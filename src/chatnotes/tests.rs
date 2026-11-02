@@ -2134,6 +2134,16 @@ fn a1c_reading_on_from_the_view_mode_the_minimized_chat_and_none_kept() {
     assert!(ed.screen.chat_view.get().is_none(), "minimized");
     crate::notes::read_on(&mut ed);
     assert!(at_paragraph(&mut ed), "shown, at its paragraph:\n{}", chat_rows(&mut ed));
+    // The chat hidden (`space L`, #270): shown, at its paragraph
+    let (_s, mut ed) = setup("a1c-read-hidden");
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    feed(&mut ed, " L");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().hidden, "hidden");
+    code_rows(&mut ed);
+    assert!(ed.screen.chat_view.get().is_none(), "hidden");
+    crate::notes::read_on(&mut ed);
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().hidden, "shown");
+    assert!(at_paragraph(&mut ed), "shown, at its paragraph:\n{}", chat_rows(&mut ed));
     // No conversation kept (the chat closed, nothing saved in tests): said, nothing opened
     let (_s, mut ed) = setup("a1c-read-none");
     crate::chat::close(&mut ed);
@@ -2390,9 +2400,11 @@ fn a1c_the_scrollbar_skips_the_cards_rows() {
     );
 }
 
-/// `space L` with the turn's card in sight where follow held it (the 80-column shot): follow's hold goes with the chat,
-/// and the view stays with the card and its line — it went back to your cursor on line 1, the card's line at the foot and
-/// the card below it. Your next move brings the view back to your cursor, as the wheel's hold does.
+/// The chat ended (`:chat-close` — `space L` did it when A1c was written) with the turn's card in sight where follow held
+/// it (the 80-column shot): follow's hold goes with the chat, and the view stays with the card and its line — it went
+/// back to your cursor on line 1, the card's line at the foot and the card below it. Your next move brings the view back
+/// to your cursor, as the wheel's hold does. `space L` in the same scene only hides the chat (#270): follow and its hold
+/// go on, the card in sight with its line as it was.
 #[test]
 fn a1c_the_card_stays_with_its_line_as_the_chat_goes() {
     const S: (u16, u16) = (80, 24);
@@ -2413,7 +2425,15 @@ fn a1c_the_card_stays_with_its_line_as_the_chat_goes() {
         rows[top - 1].contains("let line_21 = 21;").then_some(foot)
     };
     assert!(block(&code_rows_at(&mut ed, S)).is_some(), "in sight before");
+    // `space L`: hidden, nothing ended — follow and its hold go on, the card where it was
     feed(&mut ed, " L");
+    let c = ed.workspace.claude.chat.as_ref().expect("space L: the chat kept");
+    assert!(c.hidden && c.follow.on, "hidden, follow on");
+    let rows = code_rows_at(&mut ed, S);
+    assert!(block(&rows).is_some(), "hidden: the card whole, under its line:\n{}", rows.join("\n"));
+    assert_eq!(ed.cursor_line(), 0, "your cursor where it was");
+    // `:chat-close`: ended — follow's hold with it, the view staying with the card
+    feed(&mut ed, ":chat-close<ret>");
     assert!(ed.workspace.claude.chat.is_none(), "the chat gone");
     let rows = code_rows_at(&mut ed, S);
     assert!(block(&rows).is_some(), "the card whole, under its line:\n{}", rows.join("\n"));

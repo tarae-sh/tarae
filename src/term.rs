@@ -757,6 +757,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         note_text: Default::default(),
         note_more: Default::default(),
         thought_card: Default::default(),
+        follow_at_foot: Default::default(),
+        follow_room: Default::default(),
         ask_card: Default::default(),
         toast_card: Default::default(),
         overlays: Default::default(),
@@ -11932,7 +11934,12 @@ fn draw_slash_list(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write)
     let shown: Vec<&crate::chat::Slash> =
         list.names.iter().take(rows).map(|&n| &crate::chat::SLASH[n]).collect();
     let keys: Vec<String> = (shown.iter())
-        .map(|s| if s.key.starts_with("C-") { editor.key_said(s.key) } else { s.key.to_string() })
+        .map(|s| match s.act {
+            // (as the chat's foot says it: twice where a conversation would go — #268)
+            crate::chat::SlashAct::Clear => crate::chat::clear_key(c).to_string(),
+            _ if s.key.starts_with("C-") => editor.key_said(s.key),
+            _ => s.key.to_string(),
+        })
         .collect();
     let label_w = shown.iter().map(|s| s.name.width()).max().unwrap_or(0);
     let mut does_w = shown.iter().map(|s| s.does.width()).max().unwrap_or(0);
@@ -14722,7 +14729,12 @@ fn draw_follow_card(
         }
         None => (lay.rail_w, lay.text_top as usize, lay.edit_w - lay.rail_w, lay.text_rows),
     };
-    let inner = (pw / 3).clamp(34, 56).min(pw.saturating_sub(6));
+    // (its width yours where you set it — #267: a drag of its left line, `C-w < >` — within the pane; else by the pane)
+    let most = pw.saturating_sub(6);
+    let inner = match editor.sizes.follow_w {
+        Some(w) => (w as usize).saturating_sub(4).max(28).min(most),
+        None => (pw / 3).clamp(34, 56).min(most),
+    };
     if inner < 28 || ph < 8 {
         return Ok(None);
     }
@@ -14918,6 +14930,8 @@ fn draw_follow_card(
     // (`C-f` as the chat's hints say it: paused, it follows again)
     let follows = if c.follow.active() { "unfollow" } else { "follow" };
     let keys: &[(&str, &str)] = match () {
+        // (`C-l` once in the minimized chat: the second does it — #268)
+        _ if compact && crate::chat::clear_asked(editor) => &[("C-l", crate::chat::CLEAR_AGAIN)],
         _ if replaying => &[("[r ]r", "stop by stop")],
         // (`C-c` clears a draft before it stops the turn — #175)
         _ if compact && editor.workspace.is_at(At::Chat) && !c.input.blank() => {
@@ -14930,19 +14944,25 @@ fn draw_follow_card(
         _ if stops && c.busy() => &[("[r", "replay what it did")],
         _ => &[],
     };
-    // Minimized, the panel's part above the turn: the question, the plan's step (the title is the frame's line)
+    // Minimized, the panel's part above the turn: the question, the plan's step (the title is the frame's line); the
+    // chat open, the question only while the turn has nothing of its own yet — never a frame with nothing in it (#266:
+    // a press on the minimized card opened the chat at a turn's start and left this card empty)
     let mut top: Vec<Vec<Span>> = Vec::new();
-    if compact {
-        let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
-        let question = c.msgs[..turn]
-            .last()
-            .filter(|m| m.role == Role::User)
-            .map(|m| m.text.lines().next().unwrap_or_default().to_string())
-            .unwrap_or_default();
+    let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
+    let question = c.msgs[..turn]
+        .last()
+        .filter(|m| m.role == Role::User)
+        .map(|m| m.text.lines().next().unwrap_or_default().to_string())
+        .unwrap_or_default();
+    let nothing_yet = !compact && turn_rows.is_empty();
+    if nothing_yet && question.trim().is_empty() {
+        return Ok(None);
+    }
+    if compact || nothing_yet {
         top.push(vec![sp("▎ ", accent), crate::whole::fit(&question, inner - 2).span(strong)]);
-        if let Some(row) = c.plan.as_ref().and_then(|p| plan_now(p, inner, faint, accent, dim)) {
-            top.push(row);
-        }
+    }
+    if compact && let Some(row) = c.plan.as_ref().and_then(|p| plan_now(p, inner, faint, accent, dim)) {
+        top.push(row);
     }
     // Its rows but the turn's
     let fixed = top.len() + 2 * pad;
@@ -15020,15 +15040,25 @@ fn draw_follow_card(
         return Ok(None);
     };
     let room = gap_end - gap_top;
-    let body_max = BODY.min((ph / 2).saturating_sub(fixed)).min(room - fixed).max(1);
+    // (its height yours where you set it — #267: a drag of its line toward the gap, `C-w - +` — exactly that, within the
+    // gap: the newest words at its foot as ever, blank rows above them while the turn has fewer; else as many of the
+    // newest as there are, up to `BODY` and half the pane)
+    let body_max = match editor.sizes.follow_h {
+        Some(h) => (h as usize).saturating_sub(fixed).min(room - fixed).max(1),
+        None => BODY.min((ph / 2).saturating_sub(fixed)).min(room - fixed).max(1),
+    };
+    editor.screen.follow_room.set((most + 4, room));
     let (body, hand_at) = turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, (faint, card));
-    let hand_at = hand_at.map(|k| top.len() + k);
+    let fill = if editor.sizes.follow_h.is_some() { body_max.saturating_sub(body.len()) } else { 0 };
+    let hand_at = hand_at.map(|k| top.len() + fill + k);
     let mut rows: Vec<(Vec<Span>, Option<crate::chat::Link>)> = top.into_iter().map(|r| (r, None)).collect();
+    rows.extend(std::iter::repeat_n((Vec::new(), None), fill));
     rows.extend(body);
     let h = rows.len() + 2 * pad;
     let y0 = if at_bottom { gap_end - h } else { gap_top };
     let rect = (x0, y0, width, h);
     editor.screen.thought_card.set(Some(rect));
+    editor.screen.follow_at_foot.set(at_bottom);
     if compact {
         editor.screen.chat_mini.set(Some(rect));
     }
@@ -15075,7 +15105,9 @@ fn draw_follow_card(
     use crate::wordspot::Press;
     let on = crate::mouse::Surface::FollowCard;
     let follow = Some(crate::mouse::Lights::Follow);
-    let line = draw_frame(out, ui, editor, on, card, rect, &[], &bottom, &[], (follow, false))?;
+    // (an edge of it held — #267: the frame in the accent while it's dragged, half under the pointer as ever)
+    let held = grab(editor, |b| matches!(b, crate::sizes::Border::Follow { .. })) == Grab::Held;
+    let line = draw_frame(out, ui, editor, on, card, rect, &[], &bottom, &[], (follow, held))?;
     // (what it acts on, cut: its whole under the mouse)
     // (the step kept on the head: its verb, or waiting on you its state's `▲ waits` — else the status line says it)
     let says = step.is_some() && (waiting || !doing.is_empty());
@@ -18480,11 +18512,14 @@ fn draw_chat(
     ];
     let esc = crate::chatinput::esc_said(editor);
     let esc = (esc.0.as_str(), esc.1);
-    if view.is_some() {
+    // (`C-l` once with a conversation there: the second does it — said here alone until another input, #268)
+    if crate::chat::clear_asked(editor) {
+        hints.push(("C-l", crate::chat::CLEAR_AGAIN));
+    } else if view.is_some() {
         hints.extend(viewing.iter().filter_map(|(k, d)| Some((k.as_deref()?, *d))));
     } else if !editor.workspace.is_at(At::Chat) {
         hints.push(("space l", "focus"));
-        hints.push(("space L", "close"));
+        hints.push(("space L", "hide"));
     } else if c.busy() || crate::chat::slash_list(c).is_some() {
         // (a card up asks mid-turn: the chat keeps the keys, `C-q` hands them over — frictions26)
         // (not while it holds them already: given by `C-q`, its answers answer it)
@@ -18559,8 +18594,9 @@ fn draw_chat(
         if code {
             hints.push(("C-y", "copy"));
         }
-        hints.push(("C-l", "new"));
         hints.push(("C-f", if c.follow.on { "unfollow" } else { "follow" }));
+        // (last, the first to fold: a new conversation, the costly one — two presses where one would go, #268)
+        hints.push((crate::chat::clear_key(c), "new"));
     }
     let mut used = 0;
     for (k, d) in hints {
@@ -20055,9 +20091,12 @@ fn follow_thread(
     let at = hand.and_then(|h| c.msgs.iter().rposition(|m| m.is_call(Some(h))));
     let why = gaze.and_then(|g| g.why.as_deref()).filter(|w| !w.is_empty());
     // (a stop that's no call's — `follow::point`, a walk-through's: while Claude works `in_hand` still finds its
-    // newest call, the run the failure came from — or one whose call's row is gone)
-    if let (Some(g), Some(why)) = (gaze, why)
-        && (g.call.is_empty() || at.is_none())
+    // newest call, the run the failure came from — or one whose call's row is gone: its own row, its why under it; and
+    // a replayed stop whose row is gone, why or not — its row alone, never a card with nothing in it, #266. A live
+    // gaze with no row in hand, or one at rest, keeps the turn's trail below: `in_hand` is None there by design)
+    let replayed = c.follow.replaying.is_some();
+    if let Some(g) = gaze
+        && (why.is_some() && (g.call.is_empty() || at.is_none()) || replayed && at.is_none())
     {
         // (a failure: `▲`, its mark in hand)
         let glyph = knot(&g.look, true, st);
@@ -20067,7 +20106,9 @@ fn follow_thread(
         };
         let (row, ..) = trail_row_at(&look, None, glyph, &[], inner, false, st);
         let mut rows = vec![(row, g.look.link.clone().filter(|_| links))];
-        rows.extend(thought_rows(why, inner, card, st.faint, editor).into_iter().map(|r| (r, None)));
+        if let Some(why) = why {
+            rows.extend(thought_rows(why, inner, card, st.faint, editor).into_iter().map(|r| (r, None)));
+        }
         let knots = (0..rows.len()).map(|i| i == 0).collect();
         return (rows, Some(0), knots);
     }
@@ -26573,7 +26614,7 @@ mod tests {
         c.msgs.push(Msg::new(Role::Assistant, "Starting", ""));
         c.state = crate::chat::State::Writing;
         // (the panel, not the minimized card following would make of it)
-        c.unfolded = true;
+        c.unfold();
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         ed
@@ -26919,7 +26960,7 @@ mod tests {
         c.msgs.push(Msg::tool(look("run", "cargo test"), "x1"));
         c.msgs.push(Msg::new(Role::Assistant, "Done now.", ""));
         c.msgs.push(Msg::new(Role::Note, "5.2s", ""));
-        c.unfolded = true;
+        c.unfold();
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         ed
@@ -28120,7 +28161,7 @@ mod tests {
         let at = |k: usize| {
             let mut ed = Editor::new(Config::default());
             let mut c = crate::chat::Chat::new();
-            c.unfolded = true;
+            c.unfold();
             c.msgs.push(Msg::new(Role::User, "why?", ""));
             c.msgs.push(Msg::new(Role::Thought, thought.as_str(), ""));
             if k >= 1 {

@@ -682,6 +682,7 @@ fn holds(ed: &Editor, u: Under) -> bool {
             Part::Border(Border::Divider { heads, .. }) => {
                 matches!(r, R::Code | R::Weave | R::Page) && ed.workspace.viewer.focus == heads
             }
+            Part::Border(Border::Follow { .. }) => matches!(r, R::Chat | R::Unfold | R::View(_)),
             _ => false,
         },
         _ => false,
@@ -717,6 +718,8 @@ fn heads(b: Border) -> Lights {
         Border::Bottom => Lights::Slot,
         Border::Leaf(k) => Lights::Dock(k),
         Border::Divider { heads, .. } => Lights::Code(heads),
+        // (the follow card's edges: its own frame's, which the keys never light — the faint wash, half under the pointer)
+        Border::Follow { .. } => Lights::Follow,
     }
 }
 

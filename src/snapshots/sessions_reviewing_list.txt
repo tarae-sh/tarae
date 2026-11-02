@@ -14,7 +14,7 @@
 11                                                                                                 │  C-t for another model
 12                                                                                                 │  ───────────────────────────────────────────────────────────
 13                                                                                                 │  › Ask about [scratch]…
-14                                                                                                 │  space l focus  space L close
+14                                                                                                 │  space l focus  space L hide
 15  ● sessions   ¶ reviewing · 0 reads                                                                                                             utf-8 LF   1:1
 ## bg · surface per cell, blank = ui.background
 00
@@ -48,7 +48,7 @@
 11                                                                                                 f  DDD fff fffffff fffff
 12                                                                                                 f  fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 13                                                                                                 f  f fff fffff ffffffffff
-14                                                                                                 f  DDDDD D fffff  DDDDD D fffff
+14                                                                                                 f  DDDDD D fffff  DDDDD D ffff
 15  a TTTTTTTT               d d ddddd                                                                                                             ddddd dd   TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected

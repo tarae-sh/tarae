@@ -138,7 +138,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["ask"], Arg::None, "Ask Claude to edit the selection"),
     c(&["ask-cancel"], Arg::None, "Cancel the Claude request"),
     c(&["chat"], Arg::None, "Open the Claude chat (optionally send a message)"),
-    c(&["chat-close"], Arg::None, "Close the Claude chat"),
+    c(&["chat-close"], Arg::None, "End the Claude chat: its conversation, a turn under way"),
     c(&["chat-new"], Arg::None, "Start a new Claude chat"),
     c(&["chat-resume"], Arg::None, "Continue an earlier Claude conversation"),
     c(&["model"], Arg::None, "Choose Claude's model (none: a picker)"),

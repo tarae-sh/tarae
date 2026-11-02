@@ -626,11 +626,18 @@ pub struct Chat {
     /// A new conversation was asked for (`C-l`, `:chat-new`) — a session brought back doesn't continue its own when
     /// the project's are read.
     pub started_new: bool,
+    /// `C-l` pressed once with a conversation there (#268): the input it came in as (`Editor::input_seq`). The next
+    /// input a `C-l` too, a new conversation; anything else in between and it's forgotten (`clear_asked`).
+    pub clear_asked: Option<u64>,
     /// The conversation a session brought back continued by itself (`Session.brought_back`) — its top line says so
     /// (`continued · 2h ago · 120k`) until its next message goes.
     pub continued: Option<crate::chats::Past>,
     /// The user brought the panel back this turn (`space l`, a click on the minimized card).
     pub unfolded: bool,
+    /// Hidden by `space L` (#270): no panel, the conversation, its process, a turn under way and follow going on as the
+    /// minimized chat's do — until it's brought back (`unfold`: `space L` again, `space l`, a press on its card, a letter
+    /// typed to it).
+    pub hidden: bool,
     /// Claude's edits waiting for (or in) their review.
     pub edits: crate::edits::Edits,
     /// What the user allowed for this conversation (`a` on a card — `allow.rs`) · Claude's reads waiting
@@ -1109,8 +1116,10 @@ impl Chat {
             follow: Default::default(),
             no_thought_flag: false,
             started_new: false,
+            clear_asked: None,
             continued: None,
             unfolded: false,
+            hidden: false,
             edits: Default::default(),
             allowed: Default::default(),
             reads: Default::default(),
@@ -1293,7 +1302,14 @@ impl Chat {
     /// Following while Claude works: the thought card beside the code carries its words, so the panel
     /// is minimized to a floating card (back in full with the answer, or on `space l`).
     pub fn compact(&self) -> bool {
-        self.follow.on && self.busy() && !self.unfolded
+        self.hidden || self.follow.on && self.busy() && !self.unfolded
+    }
+
+    /// The panel back in full: unfolded for this turn, no longer hidden (`space l`, a press on its card, a letter
+    /// typed to it minimized).
+    pub fn unfold(&mut self) {
+        self.unfolded = true;
+        self.hidden = false;
     }
 
     /// Last code block of the last answer.
@@ -1424,7 +1440,7 @@ impl Drop for Chat {
 pub fn open(ed: &mut Editor) {
     match &mut ed.workspace.claude.chat {
         Some(c) => {
-            c.unfolded = true;
+            c.unfold();
             ed.workspace.viewer.at = At::Chat;
         }
         None => made(ed),
@@ -1797,8 +1813,28 @@ pub fn keep_now(ed: &Editor) {
     }
 }
 
+/// `space L` (#270; collab's flow plan: `space L` the conversation shown or hidden, `space l` a one-line ask): shown,
+/// the chat hidden (`hide`); hidden or minimized — or none yet —, shown with the keys in it, as `space l` gives them
+/// (`open`). `space l` never hides.
+pub fn toggle(ed: &mut Editor) {
+    let shown = ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact());
+    if shown { hide(ed) } else { open(ed) }
+}
+
+/// The chat hidden (`space L` on it shown, #270): the panel hidden, nothing ended — the conversation, its process, a turn under way and follow go
+/// on, as the minimized chat's do while Claude works; the keys the code's (`focus_sync`: a hidden chat holds none,
+/// wherever they were lent from or go back to). `space L` or `space l` brings it back; ending it is `:chat-close`
+/// (`close`).
+pub fn hide(ed: &mut Editor) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    c.hidden = true;
+    ed.set_status("chat hidden, its conversation going on — space L shows it, :chat-close ends it");
+}
+
+/// `:chat-close`: the conversation ended — its process, a turn under way cut off, follow with it. Only by name (#270:
+/// `space L` hides the panel).
 pub fn close(ed: &mut Editor) {
-    // (its view mode's or its input's key — `space L` there — has their document lent: closed once it's back)
+    // (its view mode's or its input's key — `:chat-close` there — has their document lent: closed once it's back)
     if crate::docpane::later(ed, close) {
         return;
     }
@@ -1829,6 +1865,21 @@ pub fn close(ed: &mut Editor) {
     // (what its answers let through goes with it at once — `:granted` and the chat's count too)
     ed.caps_sync();
     crate::restart::turn_over(ed);
+}
+
+/// `C-l` pressed once with a conversation there, and nothing since: said where the keys' hints are — `C-l again —
+/// a new conversation` (#268).
+pub fn clear_asked(ed: &Editor) -> bool {
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.clear_asked == Some(ed.input_seq))
+}
+
+/// What `C-l`'s hint says: a press that asks first while there's a conversation to lose (#268), at once on an empty
+/// chat — every place that hints it says it so.
+pub const CLEAR_AGAIN: &str = "again — a new conversation";
+
+/// `C-l`'s keys as its hint writes them: twice where a conversation would go, once on an empty chat (#268).
+pub fn clear_key(c: &Chat) -> &'static str {
+    if c.msgs.is_empty() { "C-l" } else { "C-l C-l" }
 }
 
 /// New chat — fresh process (drops memory of the previous conversation): `C-l` in the chat, `:chat-new`
@@ -1862,7 +1913,7 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
         return ed.set_status(said);
     };
     c.started_new = true;
-    c.unfolded = true;
+    c.unfold();
     ed.workspace.viewer.at = At::Chat;
     c.kill();
     // The one just left is an earlier one now (the empty chat offers it)
@@ -4264,7 +4315,7 @@ pub fn unfold_key(ed: &mut Editor, key: Key) -> bool {
     {
         return false;
     }
-    c.unfolded = true;
+    c.unfold();
     match key.code {
         Code::Char(x) if !key.ctrl && !key.alt && !x.is_whitespace() => {
             c.input.insert_str(x.encode_utf8(&mut [0; 4]))
@@ -4343,7 +4394,17 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
                 c.input.clear();
             }
         }
-        (Code::Char('l'), true, _) => reset(ed),
+        // A new conversation (#268: taken for "close", one lost): with a conversation there the first press asks,
+        // the second right after it does it; an empty chat at once
+        (Code::Char('l'), true, _) => {
+            let seq = ed.input_seq;
+            if c.msgs.is_empty() || c.clear_asked.is_some_and(|at| at + 1 == seq) {
+                c.clear_asked = None;
+                reset(ed);
+            } else {
+                c.clear_asked = Some(seq);
+            }
+        }
         (Code::Char('p'), true, _) => past_picker(ed),
         (Code::Char('t'), true, _) => crate::models::picker(ed),
         (Code::Char('z'), true, _) => {
@@ -4474,6 +4535,224 @@ mod tests {
         let before = crate::chats::now();
         assert!(submit(&mut ed, "and then?", None, None), "asked");
         assert!(ed.workspace.claude.chat.as_ref().unwrap().said_at >= Some(before));
+    }
+
+    /// #270, mid-turn: `space L` shows and hides the chat — minimized, shown with the keys in it; shown, hidden, nothing
+    /// more: its process, its turn and follow go on as the minimized chat's (the follow card at the code, no panel, the
+    /// keys the code's); the answer comes while it's hidden, and `space L` brings the panel back with it, the keys in it.
+    /// `space l` never hides: from the chat's view mode or the code it gives the chat the keys, and it brings a hidden
+    /// chat back. With no chat, `space L` shows one as `space l` makes it: the empty chat (its `C-p continue` row first,
+    /// where there's one), the keys in it, its claude prewarmed.
+    #[test]
+    fn space_l_upper_shows_and_hides_the_chat_space_l_never_hides() {
+        // No chat: `space L` is `space l`'s empty chat
+        for k in ["space L", "space l"] {
+            let mut ed = crate::uistate::tests::editor();
+            assert!(ed.workspace.claude.chat.is_none());
+            for key in crate::wordspot::keys(k).expect("keys") {
+                ed.handle_key(key);
+            }
+            crate::uistate::tests::frame(&mut ed);
+            let c =
+                ed.workspace.claude.chat.as_ref().unwrap_or_else(|| panic!("{k}: a chat — {:?}", ed.status));
+            assert!(c.msgs.is_empty() && !c.hidden && ed.screen.chat_w > 0, "{k}: the empty chat, shown");
+            assert_eq!(ed.keys_to().region.name(), "chat", "{k}: the keys in it");
+            crate::test_results::settle_until(&mut ed, |ed| {
+                ed.workspace.claude.chat.as_ref().is_some_and(started)
+            });
+        }
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let _rx = stand_in_own(c);
+        let g = c.generation;
+        c.msgs.push(Msg::new(Role::User, "why does it fail?", ""));
+        (c.state, c.follow.on, c.unfolded) = (State::Thinking, true, false);
+        let keys = |ed: &mut Editor, k: &str| {
+            for k in crate::wordspot::keys(k).expect("keys") {
+                ed.handle_key(k);
+            }
+            crate::uistate::tests::frame(ed);
+        };
+        let region = |ed: &Editor| ed.keys_to().region.name();
+        let shown = |ed: &Editor| ed.screen.chat_w > 0 && !ed.workspace.claude.chat.as_ref().unwrap().hidden;
+        // Minimized, the keys in the code: `space L` shows it, the keys in it
+        ed.workspace.viewer.at = At::Code;
+        crate::uistate::tests::frame(&mut ed);
+        assert_eq!(ed.screen.chat_w, 0, "minimized: no panel");
+        keys(&mut ed, "space L");
+        assert!(shown(&ed), "shown");
+        assert_eq!(region(&ed), "chat", "the keys in its input");
+        // `space l` never hides: from its view mode, nor from the code — the keys to it
+        keys(&mut ed, "esc");
+        assert_eq!(region(&ed), "view:chat");
+        keys(&mut ed, "space l");
+        assert!(shown(&ed), "space l from its view mode: still shown");
+        keys(&mut ed, "C-w h");
+        assert_eq!(region(&ed), "code");
+        keys(&mut ed, "space l");
+        assert!(shown(&ed) && region(&ed) == "chat", "space l from the code: the keys to it, still shown");
+        // Shown: `space L` hides it
+        keys(&mut ed, "C-w h");
+        keys(&mut ed, "space L");
+        let c = ed.workspace.claude.chat.as_ref().expect("the chat kept");
+        let state = (c.hidden, c.proc.is_some(), c.busy(), c.follow.on);
+        assert_eq!(state, (true, true, true, true), "hidden; its process, its turn, follow going on");
+        assert_eq!(
+            (ed.screen.chat_w, ed.workspace.viewer.at),
+            (0, At::Code),
+            "no panel, the keys the code's"
+        );
+        assert!(ed.screen.thought_card.get().is_some(), "the follow card at the code, as minimized");
+        // The answer comes while it's hidden: it stays hidden
+        on_event(&mut ed, g, StreamEv::Text("The answer, in short.".into()));
+        on_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
+        crate::uistate::tests::frame(&mut ed);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(!c.busy() && c.hidden && ed.screen.chat_w == 0, "the turn over, still hidden");
+        // Hidden: `space L` brings it back, with the answer, the keys in it
+        keys(&mut ed, "space L");
+        let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        assert!(shown(&ed), "back");
+        assert!(text.contains("The answer, in short."), "{text}");
+        assert_eq!(region(&ed), "chat", "the keys in its input");
+        // …and `space l` too
+        keys(&mut ed, "C-w h");
+        keys(&mut ed, "space L");
+        assert!(!shown(&ed), "hidden again");
+        keys(&mut ed, "space l");
+        assert!(shown(&ed) && region(&ed) == "chat", "space l: shown, the keys in it");
+    }
+
+    /// #270: ending the conversation is `:chat-close` alone — as `space L` used to (it hides now): the chat gone, its
+    /// process with it, a turn under way cut off.
+    #[test]
+    fn chat_close_ends_the_conversation() {
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let rx = stand_in_own(c);
+        c.msgs.push(Msg::new(Role::User, "why does it fail?", ""));
+        (c.state, c.follow.on) = (State::Thinking, true);
+        ed.workspace.viewer.at = At::Code;
+        for k in crate::wordspot::keys(":").unwrap() {
+            ed.handle_key(k);
+        }
+        for ch in "chat-close".chars() {
+            ed.handle_key(Key::plain(Code::Char(ch)));
+        }
+        ed.handle_key(Key::plain(Code::Enter));
+        assert!(ed.workspace.claude.chat.is_none(), "ended");
+        // (its process's stdin gone with it: nothing more reaches it)
+        while rx.try_recv().is_ok() {}
+        assert!(
+            matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)),
+            "its process let go"
+        );
+    }
+
+    /// #268: `C-l` with a conversation there asks first — said in the chat's foot, faint — and the second press right
+    /// after it starts a new one; any other key between and it's forgotten (the next `C-l` asks again); an empty chat
+    /// at once.
+    #[test]
+    fn c_l_twice_is_a_new_conversation() {
+        let ctrl_l = Key { ctrl: true, ..Key::plain(Code::Char('l')) };
+        let with_one = || {
+            let mut ed = crate::uistate::tests::editor();
+            // (a claude that isn't there: the new conversation's start fails, the chat's state is what's looked at)
+            ed.config.llm.command = "/nonexistent/no-claude-here".into();
+            crate::uistate::tests::chat(&mut ed, "");
+            let c = ed.workspace.claude.chat.as_mut().unwrap();
+            c.msgs.push(Msg::new(Role::User, "a question", ""));
+            c.msgs.push(Msg::new(Role::Assistant, "An answer.", ""));
+            ed
+        };
+        let foot = |ed: &mut Editor| {
+            crate::uistate::tests::frame(ed);
+            let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+            text.contains(&format!("C-l {CLEAR_AGAIN}"))
+        };
+        let kept = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().msgs.len() == 2;
+        // Twice: asked, then done
+        let mut ed = with_one();
+        assert!(!foot(&mut ed), "nothing asked yet");
+        ed.handle_key(ctrl_l);
+        assert!(kept(&ed), "one press keeps the conversation");
+        assert!(foot(&mut ed), "the first press says the second's");
+        // (its words are a cost's — `wordspot::COSTS`: faint words, never a button; a press on them is a press between)
+        let pressable = ed
+            .screen
+            .word_spots
+            .borrow()
+            .iter()
+            .any(|s| s.press == crate::wordspot::Press::Keys("C-l".into()));
+        assert!(!pressable, "`C-l again` is no button");
+        ed.handle_key(ctrl_l);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        // (what's left is the stand-in claude's failure to start, said in the chat)
+        assert!(
+            c.started_new && !c.msgs.iter().any(|m| m.text == "An answer."),
+            "the second, a new conversation"
+        );
+        assert!(!foot(&mut ed), "done: not said");
+        // A key between: forgotten, the next `C-l` asks again
+        let mut ed = with_one();
+        ed.handle_key(ctrl_l);
+        ed.handle_key(Key::plain(Code::Char('x')));
+        assert!(!foot(&mut ed), "gone with the next key");
+        ed.handle_key(ctrl_l);
+        assert!(kept(&ed), "a key between: this one asks again");
+        assert!(foot(&mut ed));
+        // (a press between counts as a key)
+        let mut ed = with_one();
+        ed.handle_key(ctrl_l);
+        crate::uistate::tests::frame(&mut ed);
+        ed.handle_event(crate::event::Event::Mouse(crate::event::Mouse {
+            kind: crate::event::MouseKind::Down,
+            x: 2,
+            y: 2,
+            alt: false,
+            ctrl: false,
+        }));
+        ed.workspace.viewer.at = At::Chat;
+        ed.handle_key(ctrl_l);
+        assert!(kept(&ed), "a press between: this one asks again");
+        // Minimized while Claude works: said on the follow card's bottom line, where its keys are
+        let mut ed = with_one();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.state, c.follow.on, c.unfolded) = (State::Thinking, true, false);
+        ed.handle_key(ctrl_l);
+        assert!(kept(&ed) && foot(&mut ed), "the minimized chat's card says it");
+        assert!(ed.screen.chat_mini.get().is_some(), "still minimized");
+        // An empty chat: at once
+        let mut ed = with_one();
+        ed.workspace.claude.chat.as_mut().unwrap().msgs.clear();
+        ed.handle_key(ctrl_l);
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().started_new, "an empty chat: at once");
+    }
+
+    /// #268: every place that hints `C-l` says what one press does — twice where a conversation would go (the chat's
+    /// foot, `/clear`'s row), once on an empty chat.
+    #[test]
+    fn c_ls_hint_says_twice_where_a_conversation_would_go() {
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "");
+        // (wide enough for the foot's every pair)
+        let drawn = |ed: &mut Editor| {
+            ed.focus_sync();
+            crate::term::render(ed, &mut Vec::new(), 240, 40).unwrap();
+            crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 240, 40).unwrap()
+        };
+        let text = drawn(&mut ed);
+        assert!(text.contains("C-l new") && !text.contains("C-l C-l"), "{text}");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(Msg::new(Role::User, "a question", ""));
+        c.msgs.push(Msg::new(Role::Assistant, "An answer.", ""));
+        assert!(drawn(&mut ed).contains("C-l C-l new"));
+        ed.workspace.claude.chat.as_mut().unwrap().input.set("/cl");
+        let text = drawn(&mut ed);
+        let row = text.lines().find(|l| l.contains("/clear")).expect("the slash list's /clear");
+        assert!(row.contains("C-l C-l"), "{row}");
     }
 
     /// #252: a conversation left for a new one is listed at its own time, as the store has it — the empty chat offers
@@ -4629,7 +4908,7 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         let mut c = Chat::new();
         let claude = stand_in(&mut c);
-        c.unfolded = true;
+        c.unfold();
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         let feed = |ed: &mut Editor, keys: &str| {
@@ -4730,7 +5009,7 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         let mut c = Chat::new();
         let claude = stand_in(&mut c);
-        c.unfolded = true;
+        c.unfold();
         c.state = State::Thinking;
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = crate::workspace::At::Chat;
@@ -4818,7 +5097,7 @@ mod tests {
         let mut ed = editor("");
         let mut c = Chat::new();
         let claude = stand_in(&mut c);
-        c.unfolded = true;
+        c.unfold();
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         let feed = |ed: &mut Editor, keys: &str| {

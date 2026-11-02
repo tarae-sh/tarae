@@ -452,6 +452,197 @@ fn a_slot_lines_hint_drawn_with_the_keys_elsewhere_is_the_slots() {
     assert!(ed.workspace.is_at(At::Chat), "the keys back in the chat");
 }
 
+/// frictions #266: a press on the minimized chat's card brings the panel back, and the follow card left over the code
+/// says something — never a frame with nothing in it.
+#[test]
+fn a_press_on_the_follow_card_leaves_no_empty_card() {
+    let mut ed = editor();
+    working(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
+    c.unfolded = false;
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    let (x, y, w, h) = ed.screen.chat_mini.get().expect("the minimized chat's card");
+    let at = (x + w / 2, y + h / 2);
+    mouse(&mut ed, MouseKind::Down, at);
+    mouse(&mut ed, MouseKind::Up, at);
+    frame(&mut ed);
+    assert!(ed.workspace.is_at(At::Chat), "the chat opened, its keys");
+    let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+    let rows: Vec<&str> = text.lines().collect();
+    if let Some((x, y, w, h)) = ed.screen.thought_card.get() {
+        let body: Vec<String> =
+            rows[y + 1..y + h - 1].iter().map(|r| r.chars().skip(x + 1).take(w - 2).collect()).collect();
+        assert!(
+            body.iter().any(|r| !r.trim().is_empty()),
+            "an empty follow card:\n{}",
+            rows[y..y + h].join("\n")
+        );
+        // (nothing of the turn yet: what it was asked, as the minimized card said it)
+        assert!(body.iter().any(|r| r.contains("why does it fail?")), "{}", rows[y..y + h].join("\n"));
+    }
+    // Claude's first words take the question's place
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "Looking at the parser.", ""));
+    frame(&mut ed);
+    let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+    let rows: Vec<&str> = text.lines().collect();
+    let (_, y, _, h) = ed.screen.thought_card.get().expect("the follow card");
+    let card = rows[y..y + h].join("\n");
+    assert!(card.contains("Looking at the parser.") && !card.contains("why does it fail?"), "{card}");
+}
+
+/// #266's review: the stop with no row of its own shows its row alone only in a replay — a live gaze whose call has no
+/// row in hand (a point Claude made before its first call) keeps the turn's trail, Claude's words streaming in it.
+#[test]
+fn a_live_gaze_with_no_row_keeps_the_turns_words() {
+    let mut ed = editor();
+    working(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "Reading the parser first.", ""));
+    let look = crate::chat::Look {
+        verb: "point",
+        what: "main.rs".into(),
+        pattern: false,
+        range: String::new(),
+        link: None,
+    };
+    c.follow.gaze = Some(crate::follow::Gaze::new(look, None, None));
+    assert!(c.in_hand().is_none(), "no call in hand");
+    c.unfolded = false;
+    frame(&mut ed);
+    let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+    let (_, y, _, h) = ed.screen.thought_card.get().expect("the follow card");
+    let card = text.lines().skip(y).take(h).collect::<Vec<_>>().join("\n");
+    assert!(
+        card.contains("Reading the parser first."),
+        "the turn's words, not the gaze's row alone:\n{card}"
+    );
+}
+
+/// frictions #267: the follow card's size is yours — its left line drags its width, its top line (standing at the foot
+/// of its gap) its height, the corner both, its right edge and foot staying where the rule put them; held, its frame is
+/// lit full. A press on an edge with no drag is a press on the card. Kept in the sizes; within the pane.
+#[test]
+fn the_follow_cards_edges_size_it() {
+    use crate::sizes::Border;
+    let mut ed = editor();
+    working(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
+    c.unfolded = false;
+    frame(&mut ed);
+    let card = |ed: &Editor| ed.screen.thought_card.get().expect("the follow card");
+    let (x, y, w, h) = card(&ed);
+    assert!(ed.screen.follow_at_foot.get(), "at the foot of the code");
+    // (its left line, its middle row: the width)
+    assert_eq!(ed.border_at(x, y + h / 2), Some(Border::Follow { cols: true, rows: false }));
+    assert_eq!(ed.border_at(x + 1, y), Some(Border::Follow { cols: false, rows: true }));
+    assert_eq!(ed.border_at(x, y), Some(Border::Follow { cols: true, rows: true }));
+    assert_eq!(ed.border_at(x + w - 1, y + h / 2), None, "its right edge stays");
+    assert_eq!(ed.border_at(x + 2, y + h - 1), None, "its foot stays");
+    // (the line that drags is drawn: its left `│`, its top line)
+    let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+    let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+    let drawn: String = (y..y + h).map(|r| rows[r].get(x).copied().unwrap_or(' ')).collect();
+    assert_eq!(
+        drawn,
+        format!("╭{}╰", "│".repeat(h - 2)),
+        "{}",
+        rows[y..y + h].iter().map(|r| r.iter().collect::<String>()).collect::<Vec<_>>().join("\n")
+    );
+    let lit = |ed: &Editor| {
+        let r = ed.screen.thought_card.get().unwrap();
+        ed.screen.frames.borrow().iter().find(|f| f.rect == r).map(|f| f.lit)
+    };
+    assert_eq!(lit(&ed), Some(crate::mouse::Lit::Wash));
+    for at in [(x, y + h / 2), (x + 1, y)] {
+        ed.handle_event(Event::Hover(at.0 as u16, at.1 as u16));
+        frame(&mut ed);
+        assert_eq!(lit(&ed), Some(crate::mouse::Lit::Half), "half under the pointer at {at:?}");
+    }
+    mouse(&mut ed, MouseKind::Down, (x, y + h / 2));
+    mouse(&mut ed, MouseKind::Drag, (x - 10, y + h / 2));
+    frame(&mut ed);
+    assert_eq!(ed.border_held(), Some(Border::Follow { cols: true, rows: false }));
+    let lit =
+        ed.screen.frames.borrow().iter().any(|f| f.rect == card(&ed) && f.lit == crate::mouse::Lit::Keys);
+    assert!(lit, "held: lit full");
+    mouse(&mut ed, MouseKind::Up, (x - 10, y + h / 2));
+    frame(&mut ed);
+    let (x2, y2, w2, h2) = card(&ed);
+    assert_eq!(
+        (x2 + w2, w2, y2 + h2, h2),
+        (x + w, w + 10, y + h, h),
+        "wider leftward, the rest where it was"
+    );
+    assert_eq!(ed.sizes.follow_w, Some(w2 as u16));
+    assert!(ed.toasts.iter().any(|t| t.text.starts_with("follow card ")), "said");
+    // (its top line: the height — the blank rows above the newest)
+    mouse(&mut ed, MouseKind::Down, (x2 + 1, y2));
+    mouse(&mut ed, MouseKind::Drag, (x2 + 1, y2 - 4));
+    mouse(&mut ed, MouseKind::Up, (x2 + 1, y2 - 4));
+    frame(&mut ed);
+    let (x3, y3, w3, h3) = card(&ed);
+    assert_eq!((x3, w3, y3 + h3, h3), (x2, w2, y2 + h2, h2 + 4), "taller upward");
+    assert_eq!(ed.sizes.follow_h, Some(h3 as u16));
+    // (wider than the pane: as wide as it goes, the size you set kept)
+    ed.sizes.follow_w = Some(500);
+    frame(&mut ed);
+    let (cx, _, cw, _) = card(&ed);
+    assert!(cw < 120 && cx > 0, "within the pane: {cw}");
+    // (narrower than its least: its least — the content folds as ever)
+    ed.sizes.follow_w = Some(5);
+    frame(&mut ed);
+    assert_eq!(card(&ed).2, crate::sizes::FOLLOW_MIN_W);
+    // A press on an edge with no drag: the card's — the chat brought back with the keys
+    ed.sizes.follow_w = None;
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    let (x, y, _, h) = card(&ed);
+    mouse(&mut ed, MouseKind::Down, (x, y + h / 2));
+    mouse(&mut ed, MouseKind::Up, (x, y + h / 2));
+    assert!(ed.workspace.is_at(At::Chat) && !ed.workspace.claude.chat.as_ref().unwrap().compact());
+}
+
+/// frictions #267: with the minimized chat on the follow card holding the keys, `C-w < > - +` size the card and `C-w =`
+/// makes it automatic again — the card alone, the chat's width as it was; with the chat open they're the chat's.
+#[test]
+fn c_w_sizes_the_follow_card_in_hand() {
+    let mut ed = editor();
+    working(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
+    c.unfolded = false;
+    ed.sizes.chat = Some(50);
+    frame(&mut ed);
+    let (_, _, w, h) = ed.screen.thought_card.get().expect("the follow card");
+    let keys = |ed: &mut Editor, k: &str| {
+        for k in keys(k).expect("keys") {
+            ed.handle_key(k);
+        }
+        frame(ed);
+        ed.screen.thought_card.get().map(|r| (r.2, r.3)).expect("the follow card")
+    };
+    assert_eq!(keys(&mut ed, "C-w <"), (w - crate::sizes::STEP_COLS, h));
+    assert_eq!(keys(&mut ed, "C-w > C-w >"), (w + crate::sizes::STEP_COLS, h));
+    assert_eq!(keys(&mut ed, "C-w +"), (w + crate::sizes::STEP_COLS, h + crate::sizes::STEP_ROWS));
+    assert!(ed.toasts.iter().any(|t| t.text.starts_with("follow card ")), "said");
+    assert_eq!(keys(&mut ed, "C-w ="), (w, h), "automatic again");
+    assert_eq!(
+        (ed.sizes.follow_w, ed.sizes.follow_h, ed.sizes.chat),
+        (None, None, Some(50)),
+        "the card alone"
+    );
+    // The chat open: `C-w >` is the chat's
+    ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
+    frame(&mut ed);
+    keys(&mut ed, "C-w >");
+    assert_eq!((ed.sizes.follow_w, ed.sizes.chat), (None, Some(54)), "the chat's");
+}
+
 /// The follow card's foot keys take their home from what each key is, never from where the keys are: drawn with the
 /// keys in the side panel, `space l open the chat` is the code's way in — pressed, it opens the chat from the code;
 /// drawn with the keys in the minimized chat, `C-c stop` and `C-f unfollow` are the chat's.

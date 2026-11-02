@@ -16,7 +16,7 @@ that fills it (S selection).
 | The code | a presence tag | ✓ | — ctrl+press goes there at the release | ✓ | as one press | ✓ | ✓ |
 | A pane's top line |  | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | — its line between the names: nothing to press |
 | A pane's top line | a name in its path (its row in the side panel's files), a buffer's name, a key hint (`enter go there`) | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | ✓ |
-| A line between panels, between your panes | the chat's, the side panel's, the rail's, the slot's, a dock's, a divider | ✓ | ✓ | ✓ | as one press | — nothing to scroll | ✓ |
+| A line between panels, between your panes | the chat's, the side panel's, the rail's, the slot's, a dock's, a divider, the follow card's free edges | ✓ | ✓ | ✓ | as one press | — nothing to scroll | ✓ |
 | Claude's edit review | a change | ✓ | — the press did it | ✓ | as one press | ✓ | — nothing on hover |
 | Claude's edit review | off it | says: the review waits for its answer — y accepts the change, n rejects it | — the press did it | says: the review waits for its answer — y accepts the change, n rejects it | as one press | — nothing to scroll | — nothing on hover |
 | The review's rail | a file | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | ✓ | ✓ | — nothing on hover |
@@ -29,8 +29,8 @@ that fills it (S selection).
 | The chat | a session's name, `+N` | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
 | The chat | what goes with the message over its input (a quote, `screen`, an element pointed at, `N things`) | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
 | The chat | `follow`, `paused`, the turn's word, the model, a key hint at its foot | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | ✓ |
-| The follow card | a trail row, the card | ✓ | — the press did it | — placed by rule | as one press | — nothing to scroll | — nothing on hover |
-| The follow card | a strip mark | ✓ | — the press did it | — placed by rule | as one press | — nothing to scroll | ✓ |
+| The follow card | a trail row, the card | ✓ | — the press did it | — placed by rule — its left line and the one toward the code size it | as one press | — nothing to scroll | — nothing on hover |
+| The follow card | a strip mark | ✓ | — the press did it | — placed by rule — its left line and the one toward the code size it | as one press | — nothing to scroll | ✓ |
 | The follow card | `▲ waits`, `paused`, the turn's word, its keys | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | — nothing to scroll | ✓ |
 | The side panel | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | — a row opens on one press — the git tab's opens on two | ✓ | — nothing on hover |
 | The side panel | a tab's name on its top line, a key hint at its foot | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | ✓ |

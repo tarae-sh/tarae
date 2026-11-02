@@ -847,6 +847,10 @@ impl Editor {
                 let frames = self.screen.frames.borrow();
                 frames.iter().rev().find(|f| inside(f.rect, x, y)).and_then(|f| f.of)
             }
+            // (the follow card's edges are its frame's: the card half lit under the pointer, as anywhere on it — #267)
+            S::Edge if matches!(u.part, Part::Border(crate::sizes::Border::Follow { .. })) => {
+                Some(Lights::Follow)
+            }
             _ => None,
         }
     }
@@ -1513,7 +1517,7 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         Su::FollowCard => match (part, act) {
             (_, A::Press) => Acts,
             (_, A::Double) => AS_ONE,
-            (_, A::Drag) => Not("placed by rule"),
+            (_, A::Drag) => Not("placed by rule — its left line and the one toward the code size it"),
             (_, A::Wheel) => NO_SCROLL,
             (_, A::Release) => RELEASE,
             (Part::Word(_), A::Hover) => Acts,
@@ -1648,7 +1652,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ),
         (
             "A line between panels, between your panes",
-            "the chat's, the side panel's, the rail's, the slot's, a dock's, a divider",
+            "the chat's, the side panel's, the rail's, the slot's, a dock's, a divider, the follow card's free edges",
             Su::Edge,
             Part::Border(Border::Side),
         ),

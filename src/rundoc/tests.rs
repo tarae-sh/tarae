@@ -194,7 +194,7 @@ fn the_task_panels_keys_are_normal_mode_on_its_output() {
     assert_eq!(region(&ed), "code");
 }
 
-/// #176's rule on a run panel: `space L` there closes the chat, `space F` follows another session at work into its
+/// #176's rule on a run panel: `space L` there hides the chat (#270), `space F` follows another session at work into its
 /// workspace — each once the key is over and the output's document back (`docpane::later`): the panel's output still
 /// its own, behind.
 #[test]
@@ -202,7 +202,7 @@ fn what_a_key_on_the_output_drops_waits_until_its_over() {
     let mut ed = task(40);
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
     feed(&mut ed, "<C-w>j<space>L");
-    assert!(ed.workspace.claude.chat.is_none(), "space L: the chat closed");
+    assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.hidden), "space L: the chat hidden");
     assert!(ed.workspace.outputs.doc(Slot::Task).is_some(), "the output's document back");
     assert_eq!(region(&ed), "output:task", "the keys stay where they were");
     // `space F`: another session at work

@@ -2895,7 +2895,7 @@ fn the_empty_chat_offers_the_latest_conversation_on_its_first_row() {
         let mut s = Shot::new(w, 30);
         s.file("src/demo.rs", DEMO_RS);
         let mut chat = crate::chat::Chat::new();
-        chat.unfolded = true;
+        chat.unfold();
         chat.past = past;
         s.ed.workspace.claude.chat = Some(chat);
         s.ed.workspace.viewer.at = crate::workspace::At::Chat;
@@ -2982,7 +2982,7 @@ fn a_press_on_the_top_line_lands_after_a_part_folded() {
         let mut s = Shot::new(w, 30);
         s.file("src/demo.rs", DEMO_RS);
         let mut chat = crate::chat::Chat::new();
-        chat.unfolded = true;
+        chat.unfold();
         chat.follow.on = true;
         chat.continued = Some(crate::chats::Past {
             id: "c".into(),

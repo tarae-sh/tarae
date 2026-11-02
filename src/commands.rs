@@ -278,7 +278,8 @@ commands! {
         slot_next => "Next tab of the bottom panel",
         slot_prev => "Previous bottom panel tab",
         workspace_symbol_picker => "Symbols in the workspace",
-        chat_close => "Close chat",
+        chat_close => "End chat (its conversation)",
+        chat_toggle => "Show or hide chat",
         code_action => "Code actions",
         rename_symbol => "Rename symbol",
         goto_definition => "Go to definition (LSP)",
@@ -2395,6 +2396,12 @@ fn chat_open(cx: &mut Context) {
 
 fn chat_close(cx: &mut Context) {
     crate::chat::close(cx.editor);
+}
+
+/// `space L` (#270): the chat shown or hidden — hidden, its conversation, a turn under way and follow go on
+/// (`chat::toggle`).
+fn chat_toggle(cx: &mut Context) {
+    crate::chat::toggle(cx.editor);
 }
 
 /// `space @`: labels on the elements on screen — the one picked goes to the chat's next message.

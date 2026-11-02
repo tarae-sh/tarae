@@ -282,7 +282,7 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `space j` | `jumplist_picker` | Jump list |
 | `space k` | `hover` | Show docs under cursor |
 | `space l` | `chat_open` | Chat with Claude |
-| `space L` | `chat_close` | Close chat |
+| `space L` | `chat_toggle` | Show or hide chat |
 | `space m` | … | More keys — see `space m` below |
 | `space n` | `note_here` | Ask Claude here, or reply |
 | `space N` | `note_picker` | Claude's notes |
@@ -643,7 +643,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:ask` |  | Ask Claude to edit the selection |
 | `:ask-cancel` |  | Cancel the Claude request |
 | `:chat` |  | Open the Claude chat (optionally send a message) |
-| `:chat-close` |  | Close the Claude chat |
+| `:chat-close` |  | End the Claude chat: its conversation, a turn under way |
 | `:chat-new` |  | Start a new Claude chat |
 | `:chat-resume` |  | Continue an earlier Claude conversation |
 | `:model` |  | Choose Claude's model (none: a picker) |

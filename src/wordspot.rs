@@ -187,7 +187,11 @@ pub fn press(ed: &mut Editor, i: usize) {
             let lent = there != (was_at, was_focus)
                 && !matches!(on, Surface::PaneTop(_) | Surface::Float(_) | Surface::Floatlist(_));
             let gone = home.is_some_and(|h| !standing(ed, h));
-            if lent && ((ed.workspace.viewer.at, ed.workspace.viewer.focus) == there || gone) {
+            // (never back to what can't hold them now: the chat its `space L hide` hid — #270)
+            if lent
+                && standing(ed, was_at)
+                && ((ed.workspace.viewer.at, ed.workspace.viewer.focus) == there || gone)
+            {
                 if ed.workspace.viewer.focus != was_focus {
                     ed.focus_pane(was_focus);
                 }
@@ -233,11 +237,11 @@ pub fn press(ed: &mut Editor, i: usize) {
     }
 }
 
-/// Whether the surface `at` names is still there to hold the keys (a slot closed, a chat closed: not).
+/// Whether the surface `at` names is still there to hold the keys (a slot closed, a chat closed or hidden: not).
 fn standing(ed: &Editor, at: At) -> bool {
     match at {
         At::Slot => ed.slot().is_some(),
-        At::Chat => ed.workspace.claude.chat.is_some(),
+        At::Chat => ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden),
         _ => true,
     }
 }
@@ -260,7 +264,8 @@ const COSTS: &[(Option<&str>, &str)] = &[
     (None, "discard"),
     (None, "screen"),
     (None, "Claude drafts"),
-    (Some("C-l"), "new"),
+    (Some("C-l"), "*"),
+    (Some("C-l C-l"), "*"),
     (Some("d"), "*"),
     (Some("s"), "stop"),
     (Some("s"), "drop"),

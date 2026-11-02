@@ -242,7 +242,7 @@ a = "code_action"
 r = "rename_symbol"
 i = "llm_ask"
 l = "chat_open"
-L = "chat_close"
+L = "chat_toggle"
 # Point at something on screen (a card, a row, a run) — it goes with your next chat message (C-o in the chat)
 "@" = "chat_point"
 # Quote the selection to the chat (it goes with your next message) — nothing selected: the chat's conversation

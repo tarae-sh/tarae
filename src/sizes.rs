@@ -78,7 +78,17 @@ pub struct Sizes {
     /// for it, kept while it closes and opens and across `:restart`: the session in front holds its leaf
     /// (`list_dock_sync`). None: it floats.
     pub sessions_dock: Option<crate::pane::Side>,
+    /// The follow card's width and height, whole cells, frame and all (#267: its free edges drag, `C-w < > - +` while
+    /// the minimized chat on it has the keys) — each None: automatic, by the pane it leads. Shown within the pane and
+    /// the gap it stands in, never written back.
+    pub follow_w: Option<u16>,
+    pub follow_h: Option<u16>,
 }
+
+/// The follow card at its smallest: its line's names and a strip need this (a body of 28 — `term::draw_follow_card`);
+/// three rows, one of them its own.
+pub const FOLLOW_MIN_W: usize = 32;
+pub const FOLLOW_MIN_H: usize = 3;
 
 /// The dockable kinds by `GroupKind::dock_index`, as `sizes.json` names them.
 const DOCKED: [crate::pane::GroupKind; crate::pane::DOCKABLE] = [
@@ -116,6 +126,8 @@ impl Sizes {
             messages,
             folders: crate::pane::Frame::of_json(&v["folders"]),
             sessions_dock: v["sessions_dock"].as_str().and_then(crate::pane::Side::of_name),
+            follow_w: n(&v["follow"]["w"]),
+            follow_h: n(&v["follow"]["h"]),
         }
     }
 
@@ -128,8 +140,10 @@ impl Sizes {
             (self.sessions.map(crate::pane::Frame::json), self.messages.map(crate::pane::Frame::json));
         let dock = self.sessions_dock.map(crate::pane::Side::name);
         let folders = self.folders.map(crate::pane::Frame::json);
+        let follow = json!({ "w": self.follow_w, "h": self.follow_h });
         json!({ "chat": self.chat, "side": self.side, "rail": self.rail, "bottom": self.bottom, "docked": docked,
-                "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock })
+                "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock,
+                "follow": follow })
         .to_string()
     }
 }
@@ -238,6 +252,13 @@ pub enum Border {
     },
     /// A docked group's edge (P3 step 6), by its kind: its width, or its rows over the code.
     Leaf(crate::pane::GroupKind),
+    /// The follow card's free edges (#267): its left line sizes its width (`cols`), the line toward the gap it stands in
+    /// — its top line at the gap's foot, its bottom line at its top — its height (`rows`); the corner both. Its right
+    /// and its other line stay where the rule put them.
+    Follow {
+        cols: bool,
+        rows: bool,
+    },
 }
 
 /// A code pane keeps at least this many columns and rows when its split is sized.
@@ -333,7 +354,7 @@ impl crate::editor::Editor {
     /// its `q` is tarae's, the side panel goes and the tab stays the plugin's), the review's rail (the review
     /// ends, asked first), `:procs`, the test, task and terminal panels. False: the code has them (its pane
     /// closes). Not the chat (closing it ends its conversation's process: a slip of two keys mustn't cut a turn
-    /// off — `space L` does it) nor a plugin's bottom panel (its `q` is the plugin's, and only the plugin closes
+    /// off — `:chat-close` does it, `space L` hides it) nor a plugin's bottom panel (its `q` is the plugin's, and only the plugin closes
     /// it — tarae has no event to tell it so): said.
     pub fn close_focused(&mut self) -> bool {
         use crate::uistate::Region;
@@ -346,7 +367,7 @@ impl crate::editor::Editor {
             Region::View(crate::view::Surface::Terminal) => self.slot_close(Slot::Terminal),
             Region::Output(r) => self.slot_close(r.slot()),
             Region::Chat | Region::Unfold | Region::View(crate::view::Surface::Chat) => {
-                self.set_status("C-w q closes panels — space L closes the chat")
+                self.set_status("C-w q closes panels — space L hides the chat, :chat-close ends it")
             }
             _ => return false,
         }
@@ -408,6 +429,19 @@ impl crate::editor::Editor {
         }
         let s = &self.screen;
         let total = s.width?;
+        // (the follow card floats over what's under it: its edges first)
+        if let Some((cx, cy, cw, ch)) = s.thought_card.get().filter(|_| self.workspace.claude.chat.is_some())
+            && (cx..cx + cw).contains(&x)
+            && (cy..cy + ch).contains(&y)
+        {
+            let free = if s.follow_at_foot.get() { cy } else { cy + ch - 1 };
+            let (cols, rows) = (x == cx, y == free);
+            // (a mark of the turn's strip on that line is its own button — its replay)
+            let mark = s.stop_marks.borrow().iter().any(|m| m.0 == y && m.1 == x);
+            if (cols || rows) && !mark {
+                return Some(Border::Follow { cols, rows });
+            }
+        }
         let end = s.text_top + s.body_h;
         let bottom_y = end - s.bottom_h;
         if s.chat_w > 0 && s.chat_w < total && x == total - s.chat_w && y < end {
@@ -478,6 +512,13 @@ impl crate::editor::Editor {
             Border::Bottom => {}
             Border::Leaf(kind) => self.float_focus(kind),
             Border::Divider { heads, .. } => self.pane_takes_keys(heads),
+            // (as a press on the card: the chat it's Claude's turn of, brought back with the keys)
+            Border::Follow { .. } => {
+                if let Some(c) = self.workspace.claude.chat.as_mut() {
+                    c.unfold();
+                    self.workspace.viewer.at = At::Chat;
+                }
+            }
         }
     }
 
@@ -608,6 +649,19 @@ impl crate::editor::Editor {
                 let start = end.saturating_sub(now);
                 self.pane_size(sized, dir, at.saturating_sub(start), room);
             }
+            // (its right edge and its other line stay: the width from its right, the height from its far line)
+            Border::Follow { cols, rows } => {
+                let Some((cx, cy, cw, ch)) = s.thought_card.get() else { return };
+                let (foot, (max_w, max_h)) = (s.follow_at_foot.get(), s.follow_room.get());
+                if cols {
+                    let w = (cx + cw).saturating_sub(x).clamp(FOLLOW_MIN_W, max_w.max(FOLLOW_MIN_W));
+                    self.sizes.follow_w = Some(w as u16);
+                }
+                if rows {
+                    let h = if foot { (cy + ch).saturating_sub(y) } else { (y + 1).saturating_sub(cy) };
+                    self.sizes.follow_h = Some(h.clamp(FOLLOW_MIN_H, max_h.max(FOLLOW_MIN_H)) as u16);
+                }
+            }
         }
     }
 
@@ -638,10 +692,53 @@ impl crate::editor::Editor {
                 let unit = if dir == crate::split::Dir::Vertical { "columns" } else { "rows" };
                 ("pane", n, unit)
             }
+            Border::Follow { .. } => return self.follow_size_said(),
         };
         if let Some(n) = n {
             self.say_size(format!("{what} {n} {unit}"));
         }
+    }
+
+    /// The follow card has the keys — the minimized chat is on it (#267): `C-w < > - +` and `C-w =` are its.
+    fn follow_in_hand(&self) -> bool {
+        self.workspace.is_at(At::Chat)
+            && self.workspace.claude.chat.as_ref().is_some_and(|c| c.compact())
+            && self.screen.thought_card.get().is_some()
+    }
+
+    /// `C-w < > - +` with the follow card in hand: it `STEP_COLS` narrower or wider, `STEP_ROWS` shorter or taller — from
+    /// the size you set (as much of it as it had room for), else the size it's drawn, within its room. False: not in
+    /// hand.
+    fn follow_size(&mut self, dir: crate::split::Dir, more: bool) -> bool {
+        if !self.follow_in_hand() {
+            return false;
+        }
+        let Some((_, _, w, h)) = self.screen.thought_card.get() else { return false };
+        let (max_w, max_h) = self.screen.follow_room.get();
+        let step = |kept: Option<u16>, shown: usize, n: usize, (min, max): (usize, usize)| {
+            let from = kept.map_or(shown, |k| (k as usize).min(max));
+            let to = if more { from + n } else { from.saturating_sub(n) };
+            Some(to.clamp(min, max.max(min)) as u16)
+        };
+        match dir {
+            crate::split::Dir::Vertical => {
+                self.sizes.follow_w = step(self.sizes.follow_w, w, STEP_COLS, (FOLLOW_MIN_W, max_w));
+            }
+            crate::split::Dir::Horizontal => {
+                self.sizes.follow_h = step(self.sizes.follow_h, h, STEP_ROWS, (FOLLOW_MIN_H, max_h));
+            }
+        }
+        self.sizes_keep();
+        self.follow_size_said();
+        true
+    }
+
+    /// The follow card's size, said (`say_size`): what you set, else what it's drawn.
+    fn follow_size_said(&mut self) {
+        let (_, _, w, h) = self.screen.thought_card.get().unwrap_or_default();
+        let w = self.sizes.follow_w.map_or(w, usize::from);
+        let h = self.sizes.follow_h.map_or(h, usize::from);
+        self.say_size(format!("follow card {w} × {h}"));
     }
 
     /// A size said in a toast — one at a time: the one before it goes (a few presses of `C-w >` are one
@@ -654,7 +751,8 @@ impl crate::editor::Editor {
     /// `C-w >` / `C-w <` — the chat or the side panel `STEP_COLS` wider/narrower, from its width on screen;
     /// as far as leaves the code its room. Kept (global) — `C-w =` makes it automatic again.
     pub fn size_width(&mut self, wider: bool) {
-        if self.float_size(crate::split::Dir::Vertical, wider)
+        if self.follow_size(crate::split::Dir::Vertical, wider)
+            || self.float_size(crate::split::Dir::Vertical, wider)
             || self.size_own(crate::split::Dir::Vertical, wider)
             || self.size_dock(crate::split::Dir::Vertical, wider)
         {
@@ -701,7 +799,8 @@ impl crate::editor::Editor {
 
     /// `C-w +` / `C-w -` — the bottom slot `STEP_ROWS` taller/shorter (the code keeping `BOTTOM_CODE`).
     pub fn size_height(&mut self, taller: bool) {
-        if self.float_size(crate::split::Dir::Horizontal, taller)
+        if self.follow_size(crate::split::Dir::Horizontal, taller)
+            || self.float_size(crate::split::Dir::Horizontal, taller)
             || self.size_own(crate::split::Dir::Horizontal, taller)
             || self.size_dock(crate::split::Dir::Horizontal, taller)
         {
@@ -749,6 +848,13 @@ impl crate::editor::Editor {
         // (from a floating pane: it alone, back in the middle)
         if self.float_auto() {
             return;
+        }
+        // (the follow card in hand: it alone, automatic again — #267)
+        if self.follow_in_hand() {
+            (self.sizes.follow_w, self.sizes.follow_h) = (None, None);
+            self.sizes_keep();
+            self.toasts.retain(|t| !t.text.ends_with(SIZE_TAIL));
+            return self.set_status("follow card automatic again");
         }
         // (where the lists are is no size: their frames and the session list's side stay)
         let s = self.sizes;
@@ -915,7 +1021,8 @@ impl crate::editor::Editor {
         let s = &self.workspace;
         let there = match s.docked() {
             At::Code | At::Float(_) => true,
-            At::Chat => s.claude.chat.is_some(),
+            // (hidden, it holds no keys — `space L`, #270: they're the code's, wherever they were lent from)
+            At::Chat => s.claude.chat.as_ref().is_some_and(|c| !c.hidden),
             At::Program => s.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none()),
             At::Slot => matches!(self.slot(), Some(Slot::Terminal | Slot::Test | Slot::Task | Slot::Procs)),
             At::List(id) => {
@@ -972,6 +1079,8 @@ mod tests {
         messages: None,
         folders: None,
         sessions_dock: None,
+        follow_w: None,
+        follow_h: None,
     };
 
     /// Panes P2a: where the keys are is one value (`Viewer.at`) — once what it names is gone (the chat closed,
@@ -1095,6 +1204,8 @@ mod tests {
             messages: None,
             folders: None,
             sessions_dock: None,
+            follow_w: None,
+            follow_h: None,
         };
         assert_eq!(chat_beside(160, 36, kept), 70, "yours stays");
         assert_eq!(chat_beside(70, 36, AUTO), 70, "narrow: the chat takes it all, as without the rail");
@@ -1114,6 +1225,8 @@ mod tests {
             messages: None,
             folders: None,
             sessions_dock: None,
+            follow_w: None,
+            follow_h: None,
         };
         assert_eq!(widths(200, true, true, kept), Widths { chat: 90, side: 40 });
         // 150: the chat keeps its 90; the panel's 40 would leave the code 20 — it gives way
@@ -1137,6 +1250,8 @@ mod tests {
             messages: None,
             folders: None,
             sessions_dock: None,
+            follow_w: None,
+            follow_h: None,
         };
         assert_eq!(widths(240, true, true, odd), Widths { chat: CHAT_MIN, side: SIDE_MAX });
     }
@@ -1166,6 +1281,8 @@ mod tests {
             messages: None,
             folders: None,
             sessions_dock: Some(crate::pane::Side::Right),
+            follow_w: Some(60),
+            follow_h: None,
         };
         save(&path, s, 1);
         assert_eq!(Sizes::read(Some(&path)), s);

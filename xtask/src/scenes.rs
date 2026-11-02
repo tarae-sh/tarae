@@ -315,6 +315,22 @@ const B1_KEYS: [&[&str]; 7] = [
     &["@1", " ", "l", "@1", "keep the first strand on a repeat", "\r", "\x1b", "\x1b", "@10?writing", "@2"],
 ];
 
+/// #267's keys: following, the turn running its tests, the chat minimized with the keys — then `$more` (the follow card's
+/// left line pressed and dragged; `C-w =`).
+macro_rules! f267_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", "keep the first strand on a repeat", "\r", "@10?cargo test", $($more,)* "@2"]
+    };
+}
+
+/// #267's scenes: the follow card dragged wide by its left line (to the code's `threads.insert`), dragged narrow (12
+/// cells in), and the wide one back to automatic by `C-w =` from the minimized chat.
+const F267_KEYS: [&[&str]; 3] = [
+    f267_keys!("@press?│ A repeated", "@drag?threads.insert", "@release?main.rs"),
+    f267_keys!("@press?│ A repeated", "@drag+12?│ A repeated", "@release?main.rs"),
+    f267_keys!("@press?│ A repeated", "@drag?threads.insert", "@release?main.rs", "@1", "\x17", "="),
+];
+
 /// Focus A1's keys: the question, its turn's end, the keys in the code, then `$more`.
 macro_rules! a1_keys {
     ($($more:expr),* $(,)?) => {
@@ -323,7 +339,7 @@ macro_rules! a1_keys {
 }
 
 /// Focus A1's scenes: following (its default), a question, the turn's end (its last words: the chat comes back with
-/// them), the keys in the code (`esc esc`) — the chat left open, or closed (`space L`); then the line ends, or the
+/// them), the keys in the code (`esc esc`) — the chat left open, or hidden (`space L`, #270: its conversation going on); then the line ends, or the
 /// answer's card: `gg]n` (the place's one note), `]n` (the last read's first line). `A1_LINE`: focus-line's turn —
 /// `space n`'s question at line 9 (the chat open, the keys back in the code), answered in its thread: the card there,
 /// no other note.
@@ -3194,6 +3210,10 @@ const SCENES: &[Scene] = &[
     Scene { name: "b1-wait-min", claude: "nowcard", files: MAIN, keys: B1_KEYS[5] },
     // (…and an edit being written, its call not made: the head says what it writes — no knot in hand says it)
     Scene { name: "b1-write-min", claude: "nowwrite", files: MAIN, keys: B1_KEYS[6] },
+    // (#267: the follow card's size yours — dragged wide by its left line, dragged narrow, `C-w =` back to automatic)
+    Scene { name: "f267-wide", claude: "now", files: MAIN, keys: F267_KEYS[0] },
+    Scene { name: "f267-narrow", claude: "now", files: MAIN, keys: F267_KEYS[1] },
+    Scene { name: "f267-auto", claude: "now", files: MAIN, keys: F267_KEYS[2] },
     // (focus A1: the answer's place — an answer with one placed and two place-less paragraphs, then one naming no place;
     // the chat open and closed, the line ends, then the answer's note's card)
     Scene { name: "a1-explain-open", claude: "focus-explain", files: MAIN, keys: A1_KEYS[0] },

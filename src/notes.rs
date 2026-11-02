@@ -1360,8 +1360,9 @@ pub fn start_card(ed: &mut Editor) {
 
 /// Follow's hold on the view goes with the chat (`chat::close`): where it held the open card's line — the turn's card it
 /// brought in sight — the view stays there, the card with its line, until a key of yours moves the cursor or the text
-/// (`hold_view`); never back at your cursor with the card's line at the foot and the card below it (focus A1c, `space L`
-/// in the 80-column shot). Holding anything else, the view comes back to your cursor as before.
+/// (`hold_view`); never back at your cursor with the card's line at the foot and the card below it (focus A1c, the chat
+/// ended in the 80-column shot — `:chat-close` now; `space L` hides it, follow and its hold going on). Holding anything
+/// else, the view comes back to your cursor as before.
 pub fn keep_card_in_sight(ed: &mut Editor) {
     let line = crate::follow::view_line(ed);
     let open = opened(ed, ed.doc()).map(|n| n.lines.start);
@@ -2044,7 +2045,8 @@ pub fn read_on(ed: &mut Editor) {
         notes.open = notes.list.iter().find(same).map(|m| m.id);
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
-    c.unfolded = true;
+    // (minimized or hidden by `space L`: shown — #270)
+    c.unfold();
     c.reading = Some((at, false));
     ed.unchanged = false;
 }

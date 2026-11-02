@@ -349,7 +349,7 @@ pub fn add(ed: &mut Editor, taken: Vec<Taken>) {
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     ed.workspace.viewer.at = crate::workspace::At::Chat;
-    c.unfolded = true;
+    c.unfold();
     let mut left = 0;
     for t in taken {
         let Some(c) = ed.workspace.claude.chat.as_ref() else { return };

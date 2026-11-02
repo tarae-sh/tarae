@@ -7317,7 +7317,8 @@ mod tests {
         // Once: a new conversation (`C-l`) lets it go even where it's still there (set again: as a `C-l` before the
         // session's read lands) — the chat closed and opened again is a start of yours, nothing continued
         ed.workspace.claude.brought_back = true;
-        feed(&mut ed, "<C-l>");
+        // (twice: the first asks, with a conversation there — #268)
+        feed(&mut ed, "<C-l><C-l>");
         crate::chat::close(&mut ed);
         feed(&mut ed, "<space>l");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().past.is_empty());

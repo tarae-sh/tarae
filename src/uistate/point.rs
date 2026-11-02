@@ -182,7 +182,7 @@ fn pick(ed: &mut Editor, id: String) {
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     ed.workspace.viewer.at = crate::workspace::At::Chat;
-    c.unfolded = true;
+    c.unfold();
     if !c.pointed.contains(&id) {
         c.pointed.push(id.clone());
         c.with.push(crate::chat::With::Pointed);

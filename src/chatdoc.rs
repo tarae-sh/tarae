@@ -978,7 +978,7 @@ pub fn view(ed: &mut Editor) {
         match from_input {
             true => ed.workspace.viewer.at = At::Code,
             false => {
-                c.unfolded = true;
+                c.unfold();
                 want(ed);
             }
         }

@@ -69,8 +69,12 @@ the conversation, because it has none.
 
 ![Chat panel — ask with the selection as context; code in answers sits in a well in its language's colors](screenshots/m4-chat.png)
 
-`space l` (or `:chat [question]`) opens a panel on the right ([in hanji](screenshots/m4-chat-hanji.png)); `space L`
-closes it and `:chat-new` starts over. One
+`space l` (or `:chat [question]`) opens a panel on the right ([in hanji](screenshots/m4-chat-hanji.png)), the keys
+in its input; it never hides it. `space L` shows and hides it: shown, it hides — the conversation, a turn under way
+and follow go on, as with the chat minimized while Claude works, the keys back to the code; hidden or minimized, it's
+shown with the keys in it, as `space l` gives them; with no chat, it's the empty chat `space l` opens (its `C-p
+continue` row first, its claude starting). `:chat-close` ends the conversation (its process, a turn under
+way cut off) and `:chat-new` starts over. One
 process lives for the whole conversation, so Claude remembers what came before.
 
 **What it's doing now** is said once: on the follow card while it's drawn, else on the status line, right after the
@@ -487,13 +491,13 @@ end, follow goes to the answer's first underlined place once its names are found
 | `C-]` (`C-g`) | Go to where Claude looked or pointed, or to an element it cites by id (again = one further back) |
 | `C-f` | Follow mode on/off (resumes if you took over) |
 | `C-z` | Undo what Claude changed in its last turn ([more](#undoing-a-turn)) |
-| `C-l` | New conversation |
+| `C-l` `C-l` | New conversation. With a conversation there the first `C-l` only asks — the chat's foot says `C-l again — a new conversation` (minimized, the follow card's bottom line) — and the second, right after it, starts the new one; any other key or press between and it's forgotten. An empty chat starts anew at once (`C-l` alone); `/clear` and `:chat-new` as ever |
 | `C-p` | Continue an earlier conversation |
 | `C-t` | Choose the model (`:effort` — how hard it thinks) |
 | `esc` | The conversation's view mode ([below](#reading-the-conversation-view-mode)); `esc` again, back to the code. An empty conversation has nothing to read: `esc` goes straight to the code |
 
 **Claude Code's slash names.** `/` at the input's start lists the names you know from Claude Code, each doing tarae's
-own act: `/clear` a new conversation (`C-l`), `/compact` sent to Claude as it is (*When Claude compacts*, above), `/resume` an
+own act: `/clear` a new conversation (`C-l C-l`), `/compact` sent to Claude as it is (*When Claude compacts*, above), `/resume` an
 earlier conversation (`C-p`), `/model` the model and its effort (`C-t`), `/cost` what the turns cost (`:usage`). The
 list stands on the input, each name with what it does and its key; `tab` completes the name you began (several: `tab`
 goes round them, as the `:` prompt's), a press on a row fills it in, and `enter` does the name the line is — at once.
@@ -626,7 +630,14 @@ the mark replay lands on is the one in hand — an older one keeps its place in 
 +15`). Pointing (`C-o`) labels the marks too. Claude's thinking arrives as summaries, and the chat keeps each one as a folded italic aside. While
 Claude works, the chat minimizes to a small card at the bottom right: your question, its last few lookups
 (each a link) and the keys. The code gets the whole width, and the thought card takes the room above the lines
-being read. The panel comes back with the finished answer, or right away with `space l` or a click on the card.
+being read. The panel comes back with the finished answer, or right away with `space l` or a click on the card;
+before Claude's first words the card beside the code says your question, so it's never an empty frame.
+**Its size is yours**: drag its left line for its width, and its line toward the code (its top line where it stands at
+the foot, else its bottom line) for its height — the corner both; its right edge and its other line stay where they
+are. With the minimized chat on it holding the keys, `C-w < >` narrow or widen it and `C-w - +` shorten or lengthen
+it, and `C-w =` makes it automatic again (it alone). The size is kept in `sizes.json` with the others; smaller, its
+words fold as they do on a narrow screen, taller, the newest still at its foot. The line under the pointer lights the
+card half, as anywhere on it, and in the accent while you drag it.
 While Claude waits on you (a command or a read on its card, an edit under review), the card says `waiting for
 your answer`, and over an edit's review it keeps to the room between the changes.
 
@@ -1983,8 +1994,8 @@ whole, it's cut itself, whole under the mouse.
 An older answer keeps what its own turn saw, on its card. A place the answer didn't name (its words at the turn's last
 stop) says nothing, and neither does a conversation you continued, whose stops aren't kept.
 
-A new conversation (`C-l`, `/clear`) clears them; a thread you started on one stays, it's yours. Closing the chat
-(`space L`) leaves them at the code, and the chat's next opening is a new conversation, which clears them. Continuing a
+A new conversation (`C-l`, `/clear`) clears them; a thread you started on one stays, it's yours. Ending the chat
+(`:chat-close`) leaves them at the code (hiding it, `space L`, ends nothing), and the chat's next opening is a new conversation, which clears them. Continuing a
 conversation (`C-p`, or `:restart`'s `--resume`) brings its answers' notes back: the conversation keeps their places
 only (the name as written, the file, the lines and the line's text), and their words are cut again from the
 conversation's own rows. A line that moved is found again by its text; a place whose file is gone, or that the answer

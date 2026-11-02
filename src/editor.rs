@@ -676,6 +676,12 @@ pub struct Screen {
     /// there read on in the chat (`notes::read_on`).
     pub note_more: std::cell::Cell<Option<u64>>,
     pub thought_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// The follow card stands at the foot of its gap this frame (its top line the edge that sizes its height, #267),
+    /// else at its top (its bottom line that edge).
+    pub follow_at_foot: std::cell::Cell<bool>,
+    /// How big the follow card could be this frame (its width and height at most, in the pane and the gap it stands
+    /// in): what a drag of its edges or `C-w < > - +` sizes it within (#267).
+    pub follow_room: std::cell::Cell<(usize, usize)>,
     /// The ask's waiting card this frame (x, y, width, height — `term::draw_ask_stream`): a press there is its own.
     pub ask_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// The notification card (x, y, width, height) — None when there's none, or it's folded into the status
@@ -2891,8 +2897,10 @@ impl Editor {
             };
             let over = self.lights_at(u, x, y);
             self.pointer = Some((x, y));
-            let lit = edge != std::mem::replace(&mut self.border_hover, edge)
-                || over != std::mem::replace(&mut self.pointer_over, over);
+            // (both taken, never one short-circuited past the other: onto a line from a surface, the surface left unlit —
+            // the follow card's edges are its frame's, #267)
+            let edged = edge != std::mem::replace(&mut self.border_hover, edge);
+            let lit = over != std::mem::replace(&mut self.pointer_over, over) || edged;
             self.unchanged = !(tag || mark || cut || word || lit || rest);
             return;
         }
@@ -3067,7 +3075,7 @@ impl Editor {
             c.scroll = 0;
             // (minimized, its input isn't on screen: it comes back with what was pasted — never text unseen)
             if c.compact() {
-                c.unfolded = true;
+                c.unfold();
                 self.set_status("pasted into the chat — it was minimized; it's back");
             }
             return;
@@ -3809,7 +3817,7 @@ impl Editor {
                     }
                     _ => {
                         if let Some(c) = self.workspace.claude.chat.as_mut() {
-                            c.unfolded = true;
+                            c.unfold();
                         }
                         self.workspace.viewer.at = At::Chat;
                     }
@@ -7438,10 +7446,12 @@ mod tests {
         assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
         assert_eq!(text(&ed), "foo BAR");
-        // esc = its view mode, esc again = back to the code (pane stays), space L = close
+        // esc = its view mode, esc again = back to the code (pane stays), space L = hidden (#270), :chat-close = ended
         feed(&mut ed, "<space>l<esc><esc>");
         assert!(ed.workspace.claude.chat.is_some() && !ed.workspace.is_at(At::Chat));
         feed(&mut ed, "<space>L");
+        assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.hidden));
+        feed(&mut ed, ":chat-close<ret>");
         assert!(ed.workspace.claude.chat.is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -16505,8 +16515,8 @@ mod tests {
         assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
     }
 
-    /// `C-w q` from `:procs` closes it, as its `q` does; from the chat it closes nothing and says `space L` does
-    /// (closing the chat ends its conversation's process — two keys mustn't cut a turn off).
+    /// `C-w q` from `:procs` closes it, as its `q` does; from the chat it closes nothing and says what does: `space L`
+    /// hides it, `:chat-close` ends it (its conversation's process — two keys mustn't cut a turn off).
     #[test]
     fn c_w_q_closes_procs_and_leaves_the_chat_saying_how() {
         let mut ed = editor("a\n");
@@ -16521,7 +16531,7 @@ mod tests {
         feed(&mut ed, "<C-w>q");
         assert!(ed.workspace.claude.chat.is_some(), "the chat stays");
         assert!(
-            ed.status.as_ref().is_some_and(|s| s.0.contains("space L closes the chat")),
+            ed.status.as_ref().is_some_and(|s| s.0.contains("space L hides the chat, :chat-close ends it")),
             "{:?}",
             ed.status
         );

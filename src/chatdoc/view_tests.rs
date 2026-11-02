@@ -717,7 +717,7 @@ fn z_k_carries_the_cursor_at_the_edge() {
     assert_eq!(view(&ed).top_row(), top, "and back down");
 }
 
-/// `C-w q` in the chat's view mode closes nothing — as from its input, it's said (`space L` closes the chat); the
+/// `C-w q` in the chat's view mode closes nothing — as from its input, it's said (`space L` hides the chat); the
 /// code's panes stay.
 #[test]
 fn ctrl_w_q_in_the_chats_view_is_said_and_closes_no_pane() {
@@ -731,15 +731,16 @@ fn ctrl_w_q_in_the_chats_view_is_said_and_closes_no_pane() {
     assert_eq!(ed.workspace.views.len(), panes, "no pane closed");
     assert_eq!(
         ed.status.as_ref().map(|s| s.0.as_str()),
-        Some("C-w q closes panels — space L closes the chat")
+        Some("C-w q closes panels — space L hides the chat, :chat-close ends it")
     );
     assert_eq!(region(&ed), "view:chat");
 }
 
 /// Frictions #176: `space L` in the chat's view mode killed tarae — its key ran `chat_close` with the conversation's
-/// document lent as `current`, and the chat went with the pane it was to go back to. The chat closes once the key
-/// is over, the keys the code's, in each state the view mode is met in: as it lands (a draft in the input), a
-/// selection, a search's match, a quote over the input, a turn under way; and `:chat-close` from there too.
+/// document lent as `current`, and the chat went with the pane it was to go back to. `:chat-close` closes it once the
+/// key is over, and `space L` hides it then (#270: the conversation kept, a turn under way going on), the keys the
+/// code's, in each state the view mode is met in: as it lands (a draft in the input), a selection, a search's match, a
+/// quote over the input, a turn under way.
 #[test]
 fn space_l_closes_the_chat_from_its_view_mode() {
     let cases = [
@@ -758,7 +759,14 @@ fn space_l_closes_the_chat_from_its_view_mode() {
             feed(&mut ed, keys);
             assert_eq!(region(&ed), "view:chat", "{what}: in its view mode");
             feed(&mut ed, close);
-            assert!(ed.workspace.claude.chat.is_none(), "{what}, {close}: closed");
+            match close {
+                "<space>L" => {
+                    let c = ed.workspace.claude.chat.as_ref().expect("space L: the chat kept");
+                    assert!(c.hidden && c.compact(), "{what}: hidden");
+                    assert_eq!(c.busy(), busy, "{what}: its turn as it was");
+                }
+                _ => assert!(ed.workspace.claude.chat.is_none(), "{what}, {close}: closed"),
+            }
             assert_eq!(region(&ed), "code", "{what}, {close}: the keys the code's");
             assert_eq!(
                 ed.doc().text.to_string(),
@@ -1066,18 +1074,19 @@ fn every_act_that_takes_a_workspace_to_the_front_puts_itself_off_whole() {
     assert!(not.is_empty(), "done under the key: {not:?}");
 }
 
-/// A press on the chat's `space L close` hint closes the chat (mouse W: a word that names a state does its key). It's
-/// drawn while the code has the keys and typed there; the keys moved into the chat's input or its view mode since the
-/// frame, the press gives them to the code first — the chat closes, no crash (#176), the keys the code's after.
+/// A press on the chat's `space L hide` hint hides the chat (mouse W: a word that names a state does its key; #270: its
+/// conversation kept). It's drawn while the code has the keys and typed there; the keys moved into the chat's input or
+/// its view mode since the frame, the press gives them to the code first — the chat hidden, no crash (#176), the keys
+/// the code's after.
 #[test]
-fn a_press_on_the_close_hint_closes_the_chat() {
+fn a_press_on_the_hide_hint_hides_the_chat() {
     for from in ["the code", "the input", "the view mode"] {
         let mut ed = editor();
         ed.workspace.leave(crate::workspace::At::Chat);
         let shown = frame(&mut ed);
         let (y, line) =
-            shown.lines().enumerate().find(|(_, l)| l.contains("space L close")).expect("the hint");
-        let x = line[..line.find("space L close").unwrap()].chars().count() + 2;
+            shown.lines().enumerate().find(|(_, l)| l.contains("space L hide")).expect("the hint");
+        let x = line[..line.find("space L hide").unwrap()].chars().count() + 2;
         // (the keys moved since the frame drew the hint)
         if from != "the code" {
             ed.workspace.viewer.at = crate::workspace::At::Chat;
@@ -1097,7 +1106,7 @@ fn a_press_on_the_close_hint_closes_the_chat() {
             ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
         }
         frame(&mut ed);
-        assert!(ed.workspace.claude.chat.is_none(), "from {from} ({at}): closed");
+        assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.hidden), "from {from} ({at}): hidden");
         assert_eq!(region(&ed), "code", "from {from}: the keys the code's");
         assert_eq!(ed.doc().text.to_string(), "fn main() {}\nlet code = 1;\n", "from {from}: nothing typed");
         assert!(ed.after_swap.is_empty());
@@ -1252,7 +1261,8 @@ fn another_conversation_ends_the_view_and_keeps_nothing_of_it() {
         ed
     };
     let mut ed = editor();
-    feed(&mut ed, "<esc>gg<C-l>");
+    // (twice: the first asks, with a conversation there — #268)
+    feed(&mut ed, "<esc>gg<C-l><C-l>");
     assert!(!keyed(&ed), "C-l: the view went");
     assert!(!transcript(&ed).unwrap().visited, "where it was is forgotten");
     assert_eq!(region(&ed), "chat");

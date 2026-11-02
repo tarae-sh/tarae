@@ -385,8 +385,8 @@ configs carry over as they are.
   one with the keys on top; `C-w e` has that one meaning — where nothing in hand floats it says so (the side panel
   has its own keys, `space e`, `space g`…) · `C-w t` turn the code's
   split (side by side ↔ stacked) — from a group, its members (side by side ↔ over and under) · `C-w q` close — the window, or the panel that has the keys (side panel, the
-  review's rail, `:procs`, a test, task or terminal panel, as its own `q` does; the chat closes with `space L`, so a
-  slip can't cut Claude's turn off) · `C-w o` only this one (`space w` works too); `:vsplit file`, `:hsplit file`.
+  review's rail, `:procs`, a test, task or terminal panel, as its own `q` does; the chat hides with `space L`, its
+  conversation going on, and ends only by `:chat-close`, so a slip can't cut Claude's turn off) · `C-w o` only this one (`space w` works too); `:vsplit file`, `:hsplit file`.
   Each pane has a title line; the focused one gets an accent bar and the rest dim, the line beside it lit. The same
   document in two panes shares its cursor but scrolls separately ([screenshot](screenshots/ux-splits.png)). A card,
   the picker, a prompt and which-key float over the panes: while one has the keys it's where they are, and they go
