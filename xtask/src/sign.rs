@@ -1,9 +1,11 @@
 //! `cargo xtask sign [<out-dir>]` — the working sign as built and its other candidates, as animations (#159 again: the
-//! user, 2026-10-28, "the way it moves feels awkward"; 2, the breath alone, chosen on these and built). One turn of the
-//! stand-in claude (`shimmer-sign`, `scenes::SIGN_TURN`: start, a think, prose, a stall, a read's wait, prose) with a
-//! task running beside it, recorded cell by cell in meok and hanji — the build's own cell in the chat's top line, the
-//! status line's now line and the task tab's badge as candidate 2, each other candidate drawn into the same frames
-//! where that cell stands — and the frames written as animated PNGs at their recorded times. How the next change to
+//! user, 2026-10-28, "the way it moves feels awkward" — 2, the breath alone, chosen on these and built; then #277,
+//! 2026-11-02, "one cell feels too plain": the old wave's three cells, 5b — the homepage's, a step every 0.2 s — chosen
+//! over 5's step a tick, a low wave and a 2 s one, and built). One turn of the stand-in claude (`shimmer-sign`,
+//! `scenes::SIGN_TURN`: start, a think, prose, a stall, a read's wait, prose) with a task running beside it, recorded
+//! cell by cell in meok and hanji — the build's own cells in the chat's top line, the status line's now line and the
+//! task tab's badge as candidate 5b, each other candidate drawn into the same frames
+//! where those cells stand — and the frames written as animated PNGs at their recorded times. How the next change to
 //! the sign is judged: build it, run this, watch it beside the rest. Into `<out-dir>` (`target/sign` by default):
 //! - `sign-<n>-<candidate>-<theme>.png`: one candidate in its three places;
 //! - `sign-all-<theme>.png`: every candidate, one above the other, on one clock;
@@ -39,8 +41,11 @@ const FRAME_MIN: u64 = 20;
 /// The last frame held this long before the animation starts again.
 const HOLD_MS: u64 = 1500;
 
-/// The build's heights (`shimmer::CELLS`).
-const CELLS: [char; 4] = ['▃', '▄', '▅', '▆'];
+/// The build's heights (`shimmer::CELLS`): the old wave's.
+const CELLS: [char; 6] = ['▂', '▃', '▄', '▅', '▆', '▇'];
+
+/// The one cell's heights before #277 (never `▂`, never `▇`).
+const LOW: [char; 4] = ['▃', '▄', '▅', '▆'];
 
 /// A candidate: its name in files, its title, the cells it takes, what it draws at a clock step (None: the build's, the
 /// recorded cell as it is) and what it holds while the stream stands still (None: where its clock stopped).
@@ -52,27 +57,27 @@ struct Cand {
     rest: Option<&'static str>,
 }
 
-const CANDS: [Cand; 5] = [
-    Cand { key: "2-breath", title: "2 the 2 s breath — as built", width: 1, at: None, rest: None },
+const CANDS: [Cand; 3] = [
     Cand {
-        key: "3-dot", title: "3 a dot breathing — · • ●, 2 s", width: 1, at: Some(dot), rest: Some("·")
-    },
-    Cand {
-        key: "4-two",
-        title: "4 two cells out of phase — 1.2 s",
-        width: 2,
-        at: Some(two),
-        rest: Some("▃▃"),
+        key: "5b-home",
+        title: "5b the homepage's wave, a step every 0.2 s — as built",
+        width: 3,
+        at: None,
+        rest: None,
     },
     Cand {
         key: "5-wave",
-        title: "5 three cells — the old wave, 1 s",
+        title: "5 the old wave, a step every 0.1 s",
         width: 3,
         at: Some(wave),
         rest: Some("▂▂▂"),
     },
     Cand {
-        key: "6-round", title: "6 a quadrant going round — 0.8 s", width: 1, at: Some(round), rest: None
+        key: "2-breath",
+        title: "2 one cell breathing, 2 s — before #277",
+        width: 1,
+        at: Some(breath),
+        rest: Some("▃"),
     },
 ];
 
@@ -82,28 +87,28 @@ fn cosine(step: u64, period: u64, top: usize) -> usize {
     (0.5 * (1.0 - (2.0 * PI * t).cos()) * top as f32).round() as usize
 }
 
-/// A dot on the same breath, as Claude Code's one cell breathes.
-fn dot(step: u64) -> String {
-    ['·', '•', '●'][cosine(step, 20, 2)].to_string()
+/// Three cells on a triangle over `heights`, a cycle `period` ticks long, each 3/10 of its cycle behind the next (the
+/// old wave's 3 of 10, 6b23970a's `term::wave`).
+fn tri(step: u64, heights: &[char], period: u64) -> String {
+    let top = heights.len() - 1;
+    let cycle = 2 * top as u64;
+    let (at, apart) = (step * cycle / period, (cycle * 3 + 5) / 10);
+    (0..3)
+        .map(|k| {
+            let p = ((at + k * apart) % cycle) as usize;
+            heights[if p <= top { p } else { 2 * top - p }]
+        })
+        .collect()
 }
 
-/// Two bars on one triangle half a period apart — `▃▆ ▄▅ ▅▄ ▆▃ ▅▄ ▄▅` — a step every two ticks.
-fn two(step: u64) -> String {
-    const TRI: [usize; 6] = [0, 1, 2, 3, 2, 1];
-    let n = (step / 2) as usize;
-    [CELLS[TRI[n % 6]], CELLS[TRI[(n + 3) % 6]]].iter().collect()
-}
-
-/// The wave as it was (6b23970a's `term::wave`): three cells three apart on a ten-step cycle, a step a tick.
+/// The old wave a step a tick, as tarae drew it (6b23970a) — the homepage's recording caught every other step.
 fn wave(step: u64) -> String {
-    const WAVE: [char; 10] = ['▂', '▃', '▄', '▅', '▆', '▇', '▆', '▅', '▄', '▃'];
-    (0..3).map(|k| WAVE[(step as usize + k * 3) % WAVE.len()]).collect()
+    tri(step, &CELLS, 10)
 }
 
-/// A quadrant going round the cell clockwise, a step every two ticks (`cargo xtask glyphs`: every upright face of the
-/// four, as `─ │` are).
-fn round(step: u64) -> String {
-    ['▘', '▝', '▗', '▖'][(step / 2 % 4) as usize].to_string()
+/// The one cell as it was before #277: a cosine over `▃`…`▆`, 2 s.
+fn breath(step: u64) -> String {
+    LOW[cosine(step, 20, LOW.len() - 1)].to_string()
 }
 
 /// A recorded cell, as drawn.
@@ -151,12 +156,14 @@ fn is_sign(text: &str) -> bool {
     matches!((cs.next(), cs.next()), (Some(c), None) if CELLS.contains(&c) || c == '▲' || c == '◦')
 }
 
-/// Where a place's sign is and which of its cells are shown: its row, the sign's column, the first column shown, and
-/// which way a wider sign takes its room (`left`: from the cells before it — the top line's rule).
+/// Where a place's sign is and which of its cells are shown: its row, the sign's first column and its width as
+/// recorded, the first column shown, and which way a wider sign takes its room (`left`: from the cells before it — the
+/// top line's rule).
 struct Place {
     label: &'static str,
     row: u16,
     col: u16,
+    w: u16,
     from: u16,
     left: bool,
     /// A run's sign: the clock only, never the turn's stream.
@@ -172,6 +179,12 @@ fn places(screen: &vt100::Screen) -> Result<Vec<Place>> {
             && Cell::of(screen, r, c + 2).text.chars().all(char::is_alphabetic)
     };
     let said = || format!("the frame:\n{}", screen.contents());
+    // (from the sign's last cell, found before its word: its first, and how many)
+    let whole = |r: u16, last: u16| {
+        let first =
+            (0..=last).rev().take_while(|&c| is_sign(&Cell::of(screen, r, c).text)).last().unwrap_or(last);
+        (first, last - first + 1)
+    };
     let top = (0..cols - 2)
         .rev()
         .find(|&c| sign_then_word(0, c))
@@ -186,17 +199,29 @@ fn places(screen: &vt100::Screen) -> Result<Vec<Place>> {
             is_sign(&Cell::of(screen, r, at as u16 + 6).text).then_some((r, at as u16 + 6))
         })
         .ok_or_else(|| format!("no task badge; {}", said()))?;
+    let (top, top_w) = whole(0, top);
+    let (now, now_w) = whole(rows - 1, now);
+    let badge_w = (badge.1..cols).take_while(|&c| is_sign(&Cell::of(screen, badge.0, c).text)).count() as u16;
     Ok(vec![
         Place {
             label: "chat's top line",
             row: 0,
             col: top,
+            w: top_w,
             from: cols - CROP as u16,
             left: true,
             run: false,
         },
-        Place { label: "now line", row: rows - 1, col: now, from: 0, left: false, run: false },
-        Place { label: "tab's badge", row: badge.0, col: badge.1, from: 0, left: false, run: true },
+        Place { label: "now line", row: rows - 1, col: now, w: now_w, from: 0, left: false, run: false },
+        Place {
+            label: "tab's badge",
+            row: badge.0,
+            col: badge.1,
+            w: badge_w.max(1),
+            from: 0,
+            left: false,
+            run: true,
+        },
     ])
 }
 
@@ -251,8 +276,9 @@ fn drawn(
     still_step: u64,
 ) -> String {
     let Some(at) = cand.at else { return recorded.to_string() };
-    if recorded == "▲" || recorded == "◦" {
-        return format!("{recorded}{}", " ".repeat(cand.width - 1));
+    // (a mark in the sign's place: in its last cell, by its word)
+    if let Some(g) = recorded.chars().find(|c| matches!(c, '▲' | '◦')) {
+        return format!("{}{g}", " ".repeat(cand.width - 1));
     }
     match (!place.run && script.still(t), cand.rest) {
         (true, Some(rest)) => rest.to_string(),
@@ -261,20 +287,28 @@ fn drawn(
     }
 }
 
+/// The sign as recorded at `p` in `frame`: its cells' text.
+fn recorded(frame: &vt100::Screen, p: &Place) -> String {
+    (p.col..p.col + p.w).map(|c| Cell::of(frame, p.row, c).text).collect()
+}
+
 /// A place's `CROP` cells this frame, `sign` drawn where the recorded one stands (None: as recorded). A sign wider
-/// than the recorded cell takes its room as a line would make it: from the longest run of `─` or blanks on its side
-/// (`Place::left`: before it, the top line's rule; else after it), the rest of the line where it was.
+/// than the recorded cells takes its room as a line would make it: from the longest run of `─` or blanks on its side
+/// (`Place::left`: before it, the top line's rule; else after it), the rest of the line where it was; a narrower one
+/// gives its room back to that run.
 fn place_cells(screen: &vt100::Screen, p: &Place, sign: Option<&str>) -> Vec<Cell> {
     let cols = screen.size().1 as usize;
     let mut row: Vec<Cell> = (0..cols as u16).map(|c| Cell::of(screen, p.row, c)).collect();
-    let (from, col) = (p.from as usize, p.col as usize);
-    let Some(sign) = sign.filter(|_| is_sign(&row[col].text)) else { return row[from..from + CROP].to_vec() };
-    let cells: Vec<Cell> = sign.chars().map(|ch| Cell { text: ch.to_string(), ..row[col].clone() }).collect();
-    let more = cells.len() - 1;
-    row.splice(col..col + 1, cells);
+    let (from, col, w) = (p.from as usize, p.col as usize, p.w as usize);
+    let at = (col..col + w).find(|&c| is_sign(&row[c].text));
+    let Some((sign, at)) = sign.zip(at) else { return row[from..from + CROP].to_vec() };
+    let cells: Vec<Cell> = sign.chars().map(|ch| Cell { text: ch.to_string(), ..row[at].clone() }).collect();
+    let n = cells.len();
+    row.splice(col..col + w, cells);
+    let more = n.saturating_sub(w);
     let (a, b) = match p.left {
         true => (from, col),
-        false => (col + more + 1, (from + CROP + more).min(row.len())),
+        false => (col + n, (from + CROP + more).min(row.len())),
     };
     let mut best: Option<(usize, usize)> = None;
     let mut i = a;
@@ -286,8 +320,9 @@ fn place_cells(screen: &vt100::Screen, p: &Place, sign: Option<&str>) -> Vec<Cel
         i = j;
     }
     match best {
+        Some((s, _)) if n < w => drop(row.splice(s..s, std::iter::repeat_n(row[s].clone(), w - n))),
         Some((s, e)) if e - s > more => drop(row.drain(s..s + more)),
-        _ if p.left => return row[from + more..from + more + CROP].to_vec(),
+        _ if p.left && n > w => return row[from + more..from + more + CROP].to_vec(),
         _ => {}
     }
     row[from..from + CROP].to_vec()
@@ -355,7 +390,7 @@ impl Picture<'_> {
             let caption = words(&phase, self.inks.faint, false);
             put(r, cols as usize - 1 - caption.len(), &caption);
             for (k, p) in self.places.iter().enumerate() {
-                let recorded = Cell::of(frame, p.row, p.col).text;
+                let recorded = recorded(frame, p);
                 let sign = drawn(cand, p, &recorded, self.script, t, step, still_step);
                 put(r + 1 + k as u16, 1, &words(p.label, self.inks.faint, false));
                 put(r + 1 + k as u16, 1 + LABEL, &place_cells(frame, p, Some(&sign)));
@@ -574,7 +609,7 @@ fn strip(
             for tick in (start..end).step_by(TICK as usize) {
                 let at = tick as i64 + zero;
                 let Some((t, frame)) = frames.iter().rev().find(|(t, _)| *t as i64 <= at) else { continue };
-                let recorded = Cell::of(frame, p.row, p.col).text;
+                let recorded = recorded(frame, p);
                 let sign = drawn(cand, p, &recorded, script, *t as i64 - zero, t / TICK, still_step);
                 let mut cells = place_cells(frame, p, Some(&sign));
                 cells.truncate(p.col as usize + TILE);
@@ -614,9 +649,10 @@ fn strip(
 fn load(bin: &Path, me: &Path, script: &Script) -> Result<String> {
     let frames = record(bin, me, "dark", false)?;
     let zero = offset(&frames)?;
-    let p = Place { label: "", row: SIZE.1 - 1, col: 0, from: 0, left: false, run: false };
+    let p = Place { label: "", row: SIZE.1 - 1, col: 0, w: 1, from: 0, left: false, run: false };
     let think = frames.iter().find(|(t, _)| *t as i64 - zero >= 1800).ok_or("no frame in the think")?;
-    let p = Place { col: places_now(&think.1)?, ..p };
+    let (col, w) = places_now(&think.1)?;
+    let p = Place { col, w, ..p };
     let still_step = (script.still.0 as i64 + zero).max(0) as u64 / TICK;
     let mut out = String::from(
         "Frames a second by phase (meok, 100×30, no task beside the turn; perf profile `shot`).\n\
@@ -645,7 +681,7 @@ fn load(bin: &Path, me: &Path, script: &Script) -> Result<String> {
             let (mut changes, mut cells, mut last): (u32, u32, Option<String>) = (0, 0, None);
             for (t, frame) in frames.iter().filter(|(t, _)| (start..end as i64).contains(&(*t as i64 - zero)))
             {
-                let recorded = Cell::of(frame, p.row, p.col).text;
+                let recorded = recorded(frame, &p);
                 let sign = drawn(cand, &p, &recorded, script, *t as i64 - zero, t / TICK, still_step);
                 if let Some(prev) = &last
                     && *prev != sign
@@ -666,13 +702,13 @@ fn load(bin: &Path, me: &Path, script: &Script) -> Result<String> {
     Ok(out)
 }
 
-fn places_now(screen: &vt100::Screen) -> Result<u16> {
+fn places_now(screen: &vt100::Screen) -> Result<(u16, u16)> {
     let (rows, cols) = screen.size();
-    (0..cols - 2)
-        .find(|&c| {
-            is_sign(&Cell::of(screen, rows - 1, c).text) && Cell::of(screen, rows - 1, c + 1).text == " "
-        })
-        .ok_or_else(|| format!("no sign on the now line:\n{}", screen.contents()))
+    let first = (0..cols - 2)
+        .find(|&c| is_sign(&Cell::of(screen, rows - 1, c).text))
+        .ok_or_else(|| format!("no sign on the now line:\n{}", screen.contents()))?;
+    let w = (first..cols).take_while(|&c| is_sign(&Cell::of(screen, rows - 1, c).text)).count() as u16;
+    Ok((first, w))
 }
 
 /// The page that shows them side by side.
@@ -742,14 +778,31 @@ mod tests {
         let rule = "─".repeat(30);
         parser.process(format!("{rule} ▃ thinking 1.9s ─\r\n● chat  ▃ thinking   main").as_bytes());
         let text = |cells: Vec<Cell>| cells.iter().map(|c| c.text.as_str()).collect::<String>();
-        let top = Place { label: "", row: 0, col: 31, from: 4, left: true, run: false };
+        let top = Place { label: "", row: 0, col: 31, w: 1, from: 4, left: true, run: false };
         let shown = text(place_cells(parser.screen(), &top, Some("▂▅▇")));
         assert!(shown.trim_end().ends_with("─ ▂▅▇ thinking 1.9s ─"), "{shown}");
         assert_eq!(shown.chars().count(), CROP);
-        let now = Place { label: "", row: 1, col: 8, from: 0, left: false, run: false };
+        let now = Place { label: "", row: 1, col: 8, w: 1, from: 0, left: false, run: false };
         let shown = text(place_cells(parser.screen(), &now, Some("▃▆")));
         // (the status line's gap before its right side gives way, not the room between the now line's words)
         assert!(shown.starts_with("● chat  ▃▆ thinking   main "), "{shown}");
+        assert_eq!(shown.chars().count(), CROP);
+    }
+
+    /// A narrower sign gives its room back to the line's rule beside it, the words after it where they were.
+    #[test]
+    fn a_narrower_sign_gives_its_room_back_to_the_rule() {
+        let mut parser = vt100::Parser::new(2, CROP as u16 + 4, 0);
+        let rule = "─".repeat(30);
+        parser.process(format!("{rule} ▂▅▆ thinking 1.9s ─\r\n● chat  ▂▅▆ thinking   main").as_bytes());
+        let text = |cells: Vec<Cell>| cells.iter().map(|c| c.text.as_str()).collect::<String>();
+        let top = Place { label: "", row: 0, col: 31, w: 3, from: 4, left: true, run: false };
+        let shown = text(place_cells(parser.screen(), &top, Some("▄")));
+        assert!(shown.trim_end().ends_with("─── ▄ thinking 1.9s ─"), "{shown}");
+        assert_eq!(shown.chars().count(), CROP);
+        let now = Place { label: "", row: 1, col: 8, w: 3, from: 0, left: false, run: false };
+        let shown = text(place_cells(parser.screen(), &now, Some("▄")));
+        assert!(shown.starts_with("● chat  ▄ thinking   main "), "{shown}");
         assert_eq!(shown.chars().count(), CROP);
     }
 }

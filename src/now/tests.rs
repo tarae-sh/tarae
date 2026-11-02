@@ -397,6 +397,130 @@ fn a_press_on_the_line_follows_claude() {
     }
 }
 
+/// #277: the working sign's three cells are the turn's for its whole length — at work, the stream still, at a call (its
+/// mark standing in them), waiting on a card, a call maybe stuck — so the words after them never move: the status line's
+/// verb in one column through every state; the chat's top line (right-aligned: its word moves with its own length) and
+/// the follow card's head with the sign's cells whole before the word in each.
+#[test]
+fn the_signs_cells_keep_their_columns_through_a_turn() {
+    use crate::shimmer::{CELLS, STILL_AFTER, WIDTH};
+    crate::clock::hold();
+    let mut ed = at_work();
+    // (the column `word` starts at in `line`, its last place: the chat's top line is the row's right part)
+    let col = |line: &str, word: &str| line.rfind(word).map(|b| line[..b].chars().count());
+    let mut seen: Vec<(&str, Option<usize>, String)> = Vec::new();
+    let mut look = |ed: &mut Editor, what: &'static str| {
+        let s = step(ed, &ed.workspace).expect(what);
+        let drawn = rows(ed, 160, 40);
+        let (top, line) = (&drawn[0], &drawn[39]);
+        for said in [true, false] {
+            let cell = crate::term::turn_cell_said(ed, said);
+            assert_eq!(cell.chars().count(), WIDTH, "{what}, said={said}: the turn's cells {cell:?}");
+        }
+        // (the chat's line: the turn's cells right before its word, whole)
+        let word = format!(" {} ", s.word());
+        let before =
+            top.rfind(&word).map(|b| &top[..b]).unwrap_or_else(|| panic!("{what}: {word:?} in {top}"));
+        let cell = crate::term::turn_cell_said(ed, false);
+        assert!(before.ends_with(&format!("─ {cell}")), "{what}: {cell:?} before {word:?} — {top}");
+        seen.push((what, col(line, s.verb), format!("{top}\n{line}")));
+    };
+    look(&mut ed, "at work");
+    send(&mut ed, StreamEv::Text("I will look at the order.\n".into()));
+    crate::clock::advance(STILL_AFTER);
+    sync(&mut ed);
+    assert_eq!(crate::shimmer::pace(&ed.workspace), Some(crate::shimmer::Pace::Still));
+    look(&mut ed, "the stream still");
+    call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+    look(&mut ed, "a run under way");
+    card(&mut ed);
+    look(&mut ed, "waiting on a card");
+    ed.offers.clear();
+    call(&mut ed, "t2", "symbols", json!({"path": "src/main.rs"}));
+    let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    ed.tool_waits(g, json!(7), "symbols", Duration::ZERO);
+    crate::clock::advance(Duration::from_millis(5));
+    sync(&mut ed);
+    assert!(matches!(ed.doing(&ed.workspace), Doing::Stuck { .. }));
+    look(&mut ed, "a call maybe stuck");
+    let (_, verb, frame) = &seen[0];
+    assert!(verb.is_some(), "the verb found: {frame}");
+    assert!(frame.chars().any(|c| CELLS.contains(&c)), "the sign drawn: {frame}");
+    for (what, v, frame) in &seen[1..] {
+        assert_eq!(v, verb, "{what}: the verb where it was —\n{}\n{frame}", seen[0].2);
+    }
+    crate::clock::release();
+}
+
+/// #277, the reviewer: the follow card's head through a turn — at work, a run, waiting on a card, a call maybe stuck —
+/// keeps the sign's cells where its word stands: the wave there at work; where the head's own words say the state
+/// (`▲ waits`, `◦ stuck?`) the frame's rule runs on through them, never a hole in its line, the word's column kept.
+#[test]
+fn the_follow_cards_head_keeps_the_signs_cells_through_a_turn() {
+    crate::clock::hold();
+    let mut ed = at_work();
+    let mut heads: Vec<(&str, String)> = Vec::new();
+    let mut look = |ed: &mut Editor, what: &'static str| {
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        let drawn = rows(ed, 160, 40);
+        let head =
+            drawn.iter().find(|r| r.contains("╭─ follow")).unwrap_or_else(|| panic!("{what}: {drawn:#?}"));
+        heads.push((what, head.clone()));
+    };
+    send(&mut ed, StreamEv::Text("I will run the unit tests to check the order.\n".into()));
+    look(&mut ed, "at work");
+    call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+    look(&mut ed, "a run under way");
+    card(&mut ed);
+    look(&mut ed, "waiting on a card");
+    ed.offers.clear();
+    call(&mut ed, "t2", "symbols", json!({"path": "src/main.rs"}));
+    let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    ed.tool_waits(g, json!(7), "symbols", Duration::ZERO);
+    crate::clock::advance(Duration::from_millis(5));
+    sync(&mut ed);
+    look(&mut ed, "a call maybe stuck");
+    use crate::shimmer::{CELLS, WIDTH};
+    // (the head's last `needle`: its column, the blanks right before it, the `WIDTH + 1` cells before those)
+    let at = |head: &str, needle: &str| -> (usize, usize, String) {
+        let chars: Vec<char> = head.chars().collect();
+        let b = head.rfind(needle).unwrap_or_else(|| panic!("{needle:?} in {head}"));
+        let col = head[..b].chars().count();
+        let gap = chars[..col].iter().rev().take_while(|c| **c == ' ').count();
+        let before: String = chars[col - gap - (WIDTH + 1)..col - gap].iter().collect();
+        (col, gap, before)
+    };
+    let all = || heads.iter().map(|(w, h)| format!("{w}: {h}")).collect::<Vec<_>>().join("\n");
+    let (work, run, wait, stuck) = (&heads[0].1, &heads[1].1, &heads[2].1, &heads[3].1);
+    // (the time at the right end, in one column)
+    let time = at(work, "0ms").0;
+    assert!(heads.iter().all(|(_, h)| at(h, "0ms").0 == time), "the time where it was:\n{}", all());
+    // At work: the wave right before its word, a blank between
+    let (_, gap, before) = at(work, "writing");
+    let wave = |s: &str| s.chars().skip(1).all(|c| CELLS.contains(&c));
+    assert!(
+        wave(&before) && before.starts_with(' '),
+        "at work, the sign before its word: {before:?}\n{}",
+        all()
+    );
+    let (run_col, run_gap, run_before) = at(run, "running");
+    assert!(run_gap == gap && wave(&run_before), "a run: {run_before:?}\n{}", all());
+    assert_eq!(run_col, at(work, "writing").0, "a word as long, in its column:\n{}", all());
+    // Waiting and stuck: the line through the cells, the word (or the time) as far from them as at work
+    let rule = "─".repeat(WIDTH + 1);
+    let (_, wait_gap, wait_before) = at(wait, "0ms");
+    assert_eq!(
+        (wait_gap, &wait_before),
+        (at(work, "0ms").1, &rule),
+        "waiting: no hole in the line\n{}",
+        all()
+    );
+    let (_, stuck_gap, stuck_before) = at(stuck, "stuck?");
+    assert_eq!((stuck_gap, &stuck_before), (gap, &rule), "stuck: no hole in the line\n{}", all());
+    crate::clock::release();
+}
+
 /// Focus B1, the step said once: while the follow card is drawn for the turn, the status line keeps only the turn's cell
 /// — the step, its time and the sentence on the card's head and body — and the head says the step's verb with its own
 /// time, what it acts on where the knot in hand's row doesn't (an edit being written); waiting on a card, `▲N waiting`
@@ -427,7 +551,10 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     );
     let cell = line.trim_start().strip_prefix("● normal").map(str::trim_start);
     assert!(
-        cell.and_then(|c| c.chars().next()).is_some_and(|c| "▃▄▅▆".contains(c)),
+        cell.is_some_and(|c| c
+            .chars()
+            .take(crate::shimmer::WIDTH)
+            .all(|c| crate::shimmer::CELLS.contains(&c))),
         "the turn's cell: {line}"
     );
     assert!(!ed.screen.cut_spots.borrow().iter().any(|s| s.3 == crate::whole::Cut::Now), "no line to hover");

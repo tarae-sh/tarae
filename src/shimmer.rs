@@ -1,38 +1,51 @@
-//! The working sign (CLAUDE.md, "One working sign, one cell that rises"; #159, motion's `.sb/wave-plan.md` C, then the
-//! breath alone — the user, 2026-10-28, on `cargo xtask sign`'s animations: the stream's level read as stutters) — what
-//! a turn is doing: one state, `pace`, and one cell drawn from it (`term::working`) wherever Claude or a run works: the
-//! top lines, the follow card, the now line, a tab's badge, an ask's peek, the step list. The cell keeps its place for
-//! the whole turn; it moves one way, an even breath, and stops when the stream does.
+//! The working sign (CLAUDE.md, "One working sign, three cells that wave"; #159, motion's `.sb/wave-plan.md` C, the
+//! breath on the clock — the user, 2026-10-28, on `cargo xtask sign`'s animations: the stream's level read as stutters —
+//! then the old wave's three cells again, #277: "one cell feels too plain") — what a turn is doing: one state, `pace`, and
+//! `WIDTH` cells drawn from it (`term::working`) wherever Claude or a run works: the top lines, the follow card, the now
+//! line, a tab's badge, an ask's peek, the step list. The cells keep their place for the whole turn — a mark standing in
+//! for them (`▲`, `◦`, a step's) takes the last, by its word, the ones before it blank (`mark`); they move one way, the
+//! wave on the clock, a step every `STEP` (the homepage's, the user's pick of `cargo xtask sign`'s 5b), and stop when
+//! the stream does.
 //!
 //! - `Pace::Breath` — working: deltas arriving (text, thinking's summary, an edit's input), a thinking block open
 //!   (summarized thinking sends nothing until it's done — measured 2026-10-25, `cargo xtask stream --think`: 1.2–1.9 s
 //!   silent in short turns), a run of Claude's under way, the turn's start before its first event, a request out with
 //!   nothing of its answer yet (a tool's result gone back: 2.75 s measured before the next message's first event), a
-//!   compaction. The cell breathes (`breath`): an even rise and fall, `BREATH` long, whatever the stream does — a delta
-//!   changes nothing. A turn's breath counts from its own start (`Band::from`): from the floor as the turn starts, and
-//!   again as it leaves `Still` (`woke`), so it never jumps a height on the way out.
-//! - `Pace::Still` — the stream stopped: no delta for `STILL_AFTER` and nothing else at work. The cell at the floor and
-//!   still, at once; `◦ stuck?` as before (`Doing::Stuck`).
+//!   compaction. The cells wave (`wave`): each rises and falls, `WAVE` long, `APART` steps behind the one after it,
+//!   whatever the stream does — a delta changes nothing. A turn's wave counts from its own start (`Band::from`): it
+//!   rises from the floor as the turn starts, and again as it leaves `Still` (`woke`), never faster than the wave moves.
+//! - `Pace::Still` — the stream stopped: no delta for `STILL_AFTER` and nothing else at work. The cells at the floor
+//!   and still, at once; `◦ stuck?` as before (`Doing::Stuck`).
 //!
-//! A delta within `STILL_AFTER` breathes unless something since said the stream paused for work (a thinking block
-//! opening, a tool call, a request out — each lets the delta before it go, and breathes for itself). At `calm` and `none`
-//! the cell holds `CELLS[STILL]`; still and the turn's own breath are drawn only where motion is (`Editor.motion_drawn`
-//! — off in tests, where the cell breathes on the tests' still clock).
+//! A delta within `STILL_AFTER` waves unless something since said the stream paused for work (a thinking block
+//! opening, a tool call, a request out — each lets the delta before it go, and waves for itself). At `calm` and `none`
+//! the cells hold a still wave (`held`); still and the turn's own wave are drawn only where motion is
+//! (`Editor.motion_drawn` — off in tests, where the cells wave on the tests' still clock).
 
 use std::time::{Duration, Instant};
 
 use crate::workspace::Workspace;
 
-/// The working sign's heights, low to high — never below `▃` (`▁ ▂` all but vanished on hanji in the plan's shots,
-/// and `▁` read as `_`), never above `▆` (`▇` in the accent read as the code's block cursor: the user, 2026-10-27, on
-/// the ceiling's shots).
-pub const CELLS: [char; 4] = ['▃', '▄', '▅', '▆'];
+/// The working sign's heights, low to high: the old wave's (6b23970a's `term::wave`, the homepage's recording) — `▁`
+/// never (it read as `_`); `▇` at the top, which alone in one cell read as the code's block cursor (the user,
+/// 2026-10-27), among two lower cells reads as a wave's crest.
+pub const CELLS: [char; 6] = ['▂', '▃', '▄', '▅', '▆', '▇'];
 
-/// The height held where nothing moves on a clock (`calm`, `none`).
-pub const STILL: usize = 1;
+/// The cells the sign takes, wherever it shows, for the whole turn.
+pub const WIDTH: usize = 3;
 
-/// One breath of the cell where nothing streams (Claude Code's spinner breathes on the same period).
-pub const BREATH: Duration = Duration::from_secs(2);
+/// One cell's rise and fall, low to high and back (the old wave's).
+pub const WAVE: Duration = Duration::from_secs(1);
+
+/// How long each of the wave's frames stands: every other step of its cycle, as the homepage's recording shows it
+/// (2026-10-25, a frame every ~0.2 s) — the user's pick (#277, 5b over 5's step a `TICK`): its redraws half of 5's.
+pub const STEP: Duration = Duration::from_millis(200);
+
+/// How many steps of its cycle a cell runs behind the next one (the old wave's: 3 of 10).
+pub const APART: usize = 3;
+
+/// The wave's step held where nothing moves on a clock (`calm`, `none`): `▂▅▆`, rising to the right.
+pub const STILL: u128 = 10;
 
 /// No delta for this long and the stream is still (the measured stream: prose's gaps ≤ 89 ms, an edit's input in clumps
 /// about 0.6 s apart).
@@ -121,24 +134,46 @@ pub fn woke(l: &mut Workspace, before: Option<Pace>) {
     }
 }
 
-/// The turn's cell's height now: the floor while still, else its breath from `Band::from` — None: no turn under way.
-pub fn turn_height(l: &Workspace) -> Option<usize> {
+/// The turn's cells' heights now: the floor while still, else its wave from `Band::from` — None: no turn under way.
+pub fn turn_heights(l: &Workspace) -> Option<[usize; WIDTH]> {
     Some(match pace(l)? {
-        Pace::Still => 0,
+        Pace::Still => [0; WIDTH],
         Pace::Breath => {
             let from = l.claude.chat.as_ref().map_or(0, |c| c.pace.from);
-            breath(crate::editor::anim_step().saturating_sub(from))
+            wave(crate::editor::anim_step().saturating_sub(from))
         }
     })
 }
 
-/// The cell's height at `step` of the animation's clock (`editor::anim_step`, a `TICK` a step): an even rise from the
-/// floor to the top and back, one `BREATH` long — a cosine, so it lingers at both ends.
-pub fn breath(step: u128) -> usize {
-    let period = (BREATH.as_millis() / crate::editor::TICK.as_millis()).max(1);
-    let t = (step % period) as f32 / period as f32;
-    let k = 0.5 * (1.0 - (2.0 * std::f32::consts::PI * t).cos());
-    (k * (CELLS.len() - 1) as f32).round() as usize
+/// The cells' heights `step` steps of the animation's clock (`editor::anim_step`, a `TICK` a step) after the wave
+/// began: each a triangle from the floor to the top and back, `WAVE` long, `APART` of its steps behind the next, a frame
+/// standing `STEP` — and none higher than the steps so far, so it rises from the floor as it begins, never faster than
+/// the wave itself moves.
+pub fn wave(step: u128) -> [usize; WIDTH] {
+    let top = CELLS.len() - 1;
+    let cycle = 2 * top;
+    let tick = crate::editor::TICK.as_millis();
+    let per = (WAVE.as_millis() / tick / cycle as u128).max(1);
+    let hold = (STEP.as_millis() / tick / per).max(1);
+    let at = step / per;
+    let at = at - at % hold;
+    std::array::from_fn(|k| {
+        let p = ((at + (k * APART) as u128) % cycle as u128) as usize;
+        (if p <= top { p } else { cycle - p }).min(at.min(top as u128) as usize)
+    })
+}
+
+/// The cells drawn for `heights`.
+pub fn cells(heights: [usize; WIDTH]) -> String {
+    heights.iter().map(|&h| CELLS[h]).collect()
+}
+
+/// A mark standing where the sign stands (`▲` waiting on you, `◦` maybe stuck, a step's): in its last cell, by its
+/// word, the ones before it blank — an indent before the mark, never a hole between it and its word — so the word stays
+/// where it was (the user, #277).
+pub fn mark(glyph: &str) -> String {
+    use unicode_width::UnicodeWidthStr;
+    format!("{}{glyph}", " ".repeat(WIDTH.saturating_sub(glyph.width())))
 }
 
 #[cfg(test)]
@@ -156,14 +191,26 @@ mod tests {
     }
 
     #[test]
-    fn the_breath_rises_from_the_floor_to_the_top_and_back_in_one_period() {
-        let period = BREATH.as_millis() / crate::editor::TICK.as_millis();
-        let top = CELLS.len() - 1;
-        assert_eq!(breath(0), 0);
-        assert_eq!(breath(period / 2), top);
-        assert_eq!(breath(period), 0);
-        let rise: Vec<usize> = (0..=period / 2).map(breath).collect();
-        assert!(rise.windows(2).all(|w| w[0] <= w[1]), "even: {rise:?}");
-        assert!((0..period).all(|s| breath(s) == breath(period - s) || s == 0), "and back the same way");
+    fn the_wave_rises_from_the_floor_and_runs_as_the_old_one() {
+        let period = WAVE.as_millis() / crate::editor::TICK.as_millis();
+        let s = |step: u128| cells(wave(step));
+        assert_eq!(s(0), "▂▂▂", "from the floor");
+        // (the old wave's frames, 6b23970a's `term::wave`, once it has risen — every other one, each standing two ticks:
+        // the homepage's)
+        let old = |step: usize| -> String {
+            (0..3).map(|k| ['▂', '▃', '▄', '▅', '▆', '▇', '▆', '▅', '▄', '▃'][(step + k * 3) % 10]).collect()
+        };
+        for step in 6..40 {
+            assert_eq!(s(step as u128), old(step - step % 2), "step {step}");
+        }
+        assert_eq!(s(period), s(2 * period), "one period");
+        assert_eq!(s(STILL), "▂▅▆", "the still wave");
+        let changes = (0..period).filter(|&step| wave(step) != wave(step + 1)).count();
+        assert_eq!(changes as u128, period / 2, "a frame every other tick");
+        for step in 0..3 * period {
+            let (a, b) = (wave(step), wave(step + 1));
+            assert!((0..WIDTH).all(|k| a[k].abs_diff(b[k]) <= 2), "as the wave moves, at most: {step}");
+        }
+        assert_eq!(mark("▲"), "  ▲");
     }
 }

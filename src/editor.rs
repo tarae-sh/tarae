@@ -6924,7 +6924,10 @@ mod tests {
         parser.process(&bytes);
         let s = parser.screen().contents();
         assert!(
-            s.contains("● fmt") && s.contains("▲ clippy") && s.contains("● perf") && s.contains("● test"),
+            s.contains("  ● fmt")
+                && s.contains("  ▲ clippy")
+                && s.contains("  ● perf")
+                && s.contains("  ● test"),
             "{s}"
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -7085,8 +7088,8 @@ mod tests {
         let cells: String = crate::shimmer::CELLS.iter().collect();
         let only = format!("{cells}0123456789.s ");
         let mut stepped = false;
-        // (half a breath at most: past its floor by then)
-        for _ in 0..crate::shimmer::BREATH.as_millis() / (2 * TICK.as_millis()) {
+        // (half a wave at most: past its floor by then)
+        for _ in 0..crate::shimmer::WAVE.as_millis() / (2 * TICK.as_millis()) {
             std::thread::sleep(ed.tick_wanted().unwrap());
             let next = frame(&mut ed);
             let out = String::from_utf8(screen.present(&next, 160, 50).to_vec()).unwrap();

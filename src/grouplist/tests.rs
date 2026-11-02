@@ -1039,7 +1039,7 @@ fn a_running_runs_header_says_its_wave_once_and_its_time() {
     r.started = ago(2_520);
     r.push_line(false, "building".into(), false);
     let l = line(&mut ed, "check");
-    assert_eq!(waves(&l), 1, "one cell: {l}");
+    assert_eq!(waves(&l), crate::shimmer::WIDTH, "the sign's cells: {l}");
     assert!(l.contains(" 2.5s ─"), "nothing after it: the line runs on, no gap: {l}");
     // Quiet past `waits::SILENT`: said after the time, which keeps its width from then on
     ed.workspace.task_run.as_mut().unwrap().last_output =
@@ -1051,7 +1051,11 @@ fn a_running_runs_header_says_its_wave_once_and_its_time() {
     for (ms, said) in [(12_320, " 12.3s"), (1_234_000, " 20m 34s"), (5_400_000, " 1h 30m")] {
         ed.workspace.task_run.as_mut().unwrap().started = ago(ms);
         let l = line(&mut ed, "check");
-        assert_eq!((waves(&l), end(&l, said)), (1, Some(at)), "counting, in its place: {l}");
+        assert_eq!(
+            (waves(&l), end(&l, said)),
+            (crate::shimmer::WIDTH, Some(at)),
+            "counting, in its place: {l}"
+        );
     }
     let r = ed.workspace.task_run.as_mut().unwrap();
     r.state = crate::task::State::Passed;
@@ -1067,7 +1071,7 @@ fn a_running_runs_header_says_its_wave_once_and_its_time() {
     run.started = ago(3_020);
     ed.workspace.test_run = Some(run);
     let l = line(&mut ed, "tests");
-    assert!(waves(&l) == 1 && l.contains(" 3.0s ─"), "the tests' header: {l}");
+    assert!(waves(&l) == crate::shimmer::WIDTH && l.contains(" 3.0s ─"), "the tests' header: {l}");
     let r = ed.workspace.test_run.as_mut().unwrap();
     (r.state, r.took) = (crate::testing::RunState::Passed, Some(Duration::from_millis(432_500)));
     let l = line(&mut ed, "tests");
