@@ -3,6 +3,44 @@
 
 use super::*;
 
+/// Whether `line` says a mount, an unmount or a pivot was refused: a word of the mount family that's no part of a
+/// path (`mount: /mnt: permission denied`, `umount2`, `pivot_root`, bwrap's `Can't mount proc on /newroot/proc` and
+/// `Failed to make / slave`) on a line saying `Operation not permitted` or `Permission denied` — never a path that
+/// holds the word (`/proc/mounts`: a read refused), a quoted name (`touch: cannot touch 'mount'`: a write refused),
+/// nor a daemon's answer (Docker's `Error response from daemon: … mounting volume`: its own mount, outside the run).
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "Landlock's mounts: Linux only (`mount_said_in`)")
+)]
+fn mount_line(line: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "mount",
+        "mounting",
+        "remount",
+        "umount",
+        "umount2",
+        "unmount",
+        "move_mount",
+        "fsmount",
+        "open_tree",
+        "mount_setattr",
+        "pivot_root",
+    ];
+    const QUOTES: &[char] = &['\'', '"', '`', '‘', '“'];
+    let low = line.to_ascii_lowercase();
+    if low.contains("from daemon") {
+        return false;
+    }
+    let refused = low.contains("operation not permitted") || low.contains("permission denied");
+    let word = low
+        .split_whitespace()
+        .filter(|w| !w.contains('/'))
+        .filter(|w| !w.starts_with(QUOTES))
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
+        .any(|w| WORDS.contains(&w));
+    refused && (word || low.contains("make / slave") || low.contains("make / private"))
+}
+
 /// The name a tool's refusal gives bare after the tool's own name — macOS's `touch: Makefile: Operation not permitted`,
 /// `mkdir: .github: Permission denied` (`<program>: <name>: <refusal>`) — as a path from `root` (where the run is),
 /// folded; `named_in` reads the other forms. A name with no program before it (`Makefile: Operation not permitted`)
@@ -952,6 +990,7 @@ impl Policy {
     /// A name relative to where the run is counts too — `sh`'s `cannot touch 'Makefile'`, Go's `open fx`
     /// (`named_in`): on Linux, with no audit log to read, the output is all there is, and a protected name refused
     /// by its relative name was said nowhere (compat, `touch Makefile`, `go build`: "the report names no cause").
+    /// On Linux a line saying a mount was refused is said as one (`mount_said_in`), never as a write.
     pub fn said_in_output(&self, output: &[(bool, String)], seen: &[Denial]) -> Vec<Denial> {
         const BEFORE: usize = 3;
         let refused = |l: &str| refusal(l);
@@ -983,6 +1022,18 @@ impl Policy {
         let mut out: Vec<Denial> = Vec::new();
         let lines = output.iter().zip(near.iter().zip(&denied)).filter(|(_, (n, _))| **n);
         for (l, denied) in lines.map(|((_, l), (_, d))| (l, *d)).filter(|(l, _)| failed(l)) {
+            // (a mount refused: said as one, never as a write at the paths it names)
+            if let Some(d) = self.mount_said_in(l) {
+                // (one at no place adds nothing to one at a place, whichever line came first)
+                if !d.target.is_empty() {
+                    out.retain(|s| !(s.op == d.op && s.target.is_empty()));
+                }
+                let told = |s: &Denial| s.op == d.op && (s.target == d.target || d.target.is_empty());
+                if !seen.iter().chain(&out).any(told) {
+                    out.push(d);
+                }
+                continue;
+            }
             let named = named_in(l, self.from()).into_iter().chain(program_named_in(l, self.from()));
             for real in paths_in(l, self.from()).into_iter().chain(named) {
                 let op = match (self.reads_allow(&real), self.writes_allow(&real)) {
@@ -1092,6 +1143,21 @@ impl Policy {
         }
         let _ = folder;
         false
+    }
+
+    /// Linux, confined: a mount, an unmount or a pivot `line` says was refused (`mount_line`) — at the first path it
+    /// names, else at none. None elsewhere.
+    pub(super) fn mount_said_in(&self, line: &str) -> Option<Denial> {
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(_)) = &self.confine
+            && mount_line(line)
+        {
+            let at = paths_in(line, self.from()).into_iter().next();
+            let target = at.map(|p| p.display().to_string()).unwrap_or_default();
+            return Some(Denial { process: SEEN_IN_OUTPUT.into(), op: super::MOUNT_OP.into(), target });
+        }
+        let _ = line;
+        None
     }
 
     /// Linux: what a line of output says Landlock refused though the rules above let it write — making,

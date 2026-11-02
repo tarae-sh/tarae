@@ -2494,6 +2494,10 @@ impl Audit {
 /// An audit record's blockers (`fs.write_file,fs.make_reg`, `scope.signal`) in the profile's words.
 fn audit_op(blockers: &str) -> &'static str {
     let any = |names: &[&str]| blockers.split(',').any(|b| names.contains(&b));
+    // (a mount, an unmount or a pivot — never a write: no grant opens it)
+    if any(&["fs.change_topology"]) {
+        return super::MOUNT_OP;
+    }
     if any(&["fs.read_file", "fs.read_dir", "fs.execute"]) && !blockers.contains("fs.write") {
         return "file-read-data";
     }
@@ -4422,6 +4426,85 @@ mod tests {
             c.abi = 5;
         }
         assert_eq!(plain(&p).len(), 2);
+    }
+
+    /// Landlock's audit record of a mount, an unmount or a pivot refused (`fs.change_topology`) is a mount, never a
+    /// write — what it was before: any `fs.*` it didn't know read as `file-write*`, and the panel offered a write
+    /// grant that can't open it. The others as they were.
+    #[test]
+    fn an_audit_records_topology_change_is_a_mount() {
+        assert_eq!(audit_op("fs.change_topology"), crate::sandbox::MOUNT_OP);
+        assert_eq!(audit_op("fs.write_file"), "file-write*");
+        assert_eq!(audit_op("fs.make_reg"), "file-make-in");
+        assert_eq!(audit_op("fs.read_file"), "file-read-data");
+        let mut a = Audit::default();
+        a.ours.push("7b".into());
+        let line =
+            "audit: type=1423 audit(1:2): domain=7b blockers=fs.change_topology path=\"/w/p/mnt\" ino=9";
+        let got = a.line(line);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!((got[0].op.as_str(), got[0].target.as_str()), ("mount", "/w/p/mnt"));
+        // (through to the panel: the mount offers nothing, where the same record as a write offers the folder)
+        let base = crate::scratch::Scratch::new("audit-mount");
+        std::fs::create_dir_all(base.join("home/mnt")).unwrap();
+        std::fs::create_dir_all(base.join("home/proj")).unwrap();
+        let home = std::fs::canonicalize(base.join("home")).unwrap();
+        let caps = crate::caps::Caps::at(&home, &home.join("proj"));
+        let at = home.join("mnt");
+        let mut record = |n: u32, blockers: &str| {
+            let at = at.display();
+            a.line(&format!(
+                "audit: type=1423 audit(1:{n}): domain=7b blockers={blockers} path=\"{at}\" ino=9"
+            ))
+        };
+        let write = record(3, "fs.write_file");
+        assert!(!crate::blocked::choices(&write, &caps).is_empty(), "a write offers the folder: {write:?}");
+        let mount = record(4, "fs.change_topology");
+        assert_eq!(mount.len(), 1, "{mount:?}");
+        assert!(crate::blocked::choices(&mount, &caps).is_empty());
+    }
+
+    /// A confined run's output saying a mount was refused (Landlock's EPERM, in a namespace the run made) is a
+    /// mount, at the place the line names, never a write there; the report says it and points at no grant; the
+    /// kernel's record of it isn't said twice.
+    #[test]
+    fn a_mount_refused_in_the_output_is_said_as_one() {
+        let Some(_) = kernel_abi("a_mount_refused_in_the_output_is_said_as_one") else { return };
+        let s = Scratch::new("said-mount");
+        let mut p = s.policy();
+        p.watch = Some(crate::sandbox::Watch::quiet("t."));
+        let mnt = s.root.join("mnt");
+        let out = [
+            (true, format!("mount: {}: permission denied.", mnt.display())),
+            (true, "bwrap: Failed to make / slave: Operation not permitted".to_string()),
+        ];
+        let got = |out: &[(bool, String)]| -> Vec<(String, String)> {
+            p.said_in_output(out, &[]).into_iter().map(|d| (d.op, d.target)).collect()
+        };
+        let at = mnt.display().to_string();
+        let mount = |t: &str| ("mount".to_string(), t.to_string());
+        assert_eq!(got(&out[1..]), [mount("")], "bwrap's names no place");
+        // (one at no place adds nothing to one at a place)
+        assert_eq!(got(&out), [mount(&at)]);
+        assert_eq!(got(&[out[1].clone(), out[0].clone()]), [mount(&at)], "whichever came first");
+        // (the kernel's record said first: the output's same place isn't again)
+        let seen = [Denial { process: "mount".into(), op: "mount".into(), target: at.clone() }];
+        assert!(p.said_in_output(&out[..1], &seen).is_empty());
+        let r = Guard::In(Box::new(p.clone())).report(&out);
+        let r = r.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(r.contains("No command of yours mounts or unmounts in the sandbox"), "{r}");
+        assert!(!r.contains("open it from the run's panel"), "{r}");
+        // (beside a write refused elsewhere, which a grant opens: the write is offered, the mount still isn't)
+        let w = crate::sandbox::Watch::quiet("t.");
+        let write =
+            Denial { process: "the run".into(), op: "file-write*".into(), target: "/opt/t/out".into() };
+        w.record(write.clone());
+        let g = Guard::In(Box::new(Policy { watch: Some(w), ..p.clone() }));
+        let open = g.report_with(&out[..1], crate::sandbox::Told::default(), false).open;
+        assert_eq!(open, [write], "{open:?}");
+        // (unconfined, nothing of Landlock's to read: the line is no mount)
+        let open = Policy { confine: None, ..p };
+        assert!(open.said_in_output(&out[1..], &[]).is_empty());
     }
 
     /// Where a run's refusals were read is said beside them, each source in its own words: Landlock's audit

@@ -1,6 +1,39 @@
 use super::*;
 use crate::sandbox::tests::env;
 
+/// A line saying a mount, an unmount or a pivot was refused (`mount_line`): the tools' own words, the calls' names;
+/// never a path holding the word, a mount that failed for another reason, nor a refusal that names no mount.
+#[test]
+fn a_refused_mount_is_read_from_its_line() {
+    for line in [
+        "mount: /mnt: permission denied.",
+        "umount: /x: Operation not permitted",
+        "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
+        "bwrap: Failed to make / slave: Operation not permitted",
+        "unshare: cannot change root filesystem propagation: Permission denied (mount)",
+        "pivot_root: failed to change root from `.' to `old': Operation not permitted",
+        "Error: mount_setattr: Operation not permitted",
+    ] {
+        assert!(mount_line(line), "{line}");
+    }
+    for line in [
+        "cat: /proc/mounts: Permission denied",
+        "ls: cannot open directory /mount: Permission denied",
+        "cat: /proc/self/mountinfo: Operation not permitted",
+        "mount: /mnt: special device /dev/x does not exist.",
+        "touch: Makefile: Operation not permitted",
+        "the mounts here: Permission denied",
+        // (a name the tool was given, quoted: a write refused, not a mount)
+        "touch: cannot touch 'mount': Permission denied",
+        "mkdir: cannot create directory ‘umount’: Permission denied",
+        // (a daemon's own mount, outside the run)
+        "docker: Error response from daemon: error while mounting volume '/var/lib/docker/volumes/v/_data': \
+         failed to mount local volume: mount /src:/var/lib/docker/volumes/v/_data, flags: 0x1000: permission denied.",
+    ] {
+        assert!(!mount_line(line), "{line}");
+    }
+}
+
 /// frictions29 30: macOS's tools say a refusal as `<program>: <name>: <refusal>` — `touch: Makefile: Operation not
 /// permitted`, all a run's output says when the kernel's own report is lost: read as the protected name refused, from
 /// where the run ran, not "the report names no cause". One the rules let it write, or a name with no program before

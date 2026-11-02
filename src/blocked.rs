@@ -926,6 +926,27 @@ mod tests {
         assert!(text.contains("s lasts until this session ends") && !text.contains("A until"), "{text}");
     }
 
+    /// A mount refused (Linux, Landlock: `MOUNT_OP`) offers nothing — no grant opens a mount, so the panel offers no
+    /// write where one was refused, though a write refused at that same folder would offer it; the run outside is
+    /// the way, as for what no grant opens. `choices_by` offered nothing for it before too: this keeps a mount out of
+    /// the write choices; that Landlock's record of one reaches here as a mount is pinned on Linux
+    /// (`an_audit_records_topology_change_is_a_mount`).
+    #[test]
+    fn a_mount_refused_offers_no_grant() {
+        let base = crate::scratch::Scratch::new("blocked-mount");
+        std::fs::create_dir_all(base.join("home/mnt")).unwrap();
+        std::fs::create_dir_all(base.join("home/proj")).unwrap();
+        let home = std::fs::canonicalize(base.join("home")).unwrap();
+        let at = home.join("mnt");
+        let d =
+            |op: &str| Denial { process: "bwrap".into(), op: op.into(), target: at.display().to_string() };
+        let caps = crate::caps::Caps::at(&home, &home.join("proj"));
+        assert!(!choices(&[d("file-write*")], &caps).is_empty(), "a write there would offer the folder");
+        assert!(choices(&[d(crate::sandbox::MOUNT_OP)], &caps).is_empty());
+        let empty = Denial { target: String::new(), ..d(crate::sandbox::MOUNT_OP) };
+        assert!(choices(&[empty], &caps).is_empty(), "nor one at no place");
+    }
+
     /// A file named like a key refused in the project (macOS, 7a) offers that one file, once — never a folder of
     /// it (the project is read anyway), never kept past this run (`Caps::storable`, cardauto 6); kept by an
     /// earlier build's `A`, it reaches the run (`with_allowed`) and `:sandbox-disallow` takes it back. One outside

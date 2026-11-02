@@ -459,8 +459,9 @@ impl Guard {
             }
             // (step 8: another session's port, or one whose can't be told — no grant opens it, so nothing to
             // point at; nor beyond this machine past the proxy; nor what every run is refused by design — macdeny)
-            let openable =
-                |d: &&Denial| d.op != SESSION_OP && d.op != UNTOLD_OP && d.op != DIRECT_OP && !d.by_design();
+            let openable = |d: &&Denial| {
+                ![SESSION_OP, UNTOLD_OP, DIRECT_OP, MOUNT_OP].contains(&d.op.as_str()) && !d.by_design()
+            };
             let open: Vec<Denial> = all_seen.iter().filter(openable).filter(|_| !all).cloned().collect();
             let openable = all_seen.iter().any(|d| openable(&d));
             if (!all && openable) || b.distinct > b.seen.len() || o.distinct > o.seen.len() {
@@ -504,10 +505,14 @@ impl Guard {
         let (mut beyond, mut temp_keys) = (Vec::new(), Vec::new());
         let refused_port = &crate::sandboxpack::get().refused_port;
         let (mut entries, mut signals, mut looks, mut attaches) = (false, false, false, false);
-        let mut sealed = false;
+        let (mut sealed, mut mounts) = (false, false);
         for d in seen {
             if d.op.starts_with("file-entry-") {
                 entries = true;
+                continue;
+            }
+            if d.op == MOUNT_OP {
+                mounts = true;
                 continue;
             }
             let Some(path) = d.file() else {
@@ -647,6 +652,15 @@ impl Guard {
                 "A protected name — what runs later outside the sandbox (the user's builds, their terminal) or sets \
                  how things run — is bound read-only for your commands here. To change one, edit it with your edit \
                  tool: the user reviews it. Don't work around it (another name, a copy, a link).\n",
+            );
+        }
+        if mounts {
+            s.push_str(
+                "No command of yours mounts or unmounts in the sandbox (Landlock refuses it, in every namespace a \
+                 command makes), and no grant opens it: a tool that needs mounts of its own (podman, buildah, \
+                 bwrap) can't work here. If the command needs one, ask to run it outside the sandbox \
+                 (outside_sandbox, the tool's need as your reason) — the user answers y or n; don't work around \
+                 it.\n",
             );
         }
         if git {
@@ -974,6 +988,11 @@ pub const UNTOLD_OP: &str = "network-untold";
 /// A refusal's op beyond this machine by no way that goes out (Linux's supervisor, `route::Refusal::Direct`): not
 /// through tarae's proxy — raw TCP, a datagram, a tool that ignores the proxy variable. No grant opens it.
 pub const DIRECT_OP: &str = "network-direct";
+
+/// A refusal's op for a mount, an unmount or a pivot (Linux: Landlock refuses a confined process every change of the
+/// mount topology, in every namespace a run makes — its audit's `fs.change_topology`, `linux::audit_op`; or read from
+/// the run's output, `Policy::mount_said_in`). Never a write: no grant opens it, only a run outside.
+pub const MOUNT_OP: &str = "mount";
 
 /// What a Seatbelt policy's runs are kept apart from and share (9a, `guarantees.rs`): its shared memory and priority
 /// — and, where it opens this machine's ports, what listens on them. Pinned by
@@ -2524,6 +2543,8 @@ impl Denial {
                 )
             }
             "file-make-in" => format!("making a new file in {t}"),
+            MOUNT_OP if t.is_empty() => "mounting or unmounting — no command in the sandbox does".into(),
+            MOUNT_OP => format!("mounting or unmounting at {t} — no command in the sandbox does"),
             LIKELY_MADE => format!(
                 "likely making a new file in {t}, where it ran — its output names nothing refused, but a folder \
                  holding protected names takes no new files on Linux"
@@ -9140,6 +9161,34 @@ mod tests {
             let r = Guard::In(Box::new(failed)).report(&[]);
             assert!(!r.contains("Seatbelt") && !r.contains("macOS's sandbox"), "{r}");
         }
+    }
+
+    /// A mount refused (`MOUNT_OP`) is said as one — its own words with and without a place, never as a write — and
+    /// the report says why and the way: no command mounts in the sandbox, no grant opens it, outside asked, `y` or
+    /// `n`. It's all explained: nothing to open from the panel.
+    #[test]
+    fn a_refused_mount_is_said_as_a_mount() {
+        let p = Policy::for_project(&env(Path::new("/Users/u/p")));
+        let at = Denial { process: "bwrap".into(), op: MOUNT_OP.into(), target: "/Users/u/p/mnt".into() };
+        let nowhere = Denial { target: String::new(), ..at.clone() };
+        let shown = home_shown("/Users/u/p/mnt");
+        assert_eq!(at.plain(), format!("mounting or unmounting at {shown} — no command in the sandbox does"));
+        assert_eq!(nowhere.plain(), "mounting or unmounting — no command in the sandbox does");
+        let (said, all) = Guard::In(Box::new(p.clone())).kept(&[at.clone(), nowhere]);
+        let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(all, "a mount is explained: {said}");
+        assert!(
+            said.contains("No command of yours mounts or unmounts in the sandbox")
+                && said.contains("no grant opens it")
+                && said
+                    .contains("(outside_sandbox, the tool's need as your reason) — the user answers y or n"),
+            "{said}"
+        );
+        assert_eq!(said.matches("mounts or unmounts").count(), 1, "said once: {said}");
+        assert!(!said.contains("write") && !said.contains("space m s"), "{said}");
+        // (beside a write refused, the write's still its own to open)
+        let write = Denial { op: "file-write*".into(), target: "/opt/x".into(), ..at };
+        assert!(!Guard::In(Box::new(p)).kept(&[write]).1);
     }
 
     /// Files named like keys in the project (7a, names from the data — `secretnames`): the profile denies their

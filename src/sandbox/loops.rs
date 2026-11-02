@@ -143,6 +143,8 @@ fn the_output_reader_says_no_denial_the_policy_wouldnt_make() {
                     writes && real.parent().is_some_and(|f| p.closed_holds(f))
                 }
                 "signal" => d.target.bytes().all(|b| b.is_ascii_digit()),
+                // (no run mounts: a mount refused is the policy's wherever)
+                crate::sandbox::MOUNT_OP => true,
                 _ => false,
             };
             assert!(policys, "{d:?} (reads {reads}, writes {writes}) from {out:?}");
