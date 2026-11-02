@@ -42,7 +42,8 @@ use crate::transaction::{Change, Transaction};
 #[derive(Clone, Debug, Default)]
 pub struct Touched {
     pub path: PathBuf,
-    /// Before Claude's first change this turn — None: the turn created the file.
+    /// Before Claude's first change this turn — None: the turn created the file, or (`bytes`) it's kept by its
+    /// blob only (`was`).
     pub before: Option<Rope>,
     /// After its latest.
     pub after: Rope,
@@ -182,7 +183,28 @@ impl Files {
     }
 }
 
+/// What a turn's file was before it, as its review diffs it (`Touched::was`, `codereview::turn_before`).
+#[derive(Clone, Debug)]
+pub enum Was {
+    Text(Rope),
+    /// Kept by its git blob only: a run's change of a file that isn't text, or is past what a run keeps as
+    /// text (`snapshot::TEXT_MAX`) — read from git when the review asks.
+    Blob(String),
+    /// No file: the turn made it.
+    None,
+}
+
 impl Touched {
+    /// What it was before the turn: its text where the turn kept it (an edit's, or a run's of a text file),
+    /// else its blob before.
+    pub fn was(&self) -> Was {
+        match (&self.before, &self.bytes) {
+            (Some(t), _) => Was::Text(t.clone()),
+            (None, Some(Bytes { before: Some(id), .. })) => Was::Blob(id.clone()),
+            (None, _) => Was::None,
+        }
+    }
+
     /// It's a change (a file changed and changed back isn't).
     fn changed(&self) -> bool {
         match (&self.bytes, &self.before) {
@@ -451,7 +473,8 @@ fn add_run(turn: &mut Vec<Touched>, changes: Vec<crate::snapshot::Change>) {
                 }
             }
             None => {
-                let before = c.before.as_ref().map(|_| text(&c.before));
+                // (one that isn't text has no text before — never an empty one: its blob says what it was)
+                let before = c.before.as_ref().filter(|_| is_text).map(|_| text(&c.before));
                 let bytes = (!is_text).then_some(blobs);
                 turn.push(Touched { path: c.path, before, after, unseen: true, gone, bytes });
             }

@@ -2180,8 +2180,8 @@ fn start_turn_at(ed: &mut Editor, at: usize, earlier: usize, start: Option<Strin
         });
     };
     let base = Base::Turn { at, question: cp.question.clone() };
-    let files: Vec<(PathBuf, Option<ropey::Rope>)> =
-        here.iter().map(|t| (t.path.clone(), t.before.clone())).collect();
+    let files: Vec<(PathBuf, crate::checkpoint::Was)> =
+        here.iter().map(|t| (t.path.clone(), t.was())).collect();
     let root = ed
         .workspace
         .claude
@@ -2192,24 +2192,27 @@ fn start_turn_at(ed: &mut Editor, at: usize, earlier: usize, start: Option<Strin
     let rules = crate::risk::Rules::of(&ed.config);
     let asked = asked_of(ed);
     ed.events.jobs().spawn(move || {
-        let befores: Vec<Option<ropey::Rope>> = files.iter().map(|f| f.1.clone()).collect();
+        let (mut befores, mut said) = (Vec::new(), Vec::new());
         let files: Vec<File> = files
             .into_iter()
-            .map(|(path, before)| {
+            .map(|(path, was)| {
                 let now = std::fs::read_to_string(&path);
                 let gone = !path.exists();
-                let hunks = crate::git::hunks(
-                    &before.as_ref().map(|b| b.to_string()).unwrap_or_default(),
-                    now.as_deref().unwrap_or_default(),
-                );
+                // (there but not text)
+                let binary = !gone && now.is_err();
                 let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+                let now = now.unwrap_or_default();
+                let (before, why) = turn_before(&root, &rel, &was, (!binary).then_some(now.as_str()));
+                said.extend(why);
+                let hunks = crate::git::hunks(before.as_deref().unwrap_or_default(), &now);
+                let new = before.is_none();
+                befores.push(before.map(|b| ropey::Rope::from_str(&b)));
                 File {
                     added: hunks.iter().map(|h| h.lines.len()).sum(),
                     removed: hunks.iter().map(|h| h.base.len()).sum(),
-                    new: before.is_none(),
+                    new,
                     gone,
-                    // (there but not text)
-                    binary: !gone && now.is_err(),
+                    binary,
                     rel,
                     path,
                 }
@@ -2219,6 +2222,9 @@ fn start_turn_at(ed: &mut Editor, at: usize, earlier: usize, start: Option<Strin
         let beyond = beyond_turn(&root, &files);
         move |ed: &mut Editor| {
             let grades = ungraded_said(ed, grades);
+            if !said.is_empty() {
+                ed.set_warning(said.join(" · "));
+            }
             let opens = !files.is_empty();
             open_at(ed, root, base, files, grades, start, say);
             if opens
@@ -2233,6 +2239,34 @@ fn start_turn_at(ed: &mut Editor, at: usize, earlier: usize, start: Option<Strin
             }
         }
     });
+}
+
+/// What a turn's file was before it, as its review diffs it (a worker's: git) — None: the turn made it — and,
+/// where that isn't what the turn had, why (said as the review opens). `now`: its text now (None: not text, graded
+/// by its blob — nothing read). One kept by its blob only (`checkpoint::Was::Blob`: a run's change past what a run
+/// keeps as text) is read from git; a blob the repository no longer has is HEAD's text, else its text now — its
+/// change not shown, never the whole file as new (#275: a 1.4 MB file read as 30,000 added lines).
+fn turn_before(
+    root: &Path,
+    rel: &str,
+    was: &crate::checkpoint::Was,
+    now: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    use crate::checkpoint::Was;
+    let (id, now) = match (was, now) {
+        (Was::None, _) => return (None, None),
+        (Was::Text(t), _) => return (Some(t.to_string()), None),
+        (Was::Blob(_), None) => return (Some(String::new()), None),
+        (Was::Blob(id), Some(now)) => (id, now),
+    };
+    if let Ok(t) = git(root, &["cat-file", "blob", id]) {
+        return (Some(t), None);
+    }
+    let lost = format!("{rel}: its text before the turn isn't kept");
+    match git(root, &["show", &format!("HEAD:./{rel}")]) {
+        Ok(t) => (Some(t), Some(format!("{lost} — shown against HEAD"))),
+        Err(_) => (Some(now.to_string()), Some(format!("{lost} — its change isn't shown"))),
+    }
 }
 
 /// How many files in `root`'s repository differ from HEAD (untracked ones too) besides `turn`'s — what a
@@ -2315,7 +2349,7 @@ pub fn grades_sync(ed: &mut Editor) {
     {
         return crate::checkpoint::with_texts_quietly(ed, at, |ed, _| grades_sync(ed));
     }
-    let befores: std::collections::HashMap<PathBuf, Option<ropey::Rope>> = match &r.base {
+    let befores: std::collections::HashMap<PathBuf, crate::checkpoint::Was> = match &r.base {
         Base::Turn { at, .. } => {
             let here = ed
                 .workspace
@@ -2325,7 +2359,7 @@ pub fn grades_sync(ed: &mut Editor) {
                 .get(*at)
                 .and_then(|c| c.files.here())
                 .unwrap_or_default();
-            here.iter().map(|t| (t.path.clone(), t.before.clone())).collect()
+            here.iter().map(|t| (t.path.clone(), t.was())).collect()
         }
         _ => Default::default(),
     };
@@ -2335,7 +2369,15 @@ pub fn grades_sync(ed: &mut Editor) {
     ed.events.jobs().spawn(move || {
         let changed = work();
         let files: Vec<File> = files.into_iter().filter(|f| changed.contains(&f.path)).collect();
-        let befores: Vec<_> = files.iter().map(|f| befores.get(&f.path).cloned().flatten()).collect();
+        // (a turn's: each as `start_turn_at` read it — what's said was said as it opened)
+        let befores: Vec<_> = files
+            .iter()
+            .map(|f| {
+                let was = befores.get(&f.path)?;
+                let now = std::fs::read_to_string(&f.path).ok();
+                turn_before(&root, &f.rel, was, now.as_deref()).0.map(|b| ropey::Rope::from_str(&b))
+            })
+            .collect();
         let graded = match files.is_empty() {
             true => None,
             false => Some(grade_files(&root, rev.as_deref(), &files, &befores, &rules, &asked)),
@@ -3876,14 +3918,15 @@ fn show_at(ed: &mut Editor, i: usize, at: Land) -> Option<DocId> {
     let r = &*r;
     let f = r.files.get(i).cloned()?;
     let from = match &r.base {
-        Base::Turn { at, .. } => From::Text(
+        Base::Turn { at, .. } => From::Turn(
+            r.root.clone(),
             ed.workspace
                 .claude
                 .checkpoints
                 .list
                 .get(*at)
                 .and_then(|c| c.files.here()?.iter().find(|t| t.path == f.path))
-                .and_then(|t| t.before.clone()),
+                .map_or(crate::checkpoint::Was::None, crate::checkpoint::Touched::was),
         ),
         base => From::Git(r.root.clone(), base.rev().unwrap_or("HEAD").to_string()),
     };
@@ -4216,11 +4259,11 @@ fn binary_seen(ed: &mut Editor) -> bool {
     true
 }
 
-/// Where a file's base text comes from: git (the root, the revision) · the text itself (a turn's — None: the
-/// file didn't exist).
+/// Where a file's base text comes from: git (the root, the revision) · a turn's (the root, what it was —
+/// `turn_before`).
 enum From {
     Git(PathBuf, String),
-    Text(Option<ropey::Rope>),
+    Turn(PathBuf, crate::checkpoint::Was),
 }
 
 /// The file's base text (worker) → its diff base; the first diff comes with it.
@@ -4230,12 +4273,20 @@ fn load_base(ed: &mut Editor, id: DocId, from: From, f: File) {
     // its diff is worked out once it's there
     let (text, version) = (doc.text.clone(), (!doc.loading).then(|| doc.version()));
     ed.events.jobs().spawn(move || {
+        let text = text.to_string();
         let base = match from {
-            From::Text(t) => t.map(|t| t.to_string()).unwrap_or_default(),
+            // (its text now, for a before that can't be read: the buffer's — still loading, its placeholder is
+            // none: the file's)
+            From::Turn(root, was) => {
+                let disk = || std::fs::read_to_string(&f.path).unwrap_or_default();
+                let now: std::borrow::Cow<str> =
+                    if version.is_some() { (&text).into() } else { disk().into() };
+                turn_before(&root, &f.rel, &was, Some(&now)).0.unwrap_or_default()
+            }
             From::Git(..) if f.new => String::new(),
             From::Git(root, rev) => git(&root, &["show", &format!("{rev}:{}", f.rel)]).unwrap_or_default(),
         };
-        let hunks = version.map(|_| crate::git::hunks(&base, &text.to_string()));
+        let hunks = version.map(|_| crate::git::hunks(&base, &text));
         move |ed: &mut Editor| {
             let Some(d) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
             d.set_review_base(Some(ropey::Rope::from_str(&base)));
@@ -5830,6 +5881,123 @@ mod tests {
         let gone = |s: &str| s.contains("isn't kept any more");
         assert!(ed.messages.iter().any(|m| gone(&m.2)), "noted: {:?}", ed.messages);
         assert!(!ed.toasts.iter().any(|t| gone(&t.text)), "no toast: {:?}", ed.toasts);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #275: a file past what a run keeps as text (`snapshot::TEXT_MAX` — term.rs, 1.4 MB), first changed this
+    /// turn by a run, is reviewed as the run changed it, against its blob before: its own lines — never the whole
+    /// file as new (30,000 added lines, 516 high-risk pieces holding the review's end). Opened, its buffer's base
+    /// is that blob; graded again, too. Its blob gone from the repository: against HEAD, said.
+    #[test]
+    fn a_turns_review_of_a_file_past_what_a_run_keeps_as_text_shows_only_its_change() {
+        let mut big = String::new();
+        for i in 0.. {
+            if big.len() as u64 > crate::snapshot::TEXT_MAX {
+                break;
+            }
+            big.push_str(&format!("fn f{i}() {{ unsafe {{ g({i}) }} }}\n"));
+        }
+        let (mut ed, dir) = reviewing("turn-big", &[("a.txt", "a\n", "a2\n"), ("big.rs", &big, &big)]);
+        ed.workspace.root = dir.clone();
+        // A run changes one line of it: the turn's first touch of the file
+        let before = crate::snapshot::Before::take(&dir);
+        let once = big.replacen("g(7) ", "g(70) ", 1);
+        std::fs::write(dir.join("big.rs"), &once).unwrap();
+        let found = before.since().unwrap();
+        let run: Vec<_> = found.files.iter().map(|c| (c.path.clone(), c.text())).collect();
+        assert_eq!(run, [(dir.join("big.rs"), false)], "kept by its blobs, not as text");
+        crate::checkpoint::record_run(&mut ed, found.files);
+        assert!(crate::checkpoint::gather(&mut ed, "fix"), "written unseen");
+        settle_until(&mut ed, |ed| !ed.workspace.claude.checkpoints.list.is_empty());
+        let turned = |ed: &Editor| {
+            ed.workspace.code_review.as_ref().is_some_and(|r| matches!(r.base, Base::Turn { .. }))
+        };
+        start_turn(&mut ed, 0);
+        settle_until(&mut ed, |ed| turned(ed) && landed(ed));
+        let counts = |ed: &Editor| {
+            let r = ed.workspace.code_review.as_ref().unwrap();
+            let f = r.files.iter().find(|f| f.rel == "big.rs").expect("the turn's file");
+            let g = &r.grades[&dir.join("big.rs")];
+            let graded =
+                (g.iter().map(|g| g.added).sum::<usize>(), g.iter().map(|g| g.removed).sum::<usize>());
+            (f.added, f.removed, f.new, graded, g.len())
+        };
+        assert_eq!(counts(&ed), (1, 1, false, (1, 1), 1), "its one line, against its blob before");
+        assert!(left(&ed) <= 1, "high-risk changes to look at: {}", left(&ed));
+        // Opened: its base the blob before, its diff the one line
+        let i =
+            ed.workspace.code_review.as_ref().unwrap().files.iter().position(|f| f.rel == "big.rs").unwrap();
+        show(&mut ed, i, false);
+        settle_until(&mut ed, |ed| {
+            landed(ed) && ed.doc().path.as_ref().is_some_and(|p| p.ends_with("big.rs"))
+        });
+        assert_eq!(ed.doc().review_base.as_ref().map(|b| b.len_bytes()), Some(big.len()), "its text before");
+        assert_eq!(ed.doc().git_hunks.len(), 1, "one change in the buffer");
+        // Graded again (closed, changed since): still against its blob before
+        closed(&mut ed, &dir, "big.rs");
+        let twice = once.replacen("g(9) ", "g(90) ", 1);
+        std::fs::write(dir.join("big.rs"), &twice).unwrap();
+        crate::reviewer::since_sync_shown(&mut ed);
+        settle_until(&mut ed, |ed| counts(ed).3 != (1, 1));
+        assert_eq!(counts(&ed).3, (2, 2), "its two lines");
+        // Its blob gone (pruned since the run): against HEAD, said — its change still its own lines
+        let gone = crate::checkpoint::Touched {
+            path: dir.join("big.rs"),
+            bytes: Some(crate::checkpoint::Bytes { before: Some("1".repeat(40)), after: None }),
+            unseen: true,
+            ..Default::default()
+        };
+        ed.workspace
+            .claude
+            .checkpoints
+            .list
+            .push(crate::checkpoint::Checkpoint::new("lost".into(), vec![gone]));
+        start_turn(&mut ed, 1);
+        let said = |ed: &Editor| {
+            ed.toasts
+                .iter()
+                .any(|t| t.text.contains("big.rs: its text before the turn isn't kept — shown against HEAD"))
+        };
+        let second = |ed: &Editor| {
+            ed.workspace.code_review.as_ref().is_some_and(|r| matches!(r.base, Base::Turn { at: 1, .. }))
+        };
+        settle_until(&mut ed, second);
+        assert!(said(&ed), "said as it opened: {:?}", ed.toasts);
+        assert_eq!(counts(&ed).3, (2, 2), "against HEAD's text");
+        let shown =
+            |ed: &Editor, rel: &str| landed(ed) && ed.doc().path.as_ref().is_some_and(|p| p.ends_with(rel));
+        settle_until(&mut ed, |ed| shown(ed, "big.rs"));
+        assert_eq!(ed.doc().review_base.as_ref().map(|b| b.len_bytes()), Some(big.len()), "HEAD's text");
+        assert_eq!(ed.doc().git_hunks.len(), 2, "its two changes in the buffer");
+        // An untracked one, its blob gone and no HEAD to fall back on: its text now, said — nothing graded, and
+        // its buffer's base the file, opened while it still loads (past `ASYNC_LOAD_BYTES`), never the placeholder
+        let made = twice.replacen("g(11) ", "g(110) ", 1);
+        std::fs::write(dir.join("made.rs"), &made).unwrap();
+        let lost = crate::checkpoint::Touched {
+            path: dir.join("made.rs"),
+            bytes: Some(crate::checkpoint::Bytes { before: Some("2".repeat(40)), after: None }),
+            unseen: true,
+            ..Default::default()
+        };
+        ed.workspace
+            .claude
+            .checkpoints
+            .list
+            .push(crate::checkpoint::Checkpoint::new("made".into(), vec![lost]));
+        start_turn(&mut ed, 2);
+        let third = |ed: &Editor| {
+            ed.workspace.code_review.as_ref().is_some_and(|r| matches!(r.base, Base::Turn { at: 2, .. }))
+        };
+        settle_until(&mut ed, |ed| third(ed) && shown(ed, "made.rs"));
+        let not_shown = "made.rs: its text before the turn isn't kept — its change isn't shown";
+        assert!(ed.toasts.iter().any(|t| t.text.contains(not_shown)), "said: {:?}", ed.toasts);
+        let r = ed.workspace.code_review.as_ref().unwrap();
+        let f = r.files.iter().find(|f| f.rel == "made.rs").expect("the turn's file");
+        assert_eq!((f.added, f.removed, f.new), (0, 0, false), "no change told");
+        let g = &r.grades[&dir.join("made.rs")];
+        assert_eq!(g.iter().map(|g| g.added + g.removed).sum::<usize>(), 0, "nothing graded: {g:?}");
+        assert_eq!(ed.doc().review_base.as_ref().map(|b| b.len_bytes()), Some(made.len()), "the file");
+        assert!(ed.doc().git_hunks.is_empty(), "no change in the buffer");
         std::fs::remove_dir_all(&dir).ok();
     }
 

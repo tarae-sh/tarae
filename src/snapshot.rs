@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 const INDEX: &str = "tarae-snapshot.index";
 
 /// A file larger than this (either side) is kept by its blob, not as text.
-const TEXT_MAX: u64 = 1 << 20;
+pub(crate) const TEXT_MAX: u64 = 1 << 20;
 
 /// A temporary index's name is unique per process with this.
 static INDEX_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
