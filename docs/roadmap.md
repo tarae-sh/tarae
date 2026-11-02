@@ -121,16 +121,17 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-11-02):
+Under way (2026-11-03):
 
-- **Orchestra P3 landed** (`72b18178`) — a parent's review and proposals as one tool, `session_act { session, act, why?,
-  wake? }`, every card still yours: Part I is complete. Now its week of use, then Part II's P6
-  ([§4](#4-panes-the-terminal-line-and-orchestra)).
-- **The chat and the code as one flow** — D1, B1, A1, A1b steps 1–3, E1 (the turn as a map, `3a18d92f`) and F0 (what a
-  note knows, `2038d9ad`) are in ([next](#next)); C1, the question typed at its lines, is under way, then the rest in
-  main's `.sb/focus-plan.md` order.
+- **The conversation as a card you summon** (collab's `.sb/flow-plan.md`) — piece 1, the reader, landed (`d529f481`:
+  `C-w e` floats the chat and docks it back, `space L` opens it at your line's paragraph); piece 2, the ask line, is under
+  way, then the minimize gone, `space i`'s card and steering, each landed alone, shots first ([next](#next)).
+- **The sandbox on several kernels** — `cargo xtask kernels` on this Mac's Lima VMs: K4 and K3 green, K1, K2, K5, K6 and
+  Y2 next ([§2](#2-sandbox-validation)).
+- **Orchestra Part I's week of use** (P3 `72b18178`), then Part II's P6 ([§4](#4-panes-the-terminal-line-and-orchestra)).
 
-No friction of #223–#254 is open ([§3](#3-frictions-and-lighter-cards-and-reviews)).
+Open of #255–#285: #257 (main can break Linux unseen until a push), #258 (a test failed once — determinism), #264 and
+#265 (a key that does nothing and says nothing); #278 (ASCII scenes) dropped by the user.
 
 ## Next
 
@@ -169,7 +170,18 @@ kinds A (Alongside), plugin API 0.3's overlays (§7) and frictions #188–#214 (
 thing to read is drawn in the UI state, `cargo xtask focus`), B1 the step said once, on the follow card (`026c1cda`), A1
 the answer's place (`877ad7f2`), A1b a note card opening between the lines (`e26a185d`), every answer's notes kept for
 the conversation (`1c476659`) and an older answer's placed paragraphs folded to a row in the chat (`b1d84ecf`) — and
-frictions #213, #214's pieces 2–4 and #223–#254 (§3). Frictions go on. Code mode (§3)
+frictions #213, #214's pieces 2–4 and #223–#254 (§3). Since 2026-11-01: the focus plan's E1, the turn as a map
+(`3a18d92f`), F0, what a note knows (`2038d9ad`), C1, the question typed at its lines (`6982a139`), C1b, several
+replies at once (`a57d70a1`), and A1c, the card saying this line and the chat the whole answer (`584b787b`, #259–#263);
+the flow plan's first piece, the reader (`d529f481`, #274 with it); `cargo xtask kernels` (`74e8f3fb`) and userns A's
+reporting part (`533743d0`) — §2; and from the frictions the mouse walk's every target (`b4aa9bf0`, #255/#256), the
+follow card never empty and its size yours, `C-l` asking before it drops a conversation and `space L` only hiding the
+chat (`3118b951`, #266–#268, #270), a fold kept under a selection, in code and the chat (`2ca72640`, `e07cb059`,
+#269, #271, #272), no follow card left after a turn (`11eed8b7`, #273), a big file's turn review and undo (`4d3d4fb0`,
+`47768bba`, #275, #281), the working sign back to three cells (`b70e609b`, #277), a key hint never typing into a
+text it wasn't drawn for (`594cc598`, #279), the kernel runs' three (`33874fb7`, #276, #280, #285) and K3's
+two (`38589a33`, #282 the `/proc/self` path in another pid namespace, #283 the wet-ink test pinned to its age) and a write to a
+file named `mount` a write (`fdfdbcd1`, #284). Frictions go on. Code mode (§3)
 and the review lens's A + E wait on their records' data.
 
 ### 1. Publishing
@@ -262,18 +274,21 @@ The aim is to state what the sandbox guarantees and show that it holds.
    pointer, which tarae sent on without control where the kernel answers EFAULT (fixed; a Linux test pins the
    kernel's answer), and V2-5, in the tests' fake memory, not the reader. Q1 done (2026-10-16): of the control
    messages it forwards only descriptors go (`SCM_RIGHTS`, at most 253), every other type refused and named in
-   the run's report, and `sendmsg` gets a buffer tarae built. Still open: fuzzing that forwarding further stays
-   deferred until tarae has users and the Cyber Verification Program is applied for (§1; the model's safeguards
-   stopped that work twice); a run's own `setsockopt` is unchanged (its own rights).
+   the run's report, and `sendmsg` gets a buffer tarae built. Fuzzing that forwarding further is with an outside
+   session (main's `.sb/cmsg-fuzz-brief.md`); a run's own `setsockopt` is unchanged (its own rights).
 3. **A "must be refused" property suite** — done on both systems: nothing a run does changes the session's
    rules, and nothing is reached but through tarae's proxy and sockets. macOS (`df2f70e3`); Linux (`08ec1cb3`), rows
    21–26 measured against an unsandboxed baseline. Since sandbox C (2026-10-20, `4b130f35`) it holds each user's
-   runs to their own table. Left: running it on several kernels, on a schedule.
+   runs to their own table. On several kernels: `cargo xtask kernels` (steps 0 and 1, `74e8f3fb`), one kernel per
+   behaviour that differs as Lima VMs on this Mac, run before a publish and after a sandbox landing
+   (`:preflight-full` says when it's due); K4 and K3 green (`38589a33`), K1, K2, K5, K6 and Y2 next; a dispatch-only
+   GitHub job for the x86_64 rows later.
 4. **Yama ptrace scope 2** — done (2026-10-18, D-h): Yama asks for `CAP_SYS_PTRACE` in a run's user namespace,
    which tarae owns in the session's, so tier own is served at scope 2 (the tier probe tries it on its keeper's
    run); without namespaces the session stays offline, said with the way out. No capability on tarae, no privileged
    helper (user decision).
-5. **A speed comparison** against srt's Linux sandbox — paused (the user, 2026-10-28).
+5. **A speed comparison** against srt's Linux sandbox — folded (the user); its harness kept as main's
+   `.sb/sbspeed-harness.patch`.
 6. **A file's attributes on Linux** (linmeta, found by the speed work's parity checks against srt and Codex):
    Landlock has no right for them. Part A done (2026-10-18, `dbe7086c`, D-h): the seccomp filter refuses a file's
    owner, extended attributes, ACLs and inode flags in every tier, the project's files too; its mode and times stay
@@ -296,8 +311,10 @@ The aim is to state what the sandbox guarantees and show that it holds.
    runs found the test's own fixture and assertions wanting, never the sandbox). The child's skipped keys are
    reported back before `exec` (2026-10-28, `Msg::Skipped`): the report names one replaced since the walk as readable
    and counts the gone ones, no "if still there" hedge — and a run with no key nor protected name of its own has
-   those outside hidden too (the keeper dropped its mounts then). Left: nested user namespaces in tier own, a piece
-   of their own.
+   those outside hidden too (the keeper dropped its mounts then). Nested user namespaces: allowed where the system
+   allows (the user, 2026-11-02, the sandbox checkout's `.sb/userns-plan.md`, A), once M1 shows a namespace a run
+   makes gets the covers and seals locked; A's reporting part built (`533743d0`: a mount refused said as a mount,
+   no grant offered for it; `fdfdbcd1`, #284); M1 and M2 with an outside session (main's `.sb/userns-m1-brief.md`).
 
 ### 3. Frictions, and lighter cards and reviews
 
