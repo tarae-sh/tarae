@@ -419,6 +419,19 @@ const A1C_N5: &[&str] = a1c_keys!("]n", "@0.5", "]n", "@0.5", "]n", "@0.5", "]n"
 const A1C_READ: &[&str] = a1c_keys!("21G", "\r");
 const A1C_DOC: &[&str] = a1c_keys!("5G", "\r");
 const A1C_WIDE: &[&str] = a1c_keys!(" ", "L");
+
+/// #269's scenes, on A1c's file with no answer: a drag over the folded doc comment (lines 3–7), one from the code above
+/// into it, `x` on its first line and four times, INSERT on its line 5.
+const F269_DRAG: &[&str] = &["@1", "@press?A spool:", "@drag?goes back", "@1", "@release?goes back", "@1"];
+const F269_INTO: &[&str] = &["@1", "@press?use std", "@drag?goes back", "@1", "@release?goes back", "@1"];
+const F269_X: &[&str] = &["@1", "3G", "x", "@1"];
+const F269_XS: &[&str] = &["@1", "3G", "x", "x", "x", "x", "@1"];
+const F269_INSERT: &[&str] = &["@1", "5G", "i", "@1"];
+/// … a drag back from its last row onto the code above, `x` `d` on its first line, then `gg` off it. (A double
+/// press can't be shot: the shot waits 0.35 s after each press, past `DOUBLE_CLICK`.)
+const F269_BACK: &[&str] = &["@1", "@press?goes back", "@drag?use std", "@1", "@release?use std", "@1"];
+const F269_D: &[&str] = &["@1", "3G", "x", "d", "@1"];
+const F269_DG: &[&str] = &["@1", "3G", "x", "d", "@1", "gg", "@1"];
 /// Focus C1's: a question typed on three lines, nothing else open · the chat beside it · a card a line near the screen's
 /// foot (the file pasted on, so both sizes have one there).
 const C1_NEW: &[&str] = &["@1", "8G", "x", "x", "x", " ", "n", "@1", "why a HashMap and not a Vec?", "@1"];
@@ -3217,6 +3230,15 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1c-read", claude: "a1c", files: SPOOL, keys: A1C_READ },
     Scene { name: "a1c-doc", claude: "a1c", files: SPOOL, keys: A1C_DOC },
     Scene { name: "a1c-wide", claude: "a1c", files: SPOOL, keys: A1C_WIDE },
+    // (#269: a folded doc comment stays folded while you select it)
+    Scene { name: "f269-drag", claude: "idle", files: SPOOL, keys: F269_DRAG },
+    Scene { name: "f269-into", claude: "idle", files: SPOOL, keys: F269_INTO },
+    Scene { name: "f269-x", claude: "idle", files: SPOOL, keys: F269_X },
+    Scene { name: "f269-xs", claude: "idle", files: SPOOL, keys: F269_XS },
+    Scene { name: "f269-insert", claude: "idle", files: SPOOL, keys: F269_INSERT },
+    Scene { name: "f269-back", claude: "idle", files: SPOOL, keys: F269_BACK },
+    Scene { name: "f269-d", claude: "idle", files: SPOOL, keys: F269_D },
+    Scene { name: "f269-dg", claude: "idle", files: SPOOL, keys: F269_DG },
     // (focus C1: `space n`'s line in the card, at the lines it's about)
     Scene { name: "c1-new", claude: "idle", files: MAIN, keys: C1_NEW },
     Scene { name: "c1-new-chat", claude: "idle", files: MAIN, keys: C1_NEW_CHAT },
@@ -4983,7 +5005,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
         "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
-        s if s.starts_with("a1c-") => vec![("src/spool.rs", SPOOL_RS.into())],
+        s if s.starts_with("a1c-") || s.starts_with("f269-") => vec![("src/spool.rs", SPOOL_RS.into())],
         _ => Vec::new(),
     }
 }

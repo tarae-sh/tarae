@@ -6752,7 +6752,18 @@ fn draw_text(
             }
             // Folded doc comment: on the block's first row its line number, and its lines' signs and git mark
             // folded together
-            Some(crate::codeview::Row::Doc { start, end, indent, index, spans, code }) => {
+            Some(crate::codeview::Row::Doc { start, end, indent, index, lines, spans, code }) => {
+                // (a selection over the lines its words come from lights them, the block still folded — #269; one no
+                // wider than a character is the cursor, the bar's accent says it)
+                let (from, to) = (mv::line_start(text, lines.0), mv::line_full_end(text, lines.1));
+                let lit = ranges
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.to() > crate::graphemes::next_boundary(text, r.from()))
+                    .filter(|(_, r)| r.from() < to && r.to() > from)
+                    .map(|(i, _)| i == primary_idx)
+                    .reduce(|a, b| a || b)
+                    .map(|primary| if primary { ui.selection_primary } else { ui.selection });
                 ground(out, lay, y, ui.base)?;
                 apply(out, ui.base)?;
                 if signs > 0 {
@@ -6794,7 +6805,8 @@ fn draw_text(
                         queue!(out, Print(" "))?;
                     }
                 }
-                draw_folded_row(out, editor, ui, lay.text_cols, *indent, spans, *code, here, labels_on)?;
+                let row_of = (*indent, &spans[..], *code, lit);
+                draw_folded_row(out, editor, ui, lay.text_cols, row_of, here, labels_on)?;
                 if let Some((n, count)) = doc_notes.get(row).copied().flatten() {
                     let used = folded_used(lay.text_cols, *indent, spans, *code);
                     queue!(out, MoveTo((lay.x0 + lay.gutter + used) as u16, y))?;
@@ -7994,15 +8006,16 @@ fn rows_pane(
             Some(block @ &crate::doccomment::Block { start: a, end: b, indent, .. }) => {
                 let width = lay.text_cols.saturating_sub(indent + 3).max(8);
                 let folded = fold_rows(editor, block, width, lang.as_deref());
+                let of = crate::doccomment::row_lines(text, (a, b), &folded);
                 // The top of the screen mid-block: its rows above it skipped — the rows scrolling put above
                 // (`top_rows`), or as many as lines when a top line inside it was set (`codeview::Measure::top`)
                 let skip = if line == a && line == top { top_skip } else { line - a };
                 let skip = skip.min(folded.len().saturating_sub(1));
-                for (k, (spans, code)) in folded.into_iter().enumerate().skip(skip) {
+                for ((k, (spans, code)), lines) in folded.into_iter().enumerate().zip(of).skip(skip) {
                     if view.len() == rows {
                         break;
                     }
-                    view.push(Row::Doc { start: a, end: b, indent, index: k, spans, code });
+                    view.push(Row::Doc { start: a, end: b, indent, index: k, lines, spans, code });
                 }
                 push_note(&mut view, a, b);
                 line = b + 1;
@@ -8259,17 +8272,14 @@ fn folded_used(width: usize, indent: usize, spans: &[crate::markdown::Span], cod
 /// One screen row of a folded doc comment: indent · bar · text, on the code's own ground — no panel, so a file
 /// thick with comments stays one surface. The bar says where a block is (faint; the accent on the block the cursor
 /// is in); the prose a tone above the comment colour (it's read, and quieter than code); example code set in two
-/// cells, in its syntax colours. `width` cells, the row's end left as it is. (On a card — a picker's preview —
-/// `ui` is the card's, `Ui::on`: its ground.)
-#[allow(clippy::too_many_arguments)]
+/// cells, in its syntax colours; `lit` a selection's ground over its words (#269: selected, it stays folded). `width`
+/// cells, the row's end left as it is. (On a card — a picker's preview — `ui` is the card's, `Ui::on`: its ground.)
 fn draw_folded_row(
     out: &mut impl Write,
     editor: &Editor,
     ui: &Ui,
     width: usize,
-    indent: usize,
-    spans: &[crate::markdown::Span],
-    code: bool,
+    (indent, spans, code, lit): (usize, &[crate::markdown::Span], bool, Option<Style>),
     current: bool,
     dim: bool,
 ) -> io::Result<()> {
@@ -8297,6 +8307,7 @@ fn draw_folded_row(
             continue;
         }
         let st = base.patch(Style { bg: None, ..sp.style });
+        let st = lit.map_or(st, |l| st.patch(l));
         // `gw` labels up: step back like the rest of the text
         apply(out, if dim { Style { fg: ui.virt.fg, ..st } } else { st })?;
         queue!(out, Print(&text))?;
@@ -10045,9 +10056,8 @@ fn preview_lines<'a>(
     let lang = doc.lang_name().or_else(|| {
         action.preview_target().and_then(|(path, _)| crate::syntax::detect(path)).map(|l| l.name.as_str())
     });
-    let opens_at = focus.filter(|_| !matches!(action, Action::Buffer(_)));
     let code_w = width.saturating_sub(crate::chrome::SIGNS + num_w(doc));
-    let at = (focus, opens_at, p.preview_scroll);
+    let at = (focus, p.preview_scroll);
     // (its last page: `rows_preview`'s first line can go no further down than that)
     let last = mv::last_line(&doc.text);
     let most = last.saturating_sub(rows.saturating_sub(1)).max(focus.unwrap_or(0).min(last));
@@ -10065,15 +10075,15 @@ fn preview_buffer<'a>(editor: &'a Editor, action: &Action) -> Option<&'a crate::
 /// A picker's code preview's rows: `rows` of them from where the item opens (`focus`, a third down) — scrolled
 /// by `scroll` (the wheel, `C-f`/`C-b`) but not past the last page — each line wrapped at `width` (the code's
 /// columns; a line wider continues on the next rows, no number there), and doc comments in `lang` as the editor
-/// shows the file in normal mode (`Editor::doc_block_closed`: an open buffer's selection and changes count) —
-/// but the block the item opens in (`opens_at`) is read raw: going there selects it. A first line inside a folded
+/// shows the file in normal mode (`Editor::doc_block_closed`: an open buffer's selection and changes count) — the
+/// block the item opens in too: going there selects it, and a selection leaves a block folded (#269). A first line inside a folded
 /// block starts the preview at the block's first row (never a block cut at the top — it began on a blank row of
 /// it), or past the block when then the item's line wouldn't show.
 fn rows_preview(
     editor: &Editor,
     doc: &crate::document::Document,
     lang: Option<&str>,
-    (focus, opens_at, scroll): (Option<usize>, Option<usize>, usize),
+    (focus, scroll): (Option<usize>, usize),
     rows: usize,
     width: usize,
 ) -> Vec<crate::codeview::Row> {
@@ -10087,7 +10097,6 @@ fn rows_preview(
             let lines = first.saturating_sub(200)..=(first + rows * 3 + 200).min(last);
             crate::doccomment::blocks(text, lines, editor.config.tab_width, syn)
                 .into_iter()
-                .filter(|b| !opens_at.is_some_and(|f| (b.start..=b.end).contains(&f)))
                 .filter(|b| editor.doc_block_closed(doc, false, (b.start, b.end)))
                 .collect()
         }
@@ -10101,11 +10110,13 @@ fn rows_preview(
             if let Some(b) = blocks.iter().find(|b| b.start <= line && line <= b.end) {
                 let w = width.saturating_sub(b.indent + 3).max(8);
                 let folded = fold_rows(editor, b, w, lang);
-                for (index, (spans, code)) in folded.into_iter().enumerate() {
+                let of = crate::doccomment::row_lines(text, (b.start, b.end), &folded);
+                for ((index, (spans, code)), lines) in folded.into_iter().enumerate().zip(of) {
                     if vis.len() == rows {
                         break;
                     }
-                    vis.push(Row::Doc { start: b.start, end: b.end, indent: b.indent, index, spans, code });
+                    let (start, end, indent) = (b.start, b.end, b.indent);
+                    vis.push(Row::Doc { start, end, indent, index, lines, spans, code });
                 }
                 line = b.end + 1;
                 continue;
@@ -24755,10 +24766,14 @@ mod tests {
         };
         let kept = review_rows(&ed, &ed.docs[0], &rev, folds(&ed).as_ref(), None);
         assert!(doc_rows(&kept) > 0, "the block folded");
-        // A selection wider than a character on the block opens it (the one rule's input, not the text's)
+        // Selected, it stays folded (#269); an edit of yours just made there, the selection on it, opens it (the one
+        // rule's input, not the text's)
         ed.docs[0].set_selection(crate::selection::Selection::single(crate::selection::Range::new(4, 7)));
         let kept = review_rows(&ed, &ed.docs[0], &rev, folds(&ed).as_ref(), Some(kept));
-        assert_eq!(doc_rows(&kept), 0, "a wide selection on it opens it");
+        assert!(doc_rows(&kept) > 0, "a wide selection on it: folded");
+        ed.docs[0].edited = Some((ed.docs[0].version(), vec![(4, 7)]));
+        let kept = review_rows(&ed, &ed.docs[0], &rev, folds(&ed).as_ref(), Some(kept));
+        assert_eq!(doc_rows(&kept), 0, "an edit just made there opens it");
         // An answer: accepted, the line it takes out is no row
         let before = kept.rows.len();
         rev.hunks[0].decision = crate::llm::Decision::Accept;
@@ -24805,7 +24820,10 @@ mod tests {
         ed.docs[0].set_selection(crate::selection::Selection::single(crate::selection::Range::new(4, 9)));
         buf.clear();
         render(&mut ed, &mut buf, 80, 10).unwrap();
-        assert!(String::from_utf8_lossy(&buf).contains("///"), "a selection wider than a char shows raw");
+        assert!(
+            !String::from_utf8_lossy(&buf).contains("///"),
+            "a selection wider than a char stays folded (#269)"
+        );
         // Markdown (`///` inside a code block) and unknown files stay as-is
         ed.docs[0].path.set(Some("/tmp/x.md".into()));
         ed.docs[0].set_selection(crate::selection::Selection::point(24));

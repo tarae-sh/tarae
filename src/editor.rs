@@ -2851,6 +2851,10 @@ impl Editor {
         if let Some((id, snap)) = self.undo_group.take()
             && let Some(doc) = self.docs.iter_mut().find(|d| d.id == id)
         {
+            if snap.version() != doc.version() {
+                let at = doc.selection().ranges().iter().map(|r| (r.from(), r.to())).collect();
+                doc.edited = Some((doc.version(), at));
+            }
             doc.commit_undo(snap);
         }
     }
@@ -4114,6 +4118,15 @@ impl Editor {
             }
             _ => None,
         };
+        // (a folded doc comment's row: the lines its words come from, its paragraph's — a press puts the cursor where they
+        // start, a drag takes them whole, the block staying folded: #269; a drag past the text's edge, its edge row's)
+        let held_row = if m.kind == K::Drag { row.min(text.h.saturating_sub(1)) } else { row };
+        let folded = match self.view.get(held_row) {
+            Some(&crate::codeview::Row::Doc { indent, lines, .. }) if picked.is_none() => {
+                Some((indent, lines))
+            }
+            _ => None,
+        };
         let tab = self.config.tab_width;
         let doc = self.doc();
         let last = mv::last_line(&doc.text);
@@ -4128,10 +4141,12 @@ impl Editor {
             | K::Middle => {}
             K::Down | K::Drag => {
                 let line = line.min(last);
-                let pos = match picked {
-                    Some(l) => doc.text.line_to_byte(l),
-                    None => mv::pos_at_col(&doc.text, line, col, tab),
+                let pos = match (picked, folded) {
+                    (Some(l), _) => doc.text.line_to_byte(l),
+                    (None, Some((indent, (l0, _)))) => mv::pos_at_col(&doc.text, l0, indent, tab),
+                    (None, None) => mv::pos_at_col(&doc.text, line, col, tab),
                 };
+                let span = folded.map(|(_, (_, l1))| (pos, mv::line_full_end(&doc.text, l1)));
                 // A plain press on a page's link that `gd` follows says so once (ctrl+click doesn't arrive from every
                 // terminal: nothing tells the two apart then) — never a `mailto:`'s, whose `gd` says it goes nowhere
                 let link = crate::web::page::of(doc).is_some_and(|p| {
@@ -4148,7 +4163,9 @@ impl Editor {
                 let mut pressed = false;
                 match (m.kind, anchor) {
                     (K::Drag, Some((Drag::Code, held))) => {
-                        doc.set_selection(Selection::new(vec![held.dragged(&text, pos)], 0));
+                        let r =
+                            span.map_or_else(|| held.dragged(&text, pos), |s| held.dragged_over(&text, s));
+                        doc.set_selection(Selection::new(vec![r], 0));
                     }
                     // A drag whose press wasn't in the text (the terminal's, a panel's) isn't the code's
                     (K::Drag, _) => {}
@@ -4170,6 +4187,14 @@ impl Editor {
                 // one of a double)
                 if pressed && !m.ctrl {
                     crate::mouse::text_press(self, Drag::Code, pos);
+                    // (on a folded row a double or triple takes its paragraph, as a drag over it does)
+                    if let (Some((from, to)), Some((Drag::Code, held))) = (span, self.mouse_anchor) {
+                        let held = crate::selection::Held { from, to, unit: held.unit };
+                        if held.unit != crate::selection::Unit::Char {
+                            self.doc_mut().set_selection(Selection::single(held.range()));
+                        }
+                        self.mouse_anchor = Some((Drag::Code, held));
+                    }
                 } else if pressed {
                     let held =
                         crate::selection::Held::at(&self.doc().text, pos, crate::selection::Unit::Char);
@@ -4192,7 +4217,10 @@ impl Editor {
                 }
             }
             K::Up => {
-                self.mouse_anchor = None;
+                // (a drag over a folded doc comment: its words copied as shown — #269)
+                if let Some((Drag::Code, held)) = self.mouse_anchor.take() {
+                    crate::mouse::folded_copy(self, held);
+                }
                 // (an http(s) address written there — a comment's, a string's — opens as a page, `gf`'s act: inside
                 // tarae, the system browser is `:web-open`'s; on a page a followed link there comes first — its words
                 // may be an address of their own, `[https://a.example](https://b.example/x)`)
@@ -6021,9 +6049,10 @@ impl Editor {
 
     /// **The one rule** for whether doc-comment block `a..=b` of `doc` shows rendered (folded) — every place a
     /// file's code is drawn and every move over it (`j`/`k`, the mouse, labels) asks it: doc comments render
-    /// here (`doc_comments_render`); it isn't being edited or selected — where it's being edited (`editing`)
-    /// any selection on it opens it, elsewhere one wider than a character; and no change shown on screen is in
-    /// or beside it (`doccomment::touches_change`).
+    /// here (`doc_comments_render`); it isn't being edited — a selection on it opens it only in INSERT where it's
+    /// being edited (`editing`) or right after a key of yours edited there (`Document.edited`: `c`, `d`, a paste),
+    /// never for being selected (#269: selected, its rows light, `term::draw_folded_row`); and no change shown on
+    /// screen is in or beside it (`doccomment::touches_change`).
     pub fn doc_block_folded(
         &self,
         doc: &crate::document::Document,
@@ -6040,7 +6069,34 @@ impl Editor {
         &self,
         doc: &crate::document::Document,
         editing: bool,
+        block: (usize, usize),
+    ) -> bool {
+        let typing = editing && self.mode == Mode::Insert;
+        let edited = doc.edited.as_ref().filter(|e| e.0 == doc.version());
+        let edited =
+            edited.is_some_and(|e| e.1.iter().any(|&r| crate::doccomment::on_lines(&doc.text, r, block)));
+        self.closed_by(doc, block, |_, _| typing || edited)
+    }
+
+    /// A conflict's lines `a..=b` in a woven view shown side by side (`weave::columns`): as the doc comments' rule
+    /// was before #269 — where it's being edited (`editing`, INSERT or SELECT) any selection on them stacks it,
+    /// elsewhere one wider than a character (the parts' text is selected stacked, the view read-only).
+    pub fn conflict_closed(
+        &self,
+        doc: &crate::document::Document,
+        editing: bool,
+        block: (usize, usize),
+    ) -> bool {
+        self.closed_by(doc, block, |text, r| editing || r.1 > crate::graphemes::next_boundary(text, r.0))
+    }
+
+    /// Whether block `a..=b` stays folded: no change shown on screen in or beside it, no edit being written over it,
+    /// and no selection on its lines that `opens` (its text, the range `from..to`).
+    fn closed_by(
+        &self,
+        doc: &crate::document::Document,
         (a, b): (usize, usize),
+        opens: impl Fn(&ropey::Rope, (usize, usize)) -> bool,
     ) -> bool {
         if crate::doccomment::touches_change(doc, a, b) {
             return false;
@@ -6057,11 +6113,7 @@ impl Editor {
         let all = doc.selection().ranges();
         let lo = all.partition_point(|r| r.to() < start);
         !all[lo..].iter().take_while(|r| r.from() <= end).any(|r| {
-            let wide = r.to() > crate::graphemes::next_boundary(text, r.from());
-            // (its lines are those of its first and last characters: a line selected above isn't this one)
-            let last =
-                if r.to() > r.from() { crate::graphemes::prev_boundary(text, r.to()) } else { r.from() };
-            (editing || wide) && text.byte_to_line(r.from()) <= b && text.byte_to_line(last) >= a
+            crate::doccomment::on_lines(text, (r.from(), r.to()), (a, b)) && opens(text, (r.from(), r.to()))
         })
     }
 
@@ -6070,7 +6122,8 @@ impl Editor {
     pub fn closed_key(&self, doc: &crate::document::Document, editing: bool) -> crate::codeview::ClosedKey {
         crate::codeview::ClosedKey {
             doc: (doc.id, doc.version()),
-            editing,
+            editing: editing && self.mode == Mode::Insert,
+            edited: doc.edited.clone().filter(|e| e.0 == doc.version()).map(|e| e.1),
             selection: doc.selection().ranges().iter().map(|r| (r.from(), r.to())).collect(),
             changes: crate::codeview::Changes::of(doc).near_key(doc),
             conflicts: doc.conflicts.iter().map(|c| (c.start, c.end)).collect(),

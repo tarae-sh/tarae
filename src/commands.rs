@@ -471,16 +471,16 @@ fn move_line_down(cx: &mut Context) {
     vertical(cx, Direction::Forward, false, n)
 }
 // Visual line = screen line: no soft wrap, and a folded doc-comment block counts as one line
-// (passing through it in normal mode doesn't unfold it).
+// (passing through it doesn't unfold it — nor does selecting it in SELECT, #269).
 fn move_visual_line_up(cx: &mut Context) {
     let n = cx.count();
     visual(cx, Direction::Backward, false, n);
-    over_folded_docs(cx, false);
+    over_folded_docs(cx, false, false);
 }
 fn move_visual_line_down(cx: &mut Context) {
     let n = cx.count();
     visual(cx, Direction::Forward, false, n);
-    over_folded_docs(cx, true);
+    over_folded_docs(cx, true, false);
 }
 
 /// Screen-row motion: over wrapped rows when this document soft-wraps (the sticky value is then the x
@@ -514,8 +514,8 @@ fn visual(cx: &mut Context, dir: Direction, extend: bool, n: usize) {
 }
 
 /// If the cursor landed inside a folded doc-comment block: moving up → the block's first line,
-/// moving down within the block → past it.
-fn over_folded_docs(cx: &mut Context, down: bool) {
+/// moving down within the block → past it (`extend`: the selection's head, SELECT's `j`/`k`).
+fn over_folded_docs(cx: &mut Context, down: bool, extend: bool) {
     let line = cx.editor.cursor_line();
     let Some((a, b)) = cx.editor.folded_doc_block_at(line) else { return };
     if line <= a {
@@ -525,7 +525,7 @@ fn over_folded_docs(cx: &mut Context, down: bool) {
     let dir = if down { Direction::Forward } else { Direction::Backward };
     while if down { cx.editor.cursor_line() <= b } else { cx.editor.cursor_line() > a } {
         let before = cx.editor.cursor_line();
-        vertical(cx, dir, false, 1);
+        vertical(cx, dir, extend, 1);
         if cx.editor.cursor_line() == before {
             break; // edge of the document
         }
@@ -543,11 +543,13 @@ fn extend_line_down(cx: &mut Context) {
 }
 fn extend_visual_line_up(cx: &mut Context) {
     let n = cx.count();
-    visual(cx, Direction::Backward, true, n)
+    visual(cx, Direction::Backward, true, n);
+    over_folded_docs(cx, false, true);
 }
 fn extend_visual_line_down(cx: &mut Context) {
     let n = cx.count();
-    visual(cx, Direction::Forward, true, n)
+    visual(cx, Direction::Forward, true, n);
+    over_folded_docs(cx, true, true);
 }
 
 fn word(cx: &mut Context, f: fn(&ropey::Rope, Range, usize, bool) -> Range, extend: bool) {

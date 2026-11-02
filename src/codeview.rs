@@ -31,6 +31,9 @@ pub enum Row {
         indent: usize,
         /// Which row within the block.
         index: usize,
+        /// The lines its words come from, first and last — its paragraph's (`doccomment::row_lines`; the whole block
+        /// in the edit review, which has no selection): what a selection on them lights here, what a press here takes.
+        lines: (usize, usize),
         spans: Spans,
         /// Example code row (background one shade deeper).
         code: bool,
@@ -715,7 +718,10 @@ impl Shows {
 pub struct ClosedKey {
     /// The document and its version (its text).
     pub doc: (crate::document::DocId, u64),
+    /// INSERT where it's being edited (`doc_block_closed`'s `typing`).
     pub editing: bool,
+    /// Where a key of yours just edited it (`Document.edited`, at this version).
+    pub edited: Option<Vec<(usize, usize)>>,
     /// Its selection's ranges, `from..to`.
     pub selection: Vec<(usize, usize)>,
     /// The changes shown (`Changes::near_key`) and the merge conflicts' lines.
@@ -787,6 +793,7 @@ pub fn fold(
             end: b,
             indent,
             index,
+            lines: (a, b),
             spans: spans.clone(),
             code: *code,
         }));

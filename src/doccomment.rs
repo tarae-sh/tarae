@@ -241,6 +241,68 @@ fn runs(info: &[Option<DocLine>], syn: &DocComments) -> Vec<std::ops::Range<usiz
     out
 }
 
+/// Whether range `from..to` of `text` is on lines `a..=b`: its lines are those of its first and last characters (a line
+/// selected above, its newline its last character, isn't the next one).
+pub fn on_lines(text: &ropey::Rope, (from, to): (usize, usize), (a, b): (usize, usize)) -> bool {
+    let last = if to > from { crate::graphemes::prev_boundary(text, to) } else { from };
+    text.byte_to_line(from.min(text.len_bytes())) <= b && text.byte_to_line(last.min(text.len_bytes())) >= a
+}
+
+/// Whether line `l` of a doc comment holds no words: blank once its markers are off (`///`, ` * `, `/**`, `#`) — what
+/// parts its paragraphs, as a blank row parts them folded.
+pub fn blank_line(text: &ropey::Rope, l: usize) -> bool {
+    text.line(l).to_string().trim().trim_start_matches(['/', '*', '!', '#']).trim().is_empty()
+}
+
+/// The lines of block `a..=b` each of its folded `rows`' words come from: its paragraph's — a run of blank lines after words parts two, in the comment as in its rows —, the first from the
+/// block's first line, the last to its last; a blank row between two paragraphs the blank lines between them. What a
+/// selection over a folded block lights and a drag over it takes, a paragraph at a time (#269).
+pub fn row_lines(
+    text: &ropey::Rope,
+    (a, b): (usize, usize),
+    rows: &[(crate::codeview::Spans, bool)],
+) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut open = false;
+    for l in a..=b {
+        match (blank_line(text, l), open) {
+            (true, _) => open = false,
+            (false, true) => runs.last_mut().expect("open").1 = l,
+            (false, false) => {
+                runs.push((l, l));
+                open = true;
+            }
+        }
+    }
+    let n = runs.len();
+    let para = |k: usize| {
+        if n == 0 {
+            return (a, b);
+        }
+        let k = k.min(n - 1);
+        (if k == 0 { a } else { runs[k].0 }, if k + 1 == n { b } else { runs[k].1 })
+    };
+    // (the blank lines between paragraphs `k` and `k + 1`, else `k`'s own when none are)
+    let gap = |k: usize| match (runs.get(k), runs.get(k + 1)) {
+        (Some(x), Some(y)) if y.0 > x.1 + 1 => (x.1 + 1, y.0 - 1),
+        _ => para(k),
+    };
+    let (mut p, mut words) = (0, false);
+    rows.iter()
+        .map(|(spans, _)| match (spans.iter().all(|s| s.text.trim().is_empty()), words) {
+            (false, _) => {
+                words = true;
+                para(p)
+            }
+            (true, true) => {
+                (p, words) = (p + 1, false);
+                gap(p - 1)
+            }
+            (true, false) => p.checked_sub(1).map_or_else(|| para(0), gap),
+        })
+        .collect()
+}
+
 /// Line range [start, end] of the doc comment block containing `line` (within 200 lines up/down — joins
 /// a `/** */` that starts above).
 pub fn block_at(text: &ropey::Rope, line: usize, syn: &DocComments) -> Option<(usize, usize)> {
@@ -364,6 +426,25 @@ mod tests {
 
     fn of(lang: &str) -> &'static DocComments {
         syntax(Some(lang)).expect("its pack has doc comments")
+    }
+
+    /// #269: each folded row's lines — its paragraph's, the first from the block's first line (a `/**`), the last to its
+    /// last (a `*/`), a blank row between two the blank lines between them, every row of a flowed paragraph alike.
+    #[test]
+    fn each_folded_row_knows_its_paragraphs_lines() {
+        let text = ropey::Rope::from_str("/**\n * One.\n *\n *\n * Two, a\n * paragraph.\n */\n");
+        let row = |words: &str| {
+            let span = crate::markdown::Span {
+                cut: None,
+                hint: false,
+                text: words.into(),
+                style: crate::theme::Style::default(),
+            };
+            (crate::codeview::Spans::from(vec![span]), false)
+        };
+        let rows = [row("One."), row(""), row("Two, a"), row("paragraph.")];
+        assert_eq!(row_lines(&text, (0, 6), &rows), [(0, 1), (2, 3), (4, 6), (4, 6)]);
+        assert_eq!(row_lines(&text, (1, 1), &rows[..1]), [(1, 1)], "one line, one row");
     }
 
     #[test]

@@ -76,6 +76,131 @@ fn a_double_press_in_the_code_takes_the_word_and_a_triple_the_line() {
     crate::clock::release();
 }
 
+/// A doc comment of two paragraphs between code (#269).
+const SPOOL: &str = "use std::fmt;\n\n/// A spool: the strands waiting.\n///\n/// The spool keeps its order: a strand\n/// is wound in the order it came.\npub struct Spool;\n";
+
+fn with_spool(ed: &mut Editor) {
+    ed.docs[0].text = ropey::Rope::from_str(SPOOL);
+    ed.docs[0].path.set(Some("/tmp/spool.rs".into())); // (doc comments render by the language)
+    frame(ed);
+}
+
+fn spool_folded(ed: &Editor) -> bool {
+    ed.view.iter().any(|r| matches!(r, crate::codeview::Row::Doc { start: 2, .. }))
+}
+
+/// What the copy let go wrote — asked at once (never a wait for one not coming), then its result taken in: the toast
+/// once the clipboard took it.
+fn copied(ed: &mut Editor, want: &str) {
+    assert!(crate::clipboard::asked(want), "a copy as shown asked as it's let go: {want:?}");
+    let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the copy's result");
+    ed.handle_event(ev);
+    assert!(crate::clipboard::written(want), "copied as shown: {want:?}");
+}
+
+/// #269: a folded doc comment's rows are text (a press puts the cursor where a row's paragraph starts, a drag selects);
+/// a drag over them, within it or from the code into it, leaves it folded — the selection the source of the paragraphs
+/// it went over, whole — and what it went over is copied as you let go as it's shown: no `///`, a line for each row; a
+/// double takes a paragraph; a drag over code only copies nothing.
+#[test]
+fn a_drag_over_a_folded_doc_comment_keeps_it_folded_and_copies_its_words() {
+    let mut ed = editor();
+    with_spool(&mut ed);
+    assert!(spool_folded(&ed), "folded to start with");
+    let first = cell_of(&mut ed, "A spool:");
+    let second = cell_of(&mut ed, "in the order");
+    assert!(
+        matches!(ed.mouse_at(second.0, second.1).part, crate::mouse::Part::Text { .. }),
+        "a folded row is the code's text"
+    );
+    // (within it: from the first paragraph's row onto the second's)
+    mouse(&mut ed, K::Down, first);
+    assert_eq!(ed.cursor_line(), 2, "a press: where its paragraph starts");
+    mouse(&mut ed, K::Drag, second);
+    assert!(spool_folded(&ed), "dragged over: still folded");
+    let source = "/// A spool: the strands waiting.\n///\n/// The spool keeps its order: a strand\n/// is wound in the order it came.\n";
+    assert_eq!(selected(&mut ed, Drag::Code), source, "the paragraphs' source, whole");
+    mouse(&mut ed, K::Drag, first);
+    assert_eq!(selected(&mut ed, Drag::Code), source.split_inclusive('\n').next().unwrap(), "back: its own");
+    mouse(&mut ed, K::Drag, second);
+    mouse(&mut ed, K::Up, second);
+    copied(
+        &mut ed,
+        "A spool: the strands waiting.\n\nThe spool keeps its order: a strand is wound in the order it came.",
+    );
+    assert_eq!(selected(&mut ed, Drag::Code), source, "the selection the source's (y yanks it)");
+    // (from the code above into it)
+    let code = cell_of(&mut ed, "use std");
+    mouse(&mut ed, K::Down, code);
+    mouse(&mut ed, K::Drag, first);
+    assert!(spool_folded(&ed), "from the code into it: still folded");
+    assert_eq!(cell_of(&mut ed, "A spool:"), first, "nothing moved under the pointer");
+    mouse(&mut ed, K::Drag, second);
+    assert_eq!(selected(&mut ed, Drag::Code), format!("use std::fmt;\n\n{source}"));
+    mouse(&mut ed, K::Up, second);
+    copied(
+        &mut ed,
+        "use std::fmt;\n\nA spool: the strands waiting.\n\nThe spool keeps its order: a strand is wound in the order it came.",
+    );
+    // (a double on a row: its paragraph, nothing copied — not a drag)
+    presses(&mut ed, second, 2);
+    assert_eq!(
+        selected(&mut ed, Drag::Code),
+        "/// The spool keeps its order: a strand\n/// is wound in the order it came.\n"
+    );
+    assert!(spool_folded(&ed));
+    let held = crate::selection::Held { from: 0, to: 1, unit: crate::selection::Unit::Char };
+    // (a drag over code only: selected, nothing to copy as shown)
+    let below = cell_of(&mut ed, "pub struct");
+    mouse(&mut ed, K::Down, below);
+    mouse(&mut ed, K::Drag, (below.0 + 9, below.1));
+    assert_eq!(selected(&mut ed, Drag::Code), "pub struct");
+    assert_eq!(crate::mouse::folded_shown(&ed, held), None, "a drag over code only");
+    mouse(&mut ed, K::Up, (below.0 + 9, below.1));
+    // (an edit there opens it; a press elsewhere lets that go, so a press back finds it folded — the mouse as keys)
+    press(&mut ed, first.0, first.1);
+    feed(&mut ed, "xd");
+    frame(&mut ed);
+    assert!(!spool_folded(&ed), "d there: open");
+    let below = cell_of(&mut ed, "pub struct");
+    press(&mut ed, below.0, below.1);
+    frame(&mut ed);
+    assert!(spool_folded(&ed), "a press off it: folded");
+    let back = cell_of(&mut ed, "The spool keeps");
+    press(&mut ed, back.0, back.1);
+    frame(&mut ed);
+    // (its first paragraph now starts at the block's first line, a blank `///`)
+    assert_eq!(
+        (ed.cursor_line(), spool_folded(&ed)),
+        (2, true),
+        "a press back on it: folded, the edit not just made"
+    );
+}
+
+/// #269: a paragraph that takes two rows is copied as one line — its rows' wrap is no line break, as a terminal or a
+/// browser joins a soft wrap (the user, 2026-11-02: a paragraph a line).
+#[test]
+fn a_drag_over_a_wrapped_folded_paragraph_copies_it_as_one_line() {
+    let mut ed = editor();
+    let words = "knot ".repeat(45);
+    ed.docs[0].text = ropey::Rope::from_str(&format!("fn a() {{}}\n/// {}\nfn b() {{}}\n", words.trim_end()));
+    ed.docs[0].path.set(Some("/tmp/wrap.rs".into()));
+    let screen = frame(&mut ed);
+    let rows: Vec<String> = screen
+        .lines()
+        .filter_map(|l| l.split_once("▎ ").map(|(_, r)| r.trim_end().to_string()))
+        .filter(|r| r.starts_with("knot"))
+        .collect();
+    assert_eq!(rows.len(), 2, "one paragraph, two rows:\n{screen}");
+    let at = cell_of(&mut ed, "knot");
+    mouse(&mut ed, K::Down, at);
+    mouse(&mut ed, K::Drag, (at.0 + 4, at.1 + 1));
+    let held = crate::selection::Held { from: 0, to: 1, unit: crate::selection::Unit::Char };
+    assert_eq!(crate::mouse::folded_shown(&ed, held), Some(rows.join(" ")), "the rows joined");
+    mouse(&mut ed, K::Up, (at.0 + 4, at.1 + 1));
+    copied(&mut ed, words.trim_end());
+}
+
 /// A drag held past the code's last row scrolls it a row a tick, the selection reaching the row now at the edge; the
 /// view stays where the drag left it; back inside, or let go, it stops.
 #[test]

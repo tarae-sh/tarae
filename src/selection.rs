@@ -143,8 +143,14 @@ impl Held {
     /// dragging back, the press's own still in it, the head at the pointer's.
     pub fn dragged(self, text: &Rope, pos: usize) -> Range {
         let len = text.len_bytes();
+        self.dragged_over(text, span(text, graphemes::snap(text, pos.min(len)), self.unit))
+    }
+
+    /// A drag from it onto text whose place is `from..to` whole — a folded doc comment's row, which takes the lines
+    /// its words come from (#269) — as `dragged` onto a unit there.
+    pub fn dragged_over(self, text: &Rope, (from, to): (usize, usize)) -> Range {
+        let len = text.len_bytes();
         let (a, b) = (graphemes::snap(text, self.from.min(len)), graphemes::snap(text, self.to.min(len)));
-        let (from, to) = span(text, graphemes::snap(text, pos.min(len)), self.unit);
         if from >= a { Range::new(a, to.max(b)) } else { Range::new(b, from) }
     }
 }

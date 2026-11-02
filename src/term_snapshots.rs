@@ -4064,7 +4064,7 @@ fn snapshot_review_doc_comments() {
     );
     s.check("review_doc_comments");
     s.frames_both("review_doc_comments");
-    // A click on the rendered block's last row: its first line
+    // A click on the rendered block's last row: the first line of the paragraph it shows (#269)
     let (_, rect, gutter, rows) = s.ed.screen.panes[0].clone();
     let row = rows.iter().rposition(|r| r.0 == 0).expect("the block's rows");
     assert_eq!(rows[row + 1].0, 3, "the line after the block right below it: {rows:?}");
@@ -4081,7 +4081,8 @@ fn snapshot_review_doc_comments() {
     };
     click(&mut s, crate::event::MouseKind::Down, rect.y + row);
     click(&mut s, crate::event::MouseKind::Up, rect.y + row);
-    assert_eq!(s.ed.cursor_line(), 0, "on the block");
+    assert_eq!(s.ed.cursor_line(), 2, "on the block, its paragraph's line");
+    assert_eq!(folded(&s), 3, "still folded");
     // `j` past it, `k` back onto it
     s.keys("j");
     assert_eq!(s.ed.cursor_line(), 3, "stepped over the block");
@@ -4207,7 +4208,7 @@ fn a_preview_never_starts_inside_a_folded_block() {
     tall_doc_block(&mut s);
     let doc = s.ed.doc();
     // (opens at line 6: the preview starts a third of its rows up, at line 2 — inside the block)
-    let rows = |n: usize| super::rows_preview(&s.ed, doc, Some("rust"), (Some(6), Some(6), 0), n, 40);
+    let rows = |n: usize| super::rows_preview(&s.ed, doc, Some("rust"), (Some(6), 0), n, 40);
     let tall = rows(30);
     assert!(matches!(tall[0], Row::Doc { start: 0, index: 0, .. }), "the block whole: {tall:?}");
     let short = rows(12);
@@ -4265,7 +4266,7 @@ fn jump_labels_only_on_the_rows_drawn() {
 }
 
 /// A click on a row whose text isn't the line's lands on one place of it, wherever it's clicked: a removed line
-/// the start of the line it went above, a folded doc comment where the comment starts.
+/// the start of the line it went above, a folded doc comment where its row's paragraph starts (#269).
 #[test]
 fn a_click_on_a_removed_or_folded_row() {
     use crate::codeview::Row;
@@ -4286,8 +4287,10 @@ fn a_click_on_a_removed_or_folded_row() {
     let start = |s: &Shot, l: usize| s.ed.doc().text.line_to_byte(l);
     let removed = click(&mut s, &|r| matches!(r, Row::Other { at: 7, .. }));
     assert_eq!(removed, start(&s, 7), "the start of the line it went above");
-    let folded = click(&mut s, &|r| matches!(r, Row::Doc { start: 0, index: 1, .. }));
-    assert_eq!(folded, start(&s, 0), "where the comment starts");
+    let folded = click(&mut s, &|r| matches!(r, Row::Doc { start: 0, index: 2, .. }));
+    assert_eq!(folded, start(&s, 2), "where its paragraph starts");
+    let folded = click(&mut s, &|r| matches!(r, Row::Doc { start: 0, index: 0, .. }));
+    assert_eq!(folded, start(&s, 0), "the first's: where the comment starts");
 }
 
 /// A folded doc comment indented with tabs is drawn at its code's column (it was drawn a cell a tab, left of
@@ -4488,9 +4491,9 @@ fn folded(s: &Shot) -> Vec<usize> {
     starts.collect()
 }
 
-/// The mode rule, key by key: in NORMAL a block opens only under a selection wider than a character (a line
-/// selected above it isn't on it) and `j`/`k` step over it; in INSERT and SELECT any selection on it opens it,
-/// and a block away from the cursor stays folded; a prompt or a picker taking the keys changes nothing.
+/// The mode rule, key by key (#269): a block stays folded while you select it — in NORMAL, a selection on it wide or not,
+/// and in SELECT — `j`/`k` stepping over it; INSERT on it opens it, a block away from the cursor staying folded; a
+/// prompt or a picker taking the keys changes nothing.
 #[test]
 fn doc_comments_follow_the_mode() {
     use crate::editor::Mode;
@@ -4506,26 +4509,88 @@ fn doc_comments_follow_the_mode() {
     s.keys("k");
     assert_eq!(s.ed.cursor_line(), 1, "NORMAL: k lands on its first line");
     s.keys("x");
-    assert_eq!(folded(&s), [4], "NORMAL: a selection wider than a character opens it");
+    assert_eq!(folded(&s), [1, 4], "NORMAL: a selection wider than a character leaves it folded");
     s.keys(";i");
     assert_eq!((s.ed.mode, folded(&s)), (Mode::Insert, vec![4]), "INSERT: the cursor on it opens it");
     s.keys("<esc>gg");
     s.keys("i");
     assert_eq!(folded(&s), [1, 4], "INSERT elsewhere: the others stay folded");
     s.keys("<esc>jv");
-    assert_eq!((s.ed.mode, folded(&s)), (Mode::Select, vec![4]), "SELECT: on it opens it");
+    assert_eq!((s.ed.mode, folded(&s)), (Mode::Select, vec![1, 4]), "SELECT: on it leaves it folded");
     s.keys("j");
-    assert_eq!(s.ed.cursor_line(), 2, "SELECT: j goes line by line through it (raw)");
+    assert_eq!(s.ed.cursor_line(), 3, "SELECT: j steps over it");
+    s.keys("k");
+    let held = (s.ed.cursor_line(), s.ed.mode, folded(&s));
+    assert_eq!(held, (1, Mode::Select, vec![1, 4]), "SELECT: k steps up over it, onto its first line");
+    s.keys("j");
     s.keys(":");
     assert!(s.ed.prompt.is_some());
-    assert_eq!(folded(&s), [4], "a prompt with the keys: as the mode under it");
+    assert_eq!(folded(&s), [1, 4], "a prompt with the keys: as the mode under it");
     s.keys("<esc> ?");
     assert!(s.ed.picker.is_some());
-    assert_eq!(folded(&s), [4], "a picker with the keys: as the mode under it");
+    assert_eq!(folded(&s), [1, 4], "a picker with the keys: as the mode under it");
     s.keys("<esc><esc>");
-    assert_eq!((s.ed.mode, folded(&s)), (Mode::Normal, vec![4]), "NORMAL: what SELECT selected stays, wide");
+    assert_eq!(
+        (s.ed.mode, folded(&s)),
+        (Mode::Normal, vec![1, 4]),
+        "NORMAL: what SELECT selected stays, folded"
+    );
+    s.keys("ki");
+    assert_eq!(folded(&s), [4], "INSERT with the selection on it: opens it");
+    s.keys("<esc>");
+    assert_eq!((s.ed.mode, folded(&s)), (Mode::Normal, vec![1, 4]), "nothing typed: back in NORMAL it folds");
+}
+
+/// Whether `phrase`, drawn on a folded doc comment's row, stands on a selection's ground: its first cell's ground
+/// against its row's bar (`▎`, always the code's own).
+fn lit(s: &mut Shot, phrase: &str) -> bool {
+    let bytes = s.frame();
+    let mut vt = vt100::Parser::new(s.h, s.w, 0);
+    vt.process(&bytes);
+    let screen = vt.screen();
+    let (y, row) = screen.rows(0, s.w).enumerate().find(|(_, r)| r.contains(phrase)).expect(phrase);
+    let col = |needle: &str| row[..row.find(needle).expect(needle)].chars().count() as u16;
+    let bg = |x: u16| screen.cell(y as u16, x).map(|c| c.bgcolor());
+    bg(col(phrase)) != bg(col("▎"))
+}
+
+/// #269, key by key: a selection over a folded doc comment leaves it folded and lights the rows of the paragraphs it's
+/// on — `x` the first's, `x` again through the second's —, `y` yanking the source; INSERT on it opens it; an edit of
+/// yours there (`d`, a paste) opens it while a selection stays on that block, and it folds once the selection leaves.
+#[test]
+fn a_folded_doc_comment_stays_folded_while_selected() {
+    let mut s = Shot::new(100, 24);
+    s.file("src/x.rs", "fn a() {}\n/// One line.\n///\n/// Two, a\n/// paragraph.\nfn b() {}\n");
+    s.keys("jx");
+    assert_eq!(folded(&s), [1], "x on its first line: folded");
+    assert!(lit(&mut s, "One line.") && !lit(&mut s, "Two, a paragraph."), "the first paragraph's row lit");
+    s.keys("xx");
+    assert_eq!(folded(&s), [1], "x through its lines: folded");
+    assert!(lit(&mut s, "One line.") && lit(&mut s, "Two, a paragraph."), "both rows lit");
+    s.keys("y");
+    let yanked = s.ed.registers.get(&'"').cloned();
+    assert_eq!(yanked, Some(vec!["/// One line.\n///\n/// Two, a\n".to_string()]), "y: the source");
     s.keys(";");
-    assert_eq!(folded(&s), [1, 4]);
+    assert_eq!(s.ed.cursor_line(), 3, "the cursor in the second paragraph");
+    assert!(!lit(&mut s, "Two, a paragraph."), "a cursor lights nothing (the bar says it)");
+    s.keys("i");
+    assert_eq!(folded(&s), [] as [usize; 0], "INSERT on it: open");
+    s.keys("<esc>");
+    assert_eq!(folded(&s), [1], "nothing typed: folded again");
+    s.keys("ggjxd");
+    assert_eq!(s.ed.doc().text.line(1).to_string(), "///\n", "its first line gone");
+    assert_eq!(folded(&s), [] as [usize; 0], "d there: open, to see what it did");
+    s.keys("j");
+    assert_eq!((s.ed.cursor_line(), folded(&s)), (2, vec![]), "moving within it: open");
+    s.keys("G");
+    assert_eq!(folded(&s), [1], "left: folded");
+    s.keys("ggj");
+    assert_eq!(folded(&s), [1], "back on it, the edit not just made: folded");
+    s.keys("3Gxy");
+    assert_eq!(folded(&s), [1], "a yank: folded");
+    s.keys("p");
+    assert_eq!(s.ed.doc().text.line(3).to_string(), "/// Two, a\n", "pasted under it");
+    assert_eq!(folded(&s), [] as [usize; 0], "a paste there: open");
 }
 
 /// Two panes on one file: the one being edited (focused, INSERT) shows the block raw; the other keeps
@@ -4870,8 +4935,8 @@ fn doc_comments_by_changes_shown() {
     s.frames_both("conflict_doc_comments");
 }
 
-/// A picker's preview shows doc comments as the editor would in NORMAL — but the block the item opens at stays
-/// raw (going there selects it).
+/// A picker's preview shows doc comments as the editor would in NORMAL — the block the item opens at too: going
+/// there selects it, and a selection leaves it folded (#269), so the preview is what you land on.
 #[test]
 fn doc_comments_in_previews() {
     use crate::picker::{Action, Item, Picker};
@@ -4888,12 +4953,16 @@ fn doc_comments_in_previews() {
     s.ed.open_picker(Picker::new("places", items, false), None);
     s.frame();
     let shown = screen_text(&mut s);
-    assert!(shown.contains("/// Counts") && shown.contains("▎ The longest word."), "{shown}");
+    assert!(!shown.contains("/// Counts") && shown.contains("▎ Counts the words in text."), "{shown}");
+    assert!(shown.contains("▎ The longest word."), "{shown}");
     s.check("preview_doc_comments");
     s.frames_both("preview_doc_comments");
     s.keys("<C-n>");
     let shown = screen_text(&mut s);
     assert!(!shown.contains("/// Counts") && shown.contains("▎ Counts the words in text."), "{shown}");
+    // (the first item opened: on the block's line, the block folded as its preview showed it)
+    s.keys("<C-p><ret>");
+    assert_eq!((s.ed.cursor_line(), folded(&s).contains(&0)), (0, true), "landed as previewed");
 }
 
 /// A picker's code preview is the file as the editor draws it (`Shows::preview`): a buffer's diagnostic — its

@@ -4,9 +4,9 @@
 01  ╭─ places ─────────────────────────────────┬───────────────────────────────────────────────────────────────╮
 02  │ ›                                    2/2 │ src/words.rs                                                  │
 03  │ ──────────────────────────────────────── │ ───────────────────────────────────────────────────────────── │
-04  │▎ in the first doc comment                │   1 /// Counts the words in `text`.                           │
-05  │  at count                                │   2 ///                                                       │
-06  │                                          │   3 /// Splits on **whitespace**, so `a  b` is two words.     │
+04  │▎ in the first doc comment                │   1 ▎ Counts the words in text.                               │
+05  │  at count                                │     ▎                                                         │
+06  │                                          │     ▎ Splits on whitespace, so a  b is two words.             │
 07  │                                          │   4 pub fn count(text: &str) -> usize {                       │
 08  │                                          │   5     text.split_whitespace().count()                       │
 09  │                                          │   6 }                                                         │
@@ -36,7 +36,7 @@
 02
 03
 04   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
-05                                                   ccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+05
 06
 07
 08
@@ -66,9 +66,9 @@
 01  aa TTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 02  a A                                    fff a ddddTTTTTTTT                                                  a
 03  a ffffffffffffffffffffffffffffffffffffffff a fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff a
-04  aa TT TTT TTTTT TTT TTTTTTT                a   f                                                           a
-05  a                                          a   f                                                           a
-06  a                                          a   f                                                           a
+04  aa TT TTT TTTTT TTT TTTTTTT                a   f f                                                         a
+05  a                                          a     f                                                         a
+06  a                                          a     f           BBBBBBBBBB                                    a
 07  a                                          a   f                                                           a
 08  a                                          a   f                                                           a
 09  a                                          a   f                                                           a
@@ -93,5 +93,5 @@
 28
 29  a TTTTTT   ffff ffffff  DDD fffff                                                    dddd   ddddd dd   TTTT
 ## legend
-bg: c=ui.cursorline.primary  P=ui.menu.selected
-fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus
+bg: P=ui.menu.selected
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus  B=bold

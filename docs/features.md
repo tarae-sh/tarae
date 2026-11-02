@@ -220,20 +220,26 @@ configs carry over as they are.
   edit under review, an edit follow shows, a picker's preview — and for every move over it (`j`/`k`, clicks,
   `gw` labels): a block renders unless
   - the language has none, or the setting is off;
-  - it's being edited or selected: in the pane you're editing in (the focused one), in INSERT or SELECT, any
-    selection or cursor on it opens it; elsewhere (NORMAL, other panes, a review, a preview) only a selection wider
-    than a character on it does (a line selected right above isn't on it). A preview reads the place it opens
-    at as selected — a search hit in a doc comment shows raw. A prompt, picker, card, the chat or the terminal
-    taking the keys leaves the mode as it was, so nothing changes (going to Claude's waiting edit from the inbox
-    ends INSERT first);
+  - it's being edited: in the pane you're editing in (the focused one), INSERT with the cursor or a selection on it
+    opens it; so does an edit of yours just made there — `c`, `d`, a paste — for as long as a selection
+    stays on that block, so you see what it did (a line selected right above isn't on it). Selecting never opens it:
+    `x`, `w`, a search, SELECT or a drag over it leave it folded and light the rows of the paragraphs the selection
+    is on, and `y` yanks their source. A picker's preview shows the block it opens at as you'll land on it,
+    folded. A prompt, picker, card, the chat or the terminal taking the keys leaves the mode as it was,
+    so nothing changes (going to Claude's waiting edit from the inbox ends INSERT first);
   - a change shown on screen is in or right beside it — a hunk's changed, added or removed lines, or a merge
     conflict — so a diff is always read against the text it changes.
 
-  A rendered block is flowed to the width, so scrolling sideways moves only the code lines. In NORMAL `j`/`k` step
-  over a rendered block as one line (they land on its first line); through a raw one they go line by line. The view
-  counts a rendered block's rows as drawn — keeping the cursor in sight, `zz`/`zt`/`zb`, the scroll margin — and
-  `zj`/`zk` step over it whole; a click anywhere on it lands where the comment starts; a picker's preview never
-  starts partway into one
+  A rendered block is flowed to the width, so scrolling sideways moves only the code lines. In NORMAL and SELECT
+  `j`/`k` step over a rendered block as one line (they land on its first line); through a raw one they go line by
+  line. The view counts a rendered block's rows as drawn — keeping the cursor in sight, `zz`/`zt`/`zb`, the scroll
+  margin — and `zj`/`zk` step over it whole; a picker's preview never starts partway into one. Its rows are text to
+  the mouse: a click lands where that row's paragraph starts, a double takes the paragraph, a drag selects whole
+  paragraphs (from the code into it, or back out) and the block stays still under the pointer; let go, what the drag
+  took is copied as it's shown — the words without `///`, a paragraph a line (where the pane wraps it isn't a line break: pasted, the words
+  reflow), a blank line between paragraphs, the code around them as written — and
+  said (`copied 3 lines as shown — y yanks the source`); `y` still yanks the source. A drag over code alone only
+  selects, as ever
 - **Indent guides** (the block around the cursor one tone brighter), a **scrollbar** with error and warning ticks for
   the whole file, current-line highlight, per-mode colors and cursor shapes ([screenshot](screenshots/ux-guides.png))
 

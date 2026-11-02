@@ -19,6 +19,8 @@ pub fn copy(jobs: &Jobs, text: String, what: String) {
 /// `copy`, and a yank's `flash` (`motion.rs`) once the clipboard took it — this copy's own, carried with it (another
 /// copy landing first never takes it), saying it where it's drawn.
 pub fn copy_flashing(jobs: &Jobs, text: String, what: String, flash: Option<crate::motion::What>) {
+    #[cfg(test)]
+    system::ask(&text);
     jobs.spawn(move || {
         let r = system::write(&text);
         move |ed: &mut Editor| copied(ed, &what, r, flash)
@@ -386,6 +388,13 @@ pub fn written(text: &str) -> bool {
     system::written(text)
 }
 
+/// Tests: whether a copy of `text` was asked — at once, before its job wrote it (`written`): a test that waits for the
+/// copy's result asks this first, so it never waits for one that isn't coming.
+#[cfg(test)]
+pub fn asked(text: &str) -> bool {
+    system::asked(text)
+}
+
 /// The tests' stand-in clipboard holds `text` (as a copy leaves it, unsaid).
 #[cfg(test)]
 pub fn stand_in(text: &str) {
@@ -409,6 +418,17 @@ mod system {
 
     pub fn written(text: &str) -> bool {
         WRITTEN.lock().unwrap().iter().any(|t| t == text)
+    }
+
+    /// Every copy asked since the tests started, as it's asked.
+    static ASKED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    pub fn ask(text: &str) {
+        ASKED.lock().unwrap().push(text.to_string());
+    }
+
+    pub fn asked(text: &str) -> bool {
+        ASKED.lock().unwrap().iter().any(|t| t == text)
     }
 
     pub fn read() -> Result<Read, String> {

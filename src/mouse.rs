@@ -1040,6 +1040,76 @@ pub fn review_mouse(ed: &mut Editor, kind: MouseKind, x: usize, y: usize, hunk: 
     true
 }
 
+/// What a drag over a folded doc comment's rows copies as you let go (#269): the words as they're shown — the block's
+/// paragraphs the selection is on, as they read: no `///`, a paragraph a line (its rows' wraps aren't line breaks, as
+/// a terminal or a browser joins a soft wrap: pasted, the words reflow wherever they go; the chat's drag copies its
+/// document, a paragraph a line), a heading, an item, an example's line each a line, a blank line between paragraphs;
+/// the code's lines around them as written, from the press to the pointer, cut where the selection ends — while the
+/// selection, and `y`, keep the source. (A drag takes a folded block's paragraphs whole, so it never ends inside one.)
+/// None where the drag took no folded row (a drag over code only selects, as ever) or wasn't a drag (a press, a
+/// double's paragraph).
+pub fn folded_shown(ed: &Editor, held: Held) -> Option<String> {
+    let doc = ed.doc();
+    let text = &doc.text;
+    let r = doc.selection().primary();
+    let pressed = held.range();
+    if r.from() == r.to() || (r.from(), r.to()) == (pressed.from(), pressed.to()) {
+        return None;
+    }
+    let lang = doc.lang_name();
+    let syn = crate::doccomment::syntax(lang).filter(|_| ed.doc_comments_render(lang))?;
+    let (l0, l1) =
+        (text.byte_to_line(r.from()), text.byte_to_line(crate::graphemes::prev_boundary(text, r.to())));
+    let (tab, last) = (ed.config.tab_width, crate::movement::last_line(text));
+    let editing = ed.editing_in(true);
+    // (each block whole: scanned from far enough above to join one that starts there)
+    let blocks: Vec<_> =
+        crate::doccomment::blocks(text, l0.saturating_sub(200)..=(l1 + 200).min(last), tab, syn)
+            .into_iter()
+            .filter(|b| b.end >= l0 && b.start <= l1 && ed.doc_block_closed(doc, editing, (b.start, b.end)))
+            .collect();
+    if blocks.is_empty() {
+        return None;
+    }
+    let grammar = doc.syntax.as_ref().map(|s| s.lang.name.clone());
+    let mut out = Vec::new();
+    let mut l = l0;
+    while l <= l1 {
+        if let Some(b) = blocks.iter().find(|b| b.start <= l && l <= b.end) {
+            // (laid out as the pane lays it, `term::rows_pane`, but as wide as the block's own text: nothing wraps, a
+            // paragraph is one row — its words never longer than the comment holding them, a tag's column and all)
+            let block_len =
+                crate::movement::line_full_end(text, b.end) - crate::movement::line_start(text, b.start);
+            let rows = crate::term::fold_rows(ed, b, block_len + 64, grammar.as_deref());
+            let of = crate::doccomment::row_lines(text, (b.start, b.end), &rows);
+            for ((spans, _), (a, z)) in rows.iter().zip(of) {
+                let (s, e) = (crate::movement::line_start(text, a), crate::movement::line_full_end(text, z));
+                if r.from() < e && r.to() > s {
+                    out.push(
+                        spans.iter().map(|s| s.text.as_str()).collect::<String>().trim_end().to_string(),
+                    );
+                }
+            }
+            l = b.end + 1;
+            continue;
+        }
+        let s = crate::movement::line_start(text, l).max(r.from());
+        let e = crate::movement::line_end(text, l).min(r.to()).max(s);
+        out.push(text.byte_slice(s..e).to_string());
+        l += 1;
+    }
+    Some(out.join("\n"))
+}
+
+/// A drag let go over the code: what it took of a folded doc comment copied as shown (`folded_shown`), said with what
+/// `y` takes instead. A drag over code only: nothing (it selects; `y` yanks).
+pub fn folded_copy(ed: &mut Editor, held: Held) {
+    let Some(text) = folded_shown(ed, held) else { return };
+    let n = text.lines().count().max(1);
+    let what = format!("{n} line{} as shown — y yanks the source", if n == 1 { "" } else { "s" });
+    crate::clipboard::copy(&ed.events.jobs(), text, what);
+}
+
 /// A press on `on`'s text, its surface's click having put the cursor on `pos`: the second at once on that character
 /// selects its word, the third its line, a fourth starts again (`Unit::of`) — what it took is what a drag from it
 /// holds, the drag going by the same unit.

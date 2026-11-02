@@ -264,6 +264,13 @@ pub struct Snapshot {
     paint: Vec<(usize, usize, u32)>,
 }
 
+impl Snapshot {
+    /// The document's version it was taken at.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+}
+
 pub struct Document {
     pub id: DocId,
     pub text: Rope,
@@ -400,6 +407,10 @@ pub struct Document {
     pub base_parsing: bool,
     /// Its folded doc comments' row counts, for scrolling (`codeview::Measure`).
     pub fold_counts: std::cell::RefCell<crate::codeview::FoldCounts>,
+    /// The version a key of yours that edited it left, and its selection then (`Editor::close_undo_group`): a folded
+    /// doc comment that selection is on opens while the text is that version and a selection is still on it — `c`,
+    /// `d`, a paste there show what they did (#269, `Editor::doc_block_closed`).
+    pub edited: Option<(u64, Vec<(usize, usize)>)>,
 }
 
 impl Document {
@@ -478,6 +489,7 @@ impl Document {
             base_seq: 0,
             base_parsing: false,
             fold_counts: Default::default(),
+            edited: None,
             rows: None,
             indent_unit: std::cell::Cell::new(None),
             diff_of: None,
@@ -553,6 +565,27 @@ impl Document {
 
     pub fn set_selection(&mut self, sel: Selection) {
         self.selection = sel.clamp(self.text.len_bytes());
+        self.edited_let_go();
+    }
+
+    /// `edited` let go once no selection is on the doc comment block the edit was in, or the text has moved on —
+    /// whatever moved the selection (a key, a press, a jump): coming back isn't the edit just made (#269).
+    fn edited_let_go(&mut self) {
+        let Some((v, at)) = &self.edited else { return };
+        let block = (*v == self.version)
+            .then(|| at.first())
+            .flatten()
+            .zip(crate::doccomment::syntax(self.lang_name()))
+            .and_then(|(r, syn)| {
+                let line = self.text.byte_to_line(r.0.min(self.text.len_bytes()));
+                crate::doccomment::block_at(&self.text, line, syn)
+            });
+        let ranges = self.selection.ranges();
+        if !block.is_some_and(|b| {
+            ranges.iter().any(|r| crate::doccomment::on_lines(&self.text, (r.from(), r.to()), b))
+        }) {
+            self.edited = None;
+        }
     }
 
     /// Change the text and move selections along with the changes.

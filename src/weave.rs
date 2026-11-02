@@ -190,7 +190,7 @@ pub fn columns(
 ) -> bool {
     let n = c.parts.len() + 1;
     let l = c.lines();
-    cols >= n * COLUMN_MIN + n - 1 && !l.is_empty() && ed.doc_block_closed(doc, editing, (l.start, l.end - 1))
+    cols >= n * COLUMN_MIN + n - 1 && !l.is_empty() && ed.conflict_closed(doc, editing, (l.start, l.end - 1))
 }
 
 /// A column's width when `n` parts share `cols` cells (a `│` between two).
