@@ -7439,6 +7439,14 @@ mod tests {
     #[test]
     fn a_host_given_for_claudes_next_run_goes_with_that_run_alone() {
         use serde_json::json;
+        // (its runs' rules are looked at: made only where tarae sandboxes — ABI 1 is no sandbox, `Ready` below untrue)
+        #[cfg(target_os = "linux")]
+        if let Some(why) = crate::landlock::short_of(2) {
+            crate::test_results::said_skip(&format!(
+                "tools::tests::a_host_given_for_claudes_next_run_goes_with_that_run_alone — {why}"
+            ));
+            return;
+        }
         const HOST: &str = "registry.example.invalid";
         let scratch = crate::scratch::Scratch::new("hosts-next");
         let dir = std::fs::canonicalize(scratch.path()).unwrap();

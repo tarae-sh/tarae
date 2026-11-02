@@ -2752,7 +2752,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn what_a_sessions_runs_left_ends_with_it() {
-        if crate::landlock::abi().is_err() {
+        if let Some(why) = crate::landlock::short_of(2) {
+            crate::test_results::said_skip(&format!(
+                "worktree::tests::what_a_sessions_runs_left_ends_with_it — {why}"
+            ));
             return;
         }
         let dir = std::env::temp_dir().join(format!("tarae-workspace-end-{}", std::process::id()));

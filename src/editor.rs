@@ -11208,14 +11208,10 @@ mod tests {
     /// Linux tests that need this kernel's Landlock at `abi` or more: None after saying the test skips itself.
     #[cfg(target_os = "linux")]
     fn landlock_at_least(abi: u32, test: &str) -> Option<u32> {
-        match crate::landlock::abi() {
-            Ok(n) if n >= abi => Some(n),
-            got => {
-                let line = format!(
-                    "{}editor::tests::{test} — needs Landlock ABI {abi}, this kernel: {got:?}\n",
-                    crate::test_results::SELF_SKIP
-                );
-                let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        match crate::landlock::short_of(abi) {
+            None => crate::landlock::abi().ok(),
+            Some(why) => {
+                crate::test_results::said_skip(&format!("editor::tests::{test} — {why}"));
                 None
             }
         }

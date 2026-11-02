@@ -932,17 +932,29 @@ fn a_runs_changes_join_the_turn_and_undo_takes_them_back() {
     assert!(!ed.workspace.claude.checkpoints.list[0].seen, "reviewed at the turn's end, like Claude's edits");
     // space u: back as they were
     crate::checkpoint::step(&mut ed, true).unwrap();
-    // (its blob is written on a worker, made then filled — waited for by its bytes, never by the file being there:
-    // frictions #155, read between the two in a full run)
+    // (its blob is written on a worker, made then filled — its bytes, never the file being there: frictions #155,
+    // read between the two in a full run. Its bytes there aren't the step's end either: that's its result handled
+    // on the loop, `putting` cleared — here held back on purpose, the disk watched with no event handled, so a
+    // step asked now is refused, as `space U` was on K2's full run when the test went on at the bytes)
     let blob = |bytes: &[u8]| std::fs::read(dir.join("b.bin")).is_ok_and(|b| b == bytes);
-    pump(&mut ed, &|_| blob(b"\x00\x01bin-before"), "the blob written back");
+    let end = Instant::now() + crate::test_results::PATIENCE;
+    while !blob(b"\x00\x01bin-before") {
+        assert!(Instant::now() < end, "the blob written back");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(ed.workspace.claude.checkpoints.putting, "its result not yet handled");
+    let e = crate::checkpoint::step(&mut ed, false).unwrap_err();
+    assert!(e.contains("writing that turn's files back"), "{e}");
+    let over = |ed: &crate::editor::Editor| !ed.workspace.claude.checkpoints.putting;
+    pump(&mut ed, &over, "the step's end");
     assert_eq!(std::fs::read_to_string(dir.join("src/gone.txt")).unwrap(), "kept-marker\n");
     assert_eq!(std::fs::read_to_string(dir.join("src/a.txt")).unwrap(), "one\ntwo\n");
     assert!(!dir.join("src/new.txt").exists(), "the file it made goes");
     assert_eq!(std::fs::read(dir.join("b.bin")).unwrap(), b"\x00\x01bin-before");
     // space U: the run's changes again
     crate::checkpoint::step(&mut ed, false).unwrap();
-    pump(&mut ed, &|_| !dir.join("b.bin").exists(), "the blob gone again");
+    pump(&mut ed, &over, "the step's end");
+    assert!(!dir.join("b.bin").exists(), "the blob gone again");
     assert!(!dir.join("src/gone.txt").exists(), "deleted again");
     assert_eq!(std::fs::read_to_string(dir.join("src/new.txt")).unwrap(), "made\n");
     assert_eq!(std::fs::read_to_string(dir.join("src/a.txt")).unwrap(), "one\nTHREE\n");

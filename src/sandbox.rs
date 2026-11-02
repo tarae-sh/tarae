@@ -4942,25 +4942,32 @@ fn run_homes_said(vars: &crate::sandboxpack::Vars) -> Vec<RunHomeSaid> {
 /// (`tier::for_policy`; `keeper::ready`: a keeper of another policy key ends what its runs left — D14), and its
 /// Landlock rules made for that keeper's runs (`linux::confine` — it walks the project for protected names,
 /// makes first what a build makes beside them: `linux::Made`, and grants the devices on the keeper's own).
-/// Either failing, the run doesn't start, saying why.
+/// Either failing, the run doesn't start, saying why. The ABI is asked first: below 2 tarae makes no rules
+/// (`linux::availability`: no sandbox there, the card's), and no keeper is started for them.
 #[cfg(target_os = "linux")]
 pub fn confined(mut p: Policy) -> Policy {
     let ns = tier::for_policy(&p);
     let key = policy_key(&p);
-    let made = keeper::ready_held(&p.root, &key, ns).and_then(|k| {
-        let made = crate::landlock::abi().and_then(|abi| {
-            linux::confine(
+    let abi = match crate::landlock::abi() {
+        Ok(n) if n < 2 => {
+            Err(format!("the sandbox couldn't be made: Landlock ABI {n}, which tarae doesn't use"))
+        }
+        got => got.map_err(|e| format!("the sandbox couldn't be made: {e}")),
+    };
+    let made = abi.and_then(|abi| {
+        keeper::ready_held(&p.root, &key, ns).and_then(|k| {
+            let made = linux::confine(
                 &p,
                 abi,
                 linux::audit_readable(abi),
                 true,
                 Some(&**k),
                 linux::served_here(k.ns.user),
-            )
-        });
-        let mut c = made.map_err(|e| format!("the sandbox couldn't be made: {e}"))?;
-        c.keeper = Some(k);
-        Ok(c)
+            );
+            let mut c = made.map_err(|e| format!("the sandbox couldn't be made: {e}"))?;
+            c.keeper = Some(k);
+            Ok(c)
+        })
     });
     p.confine = Some(made);
     p
@@ -6508,9 +6515,8 @@ mod tests {
             return;
         }
         #[cfg(target_os = "linux")]
-        if !matches!(crate::landlock::abi(), Ok(n) if n >= 2) {
-            let why = format!("{}{test} — needs Landlock ABI 2\n", crate::test_results::SELF_SKIP);
-            let _ = std::io::Write::write_all(&mut std::io::stderr(), why.as_bytes());
+        if let Some(why) = crate::landlock::short_of(2) {
+            crate::test_results::said_skip(&format!("{test} — {why}"));
             return;
         }
         let t = profile_path(
@@ -6630,9 +6636,8 @@ mod tests {
             return;
         }
         #[cfg(target_os = "linux")]
-        if crate::landlock::abi().is_err() {
-            let why = format!("{}{test} — needs Landlock\n", crate::test_results::SELF_SKIP);
-            let _ = std::io::Write::write_all(&mut std::io::stderr(), why.as_bytes());
+        if let Some(why) = crate::landlock::short_of(2) {
+            crate::test_results::said_skip(&format!("{test} — {why}"));
             return;
         }
         // (not in a temp folder: a policy never opens one holding its project, and a checkout isn't in one)
@@ -12442,20 +12447,17 @@ mod tests {
     }
 
     /// Whether the real-sandbox tests of files named like keys run here — else the test says it skips itself and
-    /// why: inside a sandbox on macOS (Seatbelt can't start there), without Landlock on Linux. Any ABI: nothing
-    /// here needs more than 1 (there every link and rename across folders is refused, which the tests take as
-    /// refused too).
+    /// why: inside a sandbox on macOS (Seatbelt can't start there), below Landlock ABI 2 on Linux (ABI 1 is no
+    /// sandbox: `on_landlock_abi_1_a_run_has_no_sandbox` checks that answer there).
     fn keys_tested_here(test: &str) -> bool {
         let test = format!("sandbox::tests::{test}");
         #[cfg(target_os = "macos")]
         return !skipped_inside(&test);
         #[cfg(not(target_os = "macos"))]
-        match crate::landlock::abi() {
-            Ok(_) => true,
-            Err(e) => {
-                let line =
-                    format!("{}{test} — needs Landlock, this kernel: {e}\n", crate::test_results::SELF_SKIP);
-                let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        match crate::landlock::short_of(2) {
+            None => true,
+            Some(why) => {
+                crate::test_results::said_skip(&format!("{test} — {why}"));
                 false
             }
         }
@@ -15832,12 +15834,10 @@ mod tests {
             return;
         }
         #[cfg(target_os = "linux")]
-        if !crate::landlock::abi().is_ok_and(|n| n >= 2) {
-            let line = format!(
-                "{}sandbox::tests::a_fake_token_never_reaches_a_sandboxed_run — needs Landlock ABI 2\n",
-                crate::test_results::SELF_SKIP
-            );
-            let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+        if let Some(why) = crate::landlock::short_of(2) {
+            crate::test_results::said_skip(&format!(
+                "sandbox::tests::a_fake_token_never_reaches_a_sandboxed_run — {why}"
+            ));
             return;
         }
         let scratch = crate::scratch::Scratch::new("runenv-e2e");
@@ -15911,12 +15911,8 @@ mod tests {
             return;
         }
         #[cfg(target_os = "linux")]
-        if !crate::landlock::abi().is_ok_and(|n| n >= 2) {
-            let line = format!(
-                "{}sandbox::tests::a_run_knows_its_tier — needs Landlock ABI 2\n",
-                crate::test_results::SELF_SKIP
-            );
-            let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+        if let Some(why) = crate::landlock::short_of(2) {
+            crate::test_results::said_skip(&format!("sandbox::tests::a_run_knows_its_tier — {why}"));
             return;
         }
         let scratch = crate::scratch::Scratch::new("status");
@@ -15943,6 +15939,38 @@ mod tests {
         assert_eq!(run, want, "the run's own tier, not the outer one nor none");
         assert_eq!(user, "outer", "a user's run: only what tarae was started with");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// On a kernel whose Landlock is ABI 1 (K2: Ubuntu 22.04's 5.15) the answer is no sandbox, as the user decided
+    /// (2026-10-05): the probe says it in the words the `NoSandbox` card shows (`landlock_abi_1_is_no_sandbox` takes
+    /// it from there — the card, and `y` the run without one), and a policy confined anyway gets no rules and no
+    /// keeper, saying why. Elsewhere it says it skips itself — but where ABI 1 is said (`TARAE_EXPECT_LANDLOCK_ABI=1`,
+    /// K2's in `xtask/kernels.toml`), it fails instead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_landlock_abi_1_a_run_has_no_sandbox() {
+        let test = "sandbox::tests::on_landlock_abi_1_a_run_has_no_sandbox";
+        let abi = crate::landlock::abi();
+        if std::env::var("TARAE_EXPECT_LANDLOCK_ABI").is_ok_and(|a| a.trim() == "1") {
+            assert!(
+                matches!(abi, Ok(1)),
+                "Landlock ABI 1 expected here, {}",
+                crate::landlock::kernel_said(&abi)
+            );
+        }
+        if !matches!(abi, Ok(1)) {
+            let kernel = crate::landlock::kernel_said(&abi);
+            crate::test_results::said_skip(&format!("{test} — needs Landlock ABI 1, {kernel}"));
+            return;
+        }
+        let why = "this kernel's Landlock (ABI 1) refuses every move across folders, so tarae doesn't use it";
+        assert!(probe() == Availability::Missing(why.into()), "the probe: no sandbox, saying why");
+        let s = crate::scratch::Scratch::new("sb-abi1");
+        let c = confined(Policy { run: RunDir::new().ok(), ..key_policy(&profile_path(&s)) });
+        match &c.confine {
+            Some(Err(e)) => assert!(e.ends_with("Landlock ABI 1, which tarae doesn't use"), "{e}"),
+            other => panic!("no rules, no keeper: {other:?}"),
+        }
     }
 
     /// A run's `TARAE_SANDBOX_STATUS` is tarae's alone: where tarae was started with one (an outer sandbox's), it

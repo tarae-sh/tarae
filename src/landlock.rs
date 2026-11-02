@@ -133,6 +133,24 @@ pub fn abi() -> io::Result<u32> {
     Ok(n as u32)
 }
 
+/// What a test's skip says of this kernel's Landlock: its ABI as a number, or why there's none.
+#[cfg(test)]
+pub fn kernel_said(abi: &io::Result<u32>) -> String {
+    match abi {
+        Ok(n) => format!("this kernel's is {n}"),
+        Err(e) => format!("this kernel has none ({e})"),
+    }
+}
+
+/// For a test that needs Landlock at ABI `min` or later: None where it runs, else the why its skip says
+/// (`needs Landlock ABI 2, this kernel's is 1` — `test_results::said_skip`).
+#[cfg(test)]
+pub fn short_of(min: u32) -> Option<String> {
+    let abi = abi();
+    (!abi.as_ref().is_ok_and(|&n| n >= min))
+        .then(|| format!("needs Landlock ABI {min}, {}", kernel_said(&abi)))
+}
+
 /// The rights a ruleset made for ABI `abi` (2 or later — tarae doesn't use 1: `sandbox::linux::availability`)
 /// handles: `ALL` but those that version doesn't know (it'd refuse the ruleset).
 pub fn handled(abi: u32) -> u64 {

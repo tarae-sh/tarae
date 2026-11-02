@@ -3912,6 +3912,9 @@ pub fn show(ed: &mut Editor, i: usize, at_end: bool) -> Option<DocId> {
 fn show_at(ed: &mut Editor, i: usize, at: Land) -> Option<DocId> {
     let r = ed.workspace.code_review.as_mut()?;
     r.shows = Some(i);
+    // (the newest show wins: a file's landing still waiting goes with it — a binary's buffer coming to the front
+    // before an earlier text file's base landed left that landing waiting for its file to be in front, forever)
+    r.land = None;
     // (the rail's selection too: with the rail's keys that's what it marks and scrolls to — a file shown from
     // elsewhere, `]F` or the git tab, never left out of sight behind the selection a press made: #207)
     r.selected = i;
@@ -7718,7 +7721,11 @@ mod tests {
                 break;
             }
             feed(&mut ed, "]h");
-            settle_until(&mut ed, there);
+            crate::test_results::settle_saying(&mut ed, there, |ed| {
+                let (d, r) = (ed.doc(), ed.workspace.code_review.as_ref().unwrap());
+                let front = d.title.clone().or_else(|| d.path.as_ref().map(|p| p.display().to_string()));
+                format!("in front {front:?} (doc {}), landing {:?}, shown {:?}", d.id, r.land, r.shows)
+            });
             frame(&mut ed);
             let before = unseen(&ed).len();
             feed(&mut ed, "<space>vh");
@@ -7727,6 +7734,39 @@ mod tests {
         assert!(unseen(&ed).is_empty(), "left {:?} — walked:\n{}", unseen(&ed), walked.join("\n"));
         let o = ed.offers.first().expect("the bring card");
         assert!(o.held.is_none(), "its yes back: {}", o.question);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// K2's whole run: the newest show wins, a landing still waiting with it. `space v h` takes a change and goes on
+    /// (#214), so a `]h` right after it shows another file before the first one landed: a text file's base still
+    /// on a worker, then a binary's buffer. Where the binary's read came back first, its buffer took the front and
+    /// the text file's landing waited for that file to be in front again — `every_kind_of_high_risk_change_can_be_
+    /// looked_at` waited out its patience on it (1 run in 12 here under load). The order made sure: the text file's
+    /// landing asked and its file not in front, as it is once the binary's buffer came; then the binary shown.
+    #[test]
+    fn a_binary_shown_drops_a_text_files_landing_still_waiting() {
+        let dir = bring_repo(
+            "binary-land",
+            &[("a.rs", "fn a() {}\n".into())],
+            &[("a.rs", "fn a() {}\nfn b() {}\n".into()), ("logo.png", "\0\u{1} logo\n".into())],
+        );
+        let mut ed = Editor::new(crate::config::Config::default());
+        start_in(&mut ed, dir.clone(), Some("main".into()));
+        settle_until(&mut ed, landed);
+        let a = ed.doc().id;
+        ed.open_virtual("elsewhere", "");
+        let r = ed.workspace.code_review.as_mut().unwrap();
+        r.land = Some((a, Land::First));
+        let i = r.files.iter().position(|f| f.rel == "logo.png").unwrap();
+        show(&mut ed, i, false);
+        let read = |ed: &Editor| !ed.toasts.iter().any(|t| t.step == Some("review-binary"));
+        settle_until(&mut ed, |ed| read(ed) && ed.doc().title.as_deref() == Some("logo.png · binary"));
+        let r = ed.workspace.code_review.as_ref().unwrap();
+        assert!(
+            r.land.is_none(),
+            "no landing left waiting for a.rs, behind the binary's buffer: {:?}",
+            r.land
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

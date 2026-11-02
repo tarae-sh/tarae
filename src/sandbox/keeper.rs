@@ -2932,12 +2932,11 @@ mod tests {
     /// with `CAP_SYS_PTRACE` would take it either way.
     #[test]
     fn tarae_takes_the_listener_of_a_keeper_child() {
-        if let Some(why) = super::super::supervisor::unavailable() {
-            let line = format!(
-                "{}sandbox::keeper::tests::tarae_takes_the_listener_of_a_keeper_child — {why}\n",
-                crate::test_results::SELF_SKIP
-            );
-            let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+        let why = crate::landlock::short_of(2).or_else(super::super::supervisor::unavailable);
+        if let Some(why) = why {
+            crate::test_results::said_skip(&format!(
+                "sandbox::keeper::tests::tarae_takes_the_listener_of_a_keeper_child — {why}"
+            ));
             return;
         }
         let said = scene("served_scene", &[]);

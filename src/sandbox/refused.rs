@@ -155,13 +155,13 @@ fn skipped(test: &str) -> bool {
         } else if std::env::var_os("TARAE_REFUSED_SUITE").is_none() {
             "its snapshots are `cargo xtask linux`'s tiers (TARAE_REFUSED_SUITE): run it there".to_string()
         } else {
-            match crate::landlock::abi() {
-                Ok(n) if n >= 2 => return false,
-                abi => {
+            match crate::landlock::short_of(2) {
+                None => return false,
+                Some(why) => {
                     if std::env::var("TARAE_EXPECT_TIER").is_ok_and(|t| !t.trim().is_empty()) {
-                        panic!("{test}: a tier was expected, Landlock: {abi:?}");
+                        panic!("{test}: a tier was expected — {why}");
                     }
-                    format!("needs Landlock ABI 2, this kernel: {abi:?}")
+                    why
                 }
             }
         };

@@ -1098,14 +1098,14 @@ mod tests {
             "DOCKER_CONTEXT=colima-tarae-yama2 xtask linux --env TARAE_EXPECT_YAMA=2 --env TARAE_EXPECT_TIER=own \
              --userns test --kept --as-user sandbox::"
         );
-        // (K2: nothing in its table)
+        // (K2: nothing in its table, its ABI in its `env`)
         let k2 = t.kernels.iter().find(|k| k.name == "K2").unwrap();
         let h = Docker::Host("unix:///l/tarae-k2/sock/docker.sock".into());
         let off = suite_cmd(k2, Mode::parse("offline").unwrap(), None, &h);
         assert_eq!(
             off.line(),
-            "DOCKER_HOST=unix:///l/tarae-k2/sock/docker.sock xtask linux --env TARAE_EXPECT_TIER=offline \
-             --docker-default test --kept",
+            "DOCKER_HOST=unix:///l/tarae-k2/sock/docker.sock xtask linux --env TARAE_EXPECT_LANDLOCK_ABI=1 \
+             --env TARAE_EXPECT_TIER=offline --docker-default test --kept",
             "offline expected as `--docker-default` expects it, said here as in its history row; the whole suite"
         );
         assert_eq!(expected(k2, Mode::parse("offline-user").unwrap()), Some("offline"));

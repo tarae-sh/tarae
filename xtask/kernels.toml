@@ -59,6 +59,13 @@ install = "curl -fsSL https://get.docker.com | sh"
 # (below ABI 2 no tier is reached: `--docker-default` would expect offline)
 modes = ["host", "host-user"]
 whole = "host-user"
+# (its first run, 2026-11-02 on 7df9959a: Ubuntu 22.04.5's 5.15.0-194, aarch64, Landlock ABI 1, Yama 1, nothing
+# restricting user namespaces. The probe's "tier here: host" is its namespaces and service alone — Docker's default
+# profile refuses new namespaces, `pidfd_getfd` served with SYS_PTRACE — and no run is confined on it: ABI 1 is no
+# sandbox, the card's. `TARAE_EXPECT_TIER` says a sandbox's tier is expected (the must-be-refused suite fails without
+# one), so nothing is expected; what's expected is ABI 1 and the product's answer there, pinned by
+# `on_landlock_abi_1_a_run_has_no_sandbox`, which fails rather than skips with this)
+env = ["TARAE_EXPECT_LANDLOCK_ABI=1"]
 expect = {}
 
 [[kernel]]

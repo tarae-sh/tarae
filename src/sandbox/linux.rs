@@ -2528,14 +2528,10 @@ mod tests {
     /// The kernel's ABI, or None after saying the test skips itself (no Landlock here, or ABI 1 — tarae
     /// doesn't use it).
     fn kernel_abi(test: &str) -> Option<u32> {
-        match landlock::abi() {
-            Ok(n) if n >= 2 => Some(n),
-            got => {
-                let line = format!(
-                    "{}sandbox::linux::tests::{test} — needs Landlock ABI 2, this kernel: {got:?}\n",
-                    crate::test_results::SELF_SKIP
-                );
-                let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+        match landlock::short_of(2) {
+            None => landlock::abi().ok(),
+            Some(why) => {
+                crate::test_results::said_skip(&format!("sandbox::linux::tests::{test} — {why}"));
                 None
             }
         }

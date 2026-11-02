@@ -2212,9 +2212,11 @@ mod tests {
     }
 
     /// `space v c` over `repo`'s changes (in the background: no review opened), until it's done and its findings
-    /// are placed on the lines now.
+    /// are placed on the lines now. Its round begun first: the snapshot is a worker's, and until it lands an earlier
+    /// round's reviewer, done, is still there (K2: a second round's finding not placed yet when the test looked).
     fn reviewed(ed: &mut Editor, repo: &Path) {
         ask_in(ed, repo.to_path_buf(), None, false);
+        settle_until(ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(Reviewer::reading));
         settle_until(ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading() && r.placing == 0));
     }
 

@@ -256,11 +256,10 @@ fn skip_said_in_its_own_process() {
 /// linux` checks a conversion.)
 #[cfg(test)]
 const SKIP_WRITERS_LEFT: &[(&str, usize)] = &[
-    ("editor.rs", 1),
     ("landlock.rs", 5),
-    ("sandbox.rs", 11),
-    ("sandbox/keeper.rs", 8),
-    ("sandbox/linux.rs", 2),
+    ("sandbox.rs", 6),
+    ("sandbox/keeper.rs", 7),
+    ("sandbox/linux.rs", 1),
     ("sandbox/owners/tests.rs", 1),
     ("sandbox/supervisor.rs", 4),
     ("sandbox/tier.rs", 2),
