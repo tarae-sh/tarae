@@ -146,6 +146,87 @@ pub fn lines_of(rows: &[ChatRow]) -> (String, Vec<Place>) {
     (text, at)
 }
 
+/// A note's card read on in the chat (focus A1c, `notes::read_on`): its answer's paragraph, by the question's place among
+/// your messages (`Origin.turn`) and the place as written with its first line (`Origin.name`, `Origin.said`) — held
+/// unfolded, the chat taken to it once a frame laid it out (`reading`). A flow at a stop has no name: its answer's last
+/// message.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Reading {
+    pub turn: usize,
+    pub name: Arc<str>,
+    pub said: usize,
+}
+
+/// After a frame (`term::render`): the chat taken to the paragraph a note's card read on to (`Chat.reading`), once its
+/// rows are laid out — a row of air above it; its view mode's rows where it's on, else the chat's own from the bottom.
+/// The keys stay where they are. True when it moved (drawn again).
+pub fn reading(ed: &mut Editor) -> bool {
+    use crate::chat::Role;
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return false };
+    let Some((at, false)) = c.reading.clone() else { return false };
+    let laid = ed.screen.chat_laid.borrow().clone();
+    if ed.screen.chat_view.get().is_none() || laid.is_empty() {
+        return false;
+    }
+    // (each message's question's place among yours, as `Fold::of` counts it)
+    let mut users = 0;
+    let turn: Vec<usize> = (c.msgs.iter())
+        .map(|m| {
+            users += usize::from(m.role == Role::User);
+            users.saturating_sub(1)
+        })
+        .collect();
+    let of =
+        |i: usize| c.msgs.get(i).is_some_and(|m| m.role == Role::Assistant) && turn.get(i) == Some(&at.turn);
+    let last = (0..c.msgs.len()).rev().find(|&i| of(i));
+    let (mut row, mut found) = (0, None);
+    for (o, rows) in &laid {
+        if let Of::Msg(i) = o
+            && of(*i)
+        {
+            let named =
+                |r: &crate::chat::ChatRow| r.places.iter().any(|p| *p.name == *at.name && p.line == at.said);
+            let hit = match at.name.is_empty() {
+                true => (Some(*i) == last).then_some(0),
+                false => rows.iter().position(named),
+            };
+            if let Some(k) = hit {
+                // (its paragraph's first row: a wrapped row goes on from the one above)
+                let k = (0..=k).rev().find(|&j| rows[j].join.is_none()).unwrap_or(k);
+                found = Some(row + k);
+                break;
+            }
+        }
+        row += rows.len();
+    }
+    let Some(target) = found.map(|r| r.saturating_sub(1)) else { return false };
+    let area = ed.screen.chat_view.get().map_or(20, |a| a.2.max(1));
+    let total: usize = laid.iter().map(|(_, r)| r.len()).sum();
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
+    // (done once it moved: the view mode's rows not laid yet, the next frame tries again)
+    match c.transcript.as_mut().filter(|t| t.keyed) {
+        Some(t) => {
+            let Some(d) = t.pane.doc_in_mut() else { return false };
+            let Some(g) = d.rows.clone() else { return false };
+            let Some(r) = doc_row(&laid, target) else { return false };
+            let (line, k) = g.place(r.min(g.len().saturating_sub(1)));
+            d.set_top(line);
+            d.top_rows = (k > 0).then_some((line, k));
+            // (held there as the wheel holds it: its cursor stays where it is, out of sight, until a key moves it)
+            d.wheel_held = Some((d.selection().primary(), d.version()));
+        }
+        None => {
+            c.scroll = total.saturating_sub(area).saturating_sub(target);
+            // (follow reading along the chat goes from here: not a scroll of yours — `follow::reading`)
+            if c.follow.read_at.is_some() {
+                c.follow.read_at = Some(c.scroll);
+            }
+        }
+    }
+    c.reading = Some((at, true));
+    true
+}
+
 /// What the chat folds this frame (focus A1b step 3): the conversation reads as one — the newest answer whole until the
 /// next one has come, an older answer's paragraphs whose words a note holds at the code folded to one stub row
 /// (`◂ main.rs:11  first words…`), whole on its cut card under the mouse or the view mode's cursor. The document keeps
@@ -162,6 +243,8 @@ pub struct Fold {
     keys: Vec<(usize, u64)>,
     /// (message, paragraph) held open: its lines with words before it, a stub's and a whole paragraph's alike.
     open: Vec<(usize, usize)>,
+    /// The paragraph a note's card read on to (`Chat.reading`): its stub held open.
+    reading: Option<Reading>,
 }
 
 /// What of a message folds (`Fold::of_msg`).
@@ -196,7 +279,8 @@ impl Fold {
             keys.push((chunk[0].turn, h.finish()));
         }
         let open = c.transcript.as_ref().map_or_else(Vec::new, Transcript::open);
-        Fold { upto, turns, stubs, keys, open }
+        let reading = c.reading.as_ref().map(|r| r.0.clone());
+        Fold { upto, turns, stubs, keys, open, reading }
     }
 
     /// What of message `i` folds, its stubs and the paragraphs held open; None: it stays whole.
@@ -214,7 +298,14 @@ impl Fold {
         let Some((_, open)) = self.of_msg(i) else { return 0 };
         let turn = self.turns[i];
         let at = self.keys.partition_point(|k| k.0 < turn);
-        let key = open.iter().fold(self.keys[at].1, |h, o| h.rotate_left(7) ^ o.1 as u64);
+        let mut key = open.iter().fold(self.keys[at].1, |h, o| h.rotate_left(7) ^ o.1 as u64);
+        // (a paragraph read on to from its note's card, held open)
+        if let Some(r) = self.reading.as_ref().filter(|r| r.turn == turn) {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            r.hash(&mut h);
+            key = key.rotate_left(11) ^ h.finish();
+        }
         key | 1
     }
 
@@ -261,6 +352,12 @@ impl Fold {
                 let new = !seen.iter().any(|s| *s.0 == *n.name && s.1 == n.line);
                 stubs.iter().find(|s| new && *s.name == *n.name && s.said == n.line)
             });
+            let read = |s: &&crate::chatnotes::Stub| {
+                self.reading
+                    .as_ref()
+                    .is_some_and(|r| (r.turn, &*r.name, r.said) == (s.turn, &*s.name, s.said))
+            };
+            let held = held || place.is_some_and(|s| read(&s));
             seen.extend(names().map(|n| (n.name.clone(), n.line)));
             match place.filter(|_| !held && para.iter().all(|r| r.prose)) {
                 Some(s) => {
@@ -1107,6 +1204,10 @@ pub fn forget(ed: &mut Editor) {
     leave(ed);
     if let Some(t) = transcript_mut(ed) {
         t.visited = false;
+    }
+    // (and a paragraph a note's card read on to: of the conversation that went)
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.reading = None;
     }
 }
 

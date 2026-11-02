@@ -13,13 +13,13 @@
 10                              │ 10▎let added_5 = 5;                                                             ▎
 11                              │ 11▎let added_6 = 6;                                                             ▎
 12                              │ 12▎let added_7 = 7;   ¶                                                         ▎
-13                              │    ╭─ review ──────────────────────────────────────────────────────────────────╮▎
-14                              │    │ ¶ reviewer · not sent yet                                                 │▎
-15                              │    │   This value is never checked before use.                                 │▎
-16                              │    │                                                                           │▎
-17                              │    │ ¶ claude                                                                  │▎
-18                              │    │   It is — two lines up.                                                   │▎
-19                              │    ╰─ space n reply · space v s send the review · ]n next · q close ───────────╯▎
+13                              │    ╭─ review ──────────────────────────────────────────────────────────────────╮
+14                              │    │ ¶ reviewer · not sent yet                                                 │
+15                              │    │   This value is never checked before use.                                 │
+16                              │    │                                                                           │
+17                              │    │ ¶ claude                                                                  │
+18                              │    │   It is — two lines up.                                                   │
+19                              │    ╰─ space n reply · space v s send the review · ]n next · q close ───────────╯
 20                              │ 13▎let added_8 = 8;                                                             ▎
 21                              │ 14▎let added_9 = 9;                                                             ▎
 22                              │ 15▎let added_10 = 10;                                                           ▎
@@ -65,7 +65,7 @@
 00 f TTTTTT ff fffffffffff fffffaa ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 01   d dddd  ggg                a  f                                                                              f
 02   f ff f ffffff d d dddddddd a  f                                                                              f
-03                              a  f                                                                              f
+03                              a  f                                                                              g
 04     dddf                     a  f                                                                              g
 05 a f f ttttttt    w ggg aa    a  f                                                                              g
 06                              a  fg                                                                             g
@@ -75,13 +75,13 @@
 10                              a ffg                                                                             g
 11                              a ffg                                                                             g
 12                              a AAg                                                                             g
-13                              a    ff TTTTTT fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffg
-14                              a    f   BBBBBBBB f fff ffff fff                                                 fg
-15                              a    f                                                                           fg
-16                              a    f                                                                           fg
-17                              a    f a AAAAAA                                                                  fg
-18                              a    f                                                                           fg
-19                              a    ff BBBBB B fffff f fffff f f ffff fff ffffff f BB ffff f B fffff ffffffffffffg
+13                              a    ff TTTTTT fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+14                              a    f   BBBBBBBB f fff ffff fff                                                 f
+15                              a    f                                                                           f
+16                              a    f                                                                           f
+17                              a    f a AAAAAA                                                                  f
+18                              a    f                                                                           f
+19                              a    ff BBBBB B fffff f fffff f f ffff fff ffffff f BB ffff f B fffff ffffffffffff
 20                              a ffg                                                                             g
 21                              a ffg                                                                             g
 22                              a ffg                                                                             g

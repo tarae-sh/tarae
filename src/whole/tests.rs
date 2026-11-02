@@ -1928,7 +1928,8 @@ fn the_follow_cards_folded_log_is_whole_under_the_mouse() {
 }
 
 /// frictions #235: a note thread's start, folded where its card is short of rows (`…` under the speaker's name), is
-/// whole under the mouse — the words folded away and the row they go on into.
+/// whole under the mouse — the words folded away and the row they go on into. (Its paragraphs apart: the card reads its
+/// words as the chat does, a line's break within a paragraph a space — focus A1c, #262.)
 #[test]
 fn a_note_threads_folded_start_is_whole_under_the_mouse() {
     let mut ed = Editor::new(Config::default());
@@ -1941,14 +1942,14 @@ fn a_note_threads_folded_start_is_whole_under_the_mouse() {
         .map(String::from)
         .chain((1..=30).map(|i| format!("Line {i}.")))
         .collect();
-    let id = crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    let id = crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n\n"));
     crate::notes::open(&mut ed, id);
     frame(&mut ed);
     let on = on_of(&ed, "Secondly");
     assert!(matches!(on, On::Docs(_)), "on the note card: {on:?}");
     let whole = whole_under_the_mouse(&mut ed, on, "Secondly");
     assert!(
-        whole.starts_with("The knot.\nSecondly the strand.\nLine 1."),
+        whole.starts_with("The knot.\n\nSecondly the strand.\n\nLine 1."),
         "its words from the start, unindented: {whole:?}"
     );
 }
@@ -2012,7 +2013,7 @@ fn a_docs_cards_cut_under_another_frame_is_not_in_hand() {
         .map(String::from)
         .chain((1..=30).map(|i| format!("Line {i}.")))
         .collect();
-    let id = crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    let id = crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n\n"));
     crate::notes::open(&mut ed, id);
     hidden_under_a_frame(&mut ed, "Secondly");
 }

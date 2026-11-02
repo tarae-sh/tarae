@@ -743,6 +743,9 @@ pub struct Chat {
     /// Its view mode was asked for before its rows were laid out (closed, minimized): made after the next frame
     /// (`chatdoc::wanted`).
     pub view_wanted: bool,
+    /// A note's card read on here (focus A1c, `notes::read_on`): its answer's paragraph held unfolded, and whether the
+    /// chat was taken to it yet — once a frame laid it out (`chatdoc::reading`).
+    pub reading: Option<(crate::chatdoc::Reading, bool)>,
     /// The conversation as a read-only document, following what the frames lay out (`chatdoc.rs`) — its view mode is
     /// normal mode on it, its selection where you were. None until the chat is first drawn.
     pub transcript: Option<crate::chatdoc::Transcript>,
@@ -1136,6 +1139,7 @@ impl Chat {
             cleared: None,
             slash: None,
             view_wanted: false,
+            reading: None,
             transcript: None,
             sends: Vec::new(),
             session_tools: false,
@@ -1426,6 +1430,21 @@ pub fn open(ed: &mut Editor) {
         None => made(ed),
     }
     ensure_proc(ed);
+}
+
+/// A note's card reading on with the chat closed (focus A1c, `notes::read_on`): the chat made again on the conversation
+/// it left (`Notes.left`) — its rows, and its answers' notes as it kept them; its claude with its first message, as a
+/// continue's; the keys where they are. False: none was left.
+pub fn reopen_left(ed: &mut Editor) -> bool {
+    if ed.workspace.claude.chat.is_some() {
+        return true;
+    }
+    let Some((saved, _)) = ed.workspace.claude.notes.left.take() else { return false };
+    let at = ed.workspace.viewer.at;
+    made(ed);
+    continue_from(ed, *saved, false, true);
+    ed.workspace.viewer.at = at;
+    true
 }
 
 /// Tests: whether its claude is started.
@@ -1803,6 +1822,8 @@ pub fn close(ed: &mut Editor) {
     if let Some(c) = session.chat.as_mut() {
         session.stops_left = Some(std::mem::take(&mut c.follow.replay));
     }
+    // (the turn's card follow held in sight stays there, follow's hold gone with the chat)
+    crate::notes::keep_card_in_sight(ed);
     ed.workspace.claude.chat = None;
     crate::recovery::moved(&mut ed.recovery);
     // (what its answers let through goes with it at once — `:granted` and the chat's count too)

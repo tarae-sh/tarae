@@ -672,6 +672,9 @@ pub struct Screen {
     /// The open note's card's words as drawn this frame, a row each (its screen row, its first column, its spans) —
     /// what a drag over them selects (`Editor.note_marked`, focus A1b).
     pub note_text: std::cell::RefCell<Vec<(usize, usize, Vec<crate::markdown::Span>)>>,
+    /// The open note whose card this frame ended on its `…` row, cut short of its words (focus A1c): `enter` and a press
+    /// there read on in the chat (`notes::read_on`).
+    pub note_more: std::cell::Cell<Option<u64>>,
     pub thought_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// The ask's waiting card this frame (x, y, width, height — `term::draw_ask_stream`): a press there is its own.
     pub ask_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
@@ -3437,6 +3440,8 @@ impl Editor {
                         (None, Some(_)) if crate::term::note_earlier_at(self, y) => {
                             crate::notes::unfold_earlier(self)
                         }
+                        // (on its `… enter reads on in the chat`: the chat at its paragraph — focus A1c)
+                        (None, Some(_)) if crate::term::note_more_at(self, y) => crate::notes::read_on(self),
                         (None, Some(_)) => {
                             self.pressed_through = Some((x, y, crate::clock::now()));
                             crate::notes::start_card(self)

@@ -1874,13 +1874,19 @@ counts the runs that only read text, by program.
 ![A note thread opened between the lines under its line: Claude's remark, your reply, and Claude's answer, the code below moved down](screenshots/notes.png)
 
 Claude can pin **notes** to lines of code: a bug, a risk, or a question tied to specific lines. A note shows as
-`¶ first words` at the end of its line. Its card opens **between the lines**, under the note's last line, as wide as
-the code: the code below moves down, nothing is covered. It opens only when you ask: `enter` on the note's line, a
+`¶ first words` at the end of its line — on a folded doc comment, at the end of its paragraph's rows, and only the `¶`
+where a line has no room for words. Its card opens **between the lines**, under the note's last line, as wide as
+the code: the code below moves down, nothing is covered. Lines too many to show with the card (a walk-through's stop
+over a whole function) have it under their first line instead, so `]n` and `enter` always bring it into sight. It opens only when you ask: `enter` on the note's line, a
 press on its `¶`, or `]n`/`[n` stepping to it. The cursor passing by opens nothing. It stays open as you move or
-leave the file, until `q`, `esc` or `enter` again closes it or another card opens. While it's open the line end is
+leave the file, until `q`, `esc` or `enter` again closes it (a card cut short reads on instead, below) or another card
+opens. While it's open the line end is
 the `¶` alone, since the card says the rest right below. The card is named for what it is: `chat` for an answer said
-at its place, `review` for the reviewer's finding, `note` for a thread you or Claude wrote in. It shows in every pane
-that has its file, scrolls with the code a row at a time, and takes at most half the pane. A drag over its words selects
+at its place, `review` for the reviewer's finding, `note` for a thread you or Claude wrote in, and after the name which
+of its own it is, as `]n` walks them: `chat · 2/4` among its answer's places, a finding among the review's (a note
+alone says nothing). Its words read as the chat's: `**bold**`, `code`, a list's bullets, and code in its colours. It
+shows in every pane that has its file, scrolls with the code a row at a time, and takes at most half the pane. A drag
+over its words selects
 them and copies them as you let go; a plain press replies. Notes ride edits (lines added above push them down), and the
 next start in this project brings them back.
 
@@ -1929,8 +1935,12 @@ takes the view at the turn's end; an answer naming none goes to the turn's last 
 project. Its card is the answer's last words in the order written: the paragraph about that line beside a `▎` bar,
 every paragraph no place takes whole, and a paragraph placed elsewhere as one faint line, `› src/thread.rs:9  The
 length comes from…` (its place and first words, whole at its own line, whose note stays as it is). It's one note, never
-two: the line end is that line's sentence. Too long for its card, the paragraph about that line stays in sight and
-what's before and after it folds into `…` rows, whole under the mouse. Only the turn's last words count: what Claude
+two: the line end is that line's sentence. **The card says this line; the chat is where the whole answer is read.**
+Its head is the question in one row (cut with `…`, whole under the mouse); a paragraph that ends with `:` keeps the
+fenced code after it. The card never grows: too long for it, the paragraph about that line stays in sight, what's
+before it folds into a `…` row (whole under the mouse), and its last row says `… enter reads on in the chat` — `enter`
+on the note's line, or a press on that row, takes the chat to that paragraph (opened again on its conversation if you
+closed it, a folded stub unfolded), the keys where they were. Only the turn's last words count: what Claude
 said before its last call (`Let me read the loop…`) is the turn's narration, and the chat keeps it. A turn where Claude
 wrote at a note (pinned one, or replied in a thread) gets no flow: its answer is at the code already. A turn that
 stopped nowhere in the project and names no place adds none. A line where the same answer pinned its own `note` gets

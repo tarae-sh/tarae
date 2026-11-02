@@ -375,12 +375,13 @@ fn a_selection_of_many_lines_has_its_card_under_its_end() {
         frame(&mut ed).contains("line 9\n") || frame(&mut ed).contains("line 9 "),
         "the cursor in sight again"
     );
-    // Sent, what you wrote stays in sight, your cursor far above it, until a key moves that
+    // Sent, what you wrote stays in sight — its lines past a screen, its card under their first (focus A1c, #263), in
+    // sight there
     feed(&mut ed, " nwhy<ret>");
+    let (_, y, ..) = ed.screen.note_card.get().expect("its card drawn");
     let rows = note_card_rows(&ed);
     assert!(rows.iter().any(|r| r.contains("why")), "{rows:#?}");
-    feed(&mut ed, "j");
-    assert_eq!(ed.screen.note_card.get(), None, "the next move: the view at the cursor");
+    assert!(row(&mut ed, y - 1).contains("line 9"), "under the lines' first");
 }
 
 /// The cursor's line at the pane's foot: the view moves as far as the card needs, the line and its frame's foot in sight.

@@ -34,8 +34,13 @@ fn answer(ed: &mut Editor, text: &str) {
 
 /// `answer` for a turn that stopped at `stops` and answered in the messages `texts`.
 fn answers(ed: &mut Editor, texts: &[&str], stops: Vec<crate::replay::Stop>) {
+    answers_to(ed, "where?", texts, stops);
+}
+
+/// `answers` to the question `asked`.
+fn answers_to(ed: &mut Editor, asked: &str, texts: &[&str], stops: Vec<crate::replay::Stop>) {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
-    c.msgs.push(Msg::new(Role::User, "where?", ""));
+    c.msgs.push(Msg::new(Role::User, asked, ""));
     c.follow.new_turn();
     for s in stops {
         c.follow.replay.add(s);
@@ -998,7 +1003,8 @@ fn the_answers_places_are_notes_at_their_lines() {
     let head = |t: &str| card.contains(&format!("› where? · {t}"));
     assert!(head(&before) || head(&clock()), "headed by the question and its time: {card}");
     assert!(card.contains("▎ The count is read twice"), "the paragraph on the card, marked: {card}");
-    assert!(card.contains("The fix goes in") && card.contains("- Same.rs:1 is two files"), "{card}");
+    // (its list item's bullet as the chat draws it — focus A1c, #262)
+    assert!(card.contains("The fix goes in") && card.contains("• Same.rs:1 is two files"), "{card}");
     // (closed: the line end its sentence)
     feed(&mut ed, "<esc>");
     let rows = screen(&mut ed);
@@ -1566,26 +1572,33 @@ fn a_paragraph_placed_elsewhere_is_one_row_on_a_narrow_card() {
     assert!(!rows.iter().any(|r| r.contains("before it gets there")), "{}", rows.join("\n"));
 }
 
-/// The flow's two lines as a card wraps them: this line's paragraph keeps its bar on every row it wraps to (its rows
-/// after the first hang under it, what a copy drops); one placed elsewhere is one row, cut with `…`, its whole carried.
+/// The flow's lines as a card lays them: this line's paragraph keeps its bar on every row it wraps to (the chat's
+/// renderer lays it, the bar before each row — focus A1c); one placed elsewhere is one row, cut with `…`, its whole
+/// carried.
 #[test]
 fn the_flows_lines_wrap_with_their_bar_and_cut_to_one_row() {
     use crate::markdown::{Line, Span};
     let sp = |t: &str| Span { cut: None, hint: false, text: t.into(), style: Default::default() };
-    let marked =
-        Line::Marked { mark: vec![sp("▎ ")], spans: vec![sp("one two three four five six seven eight")] };
     let stub =
         Line::Cut(vec![sp("› "), sp("src/b.rs:2"), sp("  "), sp("The guard stays as it is, every caller")]);
-    let (rows, drawn) =
-        crate::markdown::wrap_drawn(&[marked, stub], 16, Default::default(), Default::default());
+    let rows = crate::markdown::wrap(&[stub], 16, Default::default());
     let text: Vec<String> = rows.iter().map(|r| r.iter().map(|s| s.text.as_str()).collect()).collect();
-    assert_eq!(text, ["▎ one two three", "▎ four five six", "▎ seven eight", "› src/b.rs:2  T…"]);
-    assert_eq!(drawn[1].join.map(|j| j.drop), Some(2), "the bar isn't the text's");
-    assert!(rows[3].last().is_some_and(|s| s.cut.is_some()), "the stub's whole carried: {:?}", rows[3]);
+    assert_eq!(text, ["› src/b.rs:2  T…"]);
+    assert!(rows[0].last().is_some_and(|s| s.cut.is_some()), "the stub's whole carried: {:?}", rows[0]);
+    let (_s, root, mut ed) = project("chatnotes-bar", &["src/a.rs"]);
+    let long = "each thread's name, how many knots it has, its length and the order it came in ".repeat(3);
+    answer(&mut ed, &format!("The loop at src/a.rs:3 prints {long}.\n\nThat is all."));
+    ed.open(&root.join("src/a.rs")).unwrap();
+    let card = card_rows(&mut ed);
+    let barred: Vec<&String> = card.iter().filter(|r| r.contains("▎ ")).collect();
+    assert!(barred.len() >= 3, "wrapped: {card:#?}");
+    let first = card.iter().position(|r| r.contains("▎ The loop")).expect("its first row");
+    assert!(card[first..first + barred.len()].iter().all(|r| r.contains("│ ▎ ")), "a bar on each: {card:#?}");
 }
 
-/// A flow longer than its card has room for keeps its paragraph about this line in sight: what's before it and past the
-/// room folded into `…` rows (whole on their cards) — never the newest part a thread keeps.
+/// A flow longer than its card has room for keeps its paragraph about this line in sight: what's before it folded into a
+/// `…` row (whole on its card), what's past the room its last row's, saying how to read on in the chat (focus A1c) —
+/// never the newest part a thread keeps.
 #[test]
 fn a_long_flow_keeps_its_lines_paragraph_in_sight() {
     let (_s, root, mut ed) = project("chatnotes-long", &["src/a.rs"]);
@@ -1601,7 +1614,9 @@ fn a_long_flow_keeps_its_lines_paragraph_in_sight() {
     let card = code_rows(&mut ed).join("\n");
     assert!(card.contains("▎ The fix is in src/a.rs:6."), "{card}");
     assert!(!card.contains("Paragraph 1 ") && !card.contains("Paragraph 20"), "{card}");
-    assert!(card.lines().filter(|r| r.trim_matches(|c| c == '│' || c == ' ') == "…").count() == 2, "{card}");
+    assert!(card.lines().filter(|r| r.trim_matches(|c| c == '│' || c == ' ') == "…").count() == 1, "{card}");
+    let more = |r: &&str| r.trim_matches(|c| c == '│' || c == ' ') == "… enter reads on in the chat";
+    assert!(card.lines().filter(more).count() == 1, "{card}");
     // (the flow itself past `PARAGRAPH_MAX`: its last block cut with `…`, then the line that says where the rest is)
     let flow = flow_of(&ed, &root.join("src/a.rs"), 6);
     let n = flow.len();
@@ -1739,6 +1754,12 @@ const STAND_IN: &str = r#"while IFS= read -r line; do
       printf '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__tarae__read","input":{"files":["src/b.rs:2-4"]}}]}}\n'
       printf '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"read"}]}]}}\n'
       printf '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Nothing else reads it."}}}\n'
+      printf '{"type":"result","subtype":"success","is_error":false,"result":"done"}\n';;
+    *'walk me'*)
+      printf '{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"mcp__tarae__read","input":{"files":["src/s.rs"]}}]}}\n'
+      printf '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"read"}]}]}}\n'
+      printf '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"<show at=\\"src/s.rs:21-70\\">The loop winds every strand.</show> Then it sorts."}}}\n'
+      printf '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"\\n\\nIt pops.\\n\\nIt ties.\\n\\nIt measures.\\n\\nIt keeps.\\n\\nIt sorts.\\n\\nIt ends.\\n\\nThat is all."}}}\n'
       printf '{"type":"result","subtype":"success","is_error":false,"result":"done"}\n';;
     *'please fail'*)
       printf '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Now src/b.rs:2 is where the"}}}\n'
@@ -1893,4 +1914,629 @@ fn the_answers_own_note_keeps_its_line() {
     // (the next turn pins nothing: the earlier note doesn't keep its line)
     answer(&mut ed, "Still src/b.rs:5.");
     assert_eq!(newest_notes(&ed, &root), [("src/b.rs".to_string(), 5, "Still src/b.rs:5.".to_string())]);
+}
+
+// ── Focus A1c: the card says this line, the chat the whole answer ──────────────────────────────────────
+
+/// A project with `src/s.rs`: a doc comment of two paragraphs (lines 1, 3–4) over a function, then lines to the 80th
+/// (`let line_6 = 6;` …).
+fn spool(name: &str) -> (crate::scratch::Scratch, PathBuf, Editor) {
+    let (s, root, ed) = project(name, &["src/a.rs", "src/b.rs"]);
+    let mut text = String::from(
+        "/// The spool keeps its order: a strand is wound in the order it came, so the wound list reads as the queue.\n\
+         ///\n\
+         /// Each strand is tied before it is measured, and one whose knot slips goes back to be tied again later.\n\
+         /// Short.\nfn wind() {}\n",
+    );
+    text.extend((6..=80).map(|i| format!("let line_{i} = {i};\n")));
+    std::fs::write(root.join("src/s.rs"), text).unwrap();
+    (s, root, ed)
+}
+
+/// The open card's rows as the code shows them, its top line first: from the row naming it (`╭─ `) to its foot.
+fn card_rows(ed: &mut Editor) -> Vec<String> {
+    let rows = code_rows(ed);
+    let top = rows.iter().position(|r| r.contains("╭─ ")).unwrap_or_else(|| panic!("no card: {rows:#?}"));
+    let foot = top + rows[top..].iter().position(|r| r.contains("╰─")).expect("its foot");
+    rows[top..=foot].to_vec()
+}
+
+/// #259: the card's head is its question in one row, cut with `…` before its time (kept), the whole question on the
+/// cut's card; rendered as the chat renders it, its marks gone.
+#[test]
+fn a1c_the_question_is_one_row_whole_on_its_cut_card() {
+    let (_s, root, mut ed) = project("a1c-question", &["src/a.rs"]);
+    let asked = format!(
+        "why is the count read twice {}and where does it go?",
+        "when the strands are wound ".repeat(14)
+    );
+    answers_to(&mut ed, &asked, &["It is read in src/a.rs:3."], Vec::new());
+    ed.open(&root.join("src/a.rs")).unwrap();
+    let card = card_rows(&mut ed);
+    let head = card.iter().position(|r| r.contains("› why is the count")).expect("its head");
+    assert!(card[head].contains("… · "), "cut before its time: {card:#?}");
+    assert!(card[head + 1].contains("It is read in src/a.rs:3."), "its paragraph next: {card:#?}");
+    let cut = ed
+        .screen
+        .cut_spots
+        .borrow()
+        .iter()
+        .any(|s| matches!(&s.3, crate::whole::Cut::Text(w) if w.text == asked));
+    assert!(cut, "the whole question on its cut card");
+    // (a short one with marks: as the chat has it)
+    answers_to(&mut ed, "why is `count` **read** twice?", &["It is read in src/a.rs:5."], Vec::new());
+    let card = card_rows(&mut ed).join("\n");
+    assert!(card.contains("› why is count read twice? · ") && !card.contains('`'), "{card}");
+}
+
+/// #259: a paragraph that ends with `:` keeps the fenced code that follows it — what it says of its line — drawn in its
+/// colours on the card; code after any other paragraph is the chat's.
+#[test]
+fn a1c_a_paragraph_ending_with_a_colon_keeps_its_code() {
+    assert_eq!(
+        blocks("Do this:\n\n```rust\nlet x = 1;\n```\n\nNot this.\n\n```\nlet y = 2;\n```"),
+        [
+            Block { text: "Do this:".into(), item: false, code: Some("```rust\nlet x = 1;\n```".into()) },
+            Block { text: "Not this.".into(), item: false, code: None },
+        ]
+    );
+    let (_s, root, mut ed) = project("a1c-colon", &["src/a.rs"]);
+    answer(
+        &mut ed,
+        "The fix at src/a.rs:3 is this:\n\n```rust\nlet fixed = 1;\n```\n\nThe guard at src/a.rs:5 stays.\n\n```rust\nlet other = 2;\n```",
+    );
+    let a = root.join("src/a.rs");
+    assert!(
+        card_of(&ed, &a, 3, "The fix").ends_with("this:\n\n```rust\nlet fixed = 1;\n```"),
+        "{}",
+        card_of(&ed, &a, 3, "The fix")
+    );
+    assert_eq!(card_of(&ed, &a, 5, "The guard"), "The guard at src/a.rs:5 stays.");
+    ed.open(&a).unwrap();
+    let card = card_rows(&mut ed).join("\n");
+    assert!(card.contains("let fixed = 1;") && !card.contains("```") && !card.contains("other"), "{card}");
+    // (an answer's flow: its paragraph about the line with its code, the place-less one whole)
+    answer(&mut ed, "The order goes at src/a.rs:7, here:\n\n```rust\nlet order = 3;\n```\n\nThat is all.");
+    let card = card_rows(&mut ed).join("\n");
+    assert!(card.contains("▎ The order goes") && card.contains("let order = 3;"), "{card}");
+    // (a walk-through's stop, the words after it ending `:`)
+    answer(&mut ed, "<show at=\"src/a.rs:9\">The tail.</show> It ends here:\n\n```rust\nlet tail = 9;\n```");
+    assert!(
+        card_of(&ed, &a, 9, "The tail").ends_with("let tail = 9;\n```"),
+        "{}",
+        card_of(&ed, &a, 9, "The tail")
+    );
+}
+
+/// #262: the card's words render as the chat's — `**bold**` and `code` without their marks, a list's items with bullets.
+#[test]
+fn a1c_the_cards_words_read_as_the_chats() {
+    let (_s, root, mut ed) = project("a1c-markdown", &["src/a.rs"]);
+    answer(
+        &mut ed,
+        "The count at src/a.rs:3 is **read twice**, by `tally`.\n\n- the loop\n- the guard\n\nThat is all.",
+    );
+    ed.open(&root.join("src/a.rs")).unwrap();
+    let card = card_rows(&mut ed).join("\n");
+    assert!(
+        card.contains("is read twice, by tally.") && !card.contains("**") && !card.contains('`'),
+        "{card}"
+    );
+    assert!(card.contains("• the loop") && card.contains("• the guard"), "{card}");
+}
+
+/// A paragraph long past the card's room: `n` sentences, at src/a.rs:3.
+fn long_answer(n: usize) -> String {
+    let words: Vec<String> = (1..=n).map(|i| format!("Sentence {i} says more of the strands.")).collect();
+    format!("It is read in src/a.rs:3. {}", words.join(" "))
+}
+
+/// The chat's rows as drawn, right of the code.
+fn chat_rows(ed: &mut Editor) -> String {
+    let rows = screen(ed);
+    let x = ed.screen.chat_x.expect("the chat drawn");
+    rows.iter().map(|r| r.chars().skip(x).collect::<String>()).collect::<Vec<_>>().join("\n")
+}
+
+/// #259: an answer's card never grows — past its room its last row says how to read on; `enter` on its line (and a press
+/// on that row) takes the chat to its paragraph, the keys where they were, the card open; an older answer's stub there
+/// unfolded for it.
+#[test]
+fn a1c_a_card_past_its_room_reads_on_in_the_chat() {
+    let (_s, root, mut ed) = project("a1c-more", &["src/a.rs", "src/b.rs"]);
+    // (short of `PARAGRAPH_MAX`: a paragraph alone, no flow — the closed chat's test has one)
+    answer(&mut ed, &long_answer(30));
+    assert!(newest_of(&ed, |n| n.lines.start == 2).is_some_and(|n| n.flow.is_empty()));
+    answer(&mut ed, "Then src/b.rs:2 checks it.");
+    ed.open(&root.join("src/a.rs")).unwrap();
+    let first = newest_of(&ed, |n| n.lines.start == 2).map(|n| n.id).unwrap();
+    crate::notes::open(&mut ed, first);
+    assert!(chat_rows(&mut ed).contains("◂ a.rs:3"), "the older answer a stub in the chat");
+    let card = card_rows(&mut ed);
+    assert!(card.len() <= 18 + 2, "never grown: {card:#?}");
+    assert!(card[card.len() - 2].contains("… enter reads on in the chat"), "{card:#?}");
+    let (at, open) = (ed.workspace.viewer.at, ed.workspace.claude.notes.open);
+    feed(&mut ed, "3G<ret>");
+    let chat = chat_rows(&mut ed);
+    let chat = if chat.contains("Sentence 1 ") { chat } else { chat_rows(&mut ed) };
+    assert!(
+        chat.contains("It is read in") && chat.contains("Sentence 1 "),
+        "the chat at its paragraph: {chat}"
+    );
+    assert!(!chat.contains("◂ a.rs:3"), "its stub unfolded: {chat}");
+    assert_eq!(
+        (ed.workspace.viewer.at, ed.workspace.claude.notes.open),
+        (at, open),
+        "the keys, the card as they were"
+    );
+    // (a press on its row does the same: from the bottom again)
+    ed.workspace.claude.chat.as_mut().unwrap().scroll = 0;
+    ed.workspace.claude.chat.as_mut().unwrap().reading = None;
+    assert!(!chat_rows(&mut ed).contains("Sentence 1 "), "at the bottom");
+    let (y, x) = {
+        let rows = ed.screen.note_text.borrow();
+        let r = rows.iter().find(|r| r.2.iter().any(|s| s.text.contains("reads on"))).expect("its row");
+        (r.0, r.1 + 4)
+    };
+    for kind in [crate::event::MouseKind::Down, crate::event::MouseKind::Up] {
+        ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+    }
+    assert!(ed.prompt.is_none(), "never a reply");
+    chat_rows(&mut ed);
+    assert!(chat_rows(&mut ed).contains("Sentence 1 "), "pressed: the chat at its paragraph");
+    // (a card that fits says no such row, and `enter` closes it)
+    feed(&mut ed, "<esc>");
+    ed.open(&root.join("src/b.rs")).unwrap();
+    feed(&mut ed, "2G<ret>");
+    assert!(!card_rows(&mut ed).join("\n").contains("reads on"));
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.workspace.claude.notes.open, None);
+}
+
+/// #259, the review's: reading on from the chat's view mode moves the view mode's own rows (not the chat's scroll), from
+/// the minimized chat shows it first, and with no conversation kept says the card is all there is.
+#[test]
+fn a1c_reading_on_from_the_view_mode_the_minimized_chat_and_none_kept() {
+    let at_paragraph = |ed: &mut Editor| {
+        chat_rows(ed);
+        chat_rows(ed).contains("Sentence 1 ")
+    };
+    let setup = |name: &str| {
+        let (s, root, mut ed) = project(name, &["src/a.rs", "src/b.rs"]);
+        answer(&mut ed, &long_answer(30));
+        answer(&mut ed, "Then src/b.rs:2 checks it.");
+        ed.open(&root.join("src/a.rs")).unwrap();
+        let first = newest_of(&ed, |n| n.lines.start == 2).map(|n| n.id).unwrap();
+        crate::notes::open(&mut ed, first);
+        (s, ed)
+    };
+    // The view mode: its document's rows taken there, the chat's scroll left as it was
+    let (_s, mut ed) = setup("a1c-read-view");
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    feed(&mut ed, "<esc>");
+    chat_rows(&mut ed);
+    assert!(
+        ed.workspace.claude.chat.as_ref().unwrap().transcript.as_ref().is_some_and(|t| t.keyed),
+        "view mode"
+    );
+    assert!(!at_paragraph(&mut ed), "at the bottom");
+    let scroll = ed.workspace.claude.chat.as_ref().unwrap().scroll;
+    crate::notes::read_on(&mut ed);
+    assert!(at_paragraph(&mut ed), "the view mode at its paragraph:\n{}", chat_rows(&mut ed));
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert_eq!((c.scroll, c.reading.as_ref().map(|r| r.1)), (scroll, Some(true)), "done, on its own rows");
+    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Chat, "the keys where they were");
+    // The chat minimized while Claude works: shown, then at its paragraph
+    let (_s, mut ed) = setup("a1c-read-min");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    (c.state, c.follow.on, c.unfolded) = (crate::chat::State::Thinking, true, false);
+    code_rows(&mut ed);
+    assert!(ed.screen.chat_view.get().is_none(), "minimized");
+    crate::notes::read_on(&mut ed);
+    assert!(at_paragraph(&mut ed), "shown, at its paragraph:\n{}", chat_rows(&mut ed));
+    // No conversation kept (the chat closed, nothing saved in tests): said, nothing opened
+    let (_s, mut ed) = setup("a1c-read-none");
+    crate::chat::close(&mut ed);
+    crate::notes::read_on(&mut ed);
+    assert!(ed.workspace.claude.chat.is_none(), "nothing opened");
+    assert!(
+        ed.toasts.iter().any(|t| t.text.contains("conversation isn't kept")),
+        "said: {:?}",
+        ed.toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+    );
+}
+
+/// #262, the review's: a note of yours reads as the chat draws your message — line by line, a `#` or a `|` as typed — and a
+/// Claude's (the reviewer's here) as the chat renders a Claude's: markdown, its single line breaks joined.
+#[test]
+fn a1c_your_note_keeps_its_lines_a_claudes_is_markdown() {
+    let (_s, root, mut ed) = project("a1c-yours", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let id = crate::notes::add(&mut ed, &a, 2..3, By::You, "first line\n# not a heading\n| a | b |");
+    crate::notes::open(&mut ed, id);
+    let card = card_rows(&mut ed).join("\n");
+    for l in ["first line", "# not a heading", "| a | b |"] {
+        assert!(card.lines().any(|r| r.contains(l)), "{l:?} a row as typed:\n{card}");
+    }
+    let id = crate::notes::add(&mut ed, &a, 5..6, By::Reviewer, "This value\nis never checked.");
+    crate::notes::open(&mut ed, id);
+    let card = card_rows(&mut ed).join("\n");
+    assert!(card.contains("This value is never checked."), "joined, as the chat renders it:\n{card}");
+}
+
+/// #259: the chat closed, reading on opens it again on the conversation the answer is of — its answers' notes with it,
+/// the card open as it was.
+#[test]
+fn a1c_reading_on_opens_the_closed_chat_on_its_conversation() {
+    let (s, root, mut ed) = project("a1c-closed", &["src/a.rs"]);
+    let dir = s.join("chats");
+    ed.chats_dir = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c1".into());
+    // (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    answer(&mut ed, &long_answer(40));
+    let kept = |dir: &Path, root: &Path| {
+        crate::chats::load(dir, root).into_iter().any(|c| c.id == "c1" && c.places.is_some())
+    };
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root));
+    crate::chat::close(&mut ed);
+    ed.open(&root.join("src/a.rs")).unwrap();
+    // (the turn's card still open, the chat closed: its answer's notes stay)
+    feed(&mut ed, "3G");
+    assert!(ed.workspace.claude.notes.open.is_some());
+    assert!(card_rows(&mut ed).join("\n").contains("reads on"), "its card, cut");
+    feed(&mut ed, "<ret>");
+    let c = ed.workspace.claude.chat.as_ref().expect("the chat opened again");
+    assert_eq!(c.conversation.as_deref(), Some("c1"), "on its conversation");
+    assert!(ed.workspace.claude.notes.open.is_some(), "its card open again");
+    chat_rows(&mut ed);
+    assert!(chat_rows(&mut ed).contains("It is read in"), "the chat at its paragraph");
+    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code, "the keys where they were");
+}
+
+/// #260: which of its answer's places a card is, on its top line (`chat · 2/3`), as `]n` walks them; an answer of one
+/// place says none, and keeps its line's count beside another kind of note there.
+#[test]
+fn a1c_a_card_says_which_of_its_answers_places_it_is() {
+    let (_s, root, mut ed) = project("a1c-position", &["src/a.rs", "src/b.rs"]);
+    answer(
+        &mut ed,
+        "It is read in src/a.rs:3.\n\nThe guard at src/b.rs:2 checks it.\n\nAnd src/a.rs:5 sets it.",
+    );
+    ed.open(&root.join("src/a.rs")).unwrap();
+    let top = |ed: &mut Editor| card_rows(ed)[0].clone();
+    assert!(top(&mut ed).contains("╭─ chat · 1/3 ─"), "{}", top(&mut ed));
+    feed(&mut ed, "]n");
+    assert!(top(&mut ed).contains("chat · 2/3"), "{}", top(&mut ed));
+    feed(&mut ed, "]n");
+    assert!(top(&mut ed).contains("chat · 3/3"), "{}", top(&mut ed));
+    // (one place, a thread of yours on its line: none, the line's count kept)
+    answer(&mut ed, "Only src/a.rs:7.");
+    let a = root.join("src/a.rs");
+    crate::notes::add(&mut ed, &a, 6..7, By::You, "mine too");
+    ed.open(&a).unwrap();
+    let id = newest_of(&ed, |n| n.lines.start == 6 && crate::notes::bare_chat(n)).unwrap().id;
+    crate::notes::open(&mut ed, id);
+    let t = top(&mut ed);
+    assert!(t.contains("╭─ chat ─") && !t.contains('/') && t.contains(" of 2 here"), "{t}");
+}
+
+/// #263: a range past a screen (a walk-through's stop over most of a file) opens its card under its first line, `]n` with
+/// it in sight; one that fits under its last.
+#[test]
+fn a1c_a_range_past_a_screen_opens_under_its_first_line() {
+    let (_s, root, mut ed) = spool("a1c-range");
+    answer(
+        &mut ed,
+        "<show at=\"src/s.rs:6-70\">The loop winds every strand.</show> It sorts them at its end.",
+    );
+    let s = root.join("src/s.rs");
+    ed.open(&s).unwrap();
+    let above = |ed: &mut Editor| {
+        let rows = code_rows(ed);
+        let top = rows.iter().position(|r| r.contains("╭─ ")).expect("its card in sight");
+        rows[top - 1].clone()
+    };
+    feed(&mut ed, "gg]n");
+    assert!(above(&mut ed).contains("let line_6 = 6;"), "under its first line");
+    feed(&mut ed, "<ret>G");
+    assert_eq!(ed.workspace.claude.notes.open, None, "closed");
+    feed(&mut ed, "]n");
+    assert!(above(&mut ed).contains("let line_6 = 6;"), "`]n` from the foot: in sight");
+    answer(&mut ed, "<show at=\"src/s.rs:20-23\">These four tie it.</show> Then it goes.");
+    ed.open(&s).unwrap();
+    feed(&mut ed, "gg]n");
+    assert!(above(&mut ed).contains("let line_23 = 23;"), "one that fits: under its last line");
+}
+
+/// `answer`, every frame at `w`×`h` — follow paused during the turn when `paused`.
+fn answer_at(ed: &mut Editor, text: &str, (w, h): (u16, u16), paused: bool) {
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(Msg::new(Role::User, "where?", ""));
+    c.follow.new_turn();
+    c.follow.paused = paused;
+    c.msgs.push(Msg::new(Role::Assistant, text, ""));
+    turn_over(ed, true);
+    crate::term::render(ed, &mut Vec::new(), w, h).unwrap();
+    crate::test_results::settle_until(ed, |ed| {
+        crate::places::answered(ed) && ed.workspace.claude.notes.answer.is_none()
+    });
+}
+
+/// The screen's rows at `w`×`h`, left of the chat.
+fn code_rows_at(ed: &mut Editor, (w, h): (u16, u16)) -> Vec<String> {
+    let mut bytes = Vec::new();
+    crate::term::render(ed, &mut bytes, w, h).unwrap();
+    let mut vt = vt100::Parser::new(h, w, 0);
+    vt.process(&bytes);
+    let x = ed.screen.chat_x.unwrap_or(w as usize);
+    vt.screen().rows(0, w).map(|r| r.chars().take(x).collect()).collect()
+}
+
+/// The user's 80-column shot (`a1c-end`): where follow leads, the card the turn's end opens is in sight with its line and
+/// stays there as the keys come back to the code through the chat's view mode — whose scroll once took the view to the
+/// first file the chat showed (the turn's read, line 1), though the chat showed the card's place too (`follow::reading`).
+/// Never while you type, nor where follow is paused at your cursor (the view yours; off too —
+/// `the_turns_card_is_in_sight_where_follow_leads`).
+#[test]
+fn a1c_the_turns_card_is_in_sight_at_80_columns() {
+    const S: (u16, u16) = (80, 24);
+    let in_sight = |rows: &[String]| {
+        let top = rows.iter().position(|r| r.contains("╭─ chat"));
+        top.is_some_and(|t| t > 0 && rows[t - 1].contains("let line_21 = 21;"))
+    };
+    {
+        // (the shot's turn: the file read whole, then a walk-through's stop over most of it — streamed, so it plays)
+        let (_s, root, mut ed) = spool("a1c-sight80");
+        ed.workspace.claude.chat = None;
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), STAND_IN.into(), "stand-in".into()];
+        ed.config.llm.chat_settings = false;
+        ed.open(&root.join("src/s.rs")).unwrap();
+        crate::chat::open(&mut ed);
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+        code_rows_at(&mut ed, S);
+        let before = rows(&ed);
+        // (a question taller than the chat, as the shot's: its view mode moves the transcript)
+        let asked =
+            format!("walk me through it: {}", "where does the order of the strands go wrong? ".repeat(12));
+        ed.workspace.claude.chat.as_mut().unwrap().input = asked.as_str().into();
+        crate::chat::send(&mut ed);
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        loop {
+            code_rows_at(&mut ed, S);
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            let ended = rows(&ed) > before && !c.busy() && !c.follow.touring();
+            if ended && crate::places::answered(&ed) && ed.workspace.claude.notes.answer.is_none() {
+                break;
+            }
+            assert!(std::time::Instant::now() < end, "the turn didn't end within the patience");
+            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+        assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Chat);
+        // (the keys given to the code after — `esc esc`, as the shot has it: the chat's view mode, then the code)
+        let rows = code_rows_at(&mut ed, S);
+        assert!(in_sight(&rows), "at its end:\n{}", rows.join("\n"));
+        let scroll = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().scroll;
+        let was = scroll(&ed);
+        feed(&mut ed, "<esc>");
+        code_rows_at(&mut ed, S);
+        feed(&mut ed, "<esc>");
+        assert_ne!(scroll(&ed), was, "the view mode left the chat scrolled: what the chat shows moved");
+        assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code);
+        let rows = code_rows_at(&mut ed, S);
+        assert!(in_sight(&rows), "the code given the keys: its line and card in sight:\n{}", rows.join("\n"));
+        assert!(ed.workspace.claude.notes.open.is_some());
+    }
+    // (paused at your cursor: the view yours, the card under its line out of sight)
+    let (_s, root, mut ed) = spool("a1c-sight80-paused");
+    ed.open(&root.join("src/s.rs")).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    code_rows_at(&mut ed, S);
+    answer_at(
+        &mut ed,
+        "<show at=\"src/s.rs:21-70\">The loop winds every strand.</show> Then it sorts.",
+        S,
+        true,
+    );
+    let rows = code_rows_at(&mut ed, S);
+    assert!(!in_sight(&rows) && ed.doc().top == 0, "paused: the view yours:\n{}", rows.join("\n"));
+    // (typing: it waits, out of sight, until you stop)
+    let (_s, root, mut ed) = spool("a1c-sight80-typing");
+    ed.open(&root.join("src/s.rs")).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().input = "and then?".into();
+    code_rows_at(&mut ed, S);
+    answer_at(
+        &mut ed,
+        "<show at=\"src/s.rs:21-70\">The loop winds every strand.</show> Then it sorts.",
+        S,
+        false,
+    );
+    assert_eq!((ed.workspace.claude.notes.open, ed.doc().top), (None, 0), "not while you type");
+}
+
+/// The code's scrollbar beside an open card (the 80-column shot): the card's rows aren't the file's, so the thumb skips
+/// them — its column blank beside the card, the bar laid on the code's other rows, never down the card's edge.
+#[test]
+fn a1c_the_scrollbar_skips_the_cards_rows() {
+    const S: (u16, u16) = (80, 24);
+    let (_s, root, mut ed) = spool("a1c-thumb");
+    ed.open(&root.join("src/s.rs")).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    code_rows_at(&mut ed, S);
+    answer_at(
+        &mut ed,
+        "<show at=\"src/s.rs:21-70\">The loop winds every strand.</show> Then it sorts.",
+        S,
+        false,
+    );
+    let rows = code_rows_at(&mut ed, S);
+    let top = rows.iter().position(|r| r.contains("╭─ chat")).expect("its card in sight");
+    let foot = top + rows[top..].iter().position(|r| r.contains("╰─")).expect("its foot");
+    // (a row's last cell: the frame's edge on the card's rows, the thumb's on the code's)
+    let thumb = |r: &String| r.trim_end().ends_with('▎');
+    let crossed: Vec<&String> = rows[top..=foot].iter().filter(|r| thumb(r)).collect();
+    assert!(crossed.is_empty(), "the thumb down the card's edge: {crossed:#?}\n{}", rows.join("\n"));
+    // (the code's rows keep it: the view in the file's first third, the thumb drawn on its lines there)
+    let code = |i: usize| (i < top || i > foot) && rows[i].contains("let line_");
+    assert!(
+        (0..rows.len()).any(|i| code(i) && thumb(&rows[i])),
+        "the thumb on the code's rows:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// `space L` with the turn's card in sight where follow held it (the 80-column shot): follow's hold goes with the chat,
+/// and the view stays with the card and its line — it went back to your cursor on line 1, the card's line at the foot and
+/// the card below it. Your next move brings the view back to your cursor, as the wheel's hold does.
+#[test]
+fn a1c_the_card_stays_with_its_line_as_the_chat_goes() {
+    const S: (u16, u16) = (80, 24);
+    let (_s, root, mut ed) = spool("a1c-wide");
+    ed.open(&root.join("src/s.rs")).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    code_rows_at(&mut ed, S);
+    answer_at(
+        &mut ed,
+        "<show at=\"src/s.rs:21-70\">The loop winds every strand.</show> Then it sorts.",
+        S,
+        false,
+    );
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    let block = |rows: &[String]| {
+        let top = rows.iter().position(|r| r.contains("╭─ chat"))?;
+        let foot = top + rows[top..].iter().position(|r| r.contains("╰─"))?;
+        rows[top - 1].contains("let line_21 = 21;").then_some(foot)
+    };
+    assert!(block(&code_rows_at(&mut ed, S)).is_some(), "in sight before");
+    feed(&mut ed, " L");
+    assert!(ed.workspace.claude.chat.is_none(), "the chat gone");
+    let rows = code_rows_at(&mut ed, S);
+    assert!(block(&rows).is_some(), "the card whole, under its line:\n{}", rows.join("\n"));
+    assert_eq!(ed.cursor_line(), 0, "your cursor where it was");
+    feed(&mut ed, "j");
+    let rows = code_rows_at(&mut ed, S);
+    assert!(
+        rows.iter().any(|r| r.contains("let line_6 = 6;")),
+        "a move: the view at your cursor:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// #261, the review's: two notes on one folded doc comment's two paragraphs each show on their own paragraph's row, and
+/// still with the block's first rows above the screen.
+#[test]
+fn a1c_two_notes_on_one_doc_comment_each_show() {
+    let (_s, root, mut ed) = spool("a1c-doc-two");
+    answer(&mut ed, "The doc at src/s.rs:1 says the order.\n\nAnd src/s.rs:3 says how a strand is tied.");
+    let s = root.join("src/s.rs");
+    ed.open(&s).unwrap();
+    feed(&mut ed, "Gq");
+    assert_eq!(ed.workspace.claude.notes.open, None);
+    feed(&mut ed, "gg");
+    let marks = |ed: &mut Editor| {
+        let rows = code_rows(ed);
+        let at: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].contains('¶')).collect();
+        (rows, at)
+    };
+    let (rows, at) = marks(&mut ed);
+    let first = rows.iter().position(|r| r.contains("▎ The spool")).expect("its first paragraph");
+    let second = rows.iter().position(|r| r.contains("▎ Each strand")).expect("its second");
+    assert!(
+        at.len() == 2 && (first..second).contains(&at[0]) && at[1] >= second,
+        "one on each paragraph: {at:?}\n{}",
+        rows.join("\n")
+    );
+    let spots = |ed: &Editor| {
+        ed.screen
+            .word_spots
+            .borrow()
+            .iter()
+            .filter(|w| matches!(w.press, crate::wordspot::Press::Note(_)))
+            .count()
+    };
+    assert_eq!(spots(&ed), 2, "both buttons");
+    // (its first row above the screen — the view a row down: the second still shows)
+    feed(&mut ed, "<C-e>");
+    let (rows, at) = marks(&mut ed);
+    assert!(!at.is_empty() && rows[at[at.len() - 1]].contains('▎'), "cut at the top:\n{}", rows.join("\n"));
+}
+
+/// #261, the review's second: two notes on one paragraph of a folded comment share its row — one mark, their count
+/// together (`2 notes`), as two on one line; never one dropped. And at every width there's a mark: a paragraph whose
+/// rows are full (wrapped short of the code's width by less than a `¶` takes) had none — it goes to the block's
+/// nearest row with room.
+#[test]
+fn a1c_two_notes_on_one_paragraph_count_together() {
+    let (_s, root, mut ed) = spool("a1c-doc-para");
+    answer(&mut ed, "The doc at src/s.rs:3 says the tie.\n\nAnd src/s.rs:4 is short.");
+    let s = root.join("src/s.rs");
+    ed.open(&s).unwrap();
+    feed(&mut ed, "Gq");
+    feed(&mut ed, "gg");
+    // (the narrow code's row has room for its `¶` alone, both behind it; wider, the mark says how many — at 200 the
+    // paragraph is one full row, so the mark is on the blank row above it, where there's room for the count too)
+    let rows = code_rows(&mut ed);
+    assert_eq!(rows.iter().filter(|r| r.contains('¶')).count(), 1, "one mark:\n{}", rows.join("\n"));
+    for w in [140u16, 160, 200] {
+        code_rows_at(&mut ed, (w, 30));
+        let rows = code_rows_at(&mut ed, (w, 30));
+        let at: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].contains('¶')).collect();
+        assert!(at.len() == 1, "{w}: one mark:\n{}", rows.join("\n"));
+        assert!(rows[at[0]].contains("2 notes"), "{w}: both counted: {}", rows[at[0]]);
+        let full = !rows[at[0]].contains("Short.");
+        assert_eq!(full, w == 200, "{w}: on its paragraph's row unless that's full:\n{}", rows.join("\n"));
+        if full {
+            assert!(
+                rows[at[0] + 1].contains("▎ Each strand"),
+                "{w}: right above its paragraph:\n{}",
+                rows.join("\n")
+            );
+        }
+    }
+}
+
+/// #261: a note on a folded doc comment's line shows `¶` and its words on the block's rows of that line's paragraph —
+/// the first of them with room: a button there, `]n` and `enter` on it as on any line.
+#[test]
+fn a1c_a_note_on_a_doc_comment_shows_on_its_row() {
+    let (_s, root, mut ed) = spool("a1c-doc");
+    answer(&mut ed, "The doc at src/s.rs:3 says how a strand is tied.");
+    let s = root.join("src/s.rs");
+    ed.open(&s).unwrap();
+    feed(&mut ed, "Gq");
+    assert_eq!(ed.workspace.claude.notes.open, None);
+    feed(&mut ed, "gg");
+    let rows = code_rows(&mut ed);
+    // (its paragraph's rows full: its `¶` alone, the card says the rest)
+    let at = rows.iter().position(|r| r.contains('¶')).unwrap_or_else(|| panic!("its line end: {rows:#?}"));
+    assert!(
+        rows[at].contains("▎ ") && !rows.iter().any(|r| r.contains("///")),
+        "on the folded block: {rows:#?}"
+    );
+    let second = rows.iter().position(|r| r.contains("▎ Each strand")).expect("its paragraph");
+    assert!(at >= second, "in its line's paragraph, never the one before: {rows:#?}");
+    assert!(
+        rows[second..=at].iter().all(|r| r.split('▎').nth(1).is_some_and(|t| !t.trim().is_empty())),
+        "no blank row between: {rows:#?}"
+    );
+    let id = ed.workspace.claude.notes.list[0].id;
+    let y = (ed.screen.word_spots.borrow().iter())
+        .find(|w| w.press == crate::wordspot::Press::Note(id))
+        .map(|w| w.y);
+    assert_eq!(y, Some(at), "its `¶` a button there");
+    feed(&mut ed, "]n");
+    assert_eq!(
+        (ed.cursor_line(), ed.workspace.claude.notes.open),
+        (2, Some(id)),
+        "`]n` there, its card open"
+    );
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.workspace.claude.notes.open, None, "`enter` on it: closed");
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.workspace.claude.notes.open, Some(id), "and open again");
 }

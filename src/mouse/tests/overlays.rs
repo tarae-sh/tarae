@@ -679,8 +679,8 @@ pub(super) fn note_card_keys(ed: &Editor) -> Vec<(String, (usize, usize))> {
         .collect()
 }
 
-/// #240 (the user picked B): the note card is a docs card — a thin frame named `note`, which of how many notes start on
-/// its line after the name, every entry under its author's head, its keys its bottom line and none in its body; each key
+/// #240 (the user picked B): the note card is a docs card — a thin frame named `note`, which of how many notes it is after
+/// the name (focus A1c, #260), every entry under its author's head, its keys its bottom line and none in its body; each key
 /// a button (`]n` pressed goes to the next note, `:note-close` closes it), and its frame half lit while the pointer is on
 /// it, the wash again off it — never the keys': it never has them.
 #[test]
@@ -703,7 +703,7 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     crate::notes::open(&mut ed, first);
     frame(&mut ed);
     let rows = note_card_rows(&ed);
-    assert!(rows[0].starts_with("╭─ note ─") && !rows[0].contains("of 2"), "{rows:#?}");
+    assert!(rows[0].starts_with("╭─ note · 1/2 ─") && !rows[0].contains("of 2"), "{rows:#?}");
     assert!(rows[1].starts_with("│ ¶ claude"), "its author's head: {rows:#?}");
     let bottom = rows.last().unwrap();
     let foot = "╰─ space n reply · ]n next · q close · space N all · :note-close ─";
@@ -736,13 +736,14 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     press(&mut ed, kx, ky);
     let left: Vec<usize> = ed.workspace.claude.notes.list.iter().map(|n| n.lines.start).collect();
     assert_eq!(left, [0], "the note on line 5 closed");
-    // Two notes starting on one line: which this is, on its top line
+    // Two notes starting on one line: which this is, on its top line — of the notes `]n` goes through, the line's count
+    // folded into it (focus A1c, #260)
     crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, "A second one here.");
     ed.goto_line(0);
     crate::notes::open(&mut ed, first);
     frame(&mut ed);
     let rows = note_card_rows(&ed);
-    assert!(rows[0].starts_with("╭─ note ── ") && rows[0].contains(" of 2 here ─"), "{rows:#?}");
+    assert!(rows[0].starts_with("╭─ note · 1/2 ─") && !rows[0].contains(" here"), "{rows:#?}");
 }
 
 /// A draft's key that sends the review (`space v s`: a Claude turn started) is plain faint words on the note card's

@@ -135,11 +135,32 @@ pub fn stubs(notes: &crate::notes::Notes) -> Vec<Stub> {
     out
 }
 
-/// A block of an answer as it reads (`blocks`): its text, and whether it's a list item.
+/// A block of an answer as it reads (`blocks`): its text, whether it's a list item, and the fenced code that follows it
+/// where it ends with `:` (focus A1c, #259: that code is what it says, so its note's card shows it) — as written, its
+/// fences too, `CODE_LINES_MAX` lines of it at most.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub text: String,
     pub item: bool,
+    pub code: Option<String>,
+}
+
+impl Block {
+    /// Its text, its code after it (`Block.code`) — what its note's card renders.
+    pub fn whole(&self) -> String {
+        with_code(self.text.clone(), Some(self))
+    }
+}
+
+/// The most lines of a block's code its note keeps (the chat has it all).
+const CODE_LINES_MAX: usize = 30;
+
+/// `paragraph`, `b`'s code after it where it has some.
+fn with_code(paragraph: String, b: Option<&Block>) -> String {
+    match b.and_then(|b| b.code.as_deref()) {
+        Some(code) => format!("{paragraph}\n\n{code}"),
+        None => paragraph,
+    }
 }
 
 /// A block of the answer's flow on its place's card (`Note.flow`): the one about this line (marked), one no place takes
@@ -209,6 +230,8 @@ fn cut_blocks(blocks: &[Block], base: usize) -> Vec<Said> {
                 Some(n) => n.to_string(),
                 None => why.clone(),
             };
+            // (the code its last block ends on, `:`, after it)
+            let code = |p: String| with_code(p, blocks.get(upto - 1));
             // (a stop that says no why: what follows it begins the line end)
             let first =
                 |p: &str| sentences(p).first().map_or(String::new(), |s| p[s.clone()].trim().to_string());
@@ -217,7 +240,7 @@ fn cut_blocks(blocks: &[Block], base: usize) -> Vec<Said> {
                 name: Arc::from(&at[path]),
                 lines: line..range_end(at, whole.end).max(line + 1),
                 sentence: capped(&plain(&sentence), SENTENCE_MAX),
-                paragraph: capped(&paragraph, PARAGRAPH_MAX),
+                paragraph: code(capped(&paragraph, PARAGRAPH_MAX)),
                 blocks: base + i..base + upto,
             };
             push(said, &mut out);
@@ -229,7 +252,7 @@ fn cut_blocks(blocks: &[Block], base: usize) -> Vec<Said> {
                 name: Arc::from(&prose[path]),
                 lines: line..range_end(prose, whole.end).max(line + 1),
                 sentence: capped(&plain(prose[s].trim()), SENTENCE_MAX),
-                paragraph: capped(prose, PARAGRAPH_MAX),
+                paragraph: with_code(capped(prose, PARAGRAPH_MAX), blocks.get(i)),
                 blocks: base + i..base + i + 1,
             };
             push(said, &mut out);
@@ -239,11 +262,14 @@ fn cut_blocks(blocks: &[Block], base: usize) -> Vec<Said> {
 }
 
 /// `text`'s blocks as they read: a paragraph's lines joined, a list item (its marker off, the lines under it
-/// joined), a heading, a table row, a quote's text; fenced code left out.
+/// joined), a heading, a table row, a quote's text; fenced code no block of its own — the code of the block before it
+/// where that one ends with `:` (`Block.code`), else left out.
 fn blocks(text: &str) -> Vec<Block> {
-    let mut out = Vec::new();
+    let mut out: Vec<Block> = Vec::new();
     let mut cur: Option<Block> = None;
     let mut fence: Option<&str> = None;
+    // (the code of a block ending `:` as it's read, `CODE_LINES_MAX` lines and its closing fence)
+    let mut code: Option<String> = None;
     let flush = |cur: &mut Option<Block>, out: &mut Vec<Block>| {
         if let Some(b) = cur.take().filter(|b| !b.text.trim().is_empty()) {
             out.push(b);
@@ -252,14 +278,24 @@ fn blocks(text: &str) -> Vec<Block> {
     for line in text.lines() {
         let t = line.trim_start();
         if let Some(f) = fence {
-            if t.starts_with(f) {
+            let end = t.starts_with(f);
+            if let Some(c) = code.as_mut().filter(|c| end || c.lines().count() <= CODE_LINES_MAX) {
+                c.push_str(line.trim_end());
+                c.push('\n');
+            }
+            if end {
                 fence = None;
+                if let (Some(c), Some(b)) = (code.take(), out.last_mut()) {
+                    b.code = Some(c.trim_end().to_string());
+                }
             }
             continue;
         }
         if let Some(f) = ["```", "~~~"].into_iter().find(|f| t.starts_with(f)) {
             flush(&mut cur, &mut out);
             fence = Some(f);
+            let said = out.last().is_some_and(|b| b.code.is_none() && b.text.trim_end().ends_with(':'));
+            code = said.then(|| format!("{}\n", line.trim_end()));
             continue;
         }
         let t = t.strip_prefix('>').map_or(t, str::trim_start);
@@ -270,24 +306,28 @@ fn blocks(text: &str) -> Vec<Block> {
         // (a heading and a table row are blocks of their own; a list item starts one)
         if t.starts_with('#') || t.starts_with('|') {
             flush(&mut cur, &mut out);
-            out.push(Block { text: t.trim_start_matches('#').trim().to_string(), item: false });
+            out.push(Block { text: t.trim_start_matches('#').trim().to_string(), item: false, code: None });
             continue;
         }
         match item(t) {
             Some(body) => {
                 flush(&mut cur, &mut out);
-                cur = Some(Block { text: body.to_string(), item: true });
+                cur = Some(Block { text: body.to_string(), item: true, code: None });
             }
             None => match cur.as_mut() {
                 Some(c) => {
                     c.text.push(' ');
                     c.text.push_str(t.trim_end());
                 }
-                None => cur = Some(Block { text: t.trim_end().to_string(), item: false }),
+                None => cur = Some(Block { text: t.trim_end().to_string(), item: false, code: None }),
             },
         }
     }
     flush(&mut cur, &mut out);
+    // (an answer cut inside its code: what came of it)
+    if let (Some(c), Some(b)) = (code, out.last_mut()) {
+        b.code = Some(c.trim_end().to_string());
+    }
     out
 }
 
@@ -449,17 +489,22 @@ fn flow(blocks: &[Block], last: usize, here: &[bool], at: &[Option<String>]) -> 
     let mut room = PARAGRAPH_MAX;
     for (k, b) in blocks.iter().enumerate().filter(|(k, _)| *k >= last || here[*k]) {
         // (a place elsewhere is one line: what it takes of the room)
-        let size =
-            if at[k].is_some() && !here[k] { b.text.chars().count().min(60) } else { b.text.chars().count() };
+        let size = match at[k].is_some() && !here[k] {
+            true => b.text.chars().count().min(60),
+            false => b.text.chars().count() + b.code.as_ref().map_or(0, |c| c.chars().count()),
+        };
         let cut = size > room;
-        let b = Block { text: if cut { capped(&b.text, room) } else { b.text.clone() }, item: b.item };
+        let b = match cut {
+            true => Block { text: capped(&b.text, room), item: b.item, code: None },
+            false => b.clone(),
+        };
         out.push(match (&at[k], here[k]) {
             (_, true) => Part::Here(b),
             (Some(p), false) => Part::Elsewhere(p.clone(), b),
             (None, false) => Part::Whole(b),
         });
         if cut {
-            out.push(Part::Whole(Block { text: "The rest is in the chat.".into(), item: false }));
+            out.push(Part::Whole(Block { text: "The rest is in the chat.".into(), item: false, code: None }));
             break;
         }
         room -= size;
@@ -484,6 +529,12 @@ pub fn flow_text(parts: &[Part]) -> String {
             text.push_str("- ");
         }
         text.push_str(&b.text);
+        // (a place elsewhere is its line: its code is at its own place)
+        if !matches!(p, Part::Elsewhere(..))
+            && let Some(code) = &b.code
+        {
+            text.push_str(&format!("\n\n{code}"));
+        }
         item = b.item;
     }
     text

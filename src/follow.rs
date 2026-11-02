@@ -1451,9 +1451,18 @@ pub fn reading(ed: &mut Editor) -> bool {
         return false;
     }
     let scroll = c.scroll;
+    // (the place the view holds is one the chat shows — the turn's card at its line, its paragraph in the chat: the
+    // editor shows it already, never taken to an earlier row's file — focus A1c, the 80-column shot)
+    let led = c.follow.led.and_then(|(d, l)| Some((ed.docs.iter().find(|x| x.id == d)?, l)));
+    let held = led.and_then(|(x, l)| Some((x.path.clone()?, l)));
+    let shows = |l: &crate::chat::Link| held.as_ref().is_some_and(|(p, n)| l.path == *p && l.line == *n);
+    let shown = ed.screen.chat_links.borrow().iter().any(|l| shows(&l.3));
     let first = ed.screen.chat_links.borrow().iter().min_by_key(|l| (l.0, l.1)).map(|l| l.3.clone());
     if let Some(f) = follow(ed) {
         f.read_at = Some(scroll);
+    }
+    if shown {
+        return false;
     }
     let Some(link) = first else { return false };
     // You're reading now — the walk-through stops

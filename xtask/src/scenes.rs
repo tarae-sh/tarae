@@ -38,6 +38,8 @@ struct Scene {
 
 const MAIN: &[&str] = &["src/main.rs"];
 const WIDE: &[&str] = &["src/wide.rs"];
+/// Focus A1c's file (`SPOOL_RS`).
+const SPOOL: &[&str] = &["src/spool.rs"];
 
 /// Motion §2's scenes: the chat, a question — every frame kept from its `enter` through the edit's landing (~1.1 s)
 /// until it's dry — and the picture then, before `six`'s turn ends (`TARAE_MOTION_AT` pins the drying's step).
@@ -389,6 +391,34 @@ const F0_WIDE: &[&str] = f0_keys!("q", " ", "L");
 const F0_EDITED: &[&str] = f0_keys!("q", "4G", "ix", "\x1b", "j");
 const F0_OLDER: &[&str] = f0_two_keys!("4G", "\r");
 const F0_LINE: &[&str] = f0_two_keys!("10G", "\r", "\r");
+/// Focus A1c's keys: a real answer's shape (`a1c`) — a question nine rows long, its answer read in `src/spool.rs`, the
+/// keys in the code at its turn's end, then `$more`.
+macro_rules! a1c_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", A1C_ASKED, "\r", "@20?That is all", "@2", "\x1b", "\x1b", "@20!walk-through",
+          $($more,)* "@1"]
+    };
+}
+/// Focus A1c's question: one first line, nine rows of the card's width or more.
+const A1C_ASKED: &str = "I've been reading src/spool.rs and I can't tell where the order of the strands goes wrong: the doc \
+    comment on `Spool` says the spool keeps its order, a strand wound in the order it came, but when I wind a queue of ten \
+    strands the wound list comes out in a different order every time I change the knots, and the strands that slipped seem \
+    to end up in the middle rather than at the end, so could you walk me through `wind` from the start to the end, tell me \
+    which lines change the order and why, whether the sort at the end is meant to be there or is a leftover, and what the \
+    smallest change would be that keeps the order the doc comment promises without breaking the retie of a slipped strand? \
+    I'd rather not lose the progress lines it prints either, they're how I watch a long spool wind.";
+/// Focus A1c's scenes: the turn's end (its flow's card, past its cap) · `]n` through every note of that answer, the doc
+/// comment's among them · `enter` on the cut card (the chat at its paragraph) · the doc comment's own `enter` · the chat
+/// closed, the code wide.
+const A1C_END: &[&str] = a1c_keys!();
+const A1C_N1: &[&str] = a1c_keys!("]n");
+const A1C_N2: &[&str] = a1c_keys!("]n", "@0.5", "]n");
+const A1C_N3: &[&str] = a1c_keys!("]n", "@0.5", "]n", "@0.5", "]n");
+const A1C_N4: &[&str] = a1c_keys!("]n", "@0.5", "]n", "@0.5", "]n", "@0.5", "]n");
+const A1C_N5: &[&str] = a1c_keys!("]n", "@0.5", "]n", "@0.5", "]n", "@0.5", "]n", "@0.5", "]n");
+const A1C_READ: &[&str] = a1c_keys!("21G", "\r");
+const A1C_DOC: &[&str] = a1c_keys!("5G", "\r");
+const A1C_WIDE: &[&str] = a1c_keys!(" ", "L");
 /// Focus C1's: a question typed on three lines, nothing else open · the chat beside it · a card a line near the screen's
 /// foot (the file pasted on, so both sizes have one there).
 const C1_NEW: &[&str] = &["@1", "8G", "x", "x", "x", " ", "n", "@1", "why a HashMap and not a Vec?", "@1"];
@@ -3177,6 +3207,16 @@ const SCENES: &[Scene] = &[
     Scene { name: "f0-failed", claude: "f0-failed", files: MAIN, keys: F0_WIDE },
     Scene { name: "f0-older", claude: "f0-saw", files: MAIN, keys: F0_OLDER },
     Scene { name: "f0-line", claude: "f0-saw", files: MAIN, keys: F0_LINE },
+    // (focus A1c: the note card's role, on a real answer's shape)
+    Scene { name: "a1c-end", claude: "a1c", files: SPOOL, keys: A1C_END },
+    Scene { name: "a1c-n1", claude: "a1c", files: SPOOL, keys: A1C_N1 },
+    Scene { name: "a1c-n2", claude: "a1c", files: SPOOL, keys: A1C_N2 },
+    Scene { name: "a1c-n3", claude: "a1c", files: SPOOL, keys: A1C_N3 },
+    Scene { name: "a1c-n4", claude: "a1c", files: SPOOL, keys: A1C_N4 },
+    Scene { name: "a1c-n5", claude: "a1c", files: SPOOL, keys: A1C_N5 },
+    Scene { name: "a1c-read", claude: "a1c", files: SPOOL, keys: A1C_READ },
+    Scene { name: "a1c-doc", claude: "a1c", files: SPOOL, keys: A1C_DOC },
+    Scene { name: "a1c-wide", claude: "a1c", files: SPOOL, keys: A1C_WIDE },
     // (focus C1: `space n`'s line in the card, at the lines it's about)
     Scene { name: "c1-new", claude: "idle", files: MAIN, keys: C1_NEW },
     Scene { name: "c1-new-chat", claude: "idle", files: MAIN, keys: C1_NEW_CHAT },
@@ -4686,6 +4726,105 @@ impl Thread {
 }
 "#;
 
+/// Focus A1c's file: a doc comment over a struct (line 5 one of its lines) and `wind`, lines 21–85 — past a screen.
+const SPOOL_RS: &str = r#"use std::collections::VecDeque;
+
+/// A spool: the strands waiting to be wound, and the ones wound so far.
+///
+/// The spool keeps its order: a strand is wound in the order it came,
+/// so `wound` reads as the queue did. Each strand is tied before it is
+/// measured, and one whose knot slips goes back to be tied again.
+pub struct Spool {
+    pub queue: VecDeque<Strand>,
+    pub wound: Vec<Strand>,
+}
+
+/// One strand: its name and the knots along it.
+#[derive(Clone, Debug)]
+pub struct Strand {
+    pub name: String,
+    pub knots: Vec<u32>,
+}
+
+impl Spool {
+    pub fn wind(&mut self) -> usize {
+        let mut wound = 0;
+        let mut slipped = 0;
+        // A strand's knots are tied from the first to the last: each one
+        // checked against the one before it, so a knot never sits behind
+        // the knot it follows.
+        let started = self.queue.len();
+        if started == 0 {
+            return 0;
+        }
+        let mut rounds = 0;
+        while let Some(mut s) = self.queue.pop_back() {
+            rounds += 1;
+            if rounds > started * 4 {
+                // Every strand had its chances: what's left stays queued.
+                self.queue.push_back(s);
+                break;
+            }
+            let mut last = 0;
+            let mut tied = true;
+            for k in s.knots.iter_mut() {
+                if *k < last {
+                    tied = false;
+                    break;
+                }
+                last = *k;
+            }
+            if !tied {
+                slipped += 1;
+                // The knot slipped: sorted, and back to the queue to be
+                // tied again on a later round.
+                s.knots.sort_unstable();
+                retie(&mut self.queue, s);
+                continue;
+            }
+            let length = measure(&s);
+            if length == 0 {
+                // A strand with no gap between its knots is no strand:
+                // it isn't wound, and it isn't queued again.
+                continue;
+            }
+            if s.name.is_empty() {
+                s.name = format!("strand {wound}");
+            }
+            self.wound.push(s);
+            wound += 1;
+            if wound % 100 == 0 {
+                // A long spool: say how far it got, a hundred at a time.
+                eprintln!("{wound} wound, {} waiting", self.queue.len());
+            }
+        }
+        if slipped > 0 {
+            eprintln!("{slipped} slipped and were tied again");
+        }
+        // What came first is wound first, or so the doc comment says.
+        // The last strand popped is the first that came, and each
+        // retied strand goes to the back of the queue, so the order
+        // here is the queue's reversed, with the slipped ones last.
+        // Sorting by length makes it stable at least: the same
+        // strands give the same spool, whatever the queue's order was.
+        self.wound.sort_by_key(measure);
+        let total: u32 = self.wound.iter().map(measure).sum();
+        eprintln!("{wound} wound, {total} long in all");
+        wound
+    }
+}
+
+/// The length of a strand: the gaps between its knots.
+fn measure(s: &Strand) -> u32 {
+    s.knots.windows(2).map(|w| w[1] - w[0]).sum()
+}
+
+/// A slipped strand, back at the queue's end.
+fn retie(queue: &mut VecDeque<Strand>, s: Strand) {
+    queue.push_back(s);
+}
+"#;
+
 /// The crate's files as committed, then as changed since (`thread.rs` changed, `knot.rs` new) — with settings
 /// that wait for trust when `trusted` (a build of its own for `:restart`).
 fn demo_files(dir: &Path, changed: bool, trusted: bool) -> Result<()> {
@@ -4844,6 +4983,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
         "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
+        s if s.starts_with("a1c-") => vec![("src/spool.rs", SPOOL_RS.into())],
         _ => Vec::new(),
     }
 }
@@ -4944,6 +5084,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "f0-saw",
     "f0-tested",
     "f0-failed",
+    "a1c",
     "models",
     "answer",
     "askdone",
@@ -5083,6 +5224,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "f0-failed" => {
                 turn.f0_saw(turns, Some("failed in 0.4s\n$ cargo test thread\n1 failed, 1 passed"))?
             }
+            // (focus A1c's: a real answer's shape)
+            "a1c" => turn.a1c()?,
             "tour" => turn.tour()?,
             "notethread" => turn.note_thread(&line)?,
             "c1b-batch" => turn.c1b_batch(&line, turns)?,
@@ -6077,6 +6220,41 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("The length starts at src/thread.rs:9. It summed the positions: src/thread.rs:10 sums the gaps now.")?;
         self.text("\n\n")?;
         self.words("Nothing past src/thread.rs:15 reads the length, so the callers stay. That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus A1c's turn, a real answer's shape: a read, then three paragraphs, a walk-through's stop over `wind` (65
+    /// lines, 21–85), a place on a doc comment's line, a list, `**bold**`, and a paragraph ending `:` with its fenced code.
+    fn a1c(&mut self) -> io::Result<()> {
+        self.words("Let me read the spool.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/spool.rs"]}))?;
+        self.words("Here is how a spool winds, and where its order goes.")?;
+        self.text("\n\n")?;
+        self.text("<show at=\"src/spool.rs:21-85\">`wind` is the whole loop: it pops each strand, ties it, measures it and keeps it.</show> ")?;
+        self.words(
+            "It runs until the queue is empty or every strand had four rounds, then sorts what it wound.",
+        )?;
+        self.text("\n\n")?;
+        self.words("The doc comment at src/spool.rs:5 says **the spool keeps its order**, but nothing in `wind` keeps it.")?;
+        self.text("\n\n")?;
+        self.words("Three things change the order:")?;
+        self.text("\n\n")?;
+        self.words("- `pop_back` at src/spool.rs:32 takes the newest strand first, so the last that came is wound first.")?;
+        self.text("\n")?;
+        self.words("- **`retie`** sends a slipped strand to the back, behind every strand still waiting.")?;
+        self.text("\n")?;
+        self.words("- The `sort_by_key` at src/spool.rs:81 sorts by length in the end, which drops whatever order was left.")?;
+        self.text("\n\n")?;
+        self.words(
+            "Of the three, the pop is the one to change first: the retie and the sort only move what the pop has \
+             already reversed, and once strands come off the front the slipped ones land last, as the doc comment \
+             says they should. The sort can go after that, or stay as a tie-break for strands of one length.",
+        )?;
+        self.text("\n\n")?;
+        self.words("A strand that slips goes back at src/spool.rs:53; to keep its place it goes to the front instead:")?;
+        self.text("\n\n```rust\ns.knots.sort_unstable();\nself.queue.push_front(s);\ncontinue;\n```\n\n")?;
+        self.words("**In short**: nothing keeps the order the doc comment promises. That is all.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

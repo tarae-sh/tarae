@@ -39,12 +39,6 @@ pub enum Line {
     },
     Rule,
     Blank,
-    /// A paragraph every row of which starts with `mark` (a bar beside it: the note card's paragraph about its line,
-    /// focus A1) — wrapped as `Text`, its rows after the first hanging under the mark.
-    Marked {
-        mark: Vec<Span>,
-        spans: Vec<Span>,
-    },
     /// One row, never wrapped: what doesn't fit cut with `…`, whole under the mouse (`whole::fit`) — the note card's
     /// line for a paragraph said at another place.
     Cut(Vec<Span>),
@@ -71,7 +65,6 @@ impl Line {
                     + GAP * header.len().saturating_sub(1)
             }
             Line::Rule | Line::Blank => 0,
-            Line::Marked { mark, spans } => spans_width(mark) + spans_width(spans),
             Line::Cut(spans) => spans_width(spans).min(CUT_WIDE),
         }
     }
@@ -589,17 +582,6 @@ pub fn wrap_drawn(lines: &[Line], width: usize, rule: Style, label: Style) -> (V
             Line::Table { aligns, header, rows } => {
                 table(aligns, header, rows, width, (rule, label), &mut out)
             }
-            // (wrapped hanging under the mark, which then takes each row's hanging cells)
-            Line::Marked { mark, spans } => {
-                let w = spans_width(mark);
-                let all: Vec<Span> = mark.iter().chain(spans).cloned().collect();
-                wrap_row(&all, w, width, &mut out, &mut joins);
-                for row in out[from + 1..].iter_mut() {
-                    drop_cells(row, w.min(width / 2));
-                    row.splice(0..0, mark.iter().cloned());
-                }
-                lead = mark.iter().map(|s| s.text.chars().count()).sum();
-            }
             Line::Cut(spans) => {
                 let mut row = Vec::new();
                 let mut used = 0;
@@ -636,21 +618,6 @@ pub fn wrap_drawn(lines: &[Line], width: usize, rule: Style, label: Style) -> (V
         }
     }
     (out, drawn)
-}
-
-/// `row` without its first `cells` cells (a wrapped row's hanging indent: spaces).
-fn drop_cells(row: &mut Vec<Span>, mut cells: usize) {
-    while cells > 0 && !row.is_empty() {
-        let n = row[0].text.chars().count();
-        if n <= cells {
-            row.remove(0);
-            cells -= n;
-        } else {
-            let at = row[0].text.char_indices().nth(cells).map_or(row[0].text.len(), |(i, _)| i);
-            row[0].text.replace_range(..at, "");
-            cells = 0;
-        }
-    }
 }
 
 /// One line's spans into rows of `width`, broken at the last space (else after a word's last `/` — a path
