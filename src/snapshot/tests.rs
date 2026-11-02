@@ -1629,3 +1629,214 @@ fn a_stopped_run_and_one_past_its_turn_are_kept_too() {
     assert!(row.contains("late.txt after the turn"), "{row}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// #281: `repo`'s repository with `big.txt` committed, a text past `TEXT_MAX` (a run keeps it by its blobs) — and
+/// an editor on it.
+fn big_repo(name: &str) -> (PathBuf, String, crate::editor::Editor) {
+    let dir = repo(name);
+    let mut big = String::new();
+    for i in 0.. {
+        if big.len() as u64 > TEXT_MAX {
+            break;
+        }
+        big.push_str(&format!("line {i}\n"));
+    }
+    std::fs::write(dir.join("big.txt"), &big).unwrap();
+    git_in(&dir, &["add", "-A"]);
+    git_in(&dir, &["commit", "-q", "-m", "big"]);
+    let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+    ed.workspace.root = dir.clone();
+    (dir, big, ed)
+}
+
+/// A run of Claude's that writes `bytes` to `rel`, joining the turn as `tools` has it join.
+fn run_writes(ed: &mut crate::editor::Editor, dir: &Path, rel: &str, bytes: &[u8]) {
+    let before = Before::take(dir);
+    std::fs::write(dir.join(rel), bytes).unwrap();
+    let found = before.since().unwrap();
+    assert!(found.files.iter().any(|c| c.path.ends_with(rel)), "{:?}", found.files);
+    crate::checkpoint::record_run(ed, found.files);
+}
+
+/// An edit of Claude's to `path`, written unseen (review at the end) as `edits.rs` writes one.
+fn claude_writes(ed: &mut crate::editor::Editor, path: &Path, text: &str) {
+    let before = std::fs::read_to_string(path).ok().map(|s| ropey::Rope::from_str(&s));
+    crate::checkpoint::record_unseen(ed, path.to_path_buf(), before, |_| {});
+    std::fs::write(path, text).unwrap();
+}
+
+/// The turn ends: its checkpoint, gathered.
+fn turn_ends(ed: &mut crate::editor::Editor) {
+    assert!(crate::checkpoint::gather(ed, "fix"), "written unseen: gathered");
+    crate::test_results::settle_saying(
+        ed,
+        |ed| ed.workspace.claude.checkpoints.list.len() == 1,
+        |_| "its checkpoint".to_string(),
+    );
+}
+
+/// A step of the turn (`undo`), then events until its own work has ended — its buffers loaded, its blobs written
+/// (`Checkpoints.putting`) — never until what it should write: the file's bytes then, with what was said. A step
+/// still waiting for its buffers once they're in fails here.
+fn stepped(ed: &mut crate::editor::Editor, undo: bool, path: &Path) -> (Vec<u8>, String) {
+    crate::checkpoint::step(ed, undo).unwrap();
+    step_ended(ed, path)
+}
+
+/// `stepped` once the step was asked.
+fn step_ended(ed: &mut crate::editor::Editor, path: &Path) -> (Vec<u8>, String) {
+    let said = |ed: &crate::editor::Editor| {
+        ed.toasts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" | ")
+    };
+    crate::test_results::settle_saying(
+        ed,
+        |ed| !ed.workspace.claude.checkpoints.putting && !ed.docs.iter().any(|d| d.loading),
+        |ed| format!("stepped: {}", said(ed)),
+    );
+    assert!(
+        ed.workspace.claude.checkpoints.loading.is_none(),
+        "its buffers in, the step taken: {}",
+        said(ed)
+    );
+    (std::fs::read(path).unwrap(), said(ed))
+}
+
+/// #281: a big file (past `TEXT_MAX`) Claude edited and a run then changed — undo takes it back to the turn's first
+/// text, never to the text just before the run (Claude's edit still in it), and over your edit since (kept, as any text
+/// file's); redo brings the turn's last text back with yours. (Not open: the step waits for its buffer to load.)
+#[test]
+fn undo_takes_a_big_file_back_past_a_run_to_the_turns_first_text() {
+    let (dir, big, mut ed) = big_repo("big-edit-run");
+    let path = dir.join("big.txt");
+    let edited = big.replacen("line 7\n", "line 7 claude\n", 1);
+    claude_writes(&mut ed, &path, &edited);
+    let ran = edited.replacen("line 9\n", "line 9 run\n", 1);
+    run_writes(&mut ed, &dir, "big.txt", ran.as_bytes());
+    turn_ends(&mut ed);
+    std::fs::write(&path, format!("{ran}mine\n")).unwrap();
+    let first = format!("{big}mine\n");
+    let (now, said) = stepped(&mut ed, true, &path);
+    assert!(now == first.as_bytes(), "the turn's first text, yours kept: {said}");
+    let last = format!("{ran}mine\n");
+    let (now, said) = stepped(&mut ed, false, &path);
+    assert!(now == last.as_bytes(), "the turn's last text again: {said}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #281: a big file a run changed (kept by its blobs) and Claude then edited — the edit is the turn's: undo takes the
+/// file back to before the run, never "changed since" over Claude's own edit; redo brings the edit back too.
+#[test]
+fn a_big_files_edit_after_a_run_is_the_turns() {
+    let (dir, big, mut ed) = big_repo("big-run-edit");
+    let path = dir.join("big.txt");
+    let ran = big.replacen("line 9\n", "line 9 run\n", 1);
+    run_writes(&mut ed, &dir, "big.txt", ran.as_bytes());
+    let edited = ran.replacen("line 7\n", "line 7 claude\n", 1);
+    claude_writes(&mut ed, &path, &edited);
+    turn_ends(&mut ed);
+    let (now, said) = stepped(&mut ed, true, &path);
+    assert!(now == big.as_bytes(), "as before the turn: {said}");
+    let (now, said) = stepped(&mut ed, false, &path);
+    assert!(now == edited.as_bytes(), "the run's change and Claude's edit again: {said}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #281: what a big file was before the turn can't be had — its blob gone from the repository by the turn's end (a
+/// stand-in id): undo says so and leaves the file as it is, never another text written over it.
+#[test]
+fn a_big_file_whose_text_before_is_gone_is_left_and_said() {
+    let (dir, big, mut ed) = big_repo("big-lost");
+    let path = dir.join("big.txt");
+    let ran = big.replacen("line 9\n", "line 9 run\n", 1);
+    run_writes(&mut ed, &dir, "big.txt", ran.as_bytes());
+    let t = ed.workspace.claude.checkpoints.turn.iter_mut().find(|t| t.path == path).unwrap();
+    t.bytes.as_mut().expect("kept by its blobs").before = Some("1".repeat(40));
+    let edited = ran.replacen("line 7\n", "line 7 claude\n", 1);
+    claude_writes(&mut ed, &path, &edited);
+    turn_ends(&mut ed);
+    let (now, said) = stepped(&mut ed, true, &path);
+    assert!(now == edited.as_bytes(), "left as it is: {said}");
+    assert!(said.contains("big.txt: what it was before the turn isn't kept"), "said: {said}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #281: an edit of Claude's, then a run that leaves the file no text (a NUL in it): undo by its blobs takes it back
+/// to the turn's first text, never to the edit the run found; redo, the run's bytes again.
+#[test]
+fn an_edit_then_a_run_that_leaves_no_text_undoes_to_the_turns_first() {
+    let (dir, _, mut ed) = big_repo("edit-run-bytes");
+    let path = dir.join("src/a.txt");
+    claude_writes(&mut ed, &path, "one\nTWO\n");
+    run_writes(&mut ed, &dir, "src/a.txt", b"\x00bin\n");
+    turn_ends(&mut ed);
+    crate::checkpoint::step(&mut ed, true).unwrap();
+    // (its bytes written on a worker: a step meanwhile waits its turn, never racing the write)
+    assert!(ed.workspace.claude.checkpoints.putting, "its blob being written");
+    let e = crate::checkpoint::step(&mut ed, false).unwrap_err();
+    assert!(e.contains("writing that turn's files back"), "{e}");
+    let (now, said) = step_ended(&mut ed, &path);
+    assert!(now == b"one\ntwo\n", "the turn's first text: {:?} {said}", String::from_utf8_lossy(&now));
+    let (now, said) = stepped(&mut ed, false, &path);
+    assert!(now == b"\x00bin\n", "the run's bytes again: {said}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #281: a file that wasn't text (kept by its blobs) a run made text and Claude then edited — by its blobs still, the
+/// turn's last one what Claude left: undo puts its bytes back, never "changed since" over Claude's edit; redo, the edit.
+#[test]
+fn a_files_edit_after_a_run_is_the_turns_by_its_blobs_too() {
+    let (dir, _, mut ed) = big_repo("bytes-run-edit");
+    let path = dir.join("b.bin");
+    run_writes(&mut ed, &dir, "b.bin", b"text\n");
+    claude_writes(&mut ed, &path, "text claude\n");
+    turn_ends(&mut ed);
+    let (now, said) = stepped(&mut ed, true, &path);
+    assert!(now == b"\x00\x01bin-before", "its bytes before the turn: {said}");
+    let (now, said) = stepped(&mut ed, false, &path);
+    assert!(now == b"text claude\n", "Claude's edit again: {said}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #281: a step waits for its big buffers to load, a second step refused meanwhile; another buffer that couldn't be
+/// read isn't the step's — it goes on once its own is in. One of its own that couldn't be read leaves the turn as it
+/// is, said, and its load landing later takes nothing on; the next step asked goes.
+#[test]
+fn a_step_waits_for_its_big_buffers_and_only_their_failure_stops_it() {
+    let (dir, big, mut ed) = big_repo("big-waits");
+    let path = dir.join("big.txt");
+    let ran = big.replacen("line 9\n", "line 9 run\n", 1);
+    run_writes(&mut ed, &dir, "big.txt", ran.as_bytes());
+    turn_ends(&mut ed);
+    let other = dir.join("other.txt");
+    std::fs::write(&other, &big).unwrap();
+    ed.open(&other).unwrap();
+    let other = ed.doc().id;
+    assert!(ed.doc().loading, "a big buffer of the user's, loading");
+    crate::checkpoint::step(&mut ed, true).unwrap();
+    let waits = |ed: &crate::editor::Editor| {
+        ed.workspace.claude.checkpoints.loading.as_ref().map(|(undo, w)| (*undo, w.len(), w[0].1.clone()))
+    };
+    assert_eq!(waits(&ed), Some((true, 1, path.clone())), "waiting for big.txt only");
+    let e = crate::checkpoint::step(&mut ed, true).unwrap_err();
+    assert!(e.contains("a moment"), "{e}");
+    crate::checkpoint::loaded(&mut ed, other, false);
+    assert_eq!(waits(&ed), Some((true, 1, path.clone())), "another buffer's failure isn't the step's");
+    let (now, said) = step_ended(&mut ed, &path);
+    assert!(now == big.as_bytes(), "undone once big.txt was in: {said}");
+    // Its own buffer couldn't be read: the turn as it is, said
+    let id = ed.docs.by_path(&path).unwrap().id;
+    ed.close_doc(id);
+    crate::checkpoint::step(&mut ed, false).unwrap();
+    let id = ed.docs.by_path(&path).expect("opened again").id;
+    crate::checkpoint::loaded(&mut ed, id, false);
+    assert!(ed.workspace.claude.checkpoints.loading.is_none(), "not waiting any more");
+    let (now, said) = step_ended(&mut ed, &path);
+    assert!(said.contains("big.txt couldn't be read — the turn left as it is"), "said: {said}");
+    assert!(
+        now == big.as_bytes() && ed.workspace.claude.checkpoints.list[0].undone,
+        "not brought back: {said}"
+    );
+    let (now, said) = stepped(&mut ed, false, &path);
+    assert!(now == ran.as_bytes(), "the next step goes: {said}");
+    std::fs::remove_dir_all(&dir).ok();
+}

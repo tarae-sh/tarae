@@ -15,7 +15,8 @@
 //!   read when the turn ends (`gather`), and the turn opens as a review (`codereview::start_turn`).
 //! - A command of Claude's that isn't a check: what it changed in the checkout joins the turn the same way
 //!   (`record_run`, `snapshot.rs`) — a file it deleted comes back with undo, one that isn't text by its git
-//!   blob.
+//!   blob. One a run keeps by its blobs that is text at both of the turn's ends (past `snapshot::TEXT_MAX`) is
+//!   kept as text from the turn's end (`settle_blobs`), Claude's edits around the run with it.
 //! - Kept on disk per project (`$XDG_STATE_HOME/tarae/turns/<project hash>/`, and the turn in flight), written on
 //!   a worker at each change: a new tarae (`:restart`, a crash) still has them. A turn cut short comes back as one
 //!   of its own, its files as they are now.
@@ -61,6 +62,30 @@ pub struct Touched {
 pub struct Bytes {
     pub before: Option<String>,
     pub after: Option<String>,
+    /// What it was before the turn can't be had (its blob gone from the repository by the turn's end, `settle_blobs`):
+    /// why — a step leaves the file as it is and says so.
+    pub lost: Option<String>,
+}
+
+/// A file kept by its blobs during a turn is kept as text at its end (`settle_blobs`) up to this, either end — past it,
+/// by its blobs still.
+const WHOLE_MAX: u64 = 32 << 20;
+
+/// A file kept by its blobs, as the turn's end takes it to its worker (`gather`): the root whose repository has its
+/// blobs, the text an edit of Claude's kept before the run, its blobs.
+type Blobbed = (PathBuf, Option<Rope>, Bytes);
+
+/// A file the turn wrote unseen, as its end reads it (`gather`): its text (None: unreadable or no text), its
+/// fingerprint, whether it's gone, and — one kept by its blobs — how it's kept from now on.
+type Gathered = (Option<Rope>, Option<crate::disk::Stamp>, bool, Option<Settled>);
+
+/// A file the turn kept by its blobs, as its end finds it (`settle_blobs`).
+#[derive(Debug)]
+enum Settled {
+    /// Text at both ends: kept as any text file is — what it was before the turn (None: the turn made it).
+    Text(Option<Rope>),
+    /// By its blobs still, both the turn's ends.
+    Blobs(Bytes),
 }
 
 /// One turn's changes.
@@ -276,6 +301,10 @@ pub struct Checkpoints {
     pub restoring: bool,
     /// A turn's texts are being read (`with_texts`): a step waits.
     pub reading: bool,
+    /// A step (`undo`) waits for its big files' buffers to load, these (`step`, `loaded`).
+    pub loading: Option<(bool, Vec<(crate::document::DocId, PathBuf)>)>,
+    /// A step's files that aren't text are being written (`put_blobs`): the next step waits.
+    pub putting: bool,
     /// A save let its oldest turns go past `llm.turns-max-mb`, said (`saved`): since then in `:messages` only.
     pub told_full: bool,
 }
@@ -460,12 +489,14 @@ fn add_run(turn: &mut Vec<Touched>, changes: Vec<crate::snapshot::Change>) {
         let blobs = Bytes {
             before: c.before.as_ref().map(|b| b.id.clone()),
             after: c.after.as_ref().map(|b| b.id.clone()),
+            lost: None,
         };
         let (after, gone, is_text) = (text(&c.after), c.after.is_none(), c.text());
         match turn.iter_mut().find(|t| t.path == c.path) {
             Some(t) => {
                 (t.unseen, t.gone, t.after) = (true, gone, after);
-                // (its blob before stays this turn's first; one that was text before the run: from the run's)
+                // (its blob before stays this turn's first; one that was text before the run: from the run's — its
+                // text before the turn kept beside it, what the turn's end settles it by: `settle_blobs`)
                 match (&mut t.bytes, is_text) {
                     (Some(b), _) => b.after = blobs.after,
                     (None, false) => t.bytes = Some(blobs),
@@ -522,24 +553,55 @@ pub fn gather(ed: &mut Editor, question: &str) -> bool {
     let head = std::mem::take(&mut ed.workspace.claude.checkpoints.head);
     ed.workspace.claude.checkpoints.gathering = true;
     let question = question.to_string();
-    let paths: Vec<PathBuf> = files.iter().filter(|t| t.unseen).map(|t| t.path.clone()).collect();
+    // (one kept by its blobs: with its root's repository, its text before the turn if an edit kept one, its blobs)
+    let roots = ed.workspace.roots();
+    let seen: Vec<(PathBuf, Option<Blobbed>)> = files
+        .iter()
+        .filter(|t| t.unseen)
+        .map(|t| {
+            let blobs = t.bytes.as_ref().map(|b| {
+                let root = roots.all().find(|r| crate::paths::written_inside(r, &t.path));
+                (root.unwrap_or(&ed.workspace.root).to_path_buf(), t.before.clone(), b.clone())
+            });
+            (t.path.clone(), blobs)
+        })
+        .collect();
     ed.events.jobs().spawn(move || {
         // (gone: nothing in it now · unreadable: as it was kept) — with its fingerprint, for open buffers
-        let now: Vec<(Option<Rope>, Option<crate::disk::Stamp>, bool)> = paths
+        let now: Vec<Gathered> = seen
             .iter()
-            .map(|p| {
+            .map(|(p, blobs)| {
                 let stamp = crate::disk::stamp(p);
-                let (text, gone) = match std::fs::read(p) {
+                let read = std::fs::read(p);
+                let settled = match (&read, blobs) {
+                    (_, None) => None,
+                    (Ok(b), Some((root, before, bytes))) => {
+                        Some(settle_blobs(root, p, before.as_ref(), bytes, Some(b)))
+                    }
+                    (Err(e), Some((root, before, bytes))) if e.kind() == std::io::ErrorKind::NotFound => {
+                        Some(settle_blobs(root, p, before.as_ref(), bytes, None))
+                    }
+                    (Err(_), Some(_)) => None,
+                };
+                let (text, gone) = match read {
                     Ok(b) => (String::from_utf8(b).ok().map(|s| Rope::from_str(&s)), false),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Some(Rope::new()), true),
                     Err(_) => (None, false),
                 };
-                (text, stamp, gone)
+                (text, stamp, gone, settled)
             })
             .collect();
         move |ed: &mut Editor| {
             let mut files = files;
-            for (p, (now, stamp, gone)) in paths.iter().zip(now) {
+            for ((p, _), (now, stamp, gone, settled)) in seen.iter().zip(now) {
+                let t = files.iter_mut().find(|t| &t.path == p);
+                // (kept by its blobs: as text now where both its ends are, else by the turn's ends' blobs)
+                if let (Some(t), Some(s)) = (t, settled) {
+                    match s {
+                        Settled::Text(before) => (t.before, t.bytes) = (before, None),
+                        Settled::Blobs(b) => t.bytes = Some(b),
+                    }
+                }
                 let Some(now) = now else { continue };
                 // An open buffer shows what Claude wrote before the review diffs it
                 ed.disk_take(p, &now, stamp);
@@ -554,6 +616,63 @@ pub fn gather(ed: &mut Editor, question: &str) -> bool {
         }
     });
     true
+}
+
+/// A file the turn kept by its blobs (a run's change of a file that isn't text, or past `snapshot::TEXT_MAX`), as
+/// the turn ends — a worker's (git). What it was before the turn: the text an edit of Claude's kept before the run
+/// (`before`), else its blob before; what it is: `now` (None: gone). Text at both ends (up to `WHOLE_MAX`): kept as
+/// any text file is — undo takes it back to the turn's first text over your edits since, Claude's edits after the
+/// run the turn's too (#281). Else by its blobs, both the turn's ends: the text an edit kept written as one, what it
+/// is now hashed from the file. A blob before the repository no longer has is `lost`: a step says so, never writes.
+fn settle_blobs(
+    root: &Path,
+    path: &Path,
+    before: Option<&Rope>,
+    bytes: &Bytes,
+    now: Option<&[u8]>,
+) -> Settled {
+    let text = |b: &[u8]| -> Option<Rope> {
+        (b.len() as u64 <= WHOLE_MAX && !b.contains(&0))
+            .then(|| std::str::from_utf8(b).ok().map(Rope::from_str))?
+    };
+    // (Ok(None): the turn made it · Err(None): no text · Err(Some): can't be had, why)
+    let was = match (before, &bytes.before) {
+        (Some(t), _) => Ok(Some(t.clone())),
+        (None, None) => Ok(None),
+        (None, Some(id)) => match crate::snapshot::blob(root, id, WHOLE_MAX) {
+            Ok(b) => b.as_deref().and_then(text).map(Some).ok_or(None),
+            Err(None) => Err(Some("what it was before the turn isn't kept (git no longer has it)".into())),
+            // (git couldn't say just now: by its blobs, the one before still the run's — never lost for it)
+            Err(Some(e)) => {
+                let shown = crate::chat::shown(root, path);
+                crate::log::line(
+                    "turns",
+                    "info",
+                    &format!("{shown}: its blob before not read ({e}) — kept by blobs"),
+                );
+                Err(None)
+            }
+        },
+    };
+    let is_text = now.is_none_or(|b| text(b).is_some());
+    let lost = match was {
+        Ok(was) if is_text => return Settled::Text(was),
+        Ok(_) | Err(None) => None,
+        Err(Some(why)) => Some(why),
+    };
+    let mut b = Bytes { lost, ..bytes.clone() };
+    if let Some(t) = before {
+        match crate::snapshot::hash(root, path, t.to_string().as_bytes()) {
+            Ok(id) => b.before = Some(id),
+            Err(e) => b.lost = Some(format!("what it was before the turn isn't kept ({e})")),
+        }
+    }
+    // (its blob now unknown: the run's — a step finds it changed since and leaves it, said)
+    match now {
+        None => b.after = None,
+        Some(now) => b.after = crate::snapshot::hash(root, path, now).ok().or(b.after),
+    }
+    Settled::Blobs(b)
 }
 
 /// The turn's `files` as a checkpoint, with HEAD's moves in it said (`head`) — the files row (`lib.rs,
@@ -601,6 +720,12 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
     if ed.workspace.claude.checkpoints.reading {
         return Err("reading that turn's changes — a moment".into());
     }
+    if ed.workspace.claude.checkpoints.loading.is_some() {
+        return Err("reading that turn's big files — a moment".into());
+    }
+    if ed.workspace.claude.checkpoints.putting {
+        return Err("writing that turn's files back — a moment".into());
+    }
     let list = &ed.workspace.claude.checkpoints.list;
     let i = if undo {
         list.iter().rposition(|c| !c.undone).ok_or("no turn of Claude's changed files — nothing to undo")?
@@ -623,6 +748,24 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
         return Err(why);
     }
     let question = list[i].question.clone();
+    // (a big file's buffer loads in the background: every one the step writes as text is in first, then this step
+    // again — never the turn stepped with one of them left as it was, "still loading")
+    let mut waits = Vec::new();
+    for f in files.iter().filter(|f| f.bytes.is_none()) {
+        let open = match ed.docs.by_path(&f.path).map(|d| (d.id, d.loading)) {
+            Some(d) => Some(d),
+            None if f.path.exists() && ed.open(&f.path).is_ok() => Some((ed.doc().id, ed.doc().loading)),
+            None => None,
+        };
+        if let Some((id, true)) = open {
+            waits.push((id, f.path.clone()));
+        }
+    }
+    if !waits.is_empty() {
+        ed.workspace.claude.checkpoints.loading = Some((undo, waits));
+        ed.set_status(format!("reading “{}”'s big files — a moment", quote(&question)));
+        return Ok(());
+    }
     let mut changed = Vec::new();
     let mut kept = 0;
     let mut problems = Vec::new();
@@ -630,6 +773,13 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
     for f in &files {
         // (not text: its blob written out on a worker — said there if it can't be)
         if let Some(b) = &f.bytes {
+            if let Some(why) = &b.lost {
+                problems.push(format!(
+                    "{}: {why} — left as it is",
+                    crate::chat::shown(&ed.workspace.root, &f.path)
+                ));
+                continue;
+            }
             let (expect, put) = if undo { (&b.after, &b.before) } else { (&b.before, &b.after) };
             blobs.push((f.path.clone(), expect.clone(), put.clone()));
             changed.push(crate::chat::shown(&ed.workspace.root, &f.path));
@@ -684,6 +834,26 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Document `id`'s text came in (`Editor::finish_loading`; `read`: it was, not an error): a step waiting for its
+/// turn's big files (`step`) goes on once the last of them is in — one of them that couldn't be read leaves the turn
+/// as it is, said; another buffer's load, read or not, isn't the step's.
+pub fn loaded(ed: &mut Editor, id: crate::document::DocId, read: bool) {
+    let Some((undo, waits)) = &mut ed.workspace.claude.checkpoints.loading else { return };
+    let Some(at) = waits.iter().position(|w| w.0 == id) else { return };
+    let (undo, (_, path), left) = (*undo, waits.remove(at), waits.len());
+    if read && left > 0 {
+        return;
+    }
+    ed.workspace.claude.checkpoints.loading = None;
+    if !read {
+        let shown = crate::chat::shown(&ed.workspace.root, &path);
+        return ed.set_warning(format!("{shown} couldn't be read — the turn left as it is"));
+    }
+    if let Err(e) = step(ed, undo) {
+        ed.set_warning(e);
+    }
+}
+
 /// Files that aren't text, each `(path, what it should be now, what it goes to)` as git's blobs (None: no
 /// file) — written out on a worker; one changed since is left as it is, and said.
 fn put_blobs(ed: &mut Editor, blobs: Vec<(PathBuf, Option<String>, Option<String>)>) {
@@ -691,12 +861,14 @@ fn put_blobs(ed: &mut Editor, blobs: Vec<(PathBuf, Option<String>, Option<String
         return;
     }
     let root = ed.workspace.root.clone();
+    ed.workspace.claude.checkpoints.putting = true;
     ed.events.jobs().spawn(move || {
         let problems: Vec<String> = blobs
             .iter()
             .filter_map(|(p, now, to)| crate::snapshot::put(&root, p, now.as_deref(), to.as_deref()).err())
             .collect();
         move |ed: &mut Editor| {
+            ed.workspace.claude.checkpoints.putting = false;
             if !problems.is_empty() {
                 ed.set_warning(format!("not taken back: {}", problems.join("; ")));
             }
@@ -862,16 +1034,20 @@ pub fn hold_saves() -> std::sync::MutexGuard<'static, ()> {
 
 /// `t` as kept — None: its path is no text, a file no store holds (a turn kept comes back without it).
 fn touched_json(t: &Touched) -> Option<Value> {
-    let bytes = t.bytes.as_ref().map(|b| json!({ "before": b.before, "after": b.after }));
+    let bytes = t.bytes.as_ref().map(bytes_json);
     Some(
         json!({ "path": t.path.to_str()?, "before": t.before.as_ref().map(Rope::to_string), "after": t.after.to_string(),
             "unseen": t.unseen, "gone": t.gone, "bytes": bytes }),
     )
 }
 
+fn bytes_json(b: &Bytes) -> Value {
+    json!({ "before": b.before, "after": b.after, "lost": b.lost })
+}
+
 fn bytes_of(v: &Value) -> Option<Bytes> {
-    let blob = |b: &Value| b.as_str().map(String::from);
-    v.is_object().then(|| Bytes { before: blob(&v["before"]), after: blob(&v["after"]) })
+    let s = |b: &Value| b.as_str().map(String::from);
+    v.is_object().then(|| Bytes { before: s(&v["before"]), after: s(&v["after"]), lost: s(&v["lost"]) })
 }
 
 fn touched_of(v: &Value) -> Option<Touched> {
@@ -891,7 +1067,7 @@ fn files_of(v: &Value) -> Vec<Touched> {
 
 /// `k` as kept — None as `touched_json`.
 fn kept_json(k: &Kept, (before, after): &Texts) -> Option<Value> {
-    let bytes = k.bytes.as_ref().map(|b| json!({ "before": b.before, "after": b.after }));
+    let bytes = k.bytes.as_ref().map(bytes_json);
     Some(json!({ "path": k.path.to_str()?, "unseen": k.unseen, "gone": k.gone, "bytes": bytes,
             "before": before.as_ref().map(Text::json), "after": after.json() }))
 }

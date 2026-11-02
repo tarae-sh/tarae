@@ -1945,6 +1945,13 @@ impl Editor {
     }
 
     fn finish_loading(&mut self, id: DocId, result: Result<ropey::Rope>, took: std::time::Duration) {
+        let read = result.is_ok();
+        self.finish_loading_doc(id, result, took);
+        // (a turn's step waiting for its big files)
+        crate::checkpoint::loaded(self, id, read);
+    }
+
+    fn finish_loading_doc(&mut self, id: DocId, result: Result<ropey::Rope>, took: std::time::Duration) {
         let Some(i) = self.docs.iter().position(|d| d.id == id) else { return }; // closed while loading
         match result {
             Ok(text) => {

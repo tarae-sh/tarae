@@ -5943,7 +5943,7 @@ mod tests {
         // Its blob gone (pruned since the run): against HEAD, said — its change still its own lines
         let gone = crate::checkpoint::Touched {
             path: dir.join("big.rs"),
-            bytes: Some(crate::checkpoint::Bytes { before: Some("1".repeat(40)), after: None }),
+            bytes: Some(crate::checkpoint::Bytes { before: Some("1".repeat(40)), ..Default::default() }),
             unseen: true,
             ..Default::default()
         };
@@ -5975,7 +5975,7 @@ mod tests {
         std::fs::write(dir.join("made.rs"), &made).unwrap();
         let lost = crate::checkpoint::Touched {
             path: dir.join("made.rs"),
-            bytes: Some(crate::checkpoint::Bytes { before: Some("2".repeat(40)), after: None }),
+            bytes: Some(crate::checkpoint::Bytes { before: Some("2".repeat(40)), ..Default::default() }),
             unseen: true,
             ..Default::default()
         };

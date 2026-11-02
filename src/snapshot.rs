@@ -542,16 +542,7 @@ pub fn put(root: &Path, path: &Path, expect: Option<&str>, id: Option<&str>) -> 
     let there = now.is_some();
     let now = match now {
         None => None,
-        // (as `add` hashed it: through the checkout's filters — the bytes read above, by their path from the root)
-        Some(bytes) => {
-            let at = format!("--path={}", rel.to_string_lossy());
-            let ran =
-                crate::gitrepo::ran(&command(root, &["hash-object", "--stdin", &at], None)?, Some(&bytes))?;
-            if !ran.ok {
-                return Err(format!("{shown}: git hash-object failed"));
-            }
-            Some(String::from_utf8_lossy(&ran.stdout).trim().to_string())
-        }
+        Some(bytes) => Some(hash_as(root, rel, &bytes, false).map_err(|e| format!("{shown}: {e}"))?),
     };
     if now.as_deref() != expect {
         return Err(format!("{shown} changed since — left as it is"));
@@ -559,7 +550,9 @@ pub fn put(root: &Path, path: &Path, expect: Option<&str>, id: Option<&str>) -> 
     match id {
         None => base.folder(folder, false).and_then(|d| d.remove(name)).map_err(said),
         Some(id) => {
-            let bytes = git_bytes(root, &["cat-file", "blob", id], None)?;
+            // (pruned since the turn: nothing written)
+            let bytes = git_bytes(root, &["cat-file", "blob", id], None)
+                .map_err(|_| format!("{shown}: git no longer has what it was — left as it is"))?;
             let d = base.folder(folder, true).map_err(said)?;
             match there {
                 true => d.replace(name, &bytes),
@@ -568,6 +561,42 @@ pub fn put(root: &Path, path: &Path, expect: Option<&str>, id: Option<&str>) -> 
             .map(|_| ())
             .map_err(said)
         }
+    }
+}
+
+/// `bytes` as git's blob of `rel` (relative to `root`) — hashed as `add` hashes it, through the checkout's filters —,
+/// written into the repository's objects when `write` (`checkpoint::settle_blobs`: a turn's end it can be put back to).
+fn hash_as(root: &Path, rel: &Path, bytes: &[u8], write: bool) -> Result<String, String> {
+    let at = format!("--path={}", rel.to_string_lossy());
+    let args: &[&str] =
+        if write { &["hash-object", "-w", "--stdin", &at] } else { &["hash-object", "--stdin", &at] };
+    let ran = crate::gitrepo::ran(&command(root, args, None)?, Some(bytes))?;
+    if !ran.ok {
+        return Err("git hash-object failed".into());
+    }
+    Ok(String::from_utf8_lossy(&ran.stdout).trim().to_string())
+}
+
+/// `bytes` as `path`'s blob in `root`'s repository, written into its objects: what `put` can write back.
+pub(crate) fn hash(root: &Path, path: &Path, bytes: &[u8]) -> Result<String, String> {
+    let rel = path.strip_prefix(root).map_err(|_| "not in the checkout".to_string())?;
+    hash_as(root, rel, bytes, true)
+}
+
+/// Blob `id`'s bytes in `root`'s repository, None past `max` bytes — Err(None): git says the repository doesn't have
+/// it (pruned since it was taken), Err(Some): git couldn't say (why).
+pub(crate) fn blob(root: &Path, id: &str, max: u64) -> Result<Option<Vec<u8>>, Option<String>> {
+    let said = batch(root, "--batch-check", &[id]).map_err(Some)?;
+    let said = String::from_utf8_lossy(&said);
+    // (`<id> blob <size>` · `<id> missing`)
+    match said.trim_end().split(' ').collect::<Vec<_>>()[..] {
+        [_, "missing"] => Err(None),
+        [_, "blob", size] => match size.parse::<u64>() {
+            Ok(s) if s > max => Ok(None),
+            Ok(_) => git_bytes(root, &["cat-file", "blob", id], None).map(Some).map_err(Some),
+            Err(_) => Err(Some(format!("git cat-file said {said:?}"))),
+        },
+        _ => Err(Some(format!("git cat-file said {said:?}"))),
     }
 }
 
