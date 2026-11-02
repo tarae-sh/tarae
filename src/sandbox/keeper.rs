@@ -6354,6 +6354,8 @@ mod tests {
         std::fs::write("inside_x", "x\n").unwrap();
         let _ = std::fs::remove_file("link_out_x");
         std::os::unix::fs::symlink(outside.to_str().unwrap(), "link_out_x").unwrap();
+        let _ = std::fs::remove_file("link_proc_x");
+        std::os::unix::fs::symlink("/proc/self/cwd/inside_x", "link_proc_x").unwrap();
         let raw = |nr: libc::c_long, a: [libc::c_long; 6]| -> Result<(), i32> {
             // SAFETY: each row's arguments point at what lives through the call.
             let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
@@ -6417,6 +6419,8 @@ mod tests {
             ("setat a protected name", setat, [at, prot, 0, name, xa, 16], eperm),
             // (through /proc: refused, never resolved for the run)
             ("set through /proc/self/cwd", set, [c(c"/proc/self/cwd/inside_x"), name, x, 1, 0, 0], eperm),
+            // (#282: the same by the project's link to it — in tier own a `self` that's no one for tarae: refused, said)
+            ("set through a link to /proc/self/cwd", set, [c(c"link_proc_x"), name, x, 1, 0, 0], eperm),
             // (by name, where the run may write: never, as root too)
             ("security.capability inside", set, [inside, c(c"security.capability"), x, 1, 0, 0], eperm),
             ("trusted. inside", set, [inside, c(c"trusted.tarae"), x, 1, 0, 0], eperm),
@@ -6519,7 +6523,15 @@ mod tests {
                 wrong.push(format!("rsync -AX: {ran:?} {:?} ACLs {acls:?}", read_back(c"tool_rsynced")));
             }
         }
-        for f in ["inside_x", "link_out_x", "tool_src", "tool_installed", "tool_copied", "tool_rsynced"] {
+        for f in [
+            "inside_x",
+            "link_out_x",
+            "link_proc_x",
+            "tool_src",
+            "tool_installed",
+            "tool_copied",
+            "tool_rsynced",
+        ] {
             let _ = std::fs::remove_file(f);
         }
         // (every other answer the kernel's own)
@@ -10254,6 +10266,7 @@ mod tests {
                 xattr.iter().any(|d| d.target.starts_with("/proc/self/cwd/")),
                 "tier {tier}: {refused:?}"
             );
+            assert_eq!(on("link_proc_x"), 1, "tier {tier}: through a link to /proc/self said: {refused:?}");
             assert!(
                 refused.iter().all(|d| d.plain().starts_with("changing ")),
                 "tier {tier}: denials say 'changing …': {refused:?}"

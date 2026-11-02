@@ -409,6 +409,12 @@ fn answered(p: &Served, c: &Caller, at: At, change: Asked) -> Answer {
             unopened(change, c)?;
             refuse(p, c, op, said())
         }
+        // (a procfs `self` on the way that names no one for tarae — tier own's `/proc` is the run's own PID
+        // namespace's: a path through `/proc` all the same, #282)
+        Err(libc::ENOENT) if self_on_way(c, dirfd, &path, follow) => {
+            unopened(change, c)?;
+            refuse(p, c, op, said())
+        }
         file => on_path(p, c, &file?, change),
     }
 }
@@ -442,13 +448,7 @@ fn with_flags(dirfd: u64, path: Vec<u8>, flags: i32, again: Again) -> Result<At,
 /// (`refused`). A magic link on the way, `guarded`: `ELOOP` (`RESOLVE_NO_MAGICLINKS`).
 fn open_in_run(c: &Caller, dirfd: u64, path: &[u8], follow: bool, guarded: bool) -> Result<OwnedFd, i32> {
     let (from, resolve) = match path.first() {
-        Some(b'/') => {
-            let root = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-                .open(format!("/proc/{}/root", c.tid));
-            (OwnedFd::from(root.map_err(|_| libc::ESRCH)?), libc::RESOLVE_IN_ROOT)
-        }
+        Some(b'/') => (run_root(c)?, libc::RESOLVE_IN_ROOT),
         _ if cwd(dirfd) => {
             let here = c.open_cwd()?;
             let named = |w: &Path| w.is_absolute() && stat(&here).is_ok_and(|st| named_there(c, w, &st));
@@ -476,6 +476,102 @@ fn open_in_run(c: &Caller, dirfd: u64, path: &[u8], follow: bool, guarded: bool)
     }
     // SAFETY: a descriptor the call just made, ours alone.
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+}
+
+/// The run's root (`/proc/<tid>/root`), an `O_PATH` descriptor of tarae's.
+fn run_root(c: &Caller) -> Result<OwnedFd, i32> {
+    let root = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+        .open(format!("/proc/{}/root", c.tid));
+    Ok(OwnedFd::from(root.map_err(|_| libc::ESRCH)?))
+}
+
+/// Whether `path` from `dirfd`, as the run would reach it, follows a procfs `self` or `thread-self` on its way: those
+/// resolve by who asks, and in a `/proc` of a PID namespace tarae isn't in (tier own's) to nothing — the kernel's open
+/// says `ENOENT` there for tarae where the run's would go on (#282). Asked only once tarae's open said `ENOENT`, to tell a
+/// path through `/proc` (refused, said) from a name that isn't there; its answer only picks between those two refusals.
+/// It opens nothing for the run: each part `O_PATH` and `O_NOFOLLOW` from the last, `..` never above the run's root,
+/// each link read and followed as the kernel would (an absolute one from the run's root, `MAXSYMLINKS` at most); a
+/// part that fails ends it — not through one.
+fn self_on_way(c: &Caller, dirfd: u64, path: &[u8], follow: bool) -> bool {
+    let start = match path.first() {
+        Some(b'/') => run_root(c),
+        _ => open_in_run(c, dirfd, b".", true, false),
+    };
+    match (run_root(c), start) {
+        (Ok(root), Ok(start)) => self_from(&root, start, path, follow),
+        _ => false,
+    }
+}
+
+/// `self_on_way`'s walk: `path` from `start`, within `root`.
+fn self_from(root: &OwnedFd, start: OwnedFd, path: &[u8], follow: bool) -> bool {
+    let Ok(top) = stat(root) else { return false };
+    let mut here = start;
+    let parts = |p: &[u8]| p.split(|&b| b == b'/').map(<[u8]>::to_vec).collect::<Vec<_>>();
+    let mut left: std::collections::VecDeque<Vec<u8>> = parts(path).into();
+    let mut links = 0;
+    while let Some(part) = left.pop_front() {
+        if part.is_empty() || part == b"." {
+            continue;
+        }
+        let at_top = stat(&here).is_ok_and(|st| (st.st_dev, st.st_ino) == (top.st_dev, top.st_ino));
+        if part == b".." && at_top {
+            continue;
+        }
+        let Ok(name) = CString::new(part.clone()) else { return false };
+        // SAFETY: a descriptor of ours and a name that lives through the call.
+        let fd = unsafe {
+            libc::openat(here.as_raw_fd(), name.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        };
+        if fd < 0 {
+            return false;
+        }
+        // SAFETY: a descriptor the call just made, ours alone.
+        let next = unsafe { OwnedFd::from_raw_fd(fd) };
+        let Ok(st) = stat(&next) else { return false };
+        let last = left.iter().all(|p| p.is_empty() || p == b".");
+        if st.st_mode & libc::S_IFMT != libc::S_IFLNK || (last && !follow) {
+            here = next;
+            continue;
+        }
+        if (part == b"self" || part == b"thread-self") && on_procfs(&next) {
+            return true;
+        }
+        links += 1;
+        let Some(to) = link_of(&next).filter(|_| links <= 40) else { return false };
+        if to.first() == Some(&b'/') {
+            let Ok(r) = root.try_clone() else { return false };
+            here = r;
+        }
+        for p in parts(&to).into_iter().rev() {
+            left.push_front(p);
+        }
+    }
+    false
+}
+
+/// Whether tarae's descriptor `fd` is on a procfs.
+fn on_procfs(fd: &OwnedFd) -> bool {
+    let mut fs = MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: a descriptor of ours and a buffer the call fills.
+    if unsafe { libc::fstatfs(fd.as_raw_fd(), fs.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: filled by the successful fstatfs above.
+    unsafe { fs.assume_init() }.f_type as u64 == libc::PROC_SUPER_MAGIC as u64
+}
+
+/// What the link tarae holds `O_PATH` (`fd`) says.
+fn link_of(fd: &OwnedFd) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: a descriptor of ours, an empty name (the link itself) and a buffer of its length.
+    let n = unsafe { libc::readlinkat(fd.as_raw_fd(), c"".as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    (n >= 0).then(|| {
+        buf.truncate(n as usize);
+        buf
+    })
 }
 
 /// A call on `file` (opened in the run's view, its last part's link followed or not): refused where the run may not
@@ -1025,6 +1121,52 @@ mod tests {
             );
             assert_eq!(unopened(asked, &m), want);
         }
+    }
+
+    /// #282: a path that follows a procfs `self` or `thread-self` on its way — by a link, from a link, after `..` — is told
+    /// from one that doesn't (a name not there, a magic link of another process, a link to `self` not followed); the
+    /// root here this system's own `/`, whose `/proc` names tarae (in tier own the run's is another PID namespace's).
+    #[test]
+    fn a_paths_procfs_self_on_its_way_is_found() {
+        let dir = crate::scratch::Scratch::new("sb-attrs-self");
+        let here = dir.path();
+        std::fs::write(here.join("f"), "f\n").unwrap();
+        std::fs::create_dir(here.join("d")).unwrap();
+        for (name, to) in [
+            ("cwd", "/proc/self/cwd/f"),
+            ("thread", "/proc/thread-self/cwd"),
+            ("up", "../../../../../../../../proc/./self/root"),
+            ("chain", "cwd"),
+            ("gone", "/proc/self-not/f"),
+            ("other", "/proc/1/cwd"),
+            ("plain", "f"),
+        ] {
+            std::os::unix::fs::symlink(to, here.join(name)).unwrap();
+        }
+        let open = |p: &Path| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+                .open(p)
+                .map(OwnedFd::from)
+                .unwrap()
+        };
+        let root = open(Path::new("/"));
+        let on_way = |path: &str, follow| {
+            let start = if path.starts_with('/') { open(Path::new("/")) } else { open(here) };
+            self_from(&root, start, path.as_bytes(), follow)
+        };
+        for path in ["cwd", "thread", "up", "chain", "d/../cwd", "/proc/self/cwd/f"] {
+            assert!(on_way(path, true), "{path}: through a self");
+        }
+        let whole = format!("{}/chain", here.display());
+        assert!(on_way(&whole, true), "{whole}");
+        for path in ["gone", "other", "plain", "f", "nothing", "d/nothing"] {
+            assert!(!on_way(path, true), "{path}: no self");
+        }
+        // (the link itself, not followed: no self reached; one met before the last part is followed all the same)
+        assert!(!on_way("cwd", false), "cwd, not followed");
+        assert!(on_way("thread/f", false), "thread/f, not followed");
     }
 
     /// #127: an `O_PATH` descriptor is none to a descriptor's call (`fdget`): where the kernel looks at the descriptor

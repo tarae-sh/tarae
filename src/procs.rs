@@ -3013,12 +3013,19 @@ pub(crate) mod tests {
         let sleep = find(&look).expect("the stand-in");
         assert_eq!(sleep.command, None, "closed: not read");
         s.whole = true;
-        let sleep = find(&s.sample(me)).expect("still there");
-        drop(stand_in);
+        let mut sleep = find(&s.sample(me)).expect("still there");
         // (a sandbox that closes the process table to the run reads none — then nothing to check)
         if command(me).is_none() {
             return;
         }
+        // (`spawn` returns as the child's exec lets go of this process's memory, which the kernel does before the
+        // child has its own (`exec_mmap`): a look in between reads this binary's command line, then none — looked
+        // at again until it's the child's)
+        while sleep.command.as_deref() != Some("sleep 30") && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+            sleep = find(&s.sample(me)).expect("still there");
+        }
+        drop(stand_in);
         assert_eq!(sleep.command.as_deref(), Some("sleep 30"));
         assert!(sleep.cwd.is_some(), "its folder too");
     }

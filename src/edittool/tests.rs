@@ -485,9 +485,14 @@ fn under_review_at_the_end_a_delete_still_waits_on_the_card() {
 }
 
 /// §2: an edit written unseen (review at the end) leaves its lines wet in the open buffer, and so does a change set's
-/// `y` all; one your `y` gave in its review none (the stamp's press says that act).
+/// `y` all; one your `y` gave in its review none (the stamp's press says that act). Each editor's motions at a pinned
+/// age: the ink is looked at, never dried by the time a slow machine takes to the answer (#283: dry on K3's VM).
 #[test]
 fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
+    let pinned = |mut ed: Editor| {
+        ed.motion_at = Some(std::time::Duration::ZERO);
+        ed
+    };
     let wet = |ed: &Editor, p: &Path| -> Vec<String> {
         let d = ed.docs.iter().find(|d| d.path.as_deref() == Some(p)).unwrap();
         d.wet.iter().flatten().map(|r| d.text.byte_slice(r.clone()).to_string()).collect()
@@ -495,7 +500,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
     let text = "one\ntwo\nthree\n";
     let two = json!({"edits": [{"file_path": "a.rs", "old_string": "two", "new_string": "TWO"}]});
     let dir = std::fs::canonicalize(project("wet-at-end", &[("a.rs", text)])).unwrap();
-    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    let mut ed = pinned(chat_for(&dir, &dir.join("stdin.log")));
     ed.open(&dir.join("a.rs")).unwrap();
     ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     call(&mut ed, Call::test(61), &two).unwrap();
@@ -503,7 +508,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
     assert_eq!(wet(&ed, &dir.join("a.rs")), ["TWO\n"], "written unseen: wet");
     std::fs::remove_dir_all(&dir).ok();
     let dir = std::fs::canonicalize(project("wet-reviewed", &[("a.rs", text)])).unwrap();
-    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    let mut ed = pinned(chat_for(&dir, &dir.join("stdin.log")));
     ed.open(&dir.join("a.rs")).unwrap();
     call(&mut ed, Call::test(62), &two).unwrap();
     answer_reviews(&mut ed, 'y', |_| answered(62).is_some());
@@ -512,7 +517,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
     assert!(!ed.motions.iter().any(|m| matches!(m.what, crate::motion::What::Wet(_))));
     std::fs::remove_dir_all(&dir).ok();
     let dir = std::fs::canonicalize(project("wet-all", &[("a.rs", text), ("b.rs", text)])).unwrap();
-    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    let mut ed = pinned(chat_for(&dir, &dir.join("stdin.log")));
     ed.open(&dir.join("a.rs")).unwrap();
     ed.open(&dir.join("b.rs")).unwrap();
     let both = json!({"edits": [

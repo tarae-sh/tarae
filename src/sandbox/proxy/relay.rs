@@ -27,7 +27,7 @@ const HRR_RANDOM: [u8; 32] = [
     0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
 ];
 /// What one read takes.
-const CHUNK: usize = 16 * 1024;
+pub(super) const CHUNK: usize = 16 * 1024;
 /// The most bytes waiting for one side before the other isn't read any more.
 const PENDING_MAX: usize = 64 * 1024;
 /// A ServerHello's first bytes: record header, handshake header, version, random.

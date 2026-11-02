@@ -761,8 +761,10 @@ fn a_slow_readers_end_isnt_cut() {
     // (the client's side ends too: its relay is done)
     drop(c);
     let moved = relay::spliced_by(end).expect("its relay ended");
+    // (the read that ends the look may take some of what follows the ServerHello with it, up to a read's worth —
+    // as the outside's two writes reach tarae together or not — and those go by copy; the rest is spliced)
     if cfg!(target_os = "linux") {
-        assert!(moved >= SLOW, "spliced: {moved}");
+        assert!(moved + relay::CHUNK >= SLOW + sh, "spliced: {moved}");
     }
 }
 

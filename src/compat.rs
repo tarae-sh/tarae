@@ -2,7 +2,8 @@
 //! stack's command, the settings it runs under, what it's expected to do — run exactly as Claude's run is, with no
 //! chat: `tools::run` → its card → the queue → the policy → Seatbelt or the session's keeper → the report → the
 //! snapshot, the same functions a turn calls. A scripted user answers the cards: `y` on the ones the entry lists,
-//! `n` on any other (never a yes to what nobody listed), each one recorded. Then it's judged: its exit, what its
+//! `n` on any other (never a yes to what nobody listed), each one recorded — but the machine's own, a partial
+//! sandbox's session card (Landlock below ABI 3), answered `s`, said and never the entry's failure. Then it's judged: its exit, what its
 //! report says, the cards it raised, what it made and wrote outside the project, and its time against the same
 //! command unsandboxed in a copy.
 //!
@@ -716,6 +717,16 @@ fn answered_by_script(
                 Some(a) => format!("{kind} {}", a.why.word()),
                 None => kind.to_string(),
             };
+            // (the machine's own card, not the entry's: a partial sandbox — Landlock below ABI 3 — asks once a
+            // session how Claude's runs go in it; the harness answers `s`, runs going in it unasked as a full
+            // tier's do, and says it with the cards)
+            if let crate::offer::What::NoSandbox { kind, first, .. } = &o.what
+                && let Some(why) = the_machines(kind, *first)
+            {
+                v.cards.push(the_machines_said(&said, why));
+                ed.offer_for_session();
+                continue;
+            }
             let listed = entry.cards.iter().any(|c| c == kind || *c == said);
             let host = o.host().map(|a| {
                 let after = crate::term::run_duration(start.elapsed());
@@ -750,6 +761,21 @@ fn answered_by_script(
             ed.handle_event(ev);
         }
     }
+}
+
+/// Whether a no-sandbox card is the machine's own, not an entry's — the session's first of a partial sandbox (Landlock
+/// below ABI 3 asks once a session how Claude's runs go in it): its why. The scripted user answers it `s`, runs going
+/// in it unasked as a full tier's do; nothing else that nobody listed gets a yes.
+fn the_machines(kind: &crate::tools::Unsandboxed, first: bool) -> Option<&str> {
+    match (kind, first) {
+        (crate::tools::Unsandboxed::Partial(why), true) => Some(why),
+        _ => None,
+    }
+}
+
+/// The machine's card as the verdict's cards say it.
+fn the_machines_said(said: &str, why: &str) -> String {
+    format!("{said} → s (the machine's: {why})")
 }
 
 /// The report against what was expected: how it ended, where it ran, what it was refused.
@@ -1527,6 +1553,22 @@ timeout = 60
             c,
             vec![(out.join("gone"), "removed"), (out.join("kept"), "changed"), (out.join("new"), "made")]
         );
+    }
+
+    /// The one card the harness answers that no entry lists: the session's first card of a partial sandbox, `s`,
+    /// said with the cards. A later one, or one of no sandbox at all, is an entry's like any other — nobody listed it:
+    /// `n`, failing the entry (the test below).
+    #[test]
+    fn only_the_sessions_first_partial_sandbox_card_is_the_machines() {
+        use crate::tools::Unsandboxed::{Missing, Partial};
+        let why = "Landlock ABI 2".to_string();
+        assert_eq!(the_machines(&Partial(why.clone()), true), Some(why.as_str()));
+        assert_eq!(the_machines_said("no-sandbox", &why), "no-sandbox → s (the machine's: Landlock ABI 2)");
+        for (kind, first) in
+            [(Partial(why.clone()), false), (Missing(why.clone()), true), (Missing(why), false)]
+        {
+            assert_eq!(the_machines(&kind, first), None, "{kind:?}, first {first}");
+        }
     }
 
     /// A card nobody listed fails the entry, answered `n` — what it asked never runs. (No sandbox needed: the

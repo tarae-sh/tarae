@@ -202,6 +202,7 @@ fn in_stand_in_home() {
     // Stand-in files in home, state, config, outside and both sessions' checkouts
     write_file(&outside.join("existing"), "keep\n");
     write_file(&other_root.join("src/lib.rs"), "pub fn q() {}\n");
+    write_file(&other_root.join("src/keep.rs"), "pub fn k() {}\n");
     write_file(&home.join(".config/tarae/config.toml"), "# user config\n");
     write_file(&home.join(".local/state/tarae/sandbox.json"), &format!("{{\"token\":\"{FAKE_TOKEN}\"}}\n"));
     write_file(&home.join(".local/state/tarae/trust.json"), "{}\n");
@@ -275,8 +276,14 @@ fn in_stand_in_home() {
     let _other_cleanup = RunCleanupGuard { policy: other_policy.clone() };
     if let Ok(want) = std::env::var("TARAE_EXPECT_TIER") {
         let want = want.trim();
+        // (the expected tier by its name; below Landlock ABI 3 its runs say it `partial`, as the product does)
         if !want.is_empty() {
-            assert_eq!(policy.tier_said().as_deref(), Some(want), "unexpected sandbox tier");
+            #[cfg(target_os = "linux")]
+            let partial = crate::landlock::abi().is_ok_and(|n| n < 3);
+            #[cfg(not(target_os = "linux"))]
+            let partial = false;
+            let want = format!("{want}{}", if partial { " partial" } else { "" });
+            assert_eq!(policy.tier_said(), Some(want), "unexpected sandbox tier");
         }
     }
     let own_run = policy.run.as_ref().unwrap().path().to_path_buf();
@@ -461,28 +468,40 @@ fn in_stand_in_home() {
         shared_phrase: None,
     });
 
-    // 2. 1.1, 1.6 | write-other-session
+    // 2. 1.1, 1.6 | write-other-session — and a file of it emptied by its path, no file opened to write: Landlock's
+    // truncating rule is ABI 3's, so below it that one is reached (shared, said), the rest refused all the same
     let r2_checkout = got["r2_checkout"] == "refused" && !other_root.join("src/pwn").exists();
     let r2_append = got["r2_append"] == "refused"
         && fs::read_to_string(other_root.join("src/lib.rs")).unwrap() == "pub fn q() {}\n";
     let r2_run = got["r2_run"] == "refused" && !other_run.join("pwn").exists();
     let r2_runs = got["r2_runs"] == "refused" && !runs.join("pwn").exists();
-    let r2_ok = r2_checkout && r2_append && r2_run && r2_runs;
+    let r2_truncate = got["r2_truncate"] == "refused"
+        && fs::read_to_string(other_root.join("src/keep.rs")).unwrap() == "pub fn k() {}\n";
+    let r2_written = r2_checkout && r2_append && r2_run && r2_runs;
+    #[cfg(target_os = "linux")]
+    let r2_partial = crate::landlock::abi().is_ok_and(|n| n < 3);
+    #[cfg(not(target_os = "linux"))]
+    let r2_partial = false;
     rows.push(Row {
         claim: "1.1, 1.6",
         id: "write-other-session",
-        expected: Verdict::Refused,
-        verdict: if r2_ok { Verdict::Refused } else { Verdict::Allowed },
+        expected: if r2_partial { Verdict::Shared } else { Verdict::Refused },
+        verdict: match (r2_written, r2_truncate) {
+            (true, true) => Verdict::Refused,
+            (true, false) => Verdict::Shared,
+            (false, _) => Verdict::Allowed,
+        },
         witness: format!(
-            "checkout={}, append={}, run-dir={}, runs-base={}",
+            "checkout={}, append={}, run-dir={}, runs-base={}, truncate={}",
             word(r2_checkout),
             word(r2_append),
             word(r2_run),
-            word(r2_runs)
+            word(r2_runs),
+            word(r2_truncate)
         ),
         detail: got.get("r2_err").cloned().unwrap_or_default(),
-        part: Some((Part::Files, Some(!r2_ok))),
-        shared_phrase: None,
+        part: Some((Part::Files, Some(!(r2_written && r2_truncate)))),
+        shared_phrase: Some("can't control truncating files"),
     });
 
     // 3. 1.3, 1.9 | write-tarae-own
@@ -2138,6 +2157,16 @@ fn try_append(path: &Path) -> Result<(), io::Error> {
     f.write_all(b"pwn\n")
 }
 
+/// Emptied by its path (`truncate(2)`), no file opened to write.
+fn try_truncate(path: &Path) -> Result<(), io::Error> {
+    let c = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: a plain call on a path the test made.
+    match unsafe { libc::truncate(c.as_ptr(), 0) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
 fn try_all_mutations(path: &Path) -> Result<(), io::Error> {
     let mut errs = Vec::new();
     for r in [
@@ -2196,6 +2225,7 @@ fn sandbox_main(cfg: &HashMap<&str, &str>) {
             ("append", try_append(&other_root.join("src/lib.rs"))),
             ("run", try_write(&other_run.join("pwn"))),
             ("runs", try_write(&runs.join("pwn"))),
+            ("truncate", try_truncate(&other_root.join("src/keep.rs"))),
         ],
     );
 
