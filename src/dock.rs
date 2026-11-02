@@ -295,6 +295,14 @@ impl Editor {
     /// `C-w H J K L` (`swap_view_*`) from a group's member: docked on that side — left, above, right; below is the slot
     /// (`C-w J`). False: the keys aren't in a group (the code's panes trade places, `swap_view`).
     pub fn dock_key(&mut self, dx: i32, dy: i32) -> bool {
+        // (the chat floating, in hand: `C-w L` docks it where it docks — the right; another side says so)
+        if self.workspace.is_at(At::Chat) && self.sizes.chat_float.is_some() {
+            match (dx, dy) {
+                (1, 0) => self.chat_float(false),
+                _ => self.set_status("the chat docks on the right — C-w L or C-w e"),
+            }
+            return true;
+        }
         if let Some(k) = self.float_list_in_hand() {
             if matches!(k, GroupKind::Messages | GroupKind::Folders) {
                 self.set_status(format!(

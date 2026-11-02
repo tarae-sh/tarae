@@ -315,6 +315,8 @@ const BUTTONS: &[&str] = &[
     "C-\\",
     "C-w j",
     "C-w z",
+    // (the floating chat's bottom line: docked back, the keys staying in it)
+    "C-w e",
     // (round 3: a list's, a panel's, the chat's own — `? keys`, `s u stage`, `c commit`, `b bring` (its card asks), `$
     // billing`, `K where it ran`, `- fold`, `r restart` (it comes back), `↑ edit queued`, `C-y copy`, `C-v split`)
     "?",

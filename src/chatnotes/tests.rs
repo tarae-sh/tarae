@@ -2156,6 +2156,121 @@ fn a1c_reading_on_from_the_view_mode_the_minimized_chat_and_none_kept() {
     );
 }
 
+/// The flow plan's piece 1 (#274): `space L` showing the chat opens it at the paragraph about your line — the answer's
+/// note there, as its card's `enter` reads on —, that paragraph's first row at the top under a row of air even near the
+/// conversation's end (air under its last row, until a key typed takes it back to its bottom), a `▎` down its rows; with
+/// no answer's note at your line, at the first answer you hadn't had in sight; with none unread, at the end.
+#[test]
+fn flow1_space_l_opens_at_your_lines_paragraph_at_the_top_marked() {
+    use crate::workspace::At;
+    let (_s, root, mut ed) = project("flow1-l", &["src/a.rs", "src/b.rs"]);
+    // (`space L` shows it as `space l` does, its claude started: a stand-in)
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    answer(&mut ed, &long_answer(12));
+    answer(&mut ed, "Then src/b.rs:2 checks it.");
+    ed.open(&root.join("src/a.rs")).unwrap();
+    // (the transcript's first row on screen, and the rows drawn)
+    let drawn = |ed: &mut Editor| {
+        chat_rows(ed);
+        let rows: Vec<String> = chat_rows(ed).lines().map(str::to_string).collect();
+        let y = ed.screen.chat_view.get().expect("the chat drawn").0;
+        (y, rows)
+    };
+    ed.workspace.viewer.at = At::Code;
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    feed(&mut ed, "5G");
+    drawn(&mut ed);
+    feed(&mut ed, " L");
+    screen(&mut ed);
+    assert_eq!(ed.cursor_line(), 4, "space L hides it: your cursor where it was");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().hidden, "hidden");
+    // At the note's line: its paragraph at the top, a row of air over it, marked down its rows
+    feed(&mut ed, "3G L");
+    let (y, rows) = drawn(&mut ed);
+    assert!(rows[y + 1].contains("▎It is read in"), "at the top, marked:\n{}", rows.join("\n"));
+    let marked = rows.iter().filter(|r| r.contains('▎') && r.contains("Sentence")).count();
+    assert!(marked >= 2, "every row of it marked:\n{}", rows.join("\n"));
+    assert!(!rows.iter().any(|r| r.contains("▎Then")), "the next answer isn't");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.read_lift.is_some(), "near the end: air under the last row");
+    assert_eq!(ed.workspace.viewer.at, At::Chat, "the keys in it, as space L gives them");
+    let code = ed.doc();
+    assert_eq!(code.path.as_deref(), Some(root.join("src/a.rs").as_path()), "a.rs in front");
+    assert_eq!(
+        (code.text.len_lines(), code.selection().primary().head),
+        (11, 32),
+        "the code as it was: line 3"
+    );
+    // A key typed: back to its bottom
+    feed(&mut ed, "x");
+    let (y, rows) = drawn(&mut ed);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().read_lift.is_none());
+    assert!(!rows[y + 1].contains("It is read in"), "at the bottom again:\n{}", rows.join("\n"));
+    // An answer that came while it was hidden: from a line with no note, `space L` opens at it
+    ed.workspace.viewer.at = At::Code;
+    feed(&mut ed, " L");
+    answer(&mut ed, "A third look: src/b.rs:2 again.");
+    feed(&mut ed, "1G L");
+    let (y, rows) = drawn(&mut ed);
+    assert!(rows.iter().any(|r| r.contains("A third look")), "in sight:\n{}", rows.join("\n"));
+    assert!(rows[y + 1].contains("where?"), "its question at the top:\n{}", rows.join("\n"));
+    // Nothing unread: at the end
+    ed.workspace.viewer.at = At::Code;
+    feed(&mut ed, " L");
+    feed(&mut ed, " L");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert_eq!((c.scroll, c.read_lift, c.unread_at), (0, None, None), "at the end");
+}
+
+/// The flow plan's piece 1 (the user, 2026-11-03, on its shots): while the floating reader is open an answer's note card
+/// steps aside — its words are the reader's —, the line's `¶` staying, its keys not the card's (`esc` closes nothing
+/// unseen), and it comes back as the reader closes. Docked, the card stands beside the chat; a note of yours keeps its
+/// card over the floating reader (its words are no answer's).
+#[test]
+fn flow1_the_floating_reader_hides_its_answers_card_while_open() {
+    use crate::workspace::At;
+    let (_s, root, mut ed) = project("flow1-aside", &["src/a.rs"]);
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    answer(&mut ed, "The count is read twice in `src/a.rs:3`.");
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    ed.workspace.viewer.at = At::Code;
+    let open = ed.workspace.claude.notes.open.expect("the turn's end opened its card");
+    let line3 = |rows: &[String]| rows.iter().find(|r| r.contains("let line_3 = 3;")).cloned().unwrap();
+    // Docked: the card under its line, beside the chat
+    let rows = screen(&mut ed);
+    assert!(rows.join("\n").contains("╭─ chat"), "docked: the card\n{}", rows.join("\n"));
+    // Floating, shown: the reader, no card, the line's `¶` kept
+    ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+    let rows = screen(&mut ed);
+    let all = rows.join("\n");
+    assert!(all.contains("╭─ claude") && !all.contains("╭─ chat"), "the reader, no card:\n{all}");
+    assert!(line3(&rows).contains('¶'), "its ¶ stays: {}", line3(&rows));
+    assert!(crate::notes::opened(&ed, ed.doc()).is_none(), "stepped aside");
+    // (the code's `esc` closes no card it can't see: it's still open behind the reader)
+    feed(&mut ed, "<esc>");
+    assert_eq!(ed.workspace.claude.notes.open, Some(open), "left as it was");
+    // The reader closed (`space L`): the card back
+    feed(&mut ed, " L");
+    let rows = screen(&mut ed);
+    let all = rows.join("\n");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().hidden, "the reader hidden");
+    assert!(all.contains("╭─ chat") && !all.contains("╭─ claude"), "the card back:\n{all}");
+    // Shown again (`space L` from the code): aside again
+    feed(&mut ed, "gg L");
+    let all = screen(&mut ed).join("\n");
+    assert!(all.contains("╭─ claude") && !all.contains("╭─ chat"), "aside again:\n{all}");
+    // A note of yours keeps its card over the floating reader
+    // (on line 1: its card above the reader's frame, at 1/4 of the screen)
+    let id = crate::notes::add(&mut ed, &a, 0..1, By::You, "check this one");
+    crate::notes::open(&mut ed, id);
+    ed.workspace.viewer.at = At::Code;
+    let all = screen(&mut ed).join("\n");
+    assert!(all.contains("╭─ note") && all.contains("╭─ claude"), "yours stays:\n{all}");
+}
+
 /// #262, the review's: a note of yours reads as the chat draws your message — line by line, a `#` or a `|` as typed — and a
 /// Claude's (the reviewer's here) as the chat renders a Claude's: markdown, its single line breaks joined.
 #[test]

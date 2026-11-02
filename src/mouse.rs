@@ -504,6 +504,25 @@ impl Editor {
             let hint = hint_on(S::Ask).filter(|_| down);
             return at(S::Ask, hint.map_or(Part::Blank, |i| Part::Word(Word::Does(i))));
         }
+        // The chat floating (the flow plan's reader): over the floating panes, under the cards and the follow card —
+        // what's in its frame is its own, nothing under it pressed through it
+        let carded = s.thought_card.get().or(s.chat_mini.get()).is_some_and(|r| inside(r, x, y));
+        if self.picker.is_none()
+            && !carded
+            && self.workspace.claude.chat.is_some()
+            && s.chat_frame.is_some_and(|r| inside(r, x, y))
+        {
+            let mine = |w: &&crate::wordspot::Spot| w.on == S::Chat && on(w.y, w.from, w.to, x, y);
+            if down && let Some(i) = s.word_spots.borrow().iter().rposition(|w| mine(&w)) {
+                return at(S::Chat, Part::Word(Word::Does(i)));
+            }
+            if down
+                && let Some(&(.., spot)) = s.session_spots.borrow().iter().find(|l| on(l.0, l.1, l.2, x, y))
+            {
+                return at(S::Chat, Part::Word(Word::Session(spot)));
+            }
+            return self.chat_under(wheel, x, y);
+        }
         // Floating panes: the topmost there takes it, nothing under it pressed through it
         let floated = self.float_at(x, y).map(|f| f.0).filter(|_| self.picker.is_none());
         // (a floating group's header is the slot's drawn in its frame: its keys there, on its top line)
@@ -537,7 +556,6 @@ impl Editor {
         // (a line's words before the line: the slot's line drags off its tabs and its keys, as off its tabs; the last
         // drawn first, a card's line over a pane's — and under the follow card, the minimized chat, only the card's own:
         // a word it covers is neither pressed nor lit through it)
-        let carded = s.thought_card.get().or(s.chat_mini.get()).is_some_and(|r| inside(r, x, y));
         let shown = |w: &&crate::wordspot::Spot| !carded || w.on == S::FollowCard;
         if down
             && free
@@ -751,34 +769,10 @@ impl Editor {
         }
         if let Some(cx) = s.chat_x
             && self.workspace.claude.chat.is_some()
+            && s.chat_frame.is_none()
             && x >= cx
         {
-            if wheel {
-                return at(S::Transcript, self.transcript_text(x, y));
-            }
-            if let Some(i) = s.chat_ran.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y)) {
-                return at(S::Transcript, Part::Link(Link::Ran(i)));
-            }
-            if let Some(i) = s.chat_ids.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y)) {
-                return at(S::Transcript, Part::Link(Link::Id(i)));
-            }
-            if let Some(i) = links(y) {
-                return at(S::Transcript, Part::Link(Link::Chat(i)));
-            }
-            let chip = |l: &(usize, usize, usize, crate::whole::Cut)| match l.3 {
-                crate::whole::Cut::With(which) if on(l.0, l.1, l.2, x, y) => Some(which),
-                _ => None,
-            };
-            if let Some(which) = s.cut_spots.borrow().iter().find_map(chip) {
-                return at(S::Chat, Part::Word(Word::With(which)));
-            }
-            if s.chat_input_row(y).is_some() {
-                return at(S::Input, self.input_text(x, y));
-            }
-            if s.chat_row(y).is_some() {
-                return at(S::Transcript, self.transcript_text(x, y));
-            }
-            return at(S::Chat, Part::Blank);
+            return self.chat_under(wheel, x, y);
         }
         // (Claude's edit review in place of the code — an answer still being written leaves the code the code's)
         if self.workspace.claude.review.as_ref().is_some_and(|r| r.ready) {
@@ -882,6 +876,39 @@ impl Editor {
         let x = s.text_x(x, y, rect.x);
         let col = crate::wrap::clamp_col(c0 + x.saturating_sub(rect.x + gutter).saturating_sub(x0), end);
         Some(Part::Text { line, col })
+    }
+
+    /// What's under (`x`, `y`) in the chat — docked beside the code or floating in its frame: a run's row, an id, a link,
+    /// a chip of what goes with the message, its input, its conversation, else its blank.
+    fn chat_under(&self, wheel: bool, x: usize, y: usize) -> Under {
+        use Surface as S;
+        let (s, at) = (&self.screen, Under::new);
+        if wheel {
+            return at(S::Transcript, self.transcript_text(x, y));
+        }
+        if let Some(i) = s.chat_ran.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y)) {
+            return at(S::Transcript, Part::Link(Link::Ran(i)));
+        }
+        if let Some(i) = s.chat_ids.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y)) {
+            return at(S::Transcript, Part::Link(Link::Id(i)));
+        }
+        if let Some(i) = s.chat_links.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y)) {
+            return at(S::Transcript, Part::Link(Link::Chat(i)));
+        }
+        let chip = |l: &(usize, usize, usize, crate::whole::Cut)| match l.3 {
+            crate::whole::Cut::With(which) if on(l.0, l.1, l.2, x, y) => Some(which),
+            _ => None,
+        };
+        if let Some(which) = s.cut_spots.borrow().iter().find_map(chip) {
+            return at(S::Chat, Part::Word(Word::With(which)));
+        }
+        if s.chat_input_row(y).is_some() {
+            return at(S::Input, self.input_text(x, y));
+        }
+        if s.chat_row(y).is_some() {
+            return at(S::Transcript, self.transcript_text(x, y));
+        }
+        at(S::Chat, Part::Blank)
     }
 
     /// The conversation's row and column under (`x`, `y`), if a row of it was drawn there.

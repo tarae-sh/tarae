@@ -541,11 +541,21 @@ fn all_at(ed: &Editor, line: usize) -> Vec<&Note> {
     v
 }
 
-/// The note whose card is open in `doc` (`Notes.open`).
+/// The note whose card is open in `doc` (`Notes.open`) — but an answer's while the floating reader is open (the flow
+/// plan's piece 1, the user 2026-11-03): its words are the reader's, so its card steps aside (`stepped_aside`), drawn,
+/// keyed and closed by nothing, and comes back as the reader closes — `Notes.open` is left as it was; its line's `¶`
+/// stays.
 pub fn opened<'a>(ed: &'a Editor, doc: &crate::document::Document) -> Option<&'a Note> {
     let id = ed.workspace.claude.notes.open?;
     let path = doc.path.as_deref()?;
-    ed.workspace.claude.notes.list.iter().find(|n| n.id == id && n.path == path)
+    let n = ed.workspace.claude.notes.list.iter().find(|n| n.id == id && n.path == path)?;
+    (!stepped_aside(ed, n)).then_some(n)
+}
+
+/// Whether `n`'s card gives way to the floating reader: an answer's note (its paragraph is in the conversation the
+/// reader shows) while the chat floats, shown. A docked chat stands beside the code, the card in sight with it.
+pub fn stepped_aside(ed: &Editor, n: &Note) -> bool {
+    n.answer.is_some() && ed.chat_floating()
 }
 
 /// The lines a new note `space n` writes is about: the selection's; a walk-through's stop's, the cursor on it (never a
@@ -615,6 +625,16 @@ pub fn carded<'a>(ed: &'a Editor, doc: &crate::document::Document) -> Option<&'a
 pub fn here(ed: &Editor) -> Option<&Note> {
     let line = ed.cursor_line();
     first_of(ed, &all_at(ed, line), line)
+}
+
+/// The answer's paragraph about your line, for `space L` (the flow plan's reader): of the answers' notes starting at
+/// your cursor's line, the newest one's that names a place there (a walk-through's stop on the same line names none —
+/// its paragraph is the one naming it), else the note `here`'s. None: no answer's note on your line.
+pub fn answer_here(ed: &Editor) -> Option<crate::chatnotes::Origin> {
+    let line = ed.cursor_line();
+    let starts = all_at(ed, line).into_iter().filter(|n| n.lines.start == line);
+    let named = starts.filter_map(|n| n.answer.as_ref()).filter(|o| !o.name.is_empty()).max_by_key(|o| o.n);
+    named.cloned().or_else(|| here(ed).and_then(|n| n.answer.clone()))
 }
 
 /// Whether follow holds the view on note `n`'s lines — Claude's place, in sight but not where you are: a key of yours

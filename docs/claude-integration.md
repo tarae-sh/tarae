@@ -77,6 +77,19 @@ continue` row first, its claude starting). `:chat-close` ends the conversation (
 way cut off) and `:chat-new` starts over. One
 process lives for the whole conversation, so Claude remembers what came before.
 
+**The reader.** `C-w e` from the chat floats it over the code in a frame of its own, the code keeping its whole width:
+as wide as the chat's prose (78 columns, centred; a narrower screen's whole width), its top at a quarter of the screen,
+half of it tall, its keys in the frame's bottom line (`C-w e dock`, `space L hide`). `C-w e` again, or `C-w L`, docks it
+back on the right; your choice is kept (`sizes.json`) until you change it. Floating, it goes once used, as a floating
+list does: `esc` from its input (to its view mode first when there's something to read, as docked) and its view
+mode's `esc` or `q` hide it, the conversation going on; docked, it stays. Nothing is said for hiding, showing,
+floating or docking it: the change is in sight. `space L` showing the chat, floating or docked, opens it at the
+paragraph about your cursor's line — the answer's note there, as a card's `enter reads on` does — at the top, with a
+faint `▎` down its rows while you read it (near the conversation's end, air under the last row); with no answer's
+note on your line, at the first answer you haven't had in sight, from its question; else at the end. While the reader
+floats, an answer's note card steps aside — its words are the reader's —, its line's `¶` staying, and comes back as
+the reader closes; a note of yours or the reviewer's keeps its card.
+
 **What it's doing now** is said once: on the follow card while it's drawn, else on the status line, right after the
 mode word (and after whose turn it is, where the status line names the session):
 

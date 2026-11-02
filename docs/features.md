@@ -383,8 +383,9 @@ configs carry over as they are.
   taller than half (`min(H/4, (H − h)/2)`, the two meeting at half: nothing jumps) —, then where you put it — kept across `:restart`, held on the screen as it's
   resized), `C-w e` again docks it back where it came from, `C-w H J K L` on that side; `C-w m` and `h j k l` move it,
   `C-w < > - +` size it, `C-w =` puts it back in the middle, the mouse drags its top line and sizes it by its edges; the
-  one with the keys on top; `C-w e` has that one meaning — where nothing in hand floats it says so (the side panel
-  has its own keys, `space e`, `space g`…) · `C-w t` turn the code's
+  one with the keys on top; `C-w e` has that one meaning — from the chat it floats the conversation over the code and
+  docks it back (the reader: [Chat panel](claude-integration.md#chat-panel)); where nothing in hand floats it says so
+  (the side panel has its own keys, `space e`, `space g`…) · `C-w t` turn the code's
   split (side by side ↔ stacked) — from a group, its members (side by side ↔ over and under) · `C-w q` close — the window, or the panel that has the keys (side panel, the
   review's rail, `:procs`, a test, task or terminal panel, as its own `q` does; the chat hides with `space L`, its
   conversation going on, and ends only by `:chat-close`, so a slip can't cut Claude's turn off) · `C-w o` only this one (`space w` works too); `:vsplit file`, `:hsplit file`.

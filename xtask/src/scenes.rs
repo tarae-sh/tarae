@@ -442,6 +442,26 @@ const F273_ASK: &[&str] = a1c_keys!("40G", " ", "n");
 const F273_REPLAY: &[&str] = a1c_keys!("[r");
 const F273_REPLAY_OFF: &[&str] = a1c_keys!("[r", "@1", "j");
 const F273_FOLLOW: &[&str] = a1c_keys!(" ", "F");
+/// The flow plan's piece 1, the reader, on A1c's answer: `space L` from the line of the list's paragraph (21) — hidden,
+/// then shown again · the chat floated by `C-w e`, docked again by it · floating, `space L` hides it and brings it back
+/// at line 21's paragraph · floating and hidden, the cut card's `enter reads on` (#274). (A1c's `src/spool.rs` is
+/// theirs too — `run_files`.)
+const FLOW1_L: &[&str] = a1c_keys!("21G", " ", "L", "@0.5", " ", "L");
+const FLOW1_FLOAT: &[&str] = a1c_keys!(" ", "l", "@0.5", "\x17", "e");
+const FLOW1_DOCK: &[&str] = a1c_keys!(" ", "l", "@0.5", "\x17", "e", "@0.5", "\x17", "e");
+// (hidden by `space L` from its view mode — `esc`'s count to close it depends on where that lands, a selection let go
+// first; from its input `space L` is typed)
+const FLOW1_FLOAT_L: &[&str] =
+    a1c_keys!(" ", "l", "@0.5", "\x17", "e", "@0.5", "\x1b", " ", "L", "@0.5", "21G", " ", "L");
+const FLOW1_FLOAT_READ: &[&str] =
+    a1c_keys!(" ", "l", "@0.5", "\x17", "e", "@0.5", "\x1b", " ", "L", "@0.5", "21G", "\r");
+/// The baseline's other two answers in the floating reader, read by hand: `a1-none` (no place: its words on the card at the
+/// last read, `]n`) and `a1-flow` (one paragraph at a line: `gg]n]n`), the chat floated and hidden, then `space L` from
+/// that line.
+const FLOW1_NONE_READ: &[&str] =
+    a1_keys!(" ", "l", "@0.5", "\x17", "e", "@0.5", "\x1b", " ", "L", "@0.5", "]n", " ", "L");
+const FLOW1_FLOW_READ: &[&str] =
+    a1_keys!(" ", "l", "@0.5", "\x17", "e", "@0.5", "\x1b", " ", "L", "@0.5", "gg]n]n", " ", "L");
 
 /// #269's scenes, on A1c's file with no answer: a drag over the folded doc comment (lines 3–7), one from the code above
 /// into it, `x` on its first line and four times, INSERT on its line 5.
@@ -3280,6 +3300,14 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1c-f273-replay", claude: "a1c", files: SPOOL, keys: F273_REPLAY },
     Scene { name: "a1c-f273-replay-off", claude: "a1c", files: SPOOL, keys: F273_REPLAY_OFF },
     Scene { name: "a1c-f273-follow", claude: "a1c", files: SPOOL, keys: F273_FOLLOW },
+    // (the flow plan's piece 1: the reader floats or docks, `space L` opens it at your line's paragraph)
+    Scene { name: "flow1-l", claude: "a1c", files: SPOOL, keys: FLOW1_L },
+    Scene { name: "flow1-float", claude: "a1c", files: SPOOL, keys: FLOW1_FLOAT },
+    Scene { name: "flow1-dock", claude: "a1c", files: SPOOL, keys: FLOW1_DOCK },
+    Scene { name: "flow1-float-l", claude: "a1c", files: SPOOL, keys: FLOW1_FLOAT_L },
+    Scene { name: "flow1-float-read", claude: "a1c", files: SPOOL, keys: FLOW1_FLOAT_READ },
+    Scene { name: "flow1-none-read", claude: "a1-none", files: MAIN, keys: FLOW1_NONE_READ },
+    Scene { name: "flow1-flow-read", claude: "a1-flow", files: MAIN, keys: FLOW1_FLOW_READ },
     // (#269: a folded doc comment stays folded while you select it)
     Scene { name: "f269-drag", claude: "idle", files: SPOOL, keys: F269_DRAG },
     Scene { name: "f269-into", claude: "idle", files: SPOOL, keys: F269_INTO },
@@ -5062,7 +5090,13 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
         "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
-        s if s.starts_with("a1c-") || s.starts_with("f269-") => vec![("src/spool.rs", SPOOL_RS.into())],
+        // (the flow plan's piece 1 on A1c's answer too — its two on A1's answers have MAIN's files alone)
+        s if s.starts_with("a1c-")
+            || s.starts_with("f269-")
+            || s.starts_with("flow1-") && !matches!(s, "flow1-none-read" | "flow1-flow-read") =>
+        {
+            vec![("src/spool.rs", SPOOL_RS.into())]
+        }
         _ => Vec::new(),
     }
 }

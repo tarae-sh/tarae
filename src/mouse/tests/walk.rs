@@ -74,6 +74,25 @@ const MOUSE_SCENES: &[Scene] = &[
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
     }),
+    // (the flow plan's reader: the chat floating over the code in its frame, its keys in the frame's bottom line — the
+    // keys in it, then in the code under it)
+    ("the chat floating over a long file", |ed| {
+        long_text(ed);
+        chat(ed, "a draft");
+        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
+    }),
+    ("the chat floating, the keys in the code", |ed| {
+        long_text(ed);
+        chat(ed, "");
+        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+    }),
     // (what the wheel has room to scroll on each surface: `SCROLLS`)
     ("a long conversation", |ed| {
         chat(ed, "");

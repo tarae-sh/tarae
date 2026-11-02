@@ -753,6 +753,15 @@ pub struct Chat {
     /// A note's card read on here (focus A1c, `notes::read_on`): its answer's paragraph held unfolded, and whether the
     /// chat was taken to it yet — once a frame laid it out (`chatdoc::reading`).
     pub reading: Option<(crate::chatdoc::Reading, bool)>,
+    /// `space L` showing the chat with no answer's note on your line (the flow plan's reader): the first message you
+    /// haven't had in sight (`seen`), taken to the top once a frame laid it out (`chatdoc::reading`).
+    pub unread_at: Option<usize>,
+    /// The messages whose last row was in sight while the chat was drawn — what you've had in front of you, at most.
+    pub seen: usize,
+    /// The chat taken to a paragraph near the conversation's end (#274): the rows it shows as if there were this many,
+    /// so that paragraph stands at the top with air under the last row — until the conversation is that long, or goes
+    /// back to its bottom (a key typed, a message sent).
+    pub read_lift: Option<usize>,
     /// The conversation as a read-only document, following what the frames lay out (`chatdoc.rs`) — its view mode is
     /// normal mode on it, its selection where you were. None until the chat is first drawn.
     pub transcript: Option<crate::chatdoc::Transcript>,
@@ -1149,6 +1158,9 @@ impl Chat {
             slash: None,
             view_wanted: false,
             reading: None,
+            unread_at: None,
+            seen: 0,
+            read_lift: None,
             transcript: None,
             sends: Vec::new(),
             session_tools: false,
@@ -1818,17 +1830,48 @@ pub fn keep_now(ed: &Editor) {
 /// (`open`). `space l` never hides.
 pub fn toggle(ed: &mut Editor) {
     let shown = ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact());
-    if shown { hide(ed) } else { open(ed) }
+    if shown {
+        return hide(ed);
+    }
+    // (the flow plan's reader: shown at the paragraph about your line — the answer's note there, as its card's `enter`
+    // reads on —, else at the first answer you haven't had in sight, else at the end)
+    let here = crate::notes::answer_here(ed);
+    let had = ed.workspace.claude.chat.is_some();
+    open(ed);
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| had) else { return };
+    // (the first answer not had in sight — from its question, what it answers in sight over it, as the reader's mockup)
+    let unread =
+        (c.msgs.iter().enumerate().skip(c.seen)).find(|(_, m)| m.role == Role::Assistant).map(|m| m.0);
+    let asked = unread.map(|i| c.msgs[..i].iter().rposition(|m| m.role == Role::User).unwrap_or(i));
+    match (here, asked) {
+        (Some(o), _) => {
+            let at = crate::chatdoc::Reading { turn: o.turn, name: o.name.clone(), said: o.said };
+            c.reading = Some((at, false));
+        }
+        (None, Some(i)) => c.unread_at = Some(i),
+        (None, None) => (c.scroll, c.read_lift) = (0, None),
+    }
+}
+
+/// The keys leave the chat for the code (`esc` from its input with nothing to read, its view mode's `esc` and `q`):
+/// floating, it goes with them — hidden, its conversation going on, `space L` brings it back (the flow plan: a floating
+/// pane is done once used, a docked one stays). Nothing said: it's gone from sight.
+pub fn keys_left(ed: &mut Editor) {
+    ed.workspace.leave(At::Chat);
+    if ed.sizes.chat_float.is_some()
+        && let Some(c) = ed.workspace.claude.chat.as_mut()
+    {
+        c.hidden = true;
+    }
 }
 
 /// The chat hidden (`space L` on it shown, #270): the panel hidden, nothing ended — the conversation, its process, a turn under way and follow go
 /// on, as the minimized chat's do while Claude works; the keys the code's (`focus_sync`: a hidden chat holds none,
 /// wherever they were lent from or go back to). `space L` or `space l` brings it back; ending it is `:chat-close`
-/// (`close`).
+/// (`close`). Nothing said (the user, 2026-11-03): it's gone from sight, and the line it stood on said `space L hide`.
 pub fn hide(ed: &mut Editor) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.hidden = true;
-    ed.set_status("chat hidden, its conversation going on — space L shows it, :chat-close ends it");
 }
 
 /// `:chat-close`: the conversation ended — its process, a turn under way cut off, follow with it. Only by name (#270:
@@ -2815,7 +2858,9 @@ fn screen_hidden(ed: &Editor) -> Vec<crate::screen::Hidden> {
     let cols = ed.last_frame.as_ref().map_or(0, |f| f.1 as usize);
     let mut hidden = crate::reads::key_panes(ed);
     hidden.extend(ed.screen.terminal_rows.filter(|_| !ed.config.llm.screen_terminal).map(|rows| {
-        crate::screen::Hidden { rows, cols: (0, ed.screen.chat_x.unwrap_or(cols)), note: LEFT_OUT.into() }
+        // (the chat beside them: up to it; floating over them, the whole width)
+        let docked = ed.screen.chat_x.filter(|_| ed.screen.chat_frame.is_none());
+        crate::screen::Hidden { rows, cols: (0, docked.unwrap_or(cols)), note: LEFT_OUT.into() }
     }));
     hidden
 }
@@ -3498,6 +3543,8 @@ fn submit_as(
     let n = c.msgs.iter().filter(|m| m.role == Role::User).count();
     c.follow.replay.asked(n, question);
     c.scroll = 0;
+    // (a paragraph read on to and its mark: you've moved on)
+    (c.reading, c.read_lift) = (None, None);
     c.state = State::Thinking;
     c.started = crate::clock::now();
     c.turn_bare = false;
@@ -4359,7 +4406,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         && !crate::chatdoc::keyed(ed)
         && let Some(c) = ed.workspace.claude.chat.as_mut()
     {
-        c.scroll = 0;
+        (c.scroll, c.read_lift) = (0, None);
     }
     // (a sequence of the input's under way: the key goes on with it, or what it typed goes in before the key)
     if !crate::chatdoc::keyed(ed) && crate::chatinput::under_way(ed, key) {
@@ -4524,6 +4571,129 @@ pub fn apply_code(ed: &mut Editor) {
 mod tests {
     use super::*;
 
+    /// The flow plan's piece 1: `C-w e` from the chat floats it over the code — in a frame at the floating panes' place,
+    /// as wide as its prose's measure, the code its whole width, its keys in the frame's bottom line — and docks it back;
+    /// your choice kept (`Sizes.chat_float`). Floating, `esc` and `q` close it as a floating list closes once used: its
+    /// input's `esc` to its view mode, the view mode's `esc` or `q` hiding it, the keys the code's; an empty chat's
+    /// input's `esc` at once; `space L` brings it back floating. Docked, `esc` leaves it standing. `C-w L` docks it too, the
+    /// other sides say where it docks. The mouse: a press in its frame is its own, outside it the code's.
+    #[test]
+    fn c_w_e_floats_and_docks_the_chat_esc_closes_it_floating() {
+        use crate::event::MouseKind;
+        use crate::mouse::Surface;
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(Msg::new(Role::User, "why does it fail?", ""));
+        c.msgs.push(Msg::new(Role::Assistant, "Because the map is filled twice.", ""));
+        let keys = |ed: &mut Editor, k: &str| {
+            for k in crate::wordspot::keys(k).expect("keys") {
+                ed.handle_key(k);
+            }
+            crate::uistate::tests::frame(ed);
+        };
+        let region = |ed: &Editor| ed.keys_to().region.name();
+        let text =
+            |ed: &Editor| crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        let row = |ed: &Editor, y: usize| text(ed).lines().nth(y).unwrap_or_default().to_string();
+        crate::uistate::tests::frame(&mut ed);
+        assert!(ed.screen.chat_w > 0 && ed.screen.chat_frame.is_none(), "docked by default");
+        // `C-w e`: floating, the keys still in its input, nothing said — the change is in sight (the user, 2026-11-03)
+        ed.status = None;
+        keys(&mut ed, "C-w e");
+        let (x, y, w, h) = ed.screen.chat_frame.expect("floating");
+        assert!(ed.sizes.chat_float.is_some(), "your choice kept");
+        assert_eq!(ed.screen.chat_w, 0, "no column: the code its whole width");
+        assert_eq!(region(&ed), "chat");
+        let said = |ed: &Editor, s: &str| ed.status.as_ref().is_some_and(|t| t.0.contains(s));
+        assert!(ed.status.is_none(), "no toast for floating: {:?}", ed.status);
+        assert!(text(&ed).contains("esc close") || text(&ed).contains("esc normal"), "its way out said");
+        assert_eq!(
+            (w, x, y),
+            (crate::sizes::CHAT_FLOAT_W, (120 - w) / 2, 10),
+            "its measure, centred, at 1/4"
+        );
+        assert_eq!(h, 20, "half the screen tall");
+        let (top, bottom) = (row(&ed, y), row(&ed, y + h - 1));
+        let cells = |r: &str| r.chars().skip(x).take(w).collect::<String>();
+        assert!(cells(&top).starts_with("╭─ claude") && cells(&top).ends_with('╮'), "{top}");
+        assert!(cells(&bottom).starts_with('╰') && cells(&bottom).ends_with('╯'), "{bottom}");
+        assert!(cells(&bottom).contains("C-w e dock"), "its keys in its bottom line: {bottom}");
+        assert!(text(&ed).contains("Because the map is filled twice."), "its conversation in it");
+        // The mouse: in its frame the chat's, outside it the code's
+        let at = |ed: &Editor, x, y| ed.mouse_under(MouseKind::Down, x, y).surface;
+        let input = ed.screen.chat_input.get().expect("its input drawn");
+        assert_eq!(at(&ed, input.x, input.y), Surface::Input);
+        assert!(matches!(at(&ed, x, y + 2), Surface::Chat | Surface::Transcript), "its frame's left line");
+        assert!(matches!(at(&ed, x + w + 2, y + 2), Surface::Code(_)), "beside it, the code");
+        assert!(matches!(at(&ed, x + 4, y - 2), Surface::Code(_)), "above it, the code");
+        // Docked, `esc` twice leaves it standing
+        keys(&mut ed, "C-w e");
+        assert!(ed.screen.chat_w > 0 && ed.sizes.chat_float.is_none(), "docked again");
+        assert!(ed.status.is_none(), "no toast for docking: {:?}", ed.status);
+        keys(&mut ed, "esc");
+        keys(&mut ed, "esc");
+        assert_eq!(region(&ed), "code");
+        assert!(ed.screen.chat_w > 0, "docked: it stays");
+        // Floating: the input's `esc` to its view mode, then `esc` closes it
+        keys(&mut ed, "space l");
+        keys(&mut ed, "C-w e");
+        keys(&mut ed, "esc");
+        assert_eq!(region(&ed), "view:chat", "its view mode first");
+        assert!(ed.screen.chat_frame.is_some());
+        keys(&mut ed, "esc");
+        assert_eq!(region(&ed), "code");
+        assert!(
+            ed.screen.chat_frame.is_none() && ed.workspace.claude.chat.as_ref().unwrap().hidden,
+            "closed"
+        );
+        assert!(ed.status.is_none(), "no toast for closing: {:?}", ed.status);
+        // `space L`: back, floating, the keys in it; its view mode's `q` closes it too
+        keys(&mut ed, "space L");
+        assert!(ed.screen.chat_frame.is_some() && region(&ed) == "chat", "back, floating");
+        assert!(ed.status.is_none(), "no toast for showing: {:?}", ed.status);
+        keys(&mut ed, "esc");
+        keys(&mut ed, "q");
+        assert!(ed.screen.chat_frame.is_none() && region(&ed) == "code", "q closes it");
+        // `C-w H` says where it docks; `C-w L` docks it
+        keys(&mut ed, "space L");
+        keys(&mut ed, "C-w H");
+        assert!(ed.screen.chat_frame.is_some(), "still floating");
+        assert!(said(&ed, "docks on the right"), "{:?}", ed.status);
+        keys(&mut ed, "C-w L");
+        assert!(ed.screen.chat_w > 0 && ed.sizes.chat_float.is_none() && region(&ed) == "chat", "docked");
+        // An empty chat floating: its input's `esc` closes it at once
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "");
+        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        crate::uistate::tests::frame(&mut ed);
+        assert!(ed.screen.chat_frame.is_some());
+        keys(&mut ed, "esc");
+        assert!(ed.screen.chat_frame.is_none() && region(&ed) == "code", "closed at once");
+    }
+
+    /// The flow plan's reader on a short screen (the review of piece 1): the frame is never refused — at the screen's
+    /// height at most, its input drawn —, so a chat floated with the keys in it is in sight, and `chat_floating` (what
+    /// sets an answer's note card aside) is what the layout drew.
+    #[test]
+    fn a_floating_chat_on_a_short_screen_is_drawn_whole() {
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "a draft");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(Msg::new(Role::User, "why does it fail?", ""));
+        c.msgs.push(Msg::new(Role::Assistant, "Because the map is filled twice.", ""));
+        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        for h in [5u16, 6, 8, 9, 12] {
+            let mut bytes = Vec::new();
+            crate::term::render(&mut ed, &mut bytes, 120, h).unwrap();
+            let (_, y, _, fh) = ed.screen.chat_frame.unwrap_or_else(|| panic!("{h} rows: no frame"));
+            assert!(ed.chat_floating(), "{h} rows: floating as drawn");
+            assert!(y + fh < h as usize, "{h} rows: above the status line");
+            let input = ed.screen.chat_input.get().unwrap_or_else(|| panic!("{h} rows: no input drawn"));
+            assert!((y..y + fh).contains(&input.y), "{h} rows: its input in its frame");
+        }
+    }
+
     /// #252: a message moves a conversation's time as it's sent — a note closed mid-turn keeps that, not the last turn's.
     #[test]
     fn a_message_moves_the_conversations_time() {
@@ -4592,9 +4762,11 @@ mod tests {
         assert_eq!(region(&ed), "code");
         keys(&mut ed, "space l");
         assert!(shown(&ed) && region(&ed) == "chat", "space l from the code: the keys to it, still shown");
-        // Shown: `space L` hides it
+        // Shown: `space L` hides it, nothing said (the user, 2026-11-03: gone from sight, its line said `space L hide`)
         keys(&mut ed, "C-w h");
+        ed.status = None;
         keys(&mut ed, "space L");
+        assert!(ed.status.is_none(), "no toast for hiding: {:?}", ed.status);
         let c = ed.workspace.claude.chat.as_ref().expect("the chat kept");
         let state = (c.hidden, c.proc.is_some(), c.busy(), c.follow.on);
         assert_eq!(state, (true, true, true, true), "hidden; its process, its turn, follow going on");

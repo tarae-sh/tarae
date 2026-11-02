@@ -157,17 +157,11 @@ pub struct Reading {
     pub said: usize,
 }
 
-/// After a frame (`term::render`): the chat taken to the paragraph a note's card read on to (`Chat.reading`), once its
-/// rows are laid out — a row of air above it; its view mode's rows where it's on, else the chat's own from the bottom.
-/// The keys stay where they are. True when it moved (drawn again).
-pub fn reading(ed: &mut Editor) -> bool {
+/// The rows of the paragraph a note's card read on to (`Chat.reading`) among the frame's `laid` rows, from its first to
+/// its last — a wrapped row goes on from the one above. A flow's (no name): its answer's last message's first paragraph.
+pub fn reading_rows(c: &Chat, laid: &Laid) -> Option<std::ops::Range<usize>> {
     use crate::chat::Role;
-    let Some(c) = ed.workspace.claude.chat.as_ref() else { return false };
-    let Some((at, false)) = c.reading.clone() else { return false };
-    let laid = ed.screen.chat_laid.borrow().clone();
-    if ed.screen.chat_view.get().is_none() || laid.is_empty() {
-        return false;
-    }
+    let at = &c.reading.as_ref()?.0;
     // (each message's question's place among yours, as `Fold::of` counts it)
     let mut users = 0;
     let turn: Vec<usize> = (c.msgs.iter())
@@ -179,30 +173,68 @@ pub fn reading(ed: &mut Editor) -> bool {
     let of =
         |i: usize| c.msgs.get(i).is_some_and(|m| m.role == Role::Assistant) && turn.get(i) == Some(&at.turn);
     let last = (0..c.msgs.len()).rev().find(|&i| of(i));
-    let (mut row, mut found) = (0, None);
-    for (o, rows) in &laid {
+    let mut row = 0;
+    for (o, rows) in laid {
         if let Of::Msg(i) = o
             && of(*i)
         {
             let named =
                 |r: &crate::chat::ChatRow| r.places.iter().any(|p| *p.name == *at.name && p.line == at.said);
+            // (a flow's: its message's first row of words — a message's rows may start with air)
             let hit = match at.name.is_empty() {
-                true => (Some(*i) == last).then_some(0),
+                true => {
+                    (Some(*i) == last).then(|| rows.iter().position(|r| !r.spans.is_empty()).unwrap_or(0))
+                }
                 false => rows.iter().position(named),
             };
             if let Some(k) = hit {
-                // (its paragraph's first row: a wrapped row goes on from the one above)
-                let k = (0..=k).rev().find(|&j| rows[j].join.is_none()).unwrap_or(k);
-                found = Some(row + k);
-                break;
+                let first = (0..=k).rev().find(|&j| rows[j].join.is_none()).unwrap_or(k);
+                let end = k + 1 + rows[k + 1..].iter().take_while(|r| r.join.is_some()).count();
+                return Some(row + first..row + end);
             }
         }
         row += rows.len();
     }
-    let Some(target) = found.map(|r| r.saturating_sub(1)) else { return false };
+    None
+}
+
+/// After a frame (`term::render`): the chat taken to the paragraph a note's card read on to (`Chat.reading`) — or, shown
+/// by `space L` with none at your line, to the first message you hadn't had in sight (`Chat.unread_at`) — once its rows
+/// are laid out: at the top, a row of air above it (#274: near the conversation's end too, air under its last row —
+/// `Chat.read_lift`); its view mode's rows where it's on, else the chat's own from the bottom. The keys stay where they
+/// are. True when it moved (drawn again).
+pub fn reading(ed: &mut Editor) -> bool {
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return false };
+    let paragraph = matches!(c.reading, Some((_, false)));
+    if !paragraph && c.unread_at.is_none() {
+        return false;
+    }
+    let laid = ed.screen.chat_laid.borrow().clone();
+    if ed.screen.chat_view.get().is_none() || laid.is_empty() {
+        return false;
+    }
+    let found = match paragraph {
+        true => reading_rows(c, &laid).map(|r| r.start),
+        // (the first unread message's first row — one not laid out: the end)
+        false => {
+            let i = c.unread_at.unwrap_or_default();
+            let at = laid.iter().position(|(o, _)| *o == Of::Msg(i));
+            // (its first row of words: a message's rows may start with air)
+            let air = |at: usize| laid[at].1.iter().take_while(|r| r.spans.is_empty()).count();
+            at.map(|at| laid[..at].iter().map(|(_, r)| r.len()).sum::<usize>() + air(at))
+        }
+    };
+    let Some(target) = found.map(|r: usize| r.saturating_sub(1)) else {
+        // (an unread message not laid out after all: the chat as it was; a paragraph not yet: the next frame tries again)
+        if let Some(c) = ed.workspace.claude.chat.as_mut() {
+            c.unread_at = None;
+        }
+        return false;
+    };
     let area = ed.screen.chat_view.get().map_or(20, |a| a.2.max(1));
     let total: usize = laid.iter().map(|(_, r)| r.len()).sum();
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
+    c.unread_at = None;
     // (done once it moved: the view mode's rows not laid yet, the next frame tries again)
     match c.transcript.as_mut().filter(|t| t.keyed) {
         Some(t) => {
@@ -217,14 +249,40 @@ pub fn reading(ed: &mut Editor) -> bool {
         }
         None => {
             c.scroll = total.saturating_sub(area).saturating_sub(target);
+            // (near the end: the rows shown as if the conversation went on to the paragraph's screenful — #274)
+            c.read_lift = (target + area > total).then_some(target + area);
             // (follow reading along the chat goes from here: not a scroll of yours — `follow::reading`)
             if c.follow.read_at.is_some() {
                 c.follow.read_at = Some(c.scroll);
             }
         }
     }
-    c.reading = Some((at, true));
+    if let Some((_, landed)) = c.reading.as_mut() {
+        *landed = true;
+    }
     true
+}
+
+/// After a frame: the messages whose last row the chat showed (`Chat.seen`) — what `space L` counts as read. Its view
+/// mode's rows or the chat's own, as drawn.
+pub fn had_in_sight(ed: &mut Editor) {
+    let Some((_, _, area, from)) = ed.screen.chat_view.get() else { return };
+    let laid = ed.screen.chat_laid.borrow();
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.compact()) else { return };
+    // (a frame about to be moved — to a paragraph, to what's unread — is drawn again before it's seen)
+    if c.unread_at.is_some() || matches!(c.reading, Some((_, false))) {
+        return;
+    }
+    let mut row = 0;
+    for (o, rows) in laid.iter() {
+        row += rows.len();
+        if let Of::Msg(i) = o
+            && row <= from + area
+            && row > from
+        {
+            c.seen = c.seen.max(i + 1);
+        }
+    }
 }
 
 /// What the chat folds this frame (focus A1b step 3): the conversation reads as one — the newest answer whole until the
@@ -949,16 +1007,16 @@ pub fn view(ed: &mut Editor) {
         return;
     }
     if c.msgs.is_empty() {
-        ed.workspace.viewer.at = if from_input { At::Code } else { At::Chat };
-        if !from_input {
-            ed.set_status("nothing to view yet — the conversation is empty: type a question");
+        if from_input {
+            return crate::chat::keys_left(ed);
         }
-        return;
+        ed.workspace.viewer.at = At::Chat;
+        return ed.set_status("nothing to view yet — the conversation is empty: type a question");
     }
     // (`space >` from elsewhere with the chat out of sight: once a frame lays it out; the input's `esc` has it in
     // sight — its transcript what the last frame laid; none laid yet, nothing to read: to the code)
     match (from_input, c.transcript.is_some()) {
-        (true, false) => return ed.workspace.viewer.at = At::Code,
+        (true, false) => return crate::chat::keys_left(ed),
         (false, false) => return want(ed),
         (false, true) if ed.screen.chat_view.get().is_none() => return want(ed),
         _ => {}
@@ -1177,7 +1235,7 @@ pub fn forget(ed: &mut Editor) {
     }
     // (and a paragraph a note's card read on to: of the conversation that went)
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
-        c.reading = None;
+        (c.reading, c.read_lift, c.unread_at, c.seen) = (None, None, None, 0);
     }
 }
 
@@ -1297,7 +1355,7 @@ fn after(ed: &mut Editor) {
     match a {
         After::Leave => {
             leave(ed);
-            ed.workspace.leave(At::Chat);
+            crate::chat::keys_left(ed);
         }
         // (the input: the keys stay the chat's)
         After::Input => leave(ed),

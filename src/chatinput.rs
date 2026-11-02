@@ -91,12 +91,14 @@ pub fn under_way(ed: &mut Editor, key: Key) -> bool {
 }
 
 /// Where `esc` goes from the input, as its hint and its notices say it: normal mode on the conversation (`esc
-/// normal`, its key as bound) — nothing to read yet, the code.
+/// normal`, its key as bound) — nothing to read yet, the code; the chat floating, it closes with the keys
+/// (`chat::keys_left`).
 pub fn esc_said(ed: &Editor) -> (String, &'static str) {
     let to_view = ed.keymaps.chat.keys_for("chat_view").into_iter().next();
     match to_view {
         Some(k) if ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.msgs.is_empty()) => (k, "normal"),
         // (`esc code` where the surface stays, `esc close` where it goes — the user, 2026-10-20)
+        _ if ed.sizes.chat_float.is_some() => ("esc".into(), "close"),
         _ => ("esc".into(), "code"),
     }
 }

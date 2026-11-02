@@ -203,6 +203,29 @@ fn ctrl_s_leaves_the_terminal_out_when_its_rows_dont_go() {
     }
 }
 
+/// The flow plan's reader: under a chat floating over the code the bottom slot runs the screen's whole width — a press
+/// right of the frame's left edge, on the terminal's last row, is the terminal's as at the screen's left (`slot_end`) —
+/// and `llm.screen-terminal` off leaves the terminal's rows out whole, not only up to the frame's left edge as beside
+/// a docked chat.
+#[test]
+fn under_a_floating_chat_the_terminal_runs_the_whole_width() {
+    let (mut ed, _sent) = term(Config::default(), 30);
+    (ed.config.llm.command, ed.config.llm.args) = ("sh".into(), vec!["-c".into(), "cat > /dev/null".into()]);
+    ed.config.llm.screen_terminal = false;
+    crate::chat::open(&mut ed);
+    ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+    print(&mut ed, &format!("{}tail-past-the-frame\r\n$ ", "x".repeat(96)));
+    let (x, _, w, _) = ed.screen.chat_frame.expect("floating");
+    let (_, y1) = ed.screen.terminal_rows.expect("the terminal in sight");
+    assert!(x + w < W as usize - 3, "a column right of the frame");
+    let at = |ed: &Editor, x| ed.mouse_under(crate::event::MouseKind::Down, x, y1).surface;
+    assert_eq!(at(&ed, W as usize - 3), at(&ed, 2), "right of the frame, the terminal as at its left");
+    crate::chat::attach_screen(&mut ed).unwrap();
+    let text = ed.workspace.claude.chat.as_ref().unwrap().screen.as_ref().unwrap().text.clone();
+    assert!(!text.contains("tail-past-the-frame"), "left out whole: {text}");
+    assert!(text.contains(crate::chat::LEFT_OUT), "{text}");
+}
+
 /// `enter` on the selected rows: a quote over the chat's input — the program's line that wrapped joined again, the
 /// screen's blank foot left out, its token-like line hidden, where from said — the view left (its output goes on),
 /// the chat's input with the keys. `llm.screen-terminal` off: said, nothing taken, the view stays.

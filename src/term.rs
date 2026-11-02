@@ -522,6 +522,8 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
     // Reading an answer moved the editor to what the chat now shows (its links are only known once drawn)
     let mut frame = Vec::with_capacity(1 << 16);
     render_frame(editor, &mut frame, w, h)?;
+    // (what the chat showed you, before anything moves it: what `space L` counts as read)
+    crate::chatdoc::had_in_sight(editor);
     // (the chat's view mode asked for before its rows were laid out: made from these, drawn with it)
     // (and a run panel's output laid out for another size than its panel just drew: its cursor kept in sight)
     // (and the chat's, its view mode with the keys)
@@ -653,7 +655,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         pane_sizes: Vec::new(),
         writing_rows: Vec::new(),
         writing_head: None,
-        chat_x: (lay.chat_w > 0).then_some(lay.edit_w),
+        chat_x: lay.chat_at().map(|a| a.x),
+        chat_frame: lay.chat_frame.map(|r| (r.x, r.y, r.w, r.h)),
         chat_laid: Default::default(),
         chat_view: Default::default(),
         chat_input: Default::default(),
@@ -784,10 +787,10 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         regions: Default::default(),
     };
     // (the conversation laid out for this frame, the transcript's document following it — keys act on what's drawn)
-    if lay.chat_w > 0
+    if let Some(at) = lay.chat_at()
         && let Some(c) = editor.workspace.claude.chat.as_ref()
     {
-        let laid = chat_laid(c, editor, &ui, lay.chat_w);
+        let laid = chat_laid(c, editor, &ui, at.w);
         crate::chatdoc::sync(editor, &laid);
         *editor.screen.chat_laid.borrow_mut() = laid;
     }
@@ -1061,6 +1064,21 @@ struct Layout {
     rail_head: std::cell::OnceCell<Vec<Vec<(Tone, Fit)>>>,
     /// …and its files under their folders (`CodeReview::rail_rows`), built once a frame for both.
     rail_rows: std::cell::OnceCell<Vec<crate::filetree::Row>>,
+    /// The chat floating over the code (`Editor::chat_floating`, the flow plan's reader): its frame's cells on the
+    /// screen — `chat_w` 0 then, the code its whole width.
+    chat_frame: Option<crate::split::Rect>,
+}
+
+/// Where the chat is drawn this frame (`Layout::chat_at`): its first column and row, its width and rows — floating
+/// (`framed`), its frame's left line its gutter's cell and its top line the frame's, the right and bottom lines outside
+/// them.
+#[derive(Clone, Copy, Debug)]
+struct ChatAt {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    framed: bool,
 }
 
 /// A code pane's top line: its row, first column, width, pane and whether it's the focused one (`code_lines`).
@@ -1070,6 +1088,27 @@ type CodeLine = (usize, usize, usize, crate::split::PaneId, bool);
 type CodeEdges = (Vec<CodeLine>, Vec<(usize, std::ops::Range<usize>)>);
 
 impl Layout {
+    /// Where the chat is drawn: its column beside the code, from the screen's first row to the status line; or in its
+    /// floating frame. None: not drawn.
+    fn chat_at(&self) -> Option<ChatAt> {
+        match self.chat_frame {
+            Some(r) => Some(ChatAt {
+                x: r.x,
+                y: r.y,
+                w: r.w.saturating_sub(1),
+                h: r.h.saturating_sub(1),
+                framed: true,
+            }),
+            None => (self.chat_w > 0).then_some(ChatAt {
+                x: self.edit_w,
+                y: 0,
+                w: self.chat_w,
+                h: self.body_h,
+                framed: false,
+            }),
+        }
+    }
+
     /// No code drawn: something else fills the screen (the chat on a narrow screen too).
     fn code_hidden(&self) -> bool {
         self.edit_w == 0 || self.zoom_shows.is_some_and(|s| s != crate::pane::Shows::Code)
@@ -1150,6 +1189,10 @@ fn screen_leaves(editor: &Editor, lay: &Layout) -> Vec<(crate::split::PaneId, cr
     // (the floating ones after the docked, bottom first — `C-w w` goes round them last; a group's members in its
     // frame's place below)
     leaves.extend(lay.floats.iter().map(|f| (f.1, f.2)));
+    // (the chat floating: its leaf in its frame, after them — it's drawn over them)
+    if let (Some(r), Some(id)) = (lay.chat_frame, editor.workspace.leaf(crate::pane::Shows::Chat)) {
+        leaves.push((id, r));
+    }
     for g in &editor.workspace.groups {
         if let Some((list, detail)) = group_members(editor, lay, g)
             && let Some(host) = editor.group_host(g)
@@ -1628,6 +1671,13 @@ impl Layout {
             code: std::cell::OnceCell::new(),
             rail_head: std::cell::OnceCell::new(),
             rail_rows: std::cell::OnceCell::new(),
+            // (by `chat_floating` alone, never refused here: the frame is the screen's at most — a short screen's
+            // whole height, a narrow one's whole width — so a chat the rule floats is drawn, and the card it set aside
+            // has its reader)
+            chat_frame: editor
+                .chat_floating()
+                .then(|| editor.chat_float_rect(w as usize, (h as usize).saturating_sub(1)))
+                .flatten(),
         }
     }
 }
@@ -5236,26 +5286,48 @@ fn draw(
     for (_, f) in editor.screen.docked.borrow().iter() {
         drew(editor, Kind::Slot, Some((f.x, f.y, f.w, f.h)));
     }
-    let chat_cursor = match &editor.workspace.claude.chat {
-        Some(c) if lay.chat_w > 0 => {
+    // The chat: docked here, beside the code; floating, over the floating panes below
+    let chat = |out: &mut Vec<u8>| -> io::Result<Option<(u16, u16)>> {
+        let (Some(c), Some(at)) = (&editor.workspace.claude.chat, lay.chat_at()) else { return Ok(None) };
+        let cursor = {
             let _fade = Fade::unless(keys.chat(), ui);
             draw_chat(c, editor, ui, lay, out)?
+        };
+        if let Some((y, _, rows, _)) = editor.screen.chat_view.get() {
+            let below = (at.y + at.h).saturating_sub(y + rows);
+            drew(editor, Kind::ChatTop, Some((at.x, at.y, at.w, y - at.y)));
+            drew(editor, Kind::ChatTranscript, Some((at.x, y, at.w, rows)));
+            drew(editor, Kind::ChatInput, Some((at.x, y + rows, at.w, below)));
         }
-        _ => None,
+        Ok(cursor)
     };
-    if let Some((y, _, rows, _)) = editor.screen.chat_view.get().filter(|_| lay.chat_w > 0) {
-        let x = lay.edit_w;
-        drew(editor, Kind::ChatTop, Some((x, 0, lay.chat_w, y)));
-        drew(editor, Kind::ChatTranscript, Some((x, y, lay.chat_w, rows)));
-        drew(editor, Kind::ChatInput, Some((x, y + rows, lay.chat_w, lay.body_h.saturating_sub(y + rows))));
+    let mut chat_cursor = match lay.chat_frame {
+        None => chat(out)?,
+        Some(_) => None,
+    };
+    // A docked surface's row in hand whole on its card — under what floats, as that surface is (the floating chat's
+    // over it, below)
+    let hand_under = |out: &mut Vec<u8>| -> io::Result<()> {
+        cut_card(editor, ui, lay, true, out)?;
+        drew(
+            editor,
+            Kind::Hover,
+            editor.screen.cut_card.borrow().as_ref().filter(|c| c.under).map(|c| c.rect),
+        );
+        Ok(())
+    };
+    if lay.chat_frame.is_none() {
+        hand_under(out)?;
     }
-    // A docked surface's row in hand whole on its card — under what floats, as that surface is
-    cut_card(editor, ui, lay, true, out)?;
-    drew(editor, Kind::Hover, editor.screen.cut_card.borrow().as_ref().filter(|c| c.under).map(|c| c.rect));
     // The floating panes over all that's docked, under the cards (the chat's cursor under one is hidden with it)
     draw_floating(editor, ui, lay, out)?;
     for (_, f) in editor.screen.floating.borrow().iter() {
         drew(editor, Kind::Float, Some((f.x, f.y, f.w, f.h)));
+    }
+    // The chat floating: over them, under the cards
+    if lay.chat_frame.is_some() {
+        chat_cursor = chat(out)?;
+        hand_under(out)?;
     }
     let under_float = |at: Option<(u16, u16)>| {
         at.filter(|&(x, y)| {
@@ -5265,7 +5337,8 @@ fn draw(
             })
         })
     };
-    let chat_cursor = under_float(chat_cursor);
+    // (the floating chat's own: over them)
+    let chat_cursor = if lay.chat_frame.is_some() { chat_cursor } else { under_float(chat_cursor) };
     let text_cursor = under_float(text_cursor);
     let terminal_cursor = under_float(terminal_cursor);
     let ask_rect = match editor.workspace.claude.review.as_ref().filter(|r| !r.ready) {
@@ -11017,8 +11090,11 @@ fn draw_statusline(
         let quote = bound("view_take", "enter").filter(|_| crate::view::quotes(editor));
         let stub = crate::chatdoc::stub_here(editor).is_some() && quote.is_none();
         let go = bound("view_take", "enter").filter(|_| stub);
+        // (the chat floating closes with the keys — `chat::keys_left`)
+        let floating = s == crate::view::Surface::Chat && editor.sizes.chat_float.is_some();
+        let leave = if floating { "close" } else { "code" };
         let pairs =
-            [(quote, "quote"), (go, "go there"), (typed, "type"), (bound("view_leave", "esc"), "code")];
+            [(quote, "quote"), (go, "go there"), (typed, "type"), (bound("view_leave", "esc"), leave)];
         for (k, what) in pairs.iter().filter_map(|(k, d)| Some((k.as_ref()?, *d))) {
             left.push(Seg {
                 cut: None,
@@ -11189,13 +11265,13 @@ fn draw_statusline(
         }
     }
     // A message typed in the chat while the chat isn't on screen (a review read wide, the minimized card, a
-    // zoom): what's there, so it isn't lost from sight
+    // zoom): what's there, so it isn't lost from sight — floating, its input holds it in sight
     if let Some(text) = editor
         .workspace
         .claude
         .chat
         .as_ref()
-        .filter(|_| lay.chat_w == 0)
+        .filter(|_| lay.chat_at().is_none())
         .and_then(|c| c.input.text().lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string))
     {
         left.push(Seg { cut: None, text: "  unsent ".into(), style: accent, keep: UNSENT });
@@ -11949,9 +12025,14 @@ fn draw_completion(
 fn draw_slash_list(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
     const GAP: usize = 3;
     const DOES_MIN: usize = 8;
-    let Some(c) = editor.workspace.claude.chat.as_ref().filter(|_| lay.chat_w > 0) else { return Ok(()) };
-    let (Some(list), Some(input), Some((cx, cw, _))) =
-        (slash_up(editor, c), editor.screen.chat_input.get(), chat_foot(editor, lay))
+    let Some(c) = editor.workspace.claude.chat.as_ref() else { return Ok(()) };
+    // (the chat's columns past its gutter's cell: docked, as the asks over its foot have them; floating, its frame's)
+    let cols = match lay.chat_at() {
+        Some(a) if a.framed => Some((a.x + crate::chrome::GAP, a.w.saturating_sub(crate::chrome::GAP))),
+        _ => chat_foot(editor, lay).map(|(x, w, _)| (x, w)),
+    };
+    let (Some(list), Some(input), Some((cx, cw))) =
+        (slash_up(editor, c), editor.screen.chat_input.get(), cols)
     else {
         return Ok(());
     };
@@ -17920,11 +18001,19 @@ fn draw_chat(
     let accent = Style { fg: ui.accent.fg, ..card };
     let strong = card.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     use crate::chrome::{GAP, PAD};
-    let x0 = lay.edit_w;
-    let (w, _) = chat_widths(lay.chat_w, editor.sizes.chat.is_some());
-    // (the whole height, its title on the screen's first row — `chrome.rs`)
-    let top = 0;
-    let rows = lay.body_h;
+    // (docked: the whole height, its title on the screen's first row — `chrome.rs`; floating: its frame, the right
+    // and bottom lines outside `cw` and `rows`, its keys in the bottom line — a floating pane's)
+    let Some(at) = lay.chat_at() else { return Ok(None) };
+    let (x0, top, rows, cw, framed) = (at.x, at.y, at.h, at.w, at.framed);
+    let (w, _) = chat_widths(cw, editor.sizes.chat.is_some());
+    // (its frame's lines while it floats: lit as every floating frame's, recorded for the mouse — `Ui::frame_lit`)
+    let frame = (x0, top, cw + 1, rows + 1);
+    let frame_lit = ui.frame_lit(Some(crate::mouse::Lights::Chat), frame, ui.lit == Some(Region::Chat));
+    if framed {
+        let of = Some(crate::mouse::Lights::Chat);
+        editor.screen.frames.borrow_mut().push(crate::mouse::Framed { rect: frame, of, lit: frame_lit });
+    }
+    let frame_line = frame_style(ui, card, frame_lit);
     // ── Input (wrapped, up to 5 rows) + cursor position
     // (the file in front — never a view of tarae's: the file seen before it, `front_file`)
     let placeholder = match editor.front_file() {
@@ -17957,8 +18046,8 @@ fn draw_chat(
     );
     let usage_h = usize::from(usage_row.is_some());
     // ── Message rows (filled from the bottom)
-    // (its top line + plan + divider·hint + usage)
-    let area = rows.saturating_sub(input_h + 3 + plan_h + usage_h);
+    // (its top line + plan + divider·hint + usage — floating, the hint row its frame's bottom line)
+    let area = rows.saturating_sub(input_h + 2 + usize::from(!framed) + plan_h + usage_h);
     let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let plain = |spans: Vec<Span>| ChatRow { spans, ..ChatRow::default() };
     let own = |row: ChatRow| -> std::sync::Arc<[ChatRow]> { std::sync::Arc::from(vec![row]) };
@@ -18062,11 +18151,17 @@ fn draw_chat(
             (from, (from + area).min(total))
         }
         None => {
-            let scroll = c.scroll.min(total.saturating_sub(area_shown));
-            let from = total.saturating_sub(area_shown + scroll);
-            (from, (from + area_shown).min(total))
+            // (taken to a paragraph near the end: as if the conversation went on to its screenful — air under its last
+            // row, #274)
+            let total_v = total.max(c.read_lift.unwrap_or(0));
+            let scroll = c.scroll.min(total_v.saturating_sub(area_shown));
+            let from = total_v.saturating_sub(area_shown + scroll);
+            (from.min(total.saturating_sub(1)), (from + area_shown).min(total))
         }
     };
+    // (the paragraph a note's card read on to, or `space L` from its note's line: a `▎` down its rows while you read it
+    // — #274, where the card stopped)
+    let marked = c.reading.as_ref().filter(|r| r.1).and_then(|_| crate::chatdoc::reading_rows(c, &pieces));
     // (only the rows on screen are looked at again — the rest stays where it's kept)
     let mut shown: Vec<&ChatRow> = Vec::with_capacity(to - from);
     let mut at = 0;
@@ -18084,19 +18179,22 @@ fn draw_chat(
 
     // ── Draw row by row: [gutter][padding][text w][padding — its outer cell the transcript's thumb]
     // (the gutter's left half the bottom slot's on its rows; in the accent while it's being dragged — U1)
-    let edge = chat_gutter(ui, editor, lay, card);
+    let gutter = chat_gutter(ui, editor, lay, card);
+    let edge = |y: usize| if framed { ("│", frame_line) } else { gutter(y) };
     let text_x = x0 + GAP + PAD;
     // (a row's cuts: whole under the mouse — its card in the chat's columns)
-    let chat_at = |y: usize| (crate::whole::On::Chat, text_x, y, (x0, x0 + lay.chat_w));
+    let chat_at = |y: usize| (crate::whole::On::Chat, text_x, y, (x0, x0 + cw));
     let mut y = top;
     // Its top line (P3 step 6b), lit with the chat's lines: with more than one session the sessions are its names —
     // each in its colour, its state after it (the chat is the front one's spine: `session_tabs`) — else `claude`;
     // what it's in and what's on after them, folded from the last; the model or the turn's time at its right end
-    let line = edge_style(ui, card, Region::Chat);
-    // (against the screen's edge — the chat filling it — the line takes the gutter's cell too)
-    let (lx, lw) = match lay.edit_w {
-        0 => (x0, lay.chat_w),
-        _ => (x0 + GAP, lay.chat_w.saturating_sub(GAP)),
+    let line = if framed { frame_line } else { edge_style(ui, card, Region::Chat) };
+    // (against the screen's edge — the chat filling it — the line takes the gutter's cell too; floating, its frame's top
+    // line, corner to corner)
+    let ((lx, lw), ends) = match lay.edit_w {
+        _ if framed => ((x0, cw + 1), ("╭", "╮", "┬")),
+        0 => ((x0, cw), ("", "", "┬")),
+        _ => ((x0 + GAP, cw.saturating_sub(GAP)), ("", "", "┬")),
     };
     // Normal mode on its document (`v`: select), as a run's output says it — held still; once something came after
     // what it holds, said (`G` catches up)
@@ -18258,7 +18356,7 @@ fn draw_chat(
         kept: Some(&kept),
         ..TopLine::default()
     };
-    let cols = top_line(out, line, card, (lx, y, lw), ("", "", "┬"), &[], true, &head)?;
+    let cols = top_line(out, line, card, (lx, y, lw), ends, &[], true, &head)?;
     // (its details that do their keys, where they were drawn — those the line had room for, each found by its index in
     // `details`: a piece's part folded shifts the ones after it)
     let laid = &cols[names.len().min(cols.len())..];
@@ -18292,15 +18390,14 @@ fn draw_chat(
     if !plan_rows.is_empty() {
         for row in &plan_rows {
             chat_row_start(out, x0, y, edge(y), card)?;
-            let at = (crate::whole::On::Chat, text_x, y, (x0, x0 + lay.chat_w));
-            let used = chat_spans_at(out, row, card, w, at)?;
-            chat_row_end(out, card, lay.chat_w, used)?;
+            let used = chat_spans_at(out, row, card, w, chat_at(y))?;
+            chat_row_end(out, card, cw, used)?;
             y += 1;
         }
         chat_row_start(out, x0, y, edge(y), card)?;
         apply(out, faint)?;
         queue!(out, Print("─".repeat(w)))?;
-        chat_row_end(out, card, lay.chat_w, w)?;
+        chat_row_end(out, card, cw, w)?;
         y += 1;
     }
     // (what this frame laid out, and where its rows are: the view mode is made of them, the wheel finds its row)
@@ -18325,7 +18422,7 @@ fn draw_chat(
         Some(p)
     };
     // (the transcript taller than its rows: its thumb in the outer cell, as the code's last column says its view)
-    let (area_top, thumb_x) = (y, x0 + lay.chat_w.saturating_sub(1));
+    let (area_top, thumb_x) = (y, x0 + cw.saturating_sub(1));
     let bar = (total > area && area > 0).then(|| scroll_thumb(area, total, from));
     // (a cut row's whole on its card — in hand where the view mode's cursor is on its line; not while a drag there is
     // held: the card would come over the rows under the pointer as it goes, #271)
@@ -18340,6 +18437,12 @@ fn draw_chat(
     let line_of = |row: usize| Some(view?.row(crate::chatdoc::doc_row(&pieces, row)?)?.line);
     for i in 0..area {
         chat_row_start(out, x0, y, edge(y), card)?;
+        // (in the dim ink: your own messages' bar is the accent's)
+        if marked.as_ref().is_some_and(|m| m.contains(&(from + i))) {
+            queue!(out, MoveTo((text_x - 1) as u16, y as u16))?;
+            apply(out, dim)?;
+            queue!(out, Print("▎"))?;
+        }
         if let Some((a, b, whole)) = shown.get(i).and_then(|r| r.cut.clone()) {
             let hand =
                 (hand_line.is_some() && line_of(from + i) == hand_line).then_some(crate::whole::Hand::Over);
@@ -18390,7 +18493,7 @@ fn draw_chat(
                 None => 0,
             },
         };
-        chat_row_end(out, card, lay.chat_w, used)?;
+        chat_row_end(out, card, cw, used)?;
         y += 1;
     }
     for i in (0..area).filter(|i| bar.as_ref().is_some_and(|b| b.contains(i))) {
@@ -18418,7 +18521,7 @@ fn draw_chat(
         let head = crate::whole::fit(&what, w - 2 - tail.width());
         apply(out, warn_fg)?;
         queue!(out, Print(head.shown()))?;
-        crate::whole::at(crate::whole::On::Chat, &head, (text_x, y), warn_fg, (x0, x0 + lay.chat_w));
+        crate::whole::at(crate::whole::On::Chat, &head, (text_x, y), warn_fg, (x0, x0 + cw));
         apply(out, faint)?;
         queue!(out, Print(&tail))?;
         queue!(out, Print(" "))?;
@@ -18499,7 +18602,7 @@ fn draw_chat(
     // draft — said at the border's end, so a message half-written isn't lost from sight
     // (in its view mode the input keeps what's typed, faint, its cursor hidden — `i` comes back to it)
     let typing = editor.workspace.is_at(At::Chat) && view.is_none();
-    let border = edge_style(ui, card, Region::Chat);
+    let border = line;
     let draft = !editor.workspace.is_at(At::Chat) && !c.input.blank() && w >= used + 12;
     let line = w - used - if draft { " draft ──".width() } else { 0 };
     put_line(out, border, &"─".repeat(line))?;
@@ -18508,7 +18611,7 @@ fn draw_chat(
         queue!(out, Print(" draft "))?;
         put_line(out, border, "──")?;
     }
-    chat_row_end(out, card, lay.chat_w, w)?;
+    chat_row_end(out, card, cw, w)?;
     y += 1;
     let input_top = y;
     let drawn = crate::editor::InputDrawn { y, rows: input_h, first: first_input, x: x0 + GAP + PAD + 2, w };
@@ -18536,7 +18639,7 @@ fn draw_chat(
             apply(out, faint)?;
             let p = crate::whole::fit(&placeholder, w - 2);
             queue!(out, Print(p.shown()))?;
-            crate::whole::at(crate::whole::On::Chat, &p, (text_x + 2, y), faint, (x0, x0 + lay.chat_w));
+            crate::whole::at(crate::whole::On::Chat, &p, (text_x + 2, y), faint, (x0, x0 + cw));
             p.width()
         } else {
             let base = if view.is_some() { faint } else { card };
@@ -18554,11 +18657,10 @@ fn draw_chat(
             }
             row.width()
         };
-        chat_row_end(out, card, lay.chat_w, 2 + used)?;
+        chat_row_end(out, card, cw, 2 + used)?;
         y += 1;
     }
-    // Hint
-    chat_row_start(out, x0, y, edge(y), card)?;
+    // Hint — floating, in its frame's bottom line, under the usage row
     let key = Style { bold: true, ..dim };
     // (inside zellij their twins — `zellij.rs`; worked out only where the row says them: they read where the keys
     // are and the inbox)
@@ -18668,8 +18770,22 @@ fn draw_chat(
         // (last, the first to fold: a new conversation, the costly one — two presses where one would go, #268)
         hints.push((crate::chat::clear_key(c), "new"));
     }
+    // (floating, its keys in its frame's bottom line: `esc` closes it there — its view mode's `q` too — and `C-w e`,
+    // after it, docks it)
+    if framed {
+        for h in hints.iter_mut().filter(|h| h.1 == "code") {
+            h.1 = "close";
+        }
+        if editor.workspace.is_at(At::Chat) {
+            let after =
+                hints.iter().position(|h| h.0 == esc.0 || h.1 == "close").map_or(hints.len(), |i| i + 1);
+            hints.insert(after, ("C-w e", "dock"));
+        }
+    } else {
+        chat_row_start(out, x0, y, edge(y), card)?;
+    }
     let mut used = 0;
-    for (k, d) in hints {
+    for &(k, d) in hints.iter().filter(|_| !framed) {
         // (a key alone — a `:` command that says what it does: `Editor::key_hint`)
         let what = if d.is_empty() { "  ".to_string() } else { format!(" {d}  ") };
         let wd = k.width() + what.width();
@@ -18701,20 +18817,41 @@ fn draw_chat(
         }
         used += wd;
     }
-    chat_row_end(out, card, lay.chat_w, used)?;
-    y += 1;
+    if !framed {
+        chat_row_end(out, card, cw, used)?;
+        y += 1;
+    }
     // Usage: the cache, the context, the last turn's cost
     if let Some(row) = &usage_row {
         chat_row_start(out, x0, y, edge(y), card)?;
         let used = chat_spans(out, row, card, w)?;
-        chat_row_end(out, card, lay.chat_w, used)?;
+        chat_row_end(out, card, cw, used)?;
         y += 1;
     }
     // Remaining rows (when the panel is taller than the input)
     while y < top + rows {
         chat_row_start(out, x0, y, edge(y), card)?;
-        chat_row_end(out, card, lay.chat_w, 0)?;
+        chat_row_end(out, card, cw, 0)?;
         y += 1;
+    }
+    // Floating: its frame's right line and its bottom line, the keys in it as a floating pane's (`float_sides`)
+    if framed {
+        for yy in top + 1..top + rows {
+            queue!(out, MoveTo((x0 + cw) as u16, yy as u16))?;
+            put_line(out, frame_line, "│")?;
+        }
+        let home = if editor.workspace.is_at(At::Chat) { At::Chat } else { At::Code };
+        let words = TopWords {
+            spots: &editor.screen.word_spots,
+            on: crate::mouse::Surface::Chat,
+            right: None,
+            each: &[],
+            home: Some(home),
+            way_in: None,
+        };
+        let head =
+            TopLine { keys: &hints, key, faint, plain: true, words: Some(words), ..TopLine::default() };
+        top_line(out, frame_line, card, (x0, top + rows, cw + 1), ("╰", "╯", "┴"), &[], true, &head)?;
     }
     Ok(typing.then(|| {
         let r = cur_row.saturating_sub(first_input).min(input_h - 1);

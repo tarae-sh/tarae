@@ -508,6 +508,9 @@ pub struct Screen {
     pub writing_head: Option<usize>,
     /// Column where the chat pane starts.
     pub chat_x: Option<usize>,
+    /// The chat's frame while it floats over the code (the flow plan's reader): left, top, width, height — its lines
+    /// in it. None: docked or not drawn.
+    pub chat_frame: Option<(usize, usize, usize, usize)>,
     /// The chat's rows as this frame laid them out (`chatdoc::Laid` — its transcript follows them) and where its
     /// conversation was drawn (`chat_view`: first screen row, width, rows, which of its rows is on the first).
     pub chat_laid: std::cell::RefCell<crate::chatdoc::Laid>,
@@ -3072,7 +3075,7 @@ impl Editor {
             let text: String = text.chars().filter(|&c| c == '\n' || !c.is_control()).collect();
             c.input.insert_str(&text);
             // (typed, as a key typed: the conversation back to its bottom)
-            c.scroll = 0;
+            (c.scroll, c.read_lift) = (0, None);
             // (minimized, its input isn't on screen: it comes back with what was pasted — never text unseen)
             if c.compact() {
                 c.unfold();
@@ -10635,6 +10638,15 @@ mod tests {
         feed(&mut ed, "<space>vz");
         let (x, _, chat, _) = frame(&mut ed);
         assert!(x > 0 && chat > 0, "both back");
+        // The chat floating (the flow plan's reader): read wide, it's out of sight as the docked one is — not floating,
+        // so an answer's note card stays (`notes::stepped_aside`); the chat with the keys, its frame back
+        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        feed(&mut ed, "<space>vz");
+        frame(&mut ed);
+        assert!(!ed.chat_floating() && ed.screen.chat_frame.is_none(), "read wide: no frame, not floating");
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        frame(&mut ed);
+        assert!(ed.chat_floating() && ed.screen.chat_frame.is_some(), "the chat has the keys: its frame");
         std::fs::remove_dir_all(&dir).ok();
     }
 
