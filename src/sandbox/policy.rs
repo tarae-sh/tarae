@@ -3,46 +3,115 @@
 
 use super::*;
 
-/// Whether `line` says a mount, an unmount or a pivot was refused: a word of the mount family that's no part of a
-/// path (`mount: /mnt: permission denied`, `umount2`, `pivot_root`, bwrap's `Can't mount proc on /newroot/proc` and
-/// `Failed to make / slave`) on a line saying `Operation not permitted` or `Permission denied` — never a path that
-/// holds the word (`/proc/mounts`: a read refused), a quoted name (`touch: cannot touch 'mount'`: a write refused),
-/// nor a daemon's answer (Docker's `Error response from daemon: … mounting volume`: its own mount, outside the run).
+/// Whether `line` says a mount, an unmount or a pivot was refused, on a line saying `Operation not permitted` or
+/// `Permission denied` — read from the diagnostic's shape, `<program>: <what it says>` (a level word first, podman's
+/// `Error: `, isn't the program): a word of the mount family counts only as the program, never as what another
+/// program names. As the program: a call's own tool or the call itself (util-linux's `mount: /mnt: permission
+/// denied.`, `umount: /x: umount failed: …`, `pivot_root: …`, Go's `mount: operation not permitted`, podman's
+/// `Error: mount_setattr: …`); a tool that mounts saying its own messages, as its source writes them (`bwrap: Can't
+/// mount proc on …`, `Can't bind mount …`, `Failed to make / slave`, `pivot_root: …`; `unshare: cannot change root
+/// filesystem propagation`, `mount /proc failed`; `fusermount3: mount failed`; ``crun: mount `proc` to `/proc` ``).
+/// Wherever in the line: a call's own shapes (strace's `mount("proc", …) = -1 EPERM`; a message opening with the call
+/// before its target, moby/sys's `mountError` — `mount /a:/b, flags: 0x1000: …`, `unmount /x: …`), runc's `error
+/// mounting "proc" to rootfs at "/proc"` and containers/storage's messages. What no shape decides is what it was before: a refusal at the paths it names (the output is a guess where
+/// Landlock's audit can't be read; a write grant there opens writes in that folder, never a mount). So a file named like a call is an operand, a write refused
+/// (#284): Go's `open mount: permission denied`, `tee: mount: …`, a shell's `build.sh: line 3: mount: …` (bash says
+/// `line N: <name>:` only of its own refusal — a redirect, or the program it couldn't start: never a mount); and never
+/// a daemon's answer (Docker's `Error response from daemon: … mounting volume`: its own mount, outside the run).
 #[cfg_attr(
     all(not(target_os = "linux"), not(test)),
     expect(dead_code, reason = "Landlock's mounts: Linux only (`mount_said_in`)")
 )]
 fn mount_line(line: &str) -> bool {
-    const WORDS: &[&str] = &[
+    // (the calls, and the tools named by them)
+    const CALLS: &[&str] = &[
         "mount",
-        "mounting",
-        "remount",
         "umount",
         "umount2",
         "unmount",
         "move_mount",
+        "fsopen",
+        "fsconfig",
         "fsmount",
         "open_tree",
         "mount_setattr",
         "pivot_root",
     ];
-    const QUOTES: &[char] = &['\'', '"', '`', '‘', '“'];
+    // (bwrap's `die_with_mount_error`s, `die_with_bind_result`s and `die_with_error`s, as its source writes them)
+    const BWRAP: &[&str] = &[
+        "pivot_root:",
+        "pivot_root(",
+        "can't mount ",
+        "can't bind mount ",
+        "can't remount ",
+        "can't make overlay mount ",
+        "failed to make / slave",
+        "failed to make old root rprivate",
+        "failed to mount tmpfs",
+        "setting up newroot bind",
+        "mounting proc",
+        "unmount old root",
+        "umount old root",
+    ];
+    // (containers/storage's overlay driver, anywhere in podman's or buildah's line; runc's rootfs_linux.go,
+    // `error mounting %q to rootfs at %q`)
+    const SAID: &[&str] =
+        &["creating overlay mount to ", "failed to make mount private", "\" to rootfs at \""];
+    // (the tools that mount and what each says of its own mounts: unshare.c's `mount %s [on %s] failed`,
+    // fusermount.c's `%s: mount failed: %s`)
+    const OWN: &[(&str, &[&str])] = &[
+        ("bwrap", BWRAP),
+        ("unshare", &["mount ", "umount "]),
+        ("fusermount", &["mount failed"]),
+        ("fusermount3", &["mount failed"]),
+        // (crun's `crun_make_error`s in linux.c, podman's `Error: crun: …` too)
+        ("crun", &["mount `", "move mount ", "remount `", "mount_setattr `"]),
+    ];
     let low = line.to_ascii_lowercase();
-    if low.contains("from daemon") {
+    if low.contains("from daemon")
+        || !(low.contains("operation not permitted") || low.contains("permission denied"))
+    {
         return false;
     }
-    let refused = low.contains("operation not permitted") || low.contains("permission denied");
-    let word = low
-        .split_whitespace()
-        .filter(|w| !w.contains('/'))
-        .filter(|w| !w.starts_with(QUOTES))
-        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
-        .any(|w| WORDS.contains(&w));
-    refused && (word || low.contains("make / slave") || low.contains("make / private"))
+    // (the program: the first field, by its name — `/usr/bin/mount:` is mount's)
+    let shaped = low.strip_prefix("error: ").unwrap_or(&low).split_once(": ");
+    if let Some((program, says)) = shaped {
+        let program = program.rsplit('/').next().unwrap_or(program);
+        let own =
+            |(tool, what): &(&str, &[&str])| *tool == program && what.iter().any(|w| says.starts_with(w));
+        let propagation = program == "unshare"
+            && says.starts_with("cannot change ")
+            && says.contains(" filesystem propagation");
+        if CALLS.contains(&program) || OWN.iter().any(own) || propagation {
+            return true;
+        }
+    }
+    if SAID.iter().any(|s| low.contains(s)) {
+        return true;
+    }
+    // (a call's own shapes: its name before `(`, or opening a message before its target as moby/sys's `mountError`
+    // says it — `mount <src>:<dst>, flags: …`, `unmount <target>: …`; opening it: the line's start or after a `: `,
+    // never after a word of its own, as Go's `os.LinkError`'s `rename mount /x:`)
+    let words: Vec<&str> = low.split_whitespace().collect();
+    words.iter().enumerate().any(|(i, w)| {
+        let (name, after) =
+            w.split_at(w.find(|c: char| !c.is_ascii_alphanumeric() && c != '_').unwrap_or(w.len()));
+        let next = words.get(i + 1).copied().unwrap_or("");
+        let opens = i == 0 || words[i - 1].ends_with(':');
+        let flags = words.get(i + 2) == Some(&"flags:");
+        let moby = match name {
+            "mount" => next.contains(':') && next.ends_with(',') && flags,
+            "unmount" => next.contains('/') && next.ends_with(':'),
+            _ => false,
+        };
+        let target = after.is_empty() && opens && moby;
+        (CALLS.contains(&name) && after.starts_with('(')) || target
+    })
 }
 
 /// The name a tool's refusal gives bare after the tool's own name — macOS's `touch: Makefile: Operation not permitted`,
-/// `mkdir: .github: Permission denied` (`<program>: <name>: <refusal>`) — as a path from `root` (where the run is),
+/// `mkdir: .github: Permission denied` (`<program>: <name>: <refusal>`, a shell's `line 3: ` between) — as a path
+/// from `root` (where the run is),
 /// folded; `named_in` reads the other forms. A name with no program before it (`Makefile: Operation not permitted`)
 /// names nothing. frictions29 30: the kernel's report of a protected name refused was lost (1 in 10, measured), and
 /// this line, all the output said, was read as no cause.
@@ -51,6 +120,12 @@ fn program_named_in(line: &str, root: &Path) -> Option<PathBuf> {
     let refusals = [": permission denied", ": operation not permitted", ": read-only file system"];
     let at = refusals.iter().find_map(|r| low.find(r))?;
     let (program, name) = line[..at].trim().split_once(": ")?;
+    // (a shell's line number before the name: bash's `sh: line 1: Makefile:`, dash's `./build.sh: 3: Makefile:`)
+    let number = |n: &str| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit());
+    let name = match name.split_once(": ") {
+        Some((at, name)) if number(at.strip_prefix("line ").unwrap_or(at)) => name,
+        _ => name,
+    };
     let program_like =
         !program.is_empty() && program.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c));
     let bare = !name.is_empty()
@@ -851,6 +926,13 @@ impl Policy {
                 "(Read from its own error lines — {}, judged by the sandbox's rules.)\n",
                 self.output_read_why()
             ));
+            // (#284: a line read as a write may be a mount no shape of `mount_line` knows — what its grant opens)
+            if o.seen.iter().any(|d| ["file-write*", EITHER].contains(&d.op.as_str())) {
+                s.push_str(
+                    "A grant for a write read from the run's output opens writing in that folder only — never a \
+                     mount or an unmount, which the sandbox refuses whatever is granted.\n",
+                );
+            }
         }
         s
     }

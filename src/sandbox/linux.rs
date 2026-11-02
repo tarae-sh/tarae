@@ -4484,6 +4484,15 @@ mod tests {
         let at = mnt.display().to_string();
         let mount = |t: &str| ("mount".to_string(), t.to_string());
         assert_eq!(got(&out[1..]), [mount("")], "bwrap's names no place");
+        // (runc's and crun's, each naming its place: a mount, never a write there)
+        for line in [
+            "runc run failed: error mounting \"proc\" to rootfs at \"/proc\": mount src=\"proc\", dst=\"/proc\", \
+             flags=MS_NOSUID: operation not permitted",
+            "crun: mount `proc` to `/proc`: Operation not permitted",
+        ] {
+            let said = got(&[(true, line.to_string())]);
+            assert!(!said.is_empty() && said.iter().all(|(op, _)| op == "mount"), "{line}: {said:?}");
+        }
         // (one at no place adds nothing to one at a place)
         assert_eq!(got(&out), [mount(&at)]);
         assert_eq!(got(&[out[1].clone(), out[0].clone()]), [mount(&at)], "whichever came first");
@@ -4493,6 +4502,7 @@ mod tests {
         let r = Guard::In(Box::new(p.clone())).report(&out);
         let r = r.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(r.contains("No command of yours mounts or unmounts in the sandbox"), "{r}");
+        assert!(!r.contains("A grant for a write read from the run's output"), "no write read: {r}");
         assert!(!r.contains("open it from the run's panel"), "{r}");
         // (beside a write refused elsewhere, which a grant opens: the write is offered, the mount still isn't)
         let w = crate::sandbox::Watch::quiet("t.");
@@ -4505,6 +4515,65 @@ mod tests {
         // (unconfined, nothing of Landlock's to read: the line is no mount)
         let open = Policy { confine: None, ..p };
         assert!(open.said_in_output(&out[1..], &[]).is_empty());
+    }
+
+    /// #284: a refused write to a file named like a mount call, in each tool's words — Go's `os.PathError`, busybox's,
+    /// GNU's touch, tee and cat, util-linux's script, dash's and bash's, a script's, Python's — is a refusal at that
+    /// file, never a mount, and the panel offers its folder.
+    /// Before, any unquoted word of the family read as a mount: Go's `open mount: permission denied` offered nothing.
+    #[test]
+    fn a_write_refused_to_a_file_named_mount_offers_its_grant() {
+        let Some(_) = kernel_abi("a_write_refused_to_a_file_named_mount_offers_its_grant") else { return };
+        let s = Scratch::new("write-mount");
+        let out_dir = s.home.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let p = Policy { cwd: Some(out_dir.clone()), ..s.policy() };
+        let caps = crate::caps::Caps::at(&s.home, &s.root);
+        let at = out_dir.join("mount").display().to_string();
+        for line in [
+            "open mount: permission denied",
+            "mkdir mount: permission denied",
+            "touch: mount: Permission denied",
+            "touch: cannot touch 'mount': Permission denied",
+            "sh: 1: cannot create mount: Permission denied",
+            "bash: mount: Permission denied",
+            "tee: mount: Permission denied",
+            "cat: mount: Permission denied",
+            "script: cannot open mount: Permission denied",
+            "build.sh: line 3: mount: Permission denied",
+            "./run.sh: 3: mount: Permission denied",
+            "PermissionError: [Errno 13] Permission denied: 'mount'",
+        ] {
+            let got = p.said_in_output(&[(true, line.to_string())], &[]);
+            let said: Vec<_> = got.iter().map(|d| (d.op.as_str(), d.target.as_str())).collect();
+            // (a script's own path is read too — `paths_in`'s `./run.sh`, older than this — never as a mount)
+            let mount = said.iter().any(|(op, _)| *op == "mount");
+            assert!(said.iter().any(|(_, t)| *t == at) && !mount, "{line}: {said:?}");
+            assert!(!crate::blocked::choices(&got, &caps).is_empty(), "{line}: {got:?}");
+        }
+        // (Go's `os.LinkError`, the op first: a refusal at the path it names, offered, never a mount)
+        for op in ["rename", "link", "symlink"] {
+            let line = format!("{op} mount {}/x: permission denied", out_dir.display());
+            let got = p.said_in_output(&[(true, line.clone())], &[]);
+            let said: Vec<_> = got.iter().map(|d| (d.op.as_str(), d.target.as_str())).collect();
+            let x = out_dir.join("x").display().to_string();
+            assert!(
+                said.iter().any(|(_, t)| *t == x) && said.iter().all(|(op, _)| *op != "mount"),
+                "{line}: {said:?}"
+            );
+            assert!(!crate::blocked::choices(&got, &caps).is_empty(), "{line}: {got:?}");
+        }
+        // (and the report says what a grant for one opens: writes in that folder, never a mount)
+        let p = Policy { watch: Some(crate::sandbox::Watch::quiet("t.")), ..p };
+        let r = Guard::In(Box::new(p)).report(&[(true, "open mount: permission denied".to_string())]);
+        let r = r.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            r.contains(
+                "A grant for a write read from the run's output opens writing in that folder only — never a mount \
+                 or an unmount, which the sandbox refuses whatever is granted."
+            ),
+            "{r}"
+        );
     }
 
     /// Where a run's refusals were read is said beside them, each source in its own words: Landlock's audit

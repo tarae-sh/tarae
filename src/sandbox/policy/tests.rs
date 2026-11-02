@@ -1,16 +1,49 @@
 use super::*;
 use crate::sandbox::tests::env;
 
-/// A line saying a mount, an unmount or a pivot was refused (`mount_line`): the tools' own words, the calls' names;
-/// never a path holding the word, a mount that failed for another reason, nor a refusal that names no mount.
+/// A line saying a mount, an unmount or a pivot was refused (`mount_line`): the tools' own words, as their sources
+/// write them, the calls' names; never a path holding the word, a mount that failed for another reason, nor a
+/// refusal that names no mount — nor a refused write to a file named like a call (#284), in each tool's words.
 #[test]
 fn a_refused_mount_is_read_from_its_line() {
     for line in [
+        // (util-linux's mount and umount: the target, then libmount's message)
         "mount: /mnt: permission denied.",
-        "umount: /x: Operation not permitted",
+        "mount: /mnt: fsmount() failed: Operation not permitted.",
+        "umount: /x: umount failed: Operation not permitted.",
+        "/usr/bin/mount: /mnt: permission denied.",
+        // (Go's `os.NewSyscallError("mount", err)`)
+        "mount: operation not permitted",
+        // (bwrap's, as bubblewrap.c dies with them)
         "bwrap: Can't mount proc on /newroot/proc: Operation not permitted",
         "bwrap: Failed to make / slave: Operation not permitted",
-        "unshare: cannot change root filesystem propagation: Permission denied (mount)",
+        "bwrap: pivot_root: Operation not permitted",
+        "bwrap: pivot_root(/newroot): Operation not permitted",
+        "bwrap: unmount old root: Operation not permitted",
+        "bwrap: Can't bind mount /oldroot/usr on /newroot/usr: Unable to remount destination \"/newroot/usr\" with \
+         correct flags: Operation not permitted",
+        "bwrap: Can't remount readonly on /newroot/etc: Operation not permitted",
+        // (libfuse's fusermount, as fusermount.c says it)
+        "fusermount3: mount failed: Operation not permitted",
+        // (unshare's, as unshare.c errs)
+        "unshare: cannot change root filesystem propagation: Permission denied",
+        "unshare: mount /proc failed: Permission denied",
+        // (moby/sys's `mountError`, podman's through containers/storage; its overlay driver's own)
+        "Error: mount /var/lib/containers/storage/overlay:/var/lib/containers/storage/overlay, flags: 0x1000: \
+         operation not permitted",
+        "Error: unmount /run/containers/storage: operation not permitted",
+        // (runc's `mountError`, as mount_linux.go writes it; crun's, as linux.c makes them — alone and in podman's line)
+        "runc run failed: unable to start container process: error during container init: error mounting \"proc\" to \
+         rootfs at \"/proc\": mount src=\"proc\", dst=\"/proc\", flags=MS_NOSUID|MS_NODEV|MS_NOEXEC: operation not \
+         permitted",
+        "crun: mount `proc` to `/proc`: Operation not permitted",
+        "runc create failed: unable to start container process: error during container init: error mounting \
+         \"mqueue\" to rootfs at \"/dev/mqueue\": operation not permitted",
+        "Error: crun: move mount `/sys` to `/newroot/sys`: Operation not permitted: OCI permission denied",
+        "Error: creating overlay mount to /var/lib/containers/storage/overlay/1f/merged, mount_data=\"lowerdir=/l\": \
+         operation not permitted",
+        // (a call's name, then `(` or `:` — strace's, a program's own)
+        "mount(\"proc\", \"/proc\", \"proc\", 0, NULL) = -1 EPERM (Operation not permitted)",
         "pivot_root: failed to change root from `.' to `old': Operation not permitted",
         "Error: mount_setattr: Operation not permitted",
     ] {
@@ -26,6 +59,39 @@ fn a_refused_mount_is_read_from_its_line() {
         // (a name the tool was given, quoted: a write refused, not a mount)
         "touch: cannot touch 'mount': Permission denied",
         "mkdir: cannot create directory ‘umount’: Permission denied",
+        // (#284: a file named like a call is an operand, never the program — Go's `os.PathError` and `os.LinkError`,
+        // busybox's, dash's and bash's as `sh`, Python's `PermissionError`)
+        "open mount: permission denied",
+        "mkdir mount: permission denied",
+        "stat pivot_root: permission denied",
+        "unlink umount: operation not permitted",
+        "rename mount.tmp mount: permission denied",
+        "rename mount /tmp/x: permission denied",
+        "link mount /tmp/x: permission denied",
+        "symlink mount /tmp/x: permission denied",
+        "symlink unmount /x/y: operation not permitted",
+        // (what no shape decides is a refusal at its paths, as before userns A: moby's `mountError` with no flags, its
+        // write grant opening writes there, never the mount)
+        "Error: mount /a:/b, data: x: operation not permitted",
+        "touch: mount: Permission denied",
+        "sh: 1: cannot create mount: Permission denied",
+        "sh: line 1: mount: Permission denied",
+        "bash: mount: Permission denied",
+        // (whatever the program or the script: GNU's tee and cat leave a plain name bare, util-linux's script warns
+        // `cannot open %s`)
+        "tee: mount: Permission denied",
+        "cat: mount: Permission denied",
+        "script: cannot open mount: Permission denied",
+        "./build.sh: mount: Operation not permitted",
+        "build.sh: line 3: mount: Permission denied",
+        "./run.sh: 3: mount: Permission denied",
+        "PermissionError: [Errno 13] Permission denied: 'mount'",
+        // (a word of the family where no tool's message puts it: in a sentence, in a path a tool names)
+        "cannot write the mount table: Permission denied",
+        "cat: /mount: Permission denied",
+        // (a path in a line of a program that mounts: bwrap's `die_with_error ("execvp %s", …)`)
+        "bwrap: execvp ./mount: Permission denied",
+        "unshare: cannot open /x/mount: Permission denied",
         // (a daemon's own mount, outside the run)
         "docker: Error response from daemon: error while mounting volume '/var/lib/docker/volumes/v/_data': \
          failed to mount local volume: mount /src:/var/lib/docker/volumes/v/_data, flags: 0x1000: permission denied.",
@@ -51,6 +117,9 @@ fn a_tools_own_name_then_the_file_is_read_as_its_refusal() {
     let sub = Policy { cwd: Some(PathBuf::from("/Users/u/p/sub")), ..p.clone() };
     assert_eq!(said(&sub, "touch: Makefile: Operation not permitted"), ["/Users/u/p/sub/Makefile"]);
     assert_eq!(said(&sub, "touch: ../build.rs: Operation not permitted"), ["/Users/u/p/build.rs"]);
+    // (a shell's line number between: bash's, a script's as dash says it)
+    assert_eq!(said(&p, "sh: line 1: Makefile: Operation not permitted"), ["/Users/u/p/Makefile"]);
+    assert_eq!(said(&p, "./build.sh: 3: Makefile: Operation not permitted"), ["/Users/u/p/Makefile"]);
     for line in [
         "touch: src/a.rs: Operation not permitted",
         "Makefile: Operation not permitted",
