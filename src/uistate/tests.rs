@@ -392,6 +392,21 @@ pub(crate) const SCENES: &[Scene] = &[
     }),
     ("a light card", light_card),
     // (orchestra: Claude's set of sessions — waiting as it came, focused, and behind a card of yours)
+    // (focus C1: `space n`'s line in the note's card, a new question's and a reply's — the prompt's keys, as ever)
+    ("a prompt in the note's card, a question", |ed| {
+        ed.docs[0].path.set(Some(std::env::temp_dir().join("tarae-keys-question.rs")));
+        ed.handle_key(Key::plain(Code::Char(' ')));
+        ed.handle_key(Key::plain(Code::Char('n')));
+        ed.handle_key(Key::plain(Code::Char('w')));
+    }),
+    ("a prompt in the note's card, a reply", |ed| {
+        let path = std::env::temp_dir().join("tarae-keys-reply.rs");
+        ed.docs[0].path.set(Some(path.clone()));
+        let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+        crate::notes::open(ed, id);
+        crate::notes::start(ed);
+        ed.handle_key(Key::plain(Code::Char('w')));
+    }),
     ("a set card, waiting", set_card),
     ("a set card, focused by a press", |ed| {
         set_card(ed);
@@ -1037,10 +1052,13 @@ fn no_key_is_refused_in_silence() {
             "review",
             "view mode",
             "output",
+            "the note's card",
         ]
         .iter()
         .any(|p| name.contains(p)),
-        " " => ["draft", "a prompt opened over it", "picker"].iter().any(|p| name.contains(p)),
+        " " => {
+            ["draft", "a prompt opened over it", "the note's card", "picker"].iter().any(|p| name.contains(p))
+        }
         // (`S-tab` while typing is the field's — insert mode, a prompt, a picker at its first row — never the next
         // pane, and bound to nothing there (#199; the chat's input takes it as the next pane, #230); between two panes
         // of one buffer it moves the keys, which only the lit lines show — styles, not this walk's text:

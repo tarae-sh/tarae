@@ -121,14 +121,14 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-11-01):
+Under way (2026-11-02):
 
 - **Orchestra P3 landed** (`72b18178`) — a parent's review and proposals as one tool, `session_act { session, act, why?,
   wake? }`, every card still yours: Part I is complete. Now its week of use, then Part II's P6
   ([§4](#4-panes-the-terminal-line-and-orchestra)).
-- **The chat and the code as one flow, a day of use before E1** — D1, B1, A1 and A1b steps 1–3 are in
-  ([next](#next)); E1, the turn as a map (tree, outline, gutter by role), comes after a day of real work with them,
-  then the rest in main's `.sb/focus-plan.md` order.
+- **The chat and the code as one flow** — D1, B1, A1, A1b steps 1–3, E1 (the turn as a map, `3a18d92f`) and F0 (what a
+  note knows, `2038d9ad`) are in ([next](#next)); C1, the question typed at its lines, is under way, then the rest in
+  main's `.sb/focus-plan.md` order.
 
 No friction of #223–#254 is open ([§3](#3-frictions-and-lighter-cards-and-reviews)).
 

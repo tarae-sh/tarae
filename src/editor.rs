@@ -108,7 +108,13 @@ pub struct Prompt {
     pub recalled: Option<(usize, String)>,
     /// The line's first byte drawn last frame (`term::prompt_window`): a long line moves only as its cursor needs.
     pub left: std::cell::Cell<usize>,
+    /// `space n`'s: the code's view as it opened — its card moves it as far as it needs, and a line that ends with no card
+    /// to show puts it back.
+    pub view: Option<ViewAt>,
 }
+
+/// A code's view: `Document`'s `top`, `left` and `top_rows`.
+pub type ViewAt = (usize, usize, Option<(usize, usize)>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -420,8 +426,8 @@ pub struct InputDrawn {
 /// What an open note's card's height is laid out from (`Screen.note_rows`): the note, its thread's entries and their
 /// text's length, its waiting row, its flow's parts, its board's trace, the question it answers, and the code's (columns,
 /// rows) — a reply, a placing or a resize lays it out again. A line's answers (focus A1b): all their words, and (how many,
-/// how many folded).
-pub type NoteRowsKey = (u64, usize, usize, bool, (usize, usize), bool, usize, (usize, usize));
+/// how many folded). The last: whether it holds `space n`'s line (focus C1).
+pub type NoteRowsKey = (u64, usize, usize, bool, (usize, usize), bool, usize, (usize, usize), bool);
 
 /// Whose text a mouse drag selects — where its press was (`Editor.mouse_anchor`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -699,6 +705,9 @@ pub struct Screen {
     pub prompt_rows: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The prompt's line as drawn: where a press puts its cursor (`PromptDrawn`).
     pub prompt_input: std::cell::Cell<Option<PromptDrawn>>,
+    /// `space n`'s line drawn in the note's card this frame (focus C1), where its cursor stands: `draw_prompt` stands
+    /// aside, and the card's bottom line says its keys. None where no card shows: it stands on the status line.
+    pub note_input: std::cell::Cell<Option<(u16, u16)>>,
     /// A picker's query as drawn: where a press puts its cursor (`PromptDrawn`, as the prompt's line).
     pub picker_input: std::cell::Cell<Option<PromptDrawn>>,
     /// The picker's frame as drawn — its list's card and its preview's (x, y, width, height): a press outside closes it.
@@ -3394,29 +3403,31 @@ impl Editor {
                 }
             }
             // The note card: a drag over its words selects them, copied as you let go; a press not dragged replies
-            // (`space n`) as you let go; while its reply's line is open, said — its line is the reply's
+            // (`space n`) as you let go; while its reply's line is open, said — what you typed stays, its card's words
+            // still yours to copy
             (S::NoteCard, _) => {
                 took_mouse(S::NoteCard);
                 let at = crate::term::note_at(self, x, y);
-                match (m.kind, self.prompt.as_ref().map(|p| p.kind)) {
-                    (K::Down, Some(PromptKind::Note(_))) => {
-                        self.set_status("replying — enter sends it · esc close")
-                    }
-                    (K::Down, _) => self.note_marked = at.map(|p| (p, p)),
-                    (K::Drag, _) => {
+                let replying = matches!(self.prompt.as_ref().map(|p| p.kind), Some(PromptKind::Note(_)));
+                match m.kind {
+                    K::Down => self.note_marked = at.map(|p| (p, p)),
+                    K::Drag => {
                         if let (Some((a, _)), Some(p)) = (self.note_marked, at) {
                             self.note_marked = Some((a, p));
                         }
                     }
                     // (the gesture over with the release: what it held let go — else every later drag anywhere would
                     // come here while the card is drawn, `mouse_under`)
-                    (K::Up, _) => match (crate::term::note_marked_text(self), self.note_marked.take()) {
+                    K::Up => match (crate::term::note_marked_text(self), self.note_marked.take()) {
                         (Some(text), _) => {
                             let what = match text.lines().count() {
                                 0 | 1 => format!("{} characters", text.chars().count()),
                                 n => format!("{n} lines"),
                             };
                             crate::clipboard::copy(&self.events.jobs(), text, what);
+                        }
+                        (None, Some(_)) if replying => {
+                            self.set_status("replying — enter sends it · esc close")
                         }
                         // (on its `… N earlier`: the line's earlier answers unfolded — focus A1b)
                         (None, Some(_)) if crate::term::note_earlier_at(self, y) => {
@@ -6231,7 +6242,7 @@ impl Editor {
                 let text = p.text();
                 self.prompt_history.remember(p.kind, &text);
                 self.search_origin = None;
-                self.submit_prompt(p.kind, text);
+                self.submit_prompt(p, text);
             }
             // `:` completion — Tab·Shift-Tab = cycle and fill, → at the end = accept the dim suggestion
             Code::Tab | Code::BackTab if plain && kind == PromptKind::Command => {
@@ -6271,18 +6282,27 @@ impl Editor {
     }
 
     /// Closes the prompt without running it (Esc·C-c·Backspace on empty) — reverts the view moved by the
-    /// search preview, so the screen follows the cursor again.
+    /// search preview, so the screen follows the cursor again, and the one `space n`'s card moved.
     pub(crate) fn cancel_prompt(&mut self) {
-        if let Some(PromptKind::Plugin(token)) = self.prompt.take().map(|p| p.kind) {
+        let p = self.prompt.take();
+        if let Some(PromptKind::Plugin(token)) = p.as_ref().map(|p| p.kind) {
             self.plugin_prompt_done(token, None);
         }
         if let Some(top) = self.search_origin.take() {
             self.doc_mut().set_top(top);
         }
+        self.prompt_view_back(p.as_ref());
     }
 
-    fn submit_prompt(&mut self, kind: PromptKind, text: String) {
-        match kind {
+    /// The view back where `space n`'s line found it (`Prompt.view`).
+    fn prompt_view_back(&mut self, p: Option<&Prompt>) {
+        let Some(view) = p.and_then(|p| p.view) else { return };
+        let d = self.doc_mut();
+        (d.top, d.left, d.top_rows) = view;
+    }
+
+    fn submit_prompt(&mut self, p: Prompt, text: String) {
+        match p.kind {
             PromptKind::Command => {
                 self.count_typed(&text);
                 self.run(&[MappableCommand::Typed(text)], None)
@@ -6298,7 +6318,12 @@ impl Editor {
             PromptKind::Plugin(token) => self.plugin_prompt_done(token, Some(text)),
             PromptKind::Shell(p) => self.shell_pipe(p, &text),
             PromptKind::Replace => self.replace_plan_start(text),
-            PromptKind::Note(target) => crate::notes::submit(self, target, &text),
+            PromptKind::Note(target) => {
+                // (nothing typed, a review's comment: no card to show, as `esc`)
+                if !crate::notes::submit(self, target, &text) {
+                    self.prompt_view_back(Some(&p));
+                }
+            }
             PromptKind::Session => self.session_new(&text, None),
             PromptKind::Rename => {
                 if !text.is_empty() {
@@ -8061,7 +8086,10 @@ mod tests {
         assert!(!card(&mut ed), "gone once the cursor leaves");
         feed(&mut ed, "8G");
         assert!(card(&mut ed), "back at the stop");
-        feed(&mut ed, "<esc><space>nwhy here?<ret>");
+        feed(&mut ed, "<esc><space>n");
+        let asking = crate::notes::asking(&ed, ed.doc());
+        assert_eq!(asking, Some(7..9), "its card under the stop's lines as it's typed");
+        feed(&mut ed, "why here?<ret>");
         let n = ed.workspace.claude.notes.list.last().expect("a note");
         assert_eq!((n.path.as_path(), n.lines.clone()), (lib.as_path(), 7..9), "the stop's lines");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());

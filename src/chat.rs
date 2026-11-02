@@ -5672,7 +5672,9 @@ mod tests {
         };
         point_at(&mut ed, &pane);
         ed.open(&plain).unwrap();
-        went(&mut ed, "a note", &|ed| crate::notes::submit(ed, None, "about this line"));
+        went(&mut ed, "a note", &|ed| {
+            crate::notes::submit(ed, None, "about this line");
+        });
         assert_eq!(ed.workspace.claude.notes.list.len(), 1, "the note is kept");
         for n in &mut ed.workspace.claude.notes.list {
             n.thread.iter_mut().for_each(|e| e.draft = true);
@@ -5709,7 +5711,9 @@ mod tests {
             crate::allow::keep(&store, &ed.workspace.root, |a| a.add(&opened)).unwrap();
             assert!(ed.workspace.claude.chat.is_none(), "the chat isn't open yet");
             match review {
-                false => crate::notes::submit(&mut ed, None, "what is this"),
+                false => {
+                    crate::notes::submit(&mut ed, None, "what is this");
+                }
                 true => {
                     let id = crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::You, "this line");
                     let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();

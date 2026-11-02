@@ -548,6 +548,67 @@ pub fn opened<'a>(ed: &'a Editor, doc: &crate::document::Document) -> Option<&'a
     ed.workspace.claude.notes.list.iter().find(|n| n.id == id && n.path == path)
 }
 
+/// The lines a new note `space n` writes is about: the selection's; a walk-through's stop's, the cursor on it (never a
+/// review's comment) — what `submit` pins and what the card under them says while it's typed.
+fn asked_lines(ed: &Editor) -> Range<usize> {
+    let doc = ed.doc();
+    let r = doc.selection().primary();
+    let (a, b) =
+        (mv::line_of(&doc.text, r.from()), mv::line_of(&doc.text, r.to().saturating_sub(1).max(r.from())));
+    match crate::follow::stop_yours(ed).filter(|_| a == b && !crate::codereview::drafting(ed)) {
+        Some((_, lines, _)) => lines,
+        None => a..b + 1,
+    }
+}
+
+/// The lines of `doc` a new note's question is being typed about (focus C1): `space n`'s line open with no note to reply
+/// to — none, or one gone since, which `submit` makes a new one too. A buffer with no file has no notes: none.
+pub fn asking(ed: &Editor, doc: &crate::document::Document) -> Option<Range<usize>> {
+    let new = matches!(ed.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(None)));
+    (new && doc.path.is_some() && doc.id == ed.doc().id).then(|| asked_lines(ed))
+}
+
+/// A reply whose note went while it's typed is a new question: `submit` makes a note on your lines, so the line says that
+/// (`ask claude:`, a review's comment) — asked each frame, whichever of the ways a note goes took it.
+pub fn prompt_sync(ed: &mut Editor) {
+    let Some(crate::editor::PromptKind::Note(Some(id))) = ed.prompt.as_ref().map(|p| p.kind) else { return };
+    if find(ed, id).is_some() {
+        return;
+    }
+    let label = comment_label(ed);
+    if let Some(p) = ed.prompt.as_mut() {
+        (p.kind, p.label) = (crate::editor::PromptKind::Note(None), label);
+    }
+}
+
+/// `space n`'s word for a new note in a review: a comment, kept as a draft — said so, on its line (#134: "ask claude:"
+/// wasn't taken for the review's comment input the rail's `space n comment` promised).
+fn comment_label(ed: &Editor) -> Option<String> {
+    crate::codereview::drafting(ed).then(|| format!("comment on line {}:", ed.cursor_line() + 1))
+}
+
+/// The note `space n`'s line replies to, if there's one.
+fn replying_to(ed: &Editor) -> Option<&Note> {
+    let Some(crate::editor::PromptKind::Note(Some(id))) = ed.prompt.as_ref().map(|p| p.kind) else {
+        return None;
+    };
+    find(ed, id)
+}
+
+/// Whether `space n`'s line is a reply on the card that shows `n` (focus C1): the card holds it.
+pub fn replying(ed: &Editor, n: &Note) -> bool {
+    replying_to(ed).is_some_and(|r| group(&ed.workspace.claude.notes, n).iter().any(|g| g.id == r.id))
+}
+
+/// The note whose card is drawn in `doc`: the one `space n`'s line replies to while it's open (focus C1) — the line
+/// stands on its card whether that was open or not, and `esc` leaves `Notes.open` as it was —, else the open one. None
+/// while a question's card stands in its place (`asking`): one card at a time.
+pub fn carded<'a>(ed: &'a Editor, doc: &crate::document::Document) -> Option<&'a Note> {
+    let path = doc.path.as_deref();
+    let card = replying_to(ed).filter(|n| path == Some(n.path.as_path())).or_else(|| opened(ed, doc));
+    card.filter(|_| asking(ed, doc).is_none())
+}
+
 /// The note under the cursor: the focused one (just pinned, or stepped to) if it's here, else the first —
 /// so `]n` reads a crowded line in order. Your cursor's even while follow holds the view at Claude's place: a key of
 /// yours acts at your cursor, never at what follow shows (#250).
@@ -581,9 +642,10 @@ fn first_of<'a>(ed: &'a Editor, v: &[&'a Note], line: usize) -> Option<&'a Note>
         .map(|n| shown(notes, n))
 }
 
-/// The note `space n` and `enter` act on: the one here, else the open card's in this file — a card a turn opened leaves
-/// your cursor where it was, and the card's keys are its own (`term::draw_note_card` says them only where they are).
-/// While follow holds the view: your cursor's, and the open card only where it isn't Claude's place (`opened_yours`).
+/// The note `enter` acts on: the one here, else the open card's in this file — a card a turn opened leaves your cursor
+/// where it was, and the card's keys are its own (`term::draw_note_card` says them only where they are). While follow
+/// holds the view: your cursor's, and the open card only where it isn't Claude's place (`opened_yours`). `space n` has
+/// no such second place: `here`, else a new note on your line (focus C1, the user on its shots).
 pub fn target(ed: &Editor) -> Option<&Note> {
     let notes = &ed.workspace.claude.notes;
     here(ed).or_else(|| opened_yours(ed).map(|n| shown(notes, n)))
@@ -1276,10 +1338,11 @@ pub fn by_word(word: &str) -> Option<By> {
 
 // ── You ───────────────────────────────────────────────────────────────────
 
-/// `space n`: reply to the note here, or start one (asking Claude about the line or selection) — at your cursor: follow,
-/// holding the view, pauses and the view comes back to it (`follow::your_view`).
+/// `space n`: reply to the note here, or start one (asking Claude about the line or selection) — at your cursor, a card
+/// open on another line staying open: to reply there, go to its line or press its words. Follow, holding the view, pauses
+/// and the view comes back to your cursor (`follow::your_view`).
 pub fn start(ed: &mut Editor) {
-    let at = target(ed).map(|n| n.id);
+    let at = here(ed).map(|n| n.id);
     crate::follow::your_view(ed);
     start_on(ed, at);
 }
@@ -1288,28 +1351,47 @@ pub fn start(ed: &mut Editor) {
 pub fn start_card(ed: &mut Editor) {
     let notes = &ed.workspace.claude.notes;
     let at = notes.open.and_then(|o| find(ed, o)).map(|n| shown(notes, n).id);
+    // (what you type stands in this card: follow, holding the view, doesn't take it away — nor does your cursor once
+    // the line ends: the card you pressed is what's in sight)
+    crate::follow::pause_at_card(ed);
+    hold_view(ed);
     start_on(ed, at);
+}
+
+/// The view stays where it is until a key moves the cursor or the text — the wheel's hold (`Document.wheel_held`).
+fn hold_view(ed: &mut Editor) {
+    let d = ed.doc_mut();
+    d.wheel_held = Some((d.selection().primary(), d.version()));
 }
 
 /// The note prompt open on note `target`, none: a new note on the cursor's lines.
 fn start_on(ed: &mut Editor, target: Option<u64>) {
     // On a walk-through's stop: it holds still while you ask
     crate::follow::hold(ed);
-    // In a review a new one is a comment, kept as a draft — said so, on its line (#134: "ask claude:" wasn't
-    // taken for the review's comment input the rail's `space n comment` promised)
-    let comment = (target.is_none() && crate::codereview::drafting(ed))
-        .then(|| format!("comment on line {}:", ed.cursor_line() + 1));
+    let comment = comment_label(ed).filter(|_| target.is_none());
     ed.open_prompt(crate::editor::PromptKind::Note(target), "");
     if let Some(p) = ed.prompt.as_mut().filter(|_| comment.is_some()) {
         p.label = comment;
     }
+    // (where the view stands before the line moves it: put back if the line ends with no card to show)
+    let d = ed.doc();
+    let view = (d.top, d.left, d.top_rows);
+    if let Some(p) = ed.prompt.as_mut() {
+        p.view = Some(view);
+    }
+    // (a reply is written on its card — `carded`: in sight with its line, as a card that opens is)
+    let path = ed.doc().path.as_deref();
+    let lines = target.and_then(|id| find(ed, id)).filter(|n| path == Some(&n.path)).map(|n| n.lines.clone());
+    if let Some(lines) = lines {
+        ed.show_range(lines);
+    }
 }
 
-/// The prompt was sent.
-pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
+/// The prompt was sent. Whether its card stays: false with nothing to send, and for a review's comment.
+pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) -> bool {
     let text = text.trim();
     if text.is_empty() {
-        return;
+        return false;
     }
     // (Claude answering: the reply is in its thread now and goes at the turn's end — frictions29 18)
     let busy =
@@ -1331,18 +1413,10 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
         }
         None => {
             let Some(path) = ed.doc().path.clone() else {
-                return ed.set_status("save the file first — notes live in files");
+                ed.set_status("save the file first — notes live in files");
+                return false;
             };
-            let doc = ed.doc();
-            let r = doc.selection().primary();
-            let (a, b) = (
-                mv::line_of(&doc.text, r.from()),
-                mv::line_of(&doc.text, r.to().saturating_sub(1).max(r.from())),
-            );
-            let lines = match &stop {
-                Some((_, lines, _)) if a == b => lines.clone(),
-                _ => a..b + 1,
-            };
+            let lines = asked_lines(ed);
             let id = add(ed, &path, lines, By::You, text);
             if draft && let Some(n) = find_mut(ed, id) {
                 n.waiting = false;
@@ -1355,17 +1429,25 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
         let k = ed.workspace.claude.notes.list.iter().filter(|n| n.thread.iter().any(|e| e.draft)).count();
         // (outside a review too, while drafts wait — a background reviewer's findings among them: bgreview)
         // (in a review the rail counts them; outside one it's said where you look, the user's decision 2026-10-19)
-        return match ed.workspace.code_review.is_some() {
+        match ed.workspace.code_review.is_some() {
             true => ed.note(format!("draft saved — {k} in this review · space v s sends them")),
             false => ed.set_status(format!("draft saved — {k} waiting · space v s sends them")),
         };
+        return false;
     }
+    // (sent, it stays where you typed it: the card that held the line shows the thread now, the view on it wherever your
+    // cursor is — a review's comments go on to the next line, each a draft of its own, above)
+    let notes = &mut ed.workspace.claude.notes;
+    (notes.open, notes.turned, notes.opening) = (Some(id), false, None);
+    hold_view(ed);
     let why = stop.map(|(_, _, why)| why.to_string());
     if busy && let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.sends.push(crate::chat::Later::Reply { id, text: text.to_string(), fresh, why });
-        return ed.set_status("reply queued — it goes when Claude's turn ends");
+        ed.set_status("reply queued — it goes when Claude's turn ends");
+        return true;
     }
     send(ed, id, text, fresh, why, None);
+    true
 }
 
 /// Note `id`'s message goes to Claude — `text` the reply just added (`fresh`: the note with it), `why` what

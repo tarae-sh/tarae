@@ -599,6 +599,7 @@ fn over_fold(editor: &mut Editor, w: u16, h: u16) {
 fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::Result<()> {
     // (a frame drawn again: nothing of the last one's reading kept — `light_rows`)
     editor.drawn.take();
+    crate::notes::prompt_sync(editor);
     // (this frame's width first: what's docked beside the code and what folds into the slot are judged by it,
     // here and in the editor alike — `Editor::docked_in_sight`)
     editor.screen.width = Some(w as usize);
@@ -763,6 +764,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         prompt_card: Default::default(),
         prompt_rows: Default::default(),
         prompt_input: Default::default(),
+        note_input: Default::default(),
         picker_input: Default::default(),
         picker_box: Default::default(),
         review_area: Default::default(),
@@ -831,12 +833,15 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     // view, never the cursor; any move or edit brings the view back. The hold is yours only while follow doesn't
     // lead: leading again — by itself after the wait, `C-f`, `space F`, the next question — its line wins and the hold
     // goes)
-    let led = crate::follow::view_line(editor).map(|l| mv::line_start(&editor.doc().text, l));
+    // (`space n`'s line standing in its card: the view keeps it in sight, the wheel and follow within that — focus C1)
+    let asked = asked_line(editor, &focus_lay);
+    let led = (asked.or(crate::follow::view_line(editor))).map(|l| mv::line_start(&editor.doc().text, l));
     let held = led.is_none() && {
         let d = editor.doc();
         d.wheel_held.is_some_and(|h| h == (d.selection().primary(), d.version()))
     };
-    if !held && editor.doc().wheel_held.is_some() {
+    // (`space n`'s line leading, the hold stands past it: what you pressed stays in sight as the line ends)
+    if !held && asked.is_none() && editor.doc().wheel_held.is_some() {
         editor.doc_mut().wheel_held = None;
     }
     if editor.search_origin.is_none() && !held {
@@ -4318,10 +4323,15 @@ fn draw_panes(
         if *focused {
             cursor = c;
         }
-        // (an open note's card over its rows here — the press its own where the keys' pane has it, focus A1b)
-        let drawn = draw_note_between(editor, ui, (pl, doc, view), out)?;
-        if *focused || editor.screen.note_card.get().is_none() {
-            editor.screen.note_card.set(drawn);
+        // (an open note's card over its rows here — the press its own where the keys' pane has it, focus A1b; `space n`'s
+        // line in it the prompt's, as its presses and its cursor go, focus C1)
+        if let Some((rect, input)) = draw_note_between(editor, ui, (pl, doc, view), out)?
+            && (*focused || editor.screen.note_card.get().is_none())
+        {
+            editor.screen.note_card.set(Some(rect));
+            editor.screen.prompt_card.set(input.map(|i| i.2));
+            editor.screen.prompt_input.set(input.map(|i| i.0));
+            editor.screen.note_input.set(input.map(|i| i.1));
         }
     }
     // Dividers between side-by-side panes, each from the top line it starts at (`┬`, never above it), joined where a
@@ -4443,11 +4453,20 @@ pub(crate) fn cursor_idx(mode: Mode, r: Range, text: &ropey::Rope) -> usize {
     if mode == Mode::Insert { r.head } else { r.cursor(text) }
 }
 
+/// The line of the focused code whose card holds `space n`'s line (focus C1).
+fn asked_line(editor: &Editor, lay: &Layout) -> Option<usize> {
+    let kind = editor.prompt.as_ref().map(|p| p.kind);
+    matches!(kind, Some(crate::editor::PromptKind::Note(_))).then_some(())?;
+    note_line_fits(editor, lay.text_cols).then_some(())?;
+    note_rows(editor, editor.doc(), (lay.text_cols, lay.text_rows)).map(|r| r.0)
+}
+
 fn scroll_to(editor: &mut Editor, lay: &Layout, at: Option<usize>) {
     let so = editor.config.scrolloff.min(lay.text_rows.saturating_sub(1) / 2);
     let tab = editor.config.tab_width;
     let mode = editor.mode;
     let wrap_w = editor.wraps(editor.doc()).then_some(lay.text_cols);
+    let asked = asked_line(editor, lay).is_some();
     let ed = &*editor;
     let doc = ed.doc();
     let pos = at.unwrap_or_else(|| cursor_idx(mode, doc.selection().primary(), &doc.text));
@@ -4476,6 +4495,8 @@ fn scroll_to(editor: &mut Editor, lay: &Layout, at: Option<usize>) {
             None if wrap_w.is_some() => (line, crate::wrap::row_of(&here, pos) + m.removed(line)),
             None => (line, m.removed(line)),
         };
+        // (`space n`'s line in the card under it: that card's last row is what stays in sight)
+        let k = if asked && m.card(line) > 0 { m.rows(line) - 1 } else { k };
         let mut above = k;
         let mut top = line;
         while top > 0 && above < so {
@@ -5311,10 +5332,12 @@ fn draw(
         None => None,
     };
     // A prompt (`:`, `/`, `select:` …) is a card standing on the status line, its menu in it — drawn before the line
-    // (it covers none of its row) so that what covers the follow card's head is known as the line is laid (#253)
-    let prompt_cursor = match &editor.prompt {
-        Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
-        None => None,
+    // (it covers none of its row) so that what covers the follow card's head is known as the line is laid (#253);
+    // `space n`'s stands in the note's card, drawn with its pane (focus C1), here only where no card shows
+    let prompt_cursor = match (&editor.prompt, editor.screen.note_input.get()) {
+        (Some(_), Some(at)) => Some(at),
+        (Some(p), None) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
+        (None, _) => None,
     };
     drew(editor, Kind::Prompt, editor.screen.prompt_card.get());
     // (the line short only while the card's head that says the step is in sight — #253: a picker, which-key, a prompt
@@ -7271,10 +7294,11 @@ fn draw_text(
                     (false, false, true) => "draft · ",
                     (false, false, false) => "",
                 };
-                // (its card open under it: the card says it, right below — the `¶` alone, focus A1b)
-                let open = crate::notes::opened(editor, doc).is_some_and(|o| {
+                // (its card under it: the card says it, right below — the `¶` alone, focus A1b; a reply's shows a closed
+                // one, a question's stands in for an open one, and a code too narrow has none — focus C1)
+                let open = note_carded(editor, doc, lay.text_cols).is_some_and(|o| {
                     crate::notes::group(&editor.workspace.claude.notes, o).iter().any(|g| g.id == n.id)
-                });
+                }) && note_rows(editor, doc, (lay.text_cols, lay.text_rows)).is_some();
                 // (only older answers name this line: a faint `¶` alone — the newest's places have the words)
                 let older = count == 1 && crate::notes::older(&editor.workspace.claude.notes, n);
                 let gist = match () {
@@ -11630,7 +11654,7 @@ fn draw_completion(
     let name = pane_names(ui, editor, card, &["complete"], 0);
     let on = crate::mouse::Surface::Completion;
     draw_frame(out, ui, editor, on, card, rect, &fits(&name), &keys, &[], (None, true))?;
-    frame_keys_said(editor, on, &keys, (x0 + 3, y0 + h - 1), |_| At::Code);
+    frame_keys_said(editor, on, &keys, (x0 + 3, y0 + h - 1), |_| Some(At::Code));
     // The selected item's docs: a cell right of the list (left if no room), top with top — else under (over) it
     let Some((_, lines)) = c.docs.as_ref().filter(|(_, l)| !l.is_empty()) else { return Ok(()) };
     const DOCS_MIN: usize = 24;
@@ -14922,7 +14946,7 @@ fn draw_follow_card(
     if hovered.is_none() {
         // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the ways in
         // — `space l open the chat`, `[r replay` — typed in the code)
-        let home = |k: &str| if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code };
+        let home = |k: &str| Some(if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code });
         frame_keys_said(editor, on, &bottom, (x0 + 3, y0 + h - 1), home);
     }
     // (each mark's cell, for the mouse, the state and pointing: a mark is its span's last cell)
@@ -21213,13 +21237,13 @@ fn more_lines(more: usize, faint: Style) -> Vec<(String, Style)> {
 
 /// A frame's bottom line's keys (`bottom_keys`, laid as `draw_frame` lays them from `(x, y)`, after `╰─ `): each hint
 /// recorded where it stands (`kinds::hint` — a pair that costs is plain words), a press on one typing its key where `home`
-/// says it's typed.
+/// says it's typed (None: where the keys are).
 fn frame_keys_said(
     editor: &Editor,
     on: crate::mouse::Surface,
     keys: &[(String, Style)],
     (x, y): (usize, usize),
-    home: impl Fn(&str) -> At,
+    home: impl Fn(&str) -> Option<At>,
 ) {
     use crate::wordspot::{Press, Spot};
     let mut words = editor.screen.word_spots.borrow_mut();
@@ -21232,7 +21256,11 @@ fn frame_keys_said(
         if crate::wordspot::pressable(k, said) {
             // (as the frame drew them: its line is unfaded whatever fades round it — `TopLine.plain`, the note card in a
             // code pane without the keys — so never `word_spot`'s fade, or lit it'd take another colour: #197a)
-            words.push(Spot::new(on, Press::Keys(k.to_string()), (at, y), pair.to_vec()).home(home(k)));
+            let spot = Spot::new(on, Press::Keys(k.to_string()), (at, y), pair.to_vec());
+            words.push(match home(k) {
+                Some(h) => spot.home(h),
+                None => spot,
+            });
         }
         at += pair.iter().map(|s| s.0.width()).sum::<usize>() + " · ".width();
     }
@@ -21415,7 +21443,7 @@ fn draw_note_card(
     cut: (usize, usize),
     ui: &Ui,
     out: &mut impl Write,
-) -> io::Result<Rect4> {
+) -> io::Result<NoteDrawn> {
     // (a line's answers, focus A1b: their `… N earlier` row stays its last, whatever folds above it)
     let mut g = g;
     let notes = &editor.workspace.claude.notes;
@@ -21490,24 +21518,23 @@ fn draw_note_card(
     let mut rows = rows;
     let folded = earlier.is_some();
     rows.extend(earlier);
-    let replying = matches!(editor.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
+    let replying = note_holds_line(editor, n, g.inner + 4);
     let (x0, y0, w, h) = g.rect();
     // (a screen's edge across it: only the rows in sight, `y0` the first of them — its frame's lines there or not)
     let (above, below) = cut;
     let shown = h.saturating_sub(above + below);
     let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
-    let key = Style { bold: true, fg: ui.hint_key.or(ui.virt.fg), ..card };
-    let faint = Style { fg: ui.linenr.fg, ..card };
     let name = note_name(n, editor, ui, card);
     let mut keys = note_keys(n, replying);
-    // (`space n` and `enter` go to the note at your cursor: said here only where that's this card — it may be yours
-    // elsewhere, the turn's card leaving your cursor where it was)
+    // (`space n` goes to the note at your cursor, `enter` there too or to this card with none: said here only where they
+    // act on it — the turn's card leaves your cursor where it was)
     let mine = |t: &crate::notes::Note| crate::notes::group(notes, n).iter().any(|g| g.id == t.id);
+    let at_yours = crate::notes::here(editor).is_some_and(mine);
     let aimed = crate::notes::target(editor).is_some_and(mine);
     // (closing has its own rule, your cursor even while follow holds the view: it's for good)
     let closes = crate::notes::close_target(editor).is_some_and(mine);
     keys.retain(|k| match k.0 {
-        "space n" => aimed,
+        "space n" => at_yours,
         ":note-close" => closes,
         _ => true,
     });
@@ -21515,8 +21542,6 @@ fn draw_note_card(
     if folded && !replying && aimed {
         keys.insert(1, ("enter", "earlier"));
     }
-    let foot = bottom_keys(&keys, w.saturating_sub(6), key, faint, frame_line(ui, card));
-    let on = (crate::mouse::Surface::NoteCard, crate::mouse::Lights::Note);
     let rect = (x0, y0, w, shown);
     for y in y0..y0 + shown {
         card_edge(out, card, x0, y, w)?;
@@ -21539,13 +21564,106 @@ fn draw_note_card(
         };
         docs_row(out, (docs, x, y, (x0, x0 + w)), &r, card, w.saturating_sub(4))?;
     }
-    let ends = (above > 0, below > 0);
-    draw_frame_cut(out, ui, editor, on.0, card, rect, &fits(&name), &foot, (Some(on.1), false), ends)?;
-    // (its keys typed in the code, as `space n` there)
-    if below == 0 {
-        frame_keys_said(editor, on.0, &foot, (x0 + 3, y0 + shown - 1), |_| At::Code);
+    // (`space n`'s line, the last row inside the frame — a blank one over it, as between a thread's entries)
+    let input = match replying {
+        true => note_input_row(editor, ui, (x0 + 2, y0, g.inner), (h, above, below), card, out)?,
+        false => None,
+    };
+    note_frame(editor, ui, (card, rect), (&name, &keys), (above > 0, below > 0), replying, out)?;
+    Ok((rect, input))
+}
+
+/// `space n`'s line as a card holds it (focus C1): where it was drawn, where its cursor stands, and what's the prompt's to
+/// the mouse (`Screen.prompt_card`) — its row in a thread's card, whose words stay the card's; a question's card whole.
+type NoteInput = (crate::editor::PromptDrawn, (u16, u16), Rect4);
+
+/// A note's card as drawn: its rows in sight, and `space n`'s line where it holds it.
+type NoteDrawn = (Rect4, Option<NoteInput>);
+
+/// The rows a card's `space n` line adds under a thread: a blank one and the line.
+const NOTE_INPUT_ROWS: usize = 2;
+
+/// `space n`'s line on the last row inside a card `h` tall, whose first row in sight is `y0` and whose inside starts at
+/// `x` and is `inner` wide, `above` and `below` of its rows cut by a screen's edge — the prompt's own head, window and
+/// selection (`prompt_row`), its `Input` as ever. None: an edge cut it (the view brings it back: `scroll_to`).
+fn note_input_row(
+    editor: &Editor,
+    ui: &Ui,
+    (x, y0, inner): (usize, usize, usize),
+    (h, above, below): (usize, usize, usize),
+    card: Style,
+    out: &mut impl Write,
+) -> io::Result<Option<NoteInput>> {
+    let row = h - 2;
+    let in_sight = (above..h.saturating_sub(below)).contains(&row);
+    let Some(p) = editor.prompt.as_ref().filter(|_| in_sight) else { return Ok(None) };
+    let room = inner.saturating_sub(prompt_head(p).width()).max(1);
+    let line = prompt_window(&p.text(), p.cursor(), p.left.get(), room);
+    p.left.set(line.first);
+    let y = y0 + row - above;
+    queue!(out, MoveTo(x as u16, y as u16))?;
+    let (drawn, cursor, _) = prompt_row(out, ui, p, &line, (x, y, room), card)?;
+    Ok(Some((drawn, cursor, (x - 2, y, inner + 4, 1))))
+}
+
+/// What a note's card's frame says: its name, and its keys.
+type NoteWords<'a> = (&'a [(String, Style)], &'a [(&'static str, &'static str)]);
+
+/// A note's card's frame: its name on the top line, `keys` on the bottom one — lit while it holds `space n`'s line
+/// (`asks`: what's under them the prompt's, typed where the keys are; else typed in the code, as `space n` there).
+fn note_frame(
+    editor: &Editor,
+    ui: &Ui,
+    (card, rect): (Style, Rect4),
+    (name, keys): NoteWords,
+    ends: (bool, bool),
+    asks: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    use crate::mouse::{Lights, Surface};
+    let key = Style { bold: true, fg: ui.hint_key.or(ui.virt.fg), ..card };
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let foot = bottom_keys(keys, rect.2.saturating_sub(6), key, faint, frame_line(ui, card));
+    let lights = (Some(Lights::Note), asks);
+    draw_frame_cut(out, ui, editor, Surface::NoteCard, card, rect, &fits(name), &foot, lights, ends)?;
+    if !ends.1 {
+        let at = (rect.0 + 3, rect.1 + rect.3 - 1);
+        frame_keys_said(editor, Surface::NoteCard, &foot, at, |_| (!asks).then_some(At::Code));
     }
-    Ok(rect)
+    Ok(())
+}
+
+/// A question not sent yet (focus C1): a card holding only `space n`'s line, named by the lines it's about. Sent, it's a
+/// note's card in its place.
+///
+/// ```text
+///    ╭─ note ── lines 12–13 ──────────────────────────────────────────────╮
+///    │ ask claude: why a Vec and not an iterator?▏     │
+///    ╰─ enter send · esc close ───────────────────────────╯
+/// ```
+fn draw_ask_card(
+    editor: &Editor,
+    lines: std::ops::Range<usize>,
+    g: FloatGeom,
+    (above, below): (usize, usize),
+    ui: &Ui,
+    out: &mut impl Write,
+) -> io::Result<NoteDrawn> {
+    let (x0, y0, w, h) = g.rect();
+    let shown = h.saturating_sub(above + below);
+    let rect = (x0, y0, w, shown);
+    let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
+    for y in y0..y0 + shown {
+        card_edge(out, card, x0, y, w)?;
+    }
+    let mut name = pane_names(ui, editor, card, &["note"], 0);
+    name.push((" ── ".into(), frame_line(ui, card)));
+    let (a, b) = (lines.start + 1, lines.end);
+    let said = if b > a { format!("lines {a}–{b}") } else { format!("line {a}") };
+    name.push((said, Style { fg: ui.linenr.fg, ..card }));
+    let input = note_input_row(editor, ui, (x0 + 2, y0, g.inner), (h, above, below), card, out)?;
+    note_frame(editor, ui, (card, rect), (&name, NOTE_INPUT_KEYS), (above > 0, below > 0), true, out)?;
+    Ok((rect, input.map(|(drawn, cursor, _)| (drawn, cursor, rect))))
 }
 
 /// `spans` with display columns `from..to` on the selection's ground `bg` — a ground only, their colours kept.
@@ -21636,23 +21754,79 @@ fn draw_note_between(
     ui: &Ui,
     (lay, doc, view): (&Layout, &crate::document::Document, &[crate::codeview::Row]),
     out: &mut impl Write,
-) -> io::Result<Option<Rect4>> {
+) -> io::Result<Option<NoteDrawn>> {
     use crate::codeview::{OtherKind, Row};
-    let Some(n) = crate::notes::opened(editor, doc) else { return Ok(None) };
+    // (a question being typed is the card here, an open one back once it's sent or dropped: `note_rows`)
+    let asked = note_asked(editor, doc, lay.text_cols);
+    let n = note_carded(editor, doc, lay.text_cols);
     let index = |r: &Row| match r {
         Row::Other { kind: OtherKind::Note { index }, .. } => Some(*index),
         _ => None,
     };
     let Some(first) = view.iter().position(|r| index(r).is_some()) else { return Ok(None) };
     let shown = view[first..].iter().take_while(|r| index(r).is_some()).count();
-    let Some(mut g) = note_inline_geom(editor, n, ui, (lay.text_cols, lay.text_rows)) else {
-        return Ok(None);
+    let g = match (&asked, n) {
+        (Some(_), _) => note_ask_geom(editor, lay.text_cols),
+        (None, Some(n)) => note_inline_geom(editor, n, ui, (lay.text_cols, lay.text_rows)),
+        (None, None) => None,
     };
+    let Some(mut g) = g else { return Ok(None) };
     let above = index(&view[first]).unwrap_or(0);
     let below = g.h.saturating_sub(above + shown);
     g.x0 = lay.x0 + lay.gutter;
     g.y0 = lay.text_top as usize + first;
-    draw_note_card(editor, n, g, (above, below), ui, out).map(Some)
+    match (asked, n) {
+        (Some(lines), _) => draw_ask_card(editor, lines, g, (above, below), ui, out).map(Some),
+        (None, Some(n)) => draw_note_card(editor, n, g, (above, below), ui, out).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+/// The fewest cells a card leaves to type in after `space n`'s head (`ask claude:`, a comment's longer one) — fewer, and
+/// the line stands on the status line, as where no card can.
+const NOTE_LINE_MIN: usize = 4;
+
+/// Whether a card in a code `cols` wide holds `space n`'s line: its head and `NOTE_LINE_MIN` cells inside its frame.
+fn note_line_fits(editor: &Editor, cols: usize) -> bool {
+    let need =
+        editor.prompt.as_ref().map_or(usize::MAX, |p| prompt_head(p).width().saturating_add(NOTE_LINE_MIN));
+    cols.checked_sub(4).is_some_and(|inner| inner >= need)
+}
+
+/// Whether `n`'s card, in a code `cols` wide, holds `space n`'s line.
+fn note_holds_line(editor: &Editor, n: &crate::notes::Note, cols: usize) -> bool {
+    crate::notes::replying(editor, n) && note_line_fits(editor, cols)
+}
+
+/// The lines a question's card stands under in a code `cols` wide: `notes::asking`'s, only where it can hold its line — else
+/// it has no card, the line on the status line and what's open as it was (`note_carded`).
+fn note_asked(
+    editor: &Editor,
+    doc: &crate::document::Document,
+    cols: usize,
+) -> Option<std::ops::Range<usize>> {
+    crate::notes::asking(editor, doc).filter(|_| note_ask_geom(editor, cols).is_some())
+}
+
+/// The note whose card stands in `doc`, in a code `cols` wide: `notes::carded`'s, but a line that can't stand in a card here
+/// (a reply, or a question in place of the open one) leaves what's open as it was and a closed card closed, the line on the
+/// status line.
+fn note_carded<'a>(
+    editor: &'a Editor,
+    doc: &crate::document::Document,
+    cols: usize,
+) -> Option<&'a crate::notes::Note> {
+    let card = crate::notes::carded(editor, doc);
+    let asked = crate::notes::asking(editor, doc).is_some();
+    let lineless =
+        (asked || card.is_some_and(|n| crate::notes::replying(editor, n))) && !note_line_fits(editor, cols);
+    if lineless { crate::notes::opened(editor, doc) } else { card }
+}
+
+/// A question's card in a code `cols` wide (`draw_ask_card`): its line, in its frame.
+fn note_ask_geom(editor: &Editor, cols: usize) -> Option<FloatGeom> {
+    let inner = cols.checked_sub(4).filter(|&w| w >= NOTE_MIN && note_line_fits(editor, cols))?;
+    Some(FloatGeom { x0: 0, y0: 0, inner, h: 3, max_rows: 1, rows: Vec::new() })
 }
 
 /// The open note's card in a code `cols` wide and `tall` rows: its frame the code's width and its words wrapped at it
@@ -21666,8 +21840,9 @@ fn note_inline_geom(
 ) -> Option<FloatGeom> {
     let inner = cols.checked_sub(4).filter(|&w| w >= NOTE_MIN)?;
     let rows = crate::markdown::wrap(&note_lines(n, editor, ui), inner, dim_style(ui, editor));
-    let max_rows = rows.len().min(NOTE_CAP).min((tall / 2).saturating_sub(2).max(3));
-    Some(FloatGeom { x0: 0, y0: 0, inner, h: max_rows + 2, max_rows, rows })
+    let input = if note_holds_line(editor, n, cols) { NOTE_INPUT_ROWS } else { 0 };
+    let max_rows = rows.len().min(NOTE_CAP).min((tall / 2).saturating_sub(2 + input).max(3));
+    Some(FloatGeom { x0: 0, y0: 0, inner, h: max_rows + 2 + input, max_rows, rows })
 }
 
 /// The fewest cells a note's card writes in — a code narrower has none (`notes::step` says so).
@@ -21680,8 +21855,13 @@ pub(crate) fn note_rows(
     doc: &crate::document::Document,
     size: (usize, usize),
 ) -> Option<(usize, usize)> {
-    let n = crate::notes::opened(editor, doc)?;
-    let line = n.lines.end.saturating_sub(1).max(n.lines.start);
+    let last = |lines: &std::ops::Range<usize>| lines.end.saturating_sub(1).max(lines.start);
+    // (a question being typed: its card under the selection's end, whichever card is open — focus C1)
+    if let Some(lines) = note_asked(editor, doc, size.0) {
+        return note_ask_geom(editor, size.0).map(|g| (last(&lines), g.h));
+    }
+    let n = note_carded(editor, doc, size.0)?;
+    let line = last(&n.lines);
     // (once for what it says and the size: every `Measure` asks, several a key — the review of step 1)
     // (a line's answers, focus A1b: every one's words, and how many folded)
     let notes = &editor.workspace.claude.notes;
@@ -21689,7 +21869,8 @@ pub(crate) fn note_rows(
     let said = all.iter().flat_map(|m| &m.thread).map(|e| e.text.len()).sum::<usize>();
     let asked = all.iter().map(|m| m.asked.as_ref().map_or(0, String::len) + m.flow.len()).sum::<usize>();
     let kept = (all.len(), crate::notes::earlier_folded(notes, n));
-    let key = (n.id, n.thread.len(), said, n.waiting, kept, n.board.is_some(), asked, size);
+    let replying = note_holds_line(editor, n, size.0);
+    let key = (n.id, n.thread.len(), said, n.waiting, kept, n.board.is_some(), asked, size, replying);
     if let Some((k, h)) = *editor.note_rows.borrow()
         && k == key
     {
@@ -21750,11 +21931,14 @@ fn note_kind(n: &crate::notes::Note) -> &'static str {
     }
 }
 
-/// The note card's keys: none while you write a reply (the reply's prompt has the keys, said once on the status line —
-/// the user, 2026-10-29, on #240's reply shots; they come back as it ends), else the walk's.
+/// The keys of `space n`'s line while a card holds it (focus C1): the line's own, on the bottom line — the status line
+/// says none (`key_hints`).
+const NOTE_INPUT_KEYS: &[(&str, &str)] = &[("enter", "send"), ("esc", "close")];
+
+/// The note card's keys: `space n`'s line's while you write a reply on it, else the walk's.
 fn note_keys(n: &crate::notes::Note, replying: bool) -> Vec<(&'static str, &'static str)> {
     match () {
-        _ if replying => Vec::new(),
+        _ if replying => NOTE_INPUT_KEYS.to_vec(),
         _ if n.thread.iter().any(|e| e.draft) => {
             vec![("space n", "reply"), ("space v s", "send the review"), ("]n", "next"), ("q", "close")]
         }
@@ -22267,9 +22451,11 @@ fn key_hints(editor: &Editor) -> Option<Vec<(&'static str, String)>> {
             None => hints(&[("type", "narrow"), ("esc", "close")]),
         }
     } else if let Some(p) = editor.prompt.as_ref() {
-        // A prompt: what enter does with the line; the command line's names complete with tab
+        // A prompt: what enter does with the line; the command line's names complete with tab — `space n`'s, in its
+        // card, says them on the card's bottom line
         let enter = prompt_enter(p.kind);
         match p.kind {
+            _ if editor.screen.note_input.get().is_some() => None,
             crate::editor::PromptKind::Command => {
                 hints(&[("enter", enter), ("tab", "complete"), ("esc", "close")])
             }
@@ -22449,20 +22635,9 @@ fn draw_prompt(
     queue!(out, MoveTo(x0 as u16, y as u16))?;
     apply(out, card)?;
     queue!(out, Print("  "))?;
-    apply(out, if head.width() > 1 { Style { fg: ui.virt.fg, ..card } } else { card })?;
-    queue!(out, Print(&head))?;
-    let text_x = x0 + 2 + head.width() + usize::from(line.lead);
-    editor.screen.prompt_input.set(Some(crate::editor::PromptDrawn {
-        y,
-        x: text_x,
-        w: inner.saturating_sub(head.width()).max(1),
-        first: line.first,
-    }));
-    let cut = Style { fg: ui.linenr.fg, ..card };
-    let sel = p.input.pane.doc().selection();
-    let mut used = head.width() + print_input_line(out, ui, &text, &line, sel, card, cut)?;
-    let cursor = text.get(line.first..p.cursor().max(line.first)).unwrap_or_default().width();
-    let cursor = ((text_x + cursor) as u16, y as u16);
+    let room = inner.saturating_sub(head.width()).max(1);
+    let (drawn, cursor, mut used) = prompt_row(out, ui, p, &line, (x0 + 2, y, room), card)?;
+    editor.screen.prompt_input.set(Some(drawn));
     if completion.is_some()
         && let Some(g) = editor.cmdline_ghost()
     {
@@ -22484,6 +22659,29 @@ fn draw_prompt(
     let on = crate::mouse::Surface::Prompt;
     draw_frame(out, ui, editor, on, card, (x0, y0, width, h), &fits(&name), &[], &[], (None, true))?;
     Ok(cursor)
+}
+
+/// The prompt's head and its line in sight (`line`), printed from where the terminal's cursor stands: (`x`, `y`), `room`
+/// cells for the line — what a drag selected washed as the code's selection is. Where it was drawn, where its cursor
+/// stands, the cells it took.
+fn prompt_row(
+    out: &mut impl Write,
+    ui: &Ui,
+    p: &crate::editor::Prompt,
+    line: &PromptLine,
+    (x, y, room): (usize, usize, usize),
+    card: Style,
+) -> io::Result<(crate::editor::PromptDrawn, (u16, u16), usize)> {
+    let (head, text) = (prompt_head(p), p.text());
+    apply(out, if head.width() > 1 { Style { fg: ui.virt.fg, ..card } } else { card })?;
+    queue!(out, Print(&head))?;
+    let text_x = x + head.width() + usize::from(line.lead);
+    let drawn = crate::editor::PromptDrawn { y, x: text_x, w: room, first: line.first };
+    let cut = Style { fg: ui.linenr.fg, ..card };
+    let sel = p.input.pane.doc().selection();
+    let used = head.width() + print_input_line(out, ui, &text, line, sel, card, cut)?;
+    let cursor = text.get(line.first..p.cursor().max(line.first)).unwrap_or_default().width();
+    Ok((drawn, ((text_x + cursor) as u16, y as u16), used))
 }
 
 /// What of a prompt's line is drawn (`prompt_window`): from byte `first` to `end`, a `…` before it when it's cut

@@ -353,11 +353,22 @@ impl Editor {
         {
             return at(S::Status, Part::Word(Word::Does(i)));
         }
+        // (a drag begun on a note card's words goes on wherever the pointer goes, over `space n`'s line in it too — focus
+        // A1b, C1)
+        if matches!(kind, K::Drag | K::Up) && self.note_marked.is_some() && s.note_card.get().is_some() {
+            return at(S::NoteCard, Part::Blank);
+        }
         // The prompt's card: a completion row, its line where it was drawn (#153); what's under it isn't pressed through
         // it
+        // (the note's card's line lets the wheel by: it scrolls the code it's in, as over the rest of the card)
         if let Some(card) = s.prompt_card.get()
             && inside(card, x, y)
+            && !(wheel && s.note_input.get().is_some())
         {
+            // (a question's card is its line, its keys on its bottom line — focus C1)
+            if let Some(i) = hint_on(S::NoteCard).filter(|_| down) {
+                return at(S::NoteCard, Part::Word(Word::Does(i)));
+            }
             let row = s.prompt_rows.borrow().iter().find(|r| r.0 == y).map(|r| r.1);
             let part = match row {
                 Some(i) => Part::Row(i),
@@ -370,11 +381,7 @@ impl Editor {
         // prompt open: a press there is outside that prompt, which closes it)
         let replying =
             matches!(self.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
-        // (the wheel over the card between the lines scrolls the code it's in; a drag begun on its words goes on wherever
-        // the pointer goes — focus A1b)
-        if matches!(kind, K::Drag | K::Up) && self.note_marked.is_some() && s.note_card.get().is_some() {
-            return at(S::NoteCard, Part::Blank);
-        }
+        // (the wheel over the card between the lines scrolls the code it's in — focus A1b)
         if down && (self.prompt.is_none() || replying) && s.note_card.get().is_some_and(|r| inside(r, x, y)) {
             let hint = hint_on(S::NoteCard).filter(|_| down);
             return at(S::NoteCard, hint.map_or(Part::Blank, |i| Part::Word(Word::Does(i))));

@@ -109,7 +109,7 @@ impl Prompt {
     pub fn new(kind: PromptKind, text: &str) -> Prompt {
         let mut input = crate::input::Input::new(crate::document::PROMPT_INPUT);
         input.set(text);
-        Prompt { kind, label: None, input, cycle: None, recalled: None, left: Default::default() }
+        Prompt { kind, label: None, input, cycle: None, recalled: None, left: Default::default(), view: None }
     }
 
     /// What's typed.

@@ -2219,7 +2219,7 @@ fn a_note_card_scrolls_a_row_at_a_time_and_shows_in_every_pane() {
     );
     assert_eq!(s.ed.screen.note_card.get(), Some((x, first, w, h - 1)), "its rows in sight");
     assert!(!rows.iter().any(|r| r.contains("╭─ note")), "its top line above the screen");
-    assert!(rows.iter().any(|r| r.contains("╰─ space n reply")), "its bottom line in sight");
+    assert!(rows.iter().any(|r| r.contains("╰─ ]n next")), "its bottom line in sight");
     s.keys(&"zj".repeat(h - 1));
     let rows = shown_rows(&mut s);
     assert_eq!(s.ed.screen.note_card.get(), None, "scrolled past it");

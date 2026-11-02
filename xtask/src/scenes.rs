@@ -389,6 +389,67 @@ const F0_WIDE: &[&str] = f0_keys!("q", " ", "L");
 const F0_EDITED: &[&str] = f0_keys!("q", "4G", "ix", "\x1b", "j");
 const F0_OLDER: &[&str] = f0_two_keys!("4G", "\r");
 const F0_LINE: &[&str] = f0_two_keys!("10G", "\r", "\r");
+/// Focus C1's: a question typed on three lines, nothing else open · the chat beside it · a card a line near the screen's
+/// foot (the file pasted on, so both sizes have one there).
+const C1_NEW: &[&str] = &["@1", "8G", "x", "x", "x", " ", "n", "@1", "why a HashMap and not a Vec?", "@1"];
+const C1_NEW_CHAT: &[&str] =
+    &["@1", " ", "l", "@1", "\x1b", "8G", "x", "x", " ", "n", "@1", "why a HashMap?", "@1"];
+const C1_BOTTOM: &[&str] = &[
+    "@1",
+    "%",
+    "y",
+    "p",
+    "p",
+    "p",
+    "p",
+    "\x1b",
+    "60G",
+    "zb",
+    "@1",
+    " ",
+    "n",
+    "@1",
+    "what does this line do?",
+    "@1",
+];
+/// `notethread`'s note, its card open by `]n` (the chat's turn over): a reply typed on it, and its card sent.
+macro_rules! c1_reply_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", "anything off in the loop?", "\r", "@20?pinned a note", "@2", "\x1b", "\x1b",
+          " ", "L", "gg", "]n", "@1", " ", "n", "@1", $($more,)* "@1"]
+    };
+}
+const C1_REPLY: &[&str] = c1_reply_keys!("should it warn, or keep the first?");
+const C1_SENT: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\r");
+/// Its card sent, your cursor gone to a line with no note: no `space n` on its bottom line · `space n` there, a question
+/// standing in for that card, the note's line end saying what it says · a reply on a closed card, the line end left to it.
+const C1_OTHER_LINE: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\r", "@1", "gg");
+const C1_STAND_IN: &[&str] =
+    c1_reply_keys!("should it warn, or keep the first?", "\r", "@1", "gg", " ", "n", "@1", "and this line?");
+const C1_CLOSED: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "anything off in the loop?",
+    "\r",
+    "@20?pinned a note",
+    "@2",
+    "\x1b",
+    "\x1b",
+    " ",
+    "L",
+    "gg",
+    "]n",
+    "@1",
+    "q",
+    "@1",
+    " ",
+    "n",
+    "@1",
+    "should it warn?",
+    "@1",
+];
 
 const A1_LINE: &[&str] = &[
     "@1",
@@ -3082,6 +3143,15 @@ const SCENES: &[Scene] = &[
     Scene { name: "f0-failed", claude: "f0-failed", files: MAIN, keys: F0_WIDE },
     Scene { name: "f0-older", claude: "f0-saw", files: MAIN, keys: F0_OLDER },
     Scene { name: "f0-line", claude: "f0-saw", files: MAIN, keys: F0_LINE },
+    // (focus C1: `space n`'s line in the card, at the lines it's about)
+    Scene { name: "c1-new", claude: "idle", files: MAIN, keys: C1_NEW },
+    Scene { name: "c1-new-chat", claude: "idle", files: MAIN, keys: C1_NEW_CHAT },
+    Scene { name: "c1-bottom", claude: "idle", files: MAIN, keys: C1_BOTTOM },
+    Scene { name: "c1-reply", claude: "notethread", files: MAIN, keys: C1_REPLY },
+    Scene { name: "c1-sent", claude: "notethread", files: MAIN, keys: C1_SENT },
+    Scene { name: "c1-other-line", claude: "notethread", files: MAIN, keys: C1_OTHER_LINE },
+    Scene { name: "c1-stand-in", claude: "notethread", files: MAIN, keys: C1_STAND_IN },
+    Scene { name: "c1-closed", claude: "notethread", files: MAIN, keys: C1_CLOSED },
     Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
     Scene { name: "a1b-line-card", claude: "focus-line", files: MAIN, keys: A1B_LINE },
     Scene { name: "a1b-flow-cut", claude: "a1-flow", files: MAIN, keys: A1B_CUT },

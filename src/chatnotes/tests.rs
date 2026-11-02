@@ -431,8 +431,9 @@ fn next_note_walks_on_from_your_cursor_while_follow_holds_the_view() {
 }
 
 /// Reading step 2 over: a turn's card leaves your cursor where it was, so its keys are said only where they act on it.
-/// With no note on your line `space n` and `enter` are the card's, its words pressed are the card's wherever you are;
-/// on another note's line the keys are that note's and the card doesn't say them, nor counts that line's notes as its own.
+/// With no note on your line `enter` is the card's, and `space n` a question of its own there (focus C1, the user on its
+/// shots), not said; its words pressed are the card's wherever you are; on another note's line the keys are that note's and
+/// the card doesn't say them, nor counts that line's notes as its own.
 #[test]
 fn the_open_cards_keys_act_on_it_or_it_doesnt_say_them() {
     let (_s, root, mut ed) = project("chatnotes-aimed", &["src/a.rs"]);
@@ -460,16 +461,76 @@ fn the_open_cards_keys_act_on_it_or_it_doesnt_say_them() {
     crate::notes::start_card(&mut ed);
     assert!(is(aimed(&ed), card), "{:?}", aimed(&ed));
     feed(&mut ed, "<esc>");
-    // On a line with none: the card's, and it says so
+    // On a line with none: `enter` the card's, and it says so; `space n` your line's
     feed(&mut ed, "4G");
     let rows = code_rows(&mut ed).join("\n");
-    assert!(rows.contains("space n") && rows.contains("enter"), "{rows}");
+    assert!(!rows.contains("space n") && rows.contains("enter"), "{rows}");
     feed(&mut ed, " n");
-    assert!(is(aimed(&ed), card), "{:?}", aimed(&ed));
+    assert_eq!(aimed(&ed), Some(crate::editor::PromptKind::Note(None)));
     feed(&mut ed, "<esc><ret>");
     assert!(ed.workspace.claude.notes.earlier, "`enter` unfolded them, as the card said");
     let rows = code_rows(&mut ed).join("\n");
     assert!(rows.contains("It is read in src/a.rs:7."), "{rows}");
+}
+
+/// Focus C1: on a line's answers `space n`'s line stands at the card's foot, `… N earlier` above it, and answers the newest;
+/// sent, the card shows that thread, your words on it — a press on a turn's card at Claude's place holds the view there,
+/// follow paused, the card you pressed in sight with the line in it.
+#[test]
+fn a_reply_on_a_lines_answers_stands_at_the_cards_foot_and_stays_sent() {
+    let (_s, root, mut ed) = project("chatnotes-reply-card", &["src/a.rs"]);
+    ed.config.llm.command = "sh".into();
+    let a = root.join("src/a.rs");
+    answer(&mut ed, "It is read in src/a.rs:7.");
+    answer(&mut ed, "Again src/a.rs:7.");
+    let newest = newest_of(&ed, |n| n.path == a && n.lines.start == 6).unwrap().id;
+    ed.open(&a).unwrap();
+    feed(&mut ed, "7G nsure");
+    let rows = code_rows(&mut ed);
+    let at = |s: &str| rows.iter().position(|r| r.contains(s)).unwrap_or_else(|| panic!("{s}: {rows:#?}"));
+    assert!(at("Again src/a.rs:7") < at("… 1 earlier") && at("… 1 earlier") < at("reply: sure"), "{rows:#?}");
+    assert_eq!(at("enter send"), at("reply: sure") + 1, "its frame's foot under it: {rows:#?}");
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.workspace.claude.notes.open, Some(newest), "the thread's card");
+    let rows = code_rows(&mut ed);
+    assert!(rows.iter().any(|r| r.contains("sure")), "your words on it: {rows:#?}");
+}
+
+/// A press on the card follow holds in sight: the card stays, its line in it, follow paused — never the view gone to your
+/// cursor, nor on with Claude under what you type; nor once the line ends, `esc` or sent.
+#[test]
+fn a_press_on_the_card_at_claudes_place_holds_it_in_sight() {
+    let (_s, _root, mut ed) = led_apart("chatnotes-press-follow", false);
+    ed.config.llm.command = "sh".into();
+    assert!(crate::follow::view_line(&ed).is_some(), "follow holds the view");
+    let top = ed.doc().top;
+    crate::notes::start_card(&mut ed);
+    let rows = code_rows(&mut ed).join("\n");
+    assert!(rows.contains("reply:") && rows.contains("╭─ chat"), "{rows}");
+    let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
+    assert!(f.paused && crate::follow::view_line(&ed).is_none(), "follow paused");
+    assert!(!ed.toasts.iter().any(|t| t.text.contains("you took over")), "no turn under way to take over");
+    feed(&mut ed, "<esc>");
+    let rows = code_rows(&mut ed).join("\n");
+    assert_eq!(ed.doc().top, top, "`esc`: the view as it was");
+    assert!(rows.contains("╭─ chat"), "the card in sight: {rows}");
+    crate::notes::start_card(&mut ed);
+    code_rows(&mut ed);
+    feed(&mut ed, "sure<ret>");
+    let rows = code_rows(&mut ed).join("\n");
+    assert!(rows.contains("sure"), "sent, what you wrote in sight: {rows}");
+}
+
+/// That press with a turn under way takes it over: said, with the key that follows Claude again, as any key of yours that
+/// pauses follow — no silent state change.
+#[test]
+fn a_press_on_the_card_at_claudes_place_mid_turn_says_you_took_over() {
+    let (_s, _root, mut ed) = led_apart("chatnotes-press-said", false);
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+    assert!(crate::follow::view_line(&ed).is_some(), "follow holds the view");
+    crate::notes::start_card(&mut ed);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "follow paused");
+    assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "said");
 }
 
 /// Reading step 2 over: a line inside an older answer's range acts on the note whose `¶` is on it — what the line end

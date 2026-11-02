@@ -1888,6 +1888,18 @@ Talk back right there: `space n` on a note line replies. Your reply goes to Clau
 the thread so far, and Claude answers on the thread. `space n` on a line without a note asks Claude about that
 line (or the selected lines), which starts a new note with your question.
 
+You type at the lines it's about. A question gets a card of its own between the code's lines, under the last line
+selected, holding only `ask claude:` until it's sent; a reply is the last row of the note's card, under the newest
+entry, the card shown if it was closed. Its keys are on the card's bottom line (`enter send · esc close`), and `esc`
+leaves everything as it was, the view too. Sent, what you wrote stays there, on the note's card, and the view with it
+until a key moves the cursor. A card you pressed to reply stays in sight the same way, wherever your cursor is. A card
+open on another line stays open: `space n` still asks at your line, the question's card standing in for it until it's
+sent or dropped, and to reply there you go to its line or press its words. The view keeps the line in sight:
+it moves only as far as the card needs, on a selection taller than the screen too, and the wheel scrolls the code
+around it without ever losing it. It edits as any prompt does (`C-w` a word, a press puts the cursor, a drag selects).
+Where no card can stand — a code too narrow, a buffer with no file, the code hidden — the line stands on the status
+line, as `:` and `/` always do. A comment in a code review is typed the same way, with no card left after it.
+
 **What the answer says of a place shows at it.** Claude's answers name places as `path:line` far more often than it
 pins a note, so an answer's places are notes too, with no tool call and nothing sent: when a turn ends, every
 `src/x.rs:120` (or `x.rs:120-140`, or a walk-through's stop) in its prose that comes to one file of the project or
@@ -1968,7 +1980,7 @@ copies them, and a selection wider than a character on a stub opens it while it 
 
 | Key | Notes |
 |---|---|
-| `space n` | Reply to the note on your line (with none there, the open card's), or ask Claude about this line |
+| `space n` | Reply to the note on your line, or with none there ask Claude about this line |
 | `enter` | On a note's line: open its card between the lines, unfold its earlier answers, or close it |
 | `q` / `esc` | Close the open card (`q` is Helix's macro replay again once it's closed) |
 | `]n` / `[n` | Next / previous note, across files (notes sharing a line one by one), its card opened |

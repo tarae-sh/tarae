@@ -526,6 +526,20 @@ pub fn your_view(ed: &mut Editor) {
     }
 }
 
+/// A press that opens a line on the note's card at the view follow holds: follow pauses, said, the view staying — the
+/// card you pressed is what's in sight, wherever your cursor is.
+pub fn pause_at_card(ed: &mut Editor) {
+    if view_line(ed).is_none() {
+        return;
+    }
+    if let Some(f) = follow(ed) {
+        f.paused = true;
+    }
+    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+        took_over(ed);
+    }
+}
+
 /// The wheel over the pane follow leads: the focused one's view back at your cursor first (`your_view`), one aside
 /// scrolled from where Claude was — either way follow pauses while it leads, said with the key that follows again where
 /// the keys are (the wheel never moves them).
