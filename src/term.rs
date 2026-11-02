@@ -9328,8 +9328,10 @@ fn draw_list_row(
             }
             false => cut_at(editor, on, at, &label_fit, style, (0, usize::MAX), hand),
         }
+        // (a hint cut where its label is whole: its `…` is the row in hand's, and so is its card)
         if hint_w > 0 && hint_w < lw {
-            cut_at(editor, on, (x + 3 + lw - hint_w, y), hint_fit, plain, (0, usize::MAX), None);
+            let hand = hand.filter(|_| !label_fit.is_cut());
+            cut_at(editor, on, (x + 3 + lw - hint_w, y), hint_fit, plain, (0, usize::MAX), hand);
         }
     }
     apply(out, base)?;

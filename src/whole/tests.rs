@@ -1025,6 +1025,32 @@ fn a_framed_lists_row_in_hand_is_whole_outside_its_frame() {
     assert!(ed.doc().read_only.is_some() && ed.doc().text == longer.as_str(), "whole, read-only");
 }
 
+/// K4's whole run: a row in hand whose label is whole and whose hint is cut — the blocked list's grant where the temp
+/// folder's path is short — has its hint whole on its card outside the frame, as a cut label does.
+#[test]
+fn a_row_in_hands_cut_hint_is_whole_outside_its_frame() {
+    let hint = format!("where {}farewell", "a long place of its own ".repeat(3));
+    let item = |label: &str, hint: &str| crate::picker::Item {
+        label: label.into(),
+        action: crate::picker::Action::Message,
+        hint: hint.into(),
+        glyph: None,
+    };
+    let mut ed = Editor::new(Config::default());
+    let items = vec![item("a short one", &hint), item("another", "")];
+    ed.open_picker(crate::picker::Picker::of("buffers", "things", items, false), None);
+    let screen = frame(&mut ed);
+    let lines: Vec<&str> = screen.lines().collect();
+    let y = lines.iter().position(|l| l.contains("a short one")).expect("its row");
+    assert!(lines[y].contains('…') && !lines[y].contains("farewell"), "its hint cut:\n{screen}");
+    let (x, y) = outside_card(&ed, &screen);
+    let c = ed.screen.cut_card.borrow().clone().expect("its card");
+    assert!(matches!(&c.cut, Cut::Text(w) if w.text == hint), "the hint whole: {c:?}");
+    assert!(screen.contains("farewell"), "whole on it:\n{screen}");
+    click(&mut ed, x, y);
+    assert!(ed.picker.is_none(), "a press on it is outside the picker");
+}
+
 /// #235's review: a framed list's row in hand under the mouse has its card outside the frame — the list's rows between
 /// are rows of their own: the pointer onto another cut row there shows that row's card, never keeps the first.
 #[test]

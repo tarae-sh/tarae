@@ -13631,7 +13631,9 @@ mod tests {
     /// sign-in its variable moved there (`AWS_SHARED_CREDENTIALS_FILE=/opt/creds/…`, `CLOUDSDK_CONFIG=/opt/gcloud`)
     /// — isn't read, as home isn't: Landlock only grants, so it's left out of `/`'s rule. What's beside it reads, and
     /// so does the project. Stand-ins in a folder of the test's own beside its binary's build folder: outside every
-    /// place a run writes (the temp folders are, and read through that grant).
+    /// place a run writes (the temp folders are, and read through that grant) — or, where its user can't write there
+    /// (`cargo xtask linux test --as-user` installs the binary root's, in `/usr/local/bin`), in the checkout's own
+    /// `target/`, as `a_run_signals_and_looks_into_only_its_own_processes`' are.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_kept_place_outside_home_is_closed() {
@@ -13641,7 +13643,15 @@ mod tests {
         }
         let exe = std::env::current_exe().unwrap();
         let beside = exe.parent().and_then(Path::parent).expect("the build folder");
-        let s = crate::scratch::Scratch::in_dir(beside, "sb-kept-outside");
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(beside.as_os_str().as_bytes()).expect("a path");
+        // SAFETY: a NUL-terminated path; access(2) only reads it.
+        let beside = match unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0 {
+            true => beside.to_path_buf(),
+            false => Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        };
+        std::fs::create_dir_all(&beside).unwrap();
+        let s = crate::scratch::Scratch::in_dir(&beside, "sb-kept-outside");
         let t = profile_path(&s);
         let (home, root) = (t.join("home"), t.join("home/project"));
         let (creds, gcloud) = (t.join("opt/creds/aws-credentials"), t.join("opt/gcloud"));

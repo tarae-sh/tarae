@@ -17,6 +17,8 @@
 //!   `target/perf/history.tsv` and compared with the last runs (see [`perf`]).
 //! - `linux [clippy|test]` — the checks on Linux in Docker, on the pinned toolchain, the tree read-only (see
 //!   [`linux`]).
+//! - `kernels [--dry-run] [kernel …]` — the sandbox's tests on several kernels (`xtask/kernels.toml`): one build in
+//!   colima, run on colima's VMs and on a Lima VM a kernel, results in `.sb/kernels/` (see [`kernels`]).
 //! - `deb [--binary PATH]` — tarae as a `.deb`, its AppArmor profile beside it (see [`deb`]).
 //! - `stream [--model M] [--edit] [prompt]`, `stream --file F` — one real streamed answer from the chat's model
 //!   (`llm.model`), timed line by line: its bursts, and what tarae's batching adds to them — `--edit` an edit's
@@ -67,6 +69,7 @@ mod deb;
 mod focus;
 mod glyphs;
 mod homepage;
+mod kernels;
 mod linux;
 mod perf;
 // (tarae's own: a pty close-on-exec from the start)
@@ -105,6 +108,7 @@ fn main() {
         // and image of the repository's — linux.rs)
         Some("linux") if args.get(1).is_some_and(|a| a == "prune") => linux::prune_cmd(&args[2..]),
         Some("linux") => linux::run(&args[1..]),
+        Some("kernels") => kernels::run(&args[1..]),
         Some("deb") => deb::run(&args[1..]),
         Some("stream") => stream::run(&args[1..]),
         Some("trace") => trace::run(&args[1..]),

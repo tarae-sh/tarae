@@ -115,6 +115,14 @@ as a user (`--as-user`: root in the container holds `CAP_SYS_PTRACE`, which Yama
 test --as-user sandbox::` serves every run; without `--userns` and with `TARAE_EXPECT_TIER=offline` the session is
 offline. `TARAE_EXPECT_YAMA` fails where the scope is another. `colima stop -p tarae-yama2` after.
 
+`cargo xtask kernels [kernel …]` runs the sandbox's tests on the set of kernels in `xtask/kernels.toml`: tarae's
+tests built once in colima's `tarae-test` (`test --keep`), then on each kernel that one binary (`test --kept
+[--as-user]`) in every mode the table names, three times in a row, and tarae's own tests three times in one mode —
+on colima's VMs, and on a Lima VM a kernel (made from Lima's own template, Docker put in, the checkout mounted
+read-only, the image, binary and toolchain carried from colima's Docker; deleted after). Results in
+`.sb/kernels/`. `--dry-run` prints every command and each VM's file first. Run it yourself (Lima and colima keep
+their VMs in your home), before a publish and after a change to the sandbox's Linux code.
+
 The keepers' memory with many sessions (1 to 32, idle and each keeping a run) is a `perf_` test, so it needs an
 optimized build: `cargo xtask linux [--env TARAE_EXPECT_TIER=own --userns] test --profile perf --bin tarae --
 --exact sandbox::keeper::tests::perf_keepers_memory_per_session --nocapture`. The numbers it gave are in the

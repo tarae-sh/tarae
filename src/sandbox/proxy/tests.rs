@@ -749,6 +749,8 @@ fn a_slow_readers_end_isnt_cut() {
         match c.read(&mut b) {
             Ok(0) => break,
             Ok(n) => got.extend_from_slice(&b[..n]),
+            // (a read with a timeout is interrupted by this process stopped and continued, handler or not — Linux)
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => panic!("after {} bytes: {e}", got.len()),
         }
         // (a slow reader: the outside's end comes while its bytes still wait)

@@ -1,4 +1,4 @@
-//! `cargo xtask linux [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy|test [--repeat N] [cargo test's arguments] | test --installed … | test --as-user … | test --keep … | test --kept …]` — tarae's checks on Linux (CI runs there too: `-D dead-code` on code only
+//! `cargo xtask linux [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy|test [--repeat N] [cargo test's arguments] | test --installed … | test --as-user … | test --keep … | test --kept [--as-user] …]` — tarae's checks on Linux (CI runs there too: `-D dead-code` on code only
 //! macOS calls, a root container's `#` prompt …), in Docker on the pinned toolchain (`rust:<major.minor>`, and
 //! `rust-toolchain.toml`'s exact version in it). Whichever Docker the CLI reaches: `DOCKER_CONTEXT` or `DOCKER_HOST`, else the
 //! current context (here the colima VM: `colima start -p tarae-test`, `DOCKER_CONTEXT=colima-tarae-test`).
@@ -78,8 +78,11 @@ enum What {
     /// `test --kept`: the binary `--keep` kept, run with these arguments (the test binary's) — no cargo, no build,
     /// so without the container's `CARGO_TARGET_DIR` (the target volume): the tests' own cargo runs (compat's
     /// rust stack) build where a user's would, not into tarae's target; none kept yet, it fails saying so.
+    /// `test --kept --as-user`: that binary run as `--as-user` runs its own build (`cargo xtask kernels`: one
+    /// build, every kernel's tiers as root and as a user).
     Kept {
         args: Vec<String>,
+        as_user: bool,
     },
     /// `test --as-user`: tarae's own tests (`--bin tarae`) built as root, then run as a user of the container's own
     /// (`AS_USER`, made there) through `setpriv` with these arguments (the test binary's), the `--env` variables
@@ -94,7 +97,7 @@ enum What {
 /// The user `test --as-user` runs the tests as, made in the container.
 const AS_USER: &str = "tarae-test";
 
-const USAGE: &str = "usage: cargo xtask linux [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy | test [--repeat N] [cargo test's arguments] | test --installed [the test binary's arguments] | test --as-user [the test binary's arguments] | test --keep [cargo test's arguments] | test --kept [the test binary's arguments]]";
+const USAGE: &str = "usage: cargo xtask linux [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy | test [--repeat N] [cargo test's arguments] | test --installed [the test binary's arguments] | test --as-user [the test binary's arguments] | test --keep [cargo test's arguments] | test --kept [--as-user] [the test binary's arguments]]";
 
 /// What `--userns` lets the container do, so the sandbox's tier tests reach a real session keeper
 /// (`src/sandbox/tier.rs`): Docker's default seccomp profile refuses new namespaces, its `docker-default`
@@ -401,7 +404,10 @@ fn what(args: &[String]) -> Result<What> {
             [i, rest @ ..] if i == "--installed" => What::Installed { args: rest.to_vec() },
             [u, rest @ ..] if u == "--as-user" => What::AsUser { args: rest.to_vec() },
             [k, rest @ ..] if k == "--keep" => What::Keep { args: rest.to_vec() },
-            [k, rest @ ..] if k == "--kept" => What::Kept { args: rest.to_vec() },
+            [k, u, rest @ ..] if k == "--kept" && u == "--as-user" => {
+                What::Kept { args: rest.to_vec(), as_user: true }
+            }
+            [k, rest @ ..] if k == "--kept" => What::Kept { args: rest.to_vec(), as_user: false },
             [r, n, rest @ ..] if r == "--repeat" => What::Test {
                 args: rest.to_vec(),
                 repeat: n
@@ -858,7 +864,7 @@ const GIT_COPY: &str = "tarae-machine-id";
 
 /// This machine's id for tarae — Err: why there's none (no home, a folder this run can't read or write, and
 /// no copy in the repository's git folder).
-fn machine_id(root: &Path) -> std::result::Result<String, String> {
+pub(crate) fn machine_id(root: &Path) -> std::result::Result<String, String> {
     machine_id_from(crate::data_dir(), git_folder(root).as_deref())
 }
 
@@ -943,7 +949,7 @@ fn machine_id_in(dir: &Path) -> std::result::Result<String, String> {
 /// The checkout's own target volume: `tarae-target-<pin>-<hash of its path>` (FNV-1a — the same path gives the
 /// same name on every run and Rust version), the platform asked hashed in after it (the host's own: the path
 /// alone).
-fn target_volume(root: &Path, pin: &str, platform: Option<&str>) -> String {
+pub(crate) fn target_volume(root: &Path, pin: &str, platform: Option<&str>) -> String {
     let of = platform.map(|p| format!("\0{p}")).unwrap_or_default();
     let hash = (root.to_string_lossy().bytes())
         .chain(of.bytes())
@@ -953,7 +959,12 @@ fn target_volume(root: &Path, pin: &str, platform: Option<&str>) -> String {
 
 /// `docker volume create …` for it, labelled with the checkout's path and this machine's id when there's one
 /// (an existing one is left as it is).
-fn create_args(root: &Path, machine: Option<&str>, pin: &str, platform: Option<&str>) -> Vec<String> {
+pub(crate) fn create_args(
+    root: &Path,
+    machine: Option<&str>,
+    pin: &str,
+    platform: Option<&str>,
+) -> Vec<String> {
     let mut a: Vec<String> = ["volume", "create", "--label"].map(String::from).into();
     a.push(format!("{CHECKOUT_LABEL}={}", root.display()));
     if let Some(machine) = machine {
@@ -1839,32 +1850,27 @@ fn script(tree: Tree, what: &What) -> String {
                 args.join(" ")
             ));
         }
-        What::Kept { args } => {
-            let args: Vec<String> = args.iter().map(|a| quoted(a)).collect();
+        What::Kept { args, as_user } => {
             s.push_str(&format!(
-                "test -x {KEPT} || {{ echo 'no test binary kept yet: `test --keep` first'; exit 1; }}\n\
-                 env -u CARGO_TARGET_DIR CARGO_MANIFEST_DIR=/work/tarae {KEPT} {}\n",
-                args.join(" ")
+                "test -x {KEPT} || {{ echo 'no test binary kept yet: `test --keep` first'; exit 1; }}\n"
             ));
+            match as_user {
+                true => s.push_str(&as_user_run(KEPT, args, "env -u CARGO_TARGET_DIR ")),
+                false => {
+                    let args: Vec<String> = args.iter().map(|a| quoted(a)).collect();
+                    s.push_str(&format!(
+                        "env -u CARGO_TARGET_DIR CARGO_MANIFEST_DIR=/work/tarae {KEPT} {}\n",
+                        args.join(" ")
+                    ));
+                }
+            }
         }
         What::AsUser { args } => {
-            // (the binary copied where the user reads it; the clone — a throwaway, where tests write under `target/` —
-            // given to the user; its uid and gid set by setpriv, every capability gone with root's uid — the
-            // environment as `--env` gave it, but its home)
             s.push_str(&format!(
                 "exe=$(cargo test --locked --bin tarae --no-run 2>&1 | tee /dev/stderr | sed -n '{EXE_SED}')\n\
-                 test -n \"$exe\" || {{ echo 'cargo named no test binary'; exit 1; }}\n\
-                 id -u {AS_USER} >/dev/null 2>&1 || useradd --create-home {AS_USER}\n\
-                 chown -R {AS_USER}: /work/tarae\n\
-                 install -o root -g root -m 0755 \"$exe\" /usr/local/bin/tarae-tests\n\
-                 echo \"the tests run as {AS_USER} ($(id {AS_USER}))\"\n",
+                 test -n \"$exe\" || {{ echo 'cargo named no test binary'; exit 1; }}\n",
             ));
-            let args: Vec<String> = args.iter().map(|a| quoted(a)).collect();
-            s.push_str(&format!(
-                "HOME=/home/{AS_USER} USER={AS_USER} CARGO_MANIFEST_DIR=/work/tarae \
-                 setpriv --reuid={AS_USER} --regid={AS_USER} --init-groups /usr/local/bin/tarae-tests {}\n",
-                args.join(" ")
-            ));
+            s.push_str(&as_user_run("\"$exe\"", args, ""));
         }
         // (`--no-fail-fast`: every test binary runs — a unit test failing hid e2e's, f22 o)
         What::Both => s.push_str("cargo test --locked --no-fail-fast --workspace\n"),
@@ -1886,9 +1892,26 @@ fn script(tree: Tree, what: &What) -> String {
     s
 }
 
+/// The test binary at `exe` (a word for sh) run as `AS_USER` with `args`, `env` before it (`env -u …` or nothing):
+/// the binary copied where the user reads it; the clone — a throwaway, where tests write under `target/` — given
+/// to the user; its uid and gid set by setpriv, every capability gone with root's uid — the environment as
+/// `--env` gave it, but its home.
+fn as_user_run(exe: &str, args: &[String], env: &str) -> String {
+    let args: Vec<String> = args.iter().map(|a| quoted(a)).collect();
+    format!(
+        "id -u {AS_USER} >/dev/null 2>&1 || useradd --create-home {AS_USER}\n\
+         chown -R {AS_USER}: /work/tarae\n\
+         install -o root -g root -m 0755 {exe} /usr/local/bin/tarae-tests\n\
+         echo \"the tests run as {AS_USER} ($(id {AS_USER}))\"\n\
+         {env}HOME=/home/{AS_USER} USER={AS_USER} CARGO_MANIFEST_DIR=/work/tarae \
+         setpriv --reuid={AS_USER} --regid={AS_USER} --init-groups /usr/local/bin/tarae-tests {}\n",
+        args.join(" ")
+    )
+}
+
 /// Where `test --keep` keeps the test binary: in the checkout's own target volume, so only its checkout's runs
 /// find it.
-const KEPT: &str = "/target/kept/tarae-tests";
+pub(crate) const KEPT: &str = "/target/kept/tarae-tests";
 
 /// The binary `cargo test --no-run` built for tarae's own tests, from its line `Executable unittests src/main.rs
 /// (<path>)` — a `sed -n` expression.
@@ -2315,6 +2338,23 @@ mod tests {
             s.contains("`test --keep` first") && !s.contains("cargo test") && !s.contains("clippy"),
             "{s}"
         );
+        assert!(!s.contains("setpriv"), "as root: {s}");
+        // (`--as-user`: the kept binary, no build, run as the container's user — `cargo xtask kernels`)
+        let user = what(&args(&["test", "--kept", "--as-user", "sandbox::"])).unwrap();
+        assert_eq!(user, What::Kept { args: args(&["sandbox::"]), as_user: true });
+        let s = script(Tree::Mounted(None), &user);
+        assert!(
+            s.contains(&format!("install -o root -g root -m 0755 {KEPT} /usr/local/bin/tarae-tests")),
+            "{s}"
+        );
+        assert!(
+            s.contains(&format!(
+                "env -u CARGO_TARGET_DIR HOME=/home/{AS_USER} USER={AS_USER} CARGO_MANIFEST_DIR=/work/tarae \
+                 setpriv --reuid={AS_USER} --regid={AS_USER} --init-groups /usr/local/bin/tarae-tests 'sandbox::'"
+            )),
+            "{s}"
+        );
+        assert!(s.contains("`test --keep` first") && !s.contains("cargo test"), "{s}");
     }
 
     /// `--volume` mounts one of compat's volumes, before the image, and nothing else: another volume, a folder of

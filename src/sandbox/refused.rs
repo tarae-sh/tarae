@@ -121,9 +121,22 @@ fn must_be_refused() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "in_stand_in_home failed:\nstdout:\n{stdout}\nstderr:\n{stderr}");
     // (a table not held against a snapshot, said where a passing test is seen: past libtest's capture)
-    for line in stderr.lines().filter(|l| l.starts_with(UNCOMPARED)) {
-        let _ = std::io::Write::write_all(&mut std::io::stderr(), format!("{line}\n").as_bytes());
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), said_past_capture(&stderr).as_bytes());
+}
+
+/// What `in_stand_in_home` says past libtest's capture: each `UNCOMPARED` line, and the table after one (an aarch64
+/// table with no snapshot yet, for `cargo xtask kernels` to keep for blessing).
+fn said_past_capture(stderr: &str) -> String {
+    let mut said = String::new();
+    let mut table = false;
+    for l in stderr.lines() {
+        table = l.starts_with(UNCOMPARED) || (table && (l.starts_with('#') || l.contains(" | ")));
+        if table {
+            said.push_str(l);
+            said.push('\n');
+        }
     }
+    said
 }
 
 /// Whether the suite can't run here — then said past libtest's capture (`SELF_SKIP`), with why. macOS: inside a
@@ -1331,6 +1344,16 @@ fn in_stand_in_home() {
     compare_snapshot(&snap_name, &table);
     #[cfg(target_os = "linux")]
     match snap_name {
+        // (aarch64's are blessed from a `cargo xtask kernels` run: until one is, its table is said with its name, not
+        // compared — an arm64 machine never fails for a snapshot nobody could have made yet)
+        Ok(name) if !held_yet(&name) => {
+            let path = snapshot_path(&name);
+            let line = format!(
+                "{UNCOMPARED}no snapshot {} yet — aarch64's are blessed from `cargo xtask kernels`' tables\n{table}",
+                path.display()
+            );
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        }
         Ok(name) => compare_snapshot(&name, &table),
         // (the properties above held; `must_be_refused` says it past libtest's capture)
         Err(why) => {
@@ -1361,19 +1384,21 @@ struct Machine<'a> {
     user: bool,
 }
 
-/// The snapshot a Linux table is held against, or why none is: the snapshots are one machine's words, the test
-/// VM's — x86-64 (row 24 tries another ABI's calls only there), Landlock ABI 6 or more (rows 17 and 25: a run's
-/// signals scoped), Yama's `ptrace_scope` 1 (row 25's ptrace and `pidfd_getfd`, against a baseline Yama refuses
-/// or not) — keyed by tier, offline with namespaces apart (it has a network of its own), a user's apart (the system
-/// refuses some calls first; in own its names are sealed, B9). Elsewhere the rows'
-/// properties still hold, and the table is said, not compared.
+/// The snapshot a Linux table is held against, or why none is: the snapshots are the test VMs' words — x86-64's
+/// and aarch64's apart (row 24 tries another ABI's calls only on x86-64; aarch64's are `cargo xtask kernels`'
+/// Lima VMs on a Mac), Landlock ABI 6 or more (rows 17 and 25: a run's signals scoped), Yama's `ptrace_scope` 1
+/// (row 25's ptrace and `pidfd_getfd`, against a baseline Yama refuses or not) — keyed by tier, offline with
+/// namespaces apart (it has a network of its own), a user's apart (the system refuses some calls first; in own its
+/// names are sealed, B9). Elsewhere the rows' properties still hold, and the table is said, not compared.
 fn snapshot_for(m: &Machine) -> Result<String, String> {
     if m.tier.ends_with("partial") {
         return Err(format!("Landlock ABI {}: partial", m.abi));
     }
-    if m.arch != "x86_64" {
-        return Err(format!("{}: the snapshots are x86-64's", m.arch));
-    }
+    let arch = match m.arch {
+        "x86_64" => "",
+        "aarch64" => "-aarch64",
+        other => return Err(format!("{other}: the snapshots are x86-64's and aarch64's")),
+    };
     if m.abi < 6 {
         return Err(format!("Landlock ABI {}: the snapshots are ABI 6's or later", m.abi));
     }
@@ -1386,7 +1411,7 @@ fn snapshot_for(m: &Machine) -> Result<String, String> {
         return Err("offline with namespaces as a user: no snapshot of its words yet".into());
     }
     let user = if m.user { "-user" } else { "" };
-    Ok(format!("refused_linux_{}{ns}{user}", m.tier))
+    Ok(format!("refused_linux_{}{ns}{user}{arch}", m.tier))
 }
 
 #[test]
@@ -1408,10 +1433,28 @@ fn a_linux_table_is_held_against_a_snapshot_only_where_its_words_are_the_snapsho
     assert_eq!(snapshot_for(&offline_user).as_deref(), Ok("refused_linux_offline-user"));
     let got = snapshot_for(&Machine { ns: true, ..offline_user });
     assert!(got.as_ref().is_err_and(|e| e.contains("as a user")), "offline-ns as a user: {got:?}");
-    // Each of what the words depend on, off the VM's alone: no snapshot, and the why names it
+    // (aarch64's apart, every table of its own: row 24 is x86-64's only — the rest of the rule the same)
+    let arm = Machine { arch: "aarch64", ..vm };
+    for (m, name) in [
+        (arm, "refused_linux_host-aarch64"),
+        (Machine { user: true, ..arm }, "refused_linux_host-user-aarch64"),
+        (Machine { tier: "own", ns: true, ..arm }, "refused_linux_own-aarch64"),
+        (Machine { tier: "offline", ns: true, ..arm }, "refused_linux_offline-ns-aarch64"),
+    ] {
+        assert_eq!(snapshot_for(&m).as_deref(), Ok(name));
+    }
+    for (m, why) in [
+        (Machine { abi: 5, ..arm }, "ABI 5"),
+        (Machine { yama: Some(2), ..arm }, "ptrace_scope 2"),
+        (Machine { tier: "own partial", abi: 2, ..arm }, "partial"),
+    ] {
+        let got = snapshot_for(&m);
+        assert!(got.as_ref().is_err_and(|e| e.contains(why)), "aarch64: {got:?}");
+    }
+    // Each of what the words depend on, off the VMs' alone: no snapshot, and the why names it
     let off = [
         (Machine { tier: "host partial", abi: 2, ..vm }, "partial"),
-        (Machine { arch: "aarch64", ..vm }, "aarch64"),
+        (Machine { arch: "riscv64", ..vm }, "riscv64"),
         (Machine { abi: 5, ..vm }, "ABI 5"),
         (Machine { yama: Some(0), ..vm }, "ptrace_scope 0"),
         (Machine { yama: None, ..vm }, "no Yama"),
@@ -1422,9 +1465,42 @@ fn a_linux_table_is_held_against_a_snapshot_only_where_its_words_are_the_snapsho
     }
 }
 
+fn snapshot_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/snapshots").join(format!("{name}.txt"))
+}
+
+fn blessing() -> bool {
+    std::env::var_os("TARAE_BLESS").is_some_and(|v| v == "1")
+}
+
+/// Whether the table named `name` is held against its snapshot: x86-64's always (a missing one fails), aarch64's once
+/// there is one, or while blessing.
+fn held_yet(name: &str) -> bool {
+    !name.ends_with("-aarch64") || blessing() || snapshot_path(name).exists()
+}
+
+/// Review note 37: an aarch64 table with no snapshot yet is said with its name and its table, never failed — an arm64
+/// machine at ABI 6 and Yama 1 runs green until `cargo xtask kernels` blesses it; x86-64's stay required.
+#[test]
+fn an_aarch64_table_with_no_snapshot_yet_is_said_not_failed() {
+    assert!(held_yet("refused_linux_host"), "x86-64's: compared, a missing one fails");
+    assert!(!held_yet("refused_linux_nowhere-aarch64"), "aarch64's with none yet: said");
+    let stderr = format!(
+        "something else\n{UNCOMPARED}no snapshot /s/refused_linux_host-aarch64.txt yet — why\n\
+         # must-be-refused suite (Linux host)\n# claim | id | verdict | witness\n\
+         §1.1     | a_row | refused  | w\ntest a::b ... ok\n"
+    );
+    let said = said_past_capture(&stderr);
+    assert!(
+        said.starts_with(UNCOMPARED) && said.contains("§1.1     | a_row"),
+        "the line and its table: {said}"
+    );
+    assert!(!said.contains("something else") && !said.contains("a::b"), "nothing else: {said}");
+}
+
 fn compare_snapshot(name: &str, actual: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/snapshots").join(format!("{name}.txt"));
-    if std::env::var_os("TARAE_BLESS").is_some_and(|v| v == "1") {
+    let path = snapshot_path(name);
+    if blessing() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, actual).unwrap();
         return;

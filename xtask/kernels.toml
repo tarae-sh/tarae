@@ -1,0 +1,93 @@
+# The kernels `cargo xtask kernels` runs tarae's sandbox tests on — one a behaviour that differs for tarae
+# (.sb/kernels-plan.md §1). Each runs its modes `repeat` times in a row (the `sandbox::` tests, the must-be-refused
+# suite among them), then tarae's own tests `repeat` times in `whole`'s mode — every run on the one test binary built
+# in `build`'s colima VM (`cargo xtask linux test --keep`), the same binary on every kernel.
+#
+# modes: `own` (`--userns`), `host` (Docker's profiles, SYS_PTRACE added), `offline` (`--docker-default`), each as
+# root or as a user (`-user`: `--as-user`). They name how the container runs; `expect` names the tier each reaches
+# (`TARAE_EXPECT_TIER`: the probe and the suite fail rather than skip). A mode not in `expect` runs expecting nothing
+# — the tier it found is said, then written here (`--docker-default` expects offline unless told). A failure is a
+# tarae bug (fixed, pinned by a test) or the kernel lacking something (said missing in the product, the expectation
+# changed here with why) — never a mode left out to make it pass.
+#
+# `colima`: the colima profile it runs on (started if it isn't, stopped after if it was started; `start` its
+# options). `image`: a Lima VM from Lima's own template `_images/<image>` (its cloud image, downloaded once into
+# Lima's cache), Docker put in by `install`, started, run and deleted. `sysctl`: set before the runs (a VM's own,
+# gone with it; colima's until it restarts).
+
+build = "tarae-test"
+repeat = 3
+
+[[kernel]]
+name = "K4"
+says = "6.8, Ubuntu 24.04 GA — colima's own VM: Landlock ABI 4, the user-namespace restriction on"
+colima = "tarae-test"
+modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+whole = "host-user"
+# (own and own-user reach host, read on its first run, 2026-11-02: the restriction is what this kernel is here for —
+# it binds the container's root too, which holds no CAP_SYS_ADMIN where it counts — and the probe says it, with the
+# AppArmor profile that lifts it. Tier own on this kernel and its ABI is Y2's, the restriction lifted there.)
+expect = { own = "host", own-user = "host", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+
+[[kernel]]
+name = "K3"
+says = "6.1, Debian 12: Landlock ABI 2 (partial), user namespaces free"
+image = "debian-12"
+install = "curl -fsSL https://get.docker.com | sh"
+modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+whole = "host-user"
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+
+[[kernel]]
+name = "K1"
+says = "5.14, AlmaLinux 9 (RHEL 9's kernel): the floor, Landlock as backported, SELinux"
+image = "almalinux-9"
+install = "dnf -y install dnf-plugins-core && dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo && dnf -y install docker-ce docker-ce-cli containerd.io"
+modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+whole = "host-user"
+# (own and host read on its first run: the backported ABI decides. The offline modes expect offline, as
+# `--docker-default` does wherever the table names none — below ABI 2 no tier is reached and they fail: then they're
+# K2's case, written here with why)
+expect = {}
+
+[[kernel]]
+name = "K2"
+says = "5.15, Ubuntu 22.04 GA: Landlock ABI 1 — the NoSandbox path said, every test still green"
+image = "ubuntu-22.04"
+install = "curl -fsSL https://get.docker.com | sh"
+# (below ABI 2 no tier is reached: `--docker-default` would expect offline)
+modes = ["host", "host-user"]
+whole = "host-user"
+expect = {}
+
+[[kernel]]
+name = "K5"
+says = "6.12, Debian 13 with Yama's ptrace_scope 1: Landlock ABI 6 — the first where a table is compared"
+image = "debian-13"
+install = "curl -fsSL https://get.docker.com | sh"
+sysctl = ["kernel.yama.ptrace_scope=1"]
+modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+whole = "host-user"
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+
+[[kernel]]
+name = "K6"
+says = "the newest: Fedora 44 — Landlock's audit records and later ABIs, the newest syscalls, SELinux"
+image = "fedora-44"
+install = "curl -fsSL https://get.docker.com | sh"
+modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+whole = "host-user"
+# (own and own-user read on its first run)
+expect = { host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+
+[[kernel]]
+name = "Y2"
+says = "Yama's ptrace_scope 2 on K4's kernel — colima's tarae-yama2 (CONTRIBUTING's recipe)"
+colima = "tarae-yama2"
+start = ["--cpu", "4", "--memory", "8"]
+sysctl = ["kernel.yama.ptrace_scope=2", "kernel.apparmor_restrict_unprivileged_userns=0"]
+env = ["TARAE_EXPECT_YAMA=2"]
+# (as a user: root in the container holds CAP_SYS_PTRACE, which Yama lets through)
+modes = ["own-user", "host-user"]
+whole = "own-user"
+expect = { own-user = "own", host-user = "offline" }
