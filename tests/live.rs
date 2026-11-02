@@ -846,6 +846,7 @@ fn billed(stream: &str) {
 
 /// What a teed `stream`'s claudes spent so far: per claude conversation (`session_id`) its largest `total_cost_usd`
 /// (cumulative over that claude's turns), summed — every claude's lines interleave in the one file.
+#[cfg(target_os = "macos")]
 fn spent(stream: &str) -> f64 {
     let mut by: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
     for v in stream.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
@@ -1038,10 +1039,12 @@ fn chat_prompt_tokens_in_a_child() {
 
 /// The end-to-end's cap on what its claudes spend, every one's (`spent`): past it the test stops — its tarae and
 /// their claudes go with it.
+#[cfg(target_os = "macos")]
 const P3_CAP_USD: f64 = 2.0;
 
 /// Waits until `done` holds on screen, looking at what the run's claudes spent (`spent` of `out`) every two seconds —
 /// past `P3_CAP_USD`, the test stops there.
+#[cfg(target_os = "macos")]
 fn capped_wait(t: &mut Term, out: &Path, what: &str, done: impl Fn(&Screen) -> bool) -> Screen {
     let end = Instant::now() + LIVE_TIMEOUT * 2;
     loop {

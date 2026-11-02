@@ -5720,6 +5720,7 @@ mod tests {
         let target = crate::testing::Target {
             label: "outside".into(),
             cwd: dir,
+            holds: None,
             how: crate::testing::How::Pack {
                 lang: "sh".into(),
                 argv: vec!["sh".into(), "-c".into(), script.into()],
