@@ -806,6 +806,47 @@ fn a_word_never_types_letters_into_the_chats_draft() {
     assert!(status(&ed).starts_with("G would be typed into the chat's draft"), "{}", status(&ed));
 }
 
+/// To the terminal's program alike (#279): its line's `C-\ view` goes, a letter would be typed into the program — refused
+/// and said, the program given nothing. (No hint draws a letter there today: the spot is a stand-in, the program real.)
+#[test]
+fn a_word_never_types_letters_into_the_terminals_program() {
+    if crate::sandbox::no_pty_here("wordspot::tests::a_word_never_types_letters_into_the_terminals_program") {
+        return;
+    }
+    let mut ed = editor();
+    crate::uistate::tests::terminal(&mut ed);
+    frame(&mut ed);
+    let line = Surface::SlotLine;
+    let spot = Spot::new(line, Press::Keys("G".into()), (0, 0), vec![("G".into(), Style::default())])
+        .home(At::Program);
+    ed.screen.word_spots.borrow_mut().push(spot);
+    let i = ed.screen.word_spots.borrow().len() - 1;
+    crate::uistate::TOOK.set(None);
+    press(&mut ed, i);
+    assert!(status(&ed).starts_with("G would be typed into the terminal's program"), "{}", status(&ed));
+    let took = crate::uistate::TOOK.get();
+    assert_ne!(took, Some(crate::uistate::Handler::Program), "the program given nothing");
+    assert!(ed.workspace.is_at(At::Program), "its keys where they were");
+}
+
+/// #279: the side panel takes keys only in normal mode — in insert mode its `q close`, pressed, would land in the code
+/// and be typed into the file: refused and said as the code's own hints are, the file as it was.
+#[test]
+fn a_panels_word_in_insert_mode_never_types_into_the_file() {
+    let mut ed = editor();
+    ed.sidebar_show(crate::sidebar::Mode::Outline);
+    ed.mode = crate::editor::Mode::Insert;
+    frame(&mut ed);
+    let q = Press::Keys("q".into());
+    let s = spot_on(&ed, Surface::Side, &q);
+    assert_eq!(s.home, Some(At::Side));
+    let text = ed.doc().text.to_string();
+    mouse(&mut ed, MouseKind::Down, (s.from, s.y));
+    mouse(&mut ed, MouseKind::Up, (s.from, s.y));
+    assert_eq!(ed.doc().text.to_string(), text, "nothing typed into the file");
+    assert!(status(&ed).starts_with("insert mode: esc first"), "{}", status(&ed));
+}
+
 /// A hint that means "go there" moves the keys and they stay: the chat's `esc code` leaves them in the code; from the
 /// code, the chat's `space l focus` leaves them in the chat — neither given back.
 #[test]

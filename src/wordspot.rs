@@ -143,9 +143,14 @@ pub fn press(ed: &mut Editor, i: usize) {
             // of what goes with it, shown only while the draft is empty —, never letters into the draft)
             // (a character is typed; a chord, `enter`, `esc`, an arrow — `↑ edit queued` — aren't; past a way out
             // — `esc esc space I` — nothing is typed into the draft)
+            // (the terminal's program alike: its `C-\ view` goes, a letter would be typed into it)
             let typed = |k: &&Key| matches!(k.code, Code::Char(_)) && !(k.ctrl || k.alt);
-            if home == Some(At::Chat)
-                && !crate::chatdoc::keyed(ed)
+            let into = match home {
+                Some(At::Chat) if !crate::chatdoc::keyed(ed) => Some("the chat's draft"),
+                Some(At::Program) => Some("the terminal's program"),
+                _ => None,
+            };
+            if let Some(into) = into
                 && keys(&said)
                     .unwrap_or_default()
                     .iter()
@@ -153,7 +158,7 @@ pub fn press(ed: &mut Editor, i: usize) {
                     .any(|k| typed(&k))
             {
                 return ed.set_status(format!(
-                    "{said} would be typed into the chat's draft — a word presses a chord, enter or esc there"
+                    "{said} would be typed into {into} — a word presses a chord, enter or esc there"
                 ));
             }
             // (the keys to the surface the hint was drawn for first — the pane whose line it's on, focused or not; the
@@ -422,12 +427,21 @@ thread_local! {
     pub(crate) static UNBUTTONED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Why a key hint's keys can't go as typed now, said: the code where they go (`home`, else where the keys are) in a
-/// mode other than normal (they'd be typed into the file). None: they go (a sequence under way ended first — `press`).
-fn refused(ed: &Editor, home: Option<At>) -> Option<String> {
+/// Why a key hint's keys can't go as typed now, said: the code where they land (`home`, else where the keys are) in a
+/// mode other than normal (they'd be typed into the file). A panel's keys land there too outside normal mode — the side
+/// panel, the rail, a list take keys only in it (#279: the side panel's `q close` typed `q` into the file). None: they go
+/// (a sequence under way ended first — `press`).
+fn refused(ed: &mut Editor, home: Option<At>) -> Option<String> {
     use crate::uistate::Region;
     let code = match home {
-        Some(h) => h == At::Code,
+        Some(At::Code) => true,
+        // (where `home` sends them, as `keys_to` says: the keys lent there for the look, then put back)
+        Some(h) => {
+            let was = std::mem::replace(&mut ed.workspace.viewer.at, h);
+            let region = ed.keys_region();
+            ed.workspace.viewer.at = was;
+            region == Region::Code
+        }
         None => matches!(ed.keys_to().region, Region::Code | Region::Weave | Region::NoteCard | Region::Page),
     };
     let mode = format!("{:?}", ed.mode).to_lowercase();

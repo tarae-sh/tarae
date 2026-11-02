@@ -2097,8 +2097,19 @@ fn slot_header(
         each: &[],
         // (by what each is: the slot's own keys typed in the slot — its list's while the list has them, as its hints are
         // then the list's —, the way in typed in the code)
+        // (the terminal's round key out of its view mode — `C-\ view` from its program, `C-\ type` from the code — typed
+        // where it's said from: lent to its view mode it went round to the code, #279)
         home: Some(match editor.workspace.viewer.at {
             at @ At::List(_) if editor.list_focused().is_some() => at,
+            at if editor.slot() == Some(crate::sizes::Slot::Terminal)
+                && crate::view::terminal_view_of(editor).is_none() =>
+            {
+                if at == At::Program {
+                    at
+                } else {
+                    At::Code
+                }
+            }
             _ => At::Slot,
         }),
         way_in: Some("C-w j"),

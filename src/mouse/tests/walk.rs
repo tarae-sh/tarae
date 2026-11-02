@@ -1901,6 +1901,105 @@ fn a_word_on_the_note_cards_line_lights_as_its_drawn() {
     }
 }
 
+/// What a press could type into, as it stands: the code's text while it's in insert mode, the chat's draft, a prompt's.
+fn writing(ed: &Editor) -> (Option<String>, Option<String>, Option<String>) {
+    let code = (ed.mode == crate::editor::Mode::Insert)
+        .then(|| ed.docs.iter().map(|d| d.text.to_string()).collect());
+    let draft = ed.workspace.claude.chat.as_ref().map(|c| c.input.text().to_string());
+    (code, draft, ed.prompt.as_ref().map(|p| p.input.text().to_string()))
+}
+
+/// The terminal shown, the code with the keys: its line's round key (`C-\ type`) is the code's.
+const THE_TERMINAL_BESIDE: Scene = ("the terminal shown, the code with the keys", |ed| {
+    crate::uistate::tests::terminal(ed);
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+});
+
+/// A pressed key hint never types into a text you're writing that it wasn't drawn for (#279): in every scene, each key
+/// hint pressed on a scene of its own — the code's text in insert mode grows only by a hint of the code's (the
+/// completion's `enter`), the chat's draft never grows, a prompt's input only by its own keys (the status line's, `tab
+/// complete`), the terminal's program never takes a key. Each hint's keys typed where they're said from,
+/// or refused and said: the side panel's `q close` in insert mode typed `q` into the file.
+#[test]
+fn a_pressed_hint_never_types_into_another_surfaces_text() {
+    if !pty("a_pressed_hint_never_types_into_another_surfaces_text") {
+        return;
+    }
+    use crate::uistate::{Handler, TOOK};
+    use crate::workspace::At;
+    let started = std::time::Instant::now();
+    let (mut typed, mut pressed) = (Vec::new(), 0);
+    for &(scene, setup) in SCENES.iter().chain(MOUSE_SCENES).chain([&THE_TERMINAL_BESIDE]) {
+        let hints: Vec<(usize, usize, String, Option<At>)> = (fresh(setup).screen.word_spots.borrow().iter())
+            .filter_map(|s| match &s.press {
+                crate::wordspot::Press::Keys(k) => Some((s.from, s.y, k.clone(), s.home)),
+                _ => None,
+            })
+            .collect();
+        for (x, y, k, home) in hints {
+            let mut ed = fresh(setup);
+            let before = writing(&ed);
+            TOOK.set(None);
+            for kind in [K::Down, K::Up] {
+                ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+            }
+            pressed += 1;
+            let after = writing(&ed);
+            let grew = |a: &Option<String>, b: &Option<String>| match (a, b) {
+                (Some(a), Some(b)) => b.len() > a.len(),
+                _ => false,
+            };
+            // (what grew: a press outside a prompt closes it, `enter` sends a draft — those take nothing in)
+            let into = [
+                (grew(&before.0, &after.0) && home != Some(At::Code), "the code's text"),
+                (grew(&before.1, &after.1), "the draft"),
+                (grew(&before.2, &after.2) && home.is_some(), "a prompt's input"),
+                (TOOK.get() == Some(Handler::Program) && home != Some(At::Program), "the program"),
+            ];
+            for (_, what) in into.iter().filter(|i| i.0) {
+                typed.push(format!("{scene} · `{k}` (home {home:?}) typed into {what}"));
+            }
+        }
+    }
+    println!("{pressed} hints pressed in {:?}", started.elapsed());
+    assert!(pressed > 300, "{pressed} hints pressed");
+    assert!(typed.is_empty(), "{}:\n{}", typed.len(), typed.join("\n"));
+}
+
+/// The terminal's round key on its line does what it says from where it's said (#279): `C-\ view` from its program
+/// its view mode, `C-\ type` from the code its program — lent to its view mode first, both went round to the code.
+#[test]
+fn the_terminals_round_key_pressed_goes_where_it_says() {
+    if !pty("the_terminals_round_key_pressed_goes_where_it_says") {
+        return;
+    }
+    use crate::workspace::At;
+    let round = |ed: &Editor| {
+        let spots = ed.screen.word_spots.borrow();
+        let s = spots
+            .iter()
+            .find(|s| s.on == Surface::SlotLine && s.press == crate::wordspot::Press::Keys("C-\\".into()));
+        s.map(|s| (s.from, s.y)).expect("the round's key on the terminal's line")
+    };
+    let press = |ed: &mut Editor, (x, y): (usize, usize)| {
+        for kind in [K::Down, K::Up] {
+            ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        }
+    };
+    let mut ed = fresh(crate::uistate::tests::terminal);
+    let at = round(&ed);
+    press(&mut ed, at);
+    assert!(
+        crate::view::terminal_view_of(&ed).is_some(),
+        "C-\\ view: its view mode, keys {:?}",
+        ed.workspace.viewer.at
+    );
+    let mut ed = fresh(THE_TERMINAL_BESIDE.1);
+    let at = round(&ed);
+    press(&mut ed, at);
+    assert!(ed.workspace.is_at(At::Program), "C-\\ type: its program, keys {:?}", ed.workspace.viewer.at);
+}
+
 /// The kinds walk sees what it's for, broken once: every key hint drawn with no button (`wordspot::UNBUTTONED`) — the
 /// chat's `esc code`, a slot's `C-w j scroll` — is a hint the walk names, none of them on `KIND_GAPS`.
 #[test]
