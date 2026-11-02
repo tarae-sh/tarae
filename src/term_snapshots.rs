@@ -9220,6 +9220,44 @@ fn an_edit_reviews_reason_is_whole_sentences() {
     assert!(reason_rows.iter().all(|r| r.trim_end().width() <= 100 - 4), "{rows:#?}");
 }
 
+/// #272: an edit review's reason over its two rows is one cut text — the mouse on any of its words, either row, shows
+/// its card from the `…`'s row, the same card each time.
+#[test]
+fn an_edit_reviews_reason_is_whole_under_the_mouse_on_any_of_its_rows() {
+    let mut s = Shot::new(100, 30);
+    ask_answered(&mut s);
+    s.ed.toasts.clear();
+    let reason = "Keying by the name alone means a second strand with the same name replaces the first one in \
+                  the map. The entry API keeps the one that came first. I will switch it so a repeat keeps the \
+                  first strand, and since nothing else reads the map, no other line has to change.";
+    s.ed.workspace.claude.review.as_mut().unwrap().reason = reason.into();
+    s.frame();
+    let spots: Vec<(usize, usize, usize)> = (s.ed.screen.cut_spots.borrow().iter())
+        .filter(|sp| matches!(&sp.3, crate::whole::Cut::Text(w) if w.text == reason))
+        .map(|sp| (sp.0, sp.1, sp.2))
+        .collect();
+    let mut ys: Vec<usize> = spots.iter().map(|s| s.0).collect();
+    ys.dedup();
+    assert_eq!(ys.len(), 2, "both its rows recorded: {spots:?}");
+    let (fy, fx, _) = spots[0];
+    let mut held = None;
+    for &(y, a, b) in &spots {
+        s.ed.handle_event(crate::event::Event::Hover(((a + b) / 2) as u16, y as u16));
+        s.frame();
+        let card =
+            s.ed.screen.cut_card.borrow().clone().unwrap_or_else(|| panic!("no card on row {y} at {a}..{b}"));
+        assert!(
+            card.rect.1 == fy && card.rect.0 <= fx,
+            "from its first row, the mouse on row {y}: {:?}",
+            card.rect
+        );
+        assert!(held.as_ref().is_none_or(|h| *h == card.cut), "one card");
+        held = Some(card.cut);
+        s.ed.handle_event(crate::event::Event::Hover(0, 29));
+        s.frame();
+    }
+}
+
 /// The git tab opens on its first file, not on the `Changes` heading over it (the heading still takes `s` for
 /// the whole section, a `k` away) — when the file in front isn't among the changes.
 #[test]

@@ -640,6 +640,21 @@ pub fn folded(whole: String, tail: &str, (style, words): (Style, Style)) -> crat
     crate::markdown::Span { text, style, cut: Some(Box::new(of)), hint: false }
 }
 
+/// One cut text drawn over several `rows` (#272: "both rows are the same sentence") — its cut, a `folded` mark's, carried
+/// by the first row's first span that has one — carried by every span with words on every row too, so each row is its
+/// hover zone and the row in hand wherever it's held, its card standing at its first row: the first spot of a cut is
+/// where its card goes (`term::cut_card`), every spot of it the same cut (`Whole`'s, by its `key`). Rows with no such
+/// mark: as they are.
+pub fn across(rows: &mut [Vec<crate::markdown::Span>]) {
+    let Some(of) = rows.first().and_then(|r| r.iter().find_map(|s| s.cut.as_deref())).cloned() else {
+        return;
+    };
+    debug_assert!(of.key.is_some(), "one cut over rows is known by its place: its spots' styles differ");
+    for s in rows.iter_mut().flatten().filter(|s| s.cut.is_none() && !s.text.trim().is_empty()) {
+        s.cut = Some(Box::new(Of { from: 0, to: s.text.len(), ..of.clone() }));
+    }
+}
+
 /// The text of `rows` as a card says it: a row a line, a blank row a paragraph's break, none at the ends.
 pub fn rows_text(rows: &[Vec<crate::markdown::Span>]) -> String {
     let lines: Vec<String> = rows

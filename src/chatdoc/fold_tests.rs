@@ -1,5 +1,5 @@
 //! Focus A1b step 3: the chat folds an older answer's placed paragraphs — one stub row each, every word kept in the
-//! transcript's document, opened by a selection, going to the code's card by `enter` or a press.
+//! transcript's document, folded under any selection (#271), going to the code's card by `enter` or a press.
 
 use std::path::{Path, PathBuf};
 
@@ -214,39 +214,185 @@ fn a_question_with_no_answer_leaves_the_newest_whole() {
     assert_eq!(stubs(&ed), Vec::<String>::new());
 }
 
-/// A selection wider than a character on a stub opens it, the doc comments' rule: a search hit past what the stub shows,
-/// then `x`; a plain cursor on it leaves it folded, its card in hand. Open, the document is as it was but its one blank
-/// line; let go, it folds again.
+/// #271, #269's rule: a stub stays folded under any selection — a search hit past what it shows, `x` on it, which takes
+/// its paragraph whole — nothing moving, and `y` copies every word of it (the document keeps them).
 #[test]
-fn a_selection_wider_than_a_character_opens_a_stub_until_it_goes() {
-    let (_s, _root, mut ed) = project("fold-open");
+fn a_stub_stays_folded_under_any_selection() {
+    let (_s, _root, mut ed) = project("fold-stays");
     two_turns(&mut ed);
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, W);
     feed(&mut ed, "<esc>gg");
+    let folded = rows(&ed);
     assert_eq!(stubs(&ed).len(), 2);
     // (a word only the card shows)
     feed(&mut ed, "/hands<ret>");
-    let open = rows(&ed);
-    assert_eq!(stubs(&ed).len(), 1, "the search hit's paragraph: {open:#?}");
-    assert!(stubs(&ed)[0].starts_with("◂ b.rs:2"), "{:?}", stubs(&ed));
-    assert!(open.iter().any(|r| r.starts_with("The loop at src/a.rs:3")), "{open:#?}");
-    let sel = at(&ed);
-    assert_eq!(sel, "hands");
-    // (a plain cursor: folded again, and nothing moved under it)
-    feed(&mut ed, "<esc>");
-    feed(&mut ed, ";");
-    assert_eq!(stubs(&ed).len(), 2, "a cursor alone: {:#?}", rows(&ed));
-    feed(&mut ed, "x");
-    assert_eq!(stubs(&ed).len(), 1, "`x`: {:#?}", rows(&ed));
-    assert_eq!(at(&ed).trim_end(), FIRST.split("\n\n").next().unwrap(), "`x` takes the paragraph whole");
-    // (the second of two: its blank line back with it, the first stays folded)
+    assert_eq!(at(&ed), "hands");
+    assert_eq!(rows(&ed), folded, "a search hit in it: folded, nothing moved");
+    feed(&mut ed, "<esc>;x");
+    assert_eq!(rows(&ed), folded, "`x`");
+    let first = FIRST.split("\n\n").next().unwrap();
+    assert_eq!(at(&ed).trim_end(), first, "`x` takes the paragraph whole");
+    feed(&mut ed, "y");
+    let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the copy's result");
+    ed.handle_event(ev);
+    let copied = ed.registers.get(&'"').and_then(|v| v.first()).cloned().unwrap_or_default();
+    assert_eq!(copied.trim_end(), first, "`y` copies every word of it");
+    // (the second of two: the first stays as it is too)
     feed(&mut ed, "<esc>gg/filled<ret>");
-    let open = rows(&ed);
-    assert_eq!(stubs(&ed).len(), 1, "{open:#?}");
-    assert!(stubs(&ed)[0].starts_with("◂ a.rs:3"), "{:?}", stubs(&ed));
-    assert!(open.iter().any(|r| r.starts_with("The map is filled")), "{open:#?}");
+    assert_eq!(rows(&ed), folded);
     assert_eq!(at(&ed), "filled");
+}
+
+/// #271: a selection wider than a character anywhere on a stub's line lights all its words (#269's folded rows), the
+/// primary's ground; one that isn't on it, or a cursor alone, lights nothing.
+#[test]
+fn a_selection_on_a_stubs_line_lights_its_words() {
+    let (_s, _root, mut ed) = project("fold-lit");
+    two_turns(&mut ed);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    frame(&mut ed, W);
+    feed(&mut ed, "<esc>gg");
+    assert_eq!((lit(&mut ed, 0), lit(&mut ed, 1)), (false, false), "a cursor alone");
+    // (from the question above into the first stub's hidden words, the cursor off its row)
+    let line = |ed: &Editor, starts: &str| {
+        let d = transcript(ed).unwrap().pane.doc_in().unwrap();
+        (0..d.text.len_lines()).find(|&l| d.text.line(l).to_string().starts_with(starts)).unwrap()
+    };
+    let d = transcript(&ed).unwrap().pane.doc_in().unwrap();
+    let hands = d.text.to_string().find("hands").unwrap();
+    let q = mv::line_start(&d.text, line(&ed, "what does the loop"));
+    let d = transcript_mut(&mut ed).unwrap().pane.doc_in_mut().unwrap();
+    d.set_selection(Selection::single(Range::new(hands + 2, q)));
+    frame(&mut ed, W);
+    assert_eq!((lit(&mut ed, 0), lit(&mut ed, 1)), (true, false), "the first one's words, the second's not");
+    // (a selection only in what it folds — not the primary, whose cursor would bring its card over it — lights its words
+    // all the same, on the other selections' ground)
+    let d = transcript_mut(&mut ed).unwrap().pane.doc_in_mut().unwrap();
+    let ranges = vec![Range::new(q, q + "what".len()), Range::new(hands, hands + "hands".len())];
+    d.set_selection(Selection::new(ranges, 0));
+    frame(&mut ed, W);
+    assert_eq!((lit(&mut ed, 0), lit(&mut ed, 1)), (true, false), "a selection in its folded words only");
+    let primary = ground_at(&mut ed, "what does the loop");
+    assert_ne!(stub_ground(&mut ed, 0), primary, "the other selections' ground, not the primary's");
+    feed(&mut ed, "%");
+    assert_eq!((lit(&mut ed, 0), lit(&mut ed, 1)), (true, true), "all of it");
+    feed(&mut ed, ";");
+    assert_eq!((lit(&mut ed, 0), lit(&mut ed, 1)), (false, false), "let go");
+}
+
+/// Whether stub `k`'s words are drawn on another ground than its place (`◂ a.rs:3`), which a selection never lights.
+fn lit(ed: &mut Editor, k: usize) -> bool {
+    let (words, place) = stub_grounds(ed, k);
+    words != place
+}
+
+/// The ground of stub `k`'s words.
+fn stub_ground(ed: &mut Editor, k: usize) -> vt100::Color {
+    stub_grounds(ed, k).0
+}
+
+/// The grounds of stub `k`'s words and of its place, as a frame draws them.
+fn stub_grounds(ed: &mut Editor, k: usize) -> (vt100::Color, vt100::Color) {
+    let p = coloured(ed);
+    let (y, _) = ed.screen.chat_stubs.borrow()[k];
+    let x = ed.screen.chat_links.borrow().iter().find(|l| l.0 == y).map(|l| l.1).unwrap();
+    let head = "◂ a.rs:3  ".chars().count();
+    let bg = |x: usize| p.screen().cell(y as u16, x as u16).map(|c| c.bgcolor()).unwrap();
+    (bg(x + head + 1), bg(x))
+}
+
+/// The ground of the first cell of `text` in the chat, as a frame draws it.
+fn ground_at(ed: &mut Editor, text: &str) -> vt100::Color {
+    let p = coloured(ed);
+    let chat_x = ed.screen.chat_x.unwrap();
+    let screen = p.screen().contents();
+    let (x, y) = (screen.lines().enumerate())
+        .find_map(|(y, l)| {
+            let l: String = l.chars().skip(chat_x).collect();
+            Some((chat_x + l[..l.find(text)?].chars().count(), y))
+        })
+        .expect(text);
+    p.screen().cell(y as u16, x as u16).map(|c| c.bgcolor()).unwrap()
+}
+
+/// A frame with its colours.
+fn coloured(ed: &mut Editor) -> vt100::Parser {
+    // (crossterm drops every colour under NO_COLOR, which tarae's test runner sets — as `term_snapshots`' `Shot`)
+    crossterm::style::force_color_output(true);
+    let mut bytes = Vec::new();
+    crate::term::render(ed, &mut bytes, W, H).unwrap();
+    let mut p = vt100::Parser::new(H, W, 0);
+    p.process(&bytes);
+    p
+}
+
+/// #271: a drag from the question onto a stub takes its paragraph whole — it stays folded, nothing moves under the
+/// pointer, its card not over the rows the drag goes on to — on to the next stub both, back up the first again; let go,
+/// its card comes (the view mode's cursor on it), and `y` copies every word. Up from the newest answer onto it, the same:
+/// from its paragraph's start, the character pressed still in it.
+#[test]
+fn a_drag_onto_a_stub_takes_its_paragraph_whole_and_moves_nothing() {
+    use crate::event::MouseKind as K;
+    let (_s, _root, mut ed) = project("fold-drag");
+    two_turns(&mut ed);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    frame(&mut ed, W);
+    feed(&mut ed, "<esc>gg<esc>");
+    let screen = frame(&mut ed, W);
+    let folded = rows(&ed);
+    let chat_x = ed.screen.chat_x.unwrap();
+    let cell = |word: &str| {
+        screen.lines().enumerate().find_map(|(y, l)| {
+            let l: String = l.chars().skip(chat_x).collect();
+            let b = l.find(word)?;
+            Some((chat_x + l[..b].chars().count(), y))
+        })
+    };
+    let mouse = |ed: &mut Editor, kind: K, (x, y): (usize, usize)| {
+        ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        frame(ed, W)
+    };
+    let (qx, qy) = cell("what does the loop").unwrap();
+    let (sx, sy) = cell("◂ a.rs:3").unwrap();
+    let (tx, ty) = cell("◂ b.rs:2").unwrap();
+    mouse(&mut ed, K::Down, (qx, qy));
+    let held = mouse(&mut ed, K::Drag, (sx + 12, sy));
+    let first = FIRST.split("\n\n").next().unwrap();
+    assert_eq!(rows(&ed), folded, "folded:\n{held}");
+    assert!(at(&ed).trim_end().ends_with(first), "its paragraph whole: {:?}", at(&ed));
+    assert!(at(&ed).starts_with("what does the loop"), "from the press: {:?}", at(&ed));
+    assert_eq!(held.lines().nth(sy), screen.lines().nth(sy), "nothing over the row under the pointer");
+    assert_eq!(held.lines().nth(ty), screen.lines().nth(ty), "nor the row after it");
+    assert!(lit(&mut ed, 0) && !lit(&mut ed, 1), "its words lit");
+    mouse(&mut ed, K::Drag, (tx + 3, ty));
+    assert_eq!(rows(&ed), folded);
+    assert!(at(&ed).trim_end().ends_with("before the loop starts."), "both: {:?}", at(&ed));
+    assert!(lit(&mut ed, 0) && lit(&mut ed, 1));
+    mouse(&mut ed, K::Drag, (sx, sy));
+    assert!(at(&ed).trim_end().ends_with(first), "back to the first: {:?}", at(&ed));
+    mouse(&mut ed, K::Up, (sx, sy));
+    assert_eq!(rows(&ed), folded, "let go");
+    assert!(ed.screen.cut_card.borrow().is_some(), "its card, the cursor on it");
+    feed(&mut ed, "y");
+    let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the copy's result");
+    ed.handle_event(ev);
+    let copied = ed.registers.get(&'"').and_then(|v| v.first()).cloned().unwrap_or_default();
+    assert!(copied.trim_end().ends_with(first), "`y` copies every word: {copied:?}");
+    // (up: pressed on the newest answer, dragged onto the second stub, then the first)
+    let (vx, vy) = cell("A Vec would").unwrap();
+    mouse(&mut ed, K::Down, (vx, vy));
+    let held = mouse(&mut ed, K::Drag, (tx + 12, ty));
+    assert_eq!(rows(&ed), folded, "folded, dragged up:\n{held}");
+    let second = FIRST.split("\n\n").nth(1).unwrap();
+    assert!(at(&ed).starts_with(second), "from its paragraph's start: {:?}", at(&ed));
+    assert!(at(&ed).ends_with("A"), "the character pressed still in it: {:?}", at(&ed));
+    assert!(!lit(&mut ed, 0) && lit(&mut ed, 1), "its words lit");
+    mouse(&mut ed, K::Drag, (sx + 3, sy));
+    assert_eq!(rows(&ed), folded);
+    assert!(at(&ed).starts_with(first) && at(&ed).ends_with("A"), "both, up: {:?}", at(&ed));
+    assert!(lit(&mut ed, 0) && lit(&mut ed, 1));
+    mouse(&mut ed, K::Up, (sx + 3, sy));
 }
 
 fn at(ed: &Editor) -> String {
@@ -255,8 +401,7 @@ fn at(ed: &Editor) -> String {
     d.text.byte_slice(r.from()..r.to()).to_string()
 }
 
-/// A blank line coming back as a stub opens never joins what starts right after it: a selection on the second stub's first
-/// words stays those words, and a view whose top is that line keeps it.
+/// A selection on the second stub's first words stays those words, and a view whose top is that line keeps it.
 #[test]
 fn a_stubs_first_word_and_the_views_top_stay_where_they_were() {
     let (_s, _root, mut ed) = project("fold-first-word");
@@ -264,7 +409,7 @@ fn a_stubs_first_word_and_the_views_top_stay_where_they_were() {
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, W);
     feed(&mut ed, "<esc>gg/The map<ret>");
-    assert_eq!(stubs(&ed).len(), 1, "{:#?}", rows(&ed));
+    assert_eq!(stubs(&ed).len(), 2, "{:#?}", rows(&ed));
     assert_eq!(at(&ed), "The map");
     // (again with the stub at the view's top: selected there, no key to bring anything in sight)
     feed(&mut ed, ";");
@@ -275,7 +420,7 @@ fn a_stubs_first_word_and_the_views_top_stay_where_they_were() {
     d.set_top(line);
     d.set_selection(Selection::single(Range::new(start, start + "The map".len())));
     frame(&mut ed, W);
-    assert_eq!(stubs(&ed).len(), 1, "{:#?}", rows(&ed));
+    assert_eq!(stubs(&ed).len(), 2, "{:#?}", rows(&ed));
     let d = transcript(&ed).unwrap().pane.doc_in().unwrap();
     assert!(d.text.line(d.top).to_string().starts_with("The map"), "the top moved to line {}", d.top);
     assert_eq!(at(&ed), "The map");
@@ -284,9 +429,8 @@ fn a_stubs_first_word_and_the_views_top_stay_where_they_were() {
 const THREE: &str =
     "The loop is at src/a.rs:3.\n\nThe map is filled at src/b.rs:2.\n\nThe knots are counted at src/a.rs:5.";
 
-/// The middle of three stubs opening brings two blank lines back, one each side: its words are never replaced, so a search
-/// hit in them stays — else it collapses, the stub folds again, and `n` finds the same hit for ever — and a cursor left
-/// in them as it closes stays on its paragraph.
+/// A search hit in the middle of three stubs stays as it is — `n` the same hit again, the stubs as they were — and a
+/// cursor left there stays on its paragraph.
 #[test]
 fn the_middle_of_three_stubs_keeps_what_is_selected_in_it() {
     let (_s, _root, mut ed) = project("fold-three");
@@ -297,10 +441,7 @@ fn the_middle_of_three_stubs_keeps_what_is_selected_in_it() {
     frame(&mut ed, W);
     feed(&mut ed, "<esc>gg/filled<ret>");
     assert_eq!(at(&ed), "filled");
-    let open = stubs(&ed);
-    assert_eq!(open.len(), 2, "{:#?}", rows(&ed));
-    assert!(open[0].starts_with("◂ a.rs:3") && open[1].starts_with("◂ a.rs:5"), "{open:?}");
-    assert!(rows(&ed).iter().any(|r| r.starts_with("The map is filled")), "{:#?}", rows(&ed));
+    assert_eq!(stubs(&ed).len(), 3, "{:#?}", rows(&ed));
     feed(&mut ed, "n");
     assert_eq!(at(&ed), "filled", "the one hit, again");
     feed(&mut ed, ";");
@@ -403,12 +544,12 @@ fn a_copy_across_stubs_has_their_words() {
     for word in FIRST.split_whitespace() {
         assert!(selected.contains(word), "{word:?} isn't in {selected:?}");
     }
-    assert_eq!(stubs(&ed), Vec::<String>::new(), "all of it open: {:#?}", rows(&ed));
+    assert_eq!(stubs(&ed).len(), 2, "folded as ever: {:#?}", rows(&ed));
 }
 
-/// A paragraph opened near the view's foot brings the cursor's row with it, by the rows drawn now.
+/// A search hit far into a stub's words keeps its row in sight, by the rows drawn now.
 #[test]
-fn a_stub_opened_keeps_the_cursor_in_sight() {
+fn a_hit_in_a_stub_keeps_its_row_in_sight() {
     let (_s, _root, mut ed) = project("fold-sight");
     // (the hit far down a paragraph taller than the view: its stub in sight, its row past the foot once it's open)
     let long = format!("The loop at src/a.rs:3 {}needle.\n\nThe last word.", "goes on and on ".repeat(200));
@@ -418,7 +559,7 @@ fn a_stub_opened_keeps_the_cursor_in_sight() {
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, W);
     feed(&mut ed, "<esc>gg/needle<ret>");
-    assert_eq!(stubs(&ed), Vec::<String>::new());
+    assert_eq!(stubs(&ed).len(), 1);
     let t = transcript(&ed).unwrap();
     let d = t.pane.doc_in().unwrap();
     let g = d.rows.as_deref().unwrap();

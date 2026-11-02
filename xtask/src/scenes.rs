@@ -602,6 +602,23 @@ const A1B_FOLD: [&[&str]; 4] = [
     a1b_two_keys!(" ", "l", "@1", "\x1b", "@1", "gg", "/", "length", "\r"),
 ];
 
+/// #271/#272's keys: `a1b_two_keys!` on `f271` (each answer after a thinking summary), the chat's view mode at its top.
+macro_rules! f271_keys {
+    ($($more:expr),* $(,)?) => {
+        a1b_two_keys!(" ", "l", "@1", "\x1b", "@1", "gg", $($more,)*)
+    };
+}
+/// #271's scenes: a drag from the first answer's words onto its first stub, held and let go, then `y`; `x` on a stub.
+/// #272's: the mouse on the first and on the last row of the first answer's thought, folded to two rows (the chat's view
+/// mode left by `esc`: no row in hand).
+const F271_DRAG: &[&str] = f271_keys!("@press?Let me read", "@drag+3?◂ main.rs:11", "@1");
+const F271_DRAGGED: &[&str] =
+    f271_keys!("@press?Let me read", "@drag+3?◂ main.rs:11", "@1", "@release+3?◂ main.rs:11", "@1");
+const F271_X: &[&str] = f271_keys!("/", "main.rs:11", "\r", "\x1b", "x");
+const F272_FIRST: &[&str] = f271_keys!("\x1b", "@1", "@hover+4?Checking how");
+const F272_LAST: &[&str] = f271_keys!("\x1b", "@1", "@hover?…");
+const F272_HAND: &[&str] = f271_keys!("/", "Checking", "\r", "\x1b");
+
 /// Focus A1b's: `A1_LINE`'s thread, its card opened by `]n` (the cursor on its line opens nothing now).
 const A1B_LINE: &[&str] = &[
     "@1",
@@ -3293,6 +3310,13 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1b3-cursor", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[2] },
     Scene { name: "a1b3-search", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[3] },
     Scene { name: "a1b3-all-placed", claude: "a1b-all", files: MAIN, keys: A1B_FOLD[0] },
+    // (#271: a stub stays folded under a selection · #272: every row of a cut text its hover zone)
+    Scene { name: "f271-drag", claude: "f271", files: MAIN, keys: F271_DRAG },
+    Scene { name: "f271-dragged", claude: "f271", files: MAIN, keys: F271_DRAGGED },
+    Scene { name: "f271-x", claude: "f271", files: MAIN, keys: F271_X },
+    Scene { name: "f272-first", claude: "f271", files: MAIN, keys: F272_FIRST },
+    Scene { name: "f272-last", claude: "f271", files: MAIN, keys: F272_LAST },
+    Scene { name: "f272-hand", claude: "f271", files: MAIN, keys: F272_HAND },
     Scene { name: "a1-flow-open-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[0] },
     Scene { name: "a1-flow-closed-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[1] },
     // (W: a word that does its key, lit under the mouse — the chat's `paused`, the follow card's keys, the chat's foot)
@@ -5121,6 +5145,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "a1-flow",
     "a1b-two",
     "a1b-all",
+    "f271",
     "e1-map",
     "e1-failed",
     "f0-saw",
@@ -5279,6 +5304,15 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "a1b-two" => turn.a1b_two(turns, false)?,
             // (focus A1b step 3's: `a1b-two`, its first answer all placed)
             "a1b-all" => turn.a1b_two(turns, true)?,
+            // (#271/#272's: `a1b-two`, each answer after a thinking summary that folds to two rows)
+            "f271" => {
+                turn.thought(
+                    "Checking how the loop walks the map of threads and whether the order it prints them in is the \
+                     order they were added in, since a hash map keeps no order of its own and the question is about \
+                     what is printed.",
+                )?;
+                turn.a1b_two(turns, false)?
+            }
             _ => {}
         }
     }
@@ -5322,6 +5356,16 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": delta}}))?;
         std::thread::sleep(self.pause);
         Ok(())
+    }
+
+    /// A thinking block whose summary is `s`, whole, then closed.
+    fn thought(&mut self, s: &str) -> io::Result<()> {
+        let ev = |e: Value| json!({"type": "stream_event", "event": e});
+        let block = json!({"type": "thinking", "thinking": "", "signature": ""});
+        self.line(ev(json!({"type": "content_block_start", "index": 0, "content_block": block})))?;
+        let delta = json!({"type": "thinking_delta", "thinking": s});
+        self.line(ev(json!({"type": "content_block_delta", "index": 0, "delta": delta})))?;
+        self.line(ev(json!({"type": "content_block_stop", "index": 0})))
     }
 
     /// `s` a word at a time, as a model streams it.

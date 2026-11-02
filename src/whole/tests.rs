@@ -1561,6 +1561,61 @@ fn a_folded_thought_is_whole_on_a_fresh_frame_and_a_cached_one() {
     );
 }
 
+/// frictions #272 ("both rows are the same sentence, yet only the bottom one unfolds"): one cut text drawn over several
+/// rows — a thought folded to its first two rows (`…` at the second's end), one under way (`… ` at its first row in
+/// sight) — is whole under the mouse on any of its rows: one card, from its first row, the thought from there on (under
+/// way, all of it); and in hand alike, the view mode's cursor on its rows.
+#[test]
+fn every_row_of_a_folded_thought_is_its_one_cards() {
+    for live in [false, true] {
+        let thought = format!(
+            "The map is filled in one pass, {}and farewell.",
+            "each knot counted as it is met, ".repeat(13)
+        );
+        let mut msgs =
+            vec![Msg::new(Role::User, "how is the map filled?", ""), Msg::new(Role::Thought, thought, "")];
+        if !live {
+            msgs.push(run_row("cargo test"));
+        }
+        let mut ed = chat(msgs);
+        chat_of(&mut ed).state = crate::chat::State::Thinking;
+        let before = frame(&mut ed);
+        let spots: Vec<(usize, usize, usize, Cut)> = (ed.screen.cut_spots.borrow().iter())
+            .filter(|s| matches!(&s.3, Cut::Text(w) if w.text.contains("farewell")))
+            .cloned()
+            .collect();
+        let rows = spots.len();
+        assert_eq!(rows, if live { 8 } else { 2 }, "every row of it recorded, live {live}:\n{before}");
+        let (fy, fx) = (spots[0].0, spots[0].1);
+        let Cut::Text(w) = &spots[0].3 else { unreachable!() };
+        let first: String = before.lines().nth(fy).unwrap().chars().skip(fx).collect();
+        let start: String =
+            if live { "The map is filled".into() } else { first.trim().chars().take(12).collect() };
+        assert!(w.text.starts_with(&start), "from its first row, live {live}: {:?} — {start:?}", w.text);
+        for (y, a, b, cut) in &spots {
+            ed.handle_event(Event::Hover(((a + b) / 2) as u16, *y as u16));
+            let screen = frame(&mut ed);
+            assert_eq!(ed.cut_hover.as_ref(), Some(cut), "in hand on row {y}, live {live}");
+            assert_eq!(*cut, spots[0].3, "one cut");
+            let (x, top, ..) = card(&ed).unwrap_or_else(|| panic!("a card, row {y}, live {live}:\n{screen}"));
+            assert!(top == fy && x <= fx, "from its first row, the mouse on row {y}, live {live}:\n{screen}");
+            assert!(screen.contains("farewell"), "whole, row {y}:\n{screen}");
+            ed.handle_event(Event::Hover(1, H - 1));
+            frame(&mut ed);
+        }
+        // (in hand: the view mode's cursor on its words — a folded thought's first row's, then those past its `…`; one
+        // under way, its last row's)
+        feed(&mut ed, "<esc>");
+        let words: &[&str] = if live { &["farewell"] } else { &["one pass", "farewell"] };
+        for word in words {
+            feed(&mut ed, &format!("gg/{word}<ret>"));
+            let screen = frame(&mut ed);
+            let at = card(&ed).map(|c| (c.0 <= fx, c.1));
+            assert_eq!(at, Some((true, fy)), "in hand at {word:?}, live {live}:\n{screen}");
+        }
+    }
+}
+
 /// #197's review: a folded thought's whole is its own text from its `…` row on, every break as the layout made it — a
 /// path the wrap cut mid-word whole, no space put into it, on its card and in the transcript (`/`, `y`); a paragraph's
 /// break a line of its card (the transcript's line a space: every line there has a row).

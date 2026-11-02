@@ -8631,10 +8631,11 @@ fn reason_rows(
         let rows = rows_of(last, w);
         rows[rows.len().saturating_sub(REASON_ROWS)..].to_vec()
     });
-    // (the reason whole on its card — #235)
+    // (the reason whole on its card — #235 — under the mouse on any of its rows, from the first: #272)
     if let Some(first) = rows.first_mut() {
         first.insert(0, crate::whole::folded(reason.trim().to_string(), " ", (faint, dim)));
     }
+    crate::whole::across(&mut rows);
     rows
 }
 
@@ -17358,6 +17359,25 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                         .collect();
                     crate::chatdoc::lines_of(&rows).0.trim_end_matches('\n').to_string()
                 };
+                // (#197b, #272: folded, the thought's rows in sight are one cut text — whole on one card from its first
+                // row in sight, whichever of them the mouse or the view mode's cursor is on: the thought from that row
+                // on, folded after it; under way, all of it, its start folded away above. In the words' ink of the row
+                // its `…` is on)
+                let folded = body.len() > keep && !shown.is_empty();
+                let card = folded.then(|| {
+                    let at = if live { shown[0] } else { shown[shown.len() - 1] };
+                    let style = all[at].iter().find(|s| !s.text.trim().is_empty()).map_or(dim, |s| s.style);
+                    crate::whole::Whole {
+                        key: None,
+                        on: crate::whole::On::Transcript,
+                        text: text_from(if live { 0 } else { shown[0] }),
+                        style,
+                        pieces: Vec::new(),
+                        cols: (0, 0),
+                        state: None,
+                        float: None,
+                    }
+                });
                 for (k, &j) in shown.iter().enumerate() {
                     let row = &all[j];
                     let mut r = vec![sp("▎ ".into(), faint)];
@@ -17381,30 +17401,17 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     let rest = drawn[j].rest.clone();
                     let cut = crate::whole::lift(&mut r, crate::whole::On::Transcript);
                     let mut row_of = ChatRow { spans: r, skip, tail, join, rest, cut, ..ChatRow::default() };
-                    // (#197b: the `…` row whole on its card, as every cut — folded, from its own text on: what's above it
-                    // in sight, what it stands for after, and the transcript keeps that too (`/`, `y`); live, the
-                    // thought all of it, its start folded away above)
-                    if folded_before || folded_after {
-                        let text = text_from(if folded_after { j } else { 0 });
-                        if folded_after {
-                            // (the transcript's line: its paragraphs' breaks a space — every line there has a row,
-                            // `wrap::Given`, and what the `…` stands for has none; its card keeps them)
-                            let line: Vec<&str> = text.split('\n').filter(|l| !l.trim().is_empty()).collect();
-                            crate::chatdoc::keep_whole(&mut row_of, &line.join(" "));
-                        }
-                        let style = row.iter().find(|s| !s.text.trim().is_empty()).map_or(dim, |s| s.style);
+                    // (the `…` row folded after: the transcript keeps what it stands for (`/`, `y`) — its line's
+                    // paragraphs' breaks a space: every line there has a row, `wrap::Given`, and what the `…` stands for
+                    // has none; its card keeps them)
+                    if folded_after {
+                        let text = text_from(j);
+                        let line: Vec<&str> = text.split('\n').filter(|l| !l.trim().is_empty()).collect();
+                        crate::chatdoc::keep_whole(&mut row_of, &line.join(" "));
+                    }
+                    if let Some(card) = &card {
                         let to = row_of.spans.iter().map(|s| s.text.width()).sum();
-                        let whole = crate::whole::Whole {
-                            key: None,
-                            on: crate::whole::On::Transcript,
-                            text,
-                            style,
-                            pieces: Vec::new(),
-                            cols: (0, 0),
-                            state: None,
-                            float: None,
-                        };
-                        row_of.cut = Some((2, to, whole));
+                        row_of.cut = Some((2, to, card.clone()));
                     }
                     lines.push(row_of);
                 }
@@ -18254,7 +18261,8 @@ fn draw_chat(
         let row = crate::chatdoc::doc_row(&pieces, row)?;
         let (d, s) = (t.pane.doc_in()?, t.row(row)?);
         let skip = r.map_or(0, |r| r.skip);
-        let (p, cursors) = chat_paint(d, t.pane.hits(), s, skip, spans, ui, view_cursor)?;
+        let stub = r.is_some_and(|r| r.stub.is_some());
+        let (p, cursors) = chat_paint(d, t.pane.hits(), s, skip, spans, ui, view_cursor, stub)?;
         // (where its cursors land on screen: recorded, as the code's are — a stub's on its card, which stands from the
         // row's first cell: over the paragraph's own letters, not the row's)
         let card = r.filter(|r| r.stub.is_some() && r.cut.is_some()).map_or(0, |_| s.x0);
@@ -18265,8 +18273,16 @@ fn draw_chat(
     // (the transcript taller than its rows: its thumb in the outer cell, as the code's last column says its view)
     let (area_top, thumb_x) = (y, x0 + lay.chat_w.saturating_sub(1));
     let bar = (total > area && area > 0).then(|| scroll_thumb(area, total, from));
-    // (a cut row's whole on its card — in hand where the view mode's cursor is on its line)
-    let hand_line = crate::chatdoc::cursor_line(editor);
+    // (a cut row's whole on its card — in hand where the view mode's cursor is on its line; not while a drag there is
+    // held: the card would come over the rows under the pointer as it goes, #271)
+    let dragging = match editor.mouse_anchor {
+        Some((crate::editor::Drag::Transcript, held)) => {
+            let r = view.and_then(|t| t.pane.doc_in()).map(|d| d.selection().primary());
+            r.is_some_and(|r| (r.from(), r.to()) != (held.range().from(), held.range().to()))
+        }
+        _ => false,
+    };
+    let hand_line = crate::chatdoc::cursor_line(editor).filter(|_| !dragging);
     let line_of = |row: usize| Some(view?.row(crate::chatdoc::doc_row(&pieces, row)?)?.line);
     for i in 0..area {
         chat_row_start(out, x0, y, edge(y), card)?;
@@ -18826,6 +18842,7 @@ pub(crate) fn usage_row_for_test(ed: &Editor, w: usize) -> Vec<crate::markdown::
 /// the cell after its text stands for its line's break or the space a wrap took (`Shown.end`): painted there (a
 /// blank of the drawer's), else a cell added. None: nothing of the view's on its line. And the cells its cursors
 /// are at (`cursor`: drawn — it has the keys, `Editor::cursor_in`).
+#[allow(clippy::too_many_arguments)]
 fn chat_paint(
     d: &crate::document::Document,
     hits: Option<&crate::search::SearchHits>,
@@ -18834,10 +18851,26 @@ fn chat_paint(
     spans: &[crate::markdown::Span],
     ui: &Ui,
     cursor: bool,
+    stub: bool,
 ) -> Option<(Vec<crate::markdown::Span>, Vec<usize>)> {
     use crate::markdown::Span;
-    let marks = view_marks(d, hits, s.line, ui, cursor)?;
+    let mut marks = view_marks(d, hits, s.line, ui, cursor)?;
     let ls = mv::line_start(&d.text, s.line);
+    // (a stub stands for its paragraph whole, #271: a selection wider than a character anywhere on its line lights all
+    // its words — the primary's ground where the primary is on it — as a folded doc comment's row, #269)
+    if stub {
+        let le = mv::line_end(&d.text, s.line);
+        let sel = d.selection();
+        let on = |r: &Range| {
+            crate::graphemes::next_boundary(&d.text, r.from()) < r.to() && r.from() <= le && ls < r.to()
+        };
+        let mut on_it = sel.ranges().iter().enumerate().filter(|(_, r)| on(r)).map(|(i, _)| i).peekable();
+        if on_it.peek().is_some() {
+            let primary = on_it.any(|i| i == sel.primary_index());
+            let bg = if primary { ui.selection_primary.bg } else { ui.selection.bg };
+            marks.insert(0, (0, le - ls + 1, Style { bg, ..Style::default() }));
+        }
+    }
     let cursors: Vec<usize> = match cursor {
         true => d.selection().ranges().iter().filter_map(|r| r.cursor(&d.text).checked_sub(ls)).collect(),
         false => Vec::new(),
@@ -26441,7 +26474,8 @@ mod tests {
             Span { cut: None, hint: false, text: "The latest".into(), style: red },
             Span { cut: None, hint: false, text: " answer starts here.".into(), style: Style::default() },
         ];
-        let (p, cursors) = chat_paint(d, None, s, 2, &spans, &ui, true).expect("the selected row is painted");
+        let (p, cursors) =
+            chat_paint(d, None, s, 2, &spans, &ui, true, false).expect("the selected row is painted");
         let text: String = p.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(
             text, "▎ The latest answer starts here. ",
@@ -26459,9 +26493,9 @@ mod tests {
         );
         assert_eq!(cursors, [2 + 30], "its cell: after the lead and the text");
         let next = t.row(row + 1).unwrap();
-        assert!(chat_paint(d, None, next, 0, &spans, &ui, true).is_none(), "nothing on the next row");
+        assert!(chat_paint(d, None, next, 0, &spans, &ui, true, false).is_none(), "nothing on the next row");
         // (without the keys: the selection's ground, no cursor)
-        let (p, cursors) = chat_paint(d, None, s, 2, &spans, &ui, false).unwrap();
+        let (p, cursors) = chat_paint(d, None, s, 2, &spans, &ui, false, false).unwrap();
         assert!(p[1..].iter().all(|s| s.style.bg == ui.selection_primary.bg), "{p:?}");
         assert!(cursors.is_empty());
     }

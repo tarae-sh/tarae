@@ -231,7 +231,9 @@ pub fn reading(ed: &mut Editor) -> bool {
 /// next one has come, an older answer's paragraphs whose words a note holds at the code folded to one stub row
 /// (`◂ main.rs:11  first words…`), whole on its cut card under the mouse or the view mode's cursor. The document keeps
 /// every word: the row's text is the paragraph's start, what it folds its `rest` (`keep_whole`), so search and `y` find
-/// and copy all of it, and a selection wider than a character on it opens it (the doc comments' rule).
+/// and copy all of it. A selection never opens it (#271, #269's rule): a drag onto it takes its paragraph whole
+/// (`drag`), a selection wider than a character on its line lights its words (`term::chat_paint`); it opens only by its
+/// own acts — `enter` and a press go to its place, `notes::read_on` holds it open (`reading`).
 #[derive(Debug, Default)]
 pub struct Fold {
     /// The messages before it are older answers': the question of the newest answer that's done.
@@ -241,14 +243,9 @@ pub struct Fold {
     stubs: Vec<crate::chatnotes::Stub>,
     /// Each turn's stubs hashed, by turn: what a message's rows depend on, worked out once a frame.
     keys: Vec<(usize, u64)>,
-    /// (message, paragraph) held open: its lines with words before it, a stub's and a whole paragraph's alike.
-    open: Vec<(usize, usize)>,
     /// The paragraph a note's card read on to (`Chat.reading`): its stub held open.
     reading: Option<Reading>,
 }
-
-/// What of a message folds (`Fold::of_msg`).
-type MsgFold<'a> = (&'a [crate::chatnotes::Stub], &'a [(usize, usize)]);
 
 impl Fold {
     pub fn of(c: &Chat, notes: &crate::notes::Notes) -> Fold {
@@ -278,27 +275,27 @@ impl Fold {
             chunk.hash(&mut h);
             keys.push((chunk[0].turn, h.finish()));
         }
-        let open = c.transcript.as_ref().map_or_else(Vec::new, Transcript::open);
         let reading = c.reading.as_ref().map(|r| r.0.clone());
-        Fold { upto, turns, stubs, keys, open, reading }
+        Fold { upto, turns, stubs, keys, reading }
     }
 
-    /// What of message `i` folds, its stubs and the paragraphs held open; None: it stays whole.
-    fn of_msg(&self, i: usize) -> Option<MsgFold<'_>> {
+    /// What of message `i` folds, its stubs; None: it stays whole.
+    fn of_msg(&self, i: usize) -> Option<&[crate::chatnotes::Stub]> {
         let turn = *self.turns.get(i).filter(|_| i < self.upto)?;
         let from = self.stubs.partition_point(|s| s.turn < turn);
         let to = self.stubs.partition_point(|s| s.turn <= turn);
-        let open = (self.open.partition_point(|o| o.0 < i), self.open.partition_point(|o| o.0 <= i));
-        (from < to).then(|| (&self.stubs[from..to], &self.open[open.0..open.1]))
+        (from < to).then(|| &self.stubs[from..to])
     }
 
-    /// What message `i`'s rows depend on here (`LaidKey.state`) — the notes that hold its paragraphs, which of them a
-    /// selection holds open; 0: it stays whole.
+    /// What message `i`'s rows depend on here (`LaidKey.state`) — the notes that hold its paragraphs, the one read on to;
+    /// 0: it stays whole.
     pub fn key(&self, i: usize) -> u64 {
-        let Some((_, open)) = self.of_msg(i) else { return 0 };
+        if self.of_msg(i).is_none() {
+            return 0;
+        }
         let turn = self.turns[i];
         let at = self.keys.partition_point(|k| k.0 < turn);
-        let mut key = open.iter().fold(self.keys[at].1, |h, o| h.rotate_left(7) ^ o.1 as u64);
+        let mut key = self.keys[at].1;
         // (a paragraph read on to from its note's card, held open)
         if let Some(r) = self.reading.as_ref().filter(|r| r.turn == turn) {
             use std::hash::{Hash, Hasher};
@@ -321,7 +318,7 @@ impl Fold {
         styles: (Style, Style),
     ) -> Vec<ChatRow> {
         use crate::chat::Role;
-        let Some((stubs, open)) = self.of_msg(i) else { return rows };
+        let Some(stubs) = self.of_msg(i) else { return rows };
         let start = c.msgs[..i].iter().rposition(|m| m.role == Role::User).map_or(0, |u| u + 1);
         let words = c.msgs[start..i].iter().filter(|m| m.role == Role::Assistant);
         let mut seen: Vec<(Arc<str>, usize)> = words
@@ -334,7 +331,7 @@ impl Fold {
             })
             .collect();
         let mut out: Vec<ChatRow> = Vec::with_capacity(rows.len());
-        let (mut k, mut paragraph) = (0, 0);
+        let mut k = 0;
         while k < rows.len() {
             let end = k + 1 + rows[k + 1..].iter().take_while(|r| r.join.is_some()).count();
             let para = &rows[k..end];
@@ -345,8 +342,6 @@ impl Fold {
                 out.extend_from_slice(para);
                 continue;
             }
-            let held = open.iter().any(|o| o.1 == paragraph);
-            paragraph += 1;
             let names = || para.iter().flat_map(|r| &r.places);
             let place = names().find_map(|n| {
                 let new = !seen.iter().any(|s| *s.0 == *n.name && s.1 == n.line);
@@ -357,7 +352,7 @@ impl Fold {
                     .as_ref()
                     .is_some_and(|r| (r.turn, &*r.name, r.said) == (s.turn, &*s.name, s.said))
             };
-            let held = held || place.is_some_and(|s| read(&s));
+            let held = place.is_some_and(|s| read(&s));
             seen.extend(names().map(|n| (n.name.clone(), n.line)));
             match place.filter(|_| !held && para.iter().all(|r| r.prose)) {
                 Some(s) => {
@@ -494,37 +489,6 @@ impl Transcript {
         doc.throwaway = true;
         doc.rows = Some(Arc::new(Given::default()));
         Transcript { pane: Pane::new(doc), pieces: Vec::new(), keyed: false, seen: 0, visited: false }
-    }
-
-    /// The paragraphs a selection wider than a character is on (`Fold.open`, sorted): each message's, by its lines
-    /// with words before it — what folding leaves as it was, so a stub and its unfolded rows are one paragraph.
-    fn open(&self) -> Vec<(usize, usize)> {
-        let Some(d) = self.pane.doc_in() else { return Vec::new() };
-        let text = &d.text;
-        let wide = |r: &&Range| crate::graphemes::next_boundary(text, r.from()) < r.to();
-        let of = |r: &Range| {
-            (text.byte_to_line(r.from()), text.byte_to_line(crate::graphemes::prev_boundary(text, r.to())))
-        };
-        let lines: Vec<(usize, usize)> = d.selection().ranges().iter().filter(wide).map(of).collect();
-        let (mut out, mut base) = (Vec::new(), 0);
-        for p in self.pieces.iter().filter(|_| !lines.is_empty()) {
-            let on = |l: usize| lines.iter().any(|&(a, b)| a <= l && l <= b);
-            if let Of::Msg(i) = p.of
-                && (base..base + p.lines).any(on)
-            {
-                let mut words = 0;
-                for l in base..base + p.lines {
-                    if !text.line(l).to_string().trim().is_empty() {
-                        if on(l) {
-                            out.push((i, words));
-                        }
-                        words += 1;
-                    }
-                }
-            }
-            base += p.lines;
-        }
-        out
     }
 
     /// Its rows (the document's, frame rows not counted).
@@ -1093,17 +1057,23 @@ pub fn click(ed: &mut Editor, row: usize, col: usize) -> Option<usize> {
 }
 
 /// A drag from the press's character `anchor` (`click`'s) to the conversation's row `row`, column `col` under the
-/// pointer: what's between selected, both included, as a drag in the code selects — `y` copies it. Its view no
-/// longer with the keys, or a row of the frame's own: nothing.
+/// pointer: what's between selected, both included, as a drag in the code selects — `y` copies it. Onto a stub, its
+/// paragraph whole (#271, as a folded doc comment's row, #269): it stays folded, its words lit, nothing moving under the
+/// pointer — and `y` copies every word of it. Its view no longer with the keys, or a row of the frame's own: nothing.
 pub fn drag(ed: &mut Editor, held: crate::selection::Held, row: usize, col: usize) {
     if !has_keys(ed) {
         return;
     }
     let Some(row) = doc_row(&ed.screen.chat_laid.borrow(), row) else { return };
-    let Some(s) = transcript(ed).filter(|t| row < t.rows()).and_then(|t| t.row(row)) else { return };
+    let Some(t) = transcript(ed).filter(|t| row < t.rows()) else { return };
+    let Some(s) = t.row(row) else { return };
+    let stub = t.stub_at(s.line).is_some();
     let Some(d) = doc_mut(ed) else { return };
-    let pos = under(d, s, col);
-    d.set_selection(Selection::new(vec![held.dragged(&d.text, pos)], 0));
+    let range = match stub {
+        true => held.dragged_over(&d.text, (mv::line_start(&d.text, s.line), mv::line_end(&d.text, s.line))),
+        false => held.dragged(&d.text, under(d, s, col)),
+    };
+    d.set_selection(Selection::new(vec![range], 0));
 }
 
 /// The conversation's document.

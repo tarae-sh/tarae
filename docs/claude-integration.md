@@ -627,7 +627,9 @@ as it works, the newest by the word; past its room the oldest fold into `+N`, an
 gives up (the narrowest card has none while Claude works). The mouse over a mark names its stop on the card's
 bottom line (`run cargo test -q · exit 101`); a press on it is that stop's replay, as `[r`/`]r` step to it, and
 the mark replay lands on is the one in hand — an older one keeps its place in sight, a count after it too (`+3 ◦•
-+15`). Pointing (`C-o`) labels the marks too. Claude's thinking arrives as summaries, and the chat keeps each one as a folded italic aside. While
++15`). Pointing (`C-o`) labels the marks too. Claude's thinking arrives as summaries, and the chat keeps each one as a folded italic aside — its first two rows, `…`
+at the second's end; the mouse on either row, or the view mode's cursor, shows it whole on one card from its first row
+(every cut text drawn over several rows reads so, an edit review's reason too). While
 Claude works, the chat minimizes to a small card at the bottom right: your question, its last few lookups
 (each a link) and the keys. The code gets the whole width, and the thought card takes the room above the lines
 being read. The panel comes back with the finished answer, or right away with `space l` or a click on the card;
@@ -2012,8 +2014,9 @@ for is in sight. In a narrow chat a stub loses its words first, then its place i
 Only the paragraph that first names a place folds: a later one naming it again isn't on any card, so it stays whole,
 and so does a table's row. Close the note and its paragraph is whole again. An answer all placed is its stubs, with no
 blank row between two of them. Nothing is lost: the conversation's text keeps every word, so `/` searches and `y`
-copies them, and a selection wider than a character on a stub opens it while it lasts — a search hit, `x`, a word,
-`%` over all of it.
+copies them. A selection never opens a stub, as it never opens a folded doc comment: nothing moves under a drag. A drag
+onto a stub takes its paragraph whole, a selection on its line (a search hit, `x`, `%`) lights its words, and `y` copies
+every word of it.
 
 | Key | Notes |
 |---|---|

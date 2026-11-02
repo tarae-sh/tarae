@@ -386,19 +386,34 @@ fn cells(row: &str) -> Vec<char> {
 /// not its own. Contiguous (U2's fifth: letters read in order with gaps let almost any short label over a long whole
 /// pass).
 fn shows_its_own(row: &[char], (a, b): (usize, usize), whole: &str) -> bool {
-    let drawn: String =
-        (row.get(a..b.min(row.len())).unwrap_or_default().iter()).filter(|c| **c != '\0').collect();
-    let parts: Vec<&str> = drawn.split('…').map(str::trim).filter(|p| !p.is_empty()).collect();
-    let mut rest = whole;
-    drawn.contains('…')
-        && !parts.is_empty()
-        && parts.iter().all(|p| match rest.find(p) {
-            Some(i) => {
-                rest = &rest[i + p.len()..];
-                true
+    shows_its_own_over(&[(row, (a, b))], whole)
+}
+
+/// `shows_its_own` for one cut drawn over several rows (#272): its cells on each, in order, read as one stretch — each
+/// row's stretches as one row's are, and where a row goes on from the one before (no `…` between) only blanks between
+/// them in the whole, whichever (a wrap's space, a paragraph's break on a folded thought's first rows).
+fn shows_its_own_over(rows: &[(&[char], (usize, usize))], whole: &str) -> bool {
+    let cells = |(row, (a, b)): &(&[char], (usize, usize))| -> String {
+        (row.get(*a..(*b).min(row.len())).unwrap_or_default().iter()).filter(|c| **c != '\0').collect()
+    };
+    let (mut rest, mut marked, mut parts, mut goes_on) = (whole, false, 0, false);
+    for row in rows {
+        let drawn = cells(row);
+        marked |= drawn.contains('…');
+        for (j, p) in drawn.split('…').enumerate() {
+            let p = p.trim();
+            if p.is_empty() {
+                continue;
             }
-            None => false,
-        })
+            let Some(i) = rest.find(p) else { return false };
+            if goes_on && j == 0 && !rest[..i].trim().is_empty() {
+                return false;
+            }
+            (rest, parts) = (&rest[i + p.len()..], parts + 1);
+        }
+        goes_on = !drawn.trim_end().ends_with('…');
+    }
+    marked && parts > 0
 }
 
 /// The scenes whose keys leave a sequence under way where the keys are — a prefix, a count, an awaited character, the
@@ -1124,6 +1139,7 @@ fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut
             }
         }
     }
+    let spots_all = spots.clone();
     for (y, a, b, cut) in spots {
         // (a chip over the chat's input: what goes, on its card — #185)
         if let Cut::With(which) = cut {
@@ -1143,22 +1159,60 @@ fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut
             walk.cuts.push(format!("{scene} · at {x},{y} (a chip, {which:?}): {what}"));
             continue;
         }
-        let Cut::Text(w) = cut else { continue };
+        let Cut::Text(w) = &cut else { continue };
         let x = (a + b) / 2;
         let mut ed = fresh(setup);
+        // (one cut over several rows, #272: every spot of it, the first where its card stands)
+        let of: Vec<(usize, usize, usize)> =
+            spots_all.iter().filter(|s| s.3 == cut).map(|s| (s.0, s.1, s.2)).collect();
+        let first = of[0];
+        let over = of.iter().any(|s| s.0 != first.0);
         // (what's on top at its cells, as the frame shows them — never the code's own `Whole::seen`)
-        let shows = rows.get(y).is_some_and(|row| shows_its_own(row, (a, b), &w.text));
+        let cells: Vec<(&[char], (usize, usize))> =
+            of.iter().filter_map(|s| Some((rows.get(s.0)?.as_slice(), (s.1, s.2)))).collect();
+        let shows = shows_its_own_over(&cells, &w.text);
         let before = snap(&mut ed);
         ed.handle_event(Event::Hover(x as u16, y as u16));
         let after = snap(&mut ed);
         let held = matches!(&ed.cut_hover, Some(Cut::Text(h)) if h.text == w.text);
+        // (#272: one cut over several rows has its card from its first row, whichever row the mouse is on)
+        let card = ed.screen.cut_card.borrow().as_ref().map(|c| c.rect);
+        let from_first =
+            !over || card.is_some_and(|(cx, cy, cw, _)| cy == first.0 && cx <= first.1 && first.1 < cx + cw);
         let what = match (shows, held, before.frame != after.frame) {
-            (true, true, true) | (false, false, _) => continue,
+            (true, true, true) if from_first => continue,
+            (true, true, true) => "its card not from its first row",
+            (false, false, _) => continue,
             (true, false, _) => "not taken in hand",
             (true, true, false) => "in hand, nothing drawn",
             (false, true, _) => "in hand under what's over it",
         };
         walk.cuts.push(format!("{scene} · at {x},{y} ({:?}): {what} — {:?}", w.on, w.text));
+    }
+    // (#272: a row next to a cut's rows that draws its words is its text too — its hover zone, else a row of one sentence
+    // shows nothing under the mouse)
+    for (y, a, _, cut) in &spots_all {
+        let Cut::Text(w) = cut else { continue };
+        let of: Vec<usize> = spots_all.iter().filter(|s| s.3 == *cut).map(|s| s.0).collect();
+        if of.first() != Some(y) {
+            continue;
+        }
+        let last = *of.last().unwrap_or(y);
+        let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let whole = flat(&w.text);
+        for near in [y.checked_sub(1), Some(last + 1)].into_iter().flatten() {
+            let Some(row) = rows.get(near) else { continue };
+            // (its words from the cut's column, up to a gap or a line between panes)
+            let words: String =
+                row.iter().skip(*a).take_while(|c| **c != '│').filter(|c| **c != '\0').collect();
+            let words = flat(words.split("   ").next().unwrap_or_default());
+            if words.chars().count() >= 12 && whole.contains(&words) && !of.contains(&near) {
+                walk.cuts.push(format!(
+                    "{scene} · row {near}: its words are {:?}'s, not its hover zone — {words:?}",
+                    w.on
+                ));
+            }
+        }
     }
 }
 
