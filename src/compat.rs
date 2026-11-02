@@ -1299,6 +1299,11 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ),
     ("src/sandbox/proxy/upstream.rs", "in fn tls: {", UPSTREAM_TLS),
     ("src/sandbox/supervisor.rs", "in fn kept_apart: if APART_OFF.load(Relaxed) == self.session {", HOOK),
+    (
+        "src/sandbox/supervisor/attrs.rs",
+        "in fn fchmodat2_here: if super::FCHMODAT2_GONE.load(std::sync::atomic::O",
+        HOOK,
+    ),
     ("src/sandbox/supervisor.rs", "in fn routed: if p.resolvers.iter().any(|r| r.ip().to_canonical(", RECORD),
     ("src/sandbox/supervisor.rs", "in fn serve: ENDED.lock().unwrap_or_else(|e| e.into_inner()).pu", RECORD),
     ("src/sandbox/supervisor.rs", "in fn swapped_for: if let Some(pause) = p.swap_pause {", HOOK),

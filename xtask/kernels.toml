@@ -45,10 +45,11 @@ image = "almalinux-9"
 install = "dnf -y install dnf-plugins-core && dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo && dnf -y install docker-ce docker-ce-cli containerd.io"
 modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
 whole = "host-user"
-# (own and host read on its first run: the backported ABI decides. The offline modes expect offline, as
-# `--docker-default` does wherever the table names none — below ABI 2 no tier is reached and they fail: then they're
-# K2's case, written here with why)
-expect = {}
+# (read on its first run, 2026-11-02 on fdfdbcd1, as found: AlmaLinux 9.8's 5.14.0-687 backports Landlock ABI 6 —
+# full, as from 6.12 —, Yama is 0 and nothing restricts user namespaces, so `--userns` reaches own; without it
+# Docker's default seccomp profile refuses new namespaces, host; `--docker-default` offline. Under that profile here
+# a run's `fchmodat2` never reaches tarae: Docker's ENOSYS, whatever the kernel has)
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
 
 [[kernel]]
 name = "K2"

@@ -23,7 +23,8 @@
 //! A descriptor form is decided on what tarae's copy names, and the run's call is made again on the copy: one that
 //! names no file — a pipe, a socket, a file no folder holds any more — is the run's to change, and one open for
 //! writing is let wherever its name still leads the run to it (Landlock let the run write that file). tarae acts
-//! with its own credentials, the run's user's.
+//! with its own credentials, the run's user's. A call this kernel hasn't (`fchmodat2` below 6.6, `setxattrat` below
+//! 6.13) is its own `ENOSYS`, never served: tarae makes up no call for a run (`fchmodat2_here`, `xattrat_here`).
 
 use std::ffi::{CString, OsStr};
 use std::io;
@@ -265,6 +266,9 @@ pub(super) fn call(l: &Listener, n: &libc::seccomp_notif, p: &Served) -> Answer 
             (At::Path { dirfd: a[0], path: path(a[1])?, follow: true }, Change::Mode(a[2] as libc::mode_t))
         }
         crate::seccomp::SYS_FCHMODAT2 => {
+            if !fchmodat2_here(p) {
+                return Err(libc::ENOSYS);
+            }
             let flags = a[3] as i32;
             if flags & !(NOFOLLOW | EMPTY) != 0 {
                 return Err(libc::EINVAL);
@@ -789,6 +793,24 @@ fn set(m: &impl Mem, name: u64, value: u64, size: u64, flags: i32) -> Result<Cha
     }
     let name = xattr_name(m, name)?;
     Ok(Change::Xattr(name, Some((xattr_value(m, value, size)?, flags))))
+}
+
+/// Whether this kernel has `fchmodat2` (Linux 6.6) — asked once, with flags no call takes: `EINVAL` where
+/// it has it, `ENOSYS` where not — the run's own answer there, never one tarae makes up (its path forms served through
+/// `fchmodat` would answer for a call the kernel hasn't). A filter tarae runs under that hides the call (a container
+/// runtime's: K1's Docker) hides it from the probe as from the run. In tests, a run of `FCHMODAT2_GONE` sees none.
+fn fchmodat2_here(p: &Served) -> bool {
+    #[cfg(test)]
+    if super::FCHMODAT2_GONE.load(std::sync::atomic::Ordering::Relaxed) == p.run {
+        return false;
+    }
+    let _ = p; // (the tests' hook's only)
+    static HERE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HERE.get_or_init(|| {
+        // SAFETY: a call that reads nothing: its flags are refused first.
+        let r = unsafe { libc::syscall(crate::seccomp::SYS_FCHMODAT2, -1, 0, 0, libc::c_uint::MAX) };
+        r < 0 && errno_now() != libc::ENOSYS
+    })
 }
 
 /// Whether this kernel has `setxattrat` and `removexattrat` (Linux 6.13) — asked once, with a size no call takes:

@@ -1098,17 +1098,20 @@ mod tests {
             "DOCKER_CONTEXT=colima-tarae-yama2 xtask linux --env TARAE_EXPECT_YAMA=2 --env TARAE_EXPECT_TIER=own \
              --userns test --kept --as-user sandbox::"
         );
-        let k1 = t.kernels.iter().find(|k| k.name == "K1").unwrap();
-        let h = Docker::Host("unix:///l/tarae-k1/sock/docker.sock".into());
-        let off = suite_cmd(k1, Mode::parse("offline").unwrap(), None, &h);
+        // (K2: nothing in its table)
+        let k2 = t.kernels.iter().find(|k| k.name == "K2").unwrap();
+        let h = Docker::Host("unix:///l/tarae-k2/sock/docker.sock".into());
+        let off = suite_cmd(k2, Mode::parse("offline").unwrap(), None, &h);
         assert_eq!(
             off.line(),
-            "DOCKER_HOST=unix:///l/tarae-k1/sock/docker.sock xtask linux --env TARAE_EXPECT_TIER=offline \
+            "DOCKER_HOST=unix:///l/tarae-k2/sock/docker.sock xtask linux --env TARAE_EXPECT_TIER=offline \
              --docker-default test --kept",
             "offline expected as `--docker-default` expects it, said here as in its history row; the whole suite"
         );
-        assert_eq!(expected(k1, Mode::parse("offline-user").unwrap()), Some("offline"));
-        assert_eq!(expected(k1, Mode::parse("host").unwrap()), None, "nothing in the table: read");
+        assert_eq!(expected(k2, Mode::parse("offline-user").unwrap()), Some("offline"));
+        assert_eq!(expected(k2, Mode::parse("host").unwrap()), None, "nothing in the table: read");
+        let k1 = t.kernels.iter().find(|k| k.name == "K1").unwrap();
+        assert_eq!(expected(k1, Mode::parse("own-user").unwrap()), Some("own"), "its first run's, as found");
         let k4 = t.kernels.iter().find(|k| k.name == "K4").unwrap();
         assert_eq!(expected(k4, Mode::parse("own").unwrap()), Some("host"), "the table's");
         let mut c = off.command(Path::new("/x/xtask"));

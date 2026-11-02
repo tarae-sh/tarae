@@ -466,6 +466,11 @@ impl Totals {
 #[cfg(test)]
 pub static APART_OFF: AtomicU64 = AtomicU64::new(0);
 
+/// Tests: the run whose supervisor answers as a kernel without `fchmodat2` would, `ENOSYS` (`attrs::fchmodat2_here`)
+/// — 0: none.
+#[cfg(test)]
+pub static FCHMODAT2_GONE: AtomicU64 = AtomicU64::new(0);
+
 /// Tests: each ended run's own calls, by its `run_id` — one run's, which `totals` (every test's at once) isn't.
 #[cfg(test)]
 pub static ENDED: std::sync::Mutex<Vec<(u64, Totals)>> = std::sync::Mutex::new(Vec::new());

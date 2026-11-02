@@ -5298,6 +5298,13 @@ mod tests {
         let enoent = Err(libc::ENOENT);
         let efault = Err(libc::EFAULT);
         let ok = Ok(());
+        // (`fchmodat2` as the test found the kernel, outside the run (Linux 6.6 — or hidden by a filter it runs under):
+        // where it hasn't it, every row is the kernel's `ENOSYS`, never an answer tarae makes up)
+        let fchmodat2_here = std::env::var("TARAE_FCHMODAT2").expect("TARAE_FCHMODAT2") == "here";
+        let check2 = |name: &str, args: [libc::c_long; 6], want: Result<(), i32>| {
+            let want = if fchmodat2_here { want } else { Err(libc::ENOSYS) };
+            check(name, raw(crate::seccomp::SYS_FCHMODAT2, args), want);
+        };
 
         // 1. fchmod
         check("fchmod outside", raw(libc::SYS_fchmod, [fd_outside, 0o644, 0, 0, 0, 0]), eperm);
@@ -5402,16 +5409,16 @@ mod tests {
         let _ = (std::fs::remove_file("written"), std::fs::remove_file("written_kept"));
 
         // (the project's own link to outside, by an `O_PATH | O_NOFOLLOW` descriptor with AT_EMPTY_PATH: the link
-        // itself, in the project — let, and the kernel's answer: a link has no mode of its own, `EOPNOTSUPP`; a kernel
-        // without `fchmodat2` (below 6.6) has none to give, `ENOSYS`)
+        // itself, in the project — let, and the kernel's answer: a link has no mode of its own, `EOPNOTSUPP`)
         let fd_link_outside =
             unsafe { libc::open(c_link_outside.as_ptr(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) }
                 as libc::c_long;
         let empty = |fd| [fd, c_empty.as_ptr() as libc::c_long, 0o644, libc::AT_EMPTY_PATH as _, 0, 0];
-        let here = raw(crate::seccomp::SYS_FCHMODAT2, empty(fd_inside)) != Err(libc::ENOSYS);
-        let want = Err(if here { libc::EOPNOTSUPP } else { libc::ENOSYS });
-        let on_link = raw(crate::seccomp::SYS_FCHMODAT2, empty(fd_link_outside));
-        check("fchmodat2 on the project's link to outside, by its O_PATH descriptor", on_link, want);
+        check2(
+            "fchmodat2 on the project's link to outside, by its O_PATH descriptor",
+            empty(fd_link_outside),
+            Err(libc::EOPNOTSUPP),
+        );
         unsafe { libc::close(fd_link_outside as i32) };
 
         // Symlink to /proc/self/fd/N opened with O_PATH: dev/ino check refuses
@@ -5421,12 +5428,9 @@ mod tests {
         let c_link_proc = std::ffi::CString::new(link_proc).unwrap();
         let fd_link_proc = unsafe { libc::open(c_link_proc.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
         if fd_link_proc >= 0 {
-            check(
+            check2(
                 "fchmodat2 on O_PATH link to /proc/self/fd/N with AT_EMPTY_PATH",
-                raw(
-                    crate::seccomp::SYS_FCHMODAT2,
-                    [fd_link_proc as _, c_empty.as_ptr() as _, 0o777, libc::AT_EMPTY_PATH as _, 0, 0],
-                ),
+                [fd_link_proc as _, c_empty.as_ptr() as _, 0o777, libc::AT_EMPTY_PATH as _, 0, 0],
                 eperm,
             );
             unsafe { libc::close(fd_link_proc) };
@@ -5447,70 +5451,32 @@ mod tests {
         );
 
         // 3. fchmodat2
-        check(
-            "fchmodat2 outside",
-            raw(crate::seccomp::SYS_FCHMODAT2, [at, c_outside.as_ptr() as _, 0o644, 0, 0, 0]),
-            eperm,
-        );
-        check(
-            "fchmodat2 inside",
-            raw(crate::seccomp::SYS_FCHMODAT2, [at, c_inside.as_ptr() as _, 0o644, 0, 0, 0]),
-            ok,
-        );
-        check(
-            "fchmodat2 empty outside",
-            raw(
-                crate::seccomp::SYS_FCHMODAT2,
-                [fd_outside, c_empty.as_ptr() as _, 0o644, libc::AT_EMPTY_PATH as _, 0, 0],
-            ),
-            eperm,
-        );
-        let empty_in = raw(
-            crate::seccomp::SYS_FCHMODAT2,
-            [fd_inside, c_empty.as_ptr() as _, 0o644, libc::AT_EMPTY_PATH as _, 0, 0],
-        );
-        if empty_in != Ok(()) && empty_in != Err(libc::ENOSYS) {
-            wrong.borrow_mut().push(format!("fchmodat2 empty inside: {empty_in:?}"));
-        }
-        check(
+        check2("fchmodat2 outside", [at, c_outside.as_ptr() as _, 0o644, 0, 0, 0], eperm);
+        check2("fchmodat2 inside", [at, c_inside.as_ptr() as _, 0o644, 0, 0, 0], ok);
+        check2("fchmodat2 empty outside", empty(fd_outside), eperm);
+        check2("fchmodat2 empty inside", empty(fd_inside), ok);
+        check2(
             "fchmodat2 nofollow outside",
-            raw(
-                crate::seccomp::SYS_FCHMODAT2,
-                [at, c_outside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
-            ),
+            [at, c_outside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
             eperm,
         );
-        check(
+        check2(
             "fchmodat2 nofollow inside",
-            raw(
-                crate::seccomp::SYS_FCHMODAT2,
-                [at, c_inside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
-            ),
+            [at, c_inside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
             ok,
         );
-        check(
+        check2(
             "fchmodat2 nofollow link",
-            raw(
-                crate::seccomp::SYS_FCHMODAT2,
-                [at, c_link_inside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
-            ),
+            [at, c_link_inside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
             Err(libc::EOPNOTSUPP),
         );
-        check(
-            "fchmodat2 unknown flags",
-            raw(crate::seccomp::SYS_FCHMODAT2, [at, c_inside.as_ptr() as _, 0o644, 0x2000, 0, 0]),
-            einval,
-        );
-        check(
+        check2("fchmodat2 unknown flags", [at, c_inside.as_ptr() as _, 0o644, 0x2000, 0, 0], einval);
+        check2(
             "fchmodat2 empty without AT_EMPTY_PATH",
-            raw(crate::seccomp::SYS_FCHMODAT2, [fd_inside, c_empty.as_ptr() as _, 0o644, 0, 0, 0]),
+            [fd_inside, c_empty.as_ptr() as _, 0o644, 0, 0, 0],
             enoent,
         );
-        check(
-            "fchmodat2 bad fd",
-            raw(crate::seccomp::SYS_FCHMODAT2, [-1, c_inside.as_ptr() as _, 0o644, 0, 0, 0]),
-            ebadf,
-        );
+        check2("fchmodat2 bad fd", [-1, c_inside.as_ptr() as _, 0o644, 0, 0, 0], ebadf);
 
         // 4. utimensat
         let ts = [
@@ -5770,19 +5736,12 @@ mod tests {
             raw(libc::SYS_fchmodat, [at, c_proc_inside.as_ptr() as _, 0o644, 0, 0, 0]),
             ok,
         );
-        check(
+        check2(
             "/proc/self/fd/N nofollow inside",
-            raw(
-                crate::seccomp::SYS_FCHMODAT2,
-                [at, c_proc_inside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
-            ),
+            [at, c_proc_inside.as_ptr() as _, 0o644, libc::AT_SYMLINK_NOFOLLOW as _, 0, 0],
             Err(libc::EOPNOTSUPP),
         );
-        check(
-            "/proc/self/fd/N follow inside",
-            raw(crate::seccomp::SYS_FCHMODAT2, [at, c_proc_inside.as_ptr() as _, 0o644, 0, 0, 0]),
-            ok,
-        );
+        check2("/proc/self/fd/N follow inside", [at, c_proc_inside.as_ptr() as _, 0o644, 0, 0, 0], ok);
 
         // 6b. Non-UTF-8 directory: fchmodat and utimensat through dirfd
         let non_utf8_dir = b"non_utf8_dir_\xff\xfe";
@@ -9992,6 +9951,60 @@ mod tests {
         k.end();
     }
 
+    /// The `attr_calls` helper's answer, a run of `k`'s under `run`, its file moved out to `outside_scratch` when it asks
+    /// (`$TARAE_OUTSIDE` that folder's `outside_file`), `fchmodat2` `here` or `gone` — and the refusals it was said.
+    fn attr_calls_said(
+        k: &Keeper,
+        run: (&Arc<super::super::Policy>, &super::super::linux::Confine, &Path),
+        outside_scratch: &Path,
+        fchmodat2: &str,
+    ) -> (String, Vec<super::super::Denial>) {
+        let root = run.2;
+        let outside = std::fs::canonicalize(outside_scratch.join("outside_file")).unwrap();
+        let env = [("TARAE_OUTSIDE", &*outside.display().to_string()), ("TARAE_FCHMODAT2", fchmodat2)];
+        let (mut lines, pid, refused) = served_helper(k, run, "attr_calls", &env);
+        let by = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while !root.join("ready_to_move").exists() && std::time::Instant::now() < by {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if root.join("file_moved").exists() {
+            let _ = std::fs::rename(root.join("file_moved"), outside_scratch.join("file_moved"));
+        }
+        let _ = std::fs::write(root.join("moved_done"), "");
+        let said = said_next(&mut lines);
+        lines.for_each(drop);
+        crate::spawn::wait(pid).unwrap();
+        (said, refused.try_iter().collect())
+    }
+
+    /// A run on a kernel without `fchmodat2` (below Linux 6.6, unless backported) gets the kernel's `ENOSYS` for every
+    /// form of it — never tarae's answer to a call the kernel hasn't (`fchmodat`'s through `/proc` would have made the
+    /// path forms work). Such a kernel stood in for on any (`supervisor::FCHMODAT2_GONE`: that run's supervisor sees
+    /// none).
+    #[test]
+    fn a_run_without_fchmodat2_in_its_kernel_gets_enosys_for_it() {
+        let test = "a_run_without_fchmodat2_in_its_kernel_gets_enosys_for_it";
+        let Some(tiers) = served_tiers(test) else {
+            return;
+        };
+        let (tier, ns) = tiers[0];
+        let name = format!("no-fchmodat2-{tier}");
+        let k = keeper_for(&name, ns);
+        let (p, c, root) = project_served(&name, Vec::new(), Some(&k), &[], Ok(()));
+        let outside_scratch = crate::scratch::Scratch::new("sb-no-fchmodat2-out").into_path();
+        std::fs::write(outside_scratch.join("outside_file"), "marker\n").unwrap();
+        let run_id = 0x7a78_0000 + u64::from(std::process::id());
+        let gone = &super::super::supervisor::FCHMODAT2_GONE;
+        gone.store(run_id, std::sync::atomic::Ordering::Relaxed);
+        let p = super::super::Policy { run_id, ..p };
+        let (said, _) = attr_calls_said(&k, (&Arc::new(p), &c, &root), &outside_scratch, "gone");
+        gone.store(0, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(said, "ok", "tier {tier}: a kernel without fchmodat2:\n{said}");
+        k.end();
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside_scratch).ok();
+    }
+
     /// Test 2: raw mode and times calls in a sandboxed run under tarae's policy — one row per form:
     /// `fchmod`, `fchmodat`, `fchmodat2`, `utimensat`, x86-64 calls, `/proc/self/fd/N`.
     #[test]
@@ -10001,6 +10014,17 @@ mod tests {
         let Some(tiers) = served_tiers(test) else {
             return;
         };
+        // (`fchmodat2` as this kernel has it, asked here, outside any run: Linux 6.6 — and a filter the test runs under
+        // may hide it, as K1's Docker did, from the run alike)
+        // SAFETY: a call that reads nothing: its flags are refused first.
+        let r = unsafe { libc::syscall(crate::seccomp::SYS_FCHMODAT2, -1, 0, 0, libc::c_uint::MAX) };
+        let fchmodat2 = r == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::ENOSYS);
+        if !fchmodat2 {
+            crate::test_results::said_skip(&format!(
+                "sandbox::keeper::tests::{test} — its fchmodat2 rows served: none here, each the kernel's ENOSYS (Linux \
+                 below 6.6, or a filter that hides it — K1's Docker; --userns runs them)"
+            ));
+        }
         for (tier, ns) in tiers {
             let name = format!("raw-attrs-{tier}");
             let k = keeper_for(&name, ns);
@@ -10012,28 +10036,11 @@ mod tests {
             let before_mode = std::fs::metadata(&outside).unwrap().permissions().mode() & 0o7777;
             let real_outside = std::fs::canonicalize(&outside).unwrap().display().to_string();
 
-            let outside_moved = outside_scratch.join("file_moved");
             // (a run of its own number: its supervisor's own calls and threads, not every test's at once)
             let run_id = 0x7a77_0000 + u64::from(std::process::id()) * 4 + u64::from(tier == "netns");
             let p = super::super::Policy { run_id, ..p };
-            let (mut lines, pid, refused) = served_helper(
-                &k,
-                (&Arc::new(p), &c, &root),
-                "attr_calls",
-                &[("TARAE_OUTSIDE", &real_outside)],
-            );
-            let by = std::time::Instant::now() + crate::test_results::PATIENCE;
-            while !root.join("ready_to_move").exists() && std::time::Instant::now() < by {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            if root.join("file_moved").exists() {
-                let _ = std::fs::rename(root.join("file_moved"), &outside_moved);
-            }
-            let _ = std::fs::write(root.join("moved_done"), "");
-            let said = said_next(&mut lines);
-            lines.for_each(drop);
-            crate::spawn::wait(pid).unwrap();
-            let refused: Vec<_> = refused.try_iter().collect();
+            let here = if fchmodat2 { "here" } else { "gone" };
+            let (said, refused) = attr_calls_said(&k, (&Arc::new(p), &c, &root), &outside_scratch, here);
             assert_eq!(said, "ok", "tier {tier}: raw calls failed:\n{said}");
             // (its supervisor ends once no process of it is left; this run makes no connect nor send: its threads are
             // its mode and times calls')
