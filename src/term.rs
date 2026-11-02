@@ -5254,13 +5254,17 @@ fn draw(
     drew(editor, Kind::Note, note_rect);
     let offer_rect = offer.as_ref().map(|o| o.rect());
     // Follow mode: one card — what Claude does and says, and while the panel is minimized the question and
-    // its keys too (U4). After the turn, a walk-through's stop keeps it while the cursor is in it.
+    // its keys too (U4). The turn's, while it runs or its walk-through plays, and a replay's — never a stop held past
+    // them: what the answer says there is its note's card, opened at the turn's end (#273)
     let mut follow_rect = None;
     let mut follow_says = false;
-    if let Some(c) = editor.workspace.claude.chat.as_ref().filter(|c| {
-        (c.follow.on && (c.busy() || c.follow.touring() || crate::follow::stop_here(editor).is_some()))
-            || c.follow.replaying.is_some()
-    }) && (editor.workspace.claude.review.is_none() || c.compact())
+    if let Some(c) = editor
+        .workspace
+        .claude
+        .chat
+        .as_ref()
+        .filter(|c| (c.follow.on && (c.busy() || c.follow.touring())) || c.follow.replaying.is_some())
+        && (editor.workspace.claude.review.is_none() || c.compact())
         && !lay.code_hidden()
         && !editor.welcome()
     {

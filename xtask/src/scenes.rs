@@ -435,6 +435,13 @@ const A1C_N5: &[&str] = a1c_keys!("]n", "@0.5", "]n", "@0.5", "]n", "@0.5", "]n"
 const A1C_READ: &[&str] = a1c_keys!("21G", "\r");
 const A1C_DOC: &[&str] = a1c_keys!("5G", "\r");
 const A1C_WIDE: &[&str] = a1c_keys!(" ", "L");
+/// #273's scenes, on A1c's turn: no follow card stays for the walk-through's stop after it — your cursor in the stop's
+/// lines (`40G`), `space n` there, `[r` (a replay's stop has the card), `[r` then `j` off it, `space F` after the turn.
+const F273_STOP: &[&str] = a1c_keys!("40G");
+const F273_ASK: &[&str] = a1c_keys!("40G", " ", "n");
+const F273_REPLAY: &[&str] = a1c_keys!("[r");
+const F273_REPLAY_OFF: &[&str] = a1c_keys!("[r", "@1", "j");
+const F273_FOLLOW: &[&str] = a1c_keys!(" ", "F");
 
 /// #269's scenes, on A1c's file with no answer: a drag over the folded doc comment (lines 3–7), one from the code above
 /// into it, `x` on its first line and four times, INSERT on its line 5.
@@ -3267,6 +3274,12 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1c-read", claude: "a1c", files: SPOOL, keys: A1C_READ },
     Scene { name: "a1c-doc", claude: "a1c", files: SPOOL, keys: A1C_DOC },
     Scene { name: "a1c-wide", claude: "a1c", files: SPOOL, keys: A1C_WIDE },
+    // (#273: no follow card stays for a walk-through's stop after the turn)
+    Scene { name: "a1c-f273-stop", claude: "a1c", files: SPOOL, keys: F273_STOP },
+    Scene { name: "a1c-f273-ask", claude: "a1c", files: SPOOL, keys: F273_ASK },
+    Scene { name: "a1c-f273-replay", claude: "a1c", files: SPOOL, keys: F273_REPLAY },
+    Scene { name: "a1c-f273-replay-off", claude: "a1c", files: SPOOL, keys: F273_REPLAY_OFF },
+    Scene { name: "a1c-f273-follow", claude: "a1c", files: SPOOL, keys: F273_FOLLOW },
     // (#269: a folded doc comment stays folded while you select it)
     Scene { name: "f269-drag", claude: "idle", files: SPOOL, keys: F269_DRAG },
     Scene { name: "f269-into", claude: "idle", files: SPOOL, keys: F269_INTO },

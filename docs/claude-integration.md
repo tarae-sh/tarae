@@ -799,13 +799,15 @@ announced once the tour is over, so its message doesn't compete with the stop's 
 chat stops the tour and moves the editor to the first reference the chat shows, so the code follows what you're
 reading. It's plain text in the answer: no extra requests, a few words per stop.
 
-![A walk-through's last stop with the cursor in its lines: the lines Claude explains are washed, and the follow card says what they do, with "space n ask about this" on its bottom line](screenshots/follow-ask.png)
+![A walk-through's last stop with the cursor in its lines, the tour over: the lines Claude explains are washed, and the stop's note card opens between them and the code below, saying what they do](screenshots/follow-ask.png)
 
-You can talk back at a stop. Once the answer is done, the stop's card says `space n ask about this` while your cursor
-is in its lines (`space n` acts at your cursor, not at the view follow holds). The last
-stop's card stays as long as your cursor is in its lines, even after the tour ends. Press `space n` and the tour
-holds still while you type. Your question becomes a [note](#notes) on the stop's lines, and Claude gets
-those lines along with what it said about them there. It answers in the note, next to the code.
+You can talk back at a stop. Each stop is one of the answer's [notes](#notes): at the turn's end the card of its first
+place opens, and `enter` in a stop's lines opens that stop's. The follow card is the turn's: it shows the stops while
+the tour plays and goes once the tour is over, so what Claude said of those lines is in one place, the note's card.
+Once the answer is done, while the tour still plays, the stop's follow card says `space n ask about this` when your
+cursor is in its lines (`space n` acts at your cursor, not at the view follow holds). Press `space n` there and the
+tour holds still while you type. Your question goes to the stop's note, and Claude gets those lines along with what it said about them there. It
+answers in the note, next to the code.
 
 Files opened along the way are previews: unedited ones close when follow moves on, in the pane you're in. Follow
 stays in the project: what Claude reads elsewhere (its own memory files, say) shows on the card but isn't opened.

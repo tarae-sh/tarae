@@ -8136,36 +8136,22 @@ mod tests {
             !c.busy() && !c.follow.touring() && c.follow.gaze.as_ref().is_some_and(|g| g.step == Some((2, 2)))
         });
         assert_eq!((ed.doc().path.as_deref(), led_line(&ed)), (Some(lib.as_path()), 7));
-        assert!(crate::follow::stop_here(&ed).is_some(), "the stop is here");
         let said =
             ed.status.as_ref().is_some_and(|(m, _)| m.contains("Claude's walk-through: 2 in the list"));
         assert!(said, "the tour over, the list says itself: {:?}", ed.status);
-        // The stop's card stays while the view is on it (the tour is over: follow keeps it in sight, your cursor
-        // elsewhere) or your cursor is in it — and goes when your cursor leaves
+        // The tour over, no follow card stays for its last stop (#273: the turn's card, not the stop's) — the view on
+        // it or your cursor in it; `space n` at your cursor still asks about the stop (#250)
         let card = |ed: &mut Editor| {
             crate::term::render(ed, &mut Vec::new(), 100, 30).unwrap();
             ed.screen.thought_card.get().is_some()
         };
-        assert!(card(&mut ed), "the stop's card stays");
-        // (`space n` acts at your cursor, #250: the card says it asks about the stop only once your cursor is in it)
-        let asks = |ed: &mut Editor| {
-            let mut bytes = Vec::new();
-            crate::term::render(ed, &mut bytes, 100, 30).unwrap();
-            let mut vt = vt100::Parser::new(30, 100, 0);
-            vt.process(&bytes);
-            vt.screen().contents().contains("ask about this")
-        };
-        assert!(!asks(&mut ed), "your cursor elsewhere: not said");
+        assert!(!card(&mut ed), "no card for the stop the view is on");
         feed(&mut ed, "<esc><esc>8G");
         // (as the loop sees each key: follow's look after it — `follow::watch`)
         ed.handle_event(crate::event::Event::Resize);
-        assert!(card(&mut ed), "your cursor at the stop");
-        assert!(asks(&mut ed), "your cursor at the stop: said");
+        assert!(crate::follow::stop_yours(&ed).is_some(), "your cursor at the stop");
+        assert!(!card(&mut ed), "none for the stop your cursor is in");
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "your move took over");
-        feed(&mut ed, "gg");
-        assert!(!card(&mut ed), "gone once the cursor leaves");
-        feed(&mut ed, "8G");
-        assert!(card(&mut ed), "back at the stop");
         feed(&mut ed, "<esc><space>n");
         let asking = crate::notes::asking(&ed, ed.doc());
         assert_eq!(asking, Some(7..9), "its card under the stop's lines as it's typed");

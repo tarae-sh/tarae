@@ -500,9 +500,9 @@ const DOC_SCENES: &[DocScene] = &[
     )
     .claude("commitdraft"),
     // (a review whose changes are graded high: an `unsafe` line, a new build script)
-    // (a walk-through's last stop with your cursor in its lines, the tour over: its card says `space n ask about this` —
-    // `space n` acts at your cursor, #250; the answer's own card, opened at the turn's end at its first place (A1b), shut
-    // by `esc` in the code first)
+    // (a walk-through's last stop with your cursor in its lines, the tour over: no follow card stays for it (#273) — what
+    // Claude said of those lines is its note's card, opened by `enter` there; the answer's own card, opened at the turn's
+    // end at its first place (A1b), shut by `esc` in the code first)
     scene(
         "followask",
         Fixture::Demo,
@@ -520,7 +520,8 @@ const DOC_SCENES: &[DocScene] = &[
             "\x1b",
             "\x1b",
             "12G",
-            "@?ask about this",
+            "\r",
+            "@?3/3",
             "@1",
         ],
     )

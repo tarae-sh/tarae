@@ -2369,6 +2369,86 @@ fn a1c_the_turns_card_is_in_sight_at_80_columns() {
     assert_eq!((ed.workspace.claude.notes.open, ed.doc().top), (None, 0), "not while you type");
 }
 
+/// #273 (collab's baseline, `a1c` at 120 with the chat open): the follow card is the turn's — while it runs and its
+/// walk-through plays (after the answer, with your cursor in the stop, saying `space n ask about this`); the tour over,
+/// its last stop held for `space n`, no card stays for it (the view on it, or your cursor in it): what the answer says
+/// there is the note card the turn's end opened, never a third copy beside it.
+#[test]
+fn f273_no_follow_card_stays_for_a_stop_after_the_turn() {
+    const S: (u16, u16) = (120, 34);
+    // (the stop: `src/s.rs:21-70`, its words the answer's)
+    const STOP: std::ops::Range<usize> = 20..70;
+    const SAID: &str = "The loop winds every strand.";
+    let (_s, root, mut ed) = spool("f273");
+    ed.workspace.claude.chat = None;
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), STAND_IN.into(), "stand-in".into()];
+    ed.config.llm.chat_settings = false;
+    ed.open(&root.join("src/s.rs")).unwrap();
+    crate::chat::open(&mut ed);
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    code_rows_at(&mut ed, S);
+    let before = rows(&ed);
+    ed.workspace.claude.chat.as_mut().unwrap().input = "walk me through it".into();
+    crate::chat::send(&mut ed);
+    let card = |ed: &Editor| ed.screen.thought_card.get().is_some();
+    // (the first frame after sending: the turn under way, no words yet — no tour)
+    code_rows_at(&mut ed, S);
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.busy() && !c.follow.touring(), "the turn under way, its tour not begun");
+    assert!(card(&ed), "the follow card while the turn runs");
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    loop {
+        code_rows_at(&mut ed, S);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let ended = rows(&ed) > before && !c.busy() && !c.follow.touring();
+        if ended && crate::places::answered(&ed) && ed.workspace.claude.notes.answer.is_none() {
+            break;
+        }
+        assert!(std::time::Instant::now() < end, "the turn didn't end within the patience");
+        if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+            ed.handle_event(ev);
+        }
+    }
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(c.follow.gaze.as_ref().is_some_and(|g| g.step.is_some()), "the tour's last stop held");
+    assert!(ed.workspace.claude.notes.open.is_some(), "the turn's end opened the answer's card");
+    // (no follow card; the stop's words on the note card, in sight — the one copy at the code)
+    let check = |ed: &mut Editor, what: &str| {
+        let rows = code_rows_at(ed, S);
+        let follow = rows.iter().any(|r| r.contains("╭─ follow"));
+        assert!(!card(ed) && !follow, "{what}: a follow card stays after the turn:\n{}", rows.join("\n"));
+        let noted = rows.iter().any(|r| r.contains("╭─ chat")) && rows.iter().any(|r| r.contains(SAID));
+        assert!(noted, "{what}: the stop's words on its note card:\n{}", rows.join("\n"));
+    };
+    let led = crate::follow::view_line(&ed);
+    assert!(led.is_some_and(|l| STOP.contains(&l)), "follow holds the view on the stop: {led:?}");
+    check(&mut ed, "the view on the stop");
+    // (the keys to the code — the chat's view mode, then the code — and your cursor into the stop's lines)
+    feed(&mut ed, "<esc>");
+    code_rows_at(&mut ed, S);
+    feed(&mut ed, "<esc>30G");
+    ed.handle_event(crate::event::Event::Resize);
+    assert!(crate::follow::stop_yours(&ed).is_some(), "your cursor in the stop's lines");
+    check(&mut ed, "your cursor in the stop");
+    // A tour still playing after the answer's end (held so: no race with its dwell): the card is the tour's, and with
+    // your cursor in the stop it says how to ask about it — not once your cursor leaves; the tour over, it goes
+    // (the screen's rows while a follow card is up — its keys on its bottom line; the note card's say `reply`)
+    let follow_rows = |ed: &mut Editor| {
+        let rows = code_rows_at(ed, S);
+        rows.iter().any(|r| r.contains("╭─ follow")).then_some(rows)
+    };
+    let asks = |rows: &[String]| rows.iter().any(|r| r.contains("space n ask about this"));
+    ed.workspace.claude.chat.as_mut().unwrap().follow.tour_playing(true);
+    let rows = follow_rows(&mut ed).expect("the tour's card");
+    assert!(asks(&rows), "your cursor in the stop, the answer done: how to ask:\n{}", rows.join("\n"));
+    feed(&mut ed, "gg");
+    let rows = follow_rows(&mut ed).expect("the tour's card, your cursor elsewhere");
+    assert!(!asks(&rows), "your cursor out of the stop: not said:\n{}", rows.join("\n"));
+    ed.workspace.claude.chat.as_mut().unwrap().follow.tour_playing(false);
+    assert!(follow_rows(&mut ed).is_none(), "the tour over: no card");
+}
+
 /// The code's scrollbar beside an open card (the 80-column shot): the card's rows aren't the file's, so the thumb skips
 /// them — its column blank beside the card, the bar laid on the code's other rows, never down the card's edge.
 #[test]

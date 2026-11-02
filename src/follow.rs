@@ -207,6 +207,14 @@ impl Follow {
         self.playing.is_some() || !self.queue.is_empty()
     }
 
+    /// Tests: the walk-through's stop showing as if its tour still played (`on`; it ends with no wake of its own), or
+    /// the tour over — a tour after the answer's end, with no race between its dwell and the stream's end.
+    #[cfg(test)]
+    pub(crate) fn tour_playing(&mut self, on: bool) {
+        let far = crate::clock::now() + std::time::Duration::from_secs(3600);
+        self.playing = on.then_some((far, self.tour_gen));
+    }
+
     pub fn active(&self) -> bool {
         self.on && !self.paused
     }
@@ -783,20 +791,10 @@ fn in_sight(ed: &Editor, path: &Path, lines: &Range<usize>) -> bool {
     doc.path.as_deref() == Some(path) && lines.clone().all(|l| shown.contains(&l)) && !shown.is_empty()
 }
 
-/// The walk-through's stop on screen: the view's while follow holds it, else your cursor's (its file, lines and why) —
-/// the follow card stays for it; `space n` asks about `stop_yours`.
-pub fn stop_here(ed: &Editor) -> Option<(PathBuf, Range<usize>, String)> {
-    // (follow holding the view: the stop on screen is where it holds it — your cursor is elsewhere)
-    stop_at(ed, view_line(ed).unwrap_or_else(|| ed.cursor_line()))
-}
-
-/// The walk-through's stop your cursor is on — what `space n` asks about: a key of yours acts at your cursor, never at
-/// the stop follow holds the view on (#250).
+/// The walk-through's stop your cursor is on (its file, lines and why) — what `space n` asks about: a key of yours acts
+/// at your cursor, never at the stop follow holds the view on (#250).
 pub fn stop_yours(ed: &Editor) -> Option<(PathBuf, Range<usize>, String)> {
-    stop_at(ed, ed.cursor_line())
-}
-
-fn stop_at(ed: &Editor, line: usize) -> Option<(PathBuf, Range<usize>, String)> {
+    let line = ed.cursor_line();
     let g = ed.workspace.claude.chat.as_ref()?.follow.gaze.as_ref()?;
     let (path, lines, why) = (g.path.as_ref()?, g.lines.clone()?, g.why.clone()?);
     g.step?;
@@ -1320,7 +1318,8 @@ pub fn on_done(ed: &mut Editor) {
     let touring = f.touring();
     f.wanted = None;
     f.read_at = scroll;
-    // (a walk-through's last stop stays — its card waits there while you read it, to ask about it)
+    // (a walk-through's last stop stays, to ask about it — `stop_yours`; its card goes with the tour, the answer's note
+    // card says it there: #273)
     if !touring && f.gaze.as_ref().is_none_or(|g| g.step.is_none()) {
         f.gaze = None;
     }
