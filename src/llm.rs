@@ -1835,11 +1835,22 @@ fn review_answer(ed: &mut Editor, key: Key) -> bool {
             rev.follow = false;
             false
         }
-        (Code::Tab, _) => {
-            rev.current = rev.next_undecided().unwrap_or(rev.current);
-            rev.follow = true;
-            false
-        }
+        // (the next change waiting; none but this one, the view back on it — already there, said: #264)
+        (Code::Tab, _) => match rev.next_undecided().filter(|&i| i != rev.current) {
+            None if rev.follow => {
+                ed.key_unused(
+                    key,
+                    "the review of this change",
+                    "no other change waits — y takes it, n leaves it",
+                );
+                return true;
+            }
+            next => {
+                rev.current = next.unwrap_or(rev.current);
+                rev.follow = true;
+                false
+            }
+        },
         // Sideways, where lines aren't wrapped (`editor.soft-wrap`, `z w`): a long one read to its end
         (Code::Char('h') | Code::Left, false)
         | (Code::Char('l') | Code::Right, false)

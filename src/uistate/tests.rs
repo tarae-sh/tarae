@@ -881,8 +881,8 @@ const PROBES: &[&str] = &[
     "<S-tab>",
 ];
 
-/// `tab`, `space n`'s line's own as it's `:`'s: routed as `keys_to` says in every scene. Not a probe: where it's bound to
-/// nothing it's still silent (a picker, a run's output …), which `no_key_is_refused_in_silence` would walk.
+/// `tab`, `space n`'s line's own as it's `:`'s: routed as `keys_to` says in every scene, and walked for silence as the
+/// probes are (#264: left out of the walk, it did nothing unsaid on 15 surfaces — a picker, a run's output …).
 const ROUTED: &[&str] = &["<tab>"];
 
 /// The keys that move, as every surface takes them (uxaudit D7, Z2, H1): a row, half the rows, a page, the ends,
@@ -1021,7 +1021,7 @@ fn shown(ed: &mut Editor) -> String {
 fn silent() -> Vec<String> {
     let mut out = Vec::new();
     for (name, setup) in SCENES {
-        for probe in PROBES {
+        for probe in PROBES.iter().chain(ROUTED) {
             let mut ed = editor();
             setup(&mut ed);
             let (before, said) = (shown(&mut ed), ed.said);
@@ -1080,6 +1080,9 @@ fn no_key_is_refused_in_silence() {
         " " => {
             ["draft", "a prompt opened over it", "the note's card", "picker"].iter().any(|p| name.contains(p))
         }
+        // (a draft's `tab` is typed as a space is — at the input's end, not in sight as text:
+        // `tab_says_why_where_it_has_nothing_to_do`)
+        "<tab>" => name.contains("draft"),
         // (`S-tab` while typing is the field's — insert mode, a prompt, a picker at its first row — never the next
         // pane, and bound to nothing there (#199; the chat's input takes it as the next pane, #230); between two panes
         // of one buffer it moves the keys, which only the lit lines show — styles, not this walk's text:
@@ -1097,6 +1100,46 @@ fn no_key_is_refused_in_silence() {
         })
         .collect();
     assert!(off.is_empty(), "keys refused in silence:\n{}", off.join("\n"));
+}
+
+/// #264: `tab` where the walk found it silent says why — a picker of one row, an edit's review with no other change
+/// waiting, a run's output and the terminal's view mode as the bottom's only tab — or does its act there: a draft
+/// takes it as typed.
+#[test]
+fn tab_says_why_where_it_has_nothing_to_do() {
+    if no_pty_here("tab_says_why_where_it_has_nothing_to_do") {
+        return;
+    }
+    let tab_in = |scene: &str| {
+        let (_, setup) = SCENES.iter().find(|s| s.0 == scene).unwrap_or_else(|| panic!("no scene {scene:?}"));
+        let mut ed = editor();
+        setup(&mut ed);
+        frame(&mut ed);
+        let from = ed.messages.len();
+        ed.handle_key(key("<tab>"));
+        let said: Vec<String> = ed.messages[from..].iter().map(|m| m.2.clone()).collect();
+        (ed, said.join("\n"))
+    };
+    for (scene, words) in [
+        ("a picker", "one row — tab has nowhere to move"),
+        ("an edit's review", "no other change waits"),
+        ("an edit's review under the side panel", "no other change waits"),
+        ("the task panel's output, by C-w j", "the only tab at the bottom"),
+        ("the task panel's output, select mode", "the only tab at the bottom"),
+        ("a preflight's output", "the only tab at the bottom"),
+        ("the test panel's output", "the only tab at the bottom"),
+        ("a card over the task panel's output", "the only tab at the bottom"),
+        ("the terminal in view mode, by C-w j", "the only tab at the bottom"),
+    ] {
+        let (_, said) = tab_in(scene);
+        assert!(said.contains(words), "{scene}: tab said {said:?}");
+    }
+    let (ed, said) = tab_in("the chat, a draft");
+    let typed = ed.workspace.claude.chat.as_ref().unwrap().input.text();
+    assert!(
+        typed.starts_with("hello") && typed.len() > "hello".len() && said.is_empty(),
+        "{typed:?}, {said:?}"
+    );
 }
 
 /// The keys whose notation differs from their shown name, as the routing matrix's probes write them (#202) — with

@@ -1839,6 +1839,11 @@ fn walk(notes: &Notes) -> Vec<(PathBuf, usize, u64)> {
     first.into_iter().chain(rest).map(|n| (n.path.clone(), n.lines.start, n.id)).collect()
 }
 
+/// Whether `]n`/`[n` have another note to go to — a card's `]n next` drawn only then (a key hinted does its key).
+pub fn walks_on(notes: &Notes) -> bool {
+    walk(notes).len() > 1
+}
+
 /// `]n`/`[n` — the next/previous note across every file, wrapping around: after a turn the newest answer's places in
 /// the order written, then the rest in (file, line, age) order (`walk`); notes sharing a line are visited one by one
 /// (the card shows the one stepped to), a line's answers one stop.
@@ -1865,6 +1870,8 @@ pub fn step(ed: &mut Editor, forward: bool) {
             t.and_then(|t| all.iter().find(|a| a.2 == t.2))
         }
     };
+    // (from the one note there is: round to itself — said, never silent: #265)
+    let lone = all.len() == 1 && from == Some(all[0].2);
     match target.cloned() {
         Some((p, l, id)) => {
             // (a key of yours: follow, holding the view, pauses — said once, never left to notice a move, as a note on
@@ -1875,6 +1882,9 @@ pub fn step(ed: &mut Editor, forward: bool) {
                 ed.set_error(format!("{e:#}"));
             }
             open(ed, id);
+            if lone {
+                ed.set_status("the only note — 1 of 1");
+            }
         }
         None => {
             ed.set_status("no notes yet — Claude pins them while it explores, or space n asks about a line")

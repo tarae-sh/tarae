@@ -489,6 +489,8 @@ pub struct Term {
     env: Vec<(OsString, OsString)>,
     /// The build it is — `tarae state` is asked of the same one.
     bin: OsString,
+    /// How often `state` asked again past tarae's own wait for a frame (`uisocket::WAIT`) — #258's test waits on it.
+    asked_again: AtomicUsize,
 }
 
 pub fn cvt(rc: libc::c_int) -> io::Result<libc::c_int> {
@@ -614,17 +616,27 @@ impl Term {
             }
         });
 
-        let mut term =
-            Term { child, master, _slave: slave, out, timeout: sb.timeout(), env: sb.env(), bin: sb.bin() };
+        let mut term = Term {
+            child,
+            master,
+            _slave: slave,
+            out,
+            timeout: sb.timeout(),
+            env: sb.env(),
+            bin: sb.bin(),
+            asked_again: Default::default(),
+        };
         // First frame drawn = raw mode is on — safe to type from here.
         term.wait_for("the first frame (status line with the mode)", |s| s.status().contains("● normal"));
         term
     }
 
-    /// Types keys (UTF-8). Esc = "\x1b" (send it alone), Enter = "\r".
-    pub fn send(&mut self, keys: &str) {
-        self.master.write_all(keys.as_bytes()).expect("write to pty");
-        self.master.flush().unwrap();
+    /// Types keys (UTF-8). Esc = "\x1b" (send it alone), Enter = "\r". (`&self`: typed while another thread waits
+    /// in `state`.)
+    pub fn send(&self, keys: &str) {
+        let mut master = &self.master;
+        master.write_all(keys.as_bytes()).expect("write to pty");
+        master.flush().unwrap();
     }
 
     /// Esc on its own, then wait for its visible effect.
@@ -826,24 +838,43 @@ impl Term {
     }
 
     /// `tarae state --pid <its pid> args…` in its environment: what it prints (panics if it fails, saying how it
-    /// ended — a code, or the signal that ended it, which says nothing of its own — and both its streams).
+    /// ended — a code, or the signal that ended it, which says nothing of its own — and both its streams, on the
+    /// message's first line: a run's output kept by `grep -E 'test result|FAILED|panicked'` keeps it, #258).
+    ///
+    /// The harness's patience is the one deadline (#258): tarae answers `no frame within 10000 ms` once its own wait
+    /// for a frame after the input (`uisocket::WAIT`) passes — a loaded machine's slow frame, never the harness's
+    /// condition failing — so that's asked again until `timeout`, and only then a failure.
     pub fn state(&self, args: &[&str]) -> String {
-        let out = Command::new(&self.bin)
-            .arg("state")
-            .args(["--pid", &self.pid().to_string()])
-            .args(args)
-            .env_clear()
-            .envs(self.env.iter().cloned())
-            .output()
-            .expect("tarae state");
-        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        assert!(
-            out.status.success(),
-            "tarae state {args:?} ended with {} — stderr: {stderr:?}, stdout: {stdout:?}\n{}",
-            out.status,
-            self.screen()
-        );
-        stdout.into_owned()
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let out = Command::new(&self.bin)
+                .arg("state")
+                .args(["--pid", &self.pid().to_string()])
+                .args(args)
+                .env_clear()
+                .envs(self.env.iter().cloned())
+                .output()
+                .expect("tarae state");
+            let (stdout, stderr) =
+                (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            if out.status.success() {
+                return stdout.into_owned();
+            }
+            if stderr.contains("no frame within") && Instant::now() < deadline {
+                self.asked_again.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            panic!(
+                "tarae state FAILED {args:?}, ended with {} — stderr: {stderr:?}, stdout: {stdout:?}\n{}",
+                out.status,
+                self.screen()
+            );
+        }
+    }
+
+    /// How often `state` asked again past tarae's own wait for a frame.
+    pub fn asked_again(&self) -> usize {
+        self.asked_again.load(Ordering::Relaxed)
     }
 
     /// The state as JSON — once the input so far (`input` keys and clicks) is handled and drawn.

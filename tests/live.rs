@@ -3633,7 +3633,7 @@ fn reviewer_tools_ab() {
                 std::fs::write(&file, &text).unwrap();
             }
             let stream = teed(&sb, &format!("model = \"{model}\"\n"));
-            let mut t = sb.spawn(&["README.md"]);
+            let t = sb.spawn(&["README.md"]);
             let started = Instant::now();
             t.send(" vc");
             let deadline = started + Duration::from_secs(20 * 60);
@@ -3766,7 +3766,7 @@ fn a_board_reads_its_diff_from_the_cache() {
     sb.write("src/table.rs", &table);
     let lib = std::fs::read_to_string(sb.file("src/lib.rs")).unwrap();
     sb.write("src/lib.rs", &format!("pub mod table;\n{lib}"));
-    let mut t = sb.spawn(&["src/lib.rs"]);
+    let t = sb.spawn(&["src/lib.rs"]);
     t.send(" vC");
     // (a real review of a whole crate: far past a live wait)
     let deadline = Instant::now() + LIVE_TIMEOUT * 5;

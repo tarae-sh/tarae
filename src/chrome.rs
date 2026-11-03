@@ -481,6 +481,10 @@ impl Editor {
             Some(i) => (i as isize + by).rem_euclid(n) as usize,
             None => 0,
         };
+        // (a round of one: the tab in front already — said, never silent: #264)
+        if at == Some(next) {
+            return self.set_status("the only tab at the bottom — tab goes round them once there are more");
+        }
         self.slot_show(tabs[next].slot);
         // (onto a group going forward: its first member, the list; going back, its last, the detail)
         if self.bottom_has_keys()

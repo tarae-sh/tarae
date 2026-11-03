@@ -150,6 +150,27 @@ fn a_subcommand_under_a_low_limit_leaves_no_pin() {
     }
 }
 
+/// #258: `tarae state --after-input N` past tarae's own wait for its frame (`uisocket::WAIT`, 10 s — a loaded machine's
+/// slow frame) is asked again by the harness until its own patience, never a failure: here the key it waits for is typed
+/// only once the first ask has run out (so this test takes tarae's wait, about 10 s).
+#[test]
+fn the_harness_waits_for_a_state_past_taraes_own_wait() {
+    let sb = Sandbox::new("state-wait");
+    sb.write("a.txt", "one\ntwo\n");
+    let t = Term::spawn(&sb, &["a.txt"], 100, ROWS);
+    let input = t.state_json(0)["input"].as_u64().unwrap();
+    std::thread::scope(|s| {
+        let asked = s.spawn(|| t.state_json(input + 1));
+        // (the first ask run out and asked again — or ended, failing: its panic said by the join)
+        while t.asked_again() == 0 && !asked.is_finished() {
+            std::thread::sleep(POLL);
+        }
+        t.send("j");
+        let state = asked.join().unwrap();
+        assert!(state["input"].as_u64().unwrap() > input, "{state:#}");
+    });
+}
+
 /// `tarae state … | head -3`: the reader closes its end early, and every way `tarae state` prints (the text,
 /// `--json`, `--watch`, `--frame FILE`'s line, `--help`) ends quietly — exit 0, nothing on stderr — where `println!` panicked on the EPIPE
 /// (#229). A stand-in tarae answers on a socket of the test's own (`TARAE_UI`); tarae's stdout is a pipe

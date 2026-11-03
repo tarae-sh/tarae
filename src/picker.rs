@@ -976,6 +976,11 @@ impl Picker {
         self.set_query(&q);
     }
 
+    /// Whether one row at most picks something — a move, which goes round, lands where it was.
+    pub fn alone(&self) -> bool {
+        (0..self.len()).filter(|&i| self.pickable(i)).nth(1).is_none()
+    }
+
     /// Moves `delta` rows that pick something (headings are stepped over), wrapping around.
     pub fn move_by(&mut self, delta: isize) {
         let n = self.len();

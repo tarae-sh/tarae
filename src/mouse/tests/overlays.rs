@@ -746,6 +746,35 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     assert!(rows[0].starts_with("╭─ note · 1/2 ─") && !rows[0].contains(" here"), "{rows:#?}");
 }
 
+/// #265: a lone note's card hints no `]n` (a key hinted does its key), and `]n` or `[n` there says it's the only one —
+/// its card left open on it; a second note brings `]n next` back.
+#[test]
+fn a_lone_notes_card_hints_no_next_and_says_it_is_the_only_one() {
+    let scratch = crate::scratch::Scratch::new("mouse-overlays-note-lone");
+    let mut ed = editor();
+    let path = scratch.join("a.rs");
+    ed.docs[0].path.set(Some(path.clone()));
+    let long = "A word about this line, long enough for the card to carry every one of its keys.";
+    let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, long);
+    crate::notes::open(&mut ed, id);
+    frame(&mut ed);
+    let keys = |ed: &Editor| note_card_keys(ed).into_iter().map(|k| k.0).collect::<Vec<_>>();
+    assert_eq!(keys(&ed), ["space n", "q", "space N", ":note-close"], "no `]n` hinted");
+    assert!(!note_card_rows(&ed).last().unwrap().contains("]n"), "{:#?}", note_card_rows(&ed));
+    for k in ["]n", "[n"] {
+        let said = ed.said;
+        feed(&mut ed, k);
+        frame(&mut ed);
+        assert!(ed.said != said, "{k} said something");
+        let last = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+        assert_eq!(last, "the only note — 1 of 1", "{k}");
+        assert_eq!(ed.workspace.claude.notes.open, Some(id), "{k}: its card still open");
+    }
+    crate::notes::add(&mut ed, &path, 5..6, crate::notes::By::Author, &format!("Another. {long}"));
+    frame(&mut ed);
+    assert_eq!(keys(&ed), ["space n", "]n", "q", "space N", ":note-close"], "`]n` back with another");
+}
+
 /// A draft's key that sends the review (`space v s`: a Claude turn started) is plain faint words on the note card's
 /// bottom line — never a hint nor a button (`wordspot::COSTS`); its others stay buttons.
 #[test]
@@ -764,7 +793,7 @@ fn the_note_cards_costly_key_is_plain_words() {
     let rows = note_card_rows(&ed);
     assert!(rows.last().unwrap().contains("space v s send 1"), "{rows:#?}");
     let keys: Vec<String> = note_card_keys(&ed).into_iter().map(|k| k.0).collect();
-    assert_eq!(keys, ["space n", "]n", "q"], "the send no button");
+    assert_eq!(keys, ["space n", "q"], "the send no button (a lone note: no `]n`)");
     assert!(!ed.screen.hints.borrow().iter().any(|h| h.key == "space v s"), "nor a hint");
 }
 
@@ -792,7 +821,8 @@ fn a_note_card_says_its_lines_keys_while_its_reply_is_written() {
         assert!(replying(ed), "the reply's line open");
     };
     let keys = |ed: &Editor| note_card_keys(ed).into_iter().map(|k| k.0).collect::<Vec<_>>();
-    let walk = ["space n", "]n", "q", "space N", ":note-close"];
+    // (a lone note: no `]n` — `a_lone_notes_card_hints_no_next_and_says_it_is_the_only_one`)
+    let walk = ["space n", "q", "space N", ":note-close"];
     frame(&mut ed);
     assert_eq!(keys(&ed), walk, "its keys before the reply");
     reply(&mut ed);

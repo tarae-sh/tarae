@@ -22887,8 +22887,8 @@ fn note_keys<'a>(
     editor: &Editor,
     send: &'a str,
 ) -> Vec<(&'static str, &'a str)> {
-    match () {
-        _ if replying => note_input_keys(editor).to_vec(),
+    let mut keys = match () {
+        _ if replying => return note_input_keys(editor).to_vec(),
         _ if n.thread.iter().any(|e| e.draft) => {
             vec![("space n", "reply"), ("space v s", send), ("]n", "next"), ("q", "close")]
         }
@@ -22899,7 +22899,12 @@ fn note_keys<'a>(
             ("space N", "all"),
             (":note-close", ""),
         ],
+    };
+    // (a lone note: `]n` has nowhere to go — never hinted, #265)
+    if !crate::notes::walks_on(&editor.workspace.claude.notes) {
+        keys.retain(|k| k.0 != "]n");
     }
+    keys
 }
 
 /// Most rows the note card takes.

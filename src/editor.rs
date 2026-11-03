@@ -4963,6 +4963,14 @@ impl Editor {
                 }
                 return;
             }
+            // (one row to pick: a row's move, which goes round, lands where it was — said, never silent: #264)
+            (Code::Down | Code::Tab | Code::Up | Code::BackTab | Code::PageDown | Code::PageUp, _)
+            | (Code::Char('n' | 'p' | 'd' | 'u'), true)
+                if p.alone() =>
+            {
+                // (short: under a picker it shares the status line with the list's keys, and gives way first)
+                self.set_status(format!("one row — {key} has nowhere to move"));
+            }
             (Code::Down | Code::Tab, _) | (Code::Char('n'), true) => p.move_by(1),
             (Code::Up | Code::BackTab, _) | (Code::Char('p'), true) => p.move_by(-1),
             // (half the rows in sight, as everywhere — the page keys all of them)
