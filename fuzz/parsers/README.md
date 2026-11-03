@@ -65,7 +65,7 @@ tarae's process, where release aborts on a panic, so it's held to the reader's r
 what a server sends the fetch — `gzip` is `tarae-web`'s too; `response` with
 `-max_len` 73728 (past `RESPONSE_HEAD_MAX`, 64 KB: a response's head gets its own, larger limit).
 
-`hour.sh` does all of it on Linux: it builds, then runs each target for an hour (`./hour.sh [seconds]`, `JOBS`
+`hour.sh` does all of it on Linux: it builds, then runs each target for an hour (`./hour.sh [seconds [target…]]`, `JOBS`
 at a time, one per core by default). It leaves `logs/<target>.log` and prints each target's crashes and last
 coverage line (`cov:`, `ft:`). The coverage line, compared over the hour, says whether a target plateaued.
 

@@ -1,6 +1,7 @@
 #!/bin/sh
 # An hour of each fuzz target (README.md), on Linux, with the nightly in rust-toolchain.toml and cargo-fuzz installed.
-# Run from this folder: ./hour.sh [seconds]   (3600 by default; JOBS targets at a time, one per core by default).
+# Run from this folder: ./hour.sh [seconds [target…]]   (3600 by default, every target by default; JOBS targets at
+# a time, one per core by default).
 #
 # Builds every target first, then runs them, each with its own corpus (corpus/<target>, grown and kept between runs)
 # and the checked-in seeds (seeds/<target>, never written). A crash stops its target and leaves the input in
@@ -13,7 +14,8 @@ root=$(cd ../.. && pwd)
 secs=${1:-3600}
 jobs=${JOBS:-$(nproc)}
 channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
-targets="sockaddr netlink msghdr head sni body web facts"
+targets="sockaddr netlink msghdr head sni body web facts response gzip"
+[ $# -le 1 ] || { shift; targets=$*; }
 
 [ "$(uname -s)" = Linux ] || { echo "hour.sh is written for Linux (README.md runs one target anywhere)" >&2; exit 2; }
 [ -n "$channel" ] || { echo "no channel in rust-toolchain.toml" >&2; exit 2; }
@@ -29,6 +31,7 @@ max_len() {
     head | origin) echo 12288 ;;
     sni) echo 40000 ;;
     web | facts) echo 65536 ;;
+    response) echo 73728 ;;
     *) echo 8192 ;;
   esac
 }

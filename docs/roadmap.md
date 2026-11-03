@@ -270,12 +270,13 @@ The aim is to state what the sandbox guarantees and show that it holds.
    (`c38b1938`): the readers checked against the kernel's own answers and by seeded loops; three findings, two
    fixed (a preflight step can no longer say a step ended, V2-1; a thread named past ASCII no longer makes the
    supervisor refuse its every call, V2-3). Step 6 done (`6200c01c`): each reader's properties are one function,
-   `check`, called by its loop in every `cargo test` and by its fuzz target in `fuzz/parsers`. Step 7 under way
-   (2026-10-16): an hour per target on a 16-core Linux VM. Two findings so far: V2-4, a control length with a null
+   `check`, called by its loop in every `cargo test` and by its fuzz target in `fuzz/parsers`. Step 7 done
+   (2026-10-16): an hour per target on a 16-core Linux VM, and again on arm64 (2026-11-03: msghdr four hours, every
+   timeout the VM's, replayed in milliseconds). Two findings: V2-4, a control length with a null
    pointer, which tarae sent on without control where the kernel answers EFAULT (fixed; a Linux test pins the
    kernel's answer), and V2-5, in the tests' fake memory, not the reader. Q1 done (2026-10-16): of the control
    messages it forwards only descriptors go (`SCM_RIGHTS`, at most 253), every other type refused and named in
-   the run's report, and `sendmsg` gets a buffer tarae built. 2026-11-03 (`dd4e31df`, `e2a41dfb`): that buffer is a
+   the run's report, and `sendmsg` gets a buffer tarae built. 2026-11-03 (cmsg brief items 2 and 3): that buffer is a
    property held to Linux's `CMSG_*` macros, and the kernel is the oracle for 10,000 fuzzed messages per test — it found
    V2-6 (buffers the kernel refuses, arm64's tagged pointers among them, now refused as it refuses them); Q2 reviewed:
    every value read once, and a caller's `/proc` reads go through its folders opened before the check (V2-7).
