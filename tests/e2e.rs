@@ -1266,9 +1266,13 @@ fn a_page_reads_into_its_buffer_and_then_sleeps() {
     let s = t.wait_text("# Held page");
     assert!(s.contains("localhost › Held") && !s.contains("reading localhost"), "{s}");
     // Landed: its toast gone, settled (`Term::settle`, never a quiet second), then two seconds with no frame and
-    // nothing woken (the line's age is drawn when a frame comes, never a frame of its own)
-    t.wait_for("its toast gone", |s| !s.status().contains(" chars · "));
-    let s = t.settle("the page landed", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
+    // nothing woken (the line's age is drawn when a frame comes, never a frame of its own). The toast is a card
+    // top right, its fade a tick of its own: gone in the state, no tick wanted — never read off the status line,
+    // where it isn't (#337: the rest began with its fade ~3 s off, a loaded machine's settle took it in)
+    let s = t.settle("the page landed, its toast gone", |s| {
+        let none = |k: &str| s[k].as_array().is_some_and(Vec::is_empty);
+        none("motions") && none("toasts") && s.get("tick_in_ms").is_none()
+    });
     let slept = t.rest(&s);
     assert!(slept.woken().is_none(), "{slept}\n{}", t.screen());
     t.command("q");
