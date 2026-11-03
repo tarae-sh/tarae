@@ -157,8 +157,10 @@ runs-project-code = "its build scripts and proc macros, and the toolchain and ru
 leave-out = { init = "files.exclude", each = "{rel}" }
 # One for every checkout of a repository on one toolchain (`editor.lsp-share`): rustup's toolchain files say
 # which; `checkOnSave` held off while a swap's new one loads (a start with checks checks every folder); it
-# reports "Fetching" when it loads its workspaces again — a toolchain file may have changed
-share = { toolchain = ["rust-toolchain.toml", "rust-toolchain"], checks = "checkOnSave", reload-progress = "Fetching" }
+# reports "Fetching" when it loads its workspaces again — a toolchain file may have changed. `checkOnSave` stays
+# off for good and tarae asks each check (`runFlycheck` with a file: that file's folder only, as a save's), where
+# someone looks: loaded again (a file made or removed in any folder), it checked every folder it serves (#297)
+share = { toolchain = ["rust-toolchain.toml", "rust-toolchain"], checks = "checkOnSave", check = "rust-analyzer/runFlycheck", reload-progress = "Fetching" }
 # Its extension: says when it has nothing left to load (a swap switches then), asked for in the capabilities
 quiescent = { method = "experimental/serverStatus", capability = "experimental.serverStatusNotification", field = "quiescent", health = "health", message = "message" }
 # Its extension: by default `workspace/symbol` lists types only

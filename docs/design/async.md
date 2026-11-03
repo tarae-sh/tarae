@@ -460,7 +460,12 @@ How it plugs into the lineup, whatever is chosen:
 - A shared server never rests while the front's files use it, so whatever saves reach it start checks
   in every checkout they name. A base move that rewrote nine idle checkouts' open files started eleven
   checks at once, read by nobody (#294). A save into a checkout behind, with its Claude idle, is held
-  until that checkout is in front or its Claude starts a turn (`save_unlooked`).
+  until that checkout is in front or its Claude starts a turn (`save_unlooked`). A save wasn't the only
+  trigger: a file made or removed in any checkout makes rust-analyzer load its workspaces again, and once
+  it's quiescent and indexed it checks every folder it serves — a move that brought one new file checked
+  ten checkouts (#297). So the shared server's own `checkOnSave` stays off, and tarae asks each check of
+  one folder (`rust-analyzer/runFlycheck` with a file of it): a save's, and the one a load owes each
+  folder, sent once someone looks at it (`checks_due`).
 
 ---
 

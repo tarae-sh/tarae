@@ -79,8 +79,10 @@ says rust-analyzer's):
 [server.gleam]
 # One server for every checkout of a repository (sessions' worktrees), unless `editor.lsp-share` lists others:
 # the files whose words pick its toolchain (checkouts on different ones get one each), the setting that turns its
-# checks off while a second one loads, the `$/progress` title that means it's loading its workspaces again
-share = { toolchain = ["gleam.toml"], checks = "checkOnSave", reload-progress = "Fetching" }
+# checks off while a second one loads, the `$/progress` title that means it's loading its workspaces again; `check`
+# (optional) the notification that checks one file's folder (`{ textDocument }`) — with it the server's own checks stay
+# off and tarae asks each, a save's and the one a load would start, only in the checkouts someone looks at
+share = { toolchain = ["gleam.toml"], checks = "checkOnSave", check = "gleam/check", reload-progress = "Fetching" }
 # The notification that says it has nothing left to load (a swap waits for it), the capability that asks for it,
 # and where in its params it says so, its health and what's wrong
 quiescent = { method = "x/status", capability = "experimental.status", field = "quiescent", health = "health", message = "message" }

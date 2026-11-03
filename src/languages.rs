@@ -17,7 +17,7 @@
 //!   for; `core`, `dev`, `bundle`: built into which binaries (`build.rs`, the built-in packs only);
 //!   `everywhere = true`: installed with every grammar.
 //! - `[server.<name>]`: `command` (the name unless set), `args`; what it speaks beyond the protocol
-//!   (`lsp::ServerTraits`): `share = { toolchain, checks, reload-progress }` (one for a repository's checkouts —
+//!   (`lsp::ServerTraits`): `share = { toolchain, checks, check, reload-progress }` (one for a repository's checkouts —
 //!   `share.rs`), `quiescent = { method, capability, field, health, message }`, `symbol-params`, `hide-lines`;
 //!   how it starts beyond `args` (`args-add`, `args-unless`, `init`); `progress = { method, kind, text, done,
 //!   done-text, error }`, `virtual = { scheme, fetch, language, title-join }` (`virtualdoc.rs`),
@@ -554,11 +554,12 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
         known(v, keys, &format!("`{k}`"))?;
         Ok(Some(v))
     };
-    let share = match table("share", &["toolchain", "checks", "reload-progress"])? {
+    let share = match table("share", &["toolchain", "checks", "check", "reload-progress"])? {
         None => None,
         Some(s) => Some(Share {
             toolchain: strings(s.get("toolchain"), "share.toolchain")?.unwrap_or_default(),
             checks: string(s, "checks")?,
+            check: string(s, "check")?,
             reload_progress: string(s, "reload-progress")?,
         }),
     };
@@ -818,9 +819,10 @@ mod tests {
                     v.as_ref().map(|v| format!(" · {k} {v}")).unwrap_or_default()
                 };
                 said.push(format!(
-                    "share: toolchain {}{}{}",
+                    "share: toolchain {}{}{}{}",
                     sh.toolchain.join(" "),
                     opt("checks", &sh.checks),
+                    opt("check", &sh.check),
                     opt("reload-progress", &sh.reload_progress)
                 ));
             }

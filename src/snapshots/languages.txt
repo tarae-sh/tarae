@@ -385,7 +385,7 @@
       its version: org\.projectlombok:lombok:(?P<v>[0-9][0-9A-Za-z.\-]*)  <artifactId>lombok</artifactId>\s*<version>\s*(?P<v>[0-9][^<\s]*)\s*</version>  <lombok\.version>\s*(?P<v>[0-9][^<\s]*)\s*</lombok\.version>  (?m)^\s*lombok\s*=\s*"(?P<v>[0-9][^"]*)" · at least 1.18.4
       its jars: {gradle}/caches/modules-2/files-2.1/org.projectlombok/lombok/{v}/*/lombok-{v}.jar ~/.m2/repository/org/projectlombok/lombok/{v}/lombok-{v}.jar
   rust-analyzer
-    share: toolchain rust-toolchain.toml rust-toolchain · checks checkOnSave · reload-progress Fetching
+    share: toolchain rust-toolchain.toml rust-toolchain · checks checkOnSave · check rust-analyzer/runFlycheck · reload-progress Fetching
     quiescent: experimental/serverStatus (asked: experimental.serverStatusNotification) · quiescent health message
     symbol-params: {"searchKind":"allSymbols","searchScope":"workspace"}
     hide-lines: ^`#\[.*on by default$

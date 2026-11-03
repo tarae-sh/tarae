@@ -182,6 +182,10 @@ pub struct Share {
     pub toolchain: Vec<String>,
     /// The setting (a dotted path) that turns its checks off — held off while a swap's new server loads.
     pub checks: Option<String>,
+    /// The notification that checks the folder of one file (`{ textDocument }`: rust-analyzer's `runFlycheck`).
+    /// With it a shared server's own checks (`checks`) are always off and tarae asks each one, only where someone
+    /// looks (#297: loaded again, rust-analyzer checked every folder it serves).
+    pub check: Option<String>,
     /// The `$/progress` title that means it's loading its workspaces again (a toolchain may have changed).
     pub reload_progress: Option<String>,
 }
@@ -768,6 +772,9 @@ pub struct Client {
     /// Its checks (its pack's `share.checks`) held off — a swap's new server until it takes over, a restarted
     /// one until it's loaded (`share.rs`; measured: that skips a check of every folder at its start).
     pub checks_off: bool,
+    /// The folders whose check its loading would have started (its pack's `share.check`: it became quiescent
+    /// with its checks on) — each asked once someone looks at it and it has nothing under way (`checks_due`).
+    pub checks_owed: Vec<PathBuf>,
     /// What its pack's `quiescent` notification said: quiescent now (None until it says) · whether it ever was
     /// (a server still loading is restarted, not swapped) · its health.
     pub quiescent: Option<bool>,
@@ -946,6 +953,7 @@ impl Client {
             roots: roots.to_vec(),
             share: None,
             checks_off: false,
+            checks_owed: Vec::new(),
             quiescent: None,
             settled_once: false,
             health: String::new(),
@@ -1076,6 +1084,7 @@ impl Client {
             roots: Vec::new(),
             share: None,
             checks_off: false,
+            checks_owed: Vec::new(),
             quiescent: None,
             settled_once: false,
             health: String::new(),

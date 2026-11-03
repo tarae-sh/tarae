@@ -646,11 +646,12 @@ impl Editor {
         if let Some(c) = self.lsp.clients.iter().find(|c| c.name == server.name && c.root == root) {
             return Some(c.id);
         }
-        self.lsp_start(server, &[root], false)
+        self.lsp_start(server, &[root], false, false)
     }
 
     /// A new `server` for the workspace folders `roots` (`checks_off`: its checks — its pack's `share.checks` —
-    /// held off until they're turned on) — None if it couldn't start, or keeps exiting.
+    /// held off until they're turned on; `shared`: a repository's, whose own checks are off for good where tarae
+    /// asks each — `share::asks`) — None if it couldn't start, or keeps exiting.
     /// A server of tarae's own (`Client::own`) made and listed — its id.
     pub(crate) fn lsp_own(
         &mut self,
@@ -688,6 +689,7 @@ impl Editor {
         server: &lsp::ServerSpec,
         roots: &[std::path::PathBuf],
         checks_off: bool,
+        shared: bool,
     ) -> Option<ClientId> {
         let root = roots.first()?;
         // (what's loaded into it, found for this start once the repository's code was trusted — `lspagent.rs`;
@@ -704,10 +706,13 @@ impl Editor {
         let mut server = lsp::start_spec(server, root);
         server.args.extend(agents.args());
         let mut options = lsp::options_for(&server, roots);
-        // (a server with no setting for it can't be held)
-        let checks = lsp::traits(&server).share.as_ref().and_then(|s| s.checks.clone());
+        // (a server with no setting for it can't be held; a shared one whose checks tarae asks starts with its
+        // own off — `share::asks`)
+        let share = lsp::traits(&server).share.as_ref();
+        let checks = share.and_then(|s| s.checks.clone());
+        let asked = shared && share.is_some_and(|s| s.check.is_some());
         let checks_off = checks_off && checks.is_some();
-        if let Some(key) = checks.filter(|_| checks_off) {
+        if let Some(key) = checks.filter(|_| checks_off || asked) {
             options = crate::share::checks_held(options, key);
         }
         // (a test's stand-in, no process: `share::StandIn`)
@@ -862,6 +867,7 @@ impl Editor {
             let Some(c) = self.client_mut(cid) else { continue };
             for p in &paths {
                 c.notify("textDocument/didSave", json!({ "textDocument": { "uri": lsp::uri(p) } }));
+                crate::share::check(c, p);
             }
             if !paths.is_empty() {
                 let names: Vec<String> = paths
@@ -929,6 +935,69 @@ impl Editor {
                 .is_some_and(|l| !l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy))
     }
 
+    /// Server `cid` became quiescent: with its checks on, the check its loading would have started of every folder
+    /// it serves is owed, each asked once someone looks at it (`checks_due`) — only where tarae asks its checks
+    /// (`share::asks`). A restarted server's or a swap's new one's load, its checks held off, owes none (as
+    /// before: the next save checks).
+    fn checks_owe(&mut self, cid: ClientId) {
+        let Some(c) = self.client_mut(cid) else { return };
+        if crate::share::asks(c).is_none() || c.checks_off {
+            return;
+        }
+        c.checks_owed = c.roots.clone();
+        let msg = format!(
+            "loaded: the check of {} folders owed, each asked once someone looks at it",
+            c.roots.len()
+        );
+        c.log().line(&c.name, "check", &msg);
+    }
+
+    /// The owed checks (`checks_owe`) of the folders someone looks at go, each through a file of that folder its
+    /// server serves — once the server has nothing under way (its loading's indexing over: rust-analyzer waits for
+    /// its own too) and no run or test of Claude's builds. A folder nobody looks at (a workspace behind, its
+    /// Claude between turns — `save_unlooked`) waits until someone does: it comes to the front, or its Claude
+    /// starts a turn. Looked at every event (the first after a switch, a turn's start, the indexing's end).
+    pub(crate) fn checks_due(&mut self) {
+        if self.lsp.clients.iter().all(|c| c.checks_owed.is_empty()) || self.claude_building() {
+            return;
+        }
+        let ready = |c: &Client| {
+            !c.checks_owed.is_empty() && !c.checks_off && c.quiescent == Some(true) && c.progress.is_empty()
+        };
+        let cids: Vec<ClientId> = self.lsp.clients.iter().filter(|c| ready(c)).map(|c| c.id).collect();
+        // (the documents someone looks at, by id: the front's, and those of a workspace behind whose Claude is at
+        // work — `save_unlooked`'s rule)
+        let busy =
+            |w: &crate::workspace::Workspace| w.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy);
+        let looked: Vec<DocId> = std::iter::once(&self.workspace)
+            .chain(self.workspaces.iter().filter(|w| busy(w)))
+            .flat_map(|w| w.docs.iter().copied())
+            .collect();
+        for cid in cids {
+            let Some(c) = self.client(cid) else { continue };
+            let (roots, owed) = (c.roots.clone(), c.checks_owed.clone());
+            let served = |id: &DocId| {
+                let d = &self.docs[self.docs.index_of(*id)?];
+                d.path.as_ref().filter(|_| d.lsp.client == Some(cid))
+            };
+            let files: Vec<std::path::PathBuf> = owed
+                .iter()
+                .filter_map(|root| {
+                    let at = |p: &&std::path::PathBuf| crate::share::folder_of(&roots, p) == Some(root);
+                    looked.iter().filter_map(served).find(at).cloned()
+                })
+                .collect();
+            let Some(c) = self.client_mut(cid) else { continue };
+            // (a folder gone from its server owes nothing)
+            c.checks_owed.retain(|r| roots.contains(r));
+            for p in files {
+                crate::share::check(c, &p);
+                let msg = format!("checks {} — loaded since, someone looks at it", p.display());
+                c.log().line(&c.name, "check", &msg);
+            }
+        }
+    }
+
     /// (tests) Whether `id`'s save is held.
     #[cfg(test)]
     pub(crate) fn lsp_holds(&self, id: DocId) -> bool {
@@ -960,6 +1029,8 @@ impl Editor {
         for cid in clients {
             if let Some(c) = self.client_mut(cid) {
                 c.notify("textDocument/didSave", json!({ "textDocument": { "uri": lsp::uri(&path) } }));
+                // (a shared server tarae asks its checks of: this file's folder, as its own check on save would)
+                crate::share::check(c, &path);
                 let saves = self.lsp.recent_saves.entry(cid).or_default();
                 saves.retain(|(p, t)| *p != path && now.duration_since(*t) < RESAVE_WITHIN);
                 saves.push((path.clone(), now));
@@ -1265,9 +1336,14 @@ impl Editor {
                     let msg = field(&q.message).unwrap_or_default().lines().next().unwrap_or_default();
                     c.log().line(&c.name, "health", format!("{health} {msg}").trim_end());
                 }
+                let became = quiescent && c.quiescent != Some(true);
                 (c.quiescent, c.health) = (Some(quiescent), health);
                 c.settled_once |= quiescent;
                 if quiescent {
+                    // (before a restarted one's checks come on: its own load owes none)
+                    if became {
+                        self.checks_owe(cid);
+                    }
                     self.share_quiescent(cid);
                     self.code_agents_imported(cid);
                 }
@@ -6965,7 +7041,7 @@ mod tests {
         assert!(started.is_empty(), "real servers started: {started:?}");
         assert!(ed.lsp.failed.is_empty(), "real servers tried: {:?}", ed.lsp.failed);
         let taplo = crate::lsp::default_spec("taplo").expect("the toml pack's");
-        assert!(ed.lsp_start(&taplo, std::slice::from_ref(&dir), false).is_none());
+        assert!(ed.lsp_start(&taplo, std::slice::from_ref(&dir), false, false).is_none());
         let why = ed.lsp.failed.get("taplo").cloned().unwrap_or_default();
         assert!(why.contains("[lsp.taplo] command = \"sh\""), "{why}");
         assert!(ed.lsp.clients.is_empty());

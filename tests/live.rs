@@ -696,12 +696,29 @@ fn ended(mut t: Term, scratch: &Scratch, log: &Path) {
 #[ignore = "live: run with `cargo live`"]
 #[cfg(target_os = "macos")]
 fn a_base_move_checks_only_what_someone_looks_at() {
+    base_move_checks("ra-move", false);
+}
+
+/// Live (#297): the same, the move adding a file (`src/more.rs`, as `e03a8dea` added `xtask/src/recording.rs`) —
+/// rust-analyzer loads its workspaces again for a file made, and once it's quiescent it checked every folder it
+/// serves (`main_loop.rs`: "run the deferred initial workspace flycheck").
+#[test]
+#[ignore = "live: run with `cargo live`"]
+#[cfg(target_os = "macos")]
+fn a_base_move_that_adds_a_file_checks_only_what_someone_looks_at() {
+    base_move_checks("ra-move-adds", true);
+}
+
+/// The two above: the move (`adds`: with a file made), then s3 brought to the front — each window's checks only
+/// in the checkout someone looks at (main in front, then s3).
+#[cfg(target_os = "macos")]
+fn base_move_checks(name: &str, adds: bool) {
     if !have("rust-analyzer") || !have("cargo") {
         return;
     }
     const SESSIONS: usize = 9;
     // (made new, so the drop removes only what this run made — its own `Drop` does, after the group's kill)
-    let base = tarae_testkit::scratch::Scratch::new("ra-move").into_path();
+    let base = tarae_testkit::scratch::Scratch::new(name).into_path();
     let mut scratch = Scratch { base: base.clone(), group: None };
     std::fs::create_dir_all(base.join(".cargo")).unwrap();
     let cpu_log = base.join("rustc-cpu.log");
@@ -724,6 +741,9 @@ fn a_base_move_checks_only_what_someone_looks_at() {
     .unwrap();
     let lib = |v: u32| {
         let mut s = format!("pub const V: u32 = {v};\n");
+        if adds && v > 0 {
+            s += "mod more;\n";
+        }
         // (enough code that a check is seen on the clock: ~2 s of rustc)
         for i in 0..3000 {
             s += &format!(
@@ -762,7 +782,7 @@ fn a_base_move_checks_only_what_someone_looks_at() {
         Command::new("cargo").args(["check", "--all-targets", "-q", "--offline"]).current_dir(&main).status();
     assert!(st.is_ok_and(|s| s.success()), "cargo check of main");
 
-    let sb = Sandbox::live("ra-move");
+    let sb = Sandbox::live(name);
     sb.write_config(&format!(
         "{LIVE_CONFIG}auto-save = \"off\"\n[workspace]\nworktrees = \"{}/wt\"\nsync = \"idle\"\n\
          [llm]\ncommand = \"sh\"\nargs = [\"-c\", \"exit 0\"]\n",
@@ -842,52 +862,70 @@ fn a_base_move_checks_only_what_someone_looks_at() {
             })
             .sum()
     }
+    // (and the manifests the checks named)
     let window = |from: Instant, cpu0: (f64, usize), bytes0: u64| {
         let c = checks.lock().unwrap();
         let seen: Vec<&String> = c.iter().filter(|c| c.1 >= from).map(|c| &c.2).collect();
-        let mut places: Vec<&str> = seen
+        let mut places: Vec<String> = seen
             .iter()
             .filter_map(|a| a.split_whitespace().skip_while(|w| *w != "--manifest-path").nth(1))
+            .map(str::to_string)
             .collect();
         places.sort_unstable();
         places.dedup();
         let (secs, runs) = cpu();
         let grew = bytes(&base.join("build")) as i64 - bytes0 as i64;
-        format!(
+        let said = format!(
             "{} cargo checks in {} checkouts · rustc {:.2} s CPU over {} runs · build dirs {:+.1} MB",
             seen.len(),
             places.len(),
             secs - cpu0.0,
             runs - cpu0.1,
             grew as f64 / 1e6
-        )
+        );
+        (said, places)
+    };
+    let only = |places: &[String], checkout: &str| {
+        let manifest = format!("/{checkout}/Cargo.toml");
+        places.iter().all(|p| p.ends_with(&manifest))
     };
 
     // The move: main's tip moves, the nine idle checkouts are moved onto it
     let (from, cpu0, bytes0) = (Instant::now(), cpu(), bytes(&base.join("build")));
     let moved = || (1..=SESSIONS).filter(|n| logged(&format!("s{n} · moved onto main")) > 0).count();
     std::fs::write(main.join("src/lib.rs"), lib(1)).unwrap();
-    git(&["commit", "-qam", "moved"]);
+    if adds {
+        std::fs::write(main.join("src/more.rs"), "pub fn more() -> u32 { super::V }\n").unwrap();
+    }
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "moved"]);
     let end = Instant::now() + LIVE_TIMEOUT;
     while moved() < SESSIONS && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(200));
     }
     settle(&mut t);
-    eprintln!(
-        "LIVE #294 the move ({} of {SESSIONS} sessions moved): {}",
-        moved(),
-        window(from, cpu0, bytes0)
-    );
+    let (said, places) = window(from, cpu0, bytes0);
+    let what = if adds { "#297 the move, a file added" } else { "#294 the move" };
+    eprintln!("LIVE {what} ({} of {SESSIONS} sessions moved): {said}", moved());
+    if moved() < SESSIONS {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let lines = text.lines().filter(|l| ["onto", "base", "moved"].iter().any(|w| l.contains(w)));
+        eprintln!("LIVE the moves' lines:\n{}", lines.collect::<Vec<_>>().join("\n"));
+    }
+    assert_eq!(moved(), SESSIONS, "every session moved");
 
     // One session to the front: what its own reload held
     let (from, cpu0, bytes0) = (Instant::now(), cpu(), bytes(&base.join("build")));
     t.command("workspace-switch 3");
     settle(&mut t);
-    eprintln!("LIVE #294 s3 to the front: {}", window(from, cpu0, bytes0));
+    let (said3, places3) = window(from, cpu0, bytes0);
+    eprintln!("LIVE {} s3 to the front: {said3}", &what[..4]);
 
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = sampler.join();
     ended(t, &scratch, &log);
+    assert!(only(&places, "main"), "the move checked checkouts nobody looks at: {places:?}");
+    assert!(!places3.is_empty() && only(&places3, "s3"), "s3 in front checks itself only: {places3:?}");
 }
 
 /// The run's swap, restart and share lines in tarae's log.

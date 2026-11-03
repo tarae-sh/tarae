@@ -137,15 +137,43 @@ pub fn checks_held(inner: MakeOptions, checks: String) -> MakeOptions {
 }
 
 /// A shared server's answer to `workspace/configuration`: the options it started with, its checks as they
-/// are now. rust-analyzer takes the answer as its whole settings, so answering `checkOnSave` alone would
-/// drop the rest (the left-out folders). None for one that isn't shared, or whose checks can't be held
-/// (answered as before).
+/// are now — off for good where tarae asks each check (`asks`). rust-analyzer takes the answer as its whole
+/// settings, so answering `checkOnSave` alone would drop the rest (the left-out folders). None for one that
+/// isn't shared, or whose checks can't be held (answered as before).
 pub fn settings(c: &Client) -> Option<Value> {
     c.share.as_ref()?;
     let checks = c.traits.share.as_ref()?.checks.as_deref()?;
     let mut v = c.init_sent.get().cloned().unwrap_or(Value::Null);
-    lsp::put(&mut v, checks, json!(!c.checks_off));
+    lsp::put(&mut v, checks, json!(!c.checks_off && asks(c).is_none()));
     Some(v)
+}
+
+/// The notification server `c` is asked a check of one file's folder by (its pack's `share.check`) — a shared
+/// server's whose own checks (`share.checks`) tarae keeps off for good (#297). rust-analyzer checks every folder
+/// it serves once it's quiescent after loading (its `main_loop.rs`: "the deferred initial workspace flycheck",
+/// `restart_workspace` on each folder's) — and it loads again for any file made or removed in any of them: a base
+/// move that brought a file checked ten checkouts nobody looked at. Its `runFlycheck` with a file checks that
+/// file's folder only, as a save's check does, whatever `checkOnSave` says. None: it checks on its own.
+pub fn asks(c: &Client) -> Option<&'static str> {
+    c.share.as_ref()?;
+    let s = c.traits.share.as_ref()?;
+    s.checks.as_ref()?;
+    s.check.as_deref()
+}
+
+/// Server `c` checks the folder of `path` (`asks`; nothing while its checks are held off) — a save's check, or
+/// one owed since it loaded (`Client.checks_owed`): that folder owes none any more.
+pub fn check(c: &mut Client, path: &Path) {
+    let Some(method) = asks(c).filter(|_| !c.checks_off) else { return };
+    c.notify(method, json!({ "textDocument": { "uri": lsp::uri(path) } }));
+    if let Some(r) = folder_of(&c.roots, path).cloned() {
+        c.checks_owed.retain(|o| *o != r);
+    }
+}
+
+/// The folder of `roots` `path` is in — the innermost.
+pub fn folder_of<'a>(roots: &'a [PathBuf], path: &Path) -> Option<&'a PathBuf> {
+    roots.iter().filter(|r| path.starts_with(r)).max_by_key(|r| r.components().count())
 }
 
 /// Whether B's definition agrees with A's: the same places, or A had none (nothing to compare).
@@ -492,7 +520,7 @@ impl Editor {
             self.share_join(a, root, id);
             return None;
         }
-        let cid = self.lsp_start(server, std::slice::from_ref(&root), false)?;
+        let cid = self.lsp_start(server, std::slice::from_ref(&root), false, true)?;
         if let Some(c) = self.client_mut(cid) {
             c.share = Some(key);
             served_moved();
@@ -863,7 +891,7 @@ impl Editor {
     fn swap_begin(&mut self, a: ClientId, want: Vec<PathBuf>, why: String) {
         let Some(c) = self.client(a) else { return };
         let (spec, key, have) = (c.spec.clone(), c.share.clone(), c.roots.clone());
-        let Some(b) = self.lsp_start(&spec, &want, true) else {
+        let Some(b) = self.lsp_start(&spec, &want, true, key.is_some()) else {
             crate::log::line(&spec.name, "swap", &format!("not started ({why}) — the one in use stays"));
             return;
         };
@@ -913,15 +941,29 @@ impl Editor {
     }
 
     /// Its checks on again (rust-analyzer's `checkOnSave`: it asks for its settings again — `settings`;
-    /// measured: no check starts, the next save checks).
+    /// measured: no check starts, the next save checks). One tarae asks its checks of (`asks`) hears nothing:
+    /// its own stay off, tarae's are on.
     fn checks_on(&mut self, cid: ClientId) {
         let Some(c) = self.client_mut(cid) else { return };
         if !c.checks_off {
             return;
         }
         c.checks_off = false;
-        c.notify("workspace/didChangeConfiguration", json!({ "settings": {} }));
+        if asks(c).is_none() {
+            c.notify("workspace/didChangeConfiguration", json!({ "settings": {} }));
+        }
         crate::log::line(&c.name.clone(), "share", "checks on save on again");
+    }
+
+    /// What A owed (`Client.checks_owed`) is B's, of its folders — B takes over.
+    fn owed_move(&mut self, a: ClientId, b: ClientId) {
+        let owed = self.client_mut(a).map(|c| std::mem::take(&mut c.checks_owed)).unwrap_or_default();
+        let Some(c) = self.client_mut(b) else { return };
+        for r in owed {
+            if c.roots.contains(&r) && !c.checks_owed.contains(&r) {
+                c.checks_owed.push(r);
+            }
+        }
     }
 
     /// One round of "does B agree with A": the definition at a cursor in an open file of each old folder,
@@ -1037,6 +1079,7 @@ impl Editor {
         s.switched = Some(crate::clock::now());
         let (a, took, why) = (s.a, crate::clock::since(s.started), s.why.clone());
         self.take_files(a, b);
+        self.owed_move(a, b);
         self.checks_on(b);
         self.share_move_joining(a, b, &[]);
         let name = self.client(b).map(|c| c.name.clone()).unwrap_or_default();
@@ -1131,7 +1174,7 @@ impl Editor {
     fn share_restart(&mut self, a: ClientId, want: Vec<PathBuf>, why: String) {
         let Some(c) = self.client(a) else { return };
         let (spec, key) = (c.spec.clone(), c.share.clone());
-        let Some(b) = self.lsp_start(&spec, &want, true) else {
+        let Some(b) = self.lsp_start(&spec, &want, true, key.is_some()) else {
             crate::log::line(&spec.name, "restart", &format!("not started ({why}) — the one in use stays"));
             return;
         };
@@ -1153,6 +1196,7 @@ impl Editor {
             self.shadow_one(b, *id, lang);
         }
         self.take_files(a, b);
+        self.owed_move(a, b);
         let msg = format!("restart: a new {} for {} — {why}", spec.name, names(&want));
         crate::log::line(&spec.name, "restart", &msg);
         let orphans: Vec<DocId> =
@@ -1597,6 +1641,81 @@ mod tests {
         assert!(!ed.toasts.iter().any(|t| t.text.contains("exited")), "nothing said about it on screen");
     }
 
+    /// The messages of server `cid`'s log that ask a check of `path`'s folder (`share.check`).
+    fn checks_of(out: &str, path: &Path) -> usize {
+        let uri = lsp::uri(path);
+        out.split("Content-Length")
+            .filter(|m| m.contains("rust-analyzer/runFlycheck") && m.contains(&uri))
+            .count()
+    }
+
+    /// #297: a shared rust-analyzer's own checks are off from its start, and tarae asks each one of a folder: a
+    /// save's, and the one its loading would have started — there of every folder it serves at once, ten checkouts
+    /// checked after a base move brought a file. Loaded again, main (in front) is checked once its indexing is
+    /// over; wt1 (behind, its Claude idle) only once it's in front.
+    #[test]
+    fn a_loaded_server_checks_only_the_folders_someone_looks_at() {
+        let (t, mut ed) = fixture("owed", &["wt1"], plenty);
+        let (main_file, wt_file) = (t.join("main/src/main.rs"), t.join("wt1/src/main.rs"));
+        let (main, a) = open(&mut ed, &main_file);
+        let a = a.expect("the repository's server");
+        up(&mut ed, a);
+        let out = sent(&t, &ed, a, &["initialize"]);
+        assert!(out.contains(r#""checkOnSave":false"#), "its own checks off from its start: {out}");
+        // Its first load: main's check, asked
+        quiescent(&mut ed, a);
+        ed.handle_event(crate::event::Event::Resize);
+        assert_eq!(
+            checks_of(&sent(&t, &ed, a, &["runFlycheck"]), &main_file),
+            1,
+            "main checked as it loaded"
+        );
+
+        // wt1's file, opened in its own workspace, which goes behind: it joins by a swap
+        let w1 = ed.workspace_add(t.join("wt1"));
+        ed.workspace_switch(w1);
+        ed.open(&wt_file).unwrap();
+        ed.workspace_switch(crate::event::WorkspaceId::HOME);
+        settle(&mut ed, "a swap began", |ed| the_swap(ed).is_some());
+        let (_, b) = the_swap(&ed).unwrap();
+        up(&mut ed, b);
+        quiescent(&mut ed, b);
+        let place = json!([{ "uri": lsp::uri(&main_file), "range": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 7 } } }]);
+        round(&mut ed, a, b, &place, &place);
+        assert_eq!(main_of(&ed, main), Some(b), "B took over");
+        assert!(ed.client(b).unwrap().checks_owed.is_empty(), "the swap's load owes no check");
+
+        // B loads again (a file made in some folder): every folder's check owed, none while it indexes
+        let status = |q: bool| json!({ "jsonrpc": "2.0", "method": "experimental/serverStatus", "params": { "health": "ok", "quiescent": q } });
+        let progress = |kind: &str| json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": "rustAnalyzer/Indexing", "value": { "kind": kind, "title": "Indexing" } } });
+        ed.on_lsp_message(b, status(false));
+        ed.on_lsp_message(b, status(true));
+        ed.on_lsp_message(b, progress("begin"));
+        ed.handle_event(crate::event::Event::Resize);
+        assert_eq!(
+            ed.client(b).unwrap().checks_owed,
+            [t.join("main"), t.join("wt1")],
+            "owed while it indexes"
+        );
+        // Its indexing over: main's goes, wt1's waits
+        ed.on_lsp_message(b, progress("end"));
+        ed.handle_event(crate::event::Event::Resize);
+        assert_eq!(ed.client(b).unwrap().checks_owed, [t.join("wt1")], "nobody looks at wt1");
+        // (a save of main's, after: what B was sent before it is all there once it is)
+        ed.lsp_did_save(main);
+        let enough = |ed: &Editor| checks_of(&sent(&t, ed, b, &[]), &main_file) >= 2;
+        settle(&mut ed, "main's check and its save's", enough);
+        let out = sent(&t, &ed, b, &[]);
+        assert_eq!(checks_of(&out, &main_file), 2, "main: once loaded, once saved");
+        assert_eq!(checks_of(&out, &wt_file), 0, "no check of wt1 while it's behind, its Claude idle: {out}");
+        // wt1 in front: its check goes
+        ed.workspace_switch(w1);
+        ed.handle_event(crate::event::Event::Resize);
+        assert!(ed.client(b).unwrap().checks_owed.is_empty());
+        settle(&mut ed, "wt1's check", |ed| checks_of(&sent(&t, ed, b, &[]), &wt_file) == 1);
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
     /// The recipe end to end, with stand-in servers: a worktree's first file joins the repository's server
     /// by a swap — B for both folders, its checks off, told every open file (A's as a shadow: asked nothing,
     /// its diagnostics unheard) and every change, the new folder's file B's own from the start — while A goes
@@ -1672,13 +1791,12 @@ mod tests {
         assert!(doc(&ed, main).is_empty(), "no shadow left");
         assert_eq!(diags(&ed).len(), 1, "what A found stays");
         assert_eq!(diags(&ed)[0].source, b, "as B's");
-        assert!(!ed.client(b).unwrap().checks_off);
-        assert!(
-            sent(&t, &ed, b, &["didChangeConfiguration"]).contains("didChangeConfiguration"),
-            "checks on"
-        );
+        assert!(!ed.client(b).unwrap().checks_off, "tarae's checks on");
+        // (its own stay off: tarae asks each — `asks`)
         ed.on_lsp_message(b, json!({ "jsonrpc": "2.0", "id": 901, "method": "workspace/configuration", "params": { "items": [{ "section": "rust-analyzer" }] } }));
-        assert!(sent(&t, &ed, b, &[r#""id":901"#]).contains(r#""result":[{"checkOnSave":true}]"#));
+        let out = sent(&t, &ed, b, &[r#""id":901"#]);
+        assert!(out.contains(r#""result":[{"checkOnSave":false}]"#), "{out}");
+        assert!(!out.contains("didChangeConfiguration"), "nothing of its own to turn on: {out}");
         // A answers what it was asked, then goes
         shut(&mut ed, a);
         let procs = ed.share_procs(ed.client(b).unwrap()).unwrap();
@@ -1874,7 +1992,7 @@ mod tests {
         assert!(sent(&t, &ed, b, &["checkOnSave"]).contains(r#""checkOnSave":false"#));
         quiescent(&mut ed, b);
         assert!(!ed.client(b).unwrap().checks_off, "on once it's loaded");
-        assert!(sent(&t, &ed, b, &["didChangeConfiguration"]).contains("didChangeConfiguration"));
+        assert!(ed.client(b).unwrap().checks_owed.is_empty(), "its own load owes no check");
         // Room again: the next checkout is a swap
         ed.lsp.share.room = Some(plenty);
         let (wt2, _) = (ed.open(&t.join("wt2/src/main.rs")).map(|_| ed.doc().id).unwrap(), ());

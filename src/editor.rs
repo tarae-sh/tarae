@@ -3024,6 +3024,7 @@ impl Editor {
         self.disk_sync();
         self.recovery_sync();
         self.saves_due(false);
+        self.checks_due();
         crate::sound::sync(self);
         crate::writing::reveal(self);
         crate::follow::watch(self);
