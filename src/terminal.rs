@@ -54,6 +54,9 @@ pub struct Terminal {
     /// sent (the tests read it: `ready` means nothing before, the reader may empty the pty at any moment).
     #[cfg_attr(not(test), allow(dead_code))]
     reader_waits: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The stand-in reader's questions across its batches (`reader_reads`; the real reader keeps its own).
+    #[cfg(test)]
+    asks: std::sync::Mutex<Asks>,
     master: OwnedFd,
     writer: Sender<Vec<u8>>,
     generation: u64,
@@ -390,6 +393,7 @@ fn spawn(
     let events = reading;
     crate::event::thread("tarae-term-read", move || {
         let mut buf = vec![0u8; 64 * 1024];
+        let mut asks = Asks::default();
         // One batch at a time on the main loop: the next is read while it's shown and sent once it has
         // been. A program writing faster than the screen reads it (vt100 takes ~10 ms a MB) then waits on
         // its terminal, the pty full — instead of batches piling up in the queue the keys go through too.
@@ -408,7 +412,7 @@ fn spawn(
                     }
                     // Its questions answered now, as it's read — before it waits for the last batch's go-ahead,
                     // kept while the view holds: a question never waits with the output (fish waits 10 s)
-                    let sent = answer(&answering, &bytes);
+                    let sent = asks.answer(&answering, &bytes);
                     answers_sent.fetch_add(sent, std::sync::atomic::Ordering::SeqCst);
                     // (an error: the batch was dropped unshown — the editor is going)
                     if let Some(rx) = shown.take() {
@@ -450,6 +454,8 @@ fn spawn(
         answered,
         drains_held,
         reader_waits,
+        #[cfg(test)]
+        asks: Default::default(),
         master,
         writer,
         generation,
@@ -458,23 +464,63 @@ fn spawn(
     })
 }
 
-/// What a terminal answers to what the program asks of it in `bytes`: the Primary Device Attributes query
-/// (`CSI c` / `CSI 0 c`) — a VT220 with ANSI color, as many terminals say. Unanswered, fish waits 10 s for
-/// it before its first prompt (measured: a blank panel, then "could not read response to Primary Device
-/// Attribute query").
+/// What a program asks of its terminal that the terminal answers: the Primary Device Attributes query (`CSI c` /
+/// `CSI 0 c`), each answered as a VT220 with ANSI color, as many terminals say. Unanswered, fish waits 10 s for it
+/// before its first prompt (measured: a blank panel, then "could not read response to Primary Device Attribute
+/// query").
+const QUESTIONS: [&[u8]; 2] = [b"\x1b[c", b"\x1b[0c"];
+const DA1: &[u8] = b"\x1b[?62;22c";
+
+/// What a terminal answers to what the program asks of it in `bytes` (`QUESTIONS`).
 fn answers(bytes: &[u8]) -> Vec<&'static [u8]> {
-    const DA1: &[u8] = b"\x1b[?62;22c";
     let asks = |q: &[u8]| bytes.windows(q.len()).filter(|w| *w == q).count();
-    std::iter::repeat_n(DA1, asks(b"\x1b[c") + asks(b"\x1b[0c")).collect()
+    std::iter::repeat_n(DA1, QUESTIONS.iter().map(|q| asks(q)).sum()).collect()
 }
 
-/// The reader's answers to what a batch it read asks of the terminal, sent to the program at once — how many.
-fn answer(writer: &Sender<Vec<u8>>, bytes: &[u8]) -> u64 {
-    let replies = answers(bytes);
-    for reply in &replies {
-        let _ = writer.send(reply.to_vec());
+/// The reader's questions across its batches (#287): a question's start a batch ended in — `ESC [` at one read's
+/// end, its `c` at the next's start — kept for the next, so it's answered as its last byte is read. Only what could
+/// still become a question, fewer bytes than the longest; the batches go on to the screen as they were read.
+#[derive(Default)]
+struct Asks {
+    start: Vec<u8>,
+}
+
+impl Asks {
+    /// The answers to what `bytes`, read after the batches before, asks (`answers`), each once.
+    fn read(&mut self, bytes: &[u8]) -> Vec<&'static [u8]> {
+        let start = std::mem::take(&mut self.start);
+        let mut replies = answers(bytes);
+        // (a question begun in the last batch, ended in this one: at most one — no question's rest starts another's)
+        if !start.is_empty()
+            && QUESTIONS.iter().any(|q| q.starts_with(&start) && bytes.starts_with(&q[start.len()..]))
+        {
+            replies.push(DA1);
+        }
+        // What may still become one: the end of what's read — this batch's, or with the last start when it's short —
+        // that is a question's beginning
+        let longest = QUESTIONS.iter().map(|q| q.len()).max().unwrap_or(0);
+        let end = if bytes.len() >= longest {
+            bytes[bytes.len() - (longest - 1)..].to_vec()
+        } else {
+            let mut end = start;
+            end.extend_from_slice(bytes);
+            end.split_off(end.len().saturating_sub(longest - 1))
+        };
+        let begun = |s: &[u8]| QUESTIONS.iter().any(|q| q.len() > s.len() && q.starts_with(s));
+        if let Some(from) = (0..end.len()).find(|&i| begun(&end[i..])) {
+            self.start = end[from..].to_vec();
+        }
+        replies
     }
-    replies.len() as u64
+
+    /// The reader's answers to what a batch it read asks of the terminal, sent to the program at once — how many.
+    fn answer(&mut self, writer: &Sender<Vec<u8>>, bytes: &[u8]) -> u64 {
+        let replies = self.read(bytes);
+        for reply in &replies {
+            let _ = writer.send(reply.to_vec());
+        }
+        replies.len() as u64
+    }
 }
 
 /// For the tests and the simulation, whose stand-in has no reader thread: what the reader does as it reads a
@@ -482,7 +528,7 @@ fn answer(writer: &Sender<Vec<u8>>, bytes: &[u8]) -> u64 {
 #[cfg(test)]
 pub(crate) fn reader_reads(ed: &Editor, bytes: &[u8]) {
     if let Some(t) = ed.workspace.terminal.as_ref() {
-        answer(&t.writer, bytes);
+        t.asks.lock().unwrap().answer(&t.writer, bytes);
     }
 }
 
@@ -868,6 +914,7 @@ pub(crate) fn stand_in(
         answered: Default::default(),
         drains_held: Default::default(),
         reader_waits: Default::default(),
+        asks: Default::default(),
         master,
         writer,
         generation: ed.terminal_generation,
@@ -959,6 +1006,69 @@ mod tests {
         assert!(contents.contains("E[?62;22c|"), "{contents:?}");
         assert_eq!(answers(b"x\x1b[0cy\x1b[c"), [b"\x1b[?62;22c"; 2], "both forms, each answered");
         assert!(answers(b"\x1b[>c\x1b[?1;2c").is_empty(), "not the secondary query, nor a reply");
+    }
+
+    /// #287: every question split across the reader's batches — at each of its bytes, at a full read's edge (64 KB
+    /// before it), and a byte a batch — is answered once, in the batch its last byte is in; what only began one and
+    /// went on otherwise is nothing. What's kept is fewer bytes than a question.
+    #[test]
+    fn a_question_split_across_batches_is_answered_as_its_last_byte_is_read() {
+        let longest = QUESTIONS.iter().map(|q| q.len()).max().unwrap();
+        let edge = vec![b'x'; 64 * 1024];
+        for q in QUESTIONS {
+            for at in 1..q.len() {
+                for before in [&b""[..], b"out ", &edge] {
+                    let mut asks = Asks::default();
+                    let first = [before, &q[..at]].concat();
+                    assert!(asks.read(&first).is_empty(), "{q:?} at {at}: not yet");
+                    assert!(asks.start.len() < longest);
+                    let second = [&q[at..], b" more"].concat();
+                    assert_eq!(asks.read(&second), [DA1], "{q:?} at {at}: answered with its last byte");
+                    assert!(asks.read(b"next").is_empty() && asks.start.is_empty(), "{q:?} at {at}: once");
+                }
+            }
+            let mut asks = Asks::default();
+            let said: Vec<_> = q.iter().flat_map(|b| asks.read(&[*b])).collect();
+            assert_eq!(said, [DA1], "{q:?} a byte a batch");
+        }
+        let mut asks = Asks::default();
+        for (first, second) in [(&b"\x1b["[..], &b">c"[..]), (b"\x1b[0", b"1c"), (b"\x1b", b"x[c")] {
+            assert!(asks.read(first).is_empty() && asks.read(second).is_empty(), "{first:?} then {second:?}");
+        }
+        assert_eq!(asks.read(b"\x1b[\x1b[0"), [] as [&[u8]; 0]);
+        assert_eq!(asks.start, b"\x1b[0", "only what can still become one");
+        assert_eq!(asks.read(b"c\x1b[c\x1b"), [DA1; 2], "the carried one and one whole");
+        assert_eq!(asks.start, b"\x1b");
+    }
+
+    /// #287, for real: a program writing its question in two pieces — `ESC [`, then (a fifo between them) its `c` —
+    /// is answered once the second is read. The first piece is the reader's own batch: the screen has the text
+    /// before it and nothing is left on the pty (the program waits on the fifo) before the test lets it go on.
+    #[test]
+    fn a_question_written_in_two_pieces_is_answered() {
+        if no_pty_here("a_question_written_in_two_pieces_is_answered") {
+            return;
+        }
+        let scratch = crate::scratch::Scratch::new("terminal-question-split");
+        let fifo = fifo_in(&scratch);
+        let script = format!(
+            "exec bash -c 'stty -icanon -echo; printf \"asked\\033[\"; read -r _ < \"{0}\"; printf c; \
+             IFS= read -r -d c _; echo ANSWERED; sleep 30'",
+            fifo.display()
+        );
+        let mut ed = run_until(&script, |ed| shows(ed, "asked"));
+        let all_read = |ed: &Editor| {
+            ed.workspace.terminal.as_ref().is_some_and(|t| shows(ed, "asked") && !ready(t.master.as_raw_fd()))
+        };
+        wait(&mut ed, all_read);
+        assert!(all_read(&ed), "the first piece read");
+        let t = ed.workspace.terminal.as_ref().unwrap();
+        assert_eq!(t.answered(), 0, "not a question yet");
+        let_go(&fifo);
+        wait(&mut ed, |ed| shows(ed, "ANSWERED"));
+        let t = ed.workspace.terminal.as_ref().unwrap();
+        assert!(shows(&ed, "ANSWERED"), "the program had it: {:?}", t.parser.screen().contents());
+        assert_eq!(t.answered(), 1);
     }
 
     /// #144: `space T` with the terminal shown but without the keys gives it the keys — in front of the
