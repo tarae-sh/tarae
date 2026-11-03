@@ -233,6 +233,11 @@ fn parse(keys: &str) -> Vec<Key> {
 
 /// What the record promises, after every step.
 fn check(ed: &Editor, world: &World, seen: &mut Seen) -> Result<(), String> {
+    // A file's grades the worker's round kept for what it is now are the loop's — a round landing late never over
+    // newer ones (#288)
+    if let Some(r) = ed.workspace.code_review.as_ref() {
+        r.grades_agree(ed)?;
+    }
     // A file's changes land only at the text they were found in: newly landed, its document is at that text
     // and they're that text's
     let landed = probe::landed(ed);

@@ -601,6 +601,8 @@ fn over_fold(editor: &mut Editor, w: u16, h: u16) {
 }
 
 fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::Result<()> {
+    // (the review's grades as known: nothing graded on a frame's path — #288)
+    let _drawing = crate::codereview::Drawing::on();
     // (a frame drawn again: nothing of the last one's reading kept — `light_rows`)
     editor.drawn.take();
     crate::notes::prompt_sync(editor);
@@ -11402,8 +11404,10 @@ fn draw_statusline(
             });
         }
     }
-    // (an error or warning no card has shown yet under a picker outlasts the list's keys: they fit beside it,
-    // it's cut to what the mode, the position and the inbox's count leave — below. Folded for want of a free
+    // (an error or warning no card has shown yet under a picker outlasts the list's keys: they fit beside it, whole
+    // pairs folding from the right, it's cut to what the mode, the position and the inbox's count leave — below; so
+    // does any message answering your last key there, until your next — `this list — it has no preview`, `the only
+    // tab …`: the user, 2026-11-03, on #264's shots, the list's keys took its room. Folded for want of a free
     // corner, with no list up, it stays the first to go: the chip, the count and diagnostics outlast it)
     let mut waiting_at = None;
     if let Some(toast) = folded {
@@ -11413,7 +11417,7 @@ fn draw_statusline(
         let said = editor.screen.toast_said.get();
         let more = if said { editor.card_toasts().len().saturating_sub(1) } else { 0 };
         let text = if more > 0 { format!("{text} · +{more} earlier") } else { text };
-        let rank = match toast.waiting() && editor.picker.is_some() {
+        let rank = match (toast.waiting() || toast.answers(editor.input_seq)) && editor.picker.is_some() {
             true => Some(FOLDED),
             false => said.then_some(SAID),
         };
@@ -25351,6 +25355,47 @@ mod tests {
             s.lines().skip(y).take(h).map(|l| l.chars().skip(x).take(w).collect()).collect();
         assert!(card.iter().any(|r| r.contains("demo.rs changed on disk")), "{card:#?}");
         assert!(ed.toasts.iter().find(|t| t.kind == crate::editor::ToastKind::Warning).unwrap().shown);
+    }
+
+    /// A message answering your key under a picker (the user, 2026-11-03, on #264's shots): ahead of the list's keys
+    /// until your next — they fold whole pairs from the right to leave it its room, never it cut for them; your next
+    /// key and the keys are back whole.
+    #[test]
+    fn a_message_answering_your_key_under_a_picker_outlasts_its_keys() {
+        let mut ed = Editor::new(Config::default());
+        let status = |ed: &mut Editor, w: u16| {
+            let mut bytes = Vec::new();
+            render(ed, &mut bytes, w, 30).unwrap();
+            let mut vt = vt100::Parser::new(30, w, 0);
+            vt.process(&bytes);
+            vt.screen().contents().lines().nth(29).unwrap_or_default().to_string()
+        };
+        let items = (0..3)
+            .map(|i| crate::picker::Item {
+                label: format!("thing {i}"),
+                action: crate::picker::Action::Message,
+                hint: String::new(),
+                glyph: None,
+            })
+            .collect();
+        ed.open_picker(crate::picker::Picker::new("things", items, false), None);
+        ed.picker.as_mut().unwrap().preview = false;
+        let said = "C-t does nothing in this list — it has no preview";
+        assert!(status(&mut ed, 80).contains("esc close"), "its keys, nothing said yet");
+        ed.handle_key("C-t".parse().unwrap());
+        for w in [80, 120] {
+            let line = status(&mut ed, w);
+            assert!(line.contains(said), "whole at {w}: {line}");
+            // (whole pairs only, from the right: a key never without its words)
+            for (k, d) in [("enter", "open"), ("type", "narrow"), ("esc", "close")] {
+                assert_eq!(line.contains(&format!("  {k} ")), line.contains(&format!("{k} {d}")), "{line}");
+            }
+        }
+        assert!(!status(&mut ed, 80).contains("esc close"), "its last pair folded for it");
+        // Your next key: the list's keys whole again, the message only where they leave room
+        ed.handle_key("down".parse().unwrap());
+        let line = status(&mut ed, 80);
+        assert!(line.contains("esc close") && !line.contains(said), "{line}");
     }
 
     /// A notification never covers the cursor's row (U9): on the top row it goes to the bottom right — and

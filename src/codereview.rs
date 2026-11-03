@@ -127,6 +127,8 @@ pub struct CodeReview {
     pub grades: Grades,
     /// Each file's grades as `graded` last gave them, and what they were worked out from (`LiveStamp`).
     live: std::cell::RefCell<std::collections::HashMap<PathBuf, (LiveStamp, Graded)>>,
+    /// A round of `grading_sync` is under way on a worker.
+    grading: bool,
     /// How many times each file has the texts of the lines looked at and viewed in it — counted as the review
     /// opened (`grade_files`' `asked`), and again each time its open document is (`counts_of`), so a file
     /// closed since keeps what it had then: one not open with fewer now — taken out.
@@ -205,6 +207,7 @@ impl CodeReview {
             started: std::time::Instant::now(),
             grades: Default::default(),
             live: Default::default(),
+            grading: false,
             counts: Default::default(),
             occurrences: Default::default(),
             rules: Default::default(),
@@ -254,17 +257,49 @@ impl CodeReview {
     /// several times a frame (`perf_frames_with_a_graded_review`: a copy each tripled a 46-file review's frame).
     /// After its changes, open or not: the lines looked at that it has fewer of since (`taken_out_of`), and
     /// those moved within their change since (`moved_within`).
+    ///
+    /// While a frame is drawn (`Drawing`) nothing is graded: what's known — as last graded, else what the review's
+    /// worker found — and `grading_sync` grades the rest on a worker for the next frame (friction #288: a whole
+    /// file's look of thousands of keys, graded in a review's first frame, held the loop 5½ minutes).
     pub fn graded(&self, ed: &Editor, f: &File) -> Graded {
-        let ready = |d: &&crate::document::Document| d.review_base.is_some() && d.git_version == d.version();
-        let live = doc_of(ed, f).filter(ready).filter(|_| !self.whole.contains(&f.path));
-        let lines = ed.workspace.looked_lines.get(&f.rel).map_or(&[][..], Vec::as_slice);
-        let orders = ed.workspace.looked_orders.get(&f.rel).map_or(&[][..], Vec::as_slice);
         let worker = || self.grades.get(&f.path).cloned().unwrap_or_else(|| Arc::new([]));
+        let Some(stamp) = self.live_stamp(ed, f) else { return worker() };
+        if let Some((s, g)) = self.live.borrow().get(&f.path)
+            && (*s == stamp || drawing())
+        {
+            return g.clone();
+        }
+        if drawing() {
+            return worker();
+        }
+        let looked = &ed.workspace.looked;
+        let (g, counted) = grade(&self.input(ed, f, stamp.5.1, looked));
+        if let Some(c) = counted {
+            self.counts.borrow_mut().entry(f.path.clone()).or_default().extend(c);
+        }
+        let g: Graded = g.into();
+        self.live.borrow_mut().insert(f.path.clone(), (stamp, g.clone()));
+        g
+    }
+
+    /// `f`'s open document as its grades are worked out from it: its diff against the review's base in, at its
+    /// version, the file not graded whole.
+    fn live_doc<'a>(&self, ed: &'a Editor, f: &File) -> Option<&'a crate::document::Document> {
+        let ready = |d: &&crate::document::Document| d.review_base.is_some() && d.git_version == d.version();
+        doc_of(ed, f).filter(ready).filter(|_| !self.whole.contains(&f.path))
+    }
+
+    /// What `f`'s grades would be worked out from now (`LiveStamp`) — None: nothing but what the review's worker
+    /// found (no document graded live, nothing looked at, no change to cut).
+    fn live_stamp(&self, ed: &Editor, f: &File) -> Option<LiveStamp> {
+        let live = self.live_doc(ed, f);
+        let lines = ed.workspace.looked_lines.get(&f.rel).map_or(0, Vec::len);
+        let orders = ed.workspace.looked_orders.get(&f.rel).map_or(0, Vec::len);
         let rows = ed.viewport.0;
         let tall = |g: &crate::risk::Graded| g.grade == Grade::High && rows > 0 && g.added > rows;
         let cut = || self.grades.get(&f.path).is_some_and(|g| g.iter().any(tall));
-        if live.is_none() && lines.is_empty() && orders.is_empty() && !cut() {
-            return worker();
+        if live.is_none() && lines == 0 && orders == 0 && !cut() {
+            return None;
         }
         let open = doc_of(ed, f).filter(|d| !d.loading);
         // (a high-risk change taller than the pane is cut in pieces — cardburden 2 — at: its open document's
@@ -284,47 +319,46 @@ impl CodeReview {
                 Some(_) => CutAt::Whole,
             },
         };
-        let stamp = (
+        Some((
             live.map(|d| (d.id, d.version())),
             open.map(|d| (d.id, d.version())),
             ed.workspace.looked.len(),
-            lines.len(),
-            orders.len(),
+            lines,
+            orders,
             (rows, at),
-        );
-        if let Some((s, g)) = self.live.borrow().get(&f.path)
-            && *s == stamp
-        {
-            return g.clone();
+        ))
+    }
+
+    /// What `grade` works `f`'s grades out from, read where it is now — cut at `at` (its stamp's), held against
+    /// `looked`.
+    fn input<'a>(
+        &'a self,
+        ed: &'a Editor,
+        f: &'a File,
+        at: CutAt,
+        looked: &'a std::collections::HashSet<crate::risk::Key>,
+    ) -> Input<'a> {
+        let live = self.live_doc(ed, f).and_then(|d| {
+            let tree = d.syntax.as_ref().and_then(|s| Some((s.lang.name.as_str(), s.tree.as_ref()?)));
+            Some(Live { text: &d.text, base: d.review_base.as_ref()?, hunks: &d.git_hunks, tree })
+        });
+        let open = doc_of(ed, f).filter(|d| !d.loading).map(|d| &d.text);
+        Input {
+            rel: &f.rel,
+            rules: &self.rules,
+            live,
+            open,
+            worker: self.grades.get(&f.path).map_or(&[][..], |g| &g[..]),
+            lines: ed.workspace.looked_lines.get(&f.rel).map_or(&[][..], Vec::as_slice),
+            orders: ed.workspace.looked_orders.get(&f.rel).map_or(&[][..], Vec::as_slice),
+            looked,
+            rows: ed.viewport.0,
+            at,
+            known: self.defs.get(&f.path),
+            plain: self.plain.get(&f.path),
+            // (closed only: open, its text counts)
+            counted: open.is_none().then(|| self.counts.borrow().get(&f.path).cloned()).flatten(),
         }
-        let mut g = match live {
-            Some(d) => {
-                let mut g = grade_doc(d, &f.rel, &self.rules);
-                // (a change of mode isn't in a document's diff: the review's grade of it stays)
-                g.extend(worker().iter().filter(|g| g.mode).cloned());
-                g
-            }
-            None => worker().to_vec(),
-        };
-        // (held against the looks before any cut: a look is a whole change's — `take` — and the pane's height,
-        // or where its definitions are known from, moves where it's cut, never a line within it — f22 h: looks
-        // per piece, held against pieces cut elsewhere, asked again for ~30 lines nothing had moved)
-        let looked = &ed.workspace.looked;
-        let moved = moved_within(&f.rel, &g, orders, looked, live.map(|d| &d.text), self.plain.get(&f.path));
-        if at != CutAt::Whole && g.iter().any(tall) {
-            let defs = match (at, tree, known) {
-                (CutAt::Tree, Some(t), _) => live.map(|d| defs_in(t, &d.text)).unwrap_or_default(),
-                (CutAt::Opened, _, Some(Some(defs))) => defs.clone(),
-                _ => Vec::new(),
-            };
-            g = g.iter().flat_map(|g| pieces(g, &defs, rows)).collect();
-        }
-        let out = self.taken_out_of(ed, f, &g, lines, orders);
-        g.extend(moved);
-        g.extend(out);
-        let g: Graded = g.into();
-        self.live.borrow_mut().insert(f.path.clone(), (stamp, g.clone()));
-        g
     }
 
     /// How many times `f` has each of `texts` now: its open document's text (kept in `counts` for when it's
@@ -336,112 +370,13 @@ impl CodeReview {
         f: &File,
         texts: impl IntoIterator<Item = &'a str>,
     ) -> std::collections::HashMap<&'a str, Option<u32>> {
-        let mut out: std::collections::HashMap<&'a str, Option<u32>> =
-            texts.into_iter().map(|t| (t, None)).collect();
-        match doc_of(ed, f).filter(|d| !d.loading) {
-            Some(d) => {
-                for v in out.values_mut() {
-                    *v = Some(0);
-                }
-                // (as `str::lines` counts, as the review's worker did — `count_asked`: not the empty line ropey
-                // has after a last newline; frictions29 #28: a viewed file's blank line counted once more open
-                // than closed, so it read as viewed only while open, and `]u` stopped on it)
-                let n = d.text.len_lines();
-                let n = n - usize::from(d.text.line(n - 1).len_chars() == 0);
-                for l in d.text.lines().take(n) {
-                    let l = l.to_string();
-                    if let Some(Some(n)) = out.get_mut(crate::risk::line_text(&l)) {
-                        *n += 1;
-                    }
-                }
-                let mut counts = self.counts.borrow_mut();
-                let kept = counts.entry(f.path.clone()).or_default();
-                for (t, n) in &out {
-                    kept.insert(t.to_string(), n.unwrap_or(0));
-                }
-            }
-            None => {
-                let counts = self.counts.borrow();
-                let counted = counts.get(&f.path);
-                for (t, v) in out.iter_mut() {
-                    *v = counted.and_then(|c| c.get(*t).copied());
-                }
-            }
+        let open = doc_of(ed, f).filter(|d| !d.loading).map(|d| &d.text);
+        let out = count_in(open, self.counts.borrow().get(&f.path), texts);
+        if open.is_some() {
+            let kept = out.iter().map(|(t, n)| (t.to_string(), n.unwrap_or(0)));
+            self.counts.borrow_mut().entry(f.path.clone()).or_default().extend(kept);
         }
         out
-    }
-
-    /// The added lines of `f` a person looked at that were taken out since — of each looked-at change still
-    /// there (`orders`; found by its lines in `now`, the file's changes), the lines it's missing now that its
-    /// place also has fewer of than then: counted, in its open document, between the lines that were just
-    /// above and below it as they're found now around it (`in_place` — one the diff now pairs with another copy
-    /// is still there); not open, in the whole file as last counted (`counts_of`: one committed since is still
-    /// there; one it can't tell is taken as gone) — not looked at as taken out at that count: a high-risk
-    /// change at the change's place (`risk::taken_out`). Within its own place, so an edit elsewhere takes
-    /// nothing back; only lines recorded (`lines`: not blank or only punctuation — `risk::trivial`). A change
-    /// gone whole (reverted, committed) asks nothing (`prune_looked` lets its records go).
-    fn taken_out_of(
-        &self,
-        ed: &Editor,
-        f: &File,
-        now: &[crate::risk::Graded],
-        lines: &[crate::risk::LookedLine],
-        orders: &[crate::risk::LookedOrder],
-    ) -> Vec<crate::risk::Graded> {
-        if lines.is_empty() || orders.is_empty() {
-            return Vec::new();
-        }
-        let recorded: std::collections::HashSet<crate::risk::Key> = lines.iter().map(|l| l.added).collect();
-        let doc = doc_of(ed, f).filter(|d| !d.loading);
-        // (each missing line: where its change is now, and how many its place has now and had then — None:
-        // as the whole file was last counted)
-        let mut missing: Vec<Missing> = Vec::new();
-        for o in orders {
-            let matched: Vec<&crate::risk::Graded> = now
-                .iter()
-                .filter(|g| {
-                    of_lines(g) && added_keys(g).iter().any(|k| recorded.contains(k) && o.keys.contains(k))
-                })
-                .collect();
-            let Some(place) = matched.iter().map(|g| g.at).min() else { continue };
-            let end = matched.iter().map(|g| g.at + g.lines).max().unwrap_or(place);
-            let mut have: std::collections::HashMap<crate::risk::Key, usize> = Default::default();
-            for k in matched.iter().flat_map(|g| added_keys(g)) {
-                *have.entry(*k).or_default() += 1;
-            }
-            for k in &o.keys {
-                match have.get_mut(k) {
-                    Some(n) if *n > 0 => *n -= 1,
-                    _ => {
-                        let Some(l) = lines.iter().find(|l| l.added == *k) else { continue };
-                        let then = o.keys.iter().filter(|x| *x == k).count() as u32;
-                        let counted = doc.map(|d| (in_place(&d.text, o, place, end, &l.text), then));
-                        missing.push((place, l, counted));
-                    }
-                }
-            }
-        }
-        if missing.is_empty() {
-            return Vec::new();
-        }
-        let counts = self.counts_of(ed, f, missing.iter().map(|(_, l, _)| l.text.as_str()));
-        let looked = &ed.workspace.looked;
-        let mut at: std::collections::BTreeMap<usize, Vec<(&str, u32)>> = Default::default();
-        for (place, l, counted) in missing {
-            let (now, then) = counted
-                .unwrap_or_else(|| (counts.get(l.text.as_str()).copied().flatten().unwrap_or(0), l.count));
-            let gone = at.entry(place).or_default();
-            if now < then
-                && !looked.contains(&crate::risk::taken_out_key(&f.rel, &l.text, now))
-                && !gone.iter().any(|(t, _)| *t == l.text)
-            {
-                gone.push((&l.text, now));
-            }
-        }
-        at.into_iter()
-            .filter(|(_, gone)| !gone.is_empty())
-            .map(|(at, gone)| crate::risk::taken_out(&f.rel, at, &gone))
-            .collect()
     }
 
     /// How many of `f`'s high-risk changes no one has looked at yet (`space v h`).
@@ -729,6 +664,9 @@ fn moved_within(
     if orders.is_empty() {
         return out;
     }
+    // (each order's keys as a set, once — friction #288: a whole file's look is an order of thousands)
+    let sets: Vec<std::collections::HashSet<crate::risk::Key>> =
+        orders.iter().map(|o| o.keys.iter().copied().collect()).collect();
     for g in now.iter().filter(|g| g.grade == Grade::High && g.added > 1) {
         let added = &g.keys[g.removed..g.removed + g.added];
         let texts: Vec<Option<String>> = (0..added.len())
@@ -743,7 +681,9 @@ fn moved_within(
             None => known.and_then(|k| k.get(&added[i])).copied().unwrap_or(false),
         };
         let (mut moved, mut crossings) = (Vec::new(), Vec::new());
-        for then in orders.iter().filter(|o| added.iter().filter(|k| o.keys.contains(k)).nth(1).is_some()) {
+        let touched =
+            orders.iter().zip(&sets).filter(|(_, s)| added.iter().filter(|k| s.contains(k)).nth(1).is_some());
+        for (then, _) in touched {
             // (the order looked at still there line for line: nothing in it moved — a change grown around it
             // since, or a look kept from when looks were a piece's)
             if then.keys.len() <= added.len() && added.windows(then.keys.len()).any(|w| w == then.keys) {
@@ -908,27 +848,21 @@ fn bracket_net(line: &str) -> i32 {
 /// An open document's diff against the review's base, graded — its lines as `risk::changes` takes them (the
 /// diff worked out on a worker already: `git_hunks`), its tree (when there) saying which changes lie wholly
 /// inside a test.
-fn grade_doc(
-    d: &crate::document::Document,
-    rel: &str,
-    rules: &crate::risk::Rules,
-) -> Vec<crate::risk::Graded> {
-    let Some(base) = d.review_base.as_ref() else { return Vec::new() };
+fn grade_doc(d: Live, rel: &str, rules: &crate::risk::Rules) -> Vec<crate::risk::Graded> {
+    let base = d.base;
     let lang = crate::risk::lang_of(rel);
     let spans = d
-        .syntax
-        .as_ref()
-        .and_then(|s| Some((s.lang.name.clone(), s.tree.as_ref()?)))
-        .map(|(name, tree)| crate::risk::test_spans(&name, tree, &d.text.to_string()))
+        .tree
+        .map(|(name, tree)| crate::risk::test_spans(name, tree, &d.text.to_string()))
         .unwrap_or_default();
     let byte = |l: usize| d.text.line_to_byte(l.min(d.text.len_lines()));
     // (each changed line from its rope, by the one rule — `risk::line_text`)
     let line = |r: &ropey::Rope, l: usize| {
         (l < r.len_lines()).then(|| crate::risk::line_text(&r.line(l).to_string()).to_string())
     };
-    crate::risk::lines_of(|l| line(base, l), |l| line(&d.text, l), &d.git_hunks)
+    crate::risk::lines_of(|l| line(base, l), |l| line(d.text, l), d.hunks)
         .iter()
-        .zip(&d.git_hunks)
+        .zip(d.hunks)
         .map(|(hunk, h)| {
             let (a, b) = (byte(h.lines.start), byte(h.lines.end));
             let in_test = spans.iter().any(|s| s.start <= a && b <= s.end.max(a));
@@ -1435,18 +1369,24 @@ fn cut(range: std::ops::Range<usize>, defs: &[Def], rows: usize, name: Option<&s
         return vec![(range, name.map(str::to_string))];
     }
     // (the definitions in it, as much of each as is in it — not one that's all of it — and of those the
-    // outermost)
-    let inner: Vec<(std::ops::Range<usize>, &str)> = defs
+    // outermost: by their starts, the widest first, one is held in another when it ends within the furthest
+    // reach of those before it — one pass, friction #288: each against every other was 324M looks for a file
+    // of 18,000 one-line functions)
+    let mut inner: Vec<(std::ops::Range<usize>, &str)> = defs
         .iter()
         .map(|(d, n)| (clipped(d), n.as_str()))
         .filter(|(c, _)| c.start < c.end && *c != range)
         .collect();
-    let mut top: Vec<&(std::ops::Range<usize>, &str)> = inner
+    crate::sorting::by_key(&mut inner, |(c, _)| (c.start, std::cmp::Reverse(c.end)));
+    let mut reach = 0;
+    let top: Vec<&(std::ops::Range<usize>, &str)> = inner
         .iter()
-        .filter(|(c, _)| !inner.iter().any(|(o, _)| o != c && o.start <= c.start && c.end <= o.end))
+        .filter(|(c, _)| {
+            let out = c.end > reach;
+            reach = reach.max(c.end);
+            out
+        })
         .collect();
-    crate::sorting::by_key(&mut top, |(c, _)| (c.start, c.end));
-    top.dedup_by(|a, b| a.0 == b.0);
     // (a line two of them share — `} fn b() {` — is the later one's: each line in one piece. None of them
     // holds another, so their starts climb and each keeps its first line)
     let ends: Vec<usize> = top
@@ -1548,14 +1488,283 @@ fn pieces(g: &crate::risk::Graded, defs: &[Def], rows: usize) -> Vec<crate::risk
         .collect()
 }
 
-/// A line missing from its looked-at change (`CodeReview::taken_out_of`): where the change is now, the line,
-/// and how many its place has now and had then (None: as the whole file was last counted).
+/// What a file's grades are worked out from (`grade`): read where it is for a key's question
+/// (`CodeReview::input`), or owned by a worker for a frame's (`Owned`, `grading_sync` — friction #288).
+struct Input<'a> {
+    rel: &'a str,
+    rules: &'a crate::risk::Rules,
+    /// Its open document, graded live.
+    live: Option<Live<'a>>,
+    /// Its open document's text (what was taken out is counted in it).
+    open: Option<&'a ropey::Rope>,
+    /// What the review's worker found of it.
+    worker: &'a [crate::risk::Graded],
+    lines: &'a [crate::risk::LookedLine],
+    orders: &'a [crate::risk::LookedOrder],
+    looked: &'a std::collections::HashSet<crate::risk::Key>,
+    /// The pane's height, and where a tall change is cut at.
+    rows: usize,
+    at: CutAt,
+    known: Option<&'a Option<Vec<Def>>>,
+    plain: Option<&'a std::collections::HashMap<crate::risk::Key, bool>>,
+    /// Closed: how many times it had each text asked about, as last counted.
+    counted: Option<std::collections::HashMap<String, u32>>,
+}
+
+/// An open document graded live: its text, the review's base, its diff, its tree with its language's name.
+#[derive(Clone, Copy)]
+struct Live<'a> {
+    text: &'a ropey::Rope,
+    base: &'a ropey::Rope,
+    hunks: &'a [crate::git::Hunk],
+    tree: Option<(&'a str, &'a tree_sitter::Tree)>,
+}
+
+/// An `Input` of its own, for a worker (ropes and trees are shared, not copied).
+struct Owned {
+    rel: String,
+    rules: crate::risk::Rules,
+    live: Option<LiveOwned>,
+    open: Option<ropey::Rope>,
+    worker: Graded,
+    lines: Vec<crate::risk::LookedLine>,
+    orders: Vec<crate::risk::LookedOrder>,
+    rows: usize,
+    at: CutAt,
+    known: Option<Option<Vec<Def>>>,
+    plain: Option<std::collections::HashMap<crate::risk::Key, bool>>,
+    counted: Option<std::collections::HashMap<String, u32>>,
+}
+
+/// A `Live` of its own.
+struct LiveOwned {
+    text: ropey::Rope,
+    base: ropey::Rope,
+    hunks: Vec<crate::git::Hunk>,
+    tree: Option<(String, tree_sitter::Tree)>,
+}
+
+impl Input<'_> {
+    fn owned(&self, worker: Graded) -> Owned {
+        Owned {
+            rel: self.rel.to_string(),
+            rules: self.rules.clone(),
+            live: self.live.map(|d| LiveOwned {
+                text: d.text.clone(),
+                base: d.base.clone(),
+                hunks: d.hunks.to_vec(),
+                tree: d.tree.map(|(name, t)| (name.to_string(), t.clone())),
+            }),
+            open: self.open.cloned(),
+            worker,
+            lines: self.lines.to_vec(),
+            orders: self.orders.to_vec(),
+            rows: self.rows,
+            at: self.at,
+            known: self.known.cloned(),
+            plain: self.plain.cloned(),
+            counted: self.counted.clone(),
+        }
+    }
+}
+
+impl Owned {
+    fn input<'a>(&'a self, looked: &'a std::collections::HashSet<crate::risk::Key>) -> Input<'a> {
+        Input {
+            rel: &self.rel,
+            rules: &self.rules,
+            live: self.live.as_ref().map(|d| Live {
+                text: &d.text,
+                base: &d.base,
+                hunks: &d.hunks,
+                tree: d.tree.as_ref().map(|(name, t)| (name.as_str(), t)),
+            }),
+            open: self.open.as_ref(),
+            worker: &self.worker,
+            lines: &self.lines,
+            orders: &self.orders,
+            looked,
+            rows: self.rows,
+            at: self.at,
+            known: self.known.as_ref(),
+            plain: self.plain.as_ref(),
+            counted: self.counted.clone(),
+        }
+    }
+}
+
+/// A file's grades (`CodeReview::graded`), and — its document open with lines taken out of it — how many times
+/// its text has each of theirs, to keep (`CodeReview.counts`).
+fn grade(i: &Input) -> (Vec<crate::risk::Graded>, Option<std::collections::HashMap<String, u32>>) {
+    let tall = |g: &crate::risk::Graded| g.grade == Grade::High && i.rows > 0 && g.added > i.rows;
+    let mut g = match i.live {
+        Some(d) => {
+            let mut g = grade_doc(d, i.rel, i.rules);
+            // (a change of mode isn't in a document's diff: the review's grade of it stays)
+            g.extend(i.worker.iter().filter(|g| g.mode).cloned());
+            g
+        }
+        None => i.worker.to_vec(),
+    };
+    // (held against the looks before any cut: a look is a whole change's — `take` — and the pane's height,
+    // or where its definitions are known from, moves where it's cut, never a line within it — f22 h: looks
+    // per piece, held against pieces cut elsewhere, asked again for ~30 lines nothing had moved)
+    let moved = moved_within(i.rel, &g, i.orders, i.looked, i.live.map(|d| d.text), i.plain);
+    if i.at != CutAt::Whole && g.iter().any(tall) {
+        let tree = i.live.and_then(|d| Some((d.tree?.1, d.text)));
+        let defs = match (i.at, tree, i.known) {
+            (CutAt::Tree, Some((t, text)), _) => defs_in(t, text),
+            (CutAt::Opened, _, Some(Some(defs))) => defs.clone(),
+            _ => Vec::new(),
+        };
+        g = g.iter().flat_map(|g| pieces(g, &defs, i.rows)).collect();
+    }
+    let (out, counted) = taken_out_of(i, &g);
+    g.extend(moved);
+    g.extend(out);
+    (g, counted)
+}
+
+/// How many times a file has each of `texts`: its open document's `text` — else as last `counted`, None for a
+/// text it can't tell (`CodeReview::counts_of`).
+fn count_in<'a>(
+    text: Option<&ropey::Rope>,
+    counted: Option<&std::collections::HashMap<String, u32>>,
+    texts: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashMap<&'a str, Option<u32>> {
+    let mut out: std::collections::HashMap<&'a str, Option<u32>> =
+        texts.into_iter().map(|t| (t, None)).collect();
+    match text {
+        Some(text) => {
+            for v in out.values_mut() {
+                *v = Some(0);
+            }
+            // (as `str::lines` counts, as the review's worker did — `count_asked`: not the empty line ropey
+            // has after a last newline; frictions29 #28: a viewed file's blank line counted once more open
+            // than closed, so it read as viewed only while open, and `]u` stopped on it)
+            let n = text.len_lines();
+            let n = n - usize::from(text.line(n - 1).len_chars() == 0);
+            for l in text.lines().take(n) {
+                let l = l.to_string();
+                if let Some(Some(n)) = out.get_mut(crate::risk::line_text(&l)) {
+                    *n += 1;
+                }
+            }
+        }
+        None => {
+            for (t, v) in out.iter_mut() {
+                *v = counted.and_then(|c| c.get(*t).copied());
+            }
+        }
+    }
+    out
+}
+
+/// The added lines of a file a person looked at that were taken out since — of each looked-at change still
+/// there (`orders`; found by its lines in `now`, the file's changes), the lines it's missing now that its
+/// place also has fewer of than then: counted, in its open document, between the lines that were just
+/// above and below it as they're found now around it (`in_place` — one the diff now pairs with another copy
+/// is still there); not open, in the whole file as last counted (`count_in`: one committed since is still
+/// there; one it can't tell is taken as gone) — not looked at as taken out at that count: a high-risk
+/// change at the change's place (`risk::taken_out`). Within its own place, so an edit elsewhere takes
+/// nothing back; only lines recorded (`lines`: not blank or only punctuation — `risk::trivial`). A change
+/// gone whole (reverted, committed) asks nothing (`prune_looked` lets its records go). Open, also its text's
+/// counts of those lines, to keep.
+///
+/// Each order is counted once — its keys by a map, the lines recorded by key, its place's lines read once for
+/// every text missing (friction #288: for each key the order, the recorded lines and the place's lines walked
+/// again, a whole file's look of thousands of keys held the loop minutes).
+fn taken_out_of(
+    i: &Input,
+    now: &[crate::risk::Graded],
+) -> (Vec<crate::risk::Graded>, Option<std::collections::HashMap<String, u32>>) {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    if i.lines.is_empty() || i.orders.is_empty() {
+        return (Vec::new(), None);
+    }
+    // (each line recorded by its key — the first, as a look records it)
+    let mut recorded: HashMap<crate::risk::Key, &crate::risk::LookedLine> =
+        HashMap::with_capacity(i.lines.len());
+    for l in i.lines {
+        recorded.entry(l.added).or_insert(l);
+    }
+    // (each missing line: where its change is now, and how many its place has now and had then — None:
+    // as the whole file was last counted)
+    let mut missing: Vec<Missing> = Vec::new();
+    for o in i.orders {
+        let keys: HashSet<crate::risk::Key> = o.keys.iter().copied().collect();
+        let matched: Vec<&crate::risk::Graded> = now
+            .iter()
+            .filter(|g| {
+                of_lines(g) && added_keys(g).iter().any(|k| recorded.contains_key(k) && keys.contains(k))
+            })
+            .collect();
+        let Some(place) = matched.iter().map(|g| g.at).min() else { continue };
+        let end = matched.iter().map(|g| g.at + g.lines).max().unwrap_or(place);
+        let mut have: HashMap<crate::risk::Key, usize> = HashMap::new();
+        for k in matched.iter().flat_map(|g| added_keys(g)) {
+            *have.entry(*k).or_default() += 1;
+        }
+        let mut then: HashMap<crate::risk::Key, u32> = HashMap::new();
+        for k in &o.keys {
+            *then.entry(*k).or_default() += 1;
+        }
+        let gone: Vec<&crate::risk::LookedLine> = o
+            .keys
+            .iter()
+            .filter_map(|k| match have.get_mut(k) {
+                Some(n) if *n > 0 => {
+                    *n -= 1;
+                    None
+                }
+                _ => recorded.get(k).copied(),
+            })
+            .collect();
+        if gone.is_empty() {
+            continue;
+        }
+        let here = i.open.map(|text| in_place(text, o, place, end, gone.iter().map(|l| l.text.as_str())));
+        for l in gone {
+            let counted =
+                here.as_ref().map(|h| (h.get(l.text.as_str()).copied().unwrap_or(0), then[&l.added]));
+            missing.push((place, l, counted));
+        }
+    }
+    if missing.is_empty() {
+        return (Vec::new(), None);
+    }
+    let counts = count_in(i.open, i.counted.as_ref(), missing.iter().map(|(_, l, _)| l.text.as_str()));
+    let mut at: BTreeMap<usize, Vec<(&str, u32)>> = BTreeMap::new();
+    let mut said: HashSet<(usize, &str)> = HashSet::new();
+    for (place, l, counted) in missing {
+        let (now, then) =
+            counted.unwrap_or_else(|| (counts.get(l.text.as_str()).copied().flatten().unwrap_or(0), l.count));
+        if now < then
+            && !i.looked.contains(&crate::risk::taken_out_key(i.rel, &l.text, now))
+            && said.insert((place, l.text.as_str()))
+        {
+            at.entry(place).or_default().push((&l.text, now));
+        }
+    }
+    let kept = i.open.map(|_| counts.iter().map(|(t, n)| (t.to_string(), n.unwrap_or(0))).collect());
+    (at.into_iter().map(|(at, gone)| crate::risk::taken_out(i.rel, at, &gone)).collect(), kept)
+}
+
+/// A line missing from its looked-at change (`taken_out_of`): where the change is now, the line, and how many
+/// its place has now and had then (None: as the whole file was last counted).
 type Missing<'a> = (usize, &'a crate::risk::LookedLine, Option<(u32, u32)>);
 
-/// How many times `text` has `line` in the place of looked-at change `o`, now at lines `place..end`: between
-/// the nearest line above it that's the one above it then, and the nearest below that's the one below it then
-/// (none: the file's start, its end).
-fn in_place(text: &ropey::Rope, o: &crate::risk::LookedOrder, place: usize, end: usize, line: &str) -> u32 {
+/// How many times `text` has each of `lines` in the place of looked-at change `o`, now at lines `place..end`:
+/// between the nearest line above it that's the one above it then, and the nearest below that's the one below
+/// it then (none: the file's start, its end) — each of the place's lines read once.
+fn in_place<'a>(
+    text: &ropey::Rope,
+    o: &crate::risk::LookedOrder,
+    place: usize,
+    end: usize,
+    lines: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashMap<&'a str, u32> {
+    let mut out: std::collections::HashMap<&'a str, u32> = lines.into_iter().map(|l| (l, 0)).collect();
     let n = text.len_lines();
     let at = |l: usize| line_at(text, l);
     let from = match &o.above {
@@ -1566,7 +1775,12 @@ fn in_place(text: &ropey::Rope, o: &crate::risk::LookedOrder, place: usize, end:
         Some(b) => (end.min(n)..n).find(|&l| at(l) == *b).map_or(n, |l| l + 1),
         None => n,
     };
-    (from..to).filter(|&l| at(l) == line).count() as u32
+    for l in from..to {
+        if let Some(c) = out.get_mut(at(l).as_str()) {
+            *c += 1;
+        }
+    }
+    out
 }
 
 /// The whole change `g` is of (`graded`: a file's changes, a tall one in pieces — `pieces`: they stand together,
@@ -2429,6 +2643,120 @@ pub fn grades_sync(ed: &mut Editor) {
 /// Each file's changes graded (`risk.rs`), by path.
 pub type Grades = std::collections::HashMap<PathBuf, Graded>;
 
+thread_local! {
+    /// A frame is being drawn on this thread (`Drawing`): `CodeReview::graded` grades nothing then.
+    static DRAWING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn drawing() -> bool {
+    DRAWING.with(std::cell::Cell::get)
+}
+
+/// While it lives a frame is being drawn (`term::render_frame`): the review's grades are what's known, nothing
+/// graded on the frame's path — `grading_sync` grades the rest on a worker (friction #288).
+pub struct Drawing(bool);
+
+impl Drawing {
+    pub fn on() -> Drawing {
+        Drawing(DRAWING.with(|d| d.replace(true)))
+    }
+}
+
+impl Drop for Drawing {
+    fn drop(&mut self) {
+        DRAWING.with(|d| d.set(self.0));
+    }
+}
+
+impl CodeReview {
+    /// Tests and the simulation: every file's grades kept for what it is now (its `LiveStamp`) are what the loop
+    /// grades it to now — a worker's round (`grading_sync`) gives what the loop would, and one landing late never
+    /// stands over newer ones.
+    #[cfg(test)]
+    pub fn grades_agree(&self, ed: &Editor) -> Result<(), String> {
+        for f in &self.files {
+            let Some(stamp) = self.live_stamp(ed, f) else { continue };
+            let Some((s, kept)) = self.live.borrow().get(&f.path).cloned() else { continue };
+            if s != stamp {
+                continue;
+            }
+            let (now, _) = grade(&self.input(ed, f, stamp.5.1, &ed.workspace.looked));
+            if kept[..] != now[..] {
+                return Err(format!("{}: kept {kept:?}, graded now {now:?}", f.rel));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Tests: `grading_sync`'s round asked and waited for, its result applied — a frame drawn then shows the grades
+/// as they are, as one drawn just after a real event's does once the worker's round lands.
+#[cfg(test)]
+pub fn grading_settle(ed: &mut Editor) {
+    grading_sync(ed);
+    while ed.workspace.code_review.as_ref().is_some_and(|r| r.grading) {
+        let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the review's grades");
+        ed.handle_event(ev);
+    }
+}
+
+/// Every event: the review's files whose grades a frame would show as they were (`graded` grades nothing while
+/// one is drawn) graded again on a worker — one round at a time, each file's kept by what it was worked out from,
+/// so the next frame shows it and a key's question finds it graded (friction #288: a review's first frame graded
+/// every file on the loop, a whole file's look in one of them for 5½ minutes).
+pub fn grading_sync(ed: &mut Editor) {
+    let Some(r) = ed.workspace.code_review.as_ref().filter(|r| !r.grading) else { return };
+    let looked = &ed.workspace.looked;
+    let due: Vec<(PathBuf, LiveStamp, Owned)> = r
+        .files
+        .iter()
+        .filter_map(|f| {
+            let stamp = r.live_stamp(ed, f)?;
+            if r.live.borrow().get(&f.path).is_some_and(|(s, _)| *s == stamp) {
+                return None;
+            }
+            let worker = r.grades.get(&f.path).cloned().unwrap_or_else(|| Arc::new([]));
+            Some((f.path.clone(), stamp, r.input(ed, f, stamp.5.1, looked).owned(worker)))
+        })
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+    let (looked, started) = (looked.clone(), r.started);
+    if let Some(r) = ed.workspace.code_review.as_mut() {
+        r.grading = true;
+    }
+    ed.events.jobs().spawn(move || {
+        let graded: Vec<_> = due
+            .into_iter()
+            .map(|(path, stamp, o)| {
+                let (g, counted) = grade(&o.input(&looked));
+                (path, stamp, Graded::from(g), counted)
+            })
+            .collect();
+        move |ed: &mut Editor| {
+            let Some(r) = ed.workspace.code_review.as_ref().filter(|r| r.started == started) else { return };
+            // (kept only where nothing newer is: a key's question may have graded it since, as it is now)
+            let now: Vec<Option<LiveStamp>> = graded
+                .iter()
+                .map(|(p, ..)| r.files.iter().find(|f| f.path == *p).and_then(|f| r.live_stamp(ed, f)))
+                .collect();
+            let Some(r) = ed.workspace.code_review.as_mut() else { return };
+            r.grading = false;
+            for ((path, stamp, g, counted), now) in graded.into_iter().zip(now) {
+                let live = r.live.get_mut();
+                if live.get(&path).is_some_and(|(s, _)| Some(*s) == now) {
+                    continue;
+                }
+                if let Some(c) = counted.filter(|_| now == Some(stamp)) {
+                    r.counts.get_mut().entry(path.clone()).or_default().extend(c);
+                }
+                live.insert(path, (stamp, g));
+            }
+        }
+    });
+}
+
 /// One file's changes graded, shared (`CodeReview::graded`).
 pub type Graded = Arc<[crate::risk::Graded]>;
 
@@ -2500,6 +2828,7 @@ fn open_at(
         started: std::time::Instant::now(),
         grades,
         live: Default::default(),
+        grading: false,
         counts: std::cell::RefCell::new(counts),
         occurrences: Default::default(),
         rules: crate::risk::Rules::of(&ed.config),
@@ -9487,6 +9816,8 @@ mod tests {
         d.git_hunks = crate::git::hunks(&base, &now);
         let rules = crate::risk::Rules::of(&crate::config::EditorConfig::default());
         let d = &ed.docs[0];
+        let d =
+            Live { text: &d.text, base: d.review_base.as_ref().unwrap(), hunks: &d.git_hunks, tree: None };
         assert_eq!(grade_doc(d, "src/a.rs", &rules).len(), 200);
         let mut all: Vec<std::time::Duration> = (0..50)
             .map(|_| {
@@ -9501,6 +9832,77 @@ mod tests {
         let us = all[all.len() / 2].as_secs_f64() * 1e6;
         let line = format!("PERF review_grade_open_20k {us:.1} budget=16000 noise=100\n");
         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    }
+
+    /// Friction #288: a review opened after a whole file's look — 20,000 high-risk lines looked at in one order,
+    /// then every tenth taken out — draws its first frame as an ordinary frame (nothing graded on its path: what's
+    /// known), and its worker grades the file, 2,000 lines taken out found, within a frame's budget too (each order
+    /// counted once). It held the loop 5½ minutes: for each key the order, the lines recorded and the place's lines
+    /// walked again, in the first frame. Medians of 5.
+    #[test]
+    fn perf_budget_review_after_a_whole_look() {
+        if crate::test_results::unoptimized("codereview::tests::perf_budget_review_after_a_whole_look") {
+            return;
+        }
+        const N: usize = 20_000;
+        let now = text_of(N, |i| format!("fn f{i}() {{ unsafe {{ x({i}) }} }}"));
+        let (mut ed, dir) = reviewing("whole-look", &[("a.rs", "", &now)]);
+        // (every tenth line taken out since)
+        let text = ed.doc().text.clone();
+        let changes: Vec<_> = (0..N)
+            .step_by(10)
+            .map(|l| crate::transaction::Change::delete(text.line_to_byte(l), text.line_to_byte(l + 1)))
+            .collect();
+        edited(&mut ed, changes);
+        grading_settle(&mut ed);
+        let looked_at = |ed: &mut Editor| {
+            let lines: Vec<crate::risk::LookedLine> = text
+                .lines()
+                .take(N)
+                .enumerate()
+                .map(|(i, l)| {
+                    crate::risk::LookedLine::new("a.rs", i, crate::risk::line_text(&l.to_string()), 1)
+                })
+                .collect();
+            let order = crate::risk::LookedOrder {
+                keys: lines.iter().map(|l| l.added).collect(),
+                ..Default::default()
+            };
+            ed.workspace.looked.extend(order.keys.iter().copied());
+            ed.workspace.looked_lines.insert("a.rs".into(), lines);
+            ed.workspace.looked_orders.insert("a.rs".into(), vec![order]);
+            // (as the review opens: nothing graded live yet)
+            ed.workspace.code_review.as_mut().unwrap().live.get_mut().clear();
+        };
+        let (mut frames, mut gradings) = (Vec::new(), Vec::new());
+        for _ in 0..5 {
+            looked_at(&mut ed);
+            let t = std::time::Instant::now();
+            crate::term::render(&mut ed, &mut Vec::new(), 180, 50).unwrap();
+            frames.push(t.elapsed());
+            let t = std::time::Instant::now();
+            grading_settle(&mut ed);
+            gradings.push(t.elapsed());
+        }
+        let out = highs(&ed).into_iter().filter(|g| g.why.starts_with("taken out since your look")).count();
+        assert!(out > 0, "the lines taken out are found");
+        frames.sort_unstable();
+        gradings.sort_unstable();
+        let ms = |d: &[std::time::Duration]| d[d.len() / 2].as_secs_f64() * 1e3;
+        let (frame, grading) = (ms(&frames), ms(&gradings));
+        // (measured 2026-11-03: the frame 1.5 ms; the grading 89 — its diff, outline and tests' spans of 18,000
+        // functions, on the worker — against 272 with each definition held against every other in `cut`, and
+        // 7,000 with an order's keys, the lines recorded and the place's lines walked again for each key)
+        for (name, v, budget) in [
+            ("review_first_frame_whole_look_ms", frame, 16.0),
+            ("review_graded_whole_look_ms", grading, 200.0),
+        ] {
+            let line = format!("PERF {name} {v:.2} budget={budget} noise={}\n", budget / 8.0);
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        }
+        assert!(frame < 16.0, "the first frame {frame:.2} ms (budget 16)");
+        assert!(grading < 200.0, "its grading {grading:.2} ms (budget 200)");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A submodule moved to another commit under a risky path: high in a review of the working tree (its

@@ -211,6 +211,8 @@ impl Shot {
 
     /// The frame as `render` draws it, before `Screen::present` reads it.
     fn drawn(&mut self) -> Vec<u8> {
+        // (a review's grades as a person sees them a moment after the event: its worker's round landed — #288)
+        crate::codereview::grading_settle(&mut self.ed);
         let mut buf = Vec::new();
         render(&mut self.ed, &mut buf, self.w, self.h).unwrap();
         buf

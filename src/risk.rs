@@ -360,8 +360,10 @@ pub struct LookedOrder {
 /// (Review of cardburden 2: a placement of repeats by rule asked for an unchanged `b` as moved — before
 /// `[b, a, c, b]`, now `[c, b, a, b]`: only `c` moved.)
 pub fn out_of_order(then: &[Key], now: &[Key]) -> Vec<usize> {
-    // (only the lines both have can be in it: the rest left out first — a change's table stays small)
-    let both: HashSet<Key> = then.iter().filter(|k| now.contains(k)).copied().collect();
+    // (only the lines both have can be in it: the rest left out first — a change's table stays small; `now` a
+    // set, each looked up once — friction #288: a whole file's look of thousands of lines walked it for each)
+    let in_now: HashSet<Key> = now.iter().copied().collect();
+    let both: HashSet<Key> = then.iter().filter(|k| in_now.contains(k)).copied().collect();
     let t: Vec<Key> = then.iter().filter(|k| both.contains(k)).copied().collect();
     let at: Vec<usize> = (0..now.len()).filter(|&j| both.contains(&now[j])).collect();
     let (n, m) = (t.len(), at.len());

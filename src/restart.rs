@@ -2212,6 +2212,7 @@ mod tests {
             ("Client", "lsp.rs"),
             ("Deadline", "sandbox/proxy/packs_tests.rs"),
             ("DirTurn", "grammar.rs"),
+            ("Drawing", "codereview.rs"),
             ("ExecMem", "crates/tarae-wasm/src/jit/mod.rs"),
             ("Fade", "term.rs"),
             ("Fixture", "gitrepo/held/tests.rs"),

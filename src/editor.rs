@@ -159,6 +159,9 @@ pub struct Toast {
     /// Said while `:messages` was up: only its row there if the frame shows that row, else a toast as usual —
     /// decided once, by the first frame that has it (`messages::rows_drawn`).
     pub row: bool,
+    /// The input it answers (`input_seq` — said while that key, click or paste was handled, or a job it started
+    /// came back): under a picker it stays ahead of the list's keys until your next input (`term::draw_statusline`).
+    pub asked: Option<u64>,
 }
 
 /// Two clicks on the same picker row this close together are a double click (it opens the row).
@@ -330,7 +333,13 @@ impl Toast {
             persons: false,
             paint: Vec::new(),
             row: false,
+            asked: None,
         }
+    }
+
+    /// Whether it answers the latest input, `input_seq` (`Toast.asked`).
+    pub fn answers(&self, input_seq: u64) -> bool {
+        self.asked == Some(input_seq)
     }
 
     pub fn alive(&self) -> bool {
@@ -2636,12 +2645,12 @@ impl Editor {
             self.screen.toast_narrow.set(None);
         }
         // The same message again: its time starts over, where it is (moving it would make the card jump)
-        let id = self.said;
+        let (id, asked) = (self.said, self.events.asked());
         if let Some(t) = self.toasts.iter_mut().find(|t| t.text == text && t.kind == kind) {
-            *t = Toast { id, of, row, ..Toast::new(kind, text) };
+            *t = Toast { id, of, row, asked, ..Toast::new(kind, text) };
             return;
         }
-        self.toasts.push(Toast { id, of, row, ..Toast::new(kind, text) });
+        self.toasts.push(Toast { id, of, row, asked, ..Toast::new(kind, text) });
         // (the card shows the newest few and counts the rest — all of them are in `:messages`)
         if self.toasts.len() > MESSAGES_KEPT {
             self.toasts.remove(0);
@@ -3008,6 +3017,7 @@ impl Editor {
         crate::orchestra::wakes_sync(self);
         self.brought_ends_sync();
         crate::weave::sync(self);
+        crate::codereview::grading_sync(self);
         crate::motion::wet_sync(self);
         crate::web::open::sync(self);
         crate::chatnotes::sync(self);
