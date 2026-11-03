@@ -25,8 +25,7 @@ use crate::document::DocId;
 use crate::editor::Editor;
 use crate::event::{Apply, Event};
 use crate::key::{Code, Key};
-use crate::selection::{Range, Selection};
-use crate::transaction::{Assoc, Change, Transaction};
+use crate::transaction::{Change, Transaction};
 use crate::workspace::At;
 
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
@@ -1936,17 +1935,12 @@ fn apply_accepted(ed: &mut Editor, rev: &Review) -> bool {
     let tx = Transaction::new(
         accepted.iter().map(|h| Change { from: h.from, to: h.to, insert: h.new.clone() }).collect(),
     );
-    let ranges: Vec<Range> = accepted
-        .iter()
-        .map(|h| {
-            let start = tx.map_pos(h.from, Assoc::Before);
-            Range::new(start, start + h.new.len())
-        })
-        .collect();
-    let n = ranges.len();
+    let n = accepted.len();
     ed.with_group(|cx| {
         let doc = cx.editor.doc_mut();
-        doc.apply_with(&tx, Selection::new(ranges, 0));
+        // (your selection, carried through Claude's lines — never theirs selected: #307 left `2 sels` you
+        // never made after a review answered y n y)
+        doc.apply(&tx);
         // (on your `y`, Claude's lines — not your edit)
         doc.own.not_yours();
     });

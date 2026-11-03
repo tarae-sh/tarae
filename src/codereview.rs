@@ -3527,7 +3527,14 @@ fn take(ed: &mut Editor, whole_file: bool) {
         ));
     }
     if whole_file && high.iter().all(|g| g.looked_at(looked)) {
-        return ed.set_status("no high-risk change left to look at in this file — ]h goes to the next");
+        // (#302a: where `]h` goes, an earlier file's too — "the next" read as a later one, and none was)
+        let next = high_next(ed, true).and_then(|(i, at, ..)| Some((r.files.get(i)?.rel.clone(), at)));
+        return ed.set_status(match next {
+            Some((rel, at)) => {
+                format!("no high-risk change left to look at in this file — ]h goes to {rel}:{}", at + 1)
+            }
+            None => "no high-risk change left to look at in this review".to_string(),
+        });
     }
     if high.is_empty() && !unshown.is_empty() {
         // (one taller than the pane, or partly looked at: how much of it is left to bring on screen)
@@ -4722,38 +4729,15 @@ fn highs_in_order(ed: &Editor) -> Vec<(usize, usize)> {
 /// `]h` / `[h` (#196): to the next (previous) high-risk change no one has looked at — across the review's
 /// files, around at the end. Going there is no look: `space v h` on it is. True if it went.
 pub fn high_step(ed: &mut Editor, forward: bool) -> bool {
-    let Some(r) = ed.workspace.code_review.as_ref() else {
+    if ed.workspace.code_review.is_none() {
         ed.set_status("no review here — space v v starts one");
         return false;
-    };
-    let order = r.rail_order();
-    let rank = |i: usize| order.iter().position(|&k| k == i).unwrap_or(usize::MAX);
-    // (from the file in hand and the selection's end going on, its start going back; from none of them: the
-    // first · the last)
-    // (a binary file's buffer: at its one change, the file's top — on from it, never to it again)
-    let here = r.in_hand(ed).map(|i| match r.current(ed) == Some(i) {
-        true => {
-            let (doc, sel) = (ed.doc(), ed.doc().selection().primary());
-            let pos = if forward { sel.cursor(&doc.text) } else { sel.from() };
-            (rank(i), crate::movement::line_of(&doc.text, pos))
-        }
-        false => (rank(i), 0),
-    });
-    let highs = highs_in_order(ed);
-    let n = highs.len();
-    if n == 0 {
+    }
+    let Some((i, at, k, n, around)) = high_next(ed, forward) else {
         ed.set_status("no high-risk change left to look at in this review");
         return false;
-    }
-    let key = |&(i, at): &(usize, usize)| (rank(i), at);
-    let target = match (here, forward) {
-        (None, true) => highs.first(),
-        (None, false) => highs.last(),
-        (Some(h), true) => highs.iter().find(|x| key(x) > h).or(highs.first()),
-        (Some(h), false) => highs.iter().rev().find(|x| key(x) < h).or(highs.last()),
     };
-    let (i, at) = *target.expect("not empty");
-    let k = highs.iter().position(|&x| x == (i, at)).unwrap_or(0) + 1;
+    let Some(r) = ed.workspace.code_review.as_ref() else { return false };
     // (one taller than the pane — as the last frame drew it — is looked at once scrolled through; one partly
     // looked at, once its lines since were on screen: it's landed on at the first of them)
     let looked = &ed.workspace.looked;
@@ -4783,8 +4767,50 @@ pub fn high_step(ed: &mut Editor, forward: bool) -> bool {
         }
         false => "space v h looks at it".to_string(),
     };
-    ed.set_status(format!("high-risk {k} of {n} not looked at · {rel}:{} — {look}", at + 1));
+    // (#302a: gone round the review's end to an earlier file, or its start to a later one — said, as search says
+    // it wrapped)
+    let around = match (around, forward) {
+        (false, _) => "",
+        (true, true) => " · around from the review's end",
+        (true, false) => " · around from the review's start",
+    };
+    ed.set_status(format!("high-risk {k} of {n} not looked at · {rel}:{}{around} — {look}", at + 1));
     true
+}
+
+/// The high-risk change `]h` (`forward`) or `[h` goes to: (file, line, its number of all left, all left,
+/// gone round the review's end or start to get there) — from the file in hand and the selection, across the
+/// review's files and around (#302a: to an earlier file as well). None: none left to look at.
+fn high_next(ed: &Editor, forward: bool) -> Option<(usize, usize, usize, usize, bool)> {
+    let r = ed.workspace.code_review.as_ref()?;
+    let order = r.rail_order();
+    let rank = |i: usize| order.iter().position(|&k| k == i).unwrap_or(usize::MAX);
+    // (from the file in hand and the selection's end going on, its start going back; from none of them: the
+    // first · the last)
+    // (a binary file's buffer: at its one change, the file's top — on from it, never to it again)
+    let here = r.in_hand(ed).map(|i| match r.current(ed) == Some(i) {
+        true => {
+            let (doc, sel) = (ed.doc(), ed.doc().selection().primary());
+            let pos = if forward { sel.cursor(&doc.text) } else { sel.from() };
+            (rank(i), crate::movement::line_of(&doc.text, pos))
+        }
+        false => (rank(i), 0),
+    });
+    let highs = highs_in_order(ed);
+    let key = |&(i, at): &(usize, usize)| (rank(i), at);
+    let (target, around) = match (here, forward) {
+        (None, true) => (highs.first(), false),
+        (None, false) => (highs.last(), false),
+        (Some(h), true) => {
+            highs.iter().find(|x| key(x) > h).map_or((highs.first(), true), |x| (Some(x), false))
+        }
+        (Some(h), false) => {
+            highs.iter().rev().find(|x| key(x) < h).map_or((highs.last(), true), |x| (Some(x), false))
+        }
+    };
+    let &(i, at) = target?;
+    let k = highs.iter().position(|&x| x == (i, at)).unwrap_or(0) + 1;
+    Some((i, at, k, highs.len(), around))
 }
 
 /// Whether each key gets a frame of its own (`term::handle_batch`): the file in front is one of the review's
@@ -7009,6 +7035,55 @@ mod tests {
             highs(&ed).iter().filter(|g| !g.looked_at(looked)).map(|g| g.why.clone()).collect();
         crate::sorting::sort(&mut asked);
         assert_eq!(asked, ["taken out since your look: `b();`", "unsafe (rust pack)"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #302a: the one high-risk piece left is in an earlier file — `space v H` in the later one, every change
+    /// there looked at, says where it is; `]h` and `[h` from there wrap to it and say where they went.
+    #[test]
+    fn the_high_risk_keys_wrap_to_a_piece_left_in_an_earlier_file() {
+        let base = "fn main() {}\n";
+        let a = format!("{base}{}", four_line_fns(6));
+        let b = format!("{base}{}", four_line_fns(1));
+        let (mut ed, dir, _) = reviewing_parsed("wrap-back", &[("a.rs", base, &a), ("b.rs", base, &b)]);
+        let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let name =
+            |ed: &Editor| ed.doc().path.as_ref().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        // a.rs's pieces looked at but its last; b.rs's one
+        let h = highs(&ed);
+        assert!(h.len() >= 2, "{h:?}");
+        let last = h.last().unwrap().at;
+        ed.workspace.looked.extend(h[..h.len() - 1].iter().flat_map(|g| g.keys.clone()));
+        show(&mut ed, 1, false);
+        settle_until(&mut ed, |ed| landed(ed) && name(ed) == "b.rs");
+        ed.workspace.looked.extend(highs(&ed).iter().flat_map(|g| g.keys.clone()));
+        assert_eq!(left(&ed), 1);
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 12).unwrap();
+        feed(&mut ed, "<space>vH");
+        assert!(
+            status(&ed).contains(&format!("a.rs:{}", last + 1)),
+            "where the one left is: {}",
+            status(&ed)
+        );
+        // `]h` from b.rs: around the review's end, back to a.rs
+        feed(&mut ed, "]h");
+        settle_until(&mut ed, |ed| landed(ed) && name(ed) == "a.rs");
+        assert_eq!(ed.cursor_line(), last, "the piece left");
+        let to = format!("a.rs:{} · around from the review's end", last + 1);
+        assert!(status(&ed).contains(&to), "where it went, around: {}", status(&ed));
+        // `[h` from a.rs's top: around the review's start — b.rs has none — to the same piece
+        ed.goto_line(0);
+        feed(&mut ed, "[h");
+        assert_eq!(ed.cursor_line(), last, "the piece left");
+        let to = format!("a.rs:{} · around from the review's start", last + 1);
+        assert!(status(&ed).contains(&to), "where it went, around: {}", status(&ed));
+        // `[h` from b.rs: a.rs is the file before it — no wrap said
+        show(&mut ed, 1, false);
+        settle_until(&mut ed, |ed| landed(ed) && name(ed) == "b.rs");
+        feed(&mut ed, "[h");
+        settle_until(&mut ed, |ed| landed(ed) && name(ed) == "a.rs");
+        assert_eq!(ed.cursor_line(), last);
+        assert!(!status(&ed).contains("around"), "{}", status(&ed));
         std::fs::remove_dir_all(&dir).ok();
     }
 

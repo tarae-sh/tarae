@@ -10443,6 +10443,33 @@ mod tests {
         assert_eq!(ed.doc().text.to_string(), "ONE\nTWO\n");
     }
 
+    /// #307: an answered review leaves your selection as it was, carried through the accepted changes — the
+    /// accepted ones' ranges were selected (`2 sels` after y n y, none of them yours).
+    #[test]
+    fn an_answered_review_leaves_your_selection_where_it_was() {
+        let mut ed = editor("one\ntwo\nthree\nfour\nfive\n");
+        let id = ed.doc().id;
+        feed(&mut ed, "3j");
+        let before = ed.doc().selection().primary();
+        assert_eq!(before.from(), 14, "on four");
+        let changes = vec![
+            (0, 4, "one\n".to_string(), "ONE1\n".to_string()),
+            (8, 14, "three\n".into(), "THREE\n".into()),
+            (19, 24, "five\n".into(), "FIVE\n".into()),
+        ];
+        crate::llm::review_with(&mut ed, id, "upper", changes, None);
+        feed(&mut ed, "yny");
+        assert!(ed.workspace.claude.review.is_none());
+        assert_eq!(ed.doc().text.to_string(), "ONE1\ntwo\nthree\nfour\nFIVE\n");
+        let sel = ed.doc().selection();
+        assert_eq!(sel.ranges().len(), 1, "one selection, yours");
+        assert_eq!(
+            (sel.primary().from(), sel.primary().to()),
+            (before.from() + 1, before.to() + 1),
+            "on four"
+        );
+    }
+
     /// An edit review in front is said once on the status line — its mode, `● change` (`review` is the code
     /// review's rail, uxaudit D5); the right-hand `claude ● change` only while it waits behind the code's keys.
     #[test]
