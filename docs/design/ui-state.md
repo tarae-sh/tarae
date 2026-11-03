@@ -38,7 +38,7 @@ The state is mostly gathering. Most of it exists, spread around:
 | Cards | `offer::Offer` (`id` from `offer_seq`, unique in the process; `rev`, `since`), `Editor.offers` (up, front first), `Workspace.parked`, `Editor.offer_seen` (in sight since), `Session.asking` + `asking_sync` (a lost card is found and said) | The answer keys aren't data: the card's hint row works them out from `lasts`/`keeps`/`preflights`/`aborts`/`end_dirty`… |
 | Sessions | `Session`, `Editor::doing` → `Doing`, `cards_waiting`, `session_spots` | — |
 | Geometry of the last frame | `editor::Screen` (panes and their line origins, `chat_x`, `picker_list`, `sidebar`, `review_rail`, `slot_tabs`, `toast_card`, `note_card`, `thought_card`, `terminal_rows`, …) | Filled by `term.rs` every frame. Most panels have their visible rows here already |
-| After a frame | `term::render` → `toasts_drawn`, `trace_drawn`, `frame_drawn`, `last_frame` | The hook point for "state as drawn" |
+| After a frame | `term::render` → `trace_drawn`, `frame_drawn`, `last_frame`; once presented `Editor::frame_presented` → `toasts_drawn`, `had_in_sight`, `reviews::after_frame` | The hook point for "state as drawn" |
 | Did my input land | `Editor.input_seq` (keys, clicks, the wheel, pastes) | Not visible from outside |
 | Runs | `trace::RunTrace` steps, `waits::Waiting::shown`, `Workspace.runs_next` (queued) | No run id |
 | What Claude was given | `chat::context` (`on screen:` / `also on screen:`), `follow::Gaze`, replay stops | UI elements aren't in it |

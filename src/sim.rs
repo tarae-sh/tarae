@@ -57,6 +57,7 @@ mod overlay;
 mod panes;
 mod places;
 mod presence;
+mod presented;
 #[cfg(not(target_os = "linux"))]
 mod ptybroker;
 mod quota;

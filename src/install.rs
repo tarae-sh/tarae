@@ -436,7 +436,7 @@ mod tests {
         assert!(!ed.offers[0].installing());
         ed.screen.offer_buttons = vec![(20, 50, 59, 'y'), (20, 62, 71, 'n'), (20, 74, 81, 'N')];
         // Drawn whole: its y answers it
-        let o = (ed.offers[0].id, ed.offers[0].rev);
+        let o = (ed.offers[0].id, ed.offers[0].rev, ed.frames);
         ed.offer_whole.set(Some(o)); // (drawn uncut)
         ed.offer_drawn.set(Some(o));
         assert!(ed.offer_key(y));

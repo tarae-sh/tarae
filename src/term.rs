@@ -63,6 +63,8 @@ pub fn terminal(light: Option<bool>) -> Interface {
         clipboard: crate::clipboard::Env::here(),
         sound: true,
         opener: Some(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
+        // (what's written to it is on its screen)
+        presents_late: false,
     };
     Interface::new(facts, Box::new(Terminal { out: io::stdout() }))
 }
@@ -506,6 +508,11 @@ pub(crate) fn present(editor: &mut Editor, iface: &mut Interface, frame: &mut Ve
         iface.resting.wrote(iface.screen.patched(), crate::clock::now());
     }
     editor.stall.begin(Frame("after it"));
+    // (a frame written is a frame presented, to an interface that doesn't say otherwise — the terminal; unchanged, it
+    // shows what it already showed)
+    if !editor.interface.presents_late {
+        editor.frame_presented(editor.frames);
+    }
     editor.frames_written += ended as u64;
     // (the first frame drawn: the start is over — what runs from here is its only as its jobs' results)
     editor.events.started();
@@ -520,14 +527,31 @@ pub(crate) fn present(editor: &mut Editor, iface: &mut Interface, frame: &mut Ve
 #[cfg(test)]
 pub fn render(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io::Result<()> {
     render_drawn(editor, out, w, h)?;
+    // (presented as it's written, as the terminal's — unless the test's interface presents late: its input says)
+    if !editor.interface.presents_late {
+        editor.frame_presented(editor.frames);
+    }
     // (snapshots of the UI state asked over its socket: as of this frame)
     crate::uistate::after_frame(editor);
     Ok(())
 }
 
 /// A frame drawn into `out`, all but the UI state's watchers and snapshots (`uistate::after_frame`) — the main
-/// loop tells them once the frame went out (`event_loop`), `render` at once.
+/// loop tells them once the frame went out (`event_loop`), `render` at once — and what it showed the person, marked
+/// once it's presented (`Editor::frame_presented`). Its number is `Editor.frames` from its start; while it's drawn
+/// what it draws counts as presented for its own look (`Editor::saw`).
 fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io::Result<()> {
+    editor.frames += 1;
+    editor.drawing = true;
+    let drawn = render_drawing(editor, out, w, h);
+    editor.drawing = false;
+    drawn?;
+    // (what it showed you waits until it's been presented: the newest frame's)
+    editor.presented_marks = Some(editor.frames);
+    Ok(())
+}
+
+fn render_drawing(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io::Result<()> {
     // (what the interface drawn for takes: `apply` has no editor to ask)
     UNDERCURL.set(editor.interface.undercurl);
     // (the run panels' documents as their runs are now: what they printed since the last event)
@@ -535,8 +559,6 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
     // Reading an answer moved the editor to what the chat now shows (its links are only known once drawn)
     let mut frame = Vec::with_capacity(1 << 16);
     render_frame(editor, &mut frame, w, h)?;
-    // (what the chat showed you, before anything moves it: what `space L` counts as read)
-    crate::chatdoc::had_in_sight(editor);
     // (the chat's view mode asked for before its rows were laid out: made from these, drawn with it)
     // (and a run panel's output laid out for another size than its panel just drew: its cursor kept in sight)
     // (and the chat's, its view mode with the keys)
@@ -568,11 +590,8 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
         render_frame(editor, &mut frame, w, h)?;
     }
     out.write_all(&frame)?;
-    // (an error under a picker waits for the card — U7)
-    let card = editor.screen.toast_card.get().is_some();
-    editor.toasts_drawn(card);
-    // (what came before this is drawn, input too — `Editor::frame_due`; after `toasts_drawn`, which restarts
-    // the time of an error shown at last)
+    // (what came before this is drawn, input too — `Editor::frame_due`; a toast shown here restarts its time as the
+    // frame is presented, after it — `toasts_drawn`, `frame_owed`)
     (editor.frame_at, editor.frame_input) = (Some(crate::clock::now()), editor.input_seq);
     // (a go-to's answer on screen: its timing to the log — N1)
     editor.trace_drawn();
@@ -580,9 +599,6 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
     editor.frame_drawn();
     // (kept: the screen as the user sees it — `C-s` in the chat sends it as text)
     editor.last_frame = Some((frame, w, h));
-    editor.frames += 1;
-    // (the reviews under way: what of them this frame shows — the review record's time)
-    crate::reviews::after_frame(editor);
     // (the chat's place names this frame drew unanswered: found on a worker — `places.rs`)
     crate::places::after_frame(editor);
     Ok(())
@@ -633,17 +649,17 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     let mut offer = OfferCard::new(editor, &lay);
     // (folded to its peek for a pane you opened: in sight, not drawn to be answered — `OfferCard::folded`)
     let front = offer.as_ref().filter(|c| !c.is_folded()).and(editor.offers.first()).map(|o| (o.id, o.rev));
-    // (drawn as it is now: a weighty card's answers count for it, and the keys an answer handed on reach it —
-    // after this frame, the one the user sees it in)
-    editor.offer_drawn.set(front);
+    // (drawn as it is now, since the frame it was first drawn so: a weighty card's answers count for it, and the keys
+    // an answer handed on reach it — once that frame, the one the user sees it in, was presented: `Editor::saw`)
+    let since = match (front, editor.offer_drawn.get()) {
+        (Some(f), Some(d)) if (d.0, d.1) == f => Some(d),
+        (Some(f), _) => Some((f.0, f.1, editor.frames)),
+        (None, _) => None,
+    };
+    editor.offer_drawn.set(since);
     if front.is_some() && editor.card_next == front {
         editor.card_focus = editor.card_next.take();
-    }
-    // (first drawn: its `card` line counts the answer's time from here — `cards.rs`)
-    if let Some(o) = editor.offers.first().filter(|_| front.is_some())
-        && o.drawn.get().is_none()
-    {
-        o.drawn.set(Some(crate::clock::now()));
+        editor.card_handed = front.map(|f| (f.0, f.1, editor.frames));
     }
     // Drawn whole: all of it has been in sight — every row of its body in some frame, a cut one's as the wheel brought
     // them (#84: never from the wheel's offset, which can step past rows between frames); its bar is no card in sight
@@ -1011,8 +1027,10 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     // card nothing shows, `Editor::card_key`)
     let unshown = (editor.offers.first())
         .filter(|_| offer.is_none() && card_short(editor, &lay).is_some())
-        .map(|o| (o.id, o.rev));
-    editor.offer_unshown.set(unshown);
+        .map(|o| (o.id, o.rev, editor.frames));
+    // (one drawn again: kept until this frame is presented — `Editor::offer_unshown_now`)
+    let again = editor.offer_unshown.get().filter(|u| front == Some((u.0, u.1)));
+    editor.offer_unshown.set(unshown.or(again));
     draw(editor, &lay, &ui, review_rows.as_deref().map(Vec::as_slice), offer.as_ref(), out)
 }
 

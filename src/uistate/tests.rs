@@ -938,7 +938,7 @@ fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String
             }
             // (a scene with no room for its card: as a frame too small for it leaves it — `Editor::offer_unshown`)
             if name.contains("no room") {
-                ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev)));
+                ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
                 // (and it says no key answers it — every one is refused)
                 let answers = ed.keys_to().answers;
                 if !answers.is_empty() {
@@ -1017,7 +1017,7 @@ fn the_routing_test_sees_each_case_broken() {
         frame(&mut ed);
         // (as `mismatches` leaves a scene with no room for its card)
         if name.contains("no room") {
-            ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev)));
+            ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
         }
         let k = ed.keys_to();
         if matches!(k.chain[main(&k)].filter, Filter::Except(_)) {

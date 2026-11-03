@@ -827,6 +827,7 @@ impl DrawnFor {
             Event::Resize => "resize",
             Event::Paste(_) => "paste",
             Event::Job(_) | Event::For(..) => return None,
+            Event::Input { event, .. } => return DrawnFor::of(event),
         }))
     }
 }
@@ -989,8 +990,9 @@ pub struct Editor {
     /// Git-tab actions waiting on their hooks card (`hooks.rs`): the card's id, the session, the action.
     pub hook_waits: Vec<crate::hooks::Wait>,
     /// The card (id, rev) last in sight whole — drawn uncut, or read to its end in its `v` buffer (a weighty
-    /// `y` waits for it).
-    pub offer_whole: std::cell::Cell<Option<(u64, u64)>>,
+    /// `y` waits for it) — and the frame it was first whole in: a key counts it once that frame was presented
+    /// (`Editor::saw`).
+    pub offer_whole: std::cell::Cell<Option<(u64, u64, u64)>>,
     /// The front card's body scrolled by the wheel, cut to fit: (id, rev, rows past its title) — the card's drawer
     /// keeps it within the body.
     pub offer_skip: std::cell::Cell<Option<(u64, u64, usize)>>,
@@ -1012,8 +1014,8 @@ pub struct Editor {
     /// it was said for, so it's said once per change.
     pub auto_held: Vec<(DocId, u64)>,
     /// The texts of cards seen whole since tarae started (`offer::text_hash`): the same card again — a script run
-    /// again unchanged — isn't to be read again.
-    pub offer_read: std::cell::RefCell<std::collections::HashSet<u64>>,
+    /// again unchanged — isn't to be read again. Each with the frame it was first whole in (`offer_whole`'s rule).
+    pub offer_read: std::cell::RefCell<std::collections::HashMap<u64, u64>>,
     /// Whether to show offers (off in tests — so they don't swallow y/n keys).
     pub offer_popups: bool,
     /// 번짐: the head of text being written drawn as ink not yet dry (`term::bleed`) — off in tests, as the
@@ -1099,6 +1101,16 @@ pub struct Editor {
     /// Frames that went to the terminal (a frame like the last writes nothing) — what a driver reading the
     /// terminal counts (each ends its synchronized update); the state's `frames_written`.
     pub frames_written: u64,
+    /// The last frame the interface presented — the person could see it (the remote plan's "drawn means presented"):
+    /// the terminal's as it's written, one that presents late as its input says (`Event::Input`'s `seen`). What every
+    /// "only once drawn" rule judges a key by (`Editor::saw`, `interface.rs`).
+    pub presented: u64,
+    /// A frame is being drawn (`term::render_drawn`): what it draws is what it will show, presented for its own look
+    /// (`Editor::saw`) — no key is handled meanwhile.
+    pub drawing: bool,
+    /// The frame whose marks of what the person saw (the chat read, toasts shown, a review's time, a card's first
+    /// sight) wait for it to be presented (`Editor::frame_presented`) — the newest drawn; None: none wait.
+    pub presented_marks: Option<u64>,
     /// What the event under way is, as its sender said it (`event::Tx::send`'s site, or the name a job gives
     /// itself — `drawn_for`) — for the frame it draws, should it change something.
     pub event_from: Option<DrawnFor>,
@@ -1325,12 +1337,16 @@ pub struct Editor {
     /// The card an answer handed the keys on to (id, `rev`): focused once a frame has drawn it as it is
     /// (`term::render_frame`) — a key typed on after the answer (`y y`, a repeat) never answers one not yet in sight.
     pub card_next: Option<(u64, u64)>,
-    /// The front card as the last frame drew it (id, `rev`) — a weighty card's answers count only for it
-    /// (`Stands.drawn`).
-    pub offer_drawn: std::cell::Cell<Option<(u64, u64)>>,
-    /// The front card the last frame had no room to draw (id, `rev` — the status line said the size it needs): `C-q`
-    /// gives it the keys as ever, but no key of yours is its answer while nothing on screen shows it (`card_key`).
-    pub offer_unshown: std::cell::Cell<Option<(u64, u64)>>,
+    /// The card the keys were handed on to (id, `rev`) and the frame that drew it so: its answers wait until that frame
+    /// was presented (`card_key`, `Editor::saw`) — gone once it was.
+    pub card_handed: Option<(u64, u64, u64)>,
+    /// The front card as the last frame drew it (id, `rev`) and the frame it's been drawn so since — a weighty card's
+    /// answers count only for it, once that frame was presented (`Stands.drawn`, `Editor::saw`).
+    pub offer_drawn: std::cell::Cell<Option<(u64, u64, u64)>>,
+    /// The front card a frame had no room to draw (id, `rev`, that frame — the status line said the size it needs):
+    /// `C-q` gives it the keys as ever, but no key of yours is its answer while nothing on screen shows it (`card_key`)
+    /// — kept, once a frame draws it again, until that frame was presented (`Editor::offer_unshown_now`).
+    pub offer_unshown: std::cell::Cell<Option<(u64, u64, u64)>>,
     /// The floating pane a window prefix just took the keys from (a card's `card_key`): `C-w w` from it goes on round
     /// the panes, not back to it.
     pub float_left: Option<crate::pane::Floating>,
@@ -1338,7 +1354,8 @@ pub struct Editor {
     /// on`), and no input came since: the waiting animation rests (`tick_wanted`). A terminal that never
     /// says keeps it going.
     pub unfocused: bool,
-    /// Frames drawn since tarae started · snapshots of the UI state asked over its socket, answered after a
+    /// Frames drawn since tarae started — counted as one begins, so this is the number of the one being drawn, else
+    /// of the last (`term::render_drawn`) · snapshots of the UI state asked over its socket, answered after a
     /// frame (`uistate.rs`) · messages said so far (a toast's id).
     pub frames: u64,
     pub ui_asks: Vec<crate::uistate::Ask>,
@@ -1646,10 +1663,14 @@ impl Editor {
             card_focus: None,
             follow_focus: false,
             card_next: None,
+            card_handed: None,
             offer_drawn: Default::default(),
             offer_unshown: Default::default(),
             float_left: None,
             frames: 0,
+            presented: 0,
+            drawing: false,
+            presented_marks: None,
             ui_asks: Vec::new(),
             said: 0,
             ui_watch: Default::default(),
@@ -2922,6 +2943,14 @@ impl Editor {
     // ── Dispatch ─────────────────────────────────────────────────────────
 
     pub fn handle_event(&mut self, ev: Event) {
+        // (an input that says what its interface presented: that first, then the input as any — judged by it)
+        let ev = match ev {
+            Event::Input { seen, event } => {
+                self.frame_presented(seen);
+                *event
+            }
+            ev => ev,
+        };
         // A hover moves nothing: only what's under the mouse says (`presence::hovered` — a frame only when that
         // changed), none of the work every other event does below (a sweep sends dozens a second)
         if let Event::Hover(x, y) = ev {
@@ -3001,6 +3030,8 @@ impl Editor {
                 debug_assert_eq!(s, self.claude_of(w), "workspace {w}'s event tagged with another's session");
                 self.for_workspace(w, apply)
             }
+            // (taken off above)
+            Event::Input { .. } => unreachable!("an input's `seen` is taken off first"),
         }
         if let Some(was) = asked {
             self.events.set_asked(was);
@@ -4010,6 +4041,10 @@ impl Editor {
                 self.card_key(Key::plain(Code::Esc));
             }
             Some(k) if has => match k {
+                // (pressed on a frame the interface hadn't presented: as a key typed before it was in sight)
+                _ if self.card_unpresented() => {
+                    self.offer_refused("a press came before this card was in sight — not taken")
+                }
                 _ if self.offer_press_held(k) => self.offer_see_all_first(),
                 // (an answer as its key answers it: `Offer::act`, the one place a card's letters are decided — its
                 // "more lines" row's `v` views any card cut short)
@@ -4425,7 +4460,8 @@ impl Editor {
         if let Some(o) = self.offers.iter().find(|o| after(o.since)) {
             return Some(format!("card \"{}\"", o.title));
         }
-        if let Some(t) = self.toasts.iter().find(|t| after(t.at)) {
+        // (one shown is drawn: its time may restart after the frame, as it's presented — `toasts_drawn`)
+        if let Some(t) = self.toasts.iter().find(|t| !t.shown && after(t.at)) {
             return Some(format!("toast \"{}\"", t.text.chars().take(80).collect::<String>()));
         }
         let now = std::time::Instant::now();
@@ -5554,8 +5590,10 @@ impl Editor {
         let has = self.card_has_keys();
         // Handed the keys by an answer but not drawn yet: an answer of its typed on is refused, said on it (a `y y`
         // never approves a card never in sight); the rest go where the keys are
-        if !has
-            && self.card_next.is_some()
+        // — and drawn, weighty or handed the keys, in a frame not presented yet (an interface that presents late:
+        // `card_unpresented`)
+        let unseen = (!has && self.card_next.is_some()) || (has && self.card_unpresented());
+        if unseen
             && let Some(c) = key.plain_char()
             && self.offers.first().is_some_and(|o| o.acts_on(c))
         {
@@ -5614,9 +5652,10 @@ impl Editor {
         }
         let reads = card_reads(key, &self.pending);
         self.pending.clear();
-        // Nothing on screen shows it (the last frame had no room — `offer_unshown`): no key answers it, every card as a
-        // weighty one answers only once drawn (`Stands.drawn`) — said on the status line, as the card isn't there
-        if self.offer_unshown.get() == up {
+        // Nothing on screen shows it (the last frame had no room, or the one with room isn't presented yet —
+        // `offer_unshown_now`): no key answers it, every card as a weighty one answers only once drawn (`Stands.drawn`)
+        // — said on the status line, as the card isn't there
+        if self.offer_unshown_now() == up {
             self.set_status(format!("{key} not taken — {CARD_UNSHOWN}"));
             return true;
         }
@@ -18613,7 +18652,7 @@ mod tests {
         // Read whole: `y` has its meaning back, and the card keeps its width — its `y` where it was (review 7)
         screen(&mut ed);
         let waiting_at = y_at(&ed);
-        ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev)));
+        ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
         let s = screen(&mut ed);
         assert!(s.contains("more lines, read whole"), "{s}");
         // (focused since its early `y`: `esc back` where its way in was)

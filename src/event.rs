@@ -30,6 +30,16 @@ pub enum Event {
     /// A job's result for a workspace and the session at work there that it's of (`Tx` makes these): applied in that
     /// workspace (`Editor::with_workspace`).
     For(WorkspaceId, SessionId, Apply),
+    /// Input from an interface that presents late (`interface::Facts::presents_late`): the last frame it presented
+    /// as it sent `event` (the remote plan's `Input.seen`) — what the "only once drawn" rules judge it by
+    /// (`Editor::frame_presented`, `Editor::saw`). The terminal's input comes bare: its frames are presented as
+    /// they're written.
+    #[cfg_attr(not(test), allow(dead_code))]
+    // (the simulation's late interface sends it; a socket's is step 3's)
+    Input {
+        seen: crate::interface::Frame,
+        event: Box<Event>,
+    },
 }
 
 /// One mouse action (screen cell coordinates). Press, drag, release, wheel.

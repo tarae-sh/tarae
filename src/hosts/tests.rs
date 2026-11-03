@@ -666,7 +666,7 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
     assert!(s.contains("more lines, not read yet"), "{s}");
     assert_eq!(line(&ed), "╰─ C-q answer · y once read · a chat · s session · v details · n ─╯", "{s}");
     let waiting = y_at(&ed);
-    ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev)));
+    ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev, ed.frames)));
     let s = draw(&mut ed);
     assert_eq!(
         line(&ed),

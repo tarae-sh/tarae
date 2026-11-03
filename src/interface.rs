@@ -28,6 +28,82 @@ pub struct Facts {
     pub sound: bool,
     /// The program `:web-open` hands a page's address to (`web/page.rs`) — None: none, said.
     pub opener: Option<&'static str>,
+    /// A frame it's sent isn't presented yet: it says what it presented with each input (`Event::Input`'s `seen`)
+    /// — an interface across a wire. False: a frame written is a frame presented (the terminal, a tests' editor).
+    pub presents_late: bool,
+}
+
+/// A frame's number (`Editor.frames`).
+pub type Frame = u64;
+
+impl crate::editor::Editor {
+    /// Whether `frame` is one the person could see: the interface presented it (`Editor.presented`), or it's the frame
+    /// being drawn, asked for its own look. Every rule that says "only once drawn" asks this of the frame its fact was
+    /// drawn in — a weighty card's answers, the keys an answer handed on, a card with no room, a card read whole, a
+    /// review's high-risk lines on screen, a bring's change looked at.
+    pub fn saw(&self, frame: Frame) -> bool {
+        self.drawing || frame <= self.presented
+    }
+
+    /// The interface presented frame `n` (the terminal: as it was written — `term::present`; else as its input says):
+    /// the rules that wait for it can count it, and — when it's the newest drawn — what it showed the person is
+    /// marked: what of the chat was read, the toasts shown (an error's time runs), the reviews' time in sight, the
+    /// front card's first sight. An older one marks nothing: the newest's marks go when it's presented.
+    pub fn frame_presented(&mut self, n: Frame) {
+        let n = n.min(self.frames);
+        if n <= self.presented {
+            return;
+        }
+        self.presented = n;
+        if self.card_handed.is_some_and(|h| h.2 <= n) {
+            self.card_handed = None;
+        }
+        if let Some(u) = self.offer_unshown.get()
+            && self.offer_drawn.get().is_some_and(|d| (d.0, d.1) == (u.0, u.1) && u.2 < d.2 && d.2 <= n)
+        {
+            self.offer_unshown.set(None);
+        }
+        if self.presented_marks.is_none_or(|m| m > n) {
+            return;
+        }
+        self.presented_marks = None;
+        // (what the chat showed you: what `space L` counts as read)
+        crate::chatdoc::had_in_sight(self);
+        // (an error under a picker waits for the card — U7)
+        let card = self.screen.toast_card.get().is_some();
+        self.toasts_drawn(card);
+        // (first in sight: its `card` line counts the answer's time from here — `cards.rs`)
+        if let Some(o) = self.offers.first()
+            && self.offer_drawn.get().is_some_and(|d| (d.0, d.1) == (o.id, o.rev))
+            && o.drawn.get().is_none()
+        {
+            o.drawn.set(Some(crate::clock::now()));
+        }
+        // (the reviews under way: what of them this frame shows — the review record's time)
+        crate::reviews::after_frame(self);
+    }
+
+    /// The front card is drawn as it is, but the frame that drew it so isn't presented yet: a weighty one (its answers
+    /// count only in sight — `Stands.drawn`), or one the keys were handed on to in that frame (`card_handed`). Its
+    /// answers are refused as typed before it was in sight (`card_key`).
+    pub fn card_unpresented(&self) -> bool {
+        self.offers.first().is_some_and(|o| {
+            let drawn = self.offer_drawn.get().filter(|d| (d.0, d.1) == (o.id, o.rev));
+            (o.weighty() && drawn.is_some_and(|d| !self.saw(d.2)))
+                || self.card_handed.is_some_and(|h| (h.0, h.1) == (o.id, o.rev) && !self.saw(h.2))
+        })
+    }
+
+    /// The front card no frame presented with room for it (id, `rev`): the last frame had none, or one that draws it
+    /// again isn't presented yet — no key of yours answers it (`card_key`).
+    pub fn offer_unshown_now(&self) -> Option<(u64, u64)> {
+        let u = self.offer_unshown.get()?;
+        let drawn = self.offer_drawn.get().filter(|d| (d.0, d.1) == (u.0, u.1) && u.2 < d.2);
+        match drawn {
+            Some(d) if self.saw(d.2) => None,
+            _ => Some((u.0, u.1)),
+        }
+    }
 }
 
 /// How the main loop reaches an interface: made ready and left as found, its size, the thread reading its input,
@@ -172,6 +248,169 @@ mod tests {
         crate::term::present(&mut ed, &mut iface, &mut frame).unwrap();
         let whole = std::mem::take(&mut *wrote.lock().unwrap());
         assert!(whole.len() >= first.len() - 16, "whole again: {} of {} bytes", whole.len(), first.len());
+    }
+
+    use crate::editor::Editor;
+    use crate::event::Event;
+
+    /// An editor whose interface presents late: a frame drawn isn't presented until an input says so.
+    fn late() -> Editor {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.interface.presents_late = true;
+        ed
+    }
+
+    fn frame(ed: &mut Editor) {
+        crate::term::render(ed, &mut Vec::new(), 100, 30).unwrap();
+    }
+
+    /// Key `k` as an interface that had presented frame `seen` sends it.
+    fn key(ed: &mut Editor, seen: Frame, k: &str) {
+        ed.handle_event(Event::Input { seen, event: Box::new(Event::Key(k.parse().unwrap())) });
+    }
+
+    /// A weighty card up (its `y` brings back no conversation: nothing starts) — its id.
+    fn weighty(ed: &mut Editor) -> u64 {
+        let what = crate::offer::What::RecoverChats(Vec::new());
+        ed.push_offer(crate::offer::Offer::new(
+            "Bring them back?".into(),
+            "One line.",
+            "",
+            String::new(),
+            what,
+        ));
+        ed.offers[0].id
+    }
+
+    fn up(ed: &Editor, id: u64) -> bool {
+        ed.offers.iter().any(|o| o.id == id)
+    }
+
+    /// "Drawn" means presented (the remote plan's §4): a weighty card's `y` typed on a frame before the one that drew
+    /// it is refused as typed before it was in sight, said on it; sent once that frame was presented, it answers. The
+    /// terminal's frame is presented as it's written: its `y` answers at once.
+    #[test]
+    fn a_weighty_cards_key_counts_once_the_frame_that_drew_it_was_presented() {
+        let mut ed = late();
+        let id = weighty(&mut ed);
+        frame(&mut ed);
+        assert_eq!((ed.frames, ed.presented), (1, 0), "drawn, not presented");
+        key(&mut ed, 0, "C-q");
+        assert!(ed.card_has_keys(), "focused: no answer");
+        key(&mut ed, 0, "y");
+        assert!(up(&ed, id), "y typed on frame 0 answered a card frame 1 drew");
+        let said = ed.offer_said_now().unwrap_or_default().to_string();
+        assert!(said.contains("y came before this card was in sight — not taken"), "{said}");
+        key(&mut ed, 1, "y");
+        assert!(!up(&ed, id), "its frame presented: answered");
+        // (the terminal: written is presented)
+        let mut ed = Editor::new(crate::config::Config::default());
+        let id = weighty(&mut ed);
+        frame(&mut ed);
+        assert_eq!(ed.presented, ed.frames, "the terminal's frame presented as it's written");
+        for k in ["C-q", "y"] {
+            ed.handle_event(Event::Key(k.parse().unwrap()));
+        }
+        assert!(!up(&ed, id), "answered");
+    }
+
+    /// A press on a weighty card's `y` is judged as its key: on a frame not presented yet, refused and said; once it
+    /// was, an answer.
+    #[test]
+    fn a_press_on_a_cards_answer_counts_once_its_frame_was_presented() {
+        let mut ed = late();
+        let id = weighty(&mut ed);
+        frame(&mut ed);
+        key(&mut ed, 0, "C-q");
+        frame(&mut ed);
+        let &(row, x, _, _) = ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').expect("its y on the card");
+        let press = |seen| Event::Input {
+            seen,
+            event: Box::new(Event::Mouse(crate::event::Mouse {
+                kind: crate::event::MouseKind::Down,
+                x: x as u16,
+                y: row as u16,
+                alt: false,
+                ctrl: false,
+            })),
+        };
+        ed.handle_event(press(0));
+        assert!(up(&ed, id), "a press on frame 0 answered");
+        let said = ed.offer_said_now().unwrap_or_default().to_string();
+        assert!(said.contains("a press came before this card was in sight"), "{said}");
+        ed.handle_event(press(ed.frames));
+        assert!(!up(&ed, id), "its frame presented: the press answered");
+    }
+
+    /// A card read whole counts for a key once the frame it was whole in was presented — and for the frame being
+    /// drawn, its own look, at once.
+    #[test]
+    fn a_card_is_read_whole_once_the_frame_it_was_whole_in_was_presented() {
+        let mut ed = late();
+        weighty(&mut ed);
+        frame(&mut ed);
+        assert!(!ed.offer_seen_whole(), "whole in frame 1, frame 0 presented");
+        ed.drawing = true;
+        assert!(ed.offer_seen_whole(), "the frame being drawn: as it will show");
+        ed.drawing = false;
+        ed.frame_presented(1);
+        assert!(ed.offer_seen_whole(), "presented");
+    }
+
+    /// A card no frame had room for stays unanswerable until a frame with room for it was presented — drawn again,
+    /// not presented yet, still not.
+    #[test]
+    fn a_card_with_no_room_is_shown_once_a_frame_with_room_was_presented() {
+        let mut ed = late();
+        let id = weighty(&mut ed);
+        let card = (id, ed.offers[0].rev);
+        crate::term::render(&mut ed, &mut Vec::new(), 30, 4).unwrap();
+        assert_eq!(ed.offer_unshown_now(), Some(card), "no room");
+        frame(&mut ed);
+        assert_eq!(ed.offer_unshown_now(), Some(card), "room in frame 2, frame 0 presented");
+        ed.frame_presented(1);
+        assert_eq!(ed.offer_unshown_now(), Some(card), "the frame with no room presented");
+        ed.frame_presented(2);
+        assert_eq!(ed.offer_unshown_now(), None, "the one with room presented");
+        assert_eq!(ed.offer_unshown.get(), None, "and let go");
+    }
+
+    /// What a frame showed the person is marked once it's presented, not as it's drawn: the chat's messages read,
+    /// the toasts shown (an error's time runs from there), the front card's first sight. An older frame presented
+    /// marks nothing — the newest's go when it is.
+    #[test]
+    fn what_a_frame_showed_is_marked_once_its_presented() {
+        let mut ed = crate::uistate::tests::editor();
+        ed.interface.presents_late = true;
+        crate::uistate::tests::chat(&mut ed, "");
+        let chat = ed.workspace.claude.chat.as_mut().unwrap();
+        chat.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "first?", ""));
+        chat.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer.", ""));
+        weighty(&mut ed);
+        ed.set_error("an error to read");
+        let seen = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().seen;
+        let marked =
+            |ed: &Editor| (seen(ed), ed.toasts.iter().all(|t| t.shown), ed.offers[0].drawn.get().is_some());
+        crate::uistate::tests::frame(&mut ed);
+        crate::uistate::tests::frame(&mut ed);
+        assert_eq!(marked(&ed), (0, false, false), "drawn twice, nothing presented");
+        ed.frame_presented(ed.frames - 1);
+        assert_eq!(marked(&ed), (0, false, false), "an older frame presented: the newest's marks wait");
+        ed.frame_presented(ed.frames);
+        assert_eq!(marked(&ed), (2, true, true), "the newest presented");
+    }
+
+    /// An error shown in a frame has its time restarted as that frame is presented — after the frame's own time —
+    /// and is owed no frame for it: shown is drawn (an idle tarae draws nothing more).
+    #[test]
+    fn a_toast_shown_as_its_frame_is_presented_is_owed_no_frame() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.set_error("an error to read");
+        // (its time restarted past the frame's own)
+        crate::clock::advance(std::time::Duration::from_millis(5));
+        frame(&mut ed);
+        assert!(ed.toasts.iter().all(|t| t.shown), "shown, presented");
+        assert_eq!(ed.frame_owed(), None, "nothing owed");
     }
 
     /// ci round 5: the resting redraw waits once per due for an animation's frame due before long — that frame

@@ -577,8 +577,14 @@ impl Editor {
         .map(|l| l.region);
         let takes = self.takes_of(region);
         let answers = match region {
-            // (none for a card the last frame had no room for: `card_key` refuses every key, said)
-            Region::Card(id) if self.offer_unshown.get().is_some_and(|u| u.0 == id) => Vec::new(),
+            // (none for a card no presented frame had room for: `card_key` refuses every key, said — nor for one drawn,
+            // weighty or handed the keys, in a frame not presented yet: its answers refused)
+            Region::Card(id)
+                if self.offer_unshown_now().is_some_and(|u| u.0 == id)
+                    || (self.card_unpresented() && self.offers.first().is_some_and(|o| o.id == id)) =>
+            {
+                Vec::new()
+            }
             Region::Card(id) => self.offers.iter().find(|o| o.id == id).map_or_else(Vec::new, |o| {
                 let mut v: Vec<char> =
                     o.answers(self.preflight_quick().is_some()).into_iter().map(|a| a.0).collect();

@@ -1907,10 +1907,11 @@ impl crate::editor::Editor {
         }
         // (how a weighty one stands: drawn — its answers on screen, a digit is a card stacked behind)
         let stands = match o.weighty() {
-            // (drawn as it is: this card at this rev in the last frame, its answers there — not the buttons of
-            // the one an answer took away)
+            // (drawn as it is: this card at this rev in the last frame, its answers there — not the buttons of the
+            // one an answer took away; drawn in a frame not presented yet, its key and press never got here —
+            // `Editor::card_unpresented`)
             true => Stands {
-                drawn: self.offer_drawn.get() == Some((o.id, o.rev))
+                drawn: self.offer_drawn.get().is_some_and(|d| (d.0, d.1) == (o.id, o.rev))
                     && self.screen.offer_buttons.iter().any(|b| !b.3.is_ascii_digit()),
                 whole: self.offer_seen_whole(),
             },
@@ -2396,8 +2397,10 @@ impl crate::editor::Editor {
     /// Whether the front card has been in sight whole — drawn uncut, or opened with `v` — as it is now; or a
     /// card with the very same text was, since tarae started (#55: the same script run again was to be read again).
     pub fn offer_seen_whole(&self) -> bool {
+        // (whole in a frame the interface presented — or the one being drawn, for its own look: `Editor::saw`)
         self.offers.first().is_some_and(|o| {
-            self.offer_whole.get() == Some((o.id, o.rev)) || self.offer_read.borrow().contains(&text_hash(o))
+            self.offer_whole.get().is_some_and(|w| (w.0, w.1) == (o.id, o.rev) && self.saw(w.2))
+                || self.offer_read.borrow().get(&text_hash(o)).is_some_and(|&f| self.saw(f))
         })
     }
 
@@ -2432,11 +2435,15 @@ impl crate::editor::Editor {
         seen.iter().all(|&d| d)
     }
 
-    /// Card `(id, rev)` has been in sight whole — and so has its text, should a card bring it again.
+    /// Card `(id, rev)` has been in sight whole — and so has its text, should a card bring it again — in this frame
+    /// (the one being drawn, else the last): counted for a key once it's presented, the first such frame kept.
     pub fn offer_read_whole(&self, card: (u64, u64)) {
-        self.offer_whole.set(Some(card));
+        let frame = self.frames;
+        if self.offer_whole.get().is_none_or(|w| (w.0, w.1) != card) {
+            self.offer_whole.set(Some((card.0, card.1, frame)));
+        }
         if let Some(o) = self.offers.iter().find(|o| (o.id, o.rev) == card) {
-            self.offer_read.borrow_mut().insert(text_hash(o));
+            self.offer_read.borrow_mut().entry(text_hash(o)).or_insert(frame);
         }
     }
 

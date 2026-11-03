@@ -154,8 +154,9 @@ pub struct CodeReview {
     /// that text it is (`drawn_key`, `drawn_sync` after every frame): a high-risk change taller than its pane
     /// is on screen once every line of it was (`hunk_seen`) — an edit elsewhere in the file doesn't take back
     /// what was drawn (cardburden 1: a 5-line fix had the whole 1123-line change scrolled through again), and a
-    /// `}` drawn isn't every `}`.
-    drawn: std::collections::HashSet<crate::risk::Key>,
+    /// `}` drawn isn't every `}`. Each with the frame it was first drawn in: a key counts it once that frame was
+    /// presented (`Editor::saw`); tarae's own frames per key (`frame_per_key`) once it's drawn.
+    drawn: std::collections::HashMap<crate::risk::Key, crate::interface::Frame>,
     /// Of each document, the lines already counted in `drawn` at its version and its diff's (a frame's rows
     /// hashed once).
     drawn_rows: std::collections::HashMap<DocId, ((u64, u64), std::collections::HashSet<usize>)>,
@@ -3136,9 +3137,11 @@ pub struct HeldView {
     pub version: u64,
     /// Each block's lines (0-based, its heading among them) and the change's keys.
     pub blocks: Vec<(std::ops::Range<usize>, Vec<crate::risk::Key>)>,
-    /// What of each line was drawn since it was made — its first row, its last (`line_ends`): a block taller
-    /// than the pane is looked at once scrolled through.
-    pub drawn: std::collections::HashMap<usize, (bool, bool)>,
+    /// What of each line was drawn since it was made — its first row, its last (`line_ends`), each by the frame it was
+    /// first drawn in (a key counts it once that frame was presented — `Editor::saw`): a block taller than the pane is
+    /// looked at once scrolled through.
+    pub drawn:
+        std::collections::HashMap<usize, (Option<crate::interface::Frame>, Option<crate::interface::Frame>)>,
 }
 
 /// Of the rows a frame drew of document `doc` (its panes' `codeview::Row::origin`s), what of each line: its first
@@ -3231,12 +3234,17 @@ fn held_seen(ed: &mut Editor) -> bool {
     }
     // Each line whole — its first row and its last drawn: in the frame the key was pressed over, or since the
     // buffer was made, as it is (one taller than the pane: scrolled through)
-    let now = line_ends(ed, v.doc);
-    let whole =
-        |m: &std::collections::HashMap<usize, (bool, bool)>, l: usize| m.get(&l).is_some_and(|e| e.0 && e.1);
-    let shown = range.clone().all(|l| whole(&now, l)) || range.clone().all(|l| whole(&v.drawn, l));
+    // (the frame the key was pressed over: the last, once the interface presented it)
+    let now = match ed.saw(ed.frames) {
+        true => line_ends(ed, v.doc),
+        false => Default::default(),
+    };
+    let here = |l: usize| now.get(&l).is_some_and(|e| e.0 && e.1);
+    let seen = |f: Option<u64>| f.is_some_and(|f| ed.saw(f));
+    let ever = |l: usize| v.drawn.get(&l).is_some_and(|e| seen(e.0) && seen(e.1));
+    let shown = range.clone().all(here) || range.clone().all(ever);
     if !shown {
-        let unread = range.clone().filter(|&l| !whole(&now, l) && !whole(&v.drawn, l)).count();
+        let unread = range.clone().filter(|&l| !here(l) && !ever(l)).count();
         ed.set_status(format!(
             "{unread} of this change's {} lines not on screen whole — not looked at: scroll through it first",
             range.len()
@@ -3496,8 +3504,12 @@ fn take(ed: &mut Editor, whole_file: bool) {
             })
             .collect(),
     };
-    // (the lines the last frame drew of this document — what was on screen as the key was pressed)
-    let drawn: std::collections::HashSet<usize> = ed.screen.rows_of(doc.id).map(|row| row.0).collect();
+    // (the lines the last frame drew of this document — what was on screen as the key was pressed, once the interface
+    // presented it: else only what `ever` counts)
+    let drawn: std::collections::HashSet<usize> = match ed.saw(ed.frames) {
+        true => ed.screen.rows_of(doc.id).map(|row| row.0).collect(),
+        false => Default::default(),
+    };
     // (the pane's text rows — its size, not what the last frame drew there: a short file, or another file
     // drawn in it, is no measure)
     let rows = ed.viewport.0;
@@ -3505,7 +3517,9 @@ fn take(ed: &mut Editor, whole_file: bool) {
     // (a line drawn since the review opened — this one, by its text and which added line with it it is: an
     // edit elsewhere takes nothing back, and another line like it drawn isn't this one — `drawn_key`)
     let occ = r.occurrences(doc);
-    let ever = |l: usize| l < doc.text.len_lines() && r.drawn.contains(&drawn_key(&f.rel, doc, &occ, l));
+    let ever = |l: usize| {
+        l < doc.text.len_lines() && r.drawn.get(&drawn_key(&f.rel, doc, &occ, l)).is_some_and(|&n| ed.saw(n))
+    };
     let graded = r.graded(ed, f);
     let touches = |g: &crate::risk::Graded| spans.iter().any(|&(a, b)| g.at < b && a < g.at + g.lines);
     // Partly looked at (cardburden 1): only its lines since are asked for — each on screen as the key was
@@ -4883,7 +4897,8 @@ pub fn frame_per_key(ed: &Editor) -> bool {
         return due;
     }
     let occ = r.occurrences(doc);
-    let undrawn = |l: usize| l < doc.text.len_lines() && !r.drawn.contains(&drawn_key(&f.rel, doc, &occ, l));
+    let undrawn =
+        |l: usize| l < doc.text.len_lines() && !r.drawn.contains_key(&drawn_key(&f.rel, doc, &occ, l));
     // (the lines `take` asks for: one partly looked at, only its lines since)
     let waits = |g: &crate::risk::Graded| match g.keys.iter().any(|k| looked.contains(k)) {
         true => g.left(looked).into_iter().any(undrawn),
@@ -4946,11 +4961,16 @@ pub fn drawn_sync(ed: &mut Editor) {
     if let Some((doc, version)) = ed.workspace.held_view.as_ref().map(|v| (v.doc, v.version))
         && ed.docs.iter().any(|d| d.id == doc && d.version() == version)
     {
-        let now = line_ends(ed, doc);
+        let (now, frame) = (line_ends(ed, doc), ed.frames);
         if let Some(v) = ed.workspace.held_view.as_mut() {
             for (l, (start, end)) in now {
                 let e = v.drawn.entry(l).or_default();
-                (e.0, e.1) = (e.0 || start, e.1 || end);
+                if start {
+                    e.0.get_or_insert(frame);
+                }
+                if end {
+                    e.1.get_or_insert(frame);
+                }
             }
         }
     }
@@ -4976,7 +4996,7 @@ pub fn drawn_sync(ed: &mut Editor) {
         }
         for row in rows.iter().map(|row| row.0).filter(|&l| l < d.text.len_lines()) {
             if e.1.insert(row) {
-                r.drawn.insert(drawn_key(&rel, d, &occ, row));
+                r.drawn.entry(drawn_key(&rel, d, &occ, row)).or_insert(ed.frames);
             }
         }
     }
@@ -6011,6 +6031,91 @@ mod tests {
             ed.status
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// "Drawn" means presented (remote step 2): a high-risk change is on screen for `space v h` once the frame that
+    /// drew it was presented — drawn for an interface that presents late, not yet; presented, taken. The review's
+    /// record counts its time in sight from a frame presented too.
+    #[test]
+    fn a_high_risk_change_is_on_screen_once_its_frame_was_presented() {
+        let scratch = crate::scratch::Scratch::new("review-presented");
+        let dir = scratch.to_path_buf();
+        let run = |args: &[&str]| {
+            let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+            let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
+            assert!(ok.unwrap().status.success(), "git {args:?}");
+        };
+        let mut lines: Vec<String> = (0..10).map(|i| format!("fn f{i}() {{}}")).collect();
+        std::fs::write(dir.join("a.rs"), lines.join("\n") + "\n").unwrap();
+        run(&["init", "-q"]);
+        run(&["add", "."]);
+        run(&["commit", "-qm", "x"]);
+        lines.splice(3..3, ["fn g() {", "    unsafe { x() };", "}"].map(String::from));
+        std::fs::write(dir.join("a.rs"), lines.join("\n") + "\n").unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.interface.presents_late = true;
+        start_in(&mut ed, dir.clone(), None);
+        settle_until(&mut ed, landed);
+        let left = |ed: &Editor| ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(ed).len());
+        let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 30).unwrap();
+        frame(&mut ed);
+        feed(&mut ed, "]h");
+        frame(&mut ed);
+        assert!(
+            ed.workspace.reviews.code.is_none(),
+            "its record's time starts once a frame of it was presented"
+        );
+        feed(&mut ed, "<space>vh");
+        assert_eq!(left(&ed), 1, "drawn, not presented: not on screen yet — {}", status(&ed));
+        assert!(status(&ed).contains("not on screen"), "{}", status(&ed));
+        ed.frame_presented(ed.frames);
+        assert!(ed.workspace.reviews.code.is_some(), "presented: in sight");
+        feed(&mut ed, "<space>vh");
+        assert_eq!(left(&ed), 0, "presented: looked at — {}", status(&ed));
+    }
+
+    /// A tall high-risk change scrolled through on frames an interface presents late is taken once they were
+    /// presented — each line counted from the frame that first drew it (`CodeReview.drawn`), never before.
+    #[test]
+    fn a_tall_high_risk_change_is_scrolled_through_once_its_frames_were_presented() {
+        let scratch = crate::scratch::Scratch::new("review-presented-tall");
+        let dir = scratch.to_path_buf();
+        let run = |args: &[&str]| {
+            let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+            let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
+            assert!(ok.unwrap().status.success(), "git {args:?}");
+        };
+        let mut lines: Vec<String> = (0..40).map(|i| format!("fn f{i}() {{}}")).collect();
+        std::fs::write(dir.join("a.rs"), lines.join("\n") + "\n").unwrap();
+        run(&["init", "-q"]);
+        run(&["add", "."]);
+        run(&["commit", "-qm", "x"]);
+        let body = (0..18).map(|_| "    unsafe { x() };".to_string());
+        let added = std::iter::once("fn g() {".to_string()).chain(body).chain(["}".to_string()]);
+        lines.splice(5..5, added);
+        std::fs::write(dir.join("a.rs"), lines.join("\n") + "\n").unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.interface.presents_late = true;
+        start_in(&mut ed, dir.clone(), None);
+        settle_until(&mut ed, landed);
+        let left = |ed: &Editor| ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(ed).len());
+        let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 10).unwrap();
+        frame(&mut ed);
+        feed(&mut ed, "]h");
+        frame(&mut ed);
+        feed(&mut ed, "v");
+        for _ in 0..6 {
+            feed(&mut ed, "<C-d>");
+            frame(&mut ed);
+        }
+        feed(&mut ed, "<esc>");
+        feed(&mut ed, "<space>vh");
+        assert_eq!(left(&ed), 1, "scrolled through on frames not presented — {}", status(&ed));
+        ed.frame_presented(ed.frames);
+        feed(&mut ed, "<space>vh");
+        assert_eq!(left(&ed), 0, "presented: taken — {}", status(&ed));
     }
 
     /// A high-risk change taller than the pane is never on screen at once: `]h` says so and what to do, `space
@@ -8438,7 +8543,7 @@ mod tests {
                 r.graded(ed, f).iter().filter(|g| g.grade == Grade::High).cloned().collect::<Vec<_>>();
             highs
                 .iter()
-                .all(|g| (g.at..g.at + g.lines).all(|l| r.drawn.contains(&drawn_key("a.rs", d, &occ, l))))
+                .all(|g| (g.at..g.at + g.lines).all(|l| r.drawn.contains_key(&drawn_key("a.rs", d, &occ, l))))
         };
         // (keys queued at once, then the loop: a batch, a frame — until none is left; after each frame,
         // `frame_per_key` and whether the change was all drawn)
@@ -8540,7 +8645,7 @@ mod tests {
         let all_drawn = |ed: &Editor| {
             let (r, d) = (ed.workspace.code_review.as_ref().unwrap(), ed.doc());
             let occ = r.occurrences(d);
-            (0..d.text.len_lines() - 1).all(|l| r.drawn.contains(&drawn_key("a.rs", d, &occ, l)))
+            (0..d.text.len_lines() - 1).all(|l| r.drawn.contains_key(&drawn_key("a.rs", d, &occ, l)))
         };
         // (keys queued at once, then the loop: a batch, a frame — until none is left; after each frame,
         // `frame_per_key` and whether every line was drawn)
@@ -9881,6 +9986,38 @@ mod tests {
         ed.goto_line(ed.workspace.held_view.as_ref().unwrap().blocks[0].0.start);
         feed(&mut ed, "<space>vh");
         assert!(!looked(&ed, &mode) && status(&ed).contains("changed since"), "{}", status(&ed));
+    }
+
+    /// "Drawn" means presented (remote step 2): a block of a bring's changes is looked at once a frame that drew it
+    /// whole was presented — drawn for an interface that presents late, not taken; presented, taken.
+    #[test]
+    fn a_brings_change_is_looked_at_once_its_frame_was_presented() {
+        use crate::risk::{Hunk, Rules, graded};
+        let h = Hunk { mode: Some(("100644".into(), "100755".into())), ..Hunk::default() };
+        let mode = Held::of("run.sh", graded("run.sh", None, &h, &Rules::default(), false), &h);
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.interface.presents_late = true;
+        let what = crate::offer::What::ReviewEnd {
+            session: crate::event::WorkspaceId::HOME,
+            started: std::time::Instant::now(),
+        };
+        let mut card =
+            crate::offer::Offer::new("Bring work into main".into(), "held", "", String::new(), what);
+        card.held = Some(held_said(1));
+        card.gate = mode.keys.clone();
+        card.held_changes = vec![mode.clone()];
+        ed.push_offer(card);
+        let id = ed.offers[0].id;
+        show_as_brought(&mut ed, id, vec![mode.clone()]);
+        let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        ed.goto_line(ed.workspace.held_view.as_ref().unwrap().blocks[0].0.start);
+        crate::term::render(&mut ed, &mut Vec::new(), 80, 30).unwrap();
+        feed(&mut ed, "<space>vh");
+        assert!(!mode.looked_at(&ed.workspace.looked), "drawn, not presented: {}", status(&ed));
+        assert!(status(&ed).contains("not on screen whole"), "{}", status(&ed));
+        ed.frame_presented(ed.frames);
+        feed(&mut ed, "<space>vh");
+        assert!(mode.looked_at(&ed.workspace.looked), "presented: {}", status(&ed));
     }
 
     /// Review finding 5: a held card's `h` with nowhere to go — a review-end card with no review, a bring's
