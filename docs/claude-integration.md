@@ -637,13 +637,15 @@ The sent message's row lists its quotes; it opens a copy of what went.
 
 ### Follow mode
 
-![Follow mode — the lines Claude reads are washed in the accent, its thinking sits in a card above them, and the chat waits minimized in the corner](screenshots/follow.png)
+![Follow mode — the lines Claude reads carry the turn map's `◦` in the sign column, lit in the accent, its thinking sits in a card above them, and the chat waits minimized in the corner](screenshots/follow.png)
 ([hanji theme](screenshots/follow-hanji.png))
 
 Follow is on by default (`C-f` in the chat toggles it; `llm.follow = false` starts with it off). The editor goes
 where Claude is reading while it works — **the view, never your cursor**: your cursor stays where you left it, in
 sight or not, and the screen follows Claude's place. Each file it reads opens with the range read placed as a whole: left where it is if it's all on screen already, centred if it fits, and starting
-near the top if it's taller than the screen. Those lines get a faint accent wash. Each edit is shown once it's
+near the top if it's taller than the screen. Those lines keep the code's own ground: the turn's map marks them `◦` in
+the sign column (the turn as a map, below), lit in the accent as the stop in hand is while they're shown — a
+walk-through's stop too, which the map doesn't mark otherwise. Each edit is shown once it's
 written, review at the end included: its new lines on the review's green wash, the lines it replaced in red
 above them. An edit you watched being written leaves the view where its writing ended — no jump back to its first
 line once it lands; Claude's next read or edit moves it. One nothing showed as it came (in a file not in front, or
@@ -832,7 +834,7 @@ announced once the tour is over, so its message doesn't compete with the stop's 
 chat stops the tour and moves the editor to the first reference the chat shows, so the code follows what you're
 reading. It's plain text in the answer: no extra requests, a few words per stop.
 
-![A walk-through's last stop with the cursor in its lines, the tour over: the lines Claude explains are washed, and the stop's note card opens between them and the code below, saying what they do](screenshots/follow-ask.png)
+![A walk-through's last stop with the cursor in its lines, the tour over: the lines Claude explains carry the turn map's `◦`, lit in the accent, and the stop's note card opens between them and the code below, saying what they do](screenshots/follow-ask.png)
 
 You can talk back at a stop. Each stop is one of the answer's [notes](#notes): at the turn's end the card of its first
 place opens, and `enter` in a stop's lines opens that stop's. The follow card is the turn's: it shows the stops while

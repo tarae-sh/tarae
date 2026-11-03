@@ -43,7 +43,7 @@ pub struct Gaze {
     pub look: Look,
     /// The file, when the lookup has one.
     pub path: Option<PathBuf>,
-    /// 0-based lines read (washed) — none for whole-file reads and searches.
+    /// 0-based lines read — none for whole-file reads and searches.
     pub lines: Option<Range<usize>>,
     /// Why it's showing this (a walk-through's stop) · which stop of how many.
     pub why: Option<String>,

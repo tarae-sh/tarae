@@ -39,7 +39,7 @@
 11
 12
 13
-14                                     2222222222222222222222222222222222222222222222222222222222222222222222222222
+14
 15
 16
 17
@@ -75,5 +75,5 @@
 22   BBBBB B fffffff              a
 23  a TTTTTT                                                                                dddd   ddddd dd   TTT
 ## legend
-bg: c=ui.cursorline.primary  A=ui.cursor.primary  1=other  2=other
+bg: c=ui.cursorline.primary  A=ui.cursor.primary  1=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning  g=diff.plus  B=bold

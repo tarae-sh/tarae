@@ -380,6 +380,111 @@ fn a_turn_reads_as_a_map_and_a_press_is_its_stop() {
     assert_eq!(hand(&ed), Some((ed.turnmap.turn, 0)), "the read's stop");
 }
 
+/// Quiet code (polish landing 3): the lines Claude read, follow showing them, and a line with an error keep the code's
+/// own ground — no wash; the map's `◦` says the read, the diagnostic's bar and its words at the line end the error.
+#[test]
+fn read_lines_and_an_error_line_keep_the_codes_ground() {
+    let s = crate::scratch::Scratch::new("turnmap-quiet");
+    let mut ed = project(&s);
+    let a = s.join("src/a.rs");
+    add(&mut ed, vec![Stop { path: Some(a.clone()), ..read("", 0..2) }]);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.follow.gaze = Some(crate::follow::Gaze::new(look("read", "src/a.rs", "L1-2"), Some(a), Some(0..2)));
+    let d = CODE.find("fn d").unwrap();
+    ed.doc_mut().lsp.diagnostics = vec![crate::lsp::Diagnostic {
+        from: d,
+        to: d + 4,
+        severity: 1,
+        message: "mismatched types".into(),
+        raw: serde_json::json!({}),
+        source: 0,
+    }];
+    // (the cursor's line apart from them all)
+    let f = CODE.find("fn f").unwrap();
+    ed.doc_mut().set_selection(crate::selection::Selection::point(f));
+    crossterm::style::force_color_output(true);
+    let mut buf = Vec::new();
+    crate::term::render(&mut ed, &mut buf, 150, 40).unwrap();
+    let mut vt = vt100::Parser::new(40, 150, 0);
+    vt.process(&buf);
+    let screen = vt.screen();
+    let rows: Vec<String> = (0..40).map(|y| screen.contents_between(y, 0, y, 150)).collect();
+    // (a line's code: its row and the column its `fn` starts at — every cell before it one wide)
+    let at = |name: &str| {
+        let y = 1 + rows.iter().skip(1).position(|r| r.contains(name)).unwrap_or_else(|| panic!("no {name}"));
+        (y, rows[y][..rows[y].find(name).unwrap()].chars().count())
+    };
+    let ground = |name: &str| {
+        let (y, x) = at(name);
+        (x..x + 9).map(|x| screen.cell(y as u16, x as u16).unwrap().bgcolor()).collect::<Vec<_>>()
+    };
+    let own = ground("fn e()");
+    assert!(own.iter().all(|g| *g == own[0]), "one ground on a line untouched: {own:?}");
+    for name in ["fn a()", "fn b()", "fn d()"] {
+        assert_eq!(ground(name), own, "{name}: the code's own ground — {}", row(&rows, name));
+    }
+    // (the sign column: the cells just before the line's number)
+    let signs = |name: &str| {
+        let (y, x) = at(name);
+        rows[y].chars().skip(x.saturating_sub(5)).take(5).collect::<String>()
+    };
+    for name in ["fn a()", "fn b()"] {
+        assert!(signs(name).contains('◦'), "{name}: the map's `◦` — {}", row(&rows, name));
+    }
+    assert!(signs("fn d()").contains('▎'), "the error's bar: {}", row(&rows, "fn d()"));
+    assert!(row(&rows, "fn d()").contains("mismatched types"), "its words: {}", row(&rows, "fn d()"));
+}
+
+/// A stop being shown that the map doesn't mark — a walk-through's `<show at=…>`, no stop of the turn's on its lines —
+/// still says itself: the map's `◦` on each of its lines, lit as the stop in hand is (the accent, bold), the code's own
+/// ground kept; a mark, no button (no stop to go to).
+#[test]
+fn a_walk_throughs_shown_lines_get_the_maps_mark_in_hand() {
+    let s = crate::scratch::Scratch::new("turnmap-shown");
+    let mut ed = project(&s);
+    let a = s.join("src/a.rs");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    let g = crate::follow::Gaze::new(look("show", "src/a.rs", "L2-4"), Some(a), Some(1..4));
+    c.follow.gaze = Some(crate::follow::Gaze { why: Some("the three".into()), step: Some((1, 2)), ..g });
+    let f = CODE.find("fn f").unwrap();
+    ed.doc_mut().set_selection(crate::selection::Selection::point(f));
+    crossterm::style::force_color_output(true);
+    let mut buf = Vec::new();
+    crate::term::render(&mut ed, &mut buf, 150, 40).unwrap();
+    let mut vt = vt100::Parser::new(40, 150, 0);
+    vt.process(&buf);
+    let screen = vt.screen();
+    let rows: Vec<String> = (0..40).map(|y| screen.contents_between(y, 0, y, 150)).collect();
+    let at = |name: &str| {
+        let y = 1 + rows.iter().skip(1).position(|r| r.contains(name)).unwrap_or_else(|| panic!("no {name}"));
+        (y, rows[y][..rows[y].find(name).unwrap()].chars().count())
+    };
+    let ground = |name: &str| {
+        let (y, x) = at(name);
+        (x..x + 9).map(|x| screen.cell(y as u16, x as u16).unwrap().bgcolor()).collect::<Vec<_>>()
+    };
+    // (the sign column's mark: the `◦` among the cells just before the line's number, and how it's drawn)
+    let mark = |name: &str| {
+        let (y, x) = at(name);
+        (x.saturating_sub(6)..x)
+            .map(|x| screen.cell(y as u16, x as u16).unwrap())
+            .find(|c| c.contents() == "◦")
+    };
+    let own = ground("fn e()");
+    let mut lit = Vec::new();
+    for name in ["fn b()", "fn c()", "fn d()"] {
+        let m = mark(name).unwrap_or_else(|| panic!("{name}: the map's `◦` — {}", row(&rows, name)));
+        assert!(m.bold(), "{name}: lit as the stop in hand");
+        lit.push(m.fgcolor());
+        assert_eq!(ground(name), own, "{name}: the code's own ground — {}", row(&rows, name));
+    }
+    assert!(lit.iter().all(|c| *c == lit[0]), "one look on every shown line: {lit:?}");
+    for name in ["fn a()", "fn e()"] {
+        assert!(mark(name).is_none(), "{name} isn't shown: {}", row(&rows, name));
+    }
+    assert!(ed.screen.map_marks.borrow().iter().all(|m| m.4), "listed, each in hand");
+}
+
 /// Kept until the next turn starts — the turn over, a single session, it stays; a new one clears it; an older turn `[r`
 /// steps into shows that turn's.
 #[test]
@@ -1032,7 +1137,8 @@ fn a_place_in_another_folder_is_judged_the_same() {
 /// The stops the sign column reads are found by line, the heaviest on it first and the one in hand over all.
 #[test]
 fn a_lines_sign_is_its_heaviest_the_one_in_hand_over_all() {
-    let sign = |mark: Mark, stop: usize, in_hand: bool| Sign { lines: 0..3, mark, at: (0, stop), in_hand };
+    let sign =
+        |mark: Mark, stop: usize, in_hand: bool| Sign { lines: 0..3, mark, at: Some((0, stop)), in_hand };
     let signs = [sign(Mark::Read, 0, false), sign(Mark::Edit, 1, false), sign(Mark::Read, 2, false)];
     assert_eq!(sign_at(&signs, 1).map(|s| s.mark), Some(Mark::Edit));
     assert_eq!(sign_at(&signs, 9), None);

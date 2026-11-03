@@ -239,7 +239,7 @@ pub(crate) struct Drawn {
 
 impl Drawn {
     /// A watcher's `regions` event.
-    fn of(v: &Value) -> Option<Drawn> {
+    pub(crate) fn of(v: &Value) -> Option<Drawn> {
         (v["event"] == "regions").then_some(())?;
         Some(Drawn {
             written: v["written"].as_u64()?,
@@ -437,10 +437,10 @@ pub(crate) fn measure(
 /// A folder of one run's own under `target/f/` (0700, the next number when taken; removed on drop) — inside the
 /// project, short: the scene's tarae binds its UI socket in its state there, and a run's sandbox reaches a unix socket
 /// only in the project, within `sun_path`'s 104 bytes.
-struct Own(PathBuf);
+pub(crate) struct Own(pub(crate) PathBuf);
 
 impl Own {
-    fn new() -> Result<Own> {
+    pub(crate) fn new() -> Result<Own> {
         let base = root().join("target/f");
         std::fs::create_dir_all(&base).map_err(|e| format!("{}: {e}", base.display()))?;
         for n in 0..1000 {

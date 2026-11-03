@@ -6630,17 +6630,8 @@ fn draw_text(
     };
     let label_style =
         Style { fg: ui.accent.fg, bg: blend(ui.accent.fg, ui.tint, 0.16), bold: true, ..Style::default() };
-    // Lines Claude is reading right now (chat), or a replay's stop — a faint accent wash (an edit shown here
-    // has the review's instead)
-    let gaze = editor
-        .workspace
-        .claude
-        .chat
-        .as_ref()
-        .and_then(|c| c.follow.shown())
-        .filter(|g| g.path.is_some() && g.path == *doc.path && doc.shown.is_none())
-        .and_then(|g| g.lines.clone());
-    let gaze_bg = blend(ui.accent.fg, ui.tint, 0.09).or(ui.base.bg);
+    // (Lines Claude reads, or a replay's stop, keep the code's ground: the turn map's `◦` in the sign column says
+    // them — polish landing 3; an edit shown has the review's washes)
     // Code review: added and changed lines on a green wash (a step stronger on the cursor line); removed ones
     // are rows of their own (red) — and so an edit of Claude's that follow or replay shows. One diff a view:
     // the signs, washes and rows all from `shows.changes`
@@ -6809,10 +6800,17 @@ fn draw_text(
         if let Some(pane) = shows.pane {
             let at = (lay.x0 + signs - 1, y);
             let glyph = s.mark.glyph().to_string();
-            let press = crate::wordspot::Press::Stop(s.at);
-            let spot =
-                word_spot(crate::mouse::Surface::Code(pane), press, at, vec![(glyph.clone(), map_style(s))]);
-            editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+            // (lines follow shows that no stop holds — a walk-through's: a mark, no press)
+            if let Some(stop) = s.at {
+                let press = crate::wordspot::Press::Stop(stop);
+                let spot = word_spot(
+                    crate::mouse::Surface::Code(pane),
+                    press,
+                    at,
+                    vec![(glyph.clone(), map_style(s))],
+                );
+                editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+            }
             let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&editor.workspace.root).ok());
             let rel = rel.map(|p| p.display().to_string()).unwrap_or_default();
             let line = s.lines.start + 1;
@@ -7116,18 +7114,8 @@ fn draw_text(
             }
             Style { bg: deeper.or(bg), ..ui.base }
         } else {
-            let st = if here {
-                ui.cursorline
-            } else {
-                // Error/warning lines get a very faint wash of that color — so problems stand out when skimming
-                match line_message_here {
-                    Some((sev @ 1..=2, ..)) => {
-                        Style { bg: blend(ui.sign[sev as usize].fg, ui.tint, 0.07).or(ui.base.bg), ..ui.base }
-                    }
-                    _ if gaze.as_ref().is_some_and(|g| g.contains(&line)) => Style { bg: gaze_bg, ..ui.base },
-                    _ => ui.base,
-                }
-            };
+            // (an error's or warning's line keeps the code's ground: its sign and its line end say it)
+            let st = if here { ui.cursorline } else { ui.base };
             match wet_at(line).and_then(|k| wet_bg(ui, st.bg, k)) {
                 Some(bg) => {
                     #[cfg(test)]

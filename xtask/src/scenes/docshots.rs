@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-use super::{Compared, SCENES, compared_but, config_toml, write};
+use super::{Compared, SCENES, compared_but, config_toml, stand_in_lsp, write};
 use crate::shot::{self, Setup};
 use crate::{Result, root};
 
@@ -765,7 +765,9 @@ const DOCS: &[DocShot] = &[
     row("grammar-offer.png", None, S),
     row("offer-stack.png", None, S),
     row("syntax-injections.png", Some("injections"), S).varies(&[blame_age(1, (25, 51))]),
-    row("ux-error-lens.png", None, S),
+    // (an error and a warning from the stand-in language server, `scenes --lsp`; the cursor line's blame its age the
+    // scene's pace)
+    row("ux-error-lens.png", Some("diag"), S).varies(&[blame_age(1, (43, 70))]),
     row("m3-completion.png", None, S),
     row("m3-signature.png", None, S),
     row("m3-inlay-hints.png", None, S),
@@ -1046,7 +1048,11 @@ fn prepared(scene: &DocScene, bg: Bg, bin: &Path, me: &Path) -> Result<Prepared>
     let state = real.join("state");
     fixtures::seed(scene.seed, &state.join("tarae"), &home, &cwd, now())?;
     let config = real.join("xdg");
-    write(&config.join("tarae/config.toml"), &format!("{}{}", config_toml(me, scene.claude), scene.config))?;
+    let mut toml = config_toml(me, scene.claude);
+    if scene.name == "diag" {
+        toml = stand_in_lsp(me, toml);
+    }
+    write(&config.join("tarae/config.toml"), &format!("{toml}{}", scene.config))?;
     let setup = Setup {
         bin: bin.to_path_buf(),
         files: scene.files.iter().map(|f| f.to_string()).collect(),

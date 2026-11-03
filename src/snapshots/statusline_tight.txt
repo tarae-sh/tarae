@@ -8,7 +8,7 @@
 05  ● normal    main       ● 1   ▲ 1   2 sels   2:1
 ## bg · surface per cell, blank = ui.background
 00
-01     k11111111111111111111111111111111111111111111
+01     k
 02     Acccccccccccccccccccccccccccccccccccccccccccc
 03
 04
@@ -21,5 +21,5 @@
 04     f
 05  a TTTTTT    dddd       e e   w w   a aaaa   TTT
 ## legend
-bg: c=ui.cursorline.primary  A=ui.cursor.primary  k=ui.cursor  1=other
+bg: c=ui.cursorline.primary  A=ui.cursor.primary  k=ui.cursor
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning

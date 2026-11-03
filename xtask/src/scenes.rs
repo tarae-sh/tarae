@@ -39,7 +39,7 @@ use docshots::{Bg, Named, fixed_clock, homes, none_of_yours, now};
 // (`scenes --docs`: the docs' pictures, each from a scene here)
 pub(crate) mod docshots;
 
-const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
+const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --tint scene … [--size COLSxROWS …] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
 
 /// A recording's size unless `--size` says (the polish week's: its flows judged at 120×34) or the scene has its own
 /// (`record_size`).
@@ -2656,8 +2656,20 @@ const CURSOR_TURN_ESC2: &[&str] = &[
     "@1",
 ];
 
+/// `diag`'s config (its scene's and the docs' `ux-error-lens.png`): Rust's server the stand-in, this xtask as
+/// `scenes --lsp`.
+fn stand_in_lsp(me: &Path, toml: String) -> String {
+    let me = toml::Value::String(me.to_string_lossy().into_owned());
+    let toml = toml.replacen("lsp = false\n", "", 1);
+    toml + &format!(
+        "\n[lsp.stand-in]\ncommand = {me}\nargs = [\"scenes\", \"--lsp\"]\n\n[lang.rust]\nlsp = [\"stand-in\"]\n"
+    )
+}
+
 const SCENES: &[Scene] = &[
     Scene { name: "start", claude: "idle", files: &[], keys: &["@?Open a file", "@1"] },
+    // (an error and a warning from the stand-in language server, `scenes --lsp`: the sign and the line end)
+    Scene { name: "diag", claude: "idle", files: MAIN, keys: &["@?unused import", "@1"] },
     Scene { name: "code", claude: "idle", files: MAIN, keys: &["@1", " ", "e", "@?thread.rs", "@1"] },
     Scene { name: "picker", claude: "idle", files: MAIN, keys: &["@1", " ", "f", "@?README", "@1"] },
     // (an error, then a save: two toasts in one card)
@@ -4858,6 +4870,10 @@ pub fn run(args: &[String]) -> Result<()> {
         return claude(script, stdin.lock(), &mut io::stdout().lock(), pause)
             .map_err(|e| format!("the stand-in claude: {e}"));
     }
+    if args.first().is_some_and(|a| a == "--lsp") {
+        return lsp(&mut io::stdin().lock(), &mut io::stdout().lock())
+            .map_err(|e| format!("the stand-in language server: {e}"));
+    }
     if args.first().is_some_and(|a| a == "--compare") {
         let [_, a, b] = args else { return Err(USAGE.into()) };
         return compare(Path::new(a), Path::new(b));
@@ -4870,6 +4886,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut transparent = false;
     let mut recording = false;
     let mut video = false;
+    let mut tint = false;
     let mut backgrounds = BACKGROUNDS.to_vec();
     let mut bin: Option<PathBuf> = None;
     let mut it = args.iter();
@@ -4884,15 +4901,18 @@ pub fn run(args: &[String]) -> Result<()> {
             "--record" => recording = true,
             // (…and made a video — `video.rs`)
             "--video" => (recording, video) = (true, true),
+            // (the polish plan's "cells tinted in the code" on the last frame — `tint_one`)
+            "--tint" => tint = true,
             "--theme" => {
                 let bg = it.next().ok_or(USAGE)?;
                 backgrounds = vec![BACKGROUNDS.into_iter().find(|b| b == bg).ok_or(USAGE)?];
             }
-            // (one size instead of the two: a width where something folds)
+            // (sizes instead of the two — each `--size` one more: a width where something folds)
             "--size" => {
                 let s = it.next().ok_or(USAGE)?;
                 let (c, r) = s.split_once('x').ok_or(USAGE)?;
-                sizes = Some(vec![(c.parse().map_err(|_| USAGE)?, r.parse().map_err(|_| USAGE)?)]);
+                let size = (c.parse().map_err(|_| USAGE)?, r.parse().map_err(|_| USAGE)?);
+                sizes.get_or_insert_with(Vec::new).push(size);
             }
             // (the transparent themes: what has no background of its own)
             "--transparent" => transparent = true,
@@ -4902,11 +4922,17 @@ pub fn run(args: &[String]) -> Result<()> {
             _ => return Err(USAGE.into()),
         }
     }
-    if recording && (names.is_empty() || transparent) {
+    if (recording || tint) && (names.is_empty() || transparent) {
         return Err(USAGE.into());
     }
     let scenes = chosen(&names)?;
-    let out = out.unwrap_or_else(|| root().join(if recording { "target/rec" } else { "target/scenes" }));
+    let out = out.unwrap_or_else(|| {
+        root().join(match (recording, tint) {
+            (true, _) => "target/rec",
+            (_, true) => "target/tint",
+            _ => "target/scenes",
+        })
+    });
     let sizes_of = |scene: &Scene| match &sizes {
         Some(s) => s.clone(),
         None if recording => vec![record_size(scene)],
@@ -4939,6 +4965,17 @@ pub fn run(args: &[String]) -> Result<()> {
                     if let Err(e) = made {
                         eprintln!("{}: {e}", at.display());
                         failed.push(at.display().to_string());
+                    }
+                    continue;
+                }
+                if tint {
+                    let file = out.join(format!("{}-{bg}-{}.png", scene.name, size.0));
+                    match tint_one(scene, bg, size, &bin, &me, &file) {
+                        Ok(line) => println!("{line}"),
+                        Err(e) => {
+                            eprintln!("{}: {e}", file.display());
+                            failed.push(file.display().to_string());
+                        }
                     }
                     continue;
                 }
@@ -4989,6 +5026,135 @@ fn one(
     let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("tarae-demo"))?;
     let keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
     shot::take(&setup, &keys, size, &dir.0.join("state"), out)
+}
+
+/// `scene` measured for the polish plan's "cells tinted in the code" (`--tint`): driven as `one` drives it, its regions
+/// watched; on its last frame every cell a code pane holds (the last region holding it, as `cargo xtask focus` reads
+/// them) on a ground other than the code's own — the commonest in the panes' first column, the gutter's edge no wash
+/// reaches (the commonest of all is a wash where one covers most of the pane) — is tinted, counted by its colour. That
+/// frame is saved at `out`. What it returns: the scene's row.
+fn tint_one(
+    scene: &Scene,
+    bg: &'static str,
+    size: (u16, u16),
+    bin: &Path,
+    me: &Path,
+    out: &Path,
+) -> Result<String> {
+    // (the state — its UI socket — in the project, as `focus` keeps it: the sandbox's runs make sockets only there)
+    let (own, dir) = (crate::focus::Own::new()?, Fresh::new("tarae-tint")?);
+    let setup = prepare(scene, bg, false, bin, me, &dir.0, &dir.0.join("tarae-demo"))?;
+    let mut keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
+    if !keys.iter().any(|k| k == "@rec") {
+        keys.insert(0, "@rec".into());
+    }
+    let (frames, told) = shot::record_watched(&setup, &keys, size, &own.0.join("state"), &[], &["regions"])?;
+    let (n, screen) = frames.last().ok_or("no frame")?;
+    let drawn = (told.iter().rev().filter_map(crate::focus::Drawn::of).find(|d| d.written <= *n))
+        .ok_or("no regions told (an older tarae?)")?;
+    // (the code pane holding a cell: its rect's left edge)
+    let in_code = |x: usize, y: usize| {
+        let held = drawn.regions.iter().rposition(|r| {
+            let (rx, ry, w, h) = r.rect;
+            (rx..rx + w).contains(&x) && (ry..ry + h).contains(&y)
+        });
+        held.filter(|&i| drawn.regions[i].kind == "code").map(|i| drawn.regions[i].rect.0)
+    };
+    let mut grounds: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut edge: std::collections::BTreeMap<String, usize> = Default::default();
+    for y in 0..usize::from(size.1) {
+        for x in 0..usize::from(size.0) {
+            let (Some(left), Some(cell)) = (in_code(x, y), screen.cell(y as u16, x as u16)) else { continue };
+            // (a wide character's second cell: the terminal's, no ground of tarae's)
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let colour = match cell.bgcolor() {
+                vt100::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+                vt100::Color::Idx(i) => format!("idx{i}"),
+                vt100::Color::Default => "default".into(),
+            };
+            if x == left {
+                *edge.entry(colour.clone()).or_default() += 1;
+            }
+            *grounds.entry(colour).or_default() += 1;
+        }
+    }
+    let fonts = shot::Fonts::load(1)?;
+    let (w, h, px) = shot::render(screen, &fonts, 1);
+    shot::save_png(out, w, h, &px)?;
+    let own = edge.iter().max_by_key(|(c, k)| (**k, std::cmp::Reverse(*c))).map(|(c, _)| c.clone());
+    let cells: usize = grounds.values().sum();
+    let mut tinted: Vec<(String, usize)> =
+        grounds.into_iter().filter(|(c, _)| Some(c) != own.as_ref()).collect();
+    tinted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let others: Vec<String> = tinted.iter().map(|(c, k)| format!("{c} {k}")).collect();
+    Ok(format!(
+        "{:<16} {bg:<5} {:>3}×{:<3} code {cells:>5}  tinted {:>4}  (ground {})  {}",
+        scene.name,
+        size.0,
+        size.1,
+        tinted.iter().map(|t| t.1).sum::<usize>(),
+        own.unwrap_or_default(),
+        others.join(" · ")
+    ))
+}
+
+/// The stand-in language server (`scenes --lsp`, `diag`'s): `initialize` answered with whole-text sync, each file
+/// opened told an error on its 12th line and a warning on its 4th, every other request answered `null`; gone at `exit`
+/// or at its input's end.
+fn lsp(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<()> {
+    loop {
+        let mut len = None;
+        loop {
+            let mut line = String::new();
+            if input.read_line(&mut line)? == 0 {
+                return Ok(());
+            }
+            let line = line.trim_end();
+            if line.is_empty() {
+                break;
+            }
+            if let Some(n) = line.strip_prefix("Content-Length:") {
+                len = n.trim().parse::<usize>().ok();
+            }
+        }
+        let Some(len) = len else { continue };
+        let mut body = vec![0; len];
+        io::Read::read_exact(input, &mut body)?;
+        let msg: Value = serde_json::from_slice(&body).unwrap_or_default();
+        let range = |line: u32, from: u32, to: u32| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+        match msg["method"].as_str() {
+            Some("initialize") => lsp_send(
+                out,
+                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": {"textDocumentSync": 1}}}),
+            )?,
+            Some("textDocument/didOpen") => lsp_send(
+                out,
+                &json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
+                    "uri": msg["params"]["textDocument"]["uri"],
+                    "diagnostics": [
+                        {"range": range(11, 61, 71), "severity": 1, "source": "rustc",
+                         "message": "mismatched types: expected `usize`, found `u32`"},
+                        {"range": range(3, 4, 18), "severity": 2, "source": "rustc",
+                         "message": "unused import: `thread::Thread`"},
+                    ],
+                }}),
+            )?,
+            Some("exit") => return Ok(()),
+            Some(_) if !msg["id"].is_null() => {
+                lsp_send(out, &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}))?
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One message out, as the protocol frames it.
+fn lsp_send(out: &mut impl Write, v: &Value) -> io::Result<()> {
+    let text = v.to_string();
+    write!(out, "Content-Length: {}\r\n\r\n{text}", text.len())?;
+    out.flush()
 }
 
 /// `scene` in motion (`--record`): its keys as `one` sends them, every frame kept from its `@rec` (none: from the
@@ -5118,6 +5284,9 @@ fn prepare(
     // (#237's: Claude's commands without a sandbox — the chat's top line says so)
     if scene.name.ends_with("-nosandbox") {
         toml = toml.replacen("[llm]\n", "[llm]\nsandbox = false\n", 1);
+    }
+    if scene.name == "diag" {
+        toml = stand_in_lsp(me, toml);
     }
     if transparent {
         let theme = if bg == "dark" { "meok-transparent" } else { "hanji-transparent" };

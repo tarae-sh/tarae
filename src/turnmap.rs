@@ -230,8 +230,9 @@ fn rel_of<'a>(path: &'a Path, root: &Path) -> &'a Path {
 pub struct Sign {
     pub lines: Range<usize>,
     pub mark: Mark,
-    /// Its stop, in the turn replay shows.
-    pub at: (usize, usize),
+    /// Its stop, in the turn replay shows — none for lines follow shows that no stop of the map's holds (a
+    /// walk-through's): a mark, not a button.
+    pub at: Option<(usize, usize)>,
     pub in_hand: bool,
 }
 
@@ -592,29 +593,42 @@ pub fn press_kept(
     }
 }
 
-/// The signs in buffer `doc`, none for a file you changed since (`Replay.yours`).
+/// The signs in buffer `doc`, none for a file you changed since (`Replay.yours`) — and the lines follow shows (a
+/// walk-through's stop, a read as it's made, the replay's stop): a `◦` in hand on each, whether the map marks them yet
+/// or not, the code's ground kept (polish landing 3).
 pub fn signs(ed: &Editor, doc: &Document) -> Vec<Sign> {
     let m = &ed.turnmap;
-    if m.is_empty() {
-        return Vec::new();
-    }
     let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&ed.workspace.root).ok());
-    let Some(f) = rel.filter(|r| !yours(ed, r)).and_then(|r| m.files.get(r)) else {
-        return Vec::new();
-    };
+    let f = rel.filter(|r| !m.is_empty() && !yours(ed, r)).and_then(|r| m.files.get(r));
     let sign = |t: &Touched| Sign {
         lines: t.lines.clone(),
         mark: t.mark,
-        at: (m.turn, t.stop),
+        at: Some((m.turn, t.stop)),
         in_hand: m.hand == Some(t.stop),
     };
-    f.lines.iter().map(sign).collect()
+    let mut signs: Vec<Sign> = f.map(|f| f.lines.iter().map(sign).collect()).unwrap_or_default();
+    // (a replay's stop in a file you changed since: its lines moved, as the map's marks do)
+    let replayed = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.replaying.is_some());
+    if let Some(lines) = shown_on(ed, doc).filter(|_| !replayed || !rel.is_some_and(|r| yours(ed, r))) {
+        // (a press on it: the map's stop on its first line, where there's one; else it's a mark only)
+        let at = sign_at(&signs, lines.start).and_then(|s| s.at);
+        signs.push(Sign { lines, mark: Mark::Read, at, in_hand: true });
+    }
+    signs
+}
+
+/// The lines of `doc` follow shows of Claude's (`Follow::shown`) — none while an edit is shown there (the review's
+/// washes say it).
+fn shown_on(ed: &Editor, doc: &Document) -> Option<Range<usize>> {
+    let g = ed.workspace.claude.chat.as_ref()?.follow.shown()?;
+    let here = g.path.is_some() && g.path.as_deref() == doc.path.as_deref() && doc.shown.is_none();
+    g.lines.clone().filter(|l| here && !l.is_empty())
 }
 
 /// The sign on line `l`: the one in hand first, then the heaviest, then the newest.
 pub fn sign_at(signs: &[Sign], l: usize) -> Option<&Sign> {
     let on = signs.iter().filter(|s| s.lines.contains(&l));
-    on.min_by_key(|s| (!s.in_hand, weight(s.mark), usize::MAX - s.at.1))
+    on.min_by_key(|s| (!s.in_hand, weight(s.mark), usize::MAX - s.at.map_or(0, |a| a.1)))
 }
 
 #[cfg(test)]

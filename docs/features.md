@@ -526,8 +526,8 @@ clangd, jdtls, marksman, taplo, and more; the full list is in [Language support]
 Each server gets its own reader and writer threads, so the editor never waits on one. Responses that arrive after the
 cursor or document moved on are dropped.
 
-- **Diagnostics** — `●` in the gutter, underlines (curly where the terminal is known to support them), the message at
-  the end of the line with a faint wash of its color (`editor.inline-diagnostics`,
+- **Diagnostics** — a bar in the sign column, underlines (curly where the terminal is known to support them), the
+  message at the end of the line, the line itself on the code's own ground (`editor.inline-diagnostics`,
   [screenshot](screenshots/ux-error-lens.png)), `]d` `[d`, and a `space d` list. When the line end can't hold a message
   (a second line with the details, a long code line, more than one), putting the cursor on its underline shows it in
   full in a card, with `code` in syntax colors (`editor.cursor-diagnostics`; Esc hides it for that line)
