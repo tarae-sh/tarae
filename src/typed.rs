@@ -9,6 +9,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
     let line = line.trim();
     let (cmd, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let rest = rest.trim();
+    editor.stall.refine(crate::stall::Label::Typed(crate::stall::Word::of(cmd)));
     match cmd {
         "" => Ok(()),
         // (a web page: a copy of its text to a file of yours — `web/page.rs`)

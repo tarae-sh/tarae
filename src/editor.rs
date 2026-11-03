@@ -1095,6 +1095,8 @@ pub struct Editor {
     /// What the event under way is, as its sender said it (`event::Tx::send`'s site, or the name a job gives
     /// itself — `drawn_for`) — for the frame it draws, should it change something.
     pub event_from: Option<DrawnFor>,
+    /// Where the main loop is, for the freeze watcher (`stall.rs`): each handler and frame phase it begins.
+    pub stall: std::sync::Arc<crate::stall::Stamp>,
     /// What the events of the batch under way that changed something were (`term::handle_noting`) — the next
     /// frame's reasons.
     pub drawn_by: Vec<DrawnFor>,
@@ -1492,6 +1494,7 @@ impl Editor {
             redraw_due: false,
             frames_written: 0,
             event_from: None,
+            stall: Default::default(),
             drawn_by: Vec::new(),
             frames_for: Default::default(),
             events_handled: 0,
@@ -4422,6 +4425,7 @@ impl Editor {
     /// The job applied now names what it is (`DrawnFor::Named`: a tick, a watch round, a UI-state ask) — a frame
     /// it draws says that rather than where its result was sent from.
     pub(crate) fn drawn_for(&mut self, what: &'static str) {
+        self.stall.refine(crate::stall::Label::Named(what));
         self.event_from = Some(DrawnFor::Named(what));
     }
 
@@ -5978,6 +5982,7 @@ impl Editor {
             for cmd in cmds {
                 match cmd {
                     MappableCommand::Static(c) => {
+                        cx.editor.stall.refine(crate::stall::Label::Command(c.name));
                         (c.fun)(&mut Context { editor: cx.editor, count });
                         if c.motion {
                             let fun = c.fun;

@@ -327,6 +327,7 @@ impl Tx {
     fn send_from(&self, ev: Event, site: &'static Location<'static>) -> Result<(), mpsc::SendError<Event>> {
         let ev = match ev {
             Event::Job(apply) => Event::Job(Box::new(move |ed: &mut Editor| {
+                ed.stall.refine(crate::stall::Label::Job(site));
                 ed.event_from = Some(crate::editor::DrawnFor::Job(site));
                 apply(ed)
             })),

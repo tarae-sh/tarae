@@ -200,6 +200,7 @@ mod sorting;
 mod sound;
 mod spawn;
 mod split;
+mod stall;
 mod stamp;
 mod storewrite;
 mod structure;

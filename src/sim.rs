@@ -70,6 +70,7 @@ mod sessions;
 mod shareswap;
 mod shimmer;
 mod sound;
+mod stall;
 mod starts;
 mod stuckstop;
 mod termview;

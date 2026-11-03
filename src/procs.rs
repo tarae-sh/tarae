@@ -1892,6 +1892,13 @@ impl Editor {
                 }
             };
         add(self.llm_pid, Kind::Ask, "claude", "space i".into(), None);
+        add(
+            crate::stall::sampling(),
+            Kind::Helper,
+            "stall stack",
+            "the main loop's stack, taken".into(),
+            None,
+        );
         for (plugin, id, pid, program) in self.plugin_pids() {
             add(Some(pid), Kind::Plugin(plugin.clone(), id), &program, format!("plugin {plugin}"), None);
         }

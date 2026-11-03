@@ -198,6 +198,7 @@ fn event_loop(editor: &mut Editor) -> Result<()> {
     spawn_signals(editor.events.shared_sender());
     editor.watches_start();
     editor.procs_start_sampling();
+    crate::stall::watch(editor.stall.clone(), editor.events.shared_sender(), crate::stall::LIMITS);
     let mut out = io::stdout();
     let mut draw = true;
     // Frames are drawn whole, but only what changed goes to the terminal (`screen.rs`): the main loop
@@ -211,16 +212,21 @@ fn event_loop(editor: &mut Editor) -> Result<()> {
     editor.drawn_by.push(crate::editor::DrawnFor::Named("the first frame"));
     while !editor.should_quit {
         if draw {
+            use crate::stall::Label::Frame;
+            editor.stall.begin(Frame("draw"));
             let (w, h) = terminal::size()?;
             if std::mem::take(&mut editor.redraw) {
                 screen.invalidate();
             }
             frame.clear();
             render_drawn(editor, &mut frame, w, h)?;
+            editor.stall.begin(Frame("what changed"));
             let bytes = present(&mut screen, editor, &frame, w, h);
             let (own, wrote) = (std::mem::take(&mut editor.term_out), !bytes.is_empty());
             // (a frame that couldn't be read goes as it is, no synchronized update around it)
             let ended = bytes.ends_with(b"\x1b[?2026l");
+            // (a terminal that doesn't read holds the loop here)
+            editor.stall.begin(Frame("written to the terminal"));
             if wrote || !own.is_empty() {
                 out.write_all(bytes)?;
                 // (after the frame's synchronized update has ended: OSC 52 — `clipboard.rs`)
@@ -230,6 +236,7 @@ fn event_loop(editor: &mut Editor) -> Result<()> {
             if wrote {
                 resting.wrote(screen.patched(), crate::clock::now());
             }
+            editor.stall.begin(Frame("after it"));
             editor.frames_written += ended as u64;
             // (the first frame drawn: the start is over — what runs from here is its only as its jobs' results)
             editor.events.started();
@@ -242,6 +249,7 @@ fn event_loop(editor: &mut Editor) -> Result<()> {
         // its own (Terminal.app, measured: a cursor drawn past its cell next to a wide character, a line up)
         // or anything else that drifted is gone a moment later — the next frame used to wipe it anyway. Its time
         // runs from the last write, not the last event (`Resting`).
+        editor.stall.idle();
         let ev = if let Some(wait) = resting.wait(crate::clock::now()) {
             match editor.events.recv_within(wait) {
                 Ok(Some(ev)) => ev,
@@ -305,6 +313,7 @@ pub(crate) fn handle_batch(editor: &mut Editor, ev: Event, until: std::time::Ins
 /// After a batch of events (`unchanged`: every one said it changed nothing on screen): whether a frame is drawn
 /// — and when none is, the UI state's watchers hear what changed all the same (`uistate::undrawn`).
 pub(crate) fn batch_done(editor: &mut Editor, unchanged: bool) -> bool {
+    editor.stall.begin(crate::stall::Label::Named("the batch's end"));
     let draw = editor.frame_due(unchanged);
     if draw
         && unchanged
@@ -324,6 +333,11 @@ pub(crate) fn handle_noting(editor: &mut Editor, ev: crate::event::Event) -> boo
     use crate::editor::DrawnFor;
     editor.unchanged = false;
     let kind = DrawnFor::of(&ev);
+    // (a job's result says its site as it's applied: `event::Tx::send_from`)
+    editor.stall.begin(match kind {
+        Some(DrawnFor::Event(what)) => crate::stall::Label::Event(what),
+        _ => crate::stall::Label::Named("a job"),
+    });
     editor.event_from = None;
     editor.handle_event(ev);
     let unchanged = std::mem::take(&mut editor.unchanged);
