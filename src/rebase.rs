@@ -855,6 +855,16 @@ pub(crate) enum Broken {
     NotYours,
     /// The conflicted paths staged as pathspecs: a `*` in a name a glob, matching its neighbours.
     GlobPathspecs,
+    /// A conflicted path the resolution deleted staged with `git add`, as the others are (#325).
+    DeletionsAdded,
+    /// A conflicted path the resolution deleted left unstaged.
+    DeletionsLeft,
+    /// A HEAD move never looks at a stopped rebase: one ended outside tarae is kept, its card with it.
+    HeadMoveKept,
+    /// Going on never asks whether the rebase is still under way: `git rebase --continue` with none in progress.
+    GoneGoesOn,
+    /// A rebase ended outside tarae let go whatever its stage: one going on (git at work) too.
+    LetGoAtWork,
 }
 
 #[cfg(test)]
@@ -1962,7 +1972,7 @@ impl Editor {
     }
 
     /// `:rebase-continue` — the stopped rebase's conflicted files, with no markers left, staged (those git
-    /// listed, nothing else — #206: a whole tree staged took a build folder into a commit) and `git rebase
+    /// listed — one the resolution deleted as its deletion, #325 —, nothing else — #206: a whole tree staged took a build folder into a commit) and `git rebase
     /// --continue` (it may stop again) — never with a buffer of the checkout unsaved (`rebase_free`), so what's
     /// staged is the text the markers were looked for in. What else the resolution changed is never staged: a
     /// tracked file changed besides them stops it, named (git wouldn't go on — #129), yours to stage or undo;
@@ -2000,8 +2010,22 @@ impl Editor {
                 std::fs::write(&out, message_written(&text)).map_err(|e| e.to_string())?;
                 Ok(out)
             });
+            // (finished or aborted by hand meanwhile: nothing to go on with — #325's `y` ran `git rebase --continue`
+            // with no rebase in progress)
+            let ended = under_way(&root).is_none();
             let besides = besides(&root, &files, before.as_deref());
+            // (a conflicted path the resolution deleted — a modify/delete resolved as a delete: #325)
+            let gone: Vec<String> = (files.iter())
+                .filter(|f| {
+                    let there = std::fs::symlink_metadata(root.join(f));
+                    there.is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+                })
+                .cloned()
+                .collect();
             move |ed: &mut Editor| {
+                if ended && !broken(Broken::GoneGoesOn) {
+                    return ed.rebase_let_go(" — nothing to go on with");
+                }
                 let Some(r) = ed.workspace.rebase.as_mut().filter(|r| r.stopped()) else { return };
                 if !left.is_empty() {
                     return ed
@@ -2056,20 +2080,33 @@ impl Editor {
                 }
                 ed.rebase_review_gone();
                 ed.rebase_cards_gone();
-                let quoted: Vec<String> = files.iter().map(|f| crate::packs::sh_quote(f)).collect();
+                let gone = if broken(Broken::DeletionsAdded) { Vec::new() } else { gone };
+                let quote = |f: &String| crate::packs::sh_quote(f);
+                let quoted: Vec<String> = files.iter().filter(|f| !gone.contains(f)).map(quote).collect();
+                let deleted: Vec<String> = match broken(Broken::DeletionsLeft) {
+                    true => Vec::new(),
+                    false => gone.iter().map(quote).collect(),
+                };
                 // (the replayed commit's message: written with `m`, put in place by git's own editor hook — so the
                 // commit keeps its author and date — else kept as it was, no editor)
                 let editor = message.map(|f| {
                     crate::packs::sh_quote(&format!("cp {}", crate::packs::sh_quote(&f.to_string_lossy())))
                 });
                 // (the conflicted paths as git named them, literally — a `*` in a name is no glob — and nothing
-                // else: #206)
+                // else: #206. One the resolution deleted is staged as git's own hint at a modify/delete stop says,
+                // `git rm`: `--cached` touches no file, `--ignore-unmatch` goes on where it's gone from the index
+                // already — staged before, the git tab's `s` — where `add` fails on a pathspec matching nothing:
+                // #325)
                 let literal = if broken(Broken::GlobPathspecs) { "" } else { " --literal-pathspecs" };
                 let cmd = move |git: &str| {
-                    let add = match quoted.is_empty() {
-                        true => String::new(),
-                        false => format!("{git}{literal} add -- {} && ", quoted.join(" ")),
-                    };
+                    let mut add = String::new();
+                    if !quoted.is_empty() {
+                        add.push_str(&format!("{git}{literal} add -- {} && ", quoted.join(" ")));
+                    }
+                    if !deleted.is_empty() {
+                        let rm = "rm -q --cached --ignore-unmatch";
+                        add.push_str(&format!("{git}{literal} {rm} -- {} && ", deleted.join(" ")));
+                    }
                     match &editor {
                         // (`whitespace`: git keeps the message's own `#` lines — tarae cut its own already)
                         Some(e) => {
@@ -2165,6 +2202,52 @@ impl Editor {
         if replay {
             crate::codereview::close(self);
         }
+    }
+
+    /// The front session's checkout's HEAD moved (`git::watch_round`) while its rebase waits stopped or resolved:
+    /// git asked whether it's still under way — one ended outside tarae (continued or aborted by hand, #325) is let
+    /// go (`rebase_let_go`). A rebase of tarae's running moves HEAD itself: never looked at then.
+    pub(crate) fn rebase_head_moved(&mut self) {
+        if broken(Broken::HeadMoveKept) || !self.workspace.rebase.as_ref().is_some_and(Rebase::stopped) {
+            return;
+        }
+        let root = self.workspace.root.clone();
+        self.events.jobs().spawn(move || {
+            let gone = under_way(&root).is_none();
+            move |ed: &mut Editor| match gone {
+                true => ed.rebase_let_go(""),
+                // (nothing on screen changes: a HEAD move within the stop — a `git commit` there)
+                false => ed.unchanged = true,
+            }
+        });
+    }
+
+    /// The front session's rebase, which git no longer has under way, let go — ended outside tarae: its cards,
+    /// review and inbox row gone, a bring waiting on it told, and the changes set aside for it put back as any end
+    /// puts them (`changes_back`), said with `more`. Only while it's stopped or resolved: one of tarae's running
+    /// ends by its own run.
+    fn rebase_let_go(&mut self, more: &str) {
+        let stopped = |r: &mut Rebase| r.stopped() || broken(Broken::LetGoAtWork);
+        let Some(Rebase { branch, base, stashed, .. }) = self.workspace.rebase.take_if(stopped) else {
+            return;
+        };
+        self.rebase_review_gone();
+        self.rebase_cards_gone();
+        self.workspace.bring_go = false;
+        self.bring_queue_rebased(Err("its rebase ended outside tarae".into()));
+        let (root, name, more) =
+            (self.workspace.root.clone(), self.workspace.label().to_string(), more.to_string());
+        self.events.jobs().spawn(move || {
+            let aside = changes_back(&root, &branch, &base);
+            move |ed: &mut Editor| {
+                let said =
+                    format!("{name}: the rebase ended outside tarae{more}{}", aside_said(&aside, &stashed));
+                match aside {
+                    Aside::Kept(_) => ed.set_warning(said),
+                    _ => ed.set_status(said),
+                }
+            }
+        });
     }
 
     /// The resolved card of the front session's rebase goes (answered by hand).

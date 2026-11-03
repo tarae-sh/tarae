@@ -6013,6 +6013,186 @@ mod tests {
         off
     }
 
+    /// #325: a modify/delete conflict (main deleted `d.txt`, the branch changed it) resolved as a deletion goes on —
+    /// the deletion staged by tarae, and staged already (the git tab's `s` before `y`) alike: the commit holds the
+    /// branch's other change alone, `d.txt` gone from it.
+    #[test]
+    fn a_conflict_resolved_as_a_deletion_goes_on() {
+        let off = deletion_resolved("rebase-deleted", false);
+        assert!(off.is_empty(), "{off:#?}");
+    }
+
+    /// …staged before `y` too.
+    #[test]
+    fn a_conflict_resolved_as_a_deletion_staged_already_goes_on() {
+        let off = deletion_resolved("rebase-deleted-staged", true);
+        assert!(off.is_empty(), "{off:#?}");
+    }
+
+    /// …and they see a deletion left unstaged, and one staged already then added.
+    #[test]
+    fn the_deletion_tests_see_it_left_or_added() {
+        let _back = crate::rebase::Broken::DeletionsLeft.set();
+        let off = deletion_resolved("rebase-deleted-left", false);
+        assert!(off.iter().any(|o| o.starts_with("not gone on")), "{off:#?}");
+        drop(_back);
+        let _back = crate::rebase::Broken::DeletionsAdded.set();
+        let off = deletion_resolved("rebase-deleted-added", true);
+        assert!(off.iter().any(|o| o.starts_with("not gone on")), "{off:#?}");
+    }
+
+    /// What's off in `a_conflict_resolved_as_a_deletion_goes_on`, each a line — `staged`: the deletion staged by
+    /// hand before `y`.
+    fn deletion_resolved(name: &str, staged: bool) -> Vec<String> {
+        let (repo, dir) = place(name);
+        let log = dir.join("claude.log");
+        std::fs::write(repo.join("d.txt"), "d\n").unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-qm", "add d"]);
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, "rm -f d.txt;");
+        let wt = new_session(&mut ed, "feat");
+        std::fs::write(wt.join("d.txt"), "d\nfeat\n").unwrap();
+        std::fs::write(wt.join("e.txt"), "e\n").unwrap();
+        git_in(&wt, &["add", "-A"]);
+        git_in(&wt, &["commit", "-qm", "feat d"]);
+        git_in(&repo, &["rm", "-q", "d.txt"]);
+        git_in(&repo, &["commit", "-qm", "main deletes d"]);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        let mut off = Vec::new();
+        if card(&ed, "feat: conflicts resolved").is_none() {
+            off.push(format!("no resolved card: {}", said(&ed)));
+            return off;
+        }
+        if staged {
+            // (as the git tab's `s` stages: the deletion with the rest)
+            git_in(&wt, &["add", "--all"]);
+        }
+        card_in_sight(&mut ed);
+        let n = ed.messages.len();
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| {
+            let later = |s: &str| ed.messages.iter().skip(n).any(|m| m.2.contains(s));
+            // (a deletion left unstaged: git stops at it again, Claude asked again)
+            let again = later("stopped at") || later("Claude is resolving");
+            card(ed, "Rebased feat onto main").is_some() || later("rebase feat:") || again
+        });
+        let commits = git_in(&wt, &["log", "--format=%s", "main..HEAD"]);
+        if commits != "feat d" || crate::rebase::under_way(&wt).is_some() {
+            off.push(format!("not gone on: {commits:?} — {}", said(&ed)));
+        }
+        let files = commit_files(&wt, "HEAD");
+        if files != "e.txt" {
+            off.push(format!("the commit holds {files:?}, not e.txt alone"));
+        }
+        if !git_in(&wt, &["ls-tree", "--name-only", "HEAD", "d.txt"]).is_empty() {
+            off.push("d.txt still in the tree".into());
+        }
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+        off
+    }
+
+    /// #325: a resolved rebase continued by hand in a terminal is let go as its checkout's HEAD moves — said once, its
+    /// card and the rebase gone.
+    #[test]
+    fn a_rebase_ended_by_hand_is_let_go_as_head_moves() {
+        let off = ended_by_hand("rebase-by-hand-head", false, false);
+        assert!(off.is_empty(), "{off:#?}");
+    }
+
+    /// …and where no HEAD move was seen, by the card's `y`: said and let go, never `git rebase --continue` with no
+    /// rebase in progress.
+    #[test]
+    fn a_rebase_ended_by_hand_is_let_go_by_y() {
+        let off = ended_by_hand("rebase-by-hand-y", true, false);
+        assert!(off.is_empty(), "{off:#?}");
+    }
+
+    /// …and they see it kept.
+    #[test]
+    fn the_ended_by_hand_tests_see_it_kept() {
+        let _back = crate::rebase::Broken::HeadMoveKept.set();
+        let off = ended_by_hand("rebase-by-hand-head-trap", false, true);
+        assert!(off.iter().any(|o| o.starts_with("kept")), "{off:#?}");
+        drop(_back);
+        let _back = crate::rebase::Broken::GoneGoesOn.set();
+        let off = ended_by_hand("rebase-by-hand-y-trap", true, true);
+        assert!(off.iter().any(|o| o.starts_with("ran git rebase --continue")), "{off:#?}");
+    }
+
+    /// What's off in `a_rebase_ended_by_hand_is_let_go_as_head_moves` (`by_y`: `…_by_y`), each a line — `trapped`: a
+    /// trap is set that may leave nothing to wait for (looked at once a while passed with nothing).
+    fn ended_by_hand(name: &str, by_y: bool, trapped: bool) -> Vec<String> {
+        let (repo, dir) = place(name);
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, &format!("cp '{}' a.txt;", answer.display()));
+        let (wt, _) = moved_apart(&mut ed, &repo, false);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        let mut off = Vec::new();
+        if card(&ed, "feat: conflicts resolved").is_none() || ed.workspace.root != wt {
+            off.push(format!("no resolved card in feat: {}", said(&ed)));
+            return off;
+        }
+        // By hand, in a terminal
+        git_in(&wt, &["add", "a.txt"]);
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&wt)
+            .args(["rebase", "--continue"])
+            .env("GIT_EDITOR", "true")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(crate::rebase::under_way(&wt).is_none(), "finished by hand");
+        let n = ed.messages.len();
+        let later = move |ed: &Editor, s: &str| ed.messages.iter().skip(n).any(|m| m.2.contains(s));
+        let gone = |ed: &Editor| later(ed, "feat: the rebase ended outside tarae");
+        if by_y {
+            card_in_sight(&mut ed);
+            feed(&mut ed, "y");
+            settle_until(&mut ed, |ed| gone(ed) || later(ed, "Rebased feat") || later(ed, "rebase feat:"));
+            if ed.workspace.task_run.as_ref().is_some_and(|t| t.task.name == "rebase --continue") {
+                off.push(format!("ran git rebase --continue with none in progress: {}", said(&ed)));
+            }
+            if !later(&ed, "nothing to go on with") {
+                off.push(format!("not said as nothing to go on with: {}", said(&ed)));
+            }
+        } else {
+            let common = ed.workspace.git_common.clone();
+            crate::git::watch_round(&mut ed, &wt, (Some("feat".into()), common), true);
+            match trapped {
+                // (nothing comes to wait for: what a while brings, looked at)
+                true => {
+                    let end = crate::test_results::quiet_for(std::time::Duration::from_millis(500));
+                    while std::time::Instant::now() < end {
+                        if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                            ed.handle_event(ev);
+                        }
+                    }
+                }
+                false => settle_until(&mut ed, gone),
+            }
+        }
+        if ed.workspace.rebase.is_some() || card(&ed, "feat: conflicts resolved").is_some() {
+            off.push(format!("kept: the rebase or its card — {}", said(&ed)));
+        }
+        if ed.messages.iter().skip(n).filter(|m| m.2.contains("ended outside tarae")).count() != 1 {
+            off.push(format!("not said once: {}", said(&ed)));
+        }
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+        off
+    }
+
     /// Claude's turn ends with markers left: the files are named, nothing goes on — `:rebase-continue`
     /// won't either; `:rebase-abort` puts the branch back where it was.
     #[test]

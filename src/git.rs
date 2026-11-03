@@ -145,6 +145,8 @@ pub(crate) fn watch_round(
         crate::codereview::base_reached(ed);
         // (a checkout or reset changes the files the reviewer read, no save of tarae's)
         crate::reviewer::since_sync_shown(ed);
+        // (a rebase stopped here, continued or aborted by hand: let go — #325)
+        ed.rebase_head_moved();
     }
 }
 

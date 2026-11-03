@@ -4,11 +4,13 @@
 //! undone or changed again in its checkout (a stage or unstage told by its index watch, as `watch_index` tells it —
 //! #245, read again too), the git tab's status read (read again too), the rebase going on and
 //! resolved at its next stop (whose conflicted file is the one that held the stop before), a switch, the user
-//! taking their time — each read again's job and its landing interleaved by seed. `y` and `X` start no git: a run
+//! taking their time, its checkout's HEAD moving (the watch's round: a rebase ended outside tarae let go — #325;
+//! none is under way in these checkouts, so its read finds it ended) — each read again's job and its landing
+//! interleaved by seed. `y` and `X` start no git: a run
 //! in each task panel stands in, so the answer's rebase stays where it was as its line waits. After every step:
 //! a resolved card is up only as `rebase_offer` put it (an answered one never comes back); what a rebase says
 //! changed besides its conflict is never its stop's own conflicted file; a card with the keys says what it said
-//! when drawn.
+//! when drawn; a rebase going on (git at work) is never let go.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -31,12 +33,13 @@ const LIMIT: Duration = crate::test_results::PATIENCE;
 
 /// What the scenario remembers between steps: the checkouts whose card `rebase_offer` put up and no answer or
 /// move took away · those whose card `y` or `X` took away since · the front card as the last frame drew it (id,
-/// rev, question, held).
+/// rev, question, held) — and those whose rebase was left going on (git at work) and not resolved since.
 #[derive(Default)]
 struct Seen {
     up: BTreeSet<PathBuf>,
     answered: BTreeSet<PathBuf>,
     drawn: Option<(u64, u64, String, Option<String>)>,
+    at_work: BTreeSet<PathBuf>,
 }
 
 #[test]
@@ -84,8 +87,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(WorkspaceId, PathBuf)], seen: &
     let c = &mut sim.choices;
     let (sid, root) = c.pick(ids).clone();
     // (by arm: its card up 3, the card in front focused 2, answered 3, a frame 2, the checkout's file 3, the git
-    // tab's read 2, the rebase on 1, a switch 1, time passing 1)
-    match c.weighted(&[3, 2, 3, 2, 3, 2, 1, 1, 1]) {
+    // tab's read 2, the rebase on 1, a switch 1, time passing 1, its HEAD moved 1)
+    match c.weighted(&[3, 2, 3, 2, 3, 2, 1, 1, 1, 1]) {
         0 => match ed.rebase_offer(sid) {
             Ok(()) => {
                 seen.answered.remove(&root);
@@ -158,20 +161,27 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(WorkspaceId, PathBuf)], seen: &
         // Its git at work, then resolved at the next stop — or straight there (a run between two frames)
         6 => {
             let straight = c.below(2) == 0;
-            let mut said = String::new();
+            let (mut said, mut at_work) = (String::new(), None);
             ed.with_workspace(sid, |ed| {
                 let Some(r) = ed.workspace.rebase.as_ref() else { return };
                 let n = r.stop.step.map_or(1, |s| s.0);
                 if r.stage == Stage::Resolved && !straight {
                     crate::rebase::going_on_for_test(ed);
                     said = format!("session {sid}'s rebase goes on from stop {n}");
+                    at_work = Some(true);
                 } else {
                     // (stop 1's conflict is a.txt, the next a.rs — the file that held the one before)
                     let files: &[&str] = if n % 2 == 0 { &["a.txt"] } else { &["a.rs"] };
                     crate::rebase::resolved_at_for_test(ed, n + 1, files);
                     said = format!("session {sid}'s rebase resolved at stop {}", n + 1);
+                    at_work = Some(false);
                 }
             });
+            match at_work {
+                Some(true) => seen.at_work.insert(root),
+                Some(false) => seen.at_work.remove(&root),
+                None => false,
+            };
             said
         }
         7 => {
@@ -183,6 +193,15 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(WorkspaceId, PathBuf)], seen: &
             let ms = *c.pick(&[50, 300, 2000]);
             sim.wait(Duration::from_millis(ms));
             format!("{ms} ms pass")
+        }
+        // Its checkout's HEAD moved, as the git watch's round tells it (its thread off here): a stopped rebase looked
+        // at again, and — none really under way here — let go as one ended outside tarae, its job landing by seed
+        9 => {
+            ed.with_workspace(sid, |ed| {
+                let (branch, common) = (ed.workspace.git_branch.clone(), ed.workspace.git_common.clone());
+                crate::git::watch_round(ed, &root, (branch, common), true);
+            });
+            format!("session {sid}'s HEAD moved")
         }
         _ => unreachable!("one arm a weight"),
     }
@@ -217,6 +236,9 @@ fn held(ed: &Editor, seen: &Seen) -> Result<(), String> {
         return Err(format!("card#{} {:?} {how}, and no `rebase_offer` put it up since", o.id, o.title));
     }
     for l in std::iter::once(&ed.workspace).chain(&ed.workspaces) {
+        if l.rebase.is_none() && seen.at_work.contains(&l.root) {
+            return Err(format!("session {}'s rebase let go while git was at work", l.id));
+        }
         let Some(r) = l.rebase.as_ref() else { continue };
         if let Some(f) = r.also.tracked.iter().chain(&r.also.made).find(|f| r.stop.files.contains(f)) {
             return Err(format!(
@@ -235,7 +257,7 @@ fn held(ed: &Editor, seen: &Seen) -> Result<(), String> {
     Ok(())
 }
 
-/// The scenario run with `broken`'s guard out: some seed of `seeds` (found by a run of 0..40, the first that did)
+/// The scenario run with `broken`'s guard out: some seed of `seeds` (found by a run of 0..60, the first that did)
 /// fails, saying `said`.
 fn sees(broken: Broken, seeds: &[u64], said: &str) {
     let _back = broken.set();
@@ -255,18 +277,24 @@ fn sees(broken: Broken, seeds: &[u64], said: &str) {
 /// …and it sees a read again that lands after the card was answered, `y` or `X`, put it back up.
 #[test]
 fn the_read_again_simulation_sees_an_answered_card_brought_back() {
-    sees(Broken::BringsBack, &[7], "is back after its answer");
+    sees(Broken::BringsBack, &[43], "is back after its answer");
 }
 
 /// …and it sees a read asked at one stop landing after the rebase went on and was resolved at the next: what it
 /// read laid on that stop (the stage alone, looked at before the stop was, let it).
 #[test]
 fn the_read_again_simulation_sees_a_read_landing_at_the_next_stop() {
-    sees(Broken::AnyStop, &[16], "the stop's own conflicted file");
+    sees(Broken::AnyStop, &[2], "the stop's own conflicted file");
+}
+
+/// …and it sees a HEAD move's look landing after the rebase went on let it go, git at work (#325).
+#[test]
+fn the_read_again_simulation_sees_a_rebase_at_work_let_go() {
+    sees(Broken::LetGoAtWork, &[19], "let go while git was at work");
 }
 
 /// …and it sees a card said again under the focus at the same `rev`, keeping the keys.
 #[test]
 fn the_read_again_simulation_sees_a_card_changed_under_the_focus() {
-    sees(Broken::SameRev, &[3], "has the keys, saying other than it said when drawn");
+    sees(Broken::SameRev, &[1], "has the keys, saying other than it said when drawn");
 }
