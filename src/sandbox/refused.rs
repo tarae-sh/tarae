@@ -1517,6 +1517,63 @@ fn an_aarch64_table_with_no_snapshot_yet_is_said_not_failed() {
     assert!(!said.contains("something else") && !said.contains("a::b"), "nothing else: {said}");
 }
 
+/// The tier modes `cargo xtask kernels` blesses aarch64's tables of (K5: Debian 13's 6.12, Landlock ABI 6, Yama 1 —
+/// 2026-11-03 on 6010433f). Offline with namespaces has none: no kernel's mode reaches it.
+const AARCH64_BLESSED: [&str; 6] = ["own", "own-user", "host", "host-user", "offline", "offline-user"];
+
+/// K5's six tables, blessed: aarch64's words are x86-64's but row 24's other ABI — i386's `int 0x80` is x86-64's
+/// alone; an arm64 process has no other ABI to call (AArch32's calls come only from a 32-bit program, and the
+/// filter finds none of another ABI's: `the_filter_knows_only_the_native_calls`). Every other part the same, so a
+/// change to one architecture's table is a change to the other's, or a finding to say.
+#[test]
+fn an_aarch64_table_is_x86_64s_but_for_the_other_abis_calls() {
+    for mode in AARCH64_BLESSED {
+        let read =
+            |name: &str| fs::read_to_string(snapshot_path(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (x86, arm) =
+            (read(&format!("refused_linux_{mode}")), read(&format!("refused_linux_{mode}-aarch64")));
+        let (x86, arm): (Vec<_>, Vec<_>) = (x86.lines().collect(), arm.lines().collect());
+        assert_eq!(x86.len(), arm.len(), "{mode}: the same rows");
+        for (x, a) in x86.iter().zip(&arm) {
+            if !x.contains("| linux-dangerous-syscalls ") {
+                assert_eq!(x, a, "{mode}: a row apart by architecture");
+                continue;
+            }
+            let (x_head, x_arch) = x.rsplit_once(", foreign-arch=").expect("x86-64 tries the other ABI");
+            assert_eq!(x_arch, "refused", "{mode}: x86-64's other ABI refused");
+            assert_eq!(
+                *a,
+                format!("{x_head}, foreign-arch=not-here"),
+                "{mode}: aarch64's not tried, the rest x86-64's"
+            );
+        }
+    }
+}
+
+/// Once blessed, an aarch64 table is held as x86-64's are: no longer said and passed, and a row changed fails the
+/// compare, saying the row.
+#[test]
+fn a_blessed_aarch64_table_is_compared_and_a_changed_row_fails() {
+    if blessing() {
+        return; // (the compare would write the changed table over the snapshot)
+    }
+    for mode in AARCH64_BLESSED {
+        let name = format!("refused_linux_{mode}-aarch64");
+        assert!(held_yet(&name), "{name}: held");
+        let table = fs::read_to_string(snapshot_path(&name)).unwrap();
+        compare_snapshot(&name, &table);
+        let changed = table.replacen("signals=refused", "signals=allowed", 1);
+        assert_ne!(changed, table, "{name}: a row to change");
+        let failed =
+            std::panic::catch_unwind(|| compare_snapshot(&name, &changed)).expect_err("a changed row");
+        let said = failed.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(
+            said.contains("differs") && said.contains("+ ") && said.contains("signals=allowed"),
+            "{said}"
+        );
+    }
+}
+
 fn compare_snapshot(name: &str, actual: &str) {
     let path = snapshot_path(name);
     if blessing() {

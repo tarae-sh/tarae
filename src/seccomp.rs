@@ -875,8 +875,9 @@ mod tests {
             assert_eq!(run(libc::SYS_io_uring_enter, &[0]), enosys);
             assert_eq!(run(libc::SYS_read, &[0]), allow);
             assert_eq!(run(libc::SYS_sendto, &[3, 0x1000, 9, 0, 0, 0]), allow, "{mode:?}: no address");
-            // i386 (`AUDIT_ARCH_I386`, its `socketcall` is 102) and any other ABI: no call gets through
-            for other in [0x4000_0003u32, 0xC000_00B7 ^ 0xC000_003E ^ arch] {
+            // i386 (`AUDIT_ARCH_I386`, its `socketcall` is 102), AArch32 (`AUDIT_ARCH_ARM`: a 32-bit program on an
+            // arm64 kernel) and any other ABI: no call gets through
+            for other in [0x4000_0003u32, 0x4000_0028, 0xC000_00B7 ^ 0xC000_003E ^ arch] {
                 assert_eq!(eval(mode, other, libc::SYS_read, &[]), enosys, "{other:#x}");
                 assert_eq!(eval(mode, other, 102, &[inet]), enosys, "{other:#x}");
             }

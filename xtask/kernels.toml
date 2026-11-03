@@ -76,6 +76,9 @@ install = "curl -fsSL https://get.docker.com | sh"
 sysctl = ["kernel.yama.ptrace_scope=1"]
 modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
 whole = "host-user"
+# (its first run, 2026-11-03 on 6010433f: Debian 13's 6.12.111, aarch64, Landlock ABI 6, every mode the tier
+# expected; its six tables blessed as aarch64's snapshots — x86-64's but row 24's other ABI, not tried here.
+# `--docker-default` makes no namespaces, so offline's is offline's, not offline-ns's)
 expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
 
 [[kernel]]
