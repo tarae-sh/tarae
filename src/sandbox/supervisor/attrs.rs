@@ -31,7 +31,6 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use super::super::wire::{
@@ -445,7 +444,7 @@ fn with_flags(dirfd: u64, path: Vec<u8>, flags: i32, again: Again) -> Result<At,
 }
 
 /// `path` from `dirfd` opened `O_PATH` by the kernel as the run would reach it: an absolute one from the run's root
-/// (`/proc/<tid>/root`, `RESOLVE_IN_ROOT`); a relative one from where the run works by that folder's name from its
+/// (`run_root`, `RESOLVE_IN_ROOT`); a relative one from where the run works by that folder's name from its
 /// root too, while the name leads the run to the folder it works in — else, as from tarae's copy of `dirfd`
 /// (`EBADF` where it has none), from the folder itself, where an absolute link met on the way resolves from tarae's
 /// root, which in tier own isn't the run's: what it opens is decided only if its name leads the run to it
@@ -482,13 +481,9 @@ fn open_in_run(c: &Caller, dirfd: u64, path: &[u8], follow: bool, guarded: bool)
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 
-/// The run's root (`/proc/<tid>/root`), an `O_PATH` descriptor of tarae's.
+/// The run's root (its thread folder's `root`), an `O_PATH` descriptor of tarae's.
 fn run_root(c: &Caller) -> Result<OwnedFd, i32> {
-    let root = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
-        .open(format!("/proc/{}/root", c.tid));
-    Ok(OwnedFd::from(root.map_err(|_| libc::ESRCH)?))
+    c.thread.file("root", libc::O_PATH | libc::O_DIRECTORY).map_err(|_| libc::ESRCH)
 }
 
 /// Whether `path` from `dirfd`, as the run would reach it, follows a procfs `self` or `thread-self` on its way: those
@@ -885,8 +880,8 @@ fn xattr_refused(
 fn acl_ids(c: &Caller, change: Change) -> Result<Change, i32> {
     match change {
         Change::Xattr(name, Some((value, flags))) if ACLS.contains(&name.as_bytes()) => {
-            let map =
-                |f: &str| std::fs::read_to_string(format!("/proc/{}/{f}", c.tid)).map_err(|_| libc::ESRCH);
+            let map = |f: &str| c.thread.read(f).map(|m| String::from_utf8_lossy(&m).into_owned());
+            let map = |f: &str| map(f).map_err(|_| libc::ESRCH);
             let value = acl_in(value, &map("uid_map")?, &map("gid_map")?)?;
             Ok(Change::Xattr(name, Some((value, flags))))
         }
@@ -1056,6 +1051,7 @@ mod tests {
     use super::*;
 
     use crate::sandbox::wire::check::Fake;
+    use std::os::unix::fs::OpenOptionsExt as _;
 
     /// A run's memory holding an extended attribute's name (`NAME`), an empty one (`BLANK`) and a value (`VALUE`).
     const NAME: u64 = 0x1000;

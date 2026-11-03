@@ -673,28 +673,36 @@ impl Listener {
 }
 
 /// The thread that made a call, opened for what tarae needs of it: its memory, and its process's
-/// descriptors (through a pidfd — threads share them, as a rule).
+/// descriptors (through a pidfd — threads share them, as a rule) — and its thread's and its process's folders in
+/// `/proc`, every other read of it made through them (`Proc`).
 struct Caller {
     tid: i32,
     tgid: i32,
     mem: std::fs::File,
     pidfd: OwnedFd,
+    /// `/proc/<tid>`
+    thread: Proc,
+    /// `/proc/<tgid>`
+    process: Proc,
 }
 
 impl Caller {
     /// Opened, then checked that the call still waits — so what was opened is the caller's, not a later
-    /// process's that took its pid (the kernel's own advice). One it may not read (Yama, a process that made
-    /// itself undumpable): refused.
+    /// process's that took its pid (the kernel's own advice), and what's read through it later is too (V2-7: its
+    /// `/proc` folders, opened here, never a `/proc/<pid>/…` path after the check). One it may not read (Yama, a
+    /// process that made itself undumpable): refused.
     fn open(l: &Listener, n: &libc::seccomp_notif) -> Result<Caller, i32> {
         let tid = n.pid as i32;
-        let status = status_of(tid).map_err(|_| libc::ESRCH)?;
+        let thread = Proc::of(tid).map_err(|_| libc::ESRCH)?;
+        let status = thread.read("status").map_err(|_| libc::ESRCH)?;
         let tgid = proc_value(&status, "Tgid:").and_then(|v| v.parse().ok()).ok_or(libc::ESRCH)?;
-        let mem = std::fs::OpenOptions::new().read(true).write(true).open(format!("/proc/{tid}/mem"));
+        let process = Proc::of(tgid).map_err(|_| libc::ESRCH)?;
+        let mem = thread.file("mem", libc::O_RDWR).map(std::fs::File::from);
         let mem =
             mem.map_err(|e| if e.kind() == io::ErrorKind::NotFound { libc::ESRCH } else { libc::EPERM })?;
         let pidfd = pidfd_open(tgid).map_err(|_| libc::ESRCH)?;
         l.valid(n.id).map_err(|_| libc::ESRCH)?;
-        Ok(Caller { tid, tgid, mem, pidfd })
+        Ok(Caller { tid, tgid, mem, pidfd, thread, process })
     }
 
     /// `len` bytes at `at` in its memory, read once.
@@ -715,30 +723,25 @@ impl Caller {
     /// What its descriptor `n` names (`/proc/<tid>/fd/<n>`: `socket:[…]`, `pipe:[…]`, a path …) — none there: `EBADF`.
     fn link(&self, n: u64) -> Result<String, i32> {
         let n = i32::try_from(n).map_err(|_| libc::EBADF)?;
-        let link = std::fs::read_link(format!("/proc/{}/fd/{n}", self.tid)).map_err(|_| libc::EBADF)?;
+        let link = self.thread.link(&format!("fd/{n}")).map_err(|_| libc::EBADF)?;
         Ok(link.to_string_lossy().into_owned())
     }
 
     /// The folder it works in (a relative socket path is from there).
     fn cwd(&self) -> Result<PathBuf, i32> {
-        std::fs::read_link(format!("/proc/{}/cwd", self.tid)).map_err(|_| libc::ENOENT)
+        self.thread.link("cwd").map_err(|_| libc::ENOENT)
     }
 
     /// The folder it works in as tarae's own `O_PATH` descriptor (`/proc/<tid>/cwd` opened: that folder, whatever
     /// its name now) — none there: `ENOENT`.
     fn open_cwd(&self) -> Result<OwnedFd, i32> {
-        std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH)
-            .open(format!("/proc/{}/cwd", self.tid))
-            .map(OwnedFd::from)
-            .map_err(|e| errno(&e))
+        self.thread.file("cwd", libc::O_PATH).map_err(|e| errno(&e))
     }
 
     /// Its program's name, as a denial says it (`java`) — the run's own bytes, shown (lossy where they aren't
     /// UTF-8).
     fn name(&self) -> String {
-        let comm = std::fs::read(format!("/proc/{}/comm", self.tgid)).unwrap_or_default();
+        let comm = self.process.read("comm").unwrap_or_default();
         match String::from_utf8_lossy(&comm).trim() {
             "" => "the run".into(),
             c => c.into(),
@@ -760,6 +763,64 @@ impl Caller {
 impl Mem for Caller {
     fn read(&self, at: u64, len: usize) -> Result<Vec<u8>, i32> {
         Caller::read(self, at, len)
+    }
+}
+
+/// A process's folder in `/proc` (or a thread's, `/proc/<tid>`), opened once: what's read through it is that
+/// process's, or nothing once it has gone — never another's that has its number since, as a path `/proc/<pid>/…`
+/// would be, naming whoever has the number when it's read (V2-7). A caller's are opened before its call is checked
+/// (`Caller::open`).
+struct Proc(OwnedFd);
+
+impl Proc {
+    /// `/proc/<pid>`.
+    fn of(pid: i32) -> io::Result<Proc> {
+        Proc::of_in(Path::new("/proc"), pid)
+    }
+
+    /// `<root>/<pid>` (tests: a folder laid out as `/proc` is).
+    fn of_in(root: &Path, pid: i32) -> io::Result<Proc> {
+        let dir = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(root.join(pid.to_string()))?;
+        Ok(Proc(OwnedFd::from(dir)))
+    }
+
+    /// Its `name` (`status`, `fd/3`, `ns/net`) opened with `flags` (close-on-exec).
+    fn file(&self, name: &str, flags: i32) -> io::Result<OwnedFd> {
+        let name = std::ffi::CString::new(name).map_err(io::Error::other)?;
+        // SAFETY: our own folder's descriptor and a path that live through the call.
+        let fd = unsafe { libc::openat(self.0.as_raw_fd(), name.as_ptr(), flags | libc::O_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: just made, ours.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    /// Its file `name`, whole.
+    fn read(&self, name: &str) -> io::Result<Vec<u8>> {
+        use std::io::Read as _;
+        let mut bytes = Vec::new();
+        std::fs::File::from(self.file(name, libc::O_RDONLY)?).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Where its link `name` (`cwd`, `fd/3`) points.
+    fn link(&self, name: &str) -> io::Result<PathBuf> {
+        use std::os::unix::ffi::OsStringExt as _;
+        let name = std::ffi::CString::new(name).map_err(io::Error::other)?;
+        let mut buf = vec![0u8; libc::PATH_MAX as usize];
+        // SAFETY: our own folder's descriptor, a path and a buffer of its length, live through the call.
+        let n = unsafe {
+            libc::readlinkat(self.0.as_raw_fd(), name.as_ptr(), buf.as_mut_ptr().cast(), buf.len())
+        };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        buf.truncate(n as usize);
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(buf)))
     }
 }
 
@@ -1055,8 +1116,8 @@ fn session_listens(c: &Caller, port: u16, kind: i32) -> bool {
         _ => (["udp", "udp6"], None),
     };
     tables.iter().any(|t| {
-        let rows = std::fs::read_to_string(format!("/proc/{}/net/{t}", c.tid)).unwrap_or_default();
-        listening_on(&rows, port, listen)
+        let rows = c.thread.read(&format!("net/{t}")).unwrap_or_default();
+        listening_on(&String::from_utf8_lossy(&rows), port, listen)
     })
 }
 
@@ -1087,7 +1148,8 @@ fn in_session(c: &Caller, sock: &OwnedFd) -> bool {
     }
     // SAFETY: just made.
     let ns = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(ns) });
-    match (ns.metadata(), std::fs::metadata(format!("/proc/{}/ns/net", c.tid))) {
+    let session = c.thread.file("ns/net", libc::O_PATH).map(std::fs::File::from);
+    match (ns.metadata(), session.and_then(|s| s.metadata())) {
         (Ok(its), Ok(session)) => (its.dev(), its.ino()) == (session.dev(), session.ino()),
         _ => false,
     }
@@ -1189,7 +1251,7 @@ fn carry(from: &OwnedFd, to: &OwnedFd, domain: i32, kind: i32) -> Result<(), i32
 
 /// Whether the caller's descriptor `n` is close-on-exec (`/proc/<tgid>/fdinfo/<n>`'s `flags:`, octal).
 fn cloexec(c: &Caller, n: u64) -> bool {
-    let info = std::fs::read(format!("/proc/{}/fdinfo/{n}", c.tgid)).unwrap_or_default();
+    let info = c.process.read(&format!("fdinfo/{n}")).unwrap_or_default();
     proc_value(&info, "flags:")
         .and_then(|f| u32::from_str_radix(f, 8).ok())
         .is_some_and(|f| f & libc::O_CLOEXEC as u32 != 0)
@@ -1465,7 +1527,7 @@ fn pty_ioctl(l: &Listener, n: &libc::seccomp_notif, p: &Served) -> Answer {
     let (fd, request, arg) = (u64::from(args[0] as u32), args[1] as u32, args[2]);
     let c = Caller::open(l, n)?;
     let master = matches!(c.link(fd)?.as_str(), "/dev/ptmx" | "/dev/pts/ptmx");
-    let info = std::fs::read(format!("/proc/{}/fdinfo/{fd}", c.tid)).map_err(|_| libc::EBADF)?;
+    let info = c.thread.read(&format!("fdinfo/{fd}")).map_err(|_| libc::EBADF)?;
     let index =
         super::ptys::tty_index(&String::from_utf8_lossy(&info)).filter(|_| master).ok_or(libc::ENOTTY)?;
     l.valid(n.id).map_err(|_| libc::ESRCH)?;
@@ -1542,11 +1604,6 @@ fn socket(l: &Listener, n: &libc::seccomp_notif, p: &Served) -> Answer {
 fn proc_value<'a>(text: &'a [u8], key: &str) -> Option<&'a str> {
     let value = text.split(|&b| b == b'\n').find_map(|l| l.strip_prefix(key.as_bytes()))?;
     std::str::from_utf8(value).ok().map(str::trim)
-}
-
-/// A thread's `/proc/<tid>/status`, as bytes (`proc_value` reads it).
-fn status_of(tid: i32) -> io::Result<Vec<u8>> {
-    std::fs::read(format!("/proc/{tid}/status"))
 }
 
 /// `path` (absolute, real) opened without following any link on the way (`landlock::open_unlinked`) —
@@ -2162,7 +2219,7 @@ mod tests {
                 name.push(0);
                 // SAFETY: a NUL-terminated name of ours; the call names this thread only.
                 unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr()) };
-                let status = status_of(tid);
+                let status = Proc::of(tid).and_then(|p| p.read("status"));
                 let read = status.as_deref().map(|s| (proc_value(s, "Tgid:"), proc_value(s, "Pid:")));
                 let (t, p) = (tgid.to_string(), tid.to_string());
                 if !matches!(read, Ok((Some(a), Some(b))) if a == t && b == p) && wrong.len() < 10 {
@@ -2328,6 +2385,67 @@ mod tests {
         assert!(open_real(&s.base.join("there/s.sock"), false).is_ok());
         assert_eq!(open_real(&s.base.join("link/s.sock"), false).err(), Some(libc::ELOOP));
         assert_eq!(open_real(&s.base.join("link"), true).err(), Some(libc::ELOOP));
+    }
+
+    /// V2-7: what's read of a caller through its `/proc` folder is of the folder opened — a process that took its
+    /// number since, at the same path now, is never read; once that folder is gone, nothing is. Here a folder laid
+    /// out as `/proc` is: `7` opened, then moved away and another `7` put at its name (its number taken again).
+    #[test]
+    fn a_callers_proc_folder_is_the_one_opened_whoever_has_its_number_now() {
+        use std::os::unix::fs::MetadataExt as _;
+        let s = Scratch::new("proc");
+        let lay = |name: &str| {
+            let at = s.base.join("7");
+            std::fs::create_dir_all(at.join("fd")).unwrap();
+            std::fs::create_dir_all(s.base.join(name)).unwrap();
+            std::fs::write(at.join("comm"), name).unwrap();
+            std::os::unix::fs::symlink(s.base.join(name), at.join("cwd")).unwrap();
+            std::os::unix::fs::symlink(format!("socket:[{name}]"), at.join("fd/3")).unwrap();
+        };
+        let ino = |fd: OwnedFd| std::fs::File::from(fd).metadata().unwrap().ino();
+        lay("first");
+        let p = Proc::of_in(&s.base, 7).unwrap();
+        let first = std::fs::metadata(s.base.join("first")).unwrap().ino();
+        assert_eq!(p.read("comm").unwrap(), b"first");
+        std::fs::rename(s.base.join("7"), s.base.join("gone")).unwrap();
+        lay("second");
+        assert_eq!(p.read("comm").unwrap(), b"first", "the folder opened, not the one at its name now");
+        assert_eq!(p.link("cwd").unwrap(), s.base.join("first"));
+        assert_eq!(p.link("fd/3").unwrap(), Path::new("socket:[first]"));
+        assert_eq!(ino(p.file("cwd", libc::O_PATH).unwrap()), first);
+        std::fs::remove_dir_all(s.base.join("gone")).unwrap();
+        assert!(p.read("comm").is_err(), "its folder gone: nothing read, not the new one's");
+        assert!(p.link("cwd").is_err());
+        assert!(p.file("cwd", libc::O_PATH).is_err());
+    }
+
+    /// V2-7, the kernel's half: a process's `/proc` folder, opened while it runs, reads its own (its name, the
+    /// folder it works in) and nothing at all once it has ended and been reaped — the folder doesn't follow its
+    /// number to the next process given it. (`cat` waiting on its input is the stand-in.)
+    #[test]
+    fn a_proc_folder_reads_nothing_once_its_process_has_gone() {
+        let s = Scratch::new("procgone");
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .current_dir(&s.base)
+            .spawn()
+            .unwrap();
+        let p = Proc::of(child.id() as i32).unwrap();
+        // (its name is the test's until its exec)
+        let until = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while p.read("comm").unwrap() != b"cat\n" {
+            assert!(std::time::Instant::now() < until, "cat never ran");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(p.link("cwd").unwrap(), std::fs::canonicalize(&s.base).unwrap());
+        assert!(p.read("status").is_ok_and(|st| proc_value(&st, "Name:") == Some("cat")));
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        for name in ["comm", "status"] {
+            assert!(p.read(name).is_err(), "{name} read of a reaped process");
+        }
+        assert!(p.link("cwd").is_err(), "its folder named after it's gone");
+        assert!(p.file("mem", libc::O_RDONLY).is_err());
     }
 
     /// Whether tarae serves its runs here — else the test says it skips itself: no Landlock (or ABI 1, which

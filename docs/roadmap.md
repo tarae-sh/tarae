@@ -278,8 +278,9 @@ The aim is to state what the sandbox guarantees and show that it holds.
    the run's report, and `sendmsg` gets a buffer tarae built. 2026-11-03 (`dd4e31df`, `e2a41dfb`): that buffer is a
    property held to Linux's `CMSG_*` macros, and the kernel is the oracle for 10,000 fuzzed messages per test — it found
    V2-6 (buffers the kernel refuses, arm64's tagged pointers among them, now refused as it refuses them); Q2 reviewed:
-   every value read once. Fuzzing that forwarding further is with an outside session (main's
-   `.sb/cmsg-fuzz-brief.md`); a run's own `setsockopt` is unchanged (its own rights).
+   every value read once, and a caller's `/proc` reads go through its folders opened before the check (V2-7).
+   Fuzzing that forwarding further is with an outside session (main's `.sb/cmsg-fuzz-brief.md`); a run's own
+   `setsockopt` is unchanged (its own rights).
 3. **A "must be refused" property suite** — done on both systems: nothing a run does changes the session's
    rules, and nothing is reached but through tarae's proxy and sockets. macOS (`df2f70e3`); Linux (`08ec1cb3`), rows
    21–26 measured against an unsandboxed baseline. Since sandbox C (2026-10-20, `4b130f35`) it holds each user's

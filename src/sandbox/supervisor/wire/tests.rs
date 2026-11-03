@@ -293,7 +293,7 @@ fn what_tarae_sends_is_held_to_linuxs_macros() {
 }
 
 #[cfg(target_os = "linux")]
-#[path = "kernel.rs"]
+#[path = "tests/kernel.rs"]
 mod kernel;
 
 /// The numbers a laid out message passes: `passer` holds 0–7, not 8 and 9.

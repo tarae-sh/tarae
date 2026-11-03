@@ -2224,6 +2224,7 @@ mod tests {
             ("Hold", "sandbox/keeper.rs"),
             ("Holder", "sandbox/owners/tests.rs"),
             ("IndexWatch", "rebase.rs"),
+            ("Laid", "sandbox/supervisor/wire/tests/kernel.rs"),
             ("Mac", "sound/mac.rs"),
             ("Made", "sandbox/linux.rs"),
             ("Member", "reviewer.rs"),
