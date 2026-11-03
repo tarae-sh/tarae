@@ -61,8 +61,9 @@ thread_local! {
 }
 
 /// A frame begins (`term::draw`): one wave moves on the screen at a time (the user, 2026-11-03: two or more at once
-/// distract) — while the front session's turn is under way (`turn`) its own two places hold it, the follow card's head
-/// where it says the step, else the status line; with none, the first other place that asks (`claim`).
+/// distract) — while the front session's turn is under way (`turn`) its own three places hold it, the follow card's head
+/// where it says the step, the chat's top line while its column is in sight (no card stands then — #295), else the
+/// status line; with none, the first other place that asks (`claim`).
 pub fn frame(turn: bool) {
     FRAME.with(|f| f.set((turn, None)));
 }

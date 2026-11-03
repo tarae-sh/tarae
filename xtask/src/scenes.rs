@@ -5898,8 +5898,8 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         s.split(' ').try_for_each(|w| self.text(&format!("{w} ")))
     }
 
-    /// A call of tarae's tool `name` (the turn's `n`th): its row in the chat, the request, then tarae's answer
-    /// waited for.
+    /// A call of tarae's tool `name` (the turn's `n`th): its row in the chat, the request, tarae's answer waited for,
+    /// then the result as claude's stream says it (the call over — a step under way is no longer it, `now::step`).
     fn call(&mut self, n: u64, name: &str, args: Value) -> io::Result<()> {
         let tool = json!({"type": "tool_use", "id": format!("t{n}"), "name": format!("mcp__tarae__{name}"), "input": args});
         self.line(json!({"type": "assistant", "message": {"id": format!("m{n}"), "content": [tool]}}))?;
@@ -5907,12 +5907,23 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": msg});
         self.line(json!({"type": "control_request", "request_id": format!("c{n}"), "request": request}))?;
         let id = format!("\"c{n}\"");
+        let mut answer = None;
         for l in self.lines.by_ref() {
-            if l?.contains(&id) {
+            let l = l?;
+            if l.contains(&id) {
+                answer = Some(l);
                 break;
             }
         }
-        Ok(())
+        // (tarae's answer's content, as claude hands it back to the model; gone with the input: nothing to say)
+        let Some(answer) = answer else { return Ok(()) };
+        let said: Value = serde_json::from_str(&answer).unwrap_or_default();
+        let content = said
+            .pointer("/response/response/mcp_response/result/content")
+            .cloned()
+            .unwrap_or_else(|| json!([{"type": "text", "text": ""}]));
+        let result = json!({"type": "tool_result", "tool_use_id": format!("t{n}"), "content": content});
+        self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))
     }
 
     /// orchestra P1a's scenes: Claude asks for sessions on one card — `one`, `three`, or three with a brief whose first

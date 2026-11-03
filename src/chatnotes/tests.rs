@@ -2668,9 +2668,11 @@ fn f273_no_follow_card_stays_for_a_stop_after_the_turn() {
         rows.iter().any(|r| r.contains("╭─ follow")).then_some(rows)
     };
     let asks = |rows: &[String]| rows.iter().any(|r| r.contains("space n ask about this"));
-    // (the column in sight — out of sight the card's key is `space L read` —: the card its head, its keys its own)
+    // (the column in sight: no follow card, a tour's neither — #295, the column says the turn; out of sight the tour's)
     ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
     ed.workspace.claude.chat.as_mut().unwrap().follow.tour_playing(true);
+    assert!(follow_rows(&mut ed).is_none(), "the column in sight: no card");
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
     let rows = follow_rows(&mut ed).expect("the tour's card");
     assert!(asks(&rows), "your cursor in the stop, the answer done: how to ask:\n{}", rows.join("\n"));
     feed(&mut ed, "gg");

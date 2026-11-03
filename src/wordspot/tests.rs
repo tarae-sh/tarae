@@ -487,34 +487,50 @@ fn a_press_on_the_follow_card_leaves_no_empty_card() {
     assert!(q.zip(w).is_some_and(|(q, w)| q < w), "{card}");
 }
 
-/// panes4's polish audit, decision 2 (the user, 2026-11-03): beside the chat's column the follow card is only its head —
-/// the step and its time on its top line, its keys on its bottom line — the turn's words being the column's, never said
-/// twice; out of sight it carries them.
+/// panes4's polish audit, decision 2, and #295 (the user, 2026-11-03, A of two): beside the chat's column no follow card
+/// stands — the turn's words are the column's, and its top line is the step's place: the step's word and the step's own
+/// time (the one you act on, never the turn's), a press there following Claude as the card's head does; out of sight the
+/// card carries them.
 #[test]
-fn beside_the_column_the_follow_card_is_its_head() {
+fn beside_the_column_its_line_says_the_step_and_no_follow_card_stands() {
+    crate::clock::hold();
     let mut ed = editor();
     working(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "Looking at the parser.", ""));
-    c.hidden = false;
+    (c.hidden, c.follow.paused) = (false, true);
+    // (the turn 5 minutes in, its step just begun)
+    c.started -= std::time::Duration::from_secs(300);
+    crate::now::sync(&mut ed);
     ed.workspace.viewer.at = At::Code;
-    let card = |ed: &mut Editor| {
+    let text = |ed: &mut Editor| {
         frame(ed);
-        let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
-        let (x, y, w, h) = ed.screen.thought_card.get().expect("the follow card");
-        let rows: Vec<String> =
-            text.lines().skip(y).take(h).map(|r| r.chars().skip(x).take(w).collect()).collect();
-        (h, rows.join("\n"))
+        crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap()
     };
-    let (h, rows) = card(&mut ed);
+    let all = text(&mut ed);
     assert!(ed.screen.chat_x.is_some(), "the column in sight");
-    assert_eq!(h, 2, "its head and its foot:\n{rows}");
-    assert!(rows.contains("╭─ follow") && !rows.contains("Looking at the parser."), "{rows}");
-    // Out of sight: the turn's words its own again
+    assert_eq!(ed.screen.thought_card.get(), None, "no follow card:\n{all}");
+    let step = crate::now::step(&ed, &ed.workspace).expect("the step");
+    let took = crate::term::timer(crate::now::took(&ed.workspace, &step), !ed.moving());
+    let top = all.lines().next().unwrap_or_default();
+    assert!(
+        top.contains(&format!(" {} {took}", step.word())) && !top.contains("5m"),
+        "the step's time: {top}"
+    );
+    // (a press on it follows Claude: paused, following again)
+    let now = spot(&ed, &Press::Now);
+    assert_eq!((now.on, now.y), (Surface::Chat, 0), "on the column's line");
+    mouse(&mut ed, MouseKind::Down, (now.from, now.y));
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "following Claude's place");
+    // Out of sight: the card, the turn's words its own again
     ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
-    let (h, rows) = card(&mut ed);
-    assert!(h > 2 && rows.contains("Looking at the parser."), "{rows}");
+    let all = text(&mut ed);
+    let (x, y, w, h) = ed.screen.thought_card.get().expect("the follow card");
+    let rows: Vec<String> =
+        all.lines().skip(y).take(h).map(|r| r.chars().skip(x).take(w).collect()).collect();
+    assert!(rows.join("\n").contains("Looking at the parser."), "{}", rows.join("\n"));
+    crate::clock::release();
 }
 
 /// #267 (the user, 2026-11-03): the follow card takes the keys as every floating pane does — `C-w w`'s round reaches it

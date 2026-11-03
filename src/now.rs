@@ -3,7 +3,8 @@
 //! right after the mode word, while the front session's turn runs (`term::draw_statusline`); said once (focus B1): while
 //! the follow card is drawn for the turn, its head and body say it and the line keeps the turn's cell
 //! (`term::draw_follow_card` says whether its head kept it, `term::head_in_sight` whether nothing drawn after covers
-//! it). Read from what's streamed and nothing else; no token is spent on it.
+//! it); while the chat's column is in sight no card stands and its top line says it (#295, `term::draw_chat`). Read
+//! from what's streamed and nothing else; no token is spent on it.
 //!
 //! `step` is the one place a turn's doing is put in words: the line's verb (`running`, `asks to run`, `queued`) and
 //! the top lines' word (`Step::word` — the chat's line, the follow card's head; `exploring` went with this). Its time
@@ -48,12 +49,12 @@ impl Step {
         Step { sign, verb, what: what.into(), warn: false, took: None, key: key.into(), call: String::new() }
     }
 
-    /// The word the top lines say for it (the chat's, the follow card's head) beside the turn's time: the verb's
+    /// The word the top lines say for it (the chat's, the follow card's head) beside the step's time: the verb's
     /// first word, what it waits on said there by its state (`▲ waits`).
     pub fn word(&self) -> &'static str {
         match self.verb {
             v if self.warn && v != "stuck?" => "waiting",
-            "looking up" => "looking up",
+            v @ ("looking up" | "looking at") => v,
             v => v.split(' ').next().unwrap_or(v),
         }
     }
@@ -118,33 +119,22 @@ pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
         _ => {}
     }
     if let Some((call, look)) = live {
-        let (verb, what) = match look.verb {
-            "run" => ("running", look.what.clone()),
-            "test" => ("testing", look.what.clone()),
-            "read" => ("reading", place(look)),
-            "search" | "grep" | "glob" => ("searching", place(look)),
-            "references" | "definition" | "symbols" => ("looking up", look.what.clone()),
-            "diagnostics" => ("checking", look.what.clone()),
-            "edit" => ("editing", place(look)),
-            "rename" => ("renaming", look.what.clone()),
-            "replace" => ("replacing", look.what.clone()),
-            "note" => ("noting", look.what.clone()),
-            "reply" => ("replying", look.what.clone()),
-            "plan" => ("planning", look.what.clone()),
-            "git" => ("reading git", look.what.clone()),
-            "ui" => ("looking at", look.what.clone()),
-            "start" => ("starting", look.what.clone()),
-            "send" => ("messaging", look.what.clone()),
-            _ => ("using", look.what.clone()),
+        // (the verb its row says, under way — `chat::doing`; where it reads, searches or edits, with the row's range)
+        let what = match look.verb {
+            "read" | "search" | "grep" | "glob" | "edit" => place(look),
+            _ => look.what.clone(),
         };
+        let verb = crate::chat::doing(look.verb);
         let mut s = Step::new(Sign::Mark(look.mark()), verb, what, format!("call:{call}"));
         s.call = call.to_string();
         return Some(s);
     }
-    // (an edit's input streaming — its call not made yet: drawn in its buffer as it comes, `writing.rs`)
+    // (an edit's input streaming — its call not made yet: drawn in its buffer as it comes, `writing.rs`; the edit's verb,
+    // as its row will say it — `writing` is the words of an answer arriving)
     if let Some(w) = c.writing.calls.iter().rev().find(|w| !w.done) {
         let file = w.items.last().map(|it| it.file.s.trim().to_string()).unwrap_or_default();
-        return Some(Step::new(Sign::Mark(Mark::Edit), "writing", file, format!("edit:{}", w.id)));
+        let edit = crate::chat::doing("edit");
+        return Some(Step::new(Sign::Mark(Mark::Edit), edit, file, format!("edit:{}", w.id)));
     }
     let at = c.msgs.len();
     // (its words or its thinking's summary arriving, stood still, or working where nothing streams: the one cell, its

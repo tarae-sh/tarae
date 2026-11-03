@@ -3,8 +3,8 @@
 //! (`now::sync` after it).
 //!
 //! After every step: while the step holds, its time is the clock's since the last look plus what it said then — never
-//! the turn's; another step starts again from no more than the time since; and a frame drawn says that time on the
-//! status line, after the step's words.
+//! the turn's; another step starts again from no more than the time since; and a frame drawn says that time after the
+//! step's words where the step is said — the status line, or the chat's top line while its column is in sight (#295).
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -71,8 +71,8 @@ fn send(ed: &mut Editor, ev: StreamEv) {
 fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
     world.framed.set(false);
     let c = &mut sim.choices;
-    // (by arm: a call 3, its result 2, words 2, a thinking block 1, a frame 2, time passing 4)
-    match c.weighted(&[3, 2, 2, 1, 2, 4]) {
+    // (by arm: a call 3, its result 2, words 2, a thinking block 1, a frame 2, time passing 4, the column shown or hidden 1)
+    match c.weighted(&[3, 2, 2, 1, 2, 4, 1]) {
         0 => {
             let n = world.made.get() + 1;
             world.made.set(n);
@@ -106,11 +106,21 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             world.framed.set(true);
             "a frame".into()
         }
-        _ => {
+        5 => {
             let ms = *c.pick(&[300, 1000, 2500, 61_000]);
             sim.wait(Duration::from_millis(ms));
             format!("{ms} ms pass")
         }
+        _ => match ed.workspace.claude.chat.as_ref().is_some_and(|c| c.hidden) {
+            true => {
+                crate::chat::open(ed);
+                "the column shown".into()
+            }
+            false => {
+                crate::chat::hide(ed);
+                "the column hidden".into()
+            }
+        },
     }
 }
 
@@ -135,14 +145,18 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     if took > turn {
         return Err(format!("the step's {took:?} past the turn's {turn:?}"));
     }
-    // (a frame this step: the status line says that time after the step's words)
+    // (a frame this step: the status line says that time after the step's words — the column in sight, its top line
+    // after the step's word)
     let Some((frame, w, h)) = ed.last_frame.as_ref().filter(|_| world.framed.get()) else { return Ok(()) };
     let screen = crate::screen::text(frame, *w, *h).unwrap_or_default();
-    let line = screen.lines().last().unwrap_or_default();
+    let (line, words, which) = match ed.screen.chat_x.is_some() {
+        true => (screen.lines().next().unwrap_or_default(), step.word(), "the column's top line"),
+        false => (screen.lines().last().unwrap_or_default(), step.verb, "the status line"),
+    };
     let said = format!(" {}", crate::term::running(took, !ed.moving()));
-    match line.contains(step.verb) && line.contains(&said) {
+    match line.contains(words) && line.contains(&said) {
         true => Ok(()),
-        false => Err(format!("the status line doesn't say {} {said}: {line}", step.verb)),
+        false => Err(format!("{which} doesn't say {words} {said}: {line}")),
     }
 }
 

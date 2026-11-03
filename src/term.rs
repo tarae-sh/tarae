@@ -5499,6 +5499,10 @@ fn draw(
     // (the line short only while the card's head that says the step is in sight — #253: a picker, which-key, a prompt
     // or a card over it, and the line says it whole)
     let follow_says = follow_says && head_in_sight(editor, follow_rect);
+    // (#295: the chat's column in sight, its top line says the step — the line short as beside the card's head)
+    let column_says =
+        lay.chat_at().is_some() && editor.workspace.claude.chat.as_ref().is_some_and(|c| c.busy());
+    let follow_says = follow_says || column_says;
     // Folded into the status line: an error or warning still waiting for the card before the newest (U7)
     let folded = toast_folded
         .then(|| {
@@ -14695,8 +14699,8 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
 /// an ask's own claude: the wave on the animation's clock (`editor::anim_step`), every one on screen at the same step. A
 /// still wave held where nothing moves on a clock (`Editor::moving`); the turn's own only where motion is drawn
 /// (`Editor.motion_drawn`, off in tests: there it waves on the tests' still clock). It moves in one place a frame
-/// (`shimmer::frame`): the turn's own two — the follow card's head saying the step, else the status line's now — draw
-/// it here; every other place asks `wave_here`.
+/// (`shimmer::frame`): the turn's own three — the follow card's head saying the step, the chat's top line while its
+/// column is in sight (#295), else the status line's now — draw it here; every other place asks `wave_here`.
 fn working(editor: &Editor, turn: bool) -> String {
     use crate::shimmer::{STILL, cells, wave};
     if !editor.moving() {
@@ -15093,6 +15097,13 @@ fn draw_follow_card(
     // Header: what it's doing — or, stepping through the replay, the stop showing
     let gaze = c.follow.shown();
     let replaying = c.follow.replaying.is_some();
+    // (the chat's column in sight: no card — the turn's words are the column's (the user, 2026-11-03, panes4's polish
+    // audit, decision 2) and its top line says the step, its own time and the press that follows Claude (#295, the polish
+    // week's landing 2: the head alone was an empty two-row frame beside it — `draw_chat`). A replay's stop stays the
+    // card's own)
+    if !alone && lay.chat_at().is_some() && !replaying {
+        return Ok(None);
+    }
     // Its call waits on the user — a card of Claude's asking (a command, a read) or an edit's review: said so,
     // not "running" while nothing runs (what it waits on is that card's — not repeated)
     let asks = editor.offers.iter().any(|o| {
@@ -15128,12 +15139,14 @@ fn draw_follow_card(
     // goes — minimized, Claude's commands without a sandbox too (in warning) — then, as the chat's title says it,
     // what it's at and how long. Narrow, what it's at gives way first, then `› no sandbox` goes shorter
     let paused = c.follow.paused && c.busy();
-    // (what it's at: the step's verb and what it acts on — that only where the knot in hand's row doesn't say it, the
-    // step's own call: said once on the card too; else its verb, else its word — `now::Step::word`)
-    let what = step
-        .as_ref()
-        .filter(|s| !s.what.is_empty() && c.in_hand() != Some(s.call.as_str()))
-        .map(|s| s.what.as_str());
+    // (what it's at: the step's verb and what it acts on — that only where no row of the card says it: the knot in hand
+    // the step's own call, or the stop its row shows on the same place — said once on the card too (focus B1, the polish
+    // week's "the path once"); else its verb, else its word — `now::Step::word`)
+    let row_says = |s: &crate::now::Step| {
+        c.in_hand() == Some(s.call.as_str())
+            || gaze.is_some_and(|g| !g.look.what.is_empty() && s.what.starts_with(g.look.what.as_str()))
+    };
+    let what = step.as_ref().filter(|s| !s.what.is_empty() && !row_says(s)).map(|s| s.what.as_str());
     let verb = step.as_ref().map(|s| format!(" {}", s.verb));
     let word = step.as_ref().map(|s| format!(" {}", s.word()));
     let whole =
@@ -15269,8 +15282,13 @@ fn draw_follow_card(
     // (where its first mark is among the spans the line returns the columns of: the names', then the details')
     let strip_at = names.len() + details.len() + lead;
     details.extend(strip);
+    // (the chat out of sight: the plan's step in hand its one row above the turn — the plan's calls in the turn not
+    // a second, older count of it: `• plan … 2/4` under `› 3/4`)
+    let plan_row =
+        alone.then(|| c.plan.as_ref().and_then(|p| plan_now(p, inner, faint, accent, dim))).flatten();
     // The turn of the stop in hand, its knots and words — the newest at the bottom
-    let (turn_rows, hand_row, knots) = follow_thread(c, editor, ui, inner, card, &st, alone);
+    let (turn_rows, hand_row, knots) =
+        follow_thread(c, editor, ui, inner, card, &st, alone, plan_row.is_some());
     let why = gaze.and_then(|g| g.why.as_deref()).filter(|w| !w.is_empty());
     // A walk-through's stop: how to ask about it, under its words
     // (only once the answer is done — a question can't go while Claude still writes)
@@ -15279,19 +15297,18 @@ fn draw_follow_card(
         && crate::follow::stop_yours(editor).is_some()
         && !crate::codereview::drafting(editor);
     // Its keys, on its bottom line in order of use (the user, 2026-10-25: a floating card's keys are always there,
-    // never a row inside): a stop's question after the turn; the chat out of sight, the key that reads it; the
-    // replay's pair once there are stops (in the code — the chat's input would take them as letters)
+    // never a row inside): a stop's question after the turn, then the key that reads the chat (out of sight: the card is
+    // drawn beside the column only in a replay — #295); the replay's pair once there are stops (in the code — the chat's
+    // input would take them as letters)
     let stops = c.follow.replay.latest() > 0 && !editor.workspace.is_at(At::Chat);
     let keys: &[(&str, &str)] = match () {
         // (with the keys, its sizes first — #267, said only then; `follow_focus`, not `follow_in_hand`: this frame is the
         // one drawing it, the last one's rect may be gone)
         _ if editor.follow_focus => &[("C-w < > - +", "size"), ("C-w =", "automatic"), ("esc", "code")],
         _ if replaying => &[("[r ]r", "stop by stop")],
-        _ if alone && stops => &[("space L", "read"), ("[r", "replay")],
-        _ if alone => &[("space L", "read")],
-        _ if asking => &[("space n", "ask about this")],
-        _ if stops && c.busy() => &[("[r", "replay what it did")],
-        _ => &[],
+        _ if asking => &[("space n", "ask about this"), ("space L", "read")],
+        _ if stops => &[("space L", "read"), ("[r", "replay")],
+        _ => &[("space L", "read")],
     };
     // The chat out of sight, its part above the turn: the question, the plan's step (the title is the frame's line); the
     // chat in sight, the question only while the turn has nothing of its own yet — never a frame with nothing in it
@@ -15303,17 +15320,14 @@ fn draw_follow_card(
         .filter(|m| m.role == Role::User)
         .map(|m| m.text.lines().next().unwrap_or_default().to_string())
         .unwrap_or_default();
-    // (the chat's column in sight: only its head — the step and its time; the turn's words are the column's, never said
-    // twice (the user, 2026-11-03, panes4's polish audit, decision 2). A replay's stop stays the card's own)
-    let head_only = !alone && lay.chat_at().is_some() && !replaying;
-    let nothing_yet = !alone && !head_only && turn_rows.is_empty();
+    let nothing_yet = !alone && turn_rows.is_empty();
     if nothing_yet && question.trim().is_empty() {
         return Ok(None);
     }
     if alone || nothing_yet {
         top.push(vec![sp("▎ ", accent), crate::whole::fit(&question, inner - 2).span(strong)]);
     }
-    if alone && let Some(row) = c.plan.as_ref().and_then(|p| plan_now(p, inner, faint, accent, dim)) {
+    if let Some(row) = plan_row {
         top.push(row);
     }
     // Its rows but the turn's
@@ -15411,13 +15425,10 @@ fn draw_follow_card(
         None => BODY.min((ph / 2).saturating_sub(fixed)).min(room - fixed).max(1),
     };
     editor.screen.follow_room.set((most + 4, room));
-    let (body, hand_at) = match head_only {
-        true => (Vec::new(), None),
-        false => turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, (faint, card)),
-    };
+    let (body, hand_at) = turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, (faint, card));
     let fill = match editor.sizes.follow_h {
-        Some(_) if !head_only => body_max.saturating_sub(body.len()),
-        _ => 0,
+        Some(_) => body_max.saturating_sub(body.len()),
+        None => 0,
     };
     let hand_at = hand_at.map(|k| top.len() + fill + k);
     let mut rows: Vec<(Vec<Span>, Option<crate::chat::Link>)> = top.into_iter().map(|r| (r, None)).collect();
@@ -18815,19 +18826,23 @@ fn draw_chat(
             _ => Vec::new(),
         },
         _ => {
-            // (the step's word, as the status line says the step — `now::Step::word`)
-            let word = crate::now::step(editor, &editor.workspace).map_or("thinking", |s| s.word());
+            // (#295, the polish week's landing 2: while the column is in sight no follow card stands, and this line is the
+            // step's place — the wave, the step's word as the status line says the step (`now::Step::word`) and the
+            // step's own time beside it, the one you act on (`now::took`); the status line short)
+            let step = crate::now::step(editor, &editor.workspace);
+            let word = step.as_ref().map_or("thinking", |s| s.word());
+            let took = step
+                .as_ref()
+                .map_or_else(|| crate::clock::since(c.started), |s| crate::now::took(&editor.workspace, s));
             // (the turn's one cell before it, whatever the turn does — `turn_cell`)
             // (with two sessions or more the line names this one's state: `main ▲ waits` — `session_tabs`)
             // (blank for the names' `▲ waits`: the line runs on through it — #277)
-            // (its cells still: the wave is the turn's own places' — the follow card's head, the status line)
-            let moves = crate::shimmer::claim(("chat top", 0));
-            let (cell, style) = turn_cell(editor, accent, warn_fg, !editor.workspaces.is_empty(), moves);
+            let (cell, style) = turn_cell(editor, accent, warn_fg, !editor.workspaces.is_empty(), true);
             let cell = rule_through(cell);
             vec![
                 sp(cell, style),
                 sp(format!(" {word}"), dim),
-                sp(format!(" {}", timer(crate::clock::since(c.started), !editor.moving())), dim),
+                sp(format!(" {}", timer(took, !editor.moving())), dim),
             ]
         }
     };
@@ -20076,8 +20091,10 @@ fn trail_spans(
     // The target first; the suffix (line range, a note's words) keeps at most 10 cells of its room — and where
     // it ran, its own
     let room = w.saturating_sub(1 + head.width() + range.width().min(10) + tail_w).max(4);
-    let what =
-        if look.pattern { crate::whole::fit(&name, room) } else { crate::whole::fit_left(&name, room) };
+    // (cut at its end, as all prose — a plan's title, a session's name; at its start only a place, whose end says which
+    // file: `…itor.rs`)
+    let place = !look.pattern && (look.link.is_some() || look.verb == "diagnostics");
+    let what = if place { crate::whole::fit_left(&name, room) } else { crate::whole::fit(&name, room) };
     let mut row = vec![glyph, sp(head, st.faint), what.span(if look.pattern { st.string } else { st.dim })];
     let used: usize = row.iter().map(|s| s.text.width()).sum();
     // (a short suffix — a command's `ok` — whenever it fits whole; where its words start, the trail a click
@@ -20851,6 +20868,7 @@ type CardRow = (Vec<crate::markdown::Span>, Option<crate::chat::Link>);
 /// past the knot in hand by a card's rows. A stop that's no call's row (a walk-through's, a failure the editor
 /// went to) is its knot and its words. `links`: its knots go to their places on a click (minimized — the panel's
 /// rows do it otherwise).
+#[allow(clippy::too_many_arguments)]
 fn follow_thread(
     c: &crate::chat::Chat,
     editor: &Editor,
@@ -20859,6 +20877,7 @@ fn follow_thread(
     card: Style,
     st: &TrailStyles,
     links: bool,
+    plan_said: bool,
 ) -> (Vec<CardRow>, Option<usize>, Vec<bool>) {
     use crate::chat::Role;
     const ENOUGH: usize = 8;
@@ -20917,6 +20936,10 @@ fn follow_thread(
             Role::Tool => {
                 let Some(look) = &m.look else { continue };
                 let in_hand = m.is_call(hand);
+                // (the plan said by the card's own row above the turn: its calls not again — but the one in hand)
+                if plan_said && look.verb == "plan" && !in_hand {
+                    continue;
+                }
                 if in_hand {
                     below = Some(total);
                 }
@@ -28053,7 +28076,8 @@ mod tests {
     /// Every card at the code's foot stands on one line (the user, 2026-10-24: "why are the two cards' bottoms at
     /// different heights?"): the follow card, an ask at the screen's right, a toast at its bottom spot, which-key —
     /// each its last row a row of air above the status line (`card_floor`). With the chat open the ask is over the
-    /// chat's foot instead: its bottom line right above its input's line, no row of air.
+    /// chat's foot instead: its bottom line right above its input's line, no row of air; and no follow card stands —
+    /// the column's top line says the step (#295).
     #[test]
     fn every_card_at_the_foot_stands_on_one_line() {
         use crate::offer::{Offer, What};
@@ -28081,17 +28105,25 @@ mod tests {
                 });
                 ed.workspace.viewer.at = crate::workspace::At::Code;
                 let s = draw(&mut ed, w, h).join("\n");
-                let card = ed.screen.thought_card.get().expect("the follow card");
-                assert_eq!(bottom(card), floor, "{at}: the follow card\n{s}");
-                // (the state lists it as a floating pane that takes no keys, where the frame drew it)
                 let state = ed.ui_state();
                 let pane = state.workspaces.iter().flat_map(|l| &l.panes).find(|p| p.id == "follow");
-                let pane = pane.unwrap_or_else(|| panic!("{at}: the follow card's pane"));
-                assert_eq!(
-                    (pane.shows.as_str(), pane.rect, pane.float, pane.at, pane.place),
-                    ("follow", Some(card), true, false, None),
-                    "{at}"
-                );
+                match chat {
+                    true => {
+                        let none = ed.screen.thought_card.get().is_none() && pane.is_none();
+                        assert!(none, "{at}: the column in sight, no follow card\n{s}");
+                    }
+                    false => {
+                        let card = ed.screen.thought_card.get().expect("the follow card");
+                        assert_eq!(bottom(card), floor, "{at}: the follow card\n{s}");
+                        // (the state lists it as a floating pane that takes no keys, where the frame drew it)
+                        let pane = pane.unwrap_or_else(|| panic!("{at}: the follow card's pane"));
+                        assert_eq!(
+                            (pane.shows.as_str(), pane.rect, pane.float, pane.at, pane.place),
+                            ("follow", Some(card), true, false, None),
+                            "{at}"
+                        );
+                    }
+                }
                 // An ask
                 let mut ed = Editor::new(Config::default());
                 let what = What::Asks { call: crate::tools::Call::test(1) };
@@ -28781,7 +28813,8 @@ mod tests {
         let &(y, x, _) = ed.screen.stop_marks.borrow().last().expect("a mark");
         ed.handle_event(Event::Hover(x as u16, y as u16));
         let (bottom, _) = card(&mut ed, 160);
-        assert!(bottom.starts_with("╰─ references Thread ") && !bottom.contains("space L"), "{bottom:?}");
+        // (its verb as its row says it — one verb per act: a lookup is `look up`)
+        assert!(bottom.starts_with("╰─ look up Thread ") && !bottom.contains("space L"), "{bottom:?}");
         ed.handle_event(Event::Hover(0, 0));
         let (bottom, _) = card(&mut ed, 160);
         assert!(bottom.starts_with("╰─ space L read · [r replay ─"), "the keys back: {bottom:?}");

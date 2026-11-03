@@ -4142,7 +4142,7 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             let line = n("offset").unwrap_or(1).saturating_sub(1);
             Look { verb: "read", what: shown(&path), pattern: false, range, link: Some(Link { path, line }) }
         }
-        // Named as the tool it is — Claude's own Grep and Glob, or tarae's search (`search (project)`)
+        // (Claude Code's own Grep and Glob, in a conversation from before the chat had none — searches, as tarae's)
         "Grep" => {
             let place = if input["glob"].is_string() { s("glob") } else { s("path") };
             Look { verb: "grep", what: s("pattern"), pattern: true, range: within(place), link: None }
@@ -4217,7 +4217,8 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
                 verb: "references",
                 what,
                 pattern: true,
-                range: format!("in {place}"),
+                // (`look up  Session  uses in src/a.rs:3` — which lookup, its row's verb being every lookup's)
+                range: format!("uses in {place}"),
                 link: Some(Link { path, line }),
             }
         }
@@ -4269,7 +4270,7 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
                 verb: "symbols",
                 what,
                 pattern: false,
-                range: String::new(),
+                range: "outline".into(),
                 link: Some(Link { path, line }),
             }
         }
@@ -4407,13 +4408,45 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
     }
 }
 
-/// What a row and the follow card call a call's tool — its own name, so Claude's Grep reads apart from
-/// tarae's project search (the editor's `space /`).
+/// One verb per act (the polish week's landing 2): a call's act by its tool (`Look.verb`), the word its row says
+/// (`◦ read  src/a.rs` — the chat's, the follow card's) and the same verb as the step under way says it (`reading
+/// src/a.rs` — the follow card's head, the status line's now, the chat's top line, `now::step`). A tool named by a
+/// noun takes the verb of what it does: a lookup is `look up`, the diagnostics a `check`, the screen a `look`.
+const WORDS: &[(&str, &str, &str)] = &[
+    ("read", "read", "reading"),
+    ("show", "show", "showing"),
+    ("search", "search", "searching"),
+    ("grep", "search", "searching"),
+    ("glob", "search", "searching"),
+    ("references", "look up", "looking up"),
+    ("definition", "look up", "looking up"),
+    ("symbols", "look up", "looking up"),
+    ("diagnostics", "check", "checking"),
+    ("check", "check", "checking"),
+    ("ui", "look", "looking at"),
+    ("git", "git", "git"),
+    ("run", "run", "running"),
+    ("test", "test", "testing"),
+    ("edit", "edit", "editing"),
+    ("rename", "rename", "renaming"),
+    ("replace", "replace", "replacing"),
+    ("note", "note", "noting"),
+    ("reply", "reply", "replying"),
+    ("plan", "plan", "planning"),
+    ("start", "start", "starting"),
+    ("send", "send", "sending"),
+    ("review", "review", "reviewing"),
+    ("ask", "ask", "asking"),
+];
+
+/// What a call's row says it does (`WORDS`).
 pub fn label(verb: &str) -> &str {
-    match verb {
-        "search" => "search (project)",
-        v => v,
-    }
+    WORDS.iter().find(|w| w.0 == verb).map_or(verb, |w| w.1)
+}
+
+/// The same verb as the step under way says it (`WORDS`): `reading`, `looking up`.
+pub fn doing(verb: &str) -> &'static str {
+    WORDS.iter().find(|w| w.0 == verb).map_or("using", |w| w.2)
 }
 
 /// Relative to the project root (`Editor::root`) when inside it.
@@ -7647,9 +7680,19 @@ mod tests {
         );
         let f = look(cwd, "Glob", &serde_json::json!({"pattern": "**/*.rs"}));
         assert_eq!((f.verb, f.range.as_str(), f.link), ("glob", "", None));
-        // Each named as the tool it is: tarae's search over the project, a definition by name
+        // One verb per act: a search is a search, whichever tool made it; a lookup by its act, not the tool's noun
         let s = look(cwd, "mcp__tarae__search", &serde_json::json!({"pattern": "fn add"}));
-        assert_eq!((label(s.verb), label(g.verb)), ("search (project)", "grep"));
+        assert_eq!((label(s.verb), label(g.verb)), ("search", "search"));
+        assert_eq!(
+            (doing(s.verb), doing("definition"), doing("diagnostics")),
+            ("searching", "looking up", "checking")
+        );
+        // (each row's word and the step's are one verb: the step's starts with the row's stem)
+        for (verb, row, now) in WORDS {
+            assert_eq!((label(verb), doing(verb)), (*row, *now));
+            let stem = row.split(' ').next().unwrap_or(row).trim_end_matches('e');
+            assert!(now.starts_with(stem), "{verb}: `{row}` on its row, `{now}` under way — two verbs");
+        }
         let d = look(cwd, "mcp__tarae__definition", &serde_json::json!({"symbol": "Session"}));
         assert_eq!((d.verb, d.what.as_str()), ("definition", "Session"));
         let r =

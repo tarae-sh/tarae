@@ -8863,7 +8863,7 @@ mod tests {
             (Some(lib.as_path()), 4),
             "the search's hit"
         );
-        assert!(card(&mut ed).contains("search (project)"), "named as the tool");
+        assert!(card(&mut ed).contains("search "), "its verb, as the step under way says it: searching");
         feed(&mut ed, "[r");
         assert_eq!((ed.doc().path.as_deref(), cursor_line(&ed)), (Some(file.as_path()), 0));
         assert_eq!(ed.doc().shown.as_ref().map(|h| h[0].lines.clone()), Some(0..1), "edit 4's line");

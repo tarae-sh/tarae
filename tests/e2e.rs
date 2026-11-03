@@ -2208,8 +2208,8 @@ fn follow_shows_each_edit_and_replays_the_turn() {
         ),
         ("edit 4", Box::new(|s| s.contains("● edit   edit.txt  L1 ") && s.contains("zero"))),
         (
-            "the search, named, with its count",
-            Box::new(|s| s.contains("• search (project) line 5  1 matching")),
+            "the search, its verb as every search's, with its count",
+            Box::new(|s| s.contains("• search line 5  1 matching")),
         ),
         ("the last read", Box::new(|s| s.contains("◦ read   lib.txt  L8–9"))),
     ];
@@ -2231,7 +2231,7 @@ fn follow_shows_each_edit_and_replays_the_turn() {
     };
     // (the card's knot in hand reads its stop as it is now: edit 1's `L4`, its chat row the `L3` it was made at)
     step(&mut t, "[r", "the newest stop", &|s| s.contains("◦ read   lib.txt  L8–9") && s.contains("7/7"));
-    step(&mut t, "[r", "the search", &|s| s.contains("• search (project)") && s.contains("6/7"));
+    step(&mut t, "[r", "the search", &|s| s.contains("• search line 5") && s.contains("6/7"));
     step(&mut t, "[r", "edit 4", &|s| s.contains("● edit   edit.txt  L1 ") && s.contains("5/7"));
     step(&mut t, "[r[r[r", "edit 1, a line down since edit 4", &|s| {
         s.contains("● edit   edit.txt  L4") && s.contains("2/7") && removed(s, "line 3")

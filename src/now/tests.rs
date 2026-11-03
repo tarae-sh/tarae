@@ -45,9 +45,8 @@ fn card(ed: &mut Editor) {
 
 /// One wave on the screen (the user, 2026-11-03: two or more waving at once distract): two sessions at work and a run
 /// going in the bottom slot — the sign's cells in one place only: the follow card's head while it says the step, else
-/// the status line, the chat open or not — its column in sight beside the head-only card, the column's line keeps its
-/// cells blank, its word where it stands without the card; the other session says `working` (faint, as the session
-/// list), the run its `▸`.
+/// the status line, with the chat's column out of sight — in sight, no card, the column's top line (#295), its word in one
+/// cell whether follow is on or off; the other session says `working` (faint, as the session list), the run its `▸`.
 #[test]
 fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
     use crate::shimmer::CELLS;
@@ -102,37 +101,93 @@ fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
             "{w}: on the card's head alone —\n{all}"
         );
         assert!(all.contains("check ▸"), "{w}: the run its mark —\n{all}");
-        // The column in sight: the card its head only, the wave still there — the column's line its cells blank (where
-        // the card doesn't fit, the status line's)
+        // The column in sight: no card — the column's top line says the step, the wave there (#295)
         crate::chat::open(&mut ed);
         ed.workspace.viewer.at = crate::workspace::At::Code;
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
-        let one = head(&drawn).unwrap_or(h as usize - 1);
-        assert_eq!(waves(&drawn), [one], "{w}: the column in sight, on the card's head alone —\n{all}");
-        let with_card = word_at(&drawn);
-        assert!(with_card.is_some(), "{w}: the column's word —\n{all}");
+        assert_eq!(
+            (head(&drawn), waves(&drawn)),
+            (None, vec![0]),
+            "{w}: on the column's line alone —\n{all}"
+        );
+        let with_follow = word_at(&drawn);
+        assert!(with_follow.is_some(), "{w}: the column's word —\n{all}");
         // No card: the status line
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         crate::chat::hide(&mut ed);
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
         assert_eq!(waves(&drawn), [h as usize - 1], "{w}: on the status line alone —\n{all}");
-        // The chat open: still the status line, its top line run through
+        // The chat open, follow off: the column's line as with follow on
         crate::chat::open(&mut ed);
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
-        assert_eq!(waves(&drawn), [h as usize - 1], "{w}: the chat open —\n{all}");
-        // (the column's word where it stood beside the card: nothing moves as the card goes)
-        assert_eq!(word_at(&drawn), with_card, "{w}: the column's word kept its cell —\n{all}");
+        assert_eq!(waves(&drawn), [0], "{w}: the chat open —\n{all}");
+        // (the column's word where it stood following: nothing moves as follow goes)
+        assert_eq!(word_at(&drawn), with_follow, "{w}: the column's word kept its cell —\n{all}");
         // (narrow, the names past the line's room fold into `+1`)
         assert!(w < 120 || all.contains("fix working"), "{w}: the other session's word —\n{all}");
     }
     crate::clock::release();
 }
 
-/// The status line — the frame's last row — drawn `w` × `h`.
+/// One copy per screen (the polish week's landing 2, its plan's §2): wherever the turn is drawn — the follow card
+/// whole, the chat's column in sight, follow on or off, 80 to 200 wide — the step under way is said in one place and
+/// the plan's step in one at most; the follow card alone carries one plan row (`› 3/4`, never the plan call's older
+/// `2/4` beside it). The counts are printed for the landing's before and after.
+#[test]
+fn the_step_and_the_plans_step_are_each_drawn_once() {
+    crate::clock::hold();
+    let mut ed = at_work();
+    let steps = json!([
+        {"text": "Read how the map is filled", "status": "done"},
+        {"text": "Keep the first strand on a repeat", "status": "done"},
+        {"text": "Run the unit tests", "status": "doing"},
+        {"text": "Say what changed", "status": "todo"},
+    ]);
+    let plan = json!({"title": "Keep the first strand", "steps": steps});
+    call(&mut ed, "p1", "plan", plan.clone());
+    crate::plan::tool_call(&mut ed, &plan).unwrap();
+    send(&mut ed, StreamEv::ToolResult { id: "p1".into(), text: "ok".into(), error: false });
+    send(
+        &mut ed,
+        StreamEv::Text("A repeated name now keeps the first strand. I will run the tests.\n".into()),
+    );
+    call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+    let mut said = Vec::new();
+    let mut twice = Vec::new();
+    for (w, h) in [(80, 24), (120, 40), (200, 55)] {
+        for (follow, column) in [(true, false), (true, true), (false, false), (false, true)] {
+            match column {
+                true => crate::chat::open(&mut ed),
+                false => crate::chat::hide(&mut ed),
+            }
+            ed.workspace.claude.chat.as_mut().unwrap().follow.on = follow;
+            ed.workspace.viewer.at = crate::workspace::At::Code;
+            let drawn = rows(&mut ed, w, h);
+            let all = drawn.join("\n");
+            // (the step: its verb, wherever said — the run's row says `run`; the plan's step: its words; a plan row: its
+            // count — the column's transcript keeps its call's row, the log, beside the column's plan)
+            let step = all.matches("running").count();
+            let plan_step = all.matches("Run the unit tests").count();
+            let plan_rows = drawn.iter().filter(|r| r.contains("/4")).count();
+            let at = format!("{w}×{h} follow {follow} column {column}");
+            said.push(format!("{at}: step {step} · plan's step {plan_step} · plan rows {plan_rows}"));
+            if step != 1 || plan_step > 1 || !column && plan_rows > 1 {
+                twice.push(format!("{at}:\n{all}"));
+            }
+        }
+    }
+    eprintln!("{}", said.join("\n"));
+    assert!(twice.is_empty(), "said twice or never:\n{}", twice.join("\n\n"));
+    crate::clock::release();
+}
+
+/// The status line — the frame's last row — drawn `w` × `h`, the chat's column out of sight (in sight, its top line
+/// says the step and the line keeps the turn's cell — #295).
 fn status(ed: &mut Editor, w: u16, h: u16) -> String {
+    crate::chat::hide(ed);
     crate::term::render(ed, &mut Vec::new(), w, h).unwrap();
     let (frame, fw, fh) = ed.last_frame.as_ref().unwrap();
     let text = crate::screen::text(frame, *fw, *fh).unwrap_or_default();
@@ -194,7 +249,7 @@ fn each_step_says_what_claude_is_doing() {
     ];
     send(&mut ed, StreamEv::Writing(crate::writing::Delta { call: "t1".into(), pieces, done: false }));
     let s = step(&ed, &ed.workspace).unwrap();
-    assert_eq!((said_step(&ed).as_str(), s.sign), ("writing src/main.rs", Sign::Mark(Mark::Edit)));
+    assert_eq!((said_step(&ed).as_str(), s.sign), ("editing src/main.rs", Sign::Mark(Mark::Edit)));
     // Thinking, prose arriving
     let mut ed = at_work();
     send(&mut ed, StreamEv::ThinkingBlock(true));
@@ -268,7 +323,8 @@ fn the_top_lines_say_the_steps_word() {
     ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
     let rows = rows(&mut ed, 160, 40);
     assert!(rows[0].contains("running") && !rows.iter().any(|r| r.contains("exploring")), "{rows:#?}");
-    assert!(rows[39].contains("▸ running cargo test -q"), "{}", rows[39]);
+    // (the column's line says it: the status line keeps the turn's cell — #295, one copy per screen)
+    assert!(!rows[39].contains("running"), "{}", rows[39]);
 }
 
 /// The last finished sentence: a sentence ends at its stop before a blank, or with its paragraph; code blocks aren't
@@ -500,8 +556,13 @@ fn the_signs_cells_keep_their_columns_through_a_turn() {
     let mut seen: Vec<(&str, Option<usize>, String)> = Vec::new();
     let mut look = |ed: &mut Editor, what: &'static str| {
         let s = step(ed, &ed.workspace).expect(what);
-        let drawn = rows(ed, 160, 40);
-        let (top, line) = (&drawn[0], &drawn[39]);
+        // (the column's line with the column in sight; the status line's verb with it out of sight — in sight, its line
+        // says the step and the status line keeps only the turn's cell, #295)
+        crate::chat::open(ed);
+        let top = &rows(ed, 160, 40)[0];
+        crate::chat::hide(ed);
+        let line = &rows(ed, 160, 40)[39];
+        crate::chat::open(ed);
         for (said, moves) in [(true, true), (false, true), (false, false)] {
             let cell = crate::term::turn_cell_said(ed, said, moves);
             assert_eq!(cell.chars().count(), WIDTH, "{what}, said={said}: the turn's cells {cell:?}");
@@ -511,7 +572,8 @@ fn the_signs_cells_keep_their_columns_through_a_turn() {
         let word = format!(" {} ", s.word());
         let before =
             top.rfind(&word).map(|b| &top[..b]).unwrap_or_else(|| panic!("{what}: {word:?} in {top}"));
-        let cell = crate::term::turn_cell_said(ed, false, false);
+        // (the column's line the step's place while it's in sight — #295: its cells the wave's)
+        let cell = crate::term::turn_cell_said(ed, false, true);
         let drawn = match cell.trim().is_empty() {
             true => "─".repeat(WIDTH + 1),
             false => format!("─ {cell}"),
@@ -667,7 +729,7 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     ];
     send(&mut ed, StreamEv::Writing(crate::writing::Delta { call: "e1".into(), pieces, done: false }));
     let head = rows(&mut ed, 160, 40).into_iter().find(|r| r.contains("follow ─")).unwrap();
-    assert!(head.contains("writing src/main.rs"), "{head}");
+    assert!(head.contains("editing src/main.rs"), "the edit's verb, as its row will say it: {head}");
     // Waiting on a card: the card in sight says it — the line neither counts it nor marks it in the cell
     let mut ed = at_work();
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
@@ -809,6 +871,8 @@ fn the_mouse_over_the_line_shows_it_whole() {
     let long = "I will run the unit tests to check that nothing else relied on the old replace, then say what changed.";
     send(&mut ed, StreamEv::Text(format!("{long}\n")));
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+    // (the column out of sight: in sight, its top line says the step and the line is short — #295)
+    crate::chat::hide(&mut ed);
     ed.workspace.viewer.at = crate::workspace::At::Code;
     let before = rows(&mut ed, 100, 30);
     assert!(!before[29].contains(long), "cut on the line: {}", before[29]);

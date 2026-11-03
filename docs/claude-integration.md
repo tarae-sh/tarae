@@ -100,8 +100,8 @@ at the first answer you haven't had in sight, from its question; else at the end
 `enter` on its line, does the same with the keys staying in the code — no card between the lines; a thread and a reply
 are `space n`'s, and a note of yours or the reviewer's keeps its card. Off an answer's line, `enter` is the open card's
 own: it unfolds the line's earlier answers, or reads on in the column where the card is cut. While the column is in
-sight, the follow card keeps only its head (the step and its time; the turn's words are the column's), and an answer's
-card doesn't open by itself at the turn's end.
+sight no follow card stands (the turn's words are the column's, and its top line says the step), and an answer's card
+doesn't open by itself at the turn's end.
 
 **What it's doing now** is said once: on the follow card while it's drawn, else on the status line, right after the
 mode word (and after whose turn it is, where the status line names the session):
@@ -123,9 +123,12 @@ token: it's what Claude already sent. Drivers read it in the state as the sessio
 While the follow card is drawn for the turn (following, the code in sight with room for it), the card says it and the
 status line keeps only the turn's cell (`● follow  ▃`, or `▲1 waiting · C-q` when something waits on you): the card's
 head has the step's verb and its own time (`follow ── ▃ running 41s`), its selected row what the step acts on
-(`▸ run  cargo test -q`) — the head says that too where no row does (`▃ writing src/trust.rs`, an edit as it comes) —
+(`▸ run  cargo test -q`) — the head says that too where no row does (`▃ editing src/trust.rs`, an edit as it comes) —
 its body the sentence Claude finished, and the plan's step is the card's row above the turn while the chat is out of
-sight (with the chat open, its plan). A press on the head's step follows Claude. Where no card is drawn — follow off, the code hidden or
+sight (with the chat open, its plan). A press on the head's step follows Claude. With the chat's column in sight no card is
+drawn and the column's top line is where it's said: the turn's cells, the step's word and the step's own time
+(`claude ── ▃ running 41s`), a press on it following Claude, follow on or off; the status line keeps `● chat ·
+follow`. Otherwise, where no card is drawn — follow off, the code hidden or
 too narrow for it, a review in its place, a stop replayed on it — or its head is out of sight under what's open over
 it (a picker, the palette, which-key, a prompt, a card), the status line says it all, as above.
 
@@ -647,7 +650,7 @@ line once it lands; Claude's next read or edit moves it. One nothing showed as i
 one that didn't stream) takes the view to its first changed line, so it's seen at all — so too after your `y` in
 its review. A search or a lookup jumps to its first hit, with the count on the card (`1 matching line in 1
 file`), and the finished answer takes you to its first `path:line`. A card beside the code says what Claude is at
-and for how long (`thinking 3.2s`) and the turn as the chat shows it: its stops as knots, the one in hand in the accent (`● edit  src/trust.rs  L15–20`, `• search (project) …`, `• definition Session`), and
+and for how long (`thinking 3.2s`) and the turn as the chat shows it: its stops as knots, the one in hand in the accent (`● edit  src/trust.rs  L15–20`, `• search …`, `• look up Session`), and
 what Claude thinks and says between them, a running log of the turn: a new thought goes under the last one
 instead of replacing it, so you can follow the reasoning at your own pace
 ([screenshot](screenshots/follow-thinking.png)). When the words after a stop outgrow the card, its knot stays
