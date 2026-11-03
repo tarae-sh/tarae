@@ -1172,9 +1172,10 @@ pub struct Editor {
     pub code_trust: std::collections::HashMap<std::path::PathBuf, crate::codetrust::Root>,
     /// The looks for servers' agents begun, and the home they look in (`codetrust::Looks`).
     pub agent_looks: crate::codetrust::Looks,
-    /// tarae runs inside zellij: a hinted key it takes is said by its twin (`zellij.rs`) — off in tests, which
-    /// set it.
-    pub zellij: bool,
+    /// What the interface drawn for says of itself (`interface::Facts`: its ground, undercurl, inside zellij, the
+    /// clipboard's way, sound, the opener) — read here, never from the environment where it's asked. Its default is
+    /// a tests' editor's (none of them: tests set what they check).
+    pub interface: crate::interface::Facts,
     /// (Tests: the home a session's `Caps` are made for — `caps::Basis.home`; None: the process's.)
     #[cfg(test)]
     pub caps_home: Option<PathBuf>,
@@ -1535,7 +1536,7 @@ impl Editor {
             code_gate: !cfg!(test),
             code_trust: Default::default(),
             agent_looks: Default::default(),
-            zellij: crate::zellij::inside(),
+            interface: Default::default(),
             #[cfg(test)]
             caps_home: None,
             shellcheck: if cfg!(test) {
@@ -3485,7 +3486,7 @@ impl Editor {
                                 0 | 1 => format!("{} characters", text.chars().count()),
                                 n => format!("{n} lines"),
                             };
-                            crate::clipboard::copy(&self.events.jobs(), text, what);
+                            crate::clipboard::copy(self, text, what);
                         }
                         (None, Some(_)) if replying => {
                             self.set_status(match crate::codereview::drafting(self) {
@@ -4792,11 +4793,11 @@ impl Editor {
                 self.workspace.viewer.at = At::Chat;
                 let w = self.screen.chat_input.get().map_or(0, |i| i.w);
                 crate::chatinput::click(self, line, col, w);
-                crate::clipboard::paste(&self.events.jobs(), |ed, text| ed.handle_paste(text));
+                crate::clipboard::paste(self, |ed, text| ed.handle_paste(text));
             }
             (S::Prompt, Part::Text { .. }) => {
                 crate::prompt::click(self, crate::docpane::Which::Prompt, x, y);
-                crate::clipboard::paste(&self.events.jobs(), |ed, text| ed.handle_paste(text));
+                crate::clipboard::paste(self, |ed, text| ed.handle_paste(text));
             }
             _ => self.set_status(crate::mouse::MIDDLE_ELSEWHERE),
         }
@@ -6063,7 +6064,7 @@ impl Editor {
             '_' => {}
             '+' => {
                 let what = crate::clipboard::selections(values.len());
-                crate::clipboard::copy(&self.events.jobs(), values.join("\n"), what)
+                crate::clipboard::copy(self, values.join("\n"), what)
             }
             _ => {
                 self.registers.insert(name, values);

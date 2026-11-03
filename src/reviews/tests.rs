@@ -323,7 +323,7 @@ fn reviewing(name: &str, files: &[&str], risky: &[&str]) -> (Editor, PathBuf) {
 #[test]
 fn inside_zellij_an_aside_card_from_the_rail_is_the_inboxs() {
     let (mut ed, dir) = reviewing_texts("zellij-rail", &[("a.txt", "a\n", "b\n")], &[]);
-    ed.zellij = true;
+    ed.interface.zellij = true;
     // (the review opens in the code; `space e` in a review gives its rail the keys — `sidebar_show`)
     for k in ["space", "e"] {
         ed.handle_key(k.parse().unwrap());
@@ -353,7 +353,7 @@ fn inside_zellij_an_aside_card_from_the_rail_is_the_inboxs() {
 fn inside_zellij_or_not_a_brings_change_in_the_review_says_the_way_back_to_its_card() {
     for zellij in [false, true] {
         let (mut ed, dir) = reviewing(&format!("zellij-held-{zellij}"), &["a.txt"], &["a.txt"]);
-        ed.zellij = zellij;
+        ed.interface.zellij = zellij;
         let r = ed.workspace.code_review.as_ref().expect("the review");
         let graded = r.graded(&ed, &r.files[0]);
         let high = graded.iter().find(|g| g.grade == crate::risk::Grade::High).expect("a high-risk change");

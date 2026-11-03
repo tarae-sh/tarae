@@ -1002,7 +1002,8 @@ pub fn snapshot(ed: &mut Editor) -> Value {
     }
     if let Some(top) = state.as_object_mut() {
         top.extend([
-            ("light".to_string(), json!(crate::theme::is_light())),
+            // (the interface's ground as it said it — none said: meok's, as the theme took it)
+            ("light".to_string(), json!(ed.interface.light.unwrap_or(false))),
             ("overrides".into(), json!(overrides)),
             // (taken back until you quit, their store's write failed: `restore_quietly` takes them back again)
             // (not those a write that landed ended: its result wasn't applied — the loop had ended)
@@ -1658,6 +1659,17 @@ mod tests {
         assert_eq!(state["chat"]["at_end"], Value::Null);
         assert_eq!(state["review"], Value::Null, "a review there isn't carried");
         assert_eq!(state["symbols"]["at"], Value::Null);
+    }
+
+    /// The interface's ground goes through the state as it said it (`Editor.interface.light`, never what this process's
+    /// theme took), none said as dark: the new tarae takes it without asking the terminal again (`main`).
+    #[test]
+    fn the_interfaces_ground_goes_through_the_state() {
+        let mut ed = Editor::new(Config::default());
+        for (said, kept) in [(Some(true), true), (Some(false), false), (None, false)] {
+            ed.interface.light = said;
+            assert_eq!(snapshot(&mut ed)["light"], json!(kept), "{said:?}");
+        }
     }
 
     /// Files, multi-cursor selections, scroll, panes and `:set`s go through the state as they were; a

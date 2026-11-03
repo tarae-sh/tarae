@@ -365,7 +365,7 @@ fn the_order_is_by_each_ones_wait_on_its_own_clock() {
 #[test]
 fn inside_zellij_f2_reaches_the_card_as_c_q_does() {
     let (mut ed, dir, back, _) = three("zellij");
-    ed.zellij = true;
+    ed.interface.zellij = true;
     park(&mut ed, back, claudes(1, 20));
     assert_eq!(ed.key_said("C-q"), "F2");
     feed(&mut ed, "<F2>");
@@ -381,7 +381,7 @@ fn inside_zellij_f2_reaches_the_card_as_c_q_does() {
 #[test]
 fn inside_zellij_c_qs_twin_reaches_what_c_q_goes_to() {
     let (mut ed, dir, back, third) = three("zellij-twin");
-    ed.zellij = true;
+    ed.interface.zellij = true;
     let mut c = crate::chat::Chat::new();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "hi", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "hello", ""));
@@ -411,7 +411,7 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
     let cases = [(false, "auto", false), (true, "auto", true), (true, "off", false), (false, "on", true)];
     for (zellij, setting, twins) in cases {
         let (mut ed, dir, back, _) = three(&format!("zellij-left-{zellij}-{setting}"));
-        ed.zellij = zellij;
+        ed.interface.zellij = zellij;
         ed.config.zellij_hints = setting.into();
         // (the session switched to has its chat holding the keys: the toast is read later, from anywhere)
         let mut c = crate::chat::Chat::new();
@@ -435,7 +435,7 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
 #[test]
 fn inside_zellij_a_panels_twin_of_c_q_is_one_key() {
     let (mut ed, dir, back, _) = three("zellij-panel");
-    ed.zellij = true;
+    ed.interface.zellij = true;
     // (`space e` shows the files panel and gives it the keys)
     feed(&mut ed, "<space>e");
     assert!(matches!(ed.keys_to().region, crate::uistate::Region::Side(_)), "{:?}", ed.keys_to().region);

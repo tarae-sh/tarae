@@ -29,6 +29,7 @@ use crate::editor::{Editor, Mode};
 use crate::event::Event;
 use crate::filetree::Kind;
 use crate::graphemes;
+use crate::interface::{Facts, Interface};
 use crate::key::Key;
 use crate::llm::Review;
 use crate::mouse::Lit;
@@ -41,38 +42,91 @@ use crate::whole::Fit;
 use crate::workspace::At;
 use tree_sitter::QueryCursor;
 
-pub fn run(editor: &mut Editor) -> Result<()> {
-    terminal::enable_raw_mode()?;
-    execute!(
-        io::stdout(),
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableFocusChange,
-        EnableBracketedPaste
-    )?;
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = restore();
-        prev(info);
-    }));
-    let res = event_loop(editor);
-    restore()?;
+/// The main loop, drawing for `iface` until tarae quits — made ready first, left as found after.
+pub fn run(editor: &mut Editor, mut iface: Interface) -> Result<()> {
+    iface.link.begin()?;
+    let res = event_loop(editor, &mut iface);
+    iface.link.end()?;
     res
+}
+
+/// The terminal tarae runs in, as the interface it draws for (`interface.rs`) — what it says of itself read here,
+/// once, at the start, before the config (which reads the ground): its background asked (`light`: a restart's
+/// answer instead — the query's could mix with keys typed meanwhile), undercurl and zellij from its environment,
+/// the clipboard's way, this machine's sound and opener.
+pub fn terminal(light: Option<bool>) -> Interface {
+    let var = |k: &str| std::env::var(k).ok();
+    let facts = Facts {
+        light: light.or_else(|| light_background(var, query_background)),
+        undercurl: undercurl_in(var),
+        zellij: crate::zellij::inside(),
+        clipboard: crate::clipboard::Env::here(),
+        sound: true,
+        opener: Some(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
+    };
+    Interface::new(facts, Box::new(Terminal { out: io::stdout() }))
+}
+
+/// The terminal as an interface's link: stdout written, its size asked each frame, its input read by
+/// `spawn_input`.
+struct Terminal {
+    out: io::Stdout,
+}
+
+impl crate::interface::Link for Terminal {
+    fn begin(&mut self) -> io::Result<()> {
+        terminal::enable_raw_mode()?;
+        execute!(
+            self.out,
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange,
+            EnableBracketedPaste
+        )?;
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = restore();
+            prev(info);
+        }));
+        Ok(())
+    }
+
+    fn end(&mut self) -> io::Result<()> {
+        restore()
+    }
+
+    fn size(&mut self) -> io::Result<(u16, u16)> {
+        terminal::size()
+    }
+
+    fn listen(&mut self, tx: crate::event::Tx) {
+        spawn_input(tx);
+    }
+
+    fn write(&mut self, frame: &[u8], own: &[u8]) -> io::Result<()> {
+        self.out.write_all(frame)?;
+        // (after the frame's synchronized update has ended: OSC 52 — `clipboard.rs`)
+        self.out.write_all(own)?;
+        self.out.flush() // stdout holds back what has no newline
+    }
 }
 
 /// Is the terminal background light — asked once at startup to pick the `default` theme (meok/hanji).
 /// Order: `TARAE_BACKGROUND=light|dark` → query terminal bg color (OSC 11) → `COLORFGBG` → unknown (dark).
 /// DA1 (`CSI c`) is sent right after the query — nearly every terminal answers DA1, so even terminals that
 /// don't know OSC 11 finish immediately instead of waiting for the timeout (usually under 1 ms).
-pub fn detect_light_background() -> Option<bool> {
-    match std::env::var("TARAE_BACKGROUND").as_deref() {
-        Ok("light") => return Some(true),
-        Ok("dark") => return Some(false),
+fn light_background(
+    var: impl Fn(&str) -> Option<String>,
+    query: impl FnOnce() -> Option<bool>,
+) -> Option<bool> {
+    match var("TARAE_BACKGROUND").as_deref() {
+        Some("light") => return Some(true),
+        Some("dark") => return Some(false),
         _ => {}
     }
-    query_background().or_else(|| {
+    query().or_else(|| {
         // "fg;bg" — light if bg is 7 (white) or 15 (bright white)
-        let v = std::env::var("COLORFGBG").ok()?;
+        let v = var("COLORFGBG")?;
         let bg: u8 = v.rsplit(';').next()?.parse().ok()?;
         Some(bg == 7 || bg == 15)
     })
@@ -147,117 +201,36 @@ fn tests_skip_seek() -> bool {
     false
 }
 
-/// How long input rests before a screen sent in parts is drawn whole again (`event_loop`).
-const RESTING_REDRAW: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// When the whole screen goes again (`event_loop`): `RESTING_REDRAW` after the last write that went out in
-/// parts. Its time runs from that write: an event that writes nothing (a job's result that changed nothing, a
-/// state asked) doesn't put it off — else events a little under `RESTING_REDRAW` apart would hold it back, to
-/// come in the quiet after them, a frame nothing asked for then (`Editor.redraw_due` says it's due).
-#[derive(Default)]
-struct Resting {
-    at: Option<std::time::Instant>,
-    /// Put off once already for an animation's frame (`now_or_after`) — until the whole screen has gone.
-    held: bool,
-}
-
-impl Resting {
-    /// A frame went out at `now`: in parts (`patched`) — the whole screen due `RESTING_REDRAW` from now — or whole,
-    /// none due (and a hold spent with it).
-    fn wrote(&mut self, patched: bool, now: std::time::Instant) {
-        self.at = patched.then(|| now + RESTING_REDRAW);
-        self.held &= patched;
-    }
-
-    /// How long the main loop waits for an event at `now` before the whole screen goes — None: none is due.
-    fn wait(&self, now: std::time::Instant) -> Option<std::time::Duration> {
-        self.at.map(|at| at.saturating_duration_since(now))
-    }
-
-    fn due(&self) -> bool {
-        self.at.is_some()
-    }
-
-    /// Its time come at `now`: whether the whole screen goes now. Once per due it waits for an animation's frame
-    /// due before another `RESTING_REDRAW` (`tick`: `Editor::tick_due`) — that frame first, the whole screen
-    /// `RESTING_REDRAW` after (else a late fade tick lost the race: the card drawn whole by the redraw, ci round
-    /// 5). Only once: the next deadline draws it whatever ticks — an animation stepping each second (nothing on a
-    /// clock: the working sign, the reviewer's time) always has its next frame that close, and would hold it the whole turn.
-    fn now_or_after(&mut self, tick: Option<std::time::Instant>, now: std::time::Instant) -> bool {
-        if !self.held && tick.is_some_and(|t| t <= now + RESTING_REDRAW) {
-            self.wrote(true, now);
-            self.held = true;
-            return false;
-        }
-        true
-    }
-}
-
-fn event_loop(editor: &mut Editor) -> Result<()> {
-    spawn_input(editor.events.shared_sender());
+fn event_loop(editor: &mut Editor, iface: &mut Interface) -> Result<()> {
+    iface.link.listen(editor.events.shared_sender());
     spawn_signals(editor.events.shared_sender());
     editor.watches_start();
     editor.procs_start_sampling();
     crate::stall::watch(editor.stall.clone(), editor.events.shared_sender(), crate::stall::LIMITS);
-    let mut out = io::stdout();
     let mut draw = true;
-    // Frames are drawn whole, but only what changed goes to the terminal (`screen.rs`): the main loop
+    // Frames are drawn whole, but only what changed goes to the interface (`present`, `screen.rs`): the main loop
     // waits while the terminal reads what it writes — measured, a whole screen was 24 KB a key typing.
     // It's drawn whole again when input rests after that (below), after a resize or focus coming back,
     // which a terminal may redraw its own way, and on `:redraw`.
     let mut frame = Vec::with_capacity(1 << 16);
-    let mut screen = crate::screen::Screen::new();
-    // (when the whole screen goes again — below)
-    let mut resting = Resting::default();
     editor.drawn_by.push(crate::editor::DrawnFor::Named("the first frame"));
     while !editor.should_quit {
         if draw {
-            use crate::stall::Label::Frame;
-            editor.stall.begin(Frame("draw"));
-            let (w, h) = terminal::size()?;
-            if std::mem::take(&mut editor.redraw) {
-                screen.invalidate();
-            }
-            frame.clear();
-            render_drawn(editor, &mut frame, w, h)?;
-            editor.stall.begin(Frame("what changed"));
-            let bytes = present(&mut screen, editor, &frame, w, h);
-            let (own, wrote) = (std::mem::take(&mut editor.term_out), !bytes.is_empty());
-            // (a frame that couldn't be read goes as it is, no synchronized update around it)
-            let ended = bytes.ends_with(b"\x1b[?2026l");
-            // (a terminal that doesn't read holds the loop here)
-            editor.stall.begin(Frame("written to the terminal"));
-            if wrote || !own.is_empty() {
-                out.write_all(bytes)?;
-                // (after the frame's synchronized update has ended: OSC 52 — `clipboard.rs`)
-                out.write_all(&own)?;
-                out.flush()?; // stdout holds back what has no newline
-            }
-            if wrote {
-                resting.wrote(screen.patched(), crate::clock::now());
-            }
-            editor.stall.begin(Frame("after it"));
-            editor.frames_written += ended as u64;
-            // (the first frame drawn: the start is over — what runs from here is its only as its jobs' results)
-            editor.events.started();
-            editor.frame_went(ended);
-            editor.redraw_due = resting.due();
-            // (snapshots asked: as of this frame, written — what went to the terminal and what's still to go)
-            crate::uistate::after_frame(editor);
+            present(editor, iface, &mut frame)?;
         }
         // After only parts went out, the whole screen goes again once input rests: what a terminal leaves of
         // its own (Terminal.app, measured: a cursor drawn past its cell next to a wide character, a line up)
         // or anything else that drifted is gone a moment later — the next frame used to wipe it anyway. Its time
-        // runs from the last write, not the last event (`Resting`).
+        // runs from the last write, not the last event (`interface::Resting`).
         editor.stall.idle();
-        let ev = if let Some(wait) = resting.wait(crate::clock::now()) {
+        let ev = if let Some(wait) = iface.resting.wait(crate::clock::now()) {
             match editor.events.recv_within(wait) {
                 Ok(Some(ev)) => ev,
                 Ok(None) => {
-                    if !resting.now_or_after(editor.tick_due(), crate::clock::now()) {
+                    if !iface.resting.now_or_after(editor.tick_due(), crate::clock::now()) {
                         continue;
                     }
-                    screen.invalidate();
+                    iface.screen.invalidate();
                     editor.drawn_by.push(crate::editor::DrawnFor::Named("the resting redraw"));
                     draw = true;
                     continue;
@@ -273,7 +246,7 @@ fn event_loop(editor: &mut Editor) -> Result<()> {
         editor.features_turn();
         let (unchanged, whole) = handle_batch(editor, ev, until);
         if whole {
-            screen.invalidate();
+            iface.screen.invalidate();
         }
         draw = batch_done(editor, unchanged);
     }
@@ -507,16 +480,40 @@ fn mouse_kind(kind: MouseEventKind, mods: KeyModifiers) -> Option<crate::event::
     })
 }
 
-/// What goes to the terminal for `frame`, just drawn by `editor` (`Screen::present`).
-fn present<'a>(
-    screen: &'a mut crate::screen::Screen,
-    editor: &mut Editor,
-    frame: &'a [u8],
-    w: u16,
-    h: u16,
-) -> &'a [u8] {
+/// A frame drawn for `iface` at its size, and what changed of it written through its link (`Screen::present_drawn`),
+/// the editor's own bytes after it (`Editor.term_out`). `frame`: the loop's buffer, kept from frame to frame.
+pub(crate) fn present(editor: &mut Editor, iface: &mut Interface, frame: &mut Vec<u8>) -> io::Result<()> {
+    use crate::stall::Label::Frame;
+    editor.stall.begin(Frame("draw"));
+    let (w, h) = iface.link.size()?;
+    if std::mem::take(&mut editor.redraw) {
+        iface.screen.invalidate();
+    }
+    frame.clear();
+    render_drawn(editor, frame, w, h)?;
+    editor.stall.begin(Frame("what changed"));
     // (read on from where its lit row's reading stopped — `light_rows`)
-    screen.present_drawn(frame, w, h, editor.drawn.take())
+    let bytes = iface.screen.present_drawn(frame, w, h, editor.drawn.take());
+    let (own, wrote) = (std::mem::take(&mut editor.term_out), !bytes.is_empty());
+    // (a frame that couldn't be read goes as it is, no synchronized update around it)
+    let ended = bytes.ends_with(b"\x1b[?2026l");
+    // (an interface that doesn't read holds the loop here)
+    editor.stall.begin(Frame("written to the terminal"));
+    if wrote || !own.is_empty() {
+        iface.link.write(bytes, &own)?;
+    }
+    if wrote {
+        iface.resting.wrote(iface.screen.patched(), crate::clock::now());
+    }
+    editor.stall.begin(Frame("after it"));
+    editor.frames_written += ended as u64;
+    // (the first frame drawn: the start is over — what runs from here is its only as its jobs' results)
+    editor.events.started();
+    editor.frame_went(ended);
+    editor.redraw_due = iface.resting.due();
+    // (snapshots asked: as of this frame, written — what went to the interface and what's still to go)
+    crate::uistate::after_frame(editor);
+    Ok(())
 }
 
 /// One frame: layout → scroll → draw. Callable without a terminal (performance budget test).
@@ -531,6 +528,8 @@ pub fn render(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io::
 /// A frame drawn into `out`, all but the UI state's watchers and snapshots (`uistate::after_frame`) — the main
 /// loop tells them once the frame went out (`event_loop`), `render` at once.
 fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io::Result<()> {
+    // (what the interface drawn for takes: `apply` has no editor to ask)
+    UNDERCURL.set(editor.interface.undercurl);
     // (the run panels' documents as their runs are now: what they printed since the last event)
     crate::rundoc::sync(editor);
     // Reading an answer moved the editor to what the chat now shows (its links are only known once drawn)
@@ -5076,7 +5075,7 @@ fn apply(out: &mut impl Write, s: Style) -> io::Result<()> {
             sgr_color(&mut seq, on, c)?;
         }
     }
-    let fancy = undercurl_supported();
+    let fancy = UNDERCURL.get();
     let curly = s.curly && fancy;
     for (on, a) in [
         (s.bold, b";1"),
@@ -5181,26 +5180,27 @@ fn sgr_color(out: &mut impl Write, on: &[u8], c: Color) -> io::Result<()> {
     num(out, ansi)
 }
 
-/// Does the terminal grok undercurl/underline color (`CSI 4:3 m`, `CSI 58…`)? Unknown terminals print them
-/// as text ("3m") — so only where certain, plain underline elsewhere. Force with `TARAE_UNDERCURL=1/0`. Never in
-/// tests: a frame mustn't depend on the terminal the tests run in (as `zellij::inside`).
-fn undercurl_supported() -> bool {
-    if cfg!(test) {
-        return false;
+thread_local! {
+    /// Whether the interface the frame is drawn for takes undercurl (`Facts.undercurl`) — set as each frame starts
+    /// (`render_drawn`).
+    static UNDERCURL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Does the terminal grok undercurl/underline color (`CSI 4:3 m`, `CSI 58…`), by its environment (`var`)? Unknown
+/// terminals print them as text ("3m") — so only where certain, plain underline elsewhere. Force with
+/// `TARAE_UNDERCURL=1/0`. Read once, as the terminal's interface is made (`terminal`): a tests' frame never depends
+/// on the terminal the tests run in.
+fn undercurl_in(var: impl Fn(&str) -> Option<String>) -> bool {
+    let env = |k: &str| var(k).unwrap_or_default();
+    match env("TARAE_UNDERCURL").as_str() {
+        "1" => return true,
+        "0" => return false,
+        _ => {}
     }
-    static S: OnceLock<bool> = OnceLock::new();
-    *S.get_or_init(|| {
-        let env = |k: &str| std::env::var(k).unwrap_or_default();
-        match env("TARAE_UNDERCURL").as_str() {
-            "1" => return true,
-            "0" => return false,
-            _ => {}
-        }
-        let (term, prog) = (env("TERM"), env("TERM_PROGRAM"));
-        ["kitty", "wezterm", "ghostty", "alacritty", "foot", "contour"].iter().any(|t| term.contains(t))
-            || ["WezTerm", "ghostty", "iTerm.app", "vscode", "kitty"].contains(&prog.as_str())
-            || std::env::var_os("ZELLIJ").is_some()
-    })
+    let (term, prog) = (env("TERM"), env("TERM_PROGRAM"));
+    ["kitty", "wezterm", "ghostty", "alacritty", "foot", "contour"].iter().any(|t| term.contains(t))
+        || ["WezTerm", "ghostty", "iTerm.app", "vscode", "kitty"].contains(&prog.as_str())
+        || var("ZELLIJ").is_some()
 }
 
 /// A code row's ground: the pane's width from its left edge in `st`'s background (blank cells, as an erase leaves
@@ -26334,60 +26334,30 @@ mod tests {
         assert_eq!((slow, rounds), ((ms(7), "k".to_string()), ROUNDS));
     }
 
-    /// ci round 5: the resting redraw waits once per due for an animation's frame due before long — that frame
-    /// first, the whole screen `RESTING_REDRAW` after (a late fade tick lost the race: the card drawn whole by the
-    /// redraw) — and only once: with nothing on a clock the wave steps each second, its next frame always that
-    /// close, and each step writes in parts (the review of round 5: held the whole turn). A whole frame spends the
-    /// hold; a tick far off, or none, doesn't hold it.
+    /// The terminal's facts are read from its environment as its interface is made (`terminal`): the ground in
+    /// `TARAE_BACKGROUND`'s order (it, the query, `COLORFGBG`), undercurl where the terminal is known to take it.
     #[test]
-    fn the_resting_redraw_waits_once_for_an_animations_frame_due_before_long() {
-        let (t0, ms) = (std::time::Instant::now(), Duration::from_millis);
-        for tick in [ms(100), ms(500)] {
-            let mut r = Resting::default();
-            r.wrote(true, t0);
-            let at = t0 + RESTING_REDRAW;
-            // (a tick late — its time passed — or due soon: put off, the whole wait again)
-            assert!(!r.now_or_after(Some(t0 + tick), at), "a tick due at {tick:?}");
-            assert_eq!(r.wait(at), Some(RESTING_REDRAW));
-            // (that tick wrote in parts, the next is as close: the redraw goes at the next deadline all the same)
-            let next = at + ms(300);
-            r.wrote(true, next);
-            assert!(
-                r.now_or_after(Some(next + RESTING_REDRAW + ms(200)), next + RESTING_REDRAW),
-                "held once only"
-            );
-            // (the whole screen went: the next due may wait once again)
-            r.wrote(false, next + RESTING_REDRAW);
-            r.wrote(true, next + ms(1000));
-            assert!(!r.now_or_after(Some(next + ms(1600)), next + ms(1500)), "a new due, a new hold");
-        }
-        let mut r = Resting::default();
-        r.wrote(true, t0);
-        let at = t0 + RESTING_REDRAW;
-        assert!(r.now_or_after(Some(at + ms(59_000)), at), "a tick a minute off doesn't hold it");
-        assert!(r.now_or_after(None, at), "no tick: now");
-    }
-
-    /// The whole screen goes again `RESTING_REDRAW` after the last write that went out in parts (`Resting`):
-    /// events that write nothing, however close together, don't put it off — the wait shrinks to the deadline;
-    /// a write in parts starts it again; a whole frame leaves none due. `Term::settle` and the idle e2e count on
-    /// it (`redraw_due`).
-    #[test]
-    fn the_resting_redraw_is_timed_from_the_last_write() {
-        let (t0, ms) = (std::time::Instant::now(), Duration::from_millis);
-        let mut r = Resting::default();
-        assert_eq!((r.wait(t0), r.due()), (None, false), "nothing written yet");
-        r.wrote(true, t0);
-        assert_eq!(r.wait(t0), Some(RESTING_REDRAW));
-        // (events 400 ms apart that write nothing: each wait what's left, never the whole again)
-        for (at, left) in [(400, 100), (499, 1), (800, 0)] {
-            assert_eq!(r.wait(t0 + ms(at)), Some(ms(left)), "an event at {at} ms");
-        }
-        assert!(r.due());
-        r.wrote(true, t0 + ms(450));
-        assert_eq!(r.wait(t0 + ms(800)), Some(ms(150)), "a write in parts at 450 ms: due at 950");
-        r.wrote(false, t0 + ms(950));
-        assert_eq!((r.wait(t0 + ms(950)), r.due()), (None, false), "the whole screen went");
+    fn the_terminals_facts_are_read_from_its_environment() {
+        let vars = |set: &'static [(&'static str, &'static str)]| {
+            move |k: &str| set.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string())
+        };
+        let asked = || Some(false);
+        assert_eq!(
+            light_background(vars(&[("TARAE_BACKGROUND", "light")]), asked),
+            Some(true),
+            "before the query"
+        );
+        assert_eq!(
+            light_background(vars(&[("COLORFGBG", "0;15")]), asked),
+            Some(false),
+            "the query before it"
+        );
+        assert_eq!(light_background(vars(&[("COLORFGBG", "0;15")]), || None), Some(true), "no answer: it");
+        assert_eq!(light_background(vars(&[]), || None), None);
+        assert!(undercurl_in(vars(&[("TERM", "xterm-kitty")])));
+        assert!(undercurl_in(vars(&[("ZELLIJ", "0")])));
+        assert!(!undercurl_in(vars(&[("TERM", "xterm-256color")])));
+        assert!(!undercurl_in(vars(&[("TERM", "xterm-kitty"), ("TARAE_UNDERCURL", "0")])), "forced off");
     }
 
     /// One frame at 60 Hz. `TARAE_PERF_SLACK` (a multiplier) loosens it on slow shared machines — CI sets 3,
@@ -26589,7 +26559,7 @@ mod tests {
                 buf.clear();
                 let t = Instant::now();
                 render(ed, &mut buf, w, h).unwrap();
-                std::hint::black_box(present(&mut screen, ed, &buf, w, h));
+                std::hint::black_box(screen.present_drawn(&buf, w, h, ed.drawn.take()));
                 frames.push(t.elapsed());
             }
             frames.sort();
@@ -26634,7 +26604,7 @@ mod tests {
             PARSED.set(0);
             ASKED.set(0);
             render(ed, &mut buf, w, h).unwrap();
-            let out = present(&mut screen, ed, &buf, w, h).len();
+            let out = screen.present_drawn(&buf, w, h, ed.drawn.take()).len();
             assert!(out > 0, "the frame changed: something went out");
             (PARSED.get(), ASKED.get(), buf.len())
         };
@@ -27659,7 +27629,7 @@ mod tests {
         let keys: Vec<&str> = deltas.iter().map(String::as_str).collect();
         let (worst, delta) = worst_of_best(&keys, || {
             let mut ed = long_chat(200);
-            ed.zellij = true;
+            ed.interface.zellij = true;
             ed.workspace.viewer.at = crate::workspace::At::Chat;
             let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
             ed.push_offer(crate::offer::Offer::new(

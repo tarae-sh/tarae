@@ -1042,7 +1042,7 @@ fn review_copy(ed: &mut Editor) {
         0 | 1 => format!("{} characters", text.chars().count()),
         n => format!("{n} lines"),
     };
-    crate::clipboard::copy(&ed.events.jobs(), text, what);
+    crate::clipboard::copy(ed, text, what);
 }
 
 /// A press, drag or release on the edit review at (`x`, `y`), on a change's row (`hunk`) or off one: a press takes the
@@ -1150,7 +1150,7 @@ pub fn folded_copy(ed: &mut Editor, held: Held) {
     let Some(text) = folded_shown(ed, held) else { return };
     let n = text.lines().count().max(1);
     let what = format!("{n} line{} as shown — y yanks the source", if n == 1 { "" } else { "s" });
-    crate::clipboard::copy(&ed.events.jobs(), text, what);
+    crate::clipboard::copy(ed, text, what);
 }
 
 /// A press on `on`'s text, its surface's click having put the cursor on `pos`: the second at once on that character

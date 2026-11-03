@@ -1443,7 +1443,7 @@ fn a_focusing_press_moves_no_answer() {
     crate::clock::hold();
     let card = |zellij: bool| {
         let mut ed = editor();
-        ed.zellij = zellij;
+        ed.interface.zellij = zellij;
         ed.handle_key("i".parse().unwrap());
         let job =
             crate::tools::Job::Command("npm test".into(), std::path::PathBuf::from("/tmp/tarae-not-there"));

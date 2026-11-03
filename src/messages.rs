@@ -89,7 +89,7 @@ impl Editor {
             'y' => {
                 let id = self.float_list_here(GroupKind::Messages);
                 let Some(row) = rows(self).into_iter().find(|r| Some(r.id) == id) else { return };
-                crate::clipboard::copy(&self.events.jobs(), row.whole, "the message".into());
+                crate::clipboard::copy(self, row.whole, "the message".into());
             }
             _ => self.key_unused(
                 crate::key::Key::plain(crate::key::Code::Char(c)),

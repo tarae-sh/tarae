@@ -94,6 +94,7 @@ mod indent;
 mod input;
 mod install;
 mod instructions;
+mod interface;
 mod jumplist;
 mod keepclose;
 mod key;
@@ -361,10 +362,12 @@ fn main() -> Result<()> {
     if let Some(said) = raised {
         log::line("tarae", "info", &said);
     }
-    // Theme "default" (meok/hanji) follows the terminal background — before reading config (config reads it).
-    // A restart knows it already (and the query's answer could mix with keys typed meanwhile).
+    // The interface tarae draws for — the terminal it runs in — and what it says of itself (`interface::Facts`).
+    // Theme "default" (meok/hanji) follows its background — before reading config (config reads it). A restart
+    // knows it already (and the query's answer could mix with keys typed meanwhile).
     let light = restarted.as_ref().and_then(|s| s["light"].as_bool());
-    if let Some(light) = light.or_else(term::detect_light_background) {
+    let interface = term::terminal(light);
+    if let Some(light) = interface.facts.light {
         theme::set_light(light);
     }
     // (the one look at where tarae runs — from here on the editor's root, the project it's in, is what everything
@@ -380,6 +383,8 @@ fn main() -> Result<()> {
     }
     let (config, warnings) = config::load(&root, &config::Sources::own());
     let mut editor = editor::Editor::with_root(config, root);
+    // (what the editor reads of the interface — never the environment where it's asked)
+    editor.interface = interface.facts.clone();
     editor.workspace.start_in =
         start.strip_prefix(&editor.workspace.root).unwrap_or(std::path::Path::new("")).to_path_buf();
     // (a mark on the way that isn't yours, passed over: said once — a `.tarae.toml` at the project or above it is the
@@ -496,7 +501,7 @@ fn main() -> Result<()> {
         Ok(listener) => uisocket::serve(listener, editor.events.shared_sender()),
         Err(e) => log::line("ui", "info", &format!("no UI state socket: {e}")),
     }
-    let result = term::run(&mut editor);
+    let result = term::run(&mut editor, interface);
     // What Claude's runs left running ends with tarae — a `:restart` too (their supervisors don't survive the
     // exec: a daemon kept would have every connect refused)
     sandbox::end_leftovers(None);

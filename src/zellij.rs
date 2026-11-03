@@ -19,9 +19,10 @@ use crate::view::Surface;
 /// (`Editor::zellij_letters`); the generated keymap reference says these.
 pub const DEFAULT_KEYS: [char; 9] = ['g', 'q', 'p', 'n', 's', 't', 'h', 'o', 'b'];
 
-/// Whether tarae runs inside zellij — read once at the start; never in tests (they set `Editor.zellij`).
+/// Whether tarae runs inside zellij — the terminal's fact, read once as its interface is made (`term::terminal`);
+/// the rest reads `Editor.interface.zellij` (tests set it).
 pub fn inside() -> bool {
-    !cfg!(test) && std::env::var_os("ZELLIJ").is_some()
+    std::env::var_os("ZELLIJ").is_some()
 }
 
 /// Whether zellij takes `key` before tarae sees it, zellij taking `letters` with `C-`.
@@ -46,13 +47,13 @@ impl Editor {
         self.twins_said() && key.parse::<Key>().is_ok_and(|k| takes(&k, self.zellij_letters()))
     }
 
-    /// The hints say the twins: `editor.zellij-hints` — `auto` while tarae runs inside zellij (`Editor.zellij`),
+    /// The hints say the twins: `editor.zellij-hints` — `auto` while tarae runs inside zellij (`Editor.interface`),
     /// `on` and `off` whatever runs it (zellij's unlock-first preset, keys of your own: `off`).
     pub fn twins_said(&self) -> bool {
         match self.config.zellij_hints.as_str() {
             "on" => true,
             "off" => false,
-            _ => self.zellij,
+            _ => self.interface.zellij,
         }
     }
 

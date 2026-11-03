@@ -573,23 +573,26 @@ pub fn reader(ed: &mut Editor, rest: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `:web-open`: the page's own address — http(s) only, nothing else of it — handed to the system's opener (`open`,
-/// `xdg-open`) on a worker; what it says when it fails said.
+/// `:web-open`: the page's own address — http(s) only, nothing else of it — handed to the interface's opener
+/// (`Facts.opener`: the terminal's `open`, `xdg-open`) on a worker; what it says when it fails said.
 pub fn web_open(ed: &mut Editor) -> Result<(), String> {
     in_sight(ed)?;
     let url = ed.doc().virtual_uri.clone().unwrap_or_default();
     if !super::facts::followed(&url) {
         return Err("a saved page has no web address — :web-open opens only http(s)".into());
     }
+    let Some(program) = ed.interface.opener else {
+        return Err("web: nothing here opens a browser".into());
+    };
     #[cfg(test)]
     {
+        let _ = program;
         ed.workspace.web_opened.push(url.clone());
         ed.set_status(format!("web: {url} handed to your browser"));
         Ok(())
     }
     #[cfg(not(test))]
     {
-        let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
         let said = url.clone();
         ed.events.jobs().spawn(move || {
             let ended = opened_by(program, &url);

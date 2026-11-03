@@ -9,20 +9,21 @@
 //! terminals, so a paste there says to use the terminal's own paste (it comes in as a bracketed paste).
 
 use crate::editor::{Editor, ToastKind};
-use crate::event::Jobs;
 
-/// Copies `text`; once done, one toast says so, naming it (`what`: "1 selection") and how.
-pub fn copy(jobs: &Jobs, text: String, what: String) {
-    copy_flashing(jobs, text, what, None)
+/// Copies `text` the way the interface's clipboard goes (`Editor.interface`); once done, one toast says so, naming it
+/// (`what`: "1 selection") and how.
+pub fn copy(ed: &Editor, text: String, what: String) {
+    copy_flashing(ed, text, what, None)
 }
 
 /// `copy`, and a yank's `flash` (`motion.rs`) once the clipboard took it — this copy's own, carried with it (another
 /// copy landing first never takes it), saying it where it's drawn.
-pub fn copy_flashing(jobs: &Jobs, text: String, what: String, flash: Option<crate::motion::What>) {
+pub fn copy_flashing(ed: &Editor, text: String, what: String, flash: Option<crate::motion::What>) {
     #[cfg(test)]
     system::ask(&text);
-    jobs.spawn(move || {
-        let r = system::write(&text);
+    let env = ed.interface.clipboard.clone();
+    ed.events.jobs().spawn(move || {
+        let r = system::write(&text, env);
         move |ed: &mut Editor| copied(ed, &what, r, flash)
     });
 }
@@ -80,10 +81,11 @@ pub enum Read {
     Terminal(Why),
 }
 
-/// Read the clipboard and pass it to `then` (on the main loop, after the read finishes).
-pub fn paste(jobs: &Jobs, then: impl FnOnce(&mut Editor, String) + Send + 'static) {
-    jobs.spawn(move || {
-        let r = system::read();
+/// Read the clipboard the interface's way and pass it to `then` (on the main loop, after the read finishes).
+pub fn paste(ed: &Editor, then: impl FnOnce(&mut Editor, String) + Send + 'static) {
+    let env = ed.interface.clipboard.clone();
+    ed.events.jobs().spawn(move || {
+        let r = system::read(env);
         move |ed: &mut Editor| pasted(ed, r, then)
     });
 }
@@ -118,8 +120,9 @@ fn from_powershell(s: &str) -> String {
 /// The clipboard programs looked for on PATH (pbcopy/pbpaste are always there on macOS).
 const PROGRAMS: &[&str] = &["win32yank.exe", "wl-copy", "wl-paste", "xclip", "xsel", "powershell.exe"];
 
-/// What the choice of a clipboard depends on — read once per copy or paste (`Env::read`), passed in so the
-/// choice itself reads nothing.
+/// What the choice of a clipboard depends on — the interface's (`Facts.clipboard`: the terminal's read once, as it's
+/// made — `Env::here`), its `programs` looked for on PATH at each copy or paste; passed in so the choice itself reads
+/// nothing.
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub ssh: bool,
@@ -303,9 +306,27 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+impl Env {
+    /// Where tarae runs: its variables, macOS, WSL — the terminal's clipboard way (`term::terminal`), its programs
+    /// left to each copy (`with_programs`).
+    pub fn here() -> Env {
+        let mut env = Env::new(|k| std::env::var(k).ok(), |_| false);
+        env.macos = cfg!(target_os = "macos");
+        env.wsl = !env.macos && wsl();
+        env
+    }
+}
+
+/// WSL: the Linux side usually has no clipboard tool — use the Windows clipboard.
+fn wsl() -> bool {
+    std::env::var_os("WSL_DISTRO_NAME").is_some()
+        || std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .is_ok_and(|s| s.to_lowercase().contains("microsoft"))
+}
+
 #[cfg(not(test))]
 mod system {
-    use super::{Env, Mux, Read, Way, Wrote};
+    use super::{Env, Mux, PROGRAMS, Read, Way, Wrote};
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -313,17 +334,9 @@ mod system {
         std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
     }
 
-    /// WSL: the Linux side usually has no clipboard tool — use the Windows clipboard.
-    fn wsl() -> bool {
-        std::env::var_os("WSL_DISTRO_NAME").is_some()
-            || std::fs::read_to_string("/proc/sys/kernel/osrelease")
-                .is_ok_and(|s| s.to_lowercase().contains("microsoft"))
-    }
-
-    fn env() -> Env {
-        let mut env = Env::new(|k| std::env::var(k).ok(), on_path);
-        env.macos = cfg!(target_os = "macos");
-        env.wsl = !env.macos && wsl();
+    /// `env` with the clipboard programs on PATH now.
+    fn with_programs(mut env: Env) -> Env {
+        env.programs = PROGRAMS.iter().copied().filter(|p| on_path(p)).collect();
         env
     }
 
@@ -338,8 +351,8 @@ mod system {
         out.status.success().then(|| super::tmux_options(&String::from_utf8_lossy(&out.stdout)))?
     }
 
-    pub fn write(text: &str) -> Result<Wrote, String> {
-        let env = env();
+    pub fn write(text: &str, env: Env) -> Result<Wrote, String> {
+        let env = with_programs(env);
         let (cmd, args) = match super::pick(&env, true) {
             Way::Program(cmd, args) => (cmd, args),
             Way::Terminal(why) => {
@@ -364,8 +377,8 @@ mod system {
         Ok(Wrote::Program)
     }
 
-    pub fn read() -> Result<Read, String> {
-        let (cmd, args) = match super::pick(&env(), false) {
+    pub fn read(env: Env) -> Result<Read, String> {
+        let (cmd, args) = match super::pick(&with_programs(env), false) {
             Way::Program(cmd, args) => (cmd, args),
             Way::Terminal(why) => return Ok(Read::Terminal(why)),
         };
@@ -395,29 +408,40 @@ pub fn asked(text: &str) -> bool {
     system::asked(text)
 }
 
+/// Tests: the way `text`'s copy was given (`Env`) — None: not copied.
+#[cfg(test)]
+pub fn written_by(text: &str) -> Option<Env> {
+    system::written_by(text)
+}
+
 /// The tests' stand-in clipboard holds `text` (as a copy leaves it, unsaid).
 #[cfg(test)]
 pub fn stand_in(text: &str) {
-    let _ = system::write(text);
+    let _ = system::write(text, Env::default());
 }
 
 #[cfg(test)]
 mod system {
-    use super::{Read, Wrote};
+    use super::{Env, Read, Wrote};
     use std::sync::Mutex;
 
     static CLIP: Mutex<String> = Mutex::new(String::new());
-    /// Every copy since the tests started — a test asks whether its own text went (others copy alongside).
-    static WRITTEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    /// Every copy since the tests started, with the way it was given — a test asks whether its own text went (others
+    /// copy alongside).
+    static WRITTEN: Mutex<Vec<(String, Env)>> = Mutex::new(Vec::new());
 
-    pub fn write(text: &str) -> Result<Wrote, String> {
+    pub fn write(text: &str, env: Env) -> Result<Wrote, String> {
         *CLIP.lock().unwrap() = text.to_string();
-        WRITTEN.lock().unwrap().push(text.to_string());
+        WRITTEN.lock().unwrap().push((text.to_string(), env));
         Ok(Wrote::Program)
     }
 
     pub fn written(text: &str) -> bool {
-        WRITTEN.lock().unwrap().iter().any(|t| t == text)
+        written_by(text).is_some()
+    }
+
+    pub fn written_by(text: &str) -> Option<Env> {
+        WRITTEN.lock().unwrap().iter().find(|(t, _)| t == text).map(|(_, env)| env.clone())
     }
 
     /// Every copy asked since the tests started, as it's asked.
@@ -431,7 +455,7 @@ mod system {
         ASKED.lock().unwrap().iter().any(|t| t == text)
     }
 
-    pub fn read() -> Result<Read, String> {
+    pub fn read(_: Env) -> Result<Read, String> {
         Ok(Read::Text(CLIP.lock().unwrap().clone()))
     }
 }
@@ -439,6 +463,25 @@ mod system {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A copy goes the way the interface says (`Editor.interface.clipboard`), never the way of where the tests run:
+    /// over SSH it's handed the SSH way, else as the facts say.
+    #[test]
+    fn a_copy_goes_the_way_the_interface_says() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        for ssh in [true, false] {
+            ed.interface.clipboard.ssh = ssh;
+            let text = format!("the interface's way, ssh {ssh}");
+            copy(&ed, text.clone(), "it".into());
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while written_by(&text).is_none() {
+                let left = end.saturating_duration_since(std::time::Instant::now());
+                let ev = ed.events.recv_timeout(left).expect("the copy's job");
+                ed.handle_event(ev);
+            }
+            assert_eq!(written_by(&text).map(|env| env.ssh), Some(ssh));
+        }
+    }
 
     #[test]
     fn powershell_text_becomes_lf() {

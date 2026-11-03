@@ -877,7 +877,7 @@ impl Editor {
                     0 | 1 => format!("{} characters", text.chars().count()),
                     n => format!("{n} lines"),
                 };
-                crate::clipboard::copy(&self.events.jobs(), text, what);
+                crate::clipboard::copy(self, text, what);
             }
             MouseKind::ScrollLeft
             | MouseKind::ScrollRight

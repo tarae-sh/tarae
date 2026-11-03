@@ -27,7 +27,7 @@ fn drawn(ed: &mut Editor, w: u16, h: u16) -> String {
 
 fn editor(zellij: bool) -> Editor {
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.zellij = zellij;
+    ed.interface.zellij = zellij;
     ed
 }
 

@@ -842,7 +842,7 @@ fn yank(cx: &mut Context) {
         '"' => String::new(),
         // (the copy says so once it's done, and how)
         '+' => {
-            return crate::clipboard::copy_flashing(&cx.editor.events.jobs(), texts.join("\n"), what, flash);
+            return crate::clipboard::copy_flashing(cx.editor, texts.join("\n"), what, flash);
         }
         r => format!(" to register {r}"),
     };
@@ -855,7 +855,7 @@ fn yank(cx: &mut Context) {
 fn paste_from_register(cx: &mut Context, before: bool) {
     let count = cx.count();
     match cx.editor.register_name() {
-        '+' => crate::clipboard::paste(&cx.editor.events.jobs(), move |ed, s| {
+        '+' => crate::clipboard::paste(cx.editor, move |ed, s| {
             ed.with_group(|cx| {
                 for _ in 0..count {
                     paste(cx, before, std::slice::from_ref(&s));
@@ -2722,7 +2722,7 @@ fn kill_to_line_end(cx: &mut Context) {
 fn insert_register(cx: &mut Context) {
     cx.editor.on_next_char = Some((
         |cx, name| match name {
-            '+' => crate::clipboard::paste(&cx.editor.events.jobs(), |ed, s| {
+            '+' => crate::clipboard::paste(cx.editor, |ed, s| {
                 ed.with_group(|cx| insert_texts(cx, std::slice::from_ref(&s)))
             }),
             _ => match cx.editor.registers.get(&name).cloned() {

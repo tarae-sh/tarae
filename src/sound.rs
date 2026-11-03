@@ -10,7 +10,8 @@
 //! The decision is here, on the main loop's clock (`clock::now`: the simulation runs it); the sound is the audio
 //! thread's (`engine.rs`, `mac.rs`), only told — the main loop never waits on it. It's made the first time a turn runs
 //! with sound on, on a worker (opening the output takes ~100 ms), and lives until quit or `editor.sound` goes off.
-//! In tests no thread or device is made (`State.devices`); a test records what would sound (`Sink::Record`).
+//! Only for an interface whose speaker plays it (`Editor.interface.sound`: the terminal's is this machine's). In tests no
+//! thread or device is made (`open`); a test records what would sound (`Sink::Record`).
 
 mod engine;
 #[cfg(target_os = "macos")]
@@ -77,20 +78,11 @@ pub struct State {
     failed: bool,
     /// The volume the thread was last told.
     told: u8,
-    /// Whether a device may be opened — off in tests, as the animation is.
-    pub devices: bool,
 }
 
 impl Default for State {
     fn default() -> State {
-        State {
-            sink: Sink::Off,
-            typist: typist::Typist::new(0x5eed),
-            opening: false,
-            failed: false,
-            told: 0,
-            devices: !cfg!(test),
-        }
+        State { sink: Sink::Off, typist: typist::Typist::new(0x5eed), opening: false, failed: false, told: 0 }
     }
 }
 
@@ -194,12 +186,12 @@ pub fn sync(ed: &mut Editor) {
         return;
     }
     let turn = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle);
-    if !st.devices || st.opening || st.failed || !matches!(st.sink, Sink::Off) || !turn {
+    if !ed.interface.sound || st.opening || st.failed || !matches!(st.sink, Sink::Off) || !turn {
         return;
     }
     st.opening = true;
     ed.events.jobs().spawn(move || {
-        let opened = engine::spawn(volume);
+        let opened = open(volume);
         move |ed: &mut Editor| {
             ed.sound.opening = false;
             match opened {
@@ -216,6 +208,17 @@ pub fn sync(ed: &mut Editor) {
             }
         }
     });
+}
+
+/// The output opened and its thread started at `volume` — in tests none is: it says so.
+fn open(volume: u8) -> Result<Sender<Msg>, String> {
+    #[cfg(not(test))]
+    return engine::spawn(volume);
+    #[cfg(test)]
+    {
+        let _ = volume;
+        Err("no device in tests".into())
+    }
 }
 
 /// `:sound [on|off]` — what it says, and whether that's all well (else a warning).
@@ -385,15 +388,30 @@ mod tests {
         assert_eq!(land(&mut ed, "a\n", "a\nb\n"), [Kind::Settle, Kind::Settle], "back in sight: heard");
     }
 
+    /// An output is opened only for an interface whose speaker plays tarae's sound (`Editor.interface.sound`) — a
+    /// tests' editor's has none; given one, it's asked for (and in tests refused: `open`). Off lets it go.
     #[test]
-    fn no_device_is_made_in_tests_and_off_lets_it_go() {
+    fn a_device_is_asked_only_for_an_interface_with_sound_and_off_lets_it_go() {
         let (mut ed, _dir) = heard("a\n");
         ed.sound.sink = Sink::Off;
         let mut c = crate::chat::Chat::new();
         c.state = crate::chat::State::Thinking;
         ed.workspace.claude.chat = Some(c);
         sync(&mut ed);
-        assert!(!ed.sound.opening && matches!(ed.sound.sink, Sink::Off), "a device opened in a test");
+        assert!(
+            !ed.sound.opening && matches!(ed.sound.sink, Sink::Off),
+            "opened for an interface with no sound"
+        );
+        ed.interface.sound = true;
+        sync(&mut ed);
+        assert!(ed.sound.opening, "its speaker's output asked for");
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while ed.sound.opening {
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            let ev = ed.events.recv_timeout(left).expect("the opening's answer");
+            ed.handle_event(ev);
+        }
+        assert!(ed.sound.failed && matches!(ed.sound.sink, Sink::Off), "no device made in a test");
         let (tx, _rx) = std::sync::mpsc::channel();
         ed.sound.sink = Sink::Device(tx);
         ed.config.sound = false;

@@ -4671,7 +4671,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         (Code::Char(']') | Code::Char('g'), true, _) => follow(ed),
         (Code::Char('f'), true, _) => crate::follow::toggle(ed),
         (Code::Char('y'), true, _) => match c.last_code() {
-            Some(code) => crate::clipboard::copy(&ed.events.jobs(), code, "the code block".into()),
+            Some(code) => crate::clipboard::copy(ed, code, "the code block".into()),
             None => ed.set_status("no code block in the last answer"),
         },
         // The editor's page keys page the conversation (#153) — `C-u` from an empty input (with text it

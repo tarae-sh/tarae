@@ -5663,7 +5663,7 @@ mod tests {
     fn aside_said_names_the_way_back_to_the_card() {
         for zellij in [false, true] {
             let mut ed = Editor::new(crate::config::Config::default());
-            ed.zellij = zellij;
+            ed.interface.zellij = zellij;
             ed.set_status("to the change");
             aside_said(&mut ed);
             let key = if zellij { "F2" } else { "C-q" };

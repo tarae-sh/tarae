@@ -540,6 +540,18 @@ fn snapshot_diagnostic_card() {
     diagnostic_card_shot().check("diagnostic_card");
 }
 
+/// Undercurl is the interface's to take (`Editor.interface.undercurl`, set as each frame starts): a tests' editor's
+/// draws an error's plain underline, the curl only once its interface says it takes one — never by the terminal the
+/// tests run in.
+#[test]
+fn an_errors_underline_curls_only_where_the_interface_takes_it() {
+    let mut s = diagnostic_card_shot();
+    let curled = |s: &mut Shot| s.frame().windows(6).any(|w| w == b"\x1b[4:3m");
+    assert!(!curled(&mut s), "a tests' editor's interface takes no undercurl");
+    s.ed.interface.undercurl = true;
+    assert!(curled(&mut s), "its interface takes it");
+}
+
 /// The card only on an underline · only when the line end can't show it all · not in insert mode · Esc
 /// hides it until the cursor leaves the line.
 #[test]
@@ -1228,7 +1240,7 @@ fn frictions211_frames() {
         for name in ["run", "grant", "bring"] {
             let mut s = Shot::new(w, 30);
             s.ed.offer_popups = true;
-            s.ed.zellij = true;
+            s.ed.interface.zellij = true;
             s.file("src/demo.rs", DEMO_RS);
             s.keys("i");
             match name {

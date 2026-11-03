@@ -370,7 +370,7 @@ impl Editor {
             let hint = self.workspace.claude.sandbox.as_ref().and_then(|g| g.hint.as_ref());
             let step = hint.and_then(|h| h.step.clone()).ok_or("no step to copy")?;
             let what = "the step for own namespaces — run it in a terminal, then restart tarae";
-            crate::clipboard::copy(&self.events.jobs(), step, what.to_string());
+            crate::clipboard::copy(self, step, what.to_string());
             return Ok(());
         }
         let (run, list) =
