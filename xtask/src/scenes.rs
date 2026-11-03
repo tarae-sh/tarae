@@ -2568,6 +2568,59 @@ const EDIT_IN_BUFFER: &[&str] = &[
     "u",
     "@4",
 ];
+/// The fourth short video, V4 "follow and replay" (`--video follow-replay`, ~45 s at 120×34; collab's
+/// `.sb/videos-plan.md`): a question on the ask line; the `v4` turn reads `spool.rs` far apart, the view following
+/// while your cursor stays on line 1; `j` takes the view back, `space F` follows again; two edits land unseen (review
+/// at the end); after the turn `]r`/`[r` step its stops.
+const FOLLOW_REPLAY: &[&str] = &[
+    "@1",
+    "@rec",
+    "@beat:Follow Claude as it reads and writes.",
+    "@1.5",
+    " ",
+    "l",
+    "@1",
+    "why ",
+    "@hold:120",
+    "is ",
+    "@hold:120",
+    "the ",
+    "@hold:120",
+    "spool ",
+    "@hold:120",
+    "out ",
+    "@hold:120",
+    "of ",
+    "@hold:120",
+    "order?",
+    "@1.5",
+    "\r",
+    // (the read's row on the follow card: its words wrap there)
+    "@10?spool.rs:30-52",
+    "@1.5",
+    "@beat:Your first key takes the view back.",
+    "j",
+    "@1.5",
+    " ",
+    "F",
+    // (the turn's end: review at the end opens its rail)
+    "@30?last turn",
+    "@2",
+    "@beat:Replay the turn, stop by stop.",
+    // (each pair typed as one key: sent apart, `]` stood long enough for which-key)
+    "]r",
+    "@1.5",
+    "]r",
+    "@1.5",
+    "]r",
+    "@1.5",
+    "]r",
+    "@1.5",
+    "]r",
+    "@2",
+    "[r",
+    "@3",
+];
 /// Three checkouts changing `src/main.rs` far apart — main's `threads.insert` line saved, docs's `println!` saved, fix's
 /// `mod thread` unsaved — then `:weave` in fix: a clean merge, each change in its session's colour, its prefix in the
 /// sign column (`weaveclean`, collab C2b); the cursor on fix's change, `‹fix›` at its end.
@@ -4559,6 +4612,7 @@ const SCENES: &[Scene] = &[
     // (…as the second short video, V2: from the floating list to `y`)
     Scene { name: "main-moved", claude: "idle", files: MAIN, keys: MAIN_MOVED },
     Scene { name: "edit-in-buffer", claude: "v3", files: MAIN, keys: EDIT_IN_BUFFER },
+    Scene { name: "follow-replay", claude: "v4", files: SPOOL, keys: FOLLOW_REPLAY },
     // (panes P3 step 7d: Claude's card with the chat closed — the screen's right, above the status line)
     Scene { name: "asks-closed", claude: "card", files: MAIN, keys: ASKS_CLOSED },
     // (…and with the chat open — `space l` brings it back from following: over its foot, the transcript above it)
@@ -5392,6 +5446,7 @@ fn video_title(scene: &str) -> &'static str {
         "waits-60s" => "A card never covers what you opened",
         "main-moved" => "When main moves, every workspace hears",
         "edit-in-buffer" => "Claude's edit, in your buffer",
+        "follow-replay" => "Watch it work: follow and replay",
         _ => "",
     }
 }
@@ -5527,6 +5582,8 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
     let llm = match script {
         "six" | "sixend" => "review-at-end = true\nfollow = false\n",
         "sixfollow" => "review-at-end = true\nfollow = true\n",
+        // (V4's: the edits land unseen, so the turn runs through to its replay)
+        "v4" => "review-at-end = true\n",
         _ => "",
     };
     format!(
@@ -5872,6 +5929,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         ],
         // (#157: as many lines as the followed pane's rows less one, each wide enough to reach under the card)
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
+        "follow-replay" => vec![("src/spool.rs", SPOOL_RS.into())],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
         "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
         // (the flow plan's piece 1 on A1c's answer too — its two on A1's answers have MAIN's files alone)
@@ -5911,6 +5969,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "full",
     "three",
     "v3",
+    "v4",
     "two",
     "six",
     "sixfollow",
@@ -6053,6 +6112,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "three" => turn.explain(true, true)?,
             // (V3's video: two reads the view follows, then three changes written at a stream's pace)
             "v3" => turn.edit_in_buffer()?,
+            // (V4's video: three reads far apart, a pause to take the view back, two edits under review at the end)
+            "v4" => turn.follow_replay()?,
             // (two changes: the press's sheet — the first answered, the second in hand)
             "two" => turn.explain_items(2)?,
             // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
@@ -6638,8 +6699,19 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "    threads.insert(first.name.clone(), first);\n",
             "    threads.entry(first.name.clone()).or_insert(first);\n",
         );
-        let input = format!(r#"{{"edits": [{doc}, {typed}, {insert}]}}"#);
-        let block = json!({"type": "tool_use", "id": "t3", "name": "mcp__tarae__edit", "input": {}});
+        self.edit_streamed(3, &format!(r#"{{"edits": [{doc}, {typed}, {insert}]}}"#))?;
+        // (the review closes on its last answer: the three stamps stay in sight on the follow card's edit row)
+        std::thread::sleep(Duration::from_millis(2500));
+        self.words("Done — **main.rs** keeps the first strand when a name repeats.")?;
+        self.words("Nothing else reads the map, so no other change is needed.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The turn's `n`th call, an `edit` whose `input` (its JSON) streams in 8 characters every 50 ms — a measured
+    /// stream's pace is about 13 a 50 ms (`shimmer`); slower, so a video reads it — then is called.
+    fn edit_streamed(&mut self, n: u64, input: &str) -> io::Result<()> {
+        let block =
+            json!({"type": "tool_use", "id": format!("t{n}"), "name": "mcp__tarae__edit", "input": {}});
         self.line(json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": block}}))?;
         for piece in input.chars().collect::<Vec<_>>().chunks(8) {
             let delta = json!({"type": "input_json_delta", "partial_json": piece.iter().collect::<String>()});
@@ -6647,11 +6719,49 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             std::thread::sleep(Duration::from_millis(50));
         }
         self.line(json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 1}}))?;
-        self.call(3, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
-        // (the review closes on its last answer: the three stamps stay in sight on the follow card's edit row)
+        self.call(n, "edit", serde_json::from_str(input).map_err(io::Error::other)?)
+    }
+
+    /// V4's turn, on `spool.rs` (review at the end on: its edits land unseen and the turn goes on): three reads far
+    /// apart, the view following each — the second held 7 s, room for a key of yours to take the view back and `space
+    /// F` to follow again before the third — then two edits streamed in at lines 32 and 75, and an answer naming line
+    /// 32 (its card at the turn's end).
+    fn follow_replay(&mut self) -> io::Result<()> {
+        let item = |old: &str, new: &str| {
+            let s = |t: &str| Value::from(t).to_string();
+            format!(
+                r#"{{"edits": [{{"file_path": "src/spool.rs", "old_string": {}, "new_string": {}}}]}}"#,
+                s(old),
+                s(new)
+            )
+        };
+        self.words("First what the doc comment promises.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/spool.rs:3-7"]}))?;
         std::thread::sleep(Duration::from_millis(2500));
-        self.words("Done — **main.rs** keeps the first strand when a name repeats.")?;
-        self.words("Nothing else reads the map, so no other change is needed.")?;
+        self.words("The queue's order. Now the loop that winds.")?;
+        self.text("\n\n")?;
+        self.call(2, "read", json!({"files": ["src/spool.rs:30-52"]}))?;
+        std::thread::sleep(Duration::from_millis(7000));
+        self.words("It pops from the back: the newest strand goes first. And at the end:")?;
+        self.text("\n\n")?;
+        self.call(3, "read", json!({"files": ["src/spool.rs:75-84"]}))?;
+        std::thread::sleep(Duration::from_millis(2500));
+        self.words("A sort hides it. I will pop from the front and drop the sort.")?;
+        self.text("\n\n")?;
+        let pop = item(
+            "        while let Some(mut s) = self.queue.pop_back() {\n",
+            "        while let Some(mut s) = self.queue.pop_front() {\n",
+        );
+        self.edit_streamed(4, &pop)?;
+        std::thread::sleep(Duration::from_millis(2000));
+        let sort = item(
+            "        // What came first is wound first, or so the doc comment says.\n        // The last strand popped is the first that came, and each\n        // retied strand goes to the back of the queue, so the order\n        // here is the queue's reversed, with the slipped ones last.\n        // Sorting by length makes it stable at least: the same\n        // strands give the same spool, whatever the queue's order was.\n        self.wound.sort_by_key(measure);\n",
+            "        // What came first is wound first, as the doc comment says:\n        // the queue is popped from its front, so no sort is needed.\n",
+        );
+        self.edit_streamed(5, &sort)?;
+        std::thread::sleep(Duration::from_millis(2000));
+        self.words("Done — **src/spool.rs:32** winds from the front now, so `wound` keeps the queue's order with no sort.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
