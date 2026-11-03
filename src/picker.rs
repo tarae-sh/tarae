@@ -1248,6 +1248,8 @@ pub enum Preview {
     /// What it read, as a document the drawer reads (`Document::previewed`).
     Ready(Box<crate::document::Document>),
     Unavailable(&'static str),
+    /// Not text (`document::binary`): its size, said as a row says it — `binary · 412 B` (#326).
+    Binary(u64),
 }
 
 impl Action {
@@ -1337,14 +1339,15 @@ pub fn load_preview(path: &Path) -> Preview {
         return ready(text, syntax);
     }
     let Ok(bytes) = std::fs::read(path) else { return Preview::Unavailable("can't read") };
-    if bytes[..bytes.len().min(8192)].contains(&0) {
-        return Preview::Unavailable("binary file");
-    }
     let mut end = bytes.len().min(PREVIEW_BYTES);
     while end < bytes.len() && (bytes[end] & 0xC0) == 0x80 {
         end -= 1; // don't cut mid-char
     }
-    let Ok(s) = std::str::from_utf8(&bytes[..end]) else { return Preview::Unavailable("not UTF-8") };
+    // (the part shown: what opening it would read whole — `document::read_file`)
+    if crate::document::binary(&bytes[..end]) {
+        return Preview::Binary(bytes.len() as u64);
+    }
+    let s = std::str::from_utf8(&bytes[..end]).expect("checked: `binary` says UTF-8");
     let text = Rope::from_str(s);
     let syntax = syntax::detect(path)
         .and_then(|spec| syntax::Loader::global().load(spec).ok())

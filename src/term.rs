@@ -5660,8 +5660,9 @@ fn draw(
     for (_, f) in editor.screen.floating.borrow().iter() {
         drew(editor, Kind::Float, Some((f.x, f.y, f.w, f.h)));
     }
-    // The chat floating: over them, under the cards
-    if lay.chat_frame.is_some() {
+    // The chat floating: over them, under the cards — not under a picker it opened (`C-t`, `C-p`, `/model`): the ask
+    // line is a prompt, drawn only while it has the keys, and the picker has them (#330: its ends showed past it)
+    if lay.chat_frame.is_some() && editor.picker.is_none() {
         chat_cursor = chat(out)?;
         hand_under(out)?;
     }
@@ -7859,7 +7860,7 @@ fn draw_text(
                 cut_end(used, 2, &body, Style { fg, italic: true, ..line_base });
             }
         }
-        // A session's name tag where it is now: `‹main writing›` — the accent for the one you follow, dim for the others;
+        // A session's name tag where it is now: `‹main ●›` — the accent for the one you follow, dim for the others;
         // only where the line end is free, folded to its name, then gone, when narrow. A click follows it
         // (shown only while it says something new — `presence::tag_shows`: else only its bar and caret stay)
         let tag_here =
@@ -7898,7 +7899,7 @@ fn draw_text(
                     at + tag.width(),
                     crate::workspace::Spot::Follow(m.session),
                 ));
-                // (folded to its name: `‹main writing›` whole under the mouse — `whole::cut_at`)
+                // (folded to its name: `‹main ●›` whole under the mouse — `whole::cut_at`)
                 let whole = m.tag(usize::MAX).unwrap_or_default();
                 let style = Style { fg, bold: m.followed, ..line_base };
                 let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
@@ -10508,6 +10509,10 @@ fn preview_lines<'a>(
             match p.previews.get(&action.preview_key()?)? {
                 crate::picker::Preview::Loading => return Some(PreviewView::Note("loading…".into())),
                 crate::picker::Preview::Unavailable(why) => return Some(PreviewView::Note(why.to_string())),
+                crate::picker::Preview::Binary(size) => {
+                    let said = format!("binary · {}", crate::apply::size(*size));
+                    return Some(PreviewView::Note(said));
+                }
                 crate::picker::Preview::Ready(d) => (&**d, focus),
             }
         }
@@ -11156,7 +11161,7 @@ fn code_line(
         for (k, i) in buffers.into_iter().enumerate() {
             let (d, current) = (&editor.docs[i], i == editor.current);
             let mark = if d.is_modified() { " ●" } else { "" };
-            let keep = if current { 90 } else { (10 + k).min(89) as u8 };
+            let keep = if current { FRONT_BUFFER } else { (10 + k).min(FRONT_BUFFER as usize - 1) as u8 };
             buffer_of.push((keep, d.id));
             let style = named(if current { strong } else { dim }, d);
             right.push(Seg { cut: None, text: format!("{}{mark}", d.display_name_short()), style, keep });
@@ -11166,7 +11171,15 @@ fn code_line(
     }
     // (the line's own cells: its lead `─ `, a blank and a `─` after the path — with the buffers, a blank and a `─` after
     // them too; `fit_segments` keeps two cells between the two)
+    let unfitted = left.clone();
     fit_segments(&mut left, &mut right, width.saturating_sub(TOP_LINE_OWN + 1));
+    // (the buffers folded to the one in front: its name said twice, the path's and the list's — #332, a woven view's
+    // `woven · src/main.rs` both ends of the line. A list of one says nothing: gone, the path fitted to the room it leaves)
+    if !right.is_empty() && right.iter().filter(|s| !s.text.trim().is_empty()).all(|s| s.keep == FRONT_BUFFER)
+    {
+        (left, right) = (unfitted, Vec::new());
+        fit_segments(&mut left, &mut right, width.saturating_sub(TOP_LINE_OWN + 1));
+    }
     parts_whole(&mut left, &scope);
     // (a blank spacer left at an end of either side: the line's own blanks take its place)
     for side in [&mut left, &mut right] {
@@ -11289,8 +11302,13 @@ fn parts_whole(left: &mut Vec<Seg>, scope: &[(u8, usize)]) {
     }
 }
 
+/// The path bar's `keep` of the buffer in front among the buffers' names (`code_line`): the others' below it, folded
+/// first.
+const FRONT_BUFFER: u8 = 90;
+
 /// A statusline segment. Lowest `keep` is dropped first (when width runs short). `cut`: what its text was cut from
 /// (`whole::Fit`), recorded where it's printed.
+#[derive(Clone)]
 struct Seg {
     cut: Option<crate::whole::Of>,
     text: String,
@@ -30645,6 +30663,41 @@ mod tests {
     /// `editor.soft-wrap`; a card's whole text (`v`, a script read before its run) wraps whatever the setting
     /// says; and Claude's edit under review wraps its long lines — the one view of a buffer that cut them off
     /// at the edge.
+    #[test]
+    fn the_path_bar_never_lists_the_buffer_in_front_alone() {
+        let row0 = |ed: &mut Editor, w: u16| -> String {
+            let mut out = Vec::new();
+            render(ed, &mut out, w, 24).unwrap();
+            let mut vt = vt100::Parser::new(24, w, 0);
+            vt.process(&out);
+            vt.screen().rows(0, w).next().unwrap_or_default()
+        };
+        let dir = crate::scratch::Scratch::new("front-buffer-alone");
+        for f in ["other_buffer.rs", "in_front.rs"] {
+            std::fs::write(dir.path().join(f), "fn main() {}\n").unwrap();
+        }
+        let mut ed = Editor::new(Config::default());
+        ed.workspace.root = dir.path().to_path_buf();
+        ed.open(&dir.path().join("other_buffer.rs")).unwrap();
+        ed.open(&dir.path().join("in_front.rs")).unwrap();
+        let (mut listed, mut alone) = (false, false);
+        for w in 40..=160 {
+            let row = row0(&mut ed, w);
+            let named = row.matches("in_front.rs").count();
+            let other = row.contains("other_buffer.rs");
+            // (#332: folded to the one in front, the list goes — never the path's name said again at the line's end)
+            assert!(named < 2 || other, "{w} columns: {row:?}");
+            listed |= named == 2 && other;
+            alone |= named == 1 && !other;
+        }
+        assert!(
+            listed && alone,
+            "wide: the list, both names; narrower: the path alone — {:?} / {:?}",
+            row0(&mut ed, 160),
+            row0(&mut ed, 60)
+        );
+    }
+
     #[test]
     fn soft_wrap_is_the_buffers_and_the_review_wraps() {
         let shown = |ed: &mut Editor| -> String {

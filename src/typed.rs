@@ -34,7 +34,8 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             };
             editor.split_view(dir);
             if !rest.is_empty() {
-                editor.open(std::path::Path::new(rest)).map_err(|e| format!("{e:#}"))?;
+                let r = editor.open(std::path::Path::new(rest));
+                opened(editor, r)?;
             }
             Ok(())
         }
@@ -99,11 +100,11 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             }
             for p in paths {
                 let path = typed_path(editor, &p);
-                match at_line(&path, |p| p.exists()) {
+                let r = match at_line(&path, |p| p.exists()) {
                     Some((path, line, col)) => editor.open_at(&path, line, col),
                     None => editor.open(&path),
-                }
-                .map_err(|e| format!("{e:#}"))?;
+                };
+                opened(editor, r)?;
             }
             Ok(())
         }
@@ -740,6 +741,18 @@ fn run_shell(cmd: &str, dir: &std::path::Path) -> Result<Option<String>, String>
         Ok(first)
     } else {
         Err(first.unwrap_or_else(|| format!("command failed: {}", out.status)))
+    }
+}
+
+/// A typed open's outcome: a file that isn't text said as its row would say it, not an error (#326,
+/// `Editor::open_failed`) — the rest of the paths still opened.
+fn opened(editor: &mut Editor, r: anyhow::Result<()>) -> Result<(), String> {
+    match r {
+        Err(e) if e.downcast_ref::<crate::document::NotText>().is_some() => {
+            editor.open_failed(e);
+            Ok(())
+        }
+        r => r.map_err(|e| format!("{e:#}")),
     }
 }
 

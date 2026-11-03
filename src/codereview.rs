@@ -2140,6 +2140,9 @@ fn changed(root: &Path, base: &Base) -> Result<Vec<File>, String> {
         .map(|(added, removed, rel, binary)| {
             let path = root.join(&rel);
             let gone = !path.exists();
+            // (git's text has no NUL; a buffer's is UTF-8 too — a file that isn't is a binary row, never a buffer that
+            // can't be read: #326)
+            let binary = binary || (!gone && std::fs::read(&path).is_ok_and(|b| crate::document::binary(&b)));
             File { new: false, gone, binary, added, removed, rel, path }
         })
         .collect();
@@ -2158,7 +2161,7 @@ fn changed(root: &Path, base: &Base) -> Result<Vec<File>, String> {
     {
         let path = root.join(rel);
         let text = std::fs::read(&path).unwrap_or_default();
-        let binary = text.contains(&0);
+        let binary = crate::document::binary(&text);
         let added = if binary { 0 } else { text.iter().filter(|&&b| b == b'\n').count() };
         files.push(File { rel: rel.to_string(), path, added, removed: 0, new: true, gone: false, binary });
     }
@@ -4359,7 +4362,7 @@ fn show_at(ed: &mut Editor, i: usize, at: Land) -> Option<DocId> {
         // (one not open yet: no grammar or server offered for it while the review reads it — R7; in the session's
         // preview slot, the next file shown taking its place — `enter` on its row keeps it)
         if let Err(e) = ed.open_preview(&f.path) {
-            ed.set_error(format!("{e:#}"));
+            ed.open_failed(e);
             return None;
         }
         ed.doc().id

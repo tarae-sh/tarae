@@ -4841,6 +4841,38 @@ mod tests {
         }
     }
 
+    /// #330: a picker the ask line opens (`C-t`'s models) has the keys — the ask line, a prompt, isn't drawn under it
+    /// (its ends showed past the small card); the picker gone, it's back with its draft.
+    #[test]
+    fn a_picker_from_the_ask_line_stands_alone() {
+        let mut ed = crate::uistate::tests::editor();
+        crate::uistate::tests::chat(&mut ed, "a draft");
+        let keys = |ed: &mut Editor, k: &str| {
+            for w in k.split(' ') {
+                ed.handle_key(w.parse::<Key>().unwrap_or_else(|_| panic!("a key: {w}")));
+            }
+            crate::uistate::tests::frame(ed);
+        };
+        // (the column hidden, then asked from the code — as `the_conversation_is_the_docked_column_c_w_e_says_so`)
+        keys(&mut ed, "esc esc space L space l");
+        assert!(ed.chat_asking(), "the ask line");
+        // (its input drawn, and its frame's bottom line on screen)
+        let drawn = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 120, 30).unwrap();
+            let text = crate::screen::text(&bytes, 120, 30).unwrap();
+            (ed.screen.chat_input.get().is_some(), text.contains("enter send"))
+        };
+        assert_eq!(drawn(&mut ed), (true, true), "the ask line drawn");
+        keys(&mut ed, "C-t");
+        assert!(ed.picker.as_ref().is_some_and(|p| p.kind == "model"), "the models' picker");
+        assert_eq!(drawn(&mut ed), (false, false), "no ask line under the picker");
+        keys(&mut ed, "esc");
+        assert!(ed.picker.is_none() && ed.chat_asking(), "back");
+        assert_eq!(drawn(&mut ed), (true, true), "drawn again");
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input.text(), "a draft");
+    }
+
     /// The flow plan's piece 2, the ask line: `space l` opens the chat's input alone in a floating card, the reader's
     /// columns, its top at the floating panes' place — never over the lines it carries: stepped off the cursor's line, then
     /// off a selection's; its top line says what goes (the file and line; the selection's lines and how many, `C-x` taking

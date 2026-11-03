@@ -740,7 +740,7 @@ impl Editor {
             return;
         }
         if let Err(e) = self.open_preview(&path) {
-            return self.set_error(format!("{e:#}"));
+            return self.open_failed(e);
         }
         let id = self.doc().id;
         if let Some(s) = self.workspace.viewer.sidebar.as_mut() {

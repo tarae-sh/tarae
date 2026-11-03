@@ -9,7 +9,7 @@
 //! for a file and a buffer, the last one used meanwhile — and whether the two checkouts are of one repository is
 //! asked there too (`worktree::common_dir`, git's own answer, kept).
 //!
-//! Drawn (`term::draw_text`): a `▎` in a code pane's sign column on its lines (under a diagnostic) and a name tag at its first line's end (`‹main writing›`) only while it says something new
+//! Drawn (`term::draw_text`): a `▎` in a code pane's sign column on its lines (under a diagnostic) and a name tag at its first line's end (`‹main ●›`) only while it says something new
 //! (`tag_shows`) — in the session's own participant colour (`ui.participant.N`, the user 2026-10-22), at full strength
 //! for the one you follow, dim for the others, the name beside it (never the colour alone); a click on the tag or the
 //! bar follows it (`follow::follow_session`). The session list says where each is (`at`), the strip its file, the side
@@ -36,11 +36,20 @@ pub enum Act {
 }
 
 impl Act {
+    /// As the session list and the side panel's foot say it. An edit being written and one its turn wrote are one act,
+    /// one word (#334: `writing` and `editing` named one Claude's place two ways).
     pub fn word(self) -> &'static str {
         match self {
             Act::Reading => "reading",
-            Act::Editing => "editing",
-            Act::Writing => "writing",
+            Act::Editing | Act::Writing => "editing",
+        }
+    }
+
+    /// Its mark on a name tag, in the vocabulary of marks (the strip's, the turn map's): `◦` read · `●` edit.
+    pub fn mark(self) -> &'static str {
+        match self {
+            Act::Reading => "◦",
+            Act::Editing | Act::Writing => "●",
         }
     }
 }
@@ -670,10 +679,10 @@ pub struct Mark {
 }
 
 impl Mark {
-    /// Its name tag, as wide as `room` allows: `‹main writing›`, else `‹main›`, else none.
+    /// Its name tag, as wide as `room` allows: `‹main ●›`, else `‹main›`, else none.
     pub fn tag(&self, room: usize) -> Option<String> {
         use unicode_width::UnicodeWidthStr;
-        [format!("‹{} {}›", self.name, self.act.word()), format!("‹{}›", self.name)]
+        [format!("‹{} {}›", self.name, self.act.mark()), format!("‹{}›", self.name)]
             .into_iter()
             .find(|t| t.width() <= room)
     }
@@ -750,7 +759,7 @@ pub fn colour_of(ed: &Editor, doc: &Document) -> (u8, bool) {
     (owner.claude.colour, followed(ed) == Some(owner.id))
 }
 
-/// Where session `id` is now, as the list says it: `src/term.rs:3614 · writing` (its path from its checkout).
+/// Where session `id` is now, as the list says it: `src/term.rs:3614 · editing` (its path from its checkout).
 pub fn at(ed: &Editor, id: WorkspaceId) -> Option<String> {
     let p = ed.presence.now.iter().find(|p| p.session == id && p.here && live(ed, p))?;
     let rel = p.path.strip_prefix(&p.root).unwrap_or(&p.path).display().to_string();

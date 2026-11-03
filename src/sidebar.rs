@@ -1036,7 +1036,7 @@ impl Editor {
             Target::File(p) => {
                 self.workspace.leave(At::Side);
                 if let Err(e) = self.open(&p) {
-                    self.set_error(format!("{e:#}"));
+                    self.open_failed(e);
                 }
             }
             Target::Item(i) => {
@@ -1056,7 +1056,7 @@ impl Editor {
                 }
                 s.expanded.insert(rel);
                 if let Err(e) = self.open(&path) {
-                    self.set_error(format!("{e:#}"));
+                    self.open_failed(e);
                 }
             }
             Target::Change { rel, file: true, .. } => {
@@ -1067,7 +1067,7 @@ impl Editor {
                 }
                 self.workspace.leave(At::Side);
                 if let Err(e) = self.open(&path) {
-                    self.set_error(format!("{e:#}"));
+                    self.open_failed(e);
                 }
             }
             // A hunk or conflict: there in the code, which gets the keys
@@ -1204,7 +1204,7 @@ fn git_key(ed: &mut Editor, key: Key, at: Option<Line>) -> bool {
                 return true;
             }
             if let Err(e) = ed.open(&path) {
-                ed.set_error(format!("{e:#}"));
+                ed.open_failed(e);
                 return true;
             }
             ed.workspace.leave(At::Side);

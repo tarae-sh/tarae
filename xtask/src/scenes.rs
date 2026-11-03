@@ -2682,10 +2682,10 @@ const FOLLOW_REPLAY: &[&str] = &[
 /// On V2's file (`MAIN_MOVED_RS`: lines short enough for a line and its tag to read on a phone). Off camera, fix and
 /// docs opened beside main and each asked: docs explains `thread.rs` slowly, fix's edit of `wind`'s key (line 30) held
 /// mid-line until main's own edit is on main's disk. On camera, the floating list (three at work); main's view at
-/// `wind`, fix's mark and `‹fix writing›` there; main asked, its edit of `m.insert` (line 31) written and landing
+/// `wind`, fix's mark and `‹fix ●›` there; main asked, its edit of `m.insert` (line 31) written and landing
 /// unseen (review at the end), so fix's lands too —
 /// the same line two ways, and C2's `would conflict` once the trees are still; `:weave`, the conflict (side by side,
-/// stacked at 80); a press on fix's part and `enter`: fix's workspace at that line, main's `‹main editing›` on it. The
+/// stacked at 80); a press on fix's part and `enter`: fix's workspace at that line, main's `‹main ●›` on it. The
 /// Claudes go on talking after their edits (`v1_talk`): no turn ends on camera — a turn's end opens its review, its
 /// answer's card and its toasts over the beats. Its Short opens on the woven conflict (`@punch`); the tags are its
 /// zooms' targets (a line and its tag are wider than a phone reads).
@@ -2752,7 +2752,7 @@ const THREE_CLAUDES: &[&str] = &[
     "@1",
     "\r",
     // (a Short: `wind` as main writes in it, both tags there)
-    "@10?main writing",
+    "@10?‹main ●›",
     "@sound:writing",
     "@zoom:code:29-32",
     "@20?or_insert",
@@ -8396,7 +8396,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
-    /// Homepage hero (`fix` checkout): holds its `input_json_delta` on `src/main.rs` line 12 (`‹fix writing›` in
+    /// Homepage hero (`fix` checkout): holds its `input_json_delta` on `src/main.rs` line 12 (`‹fix ●›` in
     /// blue) while `main` writes line 10, then writes its own change on lines 10 and 12 once `main`'s edit lands,
     /// so `overlap.rs` reports `main ≈ fix · src/main.rs L10 — would conflict`.
     fn home_fix(&mut self) -> io::Result<()> {

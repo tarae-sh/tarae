@@ -1877,6 +1877,18 @@ impl Editor {
         self.open_as(path, Opener::You)
     }
 
+    /// What `open` couldn't open, said: a file that isn't text (`NotText`) as its row would say it —
+    /// `name: binary · 412 B` —, nothing failed (#326); anything else the error it is.
+    pub fn open_failed(&mut self, e: anyhow::Error) {
+        match e.downcast_ref::<crate::document::NotText>() {
+            Some(n) => {
+                let said = format!("{}: {}, not opened as text", self.shown(&n.path).display(), n.said());
+                self.set_status(said)
+            }
+            None => self.set_error(format!("{e:#}")),
+        }
+    }
+
     /// `open` for Claude's turn (follow, replay): a file not open yet is `claudes_only` — no grammar or
     /// server offered for it until the user takes it up (#208).
     pub fn open_for_claude(&mut self, path: &Path) -> Result<()> {
@@ -2057,7 +2069,7 @@ impl Editor {
             }
             Err(e) => {
                 self.close_doc(id);
-                self.set_error(format!("{e:#}"));
+                self.open_failed(e);
             }
         }
     }
@@ -5181,7 +5193,7 @@ impl Editor {
 
     pub(crate) fn run_picker_action(&mut self, action: Action) {
         if let Err(e) = self.picker_action(action) {
-            self.set_error(format!("{e:#}"));
+            self.open_failed(e);
         }
     }
 
@@ -6001,7 +6013,7 @@ impl Editor {
             && let Some(path) = self.recent.get(d as usize - 1).cloned()
         {
             if let Err(e) = self.open(&path) {
-                self.set_error(format!("{e:#}"));
+                self.open_failed(e);
             }
             return;
         }
@@ -17468,6 +17480,41 @@ mod tests {
         }
         assert!(ed.toasts.iter().any(|t| t.step == Some("review-binary")), "the click reached the row: read");
         assert!(on(&ed, "c.txt") && ed.doc().preview, "a double-click on the binary row keeps nothing");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #326: a fuzz seed git calls text (no NUL) that isn't UTF-8 — walking the rail over it raised an error toast
+    /// (`stream contained invalid UTF-8`). It's a binary row, its buffer the binary's; `:open` and the file
+    /// picker's preview say `binary · 8 B` alike, never an error and never a buffer of its text.
+    #[test]
+    fn a_file_that_isnt_utf8_is_a_binary_row_never_an_error() {
+        let dir = git_repo("not-utf8", &[("a.txt", "a\n"), ("seed", "s\n")]);
+        std::fs::write(dir.join("a.txt"), "A\n").unwrap();
+        std::fs::write(dir.join("seed"), b"\xff\xfehost\x80\n").unwrap();
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        ed.git_auto = true;
+        crate::codereview::start_in(&mut ed, dir.clone(), None);
+        settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ed.doc().own_base());
+        let r = ed.workspace.code_review.as_ref().unwrap();
+        assert!(r.files.iter().any(|f| f.rel == "seed" && f.binary), "git's text, not UTF-8: a binary row");
+        crate::codereview::rail_focus(&mut ed);
+        feed_events(&mut ed, "j");
+        settle_until(&mut ed, |ed| ed.doc().title.as_deref() == Some("seed · binary"));
+        let errors = |ed: &Editor| ed.messages.iter().filter(|m| m.1 == ToastKind::Error).count();
+        assert_eq!(errors(&ed), 0, "the rail's walk says nothing failed");
+        // `:open` says it as the row does, a buffer of its text never made
+        let seed = dir.join("seed");
+        feed(&mut ed, &format!(":o {}<ret>", seed.display()));
+        assert!(!ed.docs.iter().any(|d| d.path.as_deref() == Some(seed.as_path())), "no buffer of its text");
+        assert_eq!(errors(&ed), 0, "`:open` says nothing failed");
+        let t = ed.toasts.last().expect("said");
+        assert!(
+            t.kind == ToastKind::Info && t.text.ends_with("seed: binary · 8 B, not opened as text"),
+            "{t:?}"
+        );
+        // the file picker's preview
+        assert!(matches!(crate::picker::load_preview(&seed), crate::picker::Preview::Binary(8)));
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -718,7 +718,8 @@ across a restart.
 **Several sessions: where each is, and following one.** With more than one session open, every session's Claude
 shows where it is in its turn — the lines it reads, the edit it's writing, the lines its edits changed — wherever
 that file is shown, in any checkout of the repository: a `▎` in the code's sign column on those lines and a name
-tag at the end of the first (`‹fix writing›`; two on one line, each its tag) — the tag only while it says something
+tag at the end of the first, its act as a mark (`‹fix ●›` an edit, being written or written this turn; `‹fix ◦›` a read;
+two on one line, each its tag) — the tag only while it says something
 new: while that Claude writes there and three seconds after, while your cursor is on its line, or while the mouse is
 over its mark; then it fades out in a tenth of a second, and the bar and the caret stay. A file at the same path in another
 checkout is the same file, its lines mapped through a line diff of the two texts, so the marks land on the same code
@@ -728,7 +729,7 @@ and its name wherever it's listed — the session list, the strip over the chat,
 closed — in its colour at full strength, whatever it's doing, what it does said after it: what needs you in the
 warning colour (`▲ waits`, `▲ waits for you` in the list, `◦ stuck? …`), `done` in the accent, the calm states
 (`working`, `queued 2nd`) faint. In the code, the session you follow is at full strength and the others dim; the accent stays where the keys are, and the name is always beside
-the colour. The session list says where each is (`src/term.rs:3614 · writing`), the sessions' strip over
+the colour. The session list says where each is (`src/term.rs:3614 · editing`), the sessions' strip over
 the chat its file, and the side panel's files and git tabs each session's initial after a file it's in, bold in its colour (`main.rs   m f`;
 `ma`/`me` where two names start alike; past three, `+2`), the row in hand saying it in words at the panel's foot
 (`main.rs — main writing`). A session's

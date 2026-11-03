@@ -1222,7 +1222,7 @@ pub struct Shown {
     /// Marked to bring (`bring 2nd`), or where it is in the bring queue going (`bring queue · preflight`) —
     /// `bringqueue.rs`.
     pub queue: Option<String>,
-    /// Where its Claude is in its turn: `src/term.rs:3614 · writing` (`presence::at`) — empty between turns.
+    /// Where its Claude is in its turn: `src/term.rs:3614 · editing` (`presence::at`) — empty between turns.
     pub at: String,
     /// Its participant colour (`Session.colour`): its name on its row, always.
     pub colour: u8,

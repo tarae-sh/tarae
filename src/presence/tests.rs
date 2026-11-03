@@ -163,9 +163,9 @@ fn presence_maps_lines_across_checkouts() {
     let p = frame(&mut ed, 100);
     let r = rows(&p);
     let (a, b, c) = (row_of(&r, "let a = 1;"), row_of(&r, "let b = 2;"), row_of(&r, "let c = 3;"));
-    assert!(r[a].trim_end().ends_with("let a = 1;   ‹main reading›"), "{}", r[a]);
+    assert!(r[a].trim_end().ends_with("let a = 1;   ‹main ◦›"), "{}", r[a]);
     assert!(!r[b].contains('‹'), "the tag on its first line only: {}", r[b]);
-    // (its two forms: whole, nothing cut to show; folded to its name where the line end is short, `‹main reading›`
+    // (its two forms: whole, nothing cut to show; folded to its name where the line end is short, `‹main ◦›`
     // whole under the mouse — `whole::cut_at`)
     let cut_tag = |ed: &Editor| {
         let spots = ed.screen.cut_spots.borrow();
@@ -181,7 +181,7 @@ fn presence_maps_lines_across_checkouts() {
     });
     let r = folded.expect("a width that folds it to its name");
     let (y, from, to, whole) = cut_tag(&ed).expect("folded: recorded");
-    assert_eq!(whole, "‹main reading›", "the whole is the full tag");
+    assert_eq!(whole, "‹main ◦›", "the whole is the full tag");
     let shown: String = r[y].chars().skip(from).take(to - from).collect();
     assert_eq!(shown, "‹main›", "the cut one the folded tag, where it's drawn");
     // (each session its own colour, for its life — main's not fix's)
@@ -302,7 +302,7 @@ fn space_f_follows_the_next_session_at_work() {
     let status = r.last().unwrap();
     assert!(status.contains("● follow   main"), "the word alone, whom the chip: {status}");
     let b = row_of(&r, "let b = 2;");
-    assert!(r[b].trim_end().ends_with("‹main reading›"), "{}", r[b]);
+    assert!(r[b].trim_end().ends_with("‹main ◦›"), "{}", r[b]);
     assert_eq!(
         sign(&p, b),
         ("▎".to_string(), colour_of(&ed, WorkspaceId::HOME)),
@@ -346,7 +346,7 @@ fn two_sessions_on_one_line_each_its_colour() {
     let p = frame(&mut ed, 120);
     let r = rows(&p);
     let y = row_of(&r, "let a = 1;");
-    assert!(r[y].trim_end().ends_with("‹fix reading› ‹main reading›"), "{}", r[y]);
+    assert!(r[y].trim_end().ends_with("‹fix ◦› ‹main ◦›"), "{}", r[y]);
     let fg_at = |needle: &str| {
         let x = r[y][..r[y].find(needle).unwrap()].chars().count() + 1;
         p.screen().cell(y as u16, x as u16).unwrap().fgcolor()
@@ -507,7 +507,7 @@ fn a_click_on_the_tag_or_f_in_the_list_follows() {
     settle(&mut ed, |ed| !main_marks(ed).is_empty());
     just_wrote(&mut ed, main.join("a.rs"));
     let r = rows(&frame(&mut ed, 100));
-    let y = row_of(&r, "‹main reading›");
+    let y = row_of(&r, "‹main ◦›");
     let x = r[y][..r[y].find('‹').unwrap()].chars().count() + 3;
     ed.handle_mouse(Mouse { kind: MouseKind::Down, x: x as u16, y: y as u16, alt: false, ctrl: false });
     let home = crate::event::WorkspaceId::HOME;
@@ -696,4 +696,28 @@ fn a_line_map_follows_the_lines_kept() {
     assert_eq!(m.range(3..5), 5..7);
     // (past the end: the last line, never empty)
     assert_eq!(m.range(9..12), 6..7);
+}
+
+/// #334: one Claude's place said one way — an edit being written (`‹main writing›` was its tag) and one its turn wrote
+/// (`‹main editing›`) are one act: `●`, the vocabulary of marks' edit, on the tag, `editing` in the list; a read `◦`.
+#[test]
+fn an_edit_being_written_and_one_written_are_one_mark() {
+    let tag = |act: Act, room: usize| {
+        let m = Mark {
+            lines: 0..1,
+            session: WorkspaceId::HOME,
+            name: "main".into(),
+            act,
+            colour: 1,
+            followed: false,
+            here: true,
+            tag: 100,
+        };
+        m.tag(room)
+    };
+    for act in [Act::Writing, Act::Editing] {
+        assert_eq!((tag(act, 80).as_deref(), act.word()), (Some("‹main ●›"), "editing"), "{act:?}");
+    }
+    assert_eq!((tag(Act::Reading, 80).as_deref(), Act::Reading.word()), (Some("‹main ◦›"), "reading"));
+    assert_eq!(tag(Act::Writing, 7).as_deref(), Some("‹main›"), "folded to its name");
 }

@@ -1119,7 +1119,7 @@ pub struct SessionState {
     /// The edits its Claude is writing as their input streams (`writing.rs`) — drawn in their buffers, nothing
     /// applied or decided. Claude's level: its own session's only.
     pub writing: Vec<WritingState>,
-    /// Where its Claude is in its turn, as the session list says it (`presence::at`: `src/a.rs:12 · writing`) —
+    /// Where its Claude is in its turn, as the session list says it (`presence::at`: `src/a.rs:12 · editing`) —
     /// None: between turns, or one session open. Claude's level never (collab C1: nothing of it reaches Claude).
     pub at: Option<String>,
     /// What its Claude is doing now, as the status line says it (`now::state`: `step`, `waits`, `since_ms`, `said`,

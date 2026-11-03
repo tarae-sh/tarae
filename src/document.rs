@@ -240,12 +240,59 @@ pub const PROMPT_INPUT: DocId = DocId::MAX - 2;
 /// The id of a picker's query (`Picker.input`) — the prompt's line's kind, in a picker.
 pub const PICKER_INPUT: DocId = DocId::MAX - 3;
 
-/// File → rope. A missing file gives an empty rope (created on save).
+/// How far in a NUL makes a file binary — git's own rule (`buffer_is_binary`'s first 8000 bytes).
+pub const TEXT_HEAD: usize = 8000;
+
+/// Bytes that aren't text: a NUL in the first `TEXT_HEAD`, or not UTF-8 — never opened as a buffer's text (#326).
+/// `bytes` whole: a prefix may end inside a character.
+pub fn binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(TEXT_HEAD)].contains(&0) || std::str::from_utf8(bytes).is_err()
+}
+
+/// A file that isn't text (`binary`), refused as a buffer: its path and size — said as a row says it
+/// (`binary · 412 B`), never an error (`Editor::open_failed`).
+#[derive(Debug)]
+pub struct NotText {
+    pub path: std::path::PathBuf,
+    pub size: u64,
+}
+
+impl NotText {
+    /// `binary · 412 B`.
+    pub fn said(&self) -> String {
+        format!("binary · {}", crate::apply::size(self.size))
+    }
+}
+
+impl std::fmt::Display for NotText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}, not text", self.path.display(), self.said())
+    }
+}
+
+impl std::error::Error for NotText {}
+
+/// File → rope. A missing file gives an empty rope (created on save); one that isn't text is `NotText`.
 pub fn read_file(path: &Path) -> Result<Rope> {
-    match File::open(path) {
-        Ok(f) => Rope::from_reader(BufReader::new(f)).with_context(|| format!("reading {}", path.display())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Rope::new()),
-        Err(e) => Err(e).with_context(|| format!("opening {}", path.display())),
+    use std::io::Read as _;
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Rope::new()),
+        Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
+    };
+    let not_text = || NotText { path: path.to_path_buf(), size: f.metadata().map_or(0, |m| m.len()) };
+    let mut head = Vec::with_capacity(TEXT_HEAD);
+    (&f).take(TEXT_HEAD as u64)
+        .read_to_end(&mut head)
+        .with_context(|| format!("reading {}", path.display()))?;
+    if head.contains(&0) {
+        return Err(not_text().into());
+    }
+    match Rope::from_reader(BufReader::new(io::Cursor::new(head).chain(&f))) {
+        Ok(text) => Ok(text),
+        // (ropey's word for bytes that aren't UTF-8)
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => Err(not_text().into()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 

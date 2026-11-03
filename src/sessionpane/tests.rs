@@ -22,7 +22,7 @@ fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
         billing: crate::billing::Billing::Api,
         build: Some((2 << 20, true)),
         queue: None,
-        at: "src/a.rs:12 · writing".into(),
+        at: "src/a.rs:12 · editing".into(),
         colour: id.n as u8,
         overlap: vec![("main".into(), Some(0))],
         report: "I will switch it to the entry API so a repeat keeps the first strand".into(),
