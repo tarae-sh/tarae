@@ -616,7 +616,7 @@ fn the_bytes_through_are_the_same_spliced_or_not() {
     let (resolve, _) = resolver(vec![("example.invalid", vec![vec![out.at]])]);
     let f = start(resolve, limits());
     let (c, _) = tunnel(&f.proxy, 1, 1, rules(&["example.invalid"]), "example.invalid:443");
-    let end = c.local_addr().unwrap();
+    let end = relay::ends(&c);
     let mut w = limited(c.try_clone().unwrap());
     let sent = seeded(7, N);
     let want = fnv(&sent);
@@ -660,7 +660,7 @@ fn what_waits_in_tarae_goes_before_the_switch() {
         drained(&s)
     });
     let (mut c, _) = connection(&f.proxy, 1, 1, rules(&["example.invalid"]));
-    let end = c.local_addr().unwrap();
+    let end = relay::ends(&c);
     assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
     c.write_all(curl_hello()).unwrap();
     let sent = seeded(12, N);
@@ -700,8 +700,9 @@ fn what_waits_in_tarae_goes_before_the_switch() {
     }
 }
 
-/// The outside for a slow reader: a ClientHello read, a ServerHello answered (the look over), `SLOW` seeded bytes
-/// sent, closed.
+/// The outside for a slow reader: a ClientHello read, a ServerHello answered (the look over) with `SLOW` seeded
+/// bytes behind it in the same write — the read that ends the look takes a whole read's worth, more than the slow
+/// reader takes at once — closed.
 fn sends_and_closes(s: TcpStream) -> Vec<u8> {
     let mut s = limited(s);
     let (mut hello, mut b) = (Vec::new(), [0u8; 4096]);
@@ -711,8 +712,7 @@ fn sends_and_closes(s: TcpStream) -> Vec<u8> {
             _ => return Vec::new(),
         }
     }
-    let _ = s.write_all(&server_hello(&[7; 32]));
-    let _ = s.write_all(&seeded(13, SLOW));
+    let _ = s.write_all(&[server_hello(&[7; 32]), seeded(13, SLOW)].concat());
     Vec::new()
 }
 
@@ -726,11 +726,11 @@ fn a_slow_readers_end_isnt_cut() {
     let out = outside(sends_and_closes);
     let (resolve, _) = resolver(vec![("example.invalid", vec![vec![out.at]])]);
     let f = start(resolve, limits());
-    // (the run's end and tarae's both small: the bytes wait in the relay, not in the sockets)
+    // (the run's end and tarae's both small: the bytes wait in the relay, not in the sockets — the run's end accepted
+    // from a listener made small, so its window is small from the handshake: one write can't take what the look's
+    // read brought, as a slow reader's can't)
     let l = TcpListener::bind((LO, 0)).unwrap();
-    let mut c = TcpStream::connect(l.local_addr().unwrap()).unwrap();
-    let (ours, _) = l.accept().unwrap();
-    let small = |s: &TcpStream, opt| {
+    let small = |s: &dyn AsRawFd, opt| {
         let v: libc::c_int = 4096;
         // SAFETY: our socket, an int option of its size.
         unsafe {
@@ -743,14 +743,16 @@ fn a_slow_readers_end_isnt_cut() {
             )
         };
     };
+    small(&l, libc::SO_RCVBUF);
+    let ours = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+    let (mut c, _) = l.accept().unwrap();
     small(&ours, libc::SO_SNDBUF);
-    small(&c, libc::SO_RCVBUF);
     let (told, _said) = mpsc::channel();
     let rules = Arc::new(rules(&["example.invalid"]));
     let conn = Connection { fd: ours.into(), run: 1, session: 1, process: "curl".into(), rules, told };
     assert!(f.proxy.send(ToProxy::Connection(conn)));
     c.set_read_timeout(Some(WAIT)).unwrap();
-    let end = c.local_addr().unwrap();
+    let end = relay::ends(&c);
     assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
     c.write_all(curl_hello()).unwrap();
     let mut got = Vec::new();
@@ -771,8 +773,9 @@ fn a_slow_readers_end_isnt_cut() {
     // (the client's side ends too: its relay is done)
     drop(c);
     let moved = relay::spliced_by(end).expect("its relay ended");
-    // (the read that ends the look may take some of what follows the ServerHello with it, up to a read's worth —
-    // as the outside's two writes reach tarae together or not — and those go by copy; the rest is spliced)
+    // (the read that ends the look takes what follows the ServerHello with it, up to a read's worth, and those go by
+    // copy; nothing more is read until they've gone, then the rest is spliced — read on, `pending` stayed full while
+    // the reader was slow and none was: K6's offline-user, "spliced: 0")
     if cfg!(target_os = "linux") {
         assert!(moved + relay::CHUNK >= SLOW + sh, "spliced: {moved}");
     }
@@ -809,7 +812,7 @@ fn a_spliced_tunnel_half_closes_as_its_sides_do() {
     let (resolve, _) = resolver(vec![("example.invalid", vec![vec![out.at]])]);
     let f = start(resolve, limits());
     let (mut c, _) = connection(&f.proxy, 1, 1, rules(&["example.invalid"]));
-    let end = c.local_addr().unwrap();
+    let end = relay::ends(&c);
     assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
     c.write_all(curl_hello()).unwrap();
     let mut sh = vec![0u8; server_hello(&[7; 32]).len()];
@@ -869,7 +872,7 @@ fn a_plain_answers_bulk_is_spliced_and_whole() {
     let (resolve, _) = resolver(vec![("web.test", vec![vec![out.at]])]);
     let f = start(resolve, limits());
     let (mut c, _) = connection(&f.proxy, 1, 1, rules(&["web.test"]));
-    let end = c.local_addr().unwrap();
+    let end = relay::ends(&c);
     c.write_all(b"POST http://web.test/up HTTP/1.1\r\nContent-Length: 3\r\n\r\nx=").unwrap();
     std::thread::sleep(Duration::from_millis(20));
     c.write_all(b"1").unwrap();
@@ -1158,8 +1161,8 @@ fn reset_mid_splice_in_its_own_process() {
 /// count is there only once it ended.
 #[test]
 fn a_reused_port_never_gives_another_relays_count() {
-    // (an address no real relay has: port 1 on loopback)
-    let at = SocketAddr::new(LO, 1);
+    // (a connection no real relay has: ports 1 and 2 on loopback)
+    let at = (SocketAddr::new(LO, 1), SocketAddr::new(LO, 2));
     relay::started(at);
     relay::ended(at, 111);
     relay::started(at);
@@ -1168,6 +1171,22 @@ fn a_reused_port_never_gives_another_relays_count() {
     relay::ended(at, 222);
     assert_eq!(early.join("the reader"), Some(222), "the later relay's own, read before it ended");
     assert_eq!(relay::spliced_now(at), None, "the earlier relay's count went when the later one started");
+}
+
+/// Two relays at once whose clients' test ends share an address — Linux's `connect` gives one local port to
+/// connections whose peers differ — each keep their own count: one starting doesn't take the other's out, one ending
+/// doesn't give it its count (K6's offline-user, 2026-11-03: "spliced: 0" with every byte through could be another
+/// relay's count).
+#[test]
+fn relays_sharing_a_client_port_keep_their_own_counts() {
+    // (connections no real relay has: one port of this side, two peers)
+    let ours = SocketAddr::new(LO, 3);
+    let (a, b) = ((ours, SocketAddr::new(LO, 4)), (ours, SocketAddr::new(LO, 5)));
+    relay::started(a);
+    relay::started(b);
+    relay::ended(b, 0);
+    relay::ended(a, 333);
+    assert_eq!((relay::spliced_now(a), relay::spliced_now(b)), (Some(333), Some(0)), "each its own");
 }
 
 /// Without pipes (descriptors run short) a tunnel isn't refused: the relay pumps it, the same bytes through.

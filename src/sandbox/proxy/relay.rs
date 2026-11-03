@@ -85,27 +85,39 @@ pub fn relay(
     relay_with(client, server, name, hello_time, first, body, upstream, pipes)
 }
 
-/// Tests: each relay's spliced bytes by its client's peer — the test's own end of it (`spliced_by`): None while
-/// it runs, its count once it ended. One entry an address: a relay starting there takes out what an earlier one
-/// on that port left.
+/// Tests: a relay's client connection by the test's own end of it — that end's address, then its peer's (`ends`).
+/// Both: Linux's `connect` gives two connections one local port where their peers differ, so a test's end alone
+/// can be another test's too, at once.
 #[cfg(test)]
-static SPLICED: std::sync::Mutex<Vec<(std::net::SocketAddr, Option<usize>)>> =
-    std::sync::Mutex::new(Vec::new());
+pub type Ends = (std::net::SocketAddr, std::net::SocketAddr);
 
-/// Tests: the relays, by their client's peer, that have switched to splicing — nothing waiting in tarae, the rest
-/// the kernel's (`switched_by`).
+/// Tests: the test's end `s` of a relay's client connection, as `spliced_by` and `switched_by` take it.
 #[cfg(test)]
-static SWITCHED: std::sync::Mutex<Vec<std::net::SocketAddr>> = std::sync::Mutex::new(Vec::new());
+pub fn ends(s: &TcpStream) -> Ends {
+    (s.local_addr().unwrap(), s.peer_addr().unwrap())
+}
+
+/// Tests: each relay's spliced bytes by its client connection — the test's own end of it (`spliced_by`): None
+/// while it runs, its count once it ended. One entry a connection: a relay starting there takes out what an
+/// earlier one on those ports left.
+#[cfg(test)]
+static SPLICED: std::sync::Mutex<Vec<(Ends, Option<usize>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Tests: the relays, by their client connection, that have switched to splicing — nothing waiting in tarae, the
+/// rest the kernel's (`switched_by`).
+#[cfg(test)]
+static SWITCHED: std::sync::Mutex<Vec<Ends>> = std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 thread_local! {
-    /// Tests: the client's peer of the relay this thread runs (`relay_with`), for `SWITCHED`.
-    static PEER: std::cell::Cell<Option<std::net::SocketAddr>> = const { std::cell::Cell::new(None) };
+    /// Tests: the client connection of the relay this thread runs (`relay_with`), for `SWITCHED`.
+    static PEER: std::cell::Cell<Option<Ends>> = const { std::cell::Cell::new(None) };
 }
 
-/// Tests: a relay whose client's peer is `peer` started — an earlier relay's leftover there goes.
+/// Tests: a relay whose client connection is `peer` (the test's end, `ends`) started — an earlier relay's leftover
+/// there goes.
 #[cfg(test)]
-pub(super) fn started(peer: std::net::SocketAddr) {
+pub(super) fn started(peer: Ends) {
     let mut list = SPLICED.lock().unwrap_or_else(|e| e.into_inner());
     list.retain(|(a, _)| *a != peer);
     list.push((peer, None));
@@ -115,7 +127,7 @@ pub(super) fn started(peer: std::net::SocketAddr) {
 /// Tests (Linux): whether the relay whose client is the test's `end` has switched to splicing, by `PATIENCE` —
 /// from then on nothing either side sends goes through tarae.
 #[cfg(test)]
-pub fn switched_by(end: std::net::SocketAddr) -> bool {
+pub fn switched_by(end: Ends) -> bool {
     let by = Instant::now() + crate::test_results::PATIENCE;
     while !SWITCHED.lock().unwrap_or_else(|e| e.into_inner()).contains(&end) {
         if Instant::now() > by {
@@ -128,17 +140,17 @@ pub fn switched_by(end: std::net::SocketAddr) -> bool {
 
 /// Tests: that relay ended, having spliced `n` bytes.
 #[cfg(test)]
-pub(super) fn ended(peer: std::net::SocketAddr, n: usize) {
+pub(super) fn ended(peer: Ends, n: usize) {
     let mut list = SPLICED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = list.iter_mut().find(|(a, _)| *a == peer) {
         e.1 = Some(n);
     }
 }
 
-/// Tests: the bytes the relay whose client is the test's `end` (its local address) moved through pipes — that
-/// relay's alone — once it ended (by `PATIENCE`; None: it didn't), taken out. Elsewhere than Linux, 0.
+/// Tests: the bytes the relay whose client is the test's `end` (`ends`) moved through pipes — that relay's alone
+/// — once it ended (by `PATIENCE`; None: it didn't), taken out. Elsewhere than Linux, 0.
 #[cfg(test)]
-pub fn spliced_by(end: std::net::SocketAddr) -> Option<usize> {
+pub fn spliced_by(end: Ends) -> Option<usize> {
     let by = Instant::now() + crate::test_results::PATIENCE;
     loop {
         if let Some(n) = spliced_now(end) {
@@ -153,7 +165,7 @@ pub fn spliced_by(end: std::net::SocketAddr) -> Option<usize> {
 
 /// `spliced_by`'s count if its relay has ended now, taken out — None: no count there (yet), never waited for.
 #[cfg(test)]
-pub fn spliced_now(end: std::net::SocketAddr) -> Option<usize> {
+pub fn spliced_now(end: Ends) -> Option<usize> {
     let mut list = SPLICED.lock().unwrap_or_else(|e| e.into_inner());
     let i = list.iter().position(|(a, n)| *a == end && n.is_some())?;
     list.remove(i).1
@@ -171,9 +183,10 @@ pub(super) fn relay_with(
     upstream: bool,
     pipes: fn() -> io::Result<Pipes>,
 ) -> End {
-    // (taken now: a socket shut down both ways has no peer to say by its end — macOS)
+    // (taken now: a socket shut down both ways has no peer to say by its end — macOS; the test's end of the
+    // connection, `ends`: its address this side's peer, its peer this side)
     #[cfg(test)]
-    let peer = client.peer_addr();
+    let peer = client.peer_addr().and_then(|p| Ok((p, client.local_addr()?)));
     let sides = [Out::Tcp(client), server.into()];
     #[cfg(test)]
     if let Ok(peer) = peer {
@@ -272,9 +285,18 @@ fn pump(
             Look::Server(b) | Look::Client(b, _) | Look::Answer(b) => b.len(),
             Look::Off => 0,
         };
+        // (the switch to splicing waits only for what's in tarae to go: meanwhile a side whose bytes would join
+        // it isn't read — read on, a far side faster than a slow reader kept `pending` full to the end, and the
+        // tunnel was never spliced: K6's offline-user, 2026-11-03)
+        #[cfg(target_os = "linux")]
+        let switching = pipes.is_some() && matches!(look, Look::Off) && (f.body.is_none() || eof[0]);
+        #[cfg(not(target_os = "linux"))]
+        let switching = false;
         let mut fds: [libc::pollfd; 2] = std::array::from_fn(|i| {
             let other = 1 - i;
-            let read = !eof[i] && pending[other].len() + held < PENDING_MAX;
+            let read = !eof[i]
+                && pending[other].len() + held < PENDING_MAX
+                && !(switching && !pending[other].is_empty());
             let write = !pending[i].is_empty();
             let events = if read { libc::POLLIN } else { 0 } | if write { libc::POLLOUT } else { 0 };
             let fd = if hup[i] && !read && !write { -1 } else { sides[i].as_raw_fd() };

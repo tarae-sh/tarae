@@ -1224,6 +1224,12 @@ mod tests {
         let k5 = t.kernels.iter().find(|k| k.name == "K5").unwrap();
         assert!(k5.sysctl.contains(&"kernel.yama.ptrace_scope=1".to_string()), "the snapshots are Yama 1's");
         assert_eq!(k5.modes.len(), 6, "every table on the kernel that compares");
+        let k6 = t.kernels.iter().find(|k| k.name == "K6").unwrap();
+        assert!(
+            k6.sysctl.contains(&"kernel.yama.ptrace_scope=1".to_string()),
+            "Fedora's 0 isn't the snapshots'"
+        );
+        assert!(k6.modes.iter().all(|m| k6.expect.contains_key(&m.name())), "every mode of K6's expected");
     }
 
     #[test]

@@ -92,10 +92,13 @@ image = "fedora-44"
 # aarch64: Lima's vz on this Mac)
 download = { location = "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2", arch = "aarch64", digest = "sha256:55c60a3b80d3616a08705afd0459e75fe9f03c54aba7a46e4002a41a72fa0d5b" }
 install = "curl -fsSL https://get.docker.com | sh"
+# (Fedora's own is 0: set to 1, the snapshots' — K6 is the newest kernel's behaviour, held against the tables)
+sysctl = ["kernel.yama.ptrace_scope=1"]
 modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
 whole = "host-user"
-# (own and own-user read on its first run)
-expect = { host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+# (its first run, 2026-11-03 on 6c4faa7f: Fedora 44's 6.19.10, aarch64, Landlock ABI 7, Yama 0 — own and own-user
+# reached own, the rest their tiers; nothing compared at Yama 0)
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
 
 [[kernel]]
 name = "Y2"
