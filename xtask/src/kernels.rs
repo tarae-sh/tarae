@@ -9,8 +9,10 @@
 //! (`DOCKER_CONTEXT`); a Lima kernel's VM is made from Lima's own template for its cloud image (`_images/<image>`)
 //! or from the place its row names (`download`, its digest checked), Docker put in by its `install`, the checkout and its repository's git folder mounted read-only (the checks'
 //! clone reads them, nothing else of home), and what the binary needs carried in from colima's Docker with no
-//! download: the `rust:<pin>` image (`docker save | docker load`), the kept binary, the rustup volume (the pinned
-//! toolchain a test's own cargo asks for). One VM at a time: made, run, stopped and deleted (`--keep-vm` leaves it;
+//! download: the `rust:<pin>` image (`docker save | docker load`), the kept binary (its sha256 then checked against
+//! the build's), the rustup volume (the pinned toolchain a test's own cargo asks for) — into a colima profile's
+//! other than the build's too (Y2's `tarae-yama2`). No kept binary in the build's Docker: nothing runs, said with
+//! the way. One VM at a time: made, run, stopped and deleted (`--keep-vm` leaves it;
 //! a VM a stopped run left is deleted first, said).
 //!
 //! Each mode runs `repeat` times in a row (the `sandbox::` tests, the must-be-refused suite among them), stopping
@@ -260,6 +262,19 @@ enum Docker {
     Host(String),
 }
 
+impl Docker {
+    /// Its name as said: colima's profile, a Lima VM's.
+    fn name(&self) -> &str {
+        match self {
+            Docker::Context(c) if c == "colima" => "default",
+            Docker::Context(c) => c.strip_prefix("colima-").unwrap_or(c),
+            Docker::Host(h) => {
+                (h.strip_suffix("/sock/docker.sock")).and_then(|p| p.rsplit('/').next()).unwrap_or(h)
+            }
+        }
+    }
+}
+
 fn colima_context(profile: &str) -> String {
     match profile {
         "default" => "colima".into(),
@@ -507,32 +522,116 @@ fn lima_yaml(k: &Kernel, mounts: &[&Path]) -> Result<String> {
     Ok(y)
 }
 
-/// What's carried from colima's Docker into a VM's, each a pipe: the image, the kept binary into the checkout's
-/// target volume, the rustup volume.
-fn carry(from: &Docker, to: &Docker, image: &str, target: &str, rustup: &str) -> Vec<(Cmd, Cmd)> {
-    let kept = crate::linux::KEPT;
+/// What a kernel's runs take from the build's Docker: the `rust:<pin>` image, the checkout's target volume with the
+/// kept binary in it — made first as `cargo xtask linux` makes it, labelled (`make`: `docker volume create`'s
+/// words), so its `prune` judges it —, the rustup volume.
+#[derive(Clone, Debug)]
+struct Needs {
+    image: String,
+    target: String,
+    make: Vec<String>,
+    rustup: String,
+}
+
+/// The Docker `k`'s runs need the kept binary carried into — its own, where it isn't the build's (`from`): every
+/// Lima VM's, and a colima profile's other than the build's (Y2's `tarae-yama2`). None: the build's own Docker.
+fn carried_into(k: &Kernel, from: &Docker) -> Option<Docker> {
+    Some(docker_of(k)).filter(|d| d != from)
+}
+
+/// What's carried from the build's Docker into another, each a command or a pipe: the image, the target volume
+/// made, the kept binary into it, the rustup volume.
+fn carry(from: &Docker, to: &Docker, n: &Needs) -> Vec<(Cmd, Option<Cmd>)> {
+    let (kept, image) = (crate::linux::KEPT, n.image.as_str());
     let vol = |v: &str, at: &str| format!("{v}:{at}");
+    let (target, rustup) = (vol(&n.target, "/target"), vol(&n.rustup, "/r"));
     vec![
-        (Cmd::new(&["docker", "save", image]).on(from), Cmd::new(&["docker", "load"]).on(to)),
+        (Cmd::new(&["docker", "save", image]).on(from), Some(Cmd::new(&["docker", "load"]).on(to))),
+        (Cmd::new(&["docker"]).args(&n.make).on(to), None),
         (
-            Cmd::new(&["docker", "run", "--rm", "-v", &vol(target, "/target"), image, "cat", kept]).on(from),
-            Cmd::new(&["docker", "run", "--rm", "-i", "-v", &vol(target, "/target"), image, "sh", "-ec"])
-                .args([format!(
-                    "mkdir -p \"$(dirname {kept})\" && cat > {kept}.new && chmod 0755 {kept}.new && mv {kept}.new {kept}"
-                )])
-                .on(to),
+            Cmd::new(&["docker", "run", "--rm", "-v", &target, image, "cat", kept]).on(from),
+            Some(
+                Cmd::new(&["docker", "run", "--rm", "-i", "-v", &target, image, "sh", "-ec"])
+                    .args([format!(
+                        "mkdir -p \"$(dirname {kept})\" && cat > {kept}.new && chmod 0755 {kept}.new && mv {kept}.new {kept}"
+                    )])
+                    .on(to),
+            ),
         ),
         (
-            Cmd::new(&["docker", "run", "--rm", "-v", &vol(rustup, "/r"), image, "tar", "-C", "/r", "-cf", "-", "."])
-                .on(from),
-            Cmd::new(&["docker", "run", "--rm", "-i", "-v", &vol(rustup, "/r"), image, "tar", "-C", "/r", "-xf", "-"])
-                .on(to),
+            Cmd::new(&["docker", "run", "--rm", "-v", &rustup, image, "tar", "-C", "/r", "-cf", "-", "."]).on(from),
+            Some(
+                Cmd::new(&["docker", "run", "--rm", "-i", "-v", &rustup, image, "tar", "-C", "/r", "-xf", "-"])
+                    .on(to),
+            ),
         ),
     ]
 }
 
+/// The kept binary's sha256 in `d`, as `sha256sum` prints it.
+fn kept_sum(d: &Docker, n: &Needs) -> Cmd {
+    let target = format!("{}:/target", n.target);
+    Cmd::new(&["docker", "run", "--rm", "-v", &target, &n.image, "sha256sum", crate::linux::KEPT]).on(d)
+}
+
+/// `sha256sum`'s hash, its first word — None: it printed none.
+fn sum_of(said: &str) -> Option<&str> {
+    said.split_whitespace().next().filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A Docker with no kept test binary, said with the way: the build's is kept by the one build; another's is carried
+/// from the build's before a kernel's runs (`carry_in`), its hash checked.
+fn no_kept(at: &Docker, build: &Docker, k: Option<&str>) -> String {
+    let keep = build_cmd(build).line().replacen(" xtask ", " cargo xtask ", 1);
+    match (at == build, k) {
+        (true, _) | (false, None) => format!(
+            "no kept binary in {}'s Docker — `cargo xtask kernels` keeps it there (not with `--no-build`), or `{keep}`",
+            build.name()
+        ),
+        (false, Some(k)) => format!(
+            "no kept binary in {}'s Docker — it's carried there from {}'s before {k}'s runs, its sha256 checked: \
+             `cargo xtask kernels --no-build {k}` carries it again",
+            at.name(),
+            build.name()
+        ),
+    }
+}
+
+/// Carries what `to`'s runs need from `from` (`carry`), the kept binary then checked against the build's `sum`.
+fn carry_in(from: &Docker, to: &Docker, n: &Needs, sum: &str, x: &Path) -> Result<()> {
+    for (a, b) in carry(from, to, n) {
+        let ok = match &b {
+            Some(b) => {
+                eprintln!("$ {} | {}", a.line(), b.line());
+                piped(&a, b, x)
+            }
+            None => said_status(&a, x),
+        };
+        if !ok {
+            return Err(format!("carrying failed: {}", a.line()));
+        }
+    }
+    let c = kept_sum(to, n);
+    eprintln!("$ {}", c.line());
+    let said = quiet(c.command(x)).unwrap_or_default();
+    match sum_of(&said) {
+        Some(s) if s == sum => Ok(()),
+        Some(s) => Err(format!(
+            "the kept binary carried into {}'s Docker isn't the build's: sha256 {s} there, {sum} in {}'s",
+            to.name(),
+            from.name()
+        )),
+        None => Err(format!(
+            "no kept binary in {}'s Docker after carrying it from {}'s (`{}` printed no sha256)",
+            to.name(),
+            from.name(),
+            c.line()
+        )),
+    }
+}
+
 /// The lines `--dry-run` prints for `k`, in order (a Lima VM's file after them).
-fn plan(k: &Kernel, repeat: u32, from: &Docker, image: &str, target: &str, rustup: &str) -> Vec<String> {
+fn plan(k: &Kernel, repeat: u32, from: &Docker, n: &Needs) -> Vec<String> {
     let docker = docker_of(k);
     let mut l = vec![format!("# {} — {}", k.name, k.says)];
     match &k.at {
@@ -566,12 +665,18 @@ fn plan(k: &Kernel, repeat: u32, from: &Docker, image: &str, target: &str, rustu
                 ])
                 .line()
             ));
-            for (a, b) in carry(from, &docker, image, target, rustup) {
-                l.push(format!("{} | {}", a.line(), b.line()));
-            }
         }
     }
-    l.push(format!("{}    # the facts", facts_cmd(&docker, image).line()));
+    if let Some(to) = carried_into(k, from) {
+        for (a, b) in carry(from, &to, n) {
+            match b {
+                Some(b) => l.push(format!("{} | {}", a.line(), b.line())),
+                None => l.push(a.line()),
+            }
+        }
+        l.push(format!("{}    # the build's sha256, else not measured", kept_sum(&to, n).line()));
+    }
+    l.push(format!("{}    # the facts", facts_cmd(&docker, &n.image).line()));
     l.push(vm_shell(k, VM_FACTS).line());
     for m in &k.modes {
         l.push(format!("{}    # ×{repeat}", suite_cmd(k, *m, Some(FILTER), &docker).line()));
@@ -711,6 +816,8 @@ fn minutes(d: Duration) -> String {
 
 struct Run {
     dir: PathBuf,
+    /// The Docker the one build keeps the binary in (`no_kept`'s way).
+    build: Docker,
     date: String,
     commit: String,
     rows: Vec<String>,
@@ -761,6 +868,7 @@ impl Run {
         let mut passed = 0;
         let mut seen = Read::default();
         let mut tally = crate::failures::Tally::default();
+        let mut none_kept = None;
         for n in 1..=repeat {
             tally.run_starts();
             eprintln!("── {} {label}: run {n} of {repeat}", k.name);
@@ -772,6 +880,11 @@ impl Run {
                 minutes(t.elapsed()),
                 if ok { "ok" } else { "failed" }
             ));
+            // (no binary there: no run of it can pass — said where it is and the way, never as a crash)
+            if !ok && out.lines().any(|l| l.trim() == crate::linux::NONE_KEPT) {
+                none_kept = Some(no_kept(&docker_of(k), &self.build, Some(&k.name)));
+                break;
+            }
             for (name, table) in &r.tables {
                 let tables = self.dir.join("tables");
                 let _ = std::fs::create_dir_all(&tables);
@@ -794,8 +907,14 @@ impl Run {
             text.push_str(&format!("\n── every run ──\n{said}\n"));
             self.tallies.push(format!("{} {label}: {said}", k.name));
         }
+        if let Some(why) = &none_kept {
+            eprintln!("── {} {label}: {why}", k.name);
+            text.push_str(&format!("\n── {why}\n"));
+            self.failed.push(format!("{} {label} ({why})", k.name));
+        }
         let _ = std::fs::write(&file, text);
         let passed = match (passed == repeat, self.keep_going) {
+            _ if none_kept.is_some() => "no kept binary".into(),
             (true, _) => format!("ok {repeat}/{repeat}"),
             (false, keep_going) => {
                 self.failed.push(format!("{} {label}", k.name));
@@ -892,7 +1011,8 @@ fn said_status(c: &Cmd, x: &Path) -> bool {
 }
 
 /// What step 0 measures besides time: the image's, the kept binary's and the rustup volume's sizes.
-fn sizes(from: &Docker, image: &str, target: &str, rustup: &str, x: &Path) -> String {
+fn sizes(from: &Docker, n: &Needs, x: &Path) -> String {
+    let (image, target, rustup) = (n.image.as_str(), n.target.as_str(), n.rustup.as_str());
     let ask = |c: Cmd| quiet(c.on(from).command(x)).unwrap_or_else(|| "not measured".into());
     let image_size = ask(Cmd::new(&["docker", "image", "inspect", image, "--format", "{{.Size}}"]));
     let vol = |v: &str, at: &str| format!("{v}:{at}");
@@ -916,11 +1036,10 @@ fn one_kernel(
     k: &Kernel,
     repeat: u32,
     from: &Docker,
-    carried: [&str; 3],
+    (n, sum): (&Needs, &str),
     keep_vm: bool,
     x: &Path,
 ) {
-    let [image, target, rustup] = carried;
     let started = Instant::now();
     let docker = docker_of(k);
     let mut stop_colima = None;
@@ -983,27 +1102,27 @@ fn one_kernel(
                 };
                 return run.not_measured(k, &why);
             }
-            for (a, b) in carry(from, &docker, image, target, rustup) {
-                eprintln!("$ {} | {}", a.line(), b.line());
-                if !piped(&a, &b, x) {
-                    lima_down(k, keep_vm, x);
-                    return run.not_measured(k, &format!("carrying failed: {}", a.line()));
-                }
-            }
         }
     }
+    let down = |x: &Path| match &k.at {
+        At::Colima { .. } => stop_colima.iter().for_each(|p| colima_down(p, x)),
+        At::Lima { .. } => lima_down(k, keep_vm, x),
+    };
+    // (the build's binary, in a Docker of its own: a Lima VM's, another colima profile's — Y2's)
+    if let Some(to) = carried_into(k, from)
+        && let Err(why) = carry_in(from, &to, n, sum, x)
+    {
+        down(x);
+        return run.not_measured(k, &why);
+    }
     let mut facts = Facts::default();
-    for c in [facts_cmd(&docker, image), vm_shell(k, VM_FACTS)] {
+    for c in [facts_cmd(&docker, &n.image), vm_shell(k, VM_FACTS)] {
         eprintln!("$ {}", c.line());
         facts.text.push_str(&quiet(c.command(x)).unwrap_or_else(|| format!("(not read: {})", c.line())));
         facts.text.push('\n');
     }
     eprint!("{}", facts.text);
     let _ = std::fs::write(run.dir.join(format!("{}-facts.txt", k.name)), &facts.text);
-    let down = |x: &Path| match &k.at {
-        At::Colima { .. } => stop_colima.iter().for_each(|p| colima_down(p, x)),
-        At::Lima { .. } => lima_down(k, keep_vm, x),
-    };
     // (#280: past 90 % its runs would fail by the thousand with ENOSPC — not measured, said before any runs)
     if let Err(why) = room(k, &facts) {
         down(x);
@@ -1101,9 +1220,13 @@ pub fn run(args: &[String]) -> Result<()> {
     let pin = crate::linux::pin(
         &std::fs::read_to_string(&toolchain).map_err(|e| format!("{}: {e}", toolchain.display()))?,
     )?;
-    let image = crate::linux::image(&pin);
-    let target = crate::linux::target_volume(&root, &pin, None);
-    let rustup = format!("tarae-rustup-{pin}");
+    let machine = crate::linux::machine_id(&root).ok();
+    let n = Needs {
+        image: crate::linux::image(&pin),
+        target: crate::linux::target_volume(&root, &pin, None),
+        make: crate::linux::create_args(&root, machine.as_deref(), &pin, None),
+        rustup: format!("tarae-rustup-{pin}"),
+    };
     let from = Docker::Context(colima_context(&t.build));
     let x = std::env::current_exe().map_err(|e| format!("this xtask: {e}"))?;
     if a.dry {
@@ -1114,6 +1237,10 @@ pub fn run(args: &[String]) -> Result<()> {
         if a.build {
             println!("{}", build_cmd(&from).line());
         }
+        println!(
+            "{}    # the kept binary's sha256 — none: not run, said with the way",
+            kept_sum(&from, &n).line()
+        );
         if a.keep_going {
             println!(
                 "# --keep-going: every run of each mode, each failing test said once with the runs it failed in"
@@ -1123,7 +1250,7 @@ pub fn run(args: &[String]) -> Result<()> {
         let mounts: Vec<&Path> = std::iter::once(root.as_path()).chain(git.as_deref()).collect();
         for k in &kernels {
             println!();
-            for l in plan(k, repeat, &from, &image, &target, &rustup) {
+            for l in plan(k, repeat, &from, &n) {
                 println!("{l}");
             }
             if matches!(k.at, At::Lima { .. }) {
@@ -1138,6 +1265,7 @@ pub fn run(args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut run = Run {
         dir: dir.clone(),
+        build: from.clone(),
         date,
         commit,
         rows: Vec::new(),
@@ -1159,12 +1287,22 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         eprintln!("built in {} min", minutes(t0.elapsed()));
     }
-    let sized = sizes(&from, &image, &target, &rustup, &x);
+    // (the binary every kernel runs, by its sha256: none, nothing runs — said with the way, never a crash)
+    let c = kept_sum(&from, &n);
+    eprintln!("$ {}", c.line());
+    let said = quiet(c.command(&x)).unwrap_or_default();
+    let Some(sum) = sum_of(&said) else {
+        if stop_build {
+            colima_down(&build_profile, &x);
+        }
+        return Err(no_kept(&from, &from, None));
+    };
+    let sized = sizes(&from, &n, &x);
     eprint!("{sized}");
-    let _ = std::fs::write(dir.join("sizes.txt"), &sized);
+    let _ = std::fs::write(dir.join("sizes.txt"), format!("{sized}kept test binary's sha256: {sum}\n"));
     for k in &kernels {
         // (the build's own profile stays up for the carrying; a colima kernel on it isn't stopped by its run)
-        one_kernel(&mut run, k, repeat, &from, [&image, &target, &rustup], a.keep_vm, &x);
+        one_kernel(&mut run, k, repeat, &from, (&n, sum), a.keep_vm, &x);
     }
     if stop_build {
         colima_down(&build_profile, &x);
@@ -1204,6 +1342,16 @@ mod tests {
 
     fn the_table() -> Table {
         table(&std::fs::read_to_string(root().join(TABLE)).unwrap()).unwrap()
+    }
+
+    /// What the runs need, by stand-in names.
+    fn needs() -> Needs {
+        Needs {
+            image: "rust:1.95".into(),
+            target: "tv".into(),
+            make: ["volume", "create", "--label", "tarae.checkout=/w", "tv"].map(String::from).into(),
+            rustup: "rv".into(),
+        }
     }
 
     /// The set as the plan decided it (K1–K6 and Y2), each kernel read whole: modes, expectations among them, a VM.
@@ -1371,7 +1519,7 @@ mod tests {
         let y3 = lima_yaml(k3, &[]).unwrap();
         assert!(y3.contains("base:\n- template:_images/debian-12\n") && !y3.contains("images:"), "{y3}");
         let from = Docker::Context("colima-tarae-test".into());
-        let all = plan(k6, 3, &from, "rust:1.95", "tv", "rv").join("\n");
+        let all = plan(k6, 3, &from, &needs()).join("\n");
         assert!(
             all.contains("# downloads fedora-44 from dl.fedoraproject.org (its digest checked) once"),
             "{all}"
@@ -1411,15 +1559,69 @@ mod tests {
     #[test]
     fn the_image_binary_and_toolchain_are_carried_not_fetched() {
         let (from, to) = (Docker::Context("colima-tarae-test".into()), Docker::Host("unix:///s".into()));
-        let c = carry(&from, &to, "rust:1.95", "tarae-target-1.95.0-ab", "tarae-rustup-1.95.0");
-        let lines: Vec<String> = c.iter().map(|(a, b)| format!("{} | {}", a.line(), b.line())).collect();
+        let c = carry(&from, &to, &needs());
+        let lines: Vec<String> =
+            (c.iter()).map(|(a, b)| b.iter().fold(a.line(), |l, b| format!("{l} | {}", b.line()))).collect();
         assert_eq!(
             lines[0],
             "DOCKER_CONTEXT=colima-tarae-test docker save rust:1.95 | DOCKER_HOST=unix:///s docker load"
         );
-        assert!(lines[1].contains("cat /target/kept/tarae-tests | DOCKER_HOST=unix:///s docker run --rm -i -v tarae-target-1.95.0-ab:/target"), "{}", lines[1]);
-        assert!(lines[2].contains("tarae-rustup-1.95.0:/r rust:1.95 tar -C /r -cf - ."), "{}", lines[2]);
+        assert_eq!(lines[1], "DOCKER_HOST=unix:///s docker volume create --label tarae.checkout=/w tv");
+        assert!(
+            lines[2].contains(
+                "cat /target/kept/tarae-tests | DOCKER_HOST=unix:///s docker run --rm -i -v tv:/target"
+            ),
+            "{}",
+            lines[2]
+        );
+        assert!(lines[3].contains("rv:/r rust:1.95 tar -C /r -cf - ."), "{}", lines[3]);
         assert!(lines.iter().all(|l| !l.contains("pull")));
+    }
+
+    /// Y2's Docker is colima's `tarae-yama2`, not the build's `tarae-test`: the kept binary is carried there from the
+    /// build's as into a Lima VM's — its volume made labelled, then its sha256 checked — after its VM is up and set,
+    /// before any run; K4, on the build's own, carries nothing. A Docker with none is said by its name, with the way.
+    #[test]
+    fn a_colima_row_off_the_builds_docker_gets_the_kept_binary_carried() {
+        let t = the_table();
+        let from = Docker::Context(colima_context(&t.build));
+        let row = |name: &str| t.kernels.iter().find(|k| k.name == name).unwrap();
+        let yama2 = Docker::Context("colima-tarae-yama2".into());
+        assert_eq!(carried_into(row("Y2"), &from), Some(yama2.clone()));
+        assert_eq!(carried_into(row("K4"), &from), None, "the build's own Docker");
+        assert!(matches!(carried_into(row("K3"), &from), Some(Docker::Host(_))), "a Lima VM's, as before");
+
+        let l = plan(row("Y2"), 3, &from, &needs());
+        let at = |s: &str| l.iter().position(|x| x.contains(s)).unwrap_or_else(|| panic!("{s}: {l:#?}"));
+        let binary = at(
+            "DOCKER_CONTEXT=colima-tarae-test docker run --rm -v tv:/target rust:1.95 cat /target/kept/tarae-tests \
+             | DOCKER_CONTEXT=colima-tarae-yama2 docker run --rm -i -v tv:/target",
+        );
+        let made = at("DOCKER_CONTEXT=colima-tarae-yama2 docker volume create --label tarae.checkout=/w tv");
+        let sum = at("DOCKER_CONTEXT=colima-tarae-yama2 docker run --rm -v tv:/target rust:1.95 sha256sum \
+             /target/kept/tarae-tests    # the build's sha256");
+        let up = at("sysctl -w kernel.apparmor_restrict_unprivileged_userns=0");
+        let first = at("test --kept");
+        assert!(up < made && made < binary && binary < sum && sum < first, "{l:#?}");
+        assert!(l[first].starts_with("DOCKER_CONTEXT=colima-tarae-yama2 xtask linux"), "{}", l[first]);
+        let k4 = plan(row("K4"), 3, &from, &needs()).join("\n");
+        assert!(!k4.contains("sha256sum") && !k4.contains("docker load"), "{k4}");
+
+        assert_eq!(
+            no_kept(&yama2, &from, Some("Y2")),
+            "no kept binary in tarae-yama2's Docker — it's carried there from tarae-test's before Y2's runs, its \
+             sha256 checked: `cargo xtask kernels --no-build Y2` carries it again"
+        );
+        assert_eq!(
+            no_kept(&from, &from, Some("K4")),
+            "no kept binary in tarae-test's Docker — `cargo xtask kernels` keeps it there (not with `--no-build`), \
+             or `DOCKER_CONTEXT=colima-tarae-test cargo xtask linux test --keep --bin tarae`"
+        );
+        assert_eq!(Docker::Host("unix:///l/tarae-k3/sock/docker.sock".into()).name(), "tarae-k3");
+        assert_eq!(Docker::Context("colima".into()).name(), "default");
+        let h = "0123456789abcdef".repeat(4);
+        assert_eq!(sum_of(&format!("{h}  /target/kept/tarae-tests\n")), Some(h.as_str()));
+        assert_eq!(sum_of("sha256sum: /target/kept/tarae-tests: No such file or directory"), None);
     }
 
     /// The suite's own words read back: the tier the probe found, compared or why not, and a table it printed
@@ -1496,7 +1698,7 @@ mod tests {
     fn k4s_plan_starts_nothing_new_and_downloads_nothing() {
         let t = the_table();
         let from = Docker::Context("colima-tarae-test".into());
-        let l = plan(&t.kernels[0], 3, &from, "rust:1.95", "tv", "rv");
+        let l = plan(&t.kernels[0], 3, &from, &needs());
         let all = l.join("\n");
         assert!(!all.contains("limactl") && !all.contains("docker load"), "{all}");
         assert_eq!(
@@ -1509,7 +1711,7 @@ mod tests {
             "{all}"
         );
         let k3 = t.kernels.iter().find(|k| k.name == "K3").unwrap();
-        let all = plan(k3, 3, &from, "rust:1.95", "tv", "rv").join("\n");
+        let all = plan(k3, 3, &from, &needs()).join("\n");
         assert!(
             all.contains("limactl start --name=tarae-k3") && all.contains("limactl delete --force tarae-k3"),
             "{all}"

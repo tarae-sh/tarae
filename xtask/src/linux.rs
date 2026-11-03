@@ -1948,9 +1948,7 @@ fn script(tree: Tree, what: &What) -> String {
             ));
         }
         What::Kept { args, as_user } => {
-            s.push_str(&format!(
-                "test -x {KEPT} || {{ echo 'no test binary kept yet: `test --keep` first'; exit 1; }}\n"
-            ));
+            s.push_str(&format!("test -x {KEPT} || {{ echo '{NONE_KEPT}'; exit 1; }}\n"));
             match as_user {
                 true => s.push_str(&as_user_run(KEPT, args, "env -u CARGO_TARGET_DIR ")),
                 false => {
@@ -2023,6 +2021,8 @@ fn as_user_run(exe: &str, args: &[String], env: &str) -> String {
 /// Where `test --keep` keeps the test binary: in the checkout's own target volume, so only its checkout's runs
 /// find it.
 pub(crate) const KEPT: &str = "/target/kept/tarae-tests";
+/// What `test --kept` says where `KEPT` isn't (`cargo xtask kernels` reads it: a Docker with no kept binary).
+pub(crate) const NONE_KEPT: &str = "no test binary kept yet: `test --keep` first";
 
 /// The binary `cargo test --no-run` built for tarae's own tests, from its line `Executable unittests src/main.rs
 /// (<path>)` — a `sed -n` expression.
