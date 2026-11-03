@@ -1625,6 +1625,8 @@ fn the_motion_setting_holds_still_what_moves() {
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let bleeding = |ed: &mut Editor| {
         crate::term::BLEED_SEEN.with_borrow_mut(Vec::clear);
+        // (`:set`'s toast let go: news stands top right under the cursor's row, over the line read here)
+        ed.toasts.clear();
         let rows = frame(ed, 100, 30);
         assert!(rows.iter().any(|r| r.ends_with("let b = 20")), "the rows stay: {rows:#?}");
         crate::term::BLEED_SEEN.with_borrow(|w| w.iter().any(|w| w.0 == "code"))

@@ -240,10 +240,10 @@ fn enter_quotes_the_selected_rows_to_the_chat() {
     print(&mut ed, &format!("API_TOKEN=tarae-fake-token-0123456789abcdef\r\n{long}\r\n{spaced}\r\n$ "));
     feed(&mut ed, "<C-\\>%");
     assert!(!view(&ed).doc().text.to_string().contains(&long), "the line wrapped on screen");
-    // (said while selected: on the status line and the panel's head)
+    // (said while selected: on the panel's head alone — never the status line too, polish landing 5)
     let shown = frame(&mut ed);
-    assert!(status(&shown).contains("enter quote"), "{}", status(&shown));
-    assert_eq!(shown.lines().filter(|l| l.contains("enter quote")).count(), 2, "{shown}");
+    assert!(!status(&shown).contains("enter quote"), "{}", status(&shown));
+    assert_eq!(shown.lines().filter(|l| l.contains("enter quote")).count(), 1, "{shown}");
     feed(&mut ed, "<ret>");
     assert_eq!(region(&ed), "chat");
     assert!(
@@ -285,8 +285,10 @@ fn ctrl_backslash_goes_round() {
     assert_eq!(region(&ed), "view:terminal");
     let shown = frame(&mut ed);
     assert!(status(&shown).contains("view · terminal"), "{}", status(&shown));
-    assert!(status(&shown).contains("i type") && status(&shown).contains("esc code"), "{}", status(&shown));
-    assert!(shown.contains("● view"), "its head says it:\n{shown}");
+    // (its keys in its head, never the status line's too — polish landing 5)
+    assert!(!status(&shown).contains("i type") && !status(&shown).contains("esc code"), "{}", status(&shown));
+    let head = shown.lines().find(|l| l.contains("i type")).unwrap_or_default();
+    assert!(head.contains("esc code"), "its head says it:\n{shown}");
     assert!(!program(&ed));
     feed(&mut ed, "i");
     assert_eq!(region(&ed), "terminal-program");

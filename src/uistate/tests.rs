@@ -1517,7 +1517,9 @@ fn slip_2_the_terminal_program_has_the_keys_or_tarae_has_them_on_its_panel() {
     assert_eq!((k.region.name(), k.takes), ("view:terminal".to_string(), Takes::Commands));
     let shown = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
     let status = shown.lines().find(|l| l.contains("● view · terminal ")).unwrap_or_default();
-    assert!(status.contains("● view · terminal   i type  esc code"), "{shown}");
+    // (its keys in the terminal's head alone — polish landing 5)
+    assert!(!status.contains("i type") && !status.contains("esc code"), "{shown}");
+    assert!(shown.lines().any(|l| l.contains("i type") && l.contains("esc code")), "{shown}");
 }
 
 /// Slip 3 (` W` typed into a chat input that wasn't on screen, the chat minimized while Claude worked) has no ground

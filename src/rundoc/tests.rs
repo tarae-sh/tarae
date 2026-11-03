@@ -171,7 +171,8 @@ fn the_task_panels_keys_are_normal_mode_on_its_output() {
     assert_eq!(region(&ed), "output:task");
     let shown = frame(&mut ed);
     let s = status(&shown);
-    assert!(s.contains("● normal · task") && s.contains("esc code") && !s.contains("i type"), "{s}");
+    // (its keys in its head alone — never the status line's too, polish landing 5)
+    assert!(s.contains("● normal · task") && !s.contains("esc code") && !s.contains("i type"), "{s}");
     let head = shown.lines().find(|l| l.contains("y copy")).unwrap_or_default();
     assert!(head.contains("/ search") && head.contains("q close"), "{head}");
     assert_eq!(at(&ed, Slot::Task).0, 39, "on its last row");
@@ -180,7 +181,10 @@ fn the_task_panels_keys_are_normal_mode_on_its_output() {
     assert_eq!(at(&ed, Slot::Task).0, 37);
     feed(&mut ed, "x");
     assert_eq!(at(&ed, Slot::Task).1, "out 37\n", "its row selected");
-    assert!(status(&frame(&mut ed)).contains("enter quote"));
+    // (`enter quote` in its head, as the terminal's says it — not the status line's)
+    let shown = frame(&mut ed);
+    assert!(!status(&shown).contains("enter quote"), "{shown}");
+    assert!(shown.lines().any(|l| l.contains("enter quote") && l.contains("y copy")), "{shown}");
     // (the editor's own: a word, a count, `f`, the line's end)
     feed(&mut ed, "<esc>3kghwe");
     assert_eq!(at(&ed, Slot::Task), (34, "34".into()), "3k, its start, w e: the number");
@@ -278,8 +282,22 @@ fn enter_quotes_a_selection_and_without_one_goes_to_the_chat() {
     assert_eq!((region(&ed).as_str(), c.quotes.len()), ("chat", 1), "space >: quoted");
 }
 
-/// Your run waiting behind the panel's (a run under way there): the status line says `enter run now`, and `enter`
-/// with nothing selected runs it — out of line, not the chat's input.
+/// At 80 columns the panel's head folds its pairs from the right: the way out (`esc code`) is kept right after what
+/// `enter` does — the status line doesn't say it too (polish landing 5), so it's the last to fold.
+#[test]
+fn the_way_out_outlasts_the_heads_other_keys() {
+    let mut ed = task(40);
+    feed(&mut ed, "<C-w>jx");
+    crate::term::render(&mut ed, &mut Vec::new(), 80, 24).unwrap();
+    let (f, fw, fh) = ed.last_frame.as_ref().unwrap();
+    let shown = crate::screen::text(f, *fw, *fh).unwrap_or_default();
+    let head = shown.lines().find(|l| l.contains("enter quote")).unwrap_or_else(|| panic!("{shown}"));
+    assert!(head.contains("enter quote  esc code"), "{head}");
+    assert!(!status(&shown).contains("esc code"), "{shown}");
+}
+
+/// Your run waiting behind the panel's (a run under way there): its queued row says `enter run now` — there alone, never
+/// the status line too (polish landing 5) — and `enter` with nothing selected runs it, out of line, not the chat's input.
 #[test]
 fn enter_runs_your_waiting_run_now() {
     let mut ed = task(12);
@@ -288,7 +306,9 @@ fn enter_runs_your_waiting_run_now() {
     crate::queued::push(&mut ed, crate::queued::What::Task(mine));
     assert_eq!(ed.workspace.runs_next.len(), 1, "it waits");
     feed(&mut ed, "<C-w>j");
-    assert!(status(&frame(&mut ed)).contains("enter run now"));
+    let shown = frame(&mut ed);
+    assert!(!status(&shown).contains("run now"), "{shown}");
+    assert!(shown.lines().any(|l| l.contains("enter run now")), "{shown}");
     feed(&mut ed, "<ret>");
     assert!(ed.workspace.runs_next.is_empty(), "out of line: it runs");
     assert_ne!(region(&ed), "chat", "not the chat's input");

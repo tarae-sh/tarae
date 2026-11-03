@@ -3,9 +3,9 @@
 00 ─ tarae › src › demo.rs ────────────────────────────────────────────────┬─ main · fix-login ▲2 waits · + ─────── ready ─
 01   1 use std::collections::HashMap;                                      │
 02   2                                                                     │
-03   3 ▎ Counts how often each wor ▎ fix-login · waiting 3m 00s — Claude   │
-04     ▎                             changes 3 files · C-q goes there      │
-05     ▎ Words are split on whitespace; case is kept.                      │
+03   3 ▎ Counts how often each word appea ▎ fix-login · waiting 3m 00s —   │
+04     ▎                                    Claude changes 3 files ·       │
+05     ▎ Words are split on whitespace; c   C-q goes there                 │
 06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize> {            │
 07   7     let mut counts = HashMap::new();                                │
 08   8     for word in text.split_whitespace() {                           │  ▎ Ask Claude
@@ -29,14 +29,14 @@
 26                                                                         │  ───────────────────────────────────────────
 27                                                                         │  › Ask about demo.rs…
 28                                                                         │  space l focus  space L hide
-29  ● normal   C-q answer                                                                           rust   utf-8 LF   1:1
+29  ● normal   C-q answer                                                                                      rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01     Accccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 02
-03                                1111111111111111111111111111111111111111
-04                                1111111111111111111111111111111111111111
-05
+03                                       111111111111111111111111111111111
+04                                       111111111111111111111111111111111
+05                                       111111111111111111111111111111111
 06
 07
 08
@@ -65,7 +65,7 @@
 00 a ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf BBBB f           ww wwwww f d fffffff fffff f
 01   A                                                                     a
 02   f                                                                     a
-03   f f                           w                                       a
+03   f f                                  w                                a
 04     f                                                                   a
 05     f                                                                   a
 06   f                                                                     a
@@ -91,7 +91,7 @@
 26                                                                         a  fffffffffffffffffffffffffffffffffffffffffff
 27                                                                         a  f fff fffff ffffffff
 28                                                                         a  DDDDD D fffff  DDDDD D ffff
-29  a TTTTTT   DDD ffffff                                                                           dddd   ddddd dd   TTT
+29  a TTTTTT   DDD ffffff                                                                                      dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary  1=other  2=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  w=warning  g=diff.plus  B=bold

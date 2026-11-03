@@ -792,7 +792,8 @@ it was (its commit, its changes and its index) and said, never left with conflic
 auto-save) wait for it — the save is written once it lands, unless the move changed that file; `space u`, `:w` to a
 new name there and a change set into it are refused until it lands, said (`fix is moving onto main — take it back
 once it lands`). Each is said once:
-`fix · moved onto main — 4 commits under it, now at 1a2b3c4`, its reloads one line. `workspace.sync` (your own
+`fix · moved onto main — 4 commits under it, now at 1a2b3c4` — its reloads one line in `:messages`, never a toast
+beside it. `workspace.sync` (your own
 config only): `"ask"` (the card), `"idle"` (the clean ones moved unasked, a card for the conflicting ones), `"off"`.
 Claude hears nothing of it: a file a move changed is one "changed since you last read it".
 

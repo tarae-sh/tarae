@@ -320,6 +320,9 @@ pub struct DiskBatch {
     /// When the first began — one whose end never came (a run cut off) holds its session's toasts no longer than
     /// `BATCH_MAX`.
     began: std::time::Instant,
+    /// Its action's own result says what it did (a base move's toast — #316): the line goes to `:messages` only, never
+    /// a second toast beside that one. Joined by one that doesn't, said as ever.
+    told: bool,
 }
 
 /// What a disk round's result is, as the state's `frames_for` and `events_for` say it — its backstop (`fswatch`'s,
@@ -550,11 +553,22 @@ impl Editor {
     /// git-tab action: `batch_token`): that session's reloads are one line (`DiskBatch`). One under way there
     /// already: both are.
     pub(crate) fn disk_batch_start(&mut self, what: &str, token: u64) {
+        self.disk_batch_open(what, token, false)
+    }
+
+    /// `disk_batch_start` for an action whose result is said whole by its own toast (`DiskBatch.told`): its reloads'
+    /// line kept in `:messages` alone.
+    pub(crate) fn disk_batch_told(&mut self, what: &str, token: u64) {
+        self.disk_batch_open(what, token, true)
+    }
+
+    fn disk_batch_open(&mut self, what: &str, token: u64, told: bool) {
         let session = self.workspace.id;
         match self.disk_batch.iter_mut().find(|b| b.session == session) {
             Some(b) => {
                 b.open.push(token);
                 b.after = None;
+                b.told &= told;
             }
             None => {
                 let (what, began) = (what.to_string(), crate::clock::now());
@@ -567,6 +581,7 @@ impl Editor {
                     deleted: Vec::new(),
                     after: None,
                     began,
+                    told,
                 };
                 self.disk_batch.push(b);
             }
@@ -617,7 +632,10 @@ impl Editor {
             }
             let msg = format!("{}: {}", b.what, parts.join(", "));
             if self.workspaces.is_empty() {
-                self.set_status(msg);
+                match b.told {
+                    true => self.recorded(crate::editor::ToastKind::Info, msg),
+                    false => self.set_status(msg),
+                }
                 continue;
             }
             let behind =
@@ -629,6 +647,7 @@ impl Editor {
                     l.reloaded += 1;
                     self.recorded(crate::editor::ToastKind::Info, msg);
                 }
+                None if b.told => self.recorded(crate::editor::ToastKind::Info, msg),
                 None => self.set_status(msg),
             }
         }
@@ -1446,6 +1465,53 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine theirs\n");
         assert!(!ed.doc().is_modified());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #316: a base move's reloads are the move's own toast's to say — their line kept in `:messages` alone, never a second
+    /// toast beside it (the move's result said twice and cut both times).
+    #[test]
+    fn a_moves_reloads_are_in_messages_only() {
+        let dir = crate::scratch::Scratch::new("disk-batch-told").into_path();
+        let mut ed = Editor::new(Config::default());
+        reloads_of_a_move(&mut ed, &dir);
+        let shown: Vec<String> = ed.toasts.iter().map(|t| t.text.clone()).collect();
+        assert!(!shown.iter().any(|t| t.contains("moved onto main")), "{shown:?}");
+        assert!(ed.messages.iter().any(|m| m.2 == "moved onto main: 1 file reloaded"), "in :messages");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #316 with other workspaces, the move in front's: its line named after the workspace, in `:messages` alone all the
+    /// same — never the status line's toast a lone workspace's reloads get.
+    #[test]
+    fn a_moves_reloads_in_front_among_workspaces_are_in_messages_only() {
+        let dir = crate::scratch::Scratch::new("disk-batch-told-front").into_path();
+        let other = crate::scratch::Scratch::new("disk-batch-told-behind").into_path();
+        let mut ed = Editor::new(Config::default());
+        let behind = ed.workspace_add(other.clone());
+        assert_ne!(behind, ed.workspace.id, "the move is the front's");
+        reloads_of_a_move(&mut ed, &dir);
+        let shown: Vec<String> = ed.toasts.iter().map(|t| t.text.clone()).collect();
+        assert!(!shown.iter().any(|t| t.contains("moved onto main")), "{shown:?}");
+        let said = format!("{} · moved onto main: 1 file reloaded", ed.workspace.label());
+        assert!(ed.messages.iter().any(|m| m.2 == said), "{said:?} in :messages: {:?}", ed.messages);
+        assert!(ed.workspaces.iter().all(|l| l.reloaded == 0), "no workspace behind marked");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&other).ok();
+    }
+
+    /// A base move's batch (`disk_batch_told`) over one file changed on disk, waited out until its line is said.
+    fn reloads_of_a_move(ed: &mut Editor, dir: &std::path::Path) {
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        ed.open(&dir.join("a.txt")).unwrap();
+        ed.disk_batch_told("moved onto main", 7);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        poll_once(ed);
+        ed.disk_batch_end(7);
+        let round = ed.disk_poll_gen;
+        while ed.disk_poll_gen == round || !ed.disk_batch.is_empty() {
+            let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("disk stat");
+            ed.handle_event(ev);
+        }
     }
 
     /// frictions29 #68: a git action's reloads (here a rebase) are one line once it's over — the deletion its own

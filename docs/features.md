@@ -172,10 +172,10 @@ configs carry over as they are.
   while Claude's follow mode leads the cursor, `● chat · follow` with the keys in the chat) · while Claude works, what it's
   doing now: the step and its own time, the last sentence it finished, the plan's step (`▸ running cargo test -q 41s — I
   will run the unit tests to check …   › 3/4 Run the unit tests` — whole on a card under the mouse, a press follows
-  Claude; only the turn's cell while the follow card says it; [Chat panel](claude-integration.md#chat-panel)) · git branch and `+3 −2` · Claude status (`…` waiting,
+  Claude; only the turn's cell while the follow card says it; [Chat panel](claude-integration.md#chat-panel)) · git branch · Claude status (`…` waiting,
   `● change` a change of Claude's waits for its review) · `● errors ▲ warnings` · language, colored by its server's state — dim italic starting, green
-  connected (a "ready" toast says so too), red failed or exited, faintest when none is installed · encoding and line
-  endings · selection count · position (keys you've started — a count, `g`, `space w` — show in its place until
+  connected (a "ready" toast says so too), red failed or exited, faintest when none is installed · `utf-8 CRLF` for a
+  file whose lines end so (the normal case, `utf-8 LF`, unsaid) · selection count · position (keys you've started — a count, `g`, `space w` — show in its place until
   they're done). It's the screen's last row: a `:` command, a `/` search or any other prompt opens as a card
   standing on it, its completions in the same card above what you type. When the terminal is narrow, the least
   important items fold away first
@@ -316,8 +316,8 @@ configs carry over as they are.
     says `● normal · task` (`· preflight`, `· tests`; `● select · task` after `v`), its position and its search's
     count. It holds still: what the run prints meanwhile comes in below the rows in sight (the head says `↓ output
     after`), `G` catches up; a key that moves neither the selection nor the view moves no row (`v`, `y`). `enter`
-    on a selection quotes it to Claude (`<quoted from="task"` … `"preflight"`, `"test"` with the test's name); with nothing selected, your run waiting behind Claude's runs now (the status line
-    says `enter run now`), else the chat's input. `tab` the slot's other panels (`S-tab` the next pane, as everywhere), `K` where Claude's
+    on a selection quotes it to Claude (`<quoted from="task"` … `"preflight"`, `"test"` with the test's name); with nothing selected, your run waiting behind Claude's runs now (its queued row
+    says `enter run now`), else the chat's input. Its keys are said in its head, never on the status line too. `tab` the slot's other panels (`S-tab` the next pane, as everywhere), `K` where Claude's
     command ran, `o` a preflight step's whole output (beside the steps' list, the step in view selected there), `esc`
     (a selection collapses first) to the code, `q` closes the
     panel once its run has ended. `C-w`, `:` and `space` are the editor's, as from every panel; `]x` / `[x` (the
@@ -432,8 +432,8 @@ configs carry over as they are.
 - **Persistent undo** — on save, the last 1000 undo steps are written next to your state, so `u`/`U` keep working after
   a restart. If the file changed outside tarae, the history is quietly dropped
 - **Git gutter** — a thin bar between the line numbers and the text: added lines green, modified yellow, deletions a
-  red underline, compared against the index (so staged changes leave it). Ticks on the scrollbar, `+3 −2` in the
-  status line, `]g` `[g` between hunks. Stage or commit elsewhere and come back, and the baseline is reread
+  red underline, compared against the index (so staged changes leave it). Ticks on the scrollbar, a file's `+3 −2` on
+  its row in the git tab and the review rail, `]g` `[g` between hunks. Stage or commit elsewhere and come back, and the baseline is reread
   ([screenshot](screenshots/ux-git.png))
 - **Git** `space g` — the side panel's git tab, with the keys, like lazygit beside your code: what's staged and what
   isn't, each a tree of files with status letters in the gutter's colors and `+a −r`, the branch and how far it is

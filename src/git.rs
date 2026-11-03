@@ -156,7 +156,7 @@ pub(crate) fn watch_round(
 pub struct Hunk {
     pub kind: HunkKind,
     pub lines: std::ops::Range<usize>,
-    /// Lines missing on the index side (status line −N).
+    /// Lines missing on the index side (the git tab's −N).
     pub removed: usize,
     pub base: std::ops::Range<usize>,
 }

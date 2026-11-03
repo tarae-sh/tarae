@@ -3,8 +3,8 @@
 00 ─ tarae › [scratch] ───────────────────────────────────────────────────── main · fix-login · docs · parser · + ─
 01   1
 02
-03
-04
+03                                                    ▎ parser marked to bring 2nd — B brings the 2 in turn
+04                                                    ▎ fix-login marked to bring — m on another, then B brings…
 05
 06
 07                       ╭─ sessions ── 4 sessions ─────────────── enter switch  / search ─╮
@@ -29,13 +29,13 @@
 26
 27
 28
-29  ● sessions   main   ▎ parser marked to bring 2nd — B brings the 2 in turn · +…                 utf-8 LF   1:1
+29  ● sessions   main                                                                                         1:1
 ## bg · surface per cell, blank = ui.background
 00
 01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 02
-03
-04
+03                                                   1111111111111111111111111111111111111111111111111111111111111
+04                                                   1111111111111111111111111111111111111111111111111111111111111
 05
 06
 07
@@ -65,8 +65,8 @@
 00 f ddddd f TTTTTTTTT fffffffffffffffffffffffffffffffffffffffffffffffffffff BBBB f           f      f        f d f
 01   A
 02
-03
-04
+03                                                    a
+04                                                      ddddddddd dddddd dd ddddd d d dd dddddddd dddd d ddddddd
 05
 06
 07                       aa TTTTTTTT aa d dddddddd aaaaaaaaaaaaaaa DDDDD ffffff  D ffffff aa
@@ -91,7 +91,7 @@
 26
 27
 28
-29  a TTTTTTTT   BBBB   a                                                                          ddddd dd   TTT
+29  a TTTTTTTT   BBBB                                                                                         TTT
 ## legend
-bg: c=ui.cursorline.primary  P=ui.menu.selected
+bg: c=ui.cursorline.primary  P=ui.menu.selected  1=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold

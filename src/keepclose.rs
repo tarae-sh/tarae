@@ -712,7 +712,8 @@ fn start(ed: &mut Editor, w: Wait) {
     ed.keep_close.stamps = ed.docs.iter().filter(under).map(|d| (d.id, d.disk)).collect();
     ed.with_workspace(id, |ed| {
         ed.workspace.moving = Some(base.clone());
-        ed.disk_batch_start(&format!("moved onto {base}"), token);
+        // (its reloads in `:messages`: the move's own toast says it, once and whole — #316)
+        ed.disk_batch_told(&format!("moved onto {base}"), token);
     });
     let (root, branch) = (w.ws.root.clone(), base);
     ed.events.shared_jobs().spawn(move || {

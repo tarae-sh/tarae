@@ -997,11 +997,6 @@ pub fn quotes(ed: &Editor) -> bool {
     keyed(ed).is_some_and(|(_, o)| crate::docpane::wide(o.doc()))
 }
 
-/// Whether `enter` runs your run waiting behind on the output with the keys (nothing selected).
-pub fn run_waits(ed: &Editor) -> bool {
-    keyed(ed).is_some_and(|(r, _)| r.line().is_some_and(|l| crate::queued::mine_waits(ed, l)))
-}
-
 /// A prompt the output with the keys opened (`/`, `?`, `s`) is up: its word on the status line under it.
 pub fn prompt_from(ed: &Editor) -> Option<Run> {
     keyed(ed).filter(|(_, o)| o.prompt && ed.prompt.is_some()).map(|(r, _)| r)

@@ -645,6 +645,8 @@ pub fn leave(ed: &mut Editor) {
 /// mode, keys under way and search come along (a `v`, a count before `G`).
 fn catch_up(ed: &mut Editor) {
     let Some(old) = ed.workspace.viewer.view.take() else { return };
+    let came = ed.workspace.terminal.as_ref().is_some_and(|t| t.came());
+    let was = (old.doc().top, old.doc().selection().clone());
     if let Some(t) = ed.workspace.terminal.as_mut() {
         t.release();
     }
@@ -655,6 +657,12 @@ fn catch_up(ed: &mut Editor) {
         v.doc_mut().set_top(last);
     }
     in_sight(ed);
+    // (nothing came and it was there already: said, never a key gone by in silence — its head's `G latest` is pressed
+    // there too)
+    let now = ed.workspace.viewer.view.as_ref().map(|v| (v.doc().top, v.doc().selection().clone()));
+    if !came && now.as_ref() == Some(&was) {
+        ed.set_status("at the latest already — nothing came since");
+    }
 }
 
 /// What a command asked for, once its key is done.

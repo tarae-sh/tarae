@@ -582,7 +582,7 @@ fn enter_on_a_stub_opens_its_card_at_the_code() {
     let (link, note) = stub_here(&ed).unwrap();
     assert_eq!(link.path, root.join("src/a.rs"));
     let said = frame(&mut ed, W).matches("enter go there").count();
-    assert_eq!(said, 2, "its hint, at the chat's foot and on the status line");
+    assert_eq!(said, 1, "its hint, at the chat's foot — never the status line too (polish landing 5)");
     feed(&mut ed, "<ret>");
     assert_eq!(ed.doc().path.as_deref(), Some(root.join("src/a.rs").as_path()));
     assert_eq!(ed.cursor_line(), 2);

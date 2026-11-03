@@ -1902,12 +1902,14 @@ fn slot_hints(editor: &Editor, lay: &Layout) -> Vec<(String, &'static str)> {
     let closes = editor.q_closes(slot);
     // (`:procs`' detail has no run to catch up with)
     let run = slot != crate::sizes::Slot::Procs;
+    // (`enter` running your run waiting behind is its queued row's `enter run now — stops …`: `draw_queued`; the way
+    // out right after what `enter` does, the last to fold — the status line doesn't say it too, polish landing 5)
     [
         (bound("view_take", "enter").filter(|_| quotes), "quote"),
+        (bound("view_leave", "esc"), "code"),
         (bound("view_copy", "y"), "copy"),
         (bound("search", "/"), "search"),
         (bound("view_latest", "G").filter(|_| run), "latest"),
-        (bound("view_leave", "esc"), "code"),
         (bound("wclose", "q").filter(|_| closes), "close"),
         (Some("C-w z".into()), zoom),
     ]
@@ -3025,13 +3027,14 @@ fn draw_terminal_panel(
     let to_view = editor.keymaps.terminal.keys_for("terminal_view").into_iter().next();
     let to_program = editor.keymaps.normal.keys_for("terminal_focus").into_iter().next();
     let quotes = crate::view::quotes(editor);
+    // (the ways back to typing and out first, the last to fold — the status line doesn't say them too)
     let viewing: Vec<(Option<String>, &str)> = vec![
         (bound("view_take", "enter").filter(|_| quotes), "quote"),
         (bound("view_input", "i").filter(|_| t.exited.is_none()), "type"),
+        (bound("view_leave", "esc"), "code"),
         (bound("view_copy", "y"), "copy"),
         (bound("search", "/"), "search"),
         (bound("view_latest", "G"), "latest"),
-        (bound("view_leave", "esc"), "code"),
         (bound("wclose", "q"), if t.exited.is_some() { "close" } else { "hide" }),
         (Some("C-w z".into()), zoom),
     ];
@@ -11155,7 +11158,7 @@ fn fit_segments(left: &mut Vec<Seg>, right: &mut Vec<Seg>, width: usize) {
             }
             return gone;
         }
-        let key = matches!(s.keep, HINTS | VIEW_HINTS) && s.text.starts_with("  ");
+        let key = s.keep == HINTS && s.text.starts_with("  ");
         if v.get(i).is_some_and(|n| {
             n.keep == s.keep && (n.text.trim().is_empty() || key && !n.text.starts_with("  "))
         }) {
@@ -11342,53 +11345,8 @@ fn draw_statusline(
             keep: 240,
         });
     }
-    // A view mode's way back to typing and out — each key as bound; the first to fold when narrow
-    if let Keys::View(s) = keys {
-        let bound = |name: &str, like: &str| crate::view::bound(editor, s, name, like);
-        // (an ended program takes no typing)
-        let typed = bound("view_input", "i").filter(|_| crate::view::typeable(editor));
-        let quote = bound("view_take", "enter").filter(|_| crate::view::quotes(editor));
-        let stub = crate::chatdoc::stub_here(editor).is_some() && quote.is_none();
-        let go = bound("view_take", "enter").filter(|_| stub);
-        let pairs =
-            [(quote, "quote"), (go, "go there"), (typed, "type"), (bound("view_leave", "esc"), "code")];
-        for (k, what) in pairs.iter().filter_map(|(k, d)| Some((k.as_ref()?, *d))) {
-            left.push(Seg {
-                cut: None,
-                text: format!("  {k}"),
-                style: Style { bold: true, ..dim },
-                keep: VIEW_HINTS,
-            });
-            left.push(Seg {
-                cut: None,
-                text: format!(" {what}"),
-                style: Style { fg: ui.linenr.fg, ..ui.status },
-                keep: VIEW_HINTS,
-            });
-        }
-    }
-    // A run panel's output: `enter` quotes a selection, else runs your run waiting behind; the way out — as bound
-    if let Keys::Output(_) = keys {
-        let bound = |name: &str, like: &str| crate::rundoc::bound(editor, name, like);
-        let quote = bound("view_take", "enter").filter(|_| crate::rundoc::quotes(editor));
-        let run_now = bound("view_take", "enter")
-            .filter(|_| !crate::rundoc::quotes(editor) && crate::rundoc::run_waits(editor));
-        let pairs = [(quote, "quote"), (run_now, "run now"), (bound("view_leave", "esc"), "code")];
-        for (k, what) in pairs.iter().filter_map(|(k, d)| Some((k.as_ref()?, *d))) {
-            left.push(Seg {
-                cut: None,
-                text: format!("  {k}"),
-                style: Style { bold: true, ..dim },
-                keep: VIEW_HINTS,
-            });
-            left.push(Seg {
-                cut: None,
-                text: format!(" {what}"),
-                style: Style { fg: ui.linenr.fg, ..ui.status },
-                keep: VIEW_HINTS,
-            });
-        }
-    }
+    // (a view mode's keys — the terminal's, the chat's — and a run's output's are their surface's own line's: the
+    // terminal's and a run panel's header, the chat's foot — never said here too, polish landing 5)
     // The session in front, when there's more than one and the chat (whose top row has them all) isn't
     // up: its name — a click opens the list — and how the others are
     let chip = !editor.workspaces.is_empty() && lay.chat_w == 0;
@@ -11563,28 +11521,8 @@ fn draw_statusline(
     {
         left.push(Seg { cut: None, text: format!("   {b}"), style: dim, keep: BRANCH });
     }
-    // How much this file changed from HEAD: +added/modified lines −removed lines (colors match the git bar)
-    let (added, removed) = doc.git_hunks.iter().fold((0, 0), |(a, r), h| (a + h.lines.len(), r + h.removed));
-    if added + removed > 0 {
-        let color =
-            |k: &str| ui.status.patch(Style { fg: t.try_get(k).and_then(|s| s.fg), ..Style::default() });
-        if added > 0 {
-            left.push(Seg {
-                cut: None,
-                text: format!("  +{added}"),
-                style: color("diff.plus"),
-                keep: CHANGED,
-            });
-        }
-        if removed > 0 {
-            left.push(Seg {
-                cut: None,
-                text: format!("  −{removed}"),
-                style: color("diff.minus"),
-                keep: CHANGED,
-            });
-        }
-    }
+    // (how much this file changed from HEAD isn't said here — polish landing 5: the gutter's signs where you read, the git
+    // tab's and the review rail's rows say it)
     // (an error or warning no card has shown yet under a picker outlasts the list's keys: they fit beside it, whole
     // pairs folding from the right, it's cut to what the mode, the position and the inbox's count leave — below; so
     // does any message answering your last key there, until your next — `this list — it has no preview`, `the only
@@ -11790,14 +11728,13 @@ fn draw_statusline(
         }
         right.push(gap(60));
     }
+    // The file's encoding and line ends only when they aren't the normal case (polish landing 5: `utf-8 LF` went) —
+    // tarae reads UTF-8 alone, so it's the line ends that differ
     let crlf = doc.text.len_lines() > 1 && mv::line_full_end(&doc.text, 0) - mv::line_end(&doc.text, 0) == 2;
-    right.push(Seg {
-        cut: None,
-        text: format!("utf-8 {}", if crlf { "CRLF" } else { "LF" }),
-        style: dim,
-        keep: 40,
-    });
-    right.push(gap(40));
+    if crlf {
+        right.push(Seg { cut: None, text: "utf-8 CRLF".into(), style: dim, keep: 40 });
+        right.push(gap(40));
+    }
     if sel.len() > 1 {
         right.push(Seg { cut: None, text: format!("{} sels", sel.len()), style: accent, keep: 150 });
         right.push(gap(150));
@@ -11978,7 +11915,7 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
     let review = editor.workspace.claude.review.as_ref().is_some_and(|r| r.ready);
     let press = |keep: u8| match keep {
         UNSENT => Some(Press::Command("chat_open")),
-        BRANCH | CHANGED => Some(Press::Command("git_panel")),
+        BRANCH => Some(Press::Command("git_panel")),
         ZOOMED => Some(Press::Command("zoom_toggle")),
         CLAUDE_CHANGE if review => Some(Press::Card),
         PROCS_MARK | PROCS_SAYS => Some(Press::Command(":procs")),
@@ -12034,12 +11971,11 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
 const CHIP: u8 = 235;
 
 // The status line's words that do their keys, by their segments' ranks (`status_words`): what's typed in the chat out of
-// sight; the branch and how much the file changed; `full screen C-w z back`; Claude's change waiting (or `space i`
+// sight; the branch; `full screen C-w z back`; Claude's change waiting (or `space i`
 // asking); what's abnormal among tarae's processes and its ` :procs`; the file's errors and warnings; after the inbox's
 // count, what waits or `· C-q`.
 const UNSENT: u8 = 225;
 const BRANCH: u8 = 80;
-const CHANGED: u8 = 85;
 const ZOOMED: u8 = 215;
 const CLAUDE_CHANGE: u8 = 220;
 const PROCS_MARK: u8 = 195;
@@ -12054,10 +11990,6 @@ const INBOX_NEXT: u8 = INBOX - 1;
 /// The status line's `▲3 waiting` and `1 run quiet` (the inbox): they outlast the chip — what waits for you
 /// is what's left when the room runs out.
 const INBOX: u8 = 245;
-
-/// The status line's view-mode hints (`i type  esc code`): the first to fold when narrow — below the branch and
-/// the hunks; the mode word (`● normal · chat`) never (quote-plan §6).
-const VIEW_HINTS: u8 = 70;
 
 /// A code pane's top line's key hint (`enter go there`, `C-c stop`): a blank, then `hint_spans`' key and words, all
 /// this `keep` — folded before the line's details, the gap with them (`fit_segments`: a blank that leads its run).
@@ -12819,6 +12751,57 @@ const PEEK_STEP: f32 = 0.3;
 ///     +2 earlier · :messages
 ///
 /// ```
+/// The longest routine message the status line takes in a toast's place where the code is too narrow for its card
+/// (`draw_toasts`): what the line leaves it beside the mode, the branch and the position at 80 columns, so it's said
+/// there whole — a longer one keeps its card.
+const SAID_WHOLE: usize = 40;
+
+/// A toast's line in rows of `w` cells at most, broken between phrases (#318: `would / conflict` at 80 columns): where a
+/// row would end inside a phrase, the phrase goes to the next row whole — a phrase ends after `—`, `·`, or a word
+/// ending in `,` `;` `:`. A phrase longer than a row breaks between its words; a word longer than a row (a path) at the
+/// row's end, its rest on the next. `phrases` false: between words only.
+fn toast_wrap(line: &str, w: usize, phrases: bool) -> Vec<String> {
+    let ends_phrase = |word: &str| phrases && (matches!(word, "—" | "·") || word.ends_with([',', ';', ':']));
+    let mut rows: Vec<String> = Vec::new();
+    let mut row: Vec<&str> = Vec::new();
+    let width = |ws: &[&str]| ws.iter().map(|w| w.width()).sum::<usize>() + ws.len().saturating_sub(1);
+    // (a word wider than a row in pieces of a row each, at its characters' bounds)
+    let words = line.split_whitespace().flat_map(|word| {
+        let mut pieces = Vec::new();
+        let (mut from, mut cells) = (0, 0);
+        for (i, c) in word.char_indices() {
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if cells + cw > w.max(2) && i > from {
+                pieces.push(&word[from..i]);
+                (from, cells) = (i, 0);
+            }
+            cells += cw;
+        }
+        pieces.push(&word[from..]);
+        pieces
+    });
+    for word in words {
+        if row.is_empty() || width(&row) + 1 + word.width() <= w {
+            row.push(word);
+            continue;
+        }
+        // (the row ends inside a phrase: from the last phrase's start on goes down with this word — where the row keeps a
+        // phrase and they fit together; else the phrase breaks here all the same, the row kept full)
+        let from = (1..row.len())
+            .rev()
+            .find(|&i| ends_phrase(row[i - 1]))
+            .filter(|&i| !ends_phrase(row[row.len() - 1]) && width(&row[i..]) + 1 + word.width() <= w);
+        let next: Vec<&str> = from.map_or_else(Vec::new, |i| row.split_off(i));
+        rows.push(row.join(" "));
+        row = next;
+        row.push(word);
+    }
+    if !row.is_empty() {
+        rows.push(row.join(" "));
+    }
+    rows
+}
+
 fn draw_toasts(
     editor: &Editor,
     ui: &Ui,
@@ -12857,26 +12840,22 @@ fn draw_toasts(
     let mut rows: Vec<(Option<Style>, Fit, Style)> = Vec::new();
     let mut segs: Vec<Vec<(String, Option<&'static str>)>> = Vec::new();
     let mut starts: Vec<(usize, u64)> = vec![(0, newest.id)];
-    // The newest: messages with newlines (language server notices etc.) wrap per paragraph
-    let para: Vec<crate::markdown::Line> = newest
-        .text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| crate::markdown::Line::Text {
-            spans: vec![crate::markdown::Span {
-                cut: None,
-                hint: false,
-                text: l.trim_end().to_string(),
-                style: Style::default(),
-            }],
-            indent: 0,
-        })
-        .collect();
+    // The newest: messages with newlines (language server notices etc.) wrap per paragraph, between phrases
     let natural = newest.text.lines().map(|l| l.trim_end().width()).max().unwrap_or(0).min(max_inner);
-    let wrapped = crate::markdown::wrap(&para, natural.max(1), Style::default());
+    let wrap = |phrases: bool| -> Vec<String> {
+        (newest.text.lines().filter(|l| !l.trim().is_empty()))
+            .flat_map(|l| toast_wrap(l.trim_end(), natural.max(1), phrases))
+            .collect()
+    };
+    // (between phrases where that keeps it within its three rows — a longer one breaks between words, never cut for
+    // its phrases' sake)
+    let wrapped = match (wrap(true), wrap(false)) {
+        (p, w) if p.len() > 3 && p.len() > w.len() => w,
+        (p, _) => p,
+    };
     let cut = wrapped.len() > 3;
     for (i, l) in wrapped.into_iter().take(3).enumerate() {
-        let mut text = Fit::plain(l.into_iter().map(|s| s.text).collect::<String>());
+        let mut text = Fit::plain(l);
         if cut && i == 2 {
             text = crate::whole::fit_part(&format!("{} …", text.shown()), max_inner, newest.text.trim());
         }
@@ -12916,10 +12895,15 @@ fn draw_toasts(
     // keeps its card (`Toast::waiting`). Decided once for the card, as it first shows — while it's up it doesn't
     // jump between the two — and only for one message alone: messages said together (a disk-watch round's
     // reloads) keep their card, where each is read (folded, only the newest showed)
+    // (and only one the status line says whole: a longer one keeps its card, read whole there — #316, a base move's
+    // result cut on the status line)
     let narrow = match editor.screen.toast_narrow.get() {
         Some(narrow) => narrow,
         None => {
-            let narrow = toasts.len() == 1 && 2 * width > lay.edit_w.saturating_sub(lay.rail_w);
+            let whole = newest.text.trim().lines().count() == 1 && newest.text.trim().width() <= SAID_WHOLE;
+            // (as wide as its words would make it: broken between phrases its rows may be narrower, the code no wider)
+            let wide = inner.max(natural) + 5;
+            let narrow = toasts.len() == 1 && whole && 2 * wide > lay.edit_w.saturating_sub(lay.rail_w);
             editor.screen.toast_narrow.set(Some(narrow));
             narrow
         }
@@ -16683,10 +16667,11 @@ fn rail_head(editor: &Editor, r: &crate::codereview::CodeReview, w: usize) -> Ve
         r.files.iter().fold((0, 0), |(a, b), f| (a + f.added, b + f.removed));
     let n = r.files.len();
     let mut summary = vec![tone(Tone::Dim, format!("{n} file{}", if n == 1 { "" } else { "s" }))];
-    if added > 0 {
+    // (the sum only where it sums: one file's `+a −r` is its row's — #311, said once)
+    if added > 0 && n > 1 {
         summary.push(tone(Tone::Plus, format!("  +{added}")));
     }
-    if removed > 0 {
+    if removed > 0 && n > 1 {
         summary.push(tone(Tone::Minus, format!(" −{removed}")));
     }
     if r.moved_total() > 0 {
@@ -19431,14 +19416,15 @@ fn draw_chat(
     // (`enter` quotes what's selected — said while something is)
     let quotes = crate::view::quotes(editor);
     let stub = crate::chatdoc::stub_here(editor).is_some();
+    // (the ways back to typing and out first, the last to fold — the status line doesn't say them too)
     let viewing = [
         (bound("view_take", "enter").filter(|_| quotes), "quote"),
         (bound("view_take", "enter").filter(|_| stub && !quotes), "go there"),
         (bound("view_input", "i"), "type"),
+        (bound("view_leave", "esc"), "code"),
         (bound("view_copy", "y"), "copy"),
         (bound("search", "/"), "search"),
         (bound("view_latest", "G"), "latest"),
-        (bound("view_leave", "esc"), "code"),
     ];
     let esc = crate::chatinput::esc_said(editor);
     let esc = (esc.0.as_str(), esc.1);
@@ -30691,13 +30677,11 @@ mod tests {
             INBOX_NEXT,
             UNSENT,
             BRANCH,
-            CHANGED,
             ZOOMED,
             CLAUDE_CHANGE,
             PROCS_MARK,
             PROCS_SAYS,
             DIAGNOSTICS,
-            VIEW_HINTS,
             PATH_HINTS,
             REVIEWER,
             REVIEWER - 1,
@@ -30727,8 +30711,8 @@ mod tests {
     fn a_spacer_before_its_run_goes_with_it() {
         let seg = |t: &str, keep| Seg { cut: None, text: t.into(), style: Style::default(), keep };
         let texts = |l: &[Seg]| l.iter().map(|s| s.text.clone()).collect::<Vec<_>>();
-        // (the woven bar's own keep: not `HINTS`/`VIEW_HINTS`, whose glued `  key` the older rule takes whole)
-        assert!(![HINTS, VIEW_HINTS].contains(&PATH_HINTS));
+        // (the woven bar's own keep: not `HINTS`, whose glued `  key` the older rule takes whole)
+        assert_ne!(HINTS, PATH_HINTS);
         let mut l = vec![seg("woven · a.rs", 250), seg("  ≈ 1 conflict", 244), seg("  ", PATH_HINTS)];
         l.extend([seg("enter", PATH_HINTS), seg(" go there", PATH_HINTS)]);
         fit_segments(&mut l, &mut Vec::new(), 40);
@@ -30759,60 +30743,77 @@ mod tests {
         fit_segments(&mut l, &mut Vec::new(), 23);
         let texts: Vec<&str> = l.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(texts, ["● view", "  esc", " code"]);
-        // (a view mode's own pairs, after the mode word, alike)
-        for s in &mut l {
-            s.keep = if s.keep == HINTS { VIEW_HINTS } else { s.keep };
-        }
-        l.splice(1..1, [seg("  i", VIEW_HINTS), seg(" type", VIEW_HINTS)]);
-        fit_segments(&mut l, &mut Vec::new(), 21);
-        let texts: Vec<&str> = l.iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(texts, ["● view", "  esc", " code"]);
     }
 
-    /// The chat's search at 80 cells (the `transcript-search` shot, where ` code` was left alone): the right side
-    /// folds its encoding and language first, then the view's pairs go — dropping `  esc` alone would leave room
-    /// enough, so ` code` must go with it.
+    /// The status line — the frame's last row — drawn `w` wide.
+    fn status_row(ed: &mut Editor, w: u16) -> String {
+        render(ed, &mut Vec::new(), w, 24).unwrap();
+        let (frame, fw, fh) = ed.last_frame.as_ref().unwrap();
+        let text = crate::screen::text(frame, *fw, *fh).unwrap_or_default();
+        text.lines().last().unwrap_or_default().trim_end().to_string()
+    }
+
+    /// Polish landing 5, the status line hides the normal case: no `utf-8 LF` (said only for a file that isn't —
+    /// `utf-8 CRLF`), no `+N −N` (the gutter's signs, the git tab's and the rail's rows say how a file changed).
     #[test]
-    fn statusline_keeps_hint_pairs_whole_beside_a_search() {
-        let seg = |t: &str, keep| Seg { cut: None, text: t.into(), style: Style::default(), keep };
-        let mut l = vec![
-            seg(" ●", 255),
-            seg(" normal · chat ", 255),
-            seg("  enter", VIEW_HINTS),
-            seg(" quote", VIEW_HINTS),
-            seg("  i", VIEW_HINTS),
-            seg(" type", VIEW_HINTS),
-            seg("  esc", VIEW_HINTS),
-            seg(" code", VIEW_HINTS),
-            seg("   main", 80),
-            seg("  +1", 85),
-            seg("  −1", 85),
-        ];
-        let mut r = vec![
-            seg("/moves into the map in t…  ", 205),
-            seg("1/1", 206),
-            seg("   ", 206),
-            seg("rust", 60),
-            seg("   ", 60),
-            seg("utf-8 LF", 40),
-            seg("   ", 40),
-            seg("8:123 ", 250),
-        ];
-        fit_segments(&mut l, &mut r, 80);
-        let texts: Vec<&str> = l.iter().chain(&r).map(|s| s.text.as_str()).collect();
+    fn the_status_line_says_a_files_form_only_when_it_isnt_the_normal_case() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.docs[0].text = ropey::Rope::from_str("one\ntwo\nthree\n");
+        let s = status_row(&mut ed, 120);
+        assert!(!s.contains("utf-8") && !s.contains("LF"), "{s}");
+        // (changed from HEAD: one line added, two removed — not said here)
+        let hunk = |kind, lines, removed| crate::git::Hunk { kind, lines, removed, base: 0..removed };
+        ed.docs[0].git_hunks =
+            vec![hunk(crate::git::HunkKind::Added, 0..1, 0), hunk(crate::git::HunkKind::Deleted, 2..2, 2)];
+        let s = status_row(&mut ed, 120);
+        assert!(!s.contains("+1") && !s.contains("−2"), "{s}");
+        ed.docs[0].text = ropey::Rope::from_str("one\r\ntwo\r\n");
+        let s = status_row(&mut ed, 120);
+        assert!(s.contains("utf-8 CRLF"), "{s}");
+    }
+
+    /// #318: a toast breaks between phrases — after `—`, `·`, `,` — never inside one where the phrase fits a row of its
+    /// own; a phrase longer than a row breaks between its words, a word longer than a row at the row's end.
+    #[test]
+    fn a_toast_breaks_between_phrases() {
+        let said = "fix ≈ docs · src/a.rs L10 — would conflict";
+        assert_eq!(toast_wrap(said, 40, true), ["fix ≈ docs · src/a.rs L10 —", "would conflict"]);
+        assert_eq!(toast_wrap(said, 40, false), ["fix ≈ docs · src/a.rs L10 — would", "conflict"]);
+        assert_eq!(toast_wrap(said, 60, true), [said]);
+        // (the row ends at a phrase's end already: as it is)
+        assert_eq!(toast_wrap("moved onto main — one commit", 17, true), ["moved onto main —", "one commit"]);
+        // (a phrase longer than a row: between its words, the rows kept full)
         assert_eq!(
-            texts,
-            [
-                " ●",
-                " normal · chat ",
-                "   main",
-                "  +1",
-                "  −1",
-                "/moves into the map in t…  ",
-                "1/1",
-                "   ",
-                "8:123 "
-            ]
+            toast_wrap("a — one two three four five six", 12, true),
+            ["a — one two", "three four", "five six"]
+        );
+        assert_eq!(toast_wrap("go: abcdefghijkl x", 8, true), ["go:", "abcdefgh", "ijkl x"]);
+    }
+
+    /// #316: where the code is too narrow for a toast's card a routine message is said on the status line — only one the
+    /// line says whole; a longer one keeps its card, read whole there.
+    #[test]
+    fn a_toast_too_long_for_the_status_line_keeps_its_card() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.docs[0].text = ropey::Rope::from_str("one\n");
+        // (38 cells: its card would take more than half the code — the status line says it, whole)
+        ed.set_status("saved a.rs — formatted, 12 lines moved");
+        let s = status_row(&mut ed, 80);
+        assert!(s.contains("saved a.rs — formatted, 12 lines moved"), "{s}");
+        assert!(ed.screen.toast_card.get().is_none());
+        ed.toasts.clear();
+        ed.screen.toast_narrow.set(None);
+        // (its first row 40 cells: a card over half the code, kept — the line would cut it)
+        let said = "docs · moved onto main (workspace.sync = \"idle\") — 2 commits under it, now at 1a2b3c4";
+        ed.set_success(said);
+        let s = status_row(&mut ed, 80);
+        assert!(!s.contains("moved onto"), "{s}");
+        assert!(ed.screen.toast_card.get().is_some(), "its card");
+        let (frame, fw, fh) = ed.last_frame.as_ref().unwrap();
+        let shown = crate::screen::text(frame, *fw, *fh).unwrap_or_default();
+        assert!(
+            shown.contains("docs · moved onto main (workspace.sync =") && shown.contains("now at 1a2b3c4"),
+            "{shown}"
         );
     }
 

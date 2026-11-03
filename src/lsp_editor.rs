@@ -6671,6 +6671,29 @@ mod tests {
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
 
+    /// Polish landing 5's check (`Roots Scanned · 225/225` seen standing after a restart): rust-analyzer's VFS load as
+    /// its `main_loop.rs` sends it — begin, a report sent at once, its coalesced last one, the end, a second load the
+    /// same — leaves the status line once ended.
+    #[test]
+    fn a_finished_progress_leaves_the_status_line() {
+        let (mut ed, _file, _log) = setup("roots", "fn a() {}\n");
+        let cid = ready(&mut ed);
+        let said = |kind: &str, message: &str| {
+            json!({ "method": "$/progress", "params": { "token": "rustAnalyzer/Roots Scanned",
+                "value": { "kind": kind, "title": "Roots Scanned", "message": message, "percentage": 100 } } })
+        };
+        for _ in 0..2 {
+            for (kind, message) in
+                [("begin", "0/225"), ("report", "224/225"), ("report", "225/225"), ("end", "225/225")]
+            {
+                ed.on_lsp_message(cid, said(kind, message));
+                let shown = ed.lsp_progress().unwrap_or_default();
+                assert_eq!(shown.contains("Roots Scanned"), kind != "end", "after {kind}: {shown}");
+            }
+        }
+        assert_eq!(ed.lsp_progress(), None);
+    }
+
     /// `g d` while the server is still indexing gets an empty answer: that's said as "loading", and the
     /// question goes again by itself when the work ends — unless the cursor has moved on.
     #[test]

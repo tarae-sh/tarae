@@ -29,7 +29,7 @@
 26                                      │ your files, your network — this once.                      │
 27                                      ╰─ C-q answer · y Run · n No ────────────────────────────────╯
 28
-29  ● normal                                                                    rust   utf-8 LF   1:1
+29  ● normal                                                                               rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01     Accccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -91,7 +91,7 @@
 26                                      f wwww wwwwww wwww wwwwwww w wwww wwwww                      f
 27                                      ff FFF ffffff f F fff f F ff fffffffffffffffffffffffffffffffff
 28
-29  a TTTTTT                                                                    dddd   ddddd dd   TTT
+29  a TTTTTT                                                                               dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  w=warning  g=diff.plus

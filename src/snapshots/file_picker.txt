@@ -29,7 +29,7 @@
 26  │                                        │                                                       │
 27  ╰────────────────────────────────────────┴───────────────────────────────────────────────────────╯
 28
-29  ● picker   type narrow  esc close                                                  utf-8 LF   1:1
+29  ● picker   type narrow  esc close                                                             1:1
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -91,7 +91,7 @@
 26  a                                        a                                                       a
 27  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 28
-29  a TTTTTT   ffff ffffff  DDD fffff                                                  ddddd dd   TTT
+29  a TTTTTT   ffff ffffff  DDD fffff                                                             TTT
 ## legend
 bg: P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus

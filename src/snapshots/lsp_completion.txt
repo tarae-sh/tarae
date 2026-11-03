@@ -29,7 +29,7 @@
 26
 27
 28
-29  ● insert                                                                    rust   utf-8 LF   3:7
+29  ● insert                                                                               rust   3:7
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -91,7 +91,7 @@
 26
 27
 28
-29  g TTTTTT                                                                    gggg   ddddd dd   TTT
+29  g TTTTTT                                                                               gggg   TTT
 ## legend
 bg: c=ui.cursorline.primary  p=ui.popup  P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus  B=bold

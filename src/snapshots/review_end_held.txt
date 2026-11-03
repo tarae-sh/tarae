@@ -1,7 +1,7 @@
 # review_end_held · 112x30 · theme meok · cursor 1:34
 ## text
 00 ─ review ── uncommitted ─────┬─ tarae › src › demo.rs ──────────────────────────────────────────────────────────
-01   1 file  +1                 │  1 let line_1 = 1;
+01   1 file                     │  1 let line_1 = 1;
 02   0 of 1 viewed · 1 unviewed │  2 let line_2 = 2;
 03   ▲ 1 high to look at        │  3 let line_3 = 3;
 04   space v C  a board         │  4 let line_4 = 4;
@@ -29,7 +29,7 @@
 26   space n comment            │                 │ changed since asks only for its lines since.                 │
 27   space v m viewed           │                 ╰─ C-q answer · h Go to them · n Keep reviewing ───────────────╯
 28   space v q end              │
-29  ● normal   +1                                                                           rust   utf-8 LF   1:1
+29  ● normal                                                                                           rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01                                   Accccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -63,7 +63,7 @@
 29
 ## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
 00 f TTTTTT ff fffffffffff fffffaa ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-01   d dddd  gg                 a  A
+01   d dddd                     a  A
 02   f ff f ffffff d d dddddddd a  f
 03   e e eeee ee eeee ee        a  f
 04   DDDDD D D  f fffff         a  f
@@ -91,7 +91,7 @@
 26   BBBBB B fffffff            a                 f ddddddd ddddd dddd dddd ddd ddd ddddd dddddd                 f
 27   BBBBB B B ffffff           a                 ff FFF ffffff f F ff ff ffff f F ffff fffffffff ffffffffffffffff
 28   BBBBB B B fff              a
-29  a TTTTTT   gg                                                                           dddd   ddddd dd   TTT
+29  a TTTTTT                                                                                           dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected  A=ui.cursor.primary  1=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning  g=diff.plus  B=bold

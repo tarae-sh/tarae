@@ -29,7 +29,7 @@
 26   web-3   1/1    Running
 27   web-4   1/1    Running
 28   30 pods · watching
-29  ● panel                                                                            utf-8 LF   1:1
+29  ● panel                                                                                       1:1
 ## bg · surface per cell, blank = ui.background
 00
 01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -91,7 +91,7 @@
 26
 27
 28   dd dddd d dddddddd
-29  a TTTTT                                                                            ddddd dd   TTT
+29  a TTTTT                                                                                       TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr

@@ -29,7 +29,7 @@
 26                             │ l  Chat with Claude                                                 │
 27                             ╰─────────────────────────────────────────────────────────────────────╯
 28
-29  ● normal                                                                   rust   utf-8 LF   space
+29  ● normal                                                                              rust   space
 ## bg · surface per cell, blank = ui.background
 00
 01     Accccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -91,7 +91,7 @@
 26                             a A                                                                   a
 27                             aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 28
-29  a TTTTTT                                                                   dddd   ddddd dd   AAAAA
+29  a TTTTTT                                                                              dddd   AAAAA
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus

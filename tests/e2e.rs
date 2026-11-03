@@ -1470,7 +1470,7 @@ fn connected(sock: &std::path::Path) -> Option<std::process::Child> {
 
 /// A driver reads where the keys go before sending — the four slips of 2026-10-04 through the real binary
 /// and its socket (`tarae state`): the code's keys; the terminal's program having every key, then its view
-/// mode (the status line says `● view · terminal  i type`); a card the chat's draft keeps from its `y`;
+/// mode (the status line says `● view · terminal`, its head `i type`); a card the chat's draft keeps from its `y`;
 /// `--after-input` answering about the keys just sent. The terminal's shell finds this tarae (`TARAE_UI`).
 #[test]
 fn a_driver_reads_where_the_keys_go() {
@@ -1503,8 +1503,9 @@ fn a_driver_reads_where_the_keys_go() {
         (s["keys"]["region"].as_str(), s["keys"]["takes"].as_str()),
         (Some("view:terminal"), Some("commands"))
     );
-    t.wait_for("the status line says so", |s| {
-        s.status().contains("● view · terminal") && s.status().contains("i type")
+    // (its keys in its head alone — polish landing 5)
+    t.wait_for("the status line says so, its head its keys", |s| {
+        s.status().contains("● view · terminal") && !s.status().contains("i type") && s.contains("i type")
     });
     assert!(t.state(&[]).lines().nth(1).unwrap().starts_with("keys → terminal (commands)"));
     drop(t);

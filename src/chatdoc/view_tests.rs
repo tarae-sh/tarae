@@ -1304,15 +1304,16 @@ fn a_session_switch_ends_the_view_and_its_prompt() {
 }
 
 /// `x enter` on the conversation: a chip over the input — Claude's answer, its row — the input with the keys and its
-/// draft as left, the view gone; the hint rows say `enter quote` while something is selected. Two cursors, two
+/// draft as left, the view gone; the chat's hint row says `enter quote` while something is selected. Two cursors, two
 /// chips. `enter` without a selection still types.
 #[test]
 fn enter_quotes_the_selection_and_the_input_takes_the_keys() {
     let mut ed = editor();
     feed(&mut ed, "<esc>x");
     let shown = frame(&mut ed);
-    // (said while selected: on the status line and the chat's hint row)
-    assert_eq!(shown.lines().filter(|l| l.contains("enter quote")).count(), 2, "{shown}");
+    // (said while selected: on the chat's hint row alone — never the status line too, polish landing 5)
+    assert_eq!(shown.lines().filter(|l| l.contains("enter quote")).count(), 1, "{shown}");
+    assert!(!shown.lines().last().unwrap_or_default().contains("enter quote"), "{shown}");
     feed(&mut ed, "<ret>");
     assert_eq!(region(&ed), "chat");
     assert!(!keyed(&ed));

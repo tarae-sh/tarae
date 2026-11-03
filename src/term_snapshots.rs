@@ -2357,8 +2357,10 @@ fn snapshot_review_risk_and_the_reviewer() {
     assert_eq!(left(&s), 1, "the first piece, all of it drawn: looked at");
     s.ed.goto_line(34);
     crate::codereview::hunk_seen(&mut s.ed);
-    // (back at the first piece's mark)
+    // (back at the first piece's mark; the looks' toasts let go — news stands at the code's top right, over the line ends
+    // read here)
     s.ed.goto_line(3);
+    s.ed.toasts.clear();
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
@@ -2660,12 +2662,19 @@ fn snapshot_sessions_marked_to_bring() {
     s.frame();
     s.check("sessions_bring_list");
     s.frames_both("f33_list");
+    // (the marks' toasts on their card, drawn whole: its fade in and out are the clock's — held here, then half a second
+    // on, never as fast or as slow as this machine ran the keys)
+    crate::clock::hold();
     s.keys("jmjjm");
+    crate::clock::advance(Duration::from_millis(500));
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-    // (the list's rows, under the screen's top row — the sessions' strip names them there too)
-    let row = |name: &str| rows.iter().skip(1).find(|r| r.contains(name)).cloned().unwrap_or_default();
+    // (the list's rows, inside its frame — the sessions' strip on the top row and the marks' toasts above the list name
+    // them too)
+    let row = |name: &str| {
+        rows.iter().skip(1).find(|r| r.contains('│') && r.contains(name)).cloned().unwrap_or_default()
+    };
     assert!(row("fix-login").contains("bring 1st") && row("parser").contains("bring 2nd"), "{rows:#?}");
     assert!(!row("docs").contains("bring"), "{rows:#?}");
     s.check("sessions_bring_marked");
@@ -5379,7 +5388,9 @@ fn the_rail_says_what_moved() {
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
     assert!(rows.iter().any(|r| r.contains("◦ demo.rs • +30 · 30 moved")), "the name whole: {rows:#?}");
-    assert!(rows.iter().any(|r| r.contains("1 file  +30 · 15 moved")), "{rows:#?}");
+    // (one file: its `+30` is its row's alone — the head says the count and the moves, #311)
+    assert!(rows.iter().any(|r| r.contains("1 file · 15 moved")), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("1 file  +30")), "{rows:#?}");
     let row = rows.iter().find(|r| r.contains("◦ demo.rs")).unwrap();
     let screen = parser.screen();
     let y = rows.iter().position(|r| r == row).unwrap();
@@ -9442,7 +9453,8 @@ fn a_folded_routine_message_gives_way_to_the_diagnostics_count() {
     let before = rows_of(&mut s, (0, 15, 80, 1)).remove(0);
     let sign =
         before.chars().find(|c| "▲●■✖".contains(*c)).unwrap_or_else(|| panic!("its count: {before:?}"));
-    s.ed.set_success("Saved src/sidebar.rs · 1204 lines, its server told and its tests queued to run");
+    // (one the line says whole — a longer one keeps its card, #316)
+    s.ed.set_success("Saved src/sidebar.rs · its tests queued");
     let after = rows_of(&mut s, (0, 15, 80, 1)).remove(0);
     assert!(after.contains(sign) && after.contains("Saved src"), "{before:?} → {after:?}");
 }

@@ -15,7 +15,7 @@
 12         │   1;                                    │                                                ▎
 13  10     }                                         │                                                ▎
 14  11     counts                                    │                                                ▎
-15  ● normal                                                                   rust   utf-8 LF   18:1
+15  ● normal                                                                              rust   18:1
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -49,7 +49,7 @@
 12                                                   a                                                f
 13  ff                                               a                                                f
 14  ff                                               a                                                f
-15  a TTTTTT                                                                   dddd   ddddd dd   TTTT
+15  a TTTTTT                                                                              dddd   TTTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus

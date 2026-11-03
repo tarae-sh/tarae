@@ -29,7 +29,7 @@
 26   space n comment            │
 27   space v s send 1           │
 28   space v q end              │
-29  ● normal   +3  −3                                                                       rust   utf-8 LF   1:1
+29  ● normal                                                                                           rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01                                   Accccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -91,7 +91,7 @@
 26   BBBBB B fffffff            a
 27   fffff f f ffff f           a
 28   BBBBB B B fff              a
-29  a TTTTTT   gg  ee                                                                       dddd   ddddd dd   TTT
+29  a TTTTTT                                                                                           dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected  A=ui.cursor.primary  1=other  2=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning  g=diff.plus  B=bold

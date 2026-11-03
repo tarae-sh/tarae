@@ -21,7 +21,7 @@
 18  18 }             │  let mut letters = HashMap::new();                                       │
 19                   ╰─ ↓ 5 more lines ─────────────────────────────────────────────────────────╯
 20
-21  ● normal   C-d scroll down  C-u scroll up  esc close                        rust   utf-8 LF   9:19
+21  ● normal   C-d scroll down  C-u scroll up  esc close                                   rust   9:19
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -67,7 +67,7 @@
 18  ff               f                                                                          f
 19                   ff f f ffff fffff ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 20
-21  a TTTTTT   DDD ffffff ffff  DDD ffffff ff  DDD fffff                        dddd   ddddd dd   TTTT
+21  a TTTTTT   DDD ffffff ffff  DDD ffffff ff  DDD fffff                                   dddd   TTTT
 ## legend
 bg: c=ui.cursorline.primary  p=ui.popup  A=ui.cursor.primary
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus  B=bold

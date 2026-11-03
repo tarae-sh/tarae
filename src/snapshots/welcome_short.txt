@@ -13,7 +13,7 @@
 10                 space l  Chat with Claude
 11                 space ?  Find a command
 12                 tarae · tarae 0.1.0 · meok 10 minutes
-13  ● normal                                                                           utf-8 LF   1:1
+13  ● normal                                                                                      1:1
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -43,7 +43,7 @@
 10                 TTTTT T
 11                 TTTTT T
 12                 fffff f fffff fffff f ffff
-13  a TTTTTT                                                                           ddddd dd   TTT
+13  a TTTTTT                                                                                      TTT
 ## legend
 bg: 
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr

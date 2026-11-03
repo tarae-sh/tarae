@@ -1,7 +1,7 @@
 # review_notes_by_author · 112x30 · theme meok · cursor 12:34
 ## text
 00 ─ review ── uncommitted ─────┬─ tarae › src › demo.rs ──────────────────────────────────────────────────────────
-01   1 file  +30                │  1 let line_1 = 1;                                                              ▎
+01   1 file                     │  1 let line_1 = 1;                                                              ▎
 02   0 of 1 viewed · 1 unviewed │  2 let line_2 = 2;                                                              ▎
 03                              │  3 let line_3 = 3;                                                              ▎
 04     src/                     │  4 let line_4 = 4;                                                              ▎
@@ -29,7 +29,7 @@
 26   space n comment            │ 19▎let added_14 = 14;                                                           ▎
 27   space v s send 2           │ 20▎let added_15 = 15;                                                           ▎
 28   space v q end              │ 21▎let added_16 = 16;                                                           ▎
-29  ● normal   +30                                                                         rust   utf-8 LF   12:1
+29  ● normal                                                                                          rust   12:1
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -63,7 +63,7 @@
 29
 ## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
 00 f TTTTTT ff fffffffffff fffffaa ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-01   d dddd  ggg                a  f                                                                              f
+01   d dddd                     a  f                                                                              f
 02   f ff f ffffff d d dddddddd a  f                                                                              f
 03                              a  f                                                                              g
 04     dddf                     a  f                                                                              g
@@ -91,7 +91,7 @@
 26   BBBBB B fffffff            a ffg                                                                             g
 27   fffff f f ffff f           a ffg                                                                             g
 28   BBBBB B B fff              a ffg                                                                             g
-29  a TTTTTT   ggg                                                                         dddd   ddddd dd   TTTT
+29  a TTTTTT                                                                                          dddd   TTTT
 ## legend
 bg: P=ui.menu.selected  A=ui.cursor.primary  1=other  2=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  w=warning  g=diff.plus  B=bold

@@ -1,7 +1,7 @@
 # review_doc_comments · 100x24 · theme meok · cursor 15:34
 ## text
 00 ─ review ── uncommitted ─────┬─ tarae › src › demo.rs › ƒ main ─────────────────────────────────────
-01   1 file  +1                 │  1 ▎ Counts the words in text.
+01   1 file                     │  1 ▎ Counts the words in text.
 02   0 of 1 viewed · 1 unviewed │    ▎
 03                              │    ▎ Splits on whitespace, so a  b is two words.
 04     src/                     │  4 pub fn count(text: &str) -> usize {
@@ -23,7 +23,7 @@
 20   space n comment            │
 21   space v m viewed           │
 22   space v q end              │
-23  ● normal   +2  −1                                                          rust   utf-8 LF   14:1
+23  ● normal                                                                              rust   14:1
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -51,7 +51,7 @@
 23
 ## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
 00 f TTTTTT ff fffffffffff fffffaa ddddd f ddd f TTTTTTT f   dddd aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-01   d dddd  gg                 a  f f
+01   d dddd                     a  f f
 02   f ff f ffffff d d dddddddd a    f
 03                              a    f           BBBBBBBBBB
 04     dddf                     a  f
@@ -73,7 +73,7 @@
 20   BBBBB B fffffff            a
 21   BBBBB B B ffffff           a
 22   BBBBB B B fff              a
-23  a TTTTTT   gg  ee                                                          dddd   ddddd dd   TTTT
+23  a TTTTTT                                                                              dddd   TTTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected  A=ui.cursor.primary  1=other  2=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning  g=diff.plus  B=bold

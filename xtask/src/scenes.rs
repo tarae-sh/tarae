@@ -2965,6 +2965,8 @@ const SCENES: &[Scene] = &[
         keys: &["@1", ":", "frobnicate", "\r", "@1", ":", "w", "\r", "@1"],
     },
     Scene { name: "git", claude: "idle", files: MAIN, keys: &["@1", " ", "g", "@?knot.rs", "@1"] },
+    // (polish landing 5: a file whose lines end otherwise than LF — the status line's one word of its form)
+    Scene { name: "status-crlf", claude: "idle", files: MAIN, keys: &["@?utf-8 CRLF", "@1"] },
     // (the run panels' output with the keys: a task's, two lines of it selected — its settings trusted first)
     Scene {
         name: "output-task",
@@ -2973,6 +2975,8 @@ const SCENES: &[Scene] = &[
         keys: &[
             "@?Trust this",
             "@1",
+            // (a card that came on its own waits for `C-q` — polish landing 1)
+            "\x11",
             "y",
             "@1",
             ":",
@@ -6286,6 +6290,8 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         "follow-replay" => vec![("src/spool.rs", SPOOL_V4_RS.into())],
         "main-moved" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
         "edit-in-buffer" => vec![("src/main.rs", MAIN_V3_RS.into())],
+        // (its lines ended CRLF, committed so: the gutter calm, the status line's form the one thing said)
+        "status-crlf" => vec![("src/main.rs", MAIN_RS.replace('\n', "\r\n"))],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
         "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
         // (the flow plan's piece 1 on A1c's answer too — its two on A1's answers have MAIN's files alone)

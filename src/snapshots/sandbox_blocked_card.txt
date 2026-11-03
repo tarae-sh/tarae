@@ -29,7 +29,7 @@
 26   npm ERR! code EPERM
 27   npm ERR! syscall open
 28   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacach…   space m s open it
-29  ● card                                                                      rust   utf-8 LF   1:1
+29  ● card                                                                                 rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -91,7 +91,7 @@
 26   fff ffff ffff fffff
 27   fff ffff fffffff ffff
 28   w wwwwwww wwwwwww wwwwwww wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww   FFFFF F F ffff ff
-29  a TTTT                                                                      dddd   ddddd dd   TTT
+29  a TTTT                                                                                 dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning  g=diff.plus

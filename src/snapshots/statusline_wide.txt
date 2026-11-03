@@ -5,7 +5,7 @@
 02   2
 03   3 ▎ Counts how often each word appears.
 04     ▎
-05  ● normal    main                                                           ● 1   ▲ 1   rust   utf-8 LF   2 sels   2:1
+05  ● normal    main                                                                      ● 1   ▲ 1   rust   2 sels   2:1
 ## bg · surface per cell, blank = ui.background
 00
 01     k
@@ -19,7 +19,7 @@
 02   A
 03   f f
 04     f
-05  a TTTTTT    dddd                                                           e e   w w   dddd   ddddd dd   a aaaa   TTT
+05  a TTTTTT    dddd                                                                      e e   w w   dddd   a aaaa   TTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary  k=ui.cursor
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning

@@ -393,11 +393,6 @@ fn mine(n: &Next, slot: Slot) -> bool {
     n.what.slot() == slot && matches!(n.what, What::Task(_) | What::Tests(_))
 }
 
-/// The user's own run waits in `slot`'s line (`enter run now` on its panel's view).
-pub fn mine_waits(ed: &Editor, slot: Slot) -> bool {
-    ed.workspace.runs_next.iter().any(|n| mine(n, slot))
-}
-
 /// `enter` in the panel: the user's own run waiting in `slot` starts now — Claude's under way stops. False:
 /// none of theirs waits there.
 pub fn run_now(ed: &mut Editor, slot: Slot) -> bool {

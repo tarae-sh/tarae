@@ -29,7 +29,7 @@
 26
 27
 28
-29  ● sessions   main                                                                              utf-8 LF   1:1
+29  ● sessions   main                                                                                         1:1
 ## bg · surface per cell, blank = ui.background
 00
 01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -91,7 +91,7 @@
 26
 27
 28
-29  a TTTTTTTT   BBBB                                                                              ddddd dd   TTT
+29  a TTTTTTTT   BBBB                                                                                         TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold

@@ -29,7 +29,7 @@
 26
 27
 28
-29  ● change                                                                   rust   utf-8 LF   17:55
+29  ● change                                                                              rust   17:55
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -91,7 +91,7 @@
 26
 27
 28
-29  a TTTTTT                                                                   dddd   ddddd dd   TTTTT
+29  a TTTTTT                                                                              dddd   TTTTT
 ## legend
 bg: p=ui.popup  1=other  2=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  g=diff.plus

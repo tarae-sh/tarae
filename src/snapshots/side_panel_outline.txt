@@ -23,7 +23,7 @@
 20                                │
 21   enter open  tab git          │
 22   esc code  q close            │
-23  ● outline                                                                               rust   utf-8 LF   1:1
+23  ● outline                                                                                          rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01                                     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -73,7 +73,7 @@
 20                                a
 21   BBBBB ffff  BBB fff          a
 22   BBB ffff  B fffff            a
-23  a TTTTTTT                                                                               dddd   ddddd dd   TTT
+23  a TTTTTTT                                                                                          dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus  B=bold

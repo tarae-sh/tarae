@@ -196,8 +196,8 @@ impl Keys {
         matches!(self, Keys::Code | Keys::Review | Keys::Change)
     }
 
-    /// The key hint the status line puts after the label (key, what it does). A view mode's — the terminal's
-    /// with tarae's keys — are the status line's own, each key as bound.
+    /// The key hint the status line puts after the label (key, what it does). A view mode's and a run's output's are
+    /// their surface's own line's (the terminal's and a run panel's header, the chat's foot), never the status line's.
     pub fn hint(self) -> Option<(&'static str, &'static str)> {
         match self {
             Keys::Point => Some(("esc", "stop pointing")),

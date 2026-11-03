@@ -29,7 +29,7 @@
 26  │  • .tarae.toml               you · 2d ago · 2 versions │ │  ───────────────────────────────────
 27  ╰────────────────────────────────────────────────────────╯ │  › Ask about demo.rs…
 28                                                             │  space l focus  space L hide
-29  ● picker   d take it back  j k move  esc close                              rust   utf-8 LF   1:1
+29  ● picker   d take it back  j k move  esc close                                         rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -91,7 +91,7 @@
 26  a  d                           ddd d dd ddd d d dddddddd a f  fffffffffffffffffffffffffffffffffff
 27  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa f  f fff fffff ffffffff
 28                                                             f  DDDDD D fffff  DDDDD D ffff
-29  a TTTTTT   f ffff ff ffff  D D ffff  DDD fffff                              dddd   ddddd dd   TTT
+29  a TTTTTT   f ffff ff ffff  D D ffff  DDD fffff                                         dddd   TTT
 ## legend
 bg: P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr

@@ -29,7 +29,7 @@
 26
 27
 28
-29  ● normal                                                                   rust   utf-8 LF   22:1
+29  ● normal                                                                              rust   22:1
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -91,7 +91,7 @@
 26
 27
 28
-29  a TTTTTT                                                                   dddd   ddddd dd   TTTT
+29  a TTTTTT                                                                              dddd   TTTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold

@@ -263,6 +263,8 @@ fn a_click_is_the_cursor_and_ctrl_click_follows_a_link() {
     use crate::event::{Mouse, MouseKind};
     let (mut ed, _root) = page_editor();
     let text = ed.doc().text.to_string();
+    // (the page's toast let go: news stands top right under the cursor's row, over the links pressed here)
+    ed.toasts.clear();
     let mut bytes = Vec::new();
     crate::term::render(&mut ed, &mut bytes, 80, 24).unwrap();
     let mut p = vt100::Parser::new(24, 80, 0);
@@ -270,7 +272,8 @@ fn a_click_is_the_cursor_and_ctrl_click_follows_a_link() {
     let rows = p.screen().rows(0, 80).collect::<Vec<String>>();
     // (the cell of `s`'s first character, on the row that shows it)
     let cell = |s: &str| {
-        let (y, row) = rows.iter().enumerate().find(|(_, r)| r.contains(s)).unwrap_or_else(|| panic!("{s}"));
+        let (y, row) =
+            rows.iter().enumerate().find(|(_, r)| r.contains(s)).unwrap_or_else(|| panic!("{s}: {rows:#?}"));
         (row[..row.find(s).unwrap()].chars().count() as u16, y as u16)
     };
     let link = |words: &str| {

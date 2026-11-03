@@ -23,7 +23,7 @@
 20                                │
 21   space e files                │
 22   space o outline              │
-23  ● normal                                                                                rust   utf-8 LF   6:5
+23  ● normal                                                                                           rust   6:5
 ## bg · surface per cell, blank = ui.background
 00
 01
@@ -73,7 +73,7 @@
 20                                a
 21   BBBBB B fffff                a
 22   BBBBB B fffffff              a
-23  a TTTTTT                                                                                dddd   ddddd dd   TTT
+23  a TTTTTT                                                                                           dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary  1=other
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  e=error  w=warning  g=diff.plus  B=bold
