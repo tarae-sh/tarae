@@ -1,4 +1,4 @@
-//! `cargo xtask linux [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy|test [--repeat N] [cargo test's arguments] | test --installed … | test --as-user … | test --keep … | test --kept [--as-user] …]` — tarae's checks on Linux (CI runs there too: `-D dead-code` on code only
+//! `cargo xtask linux [--no-skip] [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy|test [--repeat N [--keep-going]] [cargo test's arguments] | test --installed … | test --as-user … | test --keep … | test --kept [--as-user] …]` — tarae's checks on Linux (CI runs there too: `-D dead-code` on code only
 //! macOS calls, a root container's `#` prompt …), in Docker on the pinned toolchain (`rust:<major.minor>`, and
 //! `rust-toolchain.toml`'s exact version in it). Whichever Docker the CLI reaches: `DOCKER_CONTEXT` or `DOCKER_HOST`, else the
 //! current context (here the colima VM: `colima start -p tarae-test`, `DOCKER_CONTEXT=colima-tarae-test`).
@@ -13,7 +13,9 @@
 //! registry shared).
 //!
 //! Docker not reachable: it says `skipped — …` and exits 0, so a `:preflight` step with `note = "skipped"`
-//! reads it as a pass with a note. Not in tarae's own `.tarae.toml` — a step of yours (`.tarae.local.toml`).
+//! reads it as a pass with a note — a step of yours (`.tarae.local.toml`). `--no-skip` (leading) fails there
+//! instead, saying why: tarae's own `.tarae.toml` runs `--no-skip clippy` at every landing (#257 — a check not run
+//! is never a pass).
 //!
 //! The target volume is the checkout's own (`target_volume`, labelled with its path and this machine's id):
 //! every checkout's clone is /work/tarae, so one shared target let a session's tests run another session's
@@ -58,10 +60,12 @@ use crate::{Result, root};
 enum What {
     Clippy,
     /// `cargo test` with these arguments (a filter, `--bin tarae`, `-- --test-threads=1` …), run `repeat` times
-    /// in the one container — stopping at the first that fails (a flaky test looked for).
+    /// in the one container — stopping at the first that fails (a flaky test looked for), or with `--keep-going`
+    /// every one of them, each test that failed said once at the end with the runs it failed in (`failures`).
     Test {
         args: Vec<String>,
         repeat: u32,
+        keep_going: bool,
     },
     /// `test --installed`: tarae's own tests (`--bin tarae`) built, the binary put at `/usr/bin/tarae` (root's, as
     /// its `.deb` puts it) and run from there with these arguments (the test binary's: a filter, `--exact` …) —
@@ -99,7 +103,10 @@ enum What {
 /// The user `test --as-user` runs the tests as, made in the container.
 const AS_USER: &str = "tarae-test";
 
-const USAGE: &str = "usage: cargo xtask linux [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy | test [--repeat N] [cargo test's arguments] | test --installed [the test binary's arguments] | test --as-user [the test binary's arguments] | test --keep [cargo test's arguments] | test --kept [--as-user] [the test binary's arguments]]";
+/// `test --repeat N --keep-going`: every run of N, not the first failing one.
+const KEEP_GOING: &str = "--keep-going";
+
+const USAGE: &str = "usage: cargo xtask linux [--no-skip] [--env NAME=VALUE]… [--userns[=masked] | --docker-default] [--image NAME] [--volume tarae-compat-…:/PATH] [--platform linux/<arch>] [clippy | test [--repeat N [--keep-going]] [cargo test's arguments] | test --installed [the test binary's arguments] | test --as-user [the test binary's arguments] | test --keep [cargo test's arguments] | test --kept [--as-user] [the test binary's arguments]]";
 
 /// What `--userns` lets the container do, so the sandbox's tier tests reach a real session keeper
 /// (`src/sandbox/tier.rs`): Docker's default seccomp profile refuses new namespaces, its `docker-default`
@@ -410,21 +417,24 @@ fn what(args: &[String]) -> Result<What> {
                 What::Kept { args: rest.to_vec(), as_user: true }
             }
             [k, rest @ ..] if k == "--kept" => What::Kept { args: rest.to_vec(), as_user: false },
-            [r, n, rest @ ..] if r == "--repeat" => What::Test {
-                args: rest.to_vec(),
-                repeat: n
-                    .parse()
-                    .ok()
-                    .filter(|n| *n > 0)
-                    .ok_or(format!("--repeat {n}: a count — {USAGE}"))?,
-            },
-            rest => What::Test { args: rest.to_vec(), repeat: 1 },
+            [r, n, rest @ ..] if r == "--repeat" => {
+                let repeat =
+                    n.parse().ok().filter(|n| *n > 0).ok_or(format!("--repeat {n}: a count — {USAGE}"))?;
+                let (keep_going, rest) = match rest {
+                    [k, rest @ ..] if k == KEEP_GOING => (true, rest),
+                    rest => (false, rest),
+                };
+                What::Test { args: rest.to_vec(), repeat, keep_going }
+            }
+            [k, ..] if k == KEEP_GOING => return Err(format!("{KEEP_GOING}: after --repeat N — {USAGE}")),
+            rest => What::Test { args: rest.to_vec(), repeat: 1, keep_going: false },
         },
         Some((a, _)) => return Err(format!("{USAGE} — not {a}")),
     })
 }
 
 pub fn run(args: &[String]) -> Result<()> {
+    let (needed, args) = no_skip(args);
     let (set, args) = envs(args)?;
     let (stock, args) = docker_default(args);
     let (ns, args) = userns(args)?;
@@ -443,8 +453,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let pin =
         pin(&std::fs::read_to_string(&toolchain).map_err(|e| format!("{}: {e}", toolchain.display()))?)?;
     if let Err(why) = reachable(&mut Command::new("docker")) {
-        println!("{}", skipped(&why));
-        return Ok(());
+        return unreachable(&why, needed);
     }
     let on = platform.map(|p| format!(", {p}")).unwrap_or_default();
     eprintln!("Linux checks on {} (Rust {pin}{on}) …", image(&pin));
@@ -528,6 +537,9 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     let seen = seen.join().unwrap_or_default();
     say_sizes(seen.disk);
+    if let What::Test { repeat, keep_going: true, .. } = &what {
+        seen.tally.said(*repeat).iter().for_each(|l| println!("{l}"));
+    }
     if !st.success() {
         return Err(failed_said(&seen.failed));
     }
@@ -649,9 +661,29 @@ pub(crate) fn docker_in_sandbox() -> Option<DockerConfig> {
 
 /// The line said when there's no Docker to run in — what a preflight note matches.
 pub(crate) fn skipped(why: &str) -> String {
-    format!(
-        "skipped — Docker isn't reachable: {why} (start it — colima start -p tarae-test — or set DOCKER_CONTEXT)"
-    )
+    format!("skipped — Docker isn't reachable: {why} ({START_IT})")
+}
+
+const START_IT: &str = "start it — colima start -p tarae-test — or set DOCKER_CONTEXT";
+
+/// `--no-skip` (leading): no Docker fails the checks rather than skipping them — the flag and the arguments after it.
+fn no_skip(args: &[String]) -> (bool, &[String]) {
+    match args.split_first() {
+        Some((n, rest)) if n == "--no-skip" => (true, rest),
+        _ => (false, args),
+    }
+}
+
+/// No Docker to run in (`why`): a skip said, or with `--no-skip` (`needed`) a failure saying why — the Linux
+/// checks not run are never a pass where they're asked for.
+fn unreachable(why: &str, needed: bool) -> Result<()> {
+    match needed {
+        false => {
+            println!("{}", skipped(why));
+            Ok(())
+        }
+        true => Err(format!("the Linux checks didn't run — Docker isn't reachable: {why} ({START_IT})")),
+    }
 }
 
 /// The repository's git folder when it isn't the tree's own `.git` — a worktree (every tarae session is
@@ -1265,6 +1297,8 @@ struct Seen {
     ran: u64,
     /// The tests a filter left out, all told (`test result: … 1216 filtered out`).
     filtered: u64,
+    /// Each run's failing tests (`--keep-going` says them).
+    tally: crate::failures::Tally,
 }
 
 /// libtest's `running 3 tests` (`1 test`) — how many.
@@ -1318,6 +1352,9 @@ fn forwarded(mut from: impl std::io::BufRead, to: &mut impl std::io::Write) -> S
         }
         seen.ran += text.and_then(running).unwrap_or(0);
         seen.filtered += text.and_then(filtered_out).unwrap_or(0);
+        if let Some(t) = text {
+            seen.tally.streamed(t);
+        }
         let _ = to.write_all(&line);
         let _ = to.flush();
     }
@@ -1934,22 +1971,36 @@ fn script(tree: Tree, what: &What) -> String {
         }
         // (`--no-fail-fast`: every test binary runs — a unit test failing hid e2e's, f22 o)
         What::Both => s.push_str("cargo test --locked --no-fail-fast --workspace\n"),
-        What::Test { args, repeat } => {
+        What::Test { args, repeat, keep_going } => {
             let test = std::iter::once("cargo test --locked --no-fail-fast".to_string())
                 .chain(args.iter().map(|a| quoted(a)))
                 .collect::<Vec<_>>()
                 .join(" ");
-            match repeat {
-                1 => s.push_str(&format!("{test}\n")),
-                n => s.push_str(&format!(
-                    "n=0\nwhile [ $n -lt {n} ]; do n=$((n+1)); echo \"run $n of {n}\"; \
-                     {test} || {{ echo \"failed on run $n of {n}\"; exit 1; }}; done\n\
-                     echo \"all {n} runs passed\"\n"
-                )),
-            }
+            s.push_str(&repeated(&test, *repeat, *keep_going));
         }
     }
     s
+}
+
+/// `test` (a line for sh) run `n` times: stopping at the first that fails, or with `keep_going` every one and
+/// failing after if any did. Each run's marks (`run 2 of 5`, `failed on run 2 of 5`) are the count's
+/// (`failures::Tally::streamed`): `forwarded` reads them.
+fn repeated(test: &str, n: u32, keep_going: bool) -> String {
+    match (n, keep_going) {
+        (1, _) => format!("{test}\n"),
+        (n, false) => format!(
+            "n=0\nwhile [ $n -lt {n} ]; do n=$((n+1)); echo \"run $n of {n}\"; \
+             {test} || {{ echo \"failed on run $n of {n}\"; exit 1; }}; done\n\
+             echo \"all {n} runs passed\"\n"
+        ),
+        // (`sh -e`: a failing command left of `||` doesn't end the script)
+        (n, true) => format!(
+            "n=0; failed=0\nwhile [ $n -lt {n} ]; do n=$((n+1)); echo \"run $n of {n}\"; \
+             {test} || {{ failed=$((failed+1)); echo \"failed on run $n of {n}\"; }}; done\n\
+             [ $failed -eq 0 ] || {{ echo \"failed on $failed of {n} runs, every one run\"; exit 1; }}\n\
+             echo \"all {n} runs passed\"\n"
+        ),
+    }
 }
 
 /// The test binary at `exe` (a word for sh) run as `AS_USER` with `args`, `env` before it (`env -u …` or nothing):
@@ -2198,7 +2249,8 @@ mod tests {
         );
         let clippy = script(Tree::Mounted(None), &What::Clippy);
         assert!(clippy.contains("cargo clippy") && !clippy.contains("cargo test"));
-        let test = script(Tree::Mounted(None), &What::Test { args: Vec::new(), repeat: 1 });
+        let test =
+            script(Tree::Mounted(None), &What::Test { args: Vec::new(), repeat: 1, keep_going: false });
         assert!(test.contains("cargo test") && !test.contains("cargo clippy"));
     }
 
@@ -2217,9 +2269,61 @@ mod tests {
                 && looped.contains("cargo test --locked --no-fail-fast 'recovery' ||")
         );
         assert!(looped.contains("exit 1") && looped.contains("all 20 runs passed"), "{looped}");
-        assert_eq!(what(&args(&["test"])), Ok(What::Test { args: Vec::new(), repeat: 1 }));
+        assert_eq!(what(&args(&["test"])), Ok(What::Test { args: Vec::new(), repeat: 1, keep_going: false }));
         assert!(what(&args(&["test", "--repeat", "0"])).unwrap_err().contains("--repeat 0: a count"));
         assert!(what(&args(&["clippy", "x"])).unwrap_err().starts_with("usage:"));
+    }
+
+    /// `--repeat N --keep-going` runs every one of N, the script failing after if any did, and each test that
+    /// failed is said once with the runs it failed in: the script's loop run for real under `sh -e` (as the
+    /// container runs it) with a stand-in for cargo test that fails on runs 2 and 4, its output read by
+    /// `forwarded` as the container's is. Without it, the first failing run ends the loop.
+    #[test]
+    fn keep_going_runs_every_repeat_and_counts_each_failing_test() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let w = what(&args(&["test", "--repeat", "5", "--keep-going", "--bin", "tarae"])).unwrap();
+        assert_eq!(w, What::Test { args: args(&["--bin", "tarae"]), repeat: 5, keep_going: true });
+        assert!(
+            what(&args(&["test", "--keep-going"])).unwrap_err().starts_with("--keep-going: after --repeat N")
+        );
+        assert!(
+            script(Tree::Mounted(None), &w).contains("cargo test --locked --no-fail-fast '--bin' 'tarae' ||")
+        );
+        let dir = tarae_testkit::scratch::Scratch::new("xtask-keep-going");
+        let (count, stand_in) = (dir.path().join("count"), dir.path().join("test.sh"));
+        // (libtest's own shape: the stdout sections' `failures:`, then the list of names)
+        std::fs::write(
+            &stand_in,
+            format!(
+                "n=$(($(cat '{0}' 2>/dev/null || echo 0)+1)); echo $n > '{0}'\n\
+                 case $n in 2|4) ;; *) echo 'test result: ok. 3 passed'; exit 0;; esac\n\
+                 printf 'failures:\n\n---- a::flaky stdout ----\npanicked\n\nfailures:\n    a::flaky\n'\n\
+                 [ $n = 2 ] && printf '    b::once\n'\n\
+                 printf '\ntest result: FAILED.\n'; exit 101\n",
+                count.display()
+            ),
+        )
+        .unwrap();
+        let run = |keep_going: bool| {
+            let _ = std::fs::remove_file(&count);
+            let line = repeated(&format!("sh '{}'", stand_in.display()), 5, keep_going);
+            let out = Command::new("sh").args(["-ec", &line]).output().unwrap();
+            let seen = forwarded(&out.stdout[..], &mut Vec::new());
+            (out.status.success(), seen.tally.said(5), std::fs::read_to_string(&count).unwrap())
+        };
+        let (ok, said, runs) = run(true);
+        assert!(!ok, "failed after, having run every one");
+        assert_eq!(runs.trim(), "5");
+        assert_eq!(
+            said,
+            [
+                "failed in 2 of 5 runs — 2 tests failed, each once with the runs it failed in:",
+                "  2 of 5  a::flaky  (runs 2, 4)",
+                "  1 of 5  b::once   (run 2)",
+            ]
+        );
+        let (ok, _, runs) = run(false);
+        assert!(!ok && runs.trim() == "2", "without it, the first failing run ends it: {runs}");
     }
 
     /// `test --installed` (6h): tarae's own tests run from `/usr/bin/tarae` — the binary cargo built, put there
@@ -2283,7 +2387,7 @@ mod tests {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let (p, w) = ask(&args(&["--platform", "linux/amd64", "test", "--repeat", "3", "reads"])).unwrap();
         assert_eq!(p.as_deref(), Some("linux/amd64"));
-        assert_eq!(w, What::Test { args: args(&["reads"]), repeat: 3 });
+        assert_eq!(w, What::Test { args: args(&["reads"]), repeat: 3, keep_going: false });
         assert_eq!(
             ask(&args(&["--platform", "linux/arm/v7"])).unwrap(),
             (Some("linux/arm/v7".into()), What::Both)
@@ -2587,8 +2691,13 @@ mod tests {
             ]
         );
         assert_eq!(create_args(a, None, "1.99.0", None)[3..], ["tarae.checkout=/w/tarae/s1", name.as_str()]);
-        let args =
-            docker_args(a, Tree::Mounted(None), "1.99.0", None, &What::Test { args: Vec::new(), repeat: 1 });
+        let args = docker_args(
+            a,
+            Tree::Mounted(None),
+            "1.99.0",
+            None,
+            &What::Test { args: Vec::new(), repeat: 1, keep_going: false },
+        );
         assert!(args.contains(&format!("{name}:/target")), "{args:?}");
         assert!(args.contains(&"tarae-registry:/usr/local/cargo/registry".to_string()), "{args:?}");
         assert!(args.contains(&"tarae-rustup-1.99.0:/usr/local/rustup".to_string()), "{args:?}");
@@ -3448,5 +3557,23 @@ mod tests {
         assert!(line.starts_with("skipped — Docker isn't reachable: "), "{line}");
         let line = skipped(&reachable(&mut Command::new("tarae-no-such-docker")).unwrap_err());
         assert!(line.starts_with("skipped — Docker isn't reachable: no docker command"), "{line}");
+    }
+
+    /// `--no-skip` (#257, the landing's Linux clippy): no Docker fails, saying why and how to start it — never a
+    /// pass; without it a skip, as before. Only leading.
+    #[test]
+    fn no_skip_makes_no_docker_a_failure() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let on = args(&["--no-skip", "clippy"]);
+        assert_eq!(no_skip(&on), (true, &on[1..]));
+        let off = args(&["clippy", "--no-skip"]);
+        assert_eq!(no_skip(&off), (false, &off[..]));
+        let why = reachable(&mut Command::new("tarae-no-such-docker")).unwrap_err();
+        let failed = unreachable(&why, true).unwrap_err();
+        assert!(
+            failed.starts_with("the Linux checks didn't run — Docker isn't reachable: no docker command")
+        );
+        assert!(failed.ends_with(&format!("({START_IT})")), "{failed}");
+        assert_eq!(unreachable(&why, false), Ok(()), "without it, a skip");
     }
 }

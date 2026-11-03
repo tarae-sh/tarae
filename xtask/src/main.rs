@@ -66,6 +66,7 @@ mod cards;
 mod claudestub;
 mod compat;
 mod deb;
+mod failures;
 mod focus;
 mod glyphs;
 mod homepage;

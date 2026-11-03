@@ -31,12 +31,15 @@ cargo fmt                                # rustfmt.toml: max_width = 110
 
 Before sending a change, these checks must all pass — `:preflight-full` runs them in tarae (`.tarae.toml`'s
 `[preflight]`), and CI runs the same ones. `:preflight` alone — and bringing a session in — runs the quick
-set: fmt, clippy and test (the bundled-grammars builds and perf are marked `full = true`):
+set: fmt, clippy, Linux's clippy and test (the bundled-grammars builds and perf are marked `full = true`). Linux's
+clippy is `cargo xtask linux clippy` in Docker — CI's clippy job, both its lines, on the pinned toolchain; where Docker
+isn't reachable it fails saying so (`--no-skip`), never a pass:
 
 <!-- the checks: the same as .tarae.toml's [preflight] and CI's jobs — a test keeps them so (preflight.rs) -->
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo xtask linux --no-skip clippy
 cargo clippy --workspace --all-targets --features bundled-grammars -- -D warnings
 cargo test --workspace
 cargo test --workspace --features bundled-grammars
@@ -73,7 +76,9 @@ session's volume as the session ends, put `[workspace] ended = ["cargo", "xtask"
 `.tarae.local.toml`.
 
 A test that fails only now and then on Linux: `cargo xtask linux test --repeat 20 --bin tarae recovery::` runs
-`cargo test` with those arguments twenty times in one container and stops at the first run that fails. Flakes
+`cargo test` with those arguments twenty times in one container and stops at the first run that fails;
+`--repeat 20 --keep-going` runs all twenty and says at the end each test that failed, once, with the runs it failed
+in (`cargo xtask kernels --keep-going` the same, a mode at a time). Flakes
 that need the rest of the suite beside them show up with `--bin tarae` alone. A failure seen on one architecture
 only: `cargo xtask linux --platform linux/amd64 …` runs on that one (its own target and toolchains) — emulated on
 an aarch64 VM, slow and liable to stall; a Docker on a real x86_64 machine (`DOCKER_HOST`) is better.
@@ -93,7 +98,7 @@ The sandbox's tiers ([design](docs/design/sandbox-keeper.md#tiers)) are reached 
 | `--userns=masked` | the same, `/proc` left masked | own, without a PID namespace |
 | `--docker-default` | as `docker run` makes one: no `CAP_SYS_PTRACE` | offline: `pidfd_getfd` refused |
 
-The options go in this order: `--env NAME=VALUE`… first, then `--userns[=masked]` or `--docker-default`, then
+The options go in this order: `--no-skip` (no Docker fails rather than skips), then `--env NAME=VALUE`…, then `--userns[=masked]` or `--docker-default`, then
 `--image`, `--platform`, then `clippy` or `test`. An `--env` after `--userns` is an error (`not
 --env`). `--env TARAE_EXPECT_TIER=own` makes a test that finds no namespaces fail rather than skip itself.
 `test --as-user …` runs the tests as an ordinary user of the container's

@@ -242,9 +242,14 @@ fn granted_takes_each_part_back_and_what_it_let_run_follows() {
     until(&mut ed, "the list again", |ed| {
         ed.picker.as_ref().is_some_and(|p| !p.items().iter().any(|i| i.label == ".git/config"))
     });
-    assert_eq!(ed.config.restart_build, "", "tarae's part held back at once");
-    let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
-    assert_eq!(seen.state, State::Ask);
+    // What each part let run follows on its own worker's result (`trust_take`'s job → `trust_taken`), never the
+    // store's write waited on above nor the list's — K2 read Claude's part between the two.
+    let seen = |ed: &Editor| {
+        ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.as_ref()).map(|s| s.state)
+    };
+    until(&mut ed, "tarae's and Claude's parts held back", |ed| {
+        ed.config.restart_build.is_empty() && seen(ed) == Some(State::Ask)
+    });
     until(&mut ed, "claude started again held back", |ed| {
         ed.workspace.claude.chat.as_ref().is_some_and(|c| c.running()) && argv().contains(held)
     });

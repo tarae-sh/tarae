@@ -1,4 +1,4 @@
-//! `cargo xtask kernels [--dry-run] [--repeat N] [--no-build] [--keep-vm] [kernel …]` — tarae's sandbox tests on
+//! `cargo xtask kernels [--dry-run] [--repeat N] [--keep-going] [--no-build] [--keep-vm] [kernel …]` — tarae's sandbox tests on
 //! several kernels (`.sb/kernels-plan.md`): the set is data, `xtask/kernels.toml` (each kernel's VM, its sysctls,
 //! the modes it runs and the tier each is expected to reach). Run by you, outside tarae's sandbox (Lima and colima
 //! keep their VMs in your home) — before a publish, and after a landing that touches the sandbox's Linux code.
@@ -14,7 +14,9 @@
 //! a VM a stopped run left is deleted first, said).
 //!
 //! Each mode runs `repeat` times in a row (the `sandbox::` tests, the must-be-refused suite among them), stopping
-//! at the first failure; then tarae's own tests `repeat` times in the kernel's `whole` mode. Each kernel's facts
+//! at the first failure — `--keep-going` runs every one and says each test that failed once, with the runs it
+//! failed in, after the mode and again at the end (`failures`); then tarae's own tests `repeat` times in the
+//! kernel's `whole` mode. Each kernel's facts
 //! first (uname, arch, Landlock's ABI read by the kernel, Yama, the user-namespace restriction, the LSMs).
 //! Results: `.sb/kernels/<date>-<commit>/<kernel>-<mode>.txt` (the facts, every run's output and time), the tables
 //! a run printed for a snapshot it had none of or that differed in `tables/` (to bless from), sizes in
@@ -34,7 +36,8 @@ const TABLE: &str = "xtask/kernels.toml";
 const OUT: &str = ".sb/kernels";
 const HISTORY_HEAD: &str =
     "date\tcommit\tkernel\tuname\tarch\tabi\tyama\tmode\texpected\tfound\tpassed\tcompared\tminutes\n";
-const USAGE: &str = "usage: cargo xtask kernels [--dry-run] [--repeat N] [--no-build] [--keep-vm] [kernel …]";
+const USAGE: &str =
+    "usage: cargo xtask kernels [--dry-run] [--repeat N] [--keep-going] [--no-build] [--keep-vm] [kernel …]";
 
 /// The tests a mode runs: the sandbox's, the must-be-refused suite among them.
 const FILTER: &str = "sandbox::";
@@ -649,6 +652,10 @@ struct Run {
     commit: String,
     rows: Vec<String>,
     failed: Vec<String>,
+    /// `--keep-going`: every run of a mode, its failing tests counted.
+    keep_going: bool,
+    /// Each mode's count of its failing tests, said again at the end (`--keep-going`).
+    tallies: Vec<String>,
 }
 
 impl Run {
@@ -674,7 +681,8 @@ impl Run {
         );
     }
 
-    /// `mode`'s runs on `k`, `repeat` in a row, stopping at the first failure — into its file and a row.
+    /// `mode`'s runs on `k`, `repeat` in a row, stopping at the first failure (`--keep-going`: every one, each
+    /// failing test counted) — into its file and a row.
     fn mode(
         &mut self,
         k: &Kernel,
@@ -689,7 +697,9 @@ impl Run {
         let started = Instant::now();
         let mut passed = 0;
         let mut seen = Read::default();
+        let mut tally = crate::failures::Tally::default();
         for n in 1..=repeat {
+            tally.run_starts();
             eprintln!("── {} {label}: run {n} of {repeat}", k.name);
             let t = Instant::now();
             let (ok, out) = teed(cmd.command(x));
@@ -705,17 +715,31 @@ impl Run {
                 let _ = std::fs::write(tables.join(format!("{name}.txt")), table);
             }
             seen = Read { found: r.found.or(seen.found), compared: r.compared.or(seen.compared), ..r };
+            out.lines().for_each(|l| tally.line(l));
             if !ok {
-                break;
+                tally.run_failed();
+                if !self.keep_going {
+                    break;
+                }
+                continue;
             }
-            passed = n;
+            passed += 1;
+        }
+        if self.keep_going && tally.any_failed() {
+            let said = tally.said(repeat).join("\n");
+            eprintln!("── {} {label}: {said}", k.name);
+            text.push_str(&format!("\n── every run ──\n{said}\n"));
+            self.tallies.push(format!("{} {label}: {said}", k.name));
         }
         let _ = std::fs::write(&file, text);
-        let passed = match passed == repeat {
-            true => format!("ok {repeat}/{repeat}"),
-            false => {
+        let passed = match (passed == repeat, self.keep_going) {
+            (true, _) => format!("ok {repeat}/{repeat}"),
+            (false, keep_going) => {
                 self.failed.push(format!("{} {label}", k.name));
-                format!("failed on run {} of {repeat}", passed + 1)
+                match keep_going {
+                    true => format!("failed {} of {repeat}", repeat - passed),
+                    false => format!("failed on run {} of {repeat}", passed + 1),
+                }
             }
         };
         let expected = expected(k, m).unwrap_or("-").to_string();
@@ -735,19 +759,22 @@ impl Run {
 struct Asked {
     dry: bool,
     repeat: Option<u32>,
+    keep_going: bool,
     build: bool,
     keep_vm: bool,
     names: Vec<String>,
 }
 
 fn ask(args: &[String]) -> Result<Asked> {
-    let mut a = Asked { dry: false, repeat: None, build: true, keep_vm: false, names: Vec::new() };
+    let mut a =
+        Asked { dry: false, repeat: None, keep_going: false, build: true, keep_vm: false, names: Vec::new() };
     let mut it = args.iter();
     while let Some(w) = it.next() {
         match w.as_str() {
             "--dry-run" => a.dry = true,
             "--no-build" => a.build = false,
             "--keep-vm" => a.keep_vm = true,
+            "--keep-going" => a.keep_going = true,
             "--repeat" => {
                 let n = it.next().and_then(|n| n.parse().ok()).filter(|n| *n > 0);
                 a.repeat = Some(n.ok_or(format!("--repeat: a count — {USAGE}"))?);
@@ -972,6 +999,11 @@ pub fn run(args: &[String]) -> Result<()> {
         if a.build {
             println!("{}", build_cmd(&from).line());
         }
+        if a.keep_going {
+            println!(
+                "# --keep-going: every run of each mode, each failing test said once with the runs it failed in"
+            );
+        }
         let git = crate::linux::common_git_dir(&root);
         let mounts: Vec<&Path> = std::iter::once(root.as_path()).chain(git.as_deref()).collect();
         for k in &kernels {
@@ -989,7 +1021,15 @@ pub fn run(args: &[String]) -> Result<()> {
     let (date, commit) = (crate::perf::today(), crate::perf::commit(&root));
     let dir = root.join(OUT).join(format!("{date}-{commit}"));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let mut run = Run { dir: dir.clone(), date, commit, rows: Vec::new(), failed: Vec::new() };
+    let mut run = Run {
+        dir: dir.clone(),
+        date,
+        commit,
+        rows: Vec::new(),
+        failed: Vec::new(),
+        keep_going: a.keep_going,
+        tallies: Vec::new(),
+    };
     let started = Instant::now();
     let build_profile = t.build.clone();
     let stop_build = colima_up(&build_profile, &[], &x)?;
@@ -1024,6 +1064,13 @@ pub fn run(args: &[String]) -> Result<()> {
     let summary: String = run.rows.iter().map(|r| format!("{r}\n")).collect();
     let _ = std::fs::write(dir.join("summary.tsv"), format!("{HISTORY_HEAD}{summary}"));
     let _ = std::io::stdout().write_all(format!("\n{HISTORY_HEAD}{summary}").as_bytes());
+    // (`--keep-going`: every mode's failing tests, at the end, where a long run is read)
+    for t in &run.tallies {
+        println!("\n{t}");
+    }
+    if !run.tallies.is_empty() {
+        let _ = std::fs::write(dir.join("failures.txt"), run.tallies.join("\n\n") + "\n");
+    }
     println!(
         "{} min in all — written to {}, a row each in {}",
         minutes(started.elapsed()),
@@ -1232,7 +1279,9 @@ mod tests {
         assert_eq!(got, ["K4", "Y2"]);
         assert!(chosen(&t, &["K9".into()]).is_err_and(|e| e.contains("K9: not in")));
         let a = ask(&["--dry-run".into(), "--repeat".into(), "1".into(), "K4".into()]).unwrap();
-        assert!(a.dry && a.repeat == Some(1) && a.build && a.names == ["K4"]);
+        assert!(a.dry && a.repeat == Some(1) && a.build && !a.keep_going && a.names == ["K4"]);
+        let a = ask(&["--repeat".into(), "5".into(), "--keep-going".into(), "K2".into()]).unwrap();
+        assert!(a.repeat == Some(5) && a.keep_going && a.names == ["K2"], "every run of five");
         assert!(ask(&["--repeat".into(), "0".into()]).is_err());
     }
 

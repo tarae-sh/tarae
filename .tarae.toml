@@ -36,11 +36,14 @@ docker-inert = ["cargo xtask linux: clippy test --userns --docker-default --bin=
 
 # What CI checks (perf's slower number: a pass with a note; a machine too busy to measure on fails — never a
 # pass, user 2026-10-24). `:preflight` — and before a
-# session is brought — runs the quick set; `:preflight-full`, before publishing, every step (`full = true` too)
+# session is brought — runs the quick set; `:preflight-full`, before publishing, every step (`full = true` too).
+# Linux's clippy at every landing too, in Docker (#257, the user's decision 2026-11-03: what CI's clippy job runs, with
+# and without bundled grammars); no Docker fails it, saying why (`--no-skip`)
 [preflight]
 steps = [
   { name = "fmt", cmd = "cargo fmt --all --check" },
   { name = "clippy", cmd = "cargo clippy --workspace --all-targets -- -D warnings" },
+  { name = "clippy linux", cmd = "cargo xtask linux --no-skip clippy" },
   { name = "clippy bundled", cmd = "cargo clippy --workspace --all-targets --features bundled-grammars -- -D warnings", full = true },
   { name = "test", cmd = "cargo test --workspace" },
   { name = "test bundled", cmd = "cargo test --workspace --features bundled-grammars", full = true },

@@ -1388,6 +1388,9 @@ mod tests {
     /// warnings` making clippy's warnings errors, its feature matrix spelled out). Where CI differs on
     /// purpose: `cargo perf` (it runs only the time budgets, and only to report — time is judged on a fixed
     /// machine) and the network job (`--ignored`); its tests are Linux's only (macOS's run on the maintainer's Mac).
+    /// Here Linux's clippy is `cargo xtask linux --no-skip clippy` (#257): CI's clippy job is Linux's already, so it
+    /// stands for no line of CI's of its own — but the container runs exactly CI's clippy lines (`--locked`, `-D
+    /// warnings` as CI's `RUSTFLAGS` gives them), read in xtask's script.
     /// A step with an `if:` names its command on the line after (`run: …`).
     #[test]
     fn the_checks_are_the_same_here_in_contributing_and_in_ci() {
@@ -1416,6 +1419,7 @@ mod tests {
             })
             .collect();
         let mut ran = Vec::new();
+        let mut clippy_linux = Vec::new();
         for cmd in ci
             .lines()
             .filter_map(|l| l.trim().trim_start_matches("- ").strip_prefix("run: "))
@@ -1424,6 +1428,10 @@ mod tests {
             // (on purpose: perf as budgets only, the network job)
             if cmd.contains("--profile perf") || cmd.contains("-- --ignored") {
                 continue;
+            }
+            // (as CI runs it, `--locked` too: what the container's clippy lines must be)
+            if warnings_are_errors && cmd.starts_with("cargo clippy") {
+                clippy_linux.push(format!("{cmd} -- -D warnings"));
             }
             // (CI's own: the lock file as committed, every failing binary said at once)
             let cmd = cmd.replace(" --locked", "").replace(" --no-fail-fast", "");
@@ -1444,7 +1452,21 @@ mod tests {
         }
         let mut expected = ours.clone();
         expected.remove("cargo perf");
-        assert_eq!(set(ran), expected, "CI's checks and .tarae.toml's [preflight] (perf aside)");
+        assert!(
+            expected.remove("cargo xtask linux --no-skip clippy"),
+            "Linux's clippy at every landing: {ours:?}"
+        );
+        assert_eq!(
+            set(ran),
+            expected,
+            "CI's checks and .tarae.toml's [preflight] (perf and Linux's clippy aside)"
+        );
+        // Linux's clippy here is CI's clippy job: each of its lines, as CI runs it, in the container's script
+        let xtask = read("xtask/src/linux.rs");
+        assert_eq!(clippy_linux.len(), 2, "CI's two clippy lines");
+        for c in &clippy_linux {
+            assert!(xtask.contains(&format!("\"{c}\\n\"")), "`cargo xtask linux clippy` runs CI's `{c}`");
+        }
     }
 
     /// CI's network job runs the tests that need the network by name, and those are the ones marked so
