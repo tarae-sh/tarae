@@ -8,12 +8,15 @@
 //!
 //! `--shorts` makes it a YouTube Short (`Form::Short`): `SHORT` upright, the screen `SHORT_COLS` wide and as tall as
 //! the window holds (`short_size`: 80×43), and over it a camera (`camera.rs`) — the scene's `@zoom:<target>` lines
-//! eased to and held, each frame the screen drawn at the glyph size the camera's region fits the window at, only whole
-//! cells shown and a word the window's edge would cut hidden (`Video::short_frame`); everything inside `SAFE`, the
-//! margins YouTube's own buttons and title cover; the captions in a band above the window, wrapped; and a sound track
+//! eased to and held, the window the safe area's shape with the target at the eye's height (`short_eye`), each frame
+//! the screen drawn at the glyph size the camera's region fits the window at, only whole cells shown, every card the
+//! window cuts left out and text its edge would cut hidden (`Video::short_frame`); everything inside `SAFE`, the
+//! margins YouTube's own buttons and title cover; the captions in a band above the window, wrapped; a `@punch` opening
+//! it on `PUNCH_MS` of the take from there, then the title card and the take from its start; and a sound track
 //! (`sound::track`: tarae's own strokes for the keys typed, a stamp for a card's answer, the settle where an edit
-//! lands — the scene's `@sound:stamp` and `@sound:settle`) as AAC. The wide video ignores `@zoom` and `@sound` and
-//! stays silent.
+//! lands, Claude's writing as tarae's reveal plays it — the scene's `@sound:stamp`, `@sound:settle`, and its
+//! `@sound:writing`/`@sound:landing` … `@sound:still` spans, `writing`) as AAC. The wide video ignores `@zoom`,
+//! `@sound` and `@punch`, and stays silent.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -74,8 +77,18 @@ const FIND_MS: u64 = 2_000;
 const OWN_MS: u64 = 1_000;
 /// A key this soon after a `@sound:stamp` is the stamp's: it sounds as the stamp alone.
 const STAMP_KEY_MS: u64 = 150;
-/// How wide a phone's screen is, held upright (mm) — what a glyph's size on it is said by.
+/// How wide a phone's screen is, held upright (mm) — what a glyph's size on it is said by — and the glyph a Short
+/// aims at for what its caption is about (a camera never takes more in past it: `camera::framed`'s `legible`).
 const PHONE_MM: f32 = 70.0;
+const LEGIBLE_MM: f32 = 2.5;
+/// A Short's opening on its punchline (the scene's `@punch`): this long of the take from there, before the title card.
+const PUNCH_MS: u64 = 1_500;
+/// A writing step this much past the last ends its burst; a burst of an edit that lands unseen (`@sound:landing`)
+/// settles `LANDS_MS` after its last step.
+const BURST_GAP_MS: u64 = 400;
+const LANDS_MS: u64 = 150;
+/// A step of the writing that changed more rows than this is the view moving (follow's jump, a scroll), not writing.
+const WRITING_ROWS_MAX: usize = 2;
 
 /// Which picture a video is: the wide one, or a Short.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -106,6 +119,15 @@ pub(crate) fn short_window() -> (usize, usize, usize, usize) {
     let (top, right, bottom, left) = SAFE;
     let y = top + SHORT_BAND;
     (left, y, SHORT.0 - left - right, SHORT.1 - bottom - y)
+}
+
+/// Where a Short's target sits: its centre a third down the safe area — the eye's height on a phone held upright —,
+/// as a fraction of the window's height from its top.
+pub(crate) fn short_eye() -> f32 {
+    let (_, wy, _, wh) = short_window();
+    let (top, _, bottom, _) = SAFE;
+    let third = top + (SHORT.1 - top - bottom) / 3;
+    third.saturating_sub(wy) as f32 / wh as f32
 }
 
 /// A Short's screen: `SHORT_COLS` columns and the rows the window holds at the glyph size those fit across it — the
@@ -147,6 +169,8 @@ pub(crate) struct Made {
     pub(crate) sheet: usize,
     pub(crate) zooms: Vec<String>,
     pub(crate) sound: Option<(f32, f32)>,
+    /// What a Short's track holds: keys typed, steps of Claude's writing shown, stamps, settles.
+    pub(crate) heard: Option<(usize, usize, usize, usize)>,
     pub(crate) missed: Vec<String>,
 }
 
@@ -193,7 +217,9 @@ pub(crate) fn make(
             // (the window's columns a row, at a mid zoom's cells)
             let (_, _, ww, wh) = short_window();
             let (cw, ch) = shot::cell(&fonts, 30.0);
-            moves(rec, (ww as f32 / cw as f32) / (wh as f32 / ch as f32))
+            let legible = (LEGIBLE_MM / PHONE_MM * SHORT.0 as f32).ceil();
+            let legible = (ww / shot::cell(&fonts, legible).0) as f32;
+            moves(rec, (ww as f32 / cw as f32) / (wh as f32 / ch as f32), short_eye(), legible)
         }
         Form::Wide => (Vec::new(), Vec::new()),
     };
@@ -214,23 +240,48 @@ pub(crate) fn make(
     let times: Vec<u64> = rec.frames.iter().map(|f| f.0).collect();
     let shown_ms = times.last().copied().unwrap_or(0) + LAST_MS;
     let named = moves.iter().map(|m| m.1.clone()).collect();
-    let clips = moves.iter().map(|m| (m.0, m.3)).collect();
+    let targets = moves.iter().map(|m| (m.0, m.3)).collect();
     let moves = moves.iter().map(|m| (m.0, m.2)).collect();
-    let video = Video { rec, times, px, look, fonts, cards, shown_ms, form, moves, clips, named, screen };
+    // (a Short opens on its punchline where the scene marks one)
+    let punch = rec.punch.filter(|_| form == Form::Short);
+    let lead = punch.map_or(0, |_| PUNCH_MS) + form.title_ms();
+    let video = Video {
+        rec,
+        times,
+        px,
+        look,
+        fonts,
+        cards,
+        shown_ms,
+        form,
+        moves,
+        targets,
+        named,
+        screen,
+        punch,
+        lead,
+    };
     let frames = video.frames();
     let dir = mp4.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let sheet = video.sheet(&dir.join("sheet.png"))?;
-    let (audio, sound) = match form {
-        Form::Wide => (None, None),
+    let (audio, sound, counted) = match form {
+        Form::Wide => (None, None, None),
         Form::Short => {
-            let (heard, said) = heard(rec, form.title_ms());
+            let (heard, said) = heard(rec, video.lead);
             missed.extend(said);
+            let count = |f: fn(&Heard) -> bool| heard.iter().filter(|h| f(&h.1)).count();
+            let counted = (
+                count(|h| matches!(h, Heard::Key(_))),
+                count(|h| matches!(h, Heard::Shown(..))),
+                count(|h| matches!(h, Heard::Stamp)),
+                count(|h| matches!(h, Heard::Settle)),
+            );
             let length = Duration::from_millis(frames * 1000 / FPS);
             let (samples, peak, rms) = sound::track(&heard, length);
             let wav = mp4.with_extension("wav");
             sound::wav(&wav, &samples)?;
-            (Some(wav), Some((peak, rms)))
+            (Some(wav), Some((peak, rms)), Some(counted))
         }
     };
     let ffmpeg = ffmpeg().ok_or_else(|| {
@@ -242,16 +293,18 @@ pub(crate) fn make(
         )
     })?;
     video.encode(&ffmpeg, mp4, audio.as_deref())?;
-    Ok(Made { seconds: frames as f64 / FPS as f64, px, frames, sheet, zooms, sound, missed })
+    Ok(Made { seconds: frames as f64 / FPS as f64, px, frames, sheet, zooms, sound, heard: counted, missed })
 }
 
-/// A Short's camera moves from the take (each: when, its target, its region, what of it is drawn): each `@zoom` found
-/// on the first screen at or after its time that draws its target (within `FIND_MS`), shaped to the window there
-/// (`camera::framed`: `aspect` columns a row), and each beat with no `@zoom` of its own (none within `OWN_MS` after it)
+/// A Short's camera moves from the take (each: when, its target as written, the window's region, the target's): each
+/// `@zoom` found on the first screen at or after its time that draws its target (within `FIND_MS`), shaped to the
+/// window there (`camera::framed`: `aspect` columns a row, its centre `eye` down, `legible` columns at most taken in) —
+/// as wide as it grows on the same rows while the camera holds there (`camera::widened`: a line Claude is writing reaches
+/// its end, never past the window's edge) —, and each beat with no `@zoom` of its own (none within `OWN_MS` after it)
 /// back to the whole screen. A target never found is said, the camera staying where it was.
 type Move = (u64, String, Region, Region);
 
-fn moves(rec: &Recorded, aspect: f32) -> (Vec<Move>, Vec<String>) {
+fn moves(rec: &Recorded, aspect: f32, eye: f32, legible: f32) -> (Vec<Move>, Vec<String>) {
     let (mut out, mut missed) = (Vec::new(), Vec::new());
     let mut marks: Vec<(u64, &str)> = rec.zooms.iter().map(|(t, z)| (*t, z.as_str())).collect();
     for (t, _) in &rec.beats {
@@ -260,15 +313,22 @@ fn moves(rec: &Recorded, aspect: f32) -> (Vec<Move>, Vec<String>) {
         }
     }
     marks.sort_by_key(|m| m.0);
-    for (t, spec) in marks {
+    for (i, &(t, spec)) in marks.iter().enumerate() {
+        let until = marks.get(i + 1).map_or(u64::MAX, |m| m.0);
         let from = rec.frames.partition_point(|f| f.0 <= t).saturating_sub(1);
         let found = rec.frames[from..].iter().take_while(|f| f.0 <= t + FIND_MS).find_map(|(at, s)| {
             let cells = camera::Cells::of(s);
             let region = camera::target(&cells, spec)?;
-            Some((*at.max(&t), camera::framed(&cells, region, aspect)))
+            // (the target on each screen of the hold, as it grows)
+            let held = (rec.frames.iter())
+                .skip_while(|f| f.0 <= *at)
+                .take_while(|f| f.0 < until)
+                .filter_map(|f| camera::target(&camera::Cells::of(&f.1), spec));
+            let region = camera::widened(region, held, (cells.text[0].len() as u16, cells.text.len() as u16));
+            Some((*at.max(&t), camera::framed(&cells, region, aspect, eye, legible), region))
         });
         match found {
-            Some((at, (region, clip))) => out.push((at, spec.to_string(), region, clip)),
+            Some((at, window, region)) => out.push((at, spec.to_string(), window, region)),
             None => missed.push(format!(
                 "@zoom:{spec} at {:.1} s: not on screen within {} s — the camera stayed",
                 t as f64 / 1000.0,
@@ -279,11 +339,12 @@ fn moves(rec: &Recorded, aspect: f32) -> (Vec<Move>, Vec<String>) {
     (out, missed)
 }
 
-/// What a Short hears, at its time in the video (the take's after `title` ms): each key sent (a `@type:` character one
-/// by one; a key sent whole — a paste, an escape — one stroke), each `@sound:stamp` (the key after it within
-/// `STAMP_KEY_MS` its own) and `@sound:settle`; another `@sound:` said.
-fn heard(rec: &Recorded, title: u64) -> (Vec<(Duration, Heard)>, Vec<String>) {
-    let at = |t: u64| Duration::from_millis(title + t);
+/// What a Short hears, at its time in the video (the take's after `lead` ms: the punchline and the title card, both
+/// silent): each key sent (a `@type:` character one by one; a key sent whole — a paste, an escape — one stroke), each
+/// `@sound:stamp` (the key after it within `STAMP_KEY_MS` its own) and `@sound:settle`, and Claude's writing inside
+/// the scene's `@sound:writing` and `@sound:landing` spans (`writing`); another `@sound:` said.
+fn heard(rec: &Recorded, lead: u64) -> (Vec<(Duration, Heard)>, Vec<String>) {
+    let at = |t: u64| Duration::from_millis(lead + t);
     let (mut out, mut said) = (Vec::new(), Vec::new());
     let stamps: Vec<u64> = rec.sounds.iter().filter(|s| s.1 == "stamp").map(|s| s.0).collect();
     for (t, k) in &rec.keys {
@@ -298,11 +359,96 @@ fn heard(rec: &Recorded, title: u64) -> (Vec<(Duration, Heard)>, Vec<String>) {
         match kind.as_str() {
             "stamp" => out.push((at(*t), Heard::Stamp)),
             "settle" => out.push((at(*t), Heard::Settle)),
-            other => said.push(format!("@sound:{other}: no such sound (stamp, settle)")),
+            "writing" | "landing" | "still" => {}
+            other => {
+                said.push(format!("@sound:{other}: no such sound (stamp, settle, writing, landing, still)"))
+            }
         }
     }
+    out.extend(writing(rec).into_iter().map(|(t, h)| (at(t), h)));
     out.sort_by_key(|h| h.0);
     (out, said)
+}
+
+/// Claude's writing in a take, as tarae's reveal hears it: inside each span the scene opens with `@sound:writing` (or
+/// `@sound:landing`: an edit that lands unseen) and closes with `@sound:still` (else the next span or the take's end),
+/// each screen's newly shown code (`shown`) one step of the typist, as long as that screen stood (at most 100 ms, the
+/// typist's `LATE_MAX`) — never a screen that changed more than `WRITING_ROWS_MAX` rows (the view moving, not
+/// writing) —, and in a landing's span each burst (steps under `BURST_GAP_MS` apart) settling `LANDS_MS` after its
+/// last step.
+fn writing(rec: &Recorded) -> Vec<(u64, Heard)> {
+    // (each span: from, to, and whether its edits land unseen)
+    let mut spans: Vec<(u64, u64, bool)> = Vec::new();
+    let mut open: Option<(u64, bool)> = None;
+    for (t, kind) in &rec.sounds {
+        let lands = match kind.as_str() {
+            "writing" => Some(false),
+            "landing" => Some(true),
+            "still" => None,
+            _ => continue,
+        };
+        if let Some((from, l)) = open.take() {
+            spans.push((from, *t, l));
+        }
+        open = lands.map(|l| (*t, l));
+    }
+    spans.extend(open.map(|(from, l)| (from, u64::MAX, l)));
+    let mut out = Vec::new();
+    for (from, to, lands) in spans {
+        let first = rec.frames.partition_point(|f| f.0 < from);
+        let rows = |i: usize| camera::code_rows(&camera::Cells::of(&rec.frames[i].1));
+        let mut before = first.checked_sub(1).map(rows);
+        let mut last: Option<u64> = None;
+        for i in first..rec.frames.len() {
+            let t = rec.frames[i].0;
+            if t > to {
+                break;
+            }
+            let now = rows(i);
+            if let Some((text, changed)) = before.as_ref().map(|b| shown(b, &now))
+                && !text.is_empty()
+                && changed <= WRITING_ROWS_MAX
+            {
+                if lands && let Some(l) = last.filter(|l| t - l > BURST_GAP_MS) {
+                    out.push((l + LANDS_MS, Heard::Settle));
+                }
+                let next = rec.frames.get(i + 1).map_or(t + 25, |f| f.0);
+                out.push((t, Heard::Shown(text, Duration::from_millis((next - t).clamp(1, 100)))));
+                last = Some(t);
+            }
+            before = Some(now);
+        }
+        if lands && let Some(l) = last {
+            out.push((l + LANDS_MS, Heard::Settle));
+        }
+    }
+    out
+}
+
+/// What screen `b`'s code rows newly show against `a`'s (each `camera::code_rows`), and how many rows changed: a row
+/// whose text no row of `a` has gives what it adds past the text it shares with `a`'s row there — or, sharing no more
+/// than its indent, the whole of it as a new line (`\n` before it). A row moved down by a line written above it is a row
+/// `a` has: unchanged.
+fn shown(a: &[Option<String>], b: &[Option<String>]) -> (String, usize) {
+    let had: std::collections::HashSet<&str> = a.iter().flatten().map(String::as_str).collect();
+    let (mut out, mut changed) = (String::new(), 0);
+    for (i, row) in b.iter().enumerate() {
+        let Some(row) = row.as_deref() else { continue };
+        if row.trim().is_empty() || had.contains(row) {
+            continue;
+        }
+        changed += 1;
+        let old = a.get(i).and_then(|o| o.as_deref()).unwrap_or("");
+        let common = row.chars().zip(old.chars()).take_while(|(x, y)| x == y).count();
+        let indent = row.chars().take_while(|c| c.is_whitespace()).count();
+        if common <= indent {
+            out.push('\n');
+            out.push_str(row.trim_start());
+        } else {
+            out.extend(row.chars().skip(common));
+        }
+    }
+    (out, changed)
 }
 
 /// Which of the screens drawn at `times` (ms from the take's start, in order) the `k`th frame of a `FPS` video shows:
@@ -454,12 +600,31 @@ fn ffmpeg() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Which part of the video its `t` ms is in: a Short's punchline (the take's ms from its mark `punch`, `PUNCH_MS`
+/// long), the title card (to `lead`), the take (its ms, `shown` long), then the end card.
+#[derive(Debug, PartialEq)]
+enum Part {
+    Punch(u64),
+    Title,
+    Take(u64),
+    End,
+}
+
+fn part(t: u64, punch: Option<u64>, lead: u64, shown: u64) -> Part {
+    match punch {
+        Some(from) if t < PUNCH_MS => Part::Punch(from + t),
+        _ if t < lead => Part::Title,
+        _ if t < lead + shown => Part::Take(t - lead),
+        _ => Part::End,
+    }
+}
+
 /// What one frame of the video shows.
 #[derive(Clone, Copy, PartialEq)]
 enum Shows {
     Title,
-    /// The take's screen, its caption (the beat's), how far that has come in (of 255), the camera's region and what
-    /// of it is drawn.
+    /// The take's screen, its caption (the beat's), how far that has come in (of 255), the camera's region and its
+    /// target's (a card meeting it never left out).
     Screen(usize, Option<usize>, u8, Region, Region),
     End,
 }
@@ -478,17 +643,38 @@ struct Video<'a> {
     /// How long the take is shown: to its last screen and `LAST_MS` of it.
     shown_ms: u64,
     form: Form,
-    /// A Short's camera moves (when, where to; what of it is drawn), each one's target as written, and the screen's
-    /// size (columns, rows).
+    /// A Short's camera moves (when, where to; each one's target's region), each one's target as written, and the
+    /// screen's size (columns, rows).
     moves: Vec<(u64, Region)>,
-    clips: Vec<(u64, Region)>,
+    targets: Vec<(u64, Region)>,
     named: Vec<String>,
     screen: (u16, u16),
+    /// A Short's punchline: the take's ms it opens on (`PUNCH_MS` of it, before the title card).
+    punch: Option<u64>,
+    /// The video's ms before the take starts: the punchline's and the title card's.
+    lead: u64,
 }
 
 impl Video<'_> {
     fn frames(&self) -> u64 {
-        ((self.form.title_ms() + self.shown_ms + self.form.end_ms()) * FPS).div_ceil(1000)
+        ((self.lead + self.shown_ms + self.form.end_ms()) * FPS).div_ceil(1000)
+    }
+
+    /// The take as it stands at its `ms`: the screen in force, the beat (and how far its caption has come in), the
+    /// camera's region and its target's.
+    fn take_at(&self, ms: u64, screen: usize) -> Shows {
+        let beat =
+            self.rec.beats.iter().rposition(|b| b.0 <= ms).filter(|&i| !self.rec.beats[i].1.is_empty());
+        let came = beat.map_or(255, |i| ((ms - self.rec.beats[i].0) * 255 / FADE_MS).min(255) as u8);
+        let (region, target) = match self.form {
+            Form::Wide => (Region::all(self.screen), Region::all(self.screen)),
+            Form::Short => {
+                let i = self.targets.partition_point(|t| t.0 <= ms);
+                let target = i.checked_sub(1).map_or(Region::all(self.screen), |i| self.targets[i].1);
+                (camera::at(&self.moves, self.screen, ms), target)
+            }
+        };
+        Shows::Screen(screen, beat, came, region, target)
     }
 
     /// The `k`th frame's ms in the video.
@@ -497,38 +683,32 @@ impl Video<'_> {
     }
 
     fn shows(&self, k: u64) -> Shows {
-        let title_ms = self.form.title_ms();
-        let title = title_ms * FPS / 1000;
-        let t = Self::ms(k);
-        if t < title_ms {
-            return Shows::Title;
-        }
-        if t >= title_ms + self.shown_ms {
-            return Shows::End;
-        }
-        let local = t - title_ms;
-        let beat =
-            self.rec.beats.iter().rposition(|b| b.0 <= local).filter(|&i| !self.rec.beats[i].1.is_empty());
-        let came = beat.map_or(255, |i| ((local - self.rec.beats[i].0) * 255 / FADE_MS).min(255) as u8);
-        let (region, clip) = match self.form {
-            Form::Wide => (Region::all(self.screen), Region::all(self.screen)),
-            Form::Short => {
-                (camera::at(&self.moves, self.screen, local), camera::at(&self.clips, self.screen, local))
+        match part(Self::ms(k), self.punch, self.lead, self.shown_ms) {
+            // (the punchline: the take from its mark, its caption standing as it was there)
+            Part::Punch(at) => {
+                let Shows::Screen(i, beat, _, region, target) =
+                    self.take_at(at, self.times.partition_point(|&s| s <= at).saturating_sub(1))
+                else {
+                    unreachable!("take_at is a screen")
+                };
+                Shows::Screen(i, beat, 255, region, target)
             }
-        };
-        Shows::Screen(screen_at(&self.times, k - title), beat, came, region, clip)
+            Part::Title => Shows::Title,
+            Part::Take(at) => self.take_at(at, screen_at(&self.times, k - self.lead * FPS / 1000)),
+            Part::End => Shows::End,
+        }
     }
 
     /// The frame `shows` says, its screen drawn into `drawn` when it isn't the one there and its captions' pictures kept
     /// in `captions`.
     fn frame(&self, shows: Shows, drawn: &mut Drawn, captions: &mut HashMap<usize, Picture>) -> Vec<u8> {
-        let (i, beat, came, region, clip) = match shows {
+        let (i, beat, came, region, target) = match shows {
             Shows::Title => return self.cards.0.clone(),
             Shows::End => return self.cards.1.clone(),
-            Shows::Screen(i, beat, came, region, clip) => (i, beat, came, region, clip),
+            Shows::Screen(i, beat, came, region, target) => (i, beat, came, region, target),
         };
         if self.form == Form::Short {
-            return self.short_frame(i, (beat, came), (region, clip), drawn, captions);
+            return self.short_frame(i, (beat, came), (region, target), drawn, captions);
         }
         let key = (i, self.px as u32);
         if drawn.as_ref().is_none_or(|d| d.0 != key) {
@@ -559,14 +739,15 @@ impl Video<'_> {
         px
     }
 
-    /// A Short's frame: screen `i` drawn at the glyph size `region` fits the window at, cropped there — only whole cells
-    /// inside the clip, a word its left or right edge would cut hidden on its own ground —, the beat's caption (and how
-    /// far it has come in) wrapped in the band above.
+    /// A Short's frame: screen `i` drawn at the glyph size `region` fits the window at, cropped there — only whole
+    /// cells, every card the window cuts (`camera::cut`, but the one `target` is in) left out on the window's ground, and
+    /// text its left or right edge would cut hidden on its own ground —, the beat's caption (and how far it has come in)
+    /// wrapped in the band above.
     fn short_frame(
         &self,
         i: usize,
         (beat, came): (Option<usize>, u8),
-        (region, clip): (Region, Region),
+        (region, target): (Region, Region),
         drawn: &mut Drawn,
         captions: &mut HashMap<usize, Picture>,
     ) -> Vec<u8> {
@@ -591,9 +772,6 @@ impl Video<'_> {
         };
         let (c0, c1) = whole(ox, ww, cw, cols);
         let (r0, r1) = whole(oy, wh, ch, rows);
-        let (c0, c1) = (c0.max(clip.x.ceil() as usize), c1.min((clip.x + clip.w).floor() as usize));
-        let (r0, r1) = (r0.max(clip.y.ceil() as usize), r1.min((clip.y + clip.h).floor() as usize));
-        let (c1, r1) = (c1.max(c0), r1.max(r0));
         let mut out = self.look.ground.repeat(SHORT.0 * SHORT.1);
         let to = |x: usize, y: usize| {
             let (dx, dy) = (wx as i64 + x as i64 - ox, wy as i64 + y as i64 - oy);
@@ -605,29 +783,36 @@ impl Video<'_> {
             out[at..at + (x_to - x_from) * 3]
                 .copy_from_slice(&pic[(y * pw + x_from) * 3..(y * pw + x_to) * 3]);
         }
-        // (a word cut at the window's left or right edge: its cells laid with their own ground — the colour at each
-        // one's top-left)
-        let word = |r: usize, c: usize| {
-            screen.cell(r as u16, c as u16).is_some_and(|cell| {
-                cell.contents().chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        // (the cards the window cuts: left out, the window's ground in their cells)
+        let cells = camera::Cells::of(screen);
+        let view = (c0, r0, c1, r1);
+        let cut = camera::cut(&cells, view, target);
+        for &(cr0, cc0, cr1, cc1) in &cut {
+            for y in (PAD + cr0.max(r0) * ch)..(PAD + (cr1 + 1).min(r1) * ch).min(ph) {
+                for x in (PAD + cc0.max(c0) * cw)..(PAD + (cc1 + 1).min(c1) * cw).min(pw) {
+                    out[to(x, y)..][..3].copy_from_slice(&self.look.ground);
+                }
+            }
+        }
+        // (text cut at the window's left or right edge — the stretch it's in, never a line nor a card shown: its cells
+        // laid with their row's ground, the colour at the top-left of the row's first cell left showing — a cursor's line
+        // stays whole, a match's highlight cut at the edge goes with its text)
+        let shown: Vec<camera::Card> =
+            camera::cards(&cells).into_iter().filter(|c| !cut.contains(c)).collect();
+        let hidden = camera::cut_text(&cells, view, &shown);
+        let row_ground = |r: usize| {
+            (c0..c1).find(|&c| !hidden.contains(&(r, c))).map_or(self.look.ground, |c| {
+                let at = ((PAD + r * ch) * pw + PAD + c * cw) * 3;
+                [pic[at], pic[at + 1], pic[at + 2]]
             })
         };
-        let mut hide = |r: usize, c: usize| {
+        for &(r, c) in &hidden {
+            let ground = row_ground(r);
             let (x, y) = (PAD + c * cw, PAD + r * ch);
-            let ground = &pic[(y * pw + x) * 3..][..3];
-            let ground = [ground[0], ground[1], ground[2]];
             for yy in y..(y + ch).min(ph) {
                 for xx in x..(x + cw).min(pw) {
                     out[to(xx, yy)..][..3].copy_from_slice(&ground);
                 }
-            }
-        };
-        for r in r0..r1 {
-            if c0 > 0 && c0 < c1 && word(r, c0 - 1) && word(r, c0) {
-                (c0..c1).take_while(|&c| word(r, c)).for_each(|c| hide(r, c));
-            }
-            if c1 < cols && c1 > c0 && word(r, c1) && word(r, c1 - 1) {
-                (c0..c1).rev().take_while(|&c| word(r, c)).for_each(|c| hide(r, c));
             }
         }
         if let Some(b) = beat {
@@ -716,17 +901,20 @@ impl Video<'_> {
     /// Short's at each camera move's end too —, the cards' first frames too), each at half size with its time in the
     /// video and its beat under it.
     fn sheet(&self, out: &Path) -> Result<usize> {
-        let title = self.form.title_ms();
+        let lead = self.lead;
         let dims = self.form.dims();
         let times: Vec<u64> = (0..self.frames()).map(Self::ms).collect();
         let mut marks: Vec<(u64, String)> =
-            self.rec.beats.iter().filter(|b| !b.1.is_empty()).map(|(t, c)| (title + t, c.clone())).collect();
+            self.rec.beats.iter().filter(|b| !b.1.is_empty()).map(|(t, c)| (lead + t, c.clone())).collect();
         for ((t, _), name) in self.moves.iter().zip(&self.named) {
-            marks.push((title + t + camera::EASE_MS, format!("zoom:{name}")));
+            marks.push((lead + t + camera::EASE_MS, format!("zoom:{name}")));
+        }
+        if self.punch.is_some() {
+            marks.push((PUNCH_MS / 2, "punchline".into()));
         }
         marks.sort_by_key(|m| m.0);
         // (the end card's first frame: the first whose ms is past the take's)
-        marks.push((Self::ms(((title + self.shown_ms) * FPS).div_ceil(1000)), "end card".into()));
+        marks.push((Self::ms(((lead + self.shown_ms) * FPS).div_ceil(1000)), "end card".into()));
         let picks = recording::sheet_picks(&times, &marks, recording::SHEET_EVERY_MS);
         let (mut drawn, mut captions) = (None, HashMap::new());
         let pictures: Vec<Picture> = picks
@@ -764,5 +952,91 @@ mod tests {
         assert_eq!(screen_at(&[0, 100], 3), 1);
         // (a take starting late: its first screen stands in from the first frame)
         assert_eq!(screen_at(&[50], 0), 0);
+    }
+
+    /// A Short with a punchline opens on the take from its mark for `PUNCH_MS`, then the title card, then the take from
+    /// its start, then the end card; without one, the title card first.
+    #[test]
+    fn a_punchline_opens_the_video_then_the_take_from_its_start() {
+        let (title, shown) = (1_200, 10_000);
+        let lead = PUNCH_MS + title;
+        assert_eq!(part(0, Some(7_000), lead, shown), Part::Punch(7_000));
+        assert_eq!(part(PUNCH_MS - 1, Some(7_000), lead, shown), Part::Punch(7_000 + PUNCH_MS - 1));
+        assert_eq!(part(PUNCH_MS, Some(7_000), lead, shown), Part::Title);
+        assert_eq!(part(lead, Some(7_000), lead, shown), Part::Take(0));
+        assert_eq!(part(lead + shown, Some(7_000), lead, shown), Part::End);
+        assert_eq!(part(0, None, title, shown), Part::Title);
+        assert_eq!(part(title + 5, None, title, shown), Part::Take(5));
+    }
+
+    fn rows(text: &[&str]) -> Vec<Option<String>> {
+        text.iter().map(|r| Some(r.to_string())).collect()
+    }
+
+    /// What Claude's writing newly shows from one screen to the next: the characters a row gained; a line written
+    /// below another, the rows under it moved down and unchanged, as a new line; a view that moved, many rows.
+    #[test]
+    fn the_writing_shows_what_each_screen_adds() {
+        let a = rows(&["fn main() {", "    let x", "}"]);
+        let b = rows(&["fn main() {", "    let x = 1;", "}"]);
+        assert_eq!(shown(&a, &b), (" = 1;".into(), 1));
+        let c = rows(&["fn main() {", "    let x = 1;", "    let y", "}"]);
+        assert_eq!(shown(&b, &c), ("\nlet y".into(), 1));
+        assert_eq!(shown(&c, &c), (String::new(), 0));
+        let jumped = rows(&["pub struct Thread {", "    pub name: String,", "}", "impl Thread {"]);
+        let (_, changed) = shown(&c, &jumped);
+        assert!(changed == 3 && changed > WRITING_ROWS_MAX, "a view moved: every row but the one both have");
+    }
+
+    /// A screen of a code pane: its top line, `code` numbered from `first`, the status line.
+    fn screen(first: u32, code: &[&str]) -> vt100::Screen {
+        let mut p = vt100::Parser::new(6, 40, 0);
+        let mut text = String::from("\x1b[H─ main.rs ─");
+        for (i, line) in code.iter().enumerate() {
+            text.push_str(&format!("\r\n {} {line}", first + i as u32));
+        }
+        text.push_str("\x1b[6;1H● normal");
+        p.process(text.as_bytes());
+        p.screen().clone()
+    }
+
+    /// Claude's writing in a take, as the reveal hears it: inside a landing's span each screen's new code a step (what
+    /// it showed, how long it stood), the view's jump between them none, and each burst settling as it lands — never a
+    /// step outside the span.
+    #[test]
+    fn the_writing_is_heard_step_by_step_and_settles_where_it_lands() {
+        let frames = vec![
+            (0, screen(1, &["fn main() {", "    let x", "}"])),
+            (100, screen(1, &["fn main() {", "    let x = 1", "}"])),
+            (150, screen(1, &["fn main() {", "    let x = 1;", "}"])),
+            // (the view jumps: every row another)
+            (1_000, screen(7, &["pub fn b() {", "    y", "    z"])),
+            (1_100, screen(7, &["pub fn b() {", "    y = 2", "    z"])),
+            // (past the span's end)
+            (2_000, screen(7, &["pub fn b() {", "    y = 2 + 3", "    z"])),
+        ];
+        let sounds = vec![(50, "landing".to_string()), (1_500, "still".to_string())];
+        let rec = Recorded {
+            frames,
+            beats: Vec::new(),
+            waits: Vec::new(),
+            zooms: Vec::new(),
+            keys: Vec::new(),
+            sounds,
+            punch: None,
+            missed: Vec::new(),
+            wire: Vec::new(),
+        };
+        let ms = Duration::from_millis;
+        assert_eq!(
+            writing(&rec),
+            vec![
+                (100, Heard::Shown(" = 1".into(), ms(50))),
+                (150, Heard::Shown(";".into(), ms(100))),
+                (150 + LANDS_MS, Heard::Settle),
+                (1_100, Heard::Shown(" = 2".into(), ms(100))),
+                (1_100 + LANDS_MS, Heard::Settle),
+            ]
+        );
     }
 }

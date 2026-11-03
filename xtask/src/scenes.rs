@@ -24,8 +24,9 @@
 //! `sheet.png` of the video's own frames. `--video --shorts` makes it a YouTube Short instead: 1080×1920 upright, the
 //! scene at 80 columns and the rows that fill the window (`video::short_size`), a camera over it from the scene's
 //! `@zoom:<target>` lines (`camera.rs`), the captions above it inside YouTube's overlays, and tarae's own keyboard
-//! sound for the keys typed (`@type:<text>` types a character at a time), `@sound:stamp` and `@sound:settle` — into
-//! `<DIR>/<scene>-<theme>-shorts/`. The wide video ignores `@zoom` and `@sound`.
+//! sound for the keys typed (`@type:<text>` types a character at a time), `@sound:stamp`, `@sound:settle` and Claude's
+//! writing as the reveal plays it (between `@sound:writing` or `@sound:landing` and `@sound:still`); a `@punch` opens it
+//! on the take from there — into `<DIR>/<scene>-<theme>-shorts/`. The wide video ignores `@zoom`, `@sound` and `@punch`.
 
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::DirBuilderExt;
@@ -2431,14 +2432,15 @@ const BASE_MOVED: &[&str] = &[
 ];
 /// The second short video, V2 "main moved" (`--video main-moved`, ~30 s at 120×34 — the session list's frame at a quarter
 /// down, main's card at the bottom right, the two one over the other — so the card covers nothing and stands whole beside
-/// the list, never folded to its peek; collab's `.sb/videos-plan.md`): off camera, docs with a saved change of its own
-/// far from `threads.insert` and fix's own way of that line committed; on camera, the floating list in main, main's way
-/// of the line written (C2's `main ≈ fix` said as it's saved) and committed with the list up, its card beside the list,
-/// `C-q` giving it the keys (fix would conflict, docs clean), `y` moving docs only. It ends before docs, moved, meets fix
-/// (C2's next round, ~4 s on: `fix ≈ docs`). Its Short (`--video --shorts main-moved`, 80×43): the camera on the
-/// list as it opens, on the line as main's way is written, on C2's toast as it's saved, on the prompt as the commit is
-/// typed, on the card as it arrives and through `C-q` and `y`, on the list as the card goes, on what the move says; the typing a key at a time
-/// (`@type:` — the wide video's too), `y` a stamp, the move's landing the settle.
+/// the list, never folded to its peek; collab's `.sb/videos-plan.md`): on `MAIN_MOVED_RS`, off camera, docs with a saved
+/// change of its own far from `m.insert` (line 31) and fix's own way of that line committed; on camera, the floating list
+/// in main, main's way of the line written (C2's `main ≈ fix` said as it's saved) and committed with the list up, its
+/// card beside the list, `C-q` giving it the keys (fix would conflict, docs clean), `y` moving docs only. It ends before
+/// docs, moved, meets fix (C2's next round, ~4 s on: `fix ≈ docs`). Its Short (`--video --shorts main-moved`, 80×43):
+/// opening on the card with fix's conflict said (`@punch`), then the camera on the list as it opens, on `wind` as main's
+/// way is written, on C2's toast as it's saved, on the prompt as the commit is typed, on the card as it arrives and
+/// through `C-q` and `y`, on the list as the card goes, on what the move says, and on the list to the end; the typing a
+/// key at a time (`@type:` — the wide video's too), `y` a stamp, the move's landing the settle.
 const MAIN_MOVED: &[&str] = &[
     "@1",
     ":",
@@ -2458,7 +2460,7 @@ const MAIN_MOVED: &[&str] = &[
     "println",
     "\r",
     "A",
-    " // docs' way",
+    " // docs",
     "\x1b",
     ":",
     "w",
@@ -2473,10 +2475,10 @@ const MAIN_MOVED: &[&str] = &[
     "\r",
     "@1",
     "/",
-    "threads.insert",
+    "m.insert",
     "\r",
     "A",
-    " // fix's way",
+    " // fix",
     "\x1b",
     ":",
     "w",
@@ -2502,21 +2504,21 @@ const MAIN_MOVED: &[&str] = &[
     "@4",
     "@beat:Commit on main, and main moves on.",
     "q",
-    "@zoom:code:10",
+    "@zoom:code:28-32",
     "@1",
     "/",
-    "@type:threads.insert",
+    "@type:m.insert",
     "\r",
     "@1",
     "A",
-    "@type: // main's way",
+    "@type: // main",
     "\x1b",
     "@1",
     ":",
     "w",
     "\r",
     "@8?would",
-    "@zoom:src/main.rs L10",
+    "@zoom:src/main.rs L31",
     "@2",
     " ",
     "W",
@@ -2535,6 +2537,8 @@ const MAIN_MOVED: &[&str] = &[
     "@3",
     "\x11",
     "@10?esc back",
+    // (a Short opens here: the card whole, fix's conflict said)
+    "@punch",
     "@6",
     "@beat:y moves the clean ones. Nobody's work is lost.",
     "@zoom:card:main moved",
@@ -2544,6 +2548,9 @@ const MAIN_MOVED: &[&str] = &[
     "@20?moved onto main",
     "@sound:settle",
     "@zoom:moved onto main",
+    "@1.5",
+    // (the result held to the end: the list's rows once docs moved, before C2's next round says fix ≈ docs)
+    "@zoom:card:sessions",
     "@2",
 ];
 /// The third short video, V3 "Claude's edit, in your buffer" (`--video edit-in-buffer`, ~45 s at 120×34; collab's
@@ -2557,33 +2564,35 @@ const EDIT_IN_BUFFER: &[&str] = &[
     "@2",
     " ",
     "l",
+    "@zoom:card:ask claude",
     "@1",
-    "why ",
-    "@hold:120",
-    "does ",
-    "@hold:120",
-    "insert ",
-    "@hold:120",
-    "clone ",
-    "@hold:120",
-    "the ",
-    "@hold:120",
-    "name?",
+    "@type:why does insert clone the name?",
     "@2",
     "\r",
     "@10?thread.rs",
     "@beat:Its edit is written where you are, as it thinks.",
+    // (a Short: the edit's lines as it's written, its writing heard as tarae's reveal plays it)
+    "@20?editing",
+    "@sound:writing",
+    "@zoom:code:8-13",
     "@20?Change 1 of 3",
+    "@sound:still",
     "@beat:Take what you want, change by change.",
+    "@zoom:Change 1 of 3",
     "@2",
+    "@sound:stamp",
     "y",
     "@2",
+    "@sound:stamp",
     "n",
     "@2",
+    "@sound:stamp",
     "y",
     "@20?Nothing else",
+    "@zoom:code:8-14",
     "@2",
     "@beat:And undo the whole turn in one key.",
+    "@zoom:code:8-14",
     "@2",
     " ",
     "u",
@@ -2600,46 +2609,57 @@ const FOLLOW_REPLAY: &[&str] = &[
     "@1.5",
     " ",
     "l",
+    "@zoom:card:ask claude",
     "@1",
-    "why ",
-    "@hold:120",
-    "is ",
-    "@hold:120",
-    "the ",
-    "@hold:120",
-    "spool ",
-    "@hold:120",
-    "out ",
-    "@hold:120",
-    "of ",
-    "@hold:120",
-    "order?",
+    "@type:why is the spool out of order?",
     "@1.5",
     "\r",
+    // (a Short: each read's lines as the view follows there)
+    "@10?spool.rs:3-7",
+    "@zoom:code:3-7",
     // (the read's row on the follow card: its words wrap there)
-    "@10?spool.rs:30-52",
+    "@10?spool.rs:42-56",
+    "@zoom:code:42-56",
     "@1.5",
     "@beat:Your first key takes the view back.",
     "j",
+    "@zoom:you took over",
     "@1.5",
     " ",
     "F",
-    // (the turn's end: review at the end opens its rail)
-    "@30?last turn",
+    "@10?spool.rs:75-83",
+    "@zoom:code:75-83",
+    // (the two edits written as they come, each landing unseen: their writing heard, each settling as it lands)
+    "@20?editing",
+    "@sound:landing",
+    "@zoom:code:44-48",
+    "@20?Popped from",
+    "@zoom:code:75-80",
+    // (the turn's end: its answer's card at line 32 — at 80 columns the review rail has no room for its `last turn`)
+    "@30?winds from the front",
+    "@sound:still",
+    "@zoom:card:winds from the front",
     "@2",
     "@beat:Replay the turn, stop by stop.",
-    // (each pair typed as one key: sent apart, `]` stood long enough for which-key)
+    // (each pair typed as one key: sent apart, `]` stood long enough for which-key; a Short's camera on each stop's
+    // lines)
     "]r",
+    "@zoom:code:3-7",
     "@1.5",
     "]r",
+    "@zoom:code:42-56",
     "@1.5",
     "]r",
+    "@zoom:code:75-83",
     "@1.5",
     "]r",
+    "@zoom:code:44-48",
     "@1.5",
     "]r",
+    "@zoom:code:75-80",
     "@2",
     "[r",
+    "@zoom:code:44-48",
     "@3",
 ];
 /// Polish landing 4's one bring card in motion (`--record bring`): fix's own commit (the readme), main moved since (a
@@ -5534,6 +5554,12 @@ fn video_of(
         if let Some((peak, rms)) = made.sound {
             println!("sound: peak {peak:.1} dBFS, RMS {rms:.1} dBFS (while sounding), AAC 160 kb/s");
         }
+        if let Some((keys, shown, stamps, settles)) = made.heard {
+            println!(
+                "heard: {keys} keys typed, {shown} steps of Claude's writing (the typist strikes for some), {stamps} \
+                 stamps, {settles} settles"
+            );
+        }
     }
     let kb = std::fs::metadata(&mp4).map_or(0.0, |m| m.len() as f64 / 1024.0);
     println!(
@@ -5782,6 +5808,198 @@ impl Thread {
     pub fn tie(&mut self, at: u32) {
         self.knots.push(at);
     }
+}
+"#;
+
+/// V3's `main.rs` ("Claude's edit, in your buffer"): as long as a Short's screen, no line past 35 columns, so the
+/// edit's lines read at ~2.5 mm on a phone; the `v3` turn changes lines 8, 10 and 12 (`edit_in_buffer`).
+const MAIN_V3_RS: &str = r#"use std::collections::HashMap;
+
+mod thread;
+use thread::Thread;
+
+type Map = HashMap<String, Thread>;
+
+/// 실타래 — 이어진 실 한 가닥.
+fn main() {
+    let mut m: Map = Map::new();
+    let t = thread("타래");
+    m.insert(t.name.clone(), t);
+    for (name, t) in &m {
+        say(name, t);
+    }
+}
+
+/// A thread of three knots.
+fn thread(name: &str) -> Thread {
+    let name = name.to_string();
+    let knots = vec![1, 2, 3];
+    Thread { name, knots }
+}
+
+/// Says what a thread is.
+fn say(name: &str, t: &Thread) {
+    let n = t.knots.len();
+    let long = t.length();
+    println!("{name}: {n} knots");
+    println!("{long} long");
+}
+
+/// Ties one more knot on.
+fn tie(t: &mut Thread, k: u32) {
+    t.tie(k);
+}
+
+/// Every knot, on every thread.
+fn knots(m: &Map) -> usize {
+    let all = m.values();
+    all.map(|t| t.knots.len()).sum()
+}
+"#;
+
+/// V4's `spool.rs` ("follow and replay"): two screens long, so the view jumps between the turn's reads (the doc comment
+/// at 3–7, `wind` at 42–56, `tidy` at 75–83), no line past 38 columns, so each reads at ~2.4 mm on a phone; the `v4`
+/// turn pops from the front at line 46 and drops `tidy`'s sort (`follow_replay`).
+const SPOOL_V4_RS: &str = r#"use std::collections::VecDeque;
+
+/// A spool: strands waiting to be
+/// wound, and the ones wound so far.
+/// What came first is wound first:
+/// the spool keeps the order the
+/// strands came in.
+pub struct Spool {
+    pub queue: VecDeque<Strand>,
+    pub wound: Vec<Strand>,
+}
+
+/// A strand: its name and knots.
+#[derive(Clone, Debug)]
+pub struct Strand {
+    pub name: String,
+    pub knots: Vec<u32>,
+}
+
+/// A new spool, nothing waiting.
+pub fn spool() -> Spool {
+    let queue = VecDeque::new();
+    Spool { queue, wound: vec![] }
+}
+
+/// Queues a strand to be wound.
+pub fn add(sp: &mut Spool, s: Strand) {
+    sp.queue.push_back(s);
+}
+
+/// A strand with no knots yet.
+pub fn strand(name: &str) -> Strand {
+    let name = name.to_string();
+    Strand { name, knots: vec![] }
+}
+
+/// Ties a knot on a strand.
+pub fn tie(s: &mut Strand, at: u32) {
+    s.knots.push(at);
+}
+
+/// Winds every strand waiting.
+pub fn wind(sp: &mut Spool) -> usize {
+    let mut wound = 0;
+    let q = &mut sp.queue;
+    while let Some(s) = q.pop_back() {
+        if s.knots.is_empty() {
+            // No knots: no strand.
+            continue;
+        }
+        sp.wound.push(s);
+        wound += 1;
+    }
+    tidy(sp);
+    wound
+}
+
+/// How many are waiting.
+pub fn waiting(sp: &Spool) -> usize {
+    sp.queue.len()
+}
+
+/// The longest strand wound.
+pub fn longest(sp: &Spool) -> u32 {
+    let all = sp.wound.iter();
+    all.map(measure).max().unwrap_or(0)
+}
+
+/// Every knot, on every strand.
+pub fn knots(sp: &Spool) -> usize {
+    let all = sp.wound.iter();
+    all.map(|s| s.knots.len()).sum()
+}
+
+/// Puts the wound strands in order.
+fn tidy(sp: &mut Spool) {
+    // The last popped is the first
+    // that came, so the order here
+    // is the queue's reversed.
+    // Sorting by length makes it
+    // stable, whatever the order.
+    sp.wound.sort_by_key(measure);
+}
+
+/// A strand's length: the gaps
+/// between its knots.
+fn measure(s: &Strand) -> u32 {
+    let gaps = s.knots.windows(2);
+    gaps.map(|w| w[1] - w[0]).sum()
+}
+"#;
+
+/// V2's `main.rs` ("main moved"): as long as a Short's 43 rows, so its whole screen is code; from line 10 on no line
+/// past 33 columns, so a zoom on a few of them (gutter and air) draws ~2.5 mm glyphs on a phone. Main's and fix's
+/// change is `m.insert` (line 31), docs' the first `println` (line 38), far enough apart to merge.
+const MAIN_MOVED_RS: &str = r#"use std::collections::HashMap;
+
+mod thread;
+use thread::Thread;
+
+/// Every thread wound, by its name.
+type Map = HashMap<String, Thread>;
+
+/// 실타래 — 이어진 실 한 가닥.
+fn main() {
+    let mut m = Map::new();
+    for name in ["타래", "실"] {
+        let t = thread(name);
+        wind(&mut m, t);
+    }
+    for t in m.values() {
+        say(t);
+    }
+}
+
+/// A thread of three knots.
+fn thread(name: &str) -> Thread {
+    let name = name.to_string();
+    let knots = vec![1, 2, 3];
+    Thread { name, knots }
+}
+
+/// Winds a thread in, by name.
+fn wind(m: &mut Map, t: Thread) {
+    let k = t.name.clone();
+    m.insert(k, t);
+}
+
+/// Says what a thread is.
+fn say(t: &Thread) {
+    let n = t.knots.len();
+    let long = t.length();
+    println!("{}: {n}", t.name);
+    println!("{long} long");
+}
+
+/// Ties one more knot on.
+fn tie(t: &mut Thread, k: u32) {
+    t.tie(k);
+    say(t);
 }
 "#;
 
@@ -6060,7 +6278,9 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         ],
         // (#157: as many lines as the followed pane's rows less one, each wide enough to reach under the card)
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
-        "follow-replay" => vec![("src/spool.rs", SPOOL_RS.into())],
+        "follow-replay" => vec![("src/spool.rs", SPOOL_V4_RS.into())],
+        "main-moved" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
+        "edit-in-buffer" => vec![("src/main.rs", MAIN_V3_RS.into())],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
         "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
         // (the flow plan's piece 1 on A1c's answer too — its two on A1's answers have MAIN's files alone)
@@ -6800,9 +7020,9 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
-    /// V3's turn: a read of `thread.rs` (the view follows it there), one of `main.rs`'s loop, a few words each, then an
-    /// edit of three changes a line apart (touching ones would be one change) — the doc comment's, the map's type
-    /// dropped (the one to refuse) and the insert's — its input coming
+    /// V3's turn on `MAIN_V3_RS`: a read of `thread.rs` (the view follows it there), one of `main.rs`'s `main`, a few
+    /// words each, then an edit of three changes a line apart (touching ones would be one change) — the doc comment's,
+    /// the map's type dropped (the one to refuse) and the insert's — its input coming
     /// 8 characters every 50 ms (a measured stream's, `shimmer`: about 13 a 50 ms; slower, so a video reads it), and a
     /// pause once it's answered.
     fn edit_in_buffer(&mut self) -> io::Result<()> {
@@ -6812,7 +7032,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         std::thread::sleep(Duration::from_millis(1500));
         self.words("A thread owns its name, so the map needs a key of its own.")?;
         self.text("\n\n")?;
-        self.call(2, "read", json!({"files": ["src/main.rs:6-13"]}))?;
+        self.call(2, "read", json!({"files": ["src/main.rs:8-16"]}))?;
         std::thread::sleep(Duration::from_millis(1500));
         self.words("**insert** takes the key by value, and a repeated name replaces the first strand.")?;
         self.words("I will keep the first with the entry API, and say so in the doc comment.")?;
@@ -6821,14 +7041,11 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             let s = |t: &str| Value::from(t).to_string();
             format!(r#"{{"file_path": "src/main.rs", "old_string": {}, "new_string": {}}}"#, s(old), s(new))
         };
-        let doc = item("/// 실타래 — 이어진 실 한 가닥.\n", "/// 실타래 — 같은 이름은 첫 가닥으로 남는다.\n");
-        let typed = item(
-            "    let mut threads: HashMap<String, Thread> = HashMap::new();\n",
-            "    let mut threads = HashMap::new();\n",
-        );
+        let doc = item("/// 실타래 — 이어진 실 한 가닥.\n", "/// 실타래 — 첫 가닥이 남는다.\n");
+        let typed = item("    let mut m: Map = Map::new();\n", "    let mut m = Map::new();\n");
         let insert = item(
-            "    threads.insert(first.name.clone(), first);\n",
-            "    threads.entry(first.name.clone()).or_insert(first);\n",
+            "    m.insert(t.name.clone(), t);\n",
+            "    m.entry(t.name.clone())\n        .or_insert(t);\n",
         );
         self.edit_streamed(3, &format!(r#"{{"edits": [{doc}, {typed}, {insert}]}}"#))?;
         // (the review closes on its last answer: the three stamps stay in sight on the follow card's edit row)
@@ -6853,10 +7070,10 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(n, "edit", serde_json::from_str(input).map_err(io::Error::other)?)
     }
 
-    /// V4's turn, on `spool.rs` (review at the end on: its edits land unseen and the turn goes on): three reads far
+    /// V4's turn, on `SPOOL_V4_RS` (review at the end on: its edits land unseen and the turn goes on): three reads far
     /// apart, the view following each — the second held 7 s, room for a key of yours to take the view back and `space
-    /// F` to follow again before the third — then two edits streamed in at lines 32 and 75, and an answer naming line
-    /// 32 (its card at the turn's end).
+    /// F` to follow again before the third — then two edits streamed in at lines 46 and 77, and an answer naming line
+    /// 46 (its card at the turn's end).
     fn follow_replay(&mut self) -> io::Result<()> {
         let item = |old: &str, new: &str| {
             let s = |t: &str| Value::from(t).to_string();
@@ -6872,27 +7089,25 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         std::thread::sleep(Duration::from_millis(2500));
         self.words("The queue's order. Now the loop that winds.")?;
         self.text("\n\n")?;
-        self.call(2, "read", json!({"files": ["src/spool.rs:30-52"]}))?;
+        self.call(2, "read", json!({"files": ["src/spool.rs:42-56"]}))?;
         std::thread::sleep(Duration::from_millis(7000));
         self.words("It pops from the back: the newest strand goes first. And at the end:")?;
         self.text("\n\n")?;
-        self.call(3, "read", json!({"files": ["src/spool.rs:75-84"]}))?;
+        self.call(3, "read", json!({"files": ["src/spool.rs:75-83"]}))?;
         std::thread::sleep(Duration::from_millis(2500));
         self.words("A sort hides it. I will pop from the front and drop the sort.")?;
         self.text("\n\n")?;
-        let pop = item(
-            "        while let Some(mut s) = self.queue.pop_back() {\n",
-            "        while let Some(mut s) = self.queue.pop_front() {\n",
-        );
+        let pop =
+            item("    while let Some(s) = q.pop_back() {\n", "    while let Some(s) = q.pop_front() {\n");
         self.edit_streamed(4, &pop)?;
         std::thread::sleep(Duration::from_millis(2000));
         let sort = item(
-            "        // What came first is wound first, or so the doc comment says.\n        // The last strand popped is the first that came, and each\n        // retied strand goes to the back of the queue, so the order\n        // here is the queue's reversed, with the slipped ones last.\n        // Sorting by length makes it stable at least: the same\n        // strands give the same spool, whatever the queue's order was.\n        self.wound.sort_by_key(measure);\n",
-            "        // What came first is wound first, as the doc comment says:\n        // the queue is popped from its front, so no sort is needed.\n",
+            "    // The last popped is the first\n    // that came, so the order here\n    // is the queue's reversed.\n    // Sorting by length makes it\n    // stable, whatever the order.\n    sp.wound.sort_by_key(measure);\n",
+            "    // Popped from the front, they\n    // stay in the order they came.\n",
         );
         self.edit_streamed(5, &sort)?;
         std::thread::sleep(Duration::from_millis(2000));
-        self.words("Done — **src/spool.rs:32** winds from the front now, so `wound` keeps the queue's order with no sort.")?;
+        self.words("Done — **src/spool.rs:46** winds from the front now, so `wound` keeps the queue's order with no sort.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

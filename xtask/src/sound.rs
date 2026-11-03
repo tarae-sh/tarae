@@ -414,12 +414,14 @@ fn levels(samples: &[f32]) -> (f32, f32) {
 }
 
 /// What a Short hears (`video.rs`), each at its ms: a key you typed (what it was: a return, the space bar, else a key),
-/// a card's answer pressed as a stamp, an edit's landing settling the page.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// a card's answer pressed as a stamp, an edit's landing settling the page, and a step of Claude's writing — what it
+/// newly showed and how long until the next step — as tarae's reveal hears it (`typist::Typist::step`).
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Heard {
     Key(char),
     Stamp,
     Settle,
+    Shown(String, Duration),
 }
 
 /// A Short's peak: −3 dBFS — room for AAC's overshoot, and a phone's speaker never clips (YouTube turns a loud track
@@ -429,7 +431,8 @@ const SHORT_PEAK_DB: f32 = -3.0;
 /// A Short's sound track, `length` long: tarae's own strokes (`recorded::BANK`, the synth's settle) for each of
 /// `heard`, as the audio thread plays them at the full volume, then scaled so its peak is `SHORT_PEAK_DB`. A key is the
 /// kind its character is (`Kind::Return`, `Space`, else `Key`); a stamp is the big key with the settle under it, a
-/// firm press; a settle is tarae's. Its peak and RMS (dBFS) beside it.
+/// firm press; a settle is tarae's, `typist::GAP_MIN` after the writing's last key (`Typist::once`); Claude's writing
+/// is tarae's typist striking for each step, as the reveal plays it. Its peak and RMS (dBFS) beside it.
 pub(crate) fn track(heard: &[(Duration, Heard)], length: Duration) -> (Vec<f32>, f32, f32) {
     let mut seed: u32 = 0x5107_7a2a;
     let mut next = || {
@@ -438,8 +441,11 @@ pub(crate) fn track(heard: &[(Duration, Heard)], length: Duration) -> (Vec<f32>,
         seed ^= seed << 5;
         seed
     };
+    let start = Instant::now();
+    let mut hand = typist::Typist::new(0x5eed);
     let mut said: Vec<(Duration, Said)> = Vec::new();
-    for &(t, h) in heard {
+    for (t, h) in heard {
+        let t = *t;
         let mut push = |kind: Kind, gain: f32| said.push((t, Said { kind, gain, seed: next(), delay: 0.0 }));
         match h {
             Heard::Key('\r' | '\n') => push(Kind::Return, 1.0),
@@ -449,7 +455,12 @@ pub(crate) fn track(heard: &[(Duration, Heard)], length: Duration) -> (Vec<f32>,
                 push(Kind::Return, 1.0);
                 push(Kind::Settle, 0.8);
             }
-            Heard::Settle => push(Kind::Settle, 1.0),
+            Heard::Settle => said.push((t, hand.once(start + t, Kind::Settle))),
+            Heard::Shown(text, step) => {
+                if let Some(s) = hand.step(start + t, text, *step) {
+                    said.push((t, s));
+                }
+            }
         }
     }
     said.sort_by_key(|s| s.0);

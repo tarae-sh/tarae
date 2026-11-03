@@ -312,8 +312,8 @@ pub(crate) fn record_at(
 /// A scene recorded (`scenes --record`): every frame from `@rec` on, each beat's time and caption (`@beat:<caption>`;
 /// a bare `@beat` none), each wait's end while recording (`?text`, `!text` — what it waited for), and each wait that
 /// timed out, said — the take kept all the same, to be seen. A Short's (`video::shorts`) too: each `@zoom:<target>`'s
-/// time and target, each key sent (its time and what it was, a `@type:` character one by one) and each
-/// `@sound:<kind>` mark.
+/// time and target, each key sent (its time and what it was, a `@type:` character one by one), each
+/// `@sound:<kind>` mark and the `@punch` it opens on.
 pub(crate) struct Recorded {
     pub(crate) frames: Frames,
     pub(crate) beats: Vec<(u64, String)>,
@@ -321,6 +321,8 @@ pub(crate) struct Recorded {
     pub(crate) zooms: Vec<(u64, String)>,
     pub(crate) keys: Vec<(u64, String)>,
     pub(crate) sounds: Vec<(u64, String)>,
+    /// A Short's `@punch`: the take's ms its video opens on.
+    pub(crate) punch: Option<u64>,
     pub(crate) missed: Vec<String>,
     /// Each frame's bytes as tarae wrote them, with its time and whether it changed nothing in sight (`Vt.wire`).
     pub(crate) wire: Vec<(u64, Vec<u8>, bool)>,
@@ -345,6 +347,7 @@ pub(crate) fn record(
         zooms: vt.zooms.into_iter().map(|(d, z)| (ms(d), z)).collect(),
         keys: vt.keys.into_iter().map(|(d, k)| (ms(d), k)).collect(),
         sounds: vt.sounds.into_iter().map(|(d, s)| (ms(d), s)).collect(),
+        punch: vt.punch.map(ms),
         missed,
         wire: vt.wire.into_iter().map(|(d, b, same)| (ms(d), b, same)).collect(),
     })
@@ -550,6 +553,8 @@ struct Vt {
     zooms: Vec<(Duration, String)>,
     keys: Vec<(Duration, String)>,
     sounds: Vec<(Duration, String)>,
+    /// During `@rec`: when `@punch` came (a Short opens on the take from there).
+    punch: Option<Duration>,
     /// Frames read so far, every one (a synchronized update's end each — tarae's `frames_written`), and each
     /// `captured` frame's count as it was kept.
     ends: u64,
@@ -572,6 +577,7 @@ impl Vt {
             zooms: Vec::new(),
             keys: Vec::new(),
             sounds: Vec::new(),
+            punch: None,
             ends: 0,
             captured_ends: Vec::new(),
             wire: Vec::new(),
@@ -840,6 +846,7 @@ fn drive_with(
             vt.zooms.clear();
             vt.keys.clear();
             vt.sounds.clear();
+            vt.punch = None;
             if let Some((screen, ends)) = seen.take() {
                 vt.captured.push((Duration::ZERO, screen));
                 vt.captured_ends.push(ends);
@@ -870,6 +877,10 @@ fn drive_with(
             if let Some(since) = vt.capturing {
                 vt.sounds.push((since.elapsed(), kind.to_string()));
             }
+            continue;
+        }
+        if k == "@punch" {
+            vt.punch = vt.capturing.map(|since| since.elapsed());
             continue;
         }
         if let Some(text) = k.strip_prefix("@type:") {
