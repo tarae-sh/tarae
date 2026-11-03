@@ -313,7 +313,7 @@ fn diff_row_runs(prev: &[CellState], cur: &[CellState]) -> Vec<(u16, u16, String
 /// The frames a sheet shows, by their index in `times` (each frame's ms, in order), with what's written under each: the
 /// screen as seen every `every` ms (the last frame drawn by then), at each of `marks` (its time and what it was), and
 /// the last frame. A frame picked twice is shown once, under the first time it was picked, its marks joined.
-fn sheet_picks(times: &[u64], marks: &[(u64, String)], every: u64) -> Vec<(usize, String)> {
+pub(crate) fn sheet_picks(times: &[u64], marks: &[(u64, String)], every: u64) -> Vec<(usize, String)> {
     let Some(&end) = times.last() else { return Vec::new() };
     let mut wanted: Vec<(u64, Option<&str>)> = (0..=end / every).map(|k| (k * every, None)).collect();
     wanted.extend(marks.iter().map(|(t, what)| (*t, Some(what.as_str()))));
@@ -345,18 +345,33 @@ pub(crate) fn sheet(
 ) -> Result<usize> {
     let times: Vec<u64> = frames.iter().map(|f| f.0).collect();
     let picks = sheet_picks(&times, marks, SHEET_EVERY_MS);
-    let pictures: Vec<(usize, usize, Vec<u8>)> = picks
+    let pictures: Vec<Picture> = picks
         .iter()
         .map(|(at, said)| {
             let screen = &frames[*at].1;
             let (_, cols) = screen.size();
-            // (the caption as a screen of one row: drawn by the shots' own renderer, in their font)
-            let mut caption = vt100::Parser::new(1, cols, 0);
-            caption.process(b"\x1b[?25l");
-            caption.process(said.chars().take(usize::from(cols)).collect::<String>().as_bytes());
-            stacked(&[shot::render(screen, fonts, 1), shot::render(caption.screen(), fonts, 1)])
+            labelled(shot::render(screen, fonts, 1), said, usize::from(cols), fonts)
         })
         .collect();
+    pages(&pictures, out)
+}
+
+/// RGB pixels: width, height, three bytes a pixel.
+pub(crate) type Picture = (usize, usize, Vec<u8>);
+
+/// `picture` with `said` written under it, `cols` cells wide (a screen of one row: drawn by the shots' own renderer,
+/// in their font).
+pub(crate) fn labelled(picture: Picture, said: &str, cols: usize, fonts: &Fonts) -> Picture {
+    let cols = cols.min(usize::from(u16::MAX)) as u16;
+    let mut caption = vt100::Parser::new(1, cols, 0);
+    caption.process(b"\x1b[?25l");
+    caption.process(said.chars().take(usize::from(cols)).collect::<String>().as_bytes());
+    stacked(&[picture, shot::render(caption.screen(), fonts, 1)])
+}
+
+/// A contact sheet of `pictures` at `out`, two across; past `PAGE` also in pages of `PAGE` beside it (`sheet-01.png`
+/// …). What it returns: the pictures shown.
+pub(crate) fn pages(pictures: &[Picture], out: &Path) -> Result<usize> {
     let stem = out.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     let dir = out.parent().unwrap_or(Path::new("."));
     // (a page an earlier, longer take left: gone, so every page there is this take's)
@@ -366,7 +381,7 @@ pub(crate) fn sheet(
             let _ = std::fs::remove_file(e.path());
         }
     }
-    grid(&pictures, out)?;
+    grid(pictures, out)?;
     if pictures.len() > PAGE {
         for (k, page) in pictures.chunks(PAGE).enumerate() {
             grid(page, &dir.join(format!("{stem}-{:02}.png", k + 1)))?;

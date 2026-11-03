@@ -16,7 +16,12 @@
 //! unless `--theme dark|light` — into `<DIR>/<scene>-<theme>-<cols>/` (default `target/rec`): `rec.json` in the
 //! homepage player's format (`recording.rs`, the hero's encoder), `sheet.png` (a frame every ~2 s and at each wait's
 //! end and beat, the time under each; past six frames also `sheet-01.png` …, six a page) and `play.html` (one file
-//! that plays it, nothing fetched — on a phone too).
+//! that plays it, nothing fetched — on a phone too). A scene that needs a size of its own to show what it shows is
+//! recorded at it (`record_size`).
+//!
+//! `--video` makes the take a short video (`video.rs`): 1920×1080 at 30 fps, its `@beat:` captions in a band under the
+//! screen, a title card and an end card with the seal — `<DIR>/<scene>-<theme>-video/<scene>.mp4` through ffmpeg, and
+//! `sheet.png` of the video's own frames.
 
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::DirBuilderExt;
@@ -26,18 +31,28 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::recording;
 use crate::shot::{self, Setup};
 use crate::{Result, root};
+use crate::{recording, video};
 use docshots::{Bg, Named, fixed_clock, homes, none_of_yours, now};
 
 // (`scenes --docs`: the docs' pictures, each from a scene here)
 pub(crate) mod docshots;
 
-const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
+const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
 
-/// A recording's size unless `--size` says (the polish week's: its flows judged at 120×34).
+/// A recording's size unless `--size` says (the polish week's: its flows judged at 120×34) or the scene has its own
+/// (`record_size`).
 const RECORD_SIZE: (u16, u16) = (120, 34);
+
+/// The size `scene` is recorded at when `--size` doesn't say: its own where what it shows needs one (`waits-60s`: the
+/// floating session list and main's card meet at 80×20), else `RECORD_SIZE`.
+fn record_size(scene: &Scene) -> (u16, u16) {
+    match scene.name {
+        "waits-60s" => (80, 20),
+        _ => RECORD_SIZE,
+    }
+}
 
 /// One surface: the stand-in claude's script, the files tarae opens, the keys sent (as `cargo xtask shot`
 /// takes them: `@1` waits a second, `@?text` until `text` is on screen, `@20?text` at most 20 s).
@@ -1257,9 +1272,12 @@ macro_rules! waits_keys {
         ]
     };
 }
-/// The polish week's landing 1 in motion (`--record waits-60s`, ~60 s): you in main with the session list floating;
-/// fix's Claude, asked before, raises its card ~10 s into its turn — a one-row peek while the list is open —; a press
-/// on the peek stands it whole, `esc` folds it again, the list closed it stands; `C-q y` answers it (`cardlater`).
+/// The polish week's landing 1 in motion (`--record waits-60s`, ~60 s at 80×20 — `record_size`: where main's card
+/// and the floating session list meet): fix's Claude at work the whole take (`idle`); you ask main's own Claude to run
+/// the tests and open the list; its card comes ~10 s into the turn (`cardlater`) and, the list in its way, folds to
+/// its peek; `C-q` stands it whole with the keys, `esc` folds it again, the list closed it stands; `C-q y` answers it.
+/// (A card of another session's is a peek wherever it is — its press takes you into that session —, so the fold is
+/// shown on main's own; fix asks nothing, or `C-q` — the oldest card's — would go to fix's.)
 const WAITS_60S: &[&str] = &[
     "@1",
     ":",
@@ -1270,15 +1288,10 @@ const WAITS_60S: &[&str] = &[
     "workspace-open ../fix",
     "\r",
     "@3",
-    // (fix's Claude asked, its file open: its card comes ~10 s on, once you're back in main with the list open)
-    ":",
-    "e src/main.rs",
-    "\r",
-    "@10?fix › src › main.rs",
     " ",
     "l",
     "@1",
-    "run the tests",
+    "tidy the docs",
     "\r",
     "@1",
     ":",
@@ -1286,36 +1299,46 @@ const WAITS_60S: &[&str] = &[
     "\r",
     "@10?tarae-demo › src › main.rs",
     "@rec",
-    "@3",
+    "@1",
+    "@beat:You ask main's Claude to run the tests",
+    " ",
+    "l",
+    "@1",
+    "run the tests",
+    "@1",
+    "\r",
+    "@2",
+    // (a beat that says what a key does goes just before it: the caption comes in as the key goes, not after the
+    // driver's pause behind it)
+    "@beat:The session list, floating: both Claudes at work",
     " ",
     "W",
     "@10?sessions",
-    "@beat:The session list, floating; fix's Claude at work",
-    "@30?fix asks",
-    "@beat:fix's card arrives — a peek while the list is open",
-    "@9",
-    "@press?fix asks",
+    "@30?main asks",
+    "@beat:main's card arrives — folded to a peek, off the list",
+    "@6",
+    "@beat:C-q stands it whole, the keys on it",
+    "\x11",
     "@10?Its reason",
-    "@beat:A press on the peek: the card stands whole",
-    "@9",
+    "@6",
+    "@beat:esc folds it to its peek again",
     "\x1b",
     "@10!Its reason",
-    "@beat:esc: it folds to its peek again",
-    "@9",
+    "@5",
     // (the list given the keys and closed)
+    "@beat:The list closed: the card stands",
     " ",
     "W",
     "@1",
     "q",
     "@10?Its reason",
-    "@beat:The list closed: the card stands",
-    "@9",
+    "@5",
     "\x11",
     "@1",
+    "@beat:y — the run goes",
     "y",
-    "@beat:y — fix's run goes",
     "@20!Its reason",
-    "@10",
+    "@4",
 ];
 // (in fix, main's card waiting as a peek: a file saved, its cursor off the top — the toast at the top right)
 const TOAST_PEEK: &[&str] = waits_keys!(":e src/main.rs\r", "@1", "G", ":w\r", "@1");
@@ -4199,7 +4222,7 @@ const SCENES: &[Scene] = &[
     // (…top right, beside main's ask waiting bottom right as a peek: the two one-row looks one family)
     Scene { name: "toast-peek", claude: "card", files: MAIN, keys: TOAST_PEEK },
     // (the polish week's landing 1, to be recorded: another session's card arriving while the session list floats)
-    Scene { name: "waits-60s", claude: "main=idle,fix=cardlater", files: MAIN, keys: WAITS_60S },
+    Scene { name: "waits-60s", claude: "main=cardlater,fix=idle", files: MAIN, keys: WAITS_60S },
     // (`:messages`, a floating list at the newest — the session list's frame)
     Scene { name: "messages", claude: "idle", files: MAIN, keys: MESSAGES },
     // (the same run asked again after a yes, the program it runs rebuilt since — git ignores it: the card's "Same as")
@@ -4846,6 +4869,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut sizes = None;
     let mut transparent = false;
     let mut recording = false;
+    let mut video = false;
     let mut backgrounds = BACKGROUNDS.to_vec();
     let mut bin: Option<PathBuf> = None;
     let mut it = args.iter();
@@ -4858,6 +4882,8 @@ pub fn run(args: &[String]) -> Result<()> {
             "--out" => out = Some(PathBuf::from(it.next().ok_or(USAGE)?)),
             // (in motion: every frame kept — `record`)
             "--record" => recording = true,
+            // (…and made a video — `video.rs`)
+            "--video" => (recording, video) = (true, true),
             "--theme" => {
                 let bg = it.next().ok_or(USAGE)?;
                 backgrounds = vec![BACKGROUNDS.into_iter().find(|b| b == bg).ok_or(USAGE)?];
@@ -4881,7 +4907,11 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     let scenes = chosen(&names)?;
     let out = out.unwrap_or_else(|| root().join(if recording { "target/rec" } else { "target/scenes" }));
-    let sizes = sizes.unwrap_or_else(|| if recording { vec![RECORD_SIZE] } else { SIZES.to_vec() });
+    let sizes_of = |scene: &Scene| match &sizes {
+        Some(s) => s.clone(),
+        None if recording => vec![record_size(scene)],
+        None => SIZES.to_vec(),
+    };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let bin = match bin {
         Some(b) if b.is_absolute() && b.is_file() => b,
@@ -4895,11 +4925,18 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut failed = Vec::new();
     for scene in scenes {
         for &bg in &backgrounds {
-            for &size in &sizes {
+            for size in sizes_of(scene) {
                 if recording {
                     let theme = if bg == "dark" { Bg::Dark } else { Bg::Light };
-                    let at = out.join(format!("{}-{}-{}", scene.name, theme.theme(), size.0));
-                    if let Err(e) = record(scene, theme, size, &bin, &me, &at) {
+                    let at = match video {
+                        true => out.join(format!("{}-{}-video", scene.name, theme.theme())),
+                        false => out.join(format!("{}-{}-{}", scene.name, theme.theme(), size.0)),
+                    };
+                    let made = match video {
+                        true => video_of(scene, theme, size, &bin, &me, &at),
+                        false => record(scene, theme, size, &bin, &me, &at),
+                    };
+                    if let Err(e) = made {
                         eprintln!("{}: {e}", at.display());
                         failed.push(at.display().to_string());
                     }
@@ -4917,6 +4954,7 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     match failed.len() {
         0 => Ok(()),
+        n if video => Err(format!("{n} videos failed: {}", failed.join(", "))),
         n if recording => Err(format!("{n} recordings failed: {}", failed.join(", "))),
         n => Err(format!("{n} shots failed: {}", failed.join(", "))),
     }
@@ -4958,21 +4996,7 @@ fn one(
 /// `rec.json` (the homepage player's), `sheet.png` and its pages, `play.html`. A wait that timed out fails it, the take
 /// written all the same.
 fn record(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &Path) -> Result<()> {
-    let dir = Named::new(&format!("rec-{}-{}-{}", scene.name, bg.theme(), std::process::id()))?;
-    let real = std::fs::canonicalize(&dir.0).map_err(|e| format!("{}: {e}", dir.0.display()))?;
-    let mut env_homes = homes(&real, &|k| std::env::var_os(k))?;
-    env_homes.push(("TZ", fixed_clock(now()).into()));
-    let setup = prepare(scene, bg.word(), false, bin, me, &real, &real.join("home/tarae-demo"))?;
-    let mut keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
-    if !keys.iter().any(|k| k == "@rec") {
-        keys.insert(0, "@rec".into());
-    }
-    let rec = shot::record(&setup, &keys, size, &real.join("state"), &env_homes)?;
-    let yours = std::env::var_os("HOME");
-    for (t, screen) in &rec.frames {
-        none_of_yours(&recording::screen_cells(screen), yours.as_deref())
-            .map_err(|e| format!("at {t} ms: {e}"))?;
-    }
+    let rec = take(scene, bg, size, bin, me)?;
     std::fs::create_dir_all(at).map_err(|e| format!("{}: {e}", at.display()))?;
     let beat_times: Vec<u64> = rec.beats.iter().map(|b| b.0).collect();
     let sampled = recording::sample(&rec.frames, &beat_times);
@@ -4999,6 +5023,74 @@ fn record(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &P
         true => Ok(()),
         false => Err(format!("{} — the take is written all the same", rec.missed.join("; "))),
     }
+}
+
+/// `scene` driven as `record` and `video_of` take it, its frames from `@rec`: each one passed `none_of_yours`.
+fn take(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path) -> Result<shot::Recorded> {
+    let dir = Named::new(&format!("rec-{}-{}-{}", scene.name, bg.theme(), std::process::id()))?;
+    let real = std::fs::canonicalize(&dir.0).map_err(|e| format!("{}: {e}", dir.0.display()))?;
+    let mut env_homes = homes(&real, &|k| std::env::var_os(k))?;
+    env_homes.push(("TZ", fixed_clock(now()).into()));
+    let demo = real.join("home/tarae-demo");
+    let setup = prepare(scene, bg.word(), false, bin, me, &real, &demo)?;
+    own_build_dir(&demo)?;
+    let mut keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
+    if !keys.iter().any(|k| k == "@rec") {
+        keys.insert(0, "@rec".into());
+    }
+    let rec = shot::record(&setup, &keys, size, &real.join("state"), &env_homes)?;
+    let yours = std::env::var_os("HOME");
+    for (t, screen) in &rec.frames {
+        none_of_yours(&recording::screen_cells(screen), yours.as_deref())
+            .map_err(|e| format!("at {t} ms: {e}"))?;
+    }
+    Ok(rec)
+}
+
+/// `scene` as a short video into `at` (`--video`): taken as `record` takes it, made by `video::make` — `<scene>.mp4`
+/// and `sheet.png`. A wait that timed out fails it, the video made all the same.
+fn video_of(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &Path) -> Result<()> {
+    let started = std::time::Instant::now();
+    let rec = take(scene, bg, size, bin, me)?;
+    let driven = started.elapsed();
+    let title = video_title(scene.name);
+    let mp4 = at.join(format!("{}.mp4", scene.name));
+    let made = video::make(&rec, bg, title, &mp4, std::env::var_os("HOME").as_deref())?;
+    let kb = std::fs::metadata(&mp4).map_or(0.0, |m| m.len() as f64 / 1024.0);
+    println!(
+        "saved {} ({:.1} s of video at {} px a glyph, {} frames; {kb:.0} KB; driven {:.1} s, drawn and encoded {:.1} s; \
+         sheet.png {} frames)",
+        mp4.display(),
+        made.seconds,
+        made.px,
+        made.frames,
+        driven.as_secs_f64(),
+        (started.elapsed() - driven).as_secs_f64(),
+        made.sheet,
+    );
+    match rec.missed.is_empty() {
+        true => Ok(()),
+        false => Err(format!("{} — the video is made all the same", rec.missed.join("; "))),
+    }
+}
+
+/// A video's line on its title card (≤ ~40 characters): what the scene shows, said once.
+fn video_title(scene: &str) -> &'static str {
+    match scene {
+        "waits-60s" => "A card never covers what you opened",
+        _ => "",
+    }
+}
+
+/// A recording's cargo builds `demo` in its own `target/`: the toolchain's home is yours (`homes`), and a `build-dir`
+/// your cargo config names there put your home on screen as a run of the scene's built (`~/.cargo/build/…` in its
+/// output). Kept out of the demo's git status (`info/exclude`), so no frame shows it.
+fn own_build_dir(demo: &Path) -> Result<()> {
+    write(&demo.join(".cargo/config.toml"), "[build]\nbuild-dir = \"{workspace-root}/target\"\n")?;
+    let exclude = demo.join(".git/info/exclude");
+    let mut lines = std::fs::read_to_string(&exclude).unwrap_or_default();
+    lines.push_str("/.cargo/\n");
+    write(&exclude, &lines)
 }
 
 /// A shot's demo crate at `demo`, its config at `dir`'s `xdg` and what it seeds in `dir`'s `state`: tarae's setup for
@@ -6527,16 +6619,23 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             std::thread::sleep(Duration::from_millis(290));
         }
         self.text("\n\n")?;
-        self.ask_outside()
+        // (a reason of three rows: the card tall enough to meet the floating list at 80×20)
+        self.ask_outside_for(
+            "cargo needs to fetch the registry index, and the tests bind a port on this machine that the \
+             sandbox keeps closed",
+        )
     }
 
     fn ask_outside(&mut self) -> io::Result<()> {
+        self.ask_outside_for("cargo needs to fetch the registry index")
+    }
+
+    fn ask_outside_for(&mut self, reason: &str) -> io::Result<()> {
         self.words(
             "The tests need the network for the registry, so I will ask to run them outside the sandbox.",
         )?;
         self.text("\n")?;
-        let run = json!({"command": "cargo test --quiet", "outside_sandbox": true,
-            "reason": "cargo needs to fetch the registry index"});
+        let run = json!({"command": "cargo test --quiet", "outside_sandbox": true, "reason": reason});
         self.call(1, "run", run)?;
         self.line(json!({"type": "result", "result": "done"}))
     }

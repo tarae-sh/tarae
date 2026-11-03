@@ -1314,13 +1314,29 @@ pub(crate) fn color(c: vt100::Color, default: Rgb) -> Rgb {
 /// The screen as RGB pixels at `s` times the size: glyphs drawn at `SIZE` × `s`, every other measure the 1×
 /// picture's times `s` — so 2× is the 1× layout at twice the pixels, lines and blocks on whole pixels.
 pub(crate) fn render(screen: &vt100::Screen, fonts: &Fonts, s: usize) -> (usize, usize, Vec<u8>) {
+    draw(screen, fonts, SIZE, s)
+}
+
+/// The screen as RGB pixels with its glyphs at `size` px, its cells `cell(fonts, size)`, lines a pixel thick, the
+/// margin `PAD` (a video's: `video.rs`).
+pub(crate) fn render_px(screen: &vt100::Screen, fonts: &Fonts, size: f32) -> (usize, usize, Vec<u8>) {
+    draw(screen, fonts, size, 1)
+}
+
+/// A cell's width and height in pixels with glyphs at `size` px: the mono font's advance, 1.45 times the size.
+pub(crate) fn cell(fonts: &Fonts, size: f32) -> (usize, usize) {
+    (fonts.regular.metrics('M', size).advance_width as usize, (size * 1.45) as usize)
+}
+
+/// `render`'s drawing with `base` for `SIZE`: the 1× layout at `base` px, `s` times.
+fn draw(screen: &vt100::Screen, fonts: &Fonts, base: f32, s: usize) -> (usize, usize, Vec<u8>) {
     let (rows, cols) = screen.size();
     let (rows, cols) = (rows as usize, cols as usize);
-    let size = SIZE * s as f32;
+    let size = base * s as f32;
     // The 1× cell
-    let (cw1, ch1) = (fonts.regular.metrics('M', SIZE).advance_width as usize, (SIZE * 1.45) as usize);
+    let (cw1, ch1) = cell(fonts, base);
     let (cw, ch, pad) = (cw1 * s, ch1 * s, PAD * s);
-    let baseline1 = baseline(&fonts.regular, ch1);
+    let baseline1 = baseline(&fonts.regular, ch1, base);
     let cell = |y: usize, x: usize| screen.cell(y as u16, x as u16);
     // The outer margin takes the edit view's background (the command line's last cell — no card covers it)
     let bg = cell(rows - 1, cols - 1).map_or(BG, |c| color(c.bgcolor(), BG));
@@ -1430,8 +1446,8 @@ pub(crate) fn render(screen: &vt100::Screen, fonts: &Fonts, s: usize) -> (usize,
 /// The 1× baseline, in pixels from the top of a cell `ch1` tall: `font`'s line (ascent, descent, line gap)
 /// centred in the cell, as a terminal places it (Ghostty, kitty) — one for every face of a row, a fallback's
 /// glyphs on it too. (frictions28: `3 + ascent` put it about 3 px low in a 21 px cell.)
-fn baseline(font: &fontdue::Font, ch1: usize) -> usize {
-    let at = font.horizontal_line_metrics(SIZE).map_or(SIZE, |l| {
+fn baseline(font: &fontdue::Font, ch1: usize, size: f32) -> usize {
+    let at = font.horizontal_line_metrics(size).map_or(size, |l| {
         let line = l.ascent - l.descent + l.line_gap;
         (ch1 as f32 - line) / 2.0 + l.line_gap / 2.0 + l.ascent
     });
@@ -1874,7 +1890,7 @@ mod tests {
         let Ok(f) = Fonts::load(1) else { return };
         let ch1 = (SIZE * 1.45) as usize;
         let l = f.regular.horizontal_line_metrics(SIZE).unwrap();
-        let b = baseline(&f.regular, ch1) as f32;
+        let b = baseline(&f.regular, ch1, SIZE) as f32;
         let (above, below) = (b - l.ascent, ch1 as f32 - b + l.descent);
         assert!((above - below).abs() <= 1.0, "above {above}, below {below} (baseline {b} of {ch1})");
     }

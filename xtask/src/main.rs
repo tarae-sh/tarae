@@ -85,6 +85,7 @@ mod sound;
 mod stream;
 mod trace;
 mod turns;
+mod video;
 
 type Result<T> = std::result::Result<T, String>;
 
