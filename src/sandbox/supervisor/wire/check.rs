@@ -319,6 +319,56 @@ pub(crate) fn kernel(m: &Fake, at: u64, datagram: bool) -> (Vec<(u64, usize)>, R
     (copies.into_inner(), came)
 }
 
+/// Linux's `CMSG_ALIGN`, `CMSG_LEN` and `CMSG_SPACE` (`include/uapi/linux/socket.h`, 64-bit: a `struct cmsghdr` of
+/// 16 bytes, data and the next header aligned to 8) — written out, as macOS's own differ (a 12-byte header aligned to
+/// 4); `the_numbers_are_linuxs` checks them against libc's on Linux.
+pub(crate) fn cmsg_align(n: usize) -> usize {
+    n.next_multiple_of(8)
+}
+
+pub(crate) fn cmsg_len(n: usize) -> usize {
+    16 + n
+}
+
+pub(crate) fn cmsg_space(n: usize) -> usize {
+    16 + cmsg_align(n)
+}
+
+/// What tarae sends for a message `read_msg` took (`send_one` hands the kernel its `control` as it is, none when it's
+/// empty), held to Linux's macros, not to the code that built it: `SOL_SOCKET`/`SCM_RIGHTS` headers only, each
+/// `CMSG_LEN` of at least one descriptor long and the next at its `CMSG_SPACE`, the control ending at the last one's,
+/// padding zero; in the slots, in order, the descriptors `read_msg` took (`msg.fds`) — each tarae's own copy, the
+/// number `passer` handed out for one the run passed, none twice — no more than were read, at most `SCM_MAX_FD`; no
+/// control at all when none passed. Every byte one of those, nothing of the run's control bytes goes through.
+pub(crate) fn sent(msg: &Msg<Number>, passed: &[(i32, i32)]) {
+    let c = &msg.control;
+    let ours: Vec<i32> = msg.fds.iter().map(AsRawFd::as_raw_fd).collect();
+    let handed: Vec<i32> = passed.iter().map(|p| p.1).collect();
+    assert_eq!(ours, handed, "the descriptors held are the copies handed out, one for each the run passed");
+    assert!(ours.len() <= SCM_MAX_FD, "{} descriptors", ours.len());
+    let (mut slots, mut o) = (Vec::new(), 0);
+    while o < c.len() {
+        assert!(o + cmsg_len(0) <= c.len(), "a header cut short at {o}: {c:?}");
+        let len = usize::try_from(u64::from_ne_bytes(c[o..o + 8].try_into().unwrap())).unwrap();
+        let level = i32::from_ne_bytes(c[o + 8..o + 12].try_into().unwrap());
+        let kind = i32::from_ne_bytes(c[o + 12..o + 16].try_into().unwrap());
+        assert_eq!((level, kind), (SOL_SOCKET, SCM_RIGHTS), "only descriptors: {c:?}");
+        let n = len.saturating_sub(cmsg_len(0)) / 4;
+        assert!(n > 0 && len == cmsg_len(4 * n), "CMSG_LEN of at least one descriptor: {len}");
+        let end = o + cmsg_space(4 * n);
+        assert!(end <= c.len(), "its CMSG_SPACE within the control: {c:?}");
+        slots.extend(c[o + 16..o + len].as_chunks::<4>().0.iter().map(|w| i32::from_ne_bytes(*w)));
+        assert!(c[o + len..end].iter().all(|&b| b == 0), "padding zeroed: {c:?}");
+        o = end;
+    }
+    assert_eq!(slots, ours, "in the slots, in order, the descriptors tarae holds");
+    let mut distinct = ours.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), ours.len(), "none twice: {ours:?}");
+    assert_eq!(c.is_empty(), ours.is_empty(), "no control when no descriptor passed: {c:?}");
+}
+
 /// Where `read_msg` reads the message at `at` apart from the kernel — each a difference known and named (the
 /// loop counts them; `read_apart_from_the_kernel` pins each); `None`: it must read it as the kernel does.
 fn apart(
@@ -350,8 +400,9 @@ fn apart(
 /// (`kernel`) but where it's known to differ (`apart`): the same memory read, in order — each pointer the run gave
 /// once; what tarae decides on is what it read, never fetched again — at most a header, an address, 1024 iovecs,
 /// 1 MiB of data and 64 KiB of control asked in all; the kernel's errno, else its address and data, and a control
-/// tarae built: a header per `SCM_RIGHTS`, tarae's descriptor for each number the run passed there. What came of
-/// it: the kernel's step that refused it, a difference `apart` names, or taken (with descriptors or without).
+/// tarae built (`sent`): a header per `SCM_RIGHTS` that passes any, tarae's descriptor for each number the run passed
+/// there. What came of it: the kernel's step that refused it, a difference `apart` names, or taken (with descriptors
+/// or without).
 pub(crate) fn message(m: &Fake, at: u64, datagram: bool) -> &'static str {
     let most = MSGHDR + ADDR_MAX + UIO_MAXIOV as usize * 16 + SEND_MAX + CONTROL_MAX;
     let touched = |r: &[(u64, usize)]| r.iter().copied().filter(|r| r.1 > 0).collect::<Vec<_>>();
@@ -379,11 +430,12 @@ pub(crate) fn message(m: &Fake, at: u64, datagram: bool) -> &'static str {
                 .collect();
             assert_eq!(passed.iter().map(|p| p.0).collect::<Vec<_>>(), theirs, "each number the run passed");
             let ours: Vec<i32> = msg.fds.iter().map(AsRawFd::as_raw_fd).collect();
-            assert_eq!(passed.iter().map(|p| p.1).collect::<Vec<_>>(), ours);
+            sent(&msg, &passed);
             let mut left = &ours[..];
             let built: Vec<u8> = r
                 .rights
                 .iter()
+                .filter(|&&n| n > 0)
                 .flat_map(|&n| {
                     let (these, rest) = left.split_at(n);
                     left = rest;
@@ -391,7 +443,11 @@ pub(crate) fn message(m: &Fake, at: u64, datagram: bool) -> &'static str {
                 })
                 .collect();
             assert_eq!(msg.control, built, "tarae's descriptors in tarae's headers, nothing else");
-            if r.slots.is_empty() { "taken" } else { "taken with descriptors" }
+            match (r.slots.is_empty(), r.rights.contains(&0)) {
+                (true, true) => "taken, an SCM_RIGHTS passing none",
+                (true, false) => "taken",
+                (false, _) => "taken with descriptors",
+            }
         }
         (got, kernel) => panic!("{:?} where the kernel says {kernel:?}", got.map(|m| m.data)),
     }

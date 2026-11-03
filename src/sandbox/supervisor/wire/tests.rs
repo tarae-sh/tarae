@@ -68,6 +68,12 @@ fn the_numbers_are_linuxs() {
     );
     assert_eq!((MSGHDR, MMSGHDR), (size_of::<libc::msghdr>(), size_of::<libc::mmsghdr>()));
     assert_eq!(MSG_LEN_AT as usize, std::mem::offset_of!(libc::mmsghdr, msg_len));
+    for n in 0..=4 * SCM_MAX_FD as u32 {
+        // SAFETY: arithmetic on a length, nothing read.
+        let libcs = unsafe { (libc::CMSG_LEN(n), libc::CMSG_SPACE(n)) };
+        let n = n as usize;
+        assert_eq!((check::cmsg_len(n), check::cmsg_space(n)), (libcs.0 as usize, libcs.1 as usize), "{n}");
+    }
     // (`SCM_MAX_FD`, which libc doesn't name: the kernel's own answer on a socket pair — the most, and one more)
     let null = std::fs::File::open("/dev/null").unwrap();
     let mut pair = [0; 2];
@@ -230,9 +236,68 @@ fn only_a_buffer_tarae_built_goes_out() {
     assert_eq!(msg.control, [rights(&ours[..2]), rights(&ours[2..])].concat());
 }
 
+/// An `SCM_RIGHTS` that passes no descriptor (its length `CMSG_LEN(0)`, or a tail under 4 bytes) goes as nothing:
+/// alone, the message goes with no control at all; beside one that passes some, only that one's header goes. The
+/// kernel passes nothing for it either (`scm_fp_copy`: no descriptor, nothing done).
+#[test]
+fn an_scm_rights_passing_no_descriptor_sends_no_control() {
+    let mut tail = rights(&[]);
+    tail[..8].copy_from_slice(&19u64.to_ne_bytes());
+    tail.extend([0xaa; 8]);
+    for (control, passes) in [(rights(&[]), 0), (tail, 0), ([rights(&[]), rights(&[3])].concat(), 1)] {
+        let mut passed = Vec::new();
+        let msg = read_msg(&with_control(control.clone()), passer(&mut passed), HEAD, false).unwrap();
+        let ours: Vec<i32> = msg.fds.iter().map(AsRawFd::as_raw_fd).collect();
+        assert_eq!((ours.len(), &msg.control), (passes, &if passes == 0 { vec![] } else { rights(&ours) }));
+        check::sent(&msg, &passed);
+    }
+}
+
+/// What tarae sends is held to Linux's own macros (`check::sent`): it panics on a control of another level or type,
+/// a length that isn't `CMSG_LEN` of whole descriptors, a header passing none, the next header off its
+/// `CMSG_SPACE`, padding that isn't zero, a descriptor that isn't the copy tarae holds (the run's own number), one
+/// twice, or a control with no descriptor.
+#[test]
+fn what_tarae_sends_is_held_to_linuxs_macros() {
+    let good = || {
+        let mut passed = Vec::new();
+        let msg = read_msg(&with_control(rights(&[3, 5])), passer(&mut passed), HEAD, false).unwrap();
+        (msg, passed)
+    };
+    let (msg, passed) = good();
+    check::sent(&msg, &passed);
+    let ours: Vec<i32> = msg.fds.iter().map(AsRawFd::as_raw_fd).collect();
+    type Breaks = fn(&mut Vec<u8>, &[i32]);
+    let broken: [(&str, Breaks); 8] = [
+        ("another type", |c, _| c[12..16].copy_from_slice(&SCM_CREDENTIALS.to_ne_bytes())),
+        ("another level", |c, _| c[8..12].copy_from_slice(&41i32.to_ne_bytes())),
+        ("a length not CMSG_LEN", |c, _| c[..8].copy_from_slice(&23u64.to_ne_bytes())),
+        ("a header passing none", |c, o| *c = [rights(&[]), rights(o)].concat()),
+        ("off CMSG_SPACE", |c, o| *c = [rights(&o[..1])[..20].to_vec(), rights(&o[1..])].concat()),
+        ("padding the run's", |c, o| {
+            *c = [rights(&o[..1]), rights(&o[1..])].concat().iter().map(|&b| b | 0x80).collect()
+        }),
+        ("the run's own number", |c, _| c[16..20].copy_from_slice(&3i32.to_ne_bytes())),
+        ("one twice", |c, o| c[20..24].copy_from_slice(&o[0].to_ne_bytes())),
+    ];
+    for (what, breaks) in broken {
+        let (mut msg, passed) = good();
+        breaks(&mut msg.control, &ours);
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check::sent(&msg, &passed)));
+        assert!(caught.is_err(), "{what} not caught: {:?}", msg.control);
+    }
+    let (mut msg, passed) = good();
+    msg.control.clear();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check::sent(&msg, &passed)));
+    assert!(caught.is_err(), "descriptors held with no control");
+}
+
 #[cfg(target_os = "linux")]
 #[path = "kernel.rs"]
 mod kernel;
+
+/// The numbers a laid out message passes: `passer` holds 0–7, not 8 and 9.
+const NUMBERS: [i32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 /// A small fixed-seed generator: the loops are the same every run.
 struct Rng(u64);
@@ -398,10 +463,12 @@ fn batch(rng: &mut Rng) -> (Vec<u8>, bool) {
 }
 
 /// A message as a run lays it out at `HEAD`: maybe an address (internet or unix), up to three buffers of up to 64
-/// bytes, maybe control — descriptors passed (some numbers the run doesn't hold: `passer`; now and then past
-/// `SCM_MAX_FD`), another level's or `SOL_SOCKET`'s unknown type, credentials.
-fn laid_out(rng: &mut Rng) -> Fake {
+/// bytes, maybe control — descriptors passed (one to three; some numbers the run doesn't hold: `passer`; now and
+/// then none, or past `SCM_MAX_FD`), another level's or `SOL_SOCKET`'s unknown type, credentials. The numbers it
+/// passes are `fds`' (`passer` holds the first 8 of `NUMBERS`); with `named` false it names no address.
+fn laid_out(rng: &mut Rng, fds: &[i32; 10], named: bool) -> Fake {
     let name = match rng.below(3) {
+        _ if !named => Vec::new(),
         0 => Vec::new(),
         1 => v4([10, 0, 0, rng.next() as u8], 53),
         _ => sockaddr(AF_UNIX, b"/p/s.sock\0"),
@@ -411,9 +478,10 @@ fn laid_out(rng: &mut Rng) -> Fake {
     let mut control = Vec::new();
     for _ in 0..rng.below(3) {
         control.extend(match rng.below(4) {
-            0 if rng.below(100) == 0 => rights(&vec![rng.below(8) as i32; 250 + rng.below(8)]),
-            0 | 1 => rights(&(0..1 + rng.below(3)).map(|_| rng.below(10) as i32).collect::<Vec<_>>()),
+            0 if rng.below(100) == 0 => rights(&vec![fds[rng.below(8)]; 250 + rng.below(8)]),
+            0 | 1 => rights(&(0..1 + rng.below(3)).map(|_| fds[rng.below(10)]).collect::<Vec<_>>()),
             2 => cmsg(if rng.below(4) == 0 { SOL_SOCKET } else { 41 }, 77, &[1; 5]),
+            _ if rng.below(4) == 0 => rights(&[]),
             _ => cmsg(SOL_SOCKET, SCM_CREDENTIALS, &[0; 12]),
         });
     }
@@ -433,6 +501,23 @@ fn laid_out(rng: &mut Rng) -> Fake {
     m
 }
 
+/// A laid out message (`laid_out`) mutated: a piece or two, its pointers now and then sent to another piece or
+/// their own; and where its header is (`HEAD`, now and then a word or near a piece).
+fn fuzzed(rng: &mut Rng, fds: &[i32; 10], named: bool) -> (Fake, u64) {
+    let mut m = laid_out(rng, fds, named);
+    let near: Vec<u64> = m.pieces.iter().map(|p| p.0).collect();
+    for _ in 0..1 + rng.below(2) {
+        let k = rng.below(m.pieces.len());
+        mutate(rng, &mut m.pieces[k].1, &near);
+    }
+    let at = match rng.below(50) {
+        0 => WORDS[rng.below(WORDS.len())],
+        1 => near[rng.below(near.len())] + rng.below(24) as u64,
+        _ => HEAD,
+    };
+    (m, at)
+}
+
 /// Whatever a message holds and wherever its pointers land, `read_msg` never panics and reads it as the kernel does
 /// but where it's known to differ (`check::message`). Laid out messages mutated 100,000 times, their pointers now
 /// and then sent to another piece or their own; each of the kernel's refusals and each difference seen.
@@ -441,17 +526,7 @@ fn a_message_is_read_as_the_kernel_reads_it() {
     let mut rng = Rng(0x5eed_0add_7e55_0004);
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     for _ in 0..100_000 {
-        let mut m = laid_out(&mut rng);
-        let near: Vec<u64> = m.pieces.iter().map(|p| p.0).collect();
-        for _ in 0..1 + rng.below(2) {
-            let k = rng.below(m.pieces.len());
-            mutate(&mut rng, &mut m.pieces[k].1, &near);
-        }
-        let at = match rng.below(50) {
-            0 => WORDS[rng.below(WORDS.len())],
-            1 => near[rng.below(near.len())] + rng.below(24) as u64,
-            _ => HEAD,
-        };
+        let (m, at) = fuzzed(&mut rng, &NUMBERS, true);
         let datagram = rng.below(2) == 0;
         *seen.entry(check::message(&m, at, datagram)).or_default() += 1;
     }
@@ -472,6 +547,7 @@ fn a_message_is_read_as_the_kernel_reads_it() {
         "credentials",
         "another control message",
         "F3 name past 128",
+        "taken, an SCM_RIGHTS passing none",
     ];
     let each = steps.iter().all(|s| seen.get(s).is_some_and(|&n| n > 20));
     assert!(each && seen["taken"] > 5000 && seen["taken with descriptors"] > 5000, "{seen:?}");
@@ -501,7 +577,7 @@ fn read_apart_from_the_kernel() {
 fn a_messages_fuzz_input_reads_back_as_it_was_laid_out() {
     let mut rng = Rng(0x5eed_0add_7e55_0005);
     for k in 0..100 {
-        let m = laid_out(&mut rng);
+        let m = laid_out(&mut rng, &NUMBERS, true);
         let (at, datagram, back) = Fake::from_input(&m.input(HEAD + k, k % 2 == 0)).unwrap();
         assert_eq!((at, datagram, back.pieces), (HEAD + k, k % 2 == 0, m.pieces));
     }
@@ -523,7 +599,7 @@ fn writes_fuzz_seeds() {
         (format!("{}-{k}", if reads { "reads" } else { "changes" }), b)
     });
     fuzz_seeds("netlink", batches);
-    let messages = (0..8).map(|k| (format!("message-{k}"), laid_out(&mut rng).input(HEAD, k % 2 == 0)));
+    let messages = (0..8).map(|k| (format!("message-{k}"), laid_out(&mut rng, &NUMBERS, true).input(HEAD, k % 2 == 0)));
     fuzz_seeds("msghdr", messages);
 }
 

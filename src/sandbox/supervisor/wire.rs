@@ -173,7 +173,8 @@ pub(super) fn netlink_reads(data: &[u8]) -> Result<(), String> {
 
 /// One `struct msghdr` of the caller's, read once: where it goes (if it names it), what it carries, and its
 /// control data — built by tarae: only the descriptors it passes (`SCM_RIGHTS`), taken as tarae's own
-/// (`Caller::fd`, held in `fds` until it's sent), passing on what the run holds. Every other control message is refused (`Unsent::Control`):
+/// (`Caller::fd`, held in `fds` until it's sent), passing on what the run holds; none when it passes none
+/// (`check::sent`). Every other control message is refused (`Unsent::Control`):
 /// credentials (`SCM_CREDENTIALS`) tarae can't speak for, and no other type goes on as the run's bytes.
 /// (`F`: tarae's descriptors — a test's are numbers only, `check::Number`.)
 pub(super) struct Msg<F = OwnedFd> {
@@ -293,15 +294,18 @@ pub(super) fn read_msg<M: Mem, F: AsRawFd>(
         if fds.len() + n > SCM_MAX_FD {
             return Err(libc::EINVAL.into());
         }
-        control.extend((16 + 4 * n as u64).to_ne_bytes());
-        control.extend(SOL_SOCKET.to_ne_bytes());
-        control.extend(SCM_RIGHTS.to_ne_bytes());
-        for at in (o + 16..).step_by(4).take(n) {
-            let ours = pass(i32::from_ne_bytes(theirs[at..at + 4].try_into().unwrap_or_default()))?;
-            control.extend(ours.as_raw_fd().to_ne_bytes());
-            fds.push(ours);
+        // (one passing none goes as nothing: the kernel passes nothing for it either — `scm_fp_copy`)
+        if n > 0 {
+            control.extend((16 + 4 * n as u64).to_ne_bytes());
+            control.extend(SOL_SOCKET.to_ne_bytes());
+            control.extend(SCM_RIGHTS.to_ne_bytes());
+            for at in (o + 16..).step_by(4).take(n) {
+                let ours = pass(i32::from_ne_bytes(theirs[at..at + 4].try_into().unwrap_or_default()))?;
+                control.extend(ours.as_raw_fd().to_ne_bytes());
+                fds.push(ours);
+            }
+            control.resize(control.len().next_multiple_of(8), 0);
         }
-        control.resize(control.len().next_multiple_of(8), 0);
         o += len.div_ceil(8) * 8;
     }
     Ok(Msg { name, data, control, fds })
