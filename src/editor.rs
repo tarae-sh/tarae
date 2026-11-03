@@ -11337,8 +11337,9 @@ mod tests {
 
     /// For real, on Linux: a command of Claude's that removes the empty folders inside `.git` (its refs packed
     /// — `REMOVE_DIR` reaches there) leaves a repository git still finds: they're made again before its end
-    /// is told, and Claude reads that they were. (The test's own repository in a temp folder; git's search
-    /// upward stops there.)
+    /// is told, and Claude reads that they were. Where the project's protected names are sealed (tier own as a
+    /// user, B9) `.git` is bound read-only for the run: its rmdir is refused there, nothing to make again, as the
+    /// report says. (The test's own repository in a temp folder; git's search upward stops there.)
     #[cfg(target_os = "linux")]
     #[test]
     fn a_claude_run_cant_leave_git_without_its_refs() {
@@ -11382,10 +11383,19 @@ mod tests {
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log).replace("\\n", " ");
         let answer = answer.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(answer.contains("exit 0"), "it ran: {answer}");
+        let removed = "It removed empty folders inside protected ones — .git/refs";
+        match answer.contains("protected names are each bound read-only over themselves") {
+            true => {
+                assert!(answer.contains("exit 1") && answer.contains("Read-only file system"), "{answer}");
+                assert!(!answer.contains(removed), "{answer}");
+            }
+            false => {
+                assert!(answer.contains("exit 0"), "it ran: {answer}");
+                assert!(answer.contains(removed), "{answer}");
+            }
+        }
         assert!(dir.join(".git/refs/heads").is_dir() && dir.join(".git/refs/tags").is_dir(), "{answer}");
         assert!(git(&["rev-parse", "--git-dir"]).status.success(), "git finds it");
-        assert!(answer.contains("It removed empty folders inside protected ones — .git/refs"), "{answer}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11465,8 +11475,9 @@ mod tests {
     }
 
     /// Linux, tarae serving this machine's ports: a Gradle run of Claude's goes in the sandbox like any other
-    /// — no card first — and is kept to it (a stand-in `./gradlew` writes in the project and a name the
-    /// sandbox keeps).
+    /// — no card first — and is kept to it (a stand-in `./gradlew` writes in the project and over a name the
+    /// sandbox keeps: refused by its folder's rule, or by its seal where the project's names are sealed — a new
+    /// name there would be made, B9, so it writes one that's there).
     #[cfg(target_os = "linux")]
     #[test]
     fn gradle_runs_in_the_sandbox_on_linux() {
@@ -11481,8 +11492,10 @@ mod tests {
         let gradlew = dir.join("gradlew");
         // (in a folder of its own: one holding a protected name — `gradlew` — takes no new entry on Linux)
         std::fs::create_dir_all(dir.join("build")).unwrap();
-        let script = "#!/bin/sh\ncd \"$(dirname \"$0\")\"; echo in > build/built.txt; echo out > build.rs\n";
+        let script =
+            "#!/bin/sh\ncd \"$(dirname \"$0\")\"; echo in > build/built.txt; echo out > settings.gradle\n";
         std::fs::write(&gradlew, script).unwrap();
+        std::fs::write(dir.join("settings.gradle"), "kept\n").unwrap();
         std::fs::set_permissions(&gradlew, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut ed = editor("");
         ed.sandbox = crate::sandbox::Availability::Ready;
@@ -11495,7 +11508,8 @@ mod tests {
         });
         assert!(ed.offers.is_empty(), "no card: {:?}", ed.offers.first().map(|o| &o.title));
         assert!(dir.join("build/built.txt").exists(), "it ran: {}", tool_answer(&log));
-        assert!(!dir.join("build.rs").exists(), "in the sandbox");
+        let kept = std::fs::read_to_string(dir.join("settings.gradle")).unwrap();
+        assert_eq!(kept, "kept\n", "in the sandbox: {}", tool_answer(&log));
         assert!(tool_answer(&log).contains("In tarae's sandbox"), "{}", tool_answer(&log));
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1712,8 +1712,9 @@ timeout = 60
     /// naming it; a refusal expected passes only by its words); made — Landlock can't refuse a name made where
     /// none was (G23) — the snapshot finds it: an entry expected refused that says the name ends `⊘ found`
     /// (`judge_made`), any other fails as made. Two
-    /// places: the root, which holds `.git` (Landlock grants it entry by entry: refused everywhere), and `sub/`,
-    /// which holds no protected name (made on Linux: the case the snapshot is there for).
+    /// places: the root, which holds `.git` (Landlock grants it entry by entry: refused — but where the project's
+    /// protected names are sealed, tier own as a user, it's one rule and every folder takes new files: made, B9),
+    /// and `sub/`, which holds no protected name (made on Linux: the case the snapshot is there for).
     #[test]
     fn a_protected_name_is_refused_with_its_cause_or_found_made() {
         if !sandboxed_here("compat::tests::a_protected_name_is_refused_with_its_cause_or_found_made") {
@@ -1722,6 +1723,7 @@ timeout = 60
         let s = Scratch::new("denial");
         let at = &s.place;
         let mut made = Vec::new();
+        let mut sealed = Vec::new();
         for name in ["Makefile", "sub/Makefile"] {
             let path = at.project.join(name);
             let refused = format!(
@@ -1734,6 +1736,7 @@ timeout = 60
             {
                 let v = run(&entry(&text), at);
                 let at_ = format!("{name}, {expected:?}: {v}");
+                sealed.push(v.answer.split_whitespace().collect::<Vec<_>>().join(" ").contains(SEALED));
                 if path.exists() {
                     if expected == "refused" {
                         assert_eq!(
@@ -1778,12 +1781,18 @@ timeout = 60
             }
         }
         // (both outcomes seen where they happen: Seatbelt refuses the name anywhere; Landlock only in a folder
-        // holding a protected name — in `sub/` it's made, and only the snapshot catches it)
-        match cfg!(target_os = "linux") {
-            true => assert_eq!(made, ["sub/Makefile"; 3]),
-            false => assert!(made.is_empty(), "{made:?}"),
+        // holding a protected name — in `sub/` it's made, and only the snapshot catches it; where the project is
+        // sealed, at the root too, as its report says)
+        assert!(sealed.iter().all(|s| *s == sealed[0]), "every run said alike: {sealed:?}");
+        match (cfg!(target_os = "linux"), sealed[0]) {
+            (true, false) => assert_eq!(made, ["sub/Makefile"; 3]),
+            (true, true) => assert_eq!(made, [["Makefile"; 3], ["sub/Makefile"; 3]].concat()),
+            (false, _) => assert!(made.is_empty(), "{made:?}"),
         }
     }
+
+    /// What a run's report says where the project's protected names are sealed (`linux::covers_said`, B9).
+    const SEALED: &str = "protected names are each bound read-only over themselves";
 
     /// Without a checkout the snapshot can't see what a run made: the harness refuses to judge it.
     #[test]
