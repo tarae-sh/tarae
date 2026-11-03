@@ -1399,7 +1399,11 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   denied, while the command runs. The run's panel shows the first thing blocked on its bottom row
   in plain words (`▲ sandbox blocked writing ~/x  +2`, `connecting to port 9`, `opening apps`). If the command then prints nothing for 15 seconds, a quiet
   note says it may be waiting on what was blocked: a blocked terminal or socket can hang a program instead of
-  failing it. Claude's result lists what was blocked, or says nothing was, along with which ports were open.
+  failing it. What every run is refused by design (the network's settings, Spotlight, opening apps — tools go on
+  without them) isn't what blocked a run that hasn't failed: the row names the rest first and counts only them,
+  the others faint after it (`5 more by design`); refused nothing else, the row is faint, with no `▲` and no key
+  (`sandbox refused by design: the network's settings  +4`). A failed run's are named and counted as ever.
+  Claude's result lists what was blocked, or says nothing was, along with which ports were open.
   If tarae can't watch (`log stream` refuses to run inside another sandbox), the result says so and quotes
   the output's `Operation not permitted` lines instead
 - **What it blocked is yours to open**, never Claude's: `space m s` on a command's panel (`space x s` on a test

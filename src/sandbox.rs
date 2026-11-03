@@ -3418,15 +3418,36 @@ pub fn policy_key(p: &Policy) -> String {
 /// its panel says so (the worst case had no error at all: a pty test without `/dev/ptmx` just waited).
 pub const QUIET: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// A run's sandbox line for its panel: (what was blocked, in plain words — `sandbox blocked writing ~/x  +2`,
-/// the quiet hint when it applies). None when nothing was.
-pub fn panel_line(
-    guard: Option<&Guard>,
-    running: bool,
-    last_output: std::time::Instant,
-) -> Option<(String, Option<String>)> {
+/// Where a run is, for its panel's sandbox line (`panel_line`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunIs {
+    Running,
+    Passed,
+    Failed,
+}
+
+/// A run's sandbox line for its panel (`panel_line`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelLine {
+    /// What was blocked, in plain words — `sandbox blocked writing ~/x  +2`.
+    pub line: String,
+    /// Only what every run is refused by design (`Denial::by_design`), in a run that hasn't failed: said calmly —
+    /// faint, no `▲`, no key (nothing opens it; `:sandbox-blocked` still has the run).
+    pub calm: bool,
+    /// The quiet hint, while it runs and has printed nothing for `QUIET`.
+    pub quiet: Option<String>,
+    /// Beside what's blocked, in a run that hasn't failed, how many refusals were by design: `5 more by design`.
+    pub designed: Option<String>,
+}
+
+/// A run's sandbox line for its panel — None when nothing was blocked. What every run is refused by design, in
+/// a run that hasn't failed, isn't what blocked it (friction #290: a passing `cargo xtask scenes` read `▲ sandbox
+/// blocked the network's settings  +7`): never the line's first nor in its `+N`, said apart and faint; all it
+/// was refused, the line is calm. A failed run's are named and counted as ever — they may be why.
+pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Instant) -> Option<PanelLine> {
     let g = guard?;
     let b = g.watch().map(|w| w.blocked()).unwrap_or_default();
+    let line = |line: String| PanelLine { line, calm: false, quiet: None, designed: None };
     // (nothing denied yet: what the checkout's build tool config named and stays closed — #20)
     let Some(first) = b.seen.first() else {
         let Guard::In(p) = g else { return None };
@@ -3434,24 +3455,40 @@ pub fn panel_line(
         let more = if all > 1 { format!("  +{}", all - 1) } else { String::new() };
         if let Some((d, _)) = p.refused.first() {
             let (d, by) = (crate::allow::tilde(d), &p.named_by);
-            return Some((format!("sandbox kept {d} closed — {by}'s config named it{more}"), None));
+            return Some(line(format!("sandbox kept {d} closed — {by}'s config named it{more}")));
         }
         if let Some((d, which)) = p.refused_asked.first() {
             let (d, which) = (crate::allow::tilde(d), which.split(" — ").next().unwrap_or(which));
-            return Some((format!("sandbox kept {d} closed — {which} named it{more}"), None));
+            return Some(line(format!("sandbox kept {d} closed — {which} named it{more}")));
         }
         let (d, why) = p.refused_write.first()?;
         let d = crate::allow::tilde(d);
-        return Some((format!("sandbox kept {d} closed — your answer opened it, but {why}{more}"), None));
+        return Some(line(format!("sandbox kept {d} closed — your answer opened it, but {why}{more}")));
     };
-    let more = if b.distinct > 1 { format!("  +{}", b.distinct - 1) } else { String::new() };
-    let quiet = (running && last_output.elapsed() >= QUIET).then(|| {
+    let more = |n: usize| if n > 1 { format!("  +{}", n - 1) } else { String::new() };
+    // (by design, of a run that hasn't failed — each kept one; past `DENIALS_KEPT` the rest can't be told)
+    let designed = match ran {
+        RunIs::Failed => 0,
+        _ => b.seen.iter().filter(|d| d.by_design()).count(),
+    };
+    let open = b.seen.iter().find(|d| designed == 0 || !d.by_design());
+    if open.is_none() && b.distinct == b.seen.len() {
+        let said = format!("sandbox refused by design: {}{}", first.plain(), more(b.distinct));
+        return Some(PanelLine { calm: true, ..line(said) });
+    }
+    let (first, designed) = open.map_or((first, 0), |d| (d, designed));
+    let quiet = (ran == RunIs::Running && last_output.elapsed() >= QUIET).then(|| {
         format!(
             "quiet {} — it may be waiting on what was blocked",
             crate::term::run_duration(last_output.elapsed())
         )
     });
-    Some((format!("sandbox blocked {}{more}", first.plain()), quiet))
+    Some(PanelLine {
+        line: format!("sandbox blocked {}{}", first.plain(), more(b.distinct - designed)),
+        calm: false,
+        quiet,
+        designed: (designed > 0).then(|| format!("{designed} more by design")),
+    })
 }
 
 /// The paths a line of output names — words that start `/`, `~/` (home), `./` or `../` (from `root`), with
@@ -6468,7 +6505,8 @@ mod tests {
         let g = Guard::In(Box::new(p));
         let said = g.report(&[]);
         assert!(said.contains(&format!("{} (cargo's build-dir", crate::allow::tilde(&home))), "{said}");
-        let (line, _) = panel_line(Some(&g), false, std::time::Instant::now()).expect("the panel says it");
+        let line =
+            panel_line(Some(&g), RunIs::Passed, std::time::Instant::now()).expect("the panel says it").line;
         assert!(
             line.starts_with("sandbox kept ") && line.contains(" closed — cargo's config named it"),
             "{line}"
@@ -7380,7 +7418,8 @@ mod tests {
             )),
             "{said}"
         );
-        let (line, _) = panel_line(Some(&g), false, std::time::Instant::now()).expect("the panel says it");
+        let line =
+            panel_line(Some(&g), RunIs::Passed, std::time::Instant::now()).expect("the panel says it").line;
         assert_eq!(line, format!("sandbox kept {h} closed — mytool's OUT named it  +{}", bad.len() - 1));
     }
 
@@ -7577,7 +7616,8 @@ mod tests {
             "It kept closed folders the user's answers opened for writing that no run may write now: ";
         assert!(said.contains(words) && said.contains(":granted takes the answer back"), "{said}");
         assert!(!said.contains(".local/bin"), "{said}");
-        let (line, _) = panel_line(Some(&g), false, std::time::Instant::now()).expect("the panel says it");
+        let line =
+            panel_line(Some(&g), RunIs::Passed, std::time::Instant::now()).expect("the panel says it").line;
         assert!(line.contains(" closed — your answer opened it, but ") && line.ends_with("  +3"), "{line}");
         // No home known: nothing to judge a grant by — every one stays closed, said
         let homeless = crate::caps::Caps { home: None, ..caps };
@@ -11318,7 +11358,11 @@ mod tests {
         let g = Guard::In(Box::new(Policy { watch: Some(w.clone()), ..p.clone() }));
         let r = g.report(&[]);
         assert!(r.starts_with("The sandbox blocked nothing. In tarae's sandbox"), "{r}");
-        assert_eq!(panel_line(Some(&g), true, std::time::Instant::now()), None, "nothing on the panel");
+        assert_eq!(
+            panel_line(Some(&g), RunIs::Running, std::time::Instant::now()),
+            None,
+            "nothing on the panel"
+        );
         assert_eq!(crate::cards::denied_line("go vet", &w.blocked()), None);
         // (a read there isn't quieted: only Go's own writes)
         assert!(!quiet(&denial("file-read-data", &format!("{home}/Library/Application Support/go/env"))));
@@ -11337,7 +11381,7 @@ mod tests {
             ) && !r.contains("don't work around it"),
             "{r}"
         );
-        assert_eq!(panel_line(Some(&g), true, std::time::Instant::now()), None, "no ▲ for it");
+        assert_eq!(panel_line(Some(&g), RunIs::Running, std::time::Instant::now()), None, "no ▲ for it");
         // (writing it, or one deeper in home: named as ever)
         assert!(!quiet(&denial("file-write-data", &format!("{home}/.zshenv"))));
         assert!(!quiet(&denial("file-read-data", &format!("{home}/proj/.zshenv"))));
@@ -11376,7 +11420,7 @@ mod tests {
     /// compat B4: node's look-up of LaunchServices at its start, refused by design, in a run that passed and was
     /// refused nothing else, is said calmly, not as blocked: no "if the command needs one", nothing to open. A run
     /// that failed lists it as ever (it may be why); beside anything else refused, in the watch or the output,
-    /// it's listed with the rest; the panel and the record still have it.
+    /// it's listed with the rest; the record still has it, and the panel says it calmly unless the run failed (#290).
     #[test]
     fn a_lone_launchservices_look_up_is_calm_only_when_the_run_passed() {
         let p = Policy { tag: Some("t.".into()), ..Policy::for_project(&env(Path::new("/Users/u/p"))) };
@@ -11406,9 +11450,12 @@ mod tests {
             "{}",
             failed.text
         );
-        // (the user's panel and the record: as ever)
-        let panel = panel_line(Some(&g), false, std::time::Instant::now());
-        assert!(panel.is_some_and(|(l, _)| l == "sandbox blocked opening apps"));
+        // (the user's panel: calm unless it failed; the record as ever)
+        let panel = |ran| panel_line(Some(&g), ran, std::time::Instant::now()).unwrap();
+        let calm = panel(RunIs::Passed);
+        assert!(calm.calm && calm.line == "sandbox refused by design: opening apps", "{calm:?}");
+        let failed = panel(RunIs::Failed);
+        assert!(!failed.calm && failed.line == "sandbox blocked opening apps", "{failed:?}");
         assert!(crate::cards::denied_line("npm test", &w.blocked()).is_some());
         // Beside another refusal: both named, counted whole
         w.record(denial("file-write-create", "/Users/u/marker"));
@@ -12071,17 +12118,74 @@ mod tests {
         let w = Watch::quiet("t.");
         let g = Guard::In(Box::new(Policy { watch: Some(w.clone()), ..p }));
         let now = std::time::Instant::now();
-        assert_eq!(panel_line(Some(&g), true, now), None, "nothing blocked: no line");
+        assert_eq!(panel_line(Some(&g), RunIs::Running, now), None, "nothing blocked: no line");
         w.record(denial("file-write-create", "/a"));
         w.record(denial("network-outbound", "remote:*:9"));
-        let (line, quiet) = panel_line(Some(&g), true, now).unwrap();
-        assert_eq!((line.as_str(), quiet), ("sandbox blocked writing /a  +1", None));
+        let PanelLine { line, quiet, calm, .. } = panel_line(Some(&g), RunIs::Running, now).unwrap();
+        assert_eq!((line.as_str(), quiet, calm), ("sandbox blocked writing /a  +1", None, false));
         let long_ago = now - QUIET - std::time::Duration::from_secs(1);
         assert!(
-            panel_line(Some(&g), true, long_ago).unwrap().1.is_some_and(|q| q.contains("may be waiting"))
+            panel_line(Some(&g), RunIs::Running, long_ago)
+                .unwrap()
+                .quiet
+                .is_some_and(|q| q.contains("may be waiting"))
         );
-        assert_eq!(panel_line(Some(&g), false, long_ago).unwrap().1, None, "done: no longer waiting");
-        assert_eq!(panel_line(Some(&Guard::Off), true, long_ago), None);
+        assert_eq!(
+            panel_line(Some(&g), RunIs::Passed, long_ago).unwrap().quiet,
+            None,
+            "done: no longer waiting"
+        );
+        assert_eq!(panel_line(Some(&Guard::Off), RunIs::Running, long_ago), None);
+    }
+
+    /// Friction #290: what every run is refused by design, in a run that hasn't failed, isn't what blocked it —
+    /// never the line's first nor in its `+N`, said apart (`5 more by design`); all it was refused, the line is
+    /// calm (faint, no `▲`, no key). A failed run's are named and counted as ever: they may be why. (The run
+    /// that showed it, a passing `cargo xtask scenes`: `▲ sandbox blocked the network's settings  +7`.)
+    #[test]
+    fn a_passing_runs_refusals_by_design_are_said_calmly() {
+        let p = Policy::for_project(&env(Path::new("/Users/u/p")));
+        let w = Watch::quiet("t.");
+        let g = Guard::In(Box::new(Policy { watch: Some(w.clone()), ..p }));
+        let now = std::time::Instant::now();
+        let lookup = |s: &str| Denial { process: "cargo".into(), op: "mach-lookup".into(), target: s.into() };
+        w.record(lookup("com.apple.SystemConfiguration.configd"));
+        w.record(lookup("com.apple.analyticsd"));
+        for ran in [RunIs::Running, RunIs::Passed] {
+            let said = panel_line(Some(&g), ran, now - QUIET * 2).unwrap();
+            assert!(said.calm && said.quiet.is_none() && said.designed.is_none(), "{ran:?}: {said:?}");
+            assert_eq!(
+                said.line,
+                "sandbox refused by design: the network's settings (com.apple.SystemConfiguration.configd)  +1"
+            );
+        }
+        let failed = panel_line(Some(&g), RunIs::Failed, now).unwrap();
+        assert!(!failed.calm && failed.designed.is_none(), "{failed:?}");
+        assert!(
+            failed.line.starts_with("sandbox blocked the network's settings")
+                && failed.line.ends_with("  +1")
+        );
+        // Beside one not by design: that one first, counted alone; the rest apart
+        w.record(denial("file-read-data", "/opt/tarae-test/x"));
+        w.record(lookup("com.apple.DiskArbitration.diskarbitrationd"));
+        w.record(denial("file-write-create", "/a"));
+        let said = panel_line(Some(&g), RunIs::Passed, now).unwrap();
+        assert_eq!(
+            (said.line.as_str(), said.calm, said.designed.as_deref()),
+            ("sandbox blocked reading /opt/tarae-test/x  +1", false, Some("3 more by design"))
+        );
+        let failed = panel_line(Some(&g), RunIs::Failed, now).unwrap();
+        assert!(failed.line.ends_with("  +4") && failed.designed.is_none(), "{failed:?}");
+        // Every one kept by design, and more past what's kept: those can't be told — named and counted as ever
+        let many = Watch::quiet("t.");
+        for i in 0..DENIALS_KEPT {
+            many.record(denial("system-fsctl", &i.to_string()));
+        }
+        many.record(denial("file-write-create", "/b"));
+        let g =
+            Guard::In(Box::new(Policy { watch: Some(many), ..Policy::for_project(&env(Path::new("/u/p"))) }));
+        let said = panel_line(Some(&g), RunIs::Passed, now).unwrap();
+        assert!(!said.calm && said.line.ends_with(&format!("  +{DENIALS_KEPT}")), "{said:?}");
     }
 
     /// What `sandbox-exec` says inside another sandbox (measured) reads as that.

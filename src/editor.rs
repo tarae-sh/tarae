@@ -11512,13 +11512,44 @@ mod tests {
         // The test pane, the same
         ed.workspace.task_run = None;
         let mut t = crate::testing::TestRun::finished("tests", Vec::new(), vec!["running 1 test".into()]);
-        t.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
+        t.guard = Some(crate::sandbox::Guard::In(Box::new(policy.clone())));
         ed.workspace.test_run = Some(t);
         let s = screen(&mut ed);
         assert!(
             s.contains("▲ sandbox blocked writing /opt/tarae-test/x  +1") && !s.contains("may be waiting"),
             "{s}"
         );
+        // #290: a run that passed, refused only what every run is by design — calm: no ▲, no key; beside what
+        // isn't, the rest said apart; failed, as ever
+        ed.workspace.test_run = None;
+        let calm = crate::sandbox::Watch::quiet("t.");
+        calm.record(d("mach-lookup", "com.apple.SystemConfiguration.configd"));
+        calm.record(d("mach-lookup", "com.apple.analyticsd"));
+        let mut run = crate::task::Run::for_test(crate::task::Task {
+            name: "cargo xtask scenes".into(),
+            cmd: "cargo xtask scenes".into(),
+            cwd: std::env::temp_dir(),
+        });
+        run.state = crate::task::State::Passed;
+        let p = crate::sandbox::Policy { watch: Some(calm.clone()), ..policy };
+        run.guard = Some(crate::sandbox::Guard::In(Box::new(p)));
+        ed.workspace.task_run = Some(run);
+        let s = screen(&mut ed);
+        assert!(
+            s.contains("sandbox refused by design: the network's settings")
+                && !s.contains("▲ sandbox")
+                && !s.contains("open it"),
+            "{s}"
+        );
+        calm.record(d("file-write-data", "/opt/tarae-test/x"));
+        let s = screen(&mut ed);
+        assert!(
+            s.contains("▲ sandbox blocked writing /opt/tarae-test/x   space m s open it   2 more by design"),
+            "{s}"
+        );
+        ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Failed(Some(1));
+        let s = screen(&mut ed);
+        assert!(s.contains("▲ sandbox blocked the network's settings") && !s.contains("by design"), "{s}");
     }
 
     /// What the sandbox blocked in Claude's command is the user's to open (`space m s`): a list of the

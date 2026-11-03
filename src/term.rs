@@ -2844,8 +2844,17 @@ fn task_list_h(r: &crate::task::Run, n: usize, queued: usize, total: usize, head
 
 /// The sandbox's row under the task panel's body, when it blocked something: 1, else 0.
 fn task_panel_foot(r: &crate::task::Run) -> usize {
-    let running = matches!(r.state, crate::task::State::Running);
-    usize::from(crate::sandbox::panel_line(r.guard.as_ref(), running, r.last_output).is_some())
+    usize::from(crate::sandbox::panel_line(r.guard.as_ref(), task_ran(r), r.last_output).is_some())
+}
+
+/// Where a task is, for its sandbox line: failed as Claude's report has it (`tools::run_done`) — stopped too.
+fn task_ran(r: &crate::task::Run) -> crate::sandbox::RunIs {
+    use crate::task::State;
+    match r.state {
+        State::Running => crate::sandbox::RunIs::Running,
+        State::Failed(_) | State::Stopped(_) => crate::sandbox::RunIs::Failed,
+        State::Passed => crate::sandbox::RunIs::Passed,
+    }
 }
 
 /// The terminal panel's height for `total` rows of editing area — more than the other panels (a shell wants
@@ -3162,24 +3171,15 @@ fn draw_task_panel(
     }
     // The sandbox's line, when it blocked something: the bottom row, under the output — and over it, what
     // waits for the panel, a row each (`queued.rs`)
-    let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), running, r.last_output);
+    let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), task_ran(r), r.last_output);
     // (the output keeps a row)
     let below = lay.slot_h.saturating_sub(top + 1).min(queued_h(editor, crate::queued::Slot::Task));
     let rows = lay.slot_h.saturating_sub(top + below + usize::from(sandbox.is_some()));
     draw_queued(out, editor, ui, crate::queued::Slot::Task, (x0, y0 + top + rows), w, below, card)?;
-    if let Some((line, quiet)) = &sandbox {
-        sandbox_row(
-            out,
-            slot_on(editor, crate::sizes::Slot::Task),
-            (x0, (y0 + top + rows + below) as u16),
-            w,
-            line,
-            "space m s",
-            quiet.as_deref(),
-            card,
-            warn,
-            faint,
-        )?;
+    if let Some(said) = &sandbox {
+        let at = (x0, (y0 + top + rows + below) as u16);
+        let on = slot_on(editor, crate::sizes::Slot::Task);
+        sandbox_row(out, on, at, w, said, "space m s", card, warn, faint)?;
     }
     if let Some((g, m)) = members {
         let at = (y0 + top, rows, y0 + top - 1 + rows + below);
@@ -3369,17 +3369,17 @@ fn draw_task_group(
 }
 
 /// A sandboxed run's line in its panel (from column `x0`, `w` wide): `▲ sandbox blocked writing ~/x  +2` in
-/// warning, the key that acts on it (`space m s  open it`), and the quiet hint after it, faint — each folded
-/// away, last first, when the row is too narrow for it.
+/// warning, the key that acts on it (`space m s  open it`), and after it, faint, the quiet hint and how many more
+/// were refused by design — each folded away, last first, when the row is too narrow for it. Refused only what
+/// every run is by design (`PanelLine.calm`): the line alone, faint — no `▲`, no key (#290).
 #[allow(clippy::too_many_arguments)]
 fn sandbox_row(
     out: &mut impl Write,
     on: crate::whole::On,
     (x0, y): (usize, u16),
     w: usize,
-    line: &str,
+    said: &crate::sandbox::PanelLine,
     key: &str,
-    quiet: Option<&str>,
     card: Style,
     warn: Option<Color>,
     faint: Style,
@@ -3388,15 +3388,23 @@ fn sandbox_row(
     apply(out, card)?;
     queue!(out, Spaces(w), MoveTo((x0 + crate::chrome::PAD) as u16, y))?;
     let room = w.saturating_sub(4);
-    // (the key keeps its room — a long path is cut instead — unless the row is very narrow)
-    let hint = format!("{key} open it");
-    let keyed = room >= hint.width() + 3 + 24;
-    let main = crate::whole::fit(&format!("▲ {line}"), if keyed { room - hint.width() - 3 } else { room });
-    apply(out, Style { fg: warn, ..card })?;
-    queue!(out, Print(main.shown()))?;
     let at = |text: &Fit, x: usize, st: Style| {
         crate::whole::at(on, text, (x, y as usize), st, (x0, usize::MAX));
     };
+    if said.calm {
+        let main = crate::whole::fit(&said.line, room);
+        apply(out, faint)?;
+        queue!(out, Print(main.shown()))?;
+        at(&main, x0 + crate::chrome::PAD, faint);
+        return Ok(());
+    }
+    // (the key keeps its room — a long path is cut instead — unless the row is very narrow)
+    let hint = format!("{key} open it");
+    let keyed = room >= hint.width() + 3 + 24;
+    let main =
+        crate::whole::fit(&format!("▲ {}", said.line), if keyed { room - hint.width() - 3 } else { room });
+    apply(out, Style { fg: warn, ..card })?;
+    queue!(out, Print(main.shown()))?;
     at(&main, x0 + crate::chrome::PAD, Style { fg: warn, ..card });
     let mut used = main.width();
     if keyed {
@@ -3409,14 +3417,16 @@ fn sandbox_row(
         queue!(out, Print(" open it"))?;
         used += 3 + hint.width();
     }
-    if let Some(q) = quiet {
+    for q in said.quiet.iter().chain(&said.designed) {
         let left = room.saturating_sub(used + 3);
-        if left >= 12 {
-            apply(out, faint)?;
-            let q = crate::whole::fit(q, left);
-            queue!(out, Print("   "), Print(q.shown()))?;
-            at(&q, x0 + crate::chrome::PAD + used + 3, faint);
+        if left < 12 {
+            break;
         }
+        apply(out, faint)?;
+        let q = crate::whole::fit(q, left);
+        queue!(out, Print("   "), Print(q.shown()))?;
+        at(&q, x0 + crate::chrome::PAD + used + 3, faint);
+        used += 3 + q.width();
     }
     Ok(())
 }
@@ -4195,18 +4205,24 @@ fn draw_test_panel(
 
     // The sandbox's line, when it blocked something: the bottom row, under the rest — and over it, what waits
     // for the pane, a row each (`queued.rs`)
-    let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), running, r.last_output);
+    // (failed as Claude's report has it, `tools::tests_done`)
+    let ran = match r.state {
+        RunState::Running => crate::sandbox::RunIs::Running,
+        RunState::Failed(_) => crate::sandbox::RunIs::Failed,
+        _ => crate::sandbox::RunIs::Passed,
+    };
+    let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), ran, r.last_output);
     let inner = lay.slot_h.saturating_sub(body - lay.slot_y() + usize::from(sandbox.is_some()));
     let below = inner.saturating_sub(2).min(queued_h(editor, crate::queued::Slot::Tests));
     let rows = inner - below;
     // (for the mouse: the panel from its tabs to its last row)
     let last = body + inner - usize::from(inner > 0);
     draw_queued(out, editor, ui, crate::queued::Slot::Tests, (x0, body + rows), w, below, card)?;
-    if let Some((line, quiet)) = &sandbox {
+    if let Some(said) = &sandbox {
         let warn = color("warning");
         let at = (x0, (body + rows + below) as u16);
         let on = slot_on(editor, crate::sizes::Slot::Test);
-        sandbox_row(out, on, at, w, line, "space x s", quiet.as_deref(), card, warn, faint)?;
+        sandbox_row(out, on, at, w, said, "space x s", card, warn, faint)?;
     }
     // The detail is a document (`rundoc.rs`): from the window the wheel is at (a message from its top, the output at
     // its end) — its own top while it has the keys; the wheel's thumb on the card's right edge when it doesn't fit

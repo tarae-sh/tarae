@@ -422,7 +422,7 @@ fn the_report_is_pinned() {
     let guard = Guard::In(Box::new(Policy { watch: Some(watch), ..p.clone() }));
     let mut out = String::from("══ denied\n");
     out.push_str(&guard.report(&[]));
-    let line = panel_line(Some(&guard), false, std::time::Instant::now());
+    let line = panel_line(Some(&guard), RunIs::Passed, std::time::Instant::now()).map(|p| (p.line, p.quiet));
     out.push_str(&format!("\npanel: {line:?}\n"));
     // What only the run's output says was refused: the output's words, not the sandbox's — a grep's hit
     // quoting the phrase in the project says nothing; cargo's error on its cache is said, apart
@@ -442,7 +442,8 @@ fn the_report_is_pinned() {
     let unrecorded = Guard::In(Box::new(Policy { watch: Some(Watch::quiet("golden-out.")), ..p.clone() }));
     out.push_str("══ said only in the output\n");
     out.push_str(&unrecorded.report(&output));
-    let line = panel_line(Some(&unrecorded), false, std::time::Instant::now());
+    let line =
+        panel_line(Some(&unrecorded), RunIs::Passed, std::time::Instant::now()).map(|p| (p.line, p.quiet));
     out.push_str(&format!("\npanel: {line:?}\n"));
     // Both: what tarae saw blocked, then what the output also says
     let seen = Watch::quiet("golden-both.");
@@ -468,7 +469,7 @@ fn the_report_is_pinned() {
     out.push_str("\n══ denied nothing\n");
     let calm = Guard::In(Box::new(Policy { watch: Some(Watch::quiet("golden-calm.")), ..p }));
     out.push_str(&calm.report(&[]));
-    let line = panel_line(Some(&calm), false, std::time::Instant::now());
+    let line = panel_line(Some(&calm), RunIs::Passed, std::time::Instant::now()).map(|p| (p.line, p.quiet));
     out.push_str(&format!("\npanel: {line:?}\n"));
     // 9b: the run's guarantees after the rules — with the conversation's first run; a later quiet run says neither,
     // a later failed one the rules again but not them. Seatbelt's (the policy's own), then each tier's (its keeper's,
