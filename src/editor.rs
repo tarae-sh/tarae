@@ -71,6 +71,10 @@ pub enum PromptKind {
     Plugin(u64),
     /// `space W o`: a new session's name (`worktree.rs`; the label says what it's made from).
     Session,
+    /// `space i`: what to change in the selections (`ask.rs`, B′) — drawn as the ask line's card by its lines, named
+    /// `change` (the flow plan's piece 4, `term::draw_change_line`), its draft kept as `esc` leaves it
+    /// (`Editor.change_draft`).
+    Change,
 }
 
 impl PromptKind {
@@ -90,6 +94,7 @@ impl PromptKind {
             PromptKind::Note(None) => "ask claude:",
             PromptKind::Plugin(_) => ">",
             PromptKind::Session => "new session:",
+            PromptKind::Change => "change:",
         }
     }
 }
@@ -928,6 +933,8 @@ pub struct Editor {
     pub search_origin: Option<usize>,
     /// What was run at `:` and at `/` `?` since tarae started (`prompt::History`) — never written anywhere.
     pub prompt_history: crate::prompt::History,
+    /// `space i`'s line as `esc`, a press off it or a refused send left it — back on the next `space i`.
+    pub change_draft: String,
     pub status: Option<(String, Severity)>,
     pub should_quit: bool,
     /// Text area (rows, cols) — the terminal updates it every frame. Used by page motions.
@@ -1459,6 +1466,7 @@ impl Editor {
             search_hits: None,
             search_origin: None,
             prompt_history: Default::default(),
+            change_draft: String::new(),
             status: None,
             should_quit: false,
             viewport: (24, 80),
@@ -3406,8 +3414,12 @@ impl Editor {
                             self.mouse_anchor = Some((Drag::Prompt, crate::selection::Held::char_at(at)));
                         }
                     }
-                    // (its other rows — its hints, its air: what a press there would do, said)
-                    Part::Blank if down => self.set_status(crate::mouse::PROMPT_ROWS),
+                    // (its other rows — its hints, its air: what a press there would do, said; `space i`'s card has no
+                    // completions)
+                    Part::Blank if down => match self.prompt.as_ref().map(|p| p.kind) {
+                        Some(PromptKind::Change) => self.set_status(crate::mouse::CHANGE_ROWS),
+                        _ => self.set_status(crate::mouse::PROMPT_ROWS),
+                    },
                     _ => {}
                 }
             }
@@ -6451,6 +6463,10 @@ impl Editor {
         let plain = !(key.ctrl || key.alt);
         match key.code {
             Code::Esc => self.cancel_prompt(),
+            // (`space i`'s with nothing typed: nothing to ask for — said, the line kept)
+            _ if prompt_submits(key) && kind == PromptKind::Change && prompt.text().trim().is_empty() => {
+                self.set_status("type what to change first");
+            }
             _ if prompt_submits(key) => {
                 let Some(p) = self.prompt.take() else { return };
                 let text = p.text();
@@ -6507,8 +6523,10 @@ impl Editor {
     /// search preview, so the screen follows the cursor again, and the one `space n`'s card moved.
     pub(crate) fn cancel_prompt(&mut self) {
         let p = self.prompt.take();
-        if let Some(PromptKind::Plugin(token)) = p.as_ref().map(|p| p.kind) {
-            self.plugin_prompt_done(token, None);
+        match p.as_ref().map(|p| p.kind) {
+            Some(PromptKind::Plugin(token)) => self.plugin_prompt_done(token, None),
+            Some(PromptKind::Change) => self.change_draft = p.as_ref().map(Prompt::text).unwrap_or_default(),
+            _ => {}
         }
         if let Some(top) = self.search_origin.take() {
             self.doc_mut().set_top(top);
@@ -6547,6 +6565,14 @@ impl Editor {
                 }
             }
             PromptKind::Session => self.session_new(&text, None),
+            // (refused — an ask under way, no claude: said, the line kept for the next `space i`)
+            PromptKind::Change => match crate::ask::start(self, &text) {
+                Ok(()) => self.change_draft.clear(),
+                Err(e) => {
+                    self.change_draft = text;
+                    self.set_error(e);
+                }
+            },
             PromptKind::Rename => {
                 if !text.is_empty() {
                     let extra = serde_json::json!({ "newName": text });
@@ -19664,7 +19690,8 @@ mod tests {
         let edit = serde_json::json!([{"file_path": path, "old_string": "foo", "new_string": "FOO"}]);
         fake_ask(&mut ed, edit, done(), Some(&log));
         feed(&mut ed, "e i");
-        assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some("ask "));
+        let p = ed.prompt.as_ref().map(|p| (p.kind, p.text()));
+        assert_eq!(p, Some((PromptKind::Change, String::new())), "its card, nothing typed yet");
         feed(&mut ed, "upper<ret>");
         assert!(
             ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready),
@@ -19687,6 +19714,88 @@ mod tests {
         assert!(msg.ends_with(&format!("{}upper", crate::ask::ASKS)), "{msg}");
         let answer = &lines[2]["response"]["response"]["mcp_response"]["result"]["content"][0]["text"];
         assert!(answer.as_str().unwrap().contains("accepted by the user"), "{answer}");
+    }
+
+    /// The flow plan's piece 4: `space i` is the ask line's card by the lines it changes, named `change` — just below
+    /// the primary selection, else above it, never over another selection's rows; its top line says what it changes, its
+    /// bottom line its keys (pressed, as typed: `esc close` closes it), the status line none. `esc` (or a press off it)
+    /// keeps the draft for the next `space i`; `enter` with nothing typed says so and keeps it open.
+    #[test]
+    fn flow4_space_i_is_the_change_card_by_its_lines() {
+        use crate::event::{Mouse, MouseKind};
+        let mut ed = crate::uistate::tests::editor();
+        ed.docs[0].text = ropey::Rope::from_str(&(1..=60).map(|i| format!("line {i}\n")).collect::<String>());
+        let keys = |ed: &mut Editor, k: &str| {
+            for w in k.split(' ') {
+                ed.handle_key(w.parse::<Key>().unwrap_or_else(|_| panic!("a key: {w}")));
+            }
+            crate::uistate::tests::frame(ed);
+        };
+        let text =
+            |ed: &Editor| crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        let row = |ed: &Editor, y: usize| text(ed).lines().nth(y).unwrap_or_default().to_string();
+        let card = |ed: &Editor| ed.screen.prompt_card.get().expect("the change card");
+        let col =
+            |s: &str, w: &str| s[..s.find(w).unwrap_or_else(|| panic!("{w:?} in {s:?}"))].chars().count();
+        let press = |ed: &mut Editor, x: usize, y: usize| {
+            let (x, y) = (x as u16, y as u16);
+            ed.handle_mouse(Mouse { kind: MouseKind::Down, x, y, alt: false, ctrl: false });
+            ed.handle_mouse(Mouse { kind: MouseKind::Up, x, y, alt: false, ctrl: false });
+            crate::uistate::tests::frame(ed);
+        };
+        // One selection, lines 10–11 (rows 10–11): the card just under them, from the pane's left, the ask line's width
+        keys(&mut ed, "1 0 G x x");
+        keys(&mut ed, "space i");
+        assert_eq!(ed.prompt.as_ref().map(|p| p.kind), Some(PromptKind::Change));
+        assert_eq!(ed.keys_to().region, crate::uistate::Region::Prompt, "the prompt's layer");
+        let (x, y, w, h) = card(&ed);
+        assert_eq!((x, y, w, h), (0, 12, crate::sizes::CHAT_FLOAT_W, 3), "{}", text(&ed));
+        let top = row(&ed, y);
+        assert!(top.contains("change") && top.contains(":10–11 · 2 lines"), "{top}");
+        assert!(row(&ed, y + 1).contains("› Say how to change it"), "{}", row(&ed, y + 1));
+        let foot = row(&ed, y + h - 1);
+        assert!(foot.contains("enter send") && foot.contains("esc close"), "{foot}");
+        assert!(!row(&ed, 39).contains("enter"), "the status line says none: {}", row(&ed, 39));
+        // `enter` with nothing typed: said, kept open
+        keys(&mut ed, "enter");
+        assert!(ed.prompt.as_ref().is_some_and(|p| p.kind == PromptKind::Change), "still open");
+        assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("what to change")), "{:?}", ed.status);
+        // `esc`: closed, the draft kept for the next `space i`; a press on `esc close` alike
+        keys(&mut ed, "w h y esc");
+        assert!(ed.prompt.is_none() && ed.change_draft == "why", "{:?}", ed.change_draft);
+        keys(&mut ed, "space i");
+        assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some("why"), "the draft back");
+        let foot = row(&ed, y + h - 1);
+        press(&mut ed, col(&foot, "esc close"), y + h - 1);
+        assert!(ed.prompt.is_none() && ed.change_draft == "why", "its word pressed: {}", text(&ed));
+        // (its top line: what a press there would do, said — its own words, never the `:` line's completions)
+        keys(&mut ed, "space i");
+        press(&mut ed, 2, y);
+        assert!(ed.prompt.is_some(), "a press on it keeps it");
+        assert!(ed.toasts.iter().any(|t| t.text == crate::mouse::CHANGE_ROWS), "{}", text(&ed));
+        keys(&mut ed, "esc");
+        // A press off it closes it, the draft kept, nothing under it pressed
+        keys(&mut ed, "space i");
+        let sel = ed.doc().selection().clone();
+        press(&mut ed, 4, 30);
+        assert!(ed.prompt.is_none() && ed.change_draft == "why" && ed.doc().selection() == &sel);
+        // Two selections, lines 12 and 14, 12 the primary: under it would cover 14 — above it
+        let line = |ed: &Editor, l: usize| ed.doc().text.line_to_byte(l - 1);
+        let (a, b) = (line(&ed, 12), line(&ed, 14));
+        let two = vec![Range::new(a, a + 7), Range::new(b, b + 7)];
+        ed.doc_mut().set_selection(Selection::new(two, 0));
+        keys(&mut ed, "space i");
+        let (_, y, _, h) = card(&ed);
+        assert_eq!((y, h), (9, 3), "above line 12, clear of 14: {}", text(&ed));
+        assert!(row(&ed, y).contains(":12, 14 · 2 selections"), "{}", row(&ed, y));
+        keys(&mut ed, "esc");
+        // Lines 20–38, down to the screen's foot: no room under them — above them
+        let (a, b) = (line(&ed, 20), line(&ed, 39));
+        ed.doc_mut().set_selection(Selection::single(Range::new(b, a)));
+        keys(&mut ed, "space i");
+        let (_, y, ..) = card(&ed);
+        assert_eq!(y, 17, "above line 20: {}", text(&ed));
+        assert!(row(&ed, y).contains(":20–38 · 19 lines"), "{}", row(&ed, y));
     }
 
     /// Several selections at once: one quote each, one `edit` of their file, a change each in its review.

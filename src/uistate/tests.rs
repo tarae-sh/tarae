@@ -429,6 +429,13 @@ pub(crate) const SCENES: &[Scene] = &[
         ed.open_prompt(crate::editor::PromptKind::Command, "");
         assert_eq!(ed.keys_region(), Region::Prompt, "the line has the keys");
     }),
+    // (the flow plan's piece 4: `space i`'s card by its lines — a prompt's line, the prompt's layer as ever, no layer of its
+    // own)
+    // (nothing typed: the mouse walk presses its `enter send` too — a draft's would start the ask, its clock moving the frame)
+    ("space i's change card, a prompt", |ed| {
+        ed.run_command_by_name("llm_ask");
+        assert_eq!(ed.keys_region(), Region::Prompt, "the line has the keys");
+    }),
     ("a light card", light_card),
     // (orchestra: Claude's set of sessions — waiting as it came, focused, and behind a card of yours)
     // (focus C1: `space n`'s line in the note's card, a new question's and a reply's — the prompt's keys, as ever)
@@ -1118,12 +1125,14 @@ fn no_key_is_refused_in_silence() {
             "view mode",
             "output",
             "the note's card",
+            // (`space i`'s line, the command line's keys: `C-d` at its end has nothing ahead to delete)
+            "change card",
         ]
         .iter()
         .any(|p| name.contains(p)),
-        " " => {
-            ["draft", "a prompt opened over it", "the note's card", "picker"].iter().any(|p| name.contains(p))
-        }
+        " " => ["draft", "a prompt opened over it", "the note's card", "picker", "change card"]
+            .iter()
+            .any(|p| name.contains(p)),
         // (a draft's `tab` is typed as a space is — at the input's end, not in sight as text:
         // `tab_says_why_where_it_has_nothing_to_do`)
         "<tab>" => name.contains("draft"),

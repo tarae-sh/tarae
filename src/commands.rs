@@ -2524,8 +2524,10 @@ fn view_latest(cx: &mut Context) {
     }
 }
 
+/// `space i`: the `change` card by the selections' lines (the flow plan's piece 4), its draft as it was left.
 fn llm_ask(cx: &mut Context) {
-    cx.editor.open_prompt(PromptKind::Command, "ask ");
+    let draft = cx.editor.change_draft.clone();
+    cx.editor.open_prompt(PromptKind::Change, &draft);
 }
 
 // ── Buffers ──────────────────────────────────────────────────────────────

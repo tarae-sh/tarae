@@ -26,7 +26,10 @@ your Claude Code's settings, hooks and `CLAUDE.md`, which macOS keeps from it.
 In a selection-first editor, Claude takes the *action* slot: select, then tell it what to do.
 
 1. Select one or more pieces of text (multiple cursors work — Claude answers for each selection)
-2. `space i` (or `:ask <instruction>`) and type the instruction
+2. `space i` and type the instruction. It opens a card named `change` right under the lines it changes (above them
+   when there's no room below, and never over another selection's lines). Its top line names the file and the
+   selections' lines (`spool.rs:12, 14 · 2 selections`). `enter` sends it; `esc` or a press off the card closes it,
+   and what you typed comes back with the next `space i`. `:ask <instruction>` does the same from the command line
 3. The answer streams into a card at the bottom right (thinking/writing, elapsed time) while you keep editing
 4. It opens as an **in-buffer review**: the whole file stays in view with only the changed spots expanded — deleted
    lines on faint red, added lines on faint green, both in the file's syntax colors, a header line per change —

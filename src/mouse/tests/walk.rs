@@ -95,6 +95,15 @@ const MOUSE_SCENES: &[Scene] = &[
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
     }),
+    // (the flow plan's piece 4: `space i`'s card under the lines it changes — its words buttons, a press off it closing it)
+    // (nothing typed: its `enter send` pressed says so — a draft's would start the ask, its clock moving the frame)
+    ("space i's change card over a long file", |ed| {
+        long_text(ed);
+        let at = ed.doc().text.line_to_byte(9);
+        ed.doc_mut()
+            .set_selection(crate::selection::Selection::single(crate::selection::Range::new(at, at + 6)));
+        ed.run_command_by_name("llm_ask");
+    }),
     // (the flow plan's piece 3: the column standing with the keys in the code — as an answer no place holds leaves it)
     ("the chat docked, the keys in the code", |ed| {
         long_text(ed);
@@ -1180,7 +1189,8 @@ fn gives_keys(u: Under) -> bool {
         Surface::Rail => matches!(u.part, Part::Row(_) | Part::Mark(_) | Part::Blank),
         Surface::Code(_) => matches!(u.part, Part::Text { .. }),
         Surface::NoteCard => u.part == Part::Blank,
-        Surface::Prompt => u.part != Part::Outside,
+        // (a word on its card does its key — `space i`'s `esc close` closes it, `enter send` sends it)
+        Surface::Prompt => !matches!(u.part, Part::Outside | Part::Word(_)),
         _ => false,
     }
 }

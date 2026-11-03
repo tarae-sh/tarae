@@ -258,6 +258,8 @@ pub const WAY: char = '\u{1b}';
 
 /// What a press on the prompt's card off its line and its completions says.
 pub const PROMPT_ROWS: &str = "a completion's row fills it in — enter runs the line · esc close";
+/// What a press on `space i`'s card off its line says (the flow plan's piece 4).
+pub const CHANGE_ROWS: &str = "type what to change on its line — enter sends · esc close";
 /// What the middle button says where there's no text to paste into.
 pub const MIDDLE_ELSEWHERE: &str =
     "the middle button pastes the clipboard into text — the code, the chat's input, a prompt's line";
@@ -365,9 +367,13 @@ impl Editor {
             && inside(card, x, y)
             && !(wheel && s.note_input.get().is_some())
         {
-            // (a question's card is its line, its keys on its bottom line — focus C1)
-            if let Some(i) = hint_on(S::NoteCard).filter(|_| down) {
-                return at(S::NoteCard, Part::Word(Word::Does(i)));
+            // (a question's card is its line, its keys on its bottom line — focus C1; `space i`'s card alike, the flow
+            // plan's piece 4)
+            if let Some((on, i)) =
+                [S::NoteCard, S::Prompt].into_iter().find_map(|on| hint_on(on).map(|i| (on, i)))
+                && down
+            {
+                return at(on, Part::Word(Word::Does(i)));
             }
             let row = s.prompt_rows.borrow().iter().find(|r| r.0 == y).map(|r| r.1);
             let part = match row {
@@ -1383,6 +1389,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (Part::Row(_) | Part::Outside | Part::Text { .. }, A::Press) | (Part::Text { .. }, A::Drag) => {
                 Acts
             }
+            // (`space i`'s card's keys on its bottom line: buttons — a press does its key, the pointer lights it)
+            (Part::Word(Word::Does(_)), A::Press | A::Hover) => Acts,
             (_, A::Press) => Says(PROMPT_ROWS),
             (_, A::Drag) => Gap(S, "a drag follows the pointer's row"),
             (_, A::Double) => AS_ONE,
@@ -1779,6 +1787,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("A picker's preview", "", Su::PickerPreview, Part::Blank),
         ("The prompt", "a completion", Su::Prompt, Part::Row(0)),
         ("The prompt", "its input", Su::Prompt, Part::Text { line: 0, col: 0 }),
+        ("The prompt", "a key hint on `space i`'s card", Su::Prompt, Part::Word(Word::Does(0))),
         ("The prompt", "outside it", Su::Prompt, Part::Outside),
         ("Hover text, docs", "", Su::Popup, Part::Blank),
         ("Which-key", "a key's row", Su::WhichKey, Part::Row(0)),

@@ -310,8 +310,11 @@ fn typed(ed: &mut Editor, which: Which, key: Key) {
 
 /// `key` does nothing on the line: said where it would act.
 fn said_unused(ed: &mut Editor, which: Which, key: Key) {
+    let change = ed.prompt.as_ref().is_some_and(|p| p.kind == crate::editor::PromptKind::Change);
     let (place, enter) = match which {
         Which::Picker => ("the list's query", "enter picks the row"),
+        // (`space i`'s card — the flow plan's piece 4)
+        _ if change => ("the change card's line", "enter sends it"),
         _ => ("the command line", "enter runs the line"),
     };
     let out = match ed.offers.is_empty() {

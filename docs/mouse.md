@@ -63,6 +63,7 @@ that fills it (S selection).
 | A picker's preview |  | says: a press on a row of the list picks it | — the press did it | ✗ S: the preview's text selects | as one press | ✓ | — nothing on hover |
 | The prompt | a completion | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | — tab moves through its completions | — nothing on hover |
 | The prompt | its input | ✓ | — the press did it | ✓ | as one press | — tab moves through its completions | — nothing on hover |
+| The prompt | a key hint on `space i`'s card | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | — tab moves through its completions | ✓ |
 | The prompt | outside it | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | — tab moves through its completions | — nothing on hover |
 | Hover text, docs |  | — only the wheel is its; the rest goes under | — only the wheel is its; the rest goes under | — only the wheel is its; the rest goes under | — only the wheel is its; the rest goes under | ✓ | — only the wheel is its; the rest goes under |
 | Which-key | a key's row | ✓ | — the press did it | — its press did it — a drag goes to what's under it | as one press | — nothing to scroll | — nothing on hover |

@@ -125,8 +125,9 @@ Under way (2026-11-03):
 
 - **The conversation as a card you summon** (collab's `.sb/flow-plan.md`) — piece 1, the reader, landed (`d529f481`:
   `C-w e` floats the chat and docks it back, `space L` opens it at your line's paragraph); piece 2, the ask line, landed
-  (`fc21d0aa`); piece 3, the minimize gone (`◂ new`, `── new ──`, a place-less answer opening the reader), is under way,
-  then `space i`'s card and steering, each landed alone, shots first ([next](#next)).
+  (`fc21d0aa`); piece 3, the column back and the minimize gone (`◂ new`, `── new ──`), landed (`152d7bcb`); piece 4,
+  `space i`'s line as a `change` card by its lines, is under way, then steering, each landed alone, shots first
+  ([next](#next)).
 - **The sandbox on several kernels** — `cargo xtask kernels` on this Mac's Lima VMs: K4 and K3 green, K1, K2, K5, K6 and
   Y2 next ([§2](#2-sandbox-validation)).
 - **Orchestra Part I's week of use** (P3 `72b18178`), then Part II's P6 ([§4](#4-panes-the-terminal-line-and-orchestra)).

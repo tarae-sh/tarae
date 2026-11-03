@@ -5687,6 +5687,9 @@ fn draw(
     // `space n`'s stands in the note's card, drawn with its pane (focus C1), here only where no card shows
     let prompt_cursor = match (&editor.prompt, editor.screen.note_input.get()) {
         (Some(_), Some(at)) => Some(at),
+        (Some(p), None) if p.kind == crate::editor::PromptKind::Change => {
+            Some(draw_change_line(editor, p, ui, lay, out)?)
+        }
         (Some(p), None) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
         (None, _) => None,
     };
@@ -18608,17 +18611,37 @@ fn carried_rows(editor: &Editor, selection: bool, text_top: usize) -> Option<(us
     let doc = editor.front_file()?;
     let text = &doc.text;
     let line = text.byte_to_line(doc.selection().primary().cursor(text).min(text.len_bytes()));
-    let (l0, l1) = match crate::chat::selection_goes(editor).filter(|_| selection) {
+    let lines = match crate::chat::selection_goes(editor).filter(|_| selection) {
         Some(lines) => lines,
         None => (line, line),
     };
-    let s = &editor.screen;
-    let mut panes = s.panes.iter().zip(&s.pane_docs).filter(|(_, d)| **d == doc.id).map(|(p, _)| p);
-    let pane = panes.clone().find(|p| p.0 == editor.workspace.viewer.focus).or_else(|| panes.next())?;
+    rows_of(editor, doc, lines, text_top)
+}
+
+/// The screen rows (first, last) the last frame drew `doc`'s lines `l0..=l1` on, in its pane (the focused one first).
+/// None: none of them on screen.
+fn rows_of(
+    editor: &Editor,
+    doc: &crate::document::Document,
+    (l0, l1): (usize, usize),
+    text_top: usize,
+) -> Option<(usize, usize)> {
+    let pane = pane_of(editor, doc)?;
     let top = crate::chrome::pane_text(pane.1, text_top).y;
     let mut at = pane.3.iter().enumerate().filter(|(_, o)| (l0..=l1).contains(&o.0)).map(|(i, _)| top + i);
     let first = at.next()?;
     Some((first, at.next_back().unwrap_or(first)))
+}
+
+/// The pane the last frame drew `doc` in (`Screen.panes`): the focused one, else the first.
+#[allow(clippy::type_complexity)]
+fn pane_of<'a>(
+    editor: &'a Editor,
+    doc: &crate::document::Document,
+) -> Option<&'a (crate::split::PaneId, crate::split::Rect, usize, Vec<(usize, usize, usize, usize)>)> {
+    let s = &editor.screen;
+    let mut panes = s.panes.iter().zip(&s.pane_docs).filter(|(_, d)| **d == doc.id).map(|(p, _)| p);
+    panes.clone().find(|p| p.0 == editor.workspace.viewer.focus).or_else(|| panes.next())
 }
 
 /// `r` moved off the screen rows `about` (first, last) where it stands over them: just below or just above them, the
@@ -18646,6 +18669,157 @@ fn clear_of(
     }
     let y = if down { last + 1 } else { first - h };
     crate::split::Rect { y, h, ..r }
+}
+
+/// `space i`'s card this frame (the flow plan's piece 4), on a screen `w` wide with `rows` above the status line: the ask
+/// line's width (`Editor::chat_float_rect`) from its pane's left, within it (as `float_geom_around` keeps a card in the
+/// pane it's about — never off beside short lines on a wide screen; its scrollbar kept), three rows (its top line, its
+/// line, its bottom line), **by the lines it changes** — just below the primary selection's rows in sight, else just above them (`float_geom_around`'s order), then
+/// beside another selection's; never over any selection's rows in sight. None of those free (selections filling the
+/// screen): the ask line's place, clear of the primary's rows (`clear_of`).
+fn change_rect(editor: &Editor, w: usize, rows: usize, text_top: usize) -> crate::split::Rect {
+    let h = 3.min(rows);
+    let doc = editor.doc();
+    let r = crate::split::Rect { h, ..editor.chat_float_rect(w, rows) };
+    let r = match pane_of(editor, doc) {
+        Some((_, p, ..)) => crate::split::Rect { x: p.x, w: r.w.min(p.w.saturating_sub(1)).max(1), ..r },
+        None => r,
+    };
+    let text = &doc.text;
+    let sel = doc.selection();
+    let lines = |r: &crate::selection::Range| {
+        let r = r.min_width_1(text);
+        (text.byte_to_line(r.from()), text.byte_to_line(r.to().saturating_sub(1).max(r.from())))
+    };
+    // (the primary's first, the others nearest it first)
+    let primary = rows_of(editor, doc, lines(&sel.primary()), text_top);
+    let near = primary.map_or(0, |p| p.0);
+    let mut by_distance: Vec<(usize, (usize, usize))> = (sel.ranges().iter())
+        .filter_map(|r| rows_of(editor, doc, lines(r), text_top))
+        .map(|b| (b.0.abs_diff(near), b))
+        .collect();
+    crate::sorting::sort(&mut by_distance);
+    let blocks: Vec<(usize, usize)> = by_distance.into_iter().map(|(_, b)| b).collect();
+    let free = |y: usize| y >= text_top && y + h <= rows && !blocks.iter().any(|&(f, l)| y <= l && f < y + h);
+    let at = primary.into_iter().chain(blocks.iter().copied()).find_map(|(first, last)| {
+        [Some(last + 1), first.checked_sub(h)].into_iter().flatten().find(|&y| free(y))
+    });
+    match at {
+        Some(y) => crate::split::Rect { y, ..r },
+        None => {
+            clear_of(crate::split::Rect { y: crate::pane::Frame::placed_y(h, rows), ..r }, primary, rows, h)
+        }
+    }
+}
+
+/// What `space i`'s card says goes with it, for its top line: the file and the selections' lines (`spool.rs:7, 18–20`),
+/// then how many — lines for one selection, selections for more — as the ask line says its selection's (`chat::ask_goes`).
+fn change_goes(editor: &Editor) -> Vec<String> {
+    let doc = editor.doc();
+    let text = &doc.text;
+    let spans: Vec<(usize, usize)> = (doc.selection().ranges().iter())
+        .map(|r| {
+            let r = r.min_width_1(text);
+            (text.byte_to_line(r.from()), text.byte_to_line(r.to().saturating_sub(1).max(r.from())))
+        })
+        .collect();
+    let shown: Vec<String> = (spans.iter())
+        .map(|&(l0, l1)| if l0 < l1 { format!("{}–{}", l0 + 1, l1 + 1) } else { (l0 + 1).to_string() })
+        .collect();
+    let count = match spans.as_slice() {
+        [(l0, l1)] => crate::nav::count(l1 - l0 + 1, "line"),
+        _ => crate::nav::count(spans.len(), "selection"),
+    };
+    vec![format!("{}:{}", doc.display_name_short(), shown.join(", ")), count]
+}
+
+/// `space i`'s line (the flow plan's piece 4, Q4 b): the ask line's card (`draw_ask_line`'s look) by the lines it
+/// changes (`change_rect`) — `╭─ change ── spool.rs:7, 18 · 2 selections ─╮`, its line, `╰─ enter send · esc close ─╯`,
+/// lit (it has the keys). A prompt's line (`PromptKind::Change`): its keys, history and presses the prompt's
+/// (`Screen.prompt_card`, `prompt_input`), its words pressed where the keys are. Returns the cursor.
+fn draw_change_line(
+    editor: &Editor,
+    p: &crate::editor::Prompt,
+    ui: &Ui,
+    lay: &Layout,
+    out: &mut impl Write,
+) -> io::Result<(u16, u16)> {
+    use crate::chrome::{GAP, PAD};
+    let r = change_rect(editor, lay.width, lay.status_y as usize, lay.text_top as usize);
+    let (x0, top, cw, rows) = (r.x, r.y, r.w.saturating_sub(1), r.h.saturating_sub(1));
+    let card = panel_style(ui, editor);
+    let dim = Style { fg: ui.virt.fg, ..card };
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let accent = Style { fg: ui.accent.fg, ..card };
+    let strong =
+        card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
+    let key = Style { bold: true, ..dim };
+    let (w, _) = chat_widths(cw, false);
+    let frame = (x0, top, cw + 1, rows + 1);
+    editor.screen.prompt_card.set(Some(frame));
+    let lit = ui.frame_lit(None, frame, true);
+    editor.screen.frames.borrow_mut().push(crate::mouse::Framed { rect: frame, of: None, lit });
+    let line = frame_style(ui, card, lit);
+    // Its top line: what it is, then what it changes — the file and the selections' lines, how many — folding from the last
+    let goes = change_goes(editor);
+    let last = goes.len().saturating_sub(1);
+    let details: Vec<(String, Style)> = (goes.iter().enumerate())
+        .map(|(i, g)| {
+            let sep = if i > 0 { "· " } else { "" };
+            let end = if i < last { " " } else { "" };
+            (format!("{sep}{g}{end}"), if i > 0 { accent } else { dim })
+        })
+        .collect();
+    let names = [(Fit::from("change"), strong)];
+    let head =
+        TopLine { names: &names, details: &fits(&details), key, faint, plain: true, ..TopLine::default() };
+    top_line(out, line, card, (x0, top, cw + 1), ("╭", "╮", "┬"), &[], true, &head)?;
+    // Its line, as the ask line's first row: `› `, then what's typed in sight (`prompt_window`), else what it's for, faint
+    let (y, text_x) = (top + 1, x0 + GAP + PAD);
+    chat_row_start(out, x0, y, ("│", line), card)?;
+    apply(out, Style { bold: true, ..accent })?;
+    queue!(out, Print("› "))?;
+    let room = w.saturating_sub(2).max(1);
+    let text = p.text();
+    let shown = prompt_window(&text, p.cursor(), p.left.get(), room);
+    p.left.set(shown.first);
+    let tx = text_x + 2 + usize::from(shown.lead);
+    editor.screen.prompt_input.set(Some(crate::editor::PromptDrawn {
+        y,
+        x: tx,
+        w: room,
+        first: shown.first,
+    }));
+    let used = match text.is_empty() {
+        true => {
+            let n = editor.doc().selection().len();
+            let what =
+                if n > 1 { format!("Say how to change all {n}") } else { "Say how to change it".into() };
+            let what = crate::whole::fit(&what, room);
+            apply(out, faint)?;
+            queue!(out, Print(what.shown()))?;
+            crate::whole::at(crate::whole::On::Prompt, &what, (tx, y), faint, (x0, x0 + cw));
+            what.width()
+        }
+        false => print_input_line(out, ui, &text, &shown, p.input.pane.doc().selection(), card, faint)?,
+    };
+    chat_row_end(out, card, cw, 2 + used)?;
+    queue!(out, MoveTo((x0 + cw) as u16, y as u16))?;
+    put_line(out, line, "│")?;
+    // Its keys in its bottom line, a prompt's
+    let hints: [(&str, &str); 2] = [("enter", "send"), ("esc", "close")];
+    let words = TopWords {
+        spots: &editor.screen.word_spots,
+        on: crate::mouse::Surface::Prompt,
+        right: None,
+        each: &[],
+        home: None,
+        way_in: None,
+    };
+    let foot = TopLine { keys: &hints, key, faint, plain: true, words: Some(words), ..TopLine::default() };
+    top_line(out, line, card, (x0, top + rows, cw + 1), ("╰", "╯", "┴"), &[], true, &foot)?;
+    let cursor = text.get(shown.first..p.cursor().max(shown.first)).unwrap_or_default().width();
+    Ok(((tx + cursor) as u16, y as u16))
 }
 
 /// The empty chat's conversation to continue (`continue_row`): the project's latest, but the one it holds.
@@ -23917,6 +24091,8 @@ fn key_hints(editor: &Editor) -> Option<Vec<(&'static str, String)>> {
         match p.kind {
             _ if editor.screen.note_input.get().is_some() => None,
             crate::editor::PromptKind::Note(_) => hints(note_input_keys(editor)),
+            // (`space i`'s card says them on its bottom line)
+            crate::editor::PromptKind::Change => None,
             crate::editor::PromptKind::Command => {
                 hints(&[("enter", enter), ("tab", "complete"), ("esc", "close")])
             }
@@ -23963,6 +24139,7 @@ fn prompt_enter(kind: crate::editor::PromptKind) -> &'static str {
         K::Note(_) => "send",
         K::Plugin(_) => "done",
         K::Session => "make it",
+        K::Change => "send",
     }
 }
 
