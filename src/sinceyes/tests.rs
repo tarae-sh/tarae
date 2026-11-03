@@ -52,7 +52,7 @@ fn the_projects_changes_since_the_yes_and_nothing_outside_it() {
     let index = std::fs::read(dir.join(".git/index")).unwrap();
     let y = yes(&root, cmd);
     assert!(matches!(y.kept, Kept::Tree(_)), "{:?}", y.kept);
-    let s = y.since(&root, &root, cmd, true);
+    let s = y.since(&root, &root, cmd, true, crate::log::Zone::Here);
     assert!(s.changed == Changed::Nothing && s.unchanged, "{s:?}");
     let same = format!("Same as card#41 — y at {}", s.at);
     assert_eq!(s.head(), format!("{same}\n  build files unchanged\n  nothing else in the project changed"));
@@ -61,7 +61,7 @@ fn the_projects_changes_since_the_yes_and_nothing_outside_it() {
     std::fs::write(root.join("src/lib.rs"), "fn a() {}\nfn b() { 2 }\n").unwrap();
     std::fs::write(root.join("src/new.rs"), "fn c() {}\n").unwrap();
     std::fs::write(dir.join("other.txt"), "outside-marker two\n").unwrap();
-    let s = y.since(&root, &root, cmd, true);
+    let s = y.since(&root, &root, cmd, true, crate::log::Zone::Here);
     let Changed::Lines { of, lines } = &s.changed else { panic!("{s:?}") };
     assert_eq!(of, "the project");
     let has = |l: &str| lines.iter().any(|x| x == l);
@@ -83,7 +83,7 @@ fn the_projects_changes_since_the_yes_and_nothing_outside_it() {
     assert_eq!(std::fs::read(dir.join(".git/index")).unwrap(), index, "git's own index untouched");
     // One a card can't show as it is (a bidi mark): named, not shown
     std::fs::write(root.join("src/new.rs"), "fn c() {}\n// \u{202E}reversed\n").unwrap();
-    let s = y.since(&root, &root, cmd, true);
+    let s = y.since(&root, &root, cmd, true, crate::log::Zone::Here);
     let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
     assert!(
         lines.iter().any(|l| l.starts_with("src/new.rs (new) has characters a card can't show")),
@@ -111,7 +111,7 @@ fn a_scripts_own_diff_and_one_outside_the_project_named_only() {
         "{:?}",
         y.kept
     );
-    let s = y.since(&root, &root, cmd, true);
+    let s = y.since(&root, &root, cmd, true, crate::log::Zone::Here);
     assert!(s.changed == Changed::Nothing && s.unchanged, "{s:?}");
     let outside = dir.join("outside.sh").display().to_string();
     assert!(s.head().ends_with(&format!("\n  script unchanged (check.sh, {outside})")), "{}", s.head());
@@ -119,7 +119,7 @@ fn a_scripts_own_diff_and_one_outside_the_project_named_only() {
     std::fs::write(dir.join("outside.sh"), "echo outside-marker changed\n").unwrap();
     // (in the sandbox or outside it: a script's own changes are shown)
     for whole in [true, false] {
-        let s = y.since(&root, &root, cmd, whole);
+        let s = y.since(&root, &root, cmd, whole, crate::log::Zone::Here);
         let Changed::Lines { of, lines } = &s.changed else { panic!("{s:?}") };
         assert!(of.starts_with("check.sh, "), "{of}");
         assert_eq!(lines[..4], ["check.sh", "@@ line 2", "-echo two", "+echo three"], "{lines:#?}");
@@ -133,7 +133,7 @@ fn a_scripts_own_diff_and_one_outside_the_project_named_only() {
     }
     // Not a script, not a git checkout: it can't tell
     let y = yes(&root, "make check");
-    let s = y.since(&root, &root, "make check", true);
+    let s = y.since(&root, &root, "make check", true, crate::log::Zone::Here);
     assert!(matches!(&s.changed, Changed::Unknown(w) if w.contains("not a git checkout")), "{s:?}");
     assert!(s.head().contains("read it as new") && !s.unchanged, "{}", s.head());
     std::fs::remove_dir_all(&dir).ok();
@@ -188,12 +188,12 @@ fn the_files_a_script_names_are_compared_with_it() {
         let Kept::Scripts { inputs, .. } = &y.kept else { panic!("{:?}", y.kept) };
         let kept: Vec<String> = inputs.iter().map(|(p, _)| crate::chat::shown(&root, p)).collect();
         assert_eq!(kept, [name], "{cmd}: no word that's no file, nothing outside the project");
-        let s = y.since(&root, &root, cmd, false);
+        let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
         assert!(s.unchanged && s.changed == Changed::Nothing, "{s:?}");
         assert!(s.head().contains(&format!("\n  files it names unchanged ({name})")), "{}", s.head());
         let was = std::fs::read_to_string(sb.join(file)).unwrap();
         std::fs::write(sb.join(file), format!("{was}more-marker\n")).unwrap();
-        let s = y.since(&root, &root, cmd, false);
+        let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
         assert!(!s.unchanged && s.script_changed, "{s:?}");
         assert!(s.head().contains(&format!("\n  files it names changed: {name}")), "{}", s.head());
         let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
@@ -221,11 +221,11 @@ fn a_program_git_ignores_is_compared_by_its_bytes() {
     build("probe", 0, "one");
     let cmd = "./.sb/probe";
     let y = yes(&root, cmd);
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     assert!(s.unchanged && !s.script_changed, "{s:?}");
     build("probe", 0, "two, rebuilt");
     for outside in [false, true] {
-        let s = y.since(&root, &root, cmd, outside);
+        let s = y.since(&root, &root, cmd, outside, crate::log::Zone::Here);
         assert!(!s.unchanged && s.script_changed, "{s:?}");
         assert!(s.head().contains("\n  script changed: .sb/probe"), "{}", s.head());
         let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
@@ -239,14 +239,14 @@ fn a_program_git_ignores_is_compared_by_its_bytes() {
     let y = yes(&root, cmd);
     let Kept::Scripts { inputs, .. } = &y.kept else { panic!("{:?}", y.kept) };
     assert_eq!(inputs.len(), 1, "{inputs:?}");
-    assert!(y.since(&root, &root, cmd, false).unchanged);
+    assert!(y.since(&root, &root, cmd, false, crate::log::Zone::Here).unchanged);
     build("probe-big", 300 << 10, "b");
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     assert!(!s.unchanged && s.script_changed, "{s:?}");
     assert!(s.head().contains("\n  files it names changed: .sb/probe-big"), "{}", s.head());
     // Not there then nor now: can't tell, never unchanged
     let cmd = "sh .sb/gone.sh";
-    let s = yes(&root, cmd).since(&root, &root, cmd, false);
+    let s = yes(&root, cmd).since(&root, &root, cmd, false, crate::log::Zone::Here);
     let why = "can't tell whether .sb/gone.sh changed — git ignores it, and it couldn't be read";
     assert_eq!(s.changed, Changed::Unknown(why.into()), "{s:?}");
     assert!(!s.unchanged && s.head().contains("; read it as new."), "{}", s.head());
@@ -275,15 +275,15 @@ fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
     let y = yes(&root, cmd);
     let Kept::Scripts { inputs, .. } = &y.kept else { panic!("{:?}", y.kept) };
     assert_eq!(inputs.len(), 1, "the file it names, followed: {inputs:?}");
-    assert!(y.since(&root, &root, cmd, false).unchanged);
+    assert!(y.since(&root, &root, cmd, false, crate::log::Zone::Here).unchanged);
     script("two", 0xe9);
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
     assert!(lines.iter().any(|l| l == "-echo one") && lines.iter().any(|l| l == "+echo two"), "{lines:#?}");
     assert!(!lines.iter().any(|l| l.contains('\0')), "{lines:#?}");
     // Only the byte that isn't UTF-8 changed
     script("one", 0xe8);
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     assert!(s.script_changed && !s.unchanged, "{s:?}");
     let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
     let said = ".sb/go.sh — changed only in bytes that aren't UTF-8 — not shown";
@@ -291,10 +291,10 @@ fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
     // Past the digest's limit: by its stamp
     HASH_LIMIT.with(|m| m.set(16));
     let y = yes(&root, cmd);
-    assert!(y.since(&root, &root, cmd, false).unchanged, "left alone");
+    assert!(y.since(&root, &root, cmd, false, crate::log::Zone::Here).unchanged, "left alone");
     let bytes = std::fs::read(sb.join("go.sh")).unwrap();
     std::fs::write(sb.join("go.sh"), &bytes).unwrap();
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     HASH_LIMIT.with(|m| m.set(HASH_MAX));
     assert!(s.script_changed && !s.unchanged, "the same bytes written again: by its stamp, changed — {s:?}");
     std::fs::remove_dir_all(&dir).ok();
@@ -332,11 +332,11 @@ fn what_a_script_writes_made_or_keeps_secret_is_said_so() {
     std::fs::write(sb.join("out.log"), "ok\n").unwrap();
     std::fs::write(sb.join("log.txt"), "1\n2\n").unwrap();
     std::fs::write(sb.join("later.txt"), "made since\n").unwrap();
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     assert!(s.unchanged && !s.script_changed, "{s:?}");
     // The settings file changed: said, never shown
     std::fs::write(sb.join("run.env"), "API_TOKEN=xyz789secret\n").unwrap();
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
     assert!(
         lines
@@ -346,7 +346,7 @@ fn what_a_script_writes_made_or_keeps_secret_is_said_so() {
     assert!(!lines.iter().any(|l| l.contains("secret")), "{lines:#?}");
     // A file it read is gone
     std::fs::remove_file(sb.join("hosts.txt")).unwrap();
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
     assert!(lines.iter().any(|l| l == ".sb/hosts.txt — gone since"), "{lines:#?}");
     std::fs::remove_dir_all(&dir).ok();
@@ -364,13 +364,13 @@ fn a_script_that_runs_the_projects_code_shows_the_projects_changes_too() {
     let y = yes(&root, cmd);
     assert!(matches!(&y.kept, Kept::Scripts { project: Some(Ok(_)), .. }), "{:?}", y.kept);
     // Another argument, the same script: nothing changed
-    let s = y.since(&root, &root, "sh check.sh two", true);
+    let s = y.since(&root, &root, "sh check.sh two", true, crate::log::Zone::Here);
     assert_eq!(s.changed, Changed::Nothing);
     assert_eq!(s.was.as_deref(), Some(cmd));
     assert!(s.head().starts_with("Same as card#41 (`sh check.sh one`) — y at "), "{}", s.head());
     // The project changed, the script didn't: outside the sandbox, the project's diff; in it, named
     std::fs::write(root.join("src/lib.rs"), "fn a() {}\nfn b() { 2 }\n").unwrap();
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     assert!(s.changed == Changed::Nothing && !s.unchanged, "{s:?}");
     assert!(
         s.head().ends_with(
@@ -379,7 +379,7 @@ fn a_script_that_runs_the_projects_code_shows_the_projects_changes_too() {
         "{}",
         s.head()
     );
-    let s = y.since(&root, &root, cmd, true);
+    let s = y.since(&root, &root, cmd, true, crate::log::Zone::Here);
     let Changed::Lines { of, lines } = &s.changed else { panic!("{s:?}") };
     assert_eq!(of, "the project check.sh runs (check.sh itself unchanged)");
     assert!(
@@ -388,7 +388,7 @@ fn a_script_that_runs_the_projects_code_shows_the_projects_changes_too() {
     );
     // Both: the script's hunks, then the project's — the script not twice
     std::fs::write(root.join("check.sh"), "set -e\ncargo test lib_b\n").unwrap();
-    let s = y.since(&root, &root, cmd, true);
+    let s = y.since(&root, &root, cmd, true, crate::log::Zone::Here);
     let Changed::Lines { of, lines } = &s.changed else { panic!("{s:?}") };
     assert_eq!(of, "check.sh, and the project it runs");
     assert_eq!(lines[0], "check.sh");
@@ -398,7 +398,7 @@ fn a_script_that_runs_the_projects_code_shows_the_projects_changes_too() {
     let y = yes(&root, "sh say.sh");
     assert!(matches!(&y.kept, Kept::Scripts { project: None, .. }), "{:?}", y.kept);
     std::fs::write(root.join("src/lib.rs"), "fn a() {}\nfn b() { 3 }\n").unwrap();
-    assert_eq!(y.since(&root, &root, "sh say.sh", true).changed, Changed::Nothing);
+    assert_eq!(y.since(&root, &root, "sh say.sh", true, crate::log::Zone::Here).changed, Changed::Nothing);
     // What reads as running the project's code, line by line
     for l in [
         "cargo test",
@@ -828,7 +828,7 @@ fn a_changed_script_and_build_file_are_shown_together() {
     std::fs::write(root.join("check.sh"), "set -e\ncargo test lib_b\n").unwrap();
     std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"x\"]\n").unwrap();
     std::fs::write(root.join("src/lib.rs"), "fn a() {}\nfn b() { 2 }\n").unwrap();
-    let s = y.since(&root, &root, cmd, false);
+    let s = y.since(&root, &root, cmd, false, crate::log::Zone::Here);
     let Changed::Lines { of, lines } = &s.changed else { panic!("{s:?}") };
     assert_eq!(of, "check.sh, and the project");
     let has = |l: &str| lines.iter().any(|x| x == l);

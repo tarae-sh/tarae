@@ -31,6 +31,12 @@ enum Heard {
     Input(Event),
     /// SIGTERM or SIGHUP: the client goes, its terminal restored (the host detaches).
     Signal,
+    /// What the host asked came to (`ask`, on a thread of its own): its answer, and an OSC 52 for this terminal.
+    Done {
+        id: u32,
+        answer: wire::Answer,
+        osc: Vec<u8>,
+    },
 }
 
 /// `tarae attach [--pid PID]`.
@@ -105,6 +111,9 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
         seen: 0,
         due: None,
         tx,
+        speaker: crate::sound::Played::default(),
+        offset: offset_now(),
+        zone_at: crate::clock::now() + ZONE_EVERY,
     };
     c.listen(dec);
     let end = c.run(&rx);
@@ -181,9 +190,11 @@ fn attach_to(
         ground,
         undercurl: crate::term::undercurl_here(),
         zellij: crate::zellij::inside(),
-        // (this machine's clipboard, sound and opener become the host's to ask: the remote plan's step 3, piece 4)
+        // (this machine's clipboard, speaker and browser, the host's to ask: a clipboard with no program here is this
+        // terminal's — a copy by OSC 52, a paste said)
         clipboard: wire::Clip::CopyAndPaste,
-        sound: true,
+        // (only macOS plays tarae's sound yet)
+        sound: cfg!(target_os = "macos"),
         open: true,
         zone: std::env::var("TZ").unwrap_or_default(),
         offset: offset_now(),
@@ -247,7 +258,16 @@ struct Client {
     /// When the whole screen goes again (`RESTING_REDRAW` after the last frame).
     due: Option<std::time::Instant>,
     tx: mpsc::Sender<Heard>,
+    /// The host's sound, played here.
+    speaker: crate::sound::Played,
+    /// The offset from UTC the host was last told, and when it's looked at again (`ZONE_EVERY`; focus back too).
+    offset: i32,
+    zone_at: std::time::Instant,
 }
+
+/// How often the client looks whether its zone's offset moved (summer time, the laptop moved) — and as focus comes
+/// back.
+const ZONE_EVERY: Duration = Duration::from_secs(3600);
 
 impl Client {
     /// The host's messages read on a thread of their own into the loop.
@@ -278,22 +298,24 @@ impl Client {
     fn run(&mut self, rx: &mpsc::Receiver<Heard>) -> End {
         let mut ended = false;
         loop {
-            let heard = match self.due {
-                Some(at) => match rx.recv_timeout(at.saturating_duration_since(crate::clock::now())) {
-                    Ok(h) => h,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
+            // (the resting redraw, else the zone's hourly look — idle, the next wake is an hour off)
+            let at = self.due.map_or(self.zone_at, |d| d.min(self.zone_at));
+            let heard = match rx.recv_timeout(at.saturating_duration_since(crate::clock::now())) {
+                Ok(h) => h,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let now = crate::clock::now();
+                    if self.due.is_some_and(|d| d <= now) {
                         self.due = None;
                         let mut out = Vec::new();
                         self.held.whole(&mut out);
                         let _ = write_out(&out);
-                        continue;
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return End::Said(String::new()),
-                },
-                None => match rx.recv() {
-                    Ok(h) => h,
-                    Err(_) => return End::Said(String::new()),
-                },
+                    if self.zone_at <= now {
+                        self.zone_again(ended);
+                    }
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return End::Said(String::new()),
             };
             match heard {
                 Heard::Host(m) if !ended => {
@@ -312,6 +334,15 @@ impl Client {
                 Heard::Signal => {
                     let _ = send(&self.stream, &ToHost::Bye);
                     return End::Said(String::new());
+                }
+                Heard::Done { id, answer, osc } => {
+                    // (its OSC 52 after the frame on screen, as tarae's own goes after its frame)
+                    if !osc.is_empty() {
+                        let _ = write_out(&osc);
+                    }
+                    if !ended {
+                        let _ = send(&self.stream, &ToHost::Answer { id, answer });
+                    }
                 }
                 Heard::Input(ev) if ended => match ev {
                     Event::Key(k) if k.code == crate::key::Code::Char('r') && !k.ctrl && !k.alt => {
@@ -336,6 +367,9 @@ impl Client {
                     }
                 }
                 Heard::Input(ev) => {
+                    if let Event::Focus(true) = ev {
+                        self.zone_again(ended);
+                    }
                     if let Some(event) = crate::attach::input_of(ev) {
                         self.seq += 1;
                         let _ = send(&self.stream, &ToHost::Input { seq: self.seq, seen: self.seen, event });
@@ -371,14 +405,32 @@ impl Client {
                     End::Failed(format!("the host didn't read what this sent: {said}"))
                 }
             }),
-            // (the interface's clipboard and opener: the remote plan's step 3, piece 4 — not asked yet)
-            ToInterface::Ask { id, .. } => {
-                let answer = wire::Answer::Failed("this client can't do that yet".into());
-                let _ = send(&self.stream, &ToHost::Answer { id, answer });
+            ToInterface::Ask { id, ask } => {
+                let tx = self.tx.clone();
+                crate::event::thread("tarae-wire-ask", move || {
+                    let (answer, osc) = asked(ask);
+                    let _ = tx.send(Heard::Done { id, answer, osc });
+                });
                 None
             }
-            ToInterface::Sound(_) | ToInterface::Welcome { .. } => None,
+            ToInterface::Sound(s) => {
+                self.speaker.heard(s);
+                None
+            }
+            ToInterface::Welcome { .. } => None,
         }
+    }
+
+    /// The zone's offset looked at again (hourly, focus back): the host told where it moved.
+    fn zone_again(&mut self, ended: bool) {
+        self.zone_at = crate::clock::now() + ZONE_EVERY;
+        let offset = offset_now();
+        if offset == self.offset || ended {
+            return;
+        }
+        self.offset = offset;
+        let zone = std::env::var("TZ").unwrap_or_default();
+        let _ = send(&self.stream, &ToHost::Zone { zone, offset });
     }
 
     /// `r` on the host-ended line: the host looked for again (the one asked for, else the one `tarae state` picks).
@@ -393,6 +445,49 @@ impl Client {
         self.listen(dec);
         Ok(())
     }
+}
+
+/// What the host asked of this machine done here, on a thread of its own (a clipboard program, a browser waited for):
+/// its answer, and an OSC 52 for this terminal where the copy goes through it.
+fn asked(ask: wire::Ask) -> (wire::Answer, Vec<u8>) {
+    use crate::clipboard::{Read, Why, Wrote};
+    let why = |w| match w {
+        Why::Ssh => wire::Why::Ssh,
+        Why::NoProgram => wire::Why::NoProgram,
+    };
+    match ask {
+        wire::Ask::Copy(text) => match crate::clipboard::write_here(&text) {
+            Ok(Wrote::Program) => (wire::Answer::Copied(None), Vec::new()),
+            Ok(Wrote::Terminal(osc, w)) => (wire::Answer::Copied(Some(why(w))), osc),
+            Err(e) => (wire::Answer::Failed(e), Vec::new()),
+        },
+        wire::Ask::Paste => match crate::clipboard::read_here() {
+            Ok(Read::Text(t)) => (wire::Answer::Pasted(t), Vec::new()),
+            Ok(Read::Terminal(w)) => (wire::Answer::PasteUnreadable(why(w)), Vec::new()),
+            Err(e) => (wire::Answer::Failed(e), Vec::new()),
+        },
+        // (an address only, http(s) only, as `:web-open` hands one — checked here again: this machine runs the opener)
+        wire::Ask::Open(url) if !crate::web::facts::followed(&url) => {
+            (wire::Answer::Failed("only http(s) addresses are opened".into()), Vec::new())
+        }
+        wire::Ask::Open(url) => {
+            let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+            match open(program, &url) {
+                Ok(()) => (wire::Answer::Opened, Vec::new()),
+                Err(e) => (wire::Answer::Failed(format!("{program}: {e}")), Vec::new()),
+            }
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn open(program: &str, url: &str) -> Result<(), String> {
+    crate::web::page::opened_by(program, url)
+}
+
+#[cfg(test)]
+fn open(_: &str, _: &str) -> Result<(), String> {
+    Err("not in tests".into())
 }
 
 /// A frame's bytes on the terminal, flushed: presented.

@@ -49,7 +49,7 @@ pub struct Ring {
 
 const RING: usize = 64;
 
-const KINDS: [Kind; 5] = [Kind::Key, Kind::Space, Kind::Return, Kind::Erase, Kind::Settle];
+pub const KINDS: [Kind; 5] = [Kind::Key, Kind::Space, Kind::Return, Kind::Erase, Kind::Settle];
 
 impl Ring {
     pub fn new(volume: u8) -> Ring {

@@ -1336,7 +1336,7 @@ impl Editor {
         }
         let again = format!(
             "again after {} (in {}), or once the checkouts change",
-            crate::log::clock(at),
+            self.interface.zone.clock(at),
             crate::term::run_duration(wait)
         );
         let msg = format!(
@@ -1350,7 +1350,7 @@ impl Editor {
             self.set_warning(format!(
                 "the new shared {name} exited loading {n} checkouts — the one in use stays; {} wait for another try after {} (each loads them all), or a change of checkouts",
                 new.len(),
-                crate::log::clock(at)
+                self.interface.zone.clock(at)
             ));
         }
     }
@@ -1421,7 +1421,7 @@ impl Editor {
             {
                 return Some(format!(
                     "{name}: the last swap exited — again after {}",
-                    crate::log::clock(h.at)
+                    self.interface.zone.clock(h.at)
                 ));
             }
             return Some(format!("{name}: joining the shared one"));

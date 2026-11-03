@@ -483,7 +483,9 @@ fn go(ed: &mut Editor) {
     let touched = ed.workspace.claude.usage.conv.as_ref().and_then(|c| c.touched_ms);
     let idle = touched.map_or(0, |t| crate::usage::now_ms().saturating_sub(t));
     let idle = crate::term::run_duration(std::time::Duration::from_millis(idle));
-    let cold = ed.workspace.claude.usage.cold_at().map_or_else(String::new, crate::usage::until);
+    let zone = ed.interface.zone;
+    let cold =
+        ed.workspace.claude.usage.cold_at().map_or_else(String::new, |at| crate::usage::until(zone, at));
     let note = format!(
         "Idle {idle} — compacting before Claude's cache expires at {cold}, so the next message doesn't write it \
          all again (\"idleCompaction\": false in your Claude settings turns it off)"

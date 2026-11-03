@@ -392,7 +392,9 @@ pub fn limits(ed: &mut Editor) {
         return;
     }
     let now = crate::usage::now_ms();
-    let said: Vec<String> = ed.limits.known(now).into_iter().map(crate::limits::said).collect();
+    // (a watcher reads here: this machine's time)
+    let said: Vec<String> =
+        ed.limits.known(now).into_iter().map(|r| crate::limits::said(r, crate::log::Zone::Here)).collect();
     ed.ui_said(json!({ "event": "limits", "limits": ed.limits.json(now), "said": said.join("   ") }));
 }
 

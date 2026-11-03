@@ -2288,7 +2288,9 @@ impl UiState {
             out.push(format!("sessions: {}", s.join("   ")));
         }
         if !self.limits.is_empty() {
-            let said: Vec<String> = self.limits.iter().map(crate::limits::said).collect();
+            // (`tarae state` is read here: this machine's time)
+            let said: Vec<String> =
+                self.limits.iter().map(|r| crate::limits::said(r, crate::log::Zone::Here)).collect();
             out.push(format!("limits: {}", said.join("   ")));
         }
         for (w, s) in self.workspaces.iter().flat_map(|w| w.sessions.iter().map(move |s| (w, s))) {

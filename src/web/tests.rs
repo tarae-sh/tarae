@@ -359,7 +359,7 @@ fn a_pages_commands_read_it_again_reload_it_and_hand_it_to_the_browser() {
     // (handed to the interface's opener: a tests' editor's has none, said)
     said(&mut ed, ":web-open", "web: nothing here opens a browser");
     assert!(ed.workspace.web_opened.is_empty());
-    ed.interface.opener = Some("open");
+    ed.interface.opener = crate::interface::Opener::Here("open");
     said(&mut ed, ":web-open", "web: https://page.test/a handed to your browser");
     assert_eq!(ed.workspace.web_opened, ["https://page.test/a"]);
 

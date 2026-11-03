@@ -574,15 +574,23 @@ pub fn reader(ed: &mut Editor, rest: &str) -> Result<(), String> {
 }
 
 /// `:web-open`: the page's own address — http(s) only, nothing else of it — handed to the interface's opener
-/// (`Facts.opener`: the terminal's `open`, `xdg-open`) on a worker; what it says when it fails said.
+/// (`Facts.opener`: the terminal's `open`, `xdg-open` on a worker; an attached interface's machine, asked across its
+/// wire — `attach::ask`); what it says when it fails said.
 pub fn web_open(ed: &mut Editor) -> Result<(), String> {
+    use crate::interface::Opener;
     in_sight(ed)?;
     let url = ed.doc().virtual_uri.clone().unwrap_or_default();
     if !super::facts::followed(&url) {
         return Err("a saved page has no web address — :web-open opens only http(s)".into());
     }
-    let Some(program) = ed.interface.opener else {
-        return Err("web: nothing here opens a browser".into());
+    let program = match ed.interface.opener {
+        Opener::Here(p) => p,
+        Opener::Wire => {
+            let asked = crate::attach::Asked::Open { url: url.clone() };
+            crate::attach::ask(ed, tarae_wire::Ask::Open(url), asked);
+            return Ok(());
+        }
+        Opener::None => return Err("web: nothing here opens a browser".into()),
     };
     #[cfg(test)]
     {
@@ -608,7 +616,7 @@ pub fn web_open(ed: &mut Editor) -> Result<(), String> {
 /// `program url`, in a session of its own (it never takes the terminal), waited for here on the worker: its last
 /// line of errors where it fails.
 #[cfg(not(test))]
-fn opened_by(program: &str, url: &str) -> Result<(), String> {
+pub(crate) fn opened_by(program: &str, url: &str) -> Result<(), String> {
     use std::io::Read as _;
     let mut cmd = std::process::Command::new(program);
     cmd.arg(url);

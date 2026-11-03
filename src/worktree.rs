@@ -1258,16 +1258,18 @@ impl Shown {
         u: &crate::usage::Usage,
         compacts: Option<u64>,
         now_ms: u64,
+        zone: crate::log::Zone,
     ) -> Option<(String, String)> {
         use crate::usage::Cache;
+        let until = |at| crate::usage::until(zone, at);
         if !u.reported() {
             return None;
         }
         let cache = match u.cache(now_ms) {
             Cache::Warm { left_ms, .. } => {
-                let warm = format!("● warm until {}", crate::usage::until(now_ms + left_ms));
+                let warm = format!("● warm until {}", until(now_ms + left_ms));
                 match compacts {
-                    Some(at) => format!("{warm} · compacts {}", crate::usage::until(at)),
+                    Some(at) => format!("{warm} · compacts {}", until(at)),
                     None => warm,
                 }
             }
@@ -2342,6 +2344,7 @@ impl Editor {
                     &l.claude.usage,
                     crate::idlecompact::next_at(self, l, now_ms),
                     now_ms,
+                    self.interface.zone,
                 ),
                 billing: l.claude.billing,
                 build: self.workspace_store.build_dirs.get(&l.id).map(|(_, size)| *size),
@@ -7007,7 +7010,8 @@ mod tests {
     fn the_list_says_each_sessions_cache_and_cost() {
         use crate::usage::{Counts, Seen, Spent, Ttl, Usage};
         let mut u = Usage::default();
-        assert_eq!(Shown::claude_of(&u, None, 0), None);
+        let here = crate::log::Zone::Here;
+        assert_eq!(Shown::claude_of(&u, None, 0, here), None);
         u.fresh("c");
         let usage = serde_json::json!({ "cache_creation_input_tokens": 9,
                                         "cache_creation": { "ephemeral_5m_input_tokens": 9 } });
@@ -7020,16 +7024,16 @@ mod tests {
         });
         u.spent(Spent { conversation: "c".into(), total_cost: Some(0.02), at_ms: 2_000, ..Spent::default() });
         // (warm until five minutes after the request went out, whenever it's asked)
-        let at = format!("● warm until {}", crate::usage::until(1_000 + Ttl::Min5.ms()));
+        let at = format!("● warm until {}", crate::usage::until(here, 1_000 + Ttl::Min5.ms()));
         // (the cost said as what it is: the API price — #161)
         let cost = "≈ API $0.020".to_string();
-        assert_eq!(Shown::claude_of(&u, None, 61_000), Some((at.clone(), cost.clone())));
+        assert_eq!(Shown::claude_of(&u, None, 61_000, here), Some((at.clone(), cost.clone())));
         assert_eq!(
-            Shown::claude_of(&u, Some(150_000), 290_000),
-            Some((format!("{at} · compacts {}", crate::usage::until(150_000)), cost.clone()))
+            Shown::claude_of(&u, Some(150_000), 290_000, here),
+            Some((format!("{at} · compacts {}", crate::usage::until(here, 150_000)), cost.clone()))
         );
-        assert_eq!(Shown::claude_of(&u, None, 290_000), Some((at, cost.clone())));
-        assert_eq!(Shown::claude_of(&u, None, 1_000 + Ttl::Min5.ms()), Some(("◦ cold".into(), cost)));
+        assert_eq!(Shown::claude_of(&u, None, 290_000, here), Some((at, cost.clone())));
+        assert_eq!(Shown::claude_of(&u, None, 1_000 + Ttl::Min5.ms(), here), Some(("◦ cold".into(), cost)));
     }
 
     /// #111: a build-dir set per checkout (`{workspace-path-hash}`) — found where cargo looks: its variable,

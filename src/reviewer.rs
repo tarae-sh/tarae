@@ -3004,7 +3004,8 @@ mod tests {
         let u = &ed.workspace.claude.usage;
         let t = u.last_turn().expect("its turn");
         assert_eq!((t.conversation.as_str(), t.cost), ("reviewer", Some(0.12)));
-        let said = crate::usage::report("s", u, &ed.limits, &[], crate::usage::now_ms());
+        let said =
+            crate::usage::report("s", u, &ed.limits, &[], crate::usage::now_ms(), crate::log::Zone::Here);
         assert!(said.contains("| reviewer · "), "said as the reviewer's in :usage: {said}");
         let conv = u.conv.as_ref().unwrap();
         assert_eq!((conv.id.as_str(), conv.cost_so_far), ("author-c1", Some(0.0)));
@@ -3856,8 +3857,8 @@ mod tests {
         assert_eq!(whats, [crate::board::WHOLE, "board:correctness", "board:tests"], "ended whole");
         assert!(lines.iter().all(|l| l["board"] == id.as_str()), "{lines:?}");
         assert_eq!(ed.workspace.reviewer.as_ref().unwrap().cost, Some(0.24));
-        let said =
-            crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], crate::usage::now_ms());
+        let (u, now) = (&ed.workspace.claude.usage, crate::usage::now_ms());
+        let said = crate::usage::report("s", u, &ed.limits, &[], now, crate::log::Zone::Here);
         assert!(said.contains("| board:correctness · ") && said.contains("| board:tests · "), "{said}");
         // The next one: the last board's two processes, summed
         ask_in(&mut ed, repo.clone(), None, true);

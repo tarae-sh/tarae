@@ -1120,7 +1120,7 @@ fn the_named_rows_are_those_with_a_name() {
         removed: 0,
         chats: lefts_of(&[("one", a), ("three", b)]),
     };
-    let card = super::card(copy, a, "C-p");
+    let card = super::card(copy, a, "C-p", crate::log::Zone::Here);
     assert_eq!(card.named, vec![(2, 3, a.to_path_buf()), (3, 5, b.to_path_buf())]);
     let lines: Vec<&str> = card.question.split('\n').collect();
     assert!(lines[2].starts_with("one ·") && lines[3].starts_with("three ·"), "{lines:?}");

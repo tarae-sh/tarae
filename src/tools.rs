@@ -2327,6 +2327,7 @@ fn card(
     let writes = kube.then(|| ed.workspaces_writes());
     // (the turn it's for, by its start: a call of a turn stopped meanwhile gets no card in the next one)
     let turn = ed.workspace.claude.chat.as_ref().map(|c| c.started);
+    let zone = ed.interface.zone;
     ed.events.jobs().spawn(move || {
         let cluster = writes.and_then(|writes| {
             let writes = writes();
@@ -2339,7 +2340,7 @@ fn card(
             crate::kubeconfig::said(&cmd, &place)
         });
         let outside = outside.map(|b| Beyond { cluster, ..b });
-        let since = yes.map(|y| y.since(&root, &cwd, &cmd, whole));
+        let since = yes.map(|y| y.since(&root, &cwd, &cmd, whole, zone));
         let shown = match unseen.is_empty() {
             true => Ok(Vec::new()),
             false => named(&root, &cmd, &cwd, &unseen),
@@ -2835,7 +2836,8 @@ fn read_only(
             };
             let c = call.clone();
             // (it only reads: an answer to it before is said as it is — nothing it runs to compare)
-            let since = answered_before(ed, &cmd, &cwd, beyond.as_ref()).and_then(|y| y.only_reads(&cmd));
+            let since = answered_before(ed, &cmd, &cwd, beyond.as_ref())
+                .and_then(|y| y.only_reads(&cmd, ed.interface.zone));
             let what = (Vec::new(), Vec::new(), since);
             if let Err(e) = ask_with(ed, cmd, cwd, call, what, (reads, why), beyond) {
                 answer(ed, c, Err(e));
@@ -6713,8 +6715,14 @@ mod tests {
         assert!(num(run, "bytes=") < whole, "a run of 1000 lines isn't sent whole: {run}");
 
         // `:usage`: the same counts, by tool, the most bytes first, and their total
-        let report =
-            crate::usage::report(&name, &ed.workspace.claude.usage, &ed.limits, &[], crate::usage::now_ms());
+        let report = crate::usage::report(
+            &name,
+            &ed.workspace.claude.usage,
+            &ed.limits,
+            &[],
+            crate::usage::now_ms(),
+            crate::log::Zone::Here,
+        );
         let table = report.split("## Tool results\n").nth(1).unwrap_or_else(|| panic!("{report}"));
         let rows: Vec<Vec<&str>> = table
             .lines()

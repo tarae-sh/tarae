@@ -823,12 +823,12 @@ fn scan(
     Scanned { held, found, left }
 }
 
-/// `at 14:32`, or `on 10-03 at 14:32` before today.
-fn when(t: SystemTime) -> String {
-    let (_, m, d) = crate::log::day(t);
-    match crate::log::day(t) == crate::log::day(SystemTime::now()) {
-        true => format!("at {}", crate::log::clock(t)),
-        false => format!("on {m:02}-{d:02} at {}", crate::log::clock(t)),
+/// `at 14:32`, or `on 10-03 at 14:32` before today — in the interface's zone.
+fn when(t: SystemTime, zone: crate::log::Zone) -> String {
+    let (_, m, d) = zone.day(t);
+    match zone.day(t) == zone.day(SystemTime::now()) {
+        true => format!("at {}", zone.clock(t)),
+        false => format!("on {m:02}-{d:02} at {}", zone.clock(t)),
     }
 }
 
@@ -865,13 +865,13 @@ fn chats_said(left: &[Left], lead: &str, from: usize) -> (String, Vec<(usize, St
 }
 
 /// The card for a copy found.
-fn card(f: Found, root: &Path, past: &str) -> Offer {
+fn card(f: Found, root: &Path, past: &str, zone: crate::log::Zone) -> Offer {
     // (when the copy was kept — tarae may have gone on a while after)
     let lines = match (f.added, f.removed) {
         (0, 0) => "spaces or the last newline".to_string(),
         (a, r) => format!("+{a} −{r} lines"),
     };
-    let mut q = format!("Not saved when tarae ended: {lines}, kept {}.", when(f.at));
+    let mut q = format!("Not saved when tarae ended: {lines}, kept {}.", when(f.at, zone));
     // (what `y` decides, at full strength with the edits: the first paragraph)
     let mut listed = Vec::new();
     if !f.chats.is_empty() {
@@ -891,7 +891,7 @@ fn card(f: Found, root: &Path, past: &str) -> Offer {
         Disk::Same => "The file on disk is as it was then.".to_string(),
         Disk::New => "It was a new file, never saved.".to_string(),
         Disk::Conflict => "The file changed while they were made — they'd go over it.".to_string(),
-        Disk::Changed(t) => format!("The file changed since, {} — they'd go over it.", when(t)),
+        Disk::Changed(t) => format!("The file changed since, {} — they'd go over it.", when(t, zone)),
         Disk::Gone => "The file was deleted since — :w writes it again.".to_string(),
     });
     q.push_str("\nRestored, they stay unsaved — u goes back to the file.");
@@ -1323,7 +1323,7 @@ impl Editor {
         let mut left = left;
         for mut f in found {
             f.chats = std::mem::take(&mut left);
-            self.push_offer(card(f, &root, &past));
+            self.push_offer(card(f, &root, &past, self.interface.zone));
         }
         if !left.is_empty() {
             self.push_offer(chats_card(left, &past));

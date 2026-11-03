@@ -10,9 +10,10 @@
 //! The decision is here, on the main loop's clock (`clock::now`: the simulation runs it); the sound is the audio
 //! thread's (`engine.rs`, `mac.rs`), only told — the main loop never waits on it. It's made the first time a turn runs
 //! with sound on, on a worker (opening the output takes ~100 ms), and lives until quit or `editor.sound` goes off.
-//! Only for an interface whose speaker plays it (`Editor.interface.sound`: the terminal's is this machine's) — a tests'
-//! editor's has none, so no thread or device is made; a test that gives it one stands in its opener (`State.open`). A
-//! test records what would sound (`Sink::Record`).
+//! Only for an interface whose speaker plays it (`Editor.interface.sound`: the terminal's is this machine's; an attached
+//! interface's is its client's — what's decided goes across its wire, `Sink::Wire`, and its client plays it, `Played`)
+//! — a tests' editor's has none, so no thread or device is made; a test that gives it one stands in its opener
+//! (`State.open`). A test records what would sound (`Sink::Record`).
 
 mod engine;
 #[cfg(target_os = "macos")]
@@ -32,6 +33,7 @@ use std::time::Instant;
 
 use crate::document::DocId;
 use crate::editor::Editor;
+use crate::interface::Speaker;
 use engine::Msg;
 use said::{Kind, Said};
 
@@ -65,6 +67,9 @@ pub enum Sink {
     Off,
     /// The audio thread's channel.
     Device(Sender<Msg>),
+    /// An attached interface's speaker (by its number, `Interface.id`): what's decided goes across its wire
+    /// (`ToInterface::Sound`), its client plays it (`Played`).
+    Wire(u64),
     /// Kept, with when it was decided (tests, the simulation).
     #[cfg_attr(not(test), allow(dead_code))] // (the scenes' too with the track — sound-plan §5 step 4)
     Record(Vec<(Instant, Said)>),
@@ -102,9 +107,9 @@ pub fn on(ed: &Editor) -> bool {
 }
 
 /// Whether a sound can be heard now: on, and an output opened — never off macOS (none opens there yet), nor after it
-/// failed to open, nor in a test's record.
+/// failed to open, nor in a test's record — or an attached interface's speaker playing it.
 pub fn playing(ed: &Editor) -> bool {
-    on(ed) && matches!(ed.sound.sink, Sink::Device(_))
+    on(ed) && matches!(ed.sound.sink, Sink::Device(_) | Sink::Wire(_))
 }
 
 /// The buffers whose writing is heard: those the last frame drew in a pane (none while it's off) — a pane zoomed
@@ -130,8 +135,8 @@ pub fn wrote(ed: &mut Editor, text: &str) {
 
 /// An edit's text began streaming (`writing::on_delta`): the device starts now, so its first key isn't ~40 ms late.
 pub fn wake(ed: &mut Editor) {
-    if let (true, Sink::Device(tx)) = (on(ed), &ed.sound.sink) {
-        let _ = tx.send(Msg::Wake);
+    if on(ed) {
+        told(ed, Msg::Wake);
     }
 }
 
@@ -167,11 +172,86 @@ pub fn settle(ed: &mut Editor, path: &std::path::Path, before: &ropey::Rope, aft
 
 fn play(ed: &mut Editor, s: Said) {
     match &mut ed.sound.sink {
-        Sink::Device(tx) => {
-            let _ = tx.send(Msg::Play(s));
-        }
         Sink::Record(kept) => kept.push((crate::clock::now(), s)),
-        Sink::Off => {}
+        _ => told(ed, Msg::Play(s)),
+    }
+}
+
+/// `m` to what plays the sound: the audio thread here, or the interface's speaker across its wire (at once, behind
+/// no frame — `attach::flush`).
+fn told(ed: &mut Editor, m: Msg) {
+    match &ed.sound.sink {
+        Sink::Device(tx) => {
+            let _ = tx.send(m);
+        }
+        &Sink::Wire(iface) => {
+            let m = tarae_wire::ToInterface::Sound(wire_of(m));
+            ed.attach.out.push((iface, m, tarae_wire::Order::AtOnce));
+        }
+        Sink::Record(_) | Sink::Off => {}
+    }
+}
+
+/// The audio thread's message as the wire says it (`ToInterface::Sound`).
+fn wire_of(m: Msg) -> tarae_wire::Sound {
+    match m {
+        Msg::Wake => tarae_wire::Sound::Wake,
+        Msg::Play(s) => tarae_wire::Sound::Play {
+            kind: engine::KINDS.iter().position(|k| *k == s.kind).unwrap_or(0) as u8,
+            gain: s.gain,
+            seed: s.seed,
+            delay: s.delay,
+        },
+        Msg::Volume(v) => tarae_wire::Sound::Volume(v),
+    }
+}
+
+/// The wire's sound as the audio thread's message — None: a kind this build doesn't know.
+fn msg_of(s: tarae_wire::Sound) -> Option<Msg> {
+    Some(match s {
+        tarae_wire::Sound::Wake => Msg::Wake,
+        tarae_wire::Sound::Play { kind, gain, seed, delay } => {
+            let kind = *engine::KINDS.get(kind as usize)?;
+            Msg::Play(Said { kind, gain: gain.clamp(0.0, 1.0), seed, delay: delay.clamp(0.0, 1.0) })
+        }
+        tarae_wire::Sound::Volume(v) => Msg::Volume(v.min(100)),
+    })
+}
+
+/// An attached client's speaker (`client.rs`): what its host decided, played here. The audio thread is made with the
+/// first sound heard, on a thread that opens the output (~100 ms) while what comes meanwhile waits in its channel;
+/// one that can't open is logged once and what follows dropped.
+#[derive(Default)]
+pub struct Played {
+    tx: Option<Sender<Msg>>,
+    /// The host's volume, as last told.
+    volume: Option<u8>,
+}
+
+impl Played {
+    pub fn heard(&mut self, s: tarae_wire::Sound) {
+        let Some(m) = msg_of(s) else { return };
+        if let Msg::Volume(v) = m {
+            self.volume = Some(v);
+        }
+        let volume = self.volume.unwrap_or(crate::config::EditorConfig::default().sound_volume);
+        let tx = self.tx.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+            crate::event::thread("tarae-sound-in", move || match engine::spawn(volume) {
+                Ok(out) => {
+                    for m in rx {
+                        if out.send(m).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    crate::log::line("sound", "warn", &format!("the host's sound not played here: {e}"))
+                }
+            });
+            tx
+        });
+        let _ = tx.send(m);
     }
 }
 
@@ -182,8 +262,8 @@ pub fn sync(ed: &mut Editor) {
     let st = &mut ed.sound;
     if !ed.config.sound {
         st.failed = false;
-        if let Sink::Device(_) = st.sink {
-            // (its channel let go: the thread stops the device and ends)
+        if let Sink::Device(_) | Sink::Wire(_) = st.sink {
+            // (its channel let go: the thread stops the device and ends; an interface's is told nothing more)
             st.sink = Sink::Off;
         }
         return;
@@ -195,8 +275,34 @@ pub fn sync(ed: &mut Editor) {
         st.told = volume;
         return;
     }
+    // (an interface's speaker: told the volume as it attaches and as it changes; another attached, it's told anew;
+    // none that plays, let go)
+    let iface = ed.attach.current;
+    if let Sink::Wire(was) = st.sink {
+        if ed.interface.sound != Speaker::Wire {
+            st.sink = Sink::Off;
+        } else if was != iface || st.told != volume {
+            st.sink = Sink::Wire(iface);
+            st.told = volume;
+            let m = tarae_wire::ToInterface::Sound(tarae_wire::Sound::Volume(volume));
+            ed.attach.out.push((iface, m, tarae_wire::Order::AtOnce));
+        }
+        return;
+    }
     let turn = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle);
-    if !ed.interface.sound || st.opening || st.failed || !matches!(st.sink, Sink::Off) || !turn {
+    if ed.interface.sound == Speaker::Wire && turn && matches!(st.sink, Sink::Off) {
+        st.sink = Sink::Wire(iface);
+        st.told = volume;
+        let m = tarae_wire::ToInterface::Sound(tarae_wire::Sound::Volume(volume));
+        ed.attach.out.push((iface, m, tarae_wire::Order::AtOnce));
+        return;
+    }
+    if ed.interface.sound != Speaker::Here
+        || st.opening
+        || st.failed
+        || !matches!(st.sink, Sink::Off)
+        || !turn
+    {
         return;
     }
     st.opening = true;
@@ -404,7 +510,7 @@ mod tests {
             "opened for an interface with no sound"
         );
         ed.sound.open = |_| Err("no device in tests".into());
-        ed.interface.sound = true;
+        ed.interface.sound = Speaker::Here;
         sync(&mut ed);
         assert!(ed.sound.opening, "its speaker's output asked for");
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -419,5 +525,50 @@ mod tests {
         ed.config.sound = false;
         sync(&mut ed);
         assert!(matches!(ed.sound.sink, Sink::Off), "its channel kept with sound off");
+    }
+
+    /// An attached interface's speaker opens nothing here: what's decided goes to it across its wire, behind no frame —
+    /// its volume first, and again for the next interface attached; none that plays, and it's let go.
+    #[test]
+    fn an_interfaces_speaker_is_told_across_its_wire() {
+        use tarae_wire::{Order, Sound, ToInterface};
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.config.sound = true;
+        ed.config.sound_volume = 40;
+        ed.sound.sink = Sink::Off;
+        ed.sound.open = |_| panic!("no output opened here for an interface's speaker");
+        let mut c = crate::chat::Chat::new();
+        c.state = crate::chat::State::Thinking;
+        ed.workspace.claude.chat = Some(c);
+        ed.interface.sound = Speaker::Wire;
+        ed.attach.current = 3;
+        let sounds = |ed: &mut Editor| -> Vec<(u64, String)> {
+            let out = std::mem::take(&mut ed.attach.out).into_iter();
+            out.map(|(to, m, order)| {
+                assert_eq!(order, Order::AtOnce, "a sound waits for no frame");
+                let ToInterface::Sound(s) = m else { panic!("{m:?}") };
+                (to, format!("{s:?}"))
+            })
+            .collect()
+        };
+        sync(&mut ed);
+        assert!(matches!(ed.sound.sink, Sink::Wire(3)) && !ed.sound.opening);
+        assert_eq!(sounds(&mut ed), [(3, format!("{:?}", Sound::Volume(40)))]);
+        settle(&mut ed, std::path::Path::new("/nowhere"), &"a".into(), &"b".into());
+        wake(&mut ed);
+        assert_eq!(sounds(&mut ed), [(3, format!("{:?}", Sound::Wake))], "nothing in sight settles");
+        ed.attach.current = 4;
+        sync(&mut ed);
+        assert_eq!(sounds(&mut ed), [(4, format!("{:?}", Sound::Volume(40)))], "the next one told anew");
+        ed.interface.sound = Speaker::None;
+        sync(&mut ed);
+        assert!(matches!(ed.sound.sink, Sink::Off));
+        // (the wire's words for each kind come back as they went)
+        for kind in engine::KINDS {
+            let s = Said { kind, gain: 0.5, seed: 7, delay: 0.25 };
+            let Some(Msg::Play(back)) = msg_of(wire_of(Msg::Play(s))) else { panic!() };
+            assert_eq!(back, s);
+        }
+        assert!(msg_of(Sound::Play { kind: 9, gain: 1.0, seed: 0, delay: 0.0 }).is_none(), "an unknown kind");
     }
 }

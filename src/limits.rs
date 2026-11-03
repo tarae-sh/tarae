@@ -275,8 +275,8 @@ pub fn used(r: &Reading) -> String {
 }
 
 /// `weekly 93 % · resets Tue 10:00` — a window whole, as the chat's row says it given room.
-pub fn said(r: &Reading) -> String {
-    let resets = r.resets_at_ms.map(|at| format!(" · resets {}", resets(at))).unwrap_or_default();
+pub fn said(r: &Reading, zone: crate::log::Zone) -> String {
+    let resets = r.resets_at_ms.map(|at| format!(" · resets {}", resets(zone, at))).unwrap_or_default();
     format!("{} {}{resets}", label(&r.window), used(r))
 }
 
@@ -285,9 +285,9 @@ pub fn pressing(r: &Reading) -> bool {
     matches!(r.status, Some(Status::Warning | Status::Rejected)) || r.percent.is_some_and(|p| p >= 80)
 }
 
-/// `Tue 10:00` — when a window resets, local time.
-pub fn resets(at_ms: u64) -> String {
-    crate::log::day_clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at_ms))
+/// `Tue 10:00` — when a window resets, in the interface's zone (`Facts.zone`).
+pub fn resets(zone: crate::log::Zone, at_ms: u64) -> String {
+    zone.day_clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at_ms))
 }
 
 /// A `rate_limit_event` line, read at `at_ms` — None: not one, or no window named.

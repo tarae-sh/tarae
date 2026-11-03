@@ -385,8 +385,9 @@ impl Answered {
     /// What changed since this answer in what `cmd` runs — on a worker. `outside`: it asks past the sandbox
     /// (outside it, or with a socket — Docker's is root's), where the project's whole diff is shown; in it,
     /// the diff of what it runs (scripts, a pack's `entry` files, build files) and the rest named.
-    pub fn since(&self, root: &Path, cwd: &Path, cmd: &str, outside: bool) -> Since {
-        if let Some(s) = self.only_reads(cmd) {
+    /// `zone`: where the yes's time is told (`Facts.zone`).
+    pub fn since(&self, root: &Path, cwd: &Path, cmd: &str, outside: bool, zone: crate::log::Zone) -> Since {
+        if let Some(s) = self.only_reads(cmd, zone) {
             return s;
         }
         let entry = entry_files(cmd);
@@ -471,20 +472,27 @@ impl Answered {
             // (it runs a script now and didn't then, or the other way: not the same command's files)
             _ => Changed::Unknown("it runs other files than it did".into()),
         };
-        Since { script_changed, ..self.said(cmd, said, changed, !touched) }
+        Since { script_changed, ..self.said(cmd, said, changed, !touched, zone) }
     }
 
     /// `since` with no git (the main thread's): the answer was to a command that only reads, and `cmd` only
     /// reads — it runs nothing of the project; None otherwise.
-    pub fn only_reads(&self, cmd: &str) -> Option<Since> {
+    pub fn only_reads(&self, cmd: &str, zone: crate::log::Zone) -> Option<Since> {
         let reads = matches!(self.kept, Kept::Reads) && crate::readonly::read_only(cmd);
-        reads.then(|| self.said(cmd, vec!["it only reads".into()], Changed::Nothing, true))
+        reads.then(|| self.said(cmd, vec!["it only reads".into()], Changed::Nothing, true, zone))
     }
 
-    fn said(&self, cmd: &str, said: Vec<String>, changed: Changed, quiet: bool) -> Since {
+    fn said(
+        &self,
+        cmd: &str,
+        said: Vec<String>,
+        changed: Changed,
+        quiet: bool,
+        zone: crate::log::Zone,
+    ) -> Since {
         let was = (self.cmd.trim() != cmd.trim()).then(|| self.cmd.clone());
         let unchanged = changed == Changed::Nothing && quiet;
-        let at = crate::log::clock(self.at);
+        let at = zone.clock(self.at);
         Since {
             card: self.card,
             answer: self.answer,

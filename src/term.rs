@@ -57,9 +57,9 @@ pub fn run(editor: &mut Editor, mut iface: Option<Interface>) -> Result<Option<I
 }
 
 /// What a host with no interface attached says of one (`tarae --host`): nothing — no ground (meok), no twins, no
-/// sound or opener; its clipboard this machine's way, for now.
+/// clipboard, sound or opener; this machine's zone.
 pub fn no_interface() -> Facts {
-    Facts { clipboard: crate::clipboard::Env::here(), presents_late: true, ..Facts::default() }
+    Facts { clipboard: crate::clipboard::Clip::None, presents_late: true, ..Facts::default() }
 }
 
 /// The terminal tarae runs in, as the interface it draws for (`interface.rs`) — what it says of itself read here,
@@ -72,9 +72,10 @@ pub fn terminal(light: Option<bool>) -> Interface {
         light: light.or_else(|| light_background(var, query_background)),
         undercurl: undercurl_in(var),
         zellij: crate::zellij::inside(),
-        clipboard: crate::clipboard::Env::here(),
-        sound: true,
-        opener: Some(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
+        clipboard: crate::clipboard::Clip::Here(crate::clipboard::Env::here()),
+        sound: crate::interface::Speaker::Here,
+        opener: crate::interface::Opener::Here(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
+        zone: crate::log::Zone::Here,
         // (what's written to it is on its screen)
         presents_late: false,
     };
@@ -248,6 +249,8 @@ fn event_loop(editor: &mut Editor, iface: &mut Option<Interface>) -> Result<()> 
         if draw {
             present(editor, iface, &mut frame)?;
         }
+        // (what's for the interface's machine — a question, a sound — behind the frame drawn: `attach::flush`)
+        crate::attach::flush(editor, iface);
         // After only parts went out, the whole screen goes again once input rests: what a terminal leaves of
         // its own (Terminal.app, measured: a cursor drawn past its cell next to a wide character, a line up)
         // or anything else that drifted is gone a moment later — the next frame used to wipe it anyway. Its time
@@ -301,6 +304,8 @@ fn detached_batch(editor: &mut Editor) {
     };
     editor.features_turn();
     handle_batch(editor, ev, batch_until());
+    // (nobody to hear a sound)
+    editor.attach.out.clear();
     editor.stall.begin(crate::stall::Label::Named("the batch's end"));
     editor.drawn_by.clear();
     editor.events.started();
@@ -646,8 +651,7 @@ pub(crate) fn present(editor: &mut Editor, iface: &mut Interface, frame: &mut Ve
 
 /// `present` for a link that takes frames whole (a wire, `attach::Wire`): the frame handed to its writer, which finds
 /// what changed off the main loop against what it last sent — nothing here waits on the interface. It's presented once
-/// the interface says so (its `Ack`). Its OSC 52 is the interface's own to write (the remote plan's step 3, piece 4):
-/// until then a copy goes this machine's way (`no_interface`'s clipboard).
+/// the interface says so (its `Ack`). Its OSC 52 is its client's own to write (a copy is asked of it: `attach::ask`).
 fn hand(editor: &mut Editor, iface: &mut Interface, frame: &mut Vec<u8>, w: u16, h: u16) -> io::Result<()> {
     let whole = crate::interface::Whole {
         n: editor.frames,
@@ -4257,10 +4261,10 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
         queue!(out, MoveTo(x0 as u16, y as u16))?;
         apply(out, card)?;
         queue!(out, Spaces(w), MoveTo((x0 + crate::chrome::PAD) as u16, y as u16))?;
-        let ended = c.ended.map(|e| format!("ended {}", crate::log::clock(e)));
+        let ended = c.ended.map(|e| format!("ended {}", editor.interface.zone.clock(e)));
         let right = ended.as_ref().map_or(0, |e| e.width() + 2);
         apply(out, faint)?;
-        queue!(out, Print(format!("{}  ", crate::log::clock(c.at))))?;
+        queue!(out, Print(format!("{}  ", editor.interface.zone.clock(c.at))))?;
         let (glyph, st) = if c.ended.is_none() { ("▲ ", warn) } else { ("· ", faint) };
         apply(out, st)?;
         queue!(out, Print(glyph))?;
@@ -16963,7 +16967,7 @@ fn rail_risk(editor: &Editor, r: &crate::codereview::CodeReview, w: usize) -> Ve
     let Some(rv) = this else { return rows };
     if rv.board.is_some() {
         rows.extend(rail_board(editor, rv, w));
-        rows.extend(rail_read_at(rv, r, w));
+        rows.extend(rail_read_at(rv, r, w, editor.interface.zone));
         return rows;
     }
     let mut row = vec![tone(Tone::Reviewer, "reviewer".to_string())];
@@ -17017,7 +17021,7 @@ fn rail_risk(editor: &Editor, r: &crate::codereview::CodeReview, w: usize) -> Ve
     if let Some(first) = rv.verdict.lines().map(str::trim).find(|l| !l.is_empty()) {
         rows.push(vec![tone(Tone::Dim, format!("“{first}”"))]);
     }
-    rows.extend(rail_read_at(rv, r, w));
+    rows.extend(rail_read_at(rv, r, w, editor.interface.zone));
     rows
 }
 
@@ -17028,6 +17032,7 @@ fn rail_read_at(
     rv: &crate::reviewer::Reviewer,
     r: &crate::codereview::CodeReview,
     w: usize,
+    zone: crate::log::Zone,
 ) -> Vec<Vec<(Tone, Fit)>> {
     // (its files changed on disk since its snapshot, and this review's files it didn't have changed then)
     // (none known — no snapshot's digests: nothing said of them)
@@ -17037,8 +17042,7 @@ fn rail_read_at(
     if !other && changed == 0 {
         return Vec::new();
     }
-    let stamp = crate::log::stamp(rv.at);
-    let when = stamp.get(11..16).unwrap_or(&stamp);
+    let when = zone.clock(rv.at);
     let read = format!("read {} at {when}", rv.label);
     let since = format!("{} changed since", crate::nav::count(changed, "file"));
     match changed {
@@ -18607,8 +18611,8 @@ fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
     let compacts = crate::idlecompact::next_at(editor, &editor.workspace, now_ms);
     let s = Style::default();
     let u = &editor.workspace.claude.usage;
-    let usage = usage_spans(u, compacts, &editor.limits, editor.workspace.claude.billing, now_ms, w, [s; 4])
-        .is_some();
+    let (billing, zone) = (editor.workspace.claude.billing, editor.interface.zone);
+    let usage = usage_spans(u, compacts, &editor.limits, billing, (now_ms, zone), w, [s; 4]).is_some();
     // (its top line, the transcript, the input's line, its rows, the hint row, the usage row — `draw_chat`)
     let rule = lay.body_h.checked_sub(input_h + 2 + usize::from(usage))?;
     let (x, w) = match lay.edit_w {
@@ -19113,7 +19117,7 @@ fn draw_chat(
         crate::idlecompact::next_at(editor, &editor.workspace, now_ms),
         &editor.limits,
         editor.workspace.claude.billing,
-        now_ms,
+        (now_ms, editor.interface.zone),
         w,
         [accent, dim, faint, warn_fg],
     );
@@ -19959,12 +19963,13 @@ fn usage_spans(
     compacts: Option<u64>,
     limits: &crate::limits::Limits,
     billing: crate::billing::Billing,
-    now_ms: u64,
+    (now_ms, zone): (u64, crate::log::Zone),
     w: usize,
     [accent, dim, faint, warn]: [Style; 4],
 ) -> Option<Vec<crate::markdown::Span>> {
     use crate::markdown::Span;
-    use crate::usage::{Cache, count, dollars, tokens, until};
+    use crate::usage::{Cache, count, dollars, tokens};
+    let until = |at| crate::usage::until(zone, at);
     let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let conv = u.conv.as_ref();
     let turn = conv.and_then(|c| u.turns.iter().rev().find(|t| t.conversation == c.id));
@@ -20005,7 +20010,7 @@ fn usage_spans(
             sp(crate::limits::used(r), warn),
         ];
         if let Some(at) = r.resets_at_ms.filter(|_| long) {
-            v.extend([sp(" · resets ".into(), faint), sp(crate::limits::resets(at), dim)]);
+            v.extend([sp(" · resets ".into(), faint), sp(crate::limits::resets(zone, at), dim)]);
         }
         v
     };
@@ -20104,7 +20109,7 @@ pub(crate) fn usage_row_for_test(ed: &Editor, w: usize) -> Vec<crate::markdown::
         crate::idlecompact::next_at(ed, &ed.workspace, now),
         &ed.limits,
         ed.workspace.claude.billing,
-        now,
+        (now, ed.interface.zone),
         w,
         [Style::default(); 4],
     )
@@ -23611,7 +23616,7 @@ fn note_lines(
             let asked = m.asked.as_deref().map_or("an answer".into(), crate::chatnotes::plain_words);
             said.push_str(&format!(" · {asked}"));
             if let Some(o) = &m.answer {
-                said.push_str(&format!(" {}", answer_time(o.at)));
+                said.push_str(&format!(" {}", answer_time(editor.interface.zone, o.at)));
             }
         }
         out.push(Vec::new());
@@ -23681,9 +23686,9 @@ fn fit_spans(spans: Vec<crate::markdown::Span>, width: usize) -> Vec<crate::mark
 /// The least of a note's words a line end shows after a doubt: fewer, the doubt alone.
 const NOTE_WORDS_MIN: usize = 4;
 
-/// When an answer was given, as its head says it: its local time (`14:02`).
-fn answer_time(at: u64) -> String {
-    crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at))
+/// When an answer was given, as its head says it: in the interface's zone (`14:02`).
+fn answer_time(zone: crate::log::Zone, at: u64) -> String {
+    zone.clock(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at))
 }
 
 /// One note's thread as card rows, `inner` wide — who said it (Claude in accent, you dim), its words as the chat renders
@@ -23824,7 +23829,7 @@ fn note_head(
             // answer's turn, focus F0)
             let mut tail = Vec::new();
             if let Some(o) = &n.answer {
-                tail.push(sp(&format!(" · {}", answer_time(o.at)), faint));
+                tail.push(sp(&format!(" · {}", answer_time(editor.interface.zone, o.at)), faint));
             }
             tail.extend(saw.map(|w| sp(&format!(" · {w}"), faint)));
             // (its question one row, rendered as the chat's, cut with `…` and whole on its cut card — what follows it
@@ -25581,7 +25586,8 @@ mod tests {
         use crate::billing::Billing;
         let (u, limits) = (crate::usage::Usage::default(), crate::limits::Limits::default());
         let text = |b, w| {
-            let spans = usage_spans(&u, None, &limits, b, 0, w, [Style::default(); 4]);
+            let spans =
+                usage_spans(&u, None, &limits, b, (0, crate::log::Zone::Here), w, [Style::default(); 4]);
             spans.map(|v| v.into_iter().map(|s| s.text).collect::<String>())
         };
         assert_eq!(text(Billing::Api, 80).as_deref(), Some("api"));
@@ -25614,7 +25620,8 @@ mod tests {
             };
             limits.seen(Report { readings: vec![weekly], ..Report::default() });
             let styles = [Style::default(), Style::default(), Style::default(), warn];
-            usage_spans(&u, None, &limits, crate::billing::Billing::Subscription, now, 80, styles)
+            let here = (now, crate::log::Zone::Here);
+            usage_spans(&u, None, &limits, crate::billing::Billing::Subscription, here, 80, styles)
         };
         assert_eq!(row(41, Status::Allowed), None, "41 %: nothing on the row");
         let pressing = row(93, Status::Allowed).expect("93 %: the row");
@@ -30941,6 +30948,7 @@ mod tests {
     /// said as it's given, not a time that passed; a time still to come; a measurement under a millisecond; a mark
     /// that counts whole seconds, then minutes, and wakes only as that changes; `run_duration` itself.
     const HAND_TIMES: &[(&str, usize)] = &[
+        ("attach.rs", 2),                 // limits as given: an interface's answer waited for
         ("chat.rs", 1),                   // a tool call's own `wait` argument, as Claude gave it
         ("client.rs", 1),                 // a limit as given: the host's `Welcome` waited for
         ("commands.rs", 1),               // a plural

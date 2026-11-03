@@ -7654,8 +7654,8 @@ mod tests {
         let calls = turn.calls.as_ref().expect("counted");
         assert_eq!((calls.sums.calls, calls.sums.reread, calls.sums.read_only), (3, 1, 1));
         assert_eq!(calls.programs.get("grep"), Some(&1));
-        let report =
-            crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], crate::usage::now_ms());
+        let (u, now) = (&ed.workspace.claude.usage, crate::usage::now_ms());
+        let report = crate::usage::report("s", u, &ed.limits, &[], now, crate::log::Zone::Here);
         assert!(report.contains("## Tool calls"), "{report}");
         assert!(report.contains("By tool: Read 2 · run 1"), "{report}");
         assert!(

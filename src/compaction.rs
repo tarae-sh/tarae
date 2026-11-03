@@ -150,10 +150,12 @@ impl Compacted {
         json!({ "count": self.count, "last": last, "unseen": self.unseen })
     }
 
-    /// The text form's: `2× · last 14:32 automatic, 812k tokens before`.
+    /// The text form's: `2× · last 14:32 automatic, 812k tokens before` — `tarae state` is read here, this
+    /// machine's time.
     pub fn text(&self) -> String {
+        let at = |ms| crate::usage::until(crate::log::Zone::Here, ms);
         match &self.last {
-            Some(k) => format!("{}× · last {} {}", self.count, crate::usage::until(k.at_ms), k.how()),
+            Some(k) => format!("{}× · last {} {}", self.count, at(k.at_ms), k.how()),
             None => format!("{}×", self.count),
         }
     }
@@ -552,7 +554,7 @@ mod tests {
         assert!(at.abs_diff(crate::usage::now_ms()) < 60_000, "{at}");
         assert_eq!(k["unseen"], false, "in front: seen");
         let text = state.text();
-        let clock = crate::usage::until(at);
+        let clock = crate::usage::until(crate::log::Zone::Here, at);
         assert!(
             text.contains(&format!("compacted s0: 2× · last {clock} manual, 6.6k tokens before")),
             "{text}"

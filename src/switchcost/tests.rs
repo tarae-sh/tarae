@@ -33,7 +33,8 @@ fn a_warm_cache_onto_the_key_costs_its_context_at_the_hour_long_write() {
     let until = NOW - 60_000 + Ttl::Hour1.ms();
     let c = cost(&warm, NOW, Billing::Api, "claude-opus-5-5", prices);
     assert_eq!(c, Cost::Warm { tokens: 150_000, dollars: Some(1.2), until_ms: until });
-    assert_eq!(c.said(Billing::Api), "rewrites ≈ $1.20 of cached context (150k tokens)");
+    let here = crate::log::Zone::Here;
+    assert_eq!(c.said(Billing::Api, here), "rewrites ≈ $1.20 of cached context (150k tokens)");
     let plan = cost(&warm, NOW, Billing::Subscription, "claude-opus-5-5", prices);
     assert_eq!(
         plan,
@@ -41,18 +42,20 @@ fn a_warm_cache_onto_the_key_costs_its_context_at_the_hour_long_write() {
         "the plan: never dollars"
     );
     assert_eq!(
-        plan.said(Billing::Subscription),
+        plan.said(Billing::Subscription, here),
         "rewrites ≈ 150k tokens of cached context, toward your plan's limits"
     );
     let unknown = cost(&warm, NOW, Billing::Api, "claude-someday-9", prices);
-    assert!(unknown.said(Billing::Api).contains("150k tokens of cached context (no price for this model)"));
+    assert!(
+        unknown.said(Billing::Api, here).contains("150k tokens of cached context (no price for this model)")
+    );
     // Cold since its TTL ran out: staying writes it again too
     let cold = conversation("claude-opus-5-5", 150_000, NOW, 2 * Ttl::Hour1.ms());
     let gone = NOW - 2 * Ttl::Hour1.ms() + Ttl::Hour1.ms();
     assert_eq!(cost(&cold, NOW, Billing::Api, "claude-opus-5-5", prices), Cost::Cold { since_ms: gone });
     assert!(
         Cost::Cold { since_ms: gone }
-            .said(Billing::Api)
+            .said(Billing::Api, here)
             .starts_with("no extra cost — the cache went cold at ")
     );
     assert_eq!(cost(&Usage::default(), NOW, Billing::Api, "claude-opus-5-5", prices), Cost::Nothing);

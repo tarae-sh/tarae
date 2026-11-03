@@ -33,8 +33,14 @@ pub struct Line {
 pub const LABEL_W: usize = 9;
 
 /// What row `r` of `rows` is, a line each, the long ones wrapped to `width` (the label's column kept): `checks` are
-/// tarae's (those about it said), `peak` the most memory it took since `:procs` opened.
-pub fn lines(r: &Row, rows: &[Row], checks: &[Check], peak: Option<u64>, width: usize) -> Vec<Line> {
+/// tarae's (those about it said), `peak` the most memory it took since `:procs` opened; times in `zone`.
+pub fn lines(
+    r: &Row,
+    rows: &[Row],
+    checks: &[Check],
+    (peak, zone): (Option<u64>, crate::log::Zone),
+    width: usize,
+) -> Vec<Line> {
     let room = width.saturating_sub(LABEL_W).max(16);
     let mut out = Vec::new();
     let mut put = |label: &'static str, text: String, tone: Tone, wrap: bool| {
@@ -44,7 +50,7 @@ pub fn lines(r: &Row, rows: &[Row], checks: &[Check], peak: Option<u64>, width: 
         }
     };
     if let Some(at) = r.gone {
-        put("gone", format!("it has ended — not seen since {}", crate::log::clock(at)), Tone::Warn, true);
+        put("gone", format!("it has ended — not seen since {}", zone.clock(at)), Tone::Warn, true);
     }
     put("for", for_words(r), Tone::Plain, true);
     let process = r.pid != 0;
@@ -76,7 +82,7 @@ pub fn lines(r: &Row, rows: &[Row], checks: &[Check], peak: Option<u64>, width: 
         (Kind::Queued(_), _) => Some("waiting in line — no process yet".to_string()),
         (_, Some(d)) => {
             let since = SystemTime::UNIX_EPOCH + Duration::from_secs(r.started);
-            Some(format!("{} · since {}", age(d), crate::log::clock(since)))
+            Some(format!("{} · since {}", age(d), zone.clock(since)))
         }
         _ => None,
     };
@@ -105,7 +111,7 @@ pub fn lines(r: &Row, rows: &[Row], checks: &[Check], peak: Option<u64>, width: 
     for c in checks.iter().rev().filter(|c| process && c.pid == r.pid) {
         match c.ended {
             None => put("check", format!("▲ {} — {}", c.what, c.did), Tone::Warn, true),
-            Some(e) => put("check", format!("{} — ended {}", c.what, crate::log::clock(e)), Tone::Dim, true),
+            Some(e) => put("check", format!("{} — ended {}", c.what, zone.clock(e)), Tone::Dim, true),
         }
     }
     out
@@ -256,7 +262,7 @@ pub fn of(ed: &Editor, width: usize) -> Option<(Of, Painted)> {
         return Some(((0, 0, String::new()), (text, paint)));
     };
     let peak = p.peak.get(&r.key()).copied();
-    let lines = lines(r, &ed.procs.rows, &ed.procs.checks, peak, width);
+    let lines = lines(r, &ed.procs.rows, &ed.procs.checks, (peak, ed.interface.zone), width);
     Some(((r.pid, r.started, r.title.clone()), text(&lines)))
 }
 

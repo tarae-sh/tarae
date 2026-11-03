@@ -139,7 +139,7 @@ pub fn cost(u: &Usage, now_ms: u64, to: Billing, model: &str, prices: &[Price]) 
 impl Cost {
     /// As a card says it: `rewrites ≈ $1.20 of cached context (150k tokens)` · `rewrites ≈ 150k tokens of cached
     /// context, toward your plan's limits` · `no extra cost — the cache went cold at 14:32` …
-    pub fn said(self, to: Billing) -> String {
+    pub fn said(self, to: Billing, zone: crate::log::Zone) -> String {
         match self {
             Cost::Warm { tokens, dollars: Some(d), .. } => {
                 format!(
@@ -159,7 +159,7 @@ impl Cost {
                 ),
             },
             Cost::Cold { since_ms } => {
-                format!("no extra cost — the cache went cold at {}", crate::usage::until(since_ms))
+                format!("no extra cost — the cache went cold at {}", crate::usage::until(zone, since_ms))
             }
             Cost::Nothing => "no extra cost — nothing is cached yet".into(),
             Cost::NotReported => "the cache isn't reported — what it costs can't be said".into(),
@@ -168,12 +168,12 @@ impl Cost {
     }
 
     /// As the line over the chat's input says it, short: `rewrites ≈ $1.20` · `rewrites ≈ 150k tokens` …
-    fn short(self) -> String {
+    fn short(self, zone: crate::log::Zone) -> String {
         match self {
             Cost::Warm { dollars: Some(d), .. } => format!("rewrites ≈ {}", crate::usage::dollars(d)),
             Cost::Warm { tokens, .. } => format!("rewrites ≈ {} tokens", crate::usage::tokens(tokens)),
             Cost::Cold { since_ms } => {
-                format!("costs nothing extra — cold since {}", crate::usage::until(since_ms))
+                format!("costs nothing extra — cold since {}", crate::usage::until(zone, since_ms))
             }
             Cost::Nothing => "costs nothing extra".into(),
             Cost::NotReported => "costs what can't be said — the cache isn't reported".into(),
@@ -264,7 +264,9 @@ impl Editor {
     /// What a toast after a switch ends with: ` — next message rewrites ≈ $1.20` — empty when there's nothing to
     /// say (no conversation, or back where it was).
     pub fn switched_said(&self) -> String {
-        self.switch_now().map(|s| format!(" — next message {}", s.what())).unwrap_or_default()
+        self.switch_now()
+            .map(|s| format!(" — next message {}", s.what(self.interface.zone)))
+            .unwrap_or_default()
     }
 
     /// The line over the chat's input after a switch, until the next message goes: `next message rewrites ≈
@@ -281,7 +283,11 @@ impl Editor {
     pub fn switch_parts(&self) -> Option<(String, String, &'static str)> {
         let s = self.switch_now()?;
         let back = if matches!(s.cost, Cost::Warm { .. }) { "switching back costs nothing" } else { "" };
-        Some((format!("next message {}", s.what()), format!("({} changed)", s.changed.join(" and ")), back))
+        Some((
+            format!("next message {}", s.what(self.interface.zone)),
+            format!("({} changed)", s.changed.join(" and ")),
+            back,
+        ))
     }
 
     fn switch_now(&self) -> Option<Switch> {
@@ -300,10 +306,10 @@ pub struct Switch {
 
 impl Switch {
     /// `rewrites ≈ $1.20` · `may rewrite ≈ 150k tokens` · `keeps the cache` …
-    fn what(&self) -> String {
+    fn what(&self, zone: crate::log::Zone) -> String {
         match self.maybe {
-            true => self.cost.short().replacen("rewrites", "may rewrite", 1),
-            false => self.cost.short(),
+            true => self.cost.short(zone).replacen("rewrites", "may rewrite", 1),
+            false => self.cost.short(zone),
         }
     }
 }

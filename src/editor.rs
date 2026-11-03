@@ -7782,7 +7782,7 @@ mod tests {
         };
         // (the last request: 8 in + 7,924 read + 201 written, of haiku's 200k; warm for the hour its 1h writes
         // got, said by the clock)
-        let at = crate::usage::until(ed.workspace.claude.usage.cold_at().unwrap());
+        let at = crate::usage::until(crate::log::Zone::Here, ed.workspace.claude.usage.cold_at().unwrap());
         let wide = rows(&mut ed, 240);
         let footer = wide.iter().find(|r| r.contains("● warm")).unwrap_or_else(|| panic!("{wide:#?}"));
         let long = format!(
@@ -7822,8 +7822,12 @@ mod tests {
         assert!(s.text().contains("usage s0: cache warm 60m (1h) · context 4% of 200k"), "{}", s.text());
         assert!(s.text().contains("total $0.018 in 1 turn · ≈ API price"), "{}", s.text());
         // The session list: its total, said as what it is
-        let shown =
-            crate::worktree::Shown::claude_of(&ed.workspace.claude.usage, None, crate::usage::now_ms());
+        let shown = crate::worktree::Shown::claude_of(
+            &ed.workspace.claude.usage,
+            None,
+            crate::usage::now_ms(),
+            crate::log::Zone::Here,
+        );
         assert_eq!(shown.map(|s| s.1).as_deref(), Some("≈ API $0.018"));
     }
 

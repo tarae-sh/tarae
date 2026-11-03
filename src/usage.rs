@@ -799,9 +799,9 @@ pub fn message_sent(session: &crate::log::Session, bytes: usize, context: usize)
     size_line(session, "message", bytes, &format!(" context={context}"));
 }
 
-/// The turns of every session that ended today (local time).
-pub fn today<'a>(all: impl Iterator<Item = &'a Usage>, now_ms: u64) -> Totals {
-    let day = |ms: u64| crate::log::day(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+/// The turns of every session that ended today (the interface's day).
+pub fn today<'a>(all: impl Iterator<Item = &'a Usage>, now_ms: u64, zone: crate::log::Zone) -> Totals {
+    let day = |ms: u64| zone.day(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
     let today = day(now_ms);
     let mut t = Totals::default();
     for turn in all.flat_map(|u| &u.turns).filter(|t| day(t.at_ms) == today) {
@@ -837,10 +837,10 @@ pub fn left(ms: u64) -> String {
     format!("{}m", ms.div_ceil(60_000))
 }
 
-/// When a cache warm until `at_ms` goes cold, local time (`14:32`) — what the footer, the list and `:usage`
-/// say: never stale while nothing redraws, as a countdown would be.
-pub fn until(at_ms: u64) -> String {
-    crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at_ms))
+/// When a cache warm until `at_ms` goes cold, in the interface's zone (`14:32`) — what the footer, the list and
+/// `:usage` say: never stale while nothing redraws, as a countdown would be.
+pub fn until(zone: crate::log::Zone, at_ms: u64) -> String {
+    zone.clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at_ms))
 }
 
 /// `1 turn` · `3 turns`.
@@ -866,9 +866,10 @@ pub fn model_short(m: &str) -> String {
 // ── `:usage` ────────────────────────────────────────────────────────────────
 
 /// `:usage`'s plan limits (the account's) and the credential the session's claude reported it runs on.
-fn limits_section(u: &Usage, limits: &crate::limits::Limits, now_ms: u64) -> String {
-    use crate::limits::{Answer, label, resets, used};
-    let clock = |ms: u64| crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+fn limits_section(u: &Usage, limits: &crate::limits::Limits, now_ms: u64, zone: crate::log::Zone) -> String {
+    use crate::limits::{Answer, label, used};
+    let resets = |at| crate::limits::resets(zone, at);
+    let clock = |ms: u64| zone.clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
     let mut out = String::from("## Plan limits\n\n");
     let known = limits.known(now_ms);
     if known.is_empty() {
@@ -940,8 +941,10 @@ pub fn report(
     limits: &crate::limits::Limits,
     all: &[(&str, &Usage)],
     now_ms: u64,
+    zone: crate::log::Zone,
 ) -> String {
-    let clock = |ms: u64| crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+    let until = |at| until(zone, at);
+    let clock = |ms: u64| zone.clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
     let pct = |n: u64, w: u64| n * 100 / w.max(1);
     let mut out = format!("# Claude usage — {name}\n\n");
     let cache = match u.cache(now_ms) {
@@ -958,7 +961,7 @@ pub fn report(
     };
     out += &format!("As of {} · {cache} · {context}\n\n", clock(now_ms));
     out += &format!("{}\n\n", price_note(u.cli.as_deref()));
-    out += &limits_section(u, limits, now_ms);
+    out += &limits_section(u, limits, now_ms, zone);
     out += "\n## Turns\n\n";
     if u.turns.is_empty() {
         out += "No turn has ended yet.\n";
@@ -996,7 +999,7 @@ pub fn report(
             2,
         );
     }
-    out += &calls_section(u);
+    out += &calls_section(u, zone);
     if let Some(c) = &u.conv {
         out += "\n## Every request starts with\n\n";
         out += &match &c.fixed {
@@ -1015,7 +1018,7 @@ pub fn report(
         out += "\n## Tool results\n\n";
         out += &tool_table(&c.tool_results);
     }
-    let today_all = today(all.iter().map(|(_, u)| *u), now_ms);
+    let today_all = today(all.iter().map(|(_, u)| *u), now_ms, zone);
     out += "\n## Today\n\n";
     if today_all.turns == 0 {
         out += "Nothing yet today.\n";
@@ -1024,7 +1027,7 @@ pub fn report(
         if all.len() > 1 {
             out += "\n";
             for (n, u) in all {
-                let t = today(std::iter::once(*u), now_ms);
+                let t = today(std::iter::once(*u), now_ms, zone);
                 if t.turns > 0 {
                     out += &format!("- {n}: {} in {}\n", t.cost_said(), turns(t.turns));
                 }
@@ -1037,14 +1040,14 @@ pub fn report(
 /// `:usage`'s tool calls (`calls.rs`): a row per turn that counted them and the total — calls a request, what
 /// a request carried, where the time went, the calls wasted, the runs that only read — then the calls by tool
 /// and the read-only runs by program. Nothing when no turn counted calls.
-fn calls_section(u: &Usage) -> String {
+fn calls_section(u: &Usage, zone: crate::log::Zone) -> String {
     use crate::calls::Sums;
     let counted: Vec<(&Turn, &crate::calls::Calls)> =
         u.turns.iter().filter_map(|t| Some((t, t.calls.as_ref()?))).collect();
     if counted.is_empty() {
         return String::new();
     }
-    let clock = |ms: u64| crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
+    let clock = |ms: u64| zone.clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
     let secs = |ms: u64| crate::term::run_duration(std::time::Duration::from_millis(ms));
     let cells = |s: &Sums| {
         vec![
@@ -1164,7 +1167,7 @@ fn report_now(ed: &Editor, sid: crate::event::WorkspaceId) -> Option<String> {
     let sessions = ed.sessions_in_order();
     let all: Vec<(&str, &Usage)> = sessions.iter().map(|l| (l.label(), &l.claude.usage)).collect();
     let l = sessions.iter().find(|l| l.id == sid)?;
-    Some(report(l.label(), &l.claude.usage, &ed.limits, &all, now_ms()))
+    Some(report(l.label(), &l.claude.usage, &ed.limits, &all, now_ms(), ed.interface.zone))
 }
 
 /// `:usage` — the front session's usage in a buffer of its own (Markdown, nothing to save); said again as

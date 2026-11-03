@@ -484,7 +484,7 @@ impl Editor {
         {
             let note = format!(
                 "Its Claude runs on your API key until {} (a on the limit card).",
-                crate::limits::resets(until)
+                crate::limits::resets(self.interface.zone, until)
             );
             return (Billing::Api, None, Some(note));
         }
@@ -501,11 +501,16 @@ impl Editor {
             {
                 let first =
                     r.status == Some(Status::Rejected) || r.percent.is_some_and(|p| p >= LIMIT_SUGGEST);
-                (if first { Billing::Api } else { Billing::Subscription }, Some(said(r)), None)
+                (
+                    if first { Billing::Api } else { Billing::Subscription },
+                    Some(said(r, self.interface.zone)),
+                    None,
+                )
             }
             _ => {
                 let five = self.limits.get("five_hour", now).filter(|r| crate::limits::pressing(r));
-                let note = five.map(|r| format!("The plan's {} — wait for it to pass.", said(r)));
+                let note = five
+                    .map(|r| format!("The plan's {} — wait for it to pass.", said(r, self.interface.zone)));
                 let unusable = match &self.api_ready {
                     Some(Err(e)) => Some(e),
                     _ => None,
@@ -693,13 +698,13 @@ impl Editor {
         };
         let mut q = format!(
             "Its conversation goes on as it is — resumed {on}.\n\nThe next message {}",
-            cost.said(to)
+            cost.said(to, self.interface.zone)
         );
         match cost {
             crate::switchcost::Cost::Warm { until_ms, .. } => {
                 q += &format!(
                     " — {other}. The cache is warm until {}: switch after then and it costs nothing extra.",
-                    crate::usage::until(until_ms)
+                    crate::usage::until(self.interface.zone, until_ms)
                 )
             }
             _ => q += ".",
@@ -749,8 +754,9 @@ impl Editor {
     /// turn ending on Claude Code's limit words): the 5-hour window — a toast, wait (never the key: your rule);
     /// a weekly one — the limit card, once for that window's period, unless the session bills the key already.
     pub fn limit_hit(&mut self, window: &str, resets_at_ms: Option<u64>) {
-        let resets =
-            resets_at_ms.map(|at| format!(" · resets {}", crate::limits::resets(at))).unwrap_or_default();
+        let resets = resets_at_ms
+            .map(|at| format!(" · resets {}", crate::limits::resets(self.interface.zone, at)))
+            .unwrap_or_default();
         let period = resets_at_ms.unwrap_or(0);
         if window == "five_hour" {
             let told = (window.to_string(), period);
@@ -790,13 +796,15 @@ impl Editor {
     /// cache's state; whether the plan's usage credits are paying already.
     fn limit_card(&self, ask: &LimitAsk) -> crate::offer::Offer {
         let label = crate::limits::label(&ask.window);
-        let resets =
-            ask.resets_at_ms.map(|at| format!(" · resets {}", crate::limits::resets(at))).unwrap_or_default();
+        let resets = ask
+            .resets_at_ms
+            .map(|at| format!(" · resets {}", crate::limits::resets(self.interface.zone, at)))
+            .unwrap_or_default();
         let cost = self.billing_cost(Billing::Api);
         let mut q = format!(
             "The plan refuses this conversation until its {label} window resets. Continue it on your API key?\n\n\
              The first message {}",
-            cost.said(Billing::Api)
+            cost.said(Billing::Api, self.interface.zone)
         );
         q += match cost {
             crate::switchcost::Cost::Warm { .. } => " — your plan's cache isn't your Console org's.",
@@ -838,7 +846,10 @@ impl Editor {
         });
         let until = match (all, ask.resets_at_ms) {
             (true, Some(at)) => {
-                format!(" — new sessions and the reviewer too, until {}", crate::limits::resets(at))
+                format!(
+                    " — new sessions and the reviewer too, until {}",
+                    crate::limits::resets(self.interface.zone, at)
+                )
             }
             _ => String::new(),
         };
@@ -859,7 +870,7 @@ impl Editor {
     pub(crate) fn limit_wait(&mut self, ask: &LimitAsk) {
         let resets = ask
             .resets_at_ms
-            .map(|at| format!(" — it resets {}", crate::limits::resets(at)))
+            .map(|at| format!(" — it resets {}", crate::limits::resets(self.interface.zone, at)))
             .unwrap_or_default();
         self.set_status(format!(
             "Waiting for the plan's {} window{resets}; $ in space W moves a session to your key",
@@ -877,7 +888,7 @@ impl Editor {
     pub fn money_out(&mut self, m: Money) {
         let said = m.said();
         self.workspace.log().line("claude", "warn", &said);
-        let refused = self.plan_refused().map(crate::limits::said);
+        let refused = self.plan_refused().map(|r| crate::limits::said(r, self.interface.zone));
         if let Some(c) = self.workspace.claude.chat.as_mut() {
             c.note(&match &refused {
                 Some(r) => format!("{said} — and the plan refuses it too ({r})"),
@@ -895,7 +906,7 @@ impl Editor {
         let cost = self.billing_cost(Billing::Subscription);
         let mut q = format!(
             "Your key can't pay for more now. Continue this conversation on your plan?\n\nThe next message {}",
-            cost.said(Billing::Subscription)
+            cost.said(Billing::Subscription, self.interface.zone)
         );
         q += match cost {
             crate::switchcost::Cost::Warm { .. } => " — the key's cache isn't your plan's.",

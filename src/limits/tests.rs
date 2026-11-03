@@ -79,7 +79,8 @@ fn get_usage_reports_percent_and_the_event_a_fraction() {
     let w = l.get(WEEKLY, BEFORE + 2000).unwrap();
     assert_eq!((w.percent, w.resets_at_ms, w.from), (Some(93), Some(RESETS_MS), Source::Usage));
     assert_eq!(w.status, Some(Status::Warning), "the event's warning, kept for the same period");
-    assert_eq!(said(w), format!("weekly 93 % · resets {}", resets(RESETS_MS)));
+    let here = crate::log::Zone::Here;
+    assert_eq!(said(w, here), format!("weekly 93 % · resets {}", resets(here, RESETS_MS)));
 }
 
 /// A window `get_usage` sends as null is unknown — no reading, never 0 % — while one that says 0 is 0 %.
@@ -338,7 +339,7 @@ fn the_chats_row_says_the_weekly_window_while_on_the_plan() {
     // (a new conversation — a new claude, one that answers initialize as Claude Code does)
     crate::chat::reset(&mut ed);
     until(&mut ed, "its answer to initialize", |ed| ed.workspace.claude.usage.key_source.is_some());
-    let shown = format!("weekly 93 % · resets {}", resets(far));
+    let shown = format!("weekly 93 % · resets {}", resets(crate::log::Zone::Here, far));
     assert!(rows(&mut ed).contains(&shown), "{shown:?} in\n{}", rows(&mut ed));
     assert!(!rows(&mut ed).contains("not reported"), "before a turn, the weekly window alone");
     ed.workspace.claude.usage.key_source = Some("apiKeyHelper".into());
@@ -481,7 +482,8 @@ fn a_window_with_no_figure_says_so_beside_its_reset() {
         seen_at_ms: BEFORE,
         from: Source::Event,
     };
-    assert_eq!(said(&r), format!("5-hour no figure yet · resets {}", resets(RESETS_MS)));
+    let here = crate::log::Zone::Here;
+    assert_eq!(said(&r, here), format!("5-hour no figure yet · resets {}", resets(here, RESETS_MS)));
     assert_eq!(used(&Reading { percent: Some(4), ..r }), "4 %");
 }
 
@@ -652,7 +654,8 @@ fn a_chat_says_its_account_and_another_login_is_said_and_restarted_into() {
     let shown = vt.screen().contents();
     assert!(shown.contains("weekly 93 %") && !shown.contains("max · "), "{shown}");
     let now = crate::usage::now_ms();
-    let r = crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now);
+    let r =
+        crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now, crate::log::Zone::Here);
     assert!(r.contains("Account: Acme · plan max."), "{r}");
     let state = ed.ui_state().json();
     assert_eq!(
@@ -678,7 +681,8 @@ fn a_chat_says_its_account_and_another_login_is_said_and_restarted_into() {
         "{:?}",
         c.msgs.iter().map(|m| &m.text).collect::<Vec<_>>()
     );
-    let r = crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now);
+    let r =
+        crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now, crate::log::Zone::Here);
     assert!(r.contains("Another login since this claude started"), "{r}");
     // The new login's reading (93 %): its own chat's row shows it, the one still on the old login doesn't
     let rows = |ed: &mut Editor| -> String {
@@ -776,7 +780,14 @@ fn a_claude_started_on_a_key_keeps_no_account_of_before() {
         ed.workspace.claude.usage.key_source.as_deref() == Some("apiKeyHelper")
     });
     assert_eq!(ed.workspace.claude.usage.account, None);
-    let r = crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], crate::usage::now_ms());
+    let r = crate::usage::report(
+        "s",
+        &ed.workspace.claude.usage,
+        &ed.limits,
+        &[],
+        crate::usage::now_ms(),
+        crate::log::Zone::Here,
+    );
     assert!(!r.contains("Account:"), "{r}");
     assert_eq!(ed.ui_state().json()["workspaces"][0]["sessions"][0]["account"], Value::Null);
 }
@@ -809,7 +820,9 @@ fn the_state_and_usage_say_the_limits_and_the_credential() {
     );
     assert_eq!(v["limits"]["five_hour"]["percent"], 4);
     assert_eq!(v["workspaces"][0]["sessions"][0]["key_source_seen"], "none");
-    let report = |ed: &Editor| crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now);
+    let report = |ed: &Editor| {
+        crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now, crate::log::Zone::Here)
+    };
     let r = report(&ed);
     assert!(r.contains("| 5-hour ") && r.contains("| weekly ") && r.contains("| 93 %"), "{r}");
     assert!(r.contains("`apiKeySource` `none`") && !r.contains("Console"), "{r}");

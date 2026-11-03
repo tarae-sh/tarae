@@ -321,13 +321,6 @@ pub fn stamp(at: std::time::SystemTime) -> String {
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
 }
 
-/// `Tue 10:00` — the local weekday and time of `at` (a plan window's reset: within a week).
-pub fn day_clock(at: std::time::SystemTime) -> String {
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    let tm = local_tm(at);
-    format!("{} {:02}:{:02}", DAYS[tm.tm_wday.rem_euclid(7) as usize], tm.tm_hour, tm.tm_min)
-}
-
 /// The local day `at` falls on (year, month, day).
 pub fn day(at: std::time::SystemTime) -> (i32, i32, i32) {
     let (y, mo, d, ..) = local(at);
@@ -337,6 +330,75 @@ pub fn day(at: std::time::SystemTime) -> (i32, i32, i32) {
 fn local(at: std::time::SystemTime) -> (i32, i32, i32, i32, i32, i32) {
     let tm = local_tm(at);
     (tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+/// Where a time shown to the person is told (`Facts.zone` — the remote plan's decision G): this machine's zone, as the
+/// terminal tarae runs in has it, else an attached interface's offset from UTC (seconds east, its `Hello` and `Zone`).
+/// An offset only, no zone table: a summer-time switch between now and a time shown (a window's reset days away) is an
+/// hour off there until the interface's next `Zone`. What tarae writes to its own files (the log, the card record,
+/// a day's counts) keeps this machine's time (`clock`, `stamp`, `day`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Zone {
+    #[default]
+    Here,
+    Offset(i32),
+}
+
+impl Zone {
+    /// `14:02` — when `at` was, shown.
+    pub fn clock(self, at: std::time::SystemTime) -> String {
+        let t = self.tm(at);
+        format!("{:02}:{:02}", t.3, t.4)
+    }
+
+    /// `Tue 10:00` — the weekday and time of `at`, shown (a plan window's reset: within a week).
+    pub fn day_clock(self, at: std::time::SystemTime) -> String {
+        const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        let t = self.tm(at);
+        format!("{} {:02}:{:02}", DAYS[t.6], t.3, t.4)
+    }
+
+    /// The day `at` falls on (year, month, day), shown.
+    pub fn day(self, at: std::time::SystemTime) -> (i32, i32, i32) {
+        let t = self.tm(at);
+        (t.0, t.1, t.2)
+    }
+
+    /// (year, month, day, hour, minute, second, weekday from Sunday).
+    fn tm(self, at: std::time::SystemTime) -> (i32, i32, i32, i32, i32, i32, usize) {
+        match self {
+            Zone::Here => {
+                let tm = local_tm(at);
+                let wd = tm.tm_wday.rem_euclid(7) as usize;
+                (tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, wd)
+            }
+            Zone::Offset(off) => {
+                let secs = match at.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(d) => d.as_secs() as i64,
+                    Err(e) => -(e.duration().as_secs() as i64),
+                } + off as i64;
+                let (days, s) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+                let (y, mo, d) = civil(days);
+                // (1970-01-01 was a Thursday)
+                let wd = (days + 4).rem_euclid(7) as usize;
+                (y, mo, d, (s / 3600) as i32, (s / 60 % 60) as i32, (s % 60) as i32, wd)
+            }
+        }
+    }
+}
+
+/// The proleptic Gregorian (year, month, day) of `days` since 1970-01-01 (Howard Hinnant's `civil_from_days`).
+fn civil(days: i64) -> (i32, i32, i32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (m <= 2) as i64;
+    (y as i32, m as i32, d as i32)
 }
 
 /// Seconds local time is east of UTC at `at`.
@@ -418,13 +480,15 @@ mod tests {
         const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
         let start = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_791_853_200);
         let names: Vec<String> = (0..8u64)
-            .map(|d| day_clock(start + std::time::Duration::from_secs(d * 86_400))[..3].to_string())
+            .map(|d| {
+                Zone::Here.day_clock(start + std::time::Duration::from_secs(d * 86_400))[..3].to_string()
+            })
             .collect();
         let first = DAYS.iter().position(|d| *d == names[0]).expect("a weekday's name");
         for (i, n) in names.iter().enumerate() {
             assert_eq!(n, DAYS[(first + i) % 7], "{names:?}");
         }
-        assert_eq!(day_clock(start).len(), "Tue 10:00".len());
+        assert_eq!(Zone::Here.day_clock(start).len(), "Tue 10:00".len());
     }
 
     /// A line about one session names it in its own column, whichever way it comes: from the session in hand
@@ -738,5 +802,26 @@ mod tests {
         let next = capture();
         line("test", "info", &format!("{tag} four"));
         assert_eq!(mine(&next), ["four"], "the next starts with its own");
+    }
+
+    /// A time shown is told in the interface's zone, by its offset (the remote plan's decision G) — its day, weekday
+    /// and clock across a day's edge both ways; this machine's zone (the terminal's) is what tarae's own files keep.
+    #[test]
+    fn times_shown_are_the_interfaces_and_the_logs_the_hosts() {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_709_249_400); // 2024-02-29 23:30 UTC
+        let seoul = Zone::Offset(9 * 3600);
+        assert_eq!(
+            (seoul.clock(at), seoul.day_clock(at), seoul.day(at)),
+            ("08:30".into(), "Fri 08:30".into(), (2024, 3, 1))
+        );
+        let utc = Zone::Offset(0);
+        assert_eq!((utc.day_clock(at), utc.day(at)), ("Thu 23:30".into(), (2024, 2, 29)));
+        let west = Zone::Offset(-(5 * 3600 + 30 * 60));
+        assert_eq!((west.day_clock(at), west.day(at)), ("Thu 18:00".into(), (2024, 2, 29)));
+        let year_end = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_704_067_200 - 60); // 2023-12-31 23:59
+        assert_eq!((seoul.day_clock(year_end), seoul.day(year_end)), ("Mon 08:59".into(), (2024, 1, 1)));
+        // (this machine's: the files' clock and the terminal's alike)
+        assert_eq!((Zone::Here.clock(at), Zone::Here.day(at)), (clock(at), day(at)));
+        assert_eq!(Zone::default(), Zone::Here, "a tests' editor and the terminal: this machine's");
     }
 }

@@ -81,6 +81,128 @@ pub struct Pending {
     given: u64,
     /// The last `Input.seq` of the interface attached now that was handled (`Frame.input`).
     pub input: u64,
+    /// Messages for an interface (by its number), handed to its link once the loop is between frames (`flush`).
+    pub out: Vec<(u64, ToInterface, Order)>,
+    /// What was asked of an interface and not answered yet (`ask`), oldest first.
+    asked: Vec<Waiting>,
+    /// `Ask` ids given out.
+    asks: u32,
+}
+
+/// What a question put to the interface was for: what its answer goes on to (`answered`).
+pub enum Asked {
+    /// A copy (`clipboard::copy_flashing`): what it copied, a yank's flash.
+    Copy { what: String, flash: Option<crate::motion::What> },
+    /// A paste (`clipboard::paste`): what takes the text.
+    Paste(Takes),
+    /// `:web-open`: the address handed over.
+    Open { url: String },
+}
+
+/// What takes a paste's text, on the main loop.
+pub type Takes = Box<dyn FnOnce(&mut Editor, String) + Send>;
+
+impl Asked {
+    /// What it asked, in words.
+    pub fn said(&self) -> String {
+        match self {
+            Asked::Copy { what, .. } => format!("the copy of {what}"),
+            Asked::Paste(_) => "the paste".into(),
+            Asked::Open { url } => format!("opening {url}"),
+        }
+    }
+}
+
+struct Waiting {
+    id: u32,
+    /// The interface asked (`Interface.id`).
+    iface: u64,
+    asked: Asked,
+}
+
+/// How long an interface's answer is waited for: past it, the question is said unanswered and let go (a late answer
+/// then goes nowhere, logged).
+pub const ANSWER_WITHIN: Duration = Duration::from_secs(10);
+
+/// `q` put to the interface attached now (its clipboard, its browser), after the next frame; `asked` kept for its
+/// answer (`answered`). Unanswered within `ANSWER_WITHIN`, or the interface gone first (detached, taken over), it's
+/// said and let go — never carried over to another interface: the answer can outlive the one asked, never reach the
+/// next.
+pub fn ask(ed: &mut Editor, q: wire::Ask, asked: Asked) {
+    let iface = ed.attach.current;
+    ed.attach.asks = ed.attach.asks.wrapping_add(1);
+    let id = ed.attach.asks;
+    ed.attach.out.push((iface, ToInterface::Ask { id, ask: q }, Order::AfterFrame));
+    ed.attach.asked.push(Waiting { id, iface, asked });
+    ed.events.jobs().spawn(move || {
+        crate::event::sleep(ANSWER_WITHIN);
+        move |ed: &mut Editor| {
+            ed.drawn_for("an interface's answer waited out");
+            let why = format!("the interface didn't answer within {} s", ANSWER_WITHIN.as_secs());
+            unanswered(ed, |w| w.iface == iface && w.id == id, &why);
+        }
+    });
+}
+
+/// The questions `which` picks let go, each said: nothing came of them that tarae knows of (`why`).
+fn unanswered(ed: &mut Editor, which: impl Fn(&Waiting) -> bool, why: &str) {
+    let (gone, kept) = std::mem::take(&mut ed.attach.asked).into_iter().partition(|w| which(w));
+    ed.attach.asked = kept;
+    let gone: Vec<Waiting> = gone;
+    if gone.is_empty() {
+        ed.unchanged = true;
+    }
+    for w in gone {
+        crate::log::line("attach", "info", &format!("{} let go: {why}", w.asked.said()));
+        ed.set_warning(match w.asked {
+            Asked::Copy { what, .. } => format!("not known whether {what} was copied — {why}"),
+            Asked::Paste(_) => format!("nothing pasted — {why}"),
+            Asked::Open { url } => format!("web: not known whether {url} opened — {why}"),
+        });
+    }
+}
+
+/// Interface `iface`'s answer to question `id`, on the main loop: what it was for goes on (`clipboard::answered`,
+/// `:web-open`'s words). One no longer waited for (said unanswered already) is only logged.
+pub(crate) fn answered(ed: &mut Editor, iface: u64, id: u32, answer: wire::Answer) {
+    ed.drawn_for("an interface's answer");
+    let Some(i) = ed.attach.asked.iter().position(|w| w.iface == iface && w.id == id) else {
+        ed.unchanged = true;
+        let said = format!("an answer no one waits for any more (ask {id}): {answer:?}");
+        return crate::log::line("attach", "info", &said);
+    };
+    match (ed.attach.asked.remove(i).asked, answer) {
+        (Asked::Open { url }, wire::Answer::Opened) => {
+            ed.set_status(format!("web: {url} handed to your browser"))
+        }
+        (Asked::Open { .. }, wire::Answer::Failed(e)) => ed.set_error(format!("web: {e}")),
+        (asked @ Asked::Open { .. }, answer) => {
+            ed.set_error(format!("the interface answered {} with {answer:?}", asked.said()))
+        }
+        (asked, answer) => crate::clipboard::answered(ed, asked, answer),
+    }
+}
+
+/// Between frames: what's queued for the interface handed to its link, behind the frame just drawn — what was for
+/// one gone dropped (its questions were said unanswered as it went: `swap`).
+pub fn flush(ed: &mut Editor, iface: &mut Interface) {
+    for (to, m, order) in std::mem::take(&mut ed.attach.out) {
+        if to == iface.id {
+            iface.link.say(m, order);
+        }
+    }
+}
+
+/// The interface's zone moved (its `Zone`): the times shown are told by its offset from the next frame.
+fn zone(ed: &mut Editor, iface: u64, offset: i32) {
+    ed.drawn_for("an interface's zone");
+    let z = crate::log::Zone::Offset(offset);
+    if ed.attach.current != iface || ed.interface.zone == z {
+        ed.unchanged = true;
+        return;
+    }
+    crate::log::line("attach", "info", &format!("the interface's zone moved: {offset} s east of UTC"));
+    ed.interface.zone = z;
 }
 
 /// A message's bytes on `s`, as one write (a refusal, said before anything else could be).
@@ -204,9 +326,11 @@ fn arrive(ed: &mut Editor, stream: UnixStream, hello: Hello, line: Vec<u32>, dec
     }
 }
 
-/// What an interface says of itself in its `Hello`, as the editor reads it. The clipboard, sound and the opener stay
-/// this machine's ways until they're the interface's (the remote plan's step 3, piece 4) — an attach is local today.
+/// What an interface says of itself in its `Hello`, as the editor reads it: its clipboard, speaker and browser are its
+/// machine's, asked across the wire; the times it shows are told by its offset.
 fn facts_of(h: &Hello) -> Facts {
+    use crate::clipboard::Clip;
+    use crate::interface::{Opener, Speaker};
     Facts {
         light: match h.ground {
             wire::Ground::Unsaid => None,
@@ -215,9 +339,14 @@ fn facts_of(h: &Hello) -> Facts {
         },
         undercurl: h.undercurl,
         zellij: h.zellij,
-        clipboard: crate::clipboard::Env::here(),
-        sound: false,
-        opener: h.open.then_some(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
+        clipboard: match h.clipboard {
+            wire::Clip::None => Clip::None,
+            wire::Clip::CopyAndPaste => Clip::Wire { paste: true },
+            wire::Clip::CopyOnly => Clip::Wire { paste: false },
+        },
+        sound: if h.sound { Speaker::Wire } else { Speaker::None },
+        opener: if h.open { Opener::Wire } else { Opener::None },
+        zone: crate::log::Zone::Offset(h.offset),
         presents_late: true,
     }
 }
@@ -235,6 +364,7 @@ pub fn swap(ed: &mut Editor, iface: &mut Option<Interface>) -> bool {
                 old.link.bye(gone, said);
             }
             drop(old);
+            asks_gone(ed, id);
             ed.attach.current = 0;
             ed.detached = true;
             ed.interface = crate::term::no_interface();
@@ -245,6 +375,7 @@ pub fn swap(ed: &mut Editor, iface: &mut Option<Interface>) -> bool {
     if let Some(mut old) = iface.take() {
         old.link.bye(Gone::TakenOver, String::new());
         crate::log::line("attach", "info", "taken over: the interface attached before was told");
+        asks_gone(ed, old.id);
     }
     // (a wire's: nothing to make ready — its client did)
     let _ = new.link.begin();
@@ -259,6 +390,12 @@ pub fn swap(ed: &mut Editor, iface: &mut Option<Interface>) -> bool {
     ed.drawn_by.push(crate::editor::DrawnFor::Named("an attach"));
     *iface = Some(new);
     true
+}
+
+/// Interface `iface` let go (detached, taken over): what it was asked and hasn't answered said and let go — its
+/// answer, if one still comes, goes nowhere.
+pub(crate) fn asks_gone(ed: &mut Editor, iface: u64) {
+    unanswered(ed, |w| w.iface == iface, "the interface asked went before it answered");
 }
 
 /// The interface's ground as the theme's: `default` is picked again (hanji on a light one, else meok) when it differs.
@@ -315,7 +452,7 @@ fn presented(ed: &mut Editor, id: u64, n: u64) {
 
 /// What the main loop, the reader and the writer share of one interface.
 struct Shared {
-    mail: Mailbox<Whole, ToInterface>,
+    mail: Mailbox<Whole, Out>,
     /// Its size in cells: `w << 16 | h`.
     size: AtomicU32,
     /// Its input still goes to the editor — false once it's let go (what's read after is dropped).
@@ -325,6 +462,16 @@ struct Shared {
     unknown: AtomicBool,
     id: u64,
 }
+
+/// A message queued for the writer, and when a sound to play was decided (`at`): one held up past `PLAY_LATE` (a
+/// socket that took nothing a while) would ring late, and goes unsent.
+struct Out {
+    m: ToInterface,
+    at: Option<std::time::Instant>,
+}
+
+/// How late a sound may still go out (the remote plan's §8b).
+const PLAY_LATE: Duration = Duration::from_millis(500);
 
 /// An interface across the attach socket, as the main loop's link (`interface::Link`): every method returns at once.
 pub struct Wire {
@@ -356,7 +503,7 @@ impl Wire {
             unknown: AtomicBool::new(false),
             id,
         });
-        shared.mail.with(|s| s.push(welcome, Order::AtOnce, 0));
+        shared.mail.with(|s| s.push(Out { m: welcome, at: None }, Order::AtOnce, 0));
         let out = stream.try_clone()?;
         out.set_write_timeout(Some(WRITE_WITHIN))?;
         let reader = stream.try_clone()?;
@@ -373,8 +520,11 @@ impl Wire {
     fn push(&self, m: ToInterface, order: Order) -> bool {
         let bytes = match &m {
             ToInterface::Gone { said, .. } => said.len(),
+            ToInterface::Ask { ask: wire::Ask::Copy(t) | wire::Ask::Open(t), .. } => t.len(),
             _ => 0,
         } + 16;
+        let at = matches!(m, ToInterface::Sound(wire::Sound::Play { .. })).then(crate::clock::now);
+        let m = Out { m, at };
         self.shared.mail.with(|s| {
             if s.pending() + bytes > PENDING_MAX {
                 s.close();
@@ -439,6 +589,12 @@ impl Link for Wire {
     fn flushed(&mut self, within: Duration) {
         let _ = self.done.recv_timeout(within);
     }
+
+    fn say(&mut self, m: ToInterface, order: Order) {
+        if !self.said {
+            self.push(m, order);
+        }
+    }
 }
 
 impl Drop for Wire {
@@ -462,7 +618,10 @@ fn write_loop(sh: &Shared, mut out: UnixStream, tx: &Tx) {
                 f.unknown |= sh.unknown.swap(false, Ordering::Relaxed);
                 Next::Frame(n, f)
             }
-            next => next,
+            Next::Msg(Out { at: Some(at), .. }) if crate::clock::since(at) > PLAY_LATE => continue,
+            Next::Msg(o) => Next::Msg(o.m),
+            Next::Wait => Next::Wait,
+            Next::Closed => Next::Closed,
         };
         let closed = matches!(next, Next::Closed);
         if let Some(back) = w.step(next, &mut bytes) {
@@ -552,8 +711,12 @@ fn took(sh: &Shared, m: ToHost, tx: &Tx) -> Option<(String, Option<Gone>)> {
             sh.mail.with(|s| s.ack(frame));
             tx.send(Event::Job(Box::new(move |ed: &mut Editor| presented(ed, id, frame))))
         }
-        // (the interface's clipboard, opener and zone: the remote plan's step 3, piece 4)
-        ToHost::Answer { .. } | ToHost::Zone { .. } => Ok(()),
+        ToHost::Answer { id: ask, answer } => {
+            tx.send(Event::Job(Box::new(move |ed: &mut Editor| answered(ed, id, ask, answer))))
+        }
+        ToHost::Zone { offset, .. } => {
+            tx.send(Event::Job(Box::new(move |ed: &mut Editor| zone(ed, id, offset))))
+        }
         ToHost::Bye => return Some(("it said goodbye".into(), None)),
         ToHost::Hello(_) => {
             let said = "a second Hello".to_string();

@@ -208,7 +208,7 @@ fn idle_54_minutes_sends_compact_as_a_turn() {
     let due = touched + 54 * 60_000;
     // Ahead: said on the row and in the state, nothing sent
     let row = row_text(&ed, 140);
-    assert!(row.contains(&format!("compacts {}", crate::usage::until(due))), "{row}");
+    assert!(row.contains(&format!("compacts {}", crate::usage::until(crate::log::Zone::Here, due))), "{row}");
     assert!(row.contains("warm until"), "{row}");
     let state = crate::uistate::UsageState::of_session(&ed, &ed.workspace, 0).unwrap().json();
     assert_eq!(state["idle_compact"]["at_ms"], due, "{state}");

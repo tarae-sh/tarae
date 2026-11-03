@@ -12,16 +12,24 @@ use crate::editor::{Editor, ToastKind};
 
 /// Copies `text` the way the interface's clipboard goes (`Editor.interface`); once done, one toast says so, naming it
 /// (`what`: "1 selection") and how.
-pub fn copy(ed: &Editor, text: String, what: String) {
+pub fn copy(ed: &mut Editor, text: String, what: String) {
     copy_flashing(ed, text, what, None)
 }
 
 /// `copy`, and a yank's `flash` (`motion.rs`) once the clipboard took it — this copy's own, carried with it (another
-/// copy landing first never takes it), saying it where it's drawn.
-pub fn copy_flashing(ed: &Editor, text: String, what: String, flash: Option<crate::motion::What>) {
+/// copy landing first never takes it), saying it where it's drawn. The interface's clipboard across a wire is asked
+/// (`attach::ask`), its answer said the same way (`answered`).
+pub fn copy_flashing(ed: &mut Editor, text: String, what: String, flash: Option<crate::motion::What>) {
     #[cfg(test)]
     system::ask(&text);
-    let env = ed.interface.clipboard.clone();
+    let env = match &ed.interface.clipboard {
+        Clip::Here(env) => env.clone(),
+        Clip::Wire { .. } => {
+            let asked = crate::attach::Asked::Copy { what, flash };
+            return crate::attach::ask(ed, tarae_wire::Ask::Copy(text), asked);
+        }
+        Clip::None => return ed.set_error(format!("not copied — {NONE}")),
+    };
     ed.events.jobs().spawn(move || {
         let r = system::write(&text, env);
         move |ed: &mut Editor| copied(ed, &what, r, flash)
@@ -31,6 +39,25 @@ pub fn copy_flashing(ed: &Editor, text: String, what: String, flash: Option<crat
 /// "1 selection", "3 selections" — what a copy of a register's values says it copied.
 pub fn selections(n: usize) -> String {
     format!("{n} selection{}", if n == 1 { "" } else { "s" })
+}
+
+/// Whose clipboard a copy and a paste reach (`Facts.clipboard`).
+#[derive(Clone, Debug)]
+pub enum Clip {
+    /// This machine's, the way `Env` says.
+    Here(Env),
+    /// The interface's across its wire (`attach::ask`): its client copies with its own programs or its own terminal's
+    /// OSC 52, and says how (`Answer`). `paste`: it reads its clipboard too.
+    Wire { paste: bool },
+    /// None to reach: a host with nothing attached.
+    None,
+}
+
+impl Default for Clip {
+    /// A tests' editor's: the stand-in clipboard, this machine's way.
+    fn default() -> Clip {
+        Clip::Here(Env::default())
+    }
 }
 
 /// How a copy went out.
@@ -49,6 +76,31 @@ pub enum Why {
     Ssh,
     /// No clipboard program here (or nothing for it to talk to: no display).
     NoProgram,
+}
+
+/// What a copy or paste says where no interface is attached.
+const NONE: &str = "no interface is attached (tarae attach)";
+
+/// The interface's answer to a copy or paste it was asked (`attach::answered`): said as one done here is — a copy
+/// through its terminal's OSC 52 written there already.
+pub fn answered(ed: &mut Editor, asked: crate::attach::Asked, answer: tarae_wire::Answer) {
+    use crate::attach::Asked;
+    use tarae_wire::Answer as A;
+    let why = |w: tarae_wire::Why| match w {
+        tarae_wire::Why::Ssh => Why::Ssh,
+        tarae_wire::Why::NoProgram => Why::NoProgram,
+    };
+    match (asked, answer) {
+        (Asked::Copy { what, flash }, A::Copied(how)) => {
+            let r = Ok(how.map_or(Wrote::Program, |w| Wrote::Terminal(Vec::new(), why(w))));
+            copied(ed, &what, r, flash)
+        }
+        (Asked::Copy { what, flash }, A::Failed(e)) => copied(ed, &what, Err(e), flash),
+        (Asked::Paste(then), A::Pasted(text)) => pasted(ed, Ok(Read::Text(text)), then),
+        (Asked::Paste(then), A::PasteUnreadable(w)) => pasted(ed, Ok(Read::Terminal(why(w))), then),
+        (Asked::Paste(then), A::Failed(e)) => pasted(ed, Err(e), then),
+        (asked, answer) => ed.set_error(format!("the interface answered {} with {answer:?}", asked.said())),
+    }
 }
 
 /// The result of a copy, on the main loop: the terminal's bytes go out after the next frame.
@@ -82,8 +134,23 @@ pub enum Read {
 }
 
 /// Read the clipboard the interface's way and pass it to `then` (on the main loop, after the read finishes).
-pub fn paste(ed: &Editor, then: impl FnOnce(&mut Editor, String) + Send + 'static) {
-    let env = ed.interface.clipboard.clone();
+pub fn paste(ed: &mut Editor, then: impl FnOnce(&mut Editor, String) + Send + 'static) {
+    let env = match &ed.interface.clipboard {
+        Clip::Here(env) => env.clone(),
+        Clip::Wire { paste: true } => {
+            return crate::attach::ask(
+                ed,
+                tarae_wire::Ask::Paste,
+                crate::attach::Asked::Paste(Box::new(then)),
+            );
+        }
+        Clip::Wire { paste: false } => {
+            return ed.set_status(
+                "the interface's clipboard is copy only — paste with your terminal's own paste key",
+            );
+        }
+        Clip::None => return ed.set_error(format!("clipboard: {NONE}")),
+    };
     ed.events.jobs().spawn(move || {
         let r = system::read(env);
         move |ed: &mut Editor| pasted(ed, r, then)
@@ -317,6 +384,17 @@ impl Env {
     }
 }
 
+/// An attached client's copy for its host (`client.rs`, on a thread of its own): this machine's way; an OSC 52 comes
+/// back for its own terminal.
+pub fn write_here(text: &str) -> Result<Wrote, String> {
+    system::write(text, Env::here())
+}
+
+/// An attached client's paste for its host: this machine's clipboard read.
+pub fn read_here() -> Result<Read, String> {
+    system::read(Env::here())
+}
+
 /// WSL: the Linux side usually has no clipboard tool — use the Windows clipboard.
 fn wsl() -> bool {
     std::env::var_os("WSL_DISTRO_NAME").is_some()
@@ -470,9 +548,9 @@ mod tests {
     fn a_copy_goes_the_way_the_interface_says() {
         let mut ed = Editor::new(crate::config::Config::default());
         for ssh in [true, false] {
-            ed.interface.clipboard.ssh = ssh;
+            ed.interface.clipboard = Clip::Here(Env { ssh, ..Env::default() });
             let text = format!("the interface's way, ssh {ssh}");
-            copy(&ed, text.clone(), "it".into());
+            copy(&mut ed, text.clone(), "it".into());
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
             while written_by(&text).is_none() {
                 let left = end.saturating_duration_since(std::time::Instant::now());
@@ -673,6 +751,60 @@ mod tests {
         copied(&mut ed, "1 selection", Err("xclip failed (exit status: 1)".into()), failed);
         assert_eq!(said(&ed), [("not copied — xclip failed (exit status: 1)".to_string(), Severity::Error)]);
         assert!(ed.motions.is_empty(), "nothing flashes");
+    }
+
+    /// Through an attached interface a copy and a paste are asked of it (`Ask`, after the next frame), nothing done
+    /// here, and said from its answer as one done here is (its OSC 52 its own terminal's, written there). An interface
+    /// let go before it answered: the wait said once, its late answer going nowhere.
+    #[test]
+    fn a_wires_copy_is_asked_of_the_interface_and_said_from_its_answer() {
+        use crate::editor::ToastKind as Severity;
+        use tarae_wire::{Answer, Ask, Order, ToInterface};
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.interface.clipboard = Clip::Wire { paste: true };
+        ed.attach.current = 1;
+        let asked = |ed: &mut Editor| -> Vec<(u64, u32, Ask)> {
+            let out = std::mem::take(&mut ed.attach.out).into_iter();
+            out.map(|(to, m, order)| match m {
+                ToInterface::Ask { id, ask } if order == Order::AfterFrame => (to, id, ask),
+                m => panic!("{m:?} {order:?}"),
+            })
+            .collect()
+        };
+        let text = "the wire's copy, a_wires_copy";
+        copy(&mut ed, text.into(), "1 selection".into());
+        let [(1, id, Ask::Copy(t))] = &asked(&mut ed)[..] else { panic!("one copy asked of interface 1") };
+        assert_eq!(t, text);
+        assert!(!written(text) && said(&ed).is_empty(), "nothing done here, nothing said before its answer");
+        crate::attach::answered(&mut ed, 1, *id, Answer::Copied(Some(tarae_wire::Why::Ssh)));
+        assert_eq!(
+            said(&ed),
+            [("copied 1 selection — through the terminal (OSC 52)".to_string(), Severity::Success)]
+        );
+        assert!(ed.term_out.is_empty(), "its OSC 52 is its own terminal's");
+        ed.toasts.clear();
+
+        paste(&mut ed, |ed, s| ed.set_status(format!("took {s}")));
+        let [(1, id, Ask::Paste)] = &asked(&mut ed)[..] else { panic!("one paste asked") };
+        crate::attach::answered(&mut ed, 1, *id, Answer::Pasted("yours".into()));
+        assert_eq!(said(&ed), [("took yours".to_string(), Severity::Info)]);
+        ed.toasts.clear();
+
+        // (let go before it answered — a take-over: said once; its answer, coming late, goes nowhere)
+        copy(&mut ed, text.into(), "2 selections".into());
+        let [(1, id, _)] = &asked(&mut ed)[..] else { panic!() };
+        crate::attach::asks_gone(&mut ed, 1);
+        let gone = "not known whether 2 selections was copied — the interface asked went before it answered";
+        assert_eq!(said(&ed), [(gone.to_string(), Severity::Warning)]);
+        ed.toasts.clear();
+        crate::attach::answered(&mut ed, 1, *id, Answer::Copied(None));
+        assert!(said(&ed).is_empty(), "a late answer says nothing");
+
+        // (no interface attached: refused, said)
+        ed.interface.clipboard = Clip::None;
+        copy(&mut ed, text.into(), "1 selection".into());
+        assert!(asked(&mut ed).is_empty());
+        assert_eq!(said(&ed)[0].1, Severity::Error);
     }
 
     #[test]

@@ -3,17 +3,18 @@
 //! what changed goes out — `Screen`), its resting redraw (`Resting`), written through its link (`Link`), whose thread
 //! reads its input into the loop's events. What it says of itself — the `Facts` — is the editor's to read
 //! (`Editor.interface`), never the environment's where it's asked: the theme's ground, undercurl, the key twins inside
-//! zellij, the clipboard's way, sound, the URL opener. The terminal tarae runs in is the only one yet
-//! (`term::terminal`); an interface across a socket is step 3's.
+//! zellij, the clipboard's way, sound, the URL opener, the zone times are shown in. The terminal tarae runs in
+//! (`term::terminal`), or an interface across the attach socket (`attach.rs`), whose clipboard, speaker and browser are
+//! its own machine's, asked across its wire.
 
 use std::io;
 use std::time::{Duration, Instant};
 
 use crate::screen::Screen;
 
-/// What an interface says of itself, read once as it's made (the terminal's: `term::terminal`). The default is a
-/// tests' editor: none of it — no ground said, plain underlines, no twins, the clipboard's stand-in, no sound, no
-/// opener.
+/// What an interface says of itself, read once as it's made (the terminal's: `term::terminal`; a wire's: its `Hello`,
+/// its zone again by `Zone`). The default is a tests' editor: none of it — no ground said, plain underlines, no
+/// twins, the clipboard's stand-in, no sound, no opener, this machine's zone.
 #[derive(Clone, Debug, Default)]
 pub struct Facts {
     /// Its ground is light (the theme `default` is hanji, else meok) — None: it didn't say (meok).
@@ -22,15 +23,40 @@ pub struct Facts {
     pub undercurl: bool,
     /// It runs inside zellij: a hinted key zellij takes is said by its twin (`zellij.rs`).
     pub zellij: bool,
-    /// Where a copy or paste goes (`clipboard::pick`) — its programs looked for on PATH at each copy.
-    pub clipboard: crate::clipboard::Env,
-    /// Its speaker plays tarae's sound (`sound.rs`: the output opened as a turn runs with `editor.sound` on).
-    pub sound: bool,
-    /// The program `:web-open` hands a page's address to (`web/page.rs`) — None: none, said.
-    pub opener: Option<&'static str>,
+    /// Where a copy or paste goes: this machine's way (`clipboard::pick` — its programs looked for on PATH at each
+    /// copy), or the interface's, asked across its wire (`attach::ask`).
+    pub clipboard: crate::clipboard::Clip,
+    /// Whose speaker plays tarae's sound (`sound.rs`: the output opened as a turn runs with `editor.sound` on).
+    pub sound: Speaker,
+    /// What `:web-open` hands a page's address to (`web/page.rs`) — none: said.
+    pub opener: Opener,
+    /// Where the times it shows are told (`log::Zone`): this machine's zone, or the interface's offset.
+    pub zone: crate::log::Zone,
     /// A frame it's sent isn't presented yet: it says what it presented with each input (`Event::Input`'s `seen`)
     /// — an interface across a wire. False: a frame written is a frame presented (the terminal, a tests' editor).
     pub presents_late: bool,
+}
+
+/// Whose speaker plays tarae's sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Speaker {
+    #[default]
+    None,
+    /// This machine's (the terminal tarae runs in).
+    Here,
+    /// The interface's across its wire: what's decided goes there (`ToInterface::Sound`), its client plays it.
+    Wire,
+}
+
+/// What opens a web address in a browser.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Opener {
+    #[default]
+    None,
+    /// This machine's program (`open`, `xdg-open`).
+    Here(&'static str),
+    /// The interface's machine, asked across its wire (`Ask::Open`).
+    Wire,
 }
 
 /// A frame's number (`Editor.frames`).
@@ -142,6 +168,9 @@ pub trait Link {
     /// It's let go, told why (`said`: what a quit didn't write, printed once its terminal is back) — a wire's words;
     /// the terminal has nobody to tell.
     fn bye(&mut self, _gone: tarae_wire::Gone, _said: String) {}
+    /// A message for the interface's machine (a question for its clipboard or browser, a sound for its speaker), to go
+    /// by `order` — a wire's; the terminal's machine is this one, nothing goes.
+    fn say(&mut self, _m: tarae_wire::ToInterface, _order: tarae_wire::Order) {}
     /// What `bye` said written, waited for `within` at most: tarae is ending, its last words go before it does.
     fn flushed(&mut self, _within: Duration) {}
 }
