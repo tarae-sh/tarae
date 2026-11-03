@@ -2438,11 +2438,16 @@ const BASE_MOVED: &[&str] = &[
 /// card beside the list, `C-q` giving it the keys (fix would conflict, docs clean), `y` moving docs only. It ends before
 /// docs, moved, meets fix (C2's next round, ~4 s on: `fix ≈ docs`). Its Short (`--video --shorts main-moved`, 80×43):
 /// opening on the card with fix's conflict said (`@punch`), then the camera on the list as it opens, on `wind` as main's
-/// way is written, on C2's toast as it's saved, on the prompt as the commit is typed, on the card as it arrives and
+/// way is written, on C2's toast as it's saved (auto-save's, no prompt), then on the line it names, on the prompt as the commit is typed, on the card as it arrives and
 /// through `C-q` and `y`, on the list as the card goes, on what the move says, and on the list to the end; the typing a
 /// key at a time (`@type:` — the wide video's too), `y` a stamp, the move's landing the settle.
 const MAIN_MOVED: &[&str] = &[
     "@1",
+    // (main's line saved by itself once the typing stops: `:w`'s card would stand over the code the camera is on, and a
+    // card the window cuts is left out — half the frame ground)
+    ":",
+    "set editor.auto-save idle",
+    "\r",
     ":",
     "sh git config user.name demo && git config user.email demo@example.com && git config commit.gpgsign false \
      && git worktree add -q ../fix && git worktree add -q ../docs",
@@ -2513,13 +2518,12 @@ const MAIN_MOVED: &[&str] = &[
     "A",
     "@type: // main",
     "\x1b",
-    "@1",
-    ":",
-    "w",
-    "\r",
     "@8?would",
     "@zoom:src/main.rs L31",
-    "@2",
+    "@1.5",
+    // (then the line it names: the toast stands top-right, the code all left of the window round it)
+    "@zoom:code:28-32",
+    "@1.5",
     " ",
     "W",
     "@10?sessions",
@@ -2623,10 +2627,11 @@ const FOLLOW_REPLAY: &[&str] = &[
     "@1.5",
     "@beat:Your first key takes the view back.",
     "j",
-    "@zoom:you took over",
+    // (the follow card paused, its bottom line's key following again — landing 6: no toast says it)
+    "@zoom:card:space F follow",
     "@1.5",
-    " ",
-    "F",
+    // (one key, as `]r`'s: sent apart, `space` stood long enough for which-key, over the card the camera is on)
+    " F",
     "@10?spool.rs:75-83",
     "@zoom:code:75-83",
     // (the two edits written as they come, each landing unseen: their writing heard, each settling as it lands)

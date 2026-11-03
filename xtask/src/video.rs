@@ -10,7 +10,7 @@
 //! the window holds (`short_size`: 80×43), and over it a camera (`camera.rs`) — the scene's `@zoom:<target>` lines
 //! eased to and held, the window the safe area's shape with the target at the eye's height (`short_eye`), each frame
 //! the screen drawn at the glyph size the camera's region fits the window at, only whole cells shown, every card the
-//! window cuts left out and text its edge would cut hidden (`Video::short_frame`); everything inside `SAFE`, the
+//! window cuts left out, a row its edge cuts drawn cut there, fading (`Video::short_frame`); everything inside `SAFE`, the
 //! margins YouTube's own buttons and title cover; the captions in a band above the window, wrapped; a `@punch` opening
 //! it on `PUNCH_MS` of the take from there, then the title card and the take from its start; and a sound track
 //! (`sound::track`: tarae's own strokes for the keys typed, a stamp for a card's answer, the settle where an edit
@@ -68,6 +68,10 @@ const SHORT_BAND: usize = 190;
 pub(crate) const SHORT_COLS: u16 = 80;
 /// The largest glyph a Short's camera draws (a narrow card's: ~36 columns across).
 const SHORT_PX_MAX: u32 = 40;
+/// A row cut at the window's edge fades over its last cells there, to this much of its ground at the edge: the line
+/// reads as going on, never as broken off.
+const FADE_CELLS: usize = 2;
+const FADE_MAX: u8 = 200;
 /// A Short's title card and end card: it's swiped past in a second, so its title stands shorter.
 const SHORT_TITLE_MS: u64 = 1_200;
 const SHORT_END_MS: u64 = 2_500;
@@ -740,9 +744,9 @@ impl Video<'_> {
     }
 
     /// A Short's frame: screen `i` drawn at the glyph size `region` fits the window at, cropped there — only whole
-    /// cells, every card the window cuts (`camera::cut`, but the one `target` is in) left out on the window's ground, and
-    /// text its left or right edge would cut hidden on its own ground —, the beat's caption (and how far it has come in)
-    /// wrapped in the band above.
+    /// cells, every card the window cuts (but the one `target` is in) left out on the window's ground, and a row whose
+    /// text its left or right edge cuts drawn cut there, fading into its ground (`camera::Window`) —, the beat's caption
+    /// (and how far it has come in) wrapped in the band above.
     fn short_frame(
         &self,
         i: usize,
@@ -783,35 +787,41 @@ impl Video<'_> {
             out[at..at + (x_to - x_from) * 3]
                 .copy_from_slice(&pic[(y * pw + x_from) * 3..(y * pw + x_to) * 3]);
         }
-        // (the cards the window cuts: left out, the window's ground in their cells)
+        // (the cards the window cuts: left out, the window's ground in their cells; every other cell drawn)
         let cells = camera::Cells::of(screen);
-        let view = (c0, r0, c1, r1);
-        let cut = camera::cut(&cells, view, target);
-        for &(cr0, cc0, cr1, cc1) in &cut {
-            for y in (PAD + cr0.max(r0) * ch)..(PAD + (cr1 + 1).min(r1) * ch).min(ph) {
-                for x in (PAD + cc0.max(c0) * cw)..(PAD + (cc1 + 1).min(c1) * cw).min(pw) {
-                    out[to(x, y)..][..3].copy_from_slice(&self.look.ground);
+        let window = camera::Window::of(&cells, (c0, r0, c1, r1), target);
+        for r in r0..r1 {
+            for c in (c0..c1).filter(|&c| !window.drawn(r, c)) {
+                for y in (PAD + r * ch)..(PAD + (r + 1) * ch).min(ph) {
+                    for x in (PAD + c * cw)..(PAD + (c + 1) * cw).min(pw) {
+                        out[to(x, y)..][..3].copy_from_slice(&self.look.ground);
+                    }
                 }
             }
         }
-        // (text cut at the window's left or right edge — the stretch it's in, never a line nor a card shown: its cells
-        // laid with their row's ground, the colour at the top-left of the row's first cell left showing — a cursor's line
-        // stays whole, a match's highlight cut at the edge goes with its text)
-        let shown: Vec<camera::Card> =
-            camera::cards(&cells).into_iter().filter(|c| !cut.contains(c)).collect();
-        let hidden = camera::cut_text(&cells, view, &shown);
-        let row_ground = |r: usize| {
-            (c0..c1).find(|&c| !hidden.contains(&(r, c))).map_or(self.look.ground, |c| {
-                let at = ((PAD + r * ch) * pw + PAD + c * cw) * 3;
-                [pic[at], pic[at + 1], pic[at + 2]]
-            })
-        };
-        for &(r, c) in &hidden {
-            let ground = row_ground(r);
-            let (x, y) = (PAD + c * cw, PAD + r * ch);
-            for yy in y..(y + ch).min(ph) {
-                for xx in x..(x + cw).min(pw) {
-                    out[to(xx, yy)..][..3].copy_from_slice(&ground);
+        // (a row whose text runs past the window's edge: cut there, its last `FADE_CELLS` easing into each cell's own
+        // ground — its top-left pixel's —, to `FADE_MAX` at the edge)
+        let span = (FADE_CELLS * cw) as f32;
+        for &(r, edge) in &window.fade {
+            let (y0, y1) = (PAD + r * ch, (PAD + (r + 1) * ch).min(ph));
+            for k in 0..FADE_CELLS.min(c1 - c0) {
+                let c = match edge {
+                    camera::Edge::Left => c0 + k,
+                    camera::Edge::Right => c1 - 1 - k,
+                };
+                let x0 = PAD + c * cw;
+                let at = to(x0, y0);
+                let ground: Rgb = [out[at], out[at + 1], out[at + 2]];
+                for x in x0..(x0 + cw).min(pw) {
+                    // (how far in from the edge, in px)
+                    let d = match edge {
+                        camera::Edge::Left => x - PAD - c0 * cw,
+                        camera::Edge::Right => PAD + c1 * cw - 1 - x,
+                    };
+                    let a = (f32::from(FADE_MAX) * (1.0 - d as f32 / span)).max(0.0) as u8;
+                    for y in y0..y1 {
+                        mix(&mut out[to(x, y)..][..3], ground, a);
+                    }
                 }
             }
         }

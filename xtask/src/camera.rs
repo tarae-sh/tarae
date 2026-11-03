@@ -6,7 +6,8 @@
 //! target's region is shaped to the window as it's found (`framed`), the target's centre at the eye's height: the rows
 //! or columns it adds put where they cut no card (a frame, or a borderless one by its ground — `cards`), else the cut
 //! card taken in whole, else the window as the target has it — and on every frame a card the window cuts, one that
-//! came while a zoom holds too, is left out on the window's ground (`cut`).
+//! came while a zoom holds too, is left out on the window's ground (`cut`), a row of text the window's edge cuts drawn
+//! cut there as a zoomed video crops (`Window`).
 //! Pure: the frames' drawing is `video.rs`'s.
 
 /// A screen as the camera reads it: each cell's text and its ground (its background, as a number), row by row.
@@ -389,11 +390,7 @@ pub(crate) fn framed(screen: &Cells, target: Region, aspect: f32, eye: f32, legi
 /// but the one holding `target` (inside its air) — the card the target is is shown even cut: `framed` kept it whole where
 /// it could; one that only meets it (an answer's card opened under the lines in sight) is left out. A Short's frame leaves them out on the window's ground, so nothing is ever cut at its edge — a card that
 /// came while a zoom holds (a toast) too.
-pub(crate) fn cut(
-    screen: &Cells,
-    (c0, r0, c1, r1): (usize, usize, usize, usize),
-    target: Region,
-) -> Vec<Card> {
+fn cut(screen: &Cells, (c0, r0, c1, r1): (usize, usize, usize, usize), target: Region) -> Vec<Card> {
     let (tx0, ty0) = (target.x + AIR, target.y + AIR);
     let (tx1, ty1) = (target.x + target.w - AIR, target.y + target.h - AIR);
     cards(screen)
@@ -408,53 +405,58 @@ pub(crate) fn cut(
         .collect()
 }
 
-/// The text a window of whole cells (columns `c0..c1`, rows `r0..r1`) cuts at its left or right edge, cell by cell
-/// (row, column): where the stretch reaching the edge goes on past it (an inked cell just past it, or one past a single
-/// blank there), that stretch from the edge inward — inked cells and single blanks, to two blanks, a line (`─`, `│`,
-/// `▎`…) or a card that's shown (`shown`) —, so no piece of a cut line is left standing (`type Map = HashMap<…>` cut
-/// after `Ma` or after `=` leaves no `HashMap<…>`). A wide character's second cell is part of it.
-pub(crate) fn cut_text(
+/// The window's left or right edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Edge {
+    Left,
+    Right,
+}
+
+/// What a Short's frame draws of the screen in a window of whole cells (columns `c0..c1`, rows `r0..r1`): every cell
+/// but a card the window cuts (`left_out`, `cut`'s), laid with the window's ground; a row whose text runs past the
+/// window's left or right edge drawn cut there as a zoomed video crops (`fade`: its last cells easing into their
+/// ground). A row is drawn whole or not at all — what's drawn belongs to a row that's drawn: never its ground or its
+/// blame without its code.
+pub(crate) struct Window {
+    pub(crate) left_out: Vec<Card>,
+    pub(crate) fade: Vec<(usize, Edge)>,
+}
+
+impl Window {
+    pub(crate) fn of(screen: &Cells, view: (usize, usize, usize, usize), target: Region) -> Window {
+        let all = cards(screen);
+        Window { left_out: cut(screen, view, target), fade: runs_past(screen, view, &all) }
+    }
+
+    /// Whether the frame draws the screen's cell at row `r`, column `c` (inside the window).
+    pub(crate) fn drawn(&self, r: usize, c: usize) -> bool {
+        !self.left_out.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3)
+    }
+}
+
+/// The rows whose text the window's left or right edge cuts (row, edge): an inked cell on each side of it (a wide
+/// character's second cell counts as inked), neither in a card — a card the window cuts is left out whole, and one
+/// beside the window is no text of the row's. A line (`─`, `│`, `▎`…) runs on cut as it is.
+fn runs_past(
     screen: &Cells,
     (c0, r0, c1, r1): (usize, usize, usize, usize),
-    shown: &[Card],
-) -> Vec<(usize, usize)> {
+    cards: &[Card],
+) -> Vec<(usize, Edge)> {
     let mut out = Vec::new();
     for (r, row) in screen.text.iter().enumerate().take(r1).skip(r0) {
-        // (0 a blank, 1 inked, 2 a line)
-        let kind = |c: usize| match row[c].chars().next() {
-            None if c > 0 && row[c - 1].chars().next().is_some_and(wide) => 1,
-            None => 0,
-            Some(ch) if ch.is_whitespace() => 0,
-            Some(ch) if ('\u{2500}'..='\u{259f}').contains(&ch) => 2,
-            Some(_) => 1,
+        let inked = |c: usize| match row.get(c).and_then(|s| s.chars().next()) {
+            None => c > 0 && row.get(c - 1).and_then(|s| s.chars().next()).is_some_and(wide),
+            Some(ch) => !ch.is_whitespace() && !('\u{2500}'..='\u{259f}').contains(&ch),
         };
-        let past = |c: usize, beyond: Option<usize>| {
-            kind(c) == 1 || kind(c) == 0 && beyond.is_some_and(|b| kind(b) == 1)
+        let carded = |c: usize| cards.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3);
+        let across = |inside: usize, outside: usize| {
+            inked(inside) && inked(outside) && !carded(inside) && !carded(outside)
         };
-        let carded = |c: usize| shown.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3);
-        // (from the edge inward, the blank just past it counted: two in a row end the stretch)
-        let mut run = |cs: &mut dyn Iterator<Item = usize>, past: usize| {
-            let mut blanks = u8::from(kind(past) == 0);
-            for c in cs {
-                if carded(c) || kind(c) == 2 {
-                    break;
-                }
-                if kind(c) == 0 {
-                    blanks += 1;
-                    if blanks == 2 {
-                        break;
-                    }
-                    continue;
-                }
-                blanks = 0;
-                out.push((r, c));
-            }
-        };
-        if c0 > 0 && c0 < c1 && past(c0 - 1, c0.checked_sub(2)) && !carded(c0 - 1) {
-            run(&mut (c0..c1), c0 - 1);
+        if c0 > 0 && c0 < c1 && across(c0, c0 - 1) {
+            out.push((r, Edge::Left));
         }
-        if c1 < row.len() && c1 > c0 && past(c1, Some(c1 + 1).filter(|&b| b < row.len())) && !carded(c1) {
-            run(&mut (c0..c1).rev(), c1);
+        if c1 < row.len() && c1 > c0 && across(c1 - 1, c1) {
+            out.push((r, Edge::Right));
         }
     }
     out
@@ -505,9 +507,11 @@ pub(crate) fn code_rows(screen: &Cells) -> Vec<Option<String>> {
 /// stretch of cells on a ground of its own (not the screen's commonest), as near a rectangle as a toast's or a peek's is, its first cell the kind's
 /// `▎` as a toast's and a peek's are, narrower than three quarters of the screen (a cursor's line is a row across the
 /// code), never the last row (the status line's) — and never the code's own rows (a wash on the lines Claude read or
-/// changed: a gutter's number inside it).
+/// changed: a gutter's number inside it), nor a row inside a frame (a list's selected row: the frame's own).
 pub(crate) fn cards(screen: &Cells) -> Vec<Card> {
     let mut out = frames(&screen.text);
+    let framed = out.clone();
+    let inside = |b: Card| framed.iter().any(|f| f.0 <= b.0 && b.2 <= f.2 && f.1 <= b.1 && b.3 <= f.3);
     let divs = dividers(&screen.text);
     let g = &screen.ground;
     let rows = g.len();
@@ -540,7 +544,7 @@ pub(crate) fn cards(screen: &Cells) -> Vec<Card> {
             let code = (b.0..=b.2).any(|r| {
                 numbered(&screen.text[r], &divs).is_some_and(|(_, at, _)| (b.1..=b.3).contains(&at))
             });
-            if w >= 3 && w * 4 <= cols * 3 && n * 5 >= w * h * 4 && marked && !code {
+            if w >= 3 && w * 4 <= cols * 3 && n * 5 >= w * h * 4 && marked && !code && !inside(b) {
                 out.push(b);
             }
         }
@@ -572,8 +576,6 @@ fn frames(cells: &[Vec<String>]) -> Vec<Card> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::*;
 
     const SCREEN: (u16, u16) = (80, 43);
@@ -728,7 +730,8 @@ mod tests {
     }
 
     /// A borderless card is a toast's or a peek's: a ground of its own starting with the kind's `▎` — never a ground
-    /// without it (a selection, a match), nor a wash on the code's own numbered rows, `▎` sign and all.
+    /// without it (a selection, a match), nor a wash on the code's own numbered rows, `▎` sign and all, nor a list's
+    /// selected row inside its frame (V2's session list: left out alone where the window cut the list it's in).
     #[test]
     fn a_borderless_card_starts_with_its_mark() {
         let mut cells = grid(&[
@@ -737,43 +740,67 @@ mod tests {
             "▎ 3 let x = 1;     ",
             "▎ 4▎let y = 2;     ",
             "                   ",
+            "╭─ sessions ─╮",
+            "│▎ main  2   │",
+            "╰────────────╯",
+            "",
         ]);
         cells.ground[0][0..12].fill(5);
         cells.ground[1][2..13].fill(6);
         cells.ground[2][0..14].fill(7);
         // (a line just written: the follow caret right after its number, its ink drying on a ground)
         cells.ground[3][0..14].fill(8);
-        assert_eq!(cards(&cells), vec![(0, 0, 0, 11)]);
+        cells.ground[6][1..13].fill(9);
+        assert_eq!(cards(&cells), vec![(5, 0, 7, 13), (0, 0, 0, 11)]);
     }
 
-    /// Text the window's edge cuts goes with its whole stretch — single blanks inside it, to two blanks —, from either
-    /// edge; a line or a card shown stops it; text that starts past a blank at the edge stays.
+    /// A row whose text the window's edge cuts is drawn cut there, fading at that edge: text on both sides of it, either
+    /// edge; a line running on, a blank on either side or a card there fades nothing. A wide character's second cell is
+    /// inked.
     #[test]
-    fn text_cut_at_the_edge_goes_with_its_stretch() {
+    fn a_row_cut_at_the_edge_fades_there() {
         let mut cells = grid(&[
-            "type Map = HashMap<K, V>;",
-            "fn a()  {    b }",
-            "  ok",
-            "ab─cd",
-            "abcdef",
-            "a  ok",
-            "a b c",
-            "실실 가 x",
+            "29 fn wind(m: &mut Map, t: Thread) {",
+            "── demo › main.rs ─────────────────",
+            "30     let k = t.name.clone();",
+            "ab  cd           x  y",
+            "abcdef                        ",
+            "실실",
+            "letters",
         ]);
         // (a wide character's second cell is empty, as vt100 leaves it)
-        cells.text[7] = ["실", "", "실", "", " ", "가", "", " ", "x"].map(String::from).to_vec();
-        cells.text[7].resize(25, " ".into());
-        let hidden = cut_text(&cells, (2, 0, 20, 8), &[(4, 3, 4, 5)]);
-        let row = |r: usize| hidden.iter().filter(|h| h.0 == r).map(|h| h.1).collect::<BTreeSet<_>>();
-        let inked = |r: usize| (2..20).filter(|&c| cells.text[r][c] != " ").collect::<BTreeSet<_>>();
-        assert_eq!(row(0), inked(0), "cut at both edges: the stretch between them whole");
-        assert_eq!(row(1), BTreeSet::from([3, 4, 5]), "to two blanks: `{{` and `b }}` stay");
-        assert_eq!(row(2), BTreeSet::new(), "a blank at the edge: nothing cut");
-        assert_eq!(row(3), BTreeSet::new(), "`b` past the edge, then a line: the line stops it");
-        assert_eq!(row(4), BTreeSet::from([2]), "a card shown stops it");
-        assert_eq!(row(5), BTreeSet::new(), "two blanks at the edge: a stretch of its own");
-        assert_eq!(row(6), BTreeSet::from([2, 4]), "cut at a single blank: the stretch goes on past it");
-        assert_eq!(row(7), BTreeSet::from([2, 3, 5, 6, 8]), "Hangul: its second cells are its own");
+        cells.text[5][..4].clone_from_slice(&["실", "", "실", ""].map(String::from));
+        let card: Card = (4, 0, 4, 2);
+        let fade = runs_past(&cells, (3, 0, 20, 7), &[card]);
+        let at = |r: usize| fade.iter().filter(|f| f.0 == r).map(|f| f.1).collect::<Vec<_>>();
+        assert_eq!(
+            at(0),
+            [Edge::Right],
+            "`fn` starts at the left edge, a blank past it; `Map` crosses the right"
+        );
+        assert_eq!(at(1), [], "a line runs on cut as it is");
+        assert_eq!(at(2), [Edge::Right], "the indent's blanks at the left edge: nothing there");
+        assert_eq!(at(3), [], "a blank on the inner side of either edge");
+        assert_eq!(at(4), [], "a card past the left edge: none of the row's text");
+        assert_eq!(at(5), [Edge::Left], "Hangul: the edge between a wide character's two cells");
+        assert_eq!(at(6), [Edge::Left], "`letters` crosses the left edge");
+    }
+
+    /// A row is drawn whole or not at all: V2's line under the cursor, its code cut at the window's left edge and
+    /// blame at its end on the cursor line's ground, is every cell drawn (round 2 hid its code and left the ground and
+    /// blame standing alone); a toast the right edge cuts is left out, the rest of its row drawn.
+    #[test]
+    fn a_row_is_drawn_whole_or_not_at_all() {
+        let toast = format!("{:<40}▎ saved     ", "32 }");
+        let mut cells = grid(&["31     m.insert(k, t); // main     not committed yet  ", &toast, "● normal"]);
+        cells.ground[0][3..50].fill(9);
+        cells.ground[1][40..52].fill(5);
+        let view = (10, 0, 46, 2);
+        let window = Window::of(&cells, view, region(10.0, 0.0, 20.0, 1.0));
+        assert!((10..46).all(|c| window.drawn(0, c)), "the line under the cursor drawn whole");
+        assert_eq!(window.left_out, vec![(1, 40, 1, 51)], "the toast past the right edge");
+        assert!((10..40).all(|c| window.drawn(1, c)) && !(40..46).any(|c| window.drawn(1, c)));
+        assert_eq!(window.fade, vec![(0, Edge::Left), (0, Edge::Right)]);
     }
 
     /// The code's rows as the writing is read from them: from the text's column past the numbers, a row with no number
