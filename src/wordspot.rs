@@ -269,7 +269,10 @@ const COSTS: &[(Option<&str>, &str)] = &[
     (None, "discard"),
     (None, "screen"),
     (None, "Claude drafts"),
-    (Some("C-l"), "*"),
+    // (`C-l` by the chat's words — a new conversation; the notes list's `C-l close them` is a button, the user's)
+    (Some("C-l"), "new"),
+    (Some("C-l"), crate::chat::CLEAR_AGAIN),
+    (Some("C-l"), "a new conversation"),
     (Some("C-l C-l"), "*"),
     (Some("d"), "*"),
     (Some("s"), "stop"),
@@ -306,6 +309,10 @@ const BUTTONS: &[&str] = &[
     "o",
     "G",
     "/",
+    // (a stale draft's card: re-placed on its lines as they are — and the notes list's top line closing every stale
+    // draft, a button by the user's word, 2026-11-03: the stale card's `y` it replaces was 266 of 294 answers)
+    "R",
+    "C-l",
     // (the user's split, piece B: `C-c` stops or clears, `C-o` points, `C-r` applies — and `backspace` takes a chip off)
     "C-c",
     "C-o",

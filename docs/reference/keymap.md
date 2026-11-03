@@ -522,7 +522,8 @@ Keys of what's up on the screen — not rebindable, so not in `default_keys.toml
 | No card here | `C-q` | To the session whose Claude waits for you — its card comes up there; nothing waiting, to a session whose turn ended (`done`) |
 | A card cut to fit | `v` | All of it in a buffer — `y` waits until its end was on screen |
 | A run card listing others like it | `Y` | Run it and the cards it lists — the same run each, read whole first |
-| The stale drafts card | `y` `r` `n` | Close them · list just them (`C-x` closes one) · keep them |
+| The notes list (`space N`) | `C-x` · `A-x` · `C-l` | Close the note on the row · every note its author began · every stale draft (its top line says how many: `2 stale · C-l close them`, a press on it too) |
+| A stale draft's card | `R` | Re-place it on its lines as they are now — stale again only if they change |
 | Claude's change to several files | `y` `r` `v` `n` | Accept them all · review them one by one · every change in a buffer · decline them all |
 | An edit's review | `y` `n` `a` `tab` | Accept this change · reject it · accept all left · next |
 | An edit's review | `esc` | Back to the chat, the change unanswered — `C-q` answers it |
@@ -662,6 +663,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:soft-wrap` |  | Wrap this buffer's long lines, or scroll sideways (on/off) |
 | `:note-close` |  | Close Claude's note on this line |
 | `:notes-clear` |  | Close all notes (or one author's: you, claude, reviewer, chat) |
+| `:notes-close-stale` |  | Close every draft whose lines changed since it was pinned |
 | `:commit` |  | Commit every change from a review all viewed (message file) |
 | `:commit-draft` |  | Let Claude draft the commit message |
 | `:undo-turn` |  | Undo what Claude changed in its last turn |

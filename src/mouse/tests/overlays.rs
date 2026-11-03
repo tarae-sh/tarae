@@ -687,11 +687,11 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     assert!(rows[0].starts_with("╭─ note · 1/2 ─") && !rows[0].contains("of 2"), "{rows:#?}");
     assert!(rows[1].starts_with("│ ¶ claude"), "its author's head: {rows:#?}");
     let bottom = rows.last().unwrap();
-    let foot = "╰─ space n reply · ]n next · q close · space N all · :note-close ─";
+    let foot = "╰─ ]n next · q close · space N all · :note-close ─";
     assert!(bottom.starts_with(foot), "{rows:#?}");
-    assert!(!rows[1..rows.len() - 1].iter().any(|r| r.contains("space n")), "no keys in its body: {rows:#?}");
+    assert!(!rows[1..rows.len() - 1].iter().any(|r| r.contains("]n next")), "no keys in its body: {rows:#?}");
     let keys: Vec<String> = note_card_keys(&ed).into_iter().map(|k| k.0).collect();
-    assert_eq!(keys, ["space n", "]n", "q", "space N", ":note-close"], "each key a button");
+    assert_eq!(keys, ["]n", "q", "space N", ":note-close"], "each key a button");
     // Half lit under the pointer, the wash off it
     let lit = |ed: &Editor| {
         let frames = ed.screen.frames.borrow();
@@ -740,7 +740,7 @@ fn a_lone_notes_card_hints_no_next_and_says_it_is_the_only_one() {
     crate::notes::open(&mut ed, id);
     frame(&mut ed);
     let keys = |ed: &Editor| note_card_keys(ed).into_iter().map(|k| k.0).collect::<Vec<_>>();
-    assert_eq!(keys(&ed), ["space n", "q", "space N", ":note-close"], "no `]n` hinted");
+    assert_eq!(keys(&ed), ["q", "space N", ":note-close"], "no `]n` hinted");
     assert!(!note_card_rows(&ed).last().unwrap().contains("]n"), "{:#?}", note_card_rows(&ed));
     for k in ["]n", "[n"] {
         let said = ed.said;
@@ -753,7 +753,33 @@ fn a_lone_notes_card_hints_no_next_and_says_it_is_the_only_one() {
     }
     crate::notes::add(&mut ed, &path, 5..6, crate::notes::By::Author, &format!("Another. {long}"));
     frame(&mut ed);
-    assert_eq!(keys(&ed), ["space n", "]n", "q", "space N", ":note-close"], "`]n` back with another");
+    assert_eq!(keys(&ed), ["]n", "q", "space N", ":note-close"], "`]n` back with another");
+}
+
+/// #313: a card's keys don't change as your cursor moves — an answer's card that opened at its line (the turn's end, your
+/// cursor elsewhere) has the bottom line it has with your cursor on that line. No `space n reply` on it either way:
+/// `space n` acts at your cursor only (focus C1), never at a card.
+#[test]
+fn a_note_cards_keys_stay_as_the_cursor_moves() {
+    let scratch = crate::scratch::Scratch::new("mouse-overlays-note-steady");
+    let mut ed = editor();
+    let path = scratch.join("a.rs");
+    ed.docs[0].path.set(Some(path.clone()));
+    let long = "A word about this line, long enough for the card to carry every one of its keys.";
+    let id = crate::notes::add(&mut ed, &path, 4..5, crate::notes::By::Author, long);
+    crate::notes::add(&mut ed, &path, 12..13, crate::notes::By::Author, &format!("Another. {long}"));
+    crate::notes::open(&mut ed, id);
+    let bottom = |ed: &mut Editor| {
+        frame(ed);
+        note_card_rows(ed).last().unwrap().clone()
+    };
+    ed.goto_line(1);
+    let off = bottom(&mut ed);
+    ed.goto_line(4);
+    assert!(crate::notes::here(&ed).is_some_and(|n| n.id == id), "the cursor on its line");
+    let on = bottom(&mut ed);
+    assert_eq!(on, off, "the same keys on its line and off it");
+    assert!(on.starts_with("╰─ ]n next · q close") && !on.contains("space n"), "{on}");
 }
 
 /// A draft's key that sends the review (`space v s`: a Claude turn started) is plain faint words on the note card's
@@ -774,7 +800,7 @@ fn the_note_cards_costly_key_is_plain_words() {
     let rows = note_card_rows(&ed);
     assert!(rows.last().unwrap().contains("space v s send 1"), "{rows:#?}");
     let keys: Vec<String> = note_card_keys(&ed).into_iter().map(|k| k.0).collect();
-    assert_eq!(keys, ["space n", "q"], "the send no button (a lone note: no `]n`)");
+    assert_eq!(keys, ["q"], "the send no button (a lone note: no `]n`)");
     assert!(!ed.screen.hints.borrow().iter().any(|h| h.key == "space v s"), "nor a hint");
 }
 
@@ -803,7 +829,7 @@ fn a_note_card_says_its_lines_keys_while_its_reply_is_written() {
     };
     let keys = |ed: &Editor| note_card_keys(ed).into_iter().map(|k| k.0).collect::<Vec<_>>();
     // (a lone note: no `]n` — `a_lone_notes_card_hints_no_next_and_says_it_is_the_only_one`)
-    let walk = ["space n", "q", "space N", ":note-close"];
+    let walk = ["q", "space N", ":note-close"];
     frame(&mut ed);
     assert_eq!(keys(&ed), walk, "its keys before the reply");
     reply(&mut ed);

@@ -640,7 +640,8 @@ fn a_question_stands_in_for_an_open_card_until_it_ends() {
 }
 
 /// `space n` on a line with no note, a sent question's card open on another: a question of its own on your line, never a
-/// reply to that card, whose bottom line doesn't offer it — a key of yours acts at your cursor (#250). `esc`: that card as it
+/// reply to that card, whose bottom line never offers it, on its line or off it (#313) — a key of yours acts at your
+/// cursor (#250). `esc`: that card as it
 /// was. Sent: a note of its own, the first untouched. To reply there: its line. `]n`, `q` and `esc` still act on the open
 /// card from anywhere.
 #[test]
@@ -650,10 +651,11 @@ fn space_n_on_a_line_with_no_note_asks_there_whatever_card_is_open() {
     feed(&mut ed, "4G nfirst<ret>");
     let first = ed.workspace.claude.notes.list[0].id;
     assert_eq!(ed.workspace.claude.notes.open, Some(first));
-    assert!(note_card_rows(&ed).last().unwrap().contains("space n"), "on its line: its key");
+    let on = note_card_rows(&ed).last().unwrap().clone();
+    assert!(!on.contains("space n"), "on its line: no `space n` — never a card's key: {on}");
     feed(&mut ed, "9G");
     let rows = note_card_rows(&ed);
-    assert!(!rows.last().unwrap().contains("space n"), "elsewhere it isn't its key: {rows:#?}");
+    assert_eq!(rows.last().unwrap(), &on, "elsewhere the same keys");
     feed(&mut ed, " n");
     assert_eq!(kind(&ed), Some(PromptKind::Note(None)), "a question");
     let rows = note_card_rows(&ed);

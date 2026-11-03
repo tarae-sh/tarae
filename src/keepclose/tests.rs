@@ -183,9 +183,12 @@ fn one_card_names_every_workspace_behind_and_what_would_conflict_where() {
     assert!(q.contains("  fix — 1 behind, its changed file goes with it"), "{q}");
     assert!(q.contains("  up — 1 behind\n"), "{q}");
     assert!(q.contains("  db — 1 behind, would conflict in a.rs L3"), "{q}");
-    assert!(q.contains("c rebases the conflicting one too"), "{q}");
+    // (what each answer does behind `v` — polish landing 4: the answers' words on the card, the prose read on demand)
+    assert!(!q.contains("c rebases"), "{q}");
+    let more = card(&s.ed).unwrap().output.clone().expect("behind v").1.join("\n");
+    assert!(more.contains("c rebases the conflicting one too"), "{more}");
     let answers: Vec<char> = card(&s.ed).unwrap().answers(false).iter().map(|a| a.0).collect();
-    assert_eq!(answers, ['y', 'c', 'n']);
+    assert_eq!(answers, ['y', 'c', 'v', 'n']);
     // Each workspace named in its own colour, as the strip and the list name it (`Offer.paint`)
     let colour = |name: &str| {
         let c = s.ed.workspaces.iter().find(|l| l.id == s.id(name)).unwrap().claude.colour;
@@ -792,8 +795,8 @@ fn idle_moves_the_clean_ones_unasked_and_asks_only_for_the_conflicting() {
     assert!(s.on_tip("fix") && s.on_tip("up") && !s.on_tip("db"));
     let m = moves(&s.ed);
     assert_eq!(m.ws.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["db"]);
-    let q = &card(&s.ed).unwrap().question;
-    assert!(q.contains("fix, up are moving by themselves (workspace.sync = \"idle\")"), "{q}");
+    let more = card(&s.ed).unwrap().output.clone().expect("behind v").1.join("\n");
+    assert!(more.contains("fix, up are moving by themselves (workspace.sync = \"idle\")"), "{more}");
     assert_eq!(said(&s.ed, "fix · moved onto main (workspace.sync = \"idle\")"), 1);
 }
 

@@ -902,72 +902,9 @@ fn snapshot_offer_install() {
     s.check("offer_install");
 }
 
-/// A run of Claude's that looks stuck (#181): how long it's been quiet and idle, what its threads wait in,
-/// `y Stop it` · `w What it waits on` · `n Keep waiting`.
-#[test]
-fn snapshot_offer_stuck() {
-    let mut s = Shot::new(100, 30);
-    s.ed.offer_popups = true;
-    s.file("src/demo.rs", DEMO_RS);
-    let stuck = crate::stuck::Stuck {
-        slot: crate::sizes::Slot::Task,
-        run: 1,
-        pid: 4242,
-        asked: std::time::Instant::now(),
-        quiet: std::time::Duration::from_secs(12 * 60 + 4),
-        cpu: 0.0,
-        at: 0,
-        reach: None,
-    };
-    s.ed.push_offer(crate::offer::Offer::new(
-        "Stuck? Claude's command".into(),
-        "No output for 12 min, 0% CPU — Claude's command cargo test --target aarch64-unknown-linux-gnu in the \
-         task panel. Claude's turn waits on it, and only you can stop it.\n\nWhat each of its threads waits in \
-         is in its output now (w), kept if you stop it:\n    pid 4242 · cargo test --target \
-         aarch64-unknown-linux-gnu · 1 thread\n      cargo — sleeping in do_wait · 0.84 s CPU\n    pid 4250 · \
-         qemu-aarch64 target/debug/deps/tarae-1f2e · 3 threads\n      3 × qemu-aarch64 — sleeping in \
-         futex_wait_queue · 0.02 s CPU\n    …",
-        "Stopping…",
-        String::new(),
-        crate::offer::What::Stuck(Box::new(stuck)),
-    ));
-    s.check("offer_stuck");
-}
-
-/// frictions15 #3: a quiet run connected to a daemon outside its tree — `Quiet:`, not `Stuck?`, and where its
-/// work may be going on, made by `stuck::card` itself.
-#[test]
-fn snapshot_offer_quiet() {
-    let mut s = Shot::new(100, 30);
-    s.ed.offer_popups = true;
-    s.file("src/demo.rs", DEMO_RS);
-    let stuck = crate::stuck::Stuck {
-        slot: crate::sizes::Slot::Task,
-        run: 1,
-        pid: 4242,
-        asked: std::time::Instant::now(),
-        quiet: std::time::Duration::from_secs(14 * 60),
-        cpu: 0.0,
-        at: 0,
-        reach: Some(crate::sandbox::ReachOut::Sockets("~/.colima/default/docker.sock".into())),
-    };
-    let lines = [
-        "pid 4242 · cargo xtask linux test · 1 thread".to_string(),
-        "  cargo — waiting · 0.31 s CPU".to_string(),
-        "pid 4250 · docker run --rm tarae-linux cargo test · 9 threads".to_string(),
-        "  9 × docker — waiting · 0.12 s CPU".to_string(),
-    ];
-    let label = "Claude's command cargo xtask linux test in the task panel";
-    let peers = ["~/.colima/default/docker.sock".to_string()];
-    s.ed.push_offer(crate::stuck::card(stuck, label, &lines, &peers));
-    s.check("offer_quiet");
-    s.frames_both("offer_quiet");
-}
-
 /// frictions34's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, 100×30;
-/// `.sb/frictions34-shots.sh` draws them): the stuck card on a run whose output goes through `tail` — before,
-/// and once it says why nothing shows (39 a); a failed preflight that a bring card's `p` ran — before, a toast;
-/// after, the card back naming what failed first, `v` its output (42).
+/// `.sb/frictions34-shots.sh` draws them): a failed preflight that a bring card's `p` ran — before, a toast;
+/// after, the card back naming what failed first, `v` its output (42). (Its stuck card went with polish landing 4.)
 #[test]
 fn frames_of_frictions34() {
     if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
@@ -979,31 +916,6 @@ fn frames_of_frictions34() {
         s.file("src/demo.rs", DEMO_RS);
         s
     };
-    let cmd = "cargo xtask scenes --out .sb/shots/after shuttlecard shuttle 2>&1 | tail -15";
-    let lines = [
-        "pid 4242 · sh -c cargo xtask scenes --out .sb/shots/after … · 1 thread",
-        "  sh — sleeping in do_wait · 0.01 s CPU",
-        "pid 4243 · tail -15 · 1 thread",
-        "  tail — sleeping in pipe_read · 0.00 s CPU",
-    ]
-    .map(String::from);
-    // (before: the label as it was, no word of the filter; after: as `stuck::ask` makes it)
-    let labels = [format!("Claude's command {cmd} in the task panel"), crate::stuck::task_label(cmd)];
-    for (name, label) in ["f34_stuck_before", "f34_stuck_after"].into_iter().zip(labels) {
-        let mut s = shot();
-        let stuck = crate::stuck::Stuck {
-            slot: crate::sizes::Slot::Task,
-            run: 1,
-            pid: 4242,
-            asked: std::time::Instant::now(),
-            quiet: std::time::Duration::from_secs(10 * 60),
-            cpu: 0.0,
-            at: 0,
-            reach: None,
-        };
-        s.ed.push_offer(crate::stuck::card(stuck, &label, &lines, &[]));
-        s.frames_both(name);
-    }
     let mut s = shot();
     s.ed.set_warning("linmetab not brought — the quick preflight didn't pass");
     s.frames_both("f34_bring_before");
@@ -1029,6 +941,70 @@ fn frames_of_frictions34() {
     let failed = Some(("quick preflight · test".to_string(), output));
     s.ed.push_offer(m.failed_card("quick preflight", failed));
     s.frames_both("f34_bring_after");
+}
+
+/// Landing 4's screens, for its shots (only with `TARAE_FRAMES_DIR` set: both themes, 80×24 and 120×34 —
+/// `.sb/cards4-shots.sh`): the one bring card, the rebased one, the failed one, the bring under way where its session is
+/// named (the strip, the status line's chip), its one toast at the end; `main moved` at 80. The stuck run's and the stale
+/// draft's are their tests' (`stuck/tests.rs`, `notes.rs`).
+#[test]
+fn frames_of_cards4() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    let sizes = crate::screen::SHOT_SIZES;
+    let m = crate::rebase::Moved {
+        root: PathBuf::from("/stand-in/fix"),
+        name: "fix".into(),
+        branch: "fix".into(),
+        base: "main".into(),
+        moved: 3,
+        ahead: 2,
+    };
+    let quick = Some(vec!["fmt".to_string(), "clippy".into(), "test".into()]);
+    let shot = || {
+        let mut s = Shot::new(120, 34);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s
+    };
+    for (name, card) in [
+        ("cards4-bring", m.card(quick.clone())),
+        ("cards4-bring-rebased", m.bring_card(quick.clone(), true)),
+        ("cards4-bring-failed", {
+            let output = [
+                "running 4545 tests",
+                "test worktree::tests::a_moved_base_is_rebased_onto_then_brought ... FAILED",
+                "failures:",
+                "thread 'worktree::tests::a_moved_base_is_rebased_onto_then_brought' panicked at src/worktree.rs:3920:9:",
+                "its toast, the end's",
+            ]
+            .map(String::from)
+            .to_vec();
+            m.failed_card("quick preflight", Some(("quick preflight · test".into(), output)))
+        }),
+        ("cards4-main-moved", base_moved(true).card()),
+    ] {
+        let mut s = shot();
+        s.ed.push_offer(card);
+        crate::screen::frames_sized(&mut s.ed, name, sizes);
+    }
+    // The bring under way: said where `fix` is named — the top row's strip (no chat column), the status line's chip
+    for (name, rebased) in [("cards4-bringing", false), ("cards4-bringing-rebased", true)] {
+        let mut s = shot();
+        let id = s.ed.workspace_add(PathBuf::from("/stand-in/fix"));
+        let w = s.ed.workspace_by_id(id).unwrap();
+        w.name = "fix".into();
+        (w.bring_go, w.bring_rebased) = (true, rebased);
+        crate::screen::frames_sized(&mut s.ed, name, sizes);
+    }
+    let mut s = shot();
+    s.ed.set_success("Brought 2 commits of fix into main — now at 1a2b3c4");
+    let fresh = Instant::now().checked_sub(Duration::from_millis(500)).unwrap();
+    for t in &mut s.ed.toasts {
+        (t.at, t.shown) = (fresh, true);
+    }
+    crate::screen::frames_sized(&mut s.ed, "cards4-brought", sizes);
 }
 
 /// frictions37's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, 80×24 and
@@ -2120,10 +2096,7 @@ fn a_note_card_opens_under_its_lines() {
             assert!(r < y, "note at {first}: line {k} (row {r}) above the card at {y}");
         }
         assert_eq!(row(first + 6), Some(y - 1), "note at {first}: the card right under its last line");
-        assert!(
-            rows.iter().any(|r| r.contains("╰─ space n reply")),
-            "note at {first}: the card whole in sight"
-        );
+        assert!(rows.iter().any(|r| r.contains("╰─ q close")), "note at {first}: the card whole in sight");
         if let Some(r) = row(first + 7) {
             assert_eq!(r, y + h, "note at {first}: the next line right under the card");
         }
@@ -2286,10 +2259,7 @@ fn a_cut_note_keeps_who_is_talking() {
     assert!(card[1].starts_with("¶ claude"), "{card:#?}");
     assert!(card[2].starts_with("… Sentence number"), "{card:#?}");
     assert!(card.iter().any(|r| r.contains("Sentence number 12")), "the newest stays: {card:#?}");
-    assert!(
-        card.last().unwrap().starts_with("╰─ space n reply · "),
-        "and the keys, its bottom line: {card:#?}"
-    );
+    assert!(card.last().unwrap().starts_with("╰─ q close · "), "and the keys, its bottom line: {card:#?}");
 }
 
 /// Who wrote each note, where it's seen: the reviewer's finding (`¶ reviewer · not sent yet` on its card, its
@@ -7536,7 +7506,7 @@ fn what_takes_the_keys_is_framed_with_its_name() {
 }
 
 /// The user, 2026-10-25: a floating card's keys are always in its bottom line — an ask too wide for its answers whole
-/// says each answer's short words there (`main moved`: `y move · c all · v files · n not now`), never rows of keys
+/// says each answer's short words there (`main moved`: `y move · c all · v more · n not now`), never rows of keys
 /// inside; where they fit, whole; each answer's button where its key is drawn; focused, `esc back` where its way in
 /// was and the answers where they were.
 #[test]
@@ -7554,7 +7524,7 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
         (s, rows.clone(), at(&rows[y + ch - 1]), inside, y + ch - 1)
     };
     // (at 80 the card's reading width is 40: its last answer its key alone)
-    let short = "╰─ C-q answer · y move · c all · v files · n ─";
+    let short = "╰─ C-q answer · y move · c all · v more · n ─";
     let (mut s, rows, bottom, inside, by) = shown(80);
     assert!(bottom.starts_with(short) && bottom.ends_with('╯'), "{bottom:?}");
     assert!(
@@ -7574,14 +7544,14 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
     let rows: Vec<String> = cells(&s.frame(), 80, 30).screen().rows(0, 80).collect();
     let (x, ..) = s.ed.screen.offer_card.unwrap();
     let bottom: String = rows[by].chars().skip(x).collect();
-    assert!(bottom.starts_with("╰─── esc back · y move · c all · v files · n ─"), "{bottom:?}");
+    assert!(bottom.starts_with("╰─── esc back · y move · c all · v more · n ─"), "{bottom:?}");
     assert_eq!(s.ed.screen.offer_buttons, buttons, "the answers in place");
     // At 160 its reading width is 56: every one its short words — the card never wider for them (the user,
     // 2026-10-25: "answers too wide for it" — for the card, not the screen)
     let (s, _, bottom, ..) = shown(160);
-    assert!(bottom.starts_with("╰─ C-q answer · y move · c all · v files · n not now ─"), "{bottom:?}");
+    assert!(bottom.starts_with("╰─ C-q answer · y move · c all · v more · n not now ─"), "{bottom:?}");
     let whole =
-        "╰─ C-q answer · y Move the clean ones · c Conflicting ones too · v Instruction files · n Not now ─╯";
+        "╰─ C-q answer · y Move the clean ones · c Conflicting ones too · v What each does · n Not now ─╯";
     let card = s.ed.screen.offer_card.unwrap();
     assert!(card.2 < whole.chars().count(), "never widened for its answers: {card:?}");
     // (what keeps its words is its kind's flag on the answer (`Offer::answers_all`): a move onto the base is a rebase
@@ -7597,13 +7567,13 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
     };
     let install = crate::offer::Offer::new("Install?".into(), "q", "", String::new(), what);
     assert_eq!(['y', 'n', 'N'].map(|k| install.lasting(k)), [false, false, true]);
-    // (a stuck run's `y Stop it` can't be taken back: kept, lowercase as it is)
-    assert_eq!(['y', 'w', 'n'].map(|k| quiet_card().lasting(k)), [true, false, false]);
+    // (a restart over the same build's `y Restart anyway` can't be taken back: kept, lowercase as it is)
+    assert_eq!(['y', 'n'].map(|k| lasting_card().lasting(k)), [true, false]);
     // (BaseMoved's short words, and those any card's answers fall back to)
     let card = moves(false).card();
     assert_eq!(
         card.answers_short(false),
-        [('y', "move".into()), ('c', "all".into()), ('n', "not now".into())]
+        [('y', "move".into()), ('c', "all".into()), ('v', "more".into()), ('n', "not now".into())]
     );
 }
 
@@ -7864,12 +7834,13 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         (
             "bring",
             moved.bring_card(None, true),
-            "╰─ C-q answer · y bring · p preflight · n not now ──────────╯",
+            // (one bring card: its two answers whole — polish landing 4)
+            "╰─ C-q answer · y Bring · n Not now ──────────────────────╯",
         ),
         (
             "grant",
             crate::blocked::also_card(grant, reason, "npm test", Box::new(run), None, Vec::new(), false),
-            "╰─ C-q answer · y · a chat · s session · A always · n ─────╯",
+            "╰─ C-q answer · y once · a chat · s session · A always · n ─╯",
         ),
         (
             "host",
@@ -7936,33 +7907,19 @@ fn frames_of_cardkeys() {
         c.msgs.push(Msg::tool(look("read", "src/demo.rs", "L1–20"), "t1"));
         c.msgs.push(Msg::new(Role::Assistant, "Running the tests in Linux to see it stall.", ""));
         c.msgs.push(Msg::tool(look("run", "cargo xtask linux test", ""), "t2"));
-        s.ed.push_offer(quiet_card());
+        s.ed.push_offer(lasting_card());
         s.frames_both(&format!("cardkeys-follow-{w}"));
         s.ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
         s.frames_both(&format!("cardkeys-follow-paused-{w}"));
     }
 }
 
-/// A quiet run's card (`snapshot_offer_quiet`'s): its command connected to a daemon outside its tree.
-fn quiet_card() -> crate::offer::Offer {
-    let stuck = crate::stuck::Stuck {
-        slot: crate::sizes::Slot::Task,
-        run: 1,
-        pid: 4242,
-        asked: std::time::Instant::now(),
-        quiet: std::time::Duration::from_secs(14 * 60),
-        cpu: 0.0,
-        at: 0,
-        reach: Some(crate::sandbox::ReachOut::Sockets("~/.colima/default/docker.sock".into())),
-    };
-    let lines = [
-        "pid 4242 · cargo xtask linux test · 1 thread".to_string(),
-        "  cargo — waiting · 0.31 s CPU".to_string(),
-        "pid 4250 · docker run --rm tarae-linux cargo test · 9 threads".to_string(),
-        "  9 × docker — waiting · 0.12 s CPU".to_string(),
-    ];
-    let label = "Claude's command cargo xtask linux test in the task panel";
-    crate::stuck::card(stuck, label, &lines, &["~/.colima/default/docker.sock".to_string()])
+/// A card whose `y` can't be taken back (`RestartSame`'s `Restart anyway`) — the cards' frames' stand-in (the quiet
+/// run's card went with polish landing 4).
+fn lasting_card() -> crate::offer::Offer {
+    let what = crate::offer::What::RestartSame { id: 1 };
+    let q = "The build it would make is the one running now.";
+    crate::offer::Offer::new("Restart into the same build?".into(), q, "", String::new(), what)
 }
 
 /// `main` moved: two workspaces behind it, `db` would conflict — with an instruction file newer in the main checkout
@@ -10063,8 +10020,8 @@ fn frames_of_note_cards() {
                 );
                 let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
                 (n.thread[0].draft, n.waiting) = (true, false);
-                crate::notes::stale_card(&mut s.ed, vec![id]);
-                assert!(!crate::notes::stale_shown(&s.ed).is_empty(), "the stale card up");
+                crate::notes::stale_mark(&mut s.ed, vec![id]);
+                assert!(!crate::notes::stale_shown(&s.ed).is_empty(), "stale");
             }
         }
         let line = match which {

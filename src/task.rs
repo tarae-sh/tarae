@@ -738,6 +738,10 @@ impl Editor {
 
     /// `space m c` — stop the task and close its panel.
     pub fn task_close(&mut self) {
+        // (Claude's command said stuck: stopped whole, its panel and output kept — `stuck::stop`)
+        if crate::stuck::stop_key(self, crate::sizes::Slot::Task) {
+            return;
+        }
         // An install stopped half-way: its card says so (and `y` tries again)
         if let Some(a) = self
             .workspace

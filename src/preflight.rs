@@ -811,8 +811,7 @@ impl Editor {
             move |ed: &mut Editor| match packs.held.first() {
                 // (a kind of project the packs know, but it runs its checks its own way: say how)
                 Some(why) if packs.steps.is_empty() && local.is_empty() => {
-                    ed.workspace.bring_after_preflight = false;
-                    ed.set_error(format!("no preflight steps — {why}"));
+                    ed.preflight_none(format!("no preflight steps — {why}"));
                 }
                 _ => ed.preflight_found_asking(root, packs.steps, local, set, always, told),
             }
@@ -861,10 +860,10 @@ impl Editor {
         told: Option<bool>,
     ) {
         if packs.is_empty() && local.is_empty() {
-            self.workspace.bring_after_preflight = false;
-            return self.set_error(
+            return self.preflight_none(
                 "no preflight steps — no language pack knows this kind of project; add [preflight] steps = \
-                 [{ name = \"…\", cmd = \"…\" }, …] to .tarae.toml",
+                 [{ name = \"…\", cmd = \"…\" }, …] to .tarae.toml"
+                    .into(),
             );
         }
         let defaults = !packs.is_empty();
@@ -877,6 +876,17 @@ impl Editor {
             self.workspace.bring_after_preflight = false;
             self.set_error(e);
         }
+    }
+
+    /// No step to run (`said` why). A bring waiting for it goes on — no step is no failure (the bring card's `y`
+    /// brought at once before polish landing 4): `said` recorded, the bring's toast saying none ran; else an error.
+    fn preflight_none(&mut self, said: String) {
+        if !self.workspace.bring_after_preflight {
+            return self.set_error(said);
+        }
+        self.recorded(crate::editor::ToastKind::Info, said);
+        self.workspace.bring_unchecked = true;
+        self.rebase_preflight_done(true, "preflight");
     }
 
     /// The card before `steps` run (`y` runs them): the packs' defaults (`defaults`) say they run the
@@ -1019,7 +1029,17 @@ impl Editor {
         if !passed {
             p.kept = output;
         }
-        if passed {
+        // (a bring waiting for it: one toast at the bring's end — a pass is recorded only, the bring says the rest;
+        // a failure is that end, said as the bring's — polish landing 4, the user 2026-11-03)
+        let bringing =
+            self.workspace.bring_after_preflight && self.bring_queue_at(self.workspace.id).is_none();
+        let said = match bringing && !passed {
+            true => format!("{} · not brought — {said}", self.workspace.label()),
+            false => said,
+        };
+        if passed && bringing {
+            self.recorded(crate::editor::ToastKind::Success, said);
+        } else if passed {
             self.set_success(said);
         } else {
             // (what of tarae's environment its steps got that changes their tools: a test that fails on one

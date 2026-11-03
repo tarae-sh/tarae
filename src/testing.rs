@@ -594,6 +594,10 @@ impl Editor {
 
     /// `space x c` — closes the test pane (stops the run if it's going).
     pub fn test_close(&mut self) {
+        // (Claude's tests said stuck: stopped whole, the pane and its output kept — `stuck::stop`)
+        if crate::stuck::stop_key(self, crate::sizes::Slot::Test) {
+            return;
+        }
         crate::tools::tests_dropped(self, "the user closed it");
         self.workspace.test_run = None;
         // (the pane is free: what waits for it starts)

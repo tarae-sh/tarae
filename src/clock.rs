@@ -148,7 +148,6 @@ mod tests {
         ("sandbox/supervisor.rs", 2),
         ("snapshot.rs", 1),
         ("spawn.rs", 2),
-        ("stuck.rs", 1),
         ("syntax.rs", 4),
         ("task.rs", 6),
         ("term.rs", 10),

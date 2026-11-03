@@ -1655,7 +1655,8 @@ pub struct Free {
 
 /// What Docker's card's `a` lets vary of a command whose code is pinned (`llm.docker-inert`, #139 — a project's only
 /// once trusted, `trust::RISKY`): after `run`'s words, `words` (its acts), `flags` (switches), `values` (options, each
-/// with one plain value after it) and, where `test_names`, test names after `--`. Written as one string:
+/// with one plain value after it) and, where `test_names`, test names — after `--`, or after `test` as its filter (#306).
+/// Written as one string:
 /// `"cargo xtask linux: clippy test --userns --bin= --"` — a plain word an act, `-x` a switch, `-x=` an option and its
 /// value, `--` test names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1746,7 +1747,7 @@ impl Again {
                 let mut which: Vec<String> =
                     spec.words.iter().chain(&spec.flags).chain(&spec.values).cloned().collect();
                 if spec.test_names {
-                    which.push("test names after --".into());
+                    which.push("test names".into());
                 }
                 Some(format!("`{}` ({})", p[..f.kept].join(" "), which.join(", ")))
             })
@@ -1842,15 +1843,20 @@ fn inert_args(spec: &Inert, args: &[String]) -> bool {
     };
     let test_name =
         |w: &String| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');
-    let mut i = 0;
+    let (mut i, mut testing) = (0, false);
     while let Some(w) = args.get(i) {
         if w == "--" {
             return spec.test_names && args[i + 1..].iter().all(test_name);
         }
         if spec.words.contains(w) || spec.flags.contains(w) {
+            testing |= w == "test";
             i += 1;
         } else if spec.values.contains(w) && args.get(i + 1).is_some_and(value) {
             i += 2;
+        } else if spec.test_names && testing && test_name(w) {
+            // (a test name as `cargo xtask linux test --bin tarae <name>` takes it, `cargo test`'s filter — #306: one
+            // there kept the whole line word for word, its `--repeat` and all)
+            i += 1;
         } else {
             return false;
         }
@@ -8091,7 +8097,7 @@ mod tests {
         let a = |cmd: &str| super::again(cmd).unwrap().any_arguments(&inert);
         let xtask = a("cargo xtask linux test -- sandbox::keeper");
         let said = " with other arguments after `cargo xtask linux` (clippy, test, --userns, --docker-default, --bin, \
-                    --repeat, test names after --) — no others";
+                    --repeat, test names) — no others";
         assert_eq!(xtask.args_said(), said);
         for freed in [
             "cargo xtask linux clippy",
@@ -8135,6 +8141,26 @@ mod tests {
         assert!(
             imaged.covers("cargo xtask linux --image x test") && !imaged.covers("cargo xtask linux clippy")
         );
+        // #306: the friction's two lines — another repeat count, another filter after it, a test name as `xtask linux`
+        // takes it (after `test`, `cargo test`'s filter, as CONTRIBUTING writes it) — one command; a word that isn't a
+        // test name, or one before `test` or with `clippy` (xtask refuses it), still asks
+        let named =
+            a("cargo xtask linux test --repeat 5 --bin tarae slow_reader 2>&1 | grep -E 'x|y' | head -30");
+        assert!(named.args_free(), "{named:?}");
+        for freed in [
+            "cargo xtask linux test --repeat 3 --bin tarae slow_reader 2>&1 | grep -E 'ok|z' | tail -5",
+            "cargo xtask linux test --bin tarae other::name",
+        ] {
+            assert!(named.covers(freed), "{freed}");
+        }
+        for asks in [
+            "cargo xtask linux test --bin tarae ../x",
+            "cargo xtask linux test --bin tarae a.b",
+            "cargo xtask linux name test",
+            "cargo xtask linux clippy name",
+        ] {
+            assert!(!named.covers(asks), "{asks}");
+        }
         let limited = a("timeout 1800 cargo xtask linux clippy");
         assert!(limited.covers("timeout 1800 cargo xtask linux --userns test"));
         assert!(!limited.covers("timeout 60 cargo xtask linux clippy"));

@@ -508,6 +508,11 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             crate::notes::close_by(editor, by);
             Ok(())
         }
+        // (the notes list's `C-l`: every draft whose lines changed since it was pinned — no card, polish landing 4)
+        "notes-close-stale" => {
+            crate::notes::close_stale(editor);
+            Ok(())
+        }
         n if n.parse::<usize>().is_ok() => {
             // (a woven view's numbers are where each line is: the tip's line N — `weave::woven_line`)
             let line = n.parse::<usize>().unwrap().saturating_sub(1);

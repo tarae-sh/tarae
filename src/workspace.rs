@@ -195,6 +195,17 @@ pub struct Workspace {
     /// The bring card whose `p` that preflight runs for: up again, with what failed, if it doesn't pass
     /// (frictions34 42 — a toast was all, and the output went with the task panel's next run).
     pub bring_card_after: Option<Box<crate::rebase::Moved>>,
+    /// A bring its card's `y` asked for (polish landing 4, one bring card): the rebase it starts goes on to the quick
+    /// preflight and the bring by itself, stopping only on a conflict (the resolve loop, then on), a failed
+    /// preflight, high-risk changes not looked at or messages a resolution kept (`Editor::bring_go_on`). Cleared by
+    /// an abort, a rebase that didn't start, or the preflight it goes to.
+    pub bring_go: bool,
+    /// The preflight a bring waits for (`bring_after_preflight`) came after its rebase: its state words say
+    /// `bringing · rebased · preflight 2/4` (`Editor::bring_progress`). Read only with `bring_after_preflight`.
+    pub bring_rebased: bool,
+    /// The bring under way found no preflight steps to run first (a kind of project no pack checks, none of its
+    /// own): its toast says so (`Editor::bringing`).
+    pub bring_unchecked: bool,
     /// That preflight failed, at the HEAD its card was graded at: a bring card asked again there says so too
     /// (frictions29 91 — `codereview::push_bring_card`); a pass, or another HEAD, lets it go.
     pub bring_failed: Option<crate::rebase::Failed>,
@@ -437,6 +448,9 @@ impl Workspace {
             end_when_idle: None,
             bring_after_preflight: false,
             bring_card_after: None,
+            bring_go: false,
+            bring_rebased: false,
+            bring_unchecked: false,
             bring_failed: None,
             bring_tested: None,
             turn_review_back: None,
@@ -1919,9 +1933,12 @@ mod tests {
             crate::offer::Offer::new("Resolved".into(), "go on?", "", String::new(), what)
         };
         for root in [&back, &link] {
-            for card in
-                [moved(root).card(), moved(root).bring_card(None, true), resolved(root), ending(root).card()]
-            {
+            for card in [
+                moved(root).card(None),
+                moved(root).bring_card(None, true),
+                resolved(root),
+                ending(root).card(),
+            ] {
                 let kind = card.kind();
                 ed.offers.clear();
                 ed.push_offer(card);

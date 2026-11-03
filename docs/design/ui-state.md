@@ -352,7 +352,7 @@ side git · 4 rows · in hand git:src/term.rs
     session's panes, `keys.region` `list:sessions` while it has the keys; `C-w m` moving one is `keys.region` `move`.
 - **`runs`** — task, tests, preflight steps, Claude's runs, and queued ones (`runs_next`).
   - State: `queued` · `running` · `waiting` (with `Waiting::shown`) · `quiet` (cardburden 5: a run of
-    Claude's printing nothing, held from the stuck card — under its own time limit still to come, or its work
+    Claude's printing nothing, held from being said `◦ stuck?` — under its own time limit still to come, or its work
     maybe elsewhere and not yet `llm.stuck-after-outside` quiet: `stuck::held`) · `passed` · `failed` ·
     `stopped`.
   - `since`.

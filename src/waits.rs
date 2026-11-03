@@ -107,8 +107,12 @@ pub struct Waiting {
     pub idle: Option<Instant>,
     /// Its share of a core at the last look, all its processes told.
     pub cpu: Option<f32>,
-    /// When the stuck card last asked about it — it asks again only after as long again.
+    /// When it was last found stuck — looked at again only after as long again.
     pub stuck_asked: Option<Instant>,
+    /// It looks stuck (`stuck::ask`): said where it's drawn — `◦ stuck?` on its panel's top line and the chat's row,
+    /// beside its stop key, which then stops it as `stuck::stop` does. No card (polish landing 4). Gone once it prints
+    /// or starts new work (`stuck::sync`).
+    pub stuck: Option<Box<crate::stuck::Stuck>>,
     /// The processes of its tree at work at the last look — (pid, start), `procs::at_work`.
     pub at_work: Vec<(u32, u64)>,
     /// When a look last found a process in its tree newer than any before — work that prints nothing here

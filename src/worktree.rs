@@ -2334,7 +2334,7 @@ impl Editor {
                 doing: self.doing(l),
                 front: l.id == self.workspace.id,
                 usage: crate::procs::summed(&self.procs.rows, &self.session_pids(l)),
-                rebasing: l.rebase.as_ref().map(crate::rebase::Rebase::said),
+                rebasing: self.bring_progress(l),
                 reloaded: l.reloaded,
                 compacted: l.claude.compacted.unseen,
                 reviewer: Shown::reviewer_of(self, l),
@@ -2556,6 +2556,10 @@ impl Editor {
                 false => offered,
             };
         }
+        // (a bring going on by itself there — its card's `y`: one bring at a time, its words say where it is)
+        if how == How::Card && self.bring_going(session) {
+            return Err(self.being_brought(session));
+        }
         let (root, base, start) = (session.root.clone(), session.base.clone(), self.start_root());
         let (looked, rules) = (session.looked.clone(), crate::risk::Rules::of(&self.config));
         let unsaved: Vec<PathBuf> =
@@ -2591,6 +2595,13 @@ impl Editor {
             }
             // (its changes to the instruction files, asked for the main checkout's as its bring (or move up) card
             // comes — the bring decided, its checkout there while the card waits: frictions29 #79)
+            // (asked as its bring began going — the card's `y` there: no second card)
+            let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
+            if let Some(l) = all().find(|l| l.id == id).filter(|l| how == How::Card && ed.bring_going(l)) {
+                let said = ed.being_brought(l);
+                ed.set_status(said);
+                return;
+            }
             if let Bringing::Ready(m) = &result {
                 crate::instructions::carry_out(ed, m.root.clone());
             }
@@ -2605,8 +2616,11 @@ impl Editor {
                         .any(|l| l.id == id && l.claude.parent.is_some());
                     let held = child && ed.end_held(id, &name).is_some();
                     let later = if held { " · end it once it's idle" } else { "" };
+                    let mut unchecked = false;
+                    ed.with_workspace(id, |ed| unchecked = std::mem::take(&mut ed.workspace.bring_unchecked));
+                    let unchecked = if unchecked { " — no preflight steps to run first" } else { "" };
                     ed.set_success(format!(
-                        "Brought {} of {} into {} — now at {}{later}",
+                        "Brought {} of {} into {} — now at {}{unchecked}{later}",
                         commits(b.count),
                         b.branch,
                         b.base,
@@ -2627,7 +2641,11 @@ impl Editor {
                         crate::log::line("session", "info", &format!("{name}'s end after its bring: {e}"));
                     }
                 }
-                Bringing::Moved(m) => ed.push_offer(crate::orchestra::carry(m.card(), proposed)),
+                Bringing::Moved(m) => {
+                    let mut quick = None;
+                    ed.with_workspace(id, |ed| quick = ed.preflight_quick());
+                    ed.push_offer(crate::orchestra::carry(m.card(quick), proposed))
+                }
                 // (nothing of its own, behind: moved up instead — #186)
                 Bringing::Ready(m) if m.ahead == 0 => {
                     ed.push_offer(crate::orchestra::carry(m.up_card(), proposed))
@@ -3768,10 +3786,25 @@ mod tests {
     /// a rebase (#155: it brought at once) — `y` brings it.
     fn bring_asked(ed: &mut Editor, branch: &str, base: &str) {
         let title = format!("Bring {branch} into {base}");
+        passing_preflight(ed);
         feed(ed, ":workspace-bring<ret>");
         settle_until(ed, |ed| card(ed, &title).is_some() || says(ed, &format!("bring {branch}:")));
-        assert_eq!(card_in_sight(ed), ['y', 'p', 'n'], "{}", said(ed));
+        assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", said(ed));
         feed(ed, "y");
+    }
+
+    /// A preflight that passes (`true`), where the test set none: the one bring card's `y` runs it before the bring
+    /// (polish landing 4).
+    fn passing_preflight(ed: &mut Editor) {
+        if ed.config.preflight.is_empty() {
+            ed.config.preflight = vec![crate::preflight::Step {
+                name: "check".into(),
+                cmd: "true".into(),
+                note: None,
+                from: ".tarae.toml".into(),
+                full: false,
+            }];
+        }
     }
 
     /// #200's kind: the bring card for a session behind comes from a job that swapped that session in first
@@ -3799,7 +3832,7 @@ mod tests {
             ed.handle_event(ev);
         }
         assert!(!ed.unchanged, "the event that put the card up is drawn");
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3856,9 +3889,9 @@ mod tests {
             let title = format!("Bring {} into ", ed.workspace.name);
             let up = |ed: &Editor| ed.offers.iter().any(|o| o.title.starts_with(&title));
             settle_until(ed, |ed| up(ed) || says(ed, "bring "));
-            assert_eq!(card_in_sight(ed), ['y', 'p', 'n'], "{}", said(ed));
+            assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", said(ed));
             ed.workspace.preflight = None;
-            feed(ed, "p");
+            feed(ed, "y");
             let defaults = |ed: &Editor| card(ed, "Run these checks?").is_some();
             let refused = |ed: &Editor| ed.messages[said_before..].iter().any(|m| m.2.contains("preflight"));
             settle_until(ed, |ed| ed.workspace.preflight.is_some() || defaults(ed) || refused(ed));
@@ -3959,8 +3992,8 @@ mod tests {
         feed(&mut ed, "b");
         settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
         let q = &card(&ed, "Bring feat into main").unwrap().question;
-        assert!(q.starts_with("1 commit on main's tip now.\n\nBring it into main"), "{q}");
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
+        assert!(q.starts_with("Run the preflight, then bring it into main?\n1 commit on main's tip."), "{q}");
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
         feed(&mut ed, "n");
         assert_eq!(git_in(&repo, &["rev-parse", "main"]), main_was, "nothing brought yet");
         bring_asked(&mut ed, "feat", "main");
@@ -3980,11 +4013,12 @@ mod tests {
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "and again"]);
         let main = git_in(&repo, &["rev-parse", "main"]);
         feed(&mut ed, ":workspace-bring<ret>");
-        settle_until(&mut ed, |ed| card(ed, "Bring late: main moved").is_some() || says(ed, "bring late:"));
-        let q = &card(&ed, "Bring late: main moved").unwrap().question;
+        settle_until(&mut ed, |ed| card(ed, "Bring late into main").is_some() || says(ed, "bring late:"));
+        let q = &card(&ed, "Bring late into main").unwrap().question;
         assert!(
             q.starts_with(
-                "Rebase late onto main first? main moved 2 commits since late left it; late is 1 commit ahead."
+                "Rebase late onto main's tip, run the preflight, then bring it in?\nmain moved 2 commits since late \
+                 left it; late has 1 commit."
             ),
             "{q}"
         );
@@ -4141,12 +4175,22 @@ mod tests {
         (wt.clone(), git_in(&wt, &["rev-parse", "HEAD"]))
     }
 
-    /// `:workspace-bring`, the rebase card up and answered `y` — the rebase under way.
+    /// `:workspace-bring`, the bring card up and answered `y` — the rebase under way, and only the rebase: its going on
+    /// to the preflight and the bring let go (`Workspace.bring_go`), so the rebase's own steps end at the bring card
+    /// a stop puts up. `bring_go_asked` keeps the whole bring.
     fn rebase_asked(ed: &mut Editor) {
+        bring_go_asked(ed);
+        ed.workspace.bring_go = false;
+    }
+
+    /// `:workspace-bring`, the one bring card up and answered `y` — the rebase under way, the preflight and the bring
+    /// to follow by themselves.
+    fn bring_go_asked(ed: &mut Editor) {
         feed(ed, ":workspace-bring<ret>");
-        settle_until(ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
+        settle_until(ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
         assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", said(ed));
         feed(ed, "y");
+        assert!(ed.workspace.bring_go, "its y goes on to the bring");
         // (its checkout looked at first, on a worker — #188)
         settle_until(ed, |ed| {
             ed.workspace.rebase.is_some() || says(ed, "rebase feat:") || !ed.offers.is_empty()
@@ -4154,15 +4198,27 @@ mod tests {
         assert!(ed.workspace.rebase.is_some(), "under way: {}", said(ed));
     }
 
-    /// Roadmap #3, clean: main moved, so `:workspace-bring` offers a rebase first; `y` runs `git rebase main`
-    /// in the session's checkout (tarae's own run, in the task panel); its commits land on main's tip, and the
-    /// bring card offers to bring them now — `y` does.
+    /// Roadmap #3, clean, on one card (polish landing 4): main moved, so the bring card says it rebases first; `y`
+    /// runs `git rebase main` in the session's checkout (tarae's own run, in the task panel), its commits land on
+    /// main's tip, its preflight runs there and it's brought — no card between. Its progress is the session's state
+    /// words (`bringing · rebased · preflight 1/1`), the rebase and the preflight recorded only; one toast, at its
+    /// end (the user, 2026-11-03).
     #[test]
     fn a_moved_base_is_rebased_onto_then_brought() {
         let (repo, dir) = place("rebase-clean");
         let mut ed = editor(&repo, &dir);
+        // (a preflight that waits for `go`, so its words are read while it runs)
+        let go = dir.join("go");
+        ed.config.preflight = vec![crate::preflight::Step {
+            name: "check".into(),
+            cmd: format!("while [ ! -e '{}' ]; do sleep 0.02; done", go.display()),
+            note: None,
+            from: ".tarae.toml".into(),
+            full: false,
+        }];
         let (wt, _) = moved_apart(&mut ed, &repo, true);
-        rebase_asked(&mut ed);
+        ed.toasts.clear();
+        bring_go_asked(&mut ed);
         // (its line made on a worker when the repository was resolved too soon after a change to be kept —
         // `gitrepo::RACY`)
         settle_until(&mut ed, |ed| ed.workspace.task_run.is_some() || says(ed, "rebase feat:"));
@@ -4172,27 +4228,47 @@ mod tests {
         assert!(named.contains(" --work-tree "), "{named}");
         let cmd = format!("{named} -c core.hooksPath=/dev/null -c advice.mergeConflict=false rebase 'main'");
         assert_eq!(task, Some(("rebase onto main".into(), cmd)), "in the task panel, with no hooks");
-        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
         let main = git_in(&repo, &["rev-parse", "main"]);
-        assert_eq!(git_in(&wt, &["merge-base", "main", "HEAD"]), main, "on main's tip");
-        assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a");
+        let words = |ed: &Editor| ed.bring_progress(&ed.workspace);
+        assert_eq!(words(&ed).as_deref(), Some("bringing · rebasing"), "{}", said(&ed));
+        let preflight = |ed: &Editor| ed.workspace.preflight.as_ref().is_some_and(|p| p.running().is_some());
+        settle_until(&mut ed, |ed| preflight(ed) || says(ed, "not brought") || says(ed, "bring feat:"));
+        assert_eq!(words(&ed).as_deref(), Some("bringing · rebased · preflight 1/1"), "{}", said(&ed));
+        let row = ed.session_shown().into_iter().find(|s| s.name == "feat").and_then(|s| s.rebasing);
+        assert_eq!(row.as_deref(), Some("bringing · rebased · preflight 1/1"), "the list says it too");
+        std::fs::write(&go, "").unwrap();
+        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "not brought") || says(ed, "bring feat:"));
+        assert!(
+            says(&ed, "Rebased feat onto main — 2 commits on top, now at ")
+                && says(&ed, " — the preflight next, then the bring")
+                && says(&ed, "preflight: all 1 passed"),
+            "its steps recorded: {}",
+            said(&ed)
+        );
+        let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert!(
+            toasts.len() == 1 && toasts[0].starts_with("Brought 2 commits of feat into main"),
+            "one toast, at its end: {toasts:?}"
+        );
+        assert_eq!(words(&ed), None, "its words gone with it");
+        assert!(
+            ed.offers.is_empty(),
+            "no card between: {:?}",
+            ed.offers.iter().map(|o| &o.title).collect::<Vec<_>>()
+        );
         assert!(ed.workspace.rebase.is_none() && crate::rebase::under_way(&wt).is_none());
-        assert!(says(&ed, "Rebased feat onto main — 2 commits on top, now at "), "{}", said(&ed));
-        let q = &card(&ed, "Rebased feat onto main").unwrap().question;
-        assert!(q.starts_with("2 commits on main's tip now.\n\nBring them into main"), "{q}");
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
-        feed(&mut ed, "y");
-        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "bring feat:"));
-        assert!(says(&ed, "Brought 2 commits of feat into main"), "{}", said(&ed));
+        let landed = git_in(&repo, &["rev-parse", "main"]);
+        assert_eq!(git_in(&repo, &["merge-base", &main, &landed]), main, "on main's tip it was");
+        assert_eq!(git_in(&repo, &["log", "--format=%s", &format!("{main}..main")]), "add b\nfeat a");
         assert_eq!(git_in(&repo, &["rev-parse", "main"]), git_in(&wt, &["rev-parse", "HEAD"]));
         assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "b\n", "main's checkout followed");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The bring card's `p`, when the project has two preflight sets: the card names the quick one's steps,
-    /// `p` runs only those in the session's checkout (the full ones are for before publishing — a stand-in
-    /// that would leave a mark), and the bring follows once they pass.
+    /// The one bring card, when the project has two preflight sets: the card names the quick one's steps, its `y`
+    /// runs only those in the session's checkout once it's rebased (the full ones are for before publishing — a
+    /// stand-in that would leave a mark), and the bring follows once they pass.
     #[test]
     fn a_rebased_session_is_brought_after_its_quick_preflight() {
         let (repo, dir) = place("rebase-quick");
@@ -4210,13 +4286,18 @@ mod tests {
             step("perf", format!("touch '{}'", mark.display()), true),
         ];
         let (wt, _) = moved_apart(&mut ed, &repo, true);
-        rebase_asked(&mut ed);
-        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
-        let q = card(&ed, "Rebased feat onto main").unwrap().question.clone();
-        assert!(q.contains("once the quick preflight passes?"), "{q}");
-        assert!(q.contains("Quick: fmt — :preflight-full runs the rest, before publishing."), "{q}");
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
-        feed(&mut ed, "p");
+        feed(&mut ed, ":workspace-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
+        let o = card(&ed, "Bring feat into main").unwrap();
+        assert!(
+            o.question.starts_with("Rebase feat onto main's tip, run the quick preflight,"),
+            "{}",
+            o.question
+        );
+        assert!(o.question.ends_with("\n\nQuick: fmt — :preflight-full runs the rest."), "{}", o.question);
+        assert_eq!(o.folds, vec![std::ops::Range { start: 2, end: 4 }], "its steps fold first");
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        feed(&mut ed, "y");
         // (it starts once the commit it tests is read — on a worker)
         settle_until(&mut ed, |ed| {
             ed.workspace.task_run.as_ref().is_some_and(|r| r.task.name != "rebase onto main")
@@ -4231,7 +4312,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// frictions34 42: the preflight a bring card's `p` ran fails — the card is back, naming the first test that
+    /// frictions34 42: the preflight a bring card's `y` ran after its rebase fails — the card is back, naming the first test that
     /// failed and why, and `v` opens the failed step's output (the card's own copy) after another run took the
     /// task panel; `:preflight-output` reads the kept one too. Nothing is brought.
     #[test]
@@ -4253,11 +4334,10 @@ mod tests {
             full: false,
         }];
         let (wt, _) = moved_apart(&mut ed, &repo, true);
-        rebase_asked(&mut ed);
-        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
-        feed(&mut ed, "p");
-        settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "not brought"));
+        bring_go_asked(&mut ed);
+        let failed = |ed: &Editor| card(ed, "Bring feat into main").is_some_and(|o| !o.warnings.is_empty());
+        // ("not brought" is said as the preflight ends, the card graded after it on a worker)
+        settle_until(&mut ed, failed);
         let o = card(&ed, "Bring feat into main").unwrap_or_else(|| panic!("{}", said(&ed)));
         // (what failed up front, in the warning colour, and its yes a bring anyway — frictions29 91)
         let q = o.question.clone();
@@ -4268,7 +4348,9 @@ mod tests {
         );
         assert_eq!((o.decided_lines(), o.warnings.len(), o.warnings.first()), (0..1, 1, Some(&(2..4))));
         assert_eq!(o.answers(false).first(), Some(&('y', "Bring anyway")));
-        assert!(says(&ed, "preflight: 0 of 1 passed — test failed"), "{}", said(&ed));
+        // (the bring's end, said once: the preflight's failure as its — the user, 2026-11-03)
+        assert!(says(&ed, "feat · not brought — preflight: 0 of 1 passed — test failed"), "{}", said(&ed));
+        assert_eq!(ed.bring_progress(&ed.workspace), None, "its words gone with it");
         assert_ne!(git_in(&repo, &["rev-parse", "main"]), git_in(&wt, &["rev-parse", "HEAD"]), "not brought");
         // Another run takes the task panel
         let task = crate::task::Task { name: "other".into(), cmd: "echo other".into(), cwd: wt.clone() };
@@ -4325,11 +4407,8 @@ mod tests {
         // Another HEAD: the plain card
         git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "fixed"]);
         let o = again(&mut ed);
-        assert!(!o.question.contains("failed") && o.warnings.is_empty(), "{}", o.question);
-        assert_eq!(
-            (o.answers(false), o.output.is_some()),
-            (vec![('y', "Bring"), ('p', "Preflight, then bring"), ('n', "Not now")], false)
-        );
+        assert!(!o.question.contains("preflight failed") && o.warnings.is_empty(), "{}", o.question);
+        assert_eq!((o.answers(false), o.output.is_some()), (vec![('y', "Bring"), ('n', "Not now")], false));
         // A commit made while the preflight runs was never tested (the review of 91): the failure is the commit
         // it tested, and the new one is asked about as plain
         let steps = std::fs::read_to_string(&script).unwrap();
@@ -4337,16 +4416,122 @@ mod tests {
             "git -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null commit -q --allow-empty -m mid";
         std::fs::write(&script, format!("{mid}\n{steps}")).unwrap();
         let tested = git_in(&wt, &["rev-parse", "HEAD"]).trim().to_string();
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
-        feed(&mut ed, "p");
-        let failed = |ed: &Editor| card(ed, "Bring feat into main").is_some_and(|o| !o.warnings.is_empty());
-        settle_until(&mut ed, |ed| failed(ed) || says(ed, "not brought"));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, failed);
         assert_ne!(git_in(&wt, &["rev-parse", "HEAD"]).trim(), tested, "a commit made while it ran");
         let recorded =
             std::iter::once(&ed.workspace).chain(&ed.workspaces).find_map(|l| l.bring_failed.clone());
         assert_eq!(recorded.and_then(|f| f.head), Some(tested), "the failure is the commit it tested");
         let o = again(&mut ed);
-        assert!(o.warnings.is_empty() && !o.question.contains("failed"), "never tested: {}", o.question);
+        assert!(
+            o.warnings.is_empty() && !o.question.contains("preflight failed"),
+            "never tested: {}",
+            o.question
+        );
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The one bring card's `y` through a conflict (polish landing 4): the rebase stops, its Claude resolves it, the
+    /// resolved card's `m` and `:w` go on with the commit's message as read — and the bring its card asked for goes on
+    /// with it, to the preflight and the bring, no card between (a message gone on unread stops at the bring card,
+    /// which names it — frictions29 #25). Meanwhile the session's words say `bringing · rebasing 1/2`.
+    #[test]
+    fn a_bring_through_a_conflict_goes_on_once_it_is_resolved() {
+        let (repo, dir) = place("bring-conflict");
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, &format!("cp '{}' a.txt;", answer.display()));
+        passing_preflight(&mut ed);
+        let (wt, _) = moved_apart(&mut ed, &repo, false);
+        bring_go_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        assert!(ed.workspace.bring_go, "the bring kept through the conflict");
+        assert_eq!(ed.bring_progress(&ed.workspace).as_deref(), Some("bringing · rebasing 1/2"));
+        assert!(
+            ed.session_items()[1].hint.contains("bringing · rebasing 1/2"),
+            "{}",
+            ed.session_items()[1].hint
+        );
+        assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n']);
+        feed(&mut ed, "m");
+        settle_until(&mut ed, |ed| ed.in_rebase_message() || says(ed, "the commit's message:"));
+        feed(&mut ed, ":w<ret>");
+        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "not brought") || says(ed, "bring feat:"));
+        assert!(says(&ed, "Brought 2 commits of feat into main"), "{}", said(&ed));
+        let rebased = |o: &crate::offer::Offer| matches!(o.what, crate::offer::What::Rebased(_));
+        assert!(!ed.offers.iter().any(rebased), "no card between: {}", said(&ed));
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), git_in(&wt, &["rev-parse", "HEAD"]));
+        assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "one\nmain\nfeat\n");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The one bring card's `y`, a high-risk change among what it brings (the Rust pack's `unsafe`): rebased, the
+    /// grade finds it and the bring stops there — its card stands, held (`h n`), no preflight run, nothing brought,
+    /// the session's words quiet. Looked at, its `y` runs the preflight and brings.
+    #[test]
+    fn a_high_risk_change_found_after_the_rebase_stands_its_card() {
+        let (repo, dir) = place("bring-go-high");
+        let mut ed = editor(&repo, &dir);
+        passing_preflight(&mut ed);
+        let wt = new_session(&mut ed, "risky");
+        std::fs::write(wt.join("a.rs"), "fn a() {\n    unsafe { b() }\n}\n").unwrap();
+        git_in(&wt, &["add", "a.rs"]);
+        git_in(&wt, &["commit", "-qm", "risky"]);
+        std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-qm", "main moves"]);
+        let main_was = git_in(&repo, &["rev-parse", "main"]);
+        feed(&mut ed, ":workspace-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "Bring risky into main").is_some() || says(ed, "bring risky:"));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "the rebase isn't held: the grade is after it");
+        feed(&mut ed, "y");
+        let title = "Rebased risky onto main";
+        settle_until(&mut ed, |ed| card(ed, title).is_some() || says(ed, "rebase risky:"));
+        let o = card(&ed, title).unwrap_or_else(|| panic!("{}", said(&ed)));
+        assert!(
+            o.held.is_some() && o.question.contains("1 high-risk change not looked at"),
+            "{}",
+            o.question
+        );
+        assert_eq!(card_in_sight(&mut ed), ['h', 'n']);
+        assert!(
+            !ed.workspace.bring_go && !ed.workspace.bring_after_preflight,
+            "the bring stopped at its card"
+        );
+        assert_eq!(ed.bring_progress(&ed.workspace), None);
+        let ran = ed.workspace.task_run.as_ref().map(|r| r.task.name.clone());
+        assert_eq!(ran.as_deref(), Some("rebase onto main"), "no preflight ran");
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), main_was, "nothing brought");
+        // Looked at (`h`, then `space v h` there): its yes back — the preflight, then the bring
+        feed(&mut ed, "h");
+        settle_until(&mut ed, |ed| {
+            let d = ed.doc();
+            ed.workspace.code_review.is_some()
+                && d.review_base.is_some()
+                && d.git_version == d.version()
+                && d.path.as_deref() == Some(wt.join("a.rs").as_path())
+        });
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
+        feed(&mut ed, "<space>vh");
+        assert!(card(&ed, title).is_some_and(|o| o.held.is_none()), "its yes is back: {}", said(&ed));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| {
+            says(ed, "Brought") || says(ed, "not brought") || says(ed, "bring risky:")
+        });
+        assert!(says(&ed, "preflight: all 1 passed"), "its preflight ran first: {}", said(&ed));
+        assert_eq!(
+            git_in(&repo, &["rev-parse", "main"]),
+            git_in(&wt, &["rev-parse", "HEAD"]),
+            "{}",
+            said(&ed)
+        );
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5328,7 +5513,7 @@ mod tests {
         git_in(&repo, &["commit", "-qm", "another brought"]);
         card_in_sight(&mut ed);
         feed(&mut ed, "y");
-        let again = "Bring feat: main moved";
+        let again = "Bring feat into main";
         settle_until(&mut ed, |ed| {
             card(ed, again).is_some()
                 || card(ed, "Rebased feat onto main").is_some()
@@ -5349,21 +5534,19 @@ mod tests {
         let q = &card(&ed, again).expect("the rebase card again").question;
         assert!(
             q.starts_with(
-                "Rebase feat onto main first? main moved 1 commit since feat left it; feat is 1 commit \
-                 ahead."
+                "Rebase feat onto main's tip, run the preflight, then bring it in?\nmain moved 1 commit since feat \
+                 left it; feat has 1 commit."
             ),
             "{q}"
         );
         assert!(q.ends_with("Kept its message through a resolved conflict: «feat a» — read it before bringing (the git tab's log)."), "{q}");
         assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
-        feed(&mut ed, "y");
-        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
-        let q = &card(&ed, "Rebased feat onto main").expect("the bring card").question;
-        assert!(q.starts_with("1 commit on main's tip now.\n\nBring it into main"), "{q}");
+        // (its message read on that card: its `y` rebases, runs the preflight and brings)
+        passing_preflight(&mut ed);
         let main = git_in(&repo, &["rev-parse", "main"]);
-        assert_eq!(git_in(&wt, &["rev-parse", "HEAD~1"]), main, "on main's tip now");
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
         feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "not brought") || says(ed, "bring feat:"));
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD~1"]), main, "on main's tip");
         settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "bring feat:"));
         assert!(says(&ed, "Brought 1 commit of feat into main"), "{}", said(&ed));
         assert_eq!(
@@ -5857,7 +6040,9 @@ mod tests {
         });
         card_in_sight(&mut ed);
         feed(&mut ed, "y");
+        // (`rebase_asked` let its bring go; the resolved card's `y` here doesn't ask for it again)
         settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        passing_preflight(&mut ed);
         assert_eq!(
             git_in(&wt, &["log", "--format=%s", "main..HEAD"]),
             "hooked\nadd b\nfeat a",
@@ -6188,9 +6373,11 @@ mod tests {
         let held = "Rebase feat: changes in no commit";
         let yes = |ed: &mut Editor| {
             feed(ed, ":workspace-bring<ret>");
-            settle_until(ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
+            settle_until(ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
             assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", said(ed));
             feed(ed, "y");
+            // (the rebase's own steps: its bring let go — `rebase_asked`)
+            ed.workspace.bring_go = false;
         };
         let rebased = |ed: &mut Editor| {
             settle_until(ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
@@ -6289,9 +6476,11 @@ mod tests {
     /// `:workspace-bring`, its rebase card's `y`, then `s` on the card holding it back for changes in no commit.
     fn bring_set_aside(ed: &mut Editor) {
         feed(ed, ":workspace-bring<ret>");
-        settle_until(ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
+        settle_until(ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
         card_in_sight(ed);
         feed(ed, "y");
+        // (the rebase's own steps: its bring let go — `rebase_asked`)
+        ed.workspace.bring_go = false;
         let held = "Rebase feat: changes in no commit";
         settle_until(ed, |ed| {
             card(ed, held).is_some() || ed.workspace.rebase.is_some() || says(ed, "rebase feat:")
@@ -6352,7 +6541,7 @@ mod tests {
         let earlier = git_in(&wt, &["rev-parse", "HEAD~1"]);
         git_in(&wt, &["update-ref", crate::aside::REBASE, &earlier]);
         feed(&mut ed, ":workspace-bring<ret>");
-        settle_until(&mut ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
+        settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
         card_in_sight(&mut ed);
         feed(&mut ed, "y");
         let refused = "rebase feat: not started — an earlier rebase's changes in no commit are still set aside \
@@ -6759,7 +6948,7 @@ mod tests {
         feed(&mut ed, "<space>vh");
         assert!(!ed.workspace.looked.is_empty(), "{}", said(&ed));
         assert!(card(&ed, title).is_some_and(|o| o.held.is_none()), "its yes is back");
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
         ed.offers.clear();
         ed.messages.clear();
         bring_asked(&mut ed, "risky", "main");
@@ -6810,13 +6999,19 @@ mod tests {
         assert!(ed.workspace_switch(made[0]).is_in());
         ed.workspace_bring("one").unwrap();
         settle_until(&mut ed, |ed| card(ed, "Bring one into main").is_some());
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n', '1'], "{}", said(&ed));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n', '1'], "{}", said(&ed));
         assert_eq!(ed.offers[0].title, "Bring two into main");
+        passing_preflight(&mut ed);
         feed(&mut ed, "y");
         settle_until(&mut ed, |ed| says(ed, "Brought 1 commit of two into main"));
-        // one's card graded again at once: main moved — `y` rebases first; its old card gone
-        settle_until(&mut ed, |ed| titles(ed).iter().any(|t| t == "Bring one: main moved"));
-        assert!(!titles(&ed).iter().any(|t| t == "Bring one into main"), "{:?}", titles(&ed));
+        // one's card graded again at once: main moved — its `y` rebases first; its old card gone
+        let rebases = |o: &crate::offer::Offer| matches!(o.what, crate::offer::What::Rebase(_));
+        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.title == "Bring one into main" && rebases(o)));
+        assert!(
+            !ed.offers.iter().any(|o| o.title == "Bring one into main" && !rebases(o)),
+            "{:?}",
+            titles(&ed)
+        );
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -6841,6 +7036,8 @@ mod tests {
             card_in_sight(&mut ed);
             feed(&mut ed, "y");
             settle_until(&mut ed, |ed| says(ed, &format!("Brought 1 commit of {name} into main")));
+            // (a project with no preflight steps: its `y` brings, saying none ran — polish landing 4)
+            assert!(says(&ed, " — no preflight steps to run first"), "{}", said(&ed));
             let end = format!("{name} is in main now — end it?");
             match child {
                 true => settle_until(&mut ed, |ed| card(ed, &end).is_some()),
@@ -7181,10 +7378,10 @@ mod tests {
         let s = ed.ui_state();
         let line = s.text().lines().find(|l| l.starts_with(&format!("card#{first}"))).unwrap().to_string();
         assert!(
-            line.contains(" · h go to them · n ") && line.contains(" · y p held: 1 high-risk change"),
+            line.contains(" · h go to them · n ") && line.contains(" · y held: 1 high-risk change"),
             "{line}"
         );
-        assert_eq!(s.json()["cards"][0]["withheld"], json!(["y", "p"]));
+        assert_eq!(s.json()["cards"][0]["withheld"], json!(["y"]));
         // A bring asked while it waits: one card, still held (nothing looked at yet), the old one's going said
         ed.workspace_bring("risky").unwrap();
         settle_until(&mut ed, |ed| card(ed, b).is_some());
@@ -7209,7 +7406,7 @@ mod tests {
         crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vh");
         assert!(card(&ed, r).is_some_and(|o| o.held.is_none()), "its yes is back: {}", said(&ed));
-        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
         // A bring asked now: one card, graded against the look — not held
         ed.workspace_bring("risky").unwrap();
         settle_until(&mut ed, |ed| card(ed, b).is_some());

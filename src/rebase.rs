@@ -38,6 +38,23 @@ fn git_line(repo: &crate::gitrepo::Repo) -> crate::gitrepo::Line {
     line
 }
 
+/// `the quick preflight` (the project has two sets) or `the preflight`.
+fn preflight_said(quick: &Option<Vec<String>>) -> &'static str {
+    match quick {
+        Some(_) => "the quick preflight",
+        None => "the preflight",
+    }
+}
+
+/// A bring card's quick steps, a paragraph of its own it folds first (`Offer.folds`): what `:preflight-full` adds is
+/// for before publishing.
+fn steps_folded(card: &mut Offer, quick: Option<Vec<String>>) {
+    let Some(steps) = quick else { return };
+    let at = card.question.split('\n').count();
+    card.question.push_str(&format!("\n\nQuick: {} — :preflight-full runs the rest.", steps.join(", ")));
+    card.folds.push(at..at + 2);
+}
+
 /// What a rebase step that didn't start does: says why (and a start leaves no rebase behind).
 type Unstarted = Box<dyn FnOnce(&mut Editor, String) + Send>;
 
@@ -65,52 +82,55 @@ pub struct Moved {
 }
 
 impl Moved {
-    /// The card before the rebase.
-    pub fn card(&self) -> Offer {
+    /// The one bring card when its base moved (polish landing 4: rebase → preflight → bring on one `y`, where a
+    /// rebase card, a rebased card and its `p` asked three times): what `y` does, decided, and one line of why; the
+    /// quick set's steps (`quick`) a paragraph it folds first.
+    pub fn card(&self, quick: Option<Vec<String>>) -> Offer {
         let (base, branch) = (&self.base, &self.branch);
         let q = format!(
-            "Rebase {branch} onto {base} first? {base} moved {} since {branch} left it; {branch} is {} ahead.\n\n\
-             Its commits are replayed on {base}'s tip one by one, in its checkout. A conflict goes to its \
-             Claude to resolve, and you review that before the rebase goes on.",
+            "Rebase {branch} onto {base}'s tip, run {}, then bring it in?\n\
+             {base} moved {} since {branch} left it; {branch} has {}. A conflict or a failed preflight stops here.",
+            preflight_said(&quick),
             crate::worktree::commits(self.moved),
             crate::worktree::commits(self.ahead),
         );
-        Offer::new(
-            format!("Bring {}: {base} moved", self.name),
+        let mut card = Offer::new(
+            format!("Bring {branch} into {base}"),
             &q,
             "Rebasing…",
             format!("Couldn't rebase {branch}"),
             What::Rebase(Box::new(self.clone())),
-        )
+        );
+        card.decided = Some(0..1);
+        steps_folded(&mut card, quick);
+        card
     }
 
-    /// The card once it's rebased (`rebased`), or asked to bring one already on its base's tip (#155: `b` in
-    /// the list brought it at once, no `p`): bring it now, or after the preflight — the quick set (`quick`:
-    /// its steps, when the project has two sets), the full one being for before publishing.
+    /// The bring card of one already on its base's tip — asked (#155), or stopped after its rebase for what wants
+    /// a person (`rebased`: high-risk changes not looked at, a message a resolution kept): `y` runs the quick
+    /// preflight (`quick`: its steps, when the project has two sets) and brings once it passes — the record's 80 %
+    /// `p`; a bring with no preflight is the failed card's `y bring anyway` only (4 % of answers were that `y`).
     pub fn bring_card(&self, quick: Option<Vec<String>>, rebased: bool) -> Offer {
         let (base, them) = (&self.base, if self.ahead == 1 { "it" } else { "them" });
-        let which = match quick {
-            Some(steps) => format!(
-                "the quick preflight passes?\n\nQuick: {} — :preflight-full runs the rest, before publishing.",
-                steps.join(", ")
-            ),
-            None => "the preflight passes?".into(),
-        };
         let q = format!(
-            "{} on {base}'s tip now.\n\nBring {them} into {base} — now, or once {which}",
+            "Run {}, then bring {them} into {base}?\n{} on {base}'s tip. A failed preflight stops here.",
+            preflight_said(&quick),
             crate::worktree::commits(self.ahead),
         );
         let title = match rebased {
             true => format!("Rebased {} onto {base}", self.branch),
             false => format!("Bring {} into {base}", self.branch),
         };
-        Offer::new(
+        let mut card = Offer::new(
             title,
             &q,
             "Bringing…",
             format!("Couldn't bring {}", self.branch),
             What::Rebased(Box::new(self.clone())),
-        )
+        );
+        card.decided = Some(0..1);
+        steps_folded(&mut card, quick);
+        card
     }
 
     /// The bring card once the preflight its `p` ran (`title`) failed: what's decided is a bring anyway (its
@@ -1079,6 +1099,8 @@ impl Editor {
         };
         self.workspace_switch(id);
         self.offer_finished(card, Ok(()));
+        // (the one bring card's `y`: on to the preflight and the bring once it's rebased — `bring_go_on`)
+        (self.workspace.bring_go, self.workspace.bring_rebased) = (true, false);
         self.rebase_check(m, false);
     }
 
@@ -1193,7 +1215,7 @@ impl Editor {
             },
             false,
             Box::new(move |ed, e| {
-                ed.workspace.rebase = None;
+                (ed.workspace.rebase, ed.workspace.bring_go) = (None, false);
                 if !ed.bring_queue_rebased(Err(format!("the rebase didn't start: {e}"))) {
                     ed.set_error(format!("rebase {branch}: {e}"));
                 }
@@ -1280,10 +1302,21 @@ impl Editor {
                 let (stashed, kept) =
                     self.workspace.rebase.take().map(|r| (r.stashed, r.messages.kept)).unwrap_or_default();
                 self.rebase_cards_gone();
+                // (the one bring card's `y` goes on by itself — but past a message a resolution kept, which a
+                // person reads first: its card then)
+                // (kept while it goes — its words say `bringing · rebased` until the preflight takes over)
+                let go = self.workspace.bring_go
+                    && kept.is_empty()
+                    && self.workspace.id != crate::event::WorkspaceId::HOME;
+                (self.workspace.bring_go, self.workspace.bring_rebased) = (go, go);
                 // (#223: the base moved on while a stop waited — rebased onto where it was, not its tip)
-                let since = match moved {
-                    0 => String::new(),
-                    n => format!(
+                let since = match (moved, go) {
+                    (0, true) => " — the preflight next, then the bring".to_string(),
+                    (0, false) => String::new(),
+                    (n, true) => {
+                        format!("; {base} moved {} since — rebasing again", crate::worktree::commits(n))
+                    }
+                    (n, false) => format!(
                         "; {base} moved {} since — its card rebases again",
                         crate::worktree::commits(n)
                     ),
@@ -1293,8 +1326,11 @@ impl Editor {
                     crate::worktree::commits(ahead),
                     aside_said(&aside, &stashed)
                 );
+                // (a bring under way says where it is in its session's words, and one toast at its end — the user,
+                // 2026-11-03: the rebase's own is recorded only)
                 match aside {
                     Aside::Kept(_) => self.set_warning(said),
+                    _ if go => self.recorded(crate::editor::ToastKind::Success, said),
                     _ => self.set_success(said),
                 }
                 // (its instruction files: the main checkout's changes since its copy — #27)
@@ -1306,11 +1342,14 @@ impl Editor {
                     let (root, quick, sid) =
                         (self.workspace.root.clone(), self.preflight_quick(), self.workspace.id);
                     let m = Moved { root: root.clone(), name, branch, base: base.clone(), moved, ahead };
-                    // (not on the base's tip: the bring's fast-forward can't land — the rebase card again, as
+                    if go {
+                        return self.bring_go_on(m, quick);
+                    }
+                    // (not on the base's tip: the bring's fast-forward can't land — the bring card again, as
                     // `:workspace-bring` gives)
                     let mut card = match moved {
                         0 => m.bring_card(quick, true),
-                        _ => m.card(),
+                        _ => m.card(quick),
                     };
                     // (frictions29 #25: a resolution may have made a message wrong — named before it's brought)
                     if !kept.is_empty() {
@@ -1330,6 +1369,7 @@ impl Editor {
                 }
             }
             Ended::Aborted => {
+                self.workspace.bring_go = false;
                 let stashed = self.workspace.rebase.take().map(|r| r.stashed).unwrap_or_default();
                 self.rebase_cards_gone();
                 let said =
@@ -1342,6 +1382,7 @@ impl Editor {
             }
             // (git's own words, its `error:`/`fatal:` lines — #188: "the task panel says why" sent you looking)
             Ended::Failed => {
+                self.workspace.bring_go = false;
                 let stashed = self.workspace.rebase.take().map(|r| r.stashed).unwrap_or_default();
                 let why: Vec<String> = self
                     .workspace
@@ -2142,6 +2183,57 @@ impl Editor {
         }
     }
 
+    /// What session `l`'s state words say of a bring or rebase under way there, where that session is named (the
+    /// strip, the list, the chip): `rebasing 2/5` — and a bring its card's `y` asked for (polish landing 4, the user
+    /// 2026-11-03: its progress said there, never on the card nor a toast a step) `bringing · rebasing 2/5`, then
+    /// `bringing · rebased · preflight 2/4`. The bring queue's says its own (`bring_said`).
+    pub(crate) fn bring_progress(&self, l: &crate::workspace::Workspace) -> Option<String> {
+        let queued = self.bring_queue_at(l.id).is_some();
+        if let Some(r) = &l.rebase {
+            return Some(match l.bring_go && !queued {
+                true => format!("bringing · {}", r.said()),
+                false => r.said(),
+            });
+        }
+        // (its checkout looked at before the rebase starts; graded after it, before its preflight)
+        if l.bring_go && !queued {
+            return Some(if l.bring_rebased { "bringing · rebased" } else { "bringing" }.into());
+        }
+        if !l.bring_after_preflight || queued {
+            return None;
+        }
+        let rebased = if l.bring_rebased { "rebased · " } else { "" };
+        let at = l.preflight.as_ref().filter(|p| p.took.is_none()).map(|p| {
+            let done = p.steps.iter().filter(|s| s.state != crate::preflight::State::Waiting).count();
+            format!(" {}/{}", done.max(1), p.steps.len())
+        });
+        Some(format!("bringing · {rebased}preflight{}", at.unwrap_or_default()))
+    }
+
+    /// Whether session `l`'s bring goes on by itself now — its card's `y` (rebase, preflight, bring) or a preflight
+    /// a bring waits for; the bring queue's is the queue's.
+    pub(crate) fn bring_going(&self, l: &crate::workspace::Workspace) -> bool {
+        (l.bring_go || l.bring_after_preflight) && self.bring_queue_at(l.id).is_none()
+    }
+
+    /// `fix is being brought — bringing · rebased · preflight 2/4`: what a bring asked while one goes there says.
+    pub(crate) fn being_brought(&self, l: &crate::workspace::Workspace) -> String {
+        let at = self.bring_progress(l).unwrap_or_else(|| "bringing".into());
+        format!("{} is being brought — {at}", l.label())
+    }
+
+    /// The one bring card's `y` after its rebase landed (`m`, on its base's tip unless the base moved on meanwhile):
+    /// rebased again, or graded — the held card up while high-risk changes wait for a look, else the quick preflight
+    /// (`quick`: its steps) and the bring, a failure its card back (`rebase_bring_failed`).
+    pub(crate) fn bring_go_on(&mut self, m: Moved, quick: Option<Vec<String>>) {
+        if m.moved > 0 {
+            self.workspace.bring_go = true;
+            return self.rebase_check(m, false);
+        }
+        let (sid, root, base) = (self.workspace.id, m.root.clone(), m.base.clone());
+        crate::codereview::bring_go_graded(self, sid, m.bring_card(quick, true), root, base);
+    }
+
     /// `y` on the move-up card: its branch fast-forwarded to its base's tip, in its checkout (a worker).
     pub fn rebase_move_up(&mut self, id: u64, m: Moved) {
         self.offer_finished(id, Ok(()));
@@ -2180,16 +2272,24 @@ impl Editor {
     /// it's in: should it fail, the failure is that commit's (`Workspace.bring_tested` → `Failed.head`) — not one
     /// Claude made while it ran, which the review of frictions29 91 found recorded as the failing one, the
     /// commit that failed getting the plain card again.
-    pub fn rebase_preflight_then_bring(&mut self, m: Moved) {
+    /// `rebased`: the one bring card's `y` rebased it first (its state words say so).
+    pub fn rebase_preflight_then_bring(&mut self, m: Moved, rebased: bool) {
         let Some(id) = self.session_at(&m.root) else { return };
+        let stands_in = self.bring_queue_stands_in();
         let root = m.root.clone();
         self.events.shared_jobs().spawn(move || {
             let head = git(&root, &["rev-parse", "HEAD"], None).ok().map(|h| h.trim().to_string());
             move |ed: &mut Editor| {
                 ed.with_workspace(id, |ed| {
-                    ed.workspace.bring_after_preflight = true;
+                    (ed.workspace.bring_after_preflight, ed.workspace.bring_rebased) = (true, rebased);
+                    // (the bring its card's `y` asked for goes on as the preflight's)
+                    (ed.workspace.bring_go, ed.workspace.bring_unchecked) = (false, false);
                     ed.workspace.bring_card_after = Some(Box::new(m));
                     ed.workspace.bring_tested = head;
+                    // (a simulation stands in for the preflight's task — `sim/brings.rs`)
+                    if stands_in {
+                        return;
+                    }
                     if let Err(e) = ed.preflight_start(crate::preflight::Set::Quick) {
                         ed.workspace.bring_after_preflight = false;
                         ed.set_error(e);
@@ -2221,7 +2321,9 @@ impl Editor {
             if let Some(m) = card {
                 return self.rebase_bring_failed(*m, title);
             }
-            return self.set_warning(format!("{name} not brought — the {title} didn't pass"));
+            // (the preflight's own toast said it, as the bring's end)
+            let said = format!("{name} not brought — the {title} didn't pass");
+            return self.recorded(crate::editor::ToastKind::Warning, said);
         }
         if let Err(e) = self.workspace_bring_now(&id.to_string()) {
             // (the queue's one under way: out, the next going on — else it waited at its bring for good)

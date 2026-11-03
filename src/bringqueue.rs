@@ -20,7 +20,8 @@ pub struct Queue {
     pub marks: Vec<WorkspaceId>,
     pub run: Option<Run>,
     /// Tests: the rebase and the preflight it would start as tasks are left to a simulation (which models no
-    /// task) — it says how each ended (`bring_queue_rebased`, `rebase_preflight_done`).
+    /// task) — it says how each ended (`bring_queue_rebased`, `rebase_preflight_done`); a single bring's preflight too
+    /// (`rebase_preflight_then_bring`).
     #[cfg(test)]
     pub stand_in: bool,
 }
@@ -283,7 +284,7 @@ impl Editor {
         Some(format!("bring {}", nth(i + 1)))
     }
 
-    fn bring_queue_stands_in(&self) -> bool {
+    pub(crate) fn bring_queue_stands_in(&self) -> bool {
         #[cfg(test)]
         return self.bring_queue.stand_in;
         #[cfg(not(test))]

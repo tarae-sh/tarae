@@ -1240,7 +1240,7 @@ fn finish(ed: &mut Editor) {
     // (its findings on lines changed since it read them: the stale card asks about them — those still being
     // placed ask as they land, `placed`)
     if !since_read.is_empty() {
-        crate::notes::stale_card(ed, since_read);
+        crate::notes::stale_mark(ed, since_read);
     }
     since_sync(ed);
     // (one its parent's Claude started: its end that parent's news)
@@ -1669,7 +1669,7 @@ pub fn placed(ed: &mut Editor, id: u64, changed: bool) {
     }
     r.since_read.push(id);
     if !r.reading() {
-        crate::notes::stale_card(ed, vec![id]);
+        crate::notes::stale_mark(ed, vec![id]);
     }
 }
 
@@ -1801,7 +1801,7 @@ pub fn stop(ed: &mut Editor) {
             let since_read = r.since_read.clone();
             ed.set_status(said);
             if !since_read.is_empty() {
-                crate::notes::stale_card(ed, since_read);
+                crate::notes::stale_mark(ed, since_read);
             }
             crate::orchestra::review_ended(ed);
             pump(ed);
@@ -4596,14 +4596,9 @@ mod tests {
         };
         assert_eq!(at("three is wrong"), (3..4, false), "moved down by the line put in above");
         assert_eq!(at("two is wrong"), (2..3, false), "on the line changed since, where it is now");
-        let stale = |o: &&crate::offer::Offer| matches!(o.what, crate::offer::What::NotesStale { .. });
-        let card = ed.offers.iter().find(stale).expect("the stale card");
-        assert_eq!(card.title, "Close 2 findings on changed lines?", "{}", card.question);
-        assert!(
-            card.question.starts_with("Their lines changed since the reviewer read them"),
-            "{}",
-            card.question
-        );
+        // (both on lines changed since it read them: stale, said on each — no card, polish landing 4)
+        assert_eq!(crate::notes::stale_shown(&ed).len(), 2, "both stale");
+        assert!(ed.offers.is_empty(), "no card");
         assert_eq!(run_of(&ed, 0)["high"], 3, "high by the snapshot's grades, no review open");
         assert!(ed.workspace.code_review.is_none());
         // (the last hold let go on a worker)

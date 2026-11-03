@@ -678,8 +678,9 @@ Work under way doesn't hold it, in any session. A review comes along: since main
 how long: Claude answering in a chat (and, by file, its edits waiting for your answer — dropped with it: the
 claude that asked doesn't outlive the restart), a command in the task panel, tests. `y` restarts anyway: they're ended, and the toast says which. Only what the
 card named is ended: something that starts while the card is up makes `y` ask again, naming it, and what starts
-after your answer (Claude asked again, a run) is waited for. `w` waits for them to end, and then the card asks
-again. While it waits, the status line says what it's waiting for (`restart waits for gitescape: Claude's
+after your answer (Claude asked again, a run) is waited for. `w` waits for them to end, then restarts into what `y`
+names — the card asks again only where that checkout's HEAD moved meanwhile (it says so first: `main moved since you
+answered w: 1a2b3c4 → 5d6e7f8.`) or a card waiting would be lost. While it waits, the status line says what it's waiting for (`restart waits for gitescape: Claude's
 turn`), and `:restart` again asks before calling it off. It always waits for edits you accepted to land on disk.
 
 Some things stop it, with a message saying what to do, because they can't be carried over:

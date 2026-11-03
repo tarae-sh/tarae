@@ -41,6 +41,10 @@ pub struct Look {
     /// A folder outside the project searched where it would go unasked, too big to look through for files named
     /// like keys (past `KEYS_WALK_MAX` entries): it asks, and never goes unasked (`covered`).
     pub cut: bool,
+    /// What of the file a read takes, as its card says it under the path (`lines 1830–1900`, `the whole file, 3 KB`)
+    /// — tarae's `read` sets it (`readtool::Want::said`, #298: a few lines and a whole log looked the same). Empty:
+    /// not said.
+    pub part: String,
 }
 
 /// The entries a walk of a folder outside the project looks through for files named like keys at most
@@ -137,6 +141,17 @@ impl Ask {
     #[cfg(test)]
     pub fn is_log(&self) -> bool {
         self.log
+    }
+
+    /// Its card's words as a fresh read card would say them (`question`). (Tests.)
+    #[cfg(test)]
+    pub fn question(&self) -> String {
+        question(&self.look, false, None)
+    }
+
+    /// What of the file it reads, for its card (`Look.part`).
+    pub fn reading(&mut self, part: String) {
+        self.look.part = part;
     }
 }
 
@@ -376,7 +391,7 @@ fn look_with(tool: &str, input: &Value, cwd: &Path, folder_keys: bool, no_text: 
         }
         _ => Vec::new(),
     };
-    Look { tool: tool.to_string(), at, pattern, filter, given, file, keys, cut: false }
+    Look { tool: tool.to_string(), at, pattern, filter, given, file, keys, cut: false, part: String::new() }
 }
 
 /// The files named like keys (`sandbox::key_named`) a Grep of `at` (real) opens, the project at `root`: `at`
@@ -956,6 +971,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
         file: true,
         keys,
         cut: false,
+        part: String::new(),
     };
     let p = Pending {
         request_id: String::new(),
@@ -1568,6 +1584,7 @@ pub fn question(look: &Look, keep: bool, folder: Option<(&Path, bool)>) -> Strin
         None => format!("{} (where it leads can't be told)", look.given),
     };
     let mut q = match look.tool.as_str() {
+        "Read" if !look.part.is_empty() => format!("{at}\n{}", look.part),
         "Read" => at,
         "Grep" => {
             let all = if look.file { "" } else { " and everything in it" };
@@ -2018,6 +2035,7 @@ mod tests {
             file: true,
             keys: Vec::new(),
             cut: false,
+            part: String::new(),
         };
         let none = Allowed::default();
         let some = Allowed { read: vec!["/t/x".into()], ..Default::default() };

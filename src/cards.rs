@@ -990,7 +990,13 @@ mod tests {
         (ed.cards_dir, ed.read_outside) = (Some(dir.clone()), true);
         // (each named: the record's batches land in any order)
         let card = |ed: &mut crate::editor::Editor, request: Request, what: &str| {
-            let o = Offer::new("t".into(), "q", "", String::new(), What::NotesStale { ids: Vec::new() });
+            let o = Offer::new(
+                "t".into(),
+                "q",
+                "",
+                String::new(),
+                What::NotesClose { by: None, ids: Vec::new() },
+            );
             ed.push_offer(o.asked(Asked::new(Why::Read, request).about(what)));
             ed.offer_dismiss();
         };
@@ -1052,7 +1058,8 @@ mod tests {
             &root,
         );
         ed.push_offer(
-            Offer::new("t".into(), "q", "", String::new(), What::NotesStale { ids: Vec::new() }).asked(asked),
+            Offer::new("t".into(), "q", "", String::new(), What::NotesClose { by: None, ids: Vec::new() })
+                .asked(asked),
         );
         let id = ed.offers[0].id;
         ed.offer_dismiss();
@@ -1071,7 +1078,7 @@ mod tests {
             (
                 &json!(id),
                 &json!(7),
-                &json!("notes-stale"),
+                &json!("notes-close"),
                 &json!("not-a-check:awk"),
                 &json!("none"),
                 &json!("n")
@@ -1175,12 +1182,12 @@ mod tests {
             ed.push_offer(Offer::new("t".into(), "q", "", String::new(), what));
             ed.offers[0].id
         };
-        let id = up(&mut ed, What::NotesStale { ids: Vec::new() });
+        let id = up(&mut ed, What::NotesClose { by: None, ids: Vec::new() });
         ed.offer_dismiss();
         let at = |id: u64| logged_lines("card ").into_iter().find(|l| l.contains(&format!("card#{id} ")));
         let l = at(id).expect("its line");
         assert!(
-            l.contains(&format!(" · card#{id} · notes-stale · why=own · shadow=own · n · not drawn · up ")),
+            l.contains(&format!(" · card#{id} · notes-close · why=own · shadow=own · n · not drawn · up ")),
             "{l}"
         );
         let root = std::env::temp_dir().join(format!("tarae-cards-no-session-{}", std::process::id()));

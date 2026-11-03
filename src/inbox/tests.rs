@@ -90,6 +90,7 @@ fn read_waiting(since: Instant) -> crate::reads::Pending {
         file: true,
         keys: Vec::new(),
         cut: false,
+        part: String::new(),
     };
     crate::reads::Pending {
         request_id: "r1".into(),

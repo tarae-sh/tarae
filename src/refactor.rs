@@ -656,6 +656,21 @@ fn card(l: &Landing) -> crate::offer::Offer {
         0 => format!("{}\n\n{}:", l.what, nav::count(files.len(), "file")),
         _ => format!("{}\n\n{} in {}:", l.what, nav::count(places, l.noun), nav::count(files.len(), "file")),
     };
+    // (the same call's files written unseen, the review at the end's: named before what's asked here — the card counts
+    // only what it asks, the rest said, #296)
+    let written: Vec<&str> =
+        l.done.iter().filter(|d| d.2 == Outcome::Written).map(|d| d.0.as_str()).collect();
+    if !written.is_empty() {
+        let mut names = written[..written.len().min(CARD_FILES)].join(", ");
+        if written.len() > CARD_FILES {
+            names.push_str(&format!(" … {} more", written.len() - CARD_FILES));
+        }
+        let head = q.split_off(q.find("\n\n").map_or(q.len(), |i| i + 2));
+        q.push_str(&format!(
+            "{} written already, reviewed at the turn's end: {names}\n\n{head}",
+            nav::count(written.len(), "file")
+        ));
+    }
     let shown = &files[..files.len().min(CARD_FILES)];
     let name_w = shown.iter().map(|f| f.shown().chars().count()).max().unwrap_or(0);
     let tag_w = shown.iter().map(|f| tag(f).len()).max().unwrap_or(0);

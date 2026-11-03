@@ -105,7 +105,7 @@ fn args_of(args: &str) -> Result<(Option<String>, &str), String> {
 }
 
 /// A size as said: `812 B`, `42 KB`, `3.1 MB`.
-fn size(n: u64) -> String {
+pub(crate) fn size(n: u64) -> String {
     match n {
         0..1024 => format!("{n} B"),
         1024..1_048_576 => format!("{} KB", n.div_ceil(1024)),

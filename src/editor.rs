@@ -225,6 +225,7 @@ fn picker_owns(p: &Picker, key: Key) -> bool {
         || (p.in_tree() && matches!(key.code, Code::Left | Code::Right))
         || match key.code {
             Code::Char('s' | 'v') => ctrl && !key.alt,
+            Code::Char('l') => ctrl && crate::notes::is_list(&p.title),
             Code::Char('c' | 't' | 'q' | 'n' | 'p' | 'd' | 'u' | 'f' | 'b') => ctrl,
             Code::Char('r') => {
                 ctrl && (p.grep.is_some()
@@ -237,7 +238,7 @@ fn picker_owns(p: &Picker, key: Key) -> bool {
                             p.current().map(|i| &i.action),
                             Some(Action::Buffer(_) | Action::Branch { .. })
                         )))
-                    || (key.alt && p.title == crate::notes::NOTES)
+                    || (key.alt && crate::notes::is_list(&p.title))
             }
             _ => false,
         }
@@ -4734,10 +4735,9 @@ impl Editor {
             Some(_) => {}
             None => crate::notes::close(self, id),
         }
-        let title = self.picker.as_ref().map(|p| p.title.clone()).unwrap_or_default();
-        // (the stale card's list: its card follows first — `notes::stale_sync` — then its rows)
+        // (the stale count on its top line follows first — `notes::stale_sync` — then its rows)
         crate::notes::stale_sync(self);
-        let rest = crate::notes::list_items(self, &title);
+        let rest = crate::notes::list_items(self);
         if let Some(p) = self.picker.as_mut() {
             let at = p.selected;
             p.set_items(rest);
@@ -4938,14 +4938,21 @@ impl Editor {
                     _ => self.git_branch_delete(&name, true),
                 };
             }
-            // A note: `C-x` closes it, `A-x` every note its author began (#197) — in the stale card's list
-            // (`notes::STALE`) `C-x` only: the author's others aren't on it
-            (Code::Char('x'), ctrl)
-                if (ctrl && crate::notes::is_list(&p.title))
-                    || (key.alt && p.title == crate::notes::NOTES) =>
-            {
+            // A note: `C-x` closes it, `A-x` every note its author began (#197)
+            (Code::Char('x'), ctrl) if (ctrl || key.alt) && crate::notes::is_list(&p.title) => {
                 let Some(item) = p.current().cloned() else { return };
                 return self.picker_close_notes(&item, !ctrl);
+            }
+            // `C-l`: every stale draft (polish landing 4 — the stale card's `y`, here), said on its top line
+            (Code::Char('l'), true) if crate::notes::is_list(&p.title) => {
+                crate::notes::close_stale(self);
+                let rest = crate::notes::list_items(self);
+                if let Some(p) = self.picker.as_mut() {
+                    let at = p.selected;
+                    p.set_items(rest);
+                    p.selected = at.min(p.len().saturating_sub(1));
+                }
+                return;
             }
             // A buffer: close it (#47)
             (Code::Char('x'), true) if matches!(p.current().map(|i| &i.action), Some(Action::Buffer(_))) => {
@@ -12102,7 +12109,7 @@ mod tests {
         assert!(s.contains("marker.txt"), "{s}");
         // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
         // wide as its path makes it, whatever the system's temp folder: #126, `/tmp/…` on Linux)
-        let says = "C-q answer · y · a chat · s session · A always · n";
+        let says = "C-q answer · y once · a chat · s session · A always · n";
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         answer(&mut ed, "n");
         let a = answered(&mut ed, "p2");

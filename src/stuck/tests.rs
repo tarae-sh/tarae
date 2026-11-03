@@ -8,6 +8,18 @@ use crate::waits::Waiting;
 
 const MIN: Duration = Duration::from_secs(60);
 
+/// What the front session's Claude's run in the task panel or the test pane is said as, while it's said stuck.
+fn said_stuck(ed: &Editor) -> Option<String> {
+    let task = ed.workspace.task_run.as_ref().and_then(|r| r.wait.stuck.as_deref());
+    let test = ed.workspace.test_run.as_ref().and_then(|r| r.wait.stuck.as_deref());
+    task.or(test).map(shown)
+}
+
+/// A stuck run as found, for the tests that make one.
+fn found(slot: Slot, run: u64, pid: u32, quiet: Duration, reach: Option<crate::sandbox::ReachOut>) -> Stuck {
+    Stuck { slot, run, pid, asked: Instant::now(), quiet, cpu: 0.0, at: 0, reach, quiet_there: false }
+}
+
 /// #181: a run is stuck once it has printed nothing *and* used next to no CPU for the setting's minutes —
 /// asked once, again only after as long again; never while it says what it waits on, nor with the setting
 /// at 0. Working (a look over `IDLE_PCT`) starts its idle time over.
@@ -281,10 +293,11 @@ fn sample(pid: u32, pct: f32) -> Sample {
 }
 
 /// #181 as met: a run of Claude's printing nothing at 0% CPU for the setting's minutes has what its threads
-/// wait in put in its output, then a card asks — once; `w` shows those lines in its panel (the card stays),
-/// `y` stops it, its output kept. (The run is the test's own `sleep`, stopped by the card.)
+/// wait in put in its output, then it's said where it's drawn — once, no card (polish landing 4): `◦ stuck?` on its
+/// panel's top line, in warning, beside `space m c stop`; that key stops it whole, its panel and output kept. (The
+/// run is the test's own `sleep`, stopped by its key.)
 #[test]
-fn a_stuck_run_is_captured_then_asked_about() {
+fn a_stuck_run_is_captured_then_said_where_it_is_drawn() {
     let dir = std::fs::canonicalize(std::env::temp_dir())
         .unwrap()
         .join(format!("tarae-stuck-{}", std::process::id()));
@@ -301,37 +314,57 @@ fn a_stuck_run_is_captured_then_asked_about() {
     r.last_output = ago(11);
     // Idle at the first look — and since 11 minutes, as the looks before saw it
     ed.procs_sampled(sample(pid, 0.0));
-    assert!(ed.offers.is_empty(), "idle only from this look");
+    assert!(said_stuck(&ed).is_none(), "idle only from this look");
     ed.workspace.task_run.as_mut().unwrap().wait.idle = Some(ago(11));
     ed.procs_sampled(sample(pid, 0.0));
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
-    let o = &ed.offers[0];
-    assert_eq!(o.title, "Stuck? Claude's command");
-    assert!(
-        o.question.starts_with("No output for 11m 00s, 0% CPU — Claude's command sleep 30"),
-        "{}",
-        o.question
-    );
-    assert!(o.question.contains(&format!("pid {pid} · ")), "its threads on the card: {}", o.question);
-    let answers = o.answers(false);
-    assert_eq!(answers, [('y', "Stop it"), ('w', "What it waits on"), ('n', "Keep waiting")]);
-    let out: Vec<String> =
-        ed.workspace.task_run.as_ref().unwrap().output.iter().map(|l| l.1.into_owned()).collect();
+    settle_until(&mut ed, |ed| said_stuck(ed).is_some());
+    assert_eq!(said_stuck(&ed).unwrap(), "◦ stuck? no output for 11m 00s, 0% CPU");
+    assert!(ed.offers.is_empty(), "no card");
+    let out = |ed: &Editor| -> Vec<String> {
+        ed.workspace.task_run.as_ref().unwrap().output.iter().map(|l| l.1.into_owned()).collect()
+    };
     let head = "── tarae: no output for 11m 00s, 0% CPU — what each of its threads waits in ──";
-    let at = out.iter().position(|l| *l == head).unwrap_or_else(|| panic!("{out:?}"));
-    assert!(out[at + 1].starts_with(&format!("pid {pid} · ")), "{out:?}");
-    assert!(out[at + 2].starts_with("  ") && out[at + 2].contains(" — "), "a thread: {out:?}");
-    // Asked once: the next look asks nothing more
+    let lines = out(&ed);
+    let at = lines.iter().position(|l| *l == head).unwrap_or_else(|| panic!("{lines:?}"));
+    assert!(lines[at + 1].starts_with(&format!("pid {pid} · ")), "{lines:?}");
+    assert!(lines[at + 2].starts_with("  ") && lines[at + 2].contains(" — "), "a thread: {lines:?}");
+    // Said where the run is drawn: its panel's top line, beside its stop key
+    ed.slot_show(Slot::Task);
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, 160, 40).unwrap();
+    let mut parser = vt100::Parser::new(40, 160, 0);
+    parser.process(&bytes);
+    let screen = parser.screen().contents();
+    let top = screen.lines().find(|l| l.contains("◦ stuck?")).unwrap_or_else(|| panic!("{screen}"));
+    assert!(
+        top.contains("◦ stuck? no output for 11m 00s, 0% CPU") && top.contains("space m c stop"),
+        "{top}"
+    );
+    // Narrower, the stop key stays and leads the keys; the words fold first — short, then `◦ stuck?` alone (the user,
+    // 2026-11-03)
+    let top_at = |ed: &mut Editor, w: u16| {
+        let mut bytes = Vec::new();
+        crate::term::render(ed, &mut bytes, w, 24).unwrap();
+        let mut parser = vt100::Parser::new(24, w, 0);
+        parser.process(&bytes);
+        let screen = parser.screen().contents();
+        let top = screen.lines().find(|l| l.contains("◦ stuck?")).map(str::to_string);
+        top.unwrap_or_else(|| panic!("{w}: {screen}"))
+    };
+    let top = top_at(&mut ed, 80);
+    assert!(top.contains("◦ stuck? 11m quiet") && top.contains("─ space m c stop"), "80: {top}");
+    let top = top_at(&mut ed, 60);
+    assert!(
+        top.contains("◦ stuck? ─") && !top.contains("quiet") && top.contains("─ space m c stop"),
+        "60: {top}"
+    );
+    crate::screen::frames_sized(&mut ed, "cards4-stuck", crate::screen::SHOT_SIZES);
+    // Said once: the next look starts no read of its threads (it would land on a job) — nothing more written
+    let long_ago = ago(11);
+    ed.workspace.task_run.as_mut().unwrap().wait.stuck_asked = Some(long_ago);
     ed.procs_sampled(sample(pid, 0.0));
-    assert_eq!(ed.offers.iter().filter(|o| o.stuck().is_some()).count(), 1);
-    // `w`: its panel, at those lines — the card stays
-    crate::term::render(&mut ed, &mut Vec::new(), 120, 40).unwrap();
-    let o = (ed.offers[0].id, ed.offers[0].rev);
-    ed.card_focus = Some((o.0, o.1));
-    ed.handle_key(Key::plain(Code::Char('w')));
-    assert_eq!(ed.slot(), Some(Slot::Task));
-    assert_eq!(ed.workspace.task_run.as_ref().unwrap().scroll, Some(at));
-    assert!(ed.offers.iter().any(|o| o.stuck().is_some()), "still to answer");
+    assert_eq!(ed.workspace.task_run.as_ref().unwrap().wait.stuck_asked, Some(long_ago), "not found again");
+    assert_eq!(out(&ed).iter().filter(|l| **l == head).count(), 1);
     // (a quiet `docker run`'s work goes on in its container: a stand-in `docker` lists the run's — named from its
     // prefix — and writes down what it's asked)
     let prefix =
@@ -349,9 +382,11 @@ fn a_stuck_run_is_captured_then_asked_about() {
     let tx = ed.events.sender();
     ed.workspace.task_run.as_mut().unwrap().containers =
         Some(crate::containers::Run::on(&prefix, "Claude's command", tx, &dir.join("bin")));
-    // `y`: stopped — its output stays, and says so — and its container with it, by name
-    ed.handle_key(Key::plain(Code::Char('y')));
-    assert!(ed.offers.iter().all(|o| o.stuck().is_none()));
+    // `space m c`: stopped — its panel and output stay, and say so — and its container with it, by name
+    for k in [Code::Char(' '), Code::Char('m'), Code::Char('c')] {
+        ed.handle_key(Key::plain(k));
+    }
+    assert!(said_stuck(&ed).is_none() && ed.workspace.task_run.is_some(), "stopped, the panel kept");
     settle_until(&mut ed, |ed| {
         ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
     });
@@ -362,26 +397,17 @@ fn a_stuck_run_is_captured_then_asked_about() {
     }
     let out = &ed.workspace.task_run.as_ref().unwrap().output;
     assert!(out.iter().any(|l| l.1 == head), "kept");
-    assert!(
-        out.iter().any(|l| l.1 == "── stopped from tarae's card: no output for 11m 00s, 0% CPU ──"),
-        "{out:?}"
-    );
+    assert!(out.iter().any(|l| l.1 == "── stopped by you: no output for 11m 00s, 0% CPU ──"), "{out:?}");
     ed.workspace.task_run = None;
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// frictions29 35: `y` on the card stops what the run started in a session of its own too — a test's helper that
-/// called `setsid` to take a pty was left running, blocked in a read. The run is the test's own `sh` starting
-/// the stand-in (`procs::tests::setsid_helper`, in the test's `Scratch`): after `y` it's gone, and the run's output
+/// frictions29 35: a stuck run's stop key stops what the run started in a session of its own too — a test's helper
+/// that called `setsid` to take a pty was left running, blocked in a read. The run is the test's own `sh` starting
+/// the stand-in (`procs::tests::setsid_helper`, in the test's `Scratch`): after the key it's gone, and the run's output
 /// says it was stopped with it.
-///
-/// (frictions29 90's ninth and tenth falls: the card says the run's command line and each of its threads, so its
-/// height was the place it ran in's — the scratch folder under `$TMPDIR` and the test binary's path in that line,
-/// a thread's state word under load — and at 120×40 it fitted with no row to spare: a longer `$TMPDIR` cut it, and
-/// `y` on a cut card asks for it to be read first. The line is in a script of the run's own, `sh run.sh`; the
-/// screen leaves the card room; and drawn whole is checked before the `y`, said if not.)
 #[test]
-fn a_stop_from_the_card_ends_what_left_the_runs_group() {
+fn a_stuck_runs_stop_ends_what_left_the_runs_group() {
     let dir = crate::scratch::Scratch::new("stuck-apart");
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.path().to_path_buf();
@@ -413,19 +439,9 @@ fn a_stop_from_the_card_ends_what_left_the_runs_group() {
     r.last_output = ago(11);
     r.wait.idle = Some(ago(11));
     ed.procs_sampled(sample(pid, 0.0));
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
-    crate::term::render(&mut ed, &mut Vec::new(), 140, 60).unwrap();
-    let card = &ed.offers[0];
-    assert!(
-        ed.offer_seen_whole(),
-        "the card cut ({:?}) — its `y` would ask it read first:\n{}",
-        ed.screen.offer_card,
-        card.question
-    );
-    let o = (card.id, card.rev);
-    ed.card_focus = Some((o.0, o.1));
-    ed.handle_key(Key::plain(Code::Char('y')));
-    assert!(ed.offers.iter().all(|o| o.stuck().is_none()));
+    settle_until(&mut ed, |ed| said_stuck(ed).is_some());
+    ed.task_close();
+    assert!(said_stuck(&ed).is_none());
     let said = "── stopped with it: 1 process it started in a session of its own ──";
     let out = |ed: &Editor| ed.workspace.task_run.as_ref().map(|r| r.output.clone()).unwrap_or_default();
     settle_until(&mut ed, |ed| out(ed).iter().any(|l| l.1 == said || l.1.contains("outlived the stop")));
@@ -437,8 +453,8 @@ fn a_stop_from_the_card_ends_what_left_the_runs_group() {
 }
 
 /// frictions15 #3 (a): a quiet run of Claude's that was granted a daemon's socket may be working there — a
-/// build on a remote container engine printed nothing for minutes at 0% CPU here and was called stuck. Its
-/// card is `Quiet:` and says what it can reach; one let reach nothing is still `Stuck?` (#181 — cargo hung
+/// build on a remote container engine printed nothing for minutes at 0% CPU here and was called stuck. It's said
+/// `◦ quiet?`, and its output says what it can reach; one let reach nothing is still `◦ stuck?` (#181 — cargo hung
 /// under qemu). Not at 12 minutes (cardburden 5: `llm.stuck-after-outside`, 30) — `quiet` in the state then.
 /// The run is the test's own `sleep`; the socket a name only.
 #[test]
@@ -465,89 +481,68 @@ fn a_quiet_run_let_out_to_a_socket_is_asked_as_maybe_working_elsewhere() {
     let r = ed.workspace.task_run.as_mut().unwrap();
     (r.last_output, r.wait.idle) = (ago(31), Some(ago(31)));
     ed.procs_sampled(sample(pid, 0.0));
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
-    assert_eq!(ed.ui_runs()[0].state, "running", "asked: no longer held");
-    let o = &ed.offers[0];
-    assert_eq!(o.title, "Quiet: Claude's command");
+    settle_until(&mut ed, |ed| said_stuck(ed).is_some());
+    assert_eq!(ed.ui_runs()[0].state, "running", "said: no longer held");
+    assert!(said_stuck(&ed).unwrap().starts_with("◦ quiet? no output for 31m"), "{:?}", said_stuck(&ed));
     let reach = format!(
-        "It can reach {} — the work may be going on there: next to no CPU here doesn't mean it's stuck.",
+        "── tarae: it can reach {} — the work may be going on there: next to no CPU here doesn't mean it's stuck ──",
         crate::allow::tilde(&dir.join("engine.sock"))
     );
-    assert!(o.question.contains(&reach), "{}", o.question);
-    assert_eq!(o.answers(false), [('y', "Stop it"), ('w', "What it waits on"), ('n', "Keep waiting")]);
+    let out = &ed.workspace.task_run.as_ref().unwrap().output;
+    assert!(out.iter().any(|l| l.1 == reach), "{out:?}");
+    assert!(ed.offers.is_empty(), "no card");
     ed.workspace.task_run = None;
     std::fs::remove_dir_all(&dir).ok();
 }
 
 /// frictions15 #3 (b): what the run's processes are connected to outside its tree names where the work may
 /// be — before what it was let reach (a run outside the sandbox can reach anything; its connection says
-/// which). Neither: `Stuck?`, as #181.
+/// which). Neither: nothing said of it, as #181.
 #[test]
-fn a_peer_outside_the_tree_is_named_on_the_card() {
+fn a_peer_outside_the_tree_is_named_in_its_output() {
     use crate::sandbox::ReachOut;
-    let s = |reach: Option<ReachOut>| Stuck {
-        slot: Slot::Task,
-        run: 1,
-        pid: 4242,
-        asked: Instant::now(),
-        quiet: 12 * MIN,
-        cpu: 0.0,
-        at: 0,
-        reach,
-    };
-    let lines = ["pid 4242 · docker build . · 9 threads".to_string()];
-    let label = "Claude's command docker build . in the task panel";
+    let s = |reach: Option<ReachOut>| found(Slot::Task, 1, 4242, 12 * MIN, reach);
     let peers = ["~/.colima/default/docker.sock".to_string()];
-    let o = card(s(Some(ReachOut::Anything)), label, &lines, &peers);
-    assert_eq!(o.title, "Quiet: Claude's command");
+    let said = elsewhere(&s(Some(ReachOut::Anything)), &peers).unwrap();
     assert!(
-        o.question
-            .contains("\n\nIts processes are connected to ~/.colima/default/docker.sock — the work may"),
-        "{}",
-        o.question
+        said.starts_with("its processes are connected to ~/.colima/default/docker.sock — the work may"),
+        "{said}"
     );
-    assert!(!o.question.contains("It can reach"), "the connection says which: {}", o.question);
-    let o = card(s(None), label, &lines, &[]);
-    assert_eq!(o.title, "Stuck? Claude's command");
-    assert!(!o.question.contains("may be going on there"), "{}", o.question);
+    assert!(!said.contains("it can reach"), "the connection says which: {said}");
+    assert_eq!(elsewhere(&s(None), &[]), None);
 }
 
-/// The reviewer: a run with no sandbox around it, or the network open, was always `Quiet:` — "doesn't mean
+/// The reviewer: a run with no sandbox around it, or the network open, was always quiet — "doesn't mean
 /// it's stuck" — so #181's hang (cargo under qemu, no connection anywhere) was never called stuck for those
 /// runs. Only a connection seen, or a daemon's socket granted, says where the work may be; the network or no
-/// sandbox alone, nothing connected, is `Stuck?` with the reach a note.
+/// sandbox alone, nothing connected, is `◦ stuck?` with the reach a note in its output.
 #[test]
 fn reaching_anything_with_nothing_connected_is_still_stuck() {
     use crate::sandbox::ReachOut;
-    let s = |reach| Stuck {
-        slot: Slot::Test,
-        run: 1,
-        pid: 4242,
-        asked: Instant::now(),
-        quiet: 12 * MIN,
-        cpu: 0.0,
-        at: 0,
-        reach: Some(reach),
-    };
-    let lines = ["pid 4242 · cargo test · 3 threads".to_string()];
-    let label = "Claude's tests in the test pane";
+    let dir = crate::scratch::Scratch::new("stuck-reach-note");
     for (reach, said) in
         [(ReachOut::Anything, "anything — no sandbox around it"), (ReachOut::Network, "the network")]
     {
-        let o = card(s(reach), label, &lines, &[]);
-        assert_eq!(o.title, "Stuck? Claude's tests", "{said}");
-        let note = format!("It can reach {said}, but no connection outside its processes was seen.");
-        assert!(o.question.contains(&note), "{}", o.question);
-        assert!(!o.question.contains("doesn't mean it's stuck"), "{}", o.question);
+        let (mut ed, pid) = quiet_run(dir.path(), "sleep 30");
+        let run = ed.workspace.task_run.as_ref().unwrap().trace.id();
+        ask(&mut ed, found(Slot::Task, run, pid, 12 * MIN, Some(reach)), Vec::new(), Vec::new());
+        assert!(said_stuck(&ed).unwrap().starts_with("◦ stuck? "), "{said}");
+        let note =
+            format!("── tarae: it can reach {said}, but no connection outside its processes was seen ──");
+        let out = &ed.workspace.task_run.as_ref().unwrap().output;
+        assert!(out.iter().any(|l| l.1 == note), "{out:?}");
+        // (connected, the same reach: where the work may be is known)
+        ed.workspace.task_run.as_mut().unwrap().wait.stuck = None;
+        let peers = vec!["10.0.0.7:2376".to_string()];
+        ask(&mut ed, found(Slot::Task, run, pid, 31 * MIN, None), Vec::new(), peers);
+        assert!(said_stuck(&ed).unwrap().starts_with("◦ quiet? "), "{said}");
+        ed.workspace.task_run = None;
     }
-    // (connected, the same reach: where the work may be is known)
-    let peers = ["10.0.0.7:2376".to_string()];
-    assert_eq!(card(s(ReachOut::Network), label, &lines, &peers).title, "Quiet: Claude's tests");
 }
 
 /// cardburden 5 (b): a run found connected outside its processes (read at the stuck look, on a worker) when
-/// it was let reach nothing in particular is held as one granted a socket: no card before
-/// `llm.stuck-after-outside`, marked so the next looks wait as long, `quiet` in the state; then asked, `Quiet:`.
+/// it was let reach nothing in particular is held as one granted a socket: not said before
+/// `llm.stuck-after-outside`, marked so the next looks wait as long, `quiet` in the state; then said, `◦ quiet?`.
 /// (The run is the test's own `sleep`; the peer a name only.)
 #[test]
 fn a_run_found_connected_outside_is_held_to_the_later_minutes() {
@@ -563,29 +558,20 @@ fn a_run_found_connected_outside_is_held_to_the_later_minutes() {
     let r = ed.workspace.task_run.as_mut().unwrap();
     (r.by_claude, r.last_output, r.wait.idle) = (true, ago(12), Some(ago(12)));
     let (pid, run) = (r.pid().unwrap(), r.trace.id());
-    let s = |quiet| Stuck {
-        slot: Slot::Task,
-        run,
-        pid,
-        asked: Instant::now(),
-        quiet,
-        cpu: 0.0,
-        at: 0,
-        reach: None,
-    };
+    let s = |quiet| found(Slot::Task, run, pid, quiet, None);
     let peers = || vec!["10.0.0.7:2376".to_string()];
     // (the look at 12 minutes found it due, as one let reach nothing — then read its connection)
     ed.workspace.task_run.as_mut().unwrap().wait.stuck_asked = Some(Instant::now());
     ask(&mut ed, s(12 * MIN), Vec::new(), peers());
-    assert!(ed.offers.is_empty(), "connected: not at 12 min");
+    assert!(said_stuck(&ed).is_none(), "connected: not at 12 min");
     let w = &ed.workspace.task_run.as_ref().unwrap().wait;
     assert!(w.connected && w.stuck_asked.is_none(), "marked; its next look not put off by an ask");
     ed.procs_sampled(sample(pid, 0.0));
     assert_eq!(ed.workspace.task_run.as_ref().unwrap().wait.stuck_asked, None, "the next look waits 30 min");
     assert_eq!(ed.ui_runs()[0].state, "quiet");
     ask(&mut ed, s(31 * MIN), Vec::new(), peers());
-    assert_eq!(ed.offers.len(), 1);
-    assert_eq!(ed.offers[0].title, "Quiet: Claude's command");
+    assert!(said_stuck(&ed).unwrap().starts_with("◦ quiet? no output for 31m"), "{:?}", said_stuck(&ed));
+    assert!(ed.offers.is_empty(), "no card");
     ed.workspace.task_run = None;
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -619,12 +605,12 @@ fn a_runs_connection_to_a_daemon_is_read_from_its_tree() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// #200: a stuck card parked in a session behind, its run still silent, is looked at after every event
-/// (`sync`) — and that look must not say the event changed nothing. It did: every key, resize and job came
-/// back unchanged, nothing was drawn for 30 minutes (no card settled, no toast aged) until the run ended.
-/// (The run is the test's own `sleep`, stopped at the end.)
+/// #200: a run said stuck in a session behind, still silent, is looked at after every event (`sync`) — and that
+/// look must not say the event changed nothing. It did (as a card parked there): every key, resize and job came
+/// back unchanged, nothing was drawn for 30 minutes until the run ended. (The run is the test's own `sleep`, stopped
+/// at the end.)
 #[test]
-fn a_stuck_card_behind_leaves_the_front_drawn() {
+fn a_stuck_run_behind_leaves_the_front_drawn() {
     use crate::event::Event;
     let dir = std::fs::canonicalize(std::env::temp_dir())
         .unwrap()
@@ -640,27 +626,14 @@ fn a_stuck_card_behind_leaves_the_front_drawn() {
         assert!(ed.task_start_for(task, user, None, Default::default()).is_ok());
         let r = ed.workspace.task_run.as_mut().unwrap();
         (r.by_claude, r.last_output) = (true, ago(11));
-        let s = Stuck {
-            slot: Slot::Task,
-            run: r.trace.id(),
-            pid: r.pid().unwrap(),
-            asked: Instant::now(),
-            quiet: 11 * MIN,
-            cpu: 0.0,
-            at: 0,
-            reach: None,
-        };
-        let o = crate::offer::Offer::new(
-            "Stuck? Claude's command".into(),
-            "No output for 11 min",
-            "Stopping…",
-            String::new(),
-            crate::offer::What::Stuck(Box::new(s)),
-        );
-        ed.push_offer(o);
+        let s = found(Slot::Task, r.trace.id(), r.pid().unwrap(), 11 * MIN, None);
+        r.wait.stuck = Some(Box::new(s));
     });
-    let parked = |ed: &Editor| ed.workspaces.iter().any(|l| l.parked.iter().any(|o| o.stuck().is_some()));
-    assert!(parked(&ed), "parked behind");
+    let parked = |ed: &Editor| {
+        let behind = ed.workspaces.iter().find(|l| l.id == back);
+        behind.and_then(|l| l.task_run.as_ref()).is_some_and(|r| r.wait.stuck.is_some())
+    };
+    assert!(parked(&ed), "said behind");
     // (its "waits for you" said once — what follows is the steady state that froze the screen)
     ed.handle_event(Event::Resize);
     let changed = |ed: &mut Editor, ev: Event| {
@@ -672,15 +645,15 @@ fn a_stuck_card_behind_leaves_the_front_drawn() {
     assert!(ed.prompt.is_some(), "the command line opened");
     assert!(changed(&mut ed, Event::Resize), "a resize is drawn");
     assert!(changed(&mut ed, Event::Job(Box::new(|_: &mut Editor| {}))), "a job is drawn");
-    assert!(parked(&ed), "its run still silent: the card stays");
+    assert!(parked(&ed), "its run still silent: still said");
     // (its `sleep` stopped as a dropped run is)
     ed.with_workspace(back, |ed| ed.workspace.task_run = None);
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// The card goes once its run prints — it wasn't stuck after all; `n` keeps waiting, said.
+/// It's said stuck no more once its run prints — it wasn't stuck after all; meanwhile no look finds it again.
 #[test]
-fn a_stuck_card_goes_when_its_run_prints() {
+fn a_stuck_mark_goes_when_its_run_prints() {
     let dir = std::fs::canonicalize(std::env::temp_dir())
         .unwrap()
         .join(format!("tarae-stuck-prints-{}", std::process::id()));
@@ -694,24 +667,14 @@ fn a_stuck_card_goes_when_its_run_prints() {
     (r.by_claude, r.last_output, r.wait.idle) = (true, ago(12), Some(ago(12)));
     let pid = r.pid().unwrap();
     ed.procs_sampled(sample(pid, 0.0));
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
-    // `n`: kept waiting, said — not asked again at the next look
-    crate::term::render(&mut ed, &mut Vec::new(), 120, 40).unwrap();
-    let o = (ed.offers[0].id, ed.offers[0].rev);
-    ed.card_focus = Some((o.0, o.1));
-    ed.handle_key(Key::plain(Code::Char('n')));
-    assert!(ed.offers.is_empty());
-    let said = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
-    assert!(said.contains("kept waiting — asked again after 10 more min of nothing"), "{said}");
-    ed.procs_sampled(sample(pid, 0.0));
-    assert!(ed.offers.is_empty(), "not again so soon");
-    // Asked again later; it prints — the card goes
-    ed.workspace.task_run.as_mut().unwrap().wait.stuck_asked = Some(ago(11));
-    ed.procs_sampled(sample(pid, 0.0));
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
+    settle_until(&mut ed, |ed| said_stuck(ed).is_some());
+    ed.handle_event(crate::event::Event::Resize);
+    assert!(said_stuck(&ed).is_some(), "still silent: still said");
+    // It prints — said no more
     ed.workspace.task_run.as_mut().unwrap().last_output = Instant::now();
     ed.handle_event(crate::event::Event::Resize);
-    assert!(ed.offers.is_empty(), "it printed: not stuck");
+    assert!(said_stuck(&ed).is_none(), "it printed: not stuck");
+    assert!(ed.offers.is_empty(), "never a card");
     ed.workspace.task_run = None;
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -762,7 +725,7 @@ fn a_run_busy_at_nothing_it_shows_is_said_not_asked() {
     // 11 minutes quiet at full CPU: said, listed with its stop key — no card
     ed.procs_sampled(busy(100.0));
     ed.handle_event(crate::event::Event::Resize);
-    assert!(ed.offers.iter().all(|o| o.stuck().is_none()), "busy isn't stuck: {:?}", ed.offers);
+    assert!(said_stuck(&ed).is_none(), "busy isn't stuck");
     let (said, listed) = silent(&ed);
     assert!(said.starts_with("no output for 11m ") && said.ends_with(" · 100% CPU"), "{said}");
     let listed = listed.expect("in the inbox").asks;
@@ -812,18 +775,18 @@ fn a_new_process_in_the_runs_tree_is_progress() {
     assert!(!w.worth_a_look(Instant::now(), Instant::now(), Instant::now()), "not for the inbox either");
     // (the stuck card would come on a job — none was started)
     ed.handle_event(crate::event::Event::Resize);
-    assert!(ed.offers.iter().all(|o| o.stuck().is_none()), "working: not asked");
-    // Nothing new for 11 minutes: asked
+    assert!(said_stuck(&ed).is_none(), "working: not said");
+    // Nothing new for 11 minutes: said
     let r = ed.workspace.task_run.as_mut().unwrap();
     r.wait.moved = Instant::now().checked_sub(MIN * 11);
     ed.procs_sampled(sample_with_child(pid, "tarae", 2, Duration::from_secs(3)));
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
-    let q = &ed.offers.iter().find(|o| o.stuck().is_some()).unwrap().question;
-    assert!(q.starts_with("No output for 20m 00s, 0% CPU"), "since its last line: {q}");
-    // New work while the card is up (the next scene's tarae): the card goes, as it does on a line
+    settle_until(&mut ed, |ed| said_stuck(ed).is_some());
+    let q = said_stuck(&ed).unwrap();
+    assert!(q.starts_with("◦ stuck? no output for 20m 00s, 0% CPU"), "since its last line: {q}");
+    // New work while it's said (the next scene's tarae): said no more, as on a line
     ed.procs_sampled(sample_with_child(pid, "tarae", 3, Duration::from_secs(1)));
     ed.handle_event(crate::event::Event::Resize);
-    assert!(ed.offers.iter().all(|o| o.stuck().is_none()), "at work again: {:?}", ed.offers);
+    assert!(said_stuck(&ed).is_none(), "at work again");
     ed.workspace.task_run = None;
 }
 
@@ -857,7 +820,7 @@ fn a_polling_loops_new_sleeps_are_no_progress() {
     let (mut ed, pid) = quiet_run(dir.path(), "sleep 30 | tail -5");
     ed.procs_sampled(sample_with_child(pid, "sleep", 2, Duration::from_millis(1)));
     assert!(ed.workspace.task_run.as_ref().unwrap().wait.moved.is_none(), "a sleep is no work");
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
+    settle_until(&mut ed, |ed| said_stuck(ed).is_some());
     ed.workspace.task_run = None;
 }
 
@@ -871,7 +834,7 @@ fn a_heavy_poller_is_asked_about_unless_its_output_is_held() {
     let (mut ed, pid) = quiet_run(dir.path(), "sleep 30");
     ed.procs_sampled(sample_with_child(pid, "kubectl", 2, Duration::from_millis(800)));
     assert!(ed.workspace.task_run.as_ref().unwrap().wait.moved.is_none(), "lines are the only sign");
-    settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
+    settle_until(&mut ed, |ed| said_stuck(ed).is_some());
     ed.workspace.task_run = None;
 
     let (mut ed, pid) = quiet_run(dir.path(), "sleep 30 2>&1 | tail -15");
@@ -881,38 +844,37 @@ fn a_heavy_poller_is_asked_about_unless_its_output_is_held() {
         "held: a process at work is progress"
     );
     ed.handle_event(crate::event::Event::Resize);
-    assert!(ed.offers.iter().all(|o| o.stuck().is_none()), "not asked");
+    assert!(said_stuck(&ed).is_none(), "not said");
     ed.workspace.task_run = None;
 }
 
-/// frictions34 39 a: what the card can't see, it says — a command whose output goes through a filter that holds
-/// what it writes into the run's pipe (`tail`, `grep` alike), one wording with the filter's name; one asked for
-/// its lines as they come (`grep --line-buffered`) lets only part of the output through.
+/// frictions34 39 a: what its output can't show, a stuck run's output says — a command whose output goes through a
+/// filter that holds what it writes into the run's pipe (`tail`, `grep` alike), one wording with the filter's name;
+/// one asked for its lines as they come (`grep --line-buffered`) lets only part of the output through.
 #[test]
-fn a_filtered_runs_card_says_why_nothing_shows() {
+fn a_filtered_stuck_run_says_why_nothing_shows() {
     let dir = crate::scratch::Scratch::new("stuck-filtered");
-    let card = |cmd: &str| {
+    let said = |cmd: &str| {
         let (mut ed, pid) = quiet_run(dir.path(), cmd);
         ed.procs_sampled(sample(pid, 0.0));
-        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.stuck().is_some()));
-        let q = ed.offers.iter().find(|o| o.stuck().is_some()).unwrap().question.clone();
+        settle_until(&mut ed, |ed| said_stuck(ed).is_some());
+        let out = &ed.workspace.task_run.as_ref().unwrap().output;
+        let held =
+            out.iter().find(|l| l.1.contains("goes through")).map(|l| l.1.into_owned()).unwrap_or_default();
         ed.workspace.task_run = None;
-        q
+        held
     };
-    let q = card("sleep 30 2>&1 | tail -15");
-    assert!(
-        q.starts_with(
-            "No output for 11m 00s, 0% CPU — Claude's command sleep 30 2>&1 | tail -15 in the task panel. Its \
-             output goes through tail: what it lets through may show only when the run ends. Claude's turn \
-             waits on it"
-        ),
-        "{q}"
+    let wait = "what it lets through may show only when the run ends";
+    assert_eq!(
+        said("sleep 30 2>&1 | tail -15"),
+        format!("── tarae: its output goes through tail: {wait} ──")
     );
-    let q = card("sleep 30 2>&1 | grep FAIL");
-    assert!(
-        q.contains("Its output goes through grep: what it lets through may show only when the run ends."),
-        "{q}"
+    assert_eq!(
+        said("sleep 30 2>&1 | grep FAIL"),
+        format!("── tarae: its output goes through grep: {wait} ──")
     );
-    let q = card("sleep 30 2>&1 | grep --line-buffered FAIL");
-    assert!(q.contains("Its output goes through grep: only what it lets through shows."), "{q}");
+    assert_eq!(
+        said("sleep 30 2>&1 | grep --line-buffered FAIL"),
+        "── tarae: its output goes through grep: only what it lets through shows ──"
+    );
 }

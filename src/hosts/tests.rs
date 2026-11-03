@@ -664,13 +664,13 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
     // (the exact line: `a` and `s` keep their words, `y` says it waits; read whole, `y` its meaning in that form)
     let line = |ed: &Editor| crate::term::card_line(ed).unwrap_or_default();
     assert!(s.contains("more lines, not read yet"), "{s}");
-    assert_eq!(line(&ed), "╰─ C-q answer · y once read · a chat · s session · v · n ─╯", "{s}");
+    assert_eq!(line(&ed), "╰─ C-q answer · y once read · a chat · s session · v details · n ─╯", "{s}");
     let waiting = y_at(&ed);
     ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev)));
     let s = draw(&mut ed);
     assert_eq!(
         line(&ed),
-        "╰─ C-q answer · y once · a chat · s session · v · n ──────╯",
+        "╰─ C-q answer · y once · a chat · s session · v details · n ──────╯",
         "its meaning back: {s}"
     );
     assert_eq!(y_at(&ed), waiting, "no narrower once read:\n{s}");

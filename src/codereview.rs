@@ -3304,9 +3304,33 @@ fn places_said(places: &[String]) -> String {
 pub fn push_bring_card(
     ed: &mut Editor,
     sid: crate::event::WorkspaceId,
+    card: crate::offer::Offer,
+    root: PathBuf,
+    base: String,
+) {
+    bring_graded(ed, sid, card, root, base, false);
+}
+
+/// A bring its card's `y` already asked for, rebased (polish landing 4, `Editor::bring_go_on`): graded as
+/// `push_bring_card` grades it, and on to the quick preflight and the bring when nothing holds it — the card (`card`,
+/// held, its `h`) up only while high-risk changes wait for a look.
+pub fn bring_go_graded(
+    ed: &mut Editor,
+    sid: crate::event::WorkspaceId,
+    card: crate::offer::Offer,
+    root: PathBuf,
+    base: String,
+) {
+    bring_graded(ed, sid, card, root, base, true);
+}
+
+fn bring_graded(
+    ed: &mut Editor,
+    sid: crate::event::WorkspaceId,
     mut card: crate::offer::Offer,
     root: PathBuf,
     base: String,
+    go: bool,
 ) {
     let rules = crate::risk::Rules::of(&ed.config);
     let looked = std::iter::once(&ed.workspace)
@@ -3321,6 +3345,23 @@ pub fn push_bring_card(
         move |ed: &mut Editor| {
             // (git can't say: the bring itself will — and holds then)
             let highs = highs.unwrap_or_default();
+            let left = unseen(&highs, &looked);
+            if go && left.is_empty() {
+                if let crate::offer::What::Rebased(m) = card.what {
+                    ed.rebase_preflight_then_bring(*m, true);
+                }
+                return;
+            }
+            // (the bring its card's `y` asked for stops at this card)
+            if go {
+                ed.with_workspace(sid, |ed| ed.workspace.bring_go = false);
+            }
+            // (graded for a card while a bring of its own went on meanwhile: that bring says what becomes of it — one
+            // at a time, no card beside it)
+            let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
+            if !go && all().any(|l| l.id == sid && ed.bring_going(l)) {
+                return;
+            }
             let mut said = None;
             ed.with_workspace(sid, |ed| {
                 said = reviewer_said(ed, &root, &highs, &head);
@@ -3329,7 +3370,6 @@ pub fn push_bring_card(
             if let Some(line) = said {
                 card.question.push_str(&format!("\n\n{line}"));
             }
-            let left = unseen(&highs, &looked);
             if !left.is_empty() {
                 card.question.push_str(&format!(
                     "\n\n{} not looked at — h goes to them in a review since {base} (]h the next, space v h \

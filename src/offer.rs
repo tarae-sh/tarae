@@ -269,9 +269,6 @@ pub enum What {
     RestartSame { id: u64 },
     /// `:restart` again while restart `id` is under way (#194): `y` calls it off, `n` keeps it going.
     RestartCancel { id: u64 },
-    /// Drafts (`notes.rs`) whose lines changed since they were pinned, at a turn's end (#197): `y` closes
-    /// notes `ids`, `n` keeps them. Its session's.
-    NotesStale { ids: Vec<u64> },
     /// Closing every note an author began (`:notes-clear <who>`, the notes list's `A-x`) — or every note, `by`
     /// None — when some hold your unsent drafts: `y` closes notes `ids` (the ones asked about), `n` keeps
     /// them. Its session's.
@@ -281,9 +278,6 @@ pub enum What {
     Recover(Box<crate::recovery::Found>),
     /// The conversations a tarae that's gone was in, with no unsaved edits for them to ride on (`recovery.rs`).
     RecoverChats(Vec<crate::recovery::Left>),
-    /// A run of Claude's printing nothing at next to no CPU for minutes (`stuck.rs`, #181): `y` stops it, `w`
-    /// shows what its threads wait in (its output), `n` keeps waiting. Gone once it prints or ends.
-    Stuck(Box<crate::stuck::Stuck>),
     /// A host a run's rules don't name, its connection held by tarae's proxy (`hosts.rs`): `y` once (this run),
     /// `s` this session, `A` always here (this project), `n` refused for this session. Gone with its run.
     Host(Box<crate::hosts::Ask>),
@@ -358,11 +352,9 @@ pub const KINDS: &[&str] = &[
     "restart",
     "restart-same",
     "restart-cancel",
-    "notes-stale",
     "notes-close",
     "recover",
     "recover-chats",
-    "stuck",
     "host",
     "containers",
     "billing-switch",
@@ -386,7 +378,6 @@ pub enum Act {
     Discard,
     Accept,
     AcceptLike,
-    StaleList,
     MadeView,
     /// `v` on a card with an output (`Offer.output`): in a buffer, the card staying.
     Output,
@@ -408,7 +399,6 @@ pub enum Act {
     RestartOther,
     RestartWait,
     Highs,
-    Stuck,
     /// `c` on a base's move: the conflicting workspaces rebased too (`keepclose.rs`).
     KeepClose(char),
 }
@@ -487,9 +477,7 @@ impl What {
             // (Claude's call ends with the turn)
             | What::WebRead(_)
             | What::ChangeSet { .. }
-            | What::NotesStale { .. }
             | What::NotesClose { .. }
-            | What::Stuck(_)
             // (its runs end with the restart)
             | What::LeftRunning { .. }
             // (about containers as they were then: they run on, the restart's tarae doesn't know them)
@@ -793,13 +781,10 @@ impl Offer {
                 | What::RestartSame { .. }
                 | What::Recover(_)
                 | What::RecoverChats(_)
-                | What::Stuck(_)
                 | What::Host(_)
                 // (what Claude read can go there in the address it asks for)
                 | What::WebRead(_)
                 | What::Containers(_)
-                // (one `y` closes every draft it lists — cardburden 6: answered once read, its list as it is)
-                | What::NotesStale { .. }
                 // (its yes spends your credits)
                 | What::BillingSwitch { .. }
                 | What::EnvKey { .. }
@@ -876,14 +861,6 @@ impl Offer {
         }
     }
 
-    /// The stuck run it asks about, if it's that card (`w` shows what it waits in).
-    pub fn stuck(&self) -> Option<&crate::stuck::Stuck> {
-        match &self.what {
-            What::Stuck(s) => Some(s),
-            _ => None,
-        }
-    }
-
     /// Whether `c` (compare) and `D` (discard) answer it: unsaved edits a gone tarae kept.
     pub fn recovers(&self) -> bool {
         matches!(self.what, What::Recover(_) | What::RecoverChats(_))
@@ -904,9 +881,10 @@ impl Offer {
         matches!(&self.what, What::Restart(c) if !c.under_way.is_empty())
     }
 
-    /// Whether `p` answers it: the bring card after a rebase (the preflight, then the bring).
+    /// Whether `p` answers it: the bring card back after its preflight failed (the preflight again, then the bring —
+    /// the plain card's `y` runs it the first time).
     pub fn preflights(&self) -> bool {
-        matches!(self.what, What::Rebased(_))
+        matches!(self.what, What::Rebased(_)) && !self.warnings.is_empty()
     }
 
     /// Whether `X` answers it: a resolved rebase's card (aborts the rebase).
@@ -954,10 +932,7 @@ impl Offer {
             // (its letters a weighty card takes while it's cut — `offer_key`'s weighty part)
             || (self.weighty() && self.weighty_answer(c))
             || (c == 'N' && matches!(self.what, What::Install { .. } | What::Fetch { .. }))
-            || (c == 'r'
-                && (self.change_set().is_some()
-                    || self.made()
-                    || matches!(self.what, What::NotesStale { .. })))
+            || (c == 'r' && (self.change_set().is_some() || self.made()))
             || (c == 'R' && self.end_dirty())
             || (c == 'c' && (self.commits_first() || self.compares() || self.moves_mixed()))
             || (c == 'D' && (self.recovers() || self.both()))
@@ -982,7 +957,7 @@ impl Offer {
             || (c == 'X' && self.aborts())
             || (c == 'b' && self.base_steps())
             || (c == 'f' && self.restart_other())
-            || (c == 'w' && (self.restart_waits() || self.stuck().is_some()))
+            || (c == 'w' && self.restart_waits())
             || (c == 'h' && self.highs().is_some())
     }
 
@@ -1045,8 +1020,6 @@ impl Offer {
             'y' => A::Accept,
             'a' if matches!(self.what, What::RebaseResolved { made: true, .. }) => A::AcceptBy('a'),
             'Y' if !self.like.is_empty() => A::AcceptLike,
-            // (the card stays: the list of its drafts over it, closed one by one there)
-            'r' if matches!(self.what, What::NotesStale { .. }) => A::StaleList,
             // (the card stays while it's read)
             'v' if self.made() => A::MadeView,
             'v' if self.output.is_some() => A::Output,
@@ -1076,8 +1049,6 @@ impl Offer {
             'w' if self.restart_waits() => A::RestartWait,
             // (the card stays: what it waits on is yours to look at, then it's answered)
             'h' if self.highs().is_some() => A::Highs,
-            // (the card stays: shown, it's still to answer)
-            'w' if self.stuck().is_some() => A::Stuck,
             // An answer letter this card doesn't take isn't the code's either (`a`/`A` there start inserting —
             // and the `y` after it was typed)
             'a' | 'A' if self.lasts() || self.limit_all() => A::Say("this card asks y, a or n"),
@@ -1207,9 +1178,7 @@ impl Offer {
             || matches!(
                 self.what,
                 What::ReviewEnd { .. }
-                    | What::Stuck(_)
                     | What::LeftRunning { .. }
-                    | What::NotesStale { .. }
                     | What::NotesClose { .. }
                     // (its session's: a key of another session's never answers it)
                     | What::Host(_)
@@ -1274,7 +1243,7 @@ impl Offer {
 
     /// Its answers as its bottom line says them where they don't fit there whole (the user, 2026-10-25: a floating
     /// card's keys are always in its bottom line, never rows inside): each its short words, in the same order —
-    /// `y move · c all · v files · n not now`; the card's text explains them. Its kind's own first (`Moves::short`),
+    /// `y move · c all · v more · n not now`; the card's text explains them. Its kind's own first (`Moves::short`),
     /// else `SHORT`'s, else its first word; two alike keep their words whole (lowercase), or they'd say nothing apart.
     pub fn answers_short(&self, quick: bool) -> Vec<(char, String)> {
         let whole = self.answers(quick);
@@ -1304,7 +1273,7 @@ impl Offer {
         self.held.as_ref()?;
         match &self.what {
             What::ReviewEnd { .. } => Some(None),
-            What::Rebased(m) => Some(Some((m.root.clone(), m.base.clone()))),
+            What::Rebase(m) | What::Rebased(m) => Some(Some((m.root.clone(), m.base.clone()))),
             _ => None,
         }
     }
@@ -1494,22 +1463,26 @@ impl Offer {
                 ]
             }
             W::ReviewEnd { .. } => vec![plain('y', "End it"), plain('n', "Keep reviewing")],
-            W::Rebase(_) => vec![plain('y', "Rebase first"), plain('n', "Leave it")],
+            // (one bring card: `y` rebases, runs the preflight and brings — polish landing 4)
+            W::Rebase(_) => vec![plain('y', "Bring"), plain('n', "Not now")],
             W::RebaseHeld(_) if self.stashes() => {
                 vec![lasts('s', "Stash, rebase, put back"), plain('g', "Git tab"), plain('n', "Leave it")]
             }
             W::RebaseHeld(_) => vec![plain('g', "Git tab"), plain('n', "Leave it")],
-            // (`p` runs the quick set when the project has two — the card names its steps; only the card back
-            // after that preflight failed has `warnings`, `Moved::failed_card`)
+            // (its `y` runs the preflight, then brings — polish landing 4; only the card back after that preflight
+            // failed has `warnings` (`Moved::failed_card`): `y` a bring anyway there — frictions29 91 —, `p` the
+            // preflight again)
+            W::Rebased(_) if self.warnings.is_empty() => vec![lasts('y', "Bring"), plain('n', "Not now")],
             W::Rebased(_) => {
-                let p = if quick { "Quick preflight, then bring" } else { "Preflight, then bring" };
-                // (after its preflight failed: a bring anyway — frictions29 91)
-                let y = if self.warnings.is_empty() { "Bring" } else { "Bring anyway" };
+                let p = if quick { "Quick preflight again" } else { "Preflight again" };
                 match self.output.is_some() {
-                    true => {
-                        vec![lasts('y', y), lasts('p', p), plain('v', "Its output"), plain('n', "Not now")]
-                    }
-                    false => vec![lasts('y', y), lasts('p', p), plain('n', "Not now")],
+                    true => vec![
+                        lasts('y', "Bring anyway"),
+                        lasts('p', p),
+                        plain('v', "Its output"),
+                        plain('n', "Not now"),
+                    ],
+                    false => vec![lasts('y', "Bring anyway"), lasts('p', p), plain('n', "Not now")],
                 }
             }
             // (abort throws the resolution away: a capital, as removing does)
@@ -1566,10 +1539,6 @@ impl Offer {
             }
             W::RestartSame { .. } => vec![lasts('y', "Restart anyway"), plain('n', "Not now")],
             W::RestartCancel { .. } => vec![plain('y', "Call it off"), plain('n', "Keep it")],
-            // (`r`: the notes list of just these — cardburden 6)
-            W::NotesStale { .. } => {
-                vec![lasts('y', "Close them"), plain('r', "One by one"), plain('n', "Keep them")]
-            }
             W::NotesClose { .. } => vec![lasts('y', "Close them"), plain('n', "Keep them")],
             // (throwing them away takes a capital, as removing does)
             W::Recover(_) => {
@@ -1590,9 +1559,6 @@ impl Offer {
                 plain('v', "See them"),
                 plain('n', "Decline all"),
             ],
-            W::Stuck(_) => {
-                vec![lasts('y', "Stop it"), plain('w', "What it waits on"), plain('n', "Keep waiting")]
-            }
             W::LeftRunning { runs } if runs.len() == 1 => {
                 vec![lasts('y', "Stop it"), plain('n', "Let it run")]
             }
@@ -1672,11 +1638,9 @@ impl Offer {
             W::Restart(_) => "restart",
             W::RestartSame { .. } => "restart-same",
             W::RestartCancel { .. } => "restart-cancel",
-            W::NotesStale { .. } => "notes-stale",
             W::NotesClose { .. } => "notes-close",
             W::Recover(_) => "recover",
             W::RecoverChats(_) => "recover-chats",
-            W::Stuck(_) => "stuck",
             W::LeftRunning { .. } => "left-running",
             W::Host(_) => "host",
             W::Containers(_) => "containers",
@@ -1970,7 +1934,6 @@ impl crate::editor::Editor {
             Act::Discard => self.offer_discard(),
             Act::Accept => self.offer_accept(),
             Act::AcceptLike => self.offer_accept_like(),
-            Act::StaleList => crate::notes::stale_list(self),
             Act::MadeView => crate::tools::made_view(self),
             Act::Output => {
                 if let Some((title, lines)) = self.offers.first().and_then(|o| o.output.clone()) {
@@ -1995,11 +1958,6 @@ impl crate::editor::Editor {
             Act::RestartWait => self.offer_restart_wait(),
             Act::Highs => crate::codereview::card_highs(self),
             Act::KeepClose(c) => self.offer_keep_close(c),
-            Act::Stuck => {
-                if let Some(s) = self.offers.first().and_then(Offer::stuck).cloned() {
-                    crate::stuck::show(self, &s);
-                }
-            }
         }
     }
 
@@ -2073,7 +2031,7 @@ impl crate::editor::Editor {
         let mut o = self.offers.remove(0);
         self.offer_said(&o, key);
         o.state = OfferState::Installing(crate::clock::now());
-        let (id, what) = (o.id, o.what.clone());
+        let (id, what, failed) = (o.id, o.what.clone(), !o.warnings.is_empty());
         self.offers.push(o);
         self.card_answered(id);
         match what {
@@ -2153,9 +2111,14 @@ impl crate::editor::Editor {
             What::Rebase(m) => self.rebase_start(id, *m),
             // (refused above)
             What::RebaseHeld(_) => self.offer_finished(id, Ok(())),
-            What::Rebased(m) => {
+            // (the plain card: the preflight, then the bring; back after it failed, a bring anyway)
+            What::Rebased(m) if failed => {
                 self.offer_finished(id, Ok(()));
                 self.rebase_bring(*m);
+            }
+            What::Rebased(m) => {
+                self.offer_finished(id, Ok(()));
+                self.rebase_preflight_then_bring(*m, false);
             }
             What::RebaseResolved { root, .. } => {
                 self.offer_finished(id, Ok(()));
@@ -2174,14 +2137,9 @@ impl crate::editor::Editor {
             What::Restart(c) => crate::restart::chosen(self, id, *c, Some(0)),
             What::RestartSame { id: r } => crate::restart::same_answer(self, id, r, true),
             What::RestartCancel { id: r } => crate::restart::cancel_answer(self, id, r, true),
-            What::NotesStale { ids } => crate::notes::stale_answer(self, id, ids, true),
             What::NotesClose { by, ids } => crate::notes::close_by_answer(self, id, by, ids, true),
             What::Recover(f) => crate::recovery::restore(self, id, *f),
             What::RecoverChats(left) => crate::recovery::restore_chats(self, id, left),
-            What::Stuck(s) => {
-                self.offer_finished(id, Ok(()));
-                crate::stuck::stop(self, &s);
-            }
             What::LeftRunning { runs } => {
                 self.offer_finished(id, Ok(()));
                 crate::tools::left_stop(self, &runs);
@@ -2323,7 +2281,7 @@ impl crate::editor::Editor {
         let o = self.offers.remove(0);
         self.offer_answered(&o, 'p');
         if let What::Rebased(m) = o.what {
-            self.rebase_preflight_then_bring(*m);
+            self.rebase_preflight_then_bring(*m, false);
         }
     }
 
@@ -2882,6 +2840,10 @@ impl crate::editor::Editor {
                 self.set_status(format!("Not rebased — {} as it is, nothing brought", m.branch))
             }
             What::RebaseHeld(h) => {
+                // (the bring its card's `y` asked for is off: a later rebase isn't it)
+                if let Some(id) = self.session_at(&h.moved.root) {
+                    self.with_workspace(id, |ed| ed.workspace.bring_go = false);
+                }
                 self.set_status(format!("Not rebased — {} as it is, nothing brought", h.moved.branch))
             }
             What::Rebased(m) => {
@@ -2897,11 +2859,9 @@ impl crate::editor::Editor {
             What::Restart(c) => crate::restart::chosen(self, o.id, *c, None),
             What::RestartSame { id } => crate::restart::same_answer(self, o.id, id, false),
             What::RestartCancel { id } => crate::restart::cancel_answer(self, o.id, id, false),
-            What::NotesStale { ids } => crate::notes::stale_answer(self, o.id, ids, false),
             What::NotesClose { by, ids } => crate::notes::close_by_answer(self, o.id, by, ids, false),
             What::Recover(f) => crate::recovery::not_now(self, *f),
             What::RecoverChats(left) => crate::recovery::chats_not_now(self, left),
-            What::Stuck(s) => crate::stuck::keep_waiting(self, &s),
             What::LeftRunning { .. } => {
                 self.set_status("left running — space m c stops the task, space x c the tests")
             }

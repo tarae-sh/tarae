@@ -19,7 +19,7 @@
 16                              │    │                                                                           │
 17                              │    │ ¶ claude                                                                  │
 18                              │    │   It is — two lines up.                                                   │
-19                              │    ╰─ space n reply · space v s send the review · ]n next · q close ───────────╯
+19                              │    ╰─ space v s send the review · ]n next · q close ───────────────────────────╯
 20                              │ 13▎let added_8 = 8;                                                             ▎
 21                              │ 14▎let added_9 = 9;                                                             ▎
 22                              │ 15▎let added_10 = 10;                                                           ▎
@@ -81,7 +81,7 @@
 16                              a    f                                                                           f
 17                              a    f a AAAAAA                                                                  f
 18                              a    f                                                                           f
-19                              a    ff BBBBB B fffff f fffff f f ffff fff ffffff f BB ffff f B fffff ffffffffffff
+19                              a    ff fffff f f ffff fff ffffff f BB ffff f B fffff ffffffffffffffffffffffffffff
 20                              a ffg                                                                             g
 21                              a ffg                                                                             g
 22                              a ffg                                                                             g

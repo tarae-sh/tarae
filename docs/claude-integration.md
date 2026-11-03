@@ -303,14 +303,17 @@ their own calm count on the status line (`1 run quiet`), since they can be in an
 too. A reviewer's end is its session's `•` (on its tab, or in the status line's `•1` when the chat is closed),
 the same mark that says its files came again from disk: something happened there while you were away.
 
-**A run that looks stuck** gets a card of its own: when a run of Claude's has printed nothing *and* used next to
-no CPU for `llm.stuck-after` minutes (10 by default; 0 = never), the card says `Stuck? … No output for 12 min,
-0% CPU`. Before it shows, tarae reads what each of the run's threads is waiting in and puts it in the run's
-output, so it's still there if you stop the run: on Linux each thread's state and kernel wait channel
-(`/proc/<pid>/task/*/stat` and `wchan`), on macOS each thread's state (macOS doesn't tell an unprivileged
-reader where a thread waits; `sample <pid>` in a terminal shows its stacks). Nothing needs root. `y` stops the
-run (its panel and output stay, and Claude hears how it ended), `w` shows those lines in its panel, `n` keeps
-waiting and asks again after as long again. If the run prints or ends, the card goes away.
+**A run that looks stuck** is said where it's drawn, never on a card: when a run of Claude's has printed nothing
+*and* used next to no CPU for `llm.stuck-after` minutes (10 by default; 0 = never), its panel's top line and
+Claude's run row in the chat say `◦ stuck? no output for 12m 00s, 0% CPU`, in the warning colour, beside the key
+that stops it (`space m c stop`, `space x c` for tests) — the first of the line's keys while it's said stuck. On a
+narrow line the words fold before that key does: to `◦ stuck? 12m quiet`, then to `◦ stuck?` alone. First tarae reads what each of the run's threads is
+waiting in and puts it at the end of the run's output, so it's in sight there and still there if you stop the run:
+on Linux each thread's state and kernel wait channel (`/proc/<pid>/task/*/stat` and `wchan`), on macOS each
+thread's state (macOS doesn't tell an unprivileged reader where a thread waits; `sample <pid>` in a terminal shows
+its stacks). Nothing needs root. While it's said stuck, that key stops the run whole — every process under it, what
+it started in a session of its own too — its panel and output staying (`── stopped by you: … ──`), and Claude
+hears how it ended. If the run prints, starts new work or ends, it's said no more.
 
 **A run busy at something it doesn't show** — a `grep` with a runaway pattern, a loop — is never stuck: it uses
 the CPU. Once it has printed nothing for ten minutes at half a core or more (no new process in its tree meanwhile,
@@ -324,13 +327,14 @@ what it writes in its buffer, and lines may show only when the run ends — unle
 as they come (`grep --line-buffered`, `sed -u`, `stdbuf -oL` before it). Where the output is held, no line may
 show the run's work: there a process new in its tree since the last look that has done some work of its own (a
 scene's tarae after another, a test binary after the build — not a `sleep`) counts as a line would, so the run
-isn't asked about while it's still at work, and a card already up goes when new work starts. Everywhere else
-lines are the only sign, so a hung poll loop (`until kubectl get pod x; do sleep 5; done`) is asked about as any
-quiet run. The card's `No output for` counts from its last line, and it says what a filter does to the output:
-`Its output goes through grep: what it lets through may show only when the run ends`, or, asked for its lines,
+isn't called stuck while it's still at work, and it's said no more when new work starts. Everywhere else
+lines are the only sign, so a hung poll loop (`until kubectl get pod x; do sleep 5; done`) is called stuck as any
+quiet run. Its `no output for` counts from its last line, and its output says what a filter does to it:
+`its output goes through grep: what it lets through may show only when the run ends`, or, asked for its lines,
 `… only what it lets through shows`.
 
-Quiet isn't always stuck, so some runs are asked later. A run under a time limit its own command sets
+Quiet isn't always stuck, so some runs are called stuck later — and one whose work may go on elsewhere is said
+`◦ quiet?`, its output naming what it's connected to or can reach. A run under a time limit its own command sets
 (`timeout 2700 sh breaks.sh`, `gtimeout -k 30 45m …` — the programs are the tools pack's `time-limits`, found
 after `NAME=value` and other wrappers, a `-k` grace added) isn't asked before that limit is up: it ends by then,
 stuck or not, and its panel says `no output for 10:00 · its timeout ends it in 35:00` (past an hour `1h 05m`,
@@ -348,7 +352,7 @@ default; never less than `llm.stuck-after`; 0 = the same). No sandbox at all (no
 
 **Containers a run started** stop with it. Each run of Claude's gets `TARAE_CONTAINER_PREFIX` (`tarae-<pid>-s<session>-r<run>`),
 and a script that starts containers names them from it — `cargo xtask linux` names its own `<prefix>-checks`.
-When the run is stopped — `y` on its stuck card, `space m c` / `space x c`, or dropped for another run — tarae
+When the run is stopped — `space m c` / `space x c`, stuck or not, or dropped for another run — tarae
 lists the running containers of each engine its packs know (`[[containers]]`: docker, podman) and stops the run's
 own by name, never by pid (a killed `docker run` client leaves its container running). It asks the engine the run
 reached: the engine's settings (`DOCKER_HOST`, `DOCKER_CONTEXT`, … — the pack's `settings`) as the run's
@@ -1844,7 +1848,7 @@ for (a pattern past 60 characters is cut; `v` shows it whole). What's read goes 
 - Each answer on a card is one `card` line in tarae's log (`~/.local/state/tarae/tarae.log`): the session, why
   it asked, where the read goes, what the planned card model would do instead, your answer and how long it
   was up — and each run the sandbox denied something is a `denied` line. That's how the cards are counted
-  (`docs/design/cards.md`). tarae's own cards (a preflight's, a stuck run's, a review's end, notes gone stale
+  (`docs/design/cards.md`). tarae's own cards (a preflight's, a bring's, a review's end, a moved base
   …) have their line too, as `why=own · shadow=own`, and so does an answer by a card's own letter (`w`, `p`,
   `X`, `c` …)
 
@@ -2377,8 +2381,8 @@ continued from it, and nothing of the chat goes into what it's sent
   about half the tokens and two thirds of the cost.)
 - Its findings are notes on the lines, marked **reviewer** (the chat's are the **author**'s, yours are
   **you**). Each is placed on the lines it named as they are now: lines you added above move it down, and one
-  on lines you changed since it read them is placed where that change is and, when the reviewer is done, named on
-  the card that offers to close drafts on changed lines (`Close 1 finding on changed lines?`). Whether it's on a
+  on lines you changed since it read them is placed where that change is and, when the reviewer is done, says
+  `stale` on itself (below). Whether it's on a
   high-risk change goes by the snapshot's grades, a review open or not. They wait like your drafts. Nothing goes to the author's chat until you send it: `space v s` sends
   your drafts and its findings together, and tells the author that the findings come from a second Claude,
   to weigh and not to obey. `:note-close` drops a finding first; `A-x` on one in `space N`, or
@@ -2388,13 +2392,14 @@ continued from it, and nothing of the chat goes into what it's sent
   tarae started in, the branch the round that found it was since, else HEAD — committed there) are closed, said once (`closed 6
   unsent findings of the reviewer's — their files have no change since main now (landed or undone)`, kept in
   `:messages`), so `space v s` sends only what's still on a change. One you answered stays, as do your own drafts —
-  your words never go unasked; one on a file still changed stays too (its lines changed since: the card below).
+  your words never go unasked; one on a file still changed stays too (its lines changed since: stale, below).
 - Asked the author to fix them some other way (in the chat), the findings would stay drafts. So when a chat
-  turn ends, drafts whose lines changed since they were pinned — yours and its — are named on a card: `y`
-  closes them, `r` lists just them (the notes list: `enter` goes to one, `C-x` closes it, the card's list
-  follows), `n` keeps them (each asked about once). One card a session: a later turn's join it, its list grown
-  in place, and its `y` waits until the new list has been in sight. While it's up each says `stale ·` at its
-  line end and on its card, and the review rail's file row says `stale` (all its drafts) or `1 stale`.
+  turn ends, drafts whose lines changed since they were pinned — yours and its — are **stale**, said on each and
+  never on a card: `stale ·` at its line end, `stale · its lines changed` on its card's top line, and the review
+  rail's file row says `stale` (all its drafts) or `1 stale`. Its card's first key is `R re-place`: it stays, pinned
+  to its lines as they are now, stale again only if they change. The notes list (`space N`) counts them on its top
+  line, `2 stale · C-l close them` — `C-l`, a press on those words, or `:notes-close-stale` closes every stale draft;
+  `C-x` there closes one.
 - With no review open (or its rail hidden), the status line says it: `¶ reviewing · 14 reads`, `¶ reviewer
   waits · 2nd in line`, `¶ board · 2 of 4 reading · $0.08`, and once it's done `¶ 3 findings ▲1 · space v r`
   until you've read its report or no finding of it is left unsent. A click there reads the report. Nothing on
@@ -2568,7 +2573,8 @@ out, once looked at, lets its records go too. Until each has had a look:
 
 - the file can't be marked viewed;
 - `space v q`'s card names what's left and has no yes;
-- the session's bring card names what's left and has no `y` or `p`, and a bring asked any other way is refused.
+- the session's bring card names what's left and has no `y` (nor `p` after a failed preflight), and a bring asked any
+  other way is refused.
 
 On either card `h` goes to them and the card steps aside: it shrinks to a bar over the status line, the keys go
 back to the code, and `C-q` answers it. The bring card's `h` goes to the first change it names that no one has
@@ -2628,10 +2634,23 @@ of repeating itself, and the log says where.
 ## Rebasing a session
 
 A session (`space W`) is a branch in a checkout of its own. `:workspace-bring` (or `b` in the session list) moves
-its base up to it, fast-forward only. When the base has moved since the session left it, a card says how far
-(`main moved 3 commits since fix-login left it; fix-login is 2 commits ahead`) and offers to rebase first:
+its base up to it, fast-forward only — one card, one `y`: rebased onto its base's tip when it moved, the quick
+[`:preflight`](configuration.md#checks-before-a-push-preflight) run there (the card names its steps; the
+`full = true` ones wait for `:preflight-full`, before publishing), then brought. It says what `y` does and how far
+the base moved (`Rebase fix-login onto main's tip, run the quick preflight, then bring it in?` / `main moved 3
+commits since fix-login left it; fix-login has 2 commits`). Its progress is said where the session is named — never
+on a card, nor a toast a step: the strip, the session list and the status line's chip say `fix-login bringing ·
+rebasing 2/5`, then `bringing · rebased`, then `bringing · rebased · preflight 2/4` (where the strip is narrow, `fix-login
+bringing` stays as `▲ waits` does, the calm states and the other names folding first), the preflight in the task panel
+as any; the rebase's and a passed preflight's words go to `:messages` only. One toast at its end: `Brought 2 commits
+of fix-login into main — now at 1a2b3c4`, or why it stopped (a failed preflight's: `fix-login · not brought — quick
+preflight: 0 of 1 passed …`). One bring at a time: `:workspace-bring` while one goes says where it is (`fix-login is
+being brought — bringing · rebased`). A project with no preflight steps (no pack checks its language and it has none
+of its own) is brought by the `y` at once, its toast saying `no preflight steps to run first`. It stops and asks only
+for a conflict, a failed preflight, high-risk changes no one has looked at, or a commit message a resolution kept;
+`n` is not now:
 
-- `y` rebases it onto its base in its checkout. tarae runs git itself (Claude's sandbox can't write `.git`), as
+- The rebase: tarae runs git itself (Claude's sandbox can't write `.git`), as
   `git rebase <base>` in the task panel — with hooks off: a hooks folder inside the checkout is one Claude can
   write, and this git runs outside the sandbox. A stop at conflicts reads `stopped: 2 conflicts` there, not failed
 - Before git runs, its checkout is looked at. Changes in no commit: a card names the files (`a.txt changed and
@@ -2642,9 +2661,11 @@ its base up to it, fast-forward only. When the base has moved since the session 
   — or `g`, the git tab, to commit or drop them yourself. Unsaved buffers there: named, saving them comes first
   (no `s`). A run in the task panel: the rebase waits its turn behind it (a `queued` row there). A rebase
   already stopped there: its card, to go on or abort. Should git refuse anyway, its own `error:` lines are said
-- Clean: a card offers to bring it now (`y`), to run the quick [`:preflight`](configuration.md#checks-before-a-push-preflight) first and bring it once that
-  passes (`p` — the card names its steps; the `full = true` ones wait for `:preflight-full`, before publishing), or not now (`n`).
-  If that preflight fails, the card comes back asking to bring it anyway (`y bring anyway`), what failed up front in
+- Clean: on to the preflight and the bring, no card between. Stopped after it for what wants a person, the card
+  says `Rebased fix-login onto main`, its `y` the preflight and the bring. A session already on its base's tip gets
+  the same card, its `y` the preflight, then the bring — no `p`, no bring without the preflight but the failed
+  card's `y bring anyway`.
+  If that preflight fails, the card comes back asking to bring it anyway (`y bring anyway`, `p` the preflight again), what failed up front in
   the warning colour — the first test that failed and, under it, the first line of why (`The quick preflight
   failed: worktree::tests::x` / `panicked at src/worktree.rs:3920:9: …`) — and `v` opens the failed step's whole
   output, whatever has run in the task panel since (on a card cut to fit, its text with that first failure's lines
@@ -2657,7 +2678,8 @@ its base up to it, fast-forward only. When the base has moved since the session 
   commit's parent), and told not to run git or commit. When its turn ends with no conflict markers left in
   those files, a review shows them against the commit being replayed, and a card says they aren't staged yet and
   offers to continue (`y`: tarae stages them and runs `git rebase --continue`, which may stop again — the same
-  loop) or abort (`X`: back to where the branch was). Markers left: the files are named, and the rebase waits
+  loop; once it's through, the bring goes on to its preflight) or abort (`X`: back to where the branch was). Markers
+  left: the files are named, and the rebase waits
 - `y` stages the files git named as conflicted and nothing else. What else the resolution changed is in the
   review and named on the card. A tracked file changed besides them holds `y` (git wouldn't go on with it
   unstaged): the card says `y` waits until it's staged or undone in the git tab, neither `y` nor `m` (its

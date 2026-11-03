@@ -875,6 +875,29 @@ fn a_lone_delete_is_never_written_unseen() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #296: one call editing two files and deleting a third under review at the end — the two written unseen, the delete on
+/// the card. The card counts what it asks (`1 file` in its title and over its list) and names the two written, so no
+/// count on it is left unexplained.
+#[test]
+fn a_change_sets_card_names_what_its_call_wrote_unseen() {
+    let dir = project("written", &[("a.rs", "one\n"), ("b.rs", "one\n"), ("c.rs", "gone\n")]);
+    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    let args = json!({"edits": [
+        {"file_path": "a.rs", "old_string": "one", "new_string": "two"},
+        {"file_path": "b.rs", "old_string": "one", "new_string": "two"},
+        {"file_path": "c.rs", "delete": true},
+    ]});
+    call(&mut ed, Call::test(44), &args).unwrap();
+    pump(&mut ed, "the card", |ed| change_card(ed).is_some());
+    let o = ed.offers.iter().find(|o| matches!(o.what, crate::offer::What::ChangeSet { .. })).unwrap();
+    assert_eq!(o.title, "Claude changes 1 file");
+    let q = &o.question;
+    assert!(q.contains("2 files written already, reviewed at the turn's end: a.rs, b.rs\n\n1 file:"), "{q}");
+    assert!(q.contains("c.rs  deleted"), "{q}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `space u` takes a turn's move and delete back: the deleted file is written again as it was, the moved one
 /// is back at its place and gone from the new one (its new folder's file removed); `space U` does them again.
 #[test]

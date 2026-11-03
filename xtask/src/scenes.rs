@@ -2642,6 +2642,49 @@ const FOLLOW_REPLAY: &[&str] = &[
     "[r",
     "@3",
 ];
+/// Polish landing 4's one bring card in motion (`--record bring`): fix's own commit (the readme), main moved since (a
+/// line of `thread.rs`, apart from it), the project's quick preflight two passing steps (`run_files`) — then
+/// `:workspace-bring` from fix: the card, its `y`, the strip's `bringing · rebasing`, `bringing · rebased · preflight
+/// 1/2`, the run's panel, and the one toast at its end.
+const BRING: &[&str] = &[
+    "@?Trust this",
+    "@1",
+    "y",
+    "@1",
+    ":",
+    "sh git worktree add -q ../fix",
+    "\r",
+    "@2",
+    ":",
+    "sh cd ../fix && echo 'Tied by fix.' >> README.md && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qam 'fix: the readme'",
+    "\r",
+    "@2",
+    ":",
+    "sh echo '// main moved on' >> src/thread.rs && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qam 'main: a note'",
+    "\r",
+    "@2",
+    ":",
+    "workspace-open ../fix",
+    "\r",
+    // (fix's checkout is a path of its own: its `.tarae.toml` asks again)
+    "@10?Trust this",
+    "@1",
+    "\x11",
+    "y",
+    "@2",
+    "@beat:fix is a commit ahead, main moved on since",
+    ":",
+    "workspace-bring",
+    "\r",
+    "@10?Bring fix",
+    "@beat:One card: rebase, the quick preflight, bring",
+    "@3",
+    "y",
+    "@beat:Its progress where the session is named",
+    "@30?Brought",
+    "@beat:One toast at its end",
+    "@4",
+];
 /// Three checkouts changing `src/main.rs` far apart — main's `threads.insert` line saved, docs's `println!` saved, fix's
 /// `mod thread` unsaved — then `:weave` in fix: a clean merge, each change in its session's colour, its prefix in the
 /// sign column (`weaveclean`, collab C2b); the cursor on fix's change, `‹fix›` at its end.
@@ -4634,6 +4677,8 @@ const SCENES: &[Scene] = &[
     Scene { name: "main-moved", claude: "idle", files: MAIN, keys: MAIN_MOVED },
     Scene { name: "edit-in-buffer", claude: "v3", files: MAIN, keys: EDIT_IN_BUFFER },
     Scene { name: "follow-replay", claude: "v4", files: SPOOL, keys: FOLLOW_REPLAY },
+    // (polish landing 4: the one bring card — rebased, its quick preflight, brought — said in the strip as it goes)
+    Scene { name: "bring", claude: "idle", files: MAIN, keys: BRING },
     // (panes P3 step 7d: Claude's card with the chat closed — the screen's right, above the status line)
     Scene { name: "asks-closed", claude: "card", files: MAIN, keys: ASKS_CLOSED },
     // (…and with the chat open — `space l` brings it back from following: over its foot, the transcript above it)
@@ -5972,6 +6017,20 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
                 "echo 'running 2 tests'\necho 'test tests::length_sums_the_knots ... ok'\necho 'test tests::a_tied_knot_lengthens_it ... FAILED'\necho\necho \"thread 'tests::a_tied_knot_lengthens_it' panicked at src/main.rs:30:9:\"\necho 'assertion `left == right` failed: the knot at 4 adds its gap'\necho '  left: 7'\necho ' right: 8'\necho\necho 'test result: FAILED. 1 passed; 1 failed; 0 ignored'\nexit 101\n"
                     .into(),
             ),
+        ],
+        // (the bring's quick preflight: two steps that pass in a second each; the full set's test never runs)
+        "bring" => vec![
+            (
+                ".tarae.toml",
+                "[preflight]\nsteps = [\n  { name = \"fmt\", cmd = \"sh fmt.sh\" },\n  { name = \"check\", cmd = \"sh check.sh\" },\n  { name = \"test\", cmd = \"sh test.sh\", full = true },\n]\n"
+                    .into(),
+            ),
+            ("fmt.sh", "sleep 1\nexit 0\n".into()),
+            (
+                "check.sh",
+                "echo '    Checking tarae-demo v0.1.0'\nsleep 1\necho '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.02s'\n".into(),
+            ),
+            ("test.sh", "exit 1\n".into()),
         ],
         // (a preflight whose test step prints a line every 0.1 s for a minute)
         "polish-preflight-list" | "polish-preflight-output" => vec![

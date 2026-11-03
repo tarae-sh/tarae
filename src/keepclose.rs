@@ -226,27 +226,30 @@ impl Moves {
                 },
             )],
         };
+        // (what each answer does, and the instruction files newer in the main checkout, behind `v` — polish landing 4:
+        // the answers' words say enough on the card, its prose read on demand)
         if shows {
-            v.push(('v', "Instruction files"));
+            v.push(('v', "What each does"));
         }
         v.push(('n', "Not now"));
         v
     }
 
     /// Its answers' short words, where its bottom line can't take them whole (`Offer::answers_short`):
-    /// `y move · c all · v files · n not now`.
+    /// `y move · c all · v more · n not now`.
     pub fn short(&self, k: char) -> Option<&'static str> {
         match k {
             'y' if self.clean().next().is_none() => Some("rebase"),
             'y' => Some("move"),
             'c' => Some("all"),
-            'v' => Some("files"),
+            'v' => Some("more"),
             _ => None,
         }
     }
 
-    /// The card: the base's move, a row a workspace — in words, what would conflict and where — and what each
-    /// answer does. One title a base, so a newer tip's card takes its place.
+    /// The card: the base's move, a row a workspace — in words, what would conflict and where; what each answer does
+    /// behind its `v` (polish landing 4: four rows of prose on every move, read by its answers' words already), with the
+    /// instruction files the main checkout changed. One title a base, so a newer tip's card takes its place.
     pub fn card(&self) -> Offer {
         let base = &self.base.1;
         let n = self.ws.len();
@@ -268,7 +271,7 @@ impl Moves {
             .filter(|(_, w)| !w.conflicts.is_empty())
             .map(|(i, _)| first + i..first + i + 1)
             .collect();
-        q.push(String::new());
+        let mut more: Vec<String> = Vec::new();
         let one = |n: usize, a: &'static str, b: &'static str| if n == 1 { a } else { b };
         let idle = |n: usize| {
             format!(
@@ -276,7 +279,7 @@ impl Moves {
                 one(n, "it's", "each is")
             )
         };
-        q.push(match (self.clean().count(), self.conflicting().count()) {
+        more.push(match (self.clean().count(), self.conflicting().count()) {
             (_, 0) => format!(
                 "y moves {} onto {base}'s tip {}: {} commits replayed there, {} changes in no commit taken along.",
                 one(n, "it", "them"),
@@ -301,8 +304,8 @@ impl Moves {
             ),
         });
         if !self.unasked.is_empty() {
-            q.push(String::new());
-            q.push(format!(
+            more.push(String::new());
+            more.push(format!(
                 "{} {} moving by {} (workspace.sync = \"idle\").",
                 self.unasked.join(", "),
                 one(self.unasked.len(), "is", "are"),
@@ -318,7 +321,7 @@ impl Moves {
         );
         card.decided = Some(0..rows.end);
         card.warnings = warned;
-        let shown: Vec<String> = self
+        let files: Vec<String> = self
             .ws
             .iter()
             .flat_map(|w| w.instructions.iter().map(move |i| (w, i)))
@@ -328,9 +331,13 @@ impl Moves {
                     .chain(std::iter::once(String::new()))
             })
             .collect();
-        if !shown.is_empty() {
-            card.output = Some((format!("instruction files · {base} moved"), shown));
+        if !files.is_empty() {
+            more.push(String::new());
+            more.push("Instruction files newer in the main checkout:".into());
+            more.push(String::new());
+            more.extend(files);
         }
+        card.output = Some((format!("{base} moved · what each answer does"), more));
         card
     }
 }

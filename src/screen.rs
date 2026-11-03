@@ -708,6 +708,33 @@ pub fn word_ends(frame: &[u8], w: u16, h: u16, rows: &[(usize, usize)]) -> Optio
     Some(ends.collect())
 }
 
+/// With `TARAE_FRAMES_DIR` set, `ed`'s screen at each of `sizes` in both built-in themes there, cards drawn,
+/// `<name>-<w>-meok.bin` and `<name>-<w>-hanji.bin` — for screenshots (`cargo xtask shot` draws them:
+/// `TARAE_SHOT_REPLAY`). Nothing without it. (Tests.)
+#[cfg(test)]
+pub fn frames_sized(ed: &mut crate::editor::Editor, name: &str, sizes: &[(u16, u16)]) {
+    let Some(dir) = std::env::var_os("TARAE_FRAMES_DIR") else { return };
+    std::fs::create_dir_all(&dir).unwrap();
+    // (crossterm drops every color under NO_COLOR, which tarae's test runner sets)
+    crossterm::style::force_color_output(true);
+    let (popups, was) = (std::mem::replace(&mut ed.offer_popups, true), ed.theme.name.clone());
+    for &(w, h) in sizes {
+        for theme in ["meok", "hanji"] {
+            ed.theme = crate::theme::load(theme).unwrap();
+            let mut buf = Vec::new();
+            crate::term::render(ed, &mut buf, w, h).unwrap();
+            let bytes = Screen::new().present(&buf, w, h).to_vec();
+            std::fs::write(std::path::Path::new(&dir).join(format!("{name}-{w}-{theme}.bin")), bytes)
+                .unwrap();
+        }
+    }
+    (ed.offer_popups, ed.theme) = (popups, crate::theme::load(&was).unwrap());
+}
+
+/// The sizes landing 4's shots are taken at (the user, 2026-11-03: 80 and 120).
+#[cfg(test)]
+pub const SHOT_SIZES: &[(u16, u16)] = &[(80, 24), (120, 34)];
+
 /// A whole frame as the text it shows (`w`×`h` cells, a row a line, trailing blanks and rows dropped) — what
 /// goes to Claude for "the screen" is this less what's hidden (`text_hiding`). None: a frame this doesn't read.
 #[cfg(test)]

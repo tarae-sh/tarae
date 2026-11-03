@@ -544,7 +544,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "llm.docker-inert",
         kind: Kind::StrList,
-        doc: "Chat: what a Docker card's a lets vary of a command whose code is pinned — \"cargo xtask linux: clippy test --userns --bin= --\" (an act, a switch, an option and its value, test names after --)",
+        doc: "Chat: what a Docker card's a lets vary of a command whose code is pinned — \"cargo xtask linux: clippy test --userns --bin= --\" (an act, a switch, an option and its value, test names: after test or after --)",
         get: |c| Value::Array(c.llm.docker_inert.iter().map(|a| Value::from(a.as_str())).collect()),
         set: |c, v| {
             c.llm.docker_inert =

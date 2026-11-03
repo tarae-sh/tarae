@@ -730,9 +730,15 @@ pub(crate) mod tests {
             "Run it and the cards it lists — the same run each, read whole first",
         ),
         (
-            "The stale drafts card",
-            "`y` `r` `n`",
-            "Close them · list just them (`C-x` closes one) · keep them",
+            "The notes list (`space N`)",
+            "`C-x` · `A-x` · `C-l`",
+            "Close the note on the row · every note its author began · every stale draft (its top line says how many: \
+             `2 stale · C-l close them`, a press on it too)",
+        ),
+        (
+            "A stale draft's card",
+            "`R`",
+            "Re-place it on its lines as they are now — stale again only if they change",
         ),
         (
             "Claude's change to several files",

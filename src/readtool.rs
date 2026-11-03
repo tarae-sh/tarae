@@ -61,6 +61,34 @@ pub fn schema() -> Value {
     })
 }
 
+impl Want {
+    /// What it takes of a file of `size` bytes (None: not known), as the read card says it under the path (#298):
+    /// `lines 1830–1900`, `its last 40 lines`, `` `run_search` only ``, `the whole file, 3 KB` — past `WHOLE_MAX`
+    /// `its outline or first lines (214 KB in all)`, as `section_of` reads it.
+    pub(crate) fn said(&self, size: Option<u64>) -> String {
+        match self {
+            Want::Lines(rs) => {
+                let r: Vec<String> = rs
+                    .iter()
+                    .map(|&(a, b)| if a == b { a.to_string() } else { format!("{a}\u{2013}{b}") })
+                    .collect();
+                let one = rs.len() == 1 && rs[0].0 == rs[0].1;
+                format!("{} {}", if one { "line" } else { "lines" }, r.join(", "))
+            }
+            Want::Tail(1) => "its last line".into(),
+            Want::Tail(n) => format!("its last {n} lines"),
+            Want::Symbol(name) => format!("`{name}` only"),
+            Want::Whole => match size {
+                Some(s) if s > WHOLE_MAX as u64 => {
+                    format!("its outline or first lines ({} in all)", crate::apply::size(s))
+                }
+                Some(s) => format!("the whole file, {}", crate::apply::size(s)),
+                None => "the whole file".into(),
+            },
+        }
+    }
+}
+
 /// What one item asks of its file.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Want {
@@ -257,8 +285,10 @@ fn read_between(
     let mut found: Vec<Found> = Vec::new();
     for it in items {
         let abs = root.join(&it.path);
+        let mut size = None;
         let (judged, f) = match crate::paths::open_read(&abs) {
             Ok(o) => {
+                size = o.meta.is_file().then_some(o.meta.len());
                 let inside = o.real.starts_with(&root);
                 let judged = (!inside || o.meta.is_file()).then(|| (o.real.clone(), !o.meta.is_dir()));
                 let f = match () {
@@ -280,7 +310,9 @@ fn read_between(
             if let Some(why) = gate.refused(&at) {
                 return Err(why);
             }
-            if let Err(ask) = gate.judge(&at, file) {
+            if let Err(mut ask) = gate.judge(&at, file) {
+                // (what of it, on the card: a few lines and a whole log look the same by the path alone — #298)
+                ask.reading(it.want.said(size));
                 return Ok(Err(ask));
             }
         }
@@ -938,6 +970,34 @@ mod tests {
         let let_through = crate::reads::Gate::for_test(&dir).granting(o.clone());
         let t = text(read(&dir, &items(&["src/link.txt"]), &let_through, &[]));
         assert!(t.ends_with("1: outside marker"), "{t}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// #298: the read card says what of the file it reads under its path — a few lines and a whole log looked the
+    /// same: its ranges, its last lines, a symbol, the whole file with its size (past `WHOLE_MAX` its outline).
+    #[test]
+    fn the_read_card_names_what_of_the_file_it_reads() {
+        let (dir, outside, base) = places("part");
+        let gate = crate::reads::Gate::for_test(&dir);
+        let o = outside.join("o.txt");
+        let card = |spec: &str| match read(&dir, &items(&[spec]), &gate, &[]) {
+            Ok(Err(ask)) => ask.question(),
+            other => panic!("{:?}", other.map(|r| r.map_err(|a| a.at_said()))),
+        };
+        let at = o.display().to_string();
+        for (spec, said) in [
+            (format!("{at}:1830-1900"), "lines 1830–1900"),
+            (format!("{at}:10-40,90-120"), "lines 10–40, 90–120"),
+            (format!("{at}:12"), "line 12"),
+            (format!("{at}:-40"), "its last 40 lines"),
+            (format!("{at}:run_search"), "`run_search` only"),
+            (at.clone(), "the whole file, 15 B"),
+        ] {
+            let q = card(&spec);
+            assert!(q.starts_with(&format!("{at}\n{said}\n")), "{spec}: {q}");
+        }
+        std::fs::write(&o, "x\n".repeat(20_000)).unwrap();
+        assert!(card(&at).starts_with(&format!("{at}\nits outline or first lines (40 KB in all)")));
         std::fs::remove_dir_all(&base).unwrap();
     }
 

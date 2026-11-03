@@ -2029,6 +2029,7 @@ fn slot_header(
     hints: &[(&str, &str)],
     splits: &[usize],
     members: Option<&Members>,
+    fold: HeadFold,
 ) -> io::Result<usize> {
     use crate::pane::Member;
     let (x0, y0, w) = (lay.slot_x, lay.slot_y(), lay.slot_w);
@@ -2194,6 +2195,8 @@ fn slot_header(
         beyond,
         ups: &ups,
         words: Some(words),
+        lead_keys: fold.lead_keys,
+        shorter: fold.shorter,
         ..TopLine::default()
     };
     // (floating: the frame's top line, its corners round the panel's width)
@@ -2242,6 +2245,41 @@ fn slot_header(
         word_lit(editor, word, y0, (a, b), spans_in(laid(), a, b));
     }
     Ok(y0 + crate::chrome::SLOT_HEAD)
+}
+
+/// What a slot's top line keeps as it folds (`slot_header`, polish landing 4): `TopLine.lead_keys`, `.shorter`.
+#[derive(Default, Clone, Copy)]
+struct HeadFold<'a> {
+    lead_keys: usize,
+    shorter: Option<(usize, &'a [Fit])>,
+}
+
+/// A stuck run's shorter words for its panel's top line (`stuck::shorter`, as its detail is written: after three
+/// blanks) and that detail's index — the last of `n` details said so far.
+fn stuck_forms(stuck: Option<&crate::stuck::Stuck>, n: usize) -> (Vec<Fit>, Option<usize>) {
+    match stuck {
+        Some(s) => (
+            crate::stuck::shorter(s).iter().map(|t| Fit::from(format!("   {t}").as_str())).collect(),
+            Some(n - 1),
+        ),
+        None => (Vec::new(), None),
+    }
+}
+
+/// While its run is said stuck (`shorter` its words' forms), the panel's stop key `stop` leads its keys and is kept
+/// as the details fold (the user, 2026-11-03: a key that does what the line warns about is never the piece that folds
+/// — the words fold first, to their short form, then to `◦ stuck?` alone).
+fn stuck_leads<'a>(
+    hints: &mut Vec<(&str, &str)>,
+    stop: &str,
+    shorter: Option<(usize, &'a [Fit])>,
+) -> HeadFold<'a> {
+    let Some(shorter) = shorter else { return HeadFold::default() };
+    if let Some(i) = hints.iter().position(|h| h.0 == stop) {
+        let key = hints.remove(i);
+        hints.insert(0, key);
+    }
+    HeadFold { lead_keys: usize::from(hints.first().is_some_and(|h| h.0 == stop)), shorter: Some(shorter) }
 }
 
 /// A group's members as the slot's line names them (panes P3 step 3b, plan §1.2): their names and pane ids, the
@@ -2326,6 +2364,12 @@ struct TopLine<'a> {
     /// Filled with each detail drawn, in order: its index in `details` (`fold_details` folds from the middle too — a
     /// piece's parts — so a drawn detail's place says nothing of which it is).
     kept: Option<&'a std::cell::RefCell<Vec<usize>>>,
+    /// The first keys kept before the details fold, their room taken first (a stuck run's stop key: the key that does
+    /// what the line warns about — polish landing 4).
+    lead_keys: usize,
+    /// A detail's shorter forms, tried in order where it wouldn't be drawn whole: its index in `details` and them (a
+    /// stuck run's `◦ stuck? 11m quiet`, then `◦ stuck?`); the last taken where none is.
+    shorter: Option<(usize, &'a [Fit])>,
 }
 
 /// Where a top line records its words (`TopLine.words`): the frame's spots, the surface the line is, what a press on
@@ -2583,18 +2627,39 @@ fn top_line(
     // (the right end's room kept from the details: they fold before it)
     let right_w: usize = head.right.iter().map(|(s, _)| s.width()).sum();
     let keep_right = if right_w > 0 && head.keep_right { right_w + 3 } else { 0 };
-    let most = short_of.min(room(col).saturating_sub(4 + keep_right));
+    // (the room of the keys that lead, as the keys below take it: ` k v`, `  k v`, then `KEYS_AFTER` of the line)
+    let pair = |(k, v): &(&str, &str)| k.width() + v.width() + usize::from(!k.is_empty() && !v.is_empty());
+    let leads = head.keys.iter().take(head.lead_keys).enumerate();
+    let lead_w = leads.map(|(i, p)| pair(p) + if i == 0 { 3 } else { 2 }).sum::<usize>();
+    let lead_w = if lead_w > 0 { lead_w + KEYS_AFTER - 1 } else { 0 };
+    let most = short_of.min(room(col).saturating_sub(4 + keep_right + lead_w));
+    // (a detail with shorter forms: the first that's drawn whole — its own words fold before any piece goes)
+    let formed: Vec<(Fit, Style)>;
+    let details = match head.shorter {
+        Some((i, forms)) if i < head.details.len() => {
+            let fold_room = room(col).saturating_sub(4).min(most);
+            let whole = |d: &[(Fit, Style)]| {
+                fold_details(d, fold_room)
+                    .iter()
+                    .any(|(s, _, k)| *k == i && s.shown().trim() == d[i].0.shown().trim())
+            };
+            let with = |f: &Fit| {
+                let mut d = head.details.to_vec();
+                d[i].0 = f.clone();
+                d
+            };
+            formed = match whole(head.details) {
+                true => head.details.to_vec(),
+                false => (forms.iter().map(with).find(|d| whole(d)))
+                    .or_else(|| forms.last().map(with))
+                    .unwrap_or_else(|| head.details.to_vec()),
+            };
+            &formed[..]
+        }
+        _ => head.details,
+    };
     let mut kept = Vec::new();
-    said_after(
-        &mut buf,
-        &mut said_cols,
-        &mut kept,
-        line,
-        head.details,
-        &mut col,
-        most,
-        head.names.is_empty(),
-    )?;
+    said_after(&mut buf, &mut said_cols, &mut kept, line, details, &mut col, most, head.names.is_empty())?;
     if let Some(k) = head.kept {
         *k.borrow_mut() = kept;
     }
@@ -2626,8 +2691,7 @@ fn top_line(
     }
     // The keys at the right end: as many whole pairs as fit, from the first — a run of the line (`KEYS_AFTER`)
     // before them, so it reads as a line still
-    // (a pair with no key is words alone — a plugin's own, `enter open`; one with no meaning its key alone)
-    let pair = |(k, v): &(&str, &str)| k.width() + v.width() + usize::from(!k.is_empty() && !v.is_empty());
+    // (a pair with no key is words alone — a plugin's own, `enter open`; one with no meaning its key alone: `pair`)
     let mut keys_w = 0;
     let n = head
         .keys
@@ -2966,7 +3030,7 @@ fn draw_terminal_panel(
     {
         hints.insert(0, ("alt+drag", "select"));
     }
-    let body = slot_header(out, editor, ui, lay, card, &fits(&head), &hints, &[], None)?;
+    let body = slot_header(out, editor, ui, lay, card, &fits(&head), &hints, &[], None, HeadFold::default())?;
     let rows = lay.slot_h.saturating_sub(lay.slot_head);
     let cols = terminal_cols(lay);
     let sel = t.selected();
@@ -3100,9 +3164,16 @@ fn draw_task_panel(
         _ => String::new(),
     };
     summary.push((when, dim));
+    // (said stuck: `◦ stuck?` in warning in its silence's place, `space m c stop` beside it — polish landing 4, no card)
+    let stuck = r.wait.stuck.as_deref().filter(|_| running);
+    let silent = stuck.map_or(silent, |_| None);
     for s in [wait, silent].into_iter().flatten() {
         summary.push((format!("   {s}"), dim));
     }
+    if let Some(s) = stuck {
+        summary.push((format!("   {}", crate::stuck::shown(s)), Style { fg: warn, ..card }));
+    }
+    let (shorter, at) = stuck_forms(stuck, summary.len());
     // (`space m m` runs the user's task again — not an install, not Claude's command, not tarae's git)
     let mut hints: Vec<(&str, &str)> = match (&r.state, r.found) {
         (State::Running, _) => vec![("space m c", "stop")],
@@ -3137,6 +3208,7 @@ fn draw_task_panel(
     let (to_out, rest) = slot_keys.split_at(after_out);
     hints.splice(own..own, rest.iter().map(|(k, d)| (k.as_str(), *d)));
     hints.splice(0..0, to_out.iter().map(|(k, d)| (k.as_str(), *d)));
+    let fold = stuck_leads(&mut hints, "space m c", at.map(|i| (i, &shorter[..])));
     let y0 = lay.slot_y();
     // (its members named in the line — step 3b: side by side the `┬` where they meet, stacked none)
     let splits: Vec<usize> = members.iter().filter_map(|(_, m)| side_by_side(m)).collect();
@@ -3154,7 +3226,8 @@ fn draw_task_panel(
     if head.is_none() {
         summary.extend(output_head(editor, ui, card, crate::sizes::Slot::Task));
     }
-    let body = slot_header(out, editor, ui, lay, card, &fits(&summary), &hints, &splits, head.as_ref())?;
+    let body =
+        slot_header(out, editor, ui, lay, card, &fits(&summary), &hints, &splits, head.as_ref(), fold)?;
     // A preflight's steps: the row under the header (beside the output, its list's rows instead)
     let top = body - y0 + usize::from(steps.is_some() && members.is_none());
     if let Some(p) = steps.filter(|_| members.is_none()) {
@@ -3581,7 +3654,8 @@ fn draw_plugin_panel<W: Write>(
     let mut hints: Vec<(&str, &str)> = keys.iter().map(|k| ("", k.as_str())).collect();
     let focus = editor.plugin_panel_focused();
     hints.push(if focus { ("esc", "code") } else { ("click", "keys") });
-    let top = slot_header(out, editor, ui, lay, card, &[(title, strong)], &hints, &[], None)?;
+    let top =
+        slot_header(out, editor, ui, lay, card, &[(title, strong)], &hints, &[], None, HeadFold::default())?;
     // The table, and the status line under it
     let header = !panel.columns.is_empty();
     let body = lay.slot_h.saturating_sub(lay.slot_head + 1 + header as usize);
@@ -3729,7 +3803,18 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
         split: side_by_side(&m),
         over: over_under(&m),
     });
-    let body = slot_header(out, editor, ui, lay, card, &fits(&summary), &hints, &splits, head.as_ref())?;
+    let body = slot_header(
+        out,
+        editor,
+        ui,
+        lay,
+        card,
+        &fits(&summary),
+        &hints,
+        &splits,
+        head.as_ref(),
+        HeadFold::default(),
+    )?;
     // (over and under: the table to the detail's top line, the detail under it)
     let over = head.as_ref().and_then(|m| m.over);
     let table_end = over.unwrap_or(y0 + lay.slot_h);
@@ -4162,9 +4247,17 @@ fn draw_test_panel(
         _ => String::new(),
     };
     summary.push((when, dim));
+    // (said stuck: `◦ stuck?` in warning in its silence's place, `space x c stop` beside it — polish landing 4, no card)
+    let stuck = r.wait.stuck.as_deref().filter(|_| running);
+    let silent = stuck.map_or(silent, |_| None);
     for s in [wait, silent].into_iter().flatten() {
         summary.push((format!("   {s}"), dim));
     }
+    if let Some(s) = stuck {
+        let warn = editor.theme.try_get("warning").and_then(|s| s.fg);
+        summary.push((format!("   {}", crate::stuck::shown(s)), Style { fg: warn, ..card }));
+    }
+    let (shorter, at) = stuck_forms(stuck, summary.len());
     let slot_keys = slot_hints(editor, lay);
     let mut hints: Vec<(&str, &str)> = slot_keys.iter().map(|(k, d)| (k.as_str(), *d)).collect();
     hints.extend_from_slice(match r.state {
@@ -4172,6 +4265,7 @@ fn draw_test_panel(
         // (most useful first — the ones that don't fit fold away from the end)
         _ => &[("space x l", "again"), ("space x o", "output"), ("space x c", "close")],
     });
+    let fold = stuck_leads(&mut hints, "space x c", at.map(|i| (i, &shorter[..])));
     // (where the list and the detail meet, the line down from the header's; its members named in it — step 3b: the
     // detail's name and own details, the failure's place and which of how many, after the `┬`)
     let group = lay_group(editor, lay, crate::sizes::Slot::Test);
@@ -4217,7 +4311,8 @@ fn draw_test_panel(
     if head.is_none() {
         summary.extend(output_head(editor, ui, card, crate::sizes::Slot::Test));
     }
-    let body = slot_header(out, editor, ui, lay, card, &fits(&summary), &hints, &splits, head.as_ref())?;
+    let body =
+        slot_header(out, editor, ui, lay, card, &fits(&summary), &hints, &splits, head.as_ref(), fold)?;
 
     // The sandbox's line, when it blocked something: the bottom row, under the rest — and over it, what waits
     // for the pane, a row each (`queued.rs`)
@@ -8276,7 +8371,7 @@ fn draw_note_end(
     // Several on the line: how many, then the one the card shows; a draft says so, and a
     // finding of the reviewer's whose it is (in its colour)
     let reviewer = n.thread.first().is_some_and(|e| e.by == crate::notes::By::Reviewer);
-    // (on the stale card up: `stale ·` — cardburden 6)
+    // (a stale draft: `stale ·` — its lines changed since it was pinned, polish landing 4)
     let stale = crate::notes::stale_shown(editor).contains(&n.id);
     // (the board's: the angle that found it, `+1` for each other one)
     let by = match n.board.as_ref().map(|m| &m.angles[..]) {
@@ -10010,10 +10105,31 @@ fn draw_picker(
         draw_text(editor, &Source::of(doc), top, &shows, rows, &ui.on(card), &pl, out)?;
     }
     let splits: Vec<usize> = (right_w > 0).then_some(b.x + left_w).into_iter().collect();
-    let name = pane_names(ui, editor, card, &[&p.title], 0);
+    let mut name = pane_names(ui, editor, card, &[&p.title], 0);
+    // (the notes list: how many drafts went stale, and the key closing them — polish landing 4, no card)
+    let stale = crate::notes::stale_said(editor).filter(|_| crate::notes::is_list(&p.title));
+    let mut button = None;
+    if let Some(said) = &stale {
+        name.push((" ── ".into(), frame_line(ui, card)));
+        name.push((format!("{said} · "), faint));
+        let at = frame.0 + 3 + name.iter().map(|s| s.0.width()).sum::<usize>();
+        let key = Style { bold: true, ..dim };
+        let pair = hint_spans(ui, &[(crate::notes::CLOSE_STALE_KEY, "close them")], key, faint);
+        let pair: Vec<(String, Style)> = pair.into_iter().map(|s| (s.text, s.style)).collect();
+        button = Some((at, pair.clone()));
+        name.extend(pair);
+    }
     editor.screen.picker_box.set(Some(frame));
     let on = crate::mouse::Surface::Picker;
     draw_frame(out, ui, editor, on, card, frame, &fits(&name), &[], &splits, (None, true))?;
+    // (a button: pressed, `:notes-close-stale` — the frame's top line had room for it whole)
+    if let Some((at, spans)) =
+        button.filter(|(at, s)| at + s.iter().map(|s| s.0.width()).sum::<usize>() < frame.0 + frame.2 - 2)
+    {
+        let press = crate::wordspot::Press::Command(":notes-close-stale");
+        let spot = crate::wordspot::Spot::new(on, press, (at, frame.1), spans);
+        editor.screen.word_spots.borrow_mut().push(spot);
+    }
     let q = picker_input(p, lw, &count);
     let cursor = q.text.get(q.line.first..p.input.cursor().max(q.line.first)).unwrap_or_default().width();
     Ok(((b.x + 3 + usize::from(q.line.lead) + cursor) as u16, (b.y + 1) as u16))
@@ -11266,11 +11382,11 @@ fn draw_statusline(
             ..ui.status
         };
         left.push(Seg::of(crate::whole::fit(editor.workspace.label(), 24).lead("  "), own, CHIP));
-        // (its rebase under way — in the warning color once it waits for you)
-        if let Some(r) = editor.workspace.rebase.as_ref() {
-            let style =
-                if r.stopped() { ui.status.patch(warn) } else { Style { fg: ui.virt.fg, ..ui.status } };
-            left.push(Seg { cut: None, text: format!(" {}", r.said()), style, keep: CHIP });
+        // (its rebase or bring under way — in the warning color once it waits for you)
+        if let Some(said) = editor.bring_progress(&editor.workspace) {
+            let stopped = editor.workspace.rebase.as_ref().is_some_and(|r| r.stopped());
+            let style = if stopped { ui.status.patch(warn) } else { Style { fg: ui.virt.fg, ..ui.status } };
+            left.push(Seg { cut: None, text: format!(" {said}"), style, keep: CHIP });
         }
     }
     // What waits for you, every session's (`inbox.rs`): its home is the card stack and its peeks (polish landing 1, the
@@ -13978,6 +14094,13 @@ impl OfferCard {
         let most_w = right.saturating_sub(1);
         let form = match has_buttons {
             true => match answers_fit(&way_key, &forms, room) {
+                // (words before blanks — polish landing 4: as its text may run `CARD_SLACK` past its reading width, so
+                // may its bottom line, before an answer but the last goes down to its key alone — the last's words go
+                // first as ever: `main moved` at 80 keeps `v more`, its prose behind that `v`)
+                Some(fit) if fit > 2 && fixed.is_none() => {
+                    let slack = max_inner.max(reading + CARD_SLACK).saturating_sub(2);
+                    answers_fit(&way_key, &forms, slack).map_or(fit, |f| f.clamp(2, fit))
+                }
                 Some(fit) => fit,
                 None => {
                     let need = answers_line_w(&way_key, forms.last()?);
@@ -16356,7 +16479,7 @@ fn stale_said(k: usize, drafts: usize) -> Option<String> {
 
 /// What the rail's rows say of each file's notes, each note looked at once a frame (#214: each row walked every
 /// note, twice): its notes waiting to be sent with the review — your drafts, the reviewer's findings (a note the
-/// reviewer began is its, whoever answered it since) — and how many of them the stale card lists while it's up.
+/// reviewer began is its, whoever answered it since) — and how many of them are stale.
 fn rail_notes(editor: &Editor) -> HashMap<&std::path::Path, (usize, usize, usize)> {
     let shown: std::collections::HashSet<u64> = crate::notes::stale_shown(editor).iter().copied().collect();
     let mut by: HashMap<&std::path::Path, (usize, usize, usize)> = HashMap::new();
@@ -17333,13 +17456,14 @@ fn session_tabs(
         }
         Doing::Idle => None,
     };
-    // A rebase under way there: `rebasing 2/5` — in the warning color once it waits for you
+    // A rebase or a bring under way there: `rebasing 2/5`, `bringing · rebased · preflight 2/4` — in the warning
+    // color once it waits for you
     let rebasing = |l: &crate::workspace::Workspace| {
-        l.rebase.as_ref().map(|r| Span {
+        editor.bring_progress(l).map(|said| Span {
             cut: None,
             hint: false,
-            text: format!(" {}", r.said()),
-            style: if r.stopped() { warn } else { dim },
+            text: format!(" {said}"),
+            style: if l.rebase.as_ref().is_some_and(|r| r.stopped()) { warn } else { dim },
         })
     };
     let unsent = |l: &crate::workspace::Workspace| {
@@ -17392,9 +17516,13 @@ fn session_tabs(
             };
             v.push(Span { cut: None, hint: false, text: said.into(), style: reviewer });
         }
-        // (a rebase stopped for you waits on you: its words kept at every fold, as `▲` is)
+        // (a rebase stopped for you waits on you: its words kept at every fold, as `▲` is; a bring under way keeps its
+        // first word — what it does now, never folded before the calm states and the other names: landing 4, the user
+        // 2026-11-03)
         if states || stopped(l) {
             v.extend(rebasing(l));
+        } else if editor.bring_going(l) {
+            v.push(Span { cut: None, hint: false, text: " bringing".into(), style: dim });
         }
         // (news while it was behind: files came again from disk — #6, its reviewer ended — #195; a sign already, kept
         // at every fold, as `+N` carries it)
@@ -17415,6 +17543,8 @@ fn session_tabs(
     // is what fits on it, never one session's words more for each session there)
     struct Said {
         needs: bool,
+        // (a bring under way: kept in as what needs you is, said `bringing`)
+        bringing: bool,
         stuck: bool,
         reviewer: bool,
         news: bool,
@@ -17427,6 +17557,7 @@ fn session_tabs(
             let doing = editor.doing(l);
             Said {
                 needs: needs(l),
+                bringing: editor.bring_going(l),
                 stuck: matches!(doing, Doing::Stuck { .. }),
                 reviewer: crate::reviewer::session_said(editor, l).is_some(),
                 news: l.news(),
@@ -17437,12 +17568,20 @@ fn session_tabs(
         })
         .collect();
     let front = |i: usize| sessions[i].id == editor.workspace.id;
+    // (always in while they fit: what needs you and a bring under way)
+    let kept = |i: usize| said[i].needs || said[i].bringing;
     // (a session that doesn't need you, not the front, at the last fold: its words' width from what it says, without
     // making them — its name, then `done`, `≈`, `¶`, `•`, `unsent` as `words` puts them; `lay` checks the two agree)
     let quiet_w = |i: usize| {
         let s = &said[i];
-        let signs =
-            [(s.done, " done"), (s.overlap, " ≈"), (s.reviewer, " ¶"), (s.news, " •"), (s.unsent, " unsent")];
+        let signs = [
+            (s.done, " done"),
+            (s.overlap, " ≈"),
+            (s.reviewer, " ¶"),
+            (s.bringing, " bringing"),
+            (s.news, " •"),
+            (s.unsent, " unsent"),
+        ];
         sessions[i].label().width() + signs.iter().filter(|s| s.0).map(|s| s.1.width()).sum::<usize>()
     };
     // (a child after its parent or a sibling: joined by `›`, a group's inside — orchestra N6, the user on its shots)
@@ -17555,7 +17694,7 @@ fn session_tabs(
     // The last fold: the front's and those that need you made (always in while they fit); the others' widths from what
     // they say (`quiet_w`), made only once shown
     let mut items: Vec<Option<Vec<Span>>> = (0..sessions.len())
-        .map(|i| (front(i) || said[i].needs).then(|| words(sessions[i], false, false, false)))
+        .map(|i| (front(i) || kept(i)).then(|| words(sessions[i], false, false, false)))
         .collect();
     let width = |items: &[Option<Vec<Span>>], shown: &[bool]| {
         width_of(shown, &|i| items[i].as_ref().map_or_else(|| quiet_w(i), |v| spans_w(v)))
@@ -17594,9 +17733,10 @@ fn session_tabs(
         let rebase = l.rebase.as_ref().and_then(|r| r.waits_on_you()).map(crate::clock::since);
         cards.chain(rebase).fold(stuck, std::cmp::Ord::max)
     };
-    let mut waiting: Vec<usize> = (0..sessions.len()).filter(|&i| !front(i) && said[i].needs).collect();
+    // (a bring under way among them: its wait none, kept longest)
+    let mut waiting: Vec<usize> = (0..sessions.len()).filter(|&i| !front(i) && kept(i)).collect();
     crate::sorting::by_key(&mut waiting, |&i| std::cmp::Reverse(waited(sessions[i])));
-    let mut shown: Vec<bool> = (0..sessions.len()).map(|i| front(i) || said[i].needs).collect();
+    let mut shown: Vec<bool> = (0..sessions.len()).map(|i| front(i) || kept(i)).collect();
     for &i in &waiting {
         if width(&items, &shown) <= w {
             break;
@@ -17615,7 +17755,7 @@ fn session_tabs(
                 break;
             }
         }
-        for i in (0..sessions.len()).filter(|&i| !said[i].needs) {
+        for i in (0..sessions.len()).filter(|&i| !kept(i)) {
             if !shown[i] {
                 shown[i] = true;
                 shown[i] = width(&items, &shown) <= w;
@@ -18042,8 +18182,12 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             .flatten();
         // (what it waits on, or how long it's said nothing — and, busy at nothing it shows, the key that stops
         // it: frictions 53)
+        // (said stuck: `◦ stuck? …` and its stop key, in warning — polish landing 4, no card)
         let said = |wait: &crate::waits::Waiting, last, slot| {
             let stop = wait.busy(last, now).map(|_| crate::inbox::stop_key(slot));
+            if let Some(s) = wait.stuck.as_deref() {
+                return Some((crate::stuck::shown(s), Some(crate::inbox::stop_key(slot))));
+            }
             wait.shown(now, |d| timer(d, calm))
                 .map(|s| (s, None))
                 .or_else(|| wait.silent(last, now).map(|s| (s, stop)))
@@ -18069,7 +18213,9 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             let hint = stop.map(|key| hint_spans(ui, &[(key, "stop it")], dim, faint)).unwrap_or_default();
             let hint_w: usize = hint.iter().map(|s| s.text.width()).sum();
             let room = w.saturating_sub(2 + if hint_w > 0 { hint_w + 2 } else { 0 });
-            let mut row = vec![crate::whole::fit(&wait, room).lead("  ").span(faint)];
+            let warn = editor.theme.try_get("warning").and_then(|s| s.fg);
+            let style = if wait.starts_with("◦ ") { Style { fg: warn, ..faint } } else { faint };
+            let mut row = vec![crate::whole::fit(&wait, room).lead("  ").span(style)];
             if hint_w > 0 {
                 row.push(sp("  ".into(), faint));
                 row.extend(hint);
@@ -22480,7 +22626,7 @@ pub(crate) fn underlines(d: &crate::lsp::Diagnostic, pos: usize) -> bool {
 ///   │                                                   │
 ///   │ › you                                             │
 ///   │   why not return early?                           │
-///   ╰─ space n reply · ]n next · space N all · :note-close ╯
+///   ╰─ ]n next · q close · space N all · :note-close ─────────────╯
 /// ```
 fn draw_note_card(
     editor: &Editor,
@@ -22607,18 +22753,12 @@ fn draw_note_card(
         false => format!("send {}", crate::notes::drafts(editor)),
     };
     let mut keys = note_keys(n, replying, editor, &send);
-    // (`space n` goes to the note at your cursor, `enter` there too or to this card with none: said here only where they
-    // act on it — the turn's card leaves your cursor where it was)
+    // (`enter` goes to the note at your cursor, or to this card with none there: said only where it acts on it)
     let mine = |t: &crate::notes::Note| crate::notes::group(notes, n).iter().any(|g| g.id == t.id);
-    let at_yours = crate::notes::here(editor).is_some_and(mine);
     let aimed = crate::notes::target(editor).is_some_and(mine);
     // (closing has its own rule, your cursor even while follow holds the view: it's for good)
     let closes = crate::notes::close_target(editor).is_some_and(mine);
-    keys.retain(|k| match k.0 {
-        "space n" => at_yours,
-        ":note-close" => closes,
-        _ => true,
-    });
+    keys.retain(|k| k.0 != ":note-close" || closes);
     // (a line's earlier answers folded: `enter` there unfolds them — after the reply, focus A1b; else past its room it
     // reads on in the chat — its `…` row says so, focus A1c)
     if folded && !replying && aimed {
@@ -22981,8 +23121,8 @@ thread_local! {
     pub(crate) static NOTE_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The note card's top line (#240): `note`, then which of how many notes start on its line and, on the stale card up,
-/// `stale · the card asks` (cardburden 6).
+/// The note card's top line (#240): `note`, then which of how many notes start on its line and, a stale draft,
+/// `stale · its lines changed` (its bottom line's `R` re-places it — polish landing 4).
 fn note_name(n: &crate::notes::Note, editor: &Editor, ui: &Ui, card: Style) -> Vec<(String, Style)> {
     let mut name = pane_names(ui, editor, card, &[note_kind(n)], 0);
     // (a line's answers are one card, one of the notes here — focus A1b)
@@ -23011,7 +23151,7 @@ fn note_name(n: &crate::notes::Note, editor: &Editor, ui: &Ui, card: Style) -> V
         details.push(format!("{i} of {k} here"));
     }
     if crate::notes::stale_shown(editor).contains(&n.id) {
-        details.push("stale · the card asks".into());
+        details.push("stale · its lines changed".into());
     }
     if !details.is_empty() {
         name.push((" ── ".into(), frame_line(ui, card)));
@@ -23056,18 +23196,15 @@ fn note_keys<'a>(
     editor: &Editor,
     send: &'a str,
 ) -> Vec<(&'static str, &'a str)> {
+    let stale = crate::notes::stale_shown(editor).contains(&n.id);
     let mut keys = match () {
         _ if replying => return note_input_keys(editor).to_vec(),
-        _ if n.thread.iter().any(|e| e.draft) => {
-            vec![("space n", "reply"), ("space v s", send), ("]n", "next"), ("q", "close")]
-        }
-        _ => vec![
-            ("space n", "reply"),
-            ("]n", "next"),
-            ("q", "close"),
-            ("space N", "all"),
-            (":note-close", ""),
-        ],
+        // (a stale draft: `R` first — what it asks of you, re-placed on its lines as they are, or `:note-close`)
+        _ if stale => vec![("R", "re-place"), ("space v s", send), (":note-close", ""), ("q", "close")],
+        // (no `space n reply`: `space n` acts at your cursor only — a new note on a line with none, focus C1 — so no
+        // card can promise it wherever you are, and a card's keys don't change as you move: #313)
+        _ if n.thread.iter().any(|e| e.draft) => vec![("space v s", send), ("]n", "next"), ("q", "close")],
+        _ => vec![("]n", "next"), ("q", "close"), ("space N", "all"), (":note-close", "")],
     };
     // (a lone note: `]n` has nowhere to go — never hinted, #265)
     if !crate::notes::walks_on(&editor.workspace.claude.notes) {
@@ -23657,15 +23794,12 @@ fn key_hints(editor: &Editor) -> Option<Vec<(&'static str, String)>> {
             }
         }
     } else if let Some(p) = editor.picker.as_ref().filter(|p| crate::notes::is_list(&p.title)) {
-        // (`A-x` names whose: the row's author — #197; not in the stale card's list, where it isn't one)
+        // (`A-x` names whose: the row's author — #197; `C-l` is said on the list's top line, with its count)
         let by = p
             .current()
             .and_then(|i| crate::notes::of_row(editor, i))
             .and_then(|id| crate::notes::began(editor, id));
         match by {
-            Some(_) if p.title == crate::notes::STALE => {
-                hints(&[("enter", "go to it"), ("C-x", "close it"), ("esc", "back to the card")])
-            }
             Some(by) => {
                 let all = format!("close all {} began", by.label());
                 hints(&[("enter", "go to it"), ("C-x", "close it"), ("A-x", &all), ("esc", "close")])
@@ -24313,6 +24447,41 @@ mod tests {
             let name = r.split(' ').next().unwrap();
             assert!(before.iter().any(|b| b.split(' ').next() == Some(name)), "{name} moved in: {text}");
         }
+    }
+
+    /// Polish landing 4 (the user, 2026-11-03): a bring under way is said at 80 — the top row's strip (a third of the
+    /// line) keeps the session's `bringing` as `▲ waits` is kept, the calm names folding into `+N` first.
+    #[test]
+    fn a_bring_under_way_keeps_its_word_on_a_narrow_strip() {
+        use crate::workspace::Spot;
+        let dir = crate::scratch::Scratch::new("bringing");
+        let names = ["main", "docs", "parser", "fix"];
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.name = names[0].into();
+        let mut ids = vec![ed.workspace.id];
+        for n in &names[1..] {
+            let p = dir.path().join(n);
+            std::fs::create_dir_all(&p).unwrap();
+            ids.push(ed.workspace_open(&p).unwrap());
+            ed.workspace.name = (*n).into();
+        }
+        assert!(ed.workspace_switch(ids[0]).is_in());
+        let fix = ed.workspaces.iter_mut().find(|l| l.name == "fix").unwrap();
+        (fix.bring_go, fix.bring_rebased) = (true, true);
+        let s = Style::default();
+        let tabs = |w: usize| {
+            let (spans, spots) = session_tabs(&ed, w, 0, [s; 5], &|_| s);
+            let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+            let shown = (spots.iter()).filter(|&&(_, _, spot)| matches!(spot, Spot::Session(_))).count();
+            (text, shown)
+        };
+        // (room for all: its words whole)
+        let (text, _) = tabs(60);
+        assert!(text.contains("fix bringing · rebased"), "{text}");
+        // (80 columns: the strip's third — the calm names fold, the bring's word stays)
+        let (text, shown) = tabs(80 / 3);
+        assert!(text.width() <= 80 / 3, "{text}");
+        assert_eq!((text.as_str(), shown), ("main · fix bringing · +2", 2));
     }
 
     /// orchestra N6: on the chat's line a child comes right after its parent, joined to it or a sibling by a faint `›`
@@ -29657,18 +29826,9 @@ mod tests {
         for n in &mut ed.workspace.claude.notes.list {
             n.thread[0].draft = true;
         }
-        let card = |ids: Vec<u64>| {
-            crate::offer::Offer::new(
-                "Close".into(),
-                "q",
-                "",
-                String::new(),
-                crate::offer::What::NotesStale { ids },
-            )
-        };
         let rail_stale = |ed: &Editor| stale_said(rail_notes(ed).get(f.path.as_path()).map_or(0, |e| e.2), 2);
-        assert_eq!(rail_stale(&ed), None, "no card up");
-        ed.offers.push(card(vec![ids[0]]));
+        assert_eq!(rail_stale(&ed), None, "none stale");
+        crate::notes::stale_mark(&mut ed, vec![ids[0]]);
         assert_eq!(rail_stale(&ed).as_deref(), Some(" 1 stale"));
         let row = |ed: &mut Editor| {
             let mut bytes = Vec::new();
@@ -29679,7 +29839,7 @@ mod tests {
             s.lines().find(|l| l.contains("a.rs") && l.contains("¶2")).map(str::to_string).expect("its row")
         };
         assert!(row(&mut ed).contains("¶2 1 stale"), "drawn");
-        ed.offers[0] = card(ids.clone());
+        crate::notes::stale_mark(&mut ed, ids.clone());
         assert_eq!(rail_stale(&ed).as_deref(), Some(" stale"), "all of them");
         assert!(row(&mut ed).contains("¶2 stale"));
     }
@@ -30971,8 +31131,6 @@ mod tests {
             ("goes back", 3),
             // a card given the keys (`C-q`, a press on it): esc gives them back where they came from — the code or the chat
             ("gives them back", 3),
-            // the stale notes' list goes back to the card it came from, not the code
-            ("back to the card", 1),
             // Claude's answer streaming: esc stops it
             ("stop", 1),
             // pointing: the labels go, nothing opened or closes
