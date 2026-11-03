@@ -62,7 +62,8 @@ use crate::workspace::At;
 /// 26: a finding's `thread` names the session's Claude `claude` (was `author`), as the note's card and `kind` do (#254).
 /// 27: the turn's map (`turnmap.rs`): `panels.lists` may hold a `map` list, its marks as drawn (`map:src/a.rs:●`).
 /// 28: the minimized chat gone (the flow plan's piece 3): `panels.chat.minimized` is `hidden` (out of sight), `unread` the
-/// status line's `◂ new`; `keys.region` `chat-minimized` and `takes` `unfold` gone.
+/// status line's `◂ new`; `keys.region` `chat-minimized` and `takes` `unfold` gone; `keys.region` `follow` (its handler
+/// `follow`): the follow card with the keys (#267).
 pub const V: u64 = 28;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
