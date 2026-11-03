@@ -12,8 +12,9 @@
 #
 # `colima`: the colima profile it runs on (started if it isn't, stopped after if it was started; `start` its
 # options). `image`: a Lima VM from Lima's own template `_images/<image>` (its cloud image, downloaded once into
-# Lima's cache), Docker put in by `install`, started, run and deleted. `sysctl`: set before the runs (a VM's own,
-# gone with it; colima's until it restarts).
+# Lima's cache), Docker put in by `install`, started, run and deleted. `download = { location, arch, digest }`: that
+# image's place instead of its template's (the template's images then unused), its digest checked by Lima as a
+# template's. `sysctl`: set before the runs (a VM's own, gone with it; colima's until it restarts).
 
 build = "tarae-test"
 repeat = 3
@@ -85,6 +86,11 @@ expect = { own = "own", own-user = "own", host = "host", host-user = "host", off
 name = "K6"
 says = "the newest: Fedora 44 — Landlock's audit records and later ABIs, the newest syscalls, SELinux"
 image = "fedora-44"
+# (from Fedora's master, not the template's download.fedoraproject.org: that redirector sent Lima to a mirror that
+# refused it, 403 "uncommon characteristics", 2026-11-03 on 6c4faa7f. The master serves a plain client with no
+# redirect; the digest is Lima's template's, the one in Fedora's signed Fedora-Cloud-44-1.7-aarch64-CHECKSUM there.
+# aarch64: Lima's vz on this Mac)
+download = { location = "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2", arch = "aarch64", digest = "sha256:55c60a3b80d3616a08705afd0459e75fe9f03c54aba7a46e4002a41a72fa0d5b" }
 install = "curl -fsSL https://get.docker.com | sh"
 modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
 whole = "host-user"

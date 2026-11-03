@@ -6,8 +6,8 @@
 //! **Built once, run everywhere**: tarae's own tests are built once in the `build` colima VM (`cargo xtask linux
 //! test --keep --bin tarae`), and every kernel runs that one binary (`test --kept [--as-user]`) in its own Docker —
 //! a container uses its VM's kernel, so one VM a kernel. A colima kernel's Docker is its profile's
-//! (`DOCKER_CONTEXT`); a Lima kernel's VM is made from Lima's own template for its cloud image (`_images/<image>`),
-//! Docker put in by its `install`, the checkout and its repository's git folder mounted read-only (the checks'
+//! (`DOCKER_CONTEXT`); a Lima kernel's VM is made from Lima's own template for its cloud image (`_images/<image>`)
+//! or from the place its row names (`download`, its digest checked), Docker put in by its `install`, the checkout and its repository's git folder mounted read-only (the checks'
 //! clone reads them, nothing else of home), and what the binary needs carried in from colima's Docker with no
 //! download: the `rust:<pin>` image (`docker save | docker load`), the kept binary, the rustup volume (the pinned
 //! toolchain a test's own cargo asks for). One VM at a time: made, run, stopped and deleted (`--keep-vm` leaves it;
@@ -89,8 +89,52 @@ impl Mode {
 enum At {
     /// A colima profile, and `colima start`'s options for it.
     Colima { profile: String, start: Vec<String> },
-    /// A Lima VM from `_images/<image>`, Docker put in by `install` (a shell line, as root).
-    Lima { image: String, install: String },
+    /// A Lima VM from `_images/<image>` — or from `download`, where the table names its image's place — Docker put
+    /// in by `install` (a shell line, as root).
+    Lima { image: String, install: String, download: Option<Download> },
+}
+
+/// A Lima kernel's image from a place the table names (`download`) instead of its template's: the template's own
+/// place can be a redirector that sends a plain client to a mirror refusing it (K6's first run, 2026-11-03: Fedora's
+/// to TUNA's 403). Lima checks the digest as it checks a template's.
+#[derive(Clone, Debug, PartialEq)]
+struct Download {
+    location: String,
+    arch: String,
+    digest: String,
+}
+
+/// The table's `download = { location, arch, digest }` of a kernel, checked: an https address, an arch Lima
+/// names, a sha256 digest — nothing else in it.
+fn download(t: &toml::Table, of: &str) -> Result<Option<Download>> {
+    let Some(d) = t.get("download") else {
+        return Ok(None);
+    };
+    let d = d.as_table().ok_or(format!("{of}: download: a table of location, arch and digest"))?;
+    if let Some(k) = d.keys().find(|k| !["location", "arch", "digest"].contains(&k.as_str())) {
+        return Err(format!("{of}: download.{k}: only location, arch and digest"));
+    }
+    let of = format!("{of}: download");
+    let get = |key: &str| string(d, key, &of)?.ok_or(format!("{of}: no {key}"));
+    let (location, arch, digest) = (get("location")?, get("arch")?, get("digest")?);
+    if !location.starts_with("https://") || !plain(&location) || host(&location).is_empty() {
+        return Err(format!(
+            "{of}: location {location}: an https:// address, letters, digits and `._-/=:` only"
+        ));
+    }
+    if !["aarch64", "x86_64"].contains(&arch.as_str()) {
+        return Err(format!("{of}: arch {arch}: aarch64 or x86_64"));
+    }
+    let hex = digest.strip_prefix("sha256:").unwrap_or_default();
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+        return Err(format!("{of}: digest {digest}: sha256: and 64 lowercase hex digits"));
+    }
+    Ok(Some(Download { location, arch, digest }))
+}
+
+/// An address's host (`https://dl.fedoraproject.org/pub/…` → `dl.fedoraproject.org`).
+fn host(url: &str) -> &str {
+    url.split_once("://").map_or("", |(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or_default())
 }
 
 #[derive(Clone, Debug)]
@@ -142,10 +186,13 @@ fn kernel(t: &toml::Table) -> Result<Kernel> {
     }
     let of = name.as_str();
     let at = match (string(t, "colima", of)?, string(t, "image", of)?) {
+        (Some(_), None) if t.contains_key("download") => {
+            return Err(format!("{of}: download is a Lima image's: with image, not colima"));
+        }
         (Some(profile), None) if plain(&profile) => At::Colima { profile, start: strings(t, "start", of)? },
         (None, Some(image)) if plain(&image) => {
             let install = string(t, "install", of)?.ok_or(format!("{of}: an image needs its install"))?;
-            At::Lima { image, install }
+            At::Lima { image, install, download: download(t, of)? }
         }
         _ => return Err(format!("{of}: one of colima (a profile) or image (Lima's template)")),
     };
@@ -391,17 +438,29 @@ fn made_here(yaml: &str) -> bool {
     yaml.starts_with(MADE)
 }
 
-/// The Lima VM's file for `k`: Lima's own template for its image, 4 CPUs and 8 GiB as colima's test VMs, only the
+/// The Lima VM's file for `k`: Lima's own template for its image — or the table's `download`, alone (a template's
+/// images would be tried after it, its refusing place again) —, 4 CPUs and 8 GiB as colima's test VMs, only the
 /// checkout and its git folder mounted (read-only), no containerd of Lima's, Docker put in as root (its socket
 /// the user's, forwarded to the Mac), the sysctls set at each boot.
 fn lima_yaml(k: &Kernel, mounts: &[&Path]) -> Result<String> {
-    let At::Lima { image, install } = &k.at else {
+    let At::Lima { image, install, download } = &k.at else {
         return Err(format!("{}: not a Lima kernel", k.name));
+    };
+    let from = match download {
+        None => format!("base:\n- template:_images/{image}\n"),
+        Some(d) => format!(
+            "# ({image}'s image from {}, not its template's place: the table's download)\n\
+             images:\n- location: \"{}\"\n  arch: {}\n  digest: \"{}\"\n",
+            host(&d.location),
+            d.location,
+            d.arch,
+            d.digest
+        ),
     };
     let mut y = format!(
         "{MADE} for {} — deleted after its run\n\
          minimumLimaVersion: 2.0.0\n\
-         base:\n- template:_images/{image}\n\
+         {from}\
          vmType: vz\ncpus: 4\nmemory: 8GiB\ndisk: 40GiB\n\
          # (the checks' clone reads the checkout and its git folder: nothing else of home)\n\
          mounts:\n",
@@ -486,14 +545,18 @@ fn plan(k: &Kernel, repeat: u32, from: &Docker, image: &str, target: &str, rustu
                 l.push(Cmd::new(&["colima", "ssh", "-p", profile, "--", "sudo", "sysctl", "-w", s]).line());
             }
         }
-        At::Lima { image: img, .. } => {
+        At::Lima { image: img, download, .. } => {
             let name = vm_name(k);
             l.push(format!(
                 "{}    # only if a stopped run left it",
                 Cmd::new(&["limactl", "delete", "--force", &name]).line()
             ));
+            let source = match download {
+                None => format!("Lima's _images/{img}"),
+                Some(d) => format!("{img} from {} (its digest checked)", host(&d.location)),
+            };
             l.push(format!(
-                "{}    # downloads Lima's _images/{img} once; Docker's packages inside",
+                "{}    # downloads {source} once; Docker's packages inside",
                 Cmd::new(&[
                     "limactl",
                     "start",
@@ -908,9 +971,17 @@ fn one_kernel(
             }
             let up = Cmd::new(&["limactl", "start", &format!("--name={name}"), "--tty=false"])
                 .args([file.to_string_lossy()]);
-            if !said_status(&up, x) {
+            eprintln!("$ {}", up.line());
+            let (came_up, said) = teed(up.command(x));
+            let start_file = format!("{name}-start.txt");
+            let _ = std::fs::write(run.dir.join(&start_file), &said);
+            if !came_up {
                 lima_down(k, keep_vm, x);
-                return run.not_measured(k, "its VM didn't come up (limactl start)");
+                let why = match download_refused(&said) {
+                    Some((url, status)) => refused_why(&url, &status, asked_again(&url).as_deref()),
+                    None => format!("its VM didn't come up (limactl start, its output in {start_file})"),
+                };
+                return run.not_measured(k, &why);
             }
             for (a, b) in carry(from, &docker, image, target, rustup) {
                 eprintln!("$ {} | {}", a.line(), b.line());
@@ -963,6 +1034,50 @@ fn room(k: &Kernel, facts: &Facts) -> std::result::Result<(), String> {
         }
     };
     Err(format!("its Docker: {full} — {frees}"))
+}
+
+/// The image's address and the status a refused download got, from what `limactl start` said: Lima's downloader
+/// says `failed to download <url>: unexpected HTTP status 403 Forbidden, body=…` on one line (the address quoted
+/// as Go's `%#q` quotes it, inside a log line's quotes).
+fn download_refused(said: &str) -> Option<(String, String)> {
+    said.lines().find_map(|l| {
+        let rest = &l[l.find("failed to download ")?..];
+        let url = rest[rest.find("https://")?..].split(|c: char| "`\"\\' ".contains(c)).next()?;
+        let status = l.split("unexpected HTTP status ").nth(1)?.split(", body=").next()?.trim();
+        Some((url.to_string(), status.to_string()))
+    })
+}
+
+/// Who answers `url` now as Lima's download asks it — redirects followed, one byte: curl's `<status> <redirects>
+/// <last address>`, or None where curl couldn't ask. A redirector's mirror is only seen here: Lima names the
+/// address it was given.
+fn asked_again(url: &str) -> Option<String> {
+    let mut c = Command::new("curl");
+    c.args(["-sS", "-o", "/dev/null", "-r", "0-0", "-L", "--max-time", "60"]).args([
+        "-w",
+        "%{http_code} %{num_redirects} %{url_effective}",
+        url,
+    ]);
+    quiet(c)
+}
+
+/// A refused download's reason, one line for the row: the status Lima got, the host that refused (asked again: the
+/// one a redirect sent it to), the address.
+fn refused_why(url: &str, status: &str, again: Option<&str>) -> String {
+    let from = host(url);
+    let again = again.and_then(|a| {
+        let mut w = a.split_whitespace();
+        Some((w.next()?, w.next()?.parse::<u32>().ok()?, w.next()?))
+    });
+    let who = match again {
+        Some((code, n, to)) if n > 0 => {
+            format!("{from} sent it to {}, which answers {code} (asked again)", host(to))
+        }
+        Some((code, _, _)) => format!("{from}, which answers {code} (asked again)"),
+        None => format!("{from} or a host it sent it to (not asked again: curl)"),
+    };
+    let why = format!("its image's download refused, {status}: {who} — {url}");
+    why.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
 fn lima_down(k: &Kernel, keep_vm: bool, x: &Path) {
@@ -1121,7 +1236,36 @@ mod tests {
             ("modes = [\"host\"]\nexpect = { host = \"mine\" }", "own, host or offline"),
             ("modes = [\"host\"]\nsysctl = [\"a=b; reboot\"]", "name=value"),
             ("modes = [\"host\"]\nimage = \"debian-12\"", "one of colima"),
+            ("modes = [\"host\"]\ndownload = { location = \"https://a/b\" }", "with image, not colima"),
         ];
+        // (a Lima row's download, each part checked)
+        let lima = "build = \"tarae-test\"\n[[kernel]]\nname = \"K\"\nimage = \"i\"\ninstall = \"x\"\nwhole = \"host\"\nmodes = [\"host\"]\n";
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let bad_download = [
+            (format!("location = \"http://h/i\", arch = \"aarch64\", digest = \"{digest}\""), "an https://"),
+            (
+                format!("location = \"https://h/i i\", arch = \"aarch64\", digest = \"{digest}\""),
+                "an https://",
+            ),
+            (
+                format!("location = \"https://h/i\", arch = \"arm\", digest = \"{digest}\""),
+                "aarch64 or x86_64",
+            ),
+            ("location = \"https://h/i\", arch = \"aarch64\", digest = \"sha256:ab\"".into(), "64 lowercase"),
+            ("location = \"https://h/i\", arch = \"aarch64\"".into(), "no digest"),
+            (
+                format!("location = \"https://h/i\", arch = \"aarch64\", digest = \"{digest}\", sha = 1"),
+                "only location",
+            ),
+        ];
+        for (d, why) in bad_download {
+            let got = table(&format!("{lima}download = {{ {d} }}\n"));
+            assert!(got.as_ref().is_err_and(|e| e.contains(why)), "{d}: {:?}", got.err());
+        }
+        let good = format!(
+            "{lima}download = {{ location = \"https://h/i\", arch = \"x86_64\", digest = \"{digest}\" }}\n"
+        );
+        assert!(table(&good).is_ok(), "{:?}", table(&good).err());
         for (rest, why) in bad {
             let got = table(&format!("{head}{rest}\n"));
             assert!(got.as_ref().is_err_and(|e| e.contains(why)), "{rest}: {:?}", got.err());
@@ -1199,6 +1343,62 @@ mod tests {
         assert!(lima_yaml(k5, &[Path::new("/a\"b")]).is_err());
         let k4 = &t.kernels[0];
         assert!(lima_yaml(k4, &[]).is_err(), "colima's isn't Lima's");
+    }
+
+    /// K6's image comes from the place its row names — Fedora's master, no redirector (its first run's mirror refused
+    /// Lima, 403) — with the digest Lima checks, and no template whose images Lima would try after it; a row naming
+    /// none keeps its template. A refused download's reason names the status and the host that refused.
+    #[test]
+    fn k6s_image_comes_from_fedoras_master_with_its_digest() {
+        let t = the_table();
+        let k6 = t.kernels.iter().find(|k| k.name == "K6").unwrap();
+        let y = lima_yaml(k6, &[Path::new("/u/w/ci")]).unwrap();
+        assert!(
+            y.contains(
+                "images:\n- location: \"https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2\"\n  arch: aarch64\n  digest: \"sha256:55c60a3b80d3616a08705afd0459e75fe9f03c54aba7a46e4002a41a72fa0d5b\"\n"
+            ),
+            "{y}"
+        );
+        assert!(!y.contains("template:") && !y.contains("download.fedoraproject.org"), "{y}");
+        assert!(made_here(&y) && y.contains("\nvmType: vz\n"), "{y}");
+        let k3 = t.kernels.iter().find(|k| k.name == "K3").unwrap();
+        let y3 = lima_yaml(k3, &[]).unwrap();
+        assert!(y3.contains("base:\n- template:_images/debian-12\n") && !y3.contains("images:"), "{y3}");
+        let from = Docker::Context("colima-tarae-test".into());
+        let all = plan(k6, 3, &from, "rust:1.95", "tv", "rv").join("\n");
+        assert!(
+            all.contains("# downloads fedora-44 from dl.fedoraproject.org (its digest checked) once"),
+            "{all}"
+        );
+
+        // (Lima's line for a refused download, as its log quotes it, and the host a redirect sent it to)
+        let url =
+            "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/F.qcow2";
+        let said = format!(
+            "time=\"2026-11-03T14:53:10+09:00\" level=fatal msg=\"failed to download `{url}`: unexpected HTTP status 403 Forbidden, body=`<html>uncommon characteristics</html>`\"\n"
+        );
+        let (got, status) = download_refused(&format!("downloading\n{said}")).unwrap();
+        assert_eq!((got.as_str(), status.as_str()), (url, "403 Forbidden"));
+        let escaped = said.replace('`', "\\\"");
+        assert_eq!(download_refused(&escaped).map(|(u, _)| u).as_deref(), Some(url), "{escaped}");
+        assert_eq!(download_refused("level=fatal msg=\"exiting, status={Running:false}\""), None);
+        let why = refused_why(
+            url,
+            "403 Forbidden",
+            Some("403 1 https://mirrors.tuna.tsinghua.edu.cn/fedora/F.qcow2"),
+        );
+        assert_eq!(
+            why,
+            format!(
+                "its image's download refused, 403 Forbidden: download.fedoraproject.org sent it to mirrors.tuna.tsinghua.edu.cn, which answers 403 (asked again) — {url}"
+            )
+        );
+        let why = refused_why(url, "403 Forbidden", None);
+        assert!(why.contains("403 Forbidden: download.fedoraproject.org or a host it sent it to"), "{why}");
+        assert!(
+            refused_why(url, "404 Not\tFound", Some("404 0 x"))
+                .contains("404 Not Found: download.fedoraproject.org, which answers 404")
+        );
     }
 
     /// What goes into a VM comes from colima's Docker with no download: the image, the kept binary, rustup.
