@@ -31,7 +31,7 @@ use said::{Kind, Said};
 use sampled::{Bank, Stroke};
 use synth::Synth;
 
-const RATE: u32 = 48_000;
+pub(crate) const RATE: u32 = 48_000;
 const STEP: Duration = Duration::from_millis(25);
 
 mod samples;
@@ -413,8 +413,58 @@ fn levels(samples: &[f32]) -> (f32, f32) {
     (db(peak), db(rms))
 }
 
+/// What a Short hears (`video.rs`), each at its ms: a key you typed (what it was: a return, the space bar, else a key),
+/// a card's answer pressed as a stamp, an edit's landing settling the page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Heard {
+    Key(char),
+    Stamp,
+    Settle,
+}
+
+/// A Short's peak: −3 dBFS — room for AAC's overshoot, and a phone's speaker never clips (YouTube turns a loud track
+/// down, never a quiet one up).
+const SHORT_PEAK_DB: f32 = -3.0;
+
+/// A Short's sound track, `length` long: tarae's own strokes (`recorded::BANK`, the synth's settle) for each of
+/// `heard`, as the audio thread plays them at the full volume, then scaled so its peak is `SHORT_PEAK_DB`. A key is the
+/// kind its character is (`Kind::Return`, `Space`, else `Key`); a stamp is the big key with the settle under it, a
+/// firm press; a settle is tarae's. Its peak and RMS (dBFS) beside it.
+pub(crate) fn track(heard: &[(Duration, Heard)], length: Duration) -> (Vec<f32>, f32, f32) {
+    let mut seed: u32 = 0x5107_7a2a;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let mut said: Vec<(Duration, Said)> = Vec::new();
+    for &(t, h) in heard {
+        let mut push = |kind: Kind, gain: f32| said.push((t, Said { kind, gain, seed: next(), delay: 0.0 }));
+        match h {
+            Heard::Key('\r' | '\n') => push(Kind::Return, 1.0),
+            Heard::Key(' ') => push(Kind::Space, 1.0),
+            Heard::Key(_) => push(Kind::Key, 0.9),
+            Heard::Stamp => {
+                push(Kind::Return, 1.0);
+                push(Kind::Settle, 0.8);
+            }
+            Heard::Settle => push(Kind::Settle, 1.0),
+        }
+    }
+    said.sort_by_key(|s| s.0);
+    let mut samples = render(&said, length, 100, Some(&recorded::BANK));
+    let peak = samples.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+    if peak > 0.0 {
+        let to = 10f32.powf(SHORT_PEAK_DB / 20.0) / peak;
+        samples.iter_mut().for_each(|x| *x *= to);
+    }
+    let (peak, rms) = levels(&samples);
+    (samples, peak, rms)
+}
+
 /// 16-bit PCM, mono.
-fn wav(path: &Path, samples: &[f32]) -> Result<()> {
+pub(crate) fn wav(path: &Path, samples: &[f32]) -> Result<()> {
     let data = samples.len() as u32 * 2;
     let mut b: Vec<u8> = Vec::with_capacity(44 + data as usize);
     b.extend_from_slice(b"RIFF");

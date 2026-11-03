@@ -21,7 +21,11 @@
 //!
 //! `--video` makes the take a short video (`video.rs`): 1920×1080 at 30 fps, its `@beat:` captions in a band under the
 //! screen, a title card and an end card with the seal — `<DIR>/<scene>-<theme>-video/<scene>.mp4` through ffmpeg, and
-//! `sheet.png` of the video's own frames.
+//! `sheet.png` of the video's own frames. `--video --shorts` makes it a YouTube Short instead: 1080×1920 upright, the
+//! scene at 80 columns and the rows that fill the window (`video::short_size`), a camera over it from the scene's
+//! `@zoom:<target>` lines (`camera.rs`), the captions above it inside YouTube's overlays, and tarae's own keyboard
+//! sound for the keys typed (`@type:<text>` types a character at a time), `@sound:stamp` and `@sound:settle` — into
+//! `<DIR>/<scene>-<theme>-shorts/`. The wide video ignores `@zoom` and `@sound`.
 
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::DirBuilderExt;
@@ -39,7 +43,7 @@ use docshots::{Bg, Named, fixed_clock, homes, none_of_yours, now};
 // (`scenes --docs`: the docs' pictures, each from a scene here)
 pub(crate) mod docshots;
 
-const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video|--wire scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --tint scene … [--size COLSxROWS …] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
+const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video [--shorts]|--wire scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --tint scene … [--size COLSxROWS …] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
 
 /// A recording's size unless `--size` says (the polish week's: its flows judged at 120×34) or the scene has its own
 /// (`record_size`).
@@ -2431,7 +2435,10 @@ const BASE_MOVED: &[&str] = &[
 /// far from `threads.insert` and fix's own way of that line committed; on camera, the floating list in main, main's way
 /// of the line written (C2's `main ≈ fix` said as it's saved) and committed with the list up, its card beside the list,
 /// `C-q` giving it the keys (fix would conflict, docs clean), `y` moving docs only. It ends before docs, moved, meets fix
-/// (C2's next round, ~4 s on: `fix ≈ docs`).
+/// (C2's next round, ~4 s on: `fix ≈ docs`). Its Short (`--video --shorts main-moved`, 80×43): the camera on the
+/// list as it opens, on the line as main's way is written, on C2's toast as it's saved, on the prompt as the commit is
+/// typed, on the card as it arrives and through `C-q` and `y`, on the list as the card goes, on what the move says; the typing a key at a time
+/// (`@type:` — the wide video's too), `y` a stamp, the move's landing the settle.
 const MAIN_MOVED: &[&str] = &[
     "@1",
     ":",
@@ -2491,38 +2498,52 @@ const MAIN_MOVED: &[&str] = &[
     "@1",
     "@rec",
     "@beat:Three workspaces on one branch.",
+    "@zoom:card:sessions",
     "@4",
     "@beat:Commit on main, and main moves on.",
     "q",
+    "@zoom:code:10",
     "@1",
     "/",
-    "threads.insert",
+    "@type:threads.insert",
     "\r",
     "@1",
     "A",
-    " // main's way",
+    "@type: // main's way",
     "\x1b",
     "@1",
     ":",
     "w",
     "\r",
-    "@1",
+    "@8?would",
+    "@zoom:src/main.rs L10",
+    "@2",
     " ",
     "W",
     "@10?sessions",
+    "@zoom:card:sessions",
     "@1",
     ":",
-    "sh git commit -qm main src/main.rs",
+    // (on the prompt once its first words narrowed it: `:` alone lists every command, 66 columns)
+    "@type:sh git ",
+    "@zoom:card:command",
+    "@type:commit -qm main src/main.rs",
     "\r",
     "@20?main moved",
     "@beat:Everyone behind it hears at once, and where they'd clash.",
+    "@zoom:card:main moved",
     "@3",
     "\x11",
     "@10?esc back",
     "@6",
     "@beat:y moves the clean ones. Nobody's work is lost.",
+    "@zoom:card:main moved",
+    "@sound:stamp",
     "y",
+    "@zoom:card:sessions",
     "@20?moved onto main",
+    "@sound:settle",
+    "@zoom:moved onto main",
     "@2",
 ];
 /// The third short video, V3 "Claude's edit, in your buffer" (`--video edit-in-buffer`, ~45 s at 120×34; collab's
@@ -5087,6 +5108,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut recording = false;
     let mut video = false;
     let mut wire = false;
+    let mut shorts = false;
     let mut tint = false;
     let mut backgrounds = BACKGROUNDS.to_vec();
     let mut bin: Option<PathBuf> = None;
@@ -5104,6 +5126,8 @@ pub fn run(args: &[String]) -> Result<()> {
             "--video" => (recording, video) = (true, true),
             // (…or only what a remote interface's wire would carry — `wire.rs`, the remote split's spike)
             "--wire" => (recording, wire) = (true, true),
+            // (…a YouTube Short instead: upright, a camera over the screen, its sound — `video.rs`)
+            "--shorts" => shorts = true,
             // (the polish plan's "cells tinted in the code" on the last frame — `tint_one`)
             "--tint" => tint = true,
             "--theme" => {
@@ -5125,9 +5149,10 @@ pub fn run(args: &[String]) -> Result<()> {
             _ => return Err(USAGE.into()),
         }
     }
-    if (recording || tint) && (names.is_empty() || transparent) {
+    if (recording || tint) && (names.is_empty() || transparent) || shorts && (!video || sizes.is_some()) {
         return Err(USAGE.into());
     }
+    let form = if shorts { video::Form::Short } else { video::Form::Wide };
     let scenes = chosen(&names)?;
     let out = out.unwrap_or_else(|| {
         root().join(match (recording, tint) {
@@ -5136,8 +5161,10 @@ pub fn run(args: &[String]) -> Result<()> {
             _ => "target/scenes",
         })
     });
+    let short = if shorts { video::short_size()? } else { RECORD_SIZE };
     let sizes_of = |scene: &Scene| match &sizes {
         Some(s) => s.clone(),
+        None if shorts => vec![short],
         None if recording => vec![record_size(scene)],
         None => SIZES.to_vec(),
     };
@@ -5178,12 +5205,13 @@ pub fn run(args: &[String]) -> Result<()> {
                 }
                 if recording {
                     let theme = if bg == "dark" { Bg::Dark } else { Bg::Light };
-                    let at = match video {
-                        true => out.join(format!("{}-{}-video", scene.name, theme.theme())),
-                        false => out.join(format!("{}-{}-{}", scene.name, theme.theme(), size.0)),
+                    let at = match (video, shorts) {
+                        (true, true) => out.join(format!("{}-{}-shorts", scene.name, theme.theme())),
+                        (true, false) => out.join(format!("{}-{}-video", scene.name, theme.theme())),
+                        _ => out.join(format!("{}-{}-{}", scene.name, theme.theme(), size.0)),
                     };
                     let made = match video {
-                        true => video_of(scene, theme, size, &bin, &me, &at),
+                        true => video_of(scene, theme, size, form, &bin, &me, &at),
                         false => record(scene, theme, size, &bin, &me, &at),
                     };
                     if let Err(e) = made {
@@ -5437,15 +5465,31 @@ fn take(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path) -> Resul
     Ok(rec)
 }
 
-/// `scene` as a short video into `at` (`--video`): taken as `record` takes it, made by `video::make` — `<scene>.mp4`
-/// and `sheet.png`. A wait that timed out fails it, the video made all the same.
-fn video_of(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &Path) -> Result<()> {
+/// `scene` as a short video into `at` (`--video`; `--shorts` a Short, its camera's moves and its sound said): taken as
+/// `record` takes it, made by `video::make` — `<scene>.mp4` and `sheet.png` (a Short's `<scene>.wav` too). A wait that
+/// timed out, or a Short's target never found, fails it, the video made all the same.
+fn video_of(
+    scene: &Scene,
+    bg: Bg,
+    size: (u16, u16),
+    form: video::Form,
+    bin: &Path,
+    me: &Path,
+    at: &Path,
+) -> Result<()> {
     let started = std::time::Instant::now();
     let rec = take(scene, bg, size, bin, me)?;
     let driven = started.elapsed();
     let title = video_title(scene.name);
     let mp4 = at.join(format!("{}.mp4", scene.name));
-    let made = video::make(&rec, bg, title, &mp4, std::env::var_os("HOME").as_deref())?;
+    let made = video::make(&rec, bg, title, &mp4, std::env::var_os("HOME").as_deref(), form)?;
+    if form == video::Form::Short {
+        println!("{}×{} cells; the camera:", size.0, size.1);
+        made.zooms.iter().for_each(|z| println!("  {z}"));
+        if let Some((peak, rms)) = made.sound {
+            println!("sound: peak {peak:.1} dBFS, RMS {rms:.1} dBFS (while sounding), AAC 160 kb/s");
+        }
+    }
     let kb = std::fs::metadata(&mp4).map_or(0.0, |m| m.len() as f64 / 1024.0);
     println!(
         "saved {} ({:.1} s of video at {} px a glyph, {} frames; {kb:.0} KB; driven {:.1} s, drawn and encoded {:.1} s; \
@@ -5458,9 +5502,13 @@ fn video_of(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: 
         (started.elapsed() - driven).as_secs_f64(),
         made.sheet,
     );
-    match rec.missed.is_empty() {
+    let missed: Vec<&String> = rec.missed.iter().chain(&made.missed).collect();
+    match missed.is_empty() {
         true => Ok(()),
-        false => Err(format!("{} — the video is made all the same", rec.missed.join("; "))),
+        false => Err(format!(
+            "{} — the video is made all the same",
+            missed.iter().map(|m| m.as_str()).collect::<Vec<_>>().join("; ")
+        )),
     }
 }
 

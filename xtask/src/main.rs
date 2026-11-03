@@ -62,6 +62,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 mod buildprune;
+mod camera;
 mod cards;
 mod claudestub;
 mod compat;

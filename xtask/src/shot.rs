@@ -311,11 +311,16 @@ pub(crate) fn record_at(
 
 /// A scene recorded (`scenes --record`): every frame from `@rec` on, each beat's time and caption (`@beat:<caption>`;
 /// a bare `@beat` none), each wait's end while recording (`?text`, `!text` — what it waited for), and each wait that
-/// timed out, said — the take kept all the same, to be seen.
+/// timed out, said — the take kept all the same, to be seen. A Short's (`video::shorts`) too: each `@zoom:<target>`'s
+/// time and target, each key sent (its time and what it was, a `@type:` character one by one) and each
+/// `@sound:<kind>` mark.
 pub(crate) struct Recorded {
     pub(crate) frames: Frames,
     pub(crate) beats: Vec<(u64, String)>,
     pub(crate) waits: Vec<(u64, String)>,
+    pub(crate) zooms: Vec<(u64, String)>,
+    pub(crate) keys: Vec<(u64, String)>,
+    pub(crate) sounds: Vec<(u64, String)>,
     pub(crate) missed: Vec<String>,
     /// Each frame's bytes as tarae wrote them, with its time and whether it changed nothing in sight (`Vt.wire`).
     pub(crate) wire: Vec<(u64, Vec<u8>, bool)>,
@@ -337,6 +342,9 @@ pub(crate) fn record(
         frames: vt.captured.into_iter().map(|(d, s)| (ms(d), s)).collect(),
         beats: vt.beats.iter().zip(vt.captions).map(|((d, _), c)| (ms(*d), c)).collect(),
         waits: vt.waited.into_iter().map(|(d, w)| (ms(d), w)).collect(),
+        zooms: vt.zooms.into_iter().map(|(d, z)| (ms(d), z)).collect(),
+        keys: vt.keys.into_iter().map(|(d, k)| (ms(d), k)).collect(),
+        sounds: vt.sounds.into_iter().map(|(d, s)| (ms(d), s)).collect(),
         missed,
         wire: vt.wire.into_iter().map(|(d, b, same)| (ms(d), b, same)).collect(),
     })
@@ -538,6 +546,10 @@ struct Vt {
     captions: Vec<String>,
     /// Each wait's end during `@rec`: when, and what it waited for (`?text`, `!text`).
     waited: Vec<(Duration, String)>,
+    /// During `@rec`: each `@zoom:<target>`, each key sent, each `@sound:<kind>` — when, and what.
+    zooms: Vec<(Duration, String)>,
+    keys: Vec<(Duration, String)>,
+    sounds: Vec<(Duration, String)>,
     /// Frames read so far, every one (a synchronized update's end each — tarae's `frames_written`), and each
     /// `captured` frame's count as it was kept.
     ends: u64,
@@ -557,6 +569,9 @@ impl Vt {
             beats: Vec::new(),
             captions: Vec::new(),
             waited: Vec::new(),
+            zooms: Vec::new(),
+            keys: Vec::new(),
+            sounds: Vec::new(),
             ends: 0,
             captured_ends: Vec::new(),
             wire: Vec::new(),
@@ -822,6 +837,9 @@ fn drive_with(
             vt.captions.clear();
             vt.waited.clear();
             vt.wire.clear();
+            vt.zooms.clear();
+            vt.keys.clear();
+            vt.sounds.clear();
             if let Some((screen, ends)) = seen.take() {
                 vt.captured.push((Duration::ZERO, screen));
                 vt.captured_ends.push(ends);
@@ -839,6 +857,32 @@ fn drive_with(
         }
         if let Some(ms) = k.strip_prefix("@hold:").and_then(|s| s.parse::<u64>().ok()) {
             pump(vt, ms as f64 / 1000.0);
+            continue;
+        }
+        // (a Short's camera and sound marks: kept with their time while recording, never sent — `video::shorts`)
+        if let Some(target) = k.strip_prefix("@zoom:") {
+            if let Some(since) = vt.capturing {
+                vt.zooms.push((since.elapsed(), target.to_string()));
+            }
+            continue;
+        }
+        if let Some(kind) = k.strip_prefix("@sound:") {
+            if let Some(since) = vt.capturing {
+                vt.sounds.push((since.elapsed(), kind.to_string()));
+            }
+            continue;
+        }
+        if let Some(text) = k.strip_prefix("@type:") {
+            for (i, (c, gap)) in typed(text).into_iter().enumerate() {
+                if i > 0 {
+                    pump(vt, gap);
+                }
+                if let Some(since) = vt.capturing {
+                    vt.keys.push((since.elapsed(), c.to_string()));
+                }
+                let _ = master.write_all(c.to_string().as_bytes());
+            }
+            pump(vt, 0.35);
             continue;
         }
         if let Some(secs) = capture_key(k) {
@@ -930,12 +974,37 @@ fn drive_with(
             vt.capturing = None;
             continue;
         }
+        if let Some(since) = vt.capturing {
+            vt.keys.push((since.elapsed(), k.to_string()));
+        }
         let _ = master.write_all(&unescape(k));
         pump(vt, 0.35);
     }
     pump(vt, 0.6);
     quit(&mut master, &mut child, &rx);
     Ok(missed)
+}
+
+/// `@type:<text>`: each character of `text` and the seconds before it is sent (the first's unused) — a person's
+/// rhythm, steady from run to run: a key after a key inside a word 55–100 ms, a word's first key after a space or
+/// punctuation 110–190 ms (a fixed sequence, so a take's timing is the same each time).
+fn typed(text: &str) -> Vec<(char, f64)> {
+    let mut seed: u32 = 0x7a2a_e5d1;
+    let mut unit = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed % 1000) as f64 / 1000.0
+    };
+    let mut before = ' ';
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    text.chars()
+        .map(|c| {
+            let (lo, hi) = if word(c) && !word(before) { (0.110, 0.190) } else { (0.055, 0.100) };
+            before = c;
+            (c, lo + (hi - lo) * unit())
+        })
+        .collect()
 }
 
 /// `@beat` / `@beat:<caption>`: a beat of a recording, and what's said under it (none for a bare `@beat`).
