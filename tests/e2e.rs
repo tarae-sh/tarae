@@ -470,6 +470,7 @@ fn a_half_read_frame_is_not_judged() {
 #[test]
 fn a_chat_without_claude_says_how_to_get_it() {
     let sb = Sandbox::new("noclaude");
+    sb.docked_chat();
     sb.write("a.txt", "hi\n");
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("hi");
@@ -488,6 +489,26 @@ fn a_chat_without_claude_says_how_to_get_it() {
     // (opening the chat tried, and so did sending: said once — a second would push the first's start up)
     let said = |line: &str| s.rows.iter().filter(|r| r.contains(line)).count();
     assert_eq!((said("Claude Code isn't installed"), said("After installing")), (1, 1), "{s}");
+}
+
+/// The flow plan's piece 2, as you start: the chat floats — `space l` is the ask line over the code, its frame naming
+/// the file and line that go with the message; typed into, closed by `esc` with the draft kept, back by `space l`.
+#[test]
+fn space_l_is_the_ask_line_over_the_code() {
+    let sb = Sandbox::new("askline");
+    sb.write("a.txt", "hi\nthere\n");
+    let mut t = sb.spawn(&["a.txt"]);
+    t.wait_text("there");
+    t.send(" l");
+    t.wait_for("the ask line", |s| {
+        s.contains("ask claude") && s.contains("a.txt:1") && s.contains("esc close")
+    });
+    t.send("why");
+    t.wait_text("› why");
+    t.send("\x1b");
+    t.wait_for("closed", |s| !s.contains("ask claude"));
+    t.send(" l");
+    t.wait_for("back, the draft kept", |s| s.contains("ask claude") && s.contains("› why"));
 }
 
 #[test]
@@ -1633,6 +1654,7 @@ fn a_watcher_hears_a_turn_begin_and_end() {
 #[test]
 fn bleeding_ink_draws_no_frame_after_the_turn() {
     let sb = Sandbox::new("bleeding-ink");
+    sb.docked_chat();
     let delta = |t: &str| {
         format!(
             r#"{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"{t}"}}}}}}"#
@@ -1750,6 +1772,7 @@ fn a_job_of_the_start_s_is_waited_out_before_a_rest() {
 #[test]
 fn a_turns_usage_shows_under_the_chat_and_in_usage() {
     let sb = Sandbox::new("usage");
+    sb.docked_chat();
     let lines = [
         r#"{"type":"system","subtype":"init","session_id":"c1","model":"claude-opus-5-5"}"#,
         r#"{"type":"system","subtype":"status","status":"requesting"}"#,
@@ -2094,6 +2117,7 @@ fn undo_history_comes_along_on_restart() {
 fn follow_shows_each_edit_and_replays_the_turn() {
     use serde_json::json;
     let sb = Sandbox::new("follow-replay");
+    sb.docked_chat();
     let lines = |n: usize| (1..=n).map(|i| format!("line {i}\n")).collect::<String>();
     let main = sb.write("main.txt", &lines(3));
     let lib = sb.write("lib.txt", &lines(10));
@@ -2200,6 +2224,7 @@ fn follow_shows_each_edit_and_replays_the_turn() {
 #[test]
 fn a_click_on_the_review_rail_opens_the_file() {
     let sb = Sandbox::new("rail-click");
+    sb.docked_chat();
     fs::write(sb.git_config(), "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n").unwrap();
     let rels = ["runtime/packs/c-sharp/pack.toml", "runtime/packs/go/pack.toml", "src/a.rs", "src/b.rs"];
     for rel in rels {

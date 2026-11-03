@@ -79,15 +79,25 @@ const MOUSE_SCENES: &[Scene] = &[
     ("the chat floating over a long file", |ed| {
         long_text(ed);
         chat(ed, "a draft");
-        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        ed.sizes.chat_docked = false;
         let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
+    }),
+    // (the flow plan's piece 2: the ask line — the chat's input alone in its frame, a press off it closing it)
+    ("the ask line over a long file", |ed| {
+        long_text(ed);
+        chat(ed, "a draft");
+        ed.sizes.chat_docked = false;
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.asking = true;
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
     }),
     ("the chat floating, the keys in the code", |ed| {
         long_text(ed);
         chat(ed, "");
-        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        ed.sizes.chat_docked = false;
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));

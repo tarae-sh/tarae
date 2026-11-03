@@ -1547,8 +1547,10 @@ impl Editor {
             term_out: Vec::new(),
             unfocused: false,
             // (a few bytes, read before the first frame — it's drawn at the sizes you left)
+            // (tests: the chat docked, the column most of them were written on — the ask line's and the floating reader's
+            // own tests float it, `chat_docked = false`, as you start)
             sizes: if cfg!(test) {
-                Default::default()
+                crate::sizes::Sizes { chat_docked: true, ..Default::default() }
             } else {
                 crate::sizes::Sizes::read(crate::sizes::Sizes::path().as_deref())
             },
@@ -3344,6 +3346,11 @@ impl Editor {
             (S::Picker, Part::Outside) => {
                 took_mouse(S::Picker);
                 self.picker_close();
+            }
+            // A press off the ask line closes it, as `esc` (the flow plan's piece 2)
+            (S::Input, Part::Outside) => {
+                took_mouse(S::Input);
+                crate::chat::ask_close(self);
             }
             // The notification card: a press on it (fading too) opens `:messages` at the message pressed (`toast.rs`)
             (S::Toast, _) => {
@@ -10647,7 +10654,7 @@ mod tests {
         assert!(x > 0 && chat > 0, "both back");
         // The chat floating (the flow plan's reader): read wide, it's out of sight as the docked one is — not floating,
         // so an answer's note card stays (`notes::stepped_aside`); the chat with the keys, its frame back
-        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        ed.sizes.chat_docked = false;
         feed(&mut ed, "<space>vz");
         frame(&mut ed);
         assert!(!ed.chat_floating() && ed.screen.chat_frame.is_none(), "read wide: no frame, not floating");
@@ -15821,7 +15828,8 @@ mod tests {
         // C-w =: all automatic again
         feed(&mut ed, "<C-w>=");
         draw(&mut ed, 140);
-        assert_eq!(ed.sizes, crate::sizes::Sizes::default());
+        // (where the chat stands is no size: kept)
+        assert_eq!(ed.sizes, crate::sizes::Sizes { chat_docked: true, ..Default::default() });
         assert_eq!((ed.screen.bottom_h, ed.screen.side_w), (3, side));
         std::fs::remove_dir_all(&dir).ok();
     }

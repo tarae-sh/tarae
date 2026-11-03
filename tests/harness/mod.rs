@@ -139,6 +139,13 @@ impl Sandbox {
         self
     }
 
+    /// The chat docked beside the code, as `C-w e` leaves it (`sizes.json`'s `chat_docked`) — for a test of the
+    /// conversation's column; by default it floats (the flow plan's piece 2: the ask line, the reader).
+    pub fn docked_chat(&self) {
+        fs::create_dir_all(self.state()).unwrap();
+        fs::write(self.state().join("sizes.json"), r#"{"chat_docked":true}"#).unwrap();
+    }
+
     /// One more variable in the child's environment (a measurement's hook: `TARAE_TREES_UNSEEN`).
     pub fn with_env(mut self, key: &str, value: &str) -> Self {
         self.vars.push((key.into(), value.into()));

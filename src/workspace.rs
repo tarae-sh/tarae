@@ -1518,6 +1518,9 @@ impl Editor {
     /// A click on the sessions' tabs, dropdown or chip.
     pub fn session_spot(&mut self, s: Spot) {
         match s {
+            // (the front one's own name: its conversation, as `space L` shows it — the strip on the top row names it while
+            // the chat floats)
+            Spot::Session(id) if id == self.workspace.id => crate::chat::open(self),
             Spot::Session(id) => {
                 self.workspace_switch(id);
             }

@@ -372,6 +372,19 @@ pub(crate) const SCENES: &[Scene] = &[
     }),
     ("the chat, empty", |ed| chat(ed, "")),
     ("the chat, a draft", |ed| chat(ed, "hello")),
+    // (the flow plan's piece 2: the ask line — the chat's input, its own keys first: `esc`, `pageup`, `C-x`; no handler of
+    // its own)
+    ("the ask line, a draft", |ed| {
+        chat(ed, "hello");
+        ed.sizes.chat_docked = false;
+        ed.workspace.claude.chat.as_mut().unwrap().asking = true;
+        assert!(ed.chat_asking(), "the ask line");
+    }),
+    ("the ask line, empty", |ed| {
+        chat(ed, "");
+        ed.sizes.chat_docked = false;
+        ed.workspace.claude.chat.as_mut().unwrap().asking = true;
+    }),
     ("the chat minimized while Claude works", chat_minimized),
     ("the chat minimized, a draft in it", |ed| {
         chat_minimized(ed);

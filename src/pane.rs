@@ -189,7 +189,7 @@ impl Frame {
     /// A placed top (user, 2026-10-23): `min(H/4, (H − h)/2)` — at 1/4 of the screen's height while the pane is at
     /// most half of it tall (a list, capped at 1/2, never moves), centred with equal margins once it's taller, the two
     /// meeting at h = H/2 (the centre rounded up, so on an odd height they meet too: nothing jumps).
-    fn placed_y(h: usize, sh: usize) -> usize {
+    pub fn placed_y(h: usize, sh: usize) -> usize {
         let quarter = (Self::PER / 4 * sh + Self::PER / 2) / Self::PER;
         quarter.min(sh.saturating_sub(h).div_ceil(2))
     }

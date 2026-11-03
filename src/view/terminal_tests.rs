@@ -213,7 +213,7 @@ fn under_a_floating_chat_the_terminal_runs_the_whole_width() {
     (ed.config.llm.command, ed.config.llm.args) = ("sh".into(), vec!["-c".into(), "cat > /dev/null".into()]);
     ed.config.llm.screen_terminal = false;
     crate::chat::open(&mut ed);
-    ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+    ed.sizes.chat_docked = false;
     print(&mut ed, &format!("{}tail-past-the-frame\r\n$ ", "x".repeat(96)));
     let (x, _, w, _) = ed.screen.chat_frame.expect("floating");
     let (_, y1) = ed.screen.terminal_rows.expect("the terminal in sight");

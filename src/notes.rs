@@ -553,9 +553,10 @@ pub fn opened<'a>(ed: &'a Editor, doc: &crate::document::Document) -> Option<&'a
 }
 
 /// Whether `n`'s card gives way to the floating reader: an answer's note (its paragraph is in the conversation the
-/// reader shows) while the chat floats, shown. A docked chat stands beside the code, the card in sight with it.
+/// reader shows) while the chat floats, shown. A docked chat stands beside the code, the card in sight with it; the ask
+/// line shows none of the answer, so the card stays with it (the flow plan's piece 2 — it stands clear of the card).
 pub fn stepped_aside(ed: &Editor, n: &Note) -> bool {
-    n.answer.is_some() && ed.chat_floating()
+    n.answer.is_some() && ed.chat_floating() && !ed.chat_asking()
 }
 
 /// The lines a new note `space n` writes is about: the selection's; a walk-through's stop's, the cursor on it (never a
@@ -2065,8 +2066,9 @@ pub fn read_on(ed: &mut Editor) {
         notes.open = notes.list.iter().find(same).map(|m| m.id);
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
-    // (minimized or hidden by `space L`: shown — #270)
+    // (minimized or hidden by `space L`: shown — #270 — as the conversation, never the ask line)
     c.unfold();
+    c.asking = false;
     c.reading = Some((at, false));
     ed.unchanged = false;
 }

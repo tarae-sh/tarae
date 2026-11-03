@@ -392,6 +392,11 @@ impl Editor {
         if down && self.picker.is_some() && !s.picker_box.get().is_some_and(|b| inside(b, x, y)) {
             return at(S::Picker, Part::Outside);
         }
+        // (the ask line is a prompt, the flow plan's piece 2: a press off it closes it, its draft kept — nothing under
+        // the press pressed)
+        if down && self.chat_asking() && !s.chat_frame.is_some_and(|r| inside(r, x, y)) {
+            return at(S::Input, Part::Outside);
+        }
         // The chat's slash list (#232), as it's drawn: over the toasts and an ask there, under which-key, the plugins'
         // overlays and a picker (those take a press on them, below) — a row fills its name in, the input's, nothing under
         // it pressed through it
@@ -1560,6 +1565,9 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Hover) => HOVER,
         },
         Su::Transcript | Su::Input => match (part, act) {
+            // (off the ask line: it closes, as a prompt does)
+            (Part::Outside, A::Press) => Acts,
+            (Part::Outside, A::Double | A::Drag) => Not("the first press closed it"),
             (_, A::Press) | (_, A::Wheel) => Acts,
             (_, A::Drag | A::Double) if text => Acts,
             (_, A::Drag) => Gap(S, "a drag from a link"),
@@ -1691,6 +1699,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The chat's conversation", "text", Su::Transcript, text),
         ("The chat's conversation", "a link, a tool row, an id", Su::Transcript, Part::Link(Link::Chat(0))),
         ("The chat's input", "text", Su::Input, text),
+        ("The chat's input", "off the ask line", Su::Input, Part::Outside),
         ("The chat", "its top line, its gaps", Su::Chat, Part::Blank),
         ("The chat", "a session's name, `+N`", Su::Chat, Part::Word(Word::Session(Spot::List))),
         (

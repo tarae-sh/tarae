@@ -156,16 +156,20 @@ fn keys(scene: &Scene, layout: Layout) -> Vec<String> {
         k.extend([" ", "W", "@1", "1", "@2"]);
     }
     match scene.ask {
-        Ask::Chat(q) => k.extend([" ", "l", "@1", q, "@rec", "\r"]),
+        // (`@seen` before the question: the screen as you read it before asking — what the ask line covers was read
+        // before it came, so it's nothing new as it goes)
+        Ask::Chat(q) => k.extend(["@seen", " ", "l", "@1", q, "@rec", "\r"]),
+        // (the ask line goes once its message is sent — the flow plan's piece 2: the answer at its lines, `space l` again for
+        // the next question)
         Ask::Second(first, q) => {
-            k.extend([" ", "l", "@1", first, "\r", "@20?That is all", "@2", q, "@rec", "\r"]);
+            k.extend([" ", "l", "@1", first, "\r", "@20?¶", "@2", "@seen", " ", "l", "@1", q, "@rec", "\r"]);
         }
         // (the chat open beside the code, the keys back in the code — minimized: it opens as the question goes)
         Ask::Line(q) => {
             if layout != Layout::Min160 {
                 k.extend([" ", "l", "@1", "\x1b", "@0.5"]);
             }
-            k.extend(["9", "G", "x", " ", "n", "@1", q, "@rec", "\r"]);
+            k.extend(["9", "G", "x", "@seen", " ", "n", "@1", q, "@rec", "\r"]);
         }
     }
     if layout == Layout::Min160 && matches!(scene.ask, Ask::Chat(_) | Ask::Second(..)) {
@@ -315,13 +319,20 @@ fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
     ((a.0 - b.0).powi(2) + (2.0 * (a.1 - b.1)).powi(2)).sqrt()
 }
 
-/// The turn's numbers from its frames (each its number among tarae's frames and its cells, the first the screen
-/// before the turn), the regions as told (`drawn`, in the order told) and the words you typed.
-pub(crate) fn measure(frames: &[(u64, Grid)], drawn: &[Drawn], typed: &HashSet<String>) -> Numbers {
+/// The turn's numbers from its frames (each its number among tarae's frames and its cells, the first `before` the screen
+/// before the turn — as you read it before you asked, then as you sent it), the regions as told (`drawn`, in the order
+/// told) and the words you typed.
+pub(crate) fn measure(
+    frames: &[(u64, Grid)],
+    before: usize,
+    drawn: &[Drawn],
+    typed: &HashSet<String>,
+) -> Numbers {
     let mut n = Numbers::default();
-    // (what each region has shown so far this turn: each word as many times as it showed it at once — the first frame,
-    // the screen before it, as read)
+    // (what each region has shown so far this turn: each word as many times as it showed it at once — the frames before
+    // it, as read)
     let mut seen: Option<HashMap<String, HashMap<String, usize>>> = None;
+    let mut before = before.max(1);
     // (the last region read: its id and centre)
     let mut last: Option<(String, (f64, f64))> = None;
     let (mut at_code, mut must) = (0usize, 0usize);
@@ -329,10 +340,19 @@ pub(crate) fn measure(frames: &[(u64, Grid)], drawn: &[Drawn], typed: &HashSet<S
         let Some(d) = drawn.iter().rev().find(|d| d.written <= *written).or(drawn.first()) else { continue };
         let (now, other) = read_frame(grid, &d.regions);
         n.other = n.other.max(other);
-        let Some(before) = seen.as_mut() else {
-            seen = Some(now);
+        if before > 0 {
+            before -= 1;
+            let had = seen.get_or_insert_with(HashMap::new);
+            for (id, ws) in now {
+                let had = had.entry(id).or_default();
+                for (w, c) in ws {
+                    let at = had.entry(w).or_default();
+                    *at = (*at).max(c);
+                }
+            }
             continue;
-        };
+        }
+        let Some(before) = seen.as_mut() else { continue };
         // What each region shows that it hadn't (a word's count past the most it showed), your own words left out —
         // the code a card uncovers again is what was read before it came
         let mut new: BTreeMap<String, HashMap<String, usize>> = BTreeMap::new();
@@ -478,7 +498,9 @@ fn one(scene: &Scene, layout: Layout, bin: &Path, me: &Path) -> Result<Numbers> 
         run_words(t, (false, false), &mut typed);
     }
     let typed: HashSet<String> = typed.into_keys().collect();
-    Ok(measure(&frames, &drawn, &typed))
+    // (the screen before the turn: `@seen`'s too, where the keys kept one — `shot::drive_with`)
+    let before = 1 + usize::from(keys(scene, layout).iter().any(|k| k == "@seen"));
+    Ok(measure(&frames, before, &drawn, &typed))
 }
 
 /// A kept row: (scene, layout) → its numbers as written.
@@ -674,14 +696,14 @@ mod tests {
     fn a_sentence_in_the_chat_is_its_words_away_from_the_code() {
         let a = grid(80, 11, &[(0, 0, "fn main() {")]);
         let b = grid(80, 11, &[(0, 0, "fn main() {"), (42, 2, "The loop prints names.")]);
-        let n = measure(&[(1, a), (2, b)], &layout(), &none());
+        let n = measure(&[(1, a), (2, b)], 1, &layout(), &none());
         // ("The", "loop", "prints", "names")
         assert_eq!((n.words, n.switches, n.away), (4, 0, 1.0), "{n:?}");
         assert_eq!(n.path, [("chat.transcript".to_string(), 4)]);
         // Then the code: one switch, its distance the centres' (40 across, none down)
         let c =
             grid(80, 11, &[(0, 0, "fn main() {"), (42, 2, "The loop prints names."), (0, 3, "let first;")]);
-        let n = measure(&[(1, grid(80, 11, &[])), (2, c.clone()), (3, c)], &layout(), &none());
+        let n = measure(&[(1, grid(80, 11, &[])), (2, c.clone()), (3, c)], 1, &layout(), &none());
         // ("main", "let", "first" in the code)
         assert_eq!(n.words, 4 + 3, "{n:?}");
         assert!(n.switches == 1 && (n.travel - 40.0).abs() < 1e-9, "{n:?}");
@@ -697,7 +719,7 @@ mod tests {
             (2, at("▅ running cargo test 42s")),
             (3, at("▆ running cargo test 1m 2s")),
         ];
-        let n = measure(&frames, &layout(), &none());
+        let n = measure(&frames, 1, &layout(), &none());
         assert_eq!((n.words, n.switches), (0, 0), "{n:?}");
     }
 
@@ -706,7 +728,7 @@ mod tests {
     fn a_scroll_is_nothing_new() {
         let a = grid(80, 11, &[(0, 1, "let first = Thread"), (0, 2, "threads insert first")]);
         let b = grid(80, 11, &[(0, 0, "let first = Thread"), (0, 1, "threads insert first")]);
-        let n = measure(&[(1, a), (2, b)], &layout(), &none());
+        let n = measure(&[(1, a), (2, b)], 1, &layout(), &none());
         assert_eq!(n.words, 0, "{n:?}");
     }
 
@@ -721,7 +743,7 @@ mod tests {
             11,
             &[(0, 0, "fn main"), (0, 1, "let"), (12, 7, "walks blocks first"), (42, 4, "walks blocks first")],
         );
-        let n = measure(&[(1, a), (2, b), (3, c)], &layout(), &none());
+        let n = measure(&[(1, a), (2, b), (3, c)], 1, &layout(), &none());
         assert_eq!(n.words, 1 + 3, "{n:?}");
         assert_eq!(n.path, [("code:pane#1".to_string(), 1), ("follow".to_string(), 3)], "{n:?}");
         assert_eq!(n.switches, 1);
@@ -743,8 +765,30 @@ mod tests {
         let line = "      length = knots";
         let a = grid(80, 11, &[(0, 7, line)]);
         let b = grid(80, 11, &[(0, 7, "      leng"), (10, 7, "│ reading")]);
-        let n = measure(&[(1, a.clone()), (2, b), (3, a)], &[bare, carded, back], &none());
+        let n = measure(&[(1, a.clone()), (2, b), (3, a)], 1, &[bare, carded, back], &none());
         assert_eq!(n.path, [("follow".to_string(), 1)], "{n:?}");
+    }
+
+    /// The screen before the turn is every frame before it: the code as you read it before asking (`@seen`), then the ask
+    /// line over it as you sent — the code it uncovers as it goes was read, its own words too. (From the second alone,
+    /// `length` comes back new.)
+    #[test]
+    fn what_an_ask_covered_was_read_before_it() {
+        let code = || region("code", (0, 0, 40, 10), true);
+        let bare = Drawn { written: 1, typing: false, regions: vec![code()] };
+        let asking = Drawn {
+            written: 2,
+            typing: false,
+            regions: vec![code(), region("chat.frame", (4, 6, 30, 3), false)],
+        };
+        let gone = Drawn { written: 3, ..bare.clone() };
+        let a = grid(80, 11, &[(0, 7, "      length = knots")]);
+        let b = grid(80, 11, &[(4, 6, "╭─ ask claude ─╮"), (4, 8, "╰─ enter send ─╯")]);
+        let frames = [(1, a.clone()), (2, b), (3, a)];
+        let drawn = [bare, asking, gone];
+        assert_eq!(measure(&frames, 2, &drawn, &none()).path, [], "nothing new");
+        let n = measure(&frames[1..], 1, &drawn, &none());
+        assert_eq!(n.path, [("code:pane#1".to_string(), 2)], "{n:?}");
     }
 
     /// What you typed is never read; what arrives while you type is counted apart; a cell drawn in no region is `other`.
@@ -755,10 +799,10 @@ mod tests {
         let typed: HashSet<String> = ["note".to_string(), "mine".into()].into();
         let a = grid(80, 11, &[]);
         let b = grid(80, 11, &[(0, 4, "// a note of mine"), (42, 2, "Reading the loop.")]);
-        let n = measure(&[(1, a), (2, b)], &drawn, &typed);
+        let n = measure(&[(1, a), (2, b)], 1, &drawn, &typed);
         assert_eq!((n.words, n.typing), (3, 3), "{n:?}");
         let stray = grid(80, 12, &[(0, 11, "x")]);
-        assert_eq!(measure(&[(1, stray)], &layout(), &none()).other, 1);
+        assert_eq!(measure(&[(1, stray)], 1, &layout(), &none()).other, 1);
     }
 
     #[test]
@@ -770,7 +814,7 @@ mod tests {
         assert_eq!(h[&("focus-explain".to_string(), "160-open".to_string())][0], "5");
     }
 
-    /// Every scene's keys record from its question's `enter`, at every layout.
+    /// Every scene's keys record from its question's `enter`, at every layout — the screen before it kept (`@seen`).
     #[test]
     fn every_scene_records_from_its_enter() {
         for s in SCENES {
@@ -778,6 +822,7 @@ mod tests {
                 let k = keys(s, l);
                 let rec = k.iter().position(|k| k == "@rec").expect("@rec");
                 assert_eq!(k[rec + 1], "\r", "{} at {}", s.name, l.name());
+                assert!(k[..rec].contains(&"@seen".to_string()), "{} at {}: @seen", s.name, l.name());
             }
         }
     }

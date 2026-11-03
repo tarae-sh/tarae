@@ -2390,8 +2390,9 @@ fn redo_turn(cx: &mut Context) {
     }
 }
 
+/// `space l`: the ask line (the flow plan's piece 2) — the conversation in sight, its input given the keys.
 fn chat_open(cx: &mut Context) {
-    crate::chat::open(cx.editor);
+    crate::chat::ask(cx.editor);
 }
 
 fn chat_close(cx: &mut Context) {

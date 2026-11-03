@@ -666,7 +666,8 @@ fn the_strip_the_list_and_the_tree_say_it() {
         ed.handle_event(ed.events.recv_timeout(left).expect("the files listed"));
     };
     let all: Vec<String> = p.screen().rows(0, 160).collect();
-    let row = all.iter().find(|r| r.contains("a.rs") && r.contains('≈')).cloned().unwrap_or_default();
+    // (the tree's row, under the screen's top row — the strip there says `≈` too)
+    let row = all.iter().skip(1).find(|r| r.contains("a.rs") && r.contains('≈')).cloned().unwrap_or_default();
     assert!(row.split('│').next().unwrap().trim_end().ends_with("≈m"), "the tree's row: {all:#?}");
     assert_eq!(fg_at(&p, "≈m", "", "≈"), warning, "the tree's ≈");
     assert_eq!(fg_at(&p, "≈m", "≈", "m"), main_c, "the tree's m");

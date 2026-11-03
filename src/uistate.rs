@@ -654,7 +654,8 @@ impl Editor {
             }
             Region::Prompt => s.width.is_some(),
             Region::Picker => s.picker_list.is_some(),
-            Region::Chat => s.chat_w > 0,
+            // (docked, its column; floating — the reader, the ask line — its frame)
+            Region::Chat => s.chat_w > 0 || s.chat_frame.is_some(),
             // (its input isn't on screen — the minimized card is, and the first key brings the panel back)
             Region::Unfold => s.chat_mini.get().is_some() || s.chat_w > 0,
             Region::Side(_) => s.side_w > 0,

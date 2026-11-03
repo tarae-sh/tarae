@@ -2223,6 +2223,76 @@ fn flow1_space_l_opens_at_your_lines_paragraph_at_the_top_marked() {
     assert_eq!((c.scroll, c.read_lift, c.unread_at), (0, None, None), "at the end");
 }
 
+/// The flow plan's piece 2: the ask line isn't the reader — an answer's card stays in sight while it's up (only the
+/// reader holds the answer's words: piece 1's step aside is its), and the ask line stands clear of its line and the card
+/// under it; grown into the reader (`pageup`), the card steps aside.
+#[test]
+fn flow2_the_ask_line_leaves_an_answers_card_in_sight() {
+    let (_s, root, mut ed) = project("flow2-card", &["src/a.rs"]);
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    answer(&mut ed, "The count is read twice in `src/a.rs:3`.");
+    ed.open(&root.join("src/a.rs")).unwrap();
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.sizes.chat_docked = false;
+    feed(&mut ed, " L");
+    let rows = screen(&mut ed);
+    assert!(rows.join("\n").contains("╭─ chat"), "the reader hidden: the card\n{}", rows.join("\n"));
+    // (the card's rows: from its line to its frame's foot)
+    let line = rows.iter().position(|r| r.contains("let line_3 = 3;")).unwrap();
+    let foot = line + rows[line..].iter().position(|r| r.contains('╰')).expect("the card's foot");
+    feed(&mut ed, "3G l");
+    let rows = screen(&mut ed);
+    assert!(ed.chat_asking(), "the ask line");
+    let all = rows.join("\n");
+    assert!(all.contains("╭─ chat") && all.contains("read twice"), "the card stays:\n{all}");
+    let (_, y, _, h) = ed.screen.chat_frame.expect("the ask line");
+    assert!(y + h <= line || y > foot, "rows {y}..{} clear of {line}..={foot}:\n{all}", y + h);
+    // Grown into the reader: the card steps aside
+    feed(&mut ed, "<pageup>");
+    let all = screen(&mut ed).join("\n");
+    assert!(!ed.chat_asking() && !all.contains("╭─ chat"), "the reader, no card:\n{all}");
+}
+
+/// The flow plan's piece 2: the floating reader opened at a line's paragraph (`space L` on the answer's line) stands clear
+/// of that line — moved off it, below it here, never over it; opened with nothing about a line (`space L` elsewhere) it
+/// stands at the floating panes' place, over that line's row.
+#[test]
+fn flow2_the_reader_opened_at_a_line_stands_clear_of_it() {
+    let (_s, root, mut ed) = project("flow2-clear", &["src/a.rs"]);
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    answer(&mut ed, "The count is read twice in `src/a.rs:9`.");
+    ed.open(&root.join("src/a.rs")).unwrap();
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.sizes.chat_docked = false;
+    // (hidden: line 9's screen row, the code as it stays)
+    feed(&mut ed, " L");
+    let rows = screen(&mut ed);
+    assert!(ed.screen.chat_frame.is_none(), "hidden");
+    let line9 = rows.iter().position(|r| r.contains("let line_9 = 9;")).expect("line 9 on screen");
+    let over = |ed: &Editor| {
+        let (_, y, _, h) = ed.screen.chat_frame.expect("the reader");
+        (y..y + h).contains(&line9)
+    };
+    // Shown from line 1 (no answer there, nothing unread): at its place, over line 9
+    feed(&mut ed, "1G L");
+    screen(&mut ed);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().reading.is_none(), "about no line");
+    assert!(over(&ed), "at the floating panes' place: over row {line9}, {:?}", ed.screen.chat_frame);
+    let placed = ed.screen.chat_frame.unwrap();
+    // Shown from line 9: at its paragraph, the frame moved off the line — just below it
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    feed(&mut ed, " L");
+    feed(&mut ed, "9G L");
+    let rows = screen(&mut ed);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().reading.is_some(), "at its paragraph");
+    let (x, y, w, _) = ed.screen.chat_frame.expect("the reader");
+    assert!(!over(&ed), "clear of row {line9}: {:?}\n{}", ed.screen.chat_frame, rows.join("\n"));
+    assert_eq!((x, w, y), (placed.0, placed.2, line9 + 1), "its columns, just below the line");
+    assert!(rows[line9].contains("let line_9 = 9;"), "the line in sight: {}", rows[line9]);
+}
+
 /// The flow plan's piece 1 (the user, 2026-11-03, on its shots): while the floating reader is open an answer's note card
 /// steps aside — its words are the reader's —, the line's `¶` staying, its keys not the card's (`esc` closes nothing
 /// unseen), and it comes back as the reader closes. Docked, the card stands beside the chat; a note of yours keeps its
@@ -2243,7 +2313,7 @@ fn flow1_the_floating_reader_hides_its_answers_card_while_open() {
     let rows = screen(&mut ed);
     assert!(rows.join("\n").contains("╭─ chat"), "docked: the card\n{}", rows.join("\n"));
     // Floating, shown: the reader, no card, the line's `¶` kept
-    ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+    ed.sizes.chat_docked = false;
     let rows = screen(&mut ed);
     let all = rows.join("\n");
     assert!(all.contains("╭─ claude") && !all.contains("╭─ chat"), "the reader, no card:\n{all}");

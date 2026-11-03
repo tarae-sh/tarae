@@ -344,9 +344,8 @@ pub fn add(ed: &mut Editor, taken: Vec<Taken>) {
     if taken.is_empty() {
         return;
     }
-    if ed.workspace.claude.chat.is_none() {
-        crate::chat::open(ed);
-    }
+    // (out of sight, the ask line comes with them — its top line says they go; the conversation in sight keeps them)
+    crate::chat::ask_for(ed);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     c.unfold();

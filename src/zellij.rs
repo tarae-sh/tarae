@@ -173,6 +173,8 @@ fn from(ed: &Editor, region: Region) -> Vec<String> {
     let km = &ed.keymaps;
     let leave = |s: Surface| bound(km.view(s, Mode::Normal), "view_leave", "esc");
     match region {
+        // (the ask line: its `esc` closes it — `chat::key`)
+        Region::Chat if ed.chat_asking() => vec!["esc".into()],
         Region::Chat => {
             let view = bound(&km.chat, "chat_view", "esc");
             match ed.workspace.claude.chat.as_ref() {

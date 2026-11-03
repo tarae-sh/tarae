@@ -506,7 +506,9 @@ fn a_conflict_shows_side_by_side_wide_and_stacked_narrow() {
     // Narrow: stacked — a head over each part, each part's lines their own
     let p = frame(&mut ed, 80);
     let r = rows(&p);
-    let at = |t: &str| r.iter().position(|l| l.contains(t)).unwrap_or_else(|| panic!("{t} in {r:#?}"));
+    // (in the pane, under the screen's top row: the sessions' strip names them there)
+    let at =
+        |t: &str| 1 + r[1..].iter().position(|l| l.contains(t)).unwrap_or_else(|| panic!("{t} in {r:#?}"));
     assert!(at("conflict 1 of 1 · base") < at("line 5"));
     assert!(at("line 5") < at("─ fix") && at("─ fix") < at("five, fix"));
     assert!(at("five, fix") < at("─ main") && at("─ main") < at("five, main"));

@@ -638,6 +638,14 @@ pub struct Chat {
     /// minimized chat's do — until it's brought back (`unfold`: `space L` again, `space l`, a press on its card, a letter
     /// typed to it).
     pub hidden: bool,
+    /// Shown as the ask line (the flow plan's piece 2, `space l`): floating, its input alone in a one-row card at the
+    /// floating panes' place, its frame saying what goes with the message — a prompt: drawn only while it has the keys
+    /// (`Editor::chat_asking`), gone once its message goes or `esc` closes it, the draft kept; `pageup` grows it into the
+    /// reader (false: the conversation, `space L`). Docked, the column (it isn't read).
+    pub asking: bool,
+    /// The code's selection `C-x` took off the ask line's message (its document, version and bytes, as a quote's
+    /// `code`): the context leaves it out while it's still the selection there — another selection goes again.
+    pub sel_dropped: Option<(DocId, u64, usize, usize)>,
     /// Claude's edits waiting for (or in) their review.
     pub edits: crate::edits::Edits,
     /// What the user allowed for this conversation (`a` on a card — `allow.rs`) · Claude's reads waiting
@@ -1129,6 +1137,8 @@ impl Chat {
             continued: None,
             unfolded: false,
             hidden: false,
+            asking: false,
+            sel_dropped: None,
             edits: Default::default(),
             allowed: Default::default(),
             reads: Default::default(),
@@ -1448,16 +1458,107 @@ impl Drop for Chat {
 
 // ── Open·close ──────────────────────────────────────────────────────────────
 
-/// `space l`: opens if absent (prewarming the process), moves focus to the input if already open.
+/// The chat shown with the keys in its input: made if absent (prewarming the process), else brought back — out of sight,
+/// it comes back as the conversation (floating, the reader); in sight, it stays as it is.
 pub fn open(ed: &mut Editor) {
     match &mut ed.workspace.claude.chat {
         Some(c) => {
+            if c.compact() {
+                c.asking = false;
+            }
             c.unfold();
             ed.workspace.viewer.at = At::Chat;
         }
         None => made(ed),
     }
     ensure_proc(ed);
+}
+
+/// `space l` (the flow plan's piece 2): the ask line — the chat's input as a one-row card over the code, its draft as
+/// `esc` left it; the conversation in sight (the reader, or docked) given the keys in its input instead. Docked by your
+/// choice, the column as before.
+pub fn ask(ed: &mut Editor) {
+    let shown = ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact());
+    open(ed);
+    if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| !shown) {
+        c.asking = true;
+    }
+}
+
+/// Something added to go with the next message from outside the chat (a quote, an element pointed at): out of sight,
+/// the ask line comes with it — `ask` where there's no chat yet, else that chat as the ask line, nothing started (its
+/// caller brings it back with the keys); the conversation in sight keeps it as it is.
+pub fn ask_for(ed: &mut Editor) {
+    match ed.workspace.claude.chat.as_mut() {
+        None => ask(ed),
+        Some(c) if c.compact() => c.asking = true,
+        Some(_) => {}
+    }
+}
+
+/// The ask line closed (`esc`, a press outside it, the keys gone elsewhere): hidden, its draft kept for `space l`, the
+/// keys the code's.
+pub fn ask_close(ed: &mut Editor) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    c.hidden = true;
+    ed.workspace.leave(At::Chat);
+}
+
+/// The ask line grown into the reader (`pageup`): the same card, the conversation over its input, the keys staying.
+fn ask_grow(ed: &mut Editor) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    c.asking = false;
+    (c.scroll, c.read_lift) = (0, None);
+}
+
+/// `C-x` on the ask line: the code's selection off the message — that selection, as it is; another goes again. Nothing
+/// selected, said.
+fn drop_selection(ed: &mut Editor) {
+    let Some(doc) = ed.front_file() else { return ed.set_status("no selection goes with it") };
+    let quotes = ed.workspace.claude.chat.as_ref().map_or(&[][..], |c| &c.quotes);
+    let Some((from, to, ..)) = selection_sent(doc, quotes, None) else {
+        return ed.set_status("no selection goes with it");
+    };
+    let at = (doc.id, doc.version(), from, to);
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.sel_dropped = Some(at);
+    }
+}
+
+/// What goes with the ask line's message, for its frame's top line: the file and line — the selection's lines and how
+/// many where it goes —, what's over the input (`with_chips`: what's pointed at, the screen, the quotes). A file whose
+/// text doesn't go says so.
+pub fn ask_goes(ed: &Editor) -> Vec<String> {
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return Vec::new() };
+    let mut goes = Vec::new();
+    if let Some(doc) = ed.front_file() {
+        let name = doc.display_name_short();
+        let pass = crate::reads::input_pass(ed);
+        let text_goes = text_goes(ed, doc, &pass);
+        let sel = selection_sent(doc, &c.quotes, c.sel_dropped).filter(|_| text_goes);
+        let line =
+            doc.text.byte_to_line(doc.selection().primary().cursor(&doc.text).min(doc.text.len_bytes()));
+        goes.push(match sel {
+            _ if doc.woven.is_some() => crate::weave::NOT_SENT.to_string(),
+            _ if !text_goes => format!("{name} · not sent"),
+            Some((.., l0, l1)) if l0 < l1 => format!("{name}:{}–{} · {} lines", l0 + 1, l1 + 1, l1 - l0 + 1),
+            Some((.., l0, _)) => format!("{name}:{} · 1 line", l0 + 1),
+            None => format!("{name}:{}", line + 1),
+        });
+    }
+    goes.extend(c.with_chips());
+    goes
+}
+
+/// Whether a selection goes with the ask line's message — `C-x` has something to drop.
+pub fn ask_selection(ed: &Editor) -> bool {
+    selection_goes(ed).is_some()
+}
+
+/// The lines (first, last) of the code's selection the next message carries — None: none goes.
+pub fn selection_goes(ed: &Editor) -> Option<(usize, usize)> {
+    let (c, doc) = (ed.workspace.claude.chat.as_ref()?, ed.front_file()?);
+    selection_sent(doc, &c.quotes, c.sel_dropped).map(|(.., l0, l1)| (l0, l1))
 }
 
 /// A note's card reading on with the chat closed (focus A1c, `notes::read_on`): the chat made again on the conversation
@@ -1858,7 +1959,7 @@ pub fn toggle(ed: &mut Editor) {
 /// pane is done once used, a docked one stays). Nothing said: it's gone from sight.
 pub fn keys_left(ed: &mut Editor) {
     ed.workspace.leave(At::Chat);
-    if ed.sizes.chat_float.is_some()
+    if !ed.sizes.chat_docked
         && let Some(c) = ed.workspace.claude.chat.as_mut()
     {
         c.hidden = true;
@@ -3126,7 +3227,17 @@ fn hold_queued(ed: &mut Editor) {
 /// Enter in the chat: the input goes as the next turn — or waits its turn while Claude works, or for the
 /// user's answer on a card their pointing raised (`reads::point`), said, the input kept.
 pub fn send(ed: &mut Editor) {
+    let went = |ed: &Editor| ed.workspace.claude.chat.as_ref().map(|c| (c.msgs.len(), c.queued.clone()));
+    let (before, asking) = (went(ed), ed.chat_asking());
     send_from(ed, true);
+    // (the ask line: once its message went — sent, or waiting its turn — it goes, the keys back in the code; what `C-x`
+    // took off was that message's)
+    if went(ed) != before && asking {
+        if let Some(c) = ed.workspace.claude.chat.as_mut() {
+            c.sel_dropped = None;
+        }
+        ask_close(ed);
+    }
 }
 
 /// `:chat <text>`: `send`, the text a message whatever it is — the slash names are the chat input's only (#232).
@@ -3686,9 +3797,12 @@ fn text_goes(ed: &Editor, doc: &crate::document::Document, pass: &[PathBuf]) -> 
 fn selection_sent(
     doc: &crate::document::Document,
     quotes: &[crate::quote::Quote],
+    dropped: Option<(DocId, u64, usize, usize)>,
 ) -> Option<(usize, usize, usize, usize)> {
     let (text, sel) = (&doc.text, doc.selection().primary());
-    let quoted = quotes.iter().any(|q| q.code == Some((doc.id, doc.version(), sel.from(), sel.to())));
+    let here = Some((doc.id, doc.version(), sel.from(), sel.to()));
+    // (or the one `C-x` took off the ask line's message)
+    let quoted = quotes.iter().any(|q| q.code == here) || dropped == here;
     if quoted || sel.to() <= crate::graphemes::next_boundary(text, sel.from()) {
         return None;
     }
@@ -3721,7 +3835,7 @@ pub fn selection_cut(ed: &Editor) -> Option<String> {
         return None;
     }
     let c = ed.workspace.claude.chat.as_ref()?;
-    let (_, _, l0, l1) = selection_sent(doc, &c.quotes)?;
+    let (_, _, l0, l1) = selection_sent(doc, &c.quotes, c.sel_dropped)?;
     text_goes(ed, doc, &crate::reads::input_pass(ed)).then(|| format!("selection {} · cut", at_lines(l0, l1)))
 }
 
@@ -3816,7 +3930,8 @@ fn context(
     }
     // Selection: past a quote's limit cut as a quote is (`quote::cut`, #243 — a whole file left selected went with
     // every request of a turn), what it kept said
-    if let Some((from, to, l0, l1)) = selection_sent(doc, quotes).filter(|_| its_text) {
+    let dropped = ed.workspace.claude.chat.as_ref().and_then(|c| c.sel_dropped);
+    if let Some((from, to, l0, l1)) = selection_sent(doc, quotes, dropped).filter(|_| its_text) {
         let (body, cut) = match to - from <= crate::quote::QUOTE_MAX {
             true => (text.byte_slice(from..to).to_string(), None),
             false => {
@@ -4412,6 +4527,24 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     if !crate::chatdoc::keyed(ed) && crate::chatinput::under_way(ed, key) {
         return crate::chatinput::key(ed, key);
     }
+    // The ask line (the flow plan's piece 2), a prompt's keys before the input's: `esc` closes it, the draft kept for
+    // `space l`; `pageup` grows it into the reader, the same card; `C-x` takes the code's selection off its message
+    if ed.chat_asking() {
+        let act: Option<fn(&mut Editor)> = match (key.code, key.ctrl, key.alt) {
+            (Code::Esc, false, false) => Some(ask_close),
+            (Code::PageUp, ..) => Some(ask_grow),
+            (Code::Char('x'), true, false) => Some(drop_selection),
+            // (nothing of the conversation drawn to page down to — said, `pageup` the way to it)
+            (Code::Char('d'), true, false) | (Code::PageDown, ..) => {
+                Some(|ed: &mut Editor| ed.set_status("the ask line — pageup shows the conversation"))
+            }
+            _ => None,
+        };
+        if let Some(act) = act {
+            act(ed);
+            return true;
+        }
+    }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
     // An empty input: `C-w` is the windows' (sizes — `C-w >` widens the chat), nothing to delete
     if key.ctrl && key.code == Code::Char('w') && c.input.is_empty() {
@@ -4602,7 +4735,7 @@ mod tests {
         ed.status = None;
         keys(&mut ed, "C-w e");
         let (x, y, w, h) = ed.screen.chat_frame.expect("floating");
-        assert!(ed.sizes.chat_float.is_some(), "your choice kept");
+        assert!(!ed.sizes.chat_docked, "your choice kept");
         assert_eq!(ed.screen.chat_w, 0, "no column: the code its whole width");
         assert_eq!(region(&ed), "chat");
         let said = |ed: &Editor, s: &str| ed.status.as_ref().is_some_and(|t| t.0.contains(s));
@@ -4629,7 +4762,7 @@ mod tests {
         assert!(matches!(at(&ed, x + 4, y - 2), Surface::Code(_)), "above it, the code");
         // Docked, `esc` twice leaves it standing
         keys(&mut ed, "C-w e");
-        assert!(ed.screen.chat_w > 0 && ed.sizes.chat_float.is_none(), "docked again");
+        assert!(ed.screen.chat_w > 0 && ed.sizes.chat_docked, "docked again");
         assert!(ed.status.is_none(), "no toast for docking: {:?}", ed.status);
         keys(&mut ed, "esc");
         keys(&mut ed, "esc");
@@ -4661,11 +4794,11 @@ mod tests {
         assert!(ed.screen.chat_frame.is_some(), "still floating");
         assert!(said(&ed, "docks on the right"), "{:?}", ed.status);
         keys(&mut ed, "C-w L");
-        assert!(ed.screen.chat_w > 0 && ed.sizes.chat_float.is_none() && region(&ed) == "chat", "docked");
+        assert!(ed.screen.chat_w > 0 && ed.sizes.chat_docked && region(&ed) == "chat", "docked");
         // An empty chat floating: its input's `esc` closes it at once
         let mut ed = crate::uistate::tests::editor();
         crate::uistate::tests::chat(&mut ed, "");
-        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        ed.sizes.chat_docked = false;
         crate::uistate::tests::frame(&mut ed);
         assert!(ed.screen.chat_frame.is_some());
         keys(&mut ed, "esc");
@@ -4682,7 +4815,7 @@ mod tests {
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(Msg::new(Role::User, "why does it fail?", ""));
         c.msgs.push(Msg::new(Role::Assistant, "Because the map is filled twice.", ""));
-        ed.sizes.chat_float = Some(crate::pane::Frame::CENTRED);
+        ed.sizes.chat_docked = false;
         for h in [5u16, 6, 8, 9, 12] {
             let mut bytes = Vec::new();
             crate::term::render(&mut ed, &mut bytes, 120, h).unwrap();
@@ -4692,6 +4825,115 @@ mod tests {
             let input = ed.screen.chat_input.get().unwrap_or_else(|| panic!("{h} rows: no input drawn"));
             assert!((y..y + fh).contains(&input.y), "{h} rows: its input in its frame");
         }
+    }
+
+    /// The flow plan's piece 2, the ask line: `space l` opens the chat's input alone in a floating card, the reader's
+    /// columns, its top at the floating panes' place — never over the lines it carries: stepped off the cursor's line, then
+    /// off a selection's; its top line says what goes (the file and line; the selection's lines and how many, `C-x` taking
+    /// them off), its bottom line its keys. `esc` closes it, the draft kept for `space l`; a press off it closes it,
+    /// nothing under it pressed, one on it doesn't; `pageup` grows it into the reader, the same columns; `enter` sends
+    /// and it goes, the keys back in the code.
+    #[test]
+    fn flow2_space_l_opens_the_ask_line_clear_of_its_lines() {
+        use crate::event::{Mouse, MouseKind};
+        let mut ed = crate::uistate::tests::editor();
+        ed.docs[0].text = ropey::Rope::from_str(&(1..=60).map(|i| format!("line {i}\n")).collect::<String>());
+        ed.sizes.chat_docked = false;
+        // (each word a key as the keymap names it, a frame after them)
+        let keys = |ed: &mut Editor, k: &str| {
+            for w in k.split(' ') {
+                ed.handle_key(w.parse::<Key>().unwrap_or_else(|_| panic!("a key: {w}")));
+            }
+            crate::uistate::tests::frame(ed);
+        };
+        let region = |ed: &Editor| ed.keys_to().region.name();
+        let text =
+            |ed: &Editor| crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        let row = |ed: &Editor, y: usize| text(ed).lines().nth(y).unwrap_or_default().to_string();
+        let frame = |ed: &Editor| ed.screen.chat_frame.expect("the ask line");
+        let clear = |ed: &Editor, (a, b): (usize, usize)| {
+            let (_, y, _, h) = frame(ed);
+            assert!(y + h <= a || y > b, "rows {y}..{} over rows {a}..={b}:\n{}", y + h, text(ed));
+        };
+        // (line 10 is row 10, under the place the frame's top takes, row 9)
+        keys(&mut ed, "1 0 G");
+        keys(&mut ed, "space l");
+        let (x, y, w, h) = frame(&ed);
+        assert_eq!((w, x, h), (crate::sizes::CHAT_FLOAT_W, (120 - w) / 2, 3), "one input row in its frame");
+        assert_eq!(region(&ed), "chat");
+        clear(&ed, (10, 10));
+        assert!(row(&ed, y).contains("ask claude") && row(&ed, y).contains(":10"), "{}", row(&ed, y));
+        let foot = row(&ed, y + h - 1);
+        assert!(foot.contains("enter send") && foot.contains("esc close") && !foot.contains("C-x"), "{foot}");
+        // (its frame whole: corners and both lines)
+        let at = |ed: &Editor, x: usize, y: usize| row(ed, y).chars().nth(x).unwrap_or(' ');
+        let edges = [at(&ed, x, y), at(&ed, x + w - 1, y), at(&ed, x, y + 1), at(&ed, x + w - 1, y + 1)];
+        assert_eq!(edges, ['╭', '╮', '│', '│'], "{}", text(&ed));
+        assert_eq!([at(&ed, x, y + h - 1), at(&ed, x + w - 1, y + h - 1)], ['╰', '╯'], "{}", text(&ed));
+        // `esc`: closed, the draft kept for `space l`
+        keys(&mut ed, "w h y");
+        keys(&mut ed, "esc");
+        assert!(ed.screen.chat_frame.is_none() && region(&ed) == "code", "closed");
+        keys(&mut ed, "space l");
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input.text(), "why", "the draft kept");
+        // A selection of three lines goes: said, the card stepped off them; `C-x` takes it off the message
+        keys(&mut ed, "esc");
+        keys(&mut ed, "x x x");
+        keys(&mut ed, "space l");
+        let (_, y, _, h) = frame(&ed);
+        assert!(row(&ed, y).contains(":10–12 · 3 lines"), "{}", row(&ed, y));
+        assert!(row(&ed, y + h - 1).contains("C-x drop lines"), "{}", row(&ed, y + h - 1));
+        clear(&ed, (10, 12));
+        keys(&mut ed, "C-x");
+        let (_, y, ..) = frame(&ed);
+        assert!(selection_goes(&ed).is_none() && !row(&ed, y).contains("lines"), "{}", row(&ed, y));
+        assert!(!context(&ed, None, &[], &[]).0.contains("<selection"), "off the message");
+        assert_eq!(region(&ed), "chat", "the keys still in it");
+        // The keys gone elsewhere (a hop, a press): it goes with them, a prompt's way
+        ed.workspace.viewer.at = At::Code;
+        crate::uistate::tests::frame(&mut ed);
+        assert!(ed.screen.chat_frame.is_none(), "not drawn without the keys");
+        keys(&mut ed, "space l");
+        assert!(ed.chat_asking(), "back");
+        // A press on it keeps it; one off it closes it, nothing under it pressed
+        let press = |ed: &mut Editor, x: usize, y: usize| {
+            let (x, y) = (x as u16, y as u16);
+            ed.handle_mouse(Mouse { kind: MouseKind::Down, x, y, alt: false, ctrl: false });
+            ed.handle_mouse(Mouse { kind: MouseKind::Up, x, y, alt: false, ctrl: false });
+            crate::uistate::tests::frame(ed);
+        };
+        let (fx, fy, ..) = frame(&ed);
+        press(&mut ed, fx + 6, fy + 1);
+        assert!(ed.chat_asking(), "a press on its input keeps it");
+        let sel = ed.doc().selection().clone();
+        press(&mut ed, 4, 30);
+        assert!(ed.screen.chat_frame.is_none() && region(&ed) == "code", "a press off it closes it");
+        assert_eq!(ed.doc().selection(), &sel, "nothing under it pressed");
+        // `pageup`: the reader, the same card grown
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(Msg::new(Role::User, "why does it fail?", ""));
+        c.msgs.push(Msg::new(Role::Assistant, "Because the map is filled twice.", ""));
+        keys(&mut ed, "space l");
+        assert!(row(&ed, frame(&ed).1 + 2).contains("pageup conversation"), "{}", text(&ed));
+        keys(&mut ed, "pageup");
+        let (rx, _, rw, rh) = frame(&ed);
+        assert!(!ed.chat_asking() && (rx, rw) == (x, w) && rh > 3, "the reader: {rh} rows");
+        assert!(text(&ed).contains("Because the map is filled twice"), "{}", text(&ed));
+        // With a conversation there `esc` closes the ask line too — never its view mode, the transcript out of sight
+        ask_close(&mut ed);
+        crate::uistate::tests::frame(&mut ed);
+        assert!(ed.screen.chat_frame.is_none(), "hidden");
+        keys(&mut ed, "space l");
+        assert!(ed.chat_asking(), "the ask line again");
+        keys(&mut ed, "esc");
+        assert!(ed.screen.chat_frame.is_none() && region(&ed) == "code", "closed: {}", region(&ed));
+        // `enter` sends from the ask line: it goes, the keys the code's
+        keys(&mut ed, "space l");
+        assert!(ed.chat_asking(), "the ask line again");
+        let rx = stand_in(ed.workspace.claude.chat.as_mut().unwrap());
+        keys(&mut ed, "enter");
+        assert!(rx.try_recv().is_ok_and(|m| m.contains("why")), "sent");
+        assert!(ed.screen.chat_frame.is_none() && region(&ed) == "code", "gone once sent");
     }
 
     /// #252: a message moves a conversation's time as it's sent — a note closed mid-turn keeps that, not the last turn's.

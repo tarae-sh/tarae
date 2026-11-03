@@ -406,7 +406,8 @@ fn every_session_is_named_one_way_in_the_chrome() {
             "{name} in the list: {r:#?}"
         );
     }
-    let docs_row = row_of(&r, "▲ waits ");
+    // (the list's row — the strip on the screen's top row says it too)
+    let docs_row = (1..r.len()).find(|&y| r[y].contains("▲ waits ")).expect("docs' row");
     assert_eq!(fg_of(&p, &r, docs_row, "▲"), warning, "what needs you, in warning: {}", r[docs_row]);
     press(&mut ed, "q");
     // A recovery card's rows: each name in its colour, its row faint or not; one whose session isn't here, plain

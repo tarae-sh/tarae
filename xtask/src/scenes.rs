@@ -408,10 +408,10 @@ const F0_EDITED: &[&str] = f0_keys!("q", "4G", "ix", "\x1b", "j");
 const F0_OLDER: &[&str] = f0_two_keys!("4G", "\r");
 const F0_LINE: &[&str] = f0_two_keys!("10G", "\r", "\r");
 /// Focus A1c's keys: a real answer's shape (`a1c`) — a question nine rows long, its answer read in `src/spool.rs`, the
-/// keys in the code at its turn's end, then `$more`.
+/// keys in the code at its turn's end (its answer's card up: the chat's words out of sight with it floating), then `$more`.
 macro_rules! a1c_keys {
     ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", A1C_ASKED, "\r", "@20?That is all", "@2", "\x1b", "\x1b", "@20!walk-through",
+        &["@1", " ", "l", "@1", A1C_ASKED, "\r", "@20?╭─ chat", "@2", "\x1b", "\x1b", "@20!walk-through",
           $($more,)* "@1"]
     };
 }
@@ -462,6 +462,61 @@ const FLOW1_NONE_READ: &[&str] =
     a1_keys!(" ", "l", "@0.5", "\x17", "e", "@0.5", "\x1b", " ", "L", "@0.5", "]n", " ", "L");
 const FLOW1_FLOW_READ: &[&str] =
     a1_keys!(" ", "l", "@0.5", "\x17", "e", "@0.5", "\x1b", " ", "L", "@0.5", "gg]n]n", " ", "L");
+/// The flow plan's piece 2, the ask line, on A1c's file: `space l` on line 21 · on three lines selected · a quote of two
+/// (`space >`) · typing · sent (the turn under way) · its answer · `pageup` (the reader) · `space L` after the answer (the
+/// reader's foot: usage, `warm until`) · an empty chat with a conversation to continue · two sessions, the chat hidden
+/// (the strip) and the ask line over them.
+const FLOW2_ASKED: &str = "why does wind sort the strands at the end?";
+const FLOW2_LINE: &[&str] = &["@1", "21G", " ", "l", "@1"];
+const FLOW2_SEL: &[&str] = &["@1", "21G", "x", "x", "x", " ", "l", "@1"];
+const FLOW2_QUOTE: &[&str] = &["@1", "21G", "x", "x", " ", ">", "@1"];
+const FLOW2_TYPING: &[&str] = &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "@1"];
+const FLOW2_SENT: &[&str] = &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@2"];
+const FLOW2_ANSWERED: &[&str] =
+    &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@20?wind is the whole", "@2", "\x1b", "\x1b", "@1"];
+const FLOW2_GROW: &[&str] = &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "@0.5", "\x1b[5~", "@1"];
+const FLOW2_FOOT: &[&str] = &[
+    "@1",
+    "21G",
+    " ",
+    "l",
+    "@1",
+    FLOW2_ASKED,
+    "\r",
+    "@20?That is all",
+    "@2",
+    "\x1b",
+    "\x1b",
+    "@1",
+    " ",
+    "L",
+    "@1",
+];
+const FLOW2_CONTINUE: &[&str] = &[
+    "@1",
+    "21G",
+    " ",
+    "l",
+    "@1",
+    FLOW2_ASKED,
+    "\r",
+    "@20?That is all",
+    "@2",
+    "\x1b",
+    "\x1b",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "\x0c",
+    "\x0c",
+    "@1",
+    "\x1b",
+    "@1",
+    " ",
+    "l",
+    "@1",
+];
 
 /// #269's scenes, on A1c's file with no answer: a drag over the folded doc comment (lines 3–7), one from the code above
 /// into it, `x` on its first line and four times, INSERT on its line 5.
@@ -1208,6 +1263,9 @@ macro_rules! overlap_keys {
 }
 // (the toast, once)
 const OVERLAP: &[&str] = overlap_keys!();
+// (the flow plan's piece 2: two sessions, the chat hidden — the strip — and the ask line over them)
+const FLOW2_STRIP: &[&str] = overlap_keys!("\x1b", "@3");
+const FLOW2_STRIP_L: &[&str] = overlap_keys!("\x1b", "@3", " ", "l", "@1");
 // (…then fix's Claude at work, a third checkout whose Claude asks for a run outside the sandbox, main's change
 // committed — fix and docs a commit behind —, main's chat open and the session list over it)
 const SESSIONS_FLOAT: &[&str] = overlap_keys!(
@@ -3308,6 +3366,18 @@ const SCENES: &[Scene] = &[
     Scene { name: "flow1-float-read", claude: "a1c", files: SPOOL, keys: FLOW1_FLOAT_READ },
     Scene { name: "flow1-none-read", claude: "a1-none", files: MAIN, keys: FLOW1_NONE_READ },
     Scene { name: "flow1-flow-read", claude: "a1-flow", files: MAIN, keys: FLOW1_FLOW_READ },
+    // (the flow plan's piece 2: the ask line, the default flipped, the column's tenants moved)
+    Scene { name: "flow2-line", claude: "a1c", files: SPOOL, keys: FLOW2_LINE },
+    Scene { name: "flow2-sel", claude: "a1c", files: SPOOL, keys: FLOW2_SEL },
+    Scene { name: "flow2-quote", claude: "a1c", files: SPOOL, keys: FLOW2_QUOTE },
+    Scene { name: "flow2-typing", claude: "a1c", files: SPOOL, keys: FLOW2_TYPING },
+    Scene { name: "flow2-sent", claude: "a1c", files: SPOOL, keys: FLOW2_SENT },
+    Scene { name: "flow2-answered", claude: "a1c", files: SPOOL, keys: FLOW2_ANSWERED },
+    Scene { name: "flow2-grow", claude: "a1c", files: SPOOL, keys: FLOW2_GROW },
+    Scene { name: "flow2-foot", claude: "a1c", files: SPOOL, keys: FLOW2_FOOT },
+    Scene { name: "flow2-continue", claude: "a1c", files: SPOOL, keys: FLOW2_CONTINUE },
+    Scene { name: "flow2-strip", claude: "idle", files: MAIN, keys: FLOW2_STRIP },
+    Scene { name: "flow2-strip-l", claude: "idle", files: MAIN, keys: FLOW2_STRIP_L },
     // (#269: a folded doc comment stays folded while you select it)
     Scene { name: "f269-drag", claude: "idle", files: SPOOL, keys: F269_DRAG },
     Scene { name: "f269-into", claude: "idle", files: SPOOL, keys: F269_INTO },
@@ -5093,7 +5163,8 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         // (the flow plan's piece 1 on A1c's answer too — its two on A1's answers have MAIN's files alone)
         s if s.starts_with("a1c-")
             || s.starts_with("f269-")
-            || s.starts_with("flow1-") && !matches!(s, "flow1-none-read" | "flow1-flow-read") =>
+            || s.starts_with("flow1-") && !matches!(s, "flow1-none-read" | "flow1-flow-read")
+            || s.starts_with("flow2-") && !s.starts_with("flow2-strip") =>
         {
             vec![("src/spool.rs", SPOOL_RS.into())]
         }

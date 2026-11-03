@@ -69,18 +69,27 @@ the conversation, because it has none.
 
 ![Chat panel — ask with the selection as context; code in answers sits in a well in its language's colors](screenshots/m4-chat.png)
 
-`space l` (or `:chat [question]`) opens a panel on the right ([in hanji](screenshots/m4-chat-hanji.png)), the keys
-in its input; it never hides it. `space L` shows and hides it: shown, it hides — the conversation, a turn under way
-and follow go on, as with the chat minimized while Claude works, the keys back to the code; hidden or minimized, it's
-shown with the keys in it, as `space l` gives them; with no chat, it's the empty chat `space l` opens (its `C-p
-continue` row first, its claude starting). `:chat-close` ends the conversation (its process, a turn under
-way cut off) and `:chat-new` starts over. One
-process lives for the whole conversation, so Claude remembers what came before.
+The chat is a card you summon, not a standing column: it floats over the code, and docks on the right only by your
+choice (`C-w e`, below; [docked, in hanji](screenshots/m4-chat-hanji.png)). **The ask line.** `space l` (or `:chat [question]`) opens the chat's input alone as a
+one-row card over the code — the reader's columns, its top at a quarter of the screen, but never over the lines it
+carries: it steps just above or below them. Its top line says what goes with the message: `ask claude ── spool.rs:21`,
+or with a selection `spool.rs:21–23 · 3 lines` (`C-x drop lines` takes the selection off the message), then a quote,
+the screen, an element pointed at. It's a prompt: `enter` sends and it goes, the keys back in the code (Claude's answer
+comes to its lines); `esc` or a press off it closes it, your draft kept for the next `space l`; `pageup` grows it into
+the reader, the same card. An empty chat says its `C-p continue` row under it. `space >` and pointing bring it too,
+what they add named in its top line. With the chat docked, `space l` gives its input the keys as before. `space L`
+shows and hides the conversation: shown, it hides — the conversation, a turn under way and follow go on, as with the
+chat minimized while Claude works, the keys back to the code; hidden or minimized, it's shown with the keys in it.
+`:chat-close` ends the conversation (its process, a turn under way cut off) and `:chat-new` starts over. One process
+lives for the whole conversation, so Claude remembers what came before. While the chat floats, the sessions it named
+on its top line are named at the screen's top row's right, over the code's line (a press on one switches to it, on
+your own the conversation).
 
-**The reader.** `C-w e` from the chat floats it over the code in a frame of its own, the code keeping its whole width:
+**The reader.** Floating, the conversation stands over the code in a frame of its own, the code keeping its whole width:
 as wide as the chat's prose (78 columns, centred; a narrower screen's whole width), its top at a quarter of the screen,
-half of it tall, its keys in the frame's bottom line (`C-w e dock`, `space L hide`). `C-w e` again, or `C-w L`, docks it
-back on the right; your choice is kept (`sizes.json`) until you change it. Floating, it goes once used, as a floating
+half of it tall, its keys in the frame's bottom line (`C-w e dock`, `space L hide`), its usage row (`warm until`) over
+that line. `C-w e`, or `C-w L`, docks it on the right; `C-w e` floats it again; your choice is kept (`sizes.json`)
+until you change it. Opened at a line's paragraph, it stands clear of that line, as the ask line does. Floating, it goes once used, as a floating
 list does: `esc` from its input (to its view mode first when there's something to read, as docked) and its view
 mode's `esc` or `q` hide it, the conversation going on; docked, it stays. Nothing is said for hiding, showing,
 floating or docking it: the change is in sight. `space L` showing the chat, floating or docked, opens it at the

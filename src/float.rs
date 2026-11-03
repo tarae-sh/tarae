@@ -94,7 +94,7 @@ impl Editor {
         // (the chat in hand — its input or its view mode: it floats over the code, or docks back beside it, your choice
         // kept — the flow plan's reader)
         if self.workspace.is_at(crate::workspace::At::Chat) && self.workspace.claude.chat.is_some() {
-            return self.chat_float(self.sizes.chat_float.is_none());
+            return self.chat_float(self.sizes.chat_docked);
         }
         if let Some(k) = self.float_list_in_hand() {
             // (the session list docked: floating again, where its frame was — P3 step 7d)
@@ -126,7 +126,11 @@ impl Editor {
     /// (`sizes.json`). Nothing said (the user, 2026-11-03): the change is in sight, and the frame's bottom line has its
     /// keys (`C-w e dock`).
     pub fn chat_float(&mut self, on: bool) {
-        self.sizes.chat_float = on.then_some(Frame::CENTRED);
+        self.sizes.chat_docked = !on;
+        // (floated or docked, it's the conversation: the ask line is `space l`'s)
+        if let Some(c) = self.workspace.claude.chat.as_mut() {
+            c.asking = false;
+        }
         self.sizes_keep();
     }
 

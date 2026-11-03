@@ -1039,7 +1039,7 @@ pub fn chat_back(ed: &mut Editor) {
 /// zoomed), said; drawn, it says itself. Whether a toast was made (the frame is drawn again with it).
 pub fn chat_drawn(ed: &mut Editor) -> bool {
     let Some(r) = ed.recovery.as_mut() else { return false };
-    if !std::mem::take(&mut r.unseen) || ed.screen.chat_x.is_some() {
+    if !std::mem::take(&mut r.unseen) || ed.screen.chat_x.is_some() || ed.screen.chat_frame.is_some() {
         return false;
     }
     ed.set_success("Restored the chat — space l shows it");

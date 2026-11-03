@@ -1,6 +1,6 @@
 # sessions_bring_marked · 112x30 · theme meok · cursor hidden
 ## text
-00 ─ tarae › [scratch] ────────────────────────────────────────────────────────────────────────────────────────────
+00 ─ tarae › [scratch] ───────────────────────────────────────────────────── main · fix-login · docs · parser · + ─
 01   1
 02
 03
@@ -62,7 +62,7 @@
 28
 29
 ## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
-00 f ddddd f TTTTTTTTT ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+00 f ddddd f TTTTTTTTT fffffffffffffffffffffffffffffffffffffffffffffffffffff BBBB f           f      f        f d f
 01   A
 02
 03

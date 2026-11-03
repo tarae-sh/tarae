@@ -25,6 +25,7 @@ that fills it (S selection).
 | The chat's conversation | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — a cut row comes whole under it |
 | The chat's conversation | a link, a tool row, an id | ✓ | — the press did it | ✗ S: a drag from a link | as one press | ✓ | — a cut row comes whole under it |
 | The chat's input | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — a cut row comes whole under it |
+| The chat's input | off the ask line | ✓ | — the press did it | — the first press closed it | — the first press closed it | ✓ | — a cut row comes whole under it |
 | The chat | its top line, its gaps | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | — nothing on hover |
 | The chat | a session's name, `+N` | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
 | The chat | what goes with the message over its input (a quote, `screen`, an element pointed at, `N things`) | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |

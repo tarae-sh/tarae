@@ -286,8 +286,8 @@ pub fn take_at(
 
 pub(crate) type Frames = Vec<(u64, vt100::Screen)>;
 
-/// Drives `setup` on a `cols`×`rows` pty with `homes` (`@rec` starts frame capture, `@beat` marks a beat,
-/// `@hold:<ms>` holds for `<ms>` milliseconds), returning the captured `(ms, Screen)` frames and beat snapshots.
+/// Drives `setup` on a `cols`×`rows` pty with `homes` (`@rec` starts frame capture — the screen `@seen` kept, if one
+/// was, its first frame —, `@beat` marks a beat, `@hold:<ms>` holds for `<ms>` milliseconds), returning the captured `(ms, Screen)` frames and beat snapshots.
 pub(crate) fn record_at(
     setup: &Setup,
     keys: &[String],
@@ -759,12 +759,22 @@ fn drive_with(
     pump(vt, 1.2);
     let mut missed = Vec::new();
     let mut capture = None;
+    // (`@seen`: the screen as it was then, kept as `@rec`'s first frame — what was in sight before an ask covered it)
+    let mut seen = None;
     for k in keys {
+        if k == "@seen" {
+            seen = Some((vt.parser.screen().clone(), vt.ends));
+            continue;
+        }
         if k == "@rec" {
             let since = Instant::now();
             vt.captured.clear();
             vt.captured_ends.clear();
             vt.beats.clear();
+            if let Some((screen, ends)) = seen.take() {
+                vt.captured.push((Duration::ZERO, screen));
+                vt.captured_ends.push(ends);
+            }
             vt.keep(Duration::ZERO);
             vt.capturing = Some(since);
             continue;

@@ -195,23 +195,37 @@ fn still_events_keep_no_memory() {
 const SLACK: usize = 4;
 
 /// The experience budget: a hover, a tick and a behind session's delta, and each one's frame, take the same paths and
-/// allocations with 34 sessions open as with 17 (within `SLACK`) — what didn't change isn't walked.
+/// allocations with 34 sessions open as with 17 (within `SLACK`) — what didn't change isn't walked. Measured with the
+/// chat floating or hidden (the sessions' strip on the top row) and docked (the names on the chat's top line): either
+/// line's work is what fits on it.
 #[test]
 fn an_event_of_nothing_shared_is_the_same_work_at_17_sessions_and_34() {
     let _one = one_at_a_time();
     let (mut few, _a) = laid("docpaths-still-17", SESSIONS);
     let (mut more, _b) = laid("docpaths-still-34", 2 * SESSIONS);
-    let at_few = per_kind(&mut few);
-    let at_more = per_kind(&mut more);
     let mut over = Vec::new();
-    for ((kind, ev, frame), (_, ev2, frame2)) in at_few.iter().zip(&at_more) {
-        eprintln!("STILL {kind:?}: event {ev:?} → {ev2:?}; frame {frame:?} → {frame2:?}");
-        for (what, a, b) in [("event", ev, ev2), ("frame", frame, frame2)] {
-            if b.paths > a.paths + SLACK || b.allocs > a.allocs + SLACK {
-                over.push(format!(
-                    "{kind:?}'s {what}: {a:?} at {SESSIONS} sessions, {b:?} at {}",
-                    2 * SESSIONS
-                ));
+    for docked in [false, true] {
+        if docked {
+            // (the front's chat open in its column, idle: its top line names the sessions)
+            for ed in [&mut few, &mut more] {
+                let mut c = crate::chat::Chat::new();
+                c.unfolded = true;
+                ed.workspace.claude.chat = Some(c);
+            }
+        }
+        let at_few = per_kind(&mut few);
+        let at_more = per_kind(&mut more);
+        let line = if docked { "the chat's line" } else { "the strip" };
+        assert_eq!(few.screen.chat_x.is_some(), docked, "{line}: the chat's column there or not");
+        for ((kind, ev, frame), (_, ev2, frame2)) in at_few.iter().zip(&at_more) {
+            eprintln!("STILL {line} {kind:?}: event {ev:?} → {ev2:?}; frame {frame:?} → {frame2:?}");
+            for (what, a, b) in [("event", ev, ev2), ("frame", frame, frame2)] {
+                if b.paths > a.paths + SLACK || b.allocs > a.allocs + SLACK {
+                    over.push(format!(
+                        "{line}, {kind:?}'s {what}: {a:?} at {SESSIONS} sessions, {b:?} at {}",
+                        2 * SESSIONS
+                    ));
+                }
             }
         }
     }

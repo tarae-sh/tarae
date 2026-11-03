@@ -177,9 +177,8 @@ pub fn click(ed: &mut Editor, x: usize, y: usize) -> bool {
 /// one carrying a file named like a key Claude may not read asks first (`reads::point`).
 fn pick(ed: &mut Editor, id: String) {
     ed.pointing = None;
-    if ed.workspace.claude.chat.is_none() {
-        crate::chat::open(ed);
-    }
+    // (out of sight, the ask line comes with it, as with a quote)
+    crate::chat::ask_for(ed);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     c.unfold();

@@ -98,7 +98,7 @@ pub fn esc_said(ed: &Editor) -> (String, &'static str) {
     match to_view {
         Some(k) if ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.msgs.is_empty()) => (k, "normal"),
         // (`esc code` where the surface stays, `esc close` where it goes — the user, 2026-10-20)
-        _ if ed.sizes.chat_float.is_some() => ("esc".into(), "close"),
+        _ if !ed.sizes.chat_docked => ("esc".into(), "close"),
         _ => ("esc".into(), "code"),
     }
 }

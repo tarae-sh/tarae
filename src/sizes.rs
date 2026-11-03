@@ -83,9 +83,10 @@ pub struct Sizes {
     /// the gap it stands in, never written back.
     pub follow_w: Option<u16>,
     pub follow_h: Option<u16>,
-    /// The chat floating over the code (the flow plan's reader, `C-w e`: float ↔ dock) — its frame, kept across
-    /// restarts as Claude Code keeps its panel's place; None: docked beside the code.
-    pub chat_float: Option<crate::pane::Frame>,
+    /// The chat docked beside the code — only by your choice (the flow plan's Q1: `C-w e` float ↔ dock, `C-w L`), kept
+    /// across restarts as Claude Code keeps its panel's place; false (the default): it floats, a card you summon — the
+    /// ask line (`space l`) or the reader (`space L`) at the floating panes' place (`Frame::CENTRED`).
+    pub chat_docked: bool,
 }
 
 /// The floating chat's width (`Editor::chat_float_rect`): its prose's measure (`chrome::MEASURE`), the gutter's cell and
@@ -135,7 +136,7 @@ impl Sizes {
             sessions_dock: v["sessions_dock"].as_str().and_then(crate::pane::Side::of_name),
             follow_w: n(&v["follow"]["w"]),
             follow_h: n(&v["follow"]["h"]),
-            chat_float: crate::pane::Frame::of_json(&v["chat_float"]),
+            chat_docked: v["chat_docked"].as_bool() == Some(true),
         }
     }
 
@@ -149,10 +150,9 @@ impl Sizes {
         let dock = self.sessions_dock.map(crate::pane::Side::name);
         let folders = self.folders.map(crate::pane::Frame::json);
         let follow = json!({ "w": self.follow_w, "h": self.follow_h });
-        let chat_float = self.chat_float.map(crate::pane::Frame::json);
         json!({ "chat": self.chat, "side": self.side, "rail": self.rail, "bottom": self.bottom, "docked": docked,
                 "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock,
-                "follow": follow, "chat_float": chat_float })
+                "follow": follow, "chat_docked": self.chat_docked })
         .to_string()
     }
 }
@@ -846,9 +846,7 @@ impl crate::editor::Editor {
     /// the card stays where it waited — swapping in the code under it left a 57-column card, drawn while it waited,
     /// with no room once focused, every key refused (the review of cardkeys).
     pub fn chat_panel(&self, total: usize) -> bool {
-        if !self.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact())
-            || self.sizes.chat_float.is_some()
-        {
+        if !self.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact()) || !self.sizes.chat_docked {
             return false;
         }
         self.workspace.is_at(At::Chat) || widths(total, true, false, self.sizes).chat < total
@@ -861,10 +859,18 @@ impl crate::editor::Editor {
     /// whole width. The one rule: the layout lays the frame by it, and an answer's note card steps aside by it
     /// (`notes::stepped_aside`) — never a card hidden with no reader drawn.
     pub fn chat_floating(&self) -> bool {
-        self.sizes.chat_float.is_some()
+        !self.sizes.chat_docked
             && self.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact())
             && self.zoomed().is_none()
             && !self.review_wide()
+    }
+
+    /// The chat is the ask line this frame (the flow plan's piece 2): floating, `Chat.asking`, its input with the keys —
+    /// a prompt, never drawn without them (`focus_sync` closes it once they leave).
+    pub fn chat_asking(&self) -> bool {
+        self.chat_floating()
+            && self.workspace.claude.chat.as_ref().is_some_and(|c| c.asking)
+            && self.workspace.is_at(At::Chat)
     }
 
     /// The floating chat's frame on a screen `w` wide with `rows` above the status line: its frame's top and height
@@ -872,7 +878,10 @@ impl crate::editor::Editor {
     /// (`CHAT_FLOAT_W`) and centred across — narrower, its prose would wrap short; wider, a band beside it would stay
     /// empty. A screen narrower than that: its whole width.
     pub fn chat_float_rect(&self, w: usize, rows: usize) -> Option<crate::split::Rect> {
-        let r = self.sizes.chat_float?.rect(w, rows);
+        if self.sizes.chat_docked {
+            return None;
+        }
+        let r = crate::pane::Frame::CENTRED.rect(w, rows);
         let fw = if w >= CHAT_FLOAT_W + 2 { CHAT_FLOAT_W } else { w };
         Some(crate::split::Rect { x: (w - fw) / 2, w: fw, ..r })
     }
@@ -897,7 +906,7 @@ impl crate::editor::Editor {
             messages: s.messages,
             folders: s.folders,
             sessions_dock: s.sessions_dock,
-            chat_float: s.chat_float,
+            chat_docked: s.chat_docked,
             ..Sizes::default()
         };
         self.workspace.split.even();
@@ -1073,6 +1082,12 @@ impl crate::editor::Editor {
             // (the keys gone from its group: the hand let go)
             self.hand_sync();
         }
+        // (the ask line is a prompt: once the keys left it — a hop, a press elsewhere, a picker's pick — it goes, its draft
+        // kept for `space l`)
+        let away = !self.workspace.is_at(At::Chat) && self.chat_floating();
+        if let Some(c) = self.workspace.claude.chat.as_mut().filter(|c| c.asking && away) {
+            c.hidden = true;
+        }
         // (`C-w m` ends with its pane, or once the keys leave it — a hop, a click elsewhere)
         self.float_move_sync();
         self.groups_front();
@@ -1116,7 +1131,7 @@ mod tests {
         sessions_dock: None,
         follow_w: None,
         follow_h: None,
-        chat_float: None,
+        chat_docked: false,
     };
 
     /// Panes P2a: where the keys are is one value (`Viewer.at`) — once what it names is gone (the chat closed,
@@ -1242,7 +1257,7 @@ mod tests {
             sessions_dock: None,
             follow_w: None,
             follow_h: None,
-            chat_float: None,
+            chat_docked: false,
         };
         assert_eq!(chat_beside(160, 36, kept), 70, "yours stays");
         assert_eq!(chat_beside(70, 36, AUTO), 70, "narrow: the chat takes it all, as without the rail");
@@ -1264,7 +1279,7 @@ mod tests {
             sessions_dock: None,
             follow_w: None,
             follow_h: None,
-            chat_float: None,
+            chat_docked: false,
         };
         assert_eq!(widths(200, true, true, kept), Widths { chat: 90, side: 40 });
         // 150: the chat keeps its 90; the panel's 40 would leave the code 20 — it gives way
@@ -1290,7 +1305,7 @@ mod tests {
             sessions_dock: None,
             follow_w: None,
             follow_h: None,
-            chat_float: None,
+            chat_docked: false,
         };
         assert_eq!(widths(240, true, true, odd), Widths { chat: CHAT_MIN, side: SIDE_MAX });
     }
@@ -1322,7 +1337,7 @@ mod tests {
             sessions_dock: Some(crate::pane::Side::Right),
             follow_w: Some(60),
             follow_h: None,
-            chat_float: Some(crate::pane::Frame::CENTRED),
+            chat_docked: true,
         };
         save(&path, s, 1);
         assert_eq!(Sizes::read(Some(&path)), s);

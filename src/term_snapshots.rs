@@ -2701,7 +2701,8 @@ fn snapshot_sessions_marked_to_bring() {
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-    let row = |name: &str| rows.iter().find(|r| r.contains(name)).cloned().unwrap_or_default();
+    // (the list's rows, under the screen's top row — the sessions' strip names them there too)
+    let row = |name: &str| rows.iter().skip(1).find(|r| r.contains(name)).cloned().unwrap_or_default();
     assert!(row("fix-login").contains("bring 1st") && row("parser").contains("bring 2nd"), "{rows:#?}");
     assert!(!row("docs").contains("bring"), "{rows:#?}");
     s.check("sessions_bring_marked");

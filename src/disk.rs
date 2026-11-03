@@ -1197,7 +1197,8 @@ mod tests {
         assert!(chip(&mut ed).contains(&format!("{front} •1")), "{}", chip(&mut ed));
         ed.session_list();
         let s = screen(&mut ed);
-        let row = s.lines().find(|l| l.contains(&back_label)).unwrap_or_default();
+        // (the list's row, under the screen's top row — the sessions' strip names it there too)
+        let row = s.lines().skip(1).find(|l| l.contains(&back_label)).unwrap_or_default();
         assert!(row.contains("• 1 reloaded"), "{s}");
         ed.picker = None;
         assert!(ed.workspace_switch(back).is_in());
