@@ -81,7 +81,7 @@ pub fn is_list(kind: GroupKind) -> bool {
 }
 
 /// What a list is called where a key it doesn't take is said.
-fn what(kind: GroupKind) -> &'static str {
+pub(crate) fn what(kind: GroupKind) -> &'static str {
     match kind {
         GroupKind::Messages => "the messages",
         GroupKind::Folders => "the folders",

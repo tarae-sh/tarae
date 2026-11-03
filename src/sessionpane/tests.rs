@@ -284,6 +284,39 @@ fn the_session_list_docks_and_stays_after_enter() {
     assert!(ed.screen.floating.borrow().iter().any(|f| f.0 == GroupKind::Sessions));
 }
 
+/// #302: floating, the list is done once a session is picked any other way too — its tag, `:workspace-switch` — as
+/// zellij's session manager closes: kept, it floated over the next workspace, its keys the one it was opened in, and a
+/// round there gave them back to it while you drove the code. Docked it stays, the overview kept in sight.
+#[test]
+fn a_floating_session_list_closes_on_a_switch_made_elsewhere() {
+    let dir = crate::scratch::Scratch::new("sessionswitched");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let other = dir.join("fix");
+    std::fs::create_dir_all(&other).unwrap();
+    let fix = ed.workspace_open(&other).unwrap();
+    ed.workspace.name = "fix".into();
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
+    feed(&mut ed, " W");
+    frame(&mut ed, 160, 40);
+    assert!(ed.sessions_list_keys());
+    assert!(ed.workspace_switch(fix).is_in());
+    ed.focus_sync();
+    let s = frame(&mut ed, 160, 40);
+    assert!(ed.sessions_pane.is_none(), "closed\n{s}");
+    assert_eq!(ed.keys_to().region, crate::uistate::Region::Code, "the keys the code's");
+    // (and back where it was opened: the code's there too, nothing left of it)
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
+    ed.focus_sync();
+    assert!(ed.workspace.is_at(At::Code) && ed.float_list_in_hand().is_none());
+    // Docked, it stays — its keys left where it was
+    feed(&mut ed, " W<C-w>L");
+    frame(&mut ed, 160, 40);
+    assert!(ed.sessions_list_keys());
+    assert!(ed.workspace_switch(fix).is_in());
+    assert!(ed.sessions_pane.is_some(), "docked, it stays");
+}
+
 /// Docked where its column gets no room — a narrow screen — or with the code zoomed, `space W` gives the keys to a
 /// list that's drawn: it floats for that frame, its dock kept (back docked once there's room), and floating it's done
 /// once used.

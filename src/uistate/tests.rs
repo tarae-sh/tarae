@@ -782,6 +782,16 @@ pub(crate) const SCENES: &[Scene] = &[
         frame(ed);
         light_card(ed);
     }),
+    // (#302: a session picked another way — its tag, `:workspace-switch` — the floating list done as its `enter` leaves
+    // it: the keys the code's there)
+    ("the session list floating, another workspace switched to by its tag", |ed| {
+        let dir = crate::scratch::Scratch::new("uistate-switched").into_path();
+        let id = ed.workspace_open(&dir).unwrap();
+        assert_eq!(ed.workspace.id, id);
+        ed.session_list();
+        frame(ed);
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
+    }),
     ("the task's output in the slot, the tests docked over the code", |ed| {
         task_panel(ed);
         tests_group_list(ed);
@@ -1651,6 +1661,24 @@ fn a_card_come_mid_turn_leaves_the_empty_chat_its_keys() {
     frame(&mut ed);
     assert!(ed.offers.is_empty(), "answered");
     assert_eq!(ed.keys_to().region, Region::Chat, "back where they were");
+}
+
+/// #302: the state's words say what the pane with the keys is, by its region — a floating list's `pane#N` said "the
+/// code" while every key went to the list (`C-e does nothing in the session list`, the code's scrolling gone).
+#[test]
+fn the_keys_words_name_the_list_that_has_them() {
+    let mut ed = editor();
+    ed.session_list();
+    frame(&mut ed);
+    let list = ed.sessions_pane.as_ref().unwrap().list;
+    let said = ed.ui_state().text();
+    assert!(said.contains(&format!("keys → pane#{list}, the session list (")), "{said}");
+    assert!(!said.contains(", the code"), "{said}");
+    // (a docked group's list by its kind; the code as before)
+    assert_eq!(super::keys_place("pane#7", "list:tests"), "pane#7, the tests list");
+    assert_eq!(super::keys_place("pane#7", "list:messages"), "pane#7, the messages");
+    assert_eq!(super::keys_place("pane#3", "code"), "pane#3, the code");
+    assert_eq!(super::keys_place("chat", "chat"), "chat");
 }
 
 /// Right after an edit's review is answered that took the keys from the chat (Claude asking mid-turn, its

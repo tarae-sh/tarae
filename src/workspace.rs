@@ -1400,6 +1400,13 @@ impl Editor {
             self.handle_key(esc);
             self.mode = Mode::Normal;
         }
+        // (a floating session list is done once a session is picked — by its `enter` or any other way, as zellij's
+        // session manager closes: its keys are the workspace's it was opened in while it floats over every one, so kept
+        // it took them back on a round there and the code's keys went to it — #302; docked it stays, the overview)
+        let sessions = crate::pane::GroupKind::Sessions;
+        if self.float_list(sessions).is_some() && !self.docked_in_sight(sessions) {
+            self.float_list_close(sessions);
+        }
         // Out: where it was, and its own cards — Claude's, its review's end (they wait for it)
         self.workspace.viewer.current_doc = self.doc().id;
         let (mut mine, rest): (Vec<_>, Vec<_>) =

@@ -337,13 +337,19 @@ pub fn keys_json(k: &KeysTo) -> Value {
     })
 }
 
-/// Where the keys go, as the text forms name it: a pane with what it is — `pane#29, the code (commands)`;
-/// bare, `pane#29 (commands)` was read as a pane called "commands" that nothing on screen showed.
-pub fn keys_place(to: &str) -> String {
-    match to.starts_with("pane#") {
-        true => format!("{to}, the code"),
-        false => to.to_string(),
+/// Where the keys go, as the text forms name it: a pane with what it is, by its `region` — `pane#29, the code
+/// (commands)`, `pane#278, the session list (commands)`; bare, `pane#29 (commands)` was read as a pane called
+/// "commands" that nothing on screen showed, and every pane said "the code" — a floating list's too (#302).
+pub fn keys_place(to: &str, region: &str) -> String {
+    if !to.starts_with("pane#") {
+        return to.to_string();
     }
+    let what = match region.strip_prefix("list:").map(|k| (k, crate::pane::GroupKind::of_name(k))) {
+        Some((_, Some(k))) if crate::floatlist::is_list(k) => crate::floatlist::what(k).to_string(),
+        Some((k, _)) => format!("the {k} list"),
+        None => "the code".to_string(),
+    };
+    format!("{to}, {what}")
 }
 
 fn ch(c: char) -> Key {
@@ -2283,7 +2289,7 @@ impl UiState {
     /// Where the keys go, as the text forms say it.
     fn keys_line(&self) -> Option<String> {
         let k = &self.keys;
-        let mut keys = format!("keys → {} ({}", keys_place(&k.to), k.takes.name());
+        let mut keys = format!("keys → {} ({}", keys_place(&k.to, &k.region.name()), k.takes.name());
         if !k.answers.is_empty() {
             let a: Vec<String> = k.answers.iter().map(char::to_string).collect();
             keys += &format!(" {}", a.join(" "));
