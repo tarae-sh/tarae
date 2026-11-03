@@ -41,6 +41,21 @@ const ADDR_MAX: usize = 128;
 pub(super) const SEND_MAX: usize = 1 << 20;
 /// The most control data (`SCM_RIGHTS` …) a message carries.
 const CONTROL_MAX: usize = 1 << 16;
+/// The most one call reads or writes (`MAX_RW_COUNT`: `INT_MAX` to a 4 KiB page; a kernel of 64 KiB pages cuts at
+/// 64 KiB, which tarae doesn't follow).
+const MAX_RW_COUNT: u64 = 0x7fff_f000;
+/// Where a process's memory ends (`TASK_SIZE_MAX`): the kernel takes no pointer of a run's whose reach passes it
+/// (`access_ok`: `EFAULT`, before anything is copied — an empty buffer too), and nothing tarae reads of a run's
+/// memory goes past it (`supervisor::read_mem`, `check::Fake`) — `/proc/<tid>/mem` would read some of it: arm64's
+/// drops a pointer's top byte (its tagged addresses), where the kernel refuses one unless the run turned the tagged
+/// ABI on (V2-6). x86_64's: 2^47 less a page (with 5-level paging a process may map past it only by asking — tarae
+/// refuses there, a refusal the kernel wouldn't make; 6.6–6.11 check only the top bit, so an empty buffer past it is
+/// refused by tarae alone). arm64's: 2^48 (a 52-bit kernel's past it only by asking, as above). The architectures
+/// tarae builds for.
+#[cfg(target_arch = "x86_64")]
+pub(super) const USER_MAX: u64 = (1 << 47) - 4096;
+#[cfg(not(target_arch = "x86_64"))]
+pub(super) const USER_MAX: u64 = 1 << 48;
 /// `struct msghdr` and `struct mmsghdr` on the 64-bit architectures, and where `msg_len` sits in the latter.
 const MSGHDR: usize = 56;
 const MMSGHDR: usize = 64;
@@ -220,8 +235,9 @@ pub(super) fn named(level: i32, kind: i32) -> String {
 /// The message at `at` in `m`, each descriptor it passes taken by `pass` (the caller's number → tarae's own).
 ///
 /// Its iovecs as the kernel takes them (`import_iovec`): the whole array first, every length checked before any
-/// buffer is read — one that isn't an `ssize_t` (its top bit set) `EINVAL` — and a datagram whose total passes
-/// `SEND_MAX` `EMSGSIZE`, nothing of it read; then the buffers in order, up to `SEND_MAX`. Its control as the kernel
+/// buffer is read — one that isn't an `ssize_t` (its top bit set) `EINVAL` — then every buffer's reach, one past
+/// `USER_MAX` `EFAULT` (an empty one too), and a datagram whose total passes `SEND_MAX` `EMSGSIZE`, nothing of it
+/// read; then the buffers in order, up to `SEND_MAX`. Its control as the kernel
 /// takes it (`____sys_sendmsg`): read wherever `msg_control` points when it has a length, a null pointer too —
 /// `EFAULT` where nothing is mapped there (V2-4).
 pub(super) fn read_msg<M: Mem, F: AsRawFd>(
@@ -256,6 +272,12 @@ pub(super) fn read_msg<M: Mem, F: AsRawFd>(
         .collect();
     if iov.iter().any(|&(_, len)| len > isize::MAX as u64) {
         return Err(libc::EINVAL.into());
+    }
+    // (`__import_iovec`'s `access_ok`, each buffer before any is read: one reaching past `USER_MAX` faults, an
+    // empty one too — a lone buffer's reach cut to `MAX_RW_COUNT` first, as `import_ubuf` takes it)
+    let reach = |len: u64| if iov.len() == 1 { len.min(MAX_RW_COUNT) } else { len };
+    if iov.iter().any(|&(base, len)| base.checked_add(reach(len)).is_none_or(|end| end > USER_MAX)) {
+        return Err(libc::EFAULT.into());
     }
     let total = iov.iter().fold(0u64, |total, &(_, len)| total.saturating_add(len));
     if datagram && total > SEND_MAX as u64 {

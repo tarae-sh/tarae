@@ -699,9 +699,7 @@ impl Caller {
 
     /// `len` bytes at `at` in its memory, read once.
     fn read(&self, at: u64, len: usize) -> Result<Vec<u8>, i32> {
-        let mut buf = vec![0u8; len];
-        self.mem.read_exact_at(&mut buf, at).map_err(|_| libc::EFAULT)?;
-        Ok(buf)
+        read_mem(&self.mem, at, len)
     }
 
     fn write(&self, at: u64, bytes: &[u8]) -> Result<(), i32> {
@@ -763,6 +761,19 @@ impl Mem for Caller {
     fn read(&self, at: u64, len: usize) -> Result<Vec<u8>, i32> {
         Caller::read(self, at, len)
     }
+}
+
+/// `len` bytes at `at` in a process's memory (`mem`: its `/proc/<tid>/mem`), read once — not all there, or reaching
+/// past where a process's memory ends (`wire::USER_MAX`, which the kernel's own reads keep to — `/proc` reads past
+/// it on arm64, a pointer's top byte dropped): `EFAULT`. Nothing is asked of a read of nothing. (`Caller::read`; the
+/// kernel oracle's reads of its own memory.)
+pub(super) fn read_mem(mem: &std::fs::File, at: u64, len: usize) -> Result<Vec<u8>, i32> {
+    if len > 0 && at.checked_add(len as u64).is_none_or(|end| end > super::wire::USER_MAX) {
+        return Err(libc::EFAULT);
+    }
+    let mut buf = vec![0u8; len];
+    mem.read_exact_at(&mut buf, at).map_err(|_| libc::EFAULT)?;
+    Ok(buf)
 }
 
 /// A refusal: `Refused` out (tarae says it in the run's report — its watch, once the run is gone its session's
@@ -1859,10 +1870,10 @@ fn send_one(
     p: &Served,
     c: &Caller,
     (fd, sock): (u64, &mut OwnedFd),
-    m: Msg,
+    mut m: Msg,
     flags: i32,
 ) -> Answer {
-    let (to, _held) = match m.name {
+    let (to, _held) = match m.name.take() {
         Some(addr) => {
             let theirs = sock.try_clone().map_err(|e| errno(&e))?;
             let (on, to, held) = destination(l, n, p, c, (fd, theirs), addr)?;
@@ -1872,6 +1883,17 @@ fn send_one(
         None => (Vec::new(), None),
     };
     netlink_send(p, c, sock, &m.data)?;
+    let r = send_built(sock.as_fd(), &m, &to, flags);
+    // (tarae's descriptors of what it passed, which its control names, held open until the send is done)
+    drop(m.fds);
+    c.sigpipe(flags, result(r))
+}
+
+/// `m`, a message `read_msg` built, sent on `sock` (to `to` where it's an address, else where the socket is
+/// connected) with `flags` and never a `SIGPIPE`: its data in one buffer, its control as built, none when that's
+/// empty — what `sendmsg` answers. (The test that hands the kernel the run's own message and this one, the same
+/// memory: `wire`'s `the_kernel_takes_what_tarae_sends`.)
+pub(super) fn send_built<F>(sock: BorrowedFd, m: &Msg<F>, to: &[u8], flags: i32) -> isize {
     let mut iov = libc::iovec { iov_base: m.data.as_ptr() as *mut libc::c_void, iov_len: m.data.len() };
     // SAFETY: an all-integer/pointer struct, zeroed then set.
     let mut h: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -1886,10 +1908,7 @@ fn send_one(
         h.msg_controllen = m.control.len() as _;
     }
     // SAFETY: the header and all it points to are ours, live for the call.
-    let r = unsafe { libc::sendmsg(sock.as_raw_fd(), &h, flags | libc::MSG_NOSIGNAL) };
-    // (tarae's descriptors of what it passed, which its control names, held open until the send is done)
-    drop(m.fds);
-    c.sigpipe(flags, result(r))
+    unsafe { libc::sendmsg(sock.as_raw_fd(), &h, flags | libc::MSG_NOSIGNAL) }
 }
 
 /// The caller's message at `at` (`read_msg`), each descriptor it passes taken as tarae's (`Caller::fd`) — a

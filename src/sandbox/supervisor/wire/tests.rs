@@ -537,6 +537,7 @@ fn a_message_is_read_as_the_kernel_reads_it() {
         "iovecs",
         "iovec",
         "iovec length",
+        "iovec past user space",
         "datagram",
         "data",
         "control length",
@@ -599,7 +600,8 @@ fn writes_fuzz_seeds() {
         (format!("{}-{k}", if reads { "reads" } else { "changes" }), b)
     });
     fuzz_seeds("netlink", batches);
-    let messages = (0..8).map(|k| (format!("message-{k}"), laid_out(&mut rng, &NUMBERS, true).input(HEAD, k % 2 == 0)));
+    let messages =
+        (0..8).map(|k| (format!("message-{k}"), laid_out(&mut rng, &NUMBERS, true).input(HEAD, k % 2 == 0)));
     fuzz_seeds("msghdr", messages);
 }
 
@@ -625,7 +627,8 @@ fn a_control_at_address_0_is_read_as_the_kernel_reads_it() {
 /// meet is whole, as the kernel's copies and `/proc/<tid>/mem` read across mappings. It held the first piece that
 /// held a read whole: the model's 16-byte iovec reads saw one piece, `read_msg`'s one read of the array another.
 /// The fuzz input, minimized: a stream's header at `HEAD` naming three iovecs at `IOV`; at `IOV` first one iovec
-/// (`BUFS`, 2), then three (`BUFS`, 4); four bytes at `BUFS`.
+/// (`BUFS`, 2), then three (`BUFS`, 4); four bytes at `BUFS`. Nothing is there past `USER_MAX` (a piece laid
+/// across it is read up to it only).
 #[test]
 fn a_fake_memory_holds_one_byte_an_address() {
     let piece = |at: u64, b: &[u8]| [&at.to_le_bytes()[..], &(b.len() as u16).to_le_bytes(), b].concat();
@@ -643,11 +646,12 @@ fn a_fake_memory_holds_one_byte_an_address() {
     assert_eq!(m.peek(IOV, 48).unwrap()[..16], m.peek(IOV, 16).unwrap(), "the first piece laid there");
     let msg = read_msg(&m, passer(&mut Vec::new()), at, datagram).ok().unwrap();
     assert_eq!(msg.data, b"ababcdabcd");
-    let meeting = Fake::default().at(BUFS, *b"ab").at(BUFS + 2, *b"cd").at(u64::MAX - 1, *b"yz");
+    let meeting = Fake::default().at(BUFS, *b"ab").at(BUFS + 2, *b"cd").at(USER_MAX - 2, *b"yzw");
     assert_eq!(meeting.peek(BUFS, 4), Ok(b"abcd".to_vec()), "across pieces that meet");
     assert_eq!(meeting.peek(BUFS + 1, 4), Err(libc::EFAULT), "past them");
-    assert_eq!(meeting.peek(u64::MAX - 1, 2), Ok(b"yz".to_vec()));
-    assert_eq!(meeting.peek(u64::MAX, 2), Err(libc::EFAULT), "past the address space's end");
+    assert_eq!(meeting.peek(USER_MAX - 2, 2), Ok(b"yz".to_vec()));
+    assert_eq!(meeting.peek(USER_MAX - 2, 3), Err(libc::EFAULT), "past where a process's memory ends (V2-6)");
+    assert_eq!(meeting.peek(USER_MAX + 4, 0), Ok(Vec::new()), "nothing read of nothing");
 }
 
 /// F1: the `i`th message of a `sendmmsg` array is found by checked sums — one whose header (and its `msg_len`,
