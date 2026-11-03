@@ -7,7 +7,8 @@
 //! or columns it adds put where they cut no card (a frame, or a borderless one by its ground — `cards`), else the cut
 //! card taken in whole, else the window as the target has it — and on every frame a card the window cuts, one that
 //! came while a zoom holds too, is left out on the window's ground (`cut`), a row of text the window's edge cuts drawn
-//! cut there as a zoomed video crops (`Window`).
+//! cut there as a zoomed video crops (`Window`), a sliver of one the left edge leaves erased. A news beat
+//! (`news:<text> over <target>`) frames what its toast is about and lays the toast over the window's top (`callout`).
 //! Pure: the frames' drawing is `video.rs`'s.
 
 /// A screen as the camera reads it: each cell's text and its ground (its background, as a number), row by row.
@@ -160,10 +161,16 @@ pub(crate) fn crop(
 ///   or a toast's or a peek's ground), else its row's stretch of text (to two blanks or a line);
 /// - any of them `|N`: at most `N` columns of it, air included, from its left — where tarae draws what the caption is
 ///   about across the screen's width (the ask line, a doc comment, an answer's card), the part it's about at a glyph a
-///   phone reads; the rest cut at the window's edge, fading (`Window`), its card drawn cut.
+///   phone reads; the rest cut at the window's edge, fading (`Window`), its card drawn cut;
+/// - `news:<text> over <target>` the target's, while the card holding `<text>` (a toast) is on the screen too: a news
+///   beat, the code its toast names framed, the toast laid over the window's top (`news_framed`, `callout`).
 ///
 /// Each with a cell of air round it. None where it isn't on that screen.
 pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
+    if let Some((text, inner)) = news(spec) {
+        holding(on, find(&on.text, text)?)?;
+        return target(on, inner);
+    }
     if let Some((spec, n)) = spec.rsplit_once('|').and_then(|(s, n)| Some((s, n.parse::<u16>().ok()?))) {
         let r = target(on, spec)?;
         return Some(Region { w: r.w.min(f32::from(n)), ..r });
@@ -219,11 +226,7 @@ pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
             None => {
                 let text = spec.strip_prefix("card:").unwrap_or(spec);
                 let (r, c0, c1) = find(cells, text)?;
-                let held = cards(on)
-                    .into_iter()
-                    .filter(|b| b.0 <= r && r <= b.2 && b.1 <= c0 && c1 <= b.3 + 1)
-                    .min_by_key(|b| (b.2 - b.0 + 1) * (b.3 - b.1 + 1));
-                Some(match held {
+                Some(match holding(on, (r, c0, c1)) {
                     Some((r0, c0, r1, c1)) => Region::of(c0, r0, c1 + 1, r1 + 1, screen),
                     None => {
                         // (the row's stretch round it: to two blanks, a line or the edge)
@@ -241,6 +244,141 @@ pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
             }
         },
     }
+}
+
+/// A news target's toast text and the target it's about (`news:<text> over <target>`).
+pub(crate) fn news(spec: &str) -> Option<(&str, &str)> {
+    spec.strip_prefix("news:")?.split_once(" over ")
+}
+
+/// The smallest card holding the text found at (row, first cell, past its last).
+fn holding(on: &Cells, (r, c0, c1): (usize, usize, usize)) -> Option<Card> {
+    (cards(on).into_iter())
+        .filter(|b| b.0 <= r && r <= b.2 && b.1 <= c0 && c1 <= b.3 + 1)
+        .min_by_key(|b| (b.2 - b.0 + 1) * (b.3 - b.1 + 1))
+}
+
+/// A news beat's toast as it's laid over a window's top: the card holding its text, line by line each cell the
+/// callout draws — a cell of the screen copied there (row, column), `None` the card's own ground (`ground`, one of its
+/// blank cells). The card as it stands on the screen where it fits `cols`; else its words laid again between phrases
+/// as tarae's toasts break (`toast_wrap`: a phrase ends after `—`, `·` or a word ending in `,` `;` `:`) — a phrase
+/// that doesn't fit a line's end starts the next where it fits one whole, a longer one breaks between its words —, its
+/// mark (and the air before it) on the first line, its text as far in as the card has it and its right margin kept.
+/// None where no card holds `text`.
+pub(crate) struct Callout {
+    pub(crate) card: Card,
+    pub(crate) ground: (usize, usize),
+    pub(crate) lines: Vec<Vec<Option<(usize, usize)>>>,
+}
+
+pub(crate) fn callout(on: &Cells, text: &str, cols: usize) -> Option<Callout> {
+    let card @ (r0, c0, r1, c1) = holding(on, find(&on.text, text)?)?;
+    let t = &on.text;
+    // (a wide character's second cell is filled: it's part of its word)
+    let filled = |r: usize, c: usize| {
+        let s = t[r][c].as_str();
+        !s.trim().is_empty() || s.is_empty() && c > 0 && t[r][c - 1].chars().next().is_some_and(wide)
+    };
+    let ground = (r0..=r1)
+        .flat_map(|r| (c0 + 1..=c1).rev().map(move |c| (r, c)))
+        .find(|&(r, c)| !filled(r, c))
+        .unwrap_or((r0, c1));
+    if c1 - c0 < cols {
+        let lines = (r0..=r1).map(|r| (c0..=c1).map(|c| Some((r, c))).collect()).collect();
+        return Some(Callout { card, ground, lines });
+    }
+    // (its mark: the first cell, or the one after a cell of air)
+    let mark = if t[r0].get(c0 + 1).is_some_and(|c| c == "▎") && t[r0][c0] != "▎" { c0 + 1 } else { c0 };
+    let (mut words, mut first, mut last) = (Vec::new(), c1, mark);
+    for r in r0..=r1 {
+        let mut word: Vec<(usize, usize)> = Vec::new();
+        for c in mark + 1..=c1 {
+            if filled(r, c) {
+                (first, last) = (first.min(c), last.max(c));
+                word.push((r, c));
+            } else if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        }
+        if !word.is_empty() {
+            words.push(word);
+        }
+    }
+    if words.is_empty() {
+        return None;
+    }
+    let (lead, pad) = (first - c0, c1 - last);
+    let room = cols.saturating_sub(lead + pad).max(1);
+    let ends = |w: &[(usize, usize)]| {
+        let said: String = w.iter().map(|&(r, c)| t[r][c].as_str()).collect();
+        said == "—" || said == "·" || said.ends_with([',', ';', ':'])
+    };
+    let mut phrases: Vec<Vec<Vec<(usize, usize)>>> = vec![Vec::new()];
+    for w in words {
+        let end = ends(&w);
+        if let Some(p) = phrases.last_mut() {
+            p.push(w);
+        }
+        if end {
+            phrases.push(Vec::new());
+        }
+    }
+    let mut rows: Vec<Vec<Option<(usize, usize)>>> = vec![Vec::new()];
+    for p in phrases.into_iter().filter(|p| !p.is_empty()) {
+        let width = p.iter().map(Vec::len).sum::<usize>() + p.len() - 1;
+        let fits = |line: &[Option<(usize, usize)>], w: usize| line.is_empty() || line.len() + 1 + w <= room;
+        if rows.last().is_some_and(|l| !fits(l, width)) && width <= room {
+            rows.push(Vec::new());
+        }
+        for w in p {
+            if rows.last().is_some_and(|l| !fits(l, w.len())) {
+                rows.push(Vec::new());
+            }
+            let Some(line) = rows.last_mut() else { unreachable!("never empty") };
+            if !line.is_empty() {
+                line.push(None);
+            }
+            line.extend(w.into_iter().map(Some));
+        }
+    }
+    let width = lead + rows.iter().map(Vec::len).max().unwrap_or(0) + pad;
+    let lines = (rows.into_iter().enumerate())
+        .map(|(k, row)| {
+            let mut line = vec![None; lead];
+            if k == 0 {
+                (c0..=mark).for_each(|c| line[c - c0] = Some((r0, c)));
+            }
+            line.extend(row);
+            line.resize(width, None);
+            line
+        })
+        .collect();
+    Some(Callout { card, ground, lines })
+}
+
+/// Where a callout `w` cells wide stands in a window of whole cells (columns `c0..c1`, rows `r0..r1`): its top-left cell
+/// (row, column), a row and a cell of air in from the window's top-right corner — as a toast stands on the screen.
+pub(crate) fn callout_at((c0, r0, c1, _): (usize, usize, usize, usize), w: usize) -> (usize, usize) {
+    (r0 + 1, c1.saturating_sub(w + 1).max(c0))
+}
+
+/// A news target's region shaped to the window (`framed`, its toast never a card the window avoids or takes in — it's
+/// laid over the window, not seen where it stands), moved up where the window's top hasn't room above the target for
+/// the callout (`callout` at the window's width, less its air) and a row of air under it. Inside the screen.
+pub(crate) fn news_framed(
+    screen: &Cells,
+    text: &str,
+    target: Region,
+    aspect: f32,
+    eye: f32,
+    legible: f32,
+) -> Region {
+    let toast = find(&screen.text, text).and_then(|at| holding(screen, at));
+    let r = shaped(screen, target, aspect, eye, legible, toast);
+    let Some(c) = callout(screen, text, (r.w as usize).saturating_sub(2)) else { return r };
+    let size = (screen.text.first().map_or(0, Vec::len) as u16, screen.text.len() as u16);
+    let need = 1.0 + c.lines.len() as f32;
+    Region { y: r.y.min((target.y - need).floor()).max(0.0), ..r }.inside(size)
 }
 
 /// A row's text between `from` and `to`: its first and past-its-last non-blank cell.
@@ -337,11 +475,17 @@ const TAKEN_IN_MAX: f32 = 1.25;
 /// takes nothing in; at most four times); else the target's own shape placed so — the cards it cuts left out as each
 /// frame is drawn (`cut`), the zoom kept. Inside the screen.
 pub(crate) fn framed(screen: &Cells, target: Region, aspect: f32, eye: f32, legible: f32) -> Region {
+    shaped(screen, target, aspect, eye, legible, None)
+}
+
+/// `framed`, `skip` (a news beat's toast) no card of the screen's.
+fn shaped(screen: &Cells, target: Region, aspect: f32, eye: f32, legible: f32, skip: Option<Card>) -> Region {
     let rows = screen.text.len();
     let cols = screen.text.first().map_or(0, Vec::len);
     let size = (cols as u16, rows as u16);
     // (the card the target is in is drawn even cut — a target narrower than its card, `|N`: no placement avoids it)
-    let cards: Vec<Card> = cards(screen).into_iter().filter(|&b| !holds(b, target)).collect();
+    let cards: Vec<Card> =
+        cards(screen).into_iter().filter(|&b| !holds(b, target) && Some(b) != skip).collect();
     let shape = |r: Region| match r.w / r.h > aspect {
         true => (r.w.min(cols as f32), (r.w / aspect).min(rows as f32)),
         false => ((r.h * aspect).min(cols as f32), r.h.min(rows as f32)),
@@ -436,23 +580,33 @@ pub(crate) enum Edge {
 }
 
 /// What a Short's frame draws of the screen in a window of whole cells (columns `c0..c1`, rows `r0..r1`): every cell
-/// but a card the window cuts (`left_out`, `cut`'s), laid with the window's ground; a row whose text runs past the
-/// window's left or right edge drawn cut there as a zoomed video crops (`fade`: its last cells easing into their
-/// ground). A row is drawn whole or not at all — what's drawn belongs to a row that's drawn: never its ground or its
-/// blame without its code.
+/// but a card the window cuts (`left_out`, `cut`'s) and a news beat's toast, laid over the window instead (`news`,
+/// `callout`), laid with the window's ground; a row whose text runs past the window's left or right edge drawn cut
+/// there as a zoomed video crops (`fade`: its last cells easing into their ground); a sliver of one the left edge
+/// leaves erased to its ground (`slivers`). A row is drawn whole or not at all — what's drawn belongs to a row that's
+/// drawn: never its ground or its blame without its code.
 pub(crate) struct Window {
     pub(crate) left_out: Vec<Card>,
     pub(crate) fade: Vec<(usize, Edge)>,
+    pub(crate) slivers: Vec<(usize, usize, usize)>,
 }
 
 impl Window {
-    pub(crate) fn of(screen: &Cells, view: (usize, usize, usize, usize), target: Region) -> Window {
+    pub(crate) fn of(
+        screen: &Cells,
+        view: (usize, usize, usize, usize),
+        target: Region,
+        news: Option<Card>,
+    ) -> Window {
         // (the card the target is in, where the window cuts it — a target narrower than its card, `|N` —, and a card
         // between the code's lines are drawn cut as a code row is: their rows fading at the edge)
         let others: Vec<Card> = (cards(screen).into_iter())
             .filter(|&b| !(cuts(view, b) && (holds(b, target) || between(screen, b))))
             .collect();
-        Window { left_out: cut(screen, view, target), fade: runs_past(screen, view, &others) }
+        let mut left_out = cut(screen, view, target);
+        left_out.extend(news.filter(|n| !left_out.contains(n)));
+        let slivers = slivers(screen, view, &others, target);
+        Window { left_out, fade: runs_past(screen, view, &others), slivers }
     }
 
     /// Whether the frame draws the screen's cell at row `r`, column `c` (inside the window).
@@ -472,10 +626,7 @@ fn runs_past(
 ) -> Vec<(usize, Edge)> {
     let mut out = Vec::new();
     for (r, row) in screen.text.iter().enumerate().take(r1).skip(r0) {
-        let inked = |c: usize| match row.get(c).and_then(|s| s.chars().next()) {
-            None => c > 0 && row.get(c - 1).and_then(|s| s.chars().next()).is_some_and(wide),
-            Some(ch) => !ch.is_whitespace() && !('\u{2500}'..='\u{259f}').contains(&ch),
-        };
+        let inked = |c: usize| inked(row, c);
         let carded = |c: usize| cards.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3);
         let across = |inside: usize, outside: usize| {
             inked(inside) && inked(outside) && !carded(inside) && !carded(outside)
@@ -485,6 +636,65 @@ fn runs_past(
         }
         if c1 < row.len() && c1 > c0 && across(c1 - 1, c1) {
             out.push((r, Edge::Right));
+        }
+    }
+    out
+}
+
+/// Whether a row's cell `c` is inked: text, not a blank nor a line (`─`, `│`, `▎`…) — a wide character's second cell
+/// counts.
+fn inked(row: &[String], c: usize) -> bool {
+    match row.get(c).and_then(|s| s.chars().next()) {
+        None => c > 0 && row.get(c - 1).and_then(|s| s.chars().next()).is_some_and(wide),
+        Some(ch) => !ch.is_whitespace() && !('\u{2500}'..='\u{259f}').contains(&ch),
+    }
+}
+
+/// A sliver: what the window's left edge leaves of a row's text, at most this many cells — a `{`, a `;`, a word's last
+/// letters say nothing.
+const SLIVER: usize = 3;
+
+/// The slivers a window of whole cells (columns `c0..c1`, rows `r0..r1`) leaves at its left edge (row, first cell,
+/// past its last): a row's text running in from past the edge (text just outside it, or one blank between) that ends
+/// within `SLIVER` cells — at two blanks or a line —, none of it in one of `cards` nor the target's own cells. Drawn,
+/// it's noise: the frame erases it to its ground (left out, never faded — a faded `{` is still a `{`).
+fn slivers(
+    screen: &Cells,
+    (c0, r0, c1, r1): (usize, usize, usize, usize),
+    cards: &[Card],
+    target: Region,
+) -> Vec<(usize, usize, usize)> {
+    let mut out = Vec::new();
+    if c0 == 0 {
+        return out;
+    }
+    let own = |r: usize, c: usize| {
+        let (r, c) = (r as f32, c as f32);
+        target.y + AIR <= r
+            && r < target.y + target.h - AIR
+            && target.x + AIR <= c
+            && c < target.x + target.w - AIR
+    };
+    for (r, row) in screen.text.iter().enumerate().take(r1).skip(r0) {
+        let ink = |c: usize| inked(row, c);
+        let space = |c: usize| row.get(c).is_some_and(|s| s.chars().all(char::is_whitespace));
+        let from = match ink(c0) {
+            true => c0,
+            false if c0 + 1 < c1 && space(c0) && ink(c0 + 1) => c0 + 1,
+            false => continue,
+        };
+        // (text just outside: the cell before `from`, or the one before a blank)
+        let mut before = (from - 1..from).chain(from.checked_sub(2).filter(|_| space(from - 1)));
+        if !before.any(|c| c < c0 && ink(c)) {
+            continue;
+        }
+        let mut to = from;
+        while to < c1 && (ink(to) || space(to) && to + 1 < c1 && ink(to + 1)) {
+            to += 1;
+        }
+        let carded = |c: usize| cards.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3);
+        if to < c1 && to - from <= SLIVER && !(from..to).any(|c| carded(c) || own(r, c)) {
+            out.push((r, from, to));
         }
     }
     out
@@ -533,7 +743,7 @@ pub(crate) fn code_rows(screen: &Cells) -> Vec<Option<String>> {
 
 /// The cards on a screen (`video.rs` reads them too): every frame drawn with `╭╮╰╯`, and every borderless one — a
 /// stretch of cells on a ground of its own (not the screen's commonest), as near a rectangle as a toast's or a peek's is, its first cell the kind's
-/// `▎` as a toast's and a peek's are, narrower than three quarters of the screen (a cursor's line is a row across the
+/// `▎` as a toast's and a peek's are (or a blank, the `▎` after it: a toast's cell of air), narrower than three quarters of the screen (a cursor's line is a row across the
 /// code), never the last row (the status line's) — and never the code's own rows (a wash on the lines Claude read or
 /// changed: a gutter's number inside it), nor a row inside a frame (a list's selected row: the frame's own).
 pub(crate) fn cards(screen: &Cells) -> Vec<Card> {
@@ -568,7 +778,9 @@ pub(crate) fn cards(screen: &Cells) -> Vec<Card> {
                 }
             }
             let (w, h) = (b.3 - b.1 + 1, b.2 - b.0 + 1);
-            let marked = screen.text[b.0][b.1] == "▎";
+            let first = &screen.text[b.0];
+            let marked = first[b.1] == "▎"
+                || first[b.1].trim().is_empty() && first.get(b.1 + 1).is_some_and(|c| c == "▎");
             let code = (b.0..=b.2).any(|r| {
                 numbered(&screen.text[r], &divs).is_some_and(|(_, at, _)| (b.1..=b.3).contains(&at))
             });
@@ -757,7 +969,8 @@ mod tests {
         assert_eq!(widened(first, [away].into_iter(), SCREEN), first);
     }
 
-    /// A borderless card is a toast's or a peek's: a ground of its own starting with the kind's `▎` — never a ground
+    /// A borderless card is a toast's or a peek's: a ground of its own starting with the kind's `▎` (or a cell of air
+    /// and the `▎`, as V1's `would conflict` toast stands: #336 framed only its row's words) — never a ground
     /// without it (a selection, a match), nor a wash on the code's own numbered rows, `▎` sign and all, nor a list's
     /// selected row inside its frame (V2's session list: left out alone where the window cut the list it's in).
     #[test]
@@ -767,7 +980,7 @@ mod tests {
             "  a selection here ",
             "▎ 3 let x = 1;     ",
             "▎ 4▎let y = 2;     ",
-            "                   ",
+            " ▎ would conflict  ",
             "╭─ sessions ─╮",
             "│▎ main  2   │",
             "╰────────────╯",
@@ -779,7 +992,9 @@ mod tests {
         // (a line just written: the follow caret right after its number, its ink drying on a ground)
         cells.ground[3][0..14].fill(8);
         cells.ground[6][1..13].fill(9);
-        assert_eq!(cards(&cells), vec![(5, 0, 7, 13), (0, 0, 0, 11)]);
+        // (a toast's cell of air before its mark)
+        cells.ground[4][0..12].fill(10);
+        assert_eq!(cards(&cells), vec![(5, 0, 7, 13), (0, 0, 0, 11), (4, 0, 4, 11)]);
     }
 
     /// A row whose text the window's edge cuts is drawn cut there, fading at that edge: text on both sides of it, either
@@ -832,7 +1047,7 @@ mod tests {
         assert_eq!(target(&on, "card:ask"), Some(region(0.0, 4.0, 40.0, 5.0)));
         let window = framed(&on, t, 2.0, 0.5, 80.0);
         assert_eq!(window, region(0.0, 3.0, 16.0, 8.0), "rows 2–9 would cut the list: slid to take it whole");
-        let shown = Window::of(&on, (0, 3, 16, 11), t);
+        let shown = Window::of(&on, (0, 3, 16, 11), t, None);
         assert_eq!(shown.left_out, vec![], "the card the target is in, drawn cut");
         assert_eq!(shown.fade, vec![(6, Edge::Right)], "its words fade where the edge cuts them");
     }
@@ -855,7 +1070,7 @@ mod tests {
         let target = region(0.0, 0.0, 14.0, 3.0);
         let on = rows("");
         assert_eq!(cards(&on), vec![(2, 3, 4, 34)]);
-        let shown = Window::of(&on, (0, 0, 20, 7), target);
+        let shown = Window::of(&on, (0, 0, 20, 7), target, None);
         assert_eq!(shown.left_out, vec![], "between the lines: drawn");
         assert_eq!(shown.fade, vec![(3, Edge::Right)], "its words cut at the edge, fading");
         // (floating over the code: a number beside each of its rows)
@@ -864,7 +1079,7 @@ mod tests {
         for (r, n) in [(2, 50), (3, 51), (4, 52)] {
             on.text[r][..3].clone_from_slice(&over(n).chars().map(String::from).collect::<Vec<_>>());
         }
-        let shown = Window::of(&on, (0, 0, 20, 7), target);
+        let shown = Window::of(&on, (0, 0, 20, 7), target, None);
         assert_eq!(shown.left_out, vec![(2, 3, 4, 34)], "floating: left out");
         assert_eq!(shown.fade, vec![]);
         // (floating over the gutter, the numbers under it: left out)
@@ -880,7 +1095,7 @@ mod tests {
         }
         assert_eq!(cards(&on), vec![(2, 0, 4, 31)]);
         assert_eq!(
-            Window::of(&on, (0, 0, 20, 7), target).left_out,
+            Window::of(&on, (0, 0, 20, 7), target, None).left_out,
             vec![(2, 0, 4, 31)],
             "over the gutter: left out"
         );
@@ -896,11 +1111,76 @@ mod tests {
         cells.ground[0][3..50].fill(9);
         cells.ground[1][40..52].fill(5);
         let view = (10, 0, 46, 2);
-        let window = Window::of(&cells, view, region(10.0, 0.0, 20.0, 1.0));
+        let window = Window::of(&cells, view, region(10.0, 0.0, 20.0, 1.0), None);
         assert!((10..46).all(|c| window.drawn(0, c)), "the line under the cursor drawn whole");
         assert_eq!(window.left_out, vec![(1, 40, 1, 51)], "the toast past the right edge");
         assert!((10..40).all(|c| window.drawn(1, c)) && !(40..46).any(|c| window.drawn(1, c)));
         assert_eq!(window.fade, vec![(0, Edge::Left), (0, Edge::Right)]);
+    }
+
+    /// A news beat (`news:<text> over <target>`): its target the code's while the toast is up (none without it); the
+    /// toast as it stands where the window has room for it, else laid again between its phrases (`src/main.rs L30 —`
+    /// moves down whole, never `L30 —` left from its file); the window moved up so the callout and a row of air stand
+    /// above the code; and the toast never drawn where it stands on the screen — whole in the window too.
+    #[test]
+    fn a_news_beat_frames_its_code_and_lays_its_toast_over_the_top() {
+        // (as tarae draws it: a cell of air before its mark)
+        let toast = [" ▎ main ≈ fix · src/main.rs L30 — ", "   would conflict"];
+        let rows: Vec<String> = (0..24)
+            .map(|r| match r {
+                0 => "─".repeat(60),
+                1 | 2 => format!("{:<26}{:<34} ", "", toast[r - 1]),
+                r => format!("{n}     let x{n} = {n};", n = r + 24),
+            })
+            .collect();
+        let mut on = grid(&rows.iter().map(String::as_str).collect::<Vec<_>>());
+        on.ground[1][26..60].fill(5);
+        on.ground[2][26..60].fill(5);
+        let spec = "news:would conflict over code:30-31";
+        let code = target(&on, "code:30-31").expect("the code");
+        assert_eq!(target(&on, spec), Some(code));
+        assert_eq!(target(&on, "news:saved over code:30-31"), None, "no toast up, no news");
+        let said = |c: &Callout| -> Vec<String> {
+            let cell =
+                |x: &Option<(usize, usize)>| x.map_or(" ", |(r, c)| on.text[r][c].as_str()).to_string();
+            c.lines.iter().map(|l| l.iter().map(cell).collect::<String>().trim_end().to_string()).collect()
+        };
+        let whole = callout(&on, "would conflict", 40).expect("the toast");
+        assert_eq!(whole.card, (1, 26, 2, 59));
+        assert_eq!(said(&whole), toast.map(|t| t.trim_end().to_string()), "as it stands, with room");
+        let laid = callout(&on, "would conflict", 29).expect("the toast");
+        assert_eq!(said(&laid), [" ▎ main ≈ fix ·", "   src/main.rs L30 —", "   would conflict"]);
+        assert!(laid.lines.iter().all(|l| l.len() == 21), "each line the callout's width");
+        assert_eq!(on.text[laid.ground.0][laid.ground.1], " ", "its ground a blank of its own");
+        let r = news_framed(&on, "would conflict", code, 1.8, 0.3, 40.0);
+        let n = callout(&on, "would conflict", r.w as usize - 2).expect("the toast").lines.len() as f32;
+        assert!(r.y + 1.0 + n <= code.y, "the callout above the code: {r:?}, {n} lines, {code:?}");
+        assert!(code.y + code.h <= r.y + r.h, "the code in the window: {r:?}");
+        let view = (0, 0, 60, 24);
+        assert!(Window::of(&on, view, code, Some(whole.card)).left_out.contains(&whole.card));
+        assert!(Window::of(&on, view, code, None).left_out.is_empty(), "a toast whole in a window is drawn");
+    }
+
+    /// A sliver — what the left edge leaves of a row's text, a `{`, a `;`, a word's last letters — is erased: text
+    /// just past the edge (or one blank between), ending within `SLIVER` cells; a row's own text starting at the edge,
+    /// a longer run, one in a card or the target's own cells is drawn.
+    #[test]
+    fn a_sliver_at_the_left_edge_is_left_out() {
+        let on = grid(&[
+            "abcdefgh) {",
+            "abcdefghij;",
+            "abcdefghwind ────",
+            "abcdefghijklmnopqrstuvwxyz",
+            "          let",
+            "ab        {",
+            "abcdefghij {",
+            "abcdefghij;",
+            "abcdefghij;",
+        ]);
+        let own = region(9.0, 7.0, 4.0, 3.0);
+        let found = slivers(&on, (10, 0, 40, 9), &[(7, 0, 7, 12)], own);
+        assert_eq!(found, [(0, 10, 11), (1, 10, 11), (2, 10, 12), (6, 11, 12)]);
+        assert_eq!(slivers(&on, (0, 0, 40, 9), &[], own), [], "no edge past the screen's");
     }
 
     /// The code's rows as the writing is read from them: from the text's column past the numbers, a row with no number

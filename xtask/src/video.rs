@@ -329,7 +329,11 @@ fn moves(rec: &Recorded, aspect: f32, eye: f32, legible: f32) -> (Vec<Move>, Vec
                 .take_while(|f| f.0 < until)
                 .filter_map(|f| camera::target(&camera::Cells::of(&f.1), spec));
             let region = camera::widened(region, held, (cells.text[0].len() as u16, cells.text.len() as u16));
-            Some((*at.max(&t), camera::framed(&cells, region, aspect, eye, legible), region))
+            let window = match camera::news(spec) {
+                Some((text, _)) => camera::news_framed(&cells, text, region, aspect, eye, legible),
+                None => camera::framed(&cells, region, aspect, eye, legible),
+            };
+            Some((*at.max(&t), window, region))
         });
         match found {
             Some((at, window, region)) => out.push((at, spec.to_string(), window, region)),
@@ -627,9 +631,9 @@ fn part(t: u64, punch: Option<u64>, lead: u64, shown: u64) -> Part {
 #[derive(Clone, Copy, PartialEq)]
 enum Shows {
     Title,
-    /// The take's screen, its caption (the beat's), how far that has come in (of 255), the camera's region and its
-    /// target's (a card meeting it never left out).
-    Screen(usize, Option<usize>, u8, Region, Region),
+    /// The take's screen, its caption (the beat's), how far that has come in (of 255), the camera's region, its
+    /// target's (a card meeting it never left out) and the move whose target is a news beat's (its toast laid over).
+    Screen(usize, Option<usize>, u8, Region, Region, Option<usize>),
     End,
 }
 
@@ -670,15 +674,16 @@ impl Video<'_> {
         let beat =
             self.rec.beats.iter().rposition(|b| b.0 <= ms).filter(|&i| !self.rec.beats[i].1.is_empty());
         let came = beat.map_or(255, |i| ((ms - self.rec.beats[i].0) * 255 / FADE_MS).min(255) as u8);
-        let (region, target) = match self.form {
-            Form::Wide => (Region::all(self.screen), Region::all(self.screen)),
+        let (region, target, news) = match self.form {
+            Form::Wide => (Region::all(self.screen), Region::all(self.screen), None),
             Form::Short => {
-                let i = self.targets.partition_point(|t| t.0 <= ms);
-                let target = i.checked_sub(1).map_or(Region::all(self.screen), |i| self.targets[i].1);
-                (camera::at(&self.moves, self.screen, ms), target)
+                let i = self.targets.partition_point(|t| t.0 <= ms).checked_sub(1);
+                let target = i.map_or(Region::all(self.screen), |i| self.targets[i].1);
+                let news = i.filter(|&i| camera::news(&self.named[i]).is_some());
+                (camera::at(&self.moves, self.screen, ms), target, news)
             }
         };
-        Shows::Screen(screen, beat, came, region, target)
+        Shows::Screen(screen, beat, came, region, target, news)
     }
 
     /// The `k`th frame's ms in the video.
@@ -690,12 +695,12 @@ impl Video<'_> {
         match part(Self::ms(k), self.punch, self.lead, self.shown_ms) {
             // (the punchline: the take from its mark, its caption standing as it was there)
             Part::Punch(at) => {
-                let Shows::Screen(i, beat, _, region, target) =
+                let Shows::Screen(i, beat, _, region, target, news) =
                     self.take_at(at, self.times.partition_point(|&s| s <= at).saturating_sub(1))
                 else {
                     unreachable!("take_at is a screen")
                 };
-                Shows::Screen(i, beat, 255, region, target)
+                Shows::Screen(i, beat, 255, region, target, news)
             }
             Part::Title => Shows::Title,
             Part::Take(at) => self.take_at(at, screen_at(&self.times, k - self.lead * FPS / 1000)),
@@ -706,13 +711,14 @@ impl Video<'_> {
     /// The frame `shows` says, its screen drawn into `drawn` when it isn't the one there and its captions' pictures kept
     /// in `captions`.
     fn frame(&self, shows: Shows, drawn: &mut Drawn, captions: &mut HashMap<usize, Picture>) -> Vec<u8> {
-        let (i, beat, came, region, target) = match shows {
+        let (i, beat, came, region, target, news) = match shows {
             Shows::Title => return self.cards.0.clone(),
             Shows::End => return self.cards.1.clone(),
-            Shows::Screen(i, beat, came, region, target) => (i, beat, came, region, target),
+            Shows::Screen(i, beat, came, region, target, news) => (i, beat, came, region, target, news),
         };
         if self.form == Form::Short {
-            return self.short_frame(i, (beat, came), (region, target), drawn, captions);
+            let news = news.and_then(|m| camera::news(&self.named[m])).map(|(text, _)| text);
+            return self.short_frame(i, (beat, came), (region, target, news), drawn, captions);
         }
         let key = (i, self.px as u32);
         if drawn.as_ref().is_none_or(|d| d.0 != key) {
@@ -745,13 +751,15 @@ impl Video<'_> {
 
     /// A Short's frame: screen `i` drawn at the glyph size `region` fits the window at, cropped there — only whole
     /// cells, every card the window cuts (but the one `target` is in) left out on the window's ground, and a row whose
-    /// text its left or right edge cuts drawn cut there, fading into its ground (`camera::Window`) —, the beat's caption
-    /// (and how far it has come in) wrapped in the band above.
+    /// text its left or right edge cuts drawn cut there, fading into its ground, a sliver the left edge leaves erased
+    /// (`camera::Window`) —, a news beat's toast (`news`: its text) laid over the window's top as it stands on the
+    /// screen, each of its cells copied from the screen's picture (`camera::callout`), the beat's caption (and how far it
+    /// has come in) wrapped in the band above.
     fn short_frame(
         &self,
         i: usize,
         (beat, came): (Option<usize>, u8),
-        (region, target): (Region, Region),
+        (region, target, news): (Region, Region, Option<&str>),
         drawn: &mut Drawn,
         captions: &mut HashMap<usize, Picture>,
     ) -> Vec<u8> {
@@ -789,14 +797,26 @@ impl Video<'_> {
         }
         // (the cards the window cuts: left out, the window's ground in their cells; every other cell drawn)
         let cells = camera::Cells::of(screen);
-        let window = camera::Window::of(&cells, (c0, r0, c1, r1), target);
+        let callout = news.and_then(|text| camera::callout(&cells, text, (c1 - c0).saturating_sub(2)));
+        let window = camera::Window::of(&cells, (c0, r0, c1, r1), target, callout.as_ref().map(|c| c.card));
+        let fill = |out: &mut Vec<u8>, r: usize, c: usize, ground: Rgb| {
+            for y in (PAD + r * ch)..(PAD + (r + 1) * ch).min(ph) {
+                for x in (PAD + c * cw)..(PAD + (c + 1) * cw).min(pw) {
+                    out[to(x, y)..][..3].copy_from_slice(&ground);
+                }
+            }
+        };
         for r in r0..r1 {
             for c in (c0..c1).filter(|&c| !window.drawn(r, c)) {
-                for y in (PAD + r * ch)..(PAD + (r + 1) * ch).min(ph) {
-                    for x in (PAD + c * cw)..(PAD + (c + 1) * cw).min(pw) {
-                        out[to(x, y)..][..3].copy_from_slice(&self.look.ground);
-                    }
-                }
+                fill(&mut out, r, c, self.look.ground);
+            }
+        }
+        // (a sliver: each cell its own ground — its top-left pixel's, where no glyph reaches)
+        for &(r, from, end) in &window.slivers {
+            for c in from..end {
+                let at = to(PAD + c * cw, PAD + r * ch);
+                let ground: Rgb = [out[at], out[at + 1], out[at + 2]];
+                fill(&mut out, r, c, ground);
             }
         }
         // (a row whose text runs past the window's edge: cut there, its last `FADE_CELLS` easing into each cell's own
@@ -821,6 +841,26 @@ impl Video<'_> {
                     let a = (f32::from(FADE_MAX) * (1.0 - d as f32 / span)).max(0.0) as u8;
                     for y in y0..y1 {
                         mix(&mut out[to(x, y)..][..3], ground, a);
+                    }
+                }
+            }
+        }
+        // (the news laid over the window's top: each cell's pixels the screen's own, where it stands on the screen)
+        if let Some(news) = &callout {
+            let w = news.lines.first().map_or(0, Vec::len);
+            let (top, left) = camera::callout_at((c0, r0, c1, r1), w);
+            for (k, line) in news.lines.iter().enumerate() {
+                for (j, cell) in line.iter().enumerate() {
+                    let (r, c) = (top + k, left + j);
+                    if r >= r1 || c >= c1 {
+                        continue;
+                    }
+                    let (sr, sc) = cell.unwrap_or(news.ground);
+                    for dy in 0..ch.min(ph.saturating_sub(PAD + sr * ch)) {
+                        let (from, y) = ((PAD + sr * ch + dy) * pw + PAD + sc * cw, PAD + r * ch + dy);
+                        let at = to(PAD + c * cw, y);
+                        let n = cw.min(pw.saturating_sub(PAD + sc * cw));
+                        out[at..at + n * 3].copy_from_slice(&pic[from * 3..(from + n) * 3]);
                     }
                 }
             }

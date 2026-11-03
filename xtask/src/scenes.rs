@@ -2759,7 +2759,8 @@ const THREE_CLAUDES: &[&str] = &[
     "@sound:still",
     "@20?would conflict",
     "@beat:The moment two would conflict, tarae says so.",
-    "@zoom:card:would conflict",
+    // (a Short: the lines both changed, the toast that says so laid over them — a news beat)
+    "@zoom:news:would conflict over code:30-31",
     "@2",
     "@zoom:code:29-32",
     "@2",
