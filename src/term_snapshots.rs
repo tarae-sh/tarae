@@ -2055,7 +2055,8 @@ fn the_chats_prose_fills_a_width_you_set() {
 }
 
 /// A command Claude wants to run outside the sandbox, asked while it works in follow mode, the chat out of sight: the
-/// follow card moves to the top right, out of the card's way, the card's buttons in sight.
+/// follow card stands on the card, a row of air between, its foot kept — never sent to the top (#299) — the card's
+/// buttons in sight.
 #[test]
 fn snapshot_follow_offer_run() {
     // (the turn's time drawn from a clock held still)

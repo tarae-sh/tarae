@@ -11,6 +11,9 @@
 //! P3 step 7: floated and back (`C-w e`), moved (`C-w m`, `l`, `j`), its run's `q` racing its end and a card coming
 //! over it. After every step a floating group's own pane is out of the tree, once, while it floats; drawn, its frame is
 //! on the screen whole; the slot's tabs never list it while it floats in sight; `C-w m` moves only a pane there.
+//!
+//! Polish landing 1 and #299: Claude at work in follow mode the whole run — neither a card that came on its own nor the
+//! follow card covers a floating pane's frame.
 
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
@@ -53,6 +56,17 @@ fn run(choices: Choices) -> Vec<String> {
     ed.layouts_path = Some(file.clone());
     ed.open(&root.join("a.txt")).unwrap();
     ed.workspace.test_run = Some(tests());
+    // (Claude at work in follow mode, its chat out of sight: its card came on its own too — #299)
+    let mut c = crate::chat::Chat::new();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "tidy the docs", ""));
+    // (words enough for its full height, up to where the group floats)
+    let words = "The docs say the same thing in three places; I keep the design page's words and point the others \
+                 at it, then read each page again to be sure nothing it said is lost on the way.";
+    for _ in 0..3 {
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, words, ""));
+    }
+    (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Writing);
+    ed.workspace.claude.chat = Some(c);
     crate::term::render(&mut ed, &mut Vec::new(), 120, 40).unwrap();
     let world = World::default();
     let key = root.to_str().unwrap().to_string();
@@ -195,6 +209,7 @@ fn held(ed: &Editor, world: &World, file: &std::path::Path, key: &str) -> Result
     record(ed, world, key);
     docked_held(ed)?;
     fold_held(ed)?;
+    follow_held(ed)?;
     let Some(kept) = crate::layouts::read(Some(file)).get(key).cloned() else { return Ok(()) };
     let asked = world.asked.borrow();
     let seqs: Vec<u64> = asked.iter().filter(|a| a.1 == kept).map(|a| a.0).collect();
@@ -215,7 +230,10 @@ fn held(ed: &Editor, world: &World, file: &std::path::Path, key: &str) -> Result
 /// unfocused and not yours, it meets no floating frame that frame drew — folded to its peeks there instead.
 fn fold_held(ed: &Editor) -> Result<(), String> {
     let whole = (ed.screen.offer_buttons.iter()).any(|b| !b.3.is_ascii_digit() && b.3 != crate::mouse::WAY);
-    let came = ed.offers.first().is_some_and(|o| !o.yours) && !ed.card_has_keys();
+    // (waiting as that frame drew it — its way in on its bottom line: the keys may have left it since, a key with no
+    // frame after it)
+    let waiting = ed.screen.offer_buttons.iter().any(|b| b.3 == crate::mouse::WAY);
+    let came = ed.offers.first().is_some_and(|o| !o.yours) && waiting;
     let Some((x, y, w, h)) = ed.screen.offer_card.filter(|_| whole && came) else { return Ok(()) };
     for (k, r) in ed.screen.floating.borrow().iter() {
         if x < r.x + r.w && r.x < x + w && y < r.y + r.h && r.y < y + h {
@@ -223,6 +241,17 @@ fn fold_held(ed: &Editor) -> Result<(), String> {
                 "a card that came on its own at {:?} covers {k:?}'s frame {r:?}",
                 (x, y, w, h)
             ));
+        }
+    }
+    Ok(())
+}
+
+/// The follow card came on its own too (#299): drawn by the last frame, it meets no floating frame that frame drew.
+fn follow_held(ed: &Editor) -> Result<(), String> {
+    let Some((x, y, w, h)) = ed.screen.thought_card.get() else { return Ok(()) };
+    for (k, r) in ed.screen.floating.borrow().iter() {
+        if x < r.x + r.w && r.x < x + w && y < r.y + r.h && r.y < y + h {
+            return Err(format!("the follow card at {:?} covers {k:?}'s frame {r:?}", (x, y, w, h)));
         }
     }
     Ok(())

@@ -5412,7 +5412,10 @@ fn draw(
         && !lay.code_hidden()
         && !editor.welcome()
     {
-        let avoid: Vec<Rect4> = [note_rect, offer_rect].into_iter().flatten().map(kept_apart).collect();
+        // (it came on its own too: never over a floating pane you opened — landing 1's rule, #299)
+        let opened = opened_floats(editor, lay);
+        let avoid: Vec<Rect4> =
+            [note_rect, offer_rect].into_iter().flatten().chain(opened).map(kept_apart).collect();
         let drawn = draw_follow_card(c, editor, ui, lay, &avoid, out)?;
         (follow_rect, follow_says) = (drawn.map(|d| d.0), drawn.is_some_and(|d| d.1));
         drew(editor, Kind::Follow, follow_rect);
@@ -15016,8 +15019,9 @@ fn draw_ask_stream(
     Ok(Some((x0, y0, width, h)))
 }
 
-/// Follow mode's one card (U4), in one place — the bottom right of the code (the top right when a note or an
-/// offer holds that corner, or the lines being read run under it): what Claude is at, and the turn (글타래 P6 —
+/// Follow mode's one card (U4), in one place — the bottom right of the code, on the asks standing there (the top right
+/// when a note holds that corner, or the lines being read run under it; never over a floating pane you opened —
+/// #299): what Claude is at, and the turn (글타래 P6 —
 /// `follow_thread`: its stops as knots, `●` the one in hand, its words between them); while the chat is out of
 /// sight, also the question, the plan's step and the key that reads it (a click on it brings the chat back, on a knot
 /// goes there). `None`: no room.
@@ -15338,18 +15342,29 @@ fn draw_follow_card(
     };
     // Where: the bottom right — the top right if that's taken, else the biggest gap between (an edit
     // review's changes); none free of the lines read and the review's changes: free of the change in hand,
-    // then of the lines read, then anywhere (a card over cards never). As many of the newest words as
-    // there's room for, a row at least, up to `BODY` and half the pane.
+    // then of the lines read, then anywhere (a card over cards, or over a floating pane you opened, never).
+    // As many of the newest words as there's room for, a row at least, up to `BODY` and half the pane.
     // (at the pane's foot it stands on its row of air, as every card at the foot does — `card_floor`)
     let end = (py + ph).saturating_sub(1);
     let min_h = fixed + 1;
+    // (the cards in its columns: other cards' rows, and a floating pane's)
+    let mut cards: Vec<(usize, usize)> = avoid
+        .iter()
+        .filter(|r| r.0 < x0 + width && x0 < r.0 + r.2)
+        .map(|r| (r.1, r.1 + r.3))
+        .filter(|b| b.0 < end && b.1 > py)
+        .collect();
+    #[expect(clippy::disallowed_methods, reason = "a card's placement, every frame: std's, in place")]
+    cards.sort_unstable();
+    // (its foot: on the cards standing at the code's foot — the asks' stack — as they stand on its row of air; so a card
+    // coming there lifts it by the stack's rows, never sends it to the top, #299)
+    let floor = cards.iter().rev().fold(end, |f, b| if b.0 < f && b.1 >= f { b.0 } else { f });
     // (first row, end, anchored at its end)
     let place = |keep: &[usize]| -> Option<(usize, usize, bool)> {
         // Rows other cards (and what's kept in sight) hold in the card's columns
-        let mut blocks: Vec<(usize, usize)> = avoid
+        let mut blocks: Vec<(usize, usize)> = cards
             .iter()
-            .filter(|r| r.0 < x0 + width && x0 < r.0 + r.2)
-            .map(|r| (r.1, r.1 + r.3))
+            .copied()
             .chain(keep.iter().map(|&r| (r, r + 1)))
             .filter(|b| b.0 < end && b.1 > py)
             .collect();
@@ -15367,7 +15382,7 @@ fn draw_follow_card(
             gaps.push((at, end));
         }
         let fits = |g: &&(usize, usize)| g.1 - g.0 >= min_h;
-        let bottom = gaps.last().filter(|g| g.1 == end).filter(fits).map(|g| (g.0, g.1, true));
+        let bottom = gaps.iter().find(|g| g.1 == floor).filter(fits).map(|g| (g.0, g.1, true));
         let top = gaps.first().filter(|g| g.0 == py).filter(fits).map(|g| (g.0, g.1, false));
         bottom
             .or(top)
@@ -28109,6 +28124,65 @@ mod tests {
                     Some(k) => assert_eq!(k, floor, "{at}: which-key\n{}", rows.join("\n")),
                     None => assert!(w == 80 && chat, "{at}: which-key drawn\n{}", rows.join("\n")),
                 }
+            }
+        }
+    }
+
+    /// #299: the follow card came on its own too — it never covers a floating pane you opened (landing 1's rule), and a
+    /// card coming to the code's foot lifts it onto the asks' stack, its foot right over it, never to the top. At 80×20
+    /// and 120×34, the session list open, an ask arriving: no cell of the list's frame under the follow card, before
+    /// the ask nor after.
+    #[test]
+    fn the_follow_card_keeps_off_a_pane_you_opened_and_stands_on_the_asks() {
+        use crate::offer::{Offer, What};
+        let draw = |ed: &mut Editor, w: u16, h: u16| {
+            let mut bytes = Vec::new();
+            render(ed, &mut bytes, w, h).unwrap();
+            let mut p = vt100::Parser::new(h, w, 0);
+            p.process(&bytes);
+            p.screen().contents()
+        };
+        for (w, h) in [(80u16, 20u16), (120, 34)] {
+            let at = format!("{w}×{h}");
+            let mut ed = threaded_turn();
+            // (the list asks git about the root: one of the test's own, never this repository)
+            let dir = crate::scratch::Scratch::new("follow-off-list");
+            ed.workspace.root = std::fs::canonicalize(&dir).unwrap();
+            let c = ed.workspace.claude.chat.as_mut().unwrap();
+            (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Writing);
+            c.msgs.pop();
+            let run = c.msgs[5].look.clone().unwrap();
+            c.follow.gaze =
+                Some(crate::follow::Gaze { call: "x1".into(), ..crate::follow::Gaze::new(run, None, None) });
+            ed.workspace.viewer.at = crate::workspace::At::Code;
+            for k in ["space", "W"] {
+                ed.handle_key(k.parse().unwrap());
+            }
+            let s = draw(&mut ed, w, h);
+            let list = ed.float_rect(crate::pane::GroupKind::Sessions).expect("the list floats");
+            let list = (list.x, list.y, list.w, list.h);
+            let card = ed.screen.thought_card.get().unwrap_or_else(|| panic!("{at}: the follow card\n{s}"));
+            assert!(!overlaps(card, list), "{at}: the follow card {card:?} over the list {list:?}\n{s}");
+            assert!(ed.screen.follow_at_foot.get(), "{at}: at the foot\n{s}");
+            // An ask of Claude's arrives: folded to its peek off the list, the follow card on it — still at the foot,
+            // still off the list
+            let what = What::Asks { call: crate::tools::Call::test(1) };
+            ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
+            let s = draw(&mut ed, w, h);
+            let ask = ed.screen.offer_card.unwrap_or_else(|| panic!("{at}: the ask\n{s}"));
+            let card = ed.screen.thought_card.get().unwrap_or_else(|| panic!("{at}: the follow card\n{s}"));
+            assert!(!overlaps(card, list), "{at}: the follow card {card:?} over the list {list:?}\n{s}");
+            assert!(
+                !overlaps(kept_apart(card), ask),
+                "{at}: the follow card {card:?} on the ask {ask:?}\n{s}"
+            );
+            assert!(ed.screen.follow_at_foot.get(), "{at}: no jump to the top\n{s}");
+            if overlaps((card.0, 0, card.2, h as usize), ask) {
+                assert_eq!(
+                    card.1 + card.3 + 1,
+                    ask.1,
+                    "{at}: its foot right over the ask, a row of air\n{s}"
+                );
             }
         }
     }
