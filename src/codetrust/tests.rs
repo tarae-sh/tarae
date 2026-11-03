@@ -144,7 +144,9 @@ fn code_untrust_takes_it_back_at_every_root_of_the_repository() {
     assert!(until(&mut ed, |ed| has_server(ed, &in_b)), "the other root: the repository's answer, no card");
     assert!(card(&ed).is_none());
     ed.open(&in_a).unwrap();
-    assert!(has_server(&ed, &in_a));
+    // (each root's share key is read on a worker: the one read second joins the first's server, parked until
+    // its swap begins — `a`'s may be that one)
+    assert!(until(&mut ed, |ed| has_server(ed, &in_a)), "the first root's server, its own or the shared one");
     ed.code_untrust().unwrap();
     assert!(!has_server(&ed, &in_a), "the front file's root's server stopped");
     assert!(!has_server(&ed, &in_b), "and the other root's: the trust it ran on is gone");
