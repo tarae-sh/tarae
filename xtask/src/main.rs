@@ -73,6 +73,7 @@ mod homepage;
 mod kernels;
 mod linux;
 mod perf;
+mod recording;
 // (tarae's own: a pty close-on-exec from the start)
 #[path = "../../src/pty.rs"]
 mod pty;

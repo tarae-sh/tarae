@@ -257,8 +257,10 @@ pub fn take(setup: &Setup, keys: &[String], size: (u16, u16), state: &Path, out:
     let scale = scale(std::env::var("TARAE_SHOT_SCALE").ok().as_deref())?;
     let mut vt = Vt::new(rows, cols);
     let missed = drive(&mut vt, setup, keys, state, &[], cols, rows)?;
-    // (a scene's `@~N` frames too, as `cargo xtask shot` keeps them)
-    contact_sheet(&vt, scale, out)?;
+    // (a scene's `@~N` frames too, as `cargo xtask shot` keeps them — not a recording's, `@rec`: `scenes --record`'s)
+    if !keys.iter().any(|k| k == "@rec") {
+        contact_sheet(&vt, scale, out)?;
+    }
     picture_of(&vt, scale, out, &missed)
 }
 
@@ -305,6 +307,36 @@ pub(crate) fn record_at(
         list.into_iter().map(|(d, s)| (d.as_millis() as u64, s)).collect()
     };
     Ok((ms(vt.captured), ms(vt.beats)))
+}
+
+/// A scene recorded (`scenes --record`): every frame from `@rec` on, each beat's time and caption (`@beat:<caption>`;
+/// a bare `@beat` none), each wait's end while recording (`?text`, `!text` — what it waited for), and each wait that
+/// timed out, said — the take kept all the same, to be seen.
+pub(crate) struct Recorded {
+    pub(crate) frames: Frames,
+    pub(crate) beats: Vec<(u64, String)>,
+    pub(crate) waits: Vec<(u64, String)>,
+    pub(crate) missed: Vec<String>,
+}
+
+/// `record_at` for a scene: what it returns is `Recorded`, a missed wait among it rather than an error.
+pub(crate) fn record(
+    setup: &Setup,
+    keys: &[String],
+    size: (u16, u16),
+    state: &Path,
+    homes: &[(&str, std::ffi::OsString)],
+) -> Result<Recorded> {
+    let (cols, rows) = size;
+    let mut vt = Vt::new(rows, cols);
+    let missed = drive(&mut vt, setup, keys, state, homes, cols, rows)?;
+    let ms = |d: Duration| d.as_millis() as u64;
+    Ok(Recorded {
+        frames: vt.captured.into_iter().map(|(d, s)| (ms(d), s)).collect(),
+        beats: vt.beats.iter().zip(vt.captions).map(|((d, _), c)| (ms(*d), c)).collect(),
+        waits: vt.waited.into_iter().map(|(d, w)| (ms(d), w)).collect(),
+        missed,
+    })
 }
 
 /// `record_at`'s frames from `@rec` on, each with its number (not its time) among every frame tarae wrote (its `frames_written` then —
@@ -498,8 +530,11 @@ struct Vt {
     capturing: Option<Instant>,
     /// The frames `@~N` or `@rec` kept: the screen before its key, then each frame drawn, with when it came.
     captured: Vec<(Duration, vt100::Screen)>,
-    /// The beat snapshots `@beat` marked during `@rec`.
+    /// The beat snapshots `@beat` marked during `@rec`, and each one's caption (`@beat:<caption>`; else empty).
     beats: Vec<(Duration, vt100::Screen)>,
+    captions: Vec<String>,
+    /// Each wait's end during `@rec`: when, and what it waited for (`?text`, `!text`).
+    waited: Vec<(Duration, String)>,
     /// Frames read so far, every one (a synchronized update's end each — tarae's `frames_written`), and each
     /// `captured` frame's count as it was kept.
     ends: u64,
@@ -514,6 +549,8 @@ impl Vt {
             capturing: None,
             captured: Vec::new(),
             beats: Vec::new(),
+            captions: Vec::new(),
+            waited: Vec::new(),
             ends: 0,
             captured_ends: Vec::new(),
         }
@@ -771,6 +808,8 @@ fn drive_with(
             vt.captured.clear();
             vt.captured_ends.clear();
             vt.beats.clear();
+            vt.captions.clear();
+            vt.waited.clear();
             if let Some((screen, ends)) = seen.take() {
                 vt.captured.push((Duration::ZERO, screen));
                 vt.captured_ends.push(ends);
@@ -779,10 +818,11 @@ fn drive_with(
             vt.capturing = Some(since);
             continue;
         }
-        if k == "@beat" {
+        if let Some(caption) = beat_key(k) {
             let d = vt.capturing.map_or(Duration::ZERO, |s| s.elapsed());
             vt.keep(d);
             vt.beats.push((d, vt.parser.screen().clone()));
+            vt.captions.push(caption.to_string());
             continue;
         }
         if let Some(ms) = k.strip_prefix("@hold:").and_then(|s| s.parse::<u64>().ok()) {
@@ -797,6 +837,9 @@ fn drive_with(
             let t = Instant::now();
             if pump_until(vt, text, max, false) {
                 eprintln!("shot: {text:?} on screen after {:.1}s", t.elapsed().as_secs_f64());
+                if let Some(since) = vt.capturing {
+                    vt.waited.push((since.elapsed(), format!("?{text}")));
+                }
             } else {
                 eprintln!("shot: {text:?} not on screen after {max}s — going on, the shot will fail");
                 // (the first miss's screen, to tell why — the later ones mostly follow from it)
@@ -853,6 +896,9 @@ fn drive_with(
             let t = Instant::now();
             if pump_until(vt, text, max, true) {
                 eprintln!("shot: {text:?} gone from the screen after {:.1}s", t.elapsed().as_secs_f64());
+                if let Some(since) = vt.capturing {
+                    vt.waited.push((since.elapsed(), format!("!{text}")));
+                }
             } else {
                 eprintln!("shot: {text:?} still on screen after {max}s — going on, the shot will fail");
                 missed.push(format!("waited {max} s for {text:?} to go: still on screen"));
@@ -878,6 +924,14 @@ fn drive_with(
     pump(vt, 0.6);
     quit(&mut master, &mut child, &rx);
     Ok(missed)
+}
+
+/// `@beat` / `@beat:<caption>`: a beat of a recording, and what's said under it (none for a bare `@beat`).
+fn beat_key(key: &str) -> Option<&str> {
+    match key {
+        "@beat" => Some(""),
+        k => k.strip_prefix("@beat:"),
+    }
 }
 
 /// The longest `@?text` waits unless it says (`@30?text`).

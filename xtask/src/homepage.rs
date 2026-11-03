@@ -9,23 +9,17 @@
 //! `XDG_CACHE_HOME` and `XDG_STATE_HOME` are inside a fresh `/tmp/tarae-docs/homepage-*` directory, the clock is
 //! pinned via `TZ`, and every recorded frame is checked with `none_of_yours` so no host path or username can leak.
 
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde_json::{Value, json};
-
+use crate::recording::{self, screen_cells};
 use crate::scenes::docshots::{Bg, Named, fixed_clock, homes, none_of_yours, now};
 use crate::scenes::{MAIN_RS, MAIN_TESTS, config_toml, demo_crate_with, write};
-use crate::shot::{self, Fonts, Rgb, Setup};
+use crate::shot::{self, Fonts, Setup};
 use crate::{Result, root};
 
 const COLS: u16 = 120;
 const ROWS: u16 = 32;
-/// Keyframe interval in milliseconds (~10 s, so scrubbing never replays from `t = 0`).
-const KEYFRAME_MS: u64 = 10_000;
-/// Sampling bucket width in milliseconds (keeps the latest screen in each 200 ms window).
-const FRAME_STEP_MS: u64 = 200;
 
 /// The six beats of "Three Claudes, one repository" (`.sb/home-plan.md` §2).
 const BEATS: [&str; 6] = [
@@ -229,7 +223,8 @@ fn record_theme(bg: Bg, bin: &Path, me: &Path, out: &Path) -> Result<()> {
     };
     let keys: Vec<String> = HERO_KEYS.iter().map(|k| k.to_string()).collect();
     let (raw_frames, beats) = shot::record_at(&setup, &keys, (COLS, ROWS), &state, &env_homes)?;
-    let sampled = sample_frames(&raw_frames, &beats);
+    let beat_times: Vec<u64> = beats.iter().map(|(t, _)| *t).collect();
+    let sampled = recording::sample(&raw_frames, &beat_times);
 
     let yours = std::env::var_os("HOME");
     for (_, screen) in &sampled {
@@ -239,9 +234,14 @@ fn record_theme(bg: Bg, bin: &Path, me: &Path, out: &Path) -> Result<()> {
         none_of_yours(&screen_cells(screen), yours.as_deref())?;
     }
 
-    let default_bg = if bg == Bg::Dark { [7, 8, 11] } else { [245, 241, 232] };
-    let default_fg = if bg == Bg::Dark { [232, 227, 216] } else { [52, 50, 45] };
-    let json_val = encode_recording(&sampled, &beats, default_fg, default_bg);
+    let (default_fg, default_bg) = recording::ground(bg);
+    // (each beat's caption, the last one's past the six)
+    let labelled: Vec<(u64, &str)> = beats
+        .iter()
+        .enumerate()
+        .map(|(i, (at, _))| (*at, BEATS.get(i).copied().unwrap_or(BEATS[BEATS.len() - 1])))
+        .collect();
+    let json_val = recording::encode(&sampled, &labelled, default_fg, default_bg);
     let json_text = serde_json::to_string(&json_val).map_err(|e| e.to_string())?;
     let json_path = out.join(format!("hero-{theme}.json"));
     write(&json_path, &json_text)?;
@@ -305,39 +305,6 @@ fn commit_in(dir: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
-/// Samples raw frames by keeping the first frame (`t = 0`), every beat timestamp, and the latest frame in each
-/// `FRAME_STEP_MS` (200 ms) bucket. If multiple raw frames share the same millisecond timestamp, keeps the last one.
-fn sample_frames(raw: &[(u64, vt100::Screen)], beats: &[(u64, vt100::Screen)]) -> Vec<(u64, vt100::Screen)> {
-    let beat_times: HashSet<u64> = beats.iter().map(|(t, _)| *t).collect();
-    let mut dedup: Vec<(u64, vt100::Screen)> = Vec::with_capacity(raw.len());
-    for (t, screen) in raw {
-        if let Some((last_t, last_screen)) = dedup.last_mut()
-            && *last_t == *t
-        {
-            *last_screen = screen.clone();
-            continue;
-        }
-        dedup.push((*t, screen.clone()));
-    }
-    let mut out = Vec::new();
-    for (i, (t, screen)) in dedup.iter().enumerate() {
-        let is_first = i == 0;
-        let is_beat = beat_times.contains(t);
-        let is_bucket_end =
-            dedup.get(i + 1).is_none_or(|(next_t, _)| next_t / FRAME_STEP_MS > t / FRAME_STEP_MS);
-        if is_first || is_beat || is_bucket_end {
-            out.push((*t, screen.clone()));
-        }
-    }
-    out
-}
-
-pub(crate) fn screen_cells(screen: &vt100::Screen) -> Vec<Vec<String>> {
-    let (rows, cols) = screen.size();
-    let text = |r, c| screen.cell(r, c).map(|cell| cell.contents().to_string()).unwrap_or_default();
-    (0..rows).map(|r| (0..cols).map(|c| text(r, c)).collect()).collect()
-}
-
 /// Saves a 2×3 grid contact sheet of the 6 beats to `out`.
 fn save_beats_sheet(beats: &[(u64, vt100::Screen)], fonts: &Fonts, out: &Path) -> Result<()> {
     if beats.is_empty() {
@@ -368,256 +335,6 @@ fn save_beats_sheet(beats: &[(u64, vt100::Screen)], fonts: &Fonts, out: &Path) -
     Ok(())
 }
 
-// ── Keyframed cell-run encoder ───────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct Style {
-    fg: u16,
-    bg: u16,
-    flags: u8,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct CellState {
-    style: u16,
-    ch: String,
-    wide: u8, // 0 = normal (1 col), 1 = wide start (2 cols), 2 = wide continuation
-}
-
-/// Encodes `frames` and `beats` into the homepage player's JSON format (`.sb/home-plan.md`):
-/// - `palette`: array of `"#rrggbb"` strings (index 0 = default background, index 1 = default foreground)
-/// - `styles`: array of `[fgPaletteIdx, bgPaletteIdx, flags]` (`1 = bold`, `2 = italic`, `4 = underline`)
-/// - `beats`: `[{"at": ms, "label": "..."}, ...]`
-/// - `frames`: keyframes at `t = 0` and every `KEYFRAME_MS` (~10 s), with changed-row `[col, styleIndex, text]`
-///   runs between them. Identical non-beat frames are deduplicated so idle moments add zero bytes, while beat
-///   timestamps are always preserved so seeking to `beat.at` lands on that exact beat.
-fn encode_recording(
-    frames: &[(u64, vt100::Screen)],
-    beats: &[(u64, vt100::Screen)],
-    default_fg: Rgb,
-    default_bg: Rgb,
-) -> Value {
-    let beat_times: HashSet<u64> = beats.iter().map(|(t, _)| *t).collect();
-    let mut palette: Vec<String> = Vec::new();
-    let mut color_idx: HashMap<Rgb, u16> = HashMap::new();
-    let mut intern_color = |rgb: Rgb| -> u16 {
-        if let Some(&i) = color_idx.get(&rgb) {
-            return i;
-        }
-        let i = palette.len() as u16;
-        palette.push(format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
-        color_idx.insert(rgb, i);
-        i
-    };
-    intern_color(default_bg);
-    intern_color(default_fg);
-
-    let mut styles: Vec<[u16; 3]> = Vec::new();
-    let mut style_idx: HashMap<Style, u16> = HashMap::new();
-    let mut intern_style = |s: Style| -> u16 {
-        if let Some(&i) = style_idx.get(&s) {
-            return i;
-        }
-        let i = styles.len() as u16;
-        styles.push([s.fg, s.bg, u16::from(s.flags)]);
-        style_idx.insert(s, i);
-        i
-    };
-    intern_style(Style { fg: 1, bg: 0, flags: 0 });
-
-    let (rows, cols) = frames.first().map_or((ROWS, COLS), |(_, s)| s.size());
-
-    let mut out_frames: Vec<Value> = Vec::new();
-    let mut prev_grid: Option<Vec<Vec<CellState>>> = None;
-    let mut prev_cursor: Option<Option<[u16; 2]>> = None;
-    let mut last_key_t = 0u64;
-
-    for (idx, (t, screen)) in frames.iter().enumerate() {
-        let cur_grid =
-            extract_grid(screen, rows, cols, default_fg, default_bg, &mut intern_color, &mut intern_style);
-        let cursor = (!screen.hide_cursor()).then(|| {
-            let (cy, cx) = screen.cursor_position();
-            [cx, cy]
-        });
-        let is_key = idx == 0 || *t >= last_key_t + KEYFRAME_MS;
-        let is_beat = beat_times.contains(t);
-
-        let mut row_map = serde_json::Map::new();
-        for r in 0..usize::from(rows) {
-            let runs = match &prev_grid {
-                Some(prev) if !is_key => diff_row_runs(&prev[r], &cur_grid[r]),
-                _ => full_row_runs(&cur_grid[r]),
-            };
-            if !runs.is_empty() {
-                let encoded: Vec<Value> = runs.into_iter().map(|(c, s, txt)| json!([c, s, txt])).collect();
-                row_map.insert(r.to_string(), Value::Array(encoded));
-            }
-        }
-        if !is_key && !is_beat && row_map.is_empty() && prev_cursor == Some(cursor) {
-            continue;
-        }
-        if is_key {
-            last_key_t = *t;
-        }
-        let mut obj = serde_json::Map::new();
-        obj.insert("t".into(), json!(t));
-        if is_key {
-            obj.insert("key".into(), json!(true));
-        }
-        if let Some([cx, cy]) = cursor {
-            obj.insert("cursor".into(), json!([cx, cy]));
-        }
-        obj.insert("rows".into(), Value::Object(row_map));
-        out_frames.push(Value::Object(obj));
-        prev_grid = Some(cur_grid);
-        prev_cursor = Some(cursor);
-    }
-
-    let out_beats: Vec<Value> = beats
-        .iter()
-        .enumerate()
-        .map(|(i, (at, _))| {
-            let label = BEATS.get(i).copied().unwrap_or(BEATS[BEATS.len() - 1]);
-            json!({"at": at, "label": label})
-        })
-        .collect();
-
-    json!({
-        "cols": cols,
-        "rows": rows,
-        "palette": palette,
-        "styles": styles,
-        "beats": out_beats,
-        "frames": out_frames,
-    })
-}
-
-fn extract_grid(
-    screen: &vt100::Screen,
-    rows: u16,
-    cols: u16,
-    default_fg: Rgb,
-    default_bg: Rgb,
-    intern_color: &mut impl FnMut(Rgb) -> u16,
-    intern_style: &mut impl FnMut(Style) -> u16,
-) -> Vec<Vec<CellState>> {
-    let mut out = Vec::with_capacity(usize::from(rows));
-    for r in 0..rows {
-        let mut row = Vec::with_capacity(usize::from(cols));
-        for c in 0..cols {
-            let Some(cell) = screen.cell(r, c) else {
-                row.push(CellState { style: 0, ch: " ".into(), wide: 0 });
-                continue;
-            };
-            if cell.is_wide_continuation() {
-                let style = row.last().map_or(0, |prev: &CellState| prev.style);
-                row.push(CellState { style, ch: String::new(), wide: 2 });
-                continue;
-            }
-            let (fg_rgb, bg_rgb) = {
-                let f = shot::color(cell.fgcolor(), default_fg);
-                let b = shot::color(cell.bgcolor(), default_bg);
-                if cell.inverse() { (b, f) } else { (f, b) }
-            };
-            let flags =
-                u8::from(cell.bold()) | (u8::from(cell.italic()) << 1) | (u8::from(cell.underline()) << 2);
-            let style = intern_style(Style { fg: intern_color(fg_rgb), bg: intern_color(bg_rgb), flags });
-            let text = cell.contents();
-            let ch = if text.is_empty() { " ".into() } else { text.to_string() };
-            let wide = u8::from(cell.is_wide());
-            row.push(CellState { style, ch, wide });
-        }
-        out.push(row);
-    }
-    out
-}
-
-fn full_row_runs(row: &[CellState]) -> Vec<(u16, u16, String)> {
-    let mut runs: Vec<(u16, u16, String)> = Vec::new();
-    let mut c = 0usize;
-    while c < row.len() {
-        if row[c].wide == 2 || (row[c].style == 0 && row[c].ch == " ") {
-            c += 1;
-            continue;
-        }
-        let start = c as u16;
-        let style = row[c].style;
-        let mut txt = String::new();
-        while c < row.len() && row[c].style == style {
-            if row[c].wide == 2 {
-                c += 1;
-                continue;
-            }
-            // Only break a default-style run when 8+ consecutive default spaces follow
-            if style == 0 && row[c].ch == " " {
-                let mut sp = 0;
-                while c + sp < row.len() && row[c + sp].style == 0 && row[c + sp].ch == " " {
-                    sp += 1;
-                }
-                if sp >= 8 {
-                    break;
-                }
-            }
-            txt.push_str(&row[c].ch);
-            c += 1;
-        }
-        runs.push((start, style, txt));
-    }
-    runs
-}
-
-fn diff_row_runs(prev: &[CellState], cur: &[CellState]) -> Vec<(u16, u16, String)> {
-    let n = cur.len().min(prev.len());
-    let mut dirty = vec![false; n];
-    for i in 0..n {
-        if cur[i] != prev[i] {
-            dirty[i] = true;
-            if (cur[i].wide == 2 || prev[i].wide == 2) && i > 0 {
-                dirty[i - 1] = true;
-            }
-            if (cur[i].wide == 1 || prev[i].wide == 1) && i + 1 < n {
-                dirty[i + 1] = true;
-            }
-        }
-    }
-    // Bridge short (<= 4 cell) clean gaps of the same style to avoid JSON array framing overhead.
-    let mut i = 0;
-    while i < n {
-        if dirty[i] {
-            let s = cur[i].style;
-            let mut gap = 1;
-            while i + gap < n && !dirty[i + gap] && cur[i + gap].style == s && gap <= 4 {
-                gap += 1;
-            }
-            if gap > 1 && i + gap < n && dirty[i + gap] && cur[i + gap].style == s {
-                for g in 1..gap {
-                    dirty[i + g] = true;
-                }
-            }
-        }
-        i += 1;
-    }
-    let mut runs: Vec<(u16, u16, String)> = Vec::new();
-    let mut i = 0;
-    while i < n {
-        if !dirty[i] || cur[i].wide == 2 {
-            i += 1;
-            continue;
-        }
-        let start = i as u16;
-        let style = cur[i].style;
-        let mut txt = String::new();
-        while i < n && dirty[i] && cur[i].style == style {
-            if cur[i].wide != 2 {
-                txt.push_str(&cur[i].ch);
-            }
-            i += 1;
-        }
-        runs.push((start, style, txt));
-    }
-    runs
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,76 +345,5 @@ mod tests {
         let text = english(&format!("{MAIN_RS}{MAIN_TESTS}")).unwrap();
         assert!(text.contains(DOC_LINE), "{text}");
         assert!(english("let t = \"실타래\";").is_err());
-    }
-
-    #[test]
-    fn encodes_keyframes_and_changed_row_runs() {
-        let mut p1 = vt100::Parser::new(2, 6, 0);
-        p1.process(b"\x1b[38;2;244;128;90mhi\x1b[0m all\r\nrow2");
-        let s1 = p1.screen().clone();
-
-        let mut p2 = vt100::Parser::new(2, 6, 0);
-        p2.process(b"\x1b[38;2;244;128;90mhi\x1b[0m all\r\nrow2!");
-        let s2 = p2.screen().clone();
-
-        let frames = vec![(0, s1.clone()), (100, s1.clone()), (200, s2.clone()), (KEYFRAME_MS + 500, s2)];
-        let beats = vec![(0, s1)];
-        let v = encode_recording(&frames, &beats, [232, 227, 216], [7, 8, 11]);
-
-        assert_eq!(v["cols"], 6);
-        assert_eq!(v["rows"], 2);
-        assert_eq!(v["palette"][0], "#07080b");
-        assert_eq!(v["palette"][1], "#e8e3d8");
-        assert!(v["palette"].as_array().unwrap().contains(&json!("#f4805a")));
-
-        let fs = v["frames"].as_array().unwrap();
-        assert_eq!(fs.len(), 3, "duplicate idle frame at t=100 is skipped");
-        assert_eq!(fs[0]["key"], true);
-        assert!(fs[0]["rows"]["0"].is_array() && fs[0]["rows"]["1"].is_array());
-        assert!(fs[1].get("key").is_none(), "t=200 is a delta frame");
-        assert!(fs[1]["rows"].get("0").is_none(), "unchanged row 0 omitted in delta");
-        assert_eq!(fs[1]["rows"]["1"], json!([[4, 0, "!"]]), "only changed cell at col 4 is emitted");
-        assert_eq!(fs[2]["key"], true, "t=10500 >= KEYFRAME_MS is a keyframe");
-    }
-
-    #[test]
-    fn sample_frames_keeps_latest_per_bucket_and_all_beats() {
-        let mut p1 = vt100::Parser::new(2, 6, 0);
-        p1.process(b"first");
-        let s1 = p1.screen().clone();
-
-        let mut p2 = vt100::Parser::new(2, 6, 0);
-        p2.process(b"latest");
-        let s2 = p2.screen().clone();
-
-        // Burst in bucket 1 (200..399 ms): 210 ms has `s1`, 350 ms has `s2`, plus a beat at 240 ms (`s1`),
-        // followed by a hold until 2000 ms (`s2`).
-        let raw = vec![
-            (0, s1.clone()),
-            (210, s1.clone()),
-            (240, s1.clone()),
-            (350, s2.clone()),
-            (2000, s2.clone()),
-        ];
-        let beats = vec![(0, s1.clone()), (240, s1.clone()), (2000, s2.clone())];
-        let sampled = sample_frames(&raw, &beats);
-        let times: Vec<u64> = sampled.iter().map(|(t, _)| *t).collect();
-        assert_eq!(
-            times,
-            vec![0, 240, 350, 2000],
-            "keeps t=0, beat at 240, latest in bucket 1 at 350 (drops 210), and 2000"
-        );
-        assert_eq!(sampled[2].1.contents(), "latest", "bucket 1 retains the latest screen before hold");
-
-        let v = encode_recording(&sampled, &beats, [232, 227, 216], [7, 8, 11]);
-        let emitted_times: Vec<u64> =
-            v["frames"].as_array().unwrap().iter().map(|f| f["t"].as_u64().unwrap()).collect();
-        for b in v["beats"].as_array().unwrap() {
-            let at = b["at"].as_u64().unwrap();
-            assert!(
-                emitted_times.contains(&at),
-                "every beat.at ({at}) has an emitted frame in frames ({emitted_times:?})"
-            );
-        }
     }
 }

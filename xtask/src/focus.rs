@@ -488,7 +488,7 @@ fn one(scene: &Scene, layout: Layout, bin: &Path, me: &Path) -> Result<Numbers> 
         return Err(format!("{} at {}: no regions told (an older tarae?)", scene.name, layout.name()));
     }
     let frames: Vec<(u64, Grid)> =
-        frames.iter().map(|(n, s)| (*n, crate::homepage::screen_cells(s))).collect();
+        frames.iter().map(|(n, s)| (*n, crate::recording::screen_cells(s))).collect();
     let asked = match scene.ask {
         Ask::Chat(q) | Ask::Line(q) => vec![q],
         Ask::Second(first, q) => vec![first, q],
