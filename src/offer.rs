@@ -868,6 +868,8 @@ impl Offer {
         use crate::allow::Scope;
         match &self.what {
             What::Grant { grant, .. } => Some(crate::caps::Caps::storable(grant)),
+            // (tarae's log: this chat at most — #292)
+            What::Read { pending, keep: true, .. } if pending.log => Some(Scope::ThisChat),
             What::Read { keep, .. } => Some(if *keep { Scope::Always } else { Scope::Once }),
             What::Run(r) if r.keep => Some(Scope::Always),
             _ => None,
@@ -1165,7 +1167,8 @@ impl Offer {
             // (piece C: only a host list's — the network closed, always is the setting: cards.md decision 4)
             What::Host(a) => a.open,
             What::EnvKey { .. } => true,
-            _ => self.lasts() && matches!(self.what, What::Read { .. }),
+            What::Read { .. } => self.top() == Some(crate::allow::Scope::Always),
+            _ => false,
         }
     }
 
@@ -1391,8 +1394,10 @@ impl Offer {
                     plain('n', "No"),
                 ]
             }
-            W::Read { keep, .. } => {
+            W::Read { keep, pending, .. } => {
                 let mut v = match keep {
+                    // (tarae's log: never longer than this chat — #292)
+                    true if pending.log => vec![plain('y', "Once"), lasts('a', "This chat")],
                     true => vec![
                         plain('y', "Once"),
                         lasts('a', "This chat"),
@@ -1735,7 +1740,7 @@ impl crate::editor::Editor {
     /// None where it offers no `A`, or outside a repository (`Caps::always_said`).
     pub fn always_line(&self, what: &What) -> Option<String> {
         let grants: Vec<crate::allow::Grant> = match what {
-            What::Read { keep: true, pending, folder } => folder
+            What::Read { keep: true, pending, folder } if !pending.log => folder
                 .clone()
                 .or_else(|| pending.look.at.clone())
                 .map(crate::allow::Grant::Read)

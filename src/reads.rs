@@ -86,6 +86,9 @@ pub struct Pending {
     /// A call of tarae's own tools (`search`, `read`) waits on it, not a permission ask: run again once
     /// allowed, else answered no.
     pub then: Option<Then>,
+    /// It reads tarae's log (`sandbox::is_taraes_log`): every session's activity — `y` once or `a` this chat, never
+    /// longer, never a folder around it (#292).
+    pub log: bool,
 }
 
 /// A call of tarae's in-process tools that reads where Read would ask (`Gate::judge`): it waits on the same
@@ -119,6 +122,8 @@ pub struct Ask {
     found: crate::tokens::Found,
     repository: Option<PathBuf>,
     not_whole: Option<(PathBuf, String)>,
+    /// `Pending.log`.
+    log: bool,
 }
 
 impl Ask {
@@ -126,6 +131,12 @@ impl Ask {
     #[cfg(test)]
     pub fn at_said(&self) -> String {
         self.look.at.as_ref().map_or_else(|| self.look.given.clone(), |a| a.display().to_string())
+    }
+
+    /// Whether it asks for tarae's log (`Pending.log`). (Tests.)
+    #[cfg(test)]
+    pub fn is_log(&self) -> bool {
+        self.log
     }
 }
 
@@ -145,6 +156,20 @@ impl Gate {
         self
     }
 
+    /// (Tests: `home` in place of the process's — tarae's state and cache in it.)
+    #[cfg(test)]
+    pub fn at_home(mut self, home: PathBuf) -> Gate {
+        self.basis.home = Some(home);
+        self
+    }
+
+    /// (Tests: `dir` a folder of one of the chat's runs.)
+    #[cfg(test)]
+    pub fn with_run_folder(mut self, dir: PathBuf) -> Gate {
+        self.made.dirs.push(dir);
+        self
+    }
+
     /// (Tests: as after the card let `at` through.)
     #[cfg(test)]
     pub fn granting(mut self, at: PathBuf) -> Gate {
@@ -158,6 +183,47 @@ impl Gate {
         Gate { basis: ed.caps_basis(), made, granted }
     }
 
+    /// Why reading or searching `at` (real) is refused, no card asked: it's in tarae's own state or cache, or
+    /// holds them (`sandbox::taraes_own` — every session's conversations and runs, #292) — but in a folder of
+    /// this chat's own runs. A worker's.
+    pub fn refused(&self, at: &Path) -> Option<String> {
+        // (but the chat's own runs' folders, in tarae's cache: what its runs left there is Claude's to read; and the
+        // log itself, which asks — `is_log`)
+        if self.made.dirs.iter().any(|d| at.starts_with(d)) || self.is_log(at) {
+            return None;
+        }
+        let (home, here) = self.home_here()?;
+        let own = crate::sandbox::taraes_own(&home, &here);
+        let o = own.iter().find(|o| at.starts_with(o) || o.starts_with(at))?;
+        let how = if at.starts_with(o) { "is in" } else { "holds" };
+        Some(format!(
+            "{}: refused — it {how} tarae's own state or cache ({}), which holds every session's conversations, \
+             turns, runs and its log; it's kept from you and from every command, and no card opens it (the log \
+             file itself, tarae.log, asks the user on its card). Ask the user for what you need from there.",
+            crate::allow::tilde(at),
+            crate::allow::tilde(o)
+        ))
+    }
+
+    /// Whether `at` (real) is tarae's log — asked on the read card whatever was allowed before, `y` once or `a`
+    /// this chat (#292). A worker's.
+    pub fn is_log(&self, at: &Path) -> bool {
+        self.home_here().is_some_and(|(home, here)| crate::sandbox::is_taraes_log(at, &home, &here))
+    }
+
+    /// The home tarae's state and cache are found from, and the variables.
+    fn home_here(&self) -> Option<(PathBuf, crate::sandbox::Here)> {
+        let home = self.basis.home()?;
+        let here = crate::sandbox::Here::now();
+        // (tests: a test's home, its variables none — tarae's state and cache in it)
+        #[cfg(test)]
+        let here = match self.basis.home.is_some() {
+            true => crate::sandbox::Here::default(),
+            false => here,
+        };
+        Some((home, here))
+    }
+
     /// Whether reading `at` (real, outside the project or named like a key in it) goes without asking —
     /// `file`: a file read whole (Read's rule), else a place searched (Grep's: the keys in it count). A
     /// worker's.
@@ -165,6 +231,7 @@ impl Gate {
         if self.granted.iter().any(|g| at.starts_with(g)) {
             return Ok(());
         }
+        let log = self.is_log(at);
         // (a path that's no text — `json!` panics on one, a project can hold one, a link lead to one — has no words for
         // `input`, which only says it: what's judged is where it leads, as a path in `input` is, never a lossy copy, which
         // could be another's)
@@ -180,8 +247,12 @@ impl Gate {
             return Ok(());
         }
         let found = look.at.as_deref().map(crate::tokens::found_in).unwrap_or_default();
-        let (repository, not_whole) = split(look.at.as_deref().and_then(|at| repository_or_why(at, &caps)));
-        Err(Box::new(Ask { look, class, found, repository, not_whole }))
+        // (the log: no repository offered around it)
+        let (repository, not_whole) = match log {
+            true => (None, None),
+            false => split(look.at.as_deref().and_then(|at| repository_or_why(at, &caps))),
+        };
+        Err(Box::new(Ask { look, class, found, repository, not_whole, log }))
     }
 }
 
@@ -195,7 +266,7 @@ pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
         return crate::tools::answer(ed, then.call, Err("the chat it came from is gone".into()));
     };
-    let Ask { mut look, class, found, repository, not_whole } = ask;
+    let Ask { mut look, class, found, repository, not_whole, log } = ask;
     // (tarae's search: its card says what it searches for — frictions29 33: `Gate::judge` knows only the place)
     if then.tool == "search" {
         let s = |k: &str| then.args[k].as_str().unwrap_or_default().to_string();
@@ -216,6 +287,7 @@ pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
         not_whole,
         own: None,
         then: Some(then),
+        log,
     });
     refold(ed);
     next(ed);
@@ -897,6 +969,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
         not_whole: None,
         own: Some(own),
         then: None,
+        log: false,
     };
     let keep = p
         .look
@@ -978,7 +1051,7 @@ pub fn replies_held(ed: &Editor) -> Vec<String> {
 }
 
 /// Whether the call may go without asking: inside the project, in a place read by default or allowed
-/// (`caps`), tarae's own log (the file itself — `log::is_log_real`), or made by one of Claude's runs this turn
+/// (`caps`), or made by one of Claude's runs this turn
 /// (`Made`) — and every file named like a key it opens opened (`Grant::Key`, the same grant a run's reads go
 /// by).
 pub fn covered(look: &Look, caps: &crate::caps::Caps, made: &Made) -> bool {
@@ -987,9 +1060,7 @@ pub fn covered(look: &Look, caps: &crate::caps::Caps, made: &Made) -> bool {
 
 /// `covered`'s place alone, whatever files named like keys it opens.
 fn place_covered(look: &Look, caps: &crate::caps::Caps, made: &Made) -> bool {
-    look.at
-        .as_ref()
-        .is_some_and(|at| caps.reads(at) || crate::log::is_log_real(at) || made.covers(at, SystemTime::now()))
+    look.at.as_ref().is_some_and(|at| caps.reads(at) || made.covers(at, SystemTime::now()))
 }
 
 /// One of Claude's runs started (`tools::go`) — by the clock its files are stamped by (`file_clock`).
@@ -1075,6 +1146,8 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
                 not_whole,
                 own,
                 then: None,
+                // (no Read in the chat: tarae's `read` and `search` judge the log — `Gate::is_log`)
+                log: false,
             });
             refold(ed);
             next(ed);
@@ -1413,6 +1486,11 @@ pub fn card_text(
 ) -> (String, Option<std::ops::Range<usize>>) {
     let whole = folder.map(|(f, _)| (f, p.repository.as_deref() == Some(f)));
     let mut q = question(&p.look, keep, whole);
+    // (the log: what it holds, one line after what it reads — #292)
+    if p.log {
+        let at = q.find("\n\n").unwrap_or(q.len());
+        q.insert_str(at, "\n\nIt's tarae's log: it holds every session's activity, not only this chat's.");
+    }
     if let Some(why) = not_whole.filter(|_| keep) {
         q.push_str(&format!("\n\n{why}"));
     }
@@ -1462,9 +1540,9 @@ pub fn next(ed: &mut Editor) {
     // (nor a search too big to look through for them: a longer yes would hold for nothing — it asks again)
     let keep = p.look.at.as_deref().is_some_and(keepable) && p.look.keys.iter().all(key_kept) && !p.look.cut;
     // (its repository, or — beside another read waiting or let through once — its folder for longer: #102;
-    // once it's been looked through for tokens — till then the place alone: `refold`)
+    // once it's been looked through for tokens — till then the place alone: `refold`. The log: the file alone)
     let others = others(c);
-    let folder = keep.then(|| folder_for(ed, &p, &others, home.as_deref())).flatten();
+    let folder = (keep && !p.log).then(|| folder_for(ed, &p, &others, home.as_deref())).flatten();
     let why = not_whole(ed, &p, folder.as_ref().map(|(f, _)| f.as_path()));
     let (q, warning) =
         card_text(&p, keep, folder.as_ref().map(|(f, found)| (f.as_path(), found)), why.as_deref());
@@ -1625,6 +1703,8 @@ pub fn answer(
         }
         return next(ed);
     };
+    // (the log: this chat at most — the card offers no more)
+    let scope = if p.log { scope.min(Scope::ThisChat) } else { scope };
     reply(ed, p.clone(), true, "");
     if scope == Scope::Once
         && p.look.keys.is_empty()
@@ -1757,7 +1837,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = s.to_path_buf();
         let ask = Gate::of(&ed, Vec::new()).judge(&no_text(b"/opt/caf\xe9.txt"), true);
-        let Ask { look, class, found, repository, not_whole } = *ask.expect_err("it asks");
+        let Ask { look, class, found, repository, not_whole, log } = *ask.expect_err("it asks");
         let mut chat = crate::chat::Chat::new();
         chat.reads.push_back(Pending {
             request_id: String::new(),
@@ -1771,11 +1851,58 @@ mod tests {
             not_whole,
             own: None,
             then: None,
+            log,
         });
         ed.workspace.claude.chat = Some(chat);
         next(&mut ed);
         let what = &ed.offers[0].what;
         assert!(matches!(what, crate::offer::What::Read { keep: false, folder: None, .. }), "{what:?}");
+    }
+
+    /// #292: tarae's log asks on a card of its own — `y` once, `a` this chat, never `s` nor `A`, no folder around it —
+    /// its line saying it holds every session's activity; its `a` lets Claude read it for the rest of the chat.
+    #[test]
+    fn the_logs_card_is_once_or_this_chat() {
+        let s = crate::scratch::Scratch::new("reads-log-card");
+        let log = crate::paths::real(&s).unwrap().join("tarae.log");
+        std::fs::write(&log, "ready\n").unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = s.join("p");
+        let input = json!({ "file_path": log });
+        let mut look = look("Read", &input, &ed.workspace.root);
+        look.at = Some(log.clone());
+        let mut chat = crate::chat::Chat::new();
+        chat.reads.push_back(Pending {
+            request_id: String::new(),
+            generation: chat.generation(),
+            input,
+            look,
+            class: crate::cards::Class::Secret,
+            since: std::time::Instant::now(),
+            found: Default::default(),
+            repository: None,
+            not_whole: None,
+            own: None,
+            then: None,
+            log: true,
+        });
+        ed.workspace.claude.chat = Some(chat);
+        next(&mut ed);
+        let o = &ed.offers[0];
+        assert!(matches!(o.what, crate::offer::What::Read { keep: true, folder: None, .. }), "{:?}", o.what);
+        let keys: Vec<char> = o.answers(false).iter().map(|a| a.0).collect();
+        assert_eq!(keys, ['y', 'a', 'n'], "{}", o.question);
+        assert!(o.question.contains("tarae's log: it holds every session's activity"), "{}", o.question);
+        assert!(!o.question.contains("s and A"), "{}", o.question);
+        // (`s` and `A` answer nothing; `a` this chat)
+        ed.offer_for_session();
+        ed.offer_always();
+        assert_eq!(ed.offers.len(), 1, "s and A answer nothing");
+        ed.offer_for_chat();
+        assert!(ed.offers.is_empty());
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.allowed.reads(&log), "this chat's");
+        assert!(!ed.workspace.claude.allowed.reads(&log), "not the session's");
     }
 
     /// Where each tool reads: Read its file, Grep its folder (the project when none), Glob its folder with
@@ -2032,28 +2159,22 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #45: tarae's own log is read unasked — Read, a Grep of it, a read-only command naming it — but only
-    /// the file: not the folder it's in, nor the previous run's beside it.
+    /// #292 (reversing #45): tarae's own log is no longer read unasked — not Read, a Grep of it, nor a read-only
+    /// command naming it: it says every session's news, kept with tarae's state.
     #[test]
-    fn the_editors_own_log_is_read_unasked() {
+    fn the_editors_own_log_isnt_read_unasked() {
         let Some(log) = crate::log::path() else { return };
         let root = Path::new("/r/p");
         let none = Allowed::default();
         let caps = crate::caps::Caps::granted(root, &none, &none, &none);
         let at = |tool: &str, input: Value| covered(&look(tool, &input, root), &caps, &Made::default());
-        assert!(at("Read", json!({ "file_path": log })));
-        assert!(at("Grep", json!({ "pattern": "ready", "path": log })));
-        let dir = log.parent().unwrap();
-        assert!(!at("Read", json!({ "file_path": dir.join("tarae.log.old") })));
-        assert!(!at("Read", json!({ "file_path": dir.join("trust.json") })));
-        assert!(!at("Grep", json!({ "pattern": "x", "path": dir })));
+        assert!(!at("Read", json!({ "file_path": log })));
+        assert!(!at("Grep", json!({ "pattern": "ready", "path": log })));
         // (a command's words are only paths when they're there: the log must be)
         if log.exists() {
             let cmd = format!("grep -n ready {}", log.display());
-            assert_eq!(crate::readonly::outside(&cmd, root, root, &none, &none, &[]), Ok(vec![]));
-            let cmd = format!("tail -n 40 {} {}", log.display(), dir.display());
             let out = crate::readonly::outside(&cmd, root, root, &none, &none, &[]).unwrap();
-            assert_eq!(out, vec![std::fs::canonicalize(dir).unwrap()], "the folder still asks");
+            assert_eq!(out, vec![std::fs::canonicalize(&log).unwrap()], "it asks");
         }
     }
 

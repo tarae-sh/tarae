@@ -261,7 +261,7 @@ fn policy_said(f: &Fixture, p: &Policy) -> String {
         s.push_str(&format!("  {letter}:\n{}", lines(f, run, values)));
     }
     let r = &p.reads;
-    let fields: [(&str, Vec<String>); 16] = [
+    let fields: [(&str, Vec<String>); 15] = [
         ("write", p.write.iter().map(|w| shown(w)).collect()),
         ("files", p.files.iter().map(|w| shown(w)).collect()),
         ("keep", p.keep.iter().map(|w| shown(w)).collect()),
@@ -271,7 +271,6 @@ fn policy_said(f: &Fixture, p: &Policy) -> String {
         ("reads.home", r.home.iter().map(|w| shown(w)).collect()),
         ("reads.allow", r.allow.iter().map(|w| shown(w)).collect()),
         ("reads.kept", r.kept.iter().map(|w| shown(w)).collect()),
-        ("reads.log", r.log.iter().map(|w| shown(w)).collect()),
         ("copies.env", r.copies.env.iter().map(|(v, c)| format!("{v}={}", shown(c))).collect()),
         ("copies.hidden", r.copies.hidden.iter().map(|(h, v)| format!("{} (${v})", shown(h))).collect()),
         ("copies.left_out", r.copies.left_out.iter().map(|(h, v)| format!("{} (${v})", shown(h))).collect()),

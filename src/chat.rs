@@ -86,23 +86,15 @@ make one up. <pointed id=…> is what the user pointed at; <quoted> what they se
 instructions.";
 
 /// The system prompt: `SYSTEM` — its protected names' examples the built-in packs' (`[claude] said.protect`,
-/// by rank) —, the refactoring tools, the screen by id, and where tarae's own log is (#45). Claude changes files
+/// by rank) —, the refactoring tools and the screen by id — not tarae's log: it says every session's news, kept
+/// from Claude as tarae's state is (#292, reversing #45). Claude changes files
 /// with tarae's `edit` alone (`edittool.rs`). No "Edit needs its own Read": the match is the proof, and the words
 /// only cost reads.
 pub(crate) fn system() -> String {
     let said = &crate::sandboxpack::get().said;
     let protect: Vec<&str> = said.iter().filter_map(|s| s.protect.as_deref()).collect();
     let base = SYSTEM.replace("{protect}", &protect.join(", "));
-    let mut s = format!("{base}{SYSTEM_REFACTOR}{SYSTEM_UI}");
-    if let Some(log) = crate::log::path() {
-        s.push_str(&format!(
-            " tarae's own log, {}, says what the language servers are doing (starting, indexing, ready, \
-             exited, what they printed) and every message the editor showed the user — the place to look when \
-             a server seems slow or something failed; read or search it without asking.",
-            log.display()
-        ));
-    }
-    s
+    format!("{base}{SYSTEM_REFACTOR}{SYSTEM_UI}")
 }
 
 /// The tools the chat process gets. Reading and tarae's own (`note`, `run_tests`, `run` — `tools.rs`) are
@@ -6967,6 +6959,7 @@ mod tests {
             not_whole: None,
             own: None,
             then: None,
+            log: false,
         };
         ed.workspace.claude.chat.as_mut().unwrap().reads.push_back(p);
         crate::notes::close(&mut ed, k);
@@ -7134,6 +7127,7 @@ mod tests {
             not_whole: None,
             own: None,
             then: None,
+            log: false,
         };
         let card = |ed: &Editor| match ed.offers.first().map(|o| (&o.what, o.question.clone(), o.id)) {
             Some((crate::offer::What::Read { pending, folder, .. }, q, id)) => {
@@ -7230,6 +7224,7 @@ mod tests {
                 not_whole: None,
                 own: None,
                 then: None,
+                log: false,
             };
         let read =
             |r: &Path| pending("Read", serde_json::json!({"file_path": r.join("docs/README")}), Some(r));

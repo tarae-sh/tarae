@@ -1856,7 +1856,7 @@ pub(super) fn confine_in(
     let granted: Vec<&Path> = [Path::new("/"), &p.root]
         .into_iter()
         .chain(run_dir)
-        .chain(p.write.iter().chain(&p.files).chain(&p.reads.allow).chain(&p.reads.log).map(PathBuf::as_path))
+        .chain(p.write.iter().chain(&p.files).chain(&p.reads.allow).map(PathBuf::as_path))
         .chain(DEVICES.iter().map(|(d, _)| Path::new(d)))
         .collect();
     // (the break-once of `granted`: a mount at or above a grant closed whole all the same)
@@ -1911,9 +1911,6 @@ pub(super) fn confine_in(
                 let holes: Vec<PathBuf> =
                     kept.iter().chain(&hidden).filter(|h| h.starts_with(place)).cloned().collect();
                 grant(&mut r, place, READ, &holes)?;
-            }
-            if let Some(log) = p.reads.log.as_ref().filter(|_| !kept.is_empty()) {
-                grant(&mut r, log, landlock::READ_FILE, &[])?;
             }
         }
         None => grant(&mut r, Path::new("/"), READ, &[hidden.as_slice(), &pts_hole].concat())?,

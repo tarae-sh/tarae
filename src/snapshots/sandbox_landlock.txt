@@ -12,8 +12,6 @@ ABI 3: handles files 0x07fff · network 0x0 · scopes 0x0
     0x000d $BASE/gradle-moved
     0x000d $BASE/rustup-moved
     0x000d $BASE/tmp
-    0x000d $HOME/.cache/tarae/run-homes/go-build/$KEY
-    0x000d $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
     0x000d $HOME/.cargo/build
     0x000d $HOME/.cargo/build/ab/cdef0123
     0x000d $HOME/.cargo/git
@@ -24,7 +22,6 @@ ABI 3: handles files 0x07fff · network 0x0 · scopes 0x0
     0x000d $HOME/.rustup
     0x000d $HOME/go
     0x000d $HOME/go/pkg/mod
-    0x000d $RUN
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
@@ -59,8 +56,6 @@ ABI 4: handles files 0x07fff · network 0x3 · scopes 0x0
     0x000d $BASE/gradle-moved
     0x000d $BASE/rustup-moved
     0x000d $BASE/tmp
-    0x000d $HOME/.cache/tarae/run-homes/go-build/$KEY
-    0x000d $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
     0x000d $HOME/.cargo/build
     0x000d $HOME/.cargo/build/ab/cdef0123
     0x000d $HOME/.cargo/git
@@ -71,7 +66,6 @@ ABI 4: handles files 0x07fff · network 0x3 · scopes 0x0
     0x000d $HOME/.rustup
     0x000d $HOME/go
     0x000d $HOME/go/pkg/mod
-    0x000d $RUN
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
@@ -106,8 +100,6 @@ ABI 6: handles files 0x0ffff · network 0x3 · scopes 0x3
     0x000d $BASE/gradle-moved
     0x000d $BASE/rustup-moved
     0x000d $BASE/tmp
-    0x000d $HOME/.cache/tarae/run-homes/go-build/$KEY
-    0x000d $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
     0x000d $HOME/.cargo/build
     0x000d $HOME/.cargo/build/ab/cdef0123
     0x000d $HOME/.cargo/git
@@ -118,7 +110,6 @@ ABI 6: handles files 0x0ffff · network 0x3 · scopes 0x3
     0x000d $HOME/.rustup
     0x000d $HOME/go
     0x000d $HOME/go/pkg/mod
-    0x000d $RUN
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
@@ -153,8 +144,6 @@ ABI 9: handles files 0x1ffff · network 0x3 · scopes 0x3
     0x000d $BASE/gradle-moved
     0x000d $BASE/rustup-moved
     0x000d $BASE/tmp
-    0x000d $HOME/.cache/tarae/run-homes/go-build/$KEY
-    0x000d $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
     0x000d $HOME/.cargo/build
     0x000d $HOME/.cargo/build/ab/cdef0123
     0x000d $HOME/.cargo/git
@@ -165,7 +154,6 @@ ABI 9: handles files 0x1ffff · network 0x3 · scopes 0x3
     0x000d $HOME/.rustup
     0x000d $HOME/go
     0x000d $HOME/go/pkg/mod
-    0x000d $RUN
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT
@@ -200,8 +188,6 @@ ABI 10: handles files 0x1ffff · network 0xf · scopes 0x3
     0x000d $BASE/gradle-moved
     0x000d $BASE/rustup-moved
     0x000d $BASE/tmp
-    0x000d $HOME/.cache/tarae/run-homes/go-build/$KEY
-    0x000d $HOME/.cache/tarae/run-homes/golangci-lint/$KEY
     0x000d $HOME/.cargo/build
     0x000d $HOME/.cargo/build/ab/cdef0123
     0x000d $HOME/.cargo/git
@@ -212,7 +198,6 @@ ABI 10: handles files 0x1ffff · network 0xf · scopes 0x3
     0x000d $HOME/.rustup
     0x000d $HOME/go
     0x000d $HOME/go/pkg/mod
-    0x000d $RUN
     0x000d $TMP
     0x000d /dev
     0x0010 $ROOT

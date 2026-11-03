@@ -1676,6 +1676,7 @@ fn frames_of_frictions30() {
             not_whole: Some((repo.clone(), "it's in or holds a place commands never read".into())),
             own: None,
             then: None,
+            log: false,
         };
         s.ed.workspace.claude.chat.as_mut().unwrap().reads.push_back(p);
         crate::reads::next(&mut s.ed);
@@ -1727,6 +1728,7 @@ fn frames_of_the_read_card_with_its_repository() {
             not_whole: None,
             own: None,
             then: None,
+            log: false,
         };
         let (q, warning) = crate::reads::card_text(&p, true, Some((&repo, &Default::default())), None);
         let what = crate::offer::What::Read { pending: Box::new(p), keep: true, folder: Some(repo.clone()) };

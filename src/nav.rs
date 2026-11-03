@@ -2019,6 +2019,9 @@ fn scopes(
             // (a `..` past what's there: where it leads can't be told — the card says the path as given)
             other => {
                 let at = other.clone().unwrap_or(abs);
+                if let Some(why) = gate.refused(&at) {
+                    return Err(why);
+                }
                 if let Err(ask) = gate.judge(&at, at.is_file()) {
                     return Ok(Err(ask));
                 }
@@ -2695,6 +2698,34 @@ mod tests {
         let lines = Lines::new(root.clone(), Gate::for_test(&root));
         let text = defs_text(&root, &d, "ra", &none, &crate::reads::Keys::none_opened(&root), &lines);
         assert!(text.contains(NOT_READ) && !text.contains("stand_in_outside"), "{text}");
+    }
+
+    /// #292: Claude's `search` in tarae's own state or cache, or of a folder holding them, is refused — no card —
+    /// in plain words; beside them it asks, and of the log itself on its own card.
+    #[test]
+    fn a_search_of_taraes_own_state_or_cache_is_refused() {
+        let s = crate::scratch::Scratch::new("nav-taraes-own");
+        let home = crate::paths::real(&s).unwrap();
+        let root = home.join("p");
+        for d in [
+            &root,
+            &home.join(".local/state/tarae/chats"),
+            &home.join(".cache/tarae/overlap"),
+            &home.join("else"),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let keys = crate::reads::Keys::none_opened(&root);
+        let gate = crate::reads::Gate::for_test(&root).at_home(home.clone());
+        let at = |p: &str| scopes(&root, &[home.join(p).display().to_string()], &keys, &gate);
+        for p in [".local/state/tarae/chats", ".cache/tarae/overlap", ".local/state/tarae", ".cache"] {
+            let Err(why) = at(p) else { panic!("{p}: not refused") };
+            assert!(why.contains("refused") && why.contains("tarae's own state or cache"), "{p}: {why}");
+        }
+        assert!(matches!(at("else"), Ok(Err(a)) if !a.is_log()), "beside them: the card");
+        std::fs::write(home.join(".local/state/tarae/tarae.log"), "ready\n").unwrap();
+        let log = at(".local/state/tarae/tarae.log");
+        assert!(matches!(&log, Ok(Err(a)) if a.is_log()), "the log: its own card");
     }
 
     /// The declaration's file first and its row first in it, marked; the rest by file then line; one row a

@@ -27,6 +27,7 @@ never read
     $HOME/.aws/config
     $HOME/.aws/credentials
     $HOME/.azure
+    $HOME/.cache/tarae
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
@@ -105,6 +106,7 @@ never read
     $HOME/.aws/credentials
     $HOME/.azure
     $HOME/.cache/go-build
+    $HOME/.cache/tarae
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml

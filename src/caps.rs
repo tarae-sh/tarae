@@ -9,7 +9,8 @@
 //! main thread.
 //!
 //! Never in it, whatever is answered: what runs never read (`kept` — keys, tokens, Claude's and tarae's state) and
-//! where a write would run something later (`later`).
+//! where a write would run something later (`later`). One file of the kept is Claude's own reads' to answer: tarae's
+//! log, this conversation's at most (`reads::Pending.log`, #292) — never a run's (`run_grants`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -288,8 +289,13 @@ impl Caps {
             let of = self.hosts.iter().filter(|e| e.what.0 == h && e.what.1 == p);
             !network_open && of.into_iter().all(|e| e.source == Source::Grant(Scope::Always))
         };
+        // (a read in what runs never read — tarae's log, Claude's own `a`: #292 — isn't the run's: its sandbox keeps it
+        // anyway, and its report would say it granted)
+        let kept = |p: &Path| self.kept.iter().any(|k| p.starts_with(k));
         let out = self.grants().into_iter();
-        out.filter(|g| !matches!(g, Grant::Host(h, p) if kept_only(h, *p))).collect()
+        out.filter(|g| !matches!(g, Grant::Host(h, p) if kept_only(h, *p)))
+            .filter(|g| !matches!(g, Grant::Read(p) if kept(p)))
+            .collect()
     }
 
     /// Whether `real` is read unasked: in the checkout, a place read by default, or one answered.
@@ -665,6 +671,18 @@ mod tests {
         );
         assert!(caps.opens_key(Path::new("/p/.env")) && !caps.opens_key(Path::new("/p/.env.local")));
         assert_eq!(caps.defaults(Why::Temp).collect::<Vec<_>>(), [Path::new("/t")]);
+    }
+
+    /// #292: tarae's log `a`'d for this chat reads for Claude's own reads, and never widens a run's policy — what runs
+    /// never read stays so; a read grant beside it still does.
+    #[test]
+    fn a_read_in_what_runs_never_read_is_claudes_alone() {
+        let log = PathBuf::from("/h/.local/state/tarae/tarae.log");
+        let chat = Allowed { read: vec![log.clone(), "/r/c".into()], ..Allowed::default() };
+        let mut caps = Caps::granted(Path::new("/p"), &Allowed::default(), &Allowed::default(), &chat);
+        caps.kept = vec!["/h/.local/state/tarae".into()];
+        assert!(caps.reads(&log), "Claude's read");
+        assert_eq!(caps.run_grants(false), [Grant::Read("/r/c".into())], "a run's");
     }
 
     /// Review of piece 3: a `Caps` lands in the session it was made for, wherever that is when it lands — one

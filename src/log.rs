@@ -25,14 +25,6 @@ pub fn is_log(p: Option<&std::path::Path>) -> bool {
     p.is_some_and(|p| path().is_some_and(|l| l == p || std::fs::canonicalize(&l).is_ok_and(|l| l == p)))
 }
 
-/// Whether `real` (a real path) is the log itself — Claude reads it unasked (#45: servers' progress and
-/// tarae's own messages are there); on a worker (the log's own path is resolved).
-pub fn is_log_real(real: &std::path::Path) -> bool {
-    let Some(log) = path() else { return false };
-    let log = std::fs::canonicalize(&log).ok().or_else(|| crate::paths::real(&log));
-    log.is_some_and(|l| l == real)
-}
-
 /// What the log keeps of this run, in bytes — past it, lines go (`Kept::push`).
 const KEPT: usize = 2 << 20;
 

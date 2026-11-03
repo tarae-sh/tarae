@@ -246,13 +246,18 @@ struct KeyView<'a> {
 }
 
 impl KeyView<'_> {
+    /// `Policy::own_places`.
+    fn own(&self) -> Vec<&Path> {
+        std::iter::once(self.root).chain(self.run).chain(self.write.iter().map(PathBuf::as_path)).collect()
+    }
+
     fn rule(&self, real: &Path) -> Option<KeyRule> {
         // (`keys` None: closed nowhere — a test's policy; a file the user opened; what no run reads anyway)
         let opened = self.keys?;
         // (what no run reads is the kept places' rule; a setting holding a token, read from a copy, the copies' —
         // its report says so, and no key grant opens it)
         if opened.iter().any(|f| f == real)
-            || self.reads.kept_holds(self.root, real)
+            || self.reads.kept_holds(&self.own(), real)
             || self.reads.copies.instead_of(real).is_some()
         {
             return None;
@@ -738,9 +743,10 @@ impl Policy {
         if !hidden.is_empty() {
             p.push_str(&deny(&format!("file-read-data file-read-xattr{hidden}")));
         }
-        // Last, so nothing granted opens them: what no run reads — but the project, when one holds it (a
-        // checkout under `~/.claude/worktrees`), and tarae's log. (Their metadata stays open, as everywhere:
-        // tarae's own tests look at its state folder — measured; a hard link needs the data's read anyway)
+        // Last, so nothing granted opens them: what no run reads — but the run's own places where one holds them
+        // (the project: a checkout under `~/.claude/worktrees`; its folder and its tools' kept homes: tarae's cache,
+        // #292). (Their metadata stays open, as everywhere: tarae's own tests look at its state folder — measured;
+        // a hard link needs the data's read anyway)
         let (around, other) = self.kept_split();
         let each = |v: &[usize]| v.iter().map(|i| format!(" (subpath (param \"X{i}\"))")).collect::<String>();
         if !other.is_empty() {
@@ -748,13 +754,10 @@ impl Policy {
         }
         if !around.is_empty() {
             p.push_str(&deny(&format!(
-                "file-read-data file-read-xattr (require-all (require-any{}) (require-not (subpath (param \
-                 \"ROOT\"))))",
+                "file-read-data file-read-xattr (require-all (require-any{}) (require-not (require-any (subpath \
+                 (param \"ROOT\")){run}{dirs})))",
                 each(&around)
             )));
-        }
-        if self.reads.log.is_some() && !self.reads.kept.is_empty() {
-            p.push_str("(allow file-read-data file-read-xattr (literal (param \"LOG\")))\n");
         }
         p
     }
@@ -953,17 +956,24 @@ impl Policy {
     /// The kept places (`Reads::kept`, by index) that hold the project, and the others.
     #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
     pub(super) fn kept_split(&self) -> (Vec<usize>, Vec<usize>) {
-        (0..self.reads.kept.len()).partition(|&i| self.root.starts_with(&self.reads.kept[i]))
+        let own = self.own_places();
+        (0..self.reads.kept.len()).partition(|&i| own.iter().any(|o| o.starts_with(&self.reads.kept[i])))
+    }
+
+    /// The run's own places, read wherever they are, a kept place holding them too (`Reads::kept_holds`): the
+    /// project, the run's folder and where it writes (its tools' kept homes, in tarae's cache — #292).
+    pub fn own_places(&self) -> Vec<&Path> {
+        let run = self.run.as_ref().map(|d| d.path());
+        std::iter::once(self.root.as_path())
+            .chain(run)
+            .chain(self.write.iter().map(PathBuf::as_path))
+            .collect()
     }
 
     /// Whether the profile lets a run read `real` — its rules, in Rust.
     pub fn reads_allow(&self, real: &Path) -> bool {
         let r = &self.reads;
-        // (the log: opened after everything, when anything is kept)
-        if r.log.as_deref() == Some(real) && !r.kept.is_empty() {
-            return true;
-        }
-        if r.kept_holds(&self.root, real) || r.copies.instead_of(real).is_some() {
+        if r.kept_holds(&self.own_places(), real) || r.copies.instead_of(real).is_some() {
             return false;
         }
         if is_terminal(real) {
@@ -1308,7 +1318,6 @@ impl Policy {
         );
         v.extend(r.kept.iter().enumerate().map(|(i, p)| (format!("X{i}"), s(p))));
         v.extend(r.copies.hidden.iter().enumerate().map(|(i, (p, _))| (format!("T{i}"), s(p))));
-        v.extend(r.log.iter().filter(|_| !r.kept.is_empty()).map(|l| ("LOG".to_string(), s(l))));
         v
     }
 

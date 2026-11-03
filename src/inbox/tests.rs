@@ -103,6 +103,7 @@ fn read_waiting(since: Instant) -> crate::reads::Pending {
         not_whole: None,
         own: None,
         then: None,
+        log: false,
     }
 }
 

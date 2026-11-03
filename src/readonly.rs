@@ -1307,12 +1307,7 @@ pub fn outside_with(
         for w in words {
             let w = expand(&w, expanded)?;
             let Ok(real) = std::fs::canonicalize(here.join(w)) else { continue };
-            if real.starts_with(root)
-                || chat.reads(&real)
-                || kept.reads(&real)
-                || crate::log::is_log_real(&real)
-                || out.contains(&real)
-            {
+            if real.starts_with(root) || chat.reads(&real) || kept.reads(&real) || out.contains(&real) {
                 continue;
             }
             out.push(real);

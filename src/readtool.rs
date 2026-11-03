@@ -276,10 +276,13 @@ fn read_between(
                 None => (Some((abs, true)), Found::Missing),
             },
         };
-        if let Some((at, file)) = judged
-            && let Err(ask) = gate.judge(&at, file)
-        {
-            return Ok(Err(ask));
+        if let Some((at, file)) = judged {
+            if let Some(why) = gate.refused(&at) {
+                return Err(why);
+            }
+            if let Err(ask) = gate.judge(&at, file) {
+                return Ok(Err(ask));
+            }
         }
         found.push(f);
     }
@@ -673,6 +676,60 @@ mod tests {
         assert_eq!(it("src/a.rs:Editor::open"), Want::Symbol("Editor::open".into()));
         assert_eq!(it("notes:2026/x.md"), Want::Whole, "a `:` before the last `/` is the path's");
         assert_eq!(it("a.rs:1-x"), Want::Whole, "neither a range nor a name: the whole is the path");
+    }
+
+    /// #292 (reversing #45): tarae's own state and cache — every session's conversations and runs — are refused to
+    /// Claude's `read`, no card, in plain words; so is a folder holding them; beside them, the card. The log itself
+    /// asks on the card (its `y` reads it), the previous run's beside it is refused.
+    #[test]
+    fn taraes_own_state_and_cache_are_refused_no_card() {
+        let s = crate::scratch::Scratch::new("readtool-taraes-own");
+        let home = crate::paths::real(&s).unwrap();
+        let dir = home.join("p");
+        let (state, cache) = (home.join(".local/state/tarae"), home.join(".cache/tarae"));
+        let (log, run) = (state.join("tarae.log"), cache.join("runs/7/1/out"));
+        let old = state.join("tarae.log.old");
+        for f in [
+            &log,
+            &old,
+            &state.join("chats/a.json"),
+            &run,
+            &home.join(".local/share/x.txt"),
+            &dir.join("a.rs"),
+        ] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, "marker\n").unwrap();
+        }
+        let gate = crate::reads::Gate::for_test(&dir).at_home(home.clone());
+        let said = |path: &Path| {
+            let p = path.display().to_string();
+            read(&dir, &items(&[p.as_str()]), &gate, &[])
+        };
+        for (path, holds) in
+            [(&old, false), (&state.join("chats/a.json"), false), (&run, false), (&home.join(".local"), true)]
+        {
+            let Err(why) = said(path) else { panic!("{}: not refused", path.display()) };
+            assert!(why.contains("refused") && why.contains("tarae's own state or cache"), "{why}");
+            assert_eq!(why.contains("it holds"), holds, "{why}");
+            assert!(!why.contains("marker"), "{why}");
+        }
+        assert!(
+            matches!(said(&home.join(".local/share/x.txt")), Ok(Err(a)) if !a.is_log()),
+            "beside them: the card"
+        );
+        assert!(matches!(said(&log), Ok(Err(a)) if a.is_log()), "the log: its own card");
+        let p = log.display().to_string();
+        let yes = crate::reads::Gate::for_test(&dir).at_home(home.clone()).granting(log.clone());
+        let Ok(Ok((parts, _))) = read(&dir, &items(&[p.as_str()]), &yes, &[]) else {
+            panic!("the log after its y")
+        };
+        assert!(matches!(parts.as_slice(), [Part::Text(t)] if t.contains("marker")), "{parts:?}");
+        assert!(matches!(said(&dir.join("a.rs")), Ok(Ok(_))), "the project");
+        // (a folder of the chat's own runs, in the cache: what they left there reads)
+        let gate =
+            crate::reads::Gate::for_test(&dir).at_home(home.clone()).with_run_folder(cache.join("runs/7/1"));
+        let p = run.display().to_string();
+        assert!(matches!(read(&dir, &items(&[p.as_str()]), &gate, &[]), Ok(Ok(_))), "its own run's folder");
     }
 
     /// A project, a place outside it, and a link in the project to that place — under the test's own temp

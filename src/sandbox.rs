@@ -568,14 +568,14 @@ impl Guard {
                 }
                 // (a tool's home kept whole — uv's cache: its run home says why, not the list of keys and state)
                 _ if d.op.starts_with("file-write")
-                    && p.run_homes
-                        .iter()
-                        .any(|h| path.starts_with(&h.user) && p.reads.kept_holds(&p.root, &h.user)) =>
+                    && p.run_homes.iter().any(|h| {
+                        path.starts_with(&h.user) && p.reads.kept_holds(&p.own_places(), &h.user)
+                    }) =>
                 {
                     let of = p.run_homes.iter().position(|h| path.starts_with(&h.user));
                     homes.extend(of.filter(|i| !homes.contains(i)));
                 }
-                _ if p.reads.kept_holds(&p.root, path) => secret.push(crate::allow::tilde(path)),
+                _ if p.reads.kept_holds(&p.own_places(), path) => secret.push(crate::allow::tilde(path)),
                 _ if p.reads.copies.instead_of(path).is_some() => {
                     let var = p.reads.copies.instead_of(path).unwrap_or_default();
                     copied.push(format!("{} (${var})", crate::allow::tilde(path)))
@@ -614,7 +614,8 @@ impl Guard {
                 secret.into_iter().chain(services.into_iter().map(String::from)).collect();
             s.push_str(&format!(
                 "{}: tarae keeps these from every command of yours in the sandbox — keys, tokens, Claude's and \
-                 tarae's own state, the clipboard, the keychain — and nothing opens them there. If the command \
+                 tarae's own state and cache (every session's conversations, its log, other runs), the clipboard, \
+                 the keychain — and nothing opens them there. If the command \
                  needs one, {OUTSIDE_WAY}; don't work around it (a copy, another HOME, the values in \
                  variables).\n",
                 what.join(", ")
@@ -1067,24 +1068,21 @@ pub struct Reads {
     pub home: Option<PathBuf>,
     /// Places in home it may read, files or folders with everything in them (`reads_for`).
     pub allow: Vec<PathBuf>,
-    /// Never read, denied after every allow (`kept_reads`) — but `log`.
+    /// Never read, denied after every allow (`kept_reads`) — tarae's log too: it says every session's news (#292).
     pub kept: Vec<PathBuf>,
-    /// tarae's log, though it's in tarae's state: Claude reads it unasked (#45).
-    pub log: Option<PathBuf>,
     /// Settings that hold a token: the copies the tools read instead, in the run's own folder, and the files
     /// themselves, not read (`tokens.rs`).
     pub copies: crate::tokens::Copies,
 }
 
 impl Reads {
-    /// Whether `real` is in a place kept from every run — the profile's rule, in Rust: one that holds the
-    /// project (a checkout under `~/.claude/worktrees`) is kept but for the project.
-    pub fn kept_holds(&self, root: &Path, real: &Path) -> bool {
-        self.log.as_deref() != Some(real)
-            && self
-                .kept
-                .iter()
-                .any(|k| real.starts_with(k) && !(root.starts_with(k) && real.starts_with(root)))
+    /// Whether `real` is in a place kept from every run — the profile's rule, in Rust: one that holds the run's
+    /// own places (`own`: the project — a checkout under `~/.claude/worktrees` —, its folder and where it writes —
+    /// in tarae's cache, #292) is kept but for them.
+    pub fn kept_holds(&self, own: &[&Path], real: &Path) -> bool {
+        self.kept
+            .iter()
+            .any(|k| real.starts_with(k) && !own.iter().any(|o| o.starts_with(k) && real.starts_with(o)))
     }
 }
 
@@ -1267,8 +1265,7 @@ pub fn reads_for(home: &Path, also: &[PathBuf], vars: &crate::sandboxpack::Vars)
     allow.retain(|p| p.starts_with(home) && p != home && !kept.iter().any(|k| p.starts_with(k)));
     crate::sorting::sort(&mut allow);
     allow.dedup();
-    let log = crate::log::path().map(|l| profile_path(&l));
-    Reads { home: Some(home.to_path_buf()), allow, kept, log, copies: Default::default() }
+    Reads { home: Some(home.to_path_buf()), allow, kept, copies: Default::default() }
 }
 
 /// What a toolchain reads above the project (`root`, real) in `home`: the packs' `reads-above` files in every
@@ -1285,7 +1282,9 @@ pub fn reads_above(root: &Path, home: &Path) -> Vec<PathBuf> {
 /// What a run never reads, whatever is granted: the places that hold keys (`allow::SECRETS`, and git's
 /// credential store where `$XDG_CONFIG_HOME` puts it), Claude's own (`CLAUDES`), `KEPT_FLOOR`, the packs'
 /// `kept` at both a home's places, their `kept-moved` where the user's variables move them (the cloud CLIs'
-/// sign-in, #182), and tarae's state (its conversations, what was allowed — its log aside).
+/// sign-in, #182), tarae's state (every session's conversations, turns, cards, what was allowed, its log) and
+/// tarae's cache (other runs' folders, other projects' run homes, the overlaps' snapshots — a run's own opened
+/// by `Reads::kept_holds`, #292).
 pub fn kept_reads(home: &Path, vars: &crate::sandboxpack::Vars) -> Vec<PathBuf> {
     kept_in(home, vars, &crate::sandboxpack::get().kept)
 }
@@ -1295,12 +1294,49 @@ pub fn kept_reads(home: &Path, vars: &crate::sandboxpack::Vars) -> Vec<PathBuf> 
 /// it reads what runs read, and only that). Real paths. On a worker.
 pub fn kept_places(home: &Path, here: &Here) -> Vec<PathBuf> {
     let mut v = kept_reads(home, &vars_in(home, here));
-    let state =
-        here.path("XDG_STATE_HOME").filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".local/state"));
-    v.push(profile_path(&state.join("tarae")));
+    v.extend(taraes_own(home, here));
     crate::sorting::sort(&mut v);
     v.dedup();
     v
+}
+
+/// tarae's own folders, as `here` says the variables: its state (every session's conversations, turns, cards,
+/// its log) and its cache (runs' folders, run homes, the overlaps' snapshots) — kept from every run and from
+/// Claude's `read` and `search` whatever is answered, no card opening them (#292) but the log's own for Claude's
+/// (`is_taraes_log`). Real paths.
+pub fn taraes_own(home: &Path, here: &Here) -> Vec<PathBuf> {
+    let mut v = taraes_states(home, here);
+    v.extend(taraes_cache(Some(home), here).and_then(|c| cache_kept(&c)));
+    v.dedup();
+    v
+}
+
+/// tarae's state folders among `taraes_own` (real).
+fn taraes_states(home: &Path, here: &Here) -> Vec<PathBuf> {
+    let state =
+        here.path("XDG_STATE_HOME").filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".local/state"));
+    let mut v: Vec<PathBuf> = std::iter::once(state.join("tarae"))
+        .chain(crate::config::state_dir())
+        .map(|p| profile_path(&p))
+        .collect();
+    v.dedup();
+    v
+}
+
+/// Whether `real` is tarae's log (`log::path`), in one of its state folders as `taraes_states` says them — the one
+/// file of tarae's own Claude's `read` and `search` may ask for (#292: every session's activity, so never unasked;
+/// runs never).
+pub fn is_taraes_log(real: &Path, home: &Path, here: &Here) -> bool {
+    real.file_name() == Some("tarae.log".as_ref())
+        && real.parent().is_some_and(|d| taraes_states(home, here).iter().any(|s| s == d))
+}
+
+/// tarae's cache as it's kept (real) — None where this process's own temp folder is in its `runs`: a tarae inside a
+/// sandboxed run (a test of tarae's Claude runs), whose temp folder is that run's own; the outer run's sandbox keeps
+/// the rest of the cache from it already.
+fn cache_kept(cache: &Path) -> Option<PathBuf> {
+    let cache = profile_path(cache);
+    (!profile_path(&std::env::temp_dir()).starts_with(cache.join("runs"))).then_some(cache)
 }
 
 /// `kept_reads` with the packs' `kept` given.
@@ -1311,9 +1347,17 @@ fn kept_in(home: &Path, vars: &crate::sandboxpack::Vars, packs: &[String]) -> Ve
     v.extend(packs.iter().flat_map(|k| vars.places_both(k)).map(at));
     v.extend(vars.kept_moved.iter().cloned().map(at));
     v.push(at(vars.xdg_config.join("git/credentials")));
-    v.extend(crate::config::state_dir().map(at));
     crate::sorting::sort(&mut v);
     v.dedup();
+    // tarae's state and its cache as the run's variables say it (`taraes_cache`'s rule: where its folder is made),
+    // last in this order wherever they are: the profile names a place by its index (the pinned policy, its stand-in
+    // home beside the real state)
+    let own = crate::config::state_dir().map(at).into_iter().chain(cache_kept(&vars.xdg_cache.join("tarae")));
+    for o in own {
+        if !v.contains(&o) {
+            v.push(o);
+        }
+    }
     v
 }
 
@@ -4446,9 +4490,12 @@ pub(crate) fn env_with(
     }
     if let Some(h) = &env.reads.home {
         let keep = found.kept.into_iter().filter(|d| d.starts_with(h) && d != h && !env.root.starts_with(d));
-        env.reads.kept.extend(keep);
-        crate::sorting::sort(&mut env.reads.kept);
-        env.reads.kept.dedup();
+        // (after the rest, never sorted among them: the profile names a place by its index — `kept_in`)
+        for d in keep {
+            if !env.reads.kept.contains(&d) {
+                env.reads.kept.push(d);
+            }
+        }
     }
     (env, above)
 }
@@ -6362,7 +6409,6 @@ mod tests {
                     "/Users/u/.claude".into(),
                     "/Users/u/.local/state/tarae".into(),
                 ],
-                log: Some("/Users/u/.local/state/tarae/tarae.log".into()),
                 copies: Default::default(),
             },
             run_homes: vec![gradle_at(Path::new("/Users/u/.gradle"))],
@@ -8988,7 +9034,8 @@ mod tests {
     /// Reads in the profile (card model P2), by parameters only: home's contents denied, then the project,
     /// where it writes and the allowed places opened (a file's metadata stays open); the clipboard and the
     /// keychain's servers never; and last of all, so nothing before opens them, the kept places — but the
-    /// project where one holds it, and tarae's log after that. Without a home, no read rules.
+    /// run's own places where one holds them (the project; a run home in tarae's cache, #292) — tarae's log too,
+    /// nothing after them. Without a home, no read rules.
     #[test]
     fn reads_in_the_profile() {
         let p = Policy::for_project(&env(Path::new("/Users/u/p")));
@@ -9011,16 +9058,15 @@ mod tests {
         let kept =
             at("(deny file-read-data file-read-xattr (subpath (param \"X0\")) (subpath (param \"X1\")) \
                        (subpath (param \"X2\")))");
-        let log = at("(allow file-read-data file-read-xattr (literal (param \"LOG\")))");
-        assert!(kept > at("(deny network-outbound (remote unix-socket))") && kept > link && log > kept);
-        assert!(text[kept..].lines().count() == 2, "the kept places last, then the log: {text}");
+        assert!(kept > at("(deny network-outbound (remote unix-socket))") && kept > link);
+        assert!(text[kept..].lines().count() == 1, "the kept places last, nothing after: {text}");
+        assert!(!text.contains("LOG"), "#292: the log is kept with the state: {text}");
         let params = p.params();
         for (k, v) in [
             ("HOME", "/Users/u"),
             ("R0", "/Users/u/.cargo"),
             ("X0", "/Users/u/.ssh"),
             ("X2", "/Users/u/.local/state/tarae"),
-            ("LOG", "/Users/u/.local/state/tarae/tarae.log"),
         ] {
             assert!(params.contains(&(k.into(), v.into())), "{k}: {params:?}");
         }
@@ -9032,12 +9078,33 @@ mod tests {
                 "(deny file-read-data file-read-xattr (subpath (param \"X0\")) (subpath (param \"X2\")))"
             ) && text.contains(
                 "(deny file-read-data file-read-xattr (require-all (require-any (subpath (param \"X1\"))) \
-                     (require-not (subpath (param \"ROOT\")))))"
+                     (require-not (require-any (subpath (param \"ROOT\")) (subpath (param \"W0\"))"
             ),
             "{text}"
         );
         assert!(inside.reads_allow(Path::new("/Users/u/.claude/worktrees/p/src/a.rs")));
         assert!(!inside.reads_allow(Path::new("/Users/u/.claude/settings.json")));
+        // #292: tarae's cache kept but for the run's own places in it — its folder, a run home it writes
+        let mut cached = p.clone();
+        cached.reads.kept.push("/Users/u/.cache/tarae".into());
+        cached.write.push("/Users/u/.cache/tarae/run-homes/go-build/k1".into());
+        let text = cached.profile();
+        let w = cached.write.len() - 1;
+        assert!(
+            text.contains(
+                "(deny file-read-data file-read-xattr (require-all (require-any (subpath (param \"X3\"))) \
+                 (require-not (require-any (subpath (param \"ROOT\"))"
+            ) && text.contains(&format!("(subpath (param \"W{w}\")))))")),
+            "{text}"
+        );
+        for (path, read) in [
+            ("/Users/u/.cache/tarae/run-homes/go-build/k1/a", true),
+            ("/Users/u/.cache/tarae/run-homes/go-build/k2/a", false),
+            ("/Users/u/.cache/tarae/runs/7/1/out", false),
+            ("/Users/u/.cache/tarae/overlap/1-ab/x", false),
+        ] {
+            assert_eq!(cached.reads_allow(Path::new(path)), read, "{path}");
+        }
         // The rules in Rust, as the report judges the output by them
         for (path, read) in [
             ("/Users/u/p/src/a.rs", true),
@@ -9046,7 +9113,7 @@ mod tests {
             ("/Users/u/.cargo/build/ab/cd12/x", true),
             ("/Users/u/Library/Caches/thing/x", true),
             ("/opt/homebrew/bin/go", true),
-            ("/Users/u/.local/state/tarae/tarae.log", true),
+            ("/Users/u/.local/state/tarae/tarae.log", false),
             ("/Users/u/other/x", false),
             ("/Users/u/.ssh/id_ed25519", false),
             ("/Users/u/.local/state/tarae/chats/x.json", false),
@@ -9618,6 +9685,16 @@ mod tests {
             assert!(kept.contains(&home.join(s)), "{s}: {kept:?}");
         }
         assert!(crate::config::state_dir().is_none_or(|s| kept.contains(&profile_path(&s))), "{kept:?}");
+        // (#292: tarae's cache, where the run's variables put it — and Claude's reads keep its state there too)
+        assert!(kept.contains(&home.join(".cache/tarae")), "{kept:?}");
+        let xdg = HashMap::from([
+            ("XDG_CACHE_HOME".to_string(), "/opt/c".into()),
+            ("XDG_STATE_HOME".to_string(), "/opt/s".into()),
+        ]);
+        let claudes = kept_places(home, &Here { env: xdg, ..Here::default() });
+        for d in ["/opt/c/tarae", "/opt/s/tarae"] {
+            assert!(claudes.contains(&PathBuf::from(d)), "{d}: {claudes:?}");
+        }
         let moved = Path::new("/opt/tarae-gradle-home");
         let env = HashMap::from([("GRADLE_USER_HOME".to_string(), moved.into())]);
         let vars = vars_in(home, &Here { env, ..Here::default() });
@@ -13797,6 +13874,78 @@ mod tests {
         }
     }
 
+    /// For real, on Linux in every tier (#292): tarae's state and cache are kept from every run — its log, a
+    /// conversation, another run's folder, another project's run home — in home and where `XDG_STATE_HOME` and
+    /// `XDG_CACHE_HOME` move them out of it (`kept_places`); a run home of the run's own in the cache reads. Stand-ins
+    /// beside the binary's build folder, as `a_kept_place_outside_home_is_closed`'s.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn taraes_state_and_cache_are_kept_from_runs() {
+        let test = "taraes_state_and_cache_are_kept_from_runs";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).expect("the build folder");
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(beside.as_os_str().as_bytes()).expect("a path");
+        // SAFETY: a NUL-terminated path; access(2) only reads it.
+        let beside = match unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0 {
+            true => beside.to_path_buf(),
+            false => Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        };
+        std::fs::create_dir_all(&beside).unwrap();
+        let s = crate::scratch::Scratch::in_dir(&beside, "sb-taraes-own");
+        let t = profile_path(&s);
+        let (home, root) = (t.join("home"), t.join("home/project"));
+        let moved = HashMap::from([
+            ("XDG_STATE_HOME".to_string(), t.join("xstate").into_os_string()),
+            ("XDG_CACHE_HOME".to_string(), t.join("xcache").into_os_string()),
+        ]);
+        for (here, state, cache) in [
+            (Here::default(), home.join(".local/state/tarae"), home.join(".cache/tarae")),
+            (Here { env: moved, ..Here::default() }, t.join("xstate/tarae"), t.join("xcache/tarae")),
+        ] {
+            let own = cache.join("run-homes/go-build/own");
+            let closed = [
+                state.join("tarae.log"),
+                state.join("chats/a.json"),
+                cache.join("runs/9/1/out"),
+                cache.join("run-homes/go-build/other/x"),
+            ];
+            let open = [own.join("x"), root.join("own.txt")];
+            for f in closed.iter().chain(&open) {
+                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                std::fs::write(f, FAKE).unwrap();
+            }
+            let reads =
+                Reads { home: Some(home.clone()), kept: kept_places(&home, &here), ..Reads::default() };
+            let p = Policy::for_project(&Env {
+                root: root.clone(),
+                reads,
+                run_env: run_env_here(),
+                ..Env::default()
+            });
+            assert!(
+                !p.write_places().iter().any(|w| t.starts_with(w)),
+                "the stand-ins are where no run writes"
+            );
+            let c = confined(Policy { run: RunDir::new().ok(), write: vec![own.clone()], ..p });
+            let tier = match &c.confine {
+                Some(Ok(c)) => c.tier(),
+                other => panic!("{test}: not confined: {other:?}"),
+            };
+            for f in &closed {
+                let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
+                assert!(!ok && !out.contains(FAKE), "{tier}: {}: {out} {err}", f.display());
+            }
+            for f in &open {
+                let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
+                assert!(ok && out == FAKE, "{tier}: {}: {err}", f.display());
+            }
+        }
+    }
+
     /// For real, on Linux in every tier (7e): home reached through another mount of its filesystem — toolbox's host
     /// root at `/run/host` — isn't read there, as it isn't at its own place: Landlock's rules hold inodes, and what
     /// holds that mount is granted whole by `/`'s rule, so home's path through it is a hole too. What else that mount
@@ -14873,7 +15022,8 @@ mod tests {
     }
 
     /// For real, on macOS (card model P2) — reads under the real profile: in a stand-in home only the project,
-    /// the allowed places and tarae's log are read; a place beside them isn't (nor listed — though a file's
+    /// the allowed places and in tarae's cache what the run writes are read; a place beside them isn't, nor
+    /// tarae's state — its log too — nor another run's home in the cache (#292) (nor listed — though a file's
     /// metadata stays open), nor a kept place, though an allowed — even writable — folder holds it; outside
     /// home everything is. A checkout inside a kept place reads its own files and nothing else there. Nothing
     /// unreadable can be hard-linked into the project — a key in a writable folder, a file in home not read —
@@ -14893,11 +15043,19 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let (read, unread) = (
-            [root.join("own"), home.join("allowed/m"), home.join("state/tarae.log"), t.join("outside/m")],
+            [
+                root.join("own"),
+                home.join("allowed/m"),
+                home.join("cache/run-homes/own/m"),
+                t.join("outside/m"),
+            ],
             [
                 home.join("other/m"),
                 home.join("dir/.ssh/key"),
                 home.join("state/chat.json"),
+                home.join("state/tarae.log"),
+                home.join("cache/run-homes/other/m"),
+                t.join("xcache/tarae/runs/9/1/out"),
                 home.join(".claude/settings.json"),
             ],
         );
@@ -14908,14 +15066,20 @@ mod tests {
         let reads = Reads {
             home: Some(home.clone()),
             allow: vec![home.join("allowed"), home.join("dir")],
-            kept: vec![home.join("dir/.ssh"), home.join("state"), home.join(".claude")],
-            log: Some(home.join("state/tarae.log")),
+            // (`xcache`: tarae's cache where `XDG_CACHE_HOME` moves it out of home — only its kept rule closes it)
+            kept: vec![
+                home.join("dir/.ssh"),
+                home.join("state"),
+                home.join("cache"),
+                t.join("xcache/tarae"),
+                home.join(".claude"),
+            ],
             copies: Default::default(),
         };
-        // (`dir` writable too: then only the read rules keep its key from a link)
+        // (`dir` writable too: then only the read rules keep its key from a link; a run home of its own in the cache)
         let policy = |root: &Path| Policy {
             reads: reads.clone(),
-            write: vec![home.join("dir")],
+            write: vec![home.join("dir"), home.join("cache/run-homes/own")],
             ..Policy::for_project(&Env { root: root.to_path_buf(), ..Env::default() })
         };
         let p = policy(&root);
