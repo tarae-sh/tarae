@@ -2425,6 +2425,106 @@ const BASE_MOVED: &[&str] = &[
     "@20?main moved",
     "@2",
 ];
+/// The second short video, V2 "main moved" (`--video main-moved`, ~30 s at 120×34 — the session list's frame at a quarter
+/// down, main's card at the bottom right, the two one over the other — so the card covers nothing and stands whole beside
+/// the list, never folded to its peek; collab's `.sb/videos-plan.md`): off camera, docs with a saved change of its own
+/// far from `threads.insert` and fix's own way of that line committed; on camera, the floating list in main, main's way
+/// of the line written (C2's `main ≈ fix` said as it's saved) and committed with the list up, its card beside the list,
+/// `C-q` giving it the keys (fix would conflict, docs clean), `y` moving docs only. It ends before docs, moved, meets fix
+/// (C2's next round, ~4 s on: `fix ≈ docs`).
+const MAIN_MOVED: &[&str] = &[
+    "@1",
+    ":",
+    "sh git config user.name demo && git config user.email demo@example.com && git config commit.gpgsign false \
+     && git worktree add -q ../fix && git worktree add -q ../docs",
+    "\r",
+    "@3",
+    ":",
+    "workspace-open ../docs",
+    "\r",
+    "@3",
+    ":",
+    "e src/main.rs",
+    "\r",
+    "@1",
+    "/",
+    "println",
+    "\r",
+    "A",
+    " // docs' way",
+    "\x1b",
+    ":",
+    "w",
+    "\r",
+    "@1",
+    ":",
+    "workspace-open ../fix",
+    "\r",
+    "@3",
+    ":",
+    "e src/main.rs",
+    "\r",
+    "@1",
+    "/",
+    "threads.insert",
+    "\r",
+    "A",
+    " // fix's way",
+    "\x1b",
+    ":",
+    "w",
+    "\r",
+    "@1",
+    ":",
+    "sh git commit -qm fix src/main.rs",
+    "\r",
+    "@3",
+    // (back in main, the list opened again: the opening shot)
+    " ",
+    "W",
+    "@1",
+    "1",
+    "@3",
+    " ",
+    "W",
+    "@10?sessions",
+    "@1",
+    "@rec",
+    "@beat:Three workspaces on one branch.",
+    "@4",
+    "@beat:Commit on main, and main moves on.",
+    "q",
+    "@1",
+    "/",
+    "threads.insert",
+    "\r",
+    "@1",
+    "A",
+    " // main's way",
+    "\x1b",
+    "@1",
+    ":",
+    "w",
+    "\r",
+    "@1",
+    " ",
+    "W",
+    "@10?sessions",
+    "@1",
+    ":",
+    "sh git commit -qm main src/main.rs",
+    "\r",
+    "@20?main moved",
+    "@beat:Everyone behind it hears at once, and where they'd clash.",
+    "@3",
+    "\x11",
+    "@10?esc back",
+    "@6",
+    "@beat:y moves the clean ones. Nobody's work is lost.",
+    "y",
+    "@20?moved onto main",
+    "@2",
+];
 /// Three checkouts changing `src/main.rs` far apart — main's `threads.insert` line saved, docs's `println!` saved, fix's
 /// `mod thread` unsaved — then `:weave` in fix: a clean merge, each change in its session's colour, its prefix in the
 /// sign column (`weaveclean`, collab C2b); the cursor on fix's change, `‹fix›` at its end.
@@ -4413,6 +4513,8 @@ const SCENES: &[Scene] = &[
     Scene { name: "weavegone", claude: "writemid", files: MAIN, keys: WEAVE_GONE },
     // (collab C3: main moved — one card for every workspace behind it, what would conflict where)
     Scene { name: "basemoved", claude: "writemid", files: MAIN, keys: BASE_MOVED },
+    // (…as the second short video, V2: from the floating list to `y`)
+    Scene { name: "main-moved", claude: "idle", files: MAIN, keys: MAIN_MOVED },
     // (panes P3 step 7d: Claude's card with the chat closed — the screen's right, above the status line)
     Scene { name: "asks-closed", claude: "card", files: MAIN, keys: ASKS_CLOSED },
     // (…and with the chat open — `space l` brings it back from following: over its foot, the transcript above it)
@@ -5244,6 +5346,7 @@ fn video_of(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: 
 fn video_title(scene: &str) -> &'static str {
     match scene {
         "waits-60s" => "A card never covers what you opened",
+        "main-moved" => "When main moves, every workspace hears",
         _ => "",
     }
 }
