@@ -453,7 +453,7 @@ const THREADS_MAX: usize = 256;
 
 /// A thread's `/proc/<pid>/task/<tid>/stat` and `wchan` read (`hz`: clock ticks a second).
 #[cfg(any(target_os = "linux", test))]
-fn parse_thread(stat: &str, wchan: Option<&str>, hz: u64) -> Option<Thread> {
+pub(crate) fn parse_thread(stat: &str, wchan: Option<&str>, hz: u64) -> Option<Thread> {
     let name = stat.get(stat.find('(')? + 1..stat.rfind(')')?)?.to_string();
     let f: Vec<&str> = stat.get(stat.rfind(')')? + 1..)?.split_whitespace().collect();
     let num = |i: usize| f.get(i).and_then(|v| v.parse::<u64>().ok());

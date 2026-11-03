@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 mod grow;
 mod still;
+mod stream;
 
 /// Sessions open (yours in front and 16 behind, each a checkout of one repository), the busy ones among those behind,
 /// each one's own buffers, its turn's stops (every other one an edit of two hunks, over `TURN_FILES` files, `OPEN` of

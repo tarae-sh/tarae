@@ -1977,8 +1977,12 @@ fn go_search(ed: &mut Editor, call: Call, q: Query, args: Value, granted: Vec<Pa
     let mut trace = crate::trace::Trace::new(format!("claude's search: {}", clip(&q.pattern, 60)));
     ed.events.jobs().spawn(move || {
         trace.step("worker");
-        let r = scopes(&root, &q.paths, &keys, &gate)
-            .map(|s| s.map(|scopes| run_search_traced(&root, &scopes, &q, &unsaved, &keys, &mut trace)));
+        let r = scopes(&root, &q.paths, &keys, &gate);
+        // (the places given judged here, on the worker — #300: a refused one's time was said as the main loop's)
+        if !q.paths.is_empty() {
+            trace.step("places judged");
+        }
+        let r = r.map(|s| s.map(|scopes| run_search_traced(&root, &scopes, &q, &unsaved, &keys, &mut trace)));
         move |ed: &mut Editor| {
             trace.step("main loop");
             crate::log::line("tarae", "timing", &trace.line());

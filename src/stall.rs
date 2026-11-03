@@ -7,7 +7,8 @@
 //! The watcher (`watch`, thread `tarae-stall`) parks while the loop is idle; the first stamp after unparks it. It
 //! wakes `SLOW` after a stamp began and, if that stamp still stands, writes one log line (what, how long so far);
 //! past `STACK` it takes the main thread's stack into the log's folder (macOS: `/usr/bin/sample` on tarae's own pid;
-//! Linux: the call the main thread waits in, no stack) and logs where; once the loop moves on, the stall's whole time.
+//! Linux: the call the main thread waits in, no stack) and logs where; once the loop moves on, the stall's whole time
+//! and the main thread's CPU time since it was first said (`Cpu`, #300: whether the loop computed or waited).
 //! A stall past `STACK` is said on screen once a run (a calm toast pointing at the log); later ones go to
 //! `:messages` only. What it decides is `Watcher::look`, pure over the stamp and a time — the thread and the
 //! simulation (`sim/stall.rs`) both drive it.
@@ -205,6 +206,13 @@ impl Stamp {
         (n.watched, n.ended) = (seq, None);
     }
 
+    /// The stamp under way was said to be stalling (tests wait on it) — one lock, the number read inside it.
+    #[cfg(test)]
+    pub fn said(&self) -> bool {
+        let n = self.lock();
+        n.watched == self.seq.load(SeqCst)
+    }
+
     /// Stacks taken so far.
     #[cfg(test)]
     pub fn stacks(&self) -> u32 {
@@ -355,14 +363,18 @@ pub fn sampling() -> Option<u32> {
 }
 
 /// Starts the watcher of `stamp` (the main loop's — `term::event_loop`); what it says on screen goes through `tx`.
+/// Its caller is the loop: its CPU time is what a stall's end says.
 pub fn watch(stamp: Arc<Stamp>, tx: crate::event::Tx, limits: Limits) {
+    let main = Cpu::here();
     crate::event::thread("tarae-stall", move || {
         let _ = stamp.watcher.set(std::thread::current());
         let mut w = Watcher::new(limits);
+        // (the loop's CPU time as the stall under way was first said, and when)
+        let mut from = None;
         while !stamp.stop.load(SeqCst) {
             let look = w.look(&stamp, crate::clock::now());
             for &act in &look.acts {
-                said(act, &stamp, &tx);
+                said(act, &stamp, &tx, main, &mut from);
             }
             wait(&stamp, &look);
         }
@@ -382,11 +394,13 @@ fn wait(stamp: &Stamp, look: &Look) {
     stamp.waiting.store(RUNNING, SeqCst);
 }
 
-/// An act done: its log line, the stack, the end said where it's due.
-fn said(act: Act, stamp: &Stamp, tx: &crate::event::Tx) {
+/// An act done: its log line, the stack, the end said where it's due — with what the loop's thread (`main`) did on the
+/// CPU from the stall's first word (`from`) to its end.
+fn said(act: Act, stamp: &Stamp, tx: &crate::event::Tx, main: Cpu, from: &mut Option<(Used, Instant)>) {
     let time = crate::term::run_duration;
     match act {
         Act::Slow { label, so_far } => {
+            *from = Some((main.used(), crate::clock::now()));
             crate::log::line("stall", "warn", &format!("the main loop has stood {} on {label}", time(so_far)))
         }
         Act::Stack { label, so_far } => {
@@ -395,10 +409,11 @@ fn said(act: Act, stamp: &Stamp, tx: &crate::event::Tx) {
             crate::log::line("stall", "warn", &format!("{} into {label}: {stack}", time(so_far)));
         }
         Act::Over { label, took, tell } => {
+            let cpu = cpu_said(from.take(), main.used());
             crate::log::line(
                 "stall",
                 "warn",
-                &format!("the main loop is back after {} on {label}", time(took)),
+                &format!("the main loop is back after {} on {label} · {cpu}", time(took)),
             );
             if tell == Tell::No {
                 return;
@@ -410,6 +425,76 @@ fn said(act: Act, stamp: &Stamp, tx: &crate::event::Tx) {
             };
             let _ = tx.send(crate::event::Event::Job(Box::new(job)));
         }
+    }
+}
+
+/// A thread's CPU time so far (user and system), or why it couldn't be read.
+type Used = Result<Duration, String>;
+
+/// The stand's CPU time against the time it was watched: `352ms cpu of 364ms watched` — the two near each other,
+/// the loop computed; the first near nothing, it waited (a lock, a process, the disk, a page fault's read).
+fn cpu_said(from: Option<(Used, Instant)>, now: Used) -> String {
+    let time = crate::term::run_duration;
+    match (from, now) {
+        (Some((Ok(a), at)), Ok(b)) => {
+            format!("{} cpu of {} watched", time(b.saturating_sub(a)), time(crate::clock::since(at)))
+        }
+        (Some((Err(e), _)), _) | (_, Err(e)) => format!("no cpu time: {e}"),
+        (None, Ok(_)) => "no cpu time: not read as it was said".into(),
+    }
+}
+
+/// A thread whose CPU time another reads — the loop's, read by its watcher: macOS's `thread_info` on its port, Linux's
+/// `/proc/self/task/<tid>/stat`. Neither suspends it.
+#[derive(Clone, Copy)]
+struct Cpu {
+    #[cfg(target_os = "macos")]
+    port: libc::mach_port_t,
+    #[cfg(target_os = "linux")]
+    tid: libc::pid_t,
+}
+
+impl Cpu {
+    /// The calling thread.
+    fn here() -> Cpu {
+        Cpu {
+            // SAFETY: the calling thread's own handle; its port is valid while it lives (no right taken).
+            #[cfg(target_os = "macos")]
+            port: unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) },
+            // SAFETY: gettid only names the calling thread.
+            #[cfg(target_os = "linux")]
+            tid: unsafe { libc::gettid() },
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn used(self) -> Used {
+        // SAFETY: `info` is a `thread_basic_info` and `count` its size in `integer_t`s, as `thread_info` reads them.
+        let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+        let mut count = libc::THREAD_BASIC_INFO_COUNT;
+        let flavor = libc::THREAD_BASIC_INFO as libc::thread_flavor_t;
+        let r = unsafe { libc::thread_info(self.port, flavor, (&raw mut info).cast(), &mut count) };
+        if r != 0 {
+            return Err(format!("thread_info said {r}"));
+        }
+        let t = |v: libc::time_value_t| {
+            Duration::from_secs(v.seconds.max(0) as u64) + Duration::from_micros(v.microseconds.max(0) as u64)
+        };
+        Ok(t(info.user_time) + t(info.system_time))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn used(self) -> Used {
+        let path = format!("/proc/self/task/{}/stat", self.tid);
+        let stat = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+        // SAFETY: sysconf only reads a constant.
+        let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+        crate::procs::parse_thread(&stat, None, hz).map(|t| t.cpu).ok_or_else(|| format!("{path}: not read"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn used(self) -> Used {
+        Err("not read on this system".into())
     }
 }
 

@@ -1549,6 +1549,68 @@ fn perf_budget_stream_frame_of_a_big_write() {
     assert!(worst < budget, "a batch took {worst:?} (budget {budget:?})");
 }
 
+/// #300: a small edit written into the middle of a big file (30,000 lines of documented functions, as `term.rs` is), its
+/// input's batches applied as the main loop applies them — each a job through `handle_event`, every per-event sync after
+/// it — and the frame after each: medians and the worst, said for `cargo perf`. `F300_BATCHES=n` sends only the first
+/// `n` batches untimed, for a profiler.
+#[test]
+fn perf_small_edit_written_into_a_big_file() {
+    if crate::test_results::unoptimized("writing::tests::perf_small_edit_written_into_a_big_file") {
+        return;
+    }
+    let (mut ed, dir, g) = scene("writing-perf-small-big");
+    let text: String = (0..4300)
+        .map(|i| {
+            format!(
+                "/// What `f{i}` gives: its argument and {i}, doubled — the caller's\n/// own count, never kept.\n\
+                 fn f{i}(x: u32) -> u32 {{\n    let y = x + {i};\n    y * 2\n}}\n\n"
+            )
+        })
+        .collect();
+    std::fs::write(dir.join("a.rs"), &text).unwrap();
+    crate::typed::execute(&mut ed, "reload").unwrap();
+    let mut buf = Vec::with_capacity(1 << 16);
+    let parsed = |ed: &Editor| ed.doc().syntax.as_ref().is_some_and(|s| !(s.dirty || s.in_flight));
+    settle(&mut ed, parsed);
+    crate::term::render(&mut ed, &mut buf, 160, 45).unwrap();
+    let new: String = (0..10).map(|k| format!("    let y{k} = x + {k}; // and its reason, said\n")).collect();
+    let input = edit_of("a.rs", "    let y = x + 2150;\n", &new);
+    let placed = input.find("new_string").unwrap() / 16 + 1;
+    let chars: Vec<char> = input.chars().collect();
+    let profiling = std::env::var("F300_BATCHES").ok().and_then(|n| n.parse::<usize>().ok());
+    let (mut events, mut frames) = (Vec::new(), Vec::new());
+    let mut scan = Scan::new();
+    for (k, piece) in chars.chunks(16).enumerate().take(profiling.unwrap_or(usize::MAX)) {
+        scan.feed(&piece.iter().collect::<String>());
+        let d = Delta { call: "big1".into(), pieces: scan.take(), done: false };
+        let apply = move |ed: &mut Editor| crate::chat::stream_event(ed, g, StreamEv::Writing(d));
+        let t = Instant::now();
+        ed.handle_event(crate::event::Event::Job(Box::new(apply)));
+        events.push(t.elapsed());
+        // (the place looked for on a worker, as the old string ends: its answer taken in, untimed)
+        if k == placed {
+            settle(&mut ed, |ed| shown(ed.doc()).is_some());
+        }
+        buf.clear();
+        let t = Instant::now();
+        crate::term::render(&mut ed, &mut buf, 160, 45).unwrap();
+        frames.push(t.elapsed());
+    }
+    if profiling.is_some() {
+        return;
+    }
+    assert!(shown(ed.doc()).is_some(), "the edit shown as it's written");
+    for (what, mut all) in [("event", events), ("frame", frames)] {
+        all.sort_unstable();
+        let (med, worst) = (all[all.len() / 2], all[all.len() - 1]);
+        let line = format!(
+            "PERF small_edit_big_file_{what}_us {:.1} budget=16000 noise=30\nWORST small_edit_big_file_{what} {worst:?}\n",
+            med.as_secs_f64() * 1e6
+        );
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    }
+}
+
 /// `editor.motion`: `none` draws nothing bleeding (the rows stay), `calm` keeps bleeding ink but moves nothing on a clock —
 /// the working sign held, a frame a second while waiting, a toast whole at once; macOS's Reduce Motion makes `full` calm,
 /// never `none` less.
