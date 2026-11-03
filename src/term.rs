@@ -27023,8 +27023,7 @@ mod tests {
         if crate::test_results::unoptimized("term::tests::perf_frames_with_cards") {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("tarae-perf-seat-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::Scratch::new("perf-seat");
         let path = dir.join("a.rs");
         let text: String =
             (0..2_000).map(|i| format!("fn f{i}() {{ let x = {i}; }} // line {i}\n")).collect();
@@ -27035,21 +27034,22 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         ed.open(&path).unwrap();
         let p = ed.doc().path.clone().unwrap();
+        // (the chat hidden, its turn and follow going on: while its column is in sight no follow card stands, #295)
         crate::chat::open(&mut ed);
+        crate::chat::hide(&mut ed);
         ed.workspace.viewer.at = At::Code;
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.follow.on = true;
         c.state = crate::chat::State::Thinking;
-        for i in 0..40 {
-            crate::notes::add(
-                &mut ed,
-                &p,
-                i * 2..i * 2 + 1,
-                crate::notes::By::Author,
-                "a note about this line",
-            );
-        }
+        let ids: Vec<u64> = (0..40)
+            .map(|i| {
+                let lines = i * 2..i * 2 + 1;
+                crate::notes::add(&mut ed, &p, lines, crate::notes::By::Author, "a note about this line")
+            })
+            .collect();
         ed.goto_line(10);
+        // (a note's card opens by an act only — `enter` on its line, focus A1b: line 10's, opened as that does)
+        crate::notes::open(&mut ed, ids[5]);
         let mut buf = Vec::with_capacity(1 << 16);
         render(&mut ed, &mut buf, w, h).unwrap();
         assert!(ed.screen.note_card.get().is_some(), "note card");
@@ -27072,7 +27072,6 @@ mod tests {
         };
         // (its best of 3 — the first run in a process also pays the clock ramping up)
         let frame = (0..3).map(|_| run()).min().unwrap();
-        std::fs::remove_dir_all(&dir).ok();
         let line =
             format!("PERF frame_with_cards_us {:.1} budget=16000 noise=20\n", frame.as_secs_f64() * 1e6);
         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());

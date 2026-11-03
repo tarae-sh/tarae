@@ -145,9 +145,9 @@ fn keys(scene: &Scene, layout: Layout) -> Vec<String> {
         // (a second session beside main — idle —, then back in main: the chat's top line names both)
         k.extend([
             ":",
-            "sh git worktree add -q ../fix",
+            "sh git worktree add -q ../fix && echo checkout made",
             "\r",
-            "@3",
+            "@20?checkout made",
             ":",
             "workspace-open ../fix",
             "\r",
@@ -658,6 +658,18 @@ pub fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #342: every scene's `:sh`, at every layout, is waited on by its end, never a fixed time
+    /// (`scenes::sh_waits_by_time`).
+    #[test]
+    fn every_scenes_sh_is_waited_on_by_its_end() {
+        for s in SCENES {
+            for l in LAYOUTS {
+                let late = crate::scenes::sh_waits_by_time(&keys(s, l));
+                assert!(late.is_empty(), "{l:?}: {late:?}");
+            }
+        }
+    }
 
     /// A screen of `w`×`h` blanks with `text` written at each (x, y).
     fn grid(w: usize, h: usize, texts: &[(usize, usize, &str)]) -> Grid {

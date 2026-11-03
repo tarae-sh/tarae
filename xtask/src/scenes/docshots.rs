@@ -426,9 +426,10 @@ const DOC_SCENES: &[DocScene] = &[
         &[
             "@1",
             ":",
-            "sh git worktree add -q ../api && git worktree add -q ../docs",
+            // (its line said on a toast long gone by the picture's frame)
+            "sh git worktree add -q ../api && git worktree add -q ../docs && echo checkouts made",
             "\r",
-            "@3",
+            "@20?checkouts made",
             " ",
             "l",
             "@1",
@@ -1241,6 +1242,15 @@ fn pages(root: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// #342: every docs scene's `:sh` is waited on by its end, never a fixed time (`scenes::sh_waits_by_time`).
+    #[test]
+    fn every_docs_scenes_sh_is_waited_on_by_its_end() {
+        for s in super::DOC_SCENES {
+            let late = crate::scenes::sh_waits_by_time(s.keys);
+            assert!(late.is_empty(), "{}: {late:?}", s.name);
+        }
+    }
+
     /// Every docs scene's config, as its shot writes it, gets the stand-in (`shot::stand_in_only`) — as every scene's
     /// (`scenes::tests::every_scenes_config_gets_the_stand_in`).
     #[test]

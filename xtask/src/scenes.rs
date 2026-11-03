@@ -69,6 +69,22 @@ struct Scene {
     keys: &'static [&'static str],
 }
 
+/// The `:sh` lines in `keys` whose next key after their `enter` waits a fixed time, not on text (#342). `:sh` is a job:
+/// what follows it waits on its end — the line it prints, said on the status line (`&& echo checkout made`,
+/// `@20?checkout made`), or what tarae draws of what it did — never on a guess of how long it takes.
+#[cfg(test)]
+pub(crate) fn sh_waits_by_time<S: AsRef<str>>(keys: &[S]) -> Vec<String> {
+    let on_text = |k: &str| {
+        let w = k.strip_prefix('@').and_then(|k| k.split_once('?'));
+        w.is_some_and(|(n, t)| n.chars().all(|c| c.is_ascii_digit() || c == '.') && !t.is_empty())
+    };
+    let keys: Vec<&str> = keys.iter().map(AsRef::as_ref).collect();
+    (keys.windows(4))
+        .filter(|w| w[0] == ":" && w[1].starts_with("sh ") && w[2] == "\r" && !on_text(w[3]))
+        .map(|w| format!("{:?} then {:?}", w[1], w[3]))
+        .collect()
+}
+
 const MAIN: &[&str] = &["src/main.rs"];
 const WIDE: &[&str] = &["src/wide.rs"];
 /// Focus A1c's file (`SPOOL_RS`).
@@ -1192,9 +1208,9 @@ macro_rules! presence_keys {
             "\x1b",
             // (another checkout beside it, opened as a session — the shot's own folders, not tarae's worktrees')
             ":",
-            "sh git worktree add -q ../fix",
+            "sh git worktree add -q ../fix && echo checkout made",
             "\r",
-            "@3",
+            "@20?checkout made",
             ":",
             "workspace-open ../fix",
             "\r",
@@ -1223,9 +1239,9 @@ const PRESENCE_PROCS: &[&str] = presence_keys!(":procs", "\r", "@2");
 // main's `working` and its file after it, fix in front in bold)
 const PRESENCE_STRIP: &[&str] = presence_keys!(
     ":",
-    "sh git worktree add -q ../docs",
+    "sh git worktree add -q ../docs && echo checkout made",
     "\r",
-    "@3",
+    "@20?checkout made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -1246,9 +1262,9 @@ macro_rules! waits_keys {
         &[
             "@1",
             ":",
-            "sh git worktree add -q ../fix",
+            "sh git worktree add -q ../fix && echo checkout made",
             "\r",
-            "@3",
+            "@20?checkout made",
             ":",
             "workspace-open ../fix",
             "\r",
@@ -1286,9 +1302,9 @@ macro_rules! waits_keys {
 const WAITS_60S: &[&str] = &[
     "@1",
     ":",
-    "sh git worktree add -q ../fix",
+    "sh git worktree add -q ../fix && echo checkout made",
     "\r",
-    "@3",
+    "@20?checkout made",
     ":",
     "workspace-open ../fix",
     "\r",
@@ -1426,9 +1442,9 @@ macro_rules! overlap_keys {
             "\r",
             "@1",
             ":",
-            "sh git worktree add -q ../fix",
+            "sh git worktree add -q ../fix && echo checkout made",
             "\r",
-            "@3",
+            "@20?checkout made",
             ":",
             "workspace-open ../fix",
             "\r",
@@ -1468,9 +1484,9 @@ const SESSIONS_FLOAT: &[&str] = overlap_keys!(
     "@20?knots\", t.k",
     "\x1b",
     ":",
-    "sh git worktree add -q ../docs",
+    "sh git worktree add -q ../docs && echo checkout made",
     "\r",
-    "@3",
+    "@20?checkout made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -1488,9 +1504,9 @@ const SESSIONS_FLOAT: &[&str] = overlap_keys!(
     "\r",
     "@2",
     ":",
-    "sh git commit -qam main",
+    "sh git commit -qam main && echo main committed",
     "\r",
-    "@2",
+    "@20?main committed",
     " ",
     "l",
     "@1",
@@ -1694,9 +1710,9 @@ const ORCHESTRA_END: &[&str] = &[
     "h",
     "@1",
     ":",
-    "sh git commit --allow-empty -qm count",
+    "sh git commit --allow-empty -qm count && echo count committed",
     "\r",
-    "@3",
+    "@20?count committed",
     ":",
     "workspace-bring knot-count",
     "\r",
@@ -1715,9 +1731,9 @@ const ORCHESTRA_END: &[&str] = &[
 const ORCHESTRA_LIST: &[&str] = &[
     "@1",
     ":",
-    "sh git worktree add -q ../fix",
+    "sh git worktree add -q ../fix && echo checkout made",
     "\r",
-    "@3",
+    "@20?checkout made",
     ":",
     "workspace-open ../fix",
     "\r",
@@ -1873,9 +1889,9 @@ const ORCHESTRA_FRESH: &[&str] = &[
 const ORCHESTRA_STRIP: &[&str] = &[
     "@1",
     ":",
-    "sh git worktree add -q ../fix",
+    "sh git worktree add -q ../fix && echo checkout made",
     "\r",
-    "@3",
+    "@20?checkout made",
     ":",
     "workspace-open ../fix",
     "\r",
@@ -1925,9 +1941,9 @@ const ORCHESTRA_PROPOSE_BRING: &[&str] = &[
     "h",
     "@1",
     ":",
-    "sh git commit --allow-empty -qm count",
+    "sh git commit --allow-empty -qm count && echo count committed",
     "\r",
-    "@3",
+    "@20?count committed",
     " ",
     "W",
     "@1",
@@ -1974,9 +1990,9 @@ const ORCHESTRA_PROPOSE_BOARD: &[&str] = &[
     "h",
     "@1",
     ":",
-    "sh printf '\\n// counted\\n' >> src/main.rs && git commit -qam count",
+    "sh printf '\\n// counted\\n' >> src/main.rs && git commit -qam count && echo count committed",
     "\r",
-    "@3",
+    "@20?count committed",
     " ",
     "W",
     "@1",
@@ -2249,9 +2265,9 @@ macro_rules! strip_nine_keys {
     ($($more:expr),* $(,)?) => {
         overlap_keys!(
     ":",
-    "sh for n in docs parser sbspeed keys pull web motion; do git worktree add -q ../$n; done",
+    "sh for n in docs parser sbspeed keys pull web motion; do git worktree add -q ../$n || exit; done && echo checkouts made",
     "\r",
-    "@4",
+    "@20?checkouts made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -2339,9 +2355,9 @@ const F237_TWO: &[&str] = f237_keys!();
 /// …and three more: docs waiting on its card, web's turn ended (done), motion idle.
 const F237_FIVE: &[&str] = f237_keys!(
     ":",
-    "sh for n in docs web motion; do git worktree add -q ../$n; done",
+    "sh for n in docs web motion; do git worktree add -q ../$n || exit; done && echo checkouts made",
     "\r",
-    "@4",
+    "@20?checkouts made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -2380,9 +2396,9 @@ const HOVER_CHAT_MORE: &[&str] = strip_nine_keys!("@hover?+", "@1");
 const BASE_MOVED: &[&str] = &[
     "@1",
     ":",
-    "sh git worktree add -q ../fix && git worktree add -q ../docs",
+    "sh git worktree add -q ../fix && git worktree add -q ../docs && echo checkouts made",
     "\r",
-    "@3",
+    "@20?checkouts made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -2406,9 +2422,10 @@ const BASE_MOVED: &[&str] = &[
     "\r",
     "@1",
     ":",
-    "sh git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qm fix src/main.rs",
+    "sh git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qm fix src/main.rs \
+     && echo fix committed",
     "\r",
-    "@3",
+    "@20?fix committed",
     " ",
     "W",
     "@1",
@@ -2450,9 +2467,9 @@ const MAIN_MOVED: &[&str] = &[
     "\r",
     ":",
     "sh git config user.name demo && git config user.email demo@example.com && git config commit.gpgsign false \
-     && git worktree add -q ../fix && git worktree add -q ../docs",
+     && git worktree add -q ../fix && git worktree add -q ../docs && echo checkouts made",
     "\r",
-    "@3",
+    "@20?checkouts made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -2490,9 +2507,9 @@ const MAIN_MOVED: &[&str] = &[
     "\r",
     "@1",
     ":",
-    "sh git commit -qm fix src/main.rs",
+    "sh git commit -qm fix src/main.rs && echo fix committed",
     "\r",
-    "@3",
+    "@20?fix committed",
     // (back in main, the list opened again: the opening shot)
     " ",
     "W",
@@ -2692,9 +2709,9 @@ const FOLLOW_REPLAY: &[&str] = &[
 const THREE_CLAUDES: &[&str] = &[
     "@1",
     ":",
-    "sh git worktree add -q ../fix && git worktree add -q ../docs",
+    "sh git worktree add -q ../fix && git worktree add -q ../docs && echo checkouts made",
     "\r",
-    "@3",
+    "@20?checkouts made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -2806,9 +2823,11 @@ const MANAGERS_VIEW: &[&str] = &[
     ":",
     "sh git worktree add -q ../fix && git worktree add -q ../docs && echo '// main moved on' >> src/thread.rs \
      && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qm 'main: a note' \
-     src/thread.rs",
+     src/thread.rs && echo checkouts made",
     "\r",
-    "@3",
+    // (`:sh` is a job: `../fix` opened before it's made opens nothing, and every message of fix's went to main's Claude —
+    // #342. Its end is its first line, said on the status line)
+    "@20?checkouts made",
     ":",
     "workspace-open ../fix",
     "\r",
@@ -2937,17 +2956,17 @@ const BRING: &[&str] = &[
     "y",
     "@1",
     ":",
-    "sh git worktree add -q ../fix",
+    "sh git worktree add -q ../fix && echo checkout made",
     "\r",
-    "@2",
+    "@20?checkout made",
     ":",
-    "sh cd ../fix && echo 'Tied by fix.' >> README.md && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qam 'fix: the readme'",
+    "sh cd ../fix && echo 'Tied by fix.' >> README.md && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qam 'fix: the readme' && echo fix committed",
     "\r",
-    "@2",
+    "@20?fix committed",
     ":",
-    "sh echo '// main moved on' >> src/thread.rs && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qam 'main: a note'",
+    "sh echo '// main moved on' >> src/thread.rs && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qam 'main: a note' && echo main committed",
     "\r",
-    "@2",
+    "@20?main committed",
     ":",
     "workspace-open ../fix",
     "\r",
@@ -2986,9 +3005,9 @@ const WEAVE_CLEAN: &[&str] = &[
     "\r",
     "@1",
     ":",
-    "sh git worktree add -q ../fix && git worktree add -q ../docs",
+    "sh git worktree add -q ../fix && git worktree add -q ../docs && echo checkouts made",
     "\r",
-    "@3",
+    "@20?checkouts made",
     ":",
     "workspace-open ../docs",
     "\r",
@@ -3048,9 +3067,9 @@ const WEAVE_GONE: &[&str] = &[
     "\r",
     "@1",
     ":",
-    "sh git worktree add -q ../fix",
+    "sh git worktree add -q ../fix && echo checkout made",
     "\r",
-    "@3",
+    "@20?checkout made",
     ":",
     "workspace-open ../fix",
     "\r",
@@ -4892,9 +4911,9 @@ const SCENES: &[Scene] = &[
             "@?3 reads",
             // (another checkout beside it, opened as a session — the shot's own folders, not tarae's worktrees')
             ":",
-            "sh git worktree add -q ../fix",
+            "sh git worktree add -q ../fix && echo checkout made",
             "\r",
-            "@3",
+            "@20?checkout made",
             ":",
             "workspace-open ../fix",
             "\r",
@@ -8694,6 +8713,17 @@ fn wait_file_contains(path: &Path, needle: &str, timeout: Duration) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #342: every scene's `:sh` is waited on by its end, never a fixed time (`sh_waits_by_time`).
+    #[test]
+    fn every_scenes_sh_is_waited_on_by_its_end() {
+        for s in SCENES {
+            let late = sh_waits_by_time(s.keys);
+            assert!(late.is_empty(), "{}: {late:?}", s.name);
+        }
+        assert_eq!(sh_waits_by_time(&[":", "sh true", "\r", "@3"]).len(), 1, "a fixed wait is found");
+        assert!(sh_waits_by_time(&[":", "sh echo ok", "\r", "@20?ok"]).is_empty());
+    }
 
     /// Each wait is timed from the last key sent at or before its end — a key after it never counts, and a wait with no
     /// key before it is left out.
