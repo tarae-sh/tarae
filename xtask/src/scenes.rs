@@ -39,7 +39,7 @@ use docshots::{Bg, Named, fixed_clock, homes, none_of_yours, now};
 // (`scenes --docs`: the docs' pictures, each from a scene here)
 pub(crate) mod docshots;
 
-const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --tint scene … [--size COLSxROWS …] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
+const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video|--wire scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --tint scene … [--size COLSxROWS …] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
 
 /// A recording's size unless `--size` says (the polish week's: its flows judged at 120×34) or the scene has its own
 /// (`record_size`).
@@ -5086,6 +5086,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut transparent = false;
     let mut recording = false;
     let mut video = false;
+    let mut wire = false;
     let mut tint = false;
     let mut backgrounds = BACKGROUNDS.to_vec();
     let mut bin: Option<PathBuf> = None;
@@ -5101,6 +5102,8 @@ pub fn run(args: &[String]) -> Result<()> {
             "--record" => recording = true,
             // (…and made a video — `video.rs`)
             "--video" => (recording, video) = (true, true),
+            // (…or only what a remote interface's wire would carry — `wire.rs`, the remote split's spike)
+            "--wire" => (recording, wire) = (true, true),
             // (the polish plan's "cells tinted in the code" on the last frame — `tint_one`)
             "--tint" => tint = true,
             "--theme" => {
@@ -5152,6 +5155,27 @@ pub fn run(args: &[String]) -> Result<()> {
     for scene in scenes {
         for &bg in &backgrounds {
             for size in sizes_of(scene) {
+                if wire {
+                    // (one theme: the bytes are the same but for colours' digits)
+                    let theme = if bg == "dark" { Bg::Dark } else { Bg::Light };
+                    if bg != backgrounds[0] {
+                        continue;
+                    }
+                    match take(scene, theme, size, &bin, &me) {
+                        Ok(rec) => {
+                            println!("{}", crate::wire::report(&rec.wire).line(scene.name, size));
+                            if !rec.missed.is_empty() {
+                                eprintln!("{}: {}", scene.name, rec.missed.join("; "));
+                                failed.push(scene.name.to_string());
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("{}: {e}", scene.name);
+                            failed.push(scene.name.to_string());
+                        }
+                    }
+                    continue;
+                }
                 if recording {
                     let theme = if bg == "dark" { Bg::Dark } else { Bg::Light };
                     let at = match video {

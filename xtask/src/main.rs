@@ -86,6 +86,7 @@ mod stream;
 mod trace;
 mod turns;
 mod video;
+mod wire;
 
 type Result<T> = std::result::Result<T, String>;
 

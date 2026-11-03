@@ -317,6 +317,8 @@ pub(crate) struct Recorded {
     pub(crate) beats: Vec<(u64, String)>,
     pub(crate) waits: Vec<(u64, String)>,
     pub(crate) missed: Vec<String>,
+    /// Each frame's bytes as tarae wrote them, with its time and whether it changed nothing in sight (`Vt.wire`).
+    pub(crate) wire: Vec<(u64, Vec<u8>, bool)>,
 }
 
 /// `record_at` for a scene: what it returns is `Recorded`, a missed wait among it rather than an error.
@@ -336,6 +338,7 @@ pub(crate) fn record(
         beats: vt.beats.iter().zip(vt.captions).map(|((d, _), c)| (ms(*d), c)).collect(),
         waits: vt.waited.into_iter().map(|(d, w)| (ms(d), w)).collect(),
         missed,
+        wire: vt.wire.into_iter().map(|(d, b, same)| (ms(d), b, same)).collect(),
     })
 }
 
@@ -539,6 +542,9 @@ struct Vt {
     /// `captured` frame's count as it was kept.
     ends: u64,
     captured_ends: Vec<u64>,
+    /// Every frame `@rec` kept as tarae wrote it — when it came, its bytes, and whether the screen looks the same after
+    /// it (a resting redraw, a cursor's blink): what a remote interface's wire would carry (`wire.rs`).
+    wire: Vec<(Duration, Vec<u8>, bool)>,
 }
 
 impl Vt {
@@ -553,6 +559,7 @@ impl Vt {
             waited: Vec::new(),
             ends: 0,
             captured_ends: Vec::new(),
+            wire: Vec::new(),
         }
     }
 
@@ -573,7 +580,11 @@ impl Vt {
         // (one frame at a time, each kept as drawn)
         let mut rest = &frames[..];
         while let Some(end) = rest.windows(FRAME_END.len()).position(|w| w == FRAME_END) {
+            let looked = (self.parser.screen().contents_formatted(), self.parser.screen().cursor_position());
             self.process(&rest[..end + FRAME_END.len()]);
+            let same =
+                looked == (self.parser.screen().contents_formatted(), self.parser.screen().cursor_position());
+            self.wire.push((since.elapsed(), rest[..end + FRAME_END.len()].to_vec(), same));
             self.ends += 1;
             self.keep(since.elapsed());
             rest = &rest[end + FRAME_END.len()..];
@@ -810,6 +821,7 @@ fn drive_with(
             vt.beats.clear();
             vt.captions.clear();
             vt.waited.clear();
+            vt.wire.clear();
             if let Some((screen, ends)) = seen.take() {
                 vt.captured.push((Duration::ZERO, screen));
                 vt.captured_ends.push(ends);
