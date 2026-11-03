@@ -1214,9 +1214,13 @@ fn outside_card(ed: &Editor, screen: &str) -> (usize, usize) {
 /// still opens it whole — `a_framed_lists_row_in_hand_is_whole_outside_its_frame`.)
 #[test]
 fn a_press_on_the_blocked_lists_card_outside_its_frame_closes_it_and_grants_nothing() {
-    // (a write refused deep in a long folder: `allow writing in …` its first row, cut)
+    // (a write refused deep in a long folder: `allow writing in …` its first row, cut — by the folders under the
+    // scratch alone, wider than the screen: never by how long the temp folder's path is, `/tmp` or macOS's
+    // `/private/var/folders/…`)
     let scratch = crate::scratch::Scratch::new("whole-blocked");
-    let deep = (0..3).fold(scratch.to_path_buf(), |p, _| p.join("a_rather_long_folder_name"));
+    let name = "a_rather_long_folder_name";
+    let deep = (0..=W as usize / name.len()).fold(scratch.to_path_buf(), |p, _| p.join(name));
+    assert!(deep.strip_prefix(scratch.path()).unwrap().as_os_str().len() > W as usize);
     std::fs::create_dir_all(&deep).unwrap();
     let watch = crate::sandbox::Watch::quiet("t.");
     watch.record(crate::sandbox::Denial {
