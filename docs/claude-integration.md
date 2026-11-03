@@ -133,8 +133,12 @@ works — words, its thinking, an edit coming in, a run of Claude's, the wait fo
 pace, rising from `▂▂▂` as the turn starts; the moment the stream stops it lies flat at `▂▂▂`, and rises again from
 there when it goes on. While the turn waits on you its last cell is `▲`, by the word, the two before it blank; a call that hangs makes
 it `◦`, with `stuck?` — where the line already says so (the follow card's head, the chat's line with two sessions or
-more) the three cells stay blank instead. Runs, installs and a running tab's badge use the same wave. At
-`editor.motion = "calm"` or `"none"` it holds a still wave, `▂▅▆`.
+more) the three cells stay blank instead. Runs, installs and a running tab's badge use the same wave. **One wave moves
+on the screen at a time**: the follow card's head while it says the step, else the status line; with no turn under
+way, the first run's place. Everywhere else the cells stand aside — another session at work says `working`, faint, as
+the session list does; a run its `▸`; the chat's line runs on through its blank cells — and while the card's head
+waves, the status line says only `● follow`. At `editor.motion = "calm"` or `"none"` the one place holds a still wave,
+`▂▅▆`.
 
 **The model** is named in the chat's title while it's idle (`Opus 5.5 · high`). `C-t` in the chat (or `:model`,
 or "Choose Claude's model" in the palette) lists the models your `claude` offers, with the one in use marked

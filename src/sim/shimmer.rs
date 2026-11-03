@@ -9,7 +9,8 @@
 //! (breathing at once and while Claude's next answer is on its way, past `STILL_AFTER` too; silent after its first
 //! words → still); a turn ended and the next asked (breathing from the floor). After every step the turn's pace is the
 //! stream's as sent, and a frame draws the turn's cell as it says — the floor while still, else the breath from where
-//! the turn's own started (its start, the last stall it left) — and no other height (one sign).
+//! the turn's own started (its start, the last stall it left) — and no other height (one sign), or none where the status
+//! line says a step by its mark.
 //!
 //! Besides, `World` keeps the stream as the scenario sent it and states the rule over it (`World::pace`, `World::from`)
 //! — the rule again, so it can't tell a wrong rule from a right one: what it checks is that every event reaches the
@@ -96,6 +97,9 @@ fn run(choices: Choices) -> Vec<String> {
     let mut c = crate::chat::Chat::new();
     c.msgs = vec![Msg::new(Role::User, "why does insert clone the name?", "")];
     let claude = crate::chat::stand_in(&mut c);
+    // (the follow card drawn: its head the turn's cells whatever the step — the status line says a step with a mark by
+    // its mark, and one wave moves on the screen, the card's while it says the step)
+    c.follow.on = true;
     ed.workspace.claude.chat = Some(c);
     ed.motion_drawn = true;
     ed.workspace.viewer.at = crate::workspace::At::Chat;
@@ -430,10 +434,14 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
         return Ok(());
     }
     let (seen, want) = (drawn(ed), want(ed, world));
-    // (no cell only where the turn waits on you or a call may be stuck — `▲`, `◦` take it — or no turn is under way)
+    // (no cell only where the turn waits on you or a call may be stuck — `▲`, `◦` take it —, no turn is under way, or
+    // the status line, the wave's one place with no follow card, says the step by its mark: `◦ reading` — one wave on
+    // the screen, the user 2026-11-03)
+    let marked =
+        crate::now::step(ed, &ed.workspace).is_some_and(|s| matches!(s.sign, crate::now::Sign::Mark(_)));
     match seen.as_slice() {
         [c] if *c == want => Ok(()),
-        [] if signed(ed) || pace.is_none() => Ok(()),
+        [] if signed(ed) || pace.is_none() || marked => Ok(()),
         _ => Err(format!("the frame draws {seen:?}, the turn's cell at {pace:?} is {want:?}")),
     }
 }

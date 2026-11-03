@@ -989,8 +989,9 @@ fn the_running_steps_row_keeps_its_columns() {
             "{w}: the names in one column:\n{fmt}\n{clippy}"
         );
         assert_eq!(col(&fmt, "fmt"), col(&test, "test"), "{w}");
+        // (the wave the header's, by its tab's name — drawn first: one on the screen; here a run's `▸`)
         let mark = clippy.chars().nth(col(&clippy, "clippy").unwrap() - 2).unwrap();
-        assert!(crate::shimmer::CELLS.contains(&mark), "{w}: the working sign's one cell: {clippy}");
+        assert_eq!(mark, '▸', "{w}: the sign's last cell: {clippy}");
         assert!(
             clippy.trim_end().ends_with(" 13.9s") && fmt.trim_end().ends_with(" 6ms"),
             "{w}:\n{fmt}\n{clippy}"

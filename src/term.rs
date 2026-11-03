@@ -1964,12 +1964,15 @@ fn draw_output(
 /// the plus colour, `▲` in the error or the warning colour. The sign's cells for as long as its run goes; once it
 /// ended, its mark alone (#277: the line's details change words as it ends, and a mark's blanks read as a hole in the
 /// line, taking a key hint's room).
-fn badge_glyph(b: crate::chrome::Badge, editor: &Editor, ui: &Ui) -> Option<(String, Option<Color>)> {
+/// Where the wave is elsewhere this frame (`wave_here`), a run's `▸` under way.
+fn badge_glyph(t: &crate::chrome::Tab, editor: &Editor, ui: &Ui) -> Option<(String, Option<Color>)> {
     use crate::chrome::Badge;
     let color = |k: &str| editor.theme.try_get(k).and_then(|s| s.fg);
-    Some(match b {
+    Some(match t.badge {
         Badge::None => return None,
-        Badge::Running => (working(editor, false), ui.accent.fg),
+        Badge::Running => {
+            (wave_here(editor, false, ("badge", t.slot as usize)).unwrap_or_else(|| "▸".into()), ui.accent.fg)
+        }
         Badge::Passed => ("●".into(), color("diff.plus")),
         Badge::Failed => ("▲".into(), ui.error.fg),
         Badge::Warning => ("▲".into(), color("warning")),
@@ -2034,7 +2037,7 @@ fn slot_header(
     });
     let room = stretch.saturating_sub(TOP_LINE_OWN + member_w);
     // As wide as they come; too wide, the ones behind shorten first, then the one in front
-    let badge_w = |t: &crate::chrome::Tab| badge_glyph(t.badge, editor, ui).map_or(0, |(g, _)| 1 + g.width());
+    let badge_w = |t: &crate::chrome::Tab| badge_glyph(t, editor, ui).map_or(0, |(g, _)| 1 + g.width());
     let labels = |behind: usize, ahead: usize| -> Vec<Fit> {
         // (a task's command has its own card — `run_card`)
         let cut = |t: &crate::chrome::Tab, n: usize| match n {
@@ -2073,7 +2076,7 @@ fn slot_header(
         }
         names.push((label.clone(), lit(t, if Some(t.slot) == front { strong } else { dim })));
         owner.push(Some(t.slot));
-        if let Some((g, fg)) = badge_glyph(t.badge, editor, ui) {
+        if let Some((g, fg)) = badge_glyph(t, editor, ui) {
             names.push((format!(" {g}").into(), lit(t, Style { fg, ..card })));
             owner.push(Some(t.slot));
         }
@@ -2745,7 +2748,7 @@ fn preflight_row(
                 Some(d) if timed => format!(" {}", run_duration(d)),
                 _ => String::new(),
             };
-            let (glyph, gs, name) = step_mark(editor, s, card, ui, colors);
+            let (glyph, gs, name) = step_mark(editor, (s, ("steps", k)), card, ui, colors);
             out.push((format!("{glyph} "), gs, Some(k)));
             out.push((s.name.clone(), name, Some(k)));
             let t = match s.state {
@@ -2792,7 +2795,7 @@ fn preflight_row(
 /// the others' are.
 fn step_mark(
     editor: &Editor,
-    s: &crate::preflight::StepRun,
+    (s, at): (&crate::preflight::StepRun, crate::shimmer::At),
     card: Style,
     ui: &Ui,
     (good, bad, warn): (Option<Color>, Option<Color>, Option<Color>),
@@ -2802,9 +2805,11 @@ fn step_mark(
     use crate::shimmer::mark;
     match s.state {
         State::Waiting => (mark("◦"), faint, faint),
-        State::Running => {
-            (working(editor, false), Style { fg: ui.accent.fg, ..card }, Style { bold: true, ..card })
-        }
+        State::Running => (
+            wave_here(editor, false, at).unwrap_or_else(run_mark),
+            Style { fg: ui.accent.fg, ..card },
+            Style { bold: true, ..card },
+        ),
         State::Passed if s.note.is_some() => (mark("●"), Style { fg: warn, ..card }, card),
         State::Passed => (mark("●"), Style { fg: good, ..card }, card),
         State::Failed(_) => (mark("▲"), Style { fg: bad, ..card }, Style { bold: true, ..card }),
@@ -3301,7 +3306,7 @@ fn draw_task_group(
             Some(p) => {
                 use crate::preflight::State;
                 let s = &p.steps[idx];
-                let (glyph, gs, ns) = step_mark(editor, s, card, ui, (good, bad, warn));
+                let (glyph, gs, ns) = step_mark(editor, (s, ("step list", idx)), card, ui, (good, bad, warn));
                 let took = match s.state {
                     State::Running => s.started.map(crate::clock::since),
                     _ => s.took,
@@ -3818,15 +3823,12 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
         let mark = editor.procs_focused() && scroll + i == panel.selected;
         let base = if mark { selected } else { card };
         let plain = Style { fg: base.fg, ..card };
-        // A session's heading: its name from the pid column on, its state after it — the working sign while it works
-        // (#166: the one sign wherever a session works), `▲`/`◦` as its tab has them, `queued 2nd` —, its
-        // checkout, and what's under it summed
+        // A session's heading: its name from the pid column on, its state after it — `working` faint while it works
+        // (the session list's word: one wave on the screen, the user 2026-11-03), `▲`/`◦` as its tab has them,
+        // `queued 2nd` —, its checkout, and what's under it summed
         if let Kind::Session(id) = r.kind {
             let session = editor.sessions_in_order().into_iter().find(|l| l.id == id);
-            let inks = (Style { fg: ui.accent.fg, ..card }, warn, faint);
-            let glyph = session.and_then(|l| {
-                procs_heading_state(editor, editor.doing(l), l.id == editor.workspace.id, inks)
-            });
+            let glyph = session.and_then(|l| procs_heading_state(editor.doing(l), (warn, faint)));
             let name = glyph.as_ref().map_or_else(|| r.title.clone(), |(g, _)| format!("{} {g}", r.title));
             // (its name in its colour, full, as every list names a session — #165)
             let own = session.and_then(|l| ui.participant(l.claude.colour, true));
@@ -5202,6 +5204,12 @@ fn draw(
     queue!(out, BeginSynchronizedUpdate, Hide)?;
     crate::whole::begin();
     crate::kinds::begin();
+    // (one wave on the screen: the front's turn under way holds it for its own places)
+    crate::shimmer::frame(crate::now::step(editor, &editor.workspace).is_some());
+    // (a card downloading laid its sign out before the frame began — `OfferCard::laid_of`: first, where no turn holds it)
+    if offer.is_some_and(|o| o.busy) {
+        crate::shimmer::claim(INSTALL);
+    }
     // What has the keys is drawn at full strength, the rest a step fainter (`chrome::FADE`)
     let keys = editor.keys_at();
     if lay.header {
@@ -11081,7 +11089,8 @@ fn now_short(editor: &Editor, ui: &Ui, said: bool, left: &mut Vec<Seg>) {
     let warn = editor.theme.try_get("warning").map_or(accent, |s| ui.status.patch(Style { bg: None, ..s }));
     // (`▲N waiting` says a wait, not that a call may be stuck)
     let said = said && editor.doing(&editor.workspace) == crate::workspace::Doing::Waiting;
-    let (cell, style) = turn_cell(editor, accent, warn, said);
+    // (the wave on the card's head: here only its marks — one wave on the screen)
+    let (cell, style) = turn_cell(editor, accent, warn, said, false);
     if cell.trim().is_empty() {
         return;
     }
@@ -11469,7 +11478,7 @@ fn draw_statusline(
         Some(_) => {
             right.push(Seg {
                 cut: None,
-                text: format!("{} claude", working(editor, false)),
+                text: wave_here(editor, false, ("ask", 0)).map_or("claude".into(), |w| format!("{w} claude")),
                 style: accent,
                 keep: CLAUDE_CHANGE,
             });
@@ -13654,13 +13663,14 @@ impl OfferCard {
                 };
                 (v, Some(b))
             }
-            OfferState::Installing(_) => (
-                vec![
-                    (title.into(), false),
-                    (format!("{} {}", working(editor, false), o.working).into(), true),
-                ],
-                None,
-            ),
+            OfferState::Installing(_) => {
+                // (the frame's one wave, claimed first as it begins — `draw` — where no turn of the front's holds it)
+                let sign = match crate::now::step(editor, &editor.workspace) {
+                    None => working(editor, false),
+                    Some(_) => run_mark(),
+                };
+                (vec![(title.into(), false), (format!("{sign} {}", o.working).into(), true)], None)
+            }
             OfferState::Failed(why) => {
                 let mut v = vec![(Fit::from(&o.failed), false)];
                 v.extend(wrapped(why, 3));
@@ -14135,7 +14145,9 @@ impl OfferCard {
                 bg,
                 ..Style::default()
             };
-            let tail = started.map(|_| format!(" {}", working(editor, false))).unwrap_or_default();
+            let tail = started
+                .map(|_| format!(" {}", wave_here(editor, false, ("peek", *k)).unwrap_or_else(run_mark)))
+                .unwrap_or_default();
             // (its mark at the right end, before the working sign)
             let mark_w = if mark.is_some() { 2 } else { 0 };
             let room = pw.saturating_sub(5 + tail.width() + mark_w);
@@ -14593,7 +14605,9 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
 /// left the stall, the floor and still while the stream has stopped (`shimmer::turn_heights`). For a run, an install,
 /// an ask's own claude: the wave on the animation's clock (`editor::anim_step`), every one on screen at the same step. A
 /// still wave held where nothing moves on a clock (`Editor::moving`); the turn's own only where motion is drawn
-/// (`Editor.motion_drawn`, off in tests: there it waves on the tests' still clock).
+/// (`Editor.motion_drawn`, off in tests: there it waves on the tests' still clock). It moves in one place a frame
+/// (`shimmer::frame`): the turn's own two — the follow card's head saying the step, else the status line's now — draw
+/// it here; every other place asks `wave_here`.
 fn working(editor: &Editor, turn: bool) -> String {
     use crate::shimmer::{STILL, cells, wave};
     if !editor.moving() {
@@ -14606,18 +14620,31 @@ fn working(editor: &Editor, turn: bool) -> String {
     cells(at.unwrap_or_else(|| wave(crate::editor::anim_step())))
 }
 
-/// What a session's heading in `:procs` says after its name, in its ink (`inks`: accent, warning, faint): the working
-/// sign while it works (#166 — the front's as its chat's, its own breath; one behind on the clock's), `▲`/`◦` as
-/// its tab has them, `queued 2nd` faint as the session list says it (`●` is an edit's mark); nothing idle or done.
+/// The working sign at a place other than the turn's own two, where it moves this frame (`shimmer::claim`: the first to
+/// ask while no turn of the front's is under way) — None: it says it without the cells (a run's `▸`, the faint
+/// `working`, the cells blank).
+fn wave_here(editor: &Editor, turn: bool, at: crate::shimmer::At) -> Option<String> {
+    crate::shimmer::claim(at).then(|| working(editor, turn))
+}
+
+/// The install card's place for the wave (`OfferCard::laid_of`, claimed as `draw` begins).
+const INSTALL: crate::shimmer::At = ("install", 0);
+
+/// A run's working sign where the wave isn't: `▸`, a run's mark, in the sign's last cell.
+fn run_mark() -> String {
+    crate::shimmer::mark("▸")
+}
+
+/// What a session's heading in `:procs` says after its name, in its ink (`inks`: warning, faint): `working` faint while
+/// it works, as the session list says it (one wave on the screen — the turn's own places', `shimmer::frame`), `▲`/`◦`
+/// as its tab has them, `queued 2nd` faint (`●` is an edit's mark); nothing idle or done.
 fn procs_heading_state(
-    editor: &Editor,
     doing: crate::workspace::Doing,
-    front: bool,
-    (accent, warn, faint): (Style, Style, Style),
+    (warn, faint): (Style, Style),
 ) -> Option<(String, Style)> {
     use crate::workspace::Doing;
     match doing {
-        Doing::Working => Some((working(editor, front), accent)),
+        Doing::Working => Some(("working".into(), faint)),
         Doing::Waiting => Some((crate::shimmer::mark("▲"), warn)),
         Doing::Stuck { .. } => Some((crate::shimmer::mark("◦"), warn)),
         d @ Doing::Queued { .. } => Some((d.said(), faint)),
@@ -14629,14 +14656,16 @@ fn procs_heading_state(
 /// on you, `◦` while a call of it may be stuck (each in the last cell, by its word: `shimmer::mark`), else the working sign in
 /// `accent` — the same cells whatever it does. Where the line already names the turn's state (`said`: the follow card's
 /// head, the chat's line of two sessions or more — `▲ waits`, `◦ stuck?`) the cells are blank then, their width kept:
-/// said once, and nothing moves.
-fn turn_cell(editor: &Editor, accent: Style, warn: Style, said: bool) -> (String, Style) {
+/// said once, and nothing moves. Blank too where the wave doesn't move this frame (`moves`: one place a frame,
+/// `shimmer::frame`).
+fn turn_cell(editor: &Editor, accent: Style, warn: Style, said: bool, moves: bool) -> (String, Style) {
     use crate::shimmer::{WIDTH, mark};
     use crate::workspace::Doing;
     match editor.doing(&editor.workspace) {
         Doing::Waiting | Doing::Stuck { .. } if said => (" ".repeat(WIDTH), accent),
         Doing::Waiting => (mark("▲"), warn),
         Doing::Stuck { .. } => (mark("◦"), warn),
+        _ if !moves => (" ".repeat(WIDTH), accent),
         _ => (working(editor, true), accent),
     }
 }
@@ -14650,10 +14679,11 @@ fn rule_through(cell: String) -> String {
     }
 }
 
-/// The turn's cells as `turn_cell` draws them, `said` on its line or not (tests: their width through a turn).
+/// The turn's cells as `turn_cell` draws them, `said` on its line or not, the wave there or not (`moves`; tests: their
+/// width through a turn).
 #[cfg(test)]
-pub fn turn_cell_said(editor: &Editor, said: bool) -> String {
-    turn_cell(editor, Style::default(), Style::default(), said).0
+pub fn turn_cell_said(editor: &Editor, said: bool, moves: bool) -> String {
+    turn_cell(editor, Style::default(), Style::default(), said, moves).0
 }
 
 /// A run's time so far in a panel's header, where its whole goes once it ends — `run_duration`'s; with something
@@ -14849,7 +14879,8 @@ fn draw_ask_stream(
     apply(out, card)?;
     queue!(out, Print("  "))?;
     apply(out, Style { fg: ui.accent.fg, ..card })?;
-    queue!(out, Print(working(editor, false)))?;
+    // (`space i`'s own claude: one place with the status line's `claude` — the card first, drawn first)
+    queue!(out, Print(wave_here(editor, false, ("ask", 0)).unwrap_or_else(|| crate::shimmer::mark(""))))?;
     apply(out, Style { bold: true, ..card })?;
     queue!(out, Print(format!(" claude {phase}")))?;
     // One row = margin 2 + sign + " claude status" + instruction + gap + elapsed + margin 2 = inner + 4
@@ -15030,11 +15061,12 @@ fn draw_follow_card(
         .try_get("warning")
         .and_then(|s| s.fg)
         .map_or(accent, |fg| Style { fg: Some(fg), ..card });
-    // (the turn's one cell while it works, waits on you or may be stuck — `turn_cell`; none in a replay or after it)
-    let (mark, mark_st) = match compacting || c.busy() && !replaying {
+    // (the turn's one cell while it works, waits on you or may be stuck — `turn_cell`; none in a replay or after it:
+    // its width here, its look once the head is laid out — `moves`, below)
+    let mark = match compacting || c.busy() && !replaying {
         // (its head names the turn's state: `▲ waits`, `◦ stuck?`)
-        true => turn_cell(editor, accent, warn, true),
-        false => (String::new(), accent),
+        true => turn_cell(editor, accent, warn, true, true).0,
+        false => String::new(),
     };
     // Its frame's top line (P3 step 7d: a floating pane, named): who it follows as the chrome names it — with two
     // sessions or more its name in its colour, else `follow` — its state after it (`▲ waits` in warning, `done` the
@@ -15099,6 +15131,16 @@ fn draw_follow_card(
             }
         }
         _ => if waiting { "" } else { doing.trim_start() }.into(),
+    };
+    // (the step kept on the head: its verb, or waiting on you its state's `▲ waits` — else the status line says it)
+    let says = step.is_some() && (waiting || !doing.is_empty());
+    // (the frame's one wave: here while the head says the step — else the status line's; with no turn of the front's,
+    // where no other place took it — `shimmer::frame`)
+    let shown = compacting || c.busy() && !replaying;
+    let moves = shown && if step.is_some() { says } else { crate::shimmer::claim(("follow", 0)) };
+    let (mark, mark_st) = match shown {
+        true => turn_cell(editor, accent, warn, true, moves),
+        false => (String::new(), accent),
     };
     // (what it's at and how long, a blank between — waiting on you, its state says so: not twice)
     let mut right: Vec<(String, Style)> = Vec::new();
@@ -15331,8 +15373,6 @@ fn draw_follow_card(
     let held = grab(editor, |b| matches!(b, crate::sizes::Border::Follow { .. })) == Grab::Held;
     let line = draw_frame(out, ui, editor, on, card, rect, &[], &bottom, &[], (follow, held))?;
     // (what it acts on, cut: its whole under the mouse)
-    // (the step kept on the head: its verb, or waiting on you its state's `▲ waits` — else the status line says it)
-    let says = step.is_some() && (waiting || !doing.is_empty());
     let mut right = fits(&right);
     if let Some(i) = doing_at {
         right[i].0 = doing;
@@ -18448,13 +18488,16 @@ fn draw_chat(
     let mut lines: Vec<Vec<Span>> = Vec::new();
     let thought_live = c.msgs.last().is_some_and(|m| m.role == Role::Thought);
     // (compacting can take a minute — said for what it is, whatever was going on before it)
+    // (the working sign's cells, however the turn goes: the word never slides — blank where the wave is elsewhere, the
+    // turn's own places: one on the screen)
+    let sign =
+        |editor: &Editor| wave_here(editor, true, ("chat", 0)).unwrap_or_else(|| crate::shimmer::mark(""));
     if crate::compaction::under_way(&editor.workspace) {
         lines.push(Vec::new());
-        lines.push(vec![sp(working(editor, true), accent), sp(" compacting…".into(), dim)]);
+        lines.push(vec![sp(sign(editor), accent), sp(" compacting…".into(), dim)]);
     } else if c.state == State::Thinking && !called && !thought_live {
         lines.push(Vec::new());
-        // (the working sign's one cell, however the turn goes: the word never slides)
-        lines.push(vec![sp(working(editor, true), accent), sp(" thinking…".into(), dim)]);
+        lines.push(vec![sp(sign(editor), accent), sp(" thinking…".into(), dim)]);
     }
     // Empty chat: guidance + example questions in the middle
     if c.msgs.is_empty() && !c.busy() {
@@ -18649,7 +18692,8 @@ fn draw_chat(
         // (its claude not up yet: the project's settings read first — frictions29 #67, a send then waits for it)
         State::Idle if let Some(t) = c.settings.waiting_since() => {
             let t = timer(crate::clock::since(t), !editor.moving());
-            vec![sp(working(editor, true), accent), sp(format!(" starting {t}"), dim)]
+            let sign = wave_here(editor, true, ("chat top", 0)).unwrap_or_else(|| crate::shimmer::mark(""));
+            vec![sp(rule_through(sign), accent), sp(format!(" starting {t}"), dim)]
         }
         State::Idle => match crate::models::label(editor) {
             Some(m) if left >= 4 => vec![crate::whole::fit(&m, left).span(faint)],
@@ -18662,7 +18706,9 @@ fn draw_chat(
             // (the turn's one cell before it, whatever the turn does — `turn_cell`)
             // (with two sessions or more the line names this one's state: `main ▲ waits` — `session_tabs`)
             // (blank for the names' `▲ waits`: the line runs on through it — #277)
-            let (cell, style) = turn_cell(editor, accent, warn_fg, !editor.workspaces.is_empty());
+            // (its cells still: the wave is the turn's own places' — the follow card's head, the status line)
+            let moves = crate::shimmer::claim(("chat top", 0));
+            let (cell, style) = turn_cell(editor, accent, warn_fg, !editor.workspaces.is_empty(), moves);
             let cell = rule_through(cell);
             vec![
                 sp(cell, style),
@@ -20592,7 +20638,8 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
             format!("{} ", crate::shimmer::mark(m.glyph())),
             if step.warn { warn } else { Style { bold: true, ..accent } },
         ),
-        Sign::Working => sp(format!("{} ", working(editor, true)), accent),
+        // (the status line right under it waves: one on the screen)
+        Sign::Working => sp(format!("{} ", crate::shimmer::mark("")), accent),
     };
     let lead = sign.text.width();
     let time = running(crate::now::took(&editor.workspace, &step), !editor.moving());
@@ -23076,7 +23123,13 @@ fn note_thread_lines(
     if n.waiting {
         out.push(Vec::new());
         out.extend(wrap(Line::Text {
-            spans: vec![sp(&working(editor, false), accent), sp(" claude is replying…", dim)],
+            spans: vec![
+                sp(
+                    &wave_here(editor, false, ("note", 0)).unwrap_or_else(|| crate::shimmer::mark("")),
+                    accent,
+                ),
+                sp(" claude is replying…", dim),
+            ],
             indent: 0,
         }));
     }
@@ -23823,31 +23876,21 @@ mod tests {
         (vt.screen().contents().trim_end().to_string(), cells)
     }
 
-    /// frictions #166: a `:procs` heading says its session's state as every other place does — at work the one working
-    /// sign in the accent, a run in line the faint word (`●` is an edit's mark, never a state's), `▲`/`◦` in warning,
-    /// nothing idle or done.
+    /// frictions #166: a `:procs` heading says its session's state as every other place does — at work the faint word
+    /// `working`, as the session list (one wave on the screen, the user 2026-11-03), a run in line the faint word too
+    /// (`●` is an edit's mark, never a state's), `▲`/`◦` in warning, nothing idle or done.
     #[test]
     fn a_procs_heading_says_its_sessions_state_as_everywhere() {
         use crate::workspace::Doing;
         use crossterm::style::Color;
-        let ed = crate::editor::Editor::new(crate::config::Config::default());
         let ink = |r| super::Style { fg: Some(Color::Rgb { r, g: 0, b: 0 }), ..super::Style::default() };
-        let (accent, warn, faint) = (ink(1), ink(2), ink(3));
-        let said = |d, front| super::procs_heading_state(&ed, d, front, (accent, warn, faint));
-        for front in [true, false] {
-            let (sign, st) = said(Doing::Working, front).unwrap();
-            let cells = sign.chars().collect::<Vec<_>>();
-            assert!(
-                cells.len() == crate::shimmer::WIDTH
-                    && cells.iter().all(|c| crate::shimmer::CELLS.contains(c)),
-                "{sign:?}"
-            );
-            assert_eq!(st, accent);
-        }
-        assert_eq!(said(Doing::Queued { pos: 2 }, false), Some(("queued 2nd".into(), faint)));
-        assert_eq!(said(Doing::Waiting, false), Some(("  ▲".into(), warn)));
-        assert_eq!(said(Doing::Stuck { tool: "symbols", secs: 3 }, false), Some(("  ◦".into(), warn)));
-        assert_eq!((said(Doing::Idle, true), said(Doing::Done, false)), (None, None));
+        let (warn, faint) = (ink(2), ink(3));
+        let said = |d| super::procs_heading_state(d, (warn, faint));
+        assert_eq!(said(Doing::Working), Some(("working".into(), faint)));
+        assert_eq!(said(Doing::Queued { pos: 2 }), Some(("queued 2nd".into(), faint)));
+        assert_eq!(said(Doing::Waiting), Some(("  ▲".into(), warn)));
+        assert_eq!(said(Doing::Stuck { tool: "symbols", secs: 3 }), Some(("  ◦".into(), warn)));
+        assert_eq!((said(Doing::Idle), said(Doing::Done)), (None, None));
     }
 
     /// #165's review: a list's search over a painted row — a hit keeps its own ink and ground over a painted name, the
@@ -27840,13 +27883,18 @@ mod tests {
         ed.workspace.claude.chat = Some(c);
         let (accent, warn) =
             (Style { bold: true, ..Style::default() }, Style { italic: true, ..Style::default() });
-        assert_eq!(turn_cell(&ed, accent, warn, true).1, accent, "working: the sign, said or not");
+        assert_eq!(turn_cell(&ed, accent, warn, true, true).1, accent, "working: the sign, said or not");
+        assert_eq!(turn_cell(&ed, accent, warn, false, false).0, "   ", "the wave elsewhere: blank");
         let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
         ed.push_offer(crate::offer::Offer::new("Claude asks".into(), "once", "", String::new(), what));
         assert_eq!(ed.doing(&ed.workspace), crate::workspace::Doing::Waiting);
-        assert_eq!(turn_cell(&ed, accent, warn, false), ("  ▲".to_string(), warn));
         assert_eq!(
-            turn_cell(&ed, accent, warn, true),
+            turn_cell(&ed, accent, warn, false, false),
+            ("  ▲".to_string(), warn),
+            "a mark, wave or not"
+        );
+        assert_eq!(
+            turn_cell(&ed, accent, warn, true, true),
             ("   ".to_string(), accent),
             "said once: blank, its width kept"
         );

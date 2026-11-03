@@ -4308,8 +4308,7 @@ impl Editor {
             || self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
             || (run && slot_drawn)
             || crate::web::page::reading_in_sight(self)
-            || self.offer_busy()
-            || self.procs_sign_drawn();
+            || self.offer_busy();
         // (the working sign held still where nothing moves on a clock: a frame a second, for the time waited — its timers
         // say whole seconds there, `term::running`)
         let next = if waiting && !self.unfocused {

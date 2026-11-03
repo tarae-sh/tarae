@@ -5,7 +5,7 @@
 //! line, a tab's badge, an ask's peek, the step list. The cells keep their place for the whole turn — a mark standing in
 //! for them (`▲`, `◦`, a step's) takes the last, by its word, the ones before it blank (`mark`); they move one way, the
 //! wave on the clock, a step every `STEP` (the homepage's, the user's pick of `cargo xtask sign`'s 5b), and stop when
-//! the stream does.
+//! the stream does. One wave moves on the screen at a time (`frame`, `claim`).
 //!
 //! - `Pace::Breath` — working: deltas arriving (text, thinking's summary, an edit's input), a thinking block open
 //!   (summarized thinking sends nothing until it's done — measured 2026-10-25, `cargo xtask stream --think`: 1.2–1.9 s
@@ -50,6 +50,35 @@ pub const STILL: u128 = 10;
 /// No delta for this long and the stream is still (the measured stream: prose's gaps ≤ 89 ms, an edit's input in clumps
 /// about 0.6 s apart).
 pub const STILL_AFTER: Duration = Duration::from_secs(1);
+
+/// A place the wave may move at, other than the turn's own two: its kind, and which of that kind (a tab's slot, a step's
+/// row, a peek's depth) — a place drawn twice in a frame (measured, then drawn) asks twice, and is the same place.
+pub type At = (&'static str, usize);
+
+thread_local! {
+    /// This frame's one wave (`frame`, `claim`): whether the front session's turn holds it · the place that took it.
+    static FRAME: std::cell::Cell<(bool, Option<At>)> = const { std::cell::Cell::new((false, None)) };
+}
+
+/// A frame begins (`term::draw`): one wave moves on the screen at a time (the user, 2026-11-03: two or more at once
+/// distract) — while the front session's turn is under way (`turn`) its own two places hold it, the follow card's head
+/// where it says the step, else the status line; with none, the first other place that asks (`claim`).
+pub fn frame(turn: bool) {
+    FRAME.with(|f| f.set((turn, None)));
+}
+
+/// Whether the wave moves at `at`, a place other than the turn's own two: the first to ask this frame while no turn
+/// holds it — every other place says it without the cells (the faint `working`, a mark, the cells blank).
+pub fn claim(at: At) -> bool {
+    FRAME.with(|f| match f.get() {
+        (true, _) => false,
+        (false, None) => {
+            f.set((false, Some(at)));
+            true
+        }
+        (false, Some(took)) => took == at,
+    })
+}
 
 /// What the turn is doing, as its stream shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

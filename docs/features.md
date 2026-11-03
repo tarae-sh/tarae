@@ -296,11 +296,12 @@ configs carry over as they are.
     the pane at most), the detail under it, named in its own top line (`├─ failure ── src/main.rs:31 ─`); `C-w t`
     turns them side by side ↔ over and under, kept for that kind (and across `:restart`) until `C-w =` — where the
     choice has no room they're stacked until there is. Narrow, the line folds what the run says (its time, then its counts) before the names. A run under
-    way says so once, by its name (the working sign's three cells); where its details go, the time it has run so far, which becomes its
+    way says so once, by its name (the working sign's three cells, or `▸` while the one wave on the screen is elsewhere —
+    Claude's turn, another run); where its details go, the time it has run so far, which becomes its
     whole when it ends.
   - **A task's places and a preflight's steps are lists too** — a run that pointed at two places or more lists them
     beside its output (`▲ src/main.rs:31  mismatched types`, the errors first, each as found); a preflight of two
-    steps or more lists its steps (`● fmt 6ms`, `▲ test`, `◦` not run yet, the working sign on the one running — each
+    steps or more lists its steps (`● fmt 6ms`, `▲ test`, `◦` not run yet, the working sign on the one running — `▸` while the wave is elsewhere —, each
     mark in the sign's last cell, by its name, so the names stand in one column). The same
     keys as the tests' list: a place picked puts the output at the line that printed it, on the cursor line's band
     (`tab` lands the keys there); a step picked, its heading at the top. `enter` goes to the place in the code — on

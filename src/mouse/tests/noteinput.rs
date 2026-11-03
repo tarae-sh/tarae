@@ -306,6 +306,8 @@ fn the_status_line_counts_the_drafts_and_a_press_sends_them() {
     // Claude at work: a press queues them
     feed(&mut ed, "20G nthree<tab>");
     let s = drafts_word(&mut ed).expect("a word");
+    // (a press of its own, not the first one's double: the word stands where it stood — nothing waves before it)
+    ed.list_click = None;
     press(&mut ed, s.from, s.y);
     assert_eq!(rx.try_iter().filter(|l| l.contains("\"user\"")).count(), 0, "Claude's turn first");
     assert_eq!(said(&ed), "review queued — its 1 comment goes when Claude's turn ends");

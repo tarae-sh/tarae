@@ -43,6 +43,75 @@ fn card(ed: &mut Editor) {
     sync(ed);
 }
 
+/// One wave on the screen (the user, 2026-11-03: two or more waving at once distract): two sessions at work and a run
+/// going in the bottom slot — the sign's cells in one place only: the follow card's head while it says the step, else
+/// the status line, the chat open or not; the other session says `working` (faint, as the session list), the run its
+/// `▸`.
+#[test]
+fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
+    use crate::shimmer::CELLS;
+    crate::clock::hold();
+    let dir = crate::scratch::Scratch::new("now-one-wave");
+    let mut ed = at_work();
+    ed.workspace.name = "main".into();
+    let id = ed.workspace_add(dir.path().join("fix"));
+    let fix = ed.workspace_by_id(id).unwrap();
+    fix.name = "fix".into();
+    let mut c = Chat::new();
+    c.state = crate::chat::State::Thinking;
+    fix.claude.chat = Some(c);
+    assert_eq!(ed.doing(ed.workspaces.iter().find(|l| l.id == id).unwrap()), Doing::Working);
+    let t =
+        crate::task::Task { name: "check".into(), cmd: "cargo check".into(), cwd: dir.path().to_path_buf() };
+    let mut r = crate::task::Run::for_test(t);
+    (r.state, r.took) = (crate::task::State::Running, None);
+    ed.workspace.task_run = Some(r);
+    // (each run of the sign's cells on the frame: its row)
+    let waves = |rows: &[String]| -> Vec<usize> {
+        let mut at = Vec::new();
+        for (y, r) in rows.iter().enumerate() {
+            let mut inside = false;
+            for c in r.chars() {
+                let cell = CELLS.contains(&c);
+                if cell && !inside {
+                    at.push(y);
+                }
+                inside = cell;
+            }
+        }
+        at
+    };
+    for (w, h) in [(160, 40), (80, 24)] {
+        // The follow card drawn: its head
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.follow.on = true;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        let drawn = rows(&mut ed, w, h);
+        let all = drawn.join("\n");
+        let head = drawn.iter().position(|r| r.contains("main ") && r.contains(" thinking"));
+        assert_eq!(
+            waves(&drawn),
+            head.into_iter().collect::<Vec<_>>(),
+            "{w}: on the card's head alone —\n{all}"
+        );
+        assert!(all.contains("check ▸"), "{w}: the run its mark —\n{all}");
+        // No card: the status line
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
+        let drawn = rows(&mut ed, w, h);
+        let all = drawn.join("\n");
+        assert_eq!(waves(&drawn), [h as usize - 1], "{w}: on the status line alone —\n{all}");
+        // The chat open: still the status line, its top line run through
+        crate::chat::open(&mut ed);
+        let drawn = rows(&mut ed, w, h);
+        let all = drawn.join("\n");
+        assert_eq!(waves(&drawn), [h as usize - 1], "{w}: the chat open —\n{all}");
+        // (narrow, the names past the line's room fold into `+1`)
+        assert!(w < 120 || all.contains("fix working"), "{w}: the other session's word —\n{all}");
+        crate::chat::hide(&mut ed);
+    }
+    crate::clock::release();
+}
+
 /// The status line — the frame's last row — drawn `w` × `h`.
 fn status(ed: &mut Editor, w: u16, h: u16) -> String {
     crate::term::render(ed, &mut Vec::new(), w, h).unwrap();
@@ -413,16 +482,21 @@ fn the_signs_cells_keep_their_columns_through_a_turn() {
         let s = step(ed, &ed.workspace).expect(what);
         let drawn = rows(ed, 160, 40);
         let (top, line) = (&drawn[0], &drawn[39]);
-        for said in [true, false] {
-            let cell = crate::term::turn_cell_said(ed, said);
+        for (said, moves) in [(true, true), (false, true), (false, false)] {
+            let cell = crate::term::turn_cell_said(ed, said, moves);
             assert_eq!(cell.chars().count(), WIDTH, "{what}, said={said}: the turn's cells {cell:?}");
         }
-        // (the chat's line: the turn's cells right before its word, whole)
+        // (the chat's line: the turn's cells right before its word, whole — a mark, else the line run through them: the
+        // wave is the status line's, one on the screen)
         let word = format!(" {} ", s.word());
         let before =
             top.rfind(&word).map(|b| &top[..b]).unwrap_or_else(|| panic!("{what}: {word:?} in {top}"));
-        let cell = crate::term::turn_cell_said(ed, false);
-        assert!(before.ends_with(&format!("─ {cell}")), "{what}: {cell:?} before {word:?} — {top}");
+        let cell = crate::term::turn_cell_said(ed, false, false);
+        let drawn = match cell.trim().is_empty() {
+            true => "─".repeat(WIDTH + 1),
+            false => format!("─ {cell}"),
+        };
+        assert!(before.ends_with(&drawn), "{what}: {drawn:?} before {word:?} — {top}");
         seen.push((what, col(line, s.verb), format!("{top}\n{line}")));
     };
     look(&mut ed, "at work");
@@ -549,13 +623,12 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
         !line.contains("running") && !line.contains("I will run") && !line.contains("—"),
         "short: {line}"
     );
-    let cell = line.trim_start().strip_prefix("● normal").map(str::trim_start);
-    assert!(
-        cell.is_some_and(|c| c
-            .chars()
-            .take(crate::shimmer::WIDTH)
-            .all(|c| crate::shimmer::CELLS.contains(&c))),
-        "the turn's cell: {line}"
+    // (one wave on the screen: the card's head, the line none of it — the user, 2026-11-03)
+    let waves = |l: &str| l.chars().filter(|c| crate::shimmer::CELLS.contains(c)).count();
+    assert_eq!(
+        (waves(head), waves(line)),
+        (crate::shimmer::WIDTH, 0),
+        "the wave on the head:\n{head}\n{line}"
     );
     assert!(!ed.screen.cut_spots.borrow().iter().any(|s| s.3 == crate::whole::Cut::Now), "no line to hover");
     // (the step's own time on the head, not the turn's five minutes)

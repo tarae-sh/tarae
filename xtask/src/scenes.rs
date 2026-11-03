@@ -1206,6 +1206,36 @@ const PRESENCE_TWO: &[&str] = presence_keys!(
     "\x1b",
     "@2"
 );
+// (…follow off in fix before its turn: no card)
+const SIGN1_NOCARD: &[&str] = presence_keys!(
+    ":",
+    "set llm.follow false",
+    "\r",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    "@20?knots\", t.k",
+    "\x1b",
+    "\x1b",
+    "@2"
+);
+// (…the follow card drawn, the session list over it)
+const SIGN1_LIST: &[&str] = presence_keys!(
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    "@20?knots\", t.k",
+    "\x1b",
+    "\x1b",
+    " ",
+    "W",
+    "@2"
+);
 /// The overlay scenes (`.sb/overlays-plan.md` §3 K): the demo plugin let in (its card, `C-q y`; its toast waited out),
 /// its keycast row shown in the asks' corner (`:overlay keys`, ten minutes), then `$more`.
 macro_rules! overlay_keys {
@@ -4181,6 +4211,11 @@ const SCENES: &[Scene] = &[
     Scene { name: "presencewaitslist", claude: "card", files: MAIN, keys: PRESENCE_WAITS_LIST },
     // (…two Claudes writing one file in two checkouts, each its colour; follow holds the view, your cursor elsewhere)
     Scene { name: "presencetwo", claude: "writemid", files: MAIN, keys: PRESENCE_TWO },
+    // (one wave on the screen, the user 2026-11-03: two Claudes at work — the follow card's head waves, the status line
+    // and the strip still; follow off, the status line's; the session list over it, its rows' `working`)
+    Scene { name: "sign1-card", claude: "writemid", files: MAIN, keys: PRESENCE_TWO },
+    Scene { name: "sign1-nocard", claude: "writemid", files: MAIN, keys: SIGN1_NOCARD },
+    Scene { name: "sign1-list", claude: "writemid", files: MAIN, keys: SIGN1_LIST },
     // (collab C2: the same line changed and saved two ways in two checkouts — the toast, the strip, the list, the tree)
     Scene { name: "overlap", claude: "writemid", files: MAIN, keys: OVERLAP },
     Scene { name: "overlapstrip", claude: "writemid", files: MAIN, keys: OVERLAP_STRIP },
