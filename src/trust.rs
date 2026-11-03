@@ -1007,6 +1007,19 @@ impl crate::editor::Editor {
             let o = self.project_trust_card(&p);
             self.trust_offer(o);
         }
+        self.bring_trust_sync();
+    }
+
+    /// Whether the project's trust card is up — its own or the repository's holding it — in front, stacked or parked.
+    pub(crate) fn project_trust_up(&self) -> bool {
+        let is = |o: &crate::offer::Offer| match &o.what {
+            crate::offer::What::ProjectTrust { .. } => true,
+            crate::offer::What::RepoTrust { parts, .. } => {
+                parts.iter().any(|p| matches!(p.what, crate::offer::What::ProjectTrust { .. }))
+            }
+            _ => false,
+        };
+        self.offers.iter().chain(&self.workspace.parked).any(is)
     }
 
     /// Its own card — the repository's takes its lines when another part waits with it (`repotrust.rs`).
@@ -1040,6 +1053,8 @@ impl crate::editor::Editor {
         p.state = if trusted { State::Trusted } else { State::Ignored };
         let (file, place, n) = (p.file.clone(), p.place.clone(), p.items.len());
         self.project_trust_apply();
+        // (a bring waiting on this answer goes on, or stops — #323)
+        self.bring_trust_sync();
         if let Some(path) = self.trust_path.clone() {
             let seen = crate::storewrite::seen_now(&path);
             let place = Some(place);

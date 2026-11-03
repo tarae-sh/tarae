@@ -295,6 +295,8 @@ fn space_f_follows_the_next_session_at_work() {
     );
     assert_eq!(followed(&ed), Some(crate::event::WorkspaceId::HOME));
     just_wrote(&mut ed, main.join("a.rs"));
+    // (its toast top right, over a line's end there: read without it)
+    ed.toasts.clear();
     let p = frame(&mut ed, 100);
     let r = rows(&p);
     let status = r.last().unwrap();

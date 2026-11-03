@@ -1371,14 +1371,15 @@ fn a_cut_toasts_message_is_whole_under_the_mouse() {
 
 /// The user on U2's shots (2026-10-28): a cut toast's card is the toast unfolded where it stands — over it whole, its bar
 /// too, the kind's `▎` beside the card's first row, its words where they were — whichever way it grows: down from its
-/// top row where the toast is high, up over it from the status line where it's low.
+/// top row where the toast is high, up over it from the status line where it's low. With the cursor's row the code's
+/// first the toast stands under it, top right still (#322) — high either way here.
 #[test]
 fn a_cut_toasts_card_is_the_toast_unfolded_where_it_stands() {
-    for low in [true, false] {
+    for first in [true, false] {
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(40));
-        // (the cursor off the top's rows: the toast there)
-        if !low {
+        // (the cursor on the top's rows, or off them)
+        if !first {
             feed(&mut ed, "20G");
         }
         let long = format!("the build stopped: {} and farewell", "a reason that runs on ".repeat(16));
@@ -1389,7 +1390,7 @@ fn a_cut_toasts_card_is_the_toast_unfolded_where_it_stands() {
         }
         let before = frame(&mut ed);
         let (tx, ty, tw, th) = ed.screen.toast_card.get().expect("its toast");
-        assert_eq!(ty > H as usize / 2, low, "the toast where it's meant to be:\n{before}");
+        assert!(ty < H as usize / 2, "the toast top right ({first}):\n{before}");
         let (y, a, b, _) = cut_text(&ed, "farewell").expect("recorded as cut");
         ed.handle_event(Event::Hover(((a + b) / 2) as u16, y as u16));
         let screen = frame(&mut ed);
@@ -1400,10 +1401,7 @@ fn a_cut_toasts_card_is_the_toast_unfolded_where_it_stands() {
             (x, top, w, h),
             (tx, ty, tw, th)
         );
-        match low {
-            true => assert!(top < ty, "up over it:\n{screen}"),
-            false => assert_eq!(top, ty, "from its top row:\n{screen}"),
-        }
+        assert_eq!(top, ty, "from its top row:\n{screen}");
         let lines: Vec<String> = screen.lines().map(str::to_string).collect();
         let first: String = lines[top].chars().skip(tx).collect();
         assert!(

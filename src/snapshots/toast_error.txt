@@ -3,8 +3,8 @@
 00 ─ tarae › src › demo.rs ────────────────────────────────────────────────────────────────────────────
 01   1 use std::collections::HashMap;
 02   2
-03   3 ▎ Counts how often each word appears.
-04     ▎
+03   3 ▎ Counts how often each word appears.              ▎ demo.rs changed on disk
+04     ▎                                                  ▎ Couldn't save demo.rs: permission denied
 05     ▎ Words are split on whitespace; case is kept.
 06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize> {
 07   7     let mut counts = HashMap::new();
@@ -26,16 +26,16 @@
 23
 24
 25
-26                                                        ▎ demo.rs changed on disk
-27                                                        ▎ Couldn't save demo.rs: permission denied
+26
+27
 28
 29  ● normal                                                                    rust   utf-8 LF   1:1
 ## bg · surface per cell, blank = ui.background
 00
 01     Accccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 02
-03
-04
+03                                                       111111111111111111111111111111111111111111111
+04                                                       111111111111111111111111111111111111111111111
 05
 06
 07
@@ -57,16 +57,16 @@
 23
 24
 25
-26                                                       111111111111111111111111111111111111111111111
-27                                                       111111111111111111111111111111111111111111111
+26
+27
 28
 29
 ## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
 00 a ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 01   A
 02   f
-03   f f
-04     f
+03   f f                                                  w
+04     f                                                  e
 05     f
 06   f
 07   f
@@ -88,8 +88,8 @@
 23
 24
 25
-26                                                        w
-27                                                        e
+26
+27
 28
 29  a TTTTTT                                                                    dddd   ddddd dd   TTT
 ## legend

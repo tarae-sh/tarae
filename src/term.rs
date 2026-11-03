@@ -1585,13 +1585,18 @@ impl Layout {
                         let probe = editor.workspace.split.layout(body, &room((total / 2).max(1)));
                         probe.iter().find(|l| l.0 == id).map(|l| l.1.w)
                     };
+                    // (a bring under way: one height for its rebase and its preflight alike, from its start — #320)
+                    let floor = match editor.bring_going(&editor.workspace) {
+                        true => slot_head + 1 + BRING_ROWS,
+                        false => 0,
+                    };
                     match stacked_list_rows(editor, slot_w) {
-                        Some(n) => task_list_h(r, n, queued, total, slot_head),
+                        Some(n) => task_list_h(r, n, queued, total, slot_head).max(floor.min(total / 2)),
                         None => {
                             // (a row over the output: a preflight's steps, or its group's titles)
                             let over = preflight_of(editor, r).is_some()
                                 || crate::grouplist::listed(editor, crate::pane::GroupKind::Task);
-                            task_panel_h(r, over, queued, total, slot_head)
+                            task_panel_h(r, over, queued, total, slot_head, floor)
                         }
                     }
                 }
@@ -2901,14 +2906,26 @@ fn step_mark(
 /// The fewest rows of output the task panel shows (under its header, `head` rows — `chrome::SLOT_HEAD`).
 const TASK_PANEL_MIN: usize = 2;
 
+/// The rows of output a bring's panel has from its start (#320): its rebase's few lines and a quick preflight's
+/// steps fit, so the panel takes its place once — the code shrinking once, never at each step; a preflight printing
+/// more grows it as any run grows.
+const BRING_ROWS: usize = 6;
+
 /// The task panel's height (U2): its output whole — the header, the lines, the rows of what waits for it
-/// (`queued`), the sandbox's row — at least `TASK_PANEL_MIN` rows of output, at most half the editing area (and 4
-/// rows of code always). It never shrinks while the run is up (`Run.tall`, which a rerun of the same task starts
-/// from). (A size you set will win over this — U1.)
-fn task_panel_h(r: &crate::task::Run, steps: bool, queued: usize, total: usize, head: usize) -> usize {
+/// (`queued`), the sandbox's row — at least `TASK_PANEL_MIN` rows of output (and `floor` rows in all: a bring's,
+/// `BRING_ROWS`), at most half the editing area (and 4 rows of code always). It never shrinks while the run is up
+/// (`Run.tall`, which a rerun of the same task starts from). (A size you set will win over this — U1.)
+fn task_panel_h(
+    r: &crate::task::Run,
+    steps: bool,
+    queued: usize,
+    total: usize,
+    head: usize,
+    floor: usize,
+) -> usize {
     let want = head + usize::from(steps) + r.output.len().max(1) + queued + task_panel_foot(r);
     let cap = (total / 2).min(total.saturating_sub(4));
-    let h = want.max(head + TASK_PANEL_MIN).max(r.tall.get()).min(cap);
+    let h = want.max(head + TASK_PANEL_MIN).max(floor).max(r.tall.get()).min(cap);
     r.tall.set(r.tall.get().max(h));
     h
 }
@@ -3128,6 +3145,8 @@ fn draw_task_panel(
     let color = |k: &str| t.try_get(k).and_then(|s| s.fg);
     let (good, bad, warn) = (color("diff.plus"), ui.error.fg, color("warning"));
     let (x0, w) = (lay.slot_x, lay.slot_w);
+    // (its end being read: no word yet, its time its exit's — `Run::going`, #321)
+    let running = r.going();
     let mut summary: Vec<(String, Style)> = match r.state {
         State::Running => Vec::new(),
         State::Passed if r.found == (0, 0) => vec![("ok".into(), Style { fg: good, ..card })],
@@ -3143,7 +3162,6 @@ fn draw_task_panel(
     }
     // A preflight's: which step (its row has the working sign), its whole time in minutes
     let steps = preflight_of(editor, r);
-    let running = matches!(r.state, State::Running);
     // (waiting on what isn't its own — another session's cargo, likely — not stuck: #10, `waits.rs`)
     let calm = !editor.moving();
     let wait = r.wait.shown(std::time::Instant::now(), |d| timer(d, calm)).filter(|_| running);
@@ -3151,13 +3169,13 @@ fn draw_task_panel(
     let silent = running.then(|| r.wait.silent(r.last_output, std::time::Instant::now())).flatten();
     let follows = wait.is_some() || silent.is_some();
     let when = match (&r.state, r.took, steps) {
-        (State::Running, _, Some(p)) => {
+        (State::Running, None, Some(p)) => {
             let at = p.steps.iter().filter(|s| s.state != crate::preflight::State::Waiting).count();
             format!("   step {} of {}", at.max(1), p.steps.len())
         }
         // (under way is said by the working sign by its name — the badge; here, the time it has run, which becomes its
         // whole)
-        (State::Running, _, None) => {
+        (State::Running, None, None) => {
             format!("   {}", run_time(crate::clock::since(r.started), follows, calm))
         }
         (_, Some(d), _) => format!("   {}", run_duration(d)),
@@ -3176,7 +3194,9 @@ fn draw_task_panel(
     let (shorter, at) = stuck_forms(stuck, summary.len());
     // (`space m m` runs the user's task again — not an install, not Claude's command, not tarae's git)
     let mut hints: Vec<(&str, &str)> = match (&r.state, r.found) {
-        (State::Running, _) => vec![("space m c", "stop")],
+        (State::Running, _) if running => vec![("space m c", "stop")],
+        // (exited, its end being read: nothing to stop, nothing to close yet)
+        (State::Running, _) => Vec::new(),
         _ if r.install || r.git => vec![("space m c", "close")],
         (_, (0, 0)) => vec![("space m m", "again"), ("space m c", "close")],
         _ => vec![("]q", "next"), ("space q", "list"), ("space m m", "again"), ("space m c", "close")],
@@ -11384,7 +11404,8 @@ fn draw_statusline(
         left.push(Seg::of(crate::whole::fit(editor.workspace.label(), 24).lead("  "), own, CHIP));
         // (its rebase or bring under way — in the warning color once it waits for you)
         if let Some(said) = editor.bring_progress(&editor.workspace) {
-            let stopped = editor.workspace.rebase.as_ref().is_some_and(|r| r.stopped());
+            let stopped = editor.workspace.rebase.as_ref().is_some_and(|r| r.stopped())
+                || editor.bring_waits_trust(&editor.workspace);
             let style = if stopped { ui.status.patch(warn) } else { Style { fg: ui.virt.fg, ..ui.status } };
             left.push(Seg { cut: None, text: format!(" {said}"), style, keep: CHIP });
         }
@@ -12753,7 +12774,8 @@ fn toast_color(editor: &Editor, ui: &Ui, kind: crate::editor::ToastKind) -> Opti
 }
 
 /// The notification card's first row, its rows `(x, w, h)`: at the top of the editing rows `[top, bottom)` a row of air
-/// above and below them, else at their bottom — its last row on the floor every card at the code's foot stands on
+/// above and below them — stepped down past what's in its way there (the cursor's row on the screen's first: #322, top
+/// right is news, bottom right needs you), no further than its own height and air —, else at their bottom — its last row on the floor every card at the code's foot stands on
 /// (`card_floor`), a row of air above it —, else right above what holds that floor (an ask as wide as it needs reaching
 /// over the code, its stack — #177's review: a warning was left on the status line alone), the first free place from
 /// there up, a row of air each side; wherever that overlaps none of `taken` — None if nothing is free.
@@ -12765,8 +12787,8 @@ fn toast_place(
     let pad = CARD_PAD;
     let free =
         |y: usize, h: usize| y >= top && y + h <= bottom && taken.iter().all(|&r| !overlaps((x, y, w, h), r));
-    if free(top, h + 2 * pad) {
-        return Some(top + pad);
+    if let Some(y) = (top..=top + h + 2 * pad).find(|&y| free(y, h + 2 * pad)) {
+        return Some(y + pad);
     }
     let floor = bottom.checked_sub(h + pad)?;
     if free(floor, h + pad) {
@@ -17463,16 +17485,20 @@ fn session_tabs(
             cut: None,
             hint: false,
             text: format!(" {said}"),
-            style: if l.rebase.as_ref().is_some_and(|r| r.stopped()) { warn } else { dim },
+            style: match l.rebase.as_ref().is_some_and(|r| r.stopped()) || editor.bring_waits_trust(l) {
+                true => warn,
+                false => dim,
+            },
         })
     };
     let unsent = |l: &crate::workspace::Workspace| {
         l.id != editor.workspace.id && l.claude.chat.as_ref().is_some_and(|c| !c.input.blank())
     };
     // (a rebase that waits on you — resolved and waiting for its `y`, or stopped with nothing asked of its Claude; never
-    // while its Claude resolves it: `Rebase::waits_on_you`, the inbox's)
-    let stopped =
-        |l: &crate::workspace::Workspace| l.rebase.as_ref().is_some_and(|r| r.waits_on_you().is_some());
+    // while its Claude resolves it: `Rebase::waits_on_you`, the inbox's) — or a bring waiting on its trust card (#323)
+    let stopped = |l: &crate::workspace::Workspace| {
+        l.rebase.as_ref().is_some_and(|r| r.waits_on_you().is_some()) || editor.bring_waits_trust(l)
+    };
     // A session's words at a fold: `files` where it is in its turn, `whom` its overlaps' names (else `≈` alone, in
     // warning — whose, the list and the side panel say), `states` its state in words (else what needs you: `▲`, `◦`,
     // `done`, `¶`)
@@ -25379,6 +25405,11 @@ mod tests {
         );
         assert_eq!(toast_place(card, rows, &[thought, (50, 12, 40, 16)]), None, "no room left");
         assert_eq!(toast_place(card, rows, &[(0, 2, 20, 8)]), Some(2), "a card elsewhere doesn't matter");
+        // (#322: the cursor's row in its way at the top — under it, top right still, never the asks' corner)
+        let cursor = |y: usize| (0, y, 100, 1);
+        assert_eq!(toast_place(card, rows, &[cursor(1)]), Some(3), "under the cursor's row on the first");
+        assert_eq!(toast_place(card, rows, &[cursor(3)]), Some(5), "under it on the third");
+        assert_eq!(toast_place(card, rows, &[cursor(5)]), Some(2), "over it, past its air");
     }
 
     /// The path bar's parts go whole when room runs short: a definition (` › ` · `ƒ ` · its name) never loses
@@ -28313,14 +28344,18 @@ mod tests {
                         assert!(line.trim_start().starts_with('─'), "{at}: the ask on the input's line\n{s}");
                     }
                 }
-                // A toast at its bottom spot (the cursor's row holds the top one)
+                // A toast with the cursor's row the code's first: news top right, under that row, never on the asks' floor
+                // (#322 — its bottom spot, past a card at the top, is `toast_card_keeps_out_of_the_other_cards`')
                 let mut ed = Editor::new(Config::default());
                 ed.docs[0].text = Rope::from_str(&"fn main() {}\n".repeat(60));
                 ed.workspace.claude.chat = chat.then(crate::chat::Chat::new);
                 ed.set_warning("a warning keeps its card");
-                let s = draw(&mut ed, w, h).join("\n");
+                let rows = draw(&mut ed, w, h);
+                let s = rows.join("\n");
                 let card = ed.screen.toast_card.get().expect("the toast");
-                assert_eq!(bottom(card), floor, "{at}: the toast\n{s}");
+                let cy = rows.iter().position(|r| r.contains("fn main() {}")).expect("the cursor's line");
+                assert_eq!(card.1, cy + 2, "{at}: the toast under the cursor's row, a row of air\n{s}");
+                assert!(bottom(card) < floor, "{at}: the toast off the asks' floor\n{s}");
                 // Which-key, where it fits
                 let mut ed = Editor::new(Config::default());
                 ed.workspace.claude.chat = chat.then(crate::chat::Chat::new);

@@ -3,8 +3,8 @@
 00 ─ tarae › src › demo.rs ────────────────────────────────────────────────┬─ main · fix-login ▲2 waits · + ─────── ready ─
 01   1 use std::collections::HashMap;                                      │
 02   2                                                                     │
-03   3 ▎ Counts how often each word appears.                               │
-04     ▎                                                                   │
+03   3 ▎ Counts how often each wor ▎ fix-login · waiting 3m 00s — Claude   │
+04     ▎                             changes 3 files · C-q goes there      │
 05     ▎ Words are split on whitespace; case is kept.                      │
 06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize> {            │
 07   7     let mut counts = HashMap::new();                                │
@@ -20,8 +20,8 @@
 17  17     println!("{} distinct words", counts.len()); // 타래            │
 18  18 }                                                                   │  C-t for another model
 19                                                                         │
-20                                 ▎ fix-login · waiting 3m 00s — Claude   │
-21                                   changes 3 files · C-q goes there      │
+20                                                                         │
+21                                                                         │
 22                                                                         │
 23                                                                         │
 24                                                                  ▎ fix-login asks · Claude asks to see the screen
@@ -34,8 +34,8 @@
 00
 01     Accccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 02
-03
-04
+03                                1111111111111111111111111111111111111111
+04                                1111111111111111111111111111111111111111
 05
 06
 07
@@ -51,8 +51,8 @@
 17
 18
 19
-20                                1111111111111111111111111111111111111111
-21                                1111111111111111111111111111111111111111
+20
+21
 22
 23
 24                                                                 222222222222222222222222222222222222222222222222222
@@ -65,7 +65,7 @@
 00 a ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf BBBB f           ww wwwww f d fffffff fffff f
 01   A                                                                     a
 02   f                                                                     a
-03   f f                                                                   a
+03   f f                           w                                       a
 04     f                                                                   a
 05     f                                                                   a
 06   f                                                                     a
@@ -82,7 +82,7 @@
 17  ff              ggg gggggggg gggggg                                    a
 18  ff                                                                     a  DDD fff fffffff fffff
 19                                                                         a
-20                                 w                                       a
+20                                                                         a
 21                                                                         a
 22                                                                         a
 23                                                                         a

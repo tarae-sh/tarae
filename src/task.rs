@@ -403,6 +403,14 @@ impl Run {
         &mut self.trims
     }
 
+    /// Whether its process is under way — drawn so (the working sign, its time ticking, its stop key). A run whose
+    /// end is still being read (a rebase's git, `rebase::ran`: `Running` until what git left is known) has exited:
+    /// its time stands at its exit and it says no word until the read lands (#321 — the wave and `stop` beside
+    /// git's own `Successfully rebased`), its word, badge and its session's words then changing at once.
+    pub fn going(&self) -> bool {
+        self.state == State::Running && self.took.is_none()
+    }
+
     /// Its process, while it runs (`:procs`).
     pub fn pid(&self) -> Option<u32> {
         self.pid

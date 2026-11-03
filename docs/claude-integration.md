@@ -2640,9 +2640,16 @@ its base up to it, fast-forward only — one card, one `y`: rebased onto its bas
 the base moved (`Rebase fix-login onto main's tip, run the quick preflight, then bring it in?` / `main moved 3
 commits since fix-login left it; fix-login has 2 commits`). Its progress is said where the session is named — never
 on a card, nor a toast a step: the strip, the session list and the status line's chip say `fix-login bringing ·
-rebasing 2/5`, then `bringing · rebased`, then `bringing · rebased · preflight 2/4` (where the strip is narrow, `fix-login
-bringing` stays as `▲ waits` does, the calm states and the other names folding first), the preflight in the task panel
-as any; the rebase's and a passed preflight's words go to `:messages` only. One toast at its end: `Brought 2 commits
+rebasing 2/5`, then `bringing · rebased`, then `bringing · rebased · preflight 2/4`, then `bringing · rebased · landing`
+from the preflight's `ok` to the toast (where the strip is narrow, `fix-login bringing` stays as `▲ waits` does, the
+calm states and the other names folding first). Its rebase and its preflight run in one task panel, `bring › rebase onto
+main` then `bring › quick preflight`, its height taken once as the bring starts (its output's six rows: the code
+shrinks once, never at each step; a preflight that prints more grows it as any run does). A step ends at one instant
+everywhere: git's run stops its working sign and its time as it exits, and its `ok` comes with the strip's `rebased`,
+once what git left is read. A new checkout's `.tarae.toml` asks its own trust card (trust is kept by path): while it
+waits unanswered the bring waits with it, saying `bringing · rebased · waits on trust` in the warning colour, the
+card in the stack — `y` and it goes on to its preflight, `n` and it stops, said. The rebase's and a passed preflight's
+words go to `:messages` only. One toast at its end: `Brought 2 commits
 of fix-login into main — now at 1a2b3c4`, or why it stopped (a failed preflight's: `fix-login · not brought — quick
 preflight: 0 of 1 passed …`). One bring at a time: `:workspace-bring` while one goes says where it is (`fix-login is
 being brought — bringing · rebased`). A project with no preflight steps (no pack checks its language and it has none

@@ -4329,7 +4329,7 @@ impl Editor {
         let slot_drawn = self.screen.bottom_h > 0 || self.screen.width.is_none();
         let run =
             self.workspace.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running)
-                || self.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running);
+                || self.workspace.task_run.as_ref().is_some_and(|r| r.going());
         let waiting = self.workspace.claude.review.as_ref().is_some_and(|r| !r.ready)
             || self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
             || (run && slot_drawn)

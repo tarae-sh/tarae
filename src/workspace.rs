@@ -203,6 +203,14 @@ pub struct Workspace {
     /// The preflight a bring waits for (`bring_after_preflight`) came after its rebase: its state words say
     /// `bringing · rebased · preflight 2/4` (`Editor::bring_progress`). Read only with `bring_after_preflight`.
     pub bring_rebased: bool,
+    /// That preflight hasn't started: its project's steps wait on the trust card (friction #323 — a new checkout's
+    /// `.tarae.toml` asks again). Its words say `waits on trust`, in the warning colour; the card's answer lets it go
+    /// on or stops it, said (`Editor::bring_trust_sync`). Read only with `bring_after_preflight`.
+    pub bring_trust: bool,
+    /// Its preflight passed and the bring itself is landing (on a worker, `Editor::bringing`): its words say
+    /// `bringing · rebased · landing` from the preflight's `ok` to its `Brought` toast, both in the same event as
+    /// the word they replace (#321 — half a second said nowhere).
+    pub bring_landing: bool,
     /// The bring under way found no preflight steps to run first (a kind of project no pack checks, none of its
     /// own): its toast says so (`Editor::bringing`).
     pub bring_unchecked: bool,
@@ -450,6 +458,8 @@ impl Workspace {
             bring_card_after: None,
             bring_go: false,
             bring_rebased: false,
+            bring_trust: false,
+            bring_landing: false,
             bring_unchecked: false,
             bring_failed: None,
             bring_tested: None,

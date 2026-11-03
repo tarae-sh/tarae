@@ -2581,6 +2581,10 @@ impl Editor {
             },
         };
         self.step(self.events.shared_jobs(), "session", said, work, move |ed, result| {
+            // (a bring its preflight let go has landed or not: its words go as what's said of it comes — #321)
+            if now {
+                ed.with_workspace(id, |ed| ed.workspace.bring_landing = false);
+            }
             // (the queue's: what it looked at goes to it — and so does a bring of its one under way that didn't land,
             // its base moved during the preflight among them: else it waited on it for good)
             let landed = matches!(result, Bringing::Brought(_));
@@ -3935,7 +3939,7 @@ mod tests {
         // Trust taken back: nothing runs — said, never the packs' instead; given again: the quick set
         feed(&mut ed, ":project-untrust<ret>");
         let r = p_on_the_bring_card(&mut ed, &wt);
-        assert!(r.as_ref().is_err_and(|e| e.contains("wait for it to be trusted")), "{r:?}");
+        assert!(r.as_ref().is_err_and(|e| e.contains("preflight steps are held back")), "{r:?}");
         feed(&mut ed, ":project-trust<ret>");
         let trust = ed.offers.iter().position(|o| o.title == crate::trust::TITLE).expect("its card");
         ed.offer_to_front(trust);
@@ -4207,11 +4211,11 @@ mod tests {
     fn a_moved_base_is_rebased_onto_then_brought() {
         let (repo, dir) = place("rebase-clean");
         let mut ed = editor(&repo, &dir);
-        // (a preflight that waits for `go`, so its words are read while it runs)
+        // (a preflight that prints four lines, then waits for `go`, so its words are read while it runs)
         let go = dir.join("go");
         ed.config.preflight = vec![crate::preflight::Step {
             name: "check".into(),
-            cmd: format!("while [ ! -e '{}' ]; do sleep 0.02; done", go.display()),
+            cmd: format!("printf '1\\n2\\n3\\n4\\n'; while [ ! -e '{}' ]; do sleep 0.02; done", go.display()),
             note: None,
             from: ".tarae.toml".into(),
             full: false,
@@ -4231,13 +4235,39 @@ mod tests {
         let main = git_in(&repo, &["rev-parse", "main"]);
         let words = |ed: &Editor| ed.bring_progress(&ed.workspace);
         assert_eq!(words(&ed).as_deref(), Some("bringing · rebasing"), "{}", said(&ed));
-        let preflight = |ed: &Editor| ed.workspace.preflight.as_ref().is_some_and(|p| p.running().is_some());
+        // (#320: one panel for the bring — its height from its start, the bring named first, whatever step runs)
+        let panel = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 120, 40).unwrap();
+            let mut parser = vt100::Parser::new(40, 120, 0);
+            parser.process(&bytes);
+            let screen = parser.screen().contents();
+            let top = screen.lines().find(|l| l.contains("bring › ")).map(|l| l.trim().to_string());
+            (ed.screen.bottom_h, top.unwrap_or_else(|| panic!("{screen}")))
+        };
+        let (rebasing_h, top) = panel(&mut ed);
+        assert!(top.contains("bring › rebase onto main"), "{top}");
+        let preflight = |ed: &Editor| {
+            ed.workspace.preflight.as_ref().is_some_and(|p| p.running().is_some())
+                && ed.workspace.task_run.as_ref().is_some_and(|r| r.output.len() >= 4)
+        };
         settle_until(&mut ed, |ed| preflight(ed) || says(ed, "not brought") || says(ed, "bring feat:"));
         assert_eq!(words(&ed).as_deref(), Some("bringing · rebased · preflight 1/1"), "{}", said(&ed));
+        let (preflight_h, top) = panel(&mut ed);
+        assert!(top.contains("bring › preflight"), "{top}");
+        assert_eq!(preflight_h, rebasing_h, "one height for the bring");
         let row = ed.session_shown().into_iter().find(|s| s.name == "feat").and_then(|s| s.rebasing);
         assert_eq!(row.as_deref(), Some("bringing · rebased · preflight 1/1"), "the list says it too");
         std::fs::write(&go, "").unwrap();
-        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "not brought") || says(ed, "bring feat:"));
+        // (#321: the preflight's end is the bring's landing, one instant — never a moment said nowhere)
+        let landing = |ed: &Editor| words(ed).as_deref() == Some("bringing · rebased · landing");
+        let passed = |ed: &Editor| {
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Passed)
+        };
+        settle_until(&mut ed, |ed| passed(ed) || says(ed, "not brought") || says(ed, "bring feat:"));
+        assert!(landing(&ed) && !says(&ed, "Brought"), "{:?}: {}", words(&ed), said(&ed));
+        settle_until(&mut ed, |ed| !landing(ed));
+        assert!(says(&ed, "Brought"), "its words go with its toast: {:?}: {}", words(&ed), said(&ed));
         assert!(
             says(&ed, "Rebased feat onto main — 2 commits on top, now at ")
                 && says(&ed, " — the preflight next, then the bring")
@@ -4262,6 +4292,92 @@ mod tests {
         assert_eq!(git_in(&repo, &["log", "--format=%s", &format!("{main}..main")]), "add b\nfeat a");
         assert_eq!(git_in(&repo, &["rev-parse", "main"]), git_in(&wt, &["rev-parse", "HEAD"]));
         assert_eq!(std::fs::read_to_string(repo.join("b.txt")).unwrap(), "b\n", "main's checkout followed");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Friction #321: a run that has exited while its end is still read (the rebase's git, `rebase::ran`) no longer
+    /// draws as under way — no working sign, no `stop`, its time standing at its exit — and says no word until the read
+    /// lands.
+    #[test]
+    fn a_run_whose_end_is_read_stands_still_and_says_nothing_yet() {
+        let (repo, dir) = place("run-read");
+        let mut ed = editor(&repo, &dir);
+        let task =
+            crate::task::Task { name: "rebase onto main".into(), cmd: "true".into(), cwd: repo.clone() };
+        assert!(
+            ed.task_start_for(task, crate::tools::For::User("t".into()), None, Default::default()).is_ok()
+        );
+        settle_until(&mut ed, |ed| ed.workspace.task_run.as_ref().is_some_and(|r| !r.going()));
+        let r = ed.workspace.task_run.as_mut().unwrap();
+        (r.state, r.took) = (crate::task::State::Running, Some(std::time::Duration::from_millis(305)));
+        ed.slot_show(crate::sizes::Slot::Task);
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 120, 30).unwrap();
+        let mut parser = vt100::Parser::new(30, 120, 0);
+        parser.process(&bytes);
+        let screen = parser.screen().contents();
+        let top =
+            screen.lines().find(|l| l.contains("rebase onto main")).unwrap_or_else(|| panic!("{screen}"));
+        assert!(top.contains("305ms"), "its time at its exit: {top}");
+        assert!(!top.contains("stop") && !top.contains("close"), "no key yet: {top}");
+        assert!(!top.contains(" ok") && !top.contains("failed"), "no word yet: {top}");
+        assert!(!top.chars().any(|c| ('▁'..='▇').contains(&c) || c == '▸'), "no working sign: {top}");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Friction #323: a bring whose checkout's `.tarae.toml` waits on its trust card (a new checkout is a path of its
+    /// own) holds at its preflight — never stopped unsaid: its words say `waits on trust` in the warning colour, the
+    /// card is in the stack, and its `y` lets the bring go on to its preflight and land.
+    #[test]
+    fn a_bring_waits_on_its_checkouts_trust_card_and_says_so() {
+        let (repo, dir) = place("rebase-trust");
+        let mut ed = editor(&repo, &dir);
+        let steps = vec![crate::preflight::Step {
+            name: "check".into(),
+            cmd: "true".into(),
+            note: None,
+            from: ".tarae.toml".into(),
+            full: false,
+        }];
+        let (wt, _) = moved_apart(&mut ed, &repo, true);
+        ed.toasts.clear();
+        bring_go_asked(&mut ed);
+        // (its file read as the checkout opened — here once the bring's under way, the card unanswered in the stack:
+        // the steps held back until its answer)
+        let mut with = ed.config.clone();
+        with.preflight = steps;
+        let project = crate::trust::Project {
+            place: crate::trust::place_of(&wt.join(".tarae.toml")),
+            file: wt.join(".tarae.toml"),
+            hash: [7; 32],
+            items: vec![("preflight.check".into(), "true".into())],
+            state: crate::trust::State::Ask,
+            with: Box::new((with, ed.keymaps.clone())),
+            without: Box::new((ed.config.clone(), ed.keymaps.clone())),
+            read_at: 0,
+        };
+        ed.project_trust_set(Some(project));
+        let trust = |ed: &Editor| {
+            ed.offers.iter().find(|o| matches!(o.what, crate::offer::What::ProjectTrust { .. })).map(|o| o.id)
+        };
+        assert!(trust(&ed).is_some(), "its trust card up");
+        let words = |ed: &Editor| ed.bring_progress(&ed.workspace);
+        settle_until(&mut ed, |ed| {
+            ed.workspace.bring_trust || !ed.bring_going(&ed.workspace) || says(ed, "bring feat:")
+        });
+        assert_eq!(words(&ed).as_deref(), Some("bringing · rebased · waits on trust"), "{}", said(&ed));
+        let row = ed.session_shown().into_iter().find(|s| s.name == "feat").and_then(|s| s.rebasing);
+        assert_eq!(row.as_deref(), Some("bringing · rebased · waits on trust"), "the list says it too");
+        assert!(ed.bring_going(&ed.workspace), "still under way");
+        let id = trust(&ed).expect("the card it waits on, in the stack");
+        assert!(ed.workspace.preflight.is_none(), "nothing ran meanwhile");
+        ed.project_trust_answer(id, [7; 32], true);
+        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "not brought") || says(ed, "bring feat:"));
+        assert!(says(&ed, "preflight: all 1 passed"), "its preflight ran once trusted: {}", said(&ed));
+        assert!(says(&ed, "Brought 2 commits of feat into main"), "{}", said(&ed));
+        assert_eq!(words(&ed), None, "its words gone with it");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }

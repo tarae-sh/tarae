@@ -362,13 +362,20 @@ impl Editor {
                     Slot::Task => {
                         let r = self.workspace.task_run.as_ref().expect("there");
                         let badge = match r.state {
+                            // (exited, its end being read: no sign until it's known — `Run::going`)
+                            crate::task::State::Running if !r.going() => Badge::None,
                             crate::task::State::Running => Badge::Running,
                             crate::task::State::Passed if r.found == (0, 0) => Badge::Passed,
                             crate::task::State::Passed => Badge::Warning,
                             crate::task::State::Failed(_) => Badge::Failed,
                             crate::task::State::Stopped(_) => Badge::Stopped,
                         };
-                        (r.task.name.clone(), badge)
+                        // (a bring under way: its steps' runs one panel, the bring first — #320; whose, the strip and
+                        // the status line say, the step's own name never folded for it)
+                        match self.bring_going(&self.workspace) {
+                            true => (format!("bring › {}", r.task.name), badge),
+                            false => (r.task.name.clone(), badge),
+                        }
                     }
                     Slot::Test => {
                         use crate::testing::RunState as R;

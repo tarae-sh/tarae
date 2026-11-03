@@ -1062,7 +1062,7 @@ impl Editor {
     }
 
     /// Whether the project file holds back something whose key starts with `prefix` (not trusted yet).
-    fn config_project_held(&self, prefix: &str) -> bool {
+    pub(crate) fn config_project_held(&self, prefix: &str) -> bool {
         self.project_trust.as_ref().is_some_and(|p| {
             p.state != crate::trust::State::Trusted && p.items.iter().any(|(k, _)| k.starts_with(prefix))
         })

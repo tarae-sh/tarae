@@ -2186,7 +2186,8 @@ impl Editor {
     /// What session `l`'s state words say of a bring or rebase under way there, where that session is named (the
     /// strip, the list, the chip): `rebasing 2/5` — and a bring its card's `y` asked for (polish landing 4, the user
     /// 2026-11-03: its progress said there, never on the card nor a toast a step) `bringing · rebasing 2/5`, then
-    /// `bringing · rebased · preflight 2/4`. The bring queue's says its own (`bring_said`).
+    /// `bringing · rebased · preflight 2/4`, or `… · waits on trust` while its trust card holds its steps back (#323).
+    /// The bring queue's says its own (`bring_said`).
     pub(crate) fn bring_progress(&self, l: &crate::workspace::Workspace) -> Option<String> {
         let queued = self.bring_queue_at(l.id).is_some();
         if let Some(r) = &l.rebase {
@@ -2194,6 +2195,12 @@ impl Editor {
                 true => format!("bringing · {}", r.said()),
                 false => r.said(),
             });
+        }
+        // (its preflight passed, the bring itself landing)
+        if l.bring_landing && !queued {
+            return Some(
+                if l.bring_rebased { "bringing · rebased · landing" } else { "bringing · landing" }.into(),
+            );
         }
         // (its checkout looked at before the rebase starts; graded after it, before its preflight)
         if l.bring_go && !queued {
@@ -2203,6 +2210,9 @@ impl Editor {
             return None;
         }
         let rebased = if l.bring_rebased { "rebased · " } else { "" };
+        if l.bring_trust {
+            return Some(format!("bringing · {rebased}waits on trust"));
+        }
         let at = l.preflight.as_ref().filter(|p| p.took.is_none()).map(|p| {
             let done = p.steps.iter().filter(|s| s.state != crate::preflight::State::Waiting).count();
             format!(" {}/{}", done.max(1), p.steps.len())
@@ -2210,10 +2220,15 @@ impl Editor {
         Some(format!("bringing · {rebased}preflight{}", at.unwrap_or_default()))
     }
 
+    /// Whether session `l`'s bring waits on its trust card (#323) — on you, its words in the warning colour.
+    pub(crate) fn bring_waits_trust(&self, l: &crate::workspace::Workspace) -> bool {
+        l.bring_trust && l.bring_after_preflight && self.bring_queue_at(l.id).is_none()
+    }
+
     /// Whether session `l`'s bring goes on by itself now — its card's `y` (rebase, preflight, bring) or a preflight
     /// a bring waits for; the bring queue's is the queue's.
     pub(crate) fn bring_going(&self, l: &crate::workspace::Workspace) -> bool {
-        (l.bring_go || l.bring_after_preflight) && self.bring_queue_at(l.id).is_none()
+        (l.bring_go || l.bring_after_preflight || l.bring_landing) && self.bring_queue_at(l.id).is_none()
     }
 
     /// `fix is being brought — bringing · rebased · preflight 2/4`: what a bring asked while one goes there says.
@@ -2286,17 +2301,54 @@ impl Editor {
                     (ed.workspace.bring_go, ed.workspace.bring_unchecked) = (false, false);
                     ed.workspace.bring_card_after = Some(Box::new(m));
                     ed.workspace.bring_tested = head;
-                    // (a simulation stands in for the preflight's task — `sim/brings.rs`)
-                    if stands_in {
-                        return;
-                    }
-                    if let Err(e) = ed.preflight_start(crate::preflight::Set::Quick) {
-                        ed.workspace.bring_after_preflight = false;
-                        ed.set_error(e);
-                    }
+                    ed.bring_preflight_start(stands_in);
                 });
             }
         });
+    }
+
+    /// The quick preflight a bring in front waits for (`bring_after_preflight`), started — or, its project's steps
+    /// held back by a trust card still asking (#323), waiting on that card (`bring_trust`, the card up in the stack);
+    /// held back by a no, the bring stopped and said. `stands_in`: a simulation stands in for the preflight's task.
+    fn bring_preflight_start(&mut self, stands_in: bool) {
+        if self.config_project_held("preflight.") {
+            let asking = self.project_trust.as_ref().is_some_and(|p| p.state == crate::trust::State::Ask);
+            if asking {
+                self.workspace.bring_trust = true;
+                if !self.project_trust_up() {
+                    let _ = self.project_trust_ask();
+                }
+                return;
+            }
+            (self.workspace.bring_after_preflight, self.workspace.bring_trust) = (false, false);
+            self.workspace.bring_card_after = None;
+            let name = self.workspace.label();
+            return self.set_error(format!(
+                "{name} not brought — its project's preflight steps are held back (:project-trust to look again)"
+            ));
+        }
+        self.workspace.bring_trust = false;
+        if stands_in {
+            return;
+        }
+        if let Err(e) = self.preflight_start(crate::preflight::Set::Quick) {
+            self.workspace.bring_after_preflight = false;
+            self.set_error(e);
+        }
+    }
+
+    /// The project's trust answered or read again: every bring waiting on it (#323) goes on to its preflight, waits
+    /// still, or stops, said — as `bring_preflight_start` decides now.
+    pub(crate) fn bring_trust_sync(&mut self) {
+        let waiting: Vec<crate::event::WorkspaceId> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .filter(|l| l.bring_trust && l.bring_after_preflight)
+            .map(|l| l.id)
+            .collect();
+        let stands_in = self.bring_queue_stands_in();
+        for id in waiting {
+            self.with_workspace(id, |ed| ed.bring_preflight_start(stands_in));
+        }
     }
 
     /// The preflight (`title`: which set) ended, `passed` or not: a bring waiting for it goes on, or doesn't —
@@ -2325,7 +2377,11 @@ impl Editor {
             let said = format!("{name} not brought — the {title} didn't pass");
             return self.recorded(crate::editor::ToastKind::Warning, said);
         }
+        // (said as landing until it has: the preflight's end and the bring's start one instant — #321)
+        // (a rebase there gets its card instead, nothing landing)
+        self.workspace.bring_landing = self.bring_queue_at(id).is_none() && self.workspace.rebase.is_none();
         if let Err(e) = self.workspace_bring_now(&id.to_string()) {
+            self.workspace.bring_landing = false;
             // (the queue's one under way: out, the next going on — else it waited at its bring for good)
             match self.bring_queue_at(id) {
                 Some(_) => self.bring_queue_out(id, e),

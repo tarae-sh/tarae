@@ -161,10 +161,10 @@ fn an_overlay_goes_with_its_plugin() {
     assert!(!frame(&mut ed).iter().any(|r| r.contains("stress test")), "not drawn");
 }
 
-/// A toast at its bottom spot stands where the asks do: the overlay isn't drawn while it's there, and is again at once
-/// once it's gone.
+/// A toast is news, top right, whatever row the cursor is on (#322: it steps under the cursor's row there, never down to
+/// where the asks stand): the corner overlay keeps its place beside it, the two never touching.
 #[test]
-fn the_corner_overlay_gives_way_to_a_toast_at_its_bottom_spot() {
+fn the_corner_overlay_keeps_its_place_beside_a_toast_off_the_cursors_row() {
     let lines = 3 * H as usize;
     let text: String = (0..lines).map(|i| format!("let line_{i} = {i};\n")).collect();
     let (mut ed, _dir) = editor("toast", &text);
@@ -172,21 +172,15 @@ fn the_corner_overlay_gives_way_to_a_toast_at_its_bottom_spot() {
     overlay(&mut ed, "text 600000 the stress test passes", |ed| up(ed) == 1);
     ed.toasts.clear();
     ed.set_status("saved");
-    // (the cursor's row the code's top, line by line upward: the toast's top spot is taken, it stands at its bottom one)
-    let mut low = false;
+    // (the cursor's row the code's top, line by line upward: the toast steps under it, top right still)
     for line in (0..2 * H as usize).rev() {
         ed.goto_line(line);
         frame(&mut ed);
-        let Some((_, y, _, h)) = ed.screen.toast_card.get() else { continue };
-        if 2 * (y + h) > H as usize {
-            low = true;
-            assert_eq!(rect(&ed), None, "line {line}: drawn beside the toast at {y}");
-        }
+        let (_, y, _, h) = ed.screen.toast_card.get().unwrap_or_else(|| panic!("line {line}: no toast"));
+        assert!(2 * (y + h) <= H as usize, "line {line}: the toast low, at {y}");
+        let (_, oy, _, _) = rect(&ed).unwrap_or_else(|| panic!("line {line}: no overlay"));
+        assert!(oy > y + h, "line {line}: the overlay at {oy}, the toast at {y}");
     }
-    assert!(low, "the toast never stood at its bottom spot");
-    ed.toasts.clear();
-    frame(&mut ed);
-    assert!(rect(&ed).is_some(), "back once it's gone");
 }
 
 /// The screen row line `n` (0-based) is drawn on.

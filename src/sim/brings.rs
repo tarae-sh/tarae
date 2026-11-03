@@ -7,8 +7,10 @@
 //! scenario (no task is modelled): it rebases the checkout itself (`git rebase main`, aborted at a conflict —
 //! the two sessions' `a.rs` clash) and says a preflight passed or failed. And the one bring card's `y` (polish landing
 //! 4): its rebase stood in for as the queue's, the rest of its way the real one (`bring_go_on`: graded, its preflight
-//! stood in for, brought). After every step: one bring card a session, the queue holds each session once, one under
-//! way at most, and a bring going by itself has no card of its own up and says where it is in its session's words.
+//! stood in for, brought). And the project's `.tarae.toml` read asking trust for its preflight steps, its card answered
+//! `y` or `n` later (#323: a new checkout asks again). After every step: one bring card a session, the queue holds each
+//! session once, one under way at most, a bring going by itself has no card of its own up and says where it is in its
+//! session's words, and one whose preflight the trust card holds back says it waits on it, that card up.
 
 use std::time::Duration;
 
@@ -18,8 +20,9 @@ use crate::bringqueue::Stage;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
 
-/// The seeds every `cargo test` runs, each twice — git's processes are most of a step (~40 steps a second).
-const SEEDS: &[u64] = &[0];
+/// The seeds every `cargo test` runs, each twice — git's processes are most of a step (~40 steps a second). 2: a
+/// bring waits on the trust card (#323).
+const SEEDS: &[u64] = &[0, 2];
 
 const INPUTS: usize = 30;
 
@@ -53,8 +56,9 @@ fn run(choices: Choices) -> Vec<String> {
             .and_then(|()| queue_held(ed))
             .and_then(|()| failed_said(ed))
             .and_then(|()| going_alone(ed))
+            .and_then(|()| trust_said(ed))
     };
-    let said = |ed: &Editor| format!("{} · {}", print(ed, &dir), queue_said(ed));
+    let said = |ed: &Editor| format!("{} · {}{}", print(ed, &dir), queue_said(ed), trust_waits(ed));
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &names), check, said);
     let trace = sim.trace().to_vec();
     drop(sim);
@@ -67,8 +71,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, names: &[(String, std::path::PathBuf)])
     let (name, root) = c.pick(names).clone();
     // (by arm: a bring asked 4, one brought 2, a commit 2, a frame 1, time passing 1, the queue asked 1, the
     // queue's task or a single bring's preflight stood in for 3, a bring card's failed preflight 1, the one bring
-    // card's `y` 2)
-    match c.weighted(&[4, 2, 2, 1, 1, 1, 3, 1, 2]) {
+    // card's `y` 2, the project's trust asked or answered 1)
+    match c.weighted(&[4, 2, 2, 1, 1, 1, 3, 1, 2, 1]) {
         0 => match ed.workspace_bring(&name) {
             Ok(()) => format!(":workspace-bring {name}"),
             Err(e) => format!(":workspace-bring {name}: {e}"),
@@ -99,8 +103,87 @@ fn input(sim: &mut Sim, ed: &mut Editor, names: &[(String, std::path::PathBuf)])
             stand_in(ed, names, passes)
         }
         7 => preflight_failed(ed, &name, &root),
-        _ => bring_go(ed, &name, &root),
+        8 => bring_go(ed, &name, &root),
+        _ => {
+            let yes = *c.pick(&[true, false]);
+            trust(ed, sim.steps, yes)
+        }
     }
+}
+
+/// The project's `.tarae.toml` read again, asking trust for its preflight steps (#323) — while no preflight of a
+/// bring has started (one under way runs what it was given) — or, asking, its card answered (`yes`).
+fn trust(ed: &mut Editor, step: usize, yes: bool) -> String {
+    if let Some(p) = ed.project_trust.as_ref().filter(|p| p.state == crate::trust::State::Ask) {
+        let hash = p.hash;
+        let id = all_cards(ed)
+            .find(|o| matches!(o.what, crate::offer::What::ProjectTrust { .. }))
+            .map(|o| o.id)
+            .unwrap_or_default();
+        ed.project_trust_answer(id, hash, yes);
+        return format!("its trust card: {}", if yes { "y" } else { "n" });
+    }
+    let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    if all().any(|l| l.bring_after_preflight && !l.bring_trust) {
+        return "(a preflight under way: its file read later)".into();
+    }
+    let both = Box::new((ed.config.clone(), ed.keymaps.clone()));
+    let file = ed.workspace.root.join(".tarae.toml");
+    let project = crate::trust::Project {
+        place: crate::trust::place_of(&file),
+        file,
+        hash: [step as u8; 32],
+        items: vec![("preflight.check".into(), "true".into())],
+        state: crate::trust::State::Ask,
+        with: both.clone(),
+        without: both,
+        read_at: 0,
+    };
+    ed.project_trust_set(Some(project));
+    ".tarae.toml read: its preflight steps wait on its trust card".into()
+}
+
+/// Every card, wherever it is: in front, stacked, parked with its session.
+fn all_cards(ed: &Editor) -> impl Iterator<Item = &crate::offer::Offer> {
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+    ed.offers.iter().chain(parked)
+}
+
+/// The sessions whose bring waits on the trust card, said.
+fn trust_waits(ed: &Editor) -> String {
+    let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    let names: Vec<&str> = all().filter(|l| ed.bring_waits_trust(l)).map(|l| l.label()).collect();
+    match names.is_empty() {
+        true => String::new(),
+        false => format!(" · waits on trust: {}", names.join(", ")),
+    }
+}
+
+/// A bring whose preflight the project's trust holds back waits on its card, says so in its session's words, and the
+/// card is up — never stopped unsaid (#323).
+fn trust_said(ed: &Editor) -> Result<(), String> {
+    let held = ed.config_project_held("preflight.");
+    let up = all_cards(ed).any(|o| match &o.what {
+        crate::offer::What::ProjectTrust { .. } => true,
+        crate::offer::What::RepoTrust { parts, .. } => {
+            parts.iter().any(|p| matches!(p.what, crate::offer::What::ProjectTrust { .. }))
+        }
+        _ => false,
+    });
+    let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    for l in all().filter(|l| l.bring_after_preflight && ed.bring_queue_at(l.id).is_none()) {
+        let words = ed.bring_progress(l).unwrap_or_default();
+        match (held, l.bring_trust) {
+            (true, false) => {
+                return Err(format!("{} stalls unsaid: its preflight held back, {words:?}", l.label()));
+            }
+            (true, true) if !words.ends_with("waits on trust") || !up => {
+                return Err(format!("{} waits on trust: its words {words:?}, its card up {up}", l.label()));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// The one bring card's `y` on session `name` (`rebase_start`'s `bring_go`), its rebase stood in for — run here,
@@ -243,7 +326,8 @@ fn stand_in(ed: &mut Editor, names: &[(String, std::path::PathBuf)], passes: boo
 fn single_preflight(ed: &mut Editor, names: &[(String, std::path::PathBuf)], passes: bool) -> String {
     let waiting = |ed: &Editor, n: &str| {
         let id = ed.session_named(n).ok()?.0;
-        session(ed, id).filter(|l| l.bring_after_preflight).map(|_| id)
+        // (one waiting on its trust card hasn't started)
+        session(ed, id).filter(|l| l.bring_after_preflight && !l.bring_trust).map(|_| id)
     };
     let Some((name, id)) = names.iter().find_map(|(n, _)| waiting(ed, n).map(|id| (n.clone(), id))) else {
         return "(no preflight under way)".into();

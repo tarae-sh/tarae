@@ -775,6 +775,9 @@ fn a_docked_groups_panes_are_clicked_and_listed() {
     frame(&mut ed, W);
     let detail = rect(&ed, g.detail_pane().unwrap());
     assert!(detail.w > 0, "90 columns: side by side");
+    // (what docking said stands top right, over the docked group's top: a press there would open `:messages`)
+    ed.toasts.clear();
+    frame(&mut ed, W);
     click(&mut ed, detail.x + 3, detail.y + 2);
     assert_eq!((ed.workspace.viewer.at, ed.slot()), (At::Slot, Some(Slot::Test)), "its detail has the keys");
     let list = rect(&ed, g.list);
