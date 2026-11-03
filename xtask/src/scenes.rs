@@ -2525,6 +2525,49 @@ const MAIN_MOVED: &[&str] = &[
     "@20?moved onto main",
     "@2",
 ];
+/// The third short video, V3 "Claude's edit, in your buffer" (`--video edit-in-buffer`, ~45 s at 120×34; collab's
+/// `.sb/videos-plan.md`): a question on the ask line; the `v3` turn reads `thread.rs` (the view follows it there) and
+/// `main.rs`, then writes its edit of three changes in the buffer at the stream's pace — the follow card saying each
+/// step, no chat column; the review over the buffer, `y` `n` `y` and their stamps; `space u` taking the turn back.
+const EDIT_IN_BUFFER: &[&str] = &[
+    "@1",
+    "@rec",
+    "@beat:Ask Claude about the code in front of you.",
+    "@2",
+    " ",
+    "l",
+    "@1",
+    "why ",
+    "@hold:120",
+    "does ",
+    "@hold:120",
+    "insert ",
+    "@hold:120",
+    "clone ",
+    "@hold:120",
+    "the ",
+    "@hold:120",
+    "name?",
+    "@2",
+    "\r",
+    "@10?thread.rs",
+    "@beat:Its edit is written where you are, as it thinks.",
+    "@20?Change 1 of 3",
+    "@beat:Take what you want, change by change.",
+    "@2",
+    "y",
+    "@2",
+    "n",
+    "@2",
+    "y",
+    "@20?Nothing else",
+    "@2",
+    "@beat:And undo the whole turn in one key.",
+    "@2",
+    " ",
+    "u",
+    "@4",
+];
 /// Three checkouts changing `src/main.rs` far apart — main's `threads.insert` line saved, docs's `println!` saved, fix's
 /// `mod thread` unsaved — then `:weave` in fix: a clean merge, each change in its session's colour, its prefix in the
 /// sign column (`weaveclean`, collab C2b); the cursor on fix's change, `‹fix›` at its end.
@@ -4515,6 +4558,7 @@ const SCENES: &[Scene] = &[
     Scene { name: "basemoved", claude: "writemid", files: MAIN, keys: BASE_MOVED },
     // (…as the second short video, V2: from the floating list to `y`)
     Scene { name: "main-moved", claude: "idle", files: MAIN, keys: MAIN_MOVED },
+    Scene { name: "edit-in-buffer", claude: "v3", files: MAIN, keys: EDIT_IN_BUFFER },
     // (panes P3 step 7d: Claude's card with the chat closed — the screen's right, above the status line)
     Scene { name: "asks-closed", claude: "card", files: MAIN, keys: ASKS_CLOSED },
     // (…and with the chat open — `space l` brings it back from following: over its foot, the transcript above it)
@@ -5347,6 +5391,7 @@ fn video_title(scene: &str) -> &'static str {
     match scene {
         "waits-60s" => "A card never covers what you opened",
         "main-moved" => "When main moves, every workspace hears",
+        "edit-in-buffer" => "Claude's edit, in your buffer",
         _ => "",
     }
 }
@@ -5865,6 +5910,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "idle",
     "full",
     "three",
+    "v3",
     "two",
     "six",
     "sixfollow",
@@ -6005,6 +6051,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
         match script {
             "full" => turn.explain(true, false)?,
             "three" => turn.explain(true, true)?,
+            // (V3's video: two reads the view follows, then three changes written at a stream's pace)
+            "v3" => turn.edit_in_buffer()?,
             // (two changes: the press's sheet — the first answered, the second in hand)
             "two" => turn.explain_items(2)?,
             // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
@@ -6557,6 +6605,53 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "system", "subtype": "status", "status": "requesting"}))?;
         std::thread::sleep(ms(4));
         stream(self, ms(5))?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// V3's turn: a read of `thread.rs` (the view follows it there), one of `main.rs`'s loop, a few words each, then an
+    /// edit of three changes a line apart (touching ones would be one change) — the doc comment's, the map's type
+    /// dropped (the one to refuse) and the insert's — its input coming
+    /// 8 characters every 50 ms (a measured stream's, `shimmer`: about 13 a 50 ms; slower, so a video reads it), and a
+    /// pause once it's answered.
+    fn edit_in_buffer(&mut self) -> io::Result<()> {
+        self.words("First what a thread is, then how the map is filled.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/thread.rs:1-10"]}))?;
+        std::thread::sleep(Duration::from_millis(1500));
+        self.words("A thread owns its name, so the map needs a key of its own.")?;
+        self.text("\n\n")?;
+        self.call(2, "read", json!({"files": ["src/main.rs:6-13"]}))?;
+        std::thread::sleep(Duration::from_millis(1500));
+        self.words("**insert** takes the key by value, and a repeated name replaces the first strand.")?;
+        self.words("I will keep the first with the entry API, and say so in the doc comment.")?;
+        self.text("\n")?;
+        let item = |old: &str, new: &str| {
+            let s = |t: &str| Value::from(t).to_string();
+            format!(r#"{{"file_path": "src/main.rs", "old_string": {}, "new_string": {}}}"#, s(old), s(new))
+        };
+        let doc = item("/// 실타래 — 이어진 실 한 가닥.\n", "/// 실타래 — 같은 이름은 첫 가닥으로 남는다.\n");
+        let typed = item(
+            "    let mut threads: HashMap<String, Thread> = HashMap::new();\n",
+            "    let mut threads = HashMap::new();\n",
+        );
+        let insert = item(
+            "    threads.insert(first.name.clone(), first);\n",
+            "    threads.entry(first.name.clone()).or_insert(first);\n",
+        );
+        let input = format!(r#"{{"edits": [{doc}, {typed}, {insert}]}}"#);
+        let block = json!({"type": "tool_use", "id": "t3", "name": "mcp__tarae__edit", "input": {}});
+        self.line(json!({"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": block}}))?;
+        for piece in input.chars().collect::<Vec<_>>().chunks(8) {
+            let delta = json!({"type": "input_json_delta", "partial_json": piece.iter().collect::<String>()});
+            self.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": delta}}))?;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.line(json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 1}}))?;
+        self.call(3, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
+        // (the review closes on its last answer: the three stamps stay in sight on the follow card's edit row)
+        std::thread::sleep(Duration::from_millis(2500));
+        self.words("Done — **main.rs** keeps the first strand when a name repeats.")?;
+        self.words("Nothing else reads the map, so no other change is needed.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
