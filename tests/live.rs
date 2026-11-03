@@ -687,6 +687,209 @@ fn ended(mut t: Term, scratch: &Scratch, log: &Path) {
     eprintln!("LIVE nothing of the run left running");
 }
 
+/// Live (#294): a base move across ten checkouts of a small crate of the test's own — main and nine sessions,
+/// each with its `src/lib.rs` open, one rust-analyzer serving them all — and the checks it starts: cargo checks seen
+/// (and in how many checkouts), rustc's CPU seconds (a `rustc-wrapper` adds up each rustc's) and the bytes written
+/// into the build dirs. The move lands unasked (`workspace.sync = "idle"`: the move the card's `y` makes). Then
+/// one session brought to the front: what its held save starts.
+#[test]
+#[ignore = "live: run with `cargo live`"]
+#[cfg(target_os = "macos")]
+fn a_base_move_checks_only_what_someone_looks_at() {
+    if !have("rust-analyzer") || !have("cargo") {
+        return;
+    }
+    const SESSIONS: usize = 9;
+    // (made new, so the drop removes only what this run made — its own `Drop` does, after the group's kill)
+    let base = tarae_testkit::scratch::Scratch::new("ra-move").into_path();
+    let mut scratch = Scratch { base: base.clone(), group: None };
+    std::fs::create_dir_all(base.join(".cargo")).unwrap();
+    let cpu_log = base.join("rustc-cpu.log");
+    let wrap = base.join("wrap.sh");
+    // (`times`, in this shell — a pipe's would be a subshell's: the shell's own times, then its children's — the
+    // rustc it ran — user and system)
+    let script = format!("#!/bin/sh\n\"$@\"\nrc=$?\ntimes >> '{}'\nexit $rc\n", cpu_log.display());
+    std::fs::write(&wrap, script).unwrap();
+    let mut perms = std::fs::metadata(&wrap).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&wrap, perms).unwrap();
+    std::fs::write(
+        base.join(".cargo/config.toml"),
+        format!(
+            "[build]\nbuild-dir = \"{}/build/{{workspace-path-hash}}\"\nrustc-wrapper = \"{}\"\n",
+            base.display(),
+            wrap.display()
+        ),
+    )
+    .unwrap();
+    let lib = |v: u32| {
+        let mut s = format!("pub const V: u32 = {v};\n");
+        // (enough code that a check is seen on the clock: ~2 s of rustc)
+        for i in 0..3000 {
+            s += &format!(
+                "pub fn f{i}(x: u64) -> Vec<String> {{ (0..x % {}).map(|n| format!(\"{{n}} {{x}}\")).filter(|s| !s.is_empty()).collect() }}\n",
+                i + 1
+            );
+        }
+        s
+    };
+    let main = base.join("main");
+    std::fs::create_dir_all(main.join("src")).unwrap();
+    std::fs::write(
+        main.join("Cargo.toml"),
+        "[package]\nname = \"moved\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(main.join("src/lib.rs"), lib(0)).unwrap();
+    // (the test's own repository: none of the machine's git config, no hooks)
+    let git = |args: &[&str]| {
+        let st = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .args(args)
+            .current_dir(&main)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(main.join(".gitignore"), "target/\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "first"]);
+    let st =
+        Command::new("cargo").args(["check", "--all-targets", "-q", "--offline"]).current_dir(&main).status();
+    assert!(st.is_ok_and(|s| s.success()), "cargo check of main");
+
+    let sb = Sandbox::live("ra-move");
+    sb.write_config(&format!(
+        "{LIVE_CONFIG}auto-save = \"off\"\n[workspace]\nworktrees = \"{}/wt\"\nsync = \"idle\"\n\
+         [llm]\ncommand = \"sh\"\nargs = [\"-c\", \"exit 0\"]\n",
+        base.display()
+    ));
+    let log = sb.home().join(".local/state/tarae/tarae.log");
+    let logged = |what: &str| std::fs::read_to_string(&log).unwrap_or_default().matches(what).count();
+    let mut t = Term::spawn_in(&sb, &main, &["src/lib.rs"], 160, 40);
+    let tarae = t.pid();
+    scratch.group = Some(tarae as i32);
+    // (rust-analyzer runs the project's code: the repository's code trust first, every checkout's answer)
+    let card = "Trust this repository's code";
+    t.wait_for("the code-trust card", |s| s.contains(card));
+    t.send("\x11");
+    while t.screen().contains(card) {
+        t.send("y");
+        let _ = t.poll_for(Duration::from_millis(500), |s| !s.contains(card));
+    }
+    let _ = t.poll_for(Duration::from_secs(20), |s| s.contains("rust-analyzer:"));
+    quiet(&mut t, 5);
+    for n in 1..=SESSIONS {
+        new_session(&mut t, &format!("s{n}"));
+        t.command("o src/lib.rs");
+        quiet(&mut t, 2);
+    }
+    t.command("workspace-switch 0");
+
+    // Every cargo check under tarae, as it's seen (100 ms apart: a check of this crate takes longer)
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let checks = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(u32, Instant, String)>::new()));
+    let sampler = {
+        let (stop, checks) = (stop.clone(), checks.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                for p in tree(tarae).into_iter().filter(|p| p.1 == "cargo" && p.3.contains(" check")) {
+                    let mut c = checks.lock().unwrap();
+                    if !c.iter().any(|c| c.0 == p.0) {
+                        c.push((p.0, Instant::now(), p.3));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+    // Settled: no check for 10 s in a row
+    let settle = |t: &mut Term| {
+        let end = Instant::now() + LIVE_TIMEOUT;
+        loop {
+            quiet(t, 3);
+            let last = checks.lock().unwrap().iter().map(|c| c.1).max();
+            let busy = tree(tarae).iter().any(|p| p.1 == "cargo");
+            if !busy && last.is_none_or(|l| l.elapsed() > Duration::from_secs(10)) || Instant::now() > end {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    };
+    settle(&mut t);
+    // What a window started: checks (in how many checkouts), rustc's CPU seconds and runs, bytes into the build dirs
+    let cpu = || {
+        let text = std::fs::read_to_string(&cpu_log).unwrap_or_default();
+        let secs = |w: &str| {
+            let (m, s) = w.trim_end_matches('s').split_once('m').unwrap_or(("0", "0"));
+            m.parse::<f64>().unwrap_or(0.0) * 60.0 + s.parse::<f64>().unwrap_or(0.0)
+        };
+        let children = text.lines().skip(1).step_by(2);
+        let total: f64 = children.flat_map(|l| l.split_whitespace().map(secs)).sum();
+        (total, text.lines().count() / 2)
+    };
+    fn bytes(dir: &Path) -> u64 {
+        let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+        rd.flatten()
+            .map(|e| match e.file_type() {
+                Ok(t) if t.is_dir() => bytes(&e.path()),
+                Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+                _ => 0,
+            })
+            .sum()
+    }
+    let window = |from: Instant, cpu0: (f64, usize), bytes0: u64| {
+        let c = checks.lock().unwrap();
+        let seen: Vec<&String> = c.iter().filter(|c| c.1 >= from).map(|c| &c.2).collect();
+        let mut places: Vec<&str> = seen
+            .iter()
+            .filter_map(|a| a.split_whitespace().skip_while(|w| *w != "--manifest-path").nth(1))
+            .collect();
+        places.sort_unstable();
+        places.dedup();
+        let (secs, runs) = cpu();
+        let grew = bytes(&base.join("build")) as i64 - bytes0 as i64;
+        format!(
+            "{} cargo checks in {} checkouts · rustc {:.2} s CPU over {} runs · build dirs {:+.1} MB",
+            seen.len(),
+            places.len(),
+            secs - cpu0.0,
+            runs - cpu0.1,
+            grew as f64 / 1e6
+        )
+    };
+
+    // The move: main's tip moves, the nine idle checkouts are moved onto it
+    let (from, cpu0, bytes0) = (Instant::now(), cpu(), bytes(&base.join("build")));
+    let moved = || (1..=SESSIONS).filter(|n| logged(&format!("s{n} · moved onto main")) > 0).count();
+    std::fs::write(main.join("src/lib.rs"), lib(1)).unwrap();
+    git(&["commit", "-qam", "moved"]);
+    let end = Instant::now() + LIVE_TIMEOUT;
+    while moved() < SESSIONS && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    settle(&mut t);
+    eprintln!(
+        "LIVE #294 the move ({} of {SESSIONS} sessions moved): {}",
+        moved(),
+        window(from, cpu0, bytes0)
+    );
+
+    // One session to the front: what its own reload held
+    let (from, cpu0, bytes0) = (Instant::now(), cpu(), bytes(&base.join("build")));
+    t.command("workspace-switch 3");
+    settle(&mut t);
+    eprintln!("LIVE #294 s3 to the front: {}", window(from, cpu0, bytes0));
+
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = sampler.join();
+    ended(t, &scratch, &log);
+}
+
 /// The run's swap, restart and share lines in tarae's log.
 #[cfg(target_os = "macos")]
 fn share_lines(log: &Path) -> String {

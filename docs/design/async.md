@@ -457,6 +457,10 @@ How it plugs into the lineup, whatever is chosen:
   another a full ≈12 s / 17 s CPU, because `build.rs` prints absolute rerun-if-changed paths into
   the shared build dir. So among equal-rank waiting entries on `cargo-build-dir`, the lineup should
   prefer the checkout that held it last (*affinity*). Serializing alone doesn't remove that cost.
+- A shared server never rests while the front's files use it, so whatever saves reach it start checks
+  in every checkout they name. A base move that rewrote nine idle checkouts' open files started eleven
+  checks at once, read by nobody (#294). A save into a checkout behind, with its Claude idle, is held
+  until that checkout is in front or its Claude starts a turn (`save_unlooked`).
 
 ---
 

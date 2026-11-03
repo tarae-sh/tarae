@@ -125,7 +125,7 @@ pub struct LspState {
     pub(crate) published: HashMap<(ClientId, std::path::PathBuf), std::time::Instant>,
     pub(crate) work_ended: HashMap<ClientId, std::time::Instant>,
     /// Documents written from outside whose didSave is held, since their latest write
-    /// (`lsp_saved_outside`).
+    /// (`lsp_saved_outside`) — a workspace's behind its Claude idle until someone looks at it (`save_unlooked`).
     held_saves: HashMap<DocId, std::time::Instant>,
     /// The saves each server heard lately (path, when) · those to send it again once its changes are quiet ·
     /// when each was last sent a change — a didChange right after a didSave can cancel the check the save
@@ -883,7 +883,8 @@ impl Editor {
 
     /// Document `id` was written from outside and the buffer took it (Claude's edit landing, a checkout):
     /// a save to its servers too — rust-analyzer checks on one — but held until the file has been quiet
-    /// for `SAVE_QUIET`, and while a run or test of Claude's builds (`saves_due`).
+    /// for `SAVE_QUIET`, while a run or test of Claude's builds, and while nobody looks at its checkout
+    /// (`saves_due`).
     pub(crate) fn lsp_saved_outside(&mut self, id: DocId) {
         self.lsp.held_saves.insert(id, std::time::Instant::now());
         self.events.jobs().spawn(|| {
@@ -896,7 +897,8 @@ impl Editor {
     /// Claude's is building (looked at every event, so they go at its end); `now`: all at once
     /// (`diagnostics` asks — what it waits for is the check they start). Never one whose buffer is being
     /// written (the user's `:w`): its didSave follows and takes the held one with it — under load the write
-    /// outlasted the quiet and both went (a Linux flake); a write that fails leaves it held.
+    /// outlasted the quiet and both went (a Linux flake); a write that fails leaves it held. Never one nobody
+    /// looks at (`save_unlooked`): it goes once its workspace is in front or its Claude starts a turn.
     pub(crate) fn saves_due(&mut self, now: bool) {
         if self.lsp.held_saves.is_empty() || !now && self.claude_building() {
             return;
@@ -906,7 +908,7 @@ impl Editor {
             .lsp
             .held_saves
             .iter()
-            .filter(|(id, t)| (now || t.elapsed() >= SAVE_QUIET) && !writing(id))
+            .filter(|(id, t)| (now || t.elapsed() >= SAVE_QUIET) && !writing(id) && !self.save_unlooked(**id))
             .map(|(id, _)| *id)
             .collect();
         // (in the documents' order: a server hears two held saves in the same order every run)
@@ -915,6 +917,16 @@ impl Editor {
         for id in due {
             self.lsp_did_save(id);
         }
+    }
+
+    /// Whether document `id` is a file of a workspace behind whose Claude is between turns — what a base move or
+    /// a rebase wrote there while nobody looks (#294). One rust-analyzer serves every checkout of a repository
+    /// (`share.rs`) and never rests while the front's files use it, so a save each would start a check in every
+    /// idle checkout at once, its build dir regrown, its result read by nobody. It checks once it's looked at.
+    fn save_unlooked(&self, id: DocId) -> bool {
+        !self.workspace.docs.contains(&id)
+            && (self.workspaces.iter().find(|l| l.docs.contains(&id)))
+                .is_some_and(|l| !l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy))
     }
 
     /// (tests) Whether `id`'s save is held.

@@ -72,12 +72,21 @@ impl Scene {
 /// The repository and its three workspaces, you in main; overlaps looked for at once, in the test's own folder; main's
 /// tip read once (the baseline).
 fn scene(name: &str) -> Scene {
+    scene_with(name, None)
+}
+
+/// `scene`, with `config` the editor's — and the files a crate's (a `Cargo.toml` in the first commit: a Rust server
+/// starts only in a project).
+fn scene_with(name: &str, config: Option<&str>) -> Scene {
     let dir = Scratch::new(name);
     let main = dir.join("main");
     std::fs::create_dir_all(&main).unwrap();
     let main = std::fs::canonicalize(main).unwrap();
     std::fs::write(main.join("a.rs"), twelve()).unwrap();
     std::fs::write(main.join("b.rs"), twelve()).unwrap();
+    if config.is_some() {
+        std::fs::write(main.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    }
     git(&main, &["init", "-q"]);
     // (tarae's own git replays the commits: who it is, unsigned — the repository's, so the machine's never counts)
     for (k, v) in [("user.name", "t"), ("user.email", "t@t"), ("commit.gpgsign", "false")] {
@@ -85,7 +94,7 @@ fn scene(name: &str) -> Scene {
     }
     git(&main, &["add", "-A"]);
     git(&main, &["commit", "-qm", "first"]);
-    let mut ed = Editor::new(Config::default());
+    let mut ed = Editor::new(config.map_or_else(Config::default, |c| crate::config::parse(c).0));
     ed.workspace.root = main.clone();
     ed.workspace.name = "main".into();
     crate::git::watched(&mut ed.workspace, "main");
@@ -719,6 +728,57 @@ fn v_shows_the_instruction_files_the_main_checkout_changed_since_each_copy() {
     );
     assert!(!text.contains("up's own") && !text.contains("up ·"), "{text}");
     assert!(card(&s.ed).is_some(), "the card stays");
+}
+
+/// #294: a move rewrites an idle workspace's open file, its buffer takes it from disk — and its server hears no save
+/// (one rust-analyzer serves every checkout: a save each started a check in every idle checkout at once, read by
+/// nobody). The save waits, and goes once that workspace is in front.
+#[test]
+fn a_moved_file_of_an_idle_workspace_is_no_save_until_someone_looks() {
+    let out = Scratch::new("keepclose-294-server");
+    let sent = out.join("sent.log");
+    let cfg = format!(
+        "[lsp.fake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > '{}'\"]\n[lang.rust]\nlsp = [\"fake\"]\n",
+        sent.display()
+    );
+    let mut s = scene_with("keepclose-294", Some(&cfg));
+    let fix = s.id("fix");
+    s.ed.workspace_switch(fix);
+    s.ed.open(&s.root("fix").join("a.rs")).unwrap();
+    let (id, cid) = (s.ed.doc().id, s.ed.doc().lsp.client.expect("its server"));
+    s.ed.on_lsp_message(cid, serde_json::json!({ "id": 0, "result": { "capabilities": {} } }));
+    s.ed.workspace_switch(WorkspaceId::HOME);
+    asked(&mut s);
+    key(&mut s.ed, 'y');
+    until(&mut s.ed, "both moved", |ed| ed.keep_close.moved == 2 && ed.keep_close.moving.is_none());
+    // (the disk watch's rounds until fix's buffer takes main's line)
+    let took =
+        |ed: &Editor| ed.docs.iter().any(|d| d.id == id && d.text.to_string().contains("line 3, main's"));
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while !took(&s.ed) {
+        assert!(std::time::Instant::now() < end, "fix's buffer never took the move");
+        s.ed.disk_poll(false);
+        let round = s.ed.disk_poll_gen;
+        while s.ed.disk_poll_gen == round {
+            let ev = s.ed.events.recv_timeout(crate::test_results::PATIENCE).expect("a watch round");
+            s.ed.handle_event(ev);
+        }
+    }
+    // Its quiet long past: still held, nothing sent
+    std::thread::sleep(2 * crate::lsp_editor::SAVE_QUIET);
+    quiet(&mut s.ed);
+    let saves = || std::fs::read_to_string(&sent).unwrap_or_default().matches("textDocument/didSave").count();
+    assert!(s.ed.lsp_holds(id), "held while fix is behind, its Claude idle");
+    assert_eq!(saves(), 0, "no save to its server");
+    // fix in front: its save goes
+    s.ed.workspace_switch(fix);
+    s.ed.handle_event(crate::event::Event::Resize);
+    assert!(!s.ed.lsp_holds(id), "sent once fix is in front");
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while saves() == 0 && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(saves(), 1);
 }
 
 #[test]

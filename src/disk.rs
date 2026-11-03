@@ -354,7 +354,7 @@ impl Editor {
     /// A disk round: stat the open files — at once, or (`wait`) once they may have changed. It continues
     /// the watch unless a newer round took over meanwhile (and ends its wait) — so an immediate check never
     /// leaves a second watch running beside the first.
-    fn disk_poll(&mut self, wait: bool) {
+    pub(crate) fn disk_poll(&mut self, wait: bool) {
         self.disk_poll_gen += 1;
         let generation = self.disk_poll_gen;
         let files: Vec<(DocId, PathBuf, Option<Stamp>)> = self
