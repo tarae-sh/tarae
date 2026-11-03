@@ -271,7 +271,11 @@ fn a_message_under_a_waiting_card_comes_as_a_toast() {
         session: crate::event::WorkspaceId::HOME,
         started: std::time::Instant::now(),
     };
+    // (asked by your key — `space v q`: one that came on its own folds to its peek off a pane you opened)
+    let was = ed.events.set_asked(Some(ed.input_seq));
     ed.push_offer(crate::offer::Offer::new("End the review?".into(), &q, "", String::new(), what));
+    ed.events.set_asked(was);
+    ed.card_focus = None;
     frame(&mut ed);
     let card = ed.screen.offer_card.expect("the card drawn");
     assert!(!ed.card_has_keys(), "waiting");

@@ -724,9 +724,7 @@ fn only_named_hints_are_words() {
     // (round 3, the user 2026-10-29: by the key, not its spelling; a way out before a button's keys; the costs, past
     // a way out too; what names no key plain words)
     use crate::wordspot::is_hint;
-    for (k, said) in
-        [("ret", "logs"), ("minus", "fold"), ("esc esc space I", "answer card"), ("s u", "stage")]
-    {
+    for (k, said) in [("ret", "logs"), ("minus", "fold"), ("F2", "answer card"), ("s u", "stage")] {
         assert!(is_hint(k, said), "{k} {said}");
     }
     assert!(pressable("ret", "logs") && pressable("esc :chat-point", "") && pressable("↑", "edit queued"));
@@ -971,7 +969,8 @@ fn status_word(ed: &mut Editor, press: &Press) -> Spot {
 }
 
 /// The status line's words, each its own: the branch opens the git tab, a process mark `:procs`, the file's warnings its
-/// diagnostics, Claude's change waiting the review's keys (`C-q`), the inbox's `· C-q` the card's.
+/// diagnostics, Claude's change waiting out of sight the review's keys (a card in sight says its way in itself; the
+/// status line's `C-q answer` alone is a folded card's — `sessionpane`'s fold test).
 #[test]
 fn each_status_line_word_does_its_own() {
     // The branch: the git tab
@@ -1013,7 +1012,7 @@ fn each_status_line_word_does_its_own() {
     assert_eq!(s.spans[0].0, "▲ 1");
     press_word(&mut ed, &Press::Command("diagnostics_picker"));
     assert!(ed.picker.is_some(), "the diagnostics");
-    // Claude's change waiting, the keys in the chat: the review gets them
+    // Claude's change waiting out of sight, the keys in the chat: the review gets them
     let mut ed = editor();
     crate::uistate::tests::edit_review(&mut ed);
     chat(&mut ed, "");
@@ -1021,14 +1020,6 @@ fn each_status_line_word_does_its_own() {
     assert_eq!(s.spans[0].0, "claude ● change");
     press_word(&mut ed, &Press::Card);
     assert_eq!(ed.keys_to().region, crate::uistate::Region::EditReview, "the review's keys");
-    // The inbox's `· C-q`: the card
-    let mut ed = editor();
-    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
-    ed.push_offer(crate::offer::Offer::new("Claude asks".into(), "?", "", String::new(), what));
-    let s = status_word(&mut ed, &Press::Card);
-    assert!(s.spans.iter().any(|s| s.0.contains("C-q")), "{:?}", s.spans);
-    press_word(&mut ed, &Press::Card);
-    assert!(ed.card_has_keys(), "the card's keys");
 }
 
 /// A file in the project, open, and the side panel's files listed (none of it on disk: the tree is given).
@@ -1423,8 +1414,9 @@ fn a_held_answer_lights_nothing() {
 
 /// frictions #211: a press on a waiting card's answer focuses it, and every answer stays in its cell — focused and then
 /// waiting again (`esc`) — so a second press where you aimed lands on the same answer, and answers it. Claude's grant
-/// card (five answers), the code in insert mode, inside zellij's hints (its way in `esc space I answer`; once the card
-/// held the keys `C-q`'s twin was `esc esc space I`, the line 4 cells wider and its answers moved) and outside them.
+/// card (five answers), the code in insert mode, inside zellij's hints (its way in `F2 answer`; before #291 the twin
+/// grew to `esc esc space I` once the card held the keys, the line 4 cells wider and its answers moved) and outside
+/// them.
 /// Each answer pressed first in turn; `n`, which runs nothing, pressed again: answered.
 #[test]
 fn a_focusing_press_moves_no_answer() {
@@ -1466,11 +1458,7 @@ fn a_focusing_press_moves_no_answer() {
         let keys: Vec<char> = laid(&card(zellij)).1.iter().map(|w| w.3).collect();
         assert_eq!(keys, ['y', 'a', 's', 'A', 'n'], "zellij {zellij}: five answers");
         let line = crate::term::card_line(&card(zellij)).unwrap();
-        assert_eq!(
-            line.contains("esc space I answer"),
-            zellij,
-            "zellij {zellij}: its way in as said there: {line}"
-        );
+        assert_eq!(line.contains("F2 answer"), zellij, "zellij {zellij}: its way in as said there: {line}");
         for k in keys {
             let mut ed = card(zellij);
             let waiting = laid(&ed);

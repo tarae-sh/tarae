@@ -782,63 +782,15 @@ impl Editor {
 
     /// How many things wait for you (the inbox, `inbox.rs`) — here: the cards up (the front one too), an edit
     /// in its review, its chat's reads and edits queued (parallel calls queued silently), a change set's
-    /// files — and in sessions behind (#7; #91: one `1/N` mixed the two, the card's `1/2 here · 1 elsewhere`
-    /// keeps them apart). Only what asks for an answer (`Entry::asks_answer`): a quiet run, a reviewer's end
-    /// is news, not something waiting.
+    /// files — and in sessions behind (#7; #91: the two apart). Only what asks for an answer (`Entry::asks_answer`): a quiet run, a reviewer's end
+    /// is news, not something waiting. (Tests' count: the screen says what waits by the card stack and its peeks, the
+    /// status line only what neither draws — polish landing 1.)
+    #[cfg(test)]
     pub fn cards_waiting(&self) -> (usize, usize) {
-        self.cards_waiting_from(crate::uistate::session_id(self.workspace.claude.id))
-    }
-
-    /// `cards_waiting` as session `front` (its `uistate::session_id`) counts them — another's card measured as it
-    /// would stand there (`term`'s peeks alone).
-    pub fn cards_waiting_from(&self, front: String) -> (usize, usize) {
+        let front = crate::uistate::session_id(self.workspace.claude.id);
         let inbox: Vec<_> = self.inbox().into_iter().filter(crate::inbox::Entry::asks_answer).collect();
         let here = inbox.iter().filter(|e| e.session == front).count();
         (here, inbox.len() - here)
-    }
-
-    /// What waits behind the card in front, as the card says it (frictions15 #5: `C-q` takes the oldest here
-    /// first, so the others are a queue nobody named): `2 more wait — 1 here, 1 in feat` — each other session by
-    /// its name; the key that lists them is its bottom line's (`inbox_key`). None: nothing else waits.
-    pub fn cards_behind_said(&self) -> Option<String> {
-        let front = crate::uistate::session_id(self.workspace.claude.id);
-        self.cards_behind_said_from(front, self.offers.first().map(|o| o.id))
-    }
-
-    /// `cards_behind_said` as session `front` says it with card `up` in front — another's card measured as it would
-    /// stand there (`term`'s peeks alone).
-    pub fn cards_behind_said_from(&self, front: String, up: Option<u64>) -> Option<String> {
-        let up = up.map(|id| format!("card#{id}"));
-        let behind: Vec<_> =
-            self.inbox().into_iter().filter(|e| e.asks_answer() && Some(&e.id) != up.as_ref()).collect();
-        if behind.is_empty() {
-            return None;
-        }
-        let mut wheres: Vec<(String, usize)> = Vec::new();
-        for e in &behind {
-            let at = match e.session == front {
-                true => "here".to_string(),
-                false => std::iter::once(&self.workspace)
-                    .chain(&self.workspaces)
-                    .find(|l| crate::uistate::session_id(l.claude.id) == e.session)
-                    .map_or_else(|| format!("in {}", e.session), |l| format!("in {}", l.label())),
-            };
-            match wheres.iter_mut().find(|w| w.0 == at) {
-                Some(w) => w.1 += 1,
-                None => wheres.push((at, 1)),
-            }
-        }
-        // (here first, then the sessions in the order their oldest came)
-        crate::sorting::by_key(&mut wheres, |w| w.0 != "here");
-        let wheres: Vec<String> = wheres.iter().map(|(at, n)| format!("{n} {at}")).collect();
-        let n = behind.len();
-        let wait = if n == 1 { "waits" } else { "wait" };
-        Some(format!("{n} more {wait} — {}", wheres.join(", ")))
-    }
-
-    /// The key that lists every card waiting (the inbox) as the keymap has it — `space I`; unbound, `:inbox`.
-    pub fn inbox_key(&self) -> String {
-        self.keymaps.bindings().remove("inbox").unwrap_or_else(|| ":inbox".into())
     }
 
     /// Sessions whose Claude is about to ask (its next call needs a card, held back by claude until the one
@@ -879,16 +831,11 @@ impl Editor {
             true => inbox.iter().position(|e| e.session_id() == id).unwrap_or(inbox.len()),
             false => inbox.len() + self.turns_ended().iter().position(|&l| l == id).unwrap_or(0),
         };
-        // (inside zellij its twin: the inbox lists the card, the session list the session — said from the code, no
-        // way back in it: a toast is made as news comes, wherever the keys are then, and read later from anywhere —
-        // the live hints say the way back)
-        let reach = if waits { crate::zellij::Reach::Inbox } else { crate::zellij::Reach::Sessions };
-        match (self.twinned("C-q"), before) {
-            (true, 0) if waits => format!("{} lists it", self.c_q_place(reach)),
-            (true, n) if waits => format!("{} lists it, after {n} older", self.c_q_place(reach)),
-            (true, _) => format!("{} lists its session", self.c_q_place(reach)),
-            (false, 0) => "C-q goes there".into(),
-            (false, n) => format!("C-q goes there after {n} older"),
+        // (inside zellij its twin, one key from anywhere — a toast is read later, wherever the keys are by then)
+        let key = if self.twinned("C-q") { crate::inbox::WAY_IN_TWIN } else { "C-q" };
+        match before {
+            0 => format!("{key} goes there"),
+            n => format!("{key} goes there after {n} older"),
         }
     }
 
@@ -1714,8 +1661,8 @@ mod tests {
         }
     }
 
-    /// #7: the card up says how many wait behind it — stacked, queued in its chat, in sessions behind — and
-    /// `C-q` gives the keys to the one up here (#198: this session's own first, though the one behind came
+    /// #7: what waits behind the card up is in sight — its stack's peeks, this session's and a session behind's
+    /// (polish landing 1: no count on the card) — and `C-q` gives the keys to the one up here (#198: this session's own first, though the one behind came
     /// first), then goes to the session behind's, its card up there; once it's the card up, the keys.
     #[test]
     fn the_card_counts_what_waits_and_c_q_goes_to_it() {
@@ -1738,7 +1685,8 @@ mod tests {
         let mut parser = vt100::Parser::new(30, 120, 0);
         parser.process(&bytes);
         let s = parser.screen().contents();
-        assert!(s.contains("Claude asks 2") && s.contains("1/2 here · 1 elsewhere"), "{s}");
+        assert!(s.contains("Claude asks 2") && !s.contains("elsewhere"), "{s}");
+        assert!(s.contains("Claude asks 3") && s.contains("Claude asks 1"), "their peeks: {s}");
         // C-q with cards up here — back's came first, but this session's own go first (#198): the keys
         feed(&mut ed, "<C-q>");
         assert!(ed.card_has_keys() && ed.workspace.id == WorkspaceId::HOME, "this session's own first");
@@ -1759,7 +1707,7 @@ mod tests {
     }
 
     /// #90: `C-q` goes to the session whose card has waited longest — not the first in the list — and the
-    /// card up there names its session; #91: its count keeps here and elsewhere apart.
+    /// card up there names its session; #91: what waits here and elsewhere are peeks of their own, each named.
     #[test]
     fn c_q_goes_to_the_card_waiting_longest_and_names_its_session() {
         use crate::offer::{Offer, What};
@@ -1786,7 +1734,12 @@ mod tests {
         let rows = screen(&mut ed, 140, 30);
         let head = rows.iter().find(|r| r.contains("Claude asks 2")).expect("its card");
         assert!(head.contains("third asks · Claude asks 2"), "named: {head}");
-        assert!(head.contains("1/2 here · 1 elsewhere"), "{head}");
+        assert!(!head.contains("elsewhere"), "no count on the card: {head}");
+        let all = rows.join("\n");
+        assert!(
+            all.contains("Claude asks 3") && all.contains("back asks · Claude asks 1"),
+            "the peeks: {all}"
+        );
         // Answered there: the next C-q goes to back
         ed.offers.clear();
         feed(&mut ed, "<C-q>");
@@ -1831,8 +1784,8 @@ mod tests {
     }
 
     /// With none of the front session's, another session's ask is still in the one stack: its peek drawn alone
-    /// bottom-right, named in its colour, the status line's count and `C-q` still said — a press on it goes there,
-    /// the card focused.
+    /// bottom-right, named in its colour, the status line saying the way in (`C-q answer`) and no count — a press on it
+    /// goes there, the card focused.
     #[test]
     fn another_sessions_ask_with_none_here_is_its_peek_alone() {
         use crate::offer::{Offer, What};
@@ -1857,8 +1810,8 @@ mod tests {
             assert_eq!((y, ch), (peek, 1), "{w}: one row");
             assert!(x + cw + 1 >= w - 1 && peek > h / 2, "{w}: bottom-right: {x}+{cw} at {peek}\n{rows:#?}");
             assert!(
-                rows[h - 1].contains("▲1 waiting · C-q"),
-                "{w}: still counted, its way said: {}",
+                rows[h - 1].contains("C-q answer") && !rows[h - 1].contains("waiting"),
+                "{w}: in sight, its way said: {}",
                 rows[h - 1]
             );
         }
@@ -2716,7 +2669,6 @@ mod tests {
             billing: Default::default(),
             build: None,
             queue: None,
-            waits: (0, 0),
             report: String::new(),
             context: None,
             children: None,

@@ -245,7 +245,7 @@ fn link_but(from: &Path, to: &Path, but: &str) -> Result<()> {
 /// The shot's own variables for tarae, `TARAE_SHOT_ZELLIJ` as given: `ZELLIJ` taken out — a shot taken from inside
 /// zellij shows the default hints — unless it's `1`, then `ZELLIJ=0` as zellij sets it (the hints say the twins of
 /// the keys zellij takes — `src/zellij.rs`).
-fn shot_env(zellij: Option<std::ffi::OsString>) -> Vec<(&'static str, Option<&'static str>)> {
+pub(crate) fn shot_env(zellij: Option<std::ffi::OsString>) -> Vec<(&'static str, Option<&'static str>)> {
     vec![("ZELLIJ", zellij.is_some_and(|v| v == "1").then_some("0"))]
 }
 

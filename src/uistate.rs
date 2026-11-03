@@ -384,9 +384,9 @@ impl Editor {
                 v.push(layer(Region::Card(o.id), Filter::Except(prefix.into_iter().collect())));
             } else if self.offer_reading() {
                 // (its text the buffer in sight: `C-q` gives it the keys whatever is next up)
-                v.push(shortcut(Region::Card(o.id), Filter::Only(vec![ctrl('q')])));
+                v.push(shortcut(Region::Card(o.id), Filter::Only(crate::inbox::way_in_keys())));
             } else if next == crate::inbox::Next::Card(o.id) {
-                v.push(shortcut(Region::Card(o.id), Filter::Only(vec![ctrl('q')])));
+                v.push(shortcut(Region::Card(o.id), Filter::Only(crate::inbox::way_in_keys())));
             }
         }
         // `C-q` to the one that has waited longest, elsewhere (the front's edit review takes its own) — nothing
@@ -396,7 +396,7 @@ impl Editor {
             crate::inbox::Next::Go(_) | crate::inbox::Next::Done(_) | crate::inbox::Next::None
         );
         if !modal && !held && elsewhere {
-            v.push(shortcut(Region::NextCard, Filter::Only(vec![ctrl('q')])));
+            v.push(shortcut(Region::NextCard, Filter::Only(crate::inbox::way_in_keys())));
         }
         // `follow_key`: the follow card with the keys — every key but the window prefix (its sizes, the keys staying):
         // `esc` gives them back, the rest give them back and go on
@@ -423,7 +423,7 @@ impl Editor {
         if let Some(rev) = self.workspace.claude.review.as_ref().filter(|r| r.ready && !modal && !pending) {
             let chat = self.workspace.chat_has_keys();
             v.push(match chat || rev.away {
-                true => shortcut(Region::EditReview, Filter::Only(vec![ctrl('q')])),
+                true => shortcut(Region::EditReview, Filter::Only(crate::inbox::way_in_keys())),
                 false => layer(Region::EditReview, Filter::Except(vec![ch(' '), ch(':'), ctrl('w')])),
             });
         }

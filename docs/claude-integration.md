@@ -239,13 +239,12 @@ reaches left over the code, its corner bottom-right either way.
 A card's keys are always on its bottom line, never in its body. Where they don't all fit there whole, the line gives
 up what matters least first, in one order. Kept longest:
 
-1. its way in, `C-q answer` (zellij's twin inside zellij) — without it nothing on the card says your keys don't
-   answer it;
+1. its way in, `C-q answer` (inside zellij its twin, `F2 answer`) — without it nothing on the card says your keys
+   don't answer it;
 2. answers that last or can't be taken back, in their short words — each card kind marks them on its answers
    (`y Remove checkout`, `y Commit`, `y Stop it`, `y Bring`, a trust, a capital such as `N` never or `D` remove both,
    the `a`/`s` grants), and a cut card's `y once read` and `v read all`;
-3. `space I list`, while other cards wait behind it;
-4. the other answers' short words (`y move · c all · v files · n not now`), then their keys alone, the last first.
+3. the other answers' short words (`y move · c all · v files · n not now`), then their keys alone, the last first.
 
 Past that, the card grows left over the code by just the cells its line needs, its corner where it was —
 bottom-right, over the chat's foot or a docked list's, or above the status line: asks never go anywhere else. Only a
@@ -263,10 +262,10 @@ Esc goes back unanswered, and so does `C-w` (the window prefix going on from whe
 (`:restart`, a new session, a bring) is focused as it comes. A focused card whose text changes (asked again, joined)
 lets go of the keys: focus it again to answer what it says now. Esc never answers a card. `n` does. Answered, the
 keys go on to the next card when you were going through them with `C-q` — once a frame has drawn it: a `y` typed on
-before that (a repeat) is refused and said on it, never an answer to a card not yet in sight — else back where they were. A card counts what waits behind it — `1/3`: cards
-under it, Claude's calls queued, cards in other sessions — and says it in words: `2 more wait — 1 here, 1 in
-fix-login`, the key that lists them its bottom line's last pair (`space I list`) — the queue it counts is never
-one with no way to it. A card cut
+before that (a repeat) is refused and said on it, never an answer to a card not yet in sight — else back where they were. What waits behind a card is
+the stack's: a one-row peek each under it, this session's first, then other sessions' named in their colours — the
+card and three peeks at most. A card that came on its own never covers a pane you opened (a floating list, the
+floating chat): it folds to its peeks at the screen's foot, `C-q` standing it whole. A card cut
 short says how much and whether it's read (`↓ 45 more lines, not read yet`); its bottom line has `v read all`, and
 a yes that waits for it says `y once read` until it is.
 
@@ -284,9 +283,10 @@ yes. Only `C-q` gives them to the card again: pressed again it keeps them, and i
 
 **The inbox** is everything waiting for your answer, in every session, oldest first: Claude's run and read
 cards, its edits waiting for their review (`Change 1 of 2 · src/a.rs` — a protected file like `.tarae.toml`
-always asks), change sets, and tarae's own cards (trust, a rebase, a download). The status line counts them all
-(`▲3 waiting`) once anything waits beyond the card in front of you. `space I` (`:inbox`, or a click on the
-count) lists them: each row names its session, what it asks, its kind and how long it has waited. `enter` goes
+always asks), change sets, and tarae's own cards (trust, a rebase, a download). What's in sight — a card, a peek, an
+edit's review — says itself; the status line counts only the rest (`▲1 waiting`: past the stack's room, another
+session's with no peek, a queued edit), and says the way in (`C-q answer`) only where no card's bottom line does.
+`space I` (`:inbox`, or a click on the count) lists them all: each row names its session, what it asks, its kind and how long it has waited. `enter` goes
 to it. Its session comes to the front and its card comes up with the keys, and you answer it there, on the card.
 The list never answers anything itself. `C-q` takes what waits in the session in front first, then follows
 the list's order: it goes to the one that has waited longest, whichever session it's in, and that card comes up
@@ -295,7 +295,7 @@ never says nothing does.
 
 Two kinds of news are in the list too, after everything that asks for an answer: a run of Claude's that has
 printed nothing for minutes (it may only be slow, and a card surely waits), and a reviewer that ended in a
-session behind. They aren't counted in `▲3 waiting`, or in a card's `1/2 here · 1 elsewhere`. Quiet runs have
+session behind. They aren't counted in `▲1 waiting`. Quiet runs have
 their own calm count on the status line (`1 run quiet`), since they can be in any session, the one in front
 too. A reviewer's end is its session's `•` (on its tab, or in the status line's `•1` when the chat is closed),
 the same mark that says its files came again from disk: something happened there while you were away.

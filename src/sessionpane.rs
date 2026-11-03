@@ -38,7 +38,6 @@ pub enum Ink {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Col {
     State,
-    Waits,
     Overlap,
     Behind,
     Context,
@@ -58,9 +57,8 @@ pub enum Col {
 }
 
 /// Every column, in the row's order.
-pub const COLS: [Col; 18] = [
+pub const COLS: [Col; 17] = [
     Col::State,
-    Col::Waits,
     Col::Overlap,
     Col::Behind,
     Col::Context,
@@ -80,9 +78,9 @@ pub const COLS: [Col; 18] = [
 ];
 
 /// The order whole columns fold in when the pane is narrow, the first to go first: the rest from the last, then the
-/// report line, the cost, the context, behind, the overlaps — what waits for you and the state last (user, 2026-10-23;
-/// the cost after the longer report, so a parent's children's total stays in sight longer: user, 2026-10-29).
-pub const FOLDS: [Col; 18] = [
+/// report line, the cost, the context, behind, the overlaps — the state last (user, 2026-10-23; the cost after the
+/// longer report, so a parent's children's total stays in sight longer: user, 2026-10-29).
+pub const FOLDS: [Col; 17] = [
     Col::Usage,
     Col::Build,
     Col::Cache,
@@ -99,7 +97,6 @@ pub const FOLDS: [Col; 18] = [
     Col::Context,
     Col::Behind,
     Col::Overlap,
-    Col::Waits,
     Col::State,
 ];
 
@@ -177,15 +174,8 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
         let sep = if state.iter().all(|p| p.0.is_empty()) { "" } else { " · " };
         state.push((format!("{sep}wakes {parent}"), Ink::Faint));
     }
+    // (who waits, not what: its `▲ waits` — what waits is the card stack's and its peeks', polish landing 1)
     put(Col::State, state);
-    // What waits for you there: its cards, its edits (a review, a change set, a read), counted
-    let (cards, edits) = l.waits;
-    let waits: Vec<String> = [(cards, "card"), (edits, "edit")]
-        .into_iter()
-        .filter(|w| w.0 > 0)
-        .map(|(n, what)| crate::nav::count(n, what))
-        .collect();
-    put(Col::Waits, one(waits.join(" · "), Ink::Warn));
     // Whom its changes would conflict with: `≈` in warning, each name in its colour
     if !l.overlap.is_empty() {
         let mut parts = vec![("≈ ".to_string(), Ink::Warn)];

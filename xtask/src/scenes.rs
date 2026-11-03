@@ -4848,7 +4848,7 @@ fn one(
 ) -> Result<()> {
     let dir = Fresh::new("tarae-scene")?;
     let demo = dir.0.join("tarae-demo");
-    demo_crate_with(&demo, scene.name == "trusted", &run_files(scene.name))?;
+    demo_crate_at(&demo, scene.name == "trusted", &run_files(scene.name), Some(&dates().0))?;
     let config = dir.0.join("xdg");
     // (the overlay scenes': the SDK's demo plugin, its permissions asked as it loads — `C-q y` in their keys)
     if scene.name.starts_with("overlay-") {
@@ -4901,16 +4901,46 @@ fn one(
         config,
         background: Some(bg),
         // (the terminal scenes': a plain sh of the shot's own — a `$ ` prompt, no rc, no history, no user or host
-        // name; never the shell of whoever takes the shots)
+        // name; never the shell of whoever takes the shots. Inside zellij or not as `cargo xtask shot` is: `ZELLIJ`
+        // taken out unless `TARAE_SHOT_ZELLIJ=1` — a scene taken from inside zellij said the twins)
         env: match scene.name.starts_with("quote-term") {
             true => {
                 vec![("SHELL", Some("/bin/sh")), ("PS1", Some("$ ")), ("HISTFILE", Some("")), ("ENV", None)]
             }
             false => Vec::new(),
-        },
+        }
+        .into_iter()
+        .chain(shot::shot_env(std::env::var_os("TARAE_SHOT_ZELLIJ")))
+        .chain(commits_env())
+        .collect(),
     };
     let keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
     shot::take(&setup, &keys, size, &dir.0.join("state"), out)
+}
+
+/// When a scene's commits are, whenever the shots are taken (`git`'s `@<seconds> +0000`): the demo crate's first a day
+/// before this run of the xtask began, those a scene makes (a `:sh git commit` in its keys, tarae's rebase or bring) two
+/// hours before — the blame says `1d ago` and `2h ago` at every retake, never the seconds a scene took.
+fn dates() -> &'static (String, String) {
+    static DATES: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    DATES.get_or_init(|| {
+        let at = |ago: u64| format!("@{} +0000", docshots::now().saturating_sub(ago));
+        (at(86_400), at(2 * 3600))
+    })
+}
+
+/// Who and when every commit made during a scene is, for tarae and what it runs: `demo`, as the demo crate's first
+/// commit (`demo_crate_with`), never whoever takes the shots — a `:sh git commit` reads your own git settings.
+fn commits_env() -> Vec<(&'static str, Option<&'static str>)> {
+    let at = dates().1.as_str();
+    vec![
+        ("GIT_AUTHOR_NAME", Some("demo")),
+        ("GIT_AUTHOR_EMAIL", Some("demo@example.com")),
+        ("GIT_COMMITTER_NAME", Some("demo")),
+        ("GIT_COMMITTER_EMAIL", Some("demo@example.com")),
+        ("GIT_AUTHOR_DATE", Some(at)),
+        ("GIT_COMMITTER_DATE", Some(at)),
+    ]
 }
 
 /// The shot's config: language servers off, this xtask as claude running `script` — and for the board's
@@ -5135,6 +5165,11 @@ fn demo_crate(dir: &Path, trusted: bool) -> Result<()> {
 
 /// `demo_crate` with `extra` files committed beside its own (over them where named alike).
 pub(crate) fn demo_crate_with(dir: &Path, trusted: bool, extra: &[(&str, String)]) -> Result<()> {
+    demo_crate_at(dir, trusted, extra, None)
+}
+
+/// `demo_crate_with`, its commit dated `date` (git's form) — a scene's (`dates`); none: as it's made.
+fn demo_crate_at(dir: &Path, trusted: bool, extra: &[(&str, String)], date: Option<&str>) -> Result<()> {
     demo_files(dir, false, trusted)?;
     for (path, text) in extra {
         write(&dir.join(path), text)?;
@@ -5149,6 +5184,7 @@ pub(crate) fn demo_crate_with(dir: &Path, trusted: bool, extra: &[(&str, String)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap_or(dir))
+            .envs(date.into_iter().flat_map(|d| [("GIT_AUTHOR_DATE", d), ("GIT_COMMITTER_DATE", d)]))
             .stdout(Stdio::null())
             .status()
             .map_err(|e| format!("git: {e}"))?;

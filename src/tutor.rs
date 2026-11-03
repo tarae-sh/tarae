@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(says("C-g locks zellij"), zellij, "the zellij section");
         assert_eq!(says("C-q hands it your keys"), !zellij);
         if zellij {
-            assert!(keys.contains(&"esc esc") && keys.contains(&"C-g"), "{keys:?}");
+            assert!(keys.contains(&"F2") && keys.contains(&"C-g"), "{keys:?}");
         }
         let headings = of("markup.heading");
         assert_eq!(headings[0], "tarae tutorial");

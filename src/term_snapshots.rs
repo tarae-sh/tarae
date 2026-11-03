@@ -1211,7 +1211,7 @@ fn snapshot_instructions_card() {
 /// frictions #211's screens, for their screenshots — by hand, `TARAE_FRAMES_DIR` given (both themes there, 140×30 and
 /// 100×30, named by `TARAE_FRAMES_WHICH`; `.sb/f211/shots.sh` draws them, each card waiting over itself focused;
 /// what they show is `wordspot::tests::a_focusing_press_moves_no_answer`'s to hold):
-/// inside zellij's hints, the code in insert mode (its way in `esc space I answer`) — Claude's run card, its grant card
+/// inside zellij's hints, the code in insert mode (its way in `F2 answer`) — Claude's run card, its grant card
 /// and the bring card (its answers in short words), each waiting, then focused by a press on its last answer; the grant
 /// card focused again with the mouse on `a` (#200's light).
 #[test]
@@ -1377,8 +1377,8 @@ fn snapshot_card_reading_bar() {
     s.frames_both("card_reading_bar_code");
 }
 
-/// The card in front says how many more wait and where (frictions15 #5) — one stacked here, one in a session
-/// behind — and the key that lists them.
+/// What waits behind the card in front is its stack's (frictions15 #5, polish landing 1) — one stacked here, one in a
+/// session behind, each its peek — no count on the card, none on the status line.
 #[test]
 fn snapshot_card_says_who_waits_behind_it() {
     let mut s = Shot::new(100, 30);
@@ -2746,8 +2746,7 @@ fn snapshot_session_end_keeps_its_notes() {
 /// #177's review: another session's asks alone are peeks as wide as the card the nearest stands for, by the card's own
 /// rule — a press on it brings that session to the front, its card focused at the stack's width, not a jump (they kept
 /// the chat's column while the card had its own); with the chat open, at 120 and 160 columns. Two cards wait there, the
-/// nearest's title long: its count and the line of what waits behind it are that session's — `1/2`, `1 more waits — 1
-/// here` — never this one's (`+2 elsewhere`, `2 in fix-login`), which would lay it wider (the review's round 2).
+/// nearest's title long: brought, the other is its peek (polish landing 1: no count on the card).
 #[test]
 fn the_peeks_alone_are_as_wide_as_the_card_they_bring() {
     for w in [120u16, 160] {
@@ -2773,16 +2772,19 @@ fn the_peeks_alone_are_as_wide_as_the_card_they_bring() {
         let before = cells(&s.frame(), s.w, s.h).screen().contents();
         let peek = s.ed.screen.offer_buttons.iter().find(|b| b.3 == '1').copied();
         let (_, px, end, _) = peek.unwrap_or_else(|| panic!("{w}: the peek\n{before}"));
-        let stack = end - px + 2 * super::PEEK_INSET;
         s.ed.offer_peek(1);
         let after = cells(&s.frame(), s.w, s.h).screen().contents();
         assert_eq!(s.ed.workspace.id, id, "{w}: that session in front");
         assert!(
-            after.contains("every pane on it") && after.contains("1/2"),
-            "{w}: the nearest, counted there\n{after}"
+            after.contains("every pane on it") && s.ed.screen.asks_drawn.len() == 2,
+            "{w}: the nearest, the other its peek\n{after}"
         );
-        let (_, _, cw, _) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{w}: its card\n{after}"));
-        assert_eq!(cw, stack, "{w}: the card at the stack's width\nbefore:\n{before}\nafter:\n{after}");
+        let (cx, _, cw, _) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{w}: its card\n{after}"));
+        // (the stack's corner where it was, and its peek — as wide as its title needs, polish landing 1 — never wider
+        // than the card it brings)
+        let said = format!("{w}: the card at the stack's corner\nbefore:\n{before}\nafter:\n{after}");
+        assert_eq!(cx + cw, end + super::PEEK_INSET, "{said}");
+        assert!(end - px <= cw, "{said}");
     }
 }
 
@@ -9081,11 +9083,14 @@ fn a_cards_title_is_whole_at_80_columns() {
     assert!(crate::tools::mcp(&mut s.ed, 0, "c1", &msg).is_none(), "it waits for the user");
     let screen = rows_of(&mut s, (0, 0, 80, 24)).join("\n");
     assert!(screen.contains(crate::tools::OUTSIDE_RUN_TITLE), "{screen}");
-    // (and with a second card waiting: its count shares the title's row — the card widens for both)
+    // (and with a second card waiting: its peek under it, the title still whole)
     let msg = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "run", "arguments": args}});
     assert!(crate::tools::mcp(&mut s.ed, 0, "c2", &msg).is_none(), "it waits for the user");
     let screen = rows_of(&mut s, (0, 0, 80, 24)).join("\n");
-    assert!(screen.contains(crate::tools::OUTSIDE_RUN_TITLE) && screen.contains("1/2"), "{screen}");
+    assert!(
+        screen.contains(crate::tools::OUTSIDE_RUN_TITLE) && s.ed.screen.asks_drawn.len() == 2,
+        "{screen}"
+    );
 }
 
 /// Only one row of the follow card's log fits (a short pane): its cut is still said — `…` in front of the

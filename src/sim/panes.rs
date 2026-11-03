@@ -161,11 +161,12 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
                 "a new run".into()
             }
         },
-        // (a card over it — its `n` the next key half the time)
+        // (a card over it — its `n` the next key half the time; tall half the time, reaching up to where the group floats)
         6 => {
+            let tall = (0..12).map(|i| format!("src/f{i}.rs not viewed.")).collect::<Vec<_>>().join("\n");
             let o = crate::offer::Offer::new(
                 "End the review?".into(),
-                "2 files not viewed.",
+                if sim.choices.weighted(&[1, 1]) == 0 { "2 files not viewed." } else { &tall },
                 "",
                 String::new(),
                 crate::offer::What::ReviewEnd {
@@ -193,6 +194,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
 fn held(ed: &Editor, world: &World, file: &std::path::Path, key: &str) -> Result<(), String> {
     record(ed, world, key);
     docked_held(ed)?;
+    fold_held(ed)?;
     let Some(kept) = crate::layouts::read(Some(file)).get(key).cloned() else { return Ok(()) };
     let asked = world.asked.borrow();
     let seqs: Vec<u64> = asked.iter().filter(|a| a.1 == kept).map(|a| a.0).collect();
@@ -205,6 +207,23 @@ fn held(ed: &Editor, world: &World, file: &std::path::Path, key: &str) -> Result
     match seqs.iter().find(|&&s| s >= read) {
         Some(&seq) => world.read.set(seq),
         None => return Err(format!("the file went back to layout {newest} after {read}")),
+    }
+    Ok(())
+}
+
+/// A card that came on its own never covers a floating pane you opened (polish landing 1): drawn whole by the last frame,
+/// unfocused and not yours, it meets no floating frame that frame drew — folded to its peeks there instead.
+fn fold_held(ed: &Editor) -> Result<(), String> {
+    let whole = (ed.screen.offer_buttons.iter()).any(|b| !b.3.is_ascii_digit() && b.3 != crate::mouse::WAY);
+    let came = ed.offers.first().is_some_and(|o| !o.yours) && !ed.card_has_keys();
+    let Some((x, y, w, h)) = ed.screen.offer_card.filter(|_| whole && came) else { return Ok(()) };
+    for (k, r) in ed.screen.floating.borrow().iter() {
+        if x < r.x + r.w && r.x < x + w && y < r.y + r.h && r.y < y + h {
+            return Err(format!(
+                "a card that came on its own at {:?} covers {k:?}'s frame {r:?}",
+                (x, y, w, h)
+            ));
+        }
     }
     Ok(())
 }

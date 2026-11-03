@@ -319,8 +319,7 @@ fn reviewing(name: &str, files: &[&str], risky: &[&str]) -> (Editor, PathBuf) {
 }
 
 /// Inside zellij, a card stepped aside while the review's rail has the keys (as a bring card's `h` leaves it —
-/// `codereview::aside_said`): `C-q`'s twin is the rail's way back, `esc`, then the inbox — and those keys give the
-/// card the keys again.
+/// `codereview::aside_said`): `C-q`'s twin, `F2`, gives the card the keys again from the rail.
 #[test]
 fn inside_zellij_an_aside_card_from_the_rail_is_the_inboxs() {
     let (mut ed, dir) = reviewing_texts("zellij-rail", &[("a.txt", "a\n", "b\n")], &[]);
@@ -341,11 +340,9 @@ fn inside_zellij_an_aside_card_from_the_rail_is_the_inboxs() {
     ));
     ed.offers[0].aside = true;
     frame(&mut ed);
-    assert_eq!(ed.key_said("C-q"), "esc space I");
-    for k in ["esc", "space", "I", "ret"] {
-        ed.handle_key(k.parse().unwrap());
-        frame(&mut ed);
-    }
+    assert_eq!(ed.key_said("C-q"), "F2");
+    ed.handle_key("F2".parse().unwrap());
+    frame(&mut ed);
     assert!(ed.card_has_keys(), "{:?} {:?}", ed.keys_to().region, ed.status);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -372,7 +369,7 @@ fn inside_zellij_or_not_a_brings_change_in_the_review_says_the_way_back_to_its_c
             size: None,
         };
         crate::codereview::held_go(&mut ed, 7, &[held]);
-        let key = if zellij { "space I" } else { "C-q" };
+        let key = if zellij { "F2" } else { "C-q" };
         let status = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         assert!(
             status.ends_with(&format!("space v h looks at it · {key} goes back to the card")),

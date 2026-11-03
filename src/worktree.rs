@@ -1228,8 +1228,6 @@ pub struct Shown {
     pub colour: u8,
     /// Whom its changes would conflict with (`overlap::others`): each one's name and colour — `≈ main`.
     pub overlap: Vec<(String, Option<u8>)>,
-    /// What of it waits for your answer (the inbox's): its cards, its edits (a review, a change set, a read).
-    pub waits: (usize, usize),
     /// Its Claude's last report line (`sessionpane::report`) — empty before an answer.
     pub report: String,
     /// How full its Claude's context is, in percent (None: not reported).
@@ -2321,12 +2319,6 @@ impl Editor {
     /// Each session as the list says it, in its order.
     pub(crate) fn session_shown(&self) -> Vec<Shown> {
         let now_ms = crate::usage::now_ms();
-        // (what waits for your answer, the inbox's: each session's cards and edits)
-        let inbox = self.inbox();
-        let waits = |id: WorkspaceId| {
-            let asks = inbox.iter().filter(|e| e.asks_answer() && e.session_id() == id);
-            asks.fold((0, 0), |(c, e), x| if x.card().is_some() { (c + 1, e) } else { (c, e + 1) })
-        };
         let context = |u: &crate::usage::Usage| match u.context() {
             Some((n, Some(w))) if w > 0 => Some(n * 100 / w),
             _ => None,
@@ -2357,7 +2349,6 @@ impl Editor {
                 at: crate::presence::at(self, l.id).unwrap_or_default(),
                 colour: l.claude.colour,
                 overlap: crate::overlap::others(self, l.id),
-                waits: waits(l.id),
                 report: crate::sessionpane::report(l.claude.chat.as_ref()),
                 context: context(&l.claude.usage),
                 children: crate::orchestra::children_cost(self, l.claude.id)

@@ -559,7 +559,7 @@ zellij's default normal mode takes `C-g` `C-q` `C-p` `C-n` `C-s` `C-t` `C-h` `C-
 | normal mode | `C-s` (`save_selection`) | none |
 | insert mode | `C-h` (`delete_char_backward`) | `backspace` |
 | insert mode | `C-s` (`commit_undo_checkpoint`) | none |
-| A card waiting | `C-q` | The way back to the code — `esc` from insert mode, a prompt, a picker, a panel, a view mode or a chat with nothing said yet · `esc esc` from the chat's input · `C-\ C-\` from the terminal's program — then `space I` (the inbox, `enter` goes to it and focuses it), for the card in front too. A turn that ended: the way back, then `space W` |
+| A card waiting | `C-q` | `F2`, one key from anywhere (`esc F2` from a picker, whose `C-q` is its list's): what `C-q` does — the card in front focused, else the one waiting longest, else the session whose turn ended |
 | The chat's input | `C-t` · `C-p` · `C-s` · `C-o` | The way back to the code (`esc esc`, `esc` with nothing said yet), then `:model` · `:chat-resume` · `:chat-screen` · `:chat-point` — in the input `:` is a character |
 | A list or output panel | `C-n` `C-p` · `C-b` | `j` `k` · `pageup` |
 | A picker | `C-n` `C-p` · `C-b` · `C-t` | `↓` `↑` · the wheel over the preview · none (the preview away) |

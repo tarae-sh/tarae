@@ -5631,8 +5631,8 @@ mod tests {
         assert_eq!(viewed_snapshot(&ed), json!([]));
     }
 
-    /// After a bring card's `h`, the status line says how back to the card: `C-q` — inside zellij its twin, the
-    /// inbox (`zellij.rs`).
+    /// After a bring card's `h`, the status line says how back to the card: `C-q` — inside zellij its twin, `F2`
+    /// (`zellij.rs`).
     #[test]
     fn aside_said_names_the_way_back_to_the_card() {
         for zellij in [false, true] {
@@ -5640,7 +5640,7 @@ mod tests {
             ed.zellij = zellij;
             ed.set_status("to the change");
             aside_said(&mut ed);
-            let key = if zellij { "space I" } else { "C-q" };
+            let key = if zellij { "F2" } else { "C-q" };
             let says = format!("to the change · {key} goes back to the card");
             assert_eq!(ed.status.as_ref().map(|s| s.0.as_str()), Some(says.as_str()));
         }

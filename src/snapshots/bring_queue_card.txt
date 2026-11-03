@@ -8,7 +8,7 @@
 05
 06
 07                       ╭─ sessions ── 4 sessions ────────────────────────────────────────╮
-08                       │  main                  1 card                                   │
+08                       │  main                                                           │
 09                       │  fix-login  bring 1st                                           │
 10                       │  docs                                                           │
 11                       │▎ parser     bring 2nd                                           │
@@ -70,7 +70,7 @@
 05
 06
 07                       ff TTTTTTTT ff d dddddddd fffffffffffffffffffffffffffffffffffffffff
-08                       f  BBBB                  w wwww                                   f
+08                       f  BBBB                                                           f
 09                       f             ddddd ddd                                           f
 10                       f                                                                 f
 11                       fa BBBBBB     ddddd ddd                                           f
@@ -94,4 +94,4 @@
 29  a TTTT   BBBB   a                                                                              ddddd dd   TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected
-fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  w=warning  B=bold
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold

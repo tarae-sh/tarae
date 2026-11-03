@@ -897,11 +897,11 @@ pub(crate) fn chat_view(ed: &mut Editor) {
     frame(ed);
 }
 
-/// Keys a driver sends: answers, commands, text, the prefixes, `C-q`, Esc, `S-tab` (the next pane from every pane
-/// where tarae has the keys — #199). (No Enter: in the chat it would start a claude.)
+/// Keys a driver sends: answers, commands, text, the prefixes, `C-q` and its twin `F2` (#291), Esc, `S-tab` (the next
+/// pane from every pane where tarae has the keys — #199). (No Enter: in the chat it would start a claude.)
 const PROBES: &[&str] = &[
     "y", "n", "a", "A", "v", "r", "j", "x", "i", "[", "3", " ", ":", "<C-q>", "<C-w>", "<esc>", "<C-d>",
-    "<S-tab>",
+    "<S-tab>", "<F2>",
 ];
 
 /// `tab`, `space n`'s line's own as it's `:`'s: routed as `keys_to` says in every scene, and walked for silence as the
@@ -1031,6 +1031,17 @@ fn the_routing_test_sees_each_case_broken() {
     let waiting: Vec<Scene> = SCENES.iter().filter(|s| s.0 == "a light card").copied().collect();
     assert_eq!(waiting.len(), 1);
     assert!(!mismatches(&waiting, takes_answers).is_empty(), "a card that waits took y, and the test passes");
+    // The way in's twin left out of the layers that take `C-q` (#291): `F2` routed as any other key — the test says so
+    let no_twin = |ed: &Editor| {
+        let mut k = ed.keys_to();
+        for l in &mut k.chain {
+            if let Filter::Only(keys) = &mut l.filter {
+                keys.retain(|k| *k != key("<F2>"));
+            }
+        }
+        k
+    };
+    assert!(!mismatches(&waiting, no_twin).is_empty(), "F2 isn't the way in, and the test passes");
 }
 
 /// The frame as text, as the user sees it.

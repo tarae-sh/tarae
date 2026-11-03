@@ -668,15 +668,14 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     send(&mut ed, StreamEv::Writing(crate::writing::Delta { call: "e1".into(), pieces, done: false }));
     let head = rows(&mut ed, 160, 40).into_iter().find(|r| r.contains("follow ─")).unwrap();
     assert!(head.contains("writing src/main.rs"), "{head}");
-    // Waiting on a card: `▲N waiting` says it, no cell beside it
+    // Waiting on a card: the card in sight says it — the line neither counts it nor marks it in the cell
     let mut ed = at_work();
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     card(&mut ed);
     following(&mut ed);
     let line = status(&mut ed, 80, 24);
-    // (the card in sight and the only one: the cell's `▲`; else the count's)
     assert!(!line.contains("asks to run"), "{line}");
-    assert_eq!(line.matches('▲').count(), 1, "once: {line}");
+    assert_eq!(line.matches('▲').count(), 0, "the card's: {line}");
     // A head with no room for the step beside its names (paused, on a narrow card): the line says it whole
     let mut ed = at_work();
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));

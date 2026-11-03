@@ -782,15 +782,15 @@ fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     let _ = sent();
     // `y`: the next run's, nothing sent for the run that's over, Claude told
     settled(&mut ed);
-    // (over a chat 48 wide, another card behind it: its narrowest line — its way in, what lasts in words, the key that
-    // lists what waits — is wider than the chat, so the card grows left to it; no key in its body)
-    let line = "╰─ C-q answer · y · a chat · s session · A always · n · space I list ─╯";
+    // (over a chat 48 wide, another card behind it: its line — its way in, what lasts in words — is wider than the
+    // chat, so the card grows left to it; no key in its body)
+    let line = "╰─ C-q answer · y once · a chat · s session · A always · n ──╯";
     assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line));
     let (bytes, w, h) = ed.last_frame.clone().unwrap();
     let mut p = vt100::Parser::new(h, w, 0);
     p.process(&bytes);
     let s = p.screen().contents();
-    assert!(s.contains("│ 1 more waits — 1 here ") && !s.contains("lists them"), "{s}");
+    assert!(ed.screen.asks_drawn.len() == 2 && !s.contains("more wait"), "the other its peek: {s}");
     key(&mut ed, 'y');
     assert_eq!(hosts_cards(&ed.offers).iter().map(|a| a.run).collect::<Vec<_>>(), [other]);
     let c = ed.workspace.claude.chat.as_ref().unwrap();

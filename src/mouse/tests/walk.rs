@@ -67,6 +67,18 @@ const MOUSE_SCENES: &[Scene] = &[
     }),
     ("the command line, its completions", |ed| feed(ed, &[":", "w"])),
     ("the session list, floating", |ed| feed(ed, &[" ", "W"])),
+    (FOLDED, |ed| {
+        feed(ed, &[" ", "W"]);
+        let body: Vec<String> = (0..30).map(|i| format!("line {i} of what it asks")).collect();
+        let what = crate::offer::What::ReviewAtEnd;
+        ed.push_offer(crate::offer::Offer::new(
+            "A long card".into(),
+            &body.join("\n"),
+            "",
+            String::new(),
+            what,
+        ));
+    }),
     ("the chat beside a long file", |ed| {
         long_text(ed);
         chat(ed, "a draft");
@@ -903,6 +915,30 @@ fn send(ed: &mut Editor, kind: K, x: usize, y: usize, scene: &str, walk: &mut Wa
     }
 }
 
+/// A card that came on its own over the session list you opened: folded to its peek (polish landing 1).
+const FOLDED: &str = "a card come on its own, folded off the session list";
+
+/// The walk meets the folded card's peek as a button: a press there is its way in (`mouse::WAY`), the card standing
+/// whole with the keys.
+#[test]
+fn the_walk_meets_a_folded_cards_peek() {
+    let setup = MOUSE_SCENES.iter().find(|s| s.0 == FOLDED).expect("its scene").1;
+    let mut ed = fresh(setup);
+    let text = shown(&mut ed);
+    assert!(ed.screen.offer_buttons.iter().all(|b| b.3 != 'y'), "folded, no answer drawn:\n{text}");
+    let (targets, _) = targets(&ed, &text);
+    let way = Under { surface: Surface::Card, part: Part::Answer(crate::mouse::WAY) };
+    let &((x, y), _) =
+        targets.iter().find(|t| t.1 == way).unwrap_or_else(|| panic!("its peek a button:\n{text}"));
+    assert!(text.lines().nth(y).is_some_and(|r| r.contains("A long card")), "on its peek's row {y}:\n{text}");
+    for kind in [K::Down, K::Up] {
+        ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+    }
+    frame(&mut ed);
+    assert!(ed.card_has_keys(), "the press its way in");
+    assert!(ed.screen.offer_buttons.iter().any(|b| b.3 == 'y'), "whole:\n{}", shown(&mut ed));
+}
+
 fn fresh(setup: fn(&mut Editor)) -> Editor {
     let mut ed = editor();
     setup(&mut ed);
@@ -925,8 +961,8 @@ struct Before {
     pending: bool,
     /// On the floating pane `C-w m` moves (`STATES`): a press says how it moves.
     moving_here: bool,
-    /// On a card's answer that lights nothing under the mouse (#200): a peek's row, its "more lines" row (off its bottom
-    /// line), an answer held until its text is read whole (`Editor::offer_press_held`).
+    /// On a card's answer that lights nothing under the mouse (#200): its "more lines" row (off its bottom line), an
+    /// answer held until its text is read whole (`Editor::offer_press_held`) — a peek lights, a button (polish landing 1).
     unlit: bool,
 }
 
@@ -934,7 +970,11 @@ struct Before {
 fn unlit(ed: &Editor, u: Under, y: usize) -> bool {
     let Part::Answer(k) = u.part else { return false };
     let bottom = ed.screen.offer_card.is_some_and(|c| y + 1 == c.1 + c.3);
-    k.is_ascii_digit() || !bottom || ed.offer_press_held(k)
+    // (a peek lights as every button: its digit, or a folded card's own peek — its way in a button of its row,
+    // `OfferCard::folded`; a bottom line's way in is `Screen.offer_way`, never one of its buttons)
+    let peek = k.is_ascii_digit()
+        || k == crate::mouse::WAY && ed.screen.offer_buttons.iter().any(|b| b.0 == y && b.3 == k);
+    !peek && (!bottom || ed.offer_press_held(k))
 }
 
 fn judge(
@@ -991,9 +1031,7 @@ fn state_expect(u: Under, act: Act, before: Before) -> Option<Expect> {
         return Some(STATES[1].2);
     }
     if before.unlit && act == Act::Hover {
-        return Some(Expect::Not(
-            "a peek, its more lines' row or an answer held until it's read: nothing lit",
-        ));
+        return Some(Expect::Not("its more lines' row or an answer held until it's read: nothing lit"));
     }
     if !before.moving_here {
         return None;

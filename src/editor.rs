@@ -557,6 +557,9 @@ pub struct Screen {
     pub offer_way: Option<(usize, usize, usize)>,
     /// The front card as drawn, its back cards' rows too (x, y, width, height) — the UI state's `at`.
     pub offer_card: Option<(usize, usize, usize, usize)>,
+    /// The cards this frame draws, each whole or as its peek (the front's id first; any session's): what waits in
+    /// sight — the status line's `▲N waiting` counts only the rest (polish landing 1).
+    pub asks_drawn: Vec<u64>,
     /// How many of the front card's lines its drawing left out (`↓ 2 more lines`; 0: drawn whole) — None
     /// when no card is drawn, or it stepped aside to a bar while its text is read (the UI state's `cut`).
     pub offer_cut: Option<usize>,
@@ -5647,6 +5650,8 @@ fn card_reads(key: Key, pending: &[Key]) -> bool {
 
 impl Editor {
     pub fn handle_key(&mut self, key: Key) {
+        // (`C-q`'s twin, the way in from anywhere, is `C-q` from here on — #291)
+        let key = crate::inbox::as_way_in(key);
         // (a key between: a press on a card after it is a press of its own)
         self.card_pressed = None;
         let begun = crate::document::input_begin();
@@ -10128,8 +10133,8 @@ mod tests {
         feed(&mut ed, "<space>lmake it<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let screen = draw(&mut ed);
-        // (the card's title says it waits; its run is the knot in hand)
-        assert!(screen.contains(" waiting ") && !screen.contains("exploring"), "{screen}");
+        // (the follow card's head says it waits; its run is the knot in hand)
+        assert!(screen.contains("▲ waits") && !screen.contains("exploring"), "{screen}");
         ed.offer_accept();
         settle_until(&mut ed, |ed| ed.workspace.task_run.is_some());
         let screen = draw(&mut ed);
@@ -14927,7 +14932,7 @@ mod tests {
         let r = rows(&ed);
         // (the checkout tarae started in by its branch, as the sessions are)
         assert_eq!(r.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["main", "feat", "other"]);
-        assert!(r[1].1.starts_with("▲ waits  1 card"), "{r:?}");
+        assert!(r[1].1.starts_with("▲ waits  ↑1"), "no count of cards: {r:?}");
         assert!(r[1].1.contains("↑1  1 changed"), "{r:?}");
         // (each row's name in its session's colour, what needs you in warning)
         let row = &ed.sessions_rows()[1];
@@ -15007,10 +15012,11 @@ mod tests {
         let tabs = tabs.unwrap_or_else(|| panic!("the tabs: {r:#?}"));
         assert!(tabs == 0 && !r[0].contains("claude"), "the chat's top line: {r:#?}");
         // Narrow: the states fold to what needs you, then the sessions into `+N` — names whole, the front and the one
-        // waiting always in, the order kept; `+` gone while `+N` shows. How many wait is the status line's
+        // waiting always in, the order kept; `+` gone while `+N` shows. What waits is its peek's, the status line
+        // saying the way in
         let r = rows(&mut ed, 100);
         assert!(r[0].contains("─ main · parser ▲ · +1 ─"), "{}", r[0]);
-        assert!(r[23].contains("● normal   ▲1 waiting"), "{}", r[23]);
+        assert!(r[23].contains("● normal   C-q answer"), "{}", r[23]);
         // A click on a tab: that session, whole
         let r = rows(&mut ed, 200);
         let x = r[tabs].find("fix-login").map(|b| r[tabs][..b].chars().count()).unwrap();
@@ -15025,7 +15031,7 @@ mod tests {
         // No chat there: the chip, then the list from it
         let r = rows(&mut ed, 120);
         let status = r.iter().position(|r| r.contains("● normal")).expect("the status line");
-        assert!(r[status].contains("● normal   fix-login-everywhere ▲1 waiting"), "{}", r[status]);
+        assert!(r[status].contains("● normal   fix-login-everywhere C-q answer"), "{}", r[status]);
         let x = r[status].find("fix-login").map(|b| r[status][..b].chars().count()).unwrap();
         ed.handle_mouse(Mouse {
             kind: MouseKind::Down,
@@ -19116,7 +19122,7 @@ mod tests {
     }
 
     /// A card that came on its own waits unfocused (P3 §3.8): every key is where the keys are — `y` the code's
-    /// yank, never its yes — the status line says `▲1 waiting · C-q` and the state names it; `C-q` focuses it,
+    /// yank, never its yes — its bottom line says `C-q answer` and the state names it; `C-q` focuses it,
     /// `esc` gives the keys back with it still up. What your own key asked for is focused as it comes; answered, the
     /// card that came on its own behind it waits unfocused — while one focused by `C-q` hands the keys on to the next
     /// (#101: going through them).
@@ -19152,7 +19158,10 @@ mod tests {
         feed(&mut ed, "w");
         ed.push_offer(card("Trust this project's settings?"));
         assert!(!ed.card_has_keys(), "it came on its own: it waits");
-        assert!(status(&mut ed).contains("▲1 waiting · C-q"), "said: {}", status(&mut ed));
+        // (its bottom line says the way in; the status line counts nothing it draws)
+        let said = status(&mut ed);
+        assert!(crate::term::card_line(&ed).is_some_and(|l| l.starts_with("╰─ C-q answer")), "its way in");
+        assert!(!said.contains("waiting"), "said: {said}");
         let to = ed.keys_to();
         assert_eq!((to.route(Key::plain(Code::Char('y'))), to.waiting.is_some()), (Region::Code, true));
         feed(&mut ed, "bey");

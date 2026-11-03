@@ -155,32 +155,92 @@ fn the_inbox_is_every_sessions_waiting_things_oldest_first() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// frictions15 #5: the card in front holds `C-q` (it takes this session's oldest first, #198), so what waits
-/// behind it would be a silent queue — the card says how many more wait and where (here, or which session), and
-/// its bottom line the key that lists them (the keymap's, never a hardcoded one). Alone, it says nothing of the kind.
+/// frictions15 #5, polish landing 1: what waits behind the card in front is never a silent queue, and its home is the
+/// stack — a peek each under the card (this session's, then another session's, named) — so the card says no count and
+/// its bottom line no key that lists them; the status line counts only what nothing draws: all in sight, none; a
+/// fifth past the stack's room, `▲1 waiting` — and a click on that count lists them.
 #[test]
-fn the_front_card_says_how_many_wait_behind_it_and_where() {
+fn the_stack_says_what_waits_and_the_status_line_counts_the_rest() {
     let (mut ed, dir, back, _) = three("behind");
     up(&mut ed, claudes(1, 60));
-    let alone = screen(&mut ed, 120, 30).join("\n");
-    assert!(!alone.contains("more wait"), "{alone}");
     up(&mut ed, claudes(2, 30));
     park(&mut ed, back, claudes(3, 10));
-    let rows = screen(&mut ed, 120, 30).join("\n");
-    assert!(rows.contains("2 more wait — 1 here, 1 in back") && !rows.contains("lists them"), "{rows}");
-    let line = "╰─ C-q answer · y once · a chat · n no · space I list ─╯";
-    assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "its bottom line's last pair: {rows}");
-    // Narrow: the answers' words give way first, the key that lists them never — past that the card grows left for
-    // its line; no key in its body, and the way in stays first (a key typed now isn't an answer)
-    let narrow = "╰─ C-q answer · y · a chat · n · space I list ─╯";
-    for w in [80, 60] {
-        let rows = screen(&mut ed, w, 30).join("\n");
-        assert!(
-            rows.contains("│ 2 more wait — 1 here, 1 in back ") && !rows.contains("lists them"),
-            "{w}: {rows}"
-        );
-        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(narrow), "{w}: {rows}");
+    let rows = screen(&mut ed, 120, 30);
+    let all = rows.join("\n");
+    assert!(!all.contains("more wait") && !all.contains("elsewhere"), "no count on the card: {all}");
+    assert_eq!(ed.screen.asks_drawn.len(), 3, "the card and its two peeks: {all}");
+    assert!(all.contains("back asks · Claude asks 3"), "another session's peek, named: {all}");
+    assert!(!rows[29].contains("waiting"), "all in sight, none counted: {}", rows[29]);
+    let line = "╰─ C-q answer · y Once · a This chat · n No ─╯";
+    assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "no key that lists them: {all}");
+    // A fifth: past the stack's room (the card and three peeks), counted — the way in staying the card's
+    up(&mut ed, claudes(4, 5));
+    up(&mut ed, claudes(5, 4));
+    let rows = screen(&mut ed, 120, 30);
+    assert_eq!(ed.screen.asks_drawn.len(), 4, "the stack's room");
+    assert!(rows[29].contains("▲1 waiting") && !rows[29].contains("C-q"), "{}", rows[29]);
+    // …and a click on the count lists every one
+    let x = rows[29].find("▲1 waiting").map(|b| rows[29][..b].chars().count()).expect("the count");
+    let click = crate::event::Mouse {
+        kind: crate::event::MouseKind::Down,
+        x: x as u16,
+        y: 29,
+        alt: false,
+        ctrl: false,
+    };
+    ed.handle_mouse(click);
+    let p = ed.picker.as_ref().expect("the inbox");
+    assert_eq!((p.title.as_str(), p.items().len()), (super::INBOX, 5));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A card of Claude's with a long title (`to run what it wrote — outside the sandbox`), `ago` seconds ago.
+fn long(n: u64, ago: u64) -> Offer {
+    let mut o = claudes(n, ago);
+    o.title = format!("Claude wants to run what it wrote {n} — outside the sandbox");
+    o
+}
+
+/// The polish landing's peeks (the user, 2026-11-03, on f237-five at 200: `docs asks · … outside the …` cut with half
+/// the screen free): a peek takes its title's width, up to the width its own card takes whole — never held to the
+/// stair behind a narrower card while the screen has room. Alone (other sessions' only) and behind a short card alike
+/// they read whole, their right ends on the stair; on a narrow screen a title wider than its own card is cut there.
+#[test]
+fn a_peek_is_as_wide_as_its_title_up_to_its_own_cards_width() {
+    let (mut ed, dir, back, third) = three("peek-width");
+    park(&mut ed, back, long(2, 60));
+    park(&mut ed, third, long(3, 30));
+    let peek =
+        |rows: &[String], who: &str| rows.iter().find(|r| r.contains(who)).cloned().unwrap_or_default();
+    let rows = screen(&mut ed, 200, 40);
+    for (who, n) in [("back asks", 2), ("third asks", 3)] {
+        let whole = format!("{who} · Claude wants to run what it wrote {n} — outside the sandbox");
+        assert!(peek(&rows, who).contains(&whole), "alone, whole: {}", rows.join("\n"));
     }
+    // Behind a card of this session's narrower than their titles: wider than the stair, the right ends on it
+    up(&mut ed, claudes(1, 90));
+    let rows = screen(&mut ed, 200, 40);
+    let (b, t) = (peek(&rows, "back asks"), peek(&rows, "third asks"));
+    assert!(b.contains("what it wrote 2 — outside the sandbox"), "behind, whole: {}", rows.join("\n"));
+    assert!(t.contains("what it wrote 3 — outside the sandbox"), "behind, whole: {}", rows.join("\n"));
+    let card = rows.iter().find(|r| r.contains("Claude asks 1")).expect("the card's frame");
+    let card_left = card.chars().position(|c| c == '╭').expect("its corner");
+    let back_left = b.chars().position(|c| c == '▎').expect("its bar");
+    assert!(back_left < card_left, "wider than the card in front: {}", rows.join("\n"));
+    // (its right end as the mouse finds it, `PEEK_INSET` in from the card's)
+    let y = rows.iter().position(|r| r.contains("back asks")).unwrap();
+    let to = ed.screen.elements.borrow().iter().find(|e| e.y == y).map(|e| e.to).expect("the peek, a button");
+    let card_right = card.chars().position(|c| c == '╮').expect("its corner") + 1;
+    assert_eq!(card_right - to, 2, "its right end on the stair: {}", rows.join("\n"));
+    // Narrow: a title wider than its own card is cut at that card's width, never past the screen's left
+    ed.offers.clear();
+    session(&mut ed, back).parked[0].title = format!("Claude wants to run {}", "a long line ".repeat(10));
+    let rows = screen(&mut ed, 80, 24);
+    let b = peek(&rows, "back asks");
+    assert!(b.trim_end().ends_with('…'), "cut: {b:?}");
+    let y = rows.iter().position(|r| r.contains("back asks")).unwrap();
+    let from = ed.screen.elements.borrow().iter().find(|e| e.y == y).map(|e| e.from).expect("the peek");
+    assert!(from >= 1, "a cell of air at the screen's left: {b:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -196,9 +256,9 @@ fn c_q_goes_to_the_oldest_in_any_session() {
     // (#94: tarae's own card, parked in a session whose turn ended behind)
     park(&mut ed, third, tarae(30));
     session(&mut ed, third).claude.turn_end = Some((Instant::now(), Ok(())));
-    // The status line counts all of them, every session's
+    // The status line counts none: both in sight as peeks, its way in said once
     let rows = screen(&mut ed, 160, 30);
-    assert!(rows[29].contains("▲2 waiting"), "{}", rows[29]);
+    assert!(rows[29].contains("C-q answer") && !rows[29].contains("waiting"), "{}", rows[29]);
     // C-q: to back's (the oldest), its card up
     feed(&mut ed, "<C-q>");
     // (front's comes meanwhile, the newest: it waits behind)
@@ -300,15 +360,15 @@ fn the_order_is_by_each_ones_wait_on_its_own_clock() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Inside zellij `C-q` is zellij's (uxaudit 7): the code's twin, `space I` `enter`, reaches a card waiting in a
-/// session behind as `C-q` does, and the card takes the keys.
+/// Inside zellij `C-q` is zellij's (uxaudit 7): its twin, `F2` (#291), reaches a card waiting in a session behind as
+/// `C-q` does, and the card takes the keys.
 #[test]
-fn inside_zellij_space_i_enter_reaches_the_card_as_c_q_does() {
+fn inside_zellij_f2_reaches_the_card_as_c_q_does() {
     let (mut ed, dir, back, _) = three("zellij");
     ed.zellij = true;
     park(&mut ed, back, claudes(1, 20));
-    assert_eq!(ed.key_said("C-q"), "space I");
-    feed(&mut ed, "<space>I<ret>");
+    assert_eq!(ed.key_said("C-q"), "F2");
+    feed(&mut ed, "<F2>");
     assert_eq!(ed.workspace.id, back, "went to the card's session");
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 1"));
     feed(&mut ed, "n");
@@ -316,9 +376,8 @@ fn inside_zellij_space_i_enter_reaches_the_card_as_c_q_does() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Inside zellij, `C-q`'s twin is where it goes: a card behind is the inbox's even from the chat (its way back to
-/// the code, then `space I`) — never the way back alone, which reaches only a card in front — and a turn that
-/// ended, with nothing waiting, the session list's.
+/// Inside zellij, `C-q`'s twin goes where it goes: a card behind, from the chat too (one key, nothing typed), and a
+/// turn that ended, with nothing waiting, its session.
 #[test]
 fn inside_zellij_c_qs_twin_reaches_what_c_q_goes_to() {
     let (mut ed, dir, back, third) = three("zellij-twin");
@@ -329,26 +388,23 @@ fn inside_zellij_c_qs_twin_reaches_what_c_q_goes_to() {
     ed.workspace.claude.chat = Some(c);
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     park(&mut ed, back, claudes(1, 20));
-    assert_eq!(ed.key_said("C-q"), "esc esc space I");
+    assert_eq!(ed.key_said("C-q"), "F2");
     screen(&mut ed, 160, 30);
-    feed(&mut ed, "<esc>");
-    screen(&mut ed, 160, 30);
-    feed(&mut ed, "<esc><space>I<ret>");
+    feed(&mut ed, "<F2>");
     assert_eq!(ed.workspace.id, back, "went to the card's session");
     feed(&mut ed, "n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());
-    // Nothing waits, third's turn ended: the session list
+    // Nothing waits, third's turn ended: there
     session(&mut ed, third).claude.turn_end = Some((Instant::now() - Duration::from_secs(30), Ok(())));
     assert_eq!(ed.next_up(), super::Next::Done(third));
-    assert_eq!(ed.key_said("C-q"), "space W");
-    assert_eq!(ed.c_q_place(crate::zellij::Reach::Sessions), "space W");
-    feed(&mut ed, "<space>W");
-    assert!(ed.sessions_list_keys(), "the session list");
+    assert_eq!(ed.key_said("C-q"), "F2");
+    feed(&mut ed, "<F2>");
+    assert_eq!(ed.workspace.id, third, "went to the session whose turn ended");
     std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Leaving a session whose card waits, its toast says how to get back to it: `C-q goes there` — inside zellij
-/// `space I lists it` (the card is the inbox's from here, not the way back).
+/// `F2 goes there`, one key from wherever the toast is read.
 #[test]
 fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
     // (inside zellij by its setting, auto and off — and outside, on)
@@ -357,8 +413,7 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
         let (mut ed, dir, back, _) = three(&format!("zellij-left-{zellij}-{setting}"));
         ed.zellij = zellij;
         ed.config.zellij_hints = setting.into();
-        // (the session switched to has its chat holding the keys: a way back made into the toast would say
-        // `esc esc space I` — read later, from anywhere, the toast names only the inbox)
+        // (the session switched to has its chat holding the keys: the toast is read later, from anywhere)
         let mut c = crate::chat::Chat::new();
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "hi", ""));
         session(&mut ed, back).claude.chat = Some(c);
@@ -366,7 +421,7 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
         up(&mut ed, claudes(1, 20));
         assert!(ed.workspace_switch(back).is_in());
         let says = if twins {
-            "front · waits for you — space I lists it"
+            "front · waits for you — F2 goes there"
         } else {
             "front · waits for you — C-q goes there"
         };
@@ -376,20 +431,17 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
     }
 }
 
-/// A panel holding the keys (the side panel): `esc` back to the code first, then `space I` — a bare `space I`
-/// there could be the panel's own keys.
+/// A panel holding the keys (the side panel): the twin is one key there too, never the panel's.
 #[test]
-fn inside_zellij_a_panels_twin_of_c_q_goes_back_first() {
+fn inside_zellij_a_panels_twin_of_c_q_is_one_key() {
     let (mut ed, dir, back, _) = three("zellij-panel");
     ed.zellij = true;
     // (`space e` shows the files panel and gives it the keys)
     feed(&mut ed, "<space>e");
     assert!(matches!(ed.keys_to().region, crate::uistate::Region::Side(_)), "{:?}", ed.keys_to().region);
     park(&mut ed, back, claudes(1, 20));
-    assert_eq!(ed.key_said("C-q"), "esc space I");
-    feed(&mut ed, "<esc>");
-    assert!(matches!(ed.keys_to().region, crate::uistate::Region::Code), "esc: the code");
-    feed(&mut ed, "<space>I<ret>");
+    assert_eq!(ed.key_said("C-q"), "F2");
+    feed(&mut ed, "<F2>");
     assert_eq!(ed.workspace.id, back, "went to the card's session");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -619,25 +671,16 @@ fn named_row(vt: &vt100::Parser, name: &str, asks: &str) -> (String, Vec<vt100::
     (rows[y].clone(), (0..name.len()).map(at).collect(), [at(name.len() + 1), at(name.len() + 3)])
 }
 
-/// The list: `space I` (or a click on the status line's count) — a row each, its session named, what it
-/// asks, its kind and how long it has waited, the oldest in hand. `enter` goes to it — its session in front,
+/// The list: `space I` (or a click on the status line's count, where it counts any) — a row each, its session named,
+/// what it asks, its kind and how long it has waited, the oldest in hand. `enter` goes to it — its session in front,
 /// its card up with the keys — and it's answered there. Nothing waiting: said, no list.
 #[test]
 fn the_list_goes_to_the_one_picked_and_its_card_takes_the_keys() {
     let (mut ed, dir, back, third) = three("list");
     park(&mut ed, back, claudes(1, 60));
     park(&mut ed, third, tarae(400));
-    // A click on the count opens it
-    let rows = screen(&mut ed, 160, 30);
-    let x = rows[29].find("▲2 waiting").map(|b| rows[29][..b].chars().count()).expect("the count");
-    let click = crate::event::Mouse {
-        kind: crate::event::MouseKind::Down,
-        x: x as u16,
-        y: 29,
-        alt: false,
-        ctrl: false,
-    };
-    ed.handle_mouse(click);
+    screen(&mut ed, 160, 30);
+    feed(&mut ed, "<space>I");
     let p = ed.picker.as_ref().expect("the inbox");
     assert_eq!(p.title, super::INBOX);
     let labels: Vec<&str> = p.items().iter().map(|i| i.label.as_str()).collect();

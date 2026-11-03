@@ -1592,7 +1592,8 @@ fn a_watcher_hears_what_changes() {
 
 /// A card that comes on its own waits to be focused (P3 §3.8), and a driver reads it before it sends:
 /// `keys.waiting` names it and the card `waits: focus`; a `y` sent meanwhile is the code's (a yank), the card stays
-/// up, the status line says `▲1 waiting · C-q`; `C-q`, and the next state has the keys the card's. The card is the
+/// up, its bottom line says `C-q answer` (the status line counts nothing it draws); `C-q`, and the next state has the
+/// keys the card's. The card is the
 /// project's trust, asked as a `.tarae.toml` written mid-session is read — no key asked for it.
 #[test]
 fn a_card_that_comes_on_its_own_waits_and_the_state_says_so() {
@@ -1619,13 +1620,15 @@ fn a_card_that_comes_on_its_own_waits_and_the_state_says_so() {
     let s = t.state_json(input + 1);
     assert!(s["cards"].as_array().is_some_and(|c| c.iter().any(|c| c["id"] == id.as_str())), "still up");
     assert_eq!(s["keys"]["waiting"], id.as_str(), "still waiting");
-    t.wait_for("the status line says it waits", |s| s.status().contains("▲1 waiting · C-q"));
+    t.wait_for("its bottom line says the way in", |s| {
+        s.contains("╰─ C-q answer") && !s.status().contains("waiting")
+    });
     // `C-q`: the keys the card's, nothing waits
     t.send("\x11");
     let s = t.state_json(input + 2);
     assert_eq!(s["keys"]["to"], id.as_str(), "{s}");
     assert!(s["keys"]["waiting"].is_null() && s["cards"][0]["waits"].is_null(), "{s}");
-    t.wait_for("the status line says the card has them", |s| !s.status().contains("waiting"));
+    t.wait_for("the card's line says it has them", |s| !s.contains("╰─ C-q answer"));
 }
 
 /// The card in front that `pick` matches, focused: `C-q` unless it has the keys already (your own key's card is

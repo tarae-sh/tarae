@@ -820,10 +820,8 @@ pub(crate) mod tests {
         (
             "A card waiting",
             "`C-q`",
-            "The way back to the code — `esc` from insert mode, a prompt, a picker, a panel, a view mode or a chat \
-             with nothing said yet · `esc esc` from the chat's input · `C-\\ C-\\` from the terminal's program — then \
-             `space I` (the inbox, `enter` goes to it and focuses it), for the card in front too. A turn that ended: \
-             the way back, then `space W`",
+            "`F2`, one key from anywhere (`esc F2` from a picker, whose `C-q` is its list's): what `C-q` does — the \
+             card in front focused, else the one waiting longest, else the session whose turn ended",
         ),
         (
             "The chat's input",

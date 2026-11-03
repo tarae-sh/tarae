@@ -25,7 +25,6 @@ fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
         at: "src/a.rs:12 · writing".into(),
         colour: id.n as u8,
         overlap: vec![("main".into(), Some(0))],
-        waits: (2, 1),
         report: "I will switch it to the entry API so a repeat keeps the first strand".into(),
         context: Some(84),
         children: None,
@@ -42,14 +41,14 @@ fn cols(laid: &(usize, Vec<(Col, usize)>)) -> Vec<Col> {
     laid.1.iter().map(|c| c.0).collect()
 }
 
-/// The manager's row (P3 step 7, §3.6): its state in the strip's words and inks, what waits for you counted, whom it
-/// overlaps (each name its colour), `↓N` behind, its context (warning past 80 %), its last report line, then the rest
-/// the list always said — empty cells left out.
+/// The manager's row (P3 step 7, §3.6): its state in the strip's words and inks — who waits, never what (polish landing
+/// 1: no count of its cards, the stack's peeks say them) —, whom it overlaps (each name its colour), `↓N` behind, its
+/// context (warning past 80 %), its last report line, then the rest the list always said — empty cells left out.
 #[test]
 fn a_row_says_what_the_manager_needs() {
     let r = row(&full(WorkspaceId::here(1), "fix", Doing::Waiting));
     assert_eq!(r.cell(Col::State), [("▲ waits".to_string(), Ink::Warn)]);
-    assert_eq!(r.text(Col::Waits), "2 cards · 1 edit");
+    assert!(!r.cells.iter().any(|c| c.1.iter().any(|p| p.0.contains("card"))), "no count of cards");
     assert_eq!(r.cell(Col::Overlap), [("≈ ".into(), Ink::Warn), ("main".into(), Ink::Participant(0))]);
     assert_eq!((r.text(Col::Behind), r.text(Col::Ahead)), ("↓3".into(), "↑2".into()));
     assert_eq!(r.cell(Col::Context), [("ctx ".into(), Ink::Faint), ("84%".into(), Ink::Warn)]);
@@ -65,16 +64,9 @@ fn a_row_says_what_the_manager_needs() {
             [(said.to_string(), ink)]
         );
     }
-    let idle = Shown {
-        waits: (0, 0),
-        overlap: Vec::new(),
-        context: None,
-        ..full(WorkspaceId::HOME, "main", Doing::Idle)
-    };
+    let idle = Shown { overlap: Vec::new(), context: None, ..full(WorkspaceId::HOME, "main", Doing::Idle) };
     let r = row(&idle);
-    assert!(
-        r.cell(Col::State).is_empty() && r.cell(Col::Waits).is_empty() && r.cell(Col::Overlap).is_empty()
-    );
+    assert!(r.cell(Col::State).is_empty() && r.cell(Col::Overlap).is_empty());
     assert!(r.front, "the front's name bold");
     // (a rebase and the bring queue before the state)
     let rebasing =
@@ -104,8 +96,8 @@ fn a_row_says_what_the_manager_needs() {
 }
 
 /// The list's width at 160 (the frame 96 wide) and at 80 (48): whole columns fold in `FOLDS`' order — the rest first,
-/// then the report (cut to what's there before it goes), the context, behind, the overlaps; what waits for you and the
-/// state last, the name never. Every narrower room shows a subset of the wider's.
+/// then the report (cut to what's there before it goes), the context, behind, the overlaps; the state last, the name
+/// never. Every narrower room shows a subset of the wider's.
 #[test]
 fn the_row_folds_at_80_in_its_order() {
     let rows = [
@@ -119,9 +111,7 @@ fn the_row_folds_at_80_in_its_order() {
     let at160 = lay(&rows, room(96));
     let shown = cols(&at160);
     assert!(
-        [Col::State, Col::Waits, Col::Overlap, Col::Behind, Col::Context, Col::Report]
-            .iter()
-            .all(|c| shown.contains(c)),
+        [Col::State, Col::Overlap, Col::Behind, Col::Context, Col::Report].iter().all(|c| shown.contains(c)),
         "at 160 the manager's columns all: {shown:?}"
     );
     // (the cost after the report: a parent's children's total stays in sight while the report is cut — user, 2026-10-29)
@@ -130,10 +120,7 @@ fn the_row_folds_at_80_in_its_order() {
     assert!(report_gone.is_some_and(|c| c.contains(&Col::Cost)), "the report goes before the cost");
     let at80 = cols(&lay(&rows, room(48)));
     assert!(!at80.contains(&Col::Report), "at 80 the report first: {at80:?}");
-    assert!(
-        at80.contains(&Col::State) && at80.contains(&Col::Waits),
-        "what waits and the state stay: {at80:?}"
-    );
+    assert!(at80.contains(&Col::State), "the state stays: {at80:?}");
     // (from wide to nothing, one room at a time: what goes, goes in `FOLDS`' order, and never comes back)
     let mut gone: Vec<Col> = Vec::new();
     let mut was = cols(&wide);
@@ -425,8 +412,8 @@ fn a_docked_session_lists_side_is_kept_across_restart() {
 }
 
 /// A card that comes while the list has the keys waits to be focused (P3 §3.8, the rule 7a's stand-in folded into):
-/// its letters stay the list's — `n` its search, never the card's no; `v` the list's —; the status line says the
-/// card waits and `C-q` reaches it; there `n` answers it.
+/// its letters stay the list's — `n` its search, never the card's no; `v` the list's —; its bottom line says `C-q`
+/// reaches it (the status line counting nothing it draws); there `n` answers it.
 #[test]
 fn a_card_waits_while_the_session_list_has_the_keys() {
     let dir = crate::scratch::Scratch::new("sessionpane");
@@ -447,7 +434,8 @@ fn a_card_waits_while_the_session_list_has_the_keys() {
     let state = ed.ui_state().json();
     assert_eq!(state["cards"][0]["waits"], "focus", "…and the card");
     let status = s.lines().nth(39).unwrap_or_default();
-    assert!(status.contains("waiting") && status.contains("C-q"), "said: {status}");
+    assert!(!status.contains("waiting"), "drawn, not counted: {status}");
+    assert!(crate::term::card_line(&ed).is_some_and(|l| l.starts_with("╰─ C-q answer")), "its way in:\n{s}");
     feed(&mut ed, "n");
     assert_eq!(ed.offers.len(), 1, "n: not the card's");
     assert!(ed.messages.last().unwrap().2.contains("/ searches"), "the list's n");
@@ -468,6 +456,78 @@ fn a_card_waits_while_the_session_list_has_the_keys() {
     frame(&mut ed, 160, 40);
     assert!(ed.sessions_list_keys() && ed.card_has_keys(), "yours: its keys");
     assert_eq!(ed.keys_to().waiting, None);
+}
+
+/// Polish landing 1: a card that came on its own never covers the session list you opened — at 80×24 its stack would, so
+/// it folds to its peek at the asks' foot, clear of the list: the peek its title, counted as drawn (the status line
+/// says no `▲1 waiting`, only its way in, `C-q answer`, the one place left that says it). A press on that word or `C-q`
+/// stands it whole with the keys; `esc` folds it again. A card your own key asked for (`yours`) never folds.
+#[test]
+fn a_card_that_came_on_its_own_folds_off_the_session_list() {
+    let dir = crate::scratch::Scratch::new("sessionpane");
+    let dir = std::fs::canonicalize(&dir).unwrap();
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.join("main"), "main".into());
+    // (sessions enough that the list reaches down to where the asks stand)
+    for name in ["main", "fix", "docs", "web", "k8s", "sound", "motion", "carry"] {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+        if name != "main" {
+            ed.workspace_open(&dir.join(name)).unwrap();
+        }
+    }
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
+    feed(&mut ed, " W");
+    let card = |ed: &mut Editor| {
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+        let ask = "Claude asks to see the screen: the frame as text goes with the next request, the terminal's rows too.\n\
+                   It reads what each pane shows as you see it, the chat's column and the cards as well.";
+        ed.push_offer(crate::offer::Offer::new("Claude asks".into(), ask, "", String::new(), what));
+    };
+    // (drawn whole: its answers in its bottom line)
+    let whole = |ed: &Editor| ed.screen.offer_buttons.iter().any(|b| b.3 == 'y');
+    card(&mut ed);
+    let s = frame(&mut ed, 80, 24);
+    let list = ed.float_rect(GroupKind::Sessions).expect("the list floats");
+    assert!(!ed.card_has_keys(), "it waits");
+    assert!(!whole(&ed), "not drawn whole:\n{s}");
+    let rows: Vec<&str> = s.lines().collect();
+    let peek =
+        rows.iter().position(|r| r.contains("Claude asks")).unwrap_or_else(|| panic!("its peek:\n{s}"));
+    assert!(peek >= list.y + list.h, "under the list, never over it (row {peek}, list {list:?}):\n{s}");
+    assert_eq!(ed.screen.asks_drawn, [ed.offers[0].id], "its peek is it in sight");
+    let status = rows.last().copied().unwrap_or_default();
+    assert!(status.contains("C-q answer") && !status.contains("waiting"), "{status}");
+    // A press on the status line's way in: it stands whole, the keys its
+    let spot = (ed.screen.word_spots.borrow().iter())
+        .find(|w| w.on == crate::mouse::Surface::Status && w.press == crate::wordspot::Press::Card)
+        .cloned()
+        .unwrap_or_else(|| panic!("`C-q answer` a button: {status}"));
+    for kind in [crate::event::MouseKind::Down, crate::event::MouseKind::Up] {
+        let (x, y) = (((spot.from + spot.to) / 2) as u16, spot.y as u16);
+        ed.handle_mouse(crate::event::Mouse { kind, x, y, alt: false, ctrl: false });
+    }
+    let s = frame(&mut ed, 80, 24);
+    assert!(ed.card_has_keys(), "the press focused it");
+    assert!(whole(&ed), "whole, over the list:\n{s}");
+    // `esc`: the keys back to the list, the card folded again; `C-q` stands it whole once more
+    ed.handle_key("esc".parse().unwrap());
+    frame(&mut ed, 80, 24);
+    assert!(!ed.card_has_keys() && !whole(&ed), "folded again");
+    ed.handle_key("C-q".parse().unwrap());
+    frame(&mut ed, 80, 24);
+    assert!(ed.card_has_keys() && whole(&ed), "C-q: whole");
+    ed.handle_key("n".parse().unwrap());
+    assert!(ed.offers.is_empty(), "its n");
+    // One your own key asked for (the list's `d`: end the review?) stands whole at once, the list or not
+    let was = ed.events.set_asked(Some(ed.input_seq));
+    let what =
+        crate::offer::What::ReviewEnd { session: WorkspaceId::HOME, started: std::time::Instant::now() };
+    let ask = "2 files not viewed.\nTheir notes stay with the session; the review's marks go with it.\nEnd it anyway?";
+    ed.push_offer(crate::offer::Offer::new("End the review?".into(), ask, "", String::new(), what));
+    ed.events.set_asked(was);
+    assert!(ed.offers[0].yours);
+    let s = frame(&mut ed, 80, 24);
+    assert!(ed.card_has_keys() && whole(&ed), "yours: whole:\n{s}");
 }
 
 /// orchestra N6: a session another one's Claude started comes right after its parent — fix, yours and opened before them,

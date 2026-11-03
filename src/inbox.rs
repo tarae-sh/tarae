@@ -26,6 +26,25 @@ use crate::event::WorkspaceId;
 use crate::sizes::Slot;
 use crate::uistate::{CardState, session_id};
 
+/// `C-q`'s twin, the way into what waits from wherever the keys are (#291, polish landing 1): a key no input types and
+/// zellij leaves alone — inside zellij `C-q` is zellij's, and its old twin `space I` couldn't be typed from an input
+/// (`esc space I` read as one odd chord). One meaning: what `C-q` does, it does (`as_way_in`).
+pub const WAY_IN_TWIN: &str = "F2";
+
+/// The keys of the way in (`C-q`, `WAY_IN_TWIN`) — every layer of `keys_to` that takes `C-q` takes both.
+pub fn way_in_keys() -> Vec<crate::key::Key> {
+    let key = |k: &str| k.parse().expect("a key");
+    vec![key("C-q"), key(WAY_IN_TWIN)]
+}
+
+/// `key` as the chain takes it: the twin is `C-q` (`handle_key`, first).
+pub fn as_way_in(key: crate::key::Key) -> crate::key::Key {
+    match way_in_keys() {
+        v if v[1] == key => v[0],
+        _ => key,
+    }
+}
+
 /// What `space I` and `C-q` say when nothing waits — one sentence for the one empty state.
 pub const NOTHING: &str = "nothing waits for you — no card, no edit, in any session";
 

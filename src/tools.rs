@@ -6500,7 +6500,7 @@ mod tests {
         // (the card wraps — the words read in a row once its rows are joined)
         let joined = s.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(joined.contains("2 more calls wait on this: read a.rs · read b.rs"), "{s}");
-        assert!(joined.contains("1/2"), "the second counted: {s}");
+        assert_eq!(ed.screen.asks_drawn.len(), 2, "the second its peek: {s}");
         // Yes to the first, then to the second while the first runs: it runs next (the first starts once the
         // checkout's snapshot is taken — `snapshot.rs`)
         ed.offer_accept();

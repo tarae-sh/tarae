@@ -35,15 +35,6 @@ pub fn said(letters: &[char], ticks: bool) -> String {
     letters.iter().map(|c| format!("{tick}C-{c}{tick}")).collect::<Vec<_>>().join(" ")
 }
 
-/// What a `C-q` said reaches: where it goes now (`Editor::next_up`), or — a toast about a session behind
-/// (`c_q_says`) — a card or an edit the inbox lists, or a session whose turn ended.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Reach {
-    Next,
-    Inbox,
-    Sessions,
-}
-
 impl Editor {
     /// The letters zellij takes with `C-` (`editor.zellij-keys`).
     pub fn zellij_letters(&self) -> &[char] {
@@ -82,42 +73,30 @@ impl Editor {
         (said, if command { "" } else { what })
     }
 
-    /// What `reach` is from the code — the inbox's key or the session list's, as bound — with no way back in it: for a
-    /// line read later from wherever the keys are by then (a toast about a session behind).
-    pub fn c_q_place(&self, reach: Reach) -> String {
-        match reach {
-            Reach::Sessions => bound_key(self, "session_list", ":workspace-switch"),
-            Reach::Inbox | Reach::Next => inbox(self),
-        }
-    }
-
-    /// `C-q` as a card's way in says it, first on its bottom line (`C-q answer`): as said while the card waits, whether
-    /// it holds the keys or not — never with the card's own `esc` first — so the line is laid the same waiting and
-    /// focused, and each answer keeps its cell as a press focuses the card and `esc` lets it go (#211: `esc esc space I`
-    /// made a focused card's line 4 cells wider, and a second press landed on the answer to the left).
+    /// `C-q` as a card's way in says it, first on its bottom line (`C-q answer`) — inside zellij its twin, one key from
+    /// wherever the keys are (`inbox::WAY_IN_TWIN`, #291: `esc esc space I` before it), so the line is laid the same
+    /// waiting and focused, each answer keeping its cell (#211).
     pub fn card_way_said(&self) -> String {
-        match self.twinned("C-q") {
-            true => then(beneath_card(self), c_q_tail(self, Reach::Next)),
-            false => "C-q".into(),
-        }
+        self.key_said("C-q")
     }
 
     /// `C-q` as said once the keys are back in the code's normal mode — for a line that tells the way back itself
     /// (the prompt's `esc close — then …`).
     pub fn c_q_from_code(&self) -> String {
-        match self.twinned("C-q") {
-            true => c_q_tail(self, Reach::Next),
-            false => "C-q".into(),
-        }
+        self.key_said("C-q")
     }
 }
 
-/// The twin of a key tarae's own surfaces hint (the keymap's find theirs — `Keymaps::twin`): `C-q`'s is
-/// `c_q_twin`'s; the chat's `C-t` `C-p` `C-s` `C-o` are its commands, typed in the code — the way back first (in
-/// the chat's input `:` is a character).
+/// The twin of a key tarae's own surfaces hint (the keymap's find theirs — `Keymaps::twin`): `C-q`'s is one key no
+/// input types, from anywhere (`inbox::WAY_IN_TWIN`, #291); the chat's `C-t` `C-p` `C-s` `C-o` are its commands, typed
+/// in the code — the way back first (in the chat's input `:` is a character).
 fn twin(ed: &Editor, key: &str) -> Option<String> {
     let command = match key {
-        "C-q" => return Some(c_q_twin(ed, Reach::Next)),
+        // (a picker's `C-q` is its list's — the twin's too: its `esc` first; a prompt's `C-q` closes it and goes on)
+        "C-q" => {
+            let esc = if ed.picker.is_some() { "esc " } else { "" };
+            return Some(format!("{esc}{}", crate::inbox::WAY_IN_TWIN));
+        }
         "C-t" => ":model",
         "C-p" => ":chat-resume",
         "C-s" => ":chat-screen",
@@ -193,41 +172,6 @@ fn from(ed: &Editor, region: Region) -> Vec<String> {
         Region::Code if ed.mode == Mode::Select => vec![bound(&km.select, "normal_mode", "esc")],
         Region::Code | Region::EditReview | Region::Card(_) | Region::NextCard => Vec::new(),
         _ => vec!["esc".into()],
-    }
-}
-
-/// `C-q`'s twin. `C-q` goes to the inbox's first, any session's (`next_up`), and focuses it; from the code the inbox
-/// does the same (`space I`, `enter` goes to it and focuses it — P3 §3.8: no card takes the keys by itself, the one in
-/// front too); a turn that ended, the session list's (`space W`); nothing waiting, the inbox too — it says nothing
-/// waits, as `C-q` does. The way back first. Each key as bound.
-fn c_q_twin(ed: &Editor, reach: Reach) -> String {
-    then(way_back(ed), c_q_tail(ed, reach))
-}
-
-/// A command's shortest key as bound none of whose keys zellij takes (`Keymaps::untaken`) — its `:` command when
-/// none is, or only keys zellij takes are.
-fn bound_key(ed: &Editor, command: &str, typed: &str) -> String {
-    ed.keymaps.untaken(Mode::Normal, command, ed.zellij_letters()).unwrap_or_else(|| typed.into())
-}
-
-/// The inbox's key as bound, else its command.
-fn inbox(ed: &Editor) -> String {
-    bound_key(ed, "inbox", ":inbox")
-}
-
-/// What follows the way back to reach what `C-q` reaches, from the code (`c_q_twin`).
-fn c_q_tail(ed: &Editor, reach: Reach) -> String {
-    use crate::inbox::Next;
-    let reach = match reach {
-        Reach::Next => match ed.next_up() {
-            Next::Done(_) => Reach::Sessions,
-            Next::Card(_) | Next::Review | Next::Go(_) | Next::None => Reach::Inbox,
-        },
-        r => r,
-    };
-    match reach {
-        Reach::Sessions => bound_key(ed, "session_list", ":workspace-switch"),
-        _ => inbox(ed),
     }
 }
 

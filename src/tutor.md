@@ -165,12 +165,11 @@ project, a command it wants to run, a grammar to download. Answer with
 the keys on the card — `y` yes · `n` no · `v` show more. `esc` never
 answers a card.
 
-@plain-q A card waits while you type in the chat or the terminal, and the status
-@plain-q line says so: ▲1 waiting · C-q. `C-q` hands it your keys.
-@zellij-q A card waits while you type in the chat or the terminal, and the status
-@zellij-q line says so: ▲1 waiting. zellij takes `C-q`, so go back to the code —
-@zellij-q `esc esc` from the chat, `C-\ C-\` from the terminal — and a card in
-@zellij-q front takes your keys there.
+@plain-q A card waits while you type in the chat or the terminal; its bottom
+@plain-q line says so: C-q answer. `C-q` hands it your keys.
+@zellij-q A card waits while you type in the chat or the terminal; its bottom
+@zellij-q line says so: F2 answer. zellij takes `C-q`, so `F2` does what it
+@zellij-q does, from anywhere — and hands the card your keys.
 
   → `:e try.py` `enter` — unless Python's colours are here already, a
     card offers to download them. `n` for now, `:bc!` closes the file.
@@ -203,10 +202,10 @@ list — its letters are keys, and `/` searches it as it does the code:
 
 `space I` lists everything waiting for your answer: every card and every
 change of Claude's, in every session, oldest first. `enter` goes to it.
-@plain-q The status line counts them (▲2 waiting), and `C-q` takes you to the
-@plain-q first.
-@zellij-q The status line counts them (▲2 waiting). zellij takes `C-q`, which
-@zellij-q goes to the first elsewhere — here `space I` lists them.
+@plain-q What no card on screen shows, the status line counts (▲1 waiting);
+@plain-q `C-q` takes you to the first.
+@zellij-q What no card on screen shows, the status line counts (▲1 waiting);
+@zellij-q `F2` takes you to the first.
 
 ────────────────────────────────────────────────────────────────
 

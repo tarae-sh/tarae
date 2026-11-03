@@ -368,7 +368,7 @@ fn a_press_outside_a_focused_card_gives_its_keys_back() {
     let what =
         What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() };
     ed.push_offer(Offer::new("End the review?".into(), "2 files not viewed.", "", String::new(), what));
-    // (a second behind it: the status line counts what waits — the one card in sight alone it leaves to the card)
+    // (a second behind it, its peek)
     ed.push_offer(Offer::new("Review at the end?".into(), "?", "", String::new(), What::ReviewAtEnd));
     frame(&mut ed);
     feed(&mut ed, "<C-q>");
@@ -384,14 +384,9 @@ fn a_press_outside_a_focused_card_gives_its_keys_back() {
     let (cx, cy, ..) = ed.screen.offer_card.expect("drawn");
     press(&mut ed, cx + 2, cy + 1);
     assert!(ed.card_has_keys(), "a press on it focuses it");
-    // What says its own lets go unsaid: the status line's `▲1 waiting`, a toast (its row picked, no word added first)
+    // What says its own lets go unsaid: a toast (its row picked, no word added first)
     let keys_back = |ed: &Editor| ed.messages.iter().filter(|m| m.2.starts_with("keys back")).count();
     let before = keys_back(&ed);
-    let inbox =
-        ed.screen.session_spots.borrow().iter().find(|s| s.3 == crate::workspace::Spot::Inbox).copied();
-    let (y, x0, ..) = inbox.expect("the status line's waiting count");
-    press(&mut ed, x0, y);
-    assert_eq!(keys_back(&ed), before, "the inbox's press: unsaid");
     // (the cursor off the top rows: the toast takes the top right)
     feed(&mut ed, "<esc>jjjjjjjjjj");
     ed.set_status("the newest");

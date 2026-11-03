@@ -81,7 +81,7 @@ impl Spot {
 /// (`j k`, `[r ]r`: each its own), a word (`type`). A sequence after a prefix (`space l`, `C-w j`), a motion's pair
 /// (`[r`), an arrow (`↑`), a `:` command (typed, then `enter`).
 pub fn keys(said: &str) -> Option<Vec<Key>> {
-    // (a way out first — `esc esc space I`, zellij's twin of `C-q` from the chat's input: the `esc`s, then the keys)
+    // (a way out first — `esc :chat-point`, zellij's twin of `C-o` from the chat's input: the `esc`s, then the keys)
     let (out, rest) = way_out(said);
     if out > 0 {
         let esc: Key = "esc".parse().ok()?;
@@ -114,7 +114,7 @@ pub fn keys(said: &str) -> Option<Vec<Key>> {
     Some(out)
 }
 
-/// A hint's keys as its way out — the `esc`s before them (`esc esc space I`, `esc :chat-point`: out of the chat's input
+/// A hint's keys as its way out — the `esc`s before them (`esc esc :chat-screen`, `esc :chat-point`: out of the chat's input
 /// and its view first, as zellij's twins say them) — and what's pressed after it. `esc` alone is no way out.
 fn way_out(said: &str) -> (usize, &str) {
     let (mut out, mut rest) = (0, said.trim());
@@ -142,7 +142,7 @@ pub fn press(ed: &mut Editor, i: usize) {
             // (the chat's input types what it's given: there only a chord, `enter`, `esc` or `backspace` — the take-off
             // of what goes with it, shown only while the draft is empty —, never letters into the draft)
             // (a character is typed; a chord, `enter`, `esc`, an arrow — `↑ edit queued` — aren't; past a way out
-            // — `esc esc space I` — nothing is typed into the draft)
+            // — `esc :chat-point` — nothing is typed into the draft)
             // (the terminal's program alike: its `C-\ view` goes, a letter would be typed into it)
             let typed = |k: &&Key| matches!(k.code, Code::Char(_)) && !(k.ctrl || k.alt);
             let into = match home {
@@ -338,6 +338,8 @@ const BUTTONS: &[&str] = &[
     // (the empty chat's first row, `C-p continue "…"`: the conversations' picker — projects step 2)
     "C-p",
     "C-q",
+    // (`C-q`'s twin inside zellij, the way in from anywhere — #291)
+    "F2",
     "C-v",
     "C-y",
     "C-]",
