@@ -10,8 +10,9 @@
 //! The decision is here, on the main loop's clock (`clock::now`: the simulation runs it); the sound is the audio
 //! thread's (`engine.rs`, `mac.rs`), only told — the main loop never waits on it. It's made the first time a turn runs
 //! with sound on, on a worker (opening the output takes ~100 ms), and lives until quit or `editor.sound` goes off.
-//! Only for an interface whose speaker plays it (`Editor.interface.sound`: the terminal's is this machine's). In tests no
-//! thread or device is made (`open`); a test records what would sound (`Sink::Record`).
+//! Only for an interface whose speaker plays it (`Editor.interface.sound`: the terminal's is this machine's) — a tests'
+//! editor's has none, so no thread or device is made; a test that gives it one stands in its opener (`State.open`). A
+//! test records what would sound (`Sink::Record`).
 
 mod engine;
 #[cfg(target_os = "macos")]
@@ -78,11 +79,20 @@ pub struct State {
     failed: bool,
     /// The volume the thread was last told.
     told: u8,
+    /// Opens the output and starts its thread at a volume, on a worker (`engine::spawn`).
+    pub open: fn(u8) -> Result<Sender<Msg>, String>,
 }
 
 impl Default for State {
     fn default() -> State {
-        State { sink: Sink::Off, typist: typist::Typist::new(0x5eed), opening: false, failed: false, told: 0 }
+        State {
+            sink: Sink::Off,
+            typist: typist::Typist::new(0x5eed),
+            opening: false,
+            failed: false,
+            told: 0,
+            open: engine::spawn,
+        }
     }
 }
 
@@ -190,6 +200,7 @@ pub fn sync(ed: &mut Editor) {
         return;
     }
     st.opening = true;
+    let open = st.open;
     ed.events.jobs().spawn(move || {
         let opened = open(volume);
         move |ed: &mut Editor| {
@@ -208,17 +219,6 @@ pub fn sync(ed: &mut Editor) {
             }
         }
     });
-}
-
-/// The output opened and its thread started at `volume` — in tests none is: it says so.
-fn open(volume: u8) -> Result<Sender<Msg>, String> {
-    #[cfg(not(test))]
-    return engine::spawn(volume);
-    #[cfg(test)]
-    {
-        let _ = volume;
-        Err("no device in tests".into())
-    }
 }
 
 /// `:sound [on|off]` — what it says, and whether that's all well (else a warning).
@@ -389,7 +389,8 @@ mod tests {
     }
 
     /// An output is opened only for an interface whose speaker plays tarae's sound (`Editor.interface.sound`) — a
-    /// tests' editor's has none; given one, it's asked for (and in tests refused: `open`). Off lets it go.
+    /// tests' editor's has none; given one, it's asked for (its opener a stand-in that refuses: no device made in a
+    /// test). Off lets it go.
     #[test]
     fn a_device_is_asked_only_for_an_interface_with_sound_and_off_lets_it_go() {
         let (mut ed, _dir) = heard("a\n");
@@ -402,6 +403,7 @@ mod tests {
             !ed.sound.opening && matches!(ed.sound.sink, Sink::Off),
             "opened for an interface with no sound"
         );
+        ed.sound.open = |_| Err("no device in tests".into());
         ed.interface.sound = true;
         sync(&mut ed);
         assert!(ed.sound.opening, "its speaker's output asked for");
