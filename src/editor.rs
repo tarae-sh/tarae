@@ -3605,6 +3605,9 @@ impl Editor {
             }
             (_, Part::Word(Word::Session(spot))) => {
                 took_mouse(u.surface);
+                // (what it does may lay the line out anew — the front's name opening the chat folds the strip by another
+                // room — so a double's second press finds another name there: that one press, nothing under it pressed)
+                self.pressed_through = Some((x, y, crate::clock::now()));
                 self.session_spot(spot);
             }
             // (a name on a line is the line too: a drag from it does what one from the line beside it does)

@@ -9,6 +9,8 @@ pub(crate) fn editor() -> Editor {
     let mut ed = Editor::new(Config::default());
     ed.docs[0].text = ropey::Rope::from_str("one\ntwo\nthree\n");
     ed.workspace.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    // (its name pinned, never the checkout's folder the tests run in: a line that names it lays out the same anywhere)
+    ed.workspace.name = "main".into();
     // (a message sent in a scene starts Claude: a stand-in, never the real one)
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -97,9 +99,10 @@ fn a_held_cards_line_says_why_its_yes_is_missing() {
 /// A light card up here, and an older one waiting in a session behind (`C-q` goes to that one first —
 /// `inbox.rs`).
 fn older_card_behind(ed: &mut Editor) {
-    let dir = std::env::temp_dir().join(format!("tarae-uistate-behind-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::Scratch::new("uistate-behind").into_path();
     let id = ed.workspace_open(&dir).unwrap();
+    // (in front as it opens; named as a session is, never by its folder: a scratch folder's number varies)
+    ed.workspace.name = "fix".into();
     let mut o = Offer::new(
         "Restart anyway?".into(),
         "It's the binary it was.",
@@ -547,11 +550,12 @@ pub(crate) const SCENES: &[Scene] = &[
     }),
     ("a card up, an older one in a session behind", older_card_behind),
     ("nothing waits, a turn ended in a session behind", |ed| {
-        let dir = std::env::temp_dir().join(format!("tarae-uistate-done-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::scratch::Scratch::new("uistate-done").into_path();
         let id = ed.workspace_open(&dir).unwrap();
         assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in() && ed.workspace.id != id);
         let l = ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
+        // (named as a session is, never by its folder: a scratch folder's number varies)
+        l.name = "fix".into();
         l.claude.turn_end = Some((Instant::now(), Ok(())));
         assert_eq!(ed.next_up(), crate::inbox::Next::Done(id));
     }),
