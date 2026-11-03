@@ -2568,13 +2568,20 @@ const EDIT_IN_BUFFER: &[&str] = &[
     "@2",
     " ",
     "l",
-    "@zoom:card:ask claude",
+    // (a Short: the ask line's words, not its width — the screen's, tarae's)
+    "@zoom:card:ask claude|40",
     "@1",
     "@type:why does insert clone the name?",
     "@2",
     "\r",
     "@10?thread.rs",
     "@beat:Its edit is written where you are, as it thinks.",
+    // (a Short: each read's lines as the view follows there — `thread.rs`'s doc comments past 40 columns cut, fading;
+    // `main.rs` once its own text is in sight: both files number lines 1 to 16)
+    "@10?One strand",
+    "@zoom:code:1-10|40",
+    "@10?Map::new",
+    "@zoom:code:8-16",
     // (a Short: the edit's lines as it's written, its writing heard as tarae's reveal plays it)
     "@20?editing",
     "@sound:writing",
@@ -2613,14 +2620,15 @@ const FOLLOW_REPLAY: &[&str] = &[
     "@1.5",
     " ",
     "l",
-    "@zoom:card:ask claude",
+    // (a Short: the ask line's words, not its width)
+    "@zoom:card:ask claude|40",
     "@1",
     "@type:why is the spool out of order?",
     "@1.5",
     "\r",
-    // (a Short: each read's lines as the view follows there)
+    // (a Short: each read's lines as the view follows there — the doc comment, the pane's width, its first 40 columns)
     "@10?spool.rs:3-7",
-    "@zoom:code:3-7",
+    "@zoom:code:3-7|40",
     // (the read's row on the follow card: its words wrap there)
     "@10?spool.rs:42-56",
     "@zoom:code:42-56",
@@ -2643,7 +2651,8 @@ const FOLLOW_REPLAY: &[&str] = &[
     // (the turn's end: its answer's card at line 32 — at 80 columns the review rail has no room for its `last turn`)
     "@30?winds from the front",
     "@sound:still",
-    "@zoom:card:winds from the front",
+    // (its first words: the card is the code's width)
+    "@zoom:card:winds from the front|48",
     "@2",
     "@beat:Replay the turn, stop by stop.",
     // (each pair typed as one key: sent apart, `]` stood long enough for which-key; a Short's camera on each stop's
@@ -2655,7 +2664,8 @@ const FOLLOW_REPLAY: &[&str] = &[
     "@zoom:code:42-56",
     "@1.5",
     "]r",
-    "@zoom:code:75-83",
+    // (the third read's lines are 75-79 now: the edit took four lines out above 80)
+    "@zoom:code:75-79",
     "@1.5",
     "]r",
     "@zoom:code:44-48",
@@ -5262,7 +5272,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     if bg != backgrounds[0] {
                         continue;
                     }
-                    match take(scene, theme, size, &bin, &me) {
+                    match take(scene, theme, size, &bin, &me, None) {
                         Ok(rec) => {
                             println!("{}", crate::wire::report(&rec.wire).line(scene.name, size));
                             if !rec.missed.is_empty() {
@@ -5488,8 +5498,7 @@ fn lsp_send(out: &mut impl Write, v: &Value) -> io::Result<()> {
 /// `rec.json` (the homepage player's), `sheet.png` and its pages, `play.html`. A wait that timed out fails it, the take
 /// written all the same.
 fn record(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &Path) -> Result<()> {
-    let rec = take(scene, bg, size, bin, me)?;
-    std::fs::create_dir_all(at).map_err(|e| format!("{}: {e}", at.display()))?;
+    let rec = take(scene, bg, size, bin, me, Some(at))?;
     let beat_times: Vec<u64> = rec.beats.iter().map(|b| b.0).collect();
     let sampled = recording::sample(&rec.frames, &beat_times);
     let beats: Vec<(u64, &str)> = rec.beats.iter().map(|(t, c)| (*t, c.as_str())).collect();
@@ -5517,8 +5526,32 @@ fn record(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &P
     }
 }
 
-/// `scene` driven as `record` and `video_of` take it, its frames from `@rec`: each one passed `none_of_yours`.
-fn take(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path) -> Result<shot::Recorded> {
+/// The tarae log's sources a take keeps (their column, padded): an overlap round, the keeping close of a base, a card
+/// answered or dropped.
+const TOLD_LOG: [&str; 3] = [" overlap ", " keepclose ", " card "];
+
+/// Each of `waits` (when it ended, what it waited for) with how long after the last of `keys` sent before it it came:
+/// (what, when, ms).
+fn waited(keys: &[(u64, String)], waits: &[(u64, String)]) -> Vec<(String, u64, u64)> {
+    (waits.iter())
+        .filter_map(|(end, what)| {
+            let sent = keys.iter().rev().find(|k| k.0 <= *end)?;
+            Some((what.clone(), *end, end - sent.0))
+        })
+        .collect()
+}
+
+/// `scene` driven as `record` and `video_of` take it, its frames from `@rec`: each one passed `none_of_yours`. Into
+/// `at` (made) the take's tarae log lines of what moves a base and says it (`TOLD_LOG`) as `tarae.log`; each wait's
+/// time from the key before it said (#324: a card late is seen in every take, not only one that times out).
+fn take(
+    scene: &Scene,
+    bg: Bg,
+    size: (u16, u16),
+    bin: &Path,
+    me: &Path,
+    at: Option<&Path>,
+) -> Result<shot::Recorded> {
     let dir = Named::new(&format!("rec-{}-{}-{}", scene.name, bg.theme(), std::process::id()))?;
     let real = std::fs::canonicalize(&dir.0).map_err(|e| format!("{}: {e}", dir.0.display()))?;
     let mut env_homes = homes(&real, &|k| std::env::var_os(k))?;
@@ -5531,6 +5564,21 @@ fn take(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path) -> Resul
         keys.insert(0, "@rec".into());
     }
     let rec = shot::record(&setup, &keys, size, &real.join("state"), &env_homes)?;
+    let waits = waited(&rec.keys, &rec.waits);
+    if !waits.is_empty() {
+        let said: Vec<String> = (waits.iter())
+            .map(|(what, at, ms)| {
+                format!("{what} {:.1} s ({:.1} s in)", *ms as f64 / 1000.0, *at as f64 / 1000.0)
+            })
+            .collect();
+        println!("waits, from the key before each: {}", said.join("; "));
+    }
+    if let Some(at) = at {
+        std::fs::create_dir_all(at).map_err(|e| format!("{}: {e}", at.display()))?;
+        let log = std::fs::read_to_string(real.join("state/tarae/tarae.log")).unwrap_or_default();
+        let told: Vec<&str> = log.lines().filter(|l| TOLD_LOG.iter().any(|w| l.contains(w))).collect();
+        write(&at.join("tarae.log"), &(told.join("\n") + "\n"))?;
+    }
     let yours = std::env::var_os("HOME");
     for (t, screen) in &rec.frames {
         none_of_yours(&recording::screen_cells(screen), yours.as_deref())
@@ -5552,7 +5600,7 @@ fn video_of(
     at: &Path,
 ) -> Result<()> {
     let started = std::time::Instant::now();
-    let rec = take(scene, bg, size, bin, me)?;
+    let rec = take(scene, bg, size, bin, me, Some(at))?;
     let driven = started.elapsed();
     let title = video_title(scene.name);
     let mp4 = at.join(format!("{}.mp4", scene.name));
@@ -8109,6 +8157,19 @@ fn wait_file_contains(path: &Path, needle: &str, timeout: Duration) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each wait is timed from the last key sent at or before its end — a key after it never counts, and a wait with no
+    /// key before it is left out.
+    #[test]
+    fn a_wait_is_timed_from_the_key_before_it() {
+        let keys = |k: &[(u64, &str)]| k.iter().map(|(t, s)| (*t, s.to_string())).collect::<Vec<_>>();
+        let sent = keys(&[(100, "c"), (1_000, "\r"), (21_000, "y")]);
+        let waits = keys(&[(50, "early"), (20_000, "main moved"), (21_000, "moved")]);
+        assert_eq!(
+            waited(&sent, &waits),
+            vec![("main moved".to_string(), 20_000, 19_000), ("moved".to_string(), 21_000, 0)]
+        );
+    }
 
     /// What the stand-in wrote, a JSON value a line.
     fn said(script: &str, input: &str) -> Vec<Value> {

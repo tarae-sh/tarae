@@ -157,10 +157,17 @@ pub(crate) fn crop(
 /// - `code:A-B` the code's lines A to B by the gutter's numbers, as wide as the longest of them (a card over their rows
 ///   no part of them);
 /// - `card:<text>` (or any other text) the smallest card holding `<text>` (`cards`: a frame — a floating card, a list —,
-///   or a toast's or a peek's ground), else its row's stretch of text (to two blanks or a line).
+///   or a toast's or a peek's ground), else its row's stretch of text (to two blanks or a line);
+/// - any of them `|N`: at most `N` columns of it, air included, from its left — where tarae draws what the caption is
+///   about across the screen's width (the ask line, a doc comment, an answer's card), the part it's about at a glyph a
+///   phone reads; the rest cut at the window's edge, fading (`Window`), its card drawn cut.
 ///
 /// Each with a cell of air round it. None where it isn't on that screen.
 pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
+    if let Some((spec, n)) = spec.rsplit_once('|').and_then(|(s, n)| Some((s, n.parse::<u16>().ok()?))) {
+        let r = target(on, spec)?;
+        return Some(Region { w: r.w.min(f32::from(n)), ..r });
+    }
     let cells = &on.text;
     let rows = cells.len();
     let cols = cells.first().map_or(0, Vec::len);
@@ -333,7 +340,8 @@ pub(crate) fn framed(screen: &Cells, target: Region, aspect: f32, eye: f32, legi
     let rows = screen.text.len();
     let cols = screen.text.first().map_or(0, Vec::len);
     let size = (cols as u16, rows as u16);
-    let cards = cards(screen);
+    // (the card the target is in is drawn even cut — a target narrower than its card, `|N`: no placement avoids it)
+    let cards: Vec<Card> = cards(screen).into_iter().filter(|&b| !holds(b, target)).collect();
     let shape = |r: Region| match r.w / r.h > aspect {
         true => (r.w.min(cols as f32), (r.w / aspect).min(rows as f32)),
         false => ((r.h * aspect).min(cols as f32), r.h.min(rows as f32)),
@@ -388,21 +396,36 @@ pub(crate) fn framed(screen: &Cells, target: Region, aspect: f32, eye: f32, legi
 
 /// The cards a window of whole cells (columns `c0..c1`, rows `r0..r1`) cuts: each meeting it but not whole inside it,
 /// but the one holding `target` (inside its air) — the card the target is is shown even cut: `framed` kept it whole where
-/// it could; one that only meets it (an answer's card opened under the lines in sight) is left out. A Short's frame leaves them out on the window's ground, so nothing is ever cut at its edge — a card that
+/// it could — and one standing between the code's lines (`between`), drawn cut as they are. A Short's frame leaves them out on the window's ground, so nothing is ever cut at its edge — a card that
 /// came while a zoom holds (a toast) too.
-fn cut(screen: &Cells, (c0, r0, c1, r1): (usize, usize, usize, usize), target: Region) -> Vec<Card> {
+fn cut(screen: &Cells, view: (usize, usize, usize, usize), target: Region) -> Vec<Card> {
+    cards(screen).into_iter().filter(|&b| cuts(view, b) && !holds(b, target) && !between(screen, b)).collect()
+}
+
+/// Whether `card` stands between the code's lines (an answer's or a note's card, the code under it moved down): no row
+/// of it numbered, the rows just above and below it numbered left of where it starts (a floating card over the gutter
+/// covers the numbers instead). A row of the document as its lines are: cut at the window's edge it's drawn cut as they
+/// are — left out, it would leave a hole in the code.
+fn between(screen: &Cells, (r0, c0, r1, _): Card) -> bool {
+    let divs = dividers(&screen.text);
+    let number = |r: usize| screen.text.get(r).and_then(|row| numbered(row, &divs)).map(|n| n.1);
+    let left_of = |r: usize| number(r).is_some_and(|c| c < c0);
+    r0 > 0 && left_of(r0 - 1) && left_of(r1 + 1) && !(r0..=r1).any(|r| number(r).is_some())
+}
+
+/// Whether a window of whole cells (columns `c0..c1`, rows `r0..r1`) cuts `card`: meets it, not whole inside it.
+fn cuts((c0, r0, c1, r1): (usize, usize, usize, usize), (cr0, cc0, cr1, cc1): Card) -> bool {
+    let meets = cc0 < c1 && c0 <= cc1 && cr0 < r1 && r0 <= cr1;
+    let whole = c0 <= cc0 && cc1 < c1 && r0 <= cr0 && cr1 < r1;
+    meets && !whole
+}
+
+/// Whether `card` holds `target` (inside its air).
+fn holds((cr0, cc0, cr1, cc1): Card, target: Region) -> bool {
     let (tx0, ty0) = (target.x + AIR, target.y + AIR);
     let (tx1, ty1) = (target.x + target.w - AIR, target.y + target.h - AIR);
-    cards(screen)
-        .into_iter()
-        .filter(|&(cr0, cc0, cr1, cc1)| {
-            let meets = cc0 < c1 && c0 <= cc1 && cr0 < r1 && r0 <= cr1;
-            let whole = c0 <= cc0 && cc1 < c1 && r0 <= cr0 && cr1 < r1;
-            let (x0, y0, x1, y1) = (cc0 as f32, cr0 as f32, cc1 as f32 + 1.0, cr1 as f32 + 1.0);
-            let target_in = x0 <= tx0 && tx1 <= x1 && y0 <= ty0 && ty1 <= y1;
-            meets && !whole && !target_in
-        })
-        .collect()
+    let (x0, y0, x1, y1) = (cc0 as f32, cr0 as f32, cc1 as f32 + 1.0, cr1 as f32 + 1.0);
+    x0 <= tx0 && tx1 <= x1 && y0 <= ty0 && ty1 <= y1
 }
 
 /// The window's left or right edge.
@@ -424,8 +447,12 @@ pub(crate) struct Window {
 
 impl Window {
     pub(crate) fn of(screen: &Cells, view: (usize, usize, usize, usize), target: Region) -> Window {
-        let all = cards(screen);
-        Window { left_out: cut(screen, view, target), fade: runs_past(screen, view, &all) }
+        // (the card the target is in, where the window cuts it — a target narrower than its card, `|N` —, and a card
+        // between the code's lines are drawn cut as a code row is: their rows fading at the edge)
+        let others: Vec<Card> = (cards(screen).into_iter())
+            .filter(|&b| !(cuts(view, b) && (holds(b, target) || between(screen, b))))
+            .collect();
+        Window { left_out: cut(screen, view, target), fade: runs_past(screen, view, &others) }
     }
 
     /// Whether the frame draws the screen's cell at row `r`, column `c` (inside the window).
@@ -435,8 +462,9 @@ impl Window {
 }
 
 /// The rows whose text the window's left or right edge cuts (row, edge): an inked cell on each side of it (a wide
-/// character's second cell counts as inked), neither in a card — a card the window cuts is left out whole, and one
-/// beside the window is no text of the row's. A line (`─`, `│`, `▎`…) runs on cut as it is.
+/// character's second cell counts as inked), neither in one of `cards` — a card the window cuts is left out whole, and
+/// one beside the window is no text of the row's (the target's own card, cut, isn't among them). A line (`─`, `│`,
+/// `▎`…) runs on cut as it is.
 fn runs_past(
     screen: &Cells,
     (c0, r0, c1, r1): (usize, usize, usize, usize),
@@ -784,6 +812,78 @@ mod tests {
         assert_eq!(at(4), [], "a card past the left edge: none of the row's text");
         assert_eq!(at(5), [Edge::Left], "Hangul: the edge between a wide character's two cells");
         assert_eq!(at(6), [Edge::Left], "`letters` crosses the left edge");
+    }
+
+    /// A target cut to `|N` columns of the card it's in (the ask line across the screen, its words at its left): the
+    /// card drawn cut, its row fading where the edge cuts its words; no placement avoids it, so the window still slides
+    /// past another card it would cut (a list under it), never leaving that one out where it needn't.
+    #[test]
+    fn a_target_cut_short_shows_its_card_cut() {
+        let list: Card = (9, 0, 10, 10);
+        let mut on = boxed(40, 12, &[(5, 0, 7, 39), list]);
+        for (i, ch) in "ask".chars().enumerate() {
+            on.text[5][2 + i] = ch.to_string();
+        }
+        for (i, ch) in "› why does insert clone".chars().enumerate() {
+            on.text[6][2 + i] = ch.to_string();
+        }
+        let t = target(&on, "card:ask|16").unwrap();
+        assert_eq!(t, region(0.0, 4.0, 16.0, 5.0), "the card's first 16 columns, air included");
+        assert_eq!(target(&on, "card:ask"), Some(region(0.0, 4.0, 40.0, 5.0)));
+        let window = framed(&on, t, 2.0, 0.5, 80.0);
+        assert_eq!(window, region(0.0, 3.0, 16.0, 8.0), "rows 2–9 would cut the list: slid to take it whole");
+        let shown = Window::of(&on, (0, 3, 16, 11), t);
+        assert_eq!(shown.left_out, vec![], "the card the target is in, drawn cut");
+        assert_eq!(shown.fade, vec![(6, Edge::Right)], "its words fade where the edge cuts them");
+    }
+
+    /// A card between the code's lines (an answer's, the code under it moved down: no number on its rows) the window cuts
+    /// is drawn cut as the lines are, its words fading at the edge — left out, it was a hole in the code (V4's replay). The same card floating over the code (numbers beside it) is left out.
+    #[test]
+    fn a_card_between_the_lines_is_drawn_cut() {
+        let rows = |beside: &str| {
+            grid(&[
+                "44 let a = 0;",
+                "45 let b = 1;",
+                &format!("{beside:<3}╭──────────────────────────────╮"),
+                &format!("{beside:<3}│ Done — winds from the front  │"),
+                &format!("{beside:<3}╰──────────────────────────────╯"),
+                "46 let c = 2;",
+                "47 let d = 3;",
+            ])
+        };
+        let target = region(0.0, 0.0, 14.0, 3.0);
+        let on = rows("");
+        assert_eq!(cards(&on), vec![(2, 3, 4, 34)]);
+        let shown = Window::of(&on, (0, 0, 20, 7), target);
+        assert_eq!(shown.left_out, vec![], "between the lines: drawn");
+        assert_eq!(shown.fade, vec![(3, Edge::Right)], "its words cut at the edge, fading");
+        // (floating over the code: a number beside each of its rows)
+        let over = |n: usize| format!("{n} ");
+        let mut on = rows("");
+        for (r, n) in [(2, 50), (3, 51), (4, 52)] {
+            on.text[r][..3].clone_from_slice(&over(n).chars().map(String::from).collect::<Vec<_>>());
+        }
+        let shown = Window::of(&on, (0, 0, 20, 7), target);
+        assert_eq!(shown.left_out, vec![(2, 3, 4, 34)], "floating: left out");
+        assert_eq!(shown.fade, vec![]);
+        // (floating over the gutter, the numbers under it: left out)
+        let mut on = rows("");
+        for r in 2..=4 {
+            let row: String = on.text[r].concat();
+            on.text[r] = row
+                .replacen("   ", "", 1)
+                .chars()
+                .map(String::from)
+                .chain([" ", " ", " "].map(String::from))
+                .collect();
+        }
+        assert_eq!(cards(&on), vec![(2, 0, 4, 31)]);
+        assert_eq!(
+            Window::of(&on, (0, 0, 20, 7), target).left_out,
+            vec![(2, 0, 4, 31)],
+            "over the gutter: left out"
+        );
     }
 
     /// A row is drawn whole or not at all: V2's line under the cursor, its code cut at the window's left edge and
