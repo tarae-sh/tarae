@@ -25,6 +25,8 @@ libfuzzer-sys = "0.4"
 # The web reader, the fetch's gzip and the page's own language server's answers: tarae's crate, its properties and
 # fuzz inputs (`check`) turned on
 tarae-web = { path = "../../crates/tarae-web", features = ["check"] }
+# The attach protocol's decoder (a host's and an interface's messages): tarae's crate, its property (`check`) turned on
+tarae-wire = { path = "../../crates/tarae-wire", features = ["check"] }
 
 # `fuzzing`: what cargo-fuzz sets, and what builds the sandbox's readers' `check` modules (included by `#[path]`)
 [lints.rust]
@@ -100,6 +102,13 @@ bench = false
 [[bin]]
 name = "gzip"
 path = "fuzz_targets/gzip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_decode"
+path = "fuzz_targets/wire_decode.rs"
 test = false
 doc = false
 bench = false

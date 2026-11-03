@@ -58,6 +58,12 @@ pub fn gzip(b: &[u8]) {
     web::gzip_input(b);
 }
 
+/// A host's or an interface's stream of messages (`tarae_wire::Decoder`) — the first byte says which side's and how
+/// many bytes come at a time.
+pub fn wire_decode(b: &[u8]) {
+    tarae_wire::check::decode_input(b);
+}
+
 /// A web page's bytes (`tarae_web::read`) — the first byte says which part is read and the content type given.
 pub fn web(b: &[u8]) {
     web::page_input(b);

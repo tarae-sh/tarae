@@ -1340,6 +1340,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tarae-wire"
+version = "0.1.0"
+dependencies = [
+ "tarae-testkit",
+]
+
+[[package]]
 name = "tendril"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

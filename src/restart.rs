@@ -913,6 +913,8 @@ fn exec_with(mut ed: Editor, bin: &Path, file: &Path) -> String {
     if let Err(e) = crate::disk::write_atomic(file, |w| std::io::Write::write_all(w, body.as_bytes())) {
         return format!("{}: {e}", file.display());
     }
+    // (a host stays a host: its interface attaches to the new one — the remote plan's step 3)
+    let host = ed.host.then_some("--host");
     let memory = let_go(ed);
     // (std's are marked already, but not all are std's — one left open would keep its holder from ending)
     let marked = crate::spawn::close_on_exec();
@@ -920,7 +922,7 @@ fn exec_with(mut ed: Editor, bin: &Path, file: &Path) -> String {
     // (the new tarae starts from the descriptor limit this one started with, and raises it itself — else it
     // would take the raised one for the original and give it to what it starts: `nofile`)
     let limit = crate::nofile::for_exec();
-    let err = std::process::Command::new(bin).arg("--restart").arg(file).exec();
+    let err = std::process::Command::new(bin).args(host).arg("--restart").arg(file).exec();
     // Only a failed exec returns, and std's exec set this process up as a fork's child first: no signal
     // blocked, SIGPIPE at its default — a write to a closed pipe would end it now. Put back as they were
     signals.restore();

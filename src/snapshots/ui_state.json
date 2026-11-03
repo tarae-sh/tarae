@@ -128,6 +128,10 @@
     }
   ],
   "input": 0,
+  "interface": {
+    "kind": "terminal",
+    "presented": 1
+  },
   "keys": {
     "answers": [
       "y",
@@ -288,7 +292,7 @@
       "where": "card"
     }
   ],
-  "v": 28,
+  "v": 29,
   "workspaces": [
     {
       "cards": 1,

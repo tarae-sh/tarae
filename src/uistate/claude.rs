@@ -64,6 +64,7 @@ impl Editor {
         // (the plugins' overlays are chrome: Claude sees its own work; where your pointer is, the drivers')
         s.overlays.clear();
         s.pointer = None;
+        s.interface = super::Iface::Unsaid;
         // (where each thing was drawn: the reading path's, chrome)
         s.regions.clear();
         for t in &mut s.toasts {

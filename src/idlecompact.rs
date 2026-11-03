@@ -111,6 +111,9 @@ pub enum Why {
     Busy(Busy),
     /// That plan window is near its limit (its label).
     Pressing(String),
+    /// No interface is attached to the host (`tarae --host`): nobody is there to send the next message, so nothing is
+    /// spent keeping the cache for one (the remote plan's decision C).
+    Detached,
 }
 
 impl Why {
@@ -124,6 +127,7 @@ impl Why {
             Why::Late => "late",
             Why::Busy(_) => "busy",
             Why::Pressing(_) => "near a limit",
+            Why::Detached => "detached",
         }
     }
 }
@@ -151,6 +155,8 @@ pub struct Facts {
     pub busy: Option<Busy>,
     /// A plan window near its limit (its label) — None on API billing, which no plan window limits.
     pub pressing: Option<String>,
+    /// No interface is attached (`Editor.detached`).
+    pub detached: bool,
 }
 
 /// When it fires after a request at `touched_ms` — None but on the 1 h TTL.
@@ -175,6 +181,10 @@ pub fn decide(f: &Facts) -> Decision {
     if f.now_ms > due + LATE_MS {
         return LetGo(Why::Late);
     }
+    // (judged as it wakes, as what waits is: attached again before then, it compacts)
+    if f.detached {
+        return LetGo(Why::Detached);
+    }
     if let Some(b) = f.busy {
         return LetGo(Why::Busy(b));
     }
@@ -184,8 +194,15 @@ pub fn decide(f: &Facts) -> Decision {
     Compact
 }
 
-/// The facts of session `s` at `now_ms`, `cards`: whether a card of its waits (`cards_waiting`).
-pub fn facts(s: &Workspace, cards: bool, limits: &crate::limits::Limits, now_ms: u64) -> Facts {
+/// The facts of session `s` at `now_ms`, `cards`: whether a card of its waits (`cards_waiting`), `detached`: no
+/// interface is attached.
+pub fn facts(
+    s: &Workspace,
+    cards: bool,
+    detached: bool,
+    limits: &crate::limits::Limits,
+    now_ms: u64,
+) -> Facts {
     let u = &s.claude.usage;
     let conv = u.conv.as_ref();
     let on_plan = s.claude.billing == crate::billing::Billing::Subscription;
@@ -199,6 +216,7 @@ pub fn facts(s: &Workspace, cards: bool, limits: &crate::limits::Limits, now_ms:
         rule: s.claude.idle.rule.clone(),
         busy: busy(s, cards),
         pressing: pressing.filter(|_| on_plan).map(|r| crate::limits::label(&r.window)),
+        detached,
     }
 }
 
@@ -242,7 +260,7 @@ pub fn busy(s: &Workspace, cards: bool) -> Option<Busy> {
 /// When session `s` compacts if nothing happens till then, as things stand now — the row's `compacts 14:26`, the
 /// state's.
 pub fn next_at(ed: &Editor, s: &Workspace, now_ms: u64) -> Option<u64> {
-    let f = facts(s, cards_waiting(ed, s), &ed.limits, now_ms);
+    let f = facts(s, cards_waiting(ed, s), ed.detached, &ed.limits, now_ms);
     let at = due(f.touched_ms?, f.ttl?)?;
     (decide(&Facts { now_ms: at.max(now_ms), ..f }) == Decision::Compact).then_some(at)
 }
@@ -399,7 +417,7 @@ fn managed() -> Vec<PathBuf> {
 
 /// The facts of the session in front, now.
 fn now(ed: &Editor) -> Facts {
-    facts(&ed.workspace, cards_waiting(ed, &ed.workspace), &ed.limits, crate::usage::now_ms())
+    facts(&ed.workspace, cards_waiting(ed, &ed.workspace), ed.detached, &ed.limits, crate::usage::now_ms())
 }
 
 /// After a turn (`usage::watch`): the rule read again for the row, where it may come to compacting.
@@ -490,6 +508,7 @@ fn let_go(ed: &mut Editor, why: &Why) {
         Why::Late => "woken too late (the machine slept)".to_string(),
         Why::Busy(b) => format!("{} waits", b.name()),
         Why::Pressing(w) => format!("the {w} window is near its limit"),
+        Why::Detached => "no interface is attached".to_string(),
     };
     crate::log::line("claude", "info", &format!("idle-compact: not compacted — {said}"));
 }

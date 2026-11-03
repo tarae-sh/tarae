@@ -25,6 +25,7 @@ tarae and the plugin fuzzer in `../` keep the pinned stable.
 | `facts` | `tarae_web::facts::answer` (a page's own language server, in tarae's process) | `tarae_web::check::facts_input`: no panic on any page and any request — every kind at every byte of its text's first 4 KB (one in a hundred past it), past the text, numbers no text has, what isn't a position; every position answered in the text on a character boundary; the lists within their limits | as `web`'s |
 | `response` | `parse::response`, `Body::data` (the fetch's) | `response_input`: a head ends at its blank line, a body only where its status has one; the data as its framing says (`dechunked` reads a chunked one apart) | first byte: bytes given at a time (1 + 2n), then the response |
 | `gzip` | `tarae_web::gzip::gunzip` (the fetch's) | `tarae_web::check::gzip_input`: no panic, never past its limit and one, a whole one ends with its CRC | first byte: the limit (64n), then the body |
+| `wire_decode` | `tarae_wire::Decoder` (an attached interface's messages to its host, and a host's to its client) | `tarae_wire::check::decode_input`: no panic, every message read written back as the bytes it was read from | first byte: which side's (its low bit) and bytes given at a time (1 + the rest), then the stream |
 
 `msghdr`'s input is a run's memory (`Fake::from_input`): a byte of flags (1: a datagram), where the header is
 (8 bytes), then pieces, each an address (8 bytes), a length (2 bytes) and its bytes. Numbers are little-endian.
@@ -63,7 +64,9 @@ its crate (`crates/tarae-web`, a dependency with its `check` feature, not a `#[p
 tarae's versions). `facts` is the page's own language server's answers (`tarae-web`'s `facts.rs`): it runs in
 tarae's process, where release aborts on a panic, so it's held to the reader's rules. `response` and `gzip` read
 what a server sends the fetch — `gzip` is `tarae-web`'s too; `response` with
-`-max_len` 73728 (past `RESPONSE_HEAD_MAX`, 64 KB: a response's head gets its own, larger limit).
+`-max_len` 73728 (past `RESPONSE_HEAD_MAX`, 64 KB: a response's head gets its own, larger limit). `wire_decode`
+reads what the other end of an attach socket sends (`crates/tarae-wire`, the remote plan's protocol): its peer is
+checked, its bytes aren't.
 
 `hour.sh` does all of it on Linux: it builds, then runs each target for an hour (`./hour.sh [seconds [target…]]`, `JOBS`
 at a time, one per core by default). It leaves `logs/<target>.log` and prints each target's crashes and last

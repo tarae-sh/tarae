@@ -1189,6 +1189,11 @@ pub struct Editor {
     /// clipboard's way, sound, the opener) — read here, never from the environment where it's asked. Its default is
     /// a tests' editor's (none of them: tests set what they check).
     pub interface: crate::interface::Facts,
+    /// A host with no interface attached (`tarae --host`): no frame is drawn, no animation's tick armed, the UI state
+    /// answered after each batch (`term::event_loop`), no idle `/compact` sent (`idlecompact::Why::Detached`).
+    pub detached: bool,
+    /// Started as a host (`tarae --host`): no terminal of its own, its interfaces attach (`:restart` keeps it one).
+    pub host: bool,
     /// (Tests: the home a session's `Caps` are made for — `caps::Basis.home`; None: the process's.)
     #[cfg(test)]
     pub caps_home: Option<PathBuf>,
@@ -1555,6 +1560,8 @@ impl Editor {
             code_trust: Default::default(),
             agent_looks: Default::default(),
             interface: Default::default(),
+            detached: false,
+            host: false,
             #[cfg(test)]
             caps_home: None,
             shellcheck: if cfg!(test) {
@@ -4357,8 +4364,13 @@ impl Editor {
 
     /// When a frame is next wanted with nothing else happening: the waiting animation's next step while
     /// something is waited on, else a toast's (`toast_wake`) — None: no frame. Not the animation while the
-    /// terminal says it's unfocused (`unfocused`): nobody sees it, and focus coming back draws it again.
+    /// terminal says it's unfocused (`unfocused`): nobody sees it, and focus coming back draws it again. None at all
+    /// while no interface is attached (`detached`).
     pub(crate) fn tick_wanted(&self) -> Option<std::time::Duration> {
+        // (nobody to show a step to: a host with no interface attached draws nothing)
+        if self.detached {
+            return None;
+        }
         // (a task's or tests' wave and wait counter are in the bottom slot — its panel and tabs — only: no
         // frames for them while the last frame didn't draw it; one that does asks again, `frame_drawn`)
         let slot_drawn = self.screen.bottom_h > 0 || self.screen.width.is_none();

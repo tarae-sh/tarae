@@ -14,7 +14,7 @@ root=$(cd ../.. && pwd)
 secs=${1:-3600}
 jobs=${JOBS:-$(nproc)}
 channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
-targets="sockaddr netlink msghdr head sni body web facts response gzip"
+targets="sockaddr netlink msghdr head sni body web facts response gzip wire_decode"
 [ $# -le 1 ] || { shift; targets=$*; }
 
 [ "$(uname -s)" = Linux ] || { echo "hour.sh is written for Linux (README.md runs one target anywhere)" >&2; exit 2; }

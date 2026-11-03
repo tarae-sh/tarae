@@ -64,7 +64,9 @@ use crate::workspace::At;
 /// 28: the minimized chat gone (the flow plan's piece 3): `panels.chat.minimized` is `hidden` (out of sight), `unread` the
 /// status line's `◂ new`; `keys.region` `chat-minimized` and `takes` `unfold` gone; `keys.region` `follow` (its handler
 /// `follow`): the follow card with the keys (#267).
-pub const V: u64 = 28;
+/// 29: the interface drawn for (the remote plan's step 3): `interface` is `null` for a host no interface is attached to
+/// (`tarae --host`), else its `kind` (`terminal`) and the last frame it `presented`.
+pub const V: u64 = 29;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -785,6 +787,30 @@ pub struct UiState {
     /// Where each thing to read was drawn on the last frame, by kind, bottom first (`regions.rs`) — a turn's reading
     /// path (`cargo xtask focus`); chrome, never Claude's.
     pub regions: Vec<crate::regions::Region>,
+    /// The interface drawn for (`interface.rs`): none attached to a host, else its kind and the last frame it
+    /// presented; never Claude's.
+    pub interface: Iface,
+}
+
+/// The state's `interface`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Iface {
+    /// A host with no interface attached: nothing is drawn (`Editor.detached`).
+    None,
+    /// The terminal tarae runs in, and the last frame it presented.
+    Terminal { presented: u64 },
+    /// Not said (Claude's level).
+    Unsaid,
+}
+
+impl Iface {
+    fn json(self) -> Option<Value> {
+        match self {
+            Iface::None => Some(Value::Null),
+            Iface::Terminal { presented } => Some(json!({ "kind": "terminal", "presented": presented })),
+            Iface::Unsaid => None,
+        }
+    }
 }
 
 /// The pointer's cell and what's under it: what a press there lands on (`mouse_under`'s surface and part), its kind
@@ -1847,6 +1873,10 @@ impl Editor {
             unfocused: self.unfocused,
             pointer: self.ui_pointer(),
             regions: self.screen.regions.list(),
+            interface: match self.detached {
+                true => Iface::None,
+                false => Iface::Terminal { presented: self.presented },
+            },
         }
     }
 
@@ -2213,6 +2243,9 @@ impl UiState {
         }
         if !self.regions.is_empty() {
             v["regions"] = self.regions.iter().map(crate::regions::Region::json).collect();
+        }
+        if let Some(i) = self.interface.json() {
+            v["interface"] = i;
         }
         v
     }

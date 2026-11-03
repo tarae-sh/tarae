@@ -838,31 +838,8 @@ impl Term {
     /// for a frame after the input (`uisocket::WAIT`) passes — a loaded machine's slow frame, never the harness's
     /// condition failing — so that's asked again until `timeout`, and only then a failure.
     pub fn state(&self, args: &[&str]) -> String {
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            let out = Command::new(&self.bin)
-                .arg("state")
-                .args(["--pid", &self.pid().to_string()])
-                .args(args)
-                .env_clear()
-                .envs(self.env.iter().cloned())
-                .output()
-                .expect("tarae state");
-            let (stdout, stderr) =
-                (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-            if out.status.success() {
-                return stdout.into_owned();
-            }
-            if stderr.contains("no frame within") && Instant::now() < deadline {
-                self.asked_again.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            panic!(
-                "tarae state FAILED {args:?}, ended with {} — stderr: {stderr:?}, stdout: {stdout:?}\n{}",
-                out.status,
-                self.screen()
-            );
-        }
+        let asked = Asked { bin: &self.bin, env: &self.env, pid: self.pid(), timeout: self.timeout };
+        asked.state(args, &self.asked_again, || self.screen().to_string())
     }
 
     /// How often `state` asked again past tarae's own wait for a frame.
@@ -1077,6 +1054,230 @@ impl Drop for Watching {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// How `tarae state` is asked of a running tarae (`Term::state`, `Host::state`): its build, its environment, its pid.
+struct Asked<'a> {
+    bin: &'a OsString,
+    env: &'a [(OsString, OsString)],
+    pid: u32,
+    timeout: Duration,
+}
+
+impl Asked<'_> {
+    /// `Term::state`'s loop: asked again past tarae's own wait for a frame (counted in `again`) until `timeout`, then
+    /// a failure with `shown` (the screen, or a host's output).
+    fn state(&self, args: &[&str], again: &AtomicUsize, shown: impl Fn() -> String) -> String {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let out = Command::new(self.bin)
+                .arg("state")
+                .args(["--pid", &self.pid.to_string()])
+                .args(args)
+                .env_clear()
+                .envs(self.env.iter().cloned())
+                .output()
+                .expect("tarae state");
+            let (stdout, stderr) =
+                (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            if out.status.success() {
+                return stdout.into_owned();
+            }
+            if stderr.contains("no frame within") && Instant::now() < deadline {
+                again.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            panic!(
+                "tarae state FAILED {args:?}, ended with {} — stderr: {stderr:?}, stdout: {stdout:?}\n{}",
+                out.status,
+                shown()
+            );
+        }
+    }
+}
+
+/// A host (`tarae --host`, the remote plan's step 3): tarae with no terminal of its own, as a plain child — no pty, its
+/// stdin empty, what it prints in a file of the sandbox's. Asked to quit (SIGTERM) on drop, killed past `QUIT_GRACE`.
+pub struct Host {
+    pub child: Child,
+    out: PathBuf,
+    timeout: Duration,
+    env: Vec<(OsString, OsString)>,
+    bin: OsString,
+    asked_again: AtomicUsize,
+}
+
+impl Sandbox {
+    /// `tarae --host args…` in the work folder, ready once its state socket answers.
+    pub fn host(&self, args: &[&str]) -> Host {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let out = self.root.join(format!("host-{}.out", N.fetch_add(1, Ordering::Relaxed)));
+        let file = File::create(&out).expect("the host's output file");
+        let mut cmd = Command::new(self.bin());
+        cmd.arg("--host")
+            .args(args)
+            .current_dir(self.work())
+            .env_clear()
+            .envs(self.env())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(file.try_clone().expect("dup")))
+            .stderr(Stdio::from(file));
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            // (a session of its own, as a host started in a pane is its shell's: a signal to the test's group isn't its)
+            cmd.pre_exec(|| cvt(libc::setsid()).map(|_| ()));
+        }
+        let child = cmd.spawn().expect("spawn tarae --host");
+        let mut h = Host {
+            child,
+            out,
+            timeout: self.timeout(),
+            env: self.env(),
+            bin: self.bin(),
+            asked_again: Default::default(),
+        };
+        h.wait_ready();
+        h
+    }
+}
+
+impl Host {
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// What it printed so far (stdout and stderr).
+    pub fn output(&self) -> String {
+        fs::read_to_string(&self.out).unwrap_or_default()
+    }
+
+    /// Waits until its state socket answers (a `tarae state` that fails is asked again).
+    fn wait_ready(&mut self) {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let ok = Command::new(&self.bin)
+                .args(["state", "--json", "--pid", &self.pid().to_string()])
+                .env_clear()
+                .envs(self.env.iter().cloned())
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if ok {
+                return;
+            }
+            if let Some(st) = self.child.try_wait().expect("try_wait") {
+                panic!("the host ended before its state answered: {st}\n{}", self.output());
+            }
+            assert!(Instant::now() < deadline, "the host's state never answered\n{}", self.output());
+            thread::sleep(POLL);
+        }
+    }
+
+    pub fn state(&self, args: &[&str]) -> String {
+        let asked = Asked { bin: &self.bin, env: &self.env, pid: self.pid(), timeout: self.timeout };
+        asked.state(args, &self.asked_again, || self.output())
+    }
+
+    pub fn state_json(&self) -> serde_json::Value {
+        let s = self.state(&["--json"]);
+        serde_json::from_str(&s).unwrap_or_else(|e| panic!("tarae state: {e}: {s}"))
+    }
+
+    /// Polls its state until `done` holds.
+    pub fn wait_state(&self, what: &str, done: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let s = self.state_json();
+            if done(&s) {
+                return s;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what} — the state:\n{s:#}\n{}",
+                self.output()
+            );
+            thread::sleep(POLL);
+        }
+    }
+
+    /// `Term::settle` with no terminal: `done` holds and none of the start's jobs is out (a host owes no frame).
+    pub fn settle(&mut self, what: &str, done: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let deadline = Instant::now() + self.timeout;
+        settle_on(self, |h| h.wait_state(what, &done), owes, starts_out, |_| 0, deadline)
+            .unwrap_or_else(|e| panic!("{what}: {e}\n{}", self.output()))
+    }
+
+    /// `Term::rest` with no terminal: what it printed counts as frames would (a byte is one).
+    pub fn rest(&mut self, settled: &serde_json::Value) -> Rest {
+        let pid = self.pid();
+        let (printed, before, woken, ran) = (self.output().len(), usage(pid), wakes(pid), threads(pid));
+        thread::sleep(REST);
+        let (printed, used, work, threads) = (
+            self.output().len() - printed,
+            usage(pid) - before,
+            wakes(pid).since(&woken),
+            woke(&ran, &threads(pid)),
+        );
+        let since = settled["events"].as_u64().expect("the settled answer's `events`");
+        let after = self.state_json();
+        let all = after["events"].as_u64().expect("the rest's ask's `events`");
+        let mut was = after["events_for"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["event"].as_u64().is_some_and(|n| n > since))
+            .filter_map(|e| e["was"].as_str().map(String::from))
+            .collect::<Vec<_>>();
+        let ask =
+            was.iter().rposition(|e| e == "a UI-state ask").expect("the rest's ask among the events kept");
+        was.remove(ask);
+        Rest { frames: printed, events: all - since - 1, was, used, work, threads }
+    }
+
+    /// Sends it `sig`.
+    pub fn signal(&self, sig: libc::c_int) {
+        // SAFETY: a signal to the host this harness started, still running (not waited for yet).
+        cvt(unsafe { libc::kill(self.pid() as libc::pid_t, sig) }).expect("kill");
+    }
+
+    pub fn running(&mut self) -> bool {
+        self.child.try_wait().expect("try_wait").is_none()
+    }
+
+    pub fn wait_exit(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            if let Some(st) = self.child.try_wait().expect("try_wait") {
+                return st;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the host didn't exit within {:?}\n{}",
+                self.timeout,
+                self.output()
+            );
+            thread::sleep(POLL);
+        }
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            // SAFETY: as `signal`.
+            unsafe { libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM) };
+            let grace = Instant::now() + QUIT_GRACE;
+            while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < grace {
+                thread::sleep(POLL);
+            }
+        }
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+        let deadline = Instant::now() + self.timeout;
+        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
+            thread::sleep(POLL);
+        }
     }
 }
 

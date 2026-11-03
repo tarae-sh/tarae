@@ -17,6 +17,7 @@ fn holds() -> Facts {
         rule: Rule::default(),
         busy: None,
         pressing: None,
+        detached: false,
     }
 }
 
@@ -50,6 +51,8 @@ fn decide_at_its_edges() {
     assert_eq!(with(|f| f.busy = Some(Busy::Card)), LetGo(Why::Busy(Busy::Card)), "a card waiting");
     assert_eq!(with(|f| f.busy = Some(Busy::Turn)), LetGo(Why::Busy(Busy::Turn)));
     assert_eq!(with(|f| f.pressing = Some("5-hour".into())), LetGo(Why::Pressing("5-hour".into())));
+    assert_eq!(with(|f| f.detached = true), LetGo(Why::Detached), "nobody attached to the host");
+    assert_eq!(with(|f| (f.detached, f.now_ms) = (true, AT)), WakeAt(DUE), "judged as it wakes");
     // (the variable's minimum, its floor)
     assert_eq!(with(|f| f.rule.min_tokens = 200_001), LetGo(Why::Small));
     assert_eq!(with(|f| (f.rule.min_tokens, f.tokens) = (FLOOR, Some(FLOOR))), Compact);

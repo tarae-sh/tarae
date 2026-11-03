@@ -253,6 +253,8 @@ tarae — a selection-first modal editor in the spirit of Helix
 
 usage: tarae [FILE]...
        tarae FOLDER                          work in FOLDER (its config, its last files)
+       tarae --host [FILE]...                the editor with no terminal of its own: it works on in the
+                                             foreground until :q, SIGTERM or C-c (not SIGHUP)
        tarae --diff OLD NEW                  NEW, with its changes from OLD shown in place
                                              (git difftool -x 'tarae --diff')
        tarae grammar install [LANG]...       fetch and build syntax grammars (no LANG = all;
@@ -283,6 +285,8 @@ fn main() -> Result<()> {
     restart::remember_exe();
     let mut files = Vec::new();
     let mut diff_against: Option<PathBuf> = None;
+    // A host (`--host`, the remote plan's step 3): no terminal of its own — an interface attaches to it
+    let mut host = false;
     // `:restart`: the state the last tarae left (restart.rs)
     let (mut restarted, mut old_children) = (None, Vec::new());
     let mut args = std::env::args().skip(1);
@@ -302,6 +306,7 @@ fn main() -> Result<()> {
                     std::process::exit(2);
                 }
             },
+            "--host" => host = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -350,8 +355,9 @@ fn main() -> Result<()> {
     // tarae's binary pinned for the shim — said once the log is. A subcommand that ends at once — `state`, `grammar`,
     // `plugin`, `--version` — raises nothing and pins nothing: it would leave a pin no prune of its sees)
     let raised = nofile::raise();
-    // (before any thread starts — SIGTERM and SIGHUP quit as `:q!` does, ending what tarae started)
-    term::catch_signals();
+    // (before any thread starts — SIGTERM and SIGHUP quit as `:q!` does, ending what tarae started; a host's SIGHUP
+    // is dropped, its SIGINT quits)
+    term::catch_signals(host);
     // (Linux: what Claude's runs leave running stays tarae's — served, reaped, ended with its session)
     reaper::at_start();
     // The UI state's socket — now, while no thread runs (its umask, and for a long path its folder, are the
@@ -365,9 +371,11 @@ fn main() -> Result<()> {
     // The interface tarae draws for — the terminal it runs in — and what it says of itself (`interface::Facts`).
     // Theme "default" (meok/hanji) follows its background — before reading config (config reads it). A restart
     // knows it already (and the query's answer could mix with keys typed meanwhile).
+    // A host has none until one attaches.
     let light = restarted.as_ref().and_then(|s| s["light"].as_bool());
-    let interface = term::terminal(light);
-    if let Some(light) = interface.facts.light {
+    let interface = (!host).then(|| term::terminal(light));
+    let facts = interface.as_ref().map_or_else(term::no_interface, |i| i.facts.clone());
+    if let Some(light) = facts.light {
         theme::set_light(light);
     }
     // (the one look at where tarae runs — from here on the editor's root, the project it's in, is what everything
@@ -384,7 +392,11 @@ fn main() -> Result<()> {
     let (config, warnings) = config::load(&root, &config::Sources::own());
     let mut editor = editor::Editor::with_root(config, root);
     // (what the editor reads of the interface — never the environment where it's asked)
-    editor.interface = interface.facts.clone();
+    editor.interface = facts;
+    (editor.host, editor.detached) = (host, host);
+    if host {
+        log::line("tarae", "info", "a host: no interface attached — nothing drawn; SIGHUP is ignored");
+    }
     editor.workspace.start_in =
         start.strip_prefix(&editor.workspace.root).unwrap_or(std::path::Path::new("")).to_path_buf();
     // (a mark on the way that isn't yours, passed over: said once — a `.tarae.toml` at the project or above it is the

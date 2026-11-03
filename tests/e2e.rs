@@ -1450,6 +1450,48 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
 
 /// A client connected to `sock` that asks nothing (`nc -U`, from the socket's folder — its path may be past
 /// `sun_path`'s 104 bytes); gone when dropped. None where there's no `nc` with `-U`.
+/// A host (`tarae --host`, the remote plan's step 3) has no terminal of its own: SIGHUP (the shell it was started from
+/// going) is dropped — it works on, its state still answering, with no interface (`interface: null`); SIGTERM and SIGINT
+/// (`C-c` in the foreground) quit it as `:q!` does, not killed by them. It prints nothing meanwhile.
+#[test]
+fn a_host_ignores_sighup_and_quits_on_sigterm() {
+    use std::os::unix::process::ExitStatusExt;
+    for sig in [libc::SIGTERM, libc::SIGINT] {
+        let sb = Sandbox::new("host-signals");
+        sb.write("a.txt", "one\n");
+        let mut h = sb.host(&["a.txt"]);
+        let s = h.state_json();
+        assert_eq!(s["interface"], serde_json::Value::Null, "no interface attached\n{s:#}");
+        assert_eq!(s["frames_written"].as_u64().unwrap_or(0), 0, "nothing drawn");
+        h.signal(libc::SIGHUP);
+        // (asked again after it: the hangup, if it quit, would have ended the process before this answer)
+        h.wait_state("an answer after the hangup", |s| s["events"].as_u64().is_some());
+        h.state_json();
+        assert!(h.running(), "a hangup ended the host\n{}", h.output());
+        h.signal(sig);
+        let status = h.wait_exit();
+        assert_eq!(status.signal(), None, "signal {sig}: it quit, not killed by it ({status})");
+        assert!(status.success(), "signal {sig}: {status}\n{}", h.output());
+        assert_eq!(h.output(), "", "a host prints nothing of its own");
+    }
+}
+
+/// A host with no interface attached sleeps as an idle editor does (`an_idle_editor_draws_nothing_and_sleeps`): no frame
+/// drawn, nothing printed, no event of its main loop but its wakes on a clock, its threads' work near nothing — and no
+/// animation's tick armed (`tick_ask`: nobody to show a step to).
+#[test]
+fn an_idle_host_draws_nothing_and_sleeps() {
+    let sb = Sandbox::new("host-idle");
+    sb.write("a.txt", "one\n");
+    let mut h = sb.host(&["a.txt"]);
+    let s = h.settle("the host's start", |s| s["interface"].is_null());
+    let rest = h.rest(&s);
+    assert!(rest.woken().is_none(), "{rest}\n{}", h.output());
+    let s = h.state_json();
+    assert_eq!(s["frames_written"].as_u64().unwrap_or(0), 0, "no frame\n{s:#}");
+    assert_eq!(h.output(), "", "nothing printed");
+}
+
 fn connected(sock: &std::path::Path) -> Option<std::process::Child> {
     let child = std::process::Command::new("/bin/sh")
         .args(["-c", "exec nc -U \"$0\"", &sock.file_name().unwrap().to_string_lossy()])
@@ -1479,7 +1521,7 @@ fn a_driver_reads_where_the_keys_go() {
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("one");
     let s = t.state_json(0);
-    assert_eq!(s["v"], 28, "the schema's version (`uistate::V`)");
+    assert_eq!(s["v"], 29, "the schema's version (`uistate::V`)");
     assert_eq!((s["keys"]["region"].as_str(), s["keys"]["takes"].as_str()), (Some("code"), Some("commands")));
     assert_eq!(s["tarae"]["pid"], t.pid());
     let input = s["input"].as_u64().unwrap();

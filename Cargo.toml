@@ -136,8 +136,8 @@ toml = "1.1.6"
 # them here); the dev task crate (cargo xtask — .cargo/config.toml) a member only. None affects
 # `cargo install --path .`
 [workspace]
-members = ["xtask", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit"]
-default-members = [".", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit"]
+members = ["xtask", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire"]
+default-members = [".", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire"]
 
 [workspace.package]
 edition = "2024"

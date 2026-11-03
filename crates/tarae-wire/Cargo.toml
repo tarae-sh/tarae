@@ -1,0 +1,18 @@
+# The attach protocol (the remote plan's §8b, step 3): what a host and its interface say to each other over one stream
+# — the messages, their bytes, and the writer's one-slot mailbox with its credits. Pure, std only: it names nothing of
+# the editor (tarae's src/attach.rs and src/client.rs turn its keys, frames and asks into tarae's own).
+[package]
+name = "tarae-wire"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# The decoder's property and the inputs tests build (`check`): fuzz/parsers turns it on, never tarae's own build
+check = []
+
+[dev-dependencies]
+tarae-testkit = { path = "../tarae-testkit" }  # the seeded mutators

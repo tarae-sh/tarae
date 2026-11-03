@@ -42,12 +42,23 @@ use crate::whole::Fit;
 use crate::workspace::At;
 use tree_sitter::QueryCursor;
 
-/// The main loop, drawing for `iface` until tarae quits — made ready first, left as found after.
-pub fn run(editor: &mut Editor, mut iface: Interface) -> Result<()> {
-    iface.link.begin()?;
+/// The main loop, drawing for `iface` until tarae quits — made ready first, left as found after. With none (a host
+/// no interface is attached to, `tarae --host`) it draws nothing.
+pub fn run(editor: &mut Editor, mut iface: Option<Interface>) -> Result<()> {
+    if let Some(i) = iface.as_mut() {
+        i.link.begin()?;
+    }
     let res = event_loop(editor, &mut iface);
-    iface.link.end()?;
+    if let Some(i) = iface.as_mut() {
+        i.link.end()?;
+    }
     res
+}
+
+/// What a host with no interface attached says of one (`tarae --host`): nothing — no ground (meok), no twins, no
+/// sound or opener; its clipboard this machine's way, for now.
+pub fn no_interface() -> Facts {
+    Facts { clipboard: crate::clipboard::Env::here(), presents_late: true, ..Facts::default() }
 }
 
 /// The terminal tarae runs in, as the interface it draws for (`interface.rs`) — what it says of itself read here,
@@ -203,8 +214,10 @@ fn tests_skip_seek() -> bool {
     false
 }
 
-fn event_loop(editor: &mut Editor, iface: &mut Interface) -> Result<()> {
-    iface.link.listen(editor.events.shared_sender());
+fn event_loop(editor: &mut Editor, iface: &mut Option<Interface>) -> Result<()> {
+    if let Some(i) = iface.as_mut() {
+        i.link.listen(editor.events.shared_sender());
+    }
     spawn_signals(editor.events.shared_sender());
     editor.watches_start();
     editor.procs_start_sampling();
@@ -217,6 +230,10 @@ fn event_loop(editor: &mut Editor, iface: &mut Interface) -> Result<()> {
     let mut frame = Vec::with_capacity(1 << 16);
     editor.drawn_by.push(crate::editor::DrawnFor::Named("the first frame"));
     while !editor.should_quit {
+        let Some(iface) = iface.as_mut() else {
+            detached_batch(editor);
+            continue;
+        };
         if draw {
             present(editor, iface, &mut frame)?;
         }
@@ -243,7 +260,7 @@ fn event_loop(editor: &mut Editor, iface: &mut Interface) -> Result<()> {
             let Some(ev) = editor.events.recv() else { break };
             ev
         };
-        let until = std::time::Instant::now() + std::time::Duration::from_millis(16);
+        let until = batch_until();
         // (today, for what this batch counts — and what's counted saved now and then: `features.rs`)
         editor.features_turn();
         let (unchanged, whole) = handle_batch(editor, ev, until);
@@ -258,6 +275,29 @@ fn event_loop(editor: &mut Editor, iface: &mut Interface) -> Result<()> {
     editor.reviews_flush();
     editor.cards_flush();
     Ok(())
+}
+
+/// The main loop's turn with no interface attached (`Editor.detached`): the next batch of events handled, nothing
+/// drawn — nobody is there to see it. What a frame would have done for those not looking at it is done after the
+/// batch: the start is over once its first batch is, the UI state's watchers hear what changed and its snapshots are
+/// answered (`uistate::after_frame`: no frame is owed them).
+fn detached_batch(editor: &mut Editor) {
+    editor.stall.idle();
+    let Some(ev) = editor.events.recv() else {
+        editor.should_quit = true;
+        return;
+    };
+    editor.features_turn();
+    handle_batch(editor, ev, batch_until());
+    editor.stall.begin(crate::stall::Label::Named("the batch's end"));
+    editor.drawn_by.clear();
+    editor.events.started();
+    crate::uistate::after_frame(editor);
+}
+
+/// When a batch of events begun now ends: a frame's time from now (`handle_batch`).
+fn batch_until() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_millis(16)
 }
 
 /// Handles `ev` and the events queued behind it (pastes, key bursts, job results) — what the next frame shows
@@ -337,8 +377,10 @@ static SIGNAL_READ: std::sync::Mutex<Option<io::PipeReader>> = std::sync::Mutex:
 /// tarae as `:q!` does, so what it started goes with it — the terminal panel's shell, runs, servers — where
 /// the default death runs no destructors. A second one acts as before (`SA_RESETHAND`); one ignored when
 /// tarae started (`nohup`) stays ignored. Called before any thread starts: on macOS a pipe's close-on-exec
-/// is set after it's made, and a program started meanwhile would keep it.
-pub fn catch_signals() {
+/// is set after it's made, and a program started meanwhile would keep it. A host (`tarae --host`, `host`) has no
+/// terminal of its own to lose: SIGHUP is ignored (the shell it was started from going isn't the person leaving —
+/// they come back with `tarae attach`), and SIGINT (`C-c` where it runs in the foreground) quits as SIGTERM does.
+pub fn catch_signals(host: bool) {
     use std::os::fd::{AsRawFd, IntoRawFd};
     let Ok((read, write)) = io::pipe() else { return };
     let fd = write.as_raw_fd();
@@ -346,7 +388,20 @@ pub fn catch_signals() {
     unsafe { libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK) };
     SIGNAL_WRITE.store(write.into_raw_fd(), std::sync::atomic::Ordering::SeqCst);
     *SIGNAL_READ.lock().unwrap_or_else(|e| e.into_inner()) = Some(read);
-    for sig in [libc::SIGTERM, libc::SIGHUP] {
+    if host {
+        // (caught and dropped, never `SIG_IGN`: an ignored signal stays ignored across exec, in every run, server and
+        // the terminal panel's shell; a handler goes back to the default there)
+        // SAFETY: a zeroed sigaction filled in before use; the handler does nothing.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_hangup as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(libc::SIGHUP, &sa, std::ptr::null_mut());
+        }
+    }
+    let caught = if host { [libc::SIGTERM, libc::SIGINT] } else { [libc::SIGTERM, libc::SIGHUP] };
+    for sig in caught {
         // SAFETY: a zeroed sigaction filled in before use; the handler only calls write(2).
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
@@ -361,6 +416,9 @@ pub fn catch_signals() {
         }
     }
 }
+
+/// A host's SIGHUP: nothing (`catch_signals`).
+extern "C" fn on_hangup(_: libc::c_int) {}
 
 extern "C" fn on_signal(_: libc::c_int) {
     let fd = SIGNAL_WRITE.load(std::sync::atomic::Ordering::Relaxed);
