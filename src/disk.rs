@@ -6,7 +6,9 @@
 //!   after 2 s without input. Files in conflict are never auto-saved.
 //!
 //! Watching = a worker thread waits for the open files to change (inotify/kqueue — `fswatch`), then stats
-//! them (the main loop never waits on disk); plus a stat at once on regaining focus.
+//! them (the main loop never waits on disk); plus a stat at once on regaining focus. A stamp a write of the same
+//! size could keep — its mtime within the filesystem clock's grain of when it was taken — has its text read too,
+//! until a read past that grain finds it the same (`racy_look`, git's racy-git rule; #286).
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter};
@@ -30,6 +32,59 @@ const RELOAD_MAX: u64 = 16 << 20;
 pub fn stamp(path: &Path) -> Option<Stamp> {
     let m = std::fs::metadata(path).ok()?;
     Some((m.modified().ok()?, m.len()))
+}
+
+/// The coarsest grain a file's mtime moves by that the watch allows for: FAT's two seconds (ext3's small inodes and
+/// HFS+ one, older Linux kernels a jiffy — 4 or 10 ms —, APFS and the newest kernels' multigrain ones finer). A
+/// filesystem whose clock is another machine's (NFS, SMB) may stray past it: there a write can still go unseen.
+pub(crate) const RACY: Duration = Duration::from_secs(2);
+
+/// Whether a stamp taken at `taken` (the clock read before the stat) tells every later write apart (#286, git's
+/// racy-git rule): a write after it gets an mtime past this one's, whatever the filesystem's grain — unless its
+/// mtime was within `RACY` of `taken`, when a write of the same size can keep the very stamp.
+pub fn sure(stamp: &Stamp, taken: SystemTime) -> bool {
+    stamp.0.checked_add(RACY).is_some_and(|t| t <= taken)
+}
+
+/// `stamp`, and the same stamp again where it's `sure` — a document's `disk` and `disk_sure` as it's read.
+pub fn stamp_sure(path: &Path) -> (Option<Stamp>, Option<Stamp>) {
+    let taken = crate::clock::system();
+    let now = stamp(path);
+    (now, now.filter(|s| sure(s, taken)))
+}
+
+/// A file whose stamp isn't sure (`Document.disk_sure`): its document, path, the stamp held, and the text its
+/// buffer holds as the file's.
+type Racy = (DocId, PathBuf, Stamp, Rope);
+
+/// The racy files' texts looked at (#286): a stamp as held hides no write only once its text is read and is the
+/// held one. One found another is a change (as a stamp's would be: the stamp the same, its text). One the same,
+/// read at `taken` or later, is sure from now on (`sure` — no later write can keep its stamp): out of `racy`, into
+/// `confirmed`. One whose stamp moved meanwhile is left to the stamp's own look (it moved after the watcher was
+/// armed: it wakes the round). Each read on the watch's worker, only while it's racy — a stamp is read about
+/// twice: as the round after it begins, and once past `RACY`, at the latest by the watch's backstop.
+fn racy_look(racy: &mut Vec<Racy>, taken: SystemTime, confirmed: &mut Vec<(DocId, Stamp)>) -> Vec<Stat> {
+    let mut found = Vec::new();
+    racy.retain(|(id, path, held, text)| {
+        let at = Some(*held);
+        if stamp(path) != at {
+            return true;
+        }
+        let Ok(body) = std::fs::read_to_string(path) else { return true };
+        if stamp(path) != at {
+            return true;
+        }
+        if *text != body.as_str() {
+            found.push((*id, at, at, Some(Rope::from_str(&body))));
+            return false;
+        }
+        if sure(held, taken) {
+            confirmed.push((*id, *held));
+            return false;
+        }
+        true
+    });
+    found
 }
 
 /// How long a changed file must stay as it is before a round reads it (frictions29 90 a: a plain write by another
@@ -308,6 +363,8 @@ impl Editor {
             .filter(|d| watchable(d))
             .filter_map(|d| Some((d.id, d.path.clone()?, d.disk)))
             .collect();
+        let moving = self.moving_roots();
+        let mut racy: Vec<Racy> = self.docs.iter().filter_map(|d| racy_of(d, &moving)).collect();
         let waker = crate::fswatch::Waker::new();
         let watched = files.iter().map(|(id, p, _)| (*id, p.clone())).collect();
         if let Some((old, _)) = self.disk_round.replace((waker.clone(), watched)) {
@@ -316,19 +373,23 @@ impl Editor {
         // (every session's files: applied in the one in front — never swapped into the session that happened
         // to start the round, whose name its toasts then carried, #59)
         self.events.shared_jobs().spawn(move || {
+            let mut confirmed = Vec::new();
             let stats: Vec<Stat> = loop {
                 // Armed before the stat: a change made while it runs still ends the wait
                 let mut watcher = wait.then(|| crate::fswatch::Watcher::with_waker(waker.clone()));
                 if let Some(w) = watcher.as_mut() {
                     files.iter().for_each(|(_, p, _)| w.file(p));
                 }
+                let taken = crate::clock::system();
                 let changed = files
                     .iter()
                     .map(|(id, path, known)| (*id, path.clone(), *known, stamp(path)))
                     .filter(|(_, _, known, now)| now != known)
                     .collect();
                 // (read once they stopped changing: never a write half-done — frictions29 90 a)
-                let stats = settled(changed, crate::event::pause);
+                let mut stats = settled(changed, crate::event::pause);
+                // (a stamp a same-size write could have kept: its text looked at — #286)
+                stats.extend(racy_look(&mut racy, taken, &mut confirmed));
                 // (a change that isn't in the stats — a neighbour's, or a folder that appeared: look again)
                 if !stats.is_empty() || watcher.is_none_or(|mut w| w.wait() != crate::fswatch::Woke::Changed)
                 {
@@ -337,6 +398,11 @@ impl Editor {
             };
             move |ed: &mut Editor| {
                 ed.drawn_for(ROUND);
+                for (id, held) in confirmed {
+                    if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id && d.disk == Some(held)) {
+                        d.disk_sure = Some(held);
+                    }
+                }
                 // (a backstop round that found nothing is nothing to draw)
                 ed.unchanged = stats.is_empty();
                 // (a reload landed while this round looked — an earlier round's, handled first, which may have
@@ -370,17 +436,12 @@ impl Editor {
         let mut said: Vec<(DocId, String, bool)> = Vec::new();
         // (each reload or deletion, by document: counted into its own session's batch)
         let mut counted: Vec<(DocId, bool)> = Vec::new();
-        let moving: Vec<std::path::PathBuf> = std::iter::once(&self.workspace)
-            .chain(&self.workspaces)
-            .filter(|l| l.moving.is_some())
-            .map(|l| l.root.clone())
-            .collect();
+        let moving = self.moving_roots();
         for (id, known, now, body) in stats {
             let Some(doc) = self.docs.iter_mut().find(|d| d.id == id) else { continue };
             // (your edits in a checkout being moved onto its base — `keepclose.rs`: git rewrites the file and puts
             // it back; nothing written back, nothing said — looked at as it lands, against the stamp it had)
-            if doc.is_modified() && doc.path.as_ref().is_some_and(|p| moving.iter().any(|r| p.starts_with(r)))
-            {
+            if held_while_moving(doc, &moving) {
                 continue;
             }
             // Saved (or reloaded) since the stat started — the change it saw may be our own write; or a save
@@ -464,6 +525,15 @@ impl Editor {
             self.lsp_saved_outside(id);
         }
         stale
+    }
+
+    /// The roots of the checkouts being moved onto their base (`keepclose.rs`).
+    fn moving_roots(&self) -> Vec<PathBuf> {
+        std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .filter(|l| l.moving.is_some())
+            .map(|l| l.root.clone())
+            .collect()
     }
 
     /// The session document `id` is of (the one in front when none says so).
@@ -747,6 +817,23 @@ pub fn unparsed_config(path: &Path, text: &ropey::Rope) -> Option<String> {
         false => serde_json::from_str::<serde_json::Value>(&s).err().map(|e| e.to_string()),
     }?;
     Some(err.lines().next().unwrap_or("a syntax error").trim().to_string())
+}
+
+/// A buffer with your edits in a checkout being moved onto its base (`moving`, `Editor::moving_roots`): the watch
+/// leaves it alone until the move lands.
+fn held_while_moving(d: &crate::document::Document, moving: &[PathBuf]) -> bool {
+    d.is_modified() && d.path.as_ref().is_some_and(|p| moving.iter().any(|r| p.starts_with(r)))
+}
+
+/// The document as a racy file for the watch's round (`racy_look`): watched, its stamp not sure, not already said to
+/// differ, its file's text as held still in hand (`saved_text`) and not past `RELOAD_MAX`.
+fn racy_of(d: &crate::document::Document, moving: &[PathBuf]) -> Option<Racy> {
+    // (one held while its checkout moves: as `on_disk` leaves it — else found again at once, round after round)
+    if !watchable(d) || d.disk == d.disk_sure || d.disk_conflict || held_while_moving(d, moving) {
+        return None;
+    }
+    let held = d.disk.filter(|s| s.1 <= RELOAD_MAX)?;
+    Some((d.id, d.path.clone()?, held, d.saved_text()?))
 }
 
 fn changed_while_editing(name: &str) -> String {
@@ -1051,6 +1138,65 @@ mod tests {
         s.pump(PAST_QUIET);
         assert_eq!(s.saves(), 3, "nothing changed");
         std::fs::remove_dir_all(&s.dir).ok();
+    }
+
+    /// #286, #283's sibling in the watch: another program's write of the same size within one tick of the
+    /// filesystem's clock (a jiffy on Linux 5.14 and 6.1, K1's and K3's VMs) keeps the stamp the buffer was read at,
+    /// so a stat sees no change. The buffer read within `RACY` of its file's mtime has its text looked at: taken.
+    /// With unsaved edits: the watch's message, said once, the buffer kept. Deterministic on any machine: the file's
+    /// mtime an hour ahead of every clock the test reads, and each write put back at it.
+    #[test]
+    fn a_same_size_write_that_keeps_the_stamp_is_seen_by_the_watch() {
+        let dir = crate::scratch::Scratch::new("disk-racy");
+        let file = std::fs::canonicalize(dir.join("")).unwrap().join("a.rs");
+        let ahead = SystemTime::now() + Duration::from_secs(3600);
+        let write = |text: &str| {
+            std::fs::write(&file, text).unwrap();
+            OpenOptions::new().write(true).open(&file).unwrap().set_modified(ahead).unwrap();
+        };
+        write("one\ntwo\n");
+        let mut ed = Editor::new(Config::default());
+        ed.open(&file).unwrap();
+        let held = ed.doc().disk;
+        assert!(held.is_some() && ed.doc().disk_sure.is_none(), "racy as read");
+        write("one\nTWO\n");
+        assert_eq!(stamp(&file), held, "the stamp kept");
+        poll_once(&mut ed);
+        assert_eq!(ed.doc().text.to_string(), "one\nTWO\n", "the text looked at");
+        assert!(!ed.doc().is_modified() && ed.doc().disk == held);
+        // (still racy: its mtime ahead of the round's clock)
+        assert!(ed.doc().disk_sure.is_none());
+        // Unsaved edits: said, not taken
+        feed(&mut ed, "ihi <esc>");
+        write("one\nSIX\n");
+        poll_once(&mut ed);
+        assert_eq!(ed.doc().text.to_string(), "hi one\nTWO\n");
+        assert!(ed.doc().disk_conflict);
+        poll_once(&mut ed);
+        let said =
+            ed.messages.iter().filter(|m| m.2.contains("changed on disk while you were editing")).count();
+        assert_eq!(said, 1, "{:?}", ed.messages);
+    }
+
+    /// #286: a stamp taken `RACY` past its mtime tells every later write apart — sure as read, its text never read
+    /// again; one taken by no clock (a save's, a reload's) is sure once a round read past `RACY` finds its text the
+    /// held one.
+    #[test]
+    fn a_racy_stamp_is_sure_once_read_past_the_grain() {
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1 << 30);
+        assert!(sure(&(t, 1), t + RACY) && !sure(&(t, 1), t + RACY - Duration::from_nanos(1)));
+        let dir = crate::scratch::Scratch::new("disk-sure");
+        let file = std::fs::canonicalize(dir.join("")).unwrap().join("a.rs");
+        std::fs::write(&file, "one\n").unwrap();
+        let back = SystemTime::now() - Duration::from_secs(3600);
+        OpenOptions::new().write(true).open(&file).unwrap().set_modified(back).unwrap();
+        let mut ed = Editor::new(Config::default());
+        ed.open(&file).unwrap();
+        assert!(ed.doc().disk.is_some() && ed.doc().disk_sure == ed.doc().disk, "sure as read");
+        ed.doc_mut().disk_sure = None;
+        poll_once(&mut ed);
+        assert!(ed.doc().disk_sure == ed.doc().disk, "sure once read past the grain");
+        assert_eq!(ed.doc().text.to_string(), "one\n");
     }
 
     /// #283: a write of the same size within one tick of the filesystem's clock keeps the stamp the buffer was read

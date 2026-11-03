@@ -1912,12 +1912,12 @@ impl Editor {
             self.events.jobs().spawn(move || {
                 let started = std::time::Instant::now();
                 // Stamp before reading — a change during the read is caught by the next watch round
-                let disk = crate::disk::stamp(&p);
+                let (disk, sure) = crate::disk::stamp_sure(&p);
                 let result = crate::document::read_file(&p);
                 let took = started.elapsed();
                 move |ed: &mut Editor| {
                     if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id) {
-                        d.disk = disk;
+                        (d.disk, d.disk_sure) = (disk, sure);
                     }
                     ed.finish_loading(id, result, took)
                 }

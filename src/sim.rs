@@ -35,6 +35,7 @@ mod chatstream;
 mod claudestart;
 mod codetrust;
 mod commit;
+mod diskracy;
 mod diskroom;
 mod diskwatch;
 mod folders;

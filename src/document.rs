@@ -298,6 +298,9 @@ pub struct Document {
     redo: Vec<Snapshot>,
     /// Fingerprint of the disk file last read or written — detects changes made elsewhere (disk.rs).
     pub disk: Option<crate::disk::Stamp>,
+    /// `disk` where it tells every later write apart (`disk::sure`) — any other the watch also reads the text of
+    /// (#286: a write of the same size within the filesystem clock's grain keeps the stamp).
+    pub disk_sure: Option<crate::disk::Stamp>,
     /// Disk changed too while I was editing (resolve with `:reload` / `:w!`).
     pub disk_conflict: bool,
     /// Saves of this buffer the saver thread hasn't finished (`saver.rs`) — the disk changing meanwhile is
@@ -479,6 +482,7 @@ impl Document {
             undo: Vec::new(),
             redo: Vec::new(),
             disk: None,
+            disk_sure: None,
             disk_conflict: false,
             saving: 0,
             git_base: None,
@@ -528,7 +532,7 @@ impl Document {
     /// A missing file gives an empty document at that path (created on save).
     pub fn open(id: DocId, path: &Path) -> Result<Self> {
         let mut doc = Self::placeholder(id, path);
-        doc.disk = crate::disk::stamp(path);
+        (doc.disk, doc.disk_sure) = crate::disk::stamp_sure(path);
         doc.text = read_file(path)?;
         doc.loading = false;
         Ok(doc)
