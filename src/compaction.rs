@@ -181,12 +181,11 @@ pub fn on_compacted(ed: &mut Editor, mut k: Compaction) {
     if behind {
         s.unseen = true;
     }
-    // Behind (`said_by_session` puts its name first), or in front with the chat out of sight past the turn —
-    // as a turn's end is said (`chat::out_of_sight`: not when following minimized it, the panel's back with
-    // the answer and the note in it). Came by itself, what it worked out may be gone: a warning
+    // Behind (`said_by_session` puts its name first), or in front with the chat out of sight past what it says now
+    // (`chat::out_of_sight`: a zoom, a review read wide). Came by itself, what it worked out may be gone: a warning
     let msg = match (behind, crate::chat::out_of_sight(ed)) {
         (true, _) => Some(format!("Claude compacted its conversation ({how})")),
-        (false, true) => Some(format!("Claude compacted its conversation ({how}) — space l shows it")),
+        (false, true) => Some(format!("Claude compacted its conversation ({how}) — space L shows it")),
         (false, false) => None,
     };
     match (msg, automatic) {
@@ -388,7 +387,8 @@ mod tests {
                 vec![manual(), result(None, 1.2)],
             ],
         );
-        feed(&mut ed, "<space>lgo<ret>");
+        // (the column, its input keeping the keys for the next message)
+        feed(&mut ed, "<space>Lgo<ret>");
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         let said: Vec<(Role, String)> = {
             let c = ed.workspace.claude.chat.as_ref().unwrap();
@@ -440,7 +440,7 @@ mod tests {
                 vec![sleep(), result(None, 0.3)],
             ],
         );
-        feed(&mut ed, "<space>l<esc><esc>");
+        feed(&mut ed, "<space>L<esc><esc>");
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         let said = |rows: &[String], w: &str| rows.iter().any(|r| r.contains(w));
         // Begun: said in the chat, title and body
@@ -475,8 +475,8 @@ mod tests {
     }
 
     /// The front session compacting with its chat out of sight — the code zoomed (`C-w z`): a toast says
-    /// so, and where to see it. With the chat in sight its note is enough, and so when following only
-    /// minimized it while Claude worked (the panel's back with the answer, the note in it).
+    /// so, and where to see it. With the chat in sight its note is enough, and so with it hidden while Claude
+    /// worked (the note in it, read as the conversation is).
     #[test]
     fn the_front_out_of_sight_is_told_of_a_compaction() {
         use crate::editor::ToastKind;
@@ -490,7 +490,7 @@ mod tests {
                 .map(|t| (t.text.clone(), t.kind))
                 .collect()
         };
-        feed(&mut ed, "<space>l<esc>");
+        feed(&mut ed, "<space>L<esc>");
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         // In sight
         feed(&mut ed, "<space>lone<ret>");
@@ -498,25 +498,29 @@ mod tests {
         assert!(ed.screen.chat_x.is_some());
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         assert_eq!(told(&ed), [], "{:?}", ed.toasts);
-        // Minimized by following while Claude works (code in sight, so the card is drawn)
+        // Hidden while Claude works (code in sight, so the follow card is drawn): no zoom, nothing filling the screen
         let notes = dir.join("front/notes.txt");
         std::fs::write(&notes, "one\n").unwrap();
         ed.open(&notes).unwrap();
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
         feed(&mut ed, "<space>lthree<ret>");
+        crate::chat::hide(&mut ed);
         rows(&mut ed, 160);
-        assert!(ed.screen.chat_x.is_none(), "minimized while it works");
+        assert!(ed.screen.chat_x.is_none(), "hidden while it works");
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         assert_eq!(told(&ed), [], "{:?}", ed.toasts);
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         // The code zoomed: said
-        feed(&mut ed, "<space>ltwo<ret><esc><esc>");
+        // (the column in sight, then the code zoomed over it)
+        crate::chat::open(&mut ed);
+        feed(&mut ed, "two<ret><esc><esc>");
         rows(&mut ed, 160);
         feed(&mut ed, "<C-w>z");
         rows(&mut ed, 160);
-        assert!(ed.zoomed().is_some() && ed.screen.chat_x.is_none());
+        assert!(ed.zoomed().is_some(), "zoomed: {}", ed.keys_to().region.name());
+        assert!(ed.screen.chat_x.is_none(), "the chat out of sight");
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
-        let msg = "Claude compacted its conversation (automatic, 812k tokens before) — space l shows it";
+        let msg = "Claude compacted its conversation (automatic, 812k tokens before) — space L shows it";
         assert_eq!(told(&ed), [(msg.to_string(), ToastKind::Warning)], "{:?}", ed.toasts);
         cleanup(&dir);
     }
@@ -532,7 +536,7 @@ mod tests {
             None,
             "never: not said"
         );
-        feed(&mut ed, "<space>lone<ret>");
+        feed(&mut ed, "<space>Lone<ret>");
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         feed(&mut ed, "two<ret>");
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);

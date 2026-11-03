@@ -97,7 +97,10 @@ pub struct Picker {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chat {
     pub focused: bool,
-    pub minimized: bool,
+    /// Out of sight (`Chat.hidden`).
+    pub hidden: bool,
+    /// What's new since you looked (`Chat::unread`: the status line's `◂ new`).
+    pub unread: bool,
     pub busy: bool,
     pub queued: bool,
     /// What waits for the turn's end, said (`2 messages queued` — `Chat::queued_said`).
@@ -348,7 +351,8 @@ impl Editor {
         if let Some(c) = self.workspace.claude.chat.as_ref() {
             p.chat = Some(Chat {
                 focused: self.workspace.is_at(crate::workspace::At::Chat),
-                minimized: c.compact(),
+                hidden: c.hidden,
+                unread: c.unread(),
                 busy: c.busy(),
                 queued: c.queued.is_some() || !c.sends.is_empty(),
                 queued_said: c.queued_said().map(|q| q.0),
@@ -507,7 +511,7 @@ impl Panels {
                 "front": s.front, "keys": s.keys,
             })),
             "chat": self.chat.as_ref().map(|c| json!({
-                "focused": c.focused, "minimized": c.minimized, "busy": c.busy, "queued": c.queued,
+                "focused": c.focused, "hidden": c.hidden, "unread": c.unread, "busy": c.busy, "queued": c.queued,
                 "draft": c.draft, "follow": c.follow, "paused": c.paused,
             })),
             "lists": self.lists.iter().map(|(kind, rows)| json!({ "kind": kind, "rows": rows_json(rows) }))
@@ -565,7 +569,8 @@ impl Panels {
         }
         if let Some(c) = &self.chat {
             let mut s = vec!["chat".to_string()];
-            s.extend(c.minimized.then(|| "minimized".to_string()));
+            s.extend(c.hidden.then(|| "hidden".to_string()));
+            s.extend(c.unread.then(|| "unread".to_string()));
             s.extend(c.busy.then(|| "working".to_string()));
             s.extend(c.queued_said.clone());
             s.extend((!c.draft.is_empty()).then(|| format!("draft of {} chars", c.draft.chars().count())));

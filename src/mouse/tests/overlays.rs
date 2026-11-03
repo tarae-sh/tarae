@@ -382,26 +382,6 @@ fn tab_on_a_line_over_the_chat_keeps_it_and_the_chat_stays() {
     }
 }
 
-/// The same over the minimized chat, which comes first with a key that would type.
-#[test]
-fn a_line_over_the_minimized_chat_has_its_keys() {
-    for close in ["<esc>", "<ret>"] {
-        let mut ed = editor();
-        crate::uistate::tests::chat_minimized(&mut ed);
-        ed.workspace.claude.chat.as_mut().unwrap().input.set(DRAFT);
-        ed.open_prompt(crate::editor::PromptKind::Command, "");
-        frame(&mut ed);
-        assert_eq!(ed.keys_to().region, Region::Prompt);
-        feed(&mut ed, "x");
-        assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some("x"), "typed on the line");
-        assert_eq!(draft(&ed), DRAFT, "none of it in the chat's input");
-        feed(&mut ed, close);
-        frame(&mut ed);
-        assert_eq!(ed.keys_to().region, Region::Unfold, "{close}, back in the minimized chat");
-        assert_eq!(draft(&ed), DRAFT, "{close}, the draft whole");
-    }
-}
-
 /// A chat that fills the screen keeps it under every line and after it (`C-w z` ends once it hasn't the keys): the note
 /// card's isn't there to press.
 #[test]
@@ -494,7 +474,8 @@ fn a_cards_buttons_go_by_your_cursor_while_follow_leads() {
     ed.workspace.root = root;
     ed.open(&path).unwrap();
     let mut chat = crate::chat::Chat::new();
-    chat.follow.on = true;
+    // (out of sight, as the ask line leaves it: in sight, the column has the answer and no card opens by itself)
+    (chat.follow.on, chat.hidden) = (true, true);
     ed.workspace.claude.chat = Some(chat);
     frame(&mut ed);
     let yours = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "At your cursor.");

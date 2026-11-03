@@ -196,12 +196,12 @@ pub fn at_end_set(ed: &mut Editor, on: bool) {
     }
     // (opened as it was set — it's told below)
     if ed.workspace.claude.chat.is_none() {
-        // (opened without the keys: they stay where they were)
+        // (opened without the keys: they stay where they were — out of sight)
         let at = ed.workspace.viewer.at;
         crate::chat::open(ed);
         ed.workspace.viewer.at = at;
         if let Some(c) = &mut ed.workspace.claude.chat {
-            c.unfolded = false;
+            c.hidden = true;
         }
     }
     ed.config.llm.review_at_end = on;

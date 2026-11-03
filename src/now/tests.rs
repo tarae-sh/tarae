@@ -446,8 +446,9 @@ fn a_press_on_the_line_follows_claude() {
     for (on, paused) in [(true, true), (false, false)] {
         let mut ed = at_work();
         call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
-        let f = &mut ed.workspace.claude.chat.as_mut().unwrap().follow;
-        (f.on, f.paused) = (on, paused);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        // (out of sight, as the ask line leaves it once its message went)
+        (c.follow.on, c.follow.paused, c.hidden) = (on, paused, true);
         ed.workspace.viewer.at = crate::workspace::At::Code;
         let line = status(&mut ed, 160, 40);
         assert_eq!(
@@ -535,7 +536,8 @@ fn the_follow_cards_head_keeps_the_signs_cells_through_a_turn() {
     let mut ed = at_work();
     let mut heads: Vec<(&str, String)> = Vec::new();
     let mut look = |ed: &mut Editor, what: &'static str| {
-        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.follow.on, c.hidden) = (true, true);
         ed.workspace.viewer.at = crate::workspace::At::Code;
         let drawn = rows(ed, 160, 40);
         let head =
@@ -602,7 +604,8 @@ fn the_follow_cards_head_keeps_the_signs_cells_through_a_turn() {
 #[test]
 fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     let following = |ed: &mut Editor| {
-        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.follow.on, c.hidden) = (true, true);
         ed.workspace.viewer.at = crate::workspace::At::Code;
     };
     // (the step's time read off a held clock: under a second however slow the machine)
@@ -703,7 +706,8 @@ fn the_line_is_whole_while_something_covers_the_cards_head() {
     for (w, h) in [(160, 40), (120, 34)] {
         let mut ed = at_work();
         call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
-        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.follow.on, c.hidden) = (true, true);
         ed.workspace.viewer.at = crate::workspace::At::Code;
         let mut wholes = Vec::new();
         for (keys, what) in [

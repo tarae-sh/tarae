@@ -503,6 +503,8 @@ pub enum Floating {
     Picker,
     Prompt,
     WhichKey,
+    /// The follow card, while it has the keys (`Editor.follow_focus`).
+    Follow,
 }
 
 impl Floating {
@@ -514,6 +516,7 @@ impl Floating {
             Floating::Picker => "picker",
             Floating::Prompt => "prompt",
             Floating::WhichKey => "which-key",
+            Floating::Follow => "follow",
         }
     }
 
@@ -523,6 +526,7 @@ impl Floating {
             Floating::Picker => "picker".into(),
             Floating::Prompt => "prompt".into(),
             Floating::WhichKey => "which-key".into(),
+            Floating::Follow => "follow".into(),
         }
     }
 }
@@ -545,6 +549,9 @@ impl crate::editor::Editor {
         if self.prompt.is_some() {
             out.push(Floating::Prompt);
         }
+        if self.follow_in_hand() {
+            out.push(Floating::Follow);
+        }
         out
     }
 
@@ -556,6 +563,7 @@ impl crate::editor::Editor {
             Region::Card(n) => Some(Floating::Card(n)),
             Region::Picker => Some(Floating::Picker),
             Region::Prompt => Some(Floating::Prompt),
+            Region::Follow => Some(Floating::Follow),
             _ => self.floating().into_iter().find(|f| *f == Floating::WhichKey),
         }
     }

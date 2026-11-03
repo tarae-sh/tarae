@@ -3,7 +3,7 @@
 00 ─ tarae › src › demo.rs ────────────────────────────────────────────────────────────────────────────
 01   1 use std::collections::HashMap;                           ╭─ follow ▲ waits ───────────   0ms ─╮
 02   2                                                          │ ▎ commit it                        │
-03   3 ▎ Counts how often each word appears.                    ╰─ C-c stop · C-f unfollow ──────────╯
+03   3 ▎ Counts how often each word appears.                    ╰─ space L read ─────────────────────╯
 04     ▎
 05     ▎ Words are split on whitespace; case is kept.
 06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize> {
@@ -65,7 +65,7 @@
 00 f ddddd f ddd f TTTTTTT ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 01   A                                                          ff TTTTTT w wwwww fffffffffff   fff ff
 02   f                                                          f a TTTTTT TT                        f
-03   f f                                                        ff DDD ffff f DDD ffffffff fffffffffff
+03   f f                                                        ff DDDDD D ffff ffffffffffffffffffffff
 04     f
 05     f
 06   f

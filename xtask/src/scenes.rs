@@ -334,7 +334,7 @@ const F267_KEYS: [&[&str]; 3] = [
 /// Focus A1's keys: the question, its turn's end, the keys in the code, then `$more`.
 macro_rules! a1_keys {
     ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", "what does the loop print?", "\r", "@20?That is all", "@2", "\x1b", "\x1b", $($more,)* "@1"]
+        &["@1", " ", "l", "@1", "what does the loop print?", "\r", "@30=done", "@2", $($more,)* "@1"]
     };
 }
 
@@ -368,10 +368,8 @@ macro_rules! e1_keys {
             "@20?Change 1 of 1",
             "@1",
             "y",
-            "@20?That is all",
+            "@30=done",
             "@1",
-            "\x1b",
-            "\x1b",
             $($more),*
         ]
     };
@@ -387,15 +385,15 @@ const E1_FOLDED: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1", "g", "@0.5", "\
 /// Focus F0's keys: `F0_ASKS` to `f0-saw`, its edit taken, its turn's end, the keys in the code (`esc esc`), then `$more`.
 macro_rules! f0_keys {
     ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", "why is a strand too long?", "\r", "@20?Change 1 of 1", "@1", "y", "@20?That is all",
-          "@2", "\x1b", "\x1b", "@20!walk-through", $($more,)* "@1"]
+        &["@1", " ", "l", "@1", "why is a strand too long?", "\r", "@20?Change 1 of 1", "@1", "y", "@30=done",
+          "@2", "@20!walk-through", $($more,)* "@1"]
     };
 }
 /// `f0_keys`, then a second question to its turn's end, then `$more`.
 macro_rules! f0_two_keys {
     ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", "why is a strand too long?", "\r", "@20?Change 1 of 1", "@1", "y", "@20?That is all",
-          "@2", "does anything else read it?", "\r", "@20?Only that", "@2", "\x1b", "\x1b", "@20!walk-through",
+        &["@1", " ", "l", "@1", "why is a strand too long?", "\r", "@20?Change 1 of 1", "@1", "y", "@30=done",
+          "@2", " ", "l", "@1", "does anything else read it?", "\r", "@30=done", "@2", "@20!walk-through",
           "q", " ", "L", ":", "o src/thread.rs", "\r", "@1", $($more,)* "@1"]
     };
 }
@@ -475,23 +473,57 @@ const FLOW2_SENT: &[&str] = &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@
 const FLOW2_ANSWERED: &[&str] =
     &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@20?wind is the whole", "@2", "\x1b", "\x1b", "@1"];
 const FLOW2_GROW: &[&str] = &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "@0.5", "\x1b[5~", "@1"];
-const FLOW2_FOOT: &[&str] = &[
+/// The flow plan's piece 3, the minimize gone: A1c's answer come while the chat is out of sight — the status line's
+/// `◂ new · space L`, its card at the line · then `space L` off that line: the docked column at what's new, `── new ──`
+/// over it · the answer's `¶` pressed (`flow3-pilcrow`): the column at its paragraph, the keys in the code, no card · an
+/// answer no place holds (`flow3-none`): the column shown by itself, the keys in the code · an error said only in the
+/// conversation (`flow3-error`), the same.
+const FLOW3_NEW: &[&str] = &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@30=done", "@2"];
+const FLOW3_PILCROW: &[&str] =
+    &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@30=done", "@2", "@press?¶", "@1"];
+const FLOW3_READ: &[&str] =
+    &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@30=done", "@2", "g", "g", " ", "L", "@1"];
+/// The follow card with the keys (#267, the flow plan's piece 3): a turn running the tests, asked from the ask line —
+/// `C-w w` gives the card the keys (its frame lit, its sizes said on its bottom line), then `C-w >` twice widens it.
+const FLOW3_FOLLOW_KEYS: &[&str] = &[
     "@1",
-    "21G",
     " ",
     "l",
     "@1",
-    FLOW2_ASKED,
+    "keep the first strand on a repeat",
     "\r",
-    "@20?That is all",
-    "@2",
-    "\x1b",
-    "\x1b",
+    "@10?unit tests",
     "@1",
-    " ",
-    "L",
+    "\x17",
+    "w",
     "@1",
 ];
+const FLOW3_FOLLOW_WIDER: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "keep the first strand on a repeat",
+    "\r",
+    "@10?unit tests",
+    "@1",
+    "\x17",
+    "w",
+    "@0.3",
+    "\x17",
+    ">",
+    "@0.3",
+    "\x17",
+    ">",
+    "@1",
+];
+/// panes4's polish decision 2 in piece 3: a turn running with the column in sight (`space L`, asked there) — the follow
+/// card only its head, the turn's words the column's.
+const FLOW3_FOLLOW_HEAD: &[&str] =
+    &["@1", " ", "L", "@1", "keep the first strand on a repeat", "\r", "@10?unit tests", "@1"];
+const FLOW3_ALONE: &[&str] = &["@1", " ", "l", "@1", "why a hash map?", "\r", "@30=done", "@2"];
+const FLOW2_FOOT: &[&str] =
+    &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@30=done", "@2", " ", "L", "@1"];
 const FLOW2_CONTINUE: &[&str] = &[
     "@1",
     "21G",
@@ -500,11 +532,8 @@ const FLOW2_CONTINUE: &[&str] = &[
     "@1",
     FLOW2_ASKED,
     "\r",
-    "@20?That is all",
+    "@30=done",
     "@2",
-    "\x1b",
-    "\x1b",
-    "@1",
     " ",
     "l",
     "@1",
@@ -656,8 +685,8 @@ const A1B_CUT: &[&str] =
 /// `$more`.
 macro_rules! a1b_two_keys {
     ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", "what does the loop print?", "\r", "@20?That is all", "@2", "why a hash map?", "\r",
-          "@20?A Vec", "@2", "\x1b", "\x1b", $($more,)* "@1"]
+        &["@1", " ", "l", "@1", "what does the loop print?", "\r", "@30=done", "@2", " ", "l", "@1", "why a hash map?",
+          "\r", "@30=done", "@2", $($more,)* "@1"]
     };
 }
 
@@ -816,12 +845,27 @@ const WORDS_KEYS: [&[&str]; 4] = [
         "@1",
         "how is the map filled?",
         "\r",
-        "@30?That is all.",
+        " ",
+        "L",
+        "@30=done",
         "@1",
         "@hover?esc normal",
         "@1",
     ],
-    &["@1", " ", "l", "@1", "how is the map filled?", "\r", "@30?That is all.", "@1", "@hover?follow", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "how is the map filled?",
+        "\r",
+        " ",
+        "L",
+        "@30=done",
+        "@1",
+        "@hover?follow",
+        "@1",
+    ],
 ];
 
 /// #197a: a buffer's name on the code's line under the mouse, the chat open with the keys (the line faded) — only its
@@ -949,7 +993,23 @@ const CUT_CODE_KEYS: &[&str] =
     &["@1", " ", "l", "@1", "count them", "\r", "@30?That's all.", "@1", "@hover+6?let counts", "@1"];
 
 const CUT_KEYS: [&[&str]; 4] = [
-    &["@1", " ", "l", "@1", "tidy it", "\r", "@30?That is all.", "@1", "\x1b", "/", "cargo fmt", "\r", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "tidy it",
+        "\r",
+        " ",
+        "L",
+        "@30=done",
+        "@1",
+        "\x1b",
+        "/",
+        "cargo fmt",
+        "\r",
+        "@1",
+    ],
     &["@1", " ", "e", "@?a_component", "@1"],
     &[
         "@1",
@@ -1036,7 +1096,7 @@ const FOCUS_CARD_Q: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "\x11", "@1"];
 
 /// The chat opened, a question asked, its answer waited for to its end.
-const FOOT: &[&str] = &["@1", " ", "l", "@1", "how is the map filled?", "\r", "@30?That is all.", "@1"];
+const FOOT: &[&str] = &["@1", " ", "l", "@1", "how is the map filled?", "\r", " ", "L", "@30=done", "@1"];
 
 /// Three messages said one after another: a save, two commands that don't exist (errors, so they stay).
 const TOAST_THREE: &[&str] = &["@1", ":w\r", "@1", ":nope\r", "@1", ":wat\r", "@1"];
@@ -1350,10 +1410,8 @@ const E1_SESSIONS: &[&str] = overlap_keys!(
     "@20?Change 1 of 1",
     "@1",
     "y",
-    "@20?That is all",
+    "@30=done",
     "@1",
-    "\x1b",
-    "\x1b",
     " ",
     "e",
     "@?main.rs",
@@ -2013,7 +2071,9 @@ const HOVER_KEYS: [&[&str]; 18] = [
         "@1",
         "tidy it",
         "\r",
-        "@30?That is all.",
+        " ",
+        "L",
+        "@30=done",
         "@1",
         "\x17",
         "h",
@@ -2021,7 +2081,7 @@ const HOVER_KEYS: [&[&str]; 18] = [
         "@hover?cargo fmt",
         "@1",
     ],
-    &["@1", " ", "l", "@1", "tidy it", "\r", "@30?That is all.", "@1", "\x1b", "@1", "@hover?i type", "@1"],
+    &["@1", " ", "l", "@1", "tidy it", "\r", " ", "L", "@30=done", "@1", "\x1b", "@1", "@hover?i type", "@1"],
     &["@1", "@hover?thread.rs", "@1"],
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "@hover?waiting", "@1"],
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "@hover?y Run", "@1"],
@@ -3406,6 +3466,16 @@ const SCENES: &[Scene] = &[
     Scene { name: "flow2-grow", claude: "a1c", files: SPOOL, keys: FLOW2_GROW },
     Scene { name: "flow2-foot", claude: "a1c", files: SPOOL, keys: FLOW2_FOOT },
     Scene { name: "flow2-continue", claude: "a1c", files: SPOOL, keys: FLOW2_CONTINUE },
+    // (the flow plan's piece 3: `◂ new`, `── new ──`, the reader opening by itself for a place-less answer and an error)
+    Scene { name: "flow3-new", claude: "a1c", files: SPOOL, keys: FLOW3_NEW },
+    Scene { name: "flow3-read", claude: "a1c", files: SPOOL, keys: FLOW3_READ },
+    Scene { name: "flow3-docked", claude: "a1c", files: SPOOL, keys: FLOW2_FOOT },
+    Scene { name: "flow3-pilcrow", claude: "a1c", files: SPOOL, keys: FLOW3_PILCROW },
+    Scene { name: "flow3-none", claude: "flow3-none", files: MAIN, keys: FLOW3_ALONE },
+    Scene { name: "flow3-error", claude: "flow3-error", files: MAIN, keys: FLOW3_ALONE },
+    Scene { name: "flow3-follow-keys", claude: "now", files: MAIN, keys: FLOW3_FOLLOW_KEYS },
+    Scene { name: "flow3-follow-wider", claude: "now", files: MAIN, keys: FLOW3_FOLLOW_WIDER },
+    Scene { name: "flow3-follow-head", claude: "now", files: MAIN, keys: FLOW3_FOLLOW_HEAD },
     Scene { name: "flow2-strip", claude: "idle", files: MAIN, keys: FLOW2_STRIP },
     Scene { name: "flow2-strip-l", claude: "idle", files: MAIN, keys: FLOW2_STRIP_L },
     // (#269: a folded doc comment stays folded while you select it)
@@ -3951,7 +4021,9 @@ const SCENES: &[Scene] = &[
             "@1",
             "how is the map filled?",
             "\r",
-            "@20?That is all",
+            " ",
+            "L",
+            "@30=done",
             "@1",
             "@press?one pass",
             "@drag+4?over the strands",
@@ -5199,7 +5271,8 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         s if s.starts_with("a1c-")
             || s.starts_with("f269-")
             || s.starts_with("flow1-") && !matches!(s, "flow1-none-read" | "flow1-flow-read")
-            || s.starts_with("flow2-") && !s.starts_with("flow2-strip") =>
+            || s.starts_with("flow2-") && !s.starts_with("flow2-strip")
+            || s.starts_with("flow3-") && !matches!(s, "flow3-none" | "flow3-error") =>
         {
             vec![("src/spool.rs", SPOOL_RS.into())]
         }
@@ -5295,6 +5368,8 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "notethread",
     "c1b-batch",
     "a1-none",
+    "flow3-none",
+    "flow3-error",
     "a1-flow",
     "a1b-two",
     "a1b-all",
@@ -5451,6 +5526,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "c1b-batch" => turn.c1b_batch(&line, turns)?,
             // (focus A1's: an answer naming no place)
             "a1-none" => turn.a1_none()?,
+            // (the flow plan's piece 3: an answer with no place and no stop — the reader opens by itself — and a turn
+            // that fails, its error said only in the conversation)
+            "flow3-none" => turn.flow3_none()?,
+            "flow3-error" => turn.flow3_error()?,
             // (…and one with a paragraph placed elsewhere: its line on the place's card)
             "a1-flow" => turn.a1_flow()?,
             // (focus A1b's: two answers naming the loop's line, the first one the line above it too)
@@ -6370,6 +6449,25 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
              That is all.",
         )?;
         self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The flow plan's piece 3's answer no place holds: no call, no name of a file — words only.
+    fn flow3_none(&mut self) -> io::Result<()> {
+        self.words(
+            "A hash map finds a thread by its name in one step, where a list would walk every strand to find it.",
+        )?;
+        self.text("\n\n")?;
+        self.words(
+            "The price is the order: a hash map keeps none, so what prints comes in no order you chose.",
+        )?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The flow plan's piece 3's failed turn: a few words, then claude's error as its result.
+    fn flow3_error(&mut self) -> io::Result<()> {
+        self.words("Let me look at how the map is built.")?;
+        self.line(json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+            "result": "API Error: 529 Overloaded · the request was not completed"}))
     }
 
     /// focus A1's flow: focus-explain's answer with a paragraph about another place between its own and the place-less

@@ -491,12 +491,12 @@ fn a_half_read_frame_is_not_judged() {
 #[test]
 fn a_chat_without_claude_says_how_to_get_it() {
     let sb = Sandbox::new("noclaude");
-    sb.docked_chat();
     sb.write("a.txt", "hi\n");
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("hi");
     let input = t.state_json(0)["input"].as_u64().unwrap();
-    t.send(" l");
+    // (the conversation's column, where what's said stays in sight)
+    t.send(" L");
     t.send("hello\r");
     // (the Enter handled and drawn too: it tries again)
     t.state_json(input + 8);
@@ -1675,7 +1675,6 @@ fn a_watcher_hears_a_turn_begin_and_end() {
 #[test]
 fn bleeding_ink_draws_no_frame_after_the_turn() {
     let sb = Sandbox::new("bleeding-ink");
-    sb.docked_chat();
     let delta = |t: &str| {
         format!(
             r#"{{"type":"stream_event","event":{{"type":"content_block_delta","delta":{{"type":"text_delta","text":"{t}"}}}}}}"#
@@ -1702,7 +1701,7 @@ fn bleeding_ink_draws_no_frame_after_the_turn() {
     sb.write_config(&format!("{BASE_CONFIG}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\n", script.display()));
     sb.write("a.txt", "one\n");
     let mut t = sb.spawn(&["a.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_state("the chat has the keys", |s| s["keys"]["region"] == "chat");
     t.send("why?\r");
     // (single words: the follow card or the panel may wrap the line anywhere)
@@ -1793,7 +1792,6 @@ fn a_job_of_the_start_s_is_waited_out_before_a_rest() {
 #[test]
 fn a_turns_usage_shows_under_the_chat_and_in_usage() {
     let sb = Sandbox::new("usage");
-    sb.docked_chat();
     let lines = [
         r#"{"type":"system","subtype":"init","session_id":"c1","model":"claude-opus-5-5"}"#,
         r#"{"type":"system","subtype":"status","status":"requesting"}"#,
@@ -1811,7 +1809,7 @@ fn a_turns_usage_shows_under_the_chat_and_in_usage() {
     sb.write_config(&format!("{BASE_CONFIG}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\n", script.display()));
     sb.write("a.txt", "one\n");
     let mut t = sb.spawn(&["a.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_state("the chat has the keys", |s| s["keys"]["region"] == "chat");
     t.send("hello\r");
     // (the chat is 40 wide here: the footer's short form; warm until five minutes on, by the clock)
@@ -2138,7 +2136,6 @@ fn undo_history_comes_along_on_restart() {
 fn follow_shows_each_edit_and_replays_the_turn() {
     use serde_json::json;
     let sb = Sandbox::new("follow-replay");
-    sb.docked_chat();
     let lines = |n: usize| (1..=n).map(|i| format!("line {i}\n")).collect::<String>();
     let main = sb.write("main.txt", &lines(3));
     let lib = sb.write("lib.txt", &lines(10));
@@ -2186,7 +2183,7 @@ fn follow_shows_each_edit_and_replays_the_turn() {
         script.display()
     ));
     let mut t = Term::spawn(&sb, &["main.txt"], 120, 40);
-    t.send(" l");
+    t.send(" L");
     t.send("change it\r");
     // Live: each stop in order, each within a bound of the one before (they come 0.4 s apart) — the follow
     // card's knot rows (글타래 P6, motion §4's marks): `◦` a read, `●` an edit, `•` a search; a search's count cut to the row's room
@@ -2245,7 +2242,6 @@ fn follow_shows_each_edit_and_replays_the_turn() {
 #[test]
 fn a_click_on_the_review_rail_opens_the_file() {
     let sb = Sandbox::new("rail-click");
-    sb.docked_chat();
     fs::write(sb.git_config(), "[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n").unwrap();
     let rels = ["runtime/packs/c-sharp/pack.toml", "runtime/packs/go/pack.toml", "src/a.rs", "src/b.rs"];
     for rel in rels {
@@ -2273,7 +2269,7 @@ fn a_click_on_the_review_rail_opens_the_file() {
         s.rows[0].contains("c-sharp") && s.rows[0].contains("pack.toml")
     });
     // The chat open and focused beside it: the same
-    t.send(" l");
+    t.send(" L");
     let s = t.wait_text("claude");
     click(&mut t, &s, "a.rs", 0);
     t.wait_for("a.rs opened", |s| s.rows[0].contains("a.rs"));

@@ -5447,12 +5447,12 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
         ));
     }
     if ed.workspace.claude.chat.is_none() {
-        // (opened without the keys: they stay where they were)
+        // (opened without the keys: they stay where they were — out of sight, its answer news: `◂ new`)
         let at = ed.workspace.viewer.at;
         crate::chat::open(ed);
         ed.workspace.viewer.at = at;
         if let Some(c) = &mut ed.workspace.claude.chat {
-            c.unfolded = false;
+            c.hidden = true;
         }
     }
     // (the chat just opened: what the project keeps open is read first — no card about one it does)

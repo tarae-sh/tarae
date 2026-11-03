@@ -108,7 +108,7 @@ fn heard(key: Key, b: &Before, pending: &[String], mode: Mode) -> Option<KeyEven
         t => t,
     };
     match takes {
-        Takes::Label | Takes::Unfold | Takes::Program => None,
+        Takes::Label | Takes::Program => None,
         Takes::Answers => match key.plain_char() {
             Some(c) if !b.answers.contains(&c) => None,
             _ => one(vec![key.to_string()]),

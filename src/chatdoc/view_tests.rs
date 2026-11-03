@@ -762,7 +762,7 @@ fn space_l_closes_the_chat_from_its_view_mode() {
             match close {
                 "<space>L" => {
                     let c = ed.workspace.claude.chat.as_ref().expect("space L: the chat kept");
-                    assert!(c.hidden && c.compact(), "{what}: hidden");
+                    assert!(c.hidden && c.hidden, "{what}: hidden");
                     assert_eq!(c.busy(), busy, "{what}: its turn as it was");
                 }
                 _ => assert!(ed.workspace.claude.chat.is_none(), "{what}, {close}: closed"),

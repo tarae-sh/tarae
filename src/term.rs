@@ -1688,8 +1688,7 @@ impl Layout {
             rail_head: std::cell::OnceCell::new(),
             rail_rows: std::cell::OnceCell::new(),
             // (by `chat_floating` alone, never refused here: the frame is the screen's at most — a short screen's
-            // whole height, a narrow one's whole width — so a chat the rule floats is drawn, and the card it set aside
-            // has its reader)
+            // whole height, a narrow one's whole width — so the ask line the rule floats is drawn)
             chat_frame: editor
                 .chat_floating()
                 .then(|| chat_frame_at(editor, w as usize, (h as usize).saturating_sub(1), text_top as usize))
@@ -5406,7 +5405,7 @@ fn draw(
         .chat
         .as_ref()
         .filter(|c| (c.follow.on && (c.busy() || c.follow.touring())) || c.follow.replaying.is_some())
-        && (editor.workspace.claude.review.is_none() || c.compact())
+        && (editor.workspace.claude.review.is_none() || c.hidden)
         && !lay.code_hidden()
         && !editor.welcome()
     {
@@ -11219,11 +11218,8 @@ fn draw_statusline(
         let quote = bound("view_take", "enter").filter(|_| crate::view::quotes(editor));
         let stub = crate::chatdoc::stub_here(editor).is_some() && quote.is_none();
         let go = bound("view_take", "enter").filter(|_| stub);
-        // (the chat floating closes with the keys — `chat::keys_left`)
-        let floating = s == crate::view::Surface::Chat && !editor.sizes.chat_docked;
-        let leave = if floating { "close" } else { "code" };
         let pairs =
-            [(quote, "quote"), (go, "go there"), (typed, "type"), (bound("view_leave", "esc"), leave)];
+            [(quote, "quote"), (go, "go there"), (typed, "type"), (bound("view_leave", "esc"), "code")];
         for (k, what) in pairs.iter().filter_map(|(k, d)| Some((k.as_ref()?, *d))) {
             left.push(Seg {
                 cut: None,
@@ -11369,6 +11365,13 @@ fn draw_statusline(
         let key = " · space v s".to_string();
         left.push(Seg { cut: None, text: key, style: Style { bold: true, ..dim }, keep: DRAFTS_KEY });
     }
+    // What's new since you looked (the flow plan's piece 3, no toast): the conversation out of sight, its newest answer
+    // or an error said only there not yet in front of you — `space L` reads it, and so does a press
+    if editor.workspace.claude.chat.as_ref().is_some_and(|c| c.unread()) && lay.chat_at().is_none() {
+        left.push(Seg { cut: None, text: "  ◂ new".into(), style: accent, keep: UNREAD });
+        let key = Style { bold: true, ..dim };
+        left.push(Seg { cut: None, text: " · space L".into(), style: key, keep: UNREAD_KEY });
+    }
     // A restart under way, until it happens (#194: a toast said it once; a second `:restart` called it off)
     if let Some(r) = crate::restart::pending(editor) {
         left.push(Seg::of(crate::whole::fit(&r, 40).lead("  "), accent, CHIP));
@@ -11393,8 +11396,8 @@ fn draw_statusline(
             }),
         }
     }
-    // A message typed in the chat while the chat isn't on screen (a review read wide, the minimized card, a
-    // zoom): what's there, so it isn't lost from sight — floating, its input holds it in sight
+    // A message typed in the chat while the chat isn't on screen (hidden, a review read wide, a zoom): what's there, so
+    // it isn't lost from sight — floating, its input holds it in sight
     if let Some(text) = editor
         .workspace
         .claude
@@ -11819,7 +11822,8 @@ fn draw_statusline(
 /// while it's out of sight (the chat), the branch and how much the file changed (the git tab), `full screen C-w z back`,
 /// Claude's change waiting (`C-q`, the review), what's abnormal among tarae's processes (`:procs`), the file's errors and
 /// warnings (its diagnostics), the inbox's `· C-q` after its count (the card), the drafts' count (`space v s`: its press
-/// sends, the user's call for this word, the key's hints elsewhere staying `wordspot::COSTS`' plain words). Each run of
+/// sends, the user's call for this word, the key's hints elsewhere staying `wordspot::COSTS`' plain words), `◂ new`
+/// (`space L`, the reader). Each run of
 /// segments of one press one word, from its first mark to its last; `right_x` where the right side starts.
 fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usize, usize)) {
     use crate::wordspot::{Press, Spot};
@@ -11833,6 +11837,7 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
         DIAGNOSTICS => Some(Press::Command("diagnostics_picker")),
         INBOX_NEXT => Some(Press::Card),
         DRAFTS | DRAFTS_KEY => Some(Press::Command("review_send")),
+        UNREAD | UNREAD_KEY => Some(Press::Command("chat_toggle")),
         _ => None,
     };
     let laid = |segs: &[Seg], x0: usize| -> Vec<(usize, Option<Press>, (String, Style))> {
@@ -11919,6 +11924,11 @@ const REVIEWER: u8 = 234;
 /// key folds first, the count last.
 const DRAFTS: u8 = 231;
 const DRAFTS_KEY: u8 = DRAFTS - 1;
+
+/// The status line's `◂ new · space L` (`Chat::unread`): below the reviewer's segment, above the drafts — its key folds
+/// first, the word last.
+const UNREAD: u8 = 233;
+const UNREAD_KEY: u8 = UNREAD - 1;
 
 /// The status line's `keep` for a floating list's keys (`key_hints`): only the mode, the position and an error
 /// or warning waiting there (`FOLDED`) outlast them — and they're cut to fit beside those and the inbox's count,
@@ -14966,18 +14976,18 @@ fn draw_ask_stream(
 
 /// Follow mode's one card (U4), in one place — the bottom right of the code (the top right when a note or an
 /// offer holds that corner, or the lines being read run under it): what Claude is at, and the turn (글타래 P6 —
-/// `follow_thread`: its stops as knots, `●` the one in hand, its words between them); while the panel is
-/// minimized, also the question, the plan's step and the keys (a click on it brings the panel back, on a knot
+/// `follow_thread`: its stops as knots, `●` the one in hand, its words between them); while the chat is out of
+/// sight, also the question, the plan's step and the key that reads it (a click on it brings the chat back, on a knot
 /// goes there). `None`: no room.
 ///
 /// ```text
 ///      ╭─ main working ── paused ──────── ▂▅▇ running 3.2s ─╮  ← P3 step 7d: framed, named
-///      │ ▎ does ask get tools too?                     │  ← minimized only
+///      │ ▎ does ask get tools too?                     │  ← the chat out of sight only
 ///      │ ◦ read    src/chat.rs  L88–120                │
 ///      │ The chat swaps the empty tool list here;     │
 ///      │ ● read    src/llm.rs  L230–249                │
 ///      │ ask never calls it, so it stays tool-less.   │
-///      ╰─ C-c stop · C-f unfollow ───────────────────╯  ← its keys: minimized, these
+///      ╰─ space L read · [r replay ───────────────────╯  ← its keys: the chat out of sight, these
 ///
 /// Its frame's top line names whom it follows as the chrome does (one session: `follow`); it takes no keys.
 /// ```
@@ -14995,7 +15005,8 @@ fn draw_follow_card(
     use crate::chat::Role;
     use crate::markdown::Span;
     const BODY: usize = 7;
-    let compact = c.compact();
+    // (the chat out of sight: the card carries its question and the key that reads it)
+    let alone = c.hidden;
     // The pane follow leads, the focused one or not (panes P3 step 8; else the editing area — a review in place of the
     // panes, or that pane out of sight: another zoomed)
     let followed = crate::follow::pane(editor);
@@ -15086,7 +15097,7 @@ fn draw_follow_card(
         _ if replaying || !c.busy() => vec![""],
         _ => [whole.as_deref(), verb.as_deref(), word.as_deref()].into_iter().flatten().chain([""]).collect(),
     };
-    let bares: &[&str] = match compact && crate::tools::unsandboxed(editor) {
+    let bares: &[&str] = match alone && crate::tools::unsandboxed(editor) {
         true => &[" › no sandbox", " › bare", ""],
         false => &[""],
     };
@@ -15213,7 +15224,7 @@ fn draw_follow_card(
     let strip_at = names.len() + details.len() + lead;
     details.extend(strip);
     // The turn of the stop in hand, its knots and words — the newest at the bottom
-    let (turn_rows, hand_row, knots) = follow_thread(c, editor, ui, inner, card, &st, compact);
+    let (turn_rows, hand_row, knots) = follow_thread(c, editor, ui, inner, card, &st, alone);
     let why = gaze.and_then(|g| g.why.as_deref()).filter(|w| !w.is_empty());
     // A walk-through's stop: how to ask about it, under its words
     // (only once the answer is done — a question can't go while Claude still writes)
@@ -15222,29 +15233,23 @@ fn draw_follow_card(
         && crate::follow::stop_yours(editor).is_some()
         && !crate::codereview::drafting(editor);
     // Its keys, on its bottom line in order of use (the user, 2026-10-25: a floating card's keys are always there,
-    // never a row inside): a stop's question after the turn; minimized, how to stop it or bring the panel back; the
+    // never a row inside): a stop's question after the turn; the chat out of sight, the key that reads it; the
     // replay's pair once there are stops (in the code — the chat's input would take them as letters)
     let stops = c.follow.replay.latest() > 0 && !editor.workspace.is_at(At::Chat);
-    // (`C-f` as the chat's hints say it: paused, it follows again)
-    let follows = if c.follow.active() { "unfollow" } else { "follow" };
     let keys: &[(&str, &str)] = match () {
-        // (`C-l` once in the minimized chat: the second does it — #268)
-        _ if compact && crate::chat::clear_asked(editor) => &[("C-l", crate::chat::CLEAR_AGAIN)],
+        // (with the keys, its sizes first — #267, said only then; `follow_focus`, not `follow_in_hand`: this frame is the
+        // one drawing it, the last one's rect may be gone)
+        _ if editor.follow_focus => &[("C-w < > - +", "size"), ("C-w =", "automatic"), ("esc", "code")],
         _ if replaying => &[("[r ]r", "stop by stop")],
-        // (`C-c` clears a draft before it stops the turn — #175)
-        _ if compact && editor.workspace.is_at(At::Chat) && !c.input.blank() => {
-            &[("C-c", "clear"), ("C-f", follows)]
-        }
-        _ if compact && editor.workspace.is_at(At::Chat) => &[("C-c", "stop"), ("C-f", follows)],
-        _ if compact && stops => &[("space l", "open the chat"), ("[r", "replay")],
-        _ if compact => &[("space l", "open the chat")],
+        _ if alone && stops => &[("space L", "read"), ("[r", "replay")],
+        _ if alone => &[("space L", "read")],
         _ if asking => &[("space n", "ask about this")],
         _ if stops && c.busy() => &[("[r", "replay what it did")],
         _ => &[],
     };
-    // Minimized, the panel's part above the turn: the question, the plan's step (the title is the frame's line); the
-    // chat open, the question only while the turn has nothing of its own yet — never a frame with nothing in it (#266:
-    // a press on the minimized card opened the chat at a turn's start and left this card empty)
+    // The chat out of sight, its part above the turn: the question, the plan's step (the title is the frame's line); the
+    // chat in sight, the question only while the turn has nothing of its own yet — never a frame with nothing in it
+    // (#266: a press on the card opened the chat at a turn's start and left this card empty)
     let mut top: Vec<Vec<Span>> = Vec::new();
     let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
     let question = c.msgs[..turn]
@@ -15252,14 +15257,17 @@ fn draw_follow_card(
         .filter(|m| m.role == Role::User)
         .map(|m| m.text.lines().next().unwrap_or_default().to_string())
         .unwrap_or_default();
-    let nothing_yet = !compact && turn_rows.is_empty();
+    // (the chat's column in sight: only its head — the step and its time; the turn's words are the column's, never said
+    // twice (the user, 2026-11-03, panes4's polish audit, decision 2). A replay's stop stays the card's own)
+    let head_only = !alone && lay.chat_at().is_some() && !replaying;
+    let nothing_yet = !alone && !head_only && turn_rows.is_empty();
     if nothing_yet && question.trim().is_empty() {
         return Ok(None);
     }
-    if compact || nothing_yet {
+    if alone || nothing_yet {
         top.push(vec![sp("▎ ", accent), crate::whole::fit(&question, inner - 2).span(strong)]);
     }
-    if compact && let Some(row) = c.plan.as_ref().and_then(|p| plan_now(p, inner, faint, accent, dim)) {
+    if alone && let Some(row) = c.plan.as_ref().and_then(|p| plan_now(p, inner, faint, accent, dim)) {
         top.push(row);
     }
     // Its rows but the turn's
@@ -15346,8 +15354,14 @@ fn draw_follow_card(
         None => BODY.min((ph / 2).saturating_sub(fixed)).min(room - fixed).max(1),
     };
     editor.screen.follow_room.set((most + 4, room));
-    let (body, hand_at) = turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, (faint, card));
-    let fill = if editor.sizes.follow_h.is_some() { body_max.saturating_sub(body.len()) } else { 0 };
+    let (body, hand_at) = match head_only {
+        true => (Vec::new(), None),
+        false => turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, (faint, card)),
+    };
+    let fill = match editor.sizes.follow_h {
+        Some(_) if !head_only => body_max.saturating_sub(body.len()),
+        _ => 0,
+    };
     let hand_at = hand_at.map(|k| top.len() + fill + k);
     let mut rows: Vec<(Vec<Span>, Option<crate::chat::Link>)> = top.into_iter().map(|r| (r, None)).collect();
     rows.extend(std::iter::repeat_n((Vec::new(), None), fill));
@@ -15357,7 +15371,7 @@ fn draw_follow_card(
     let rect = (x0, y0, width, h);
     editor.screen.thought_card.set(Some(rect));
     editor.screen.follow_at_foot.set(at_bottom);
-    if compact {
+    if alone {
         editor.screen.chat_mini.set(Some(rect));
     }
     let mut links = editor.screen.chat_links.borrow_mut();
@@ -15404,7 +15418,9 @@ fn draw_follow_card(
     let on = crate::mouse::Surface::FollowCard;
     let follow = Some(crate::mouse::Lights::Follow);
     // (an edge of it held — #267: the frame in the accent while it's dragged, half under the pointer as ever)
-    let held = grab(editor, |b| matches!(b, crate::sizes::Border::Follow { .. })) == Grab::Held;
+    // (with the keys, lit as every floating frame that has them)
+    let held = grab(editor, |b| matches!(b, crate::sizes::Border::Follow { .. })) == Grab::Held
+        || editor.follow_focus;
     let line = draw_frame(out, ui, editor, on, card, rect, &[], &bottom, &[], (follow, held))?;
     // (what it acts on, cut: its whole under the mouse)
     let mut right = fits(&right);
@@ -17886,6 +17902,18 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             pieces.push((Of::Air, blank.clone()));
             total += 1;
         }
+        // (`── new ──` where you'd read to as the conversation came into sight — `Chat.new_at`, the flow plan's piece 3:
+        // the frame's own row, never the transcript's text)
+        if c.new_at == Some(i) {
+            let rest = w.saturating_sub(7);
+            let row = vec![
+                sp("── ".into(), faint),
+                sp("new".into(), accent),
+                sp(format!(" {}", "─".repeat(rest)), faint),
+            ];
+            pieces.push((Of::Own, own(plain(row))));
+            total += 1;
+        }
         let key = LaidKey {
             version: m.version(),
             len: m.text.len(),
@@ -18237,28 +18265,23 @@ fn continued_said(p: &crate::chats::Past, now: u64) -> Vec<String> {
     parts
 }
 
-/// The floating chat's frame this frame, on a screen `w` wide with `rows` above the status line: the reader's
-/// (`Editor::chat_float_rect`), or the ask line's — the reader's columns, as tall as its input (and an empty chat's
-/// continue row), its top the floating panes' (`Frame::placed_y`). Each stands clear of the lines it's about
-/// (`clear_of`, as `float_geom_around` keeps a card's lines in sight): the ask line of those it carries — the selection
-/// that goes, else the cursor's line —, the reader opened at a line's paragraph (`Chat.reading`) of that line.
+/// The ask line's frame this frame, on a screen `w` wide with `rows` above the status line: its columns
+/// (`Editor::chat_float_rect`), as tall as its input (and an empty chat's continue row), its top the floating panes'
+/// (`Frame::placed_y`), clear of the lines it carries (`clear_of`, as `float_geom_around` keeps a card's lines in sight):
+/// the selection that goes, else the cursor's line.
 fn chat_frame_at(editor: &Editor, w: usize, rows: usize, text_top: usize) -> Option<crate::split::Rect> {
-    let r = editor.chat_float_rect(w, rows)?;
+    let r = editor.chat_float_rect(w, rows);
     let c = editor.workspace.claude.chat.as_ref()?;
-    if editor.chat_asking() {
-        let (tw, _) = chat_widths(r.w.saturating_sub(1), false);
-        let input_h = c.input.laid(tw).height().clamp(1, CHAT_INPUT_MAX);
-        let h = (input_h + 2 + usize::from(ask_past(c).is_some())).min(rows);
-        let ask = crate::split::Rect { y: crate::pane::Frame::placed_y(h, rows), h, ..r };
-        return Some(clear_of(ask, carried_rows(editor, true, text_top), rows, h));
-    }
-    let about = c.reading.as_ref().and_then(|_| carried_rows(editor, false, text_top));
-    Some(clear_of(r, about, rows, crate::pane::FLOAT_MIN_H))
+    let (tw, _) = chat_widths(r.w.saturating_sub(1), false);
+    let input_h = c.input.laid(tw).height().clamp(1, CHAT_INPUT_MAX);
+    let h = (input_h + 2 + usize::from(ask_past(c).is_some())).min(rows);
+    let ask = crate::split::Rect { y: crate::pane::Frame::placed_y(h, rows), h, ..r };
+    Some(clear_of(ask, carried_rows(editor, true, text_top), rows, h))
 }
 
-/// The screen rows (first, last) the last frame drew the lines a floating chat is about on: the front file's, in its
-/// pane (the focused one first) — the selection that goes with the message where `selection` and one does, else the
-/// cursor's line. None: not on screen.
+/// The screen rows (first, last) the last frame drew the lines the ask line carries on: the front file's, in its pane
+/// (the focused one first) — the selection that goes with the message where `selection` and one does, else the cursor's
+/// line. None: not on screen.
 fn carried_rows(editor: &Editor, selection: bool, text_top: usize) -> Option<(usize, usize)> {
     let doc = editor.front_file()?;
     let text = &doc.text;
@@ -24308,7 +24331,7 @@ mod tests {
                     }
                 }
                 let mut c = crate::chat::Chat::new();
-                (c.follow.on, c.unfolded) = (true, true);
+                c.follow.on = true;
                 if busy {
                     c.state = crate::chat::State::Thinking;
                 }
@@ -24426,7 +24449,7 @@ mod tests {
         }
         assert_eq!(ed.workspace.label(), "");
         let mut c = crate::chat::Chat::new();
-        (c.follow.on, c.unfolded) = (true, true);
+        c.follow.on = true;
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = At::Chat;
         let lines: Vec<(u16, String, String)> = (20..=140)
@@ -27379,7 +27402,7 @@ mod tests {
         c.msgs.push(Msg::new(Role::Assistant, "Starting", ""));
         c.state = crate::chat::State::Writing;
         // (the panel, not the minimized card following would make of it)
-        c.unfold();
+        c.hidden = false;
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         ed
@@ -27725,7 +27748,7 @@ mod tests {
         c.msgs.push(Msg::tool(look("run", "cargo test"), "x1"));
         c.msgs.push(Msg::new(Role::Assistant, "Done now.", ""));
         c.msgs.push(Msg::new(Role::Note, "5.2s", ""));
-        c.unfold();
+        c.hidden = false;
         ed.workspace.claude.chat = Some(c);
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         ed
@@ -27911,7 +27934,7 @@ mod tests {
             }
             crate::chat::open(&mut ed);
             let c = ed.workspace.claude.chat.as_mut().unwrap();
-            (c.state, c.unfolded) = (crate::chat::State::Thinking, true);
+            c.state = crate::chat::State::Thinking;
             let generation = c.generation();
             match stuck {
                 true => ed.tool_waits(generation, serde_json::json!(1), "symbols", Duration::ZERO),
@@ -28002,7 +28025,7 @@ mod tests {
                 // The follow card
                 let mut ed = threaded_turn();
                 let c = ed.workspace.claude.chat.as_mut().unwrap();
-                (c.unfolded, c.follow.on, c.state) = (chat, true, crate::chat::State::Writing);
+                (c.hidden, c.follow.on, c.state) = (!chat, true, crate::chat::State::Writing);
                 c.msgs.pop();
                 let run = c.msgs[5].look.clone().unwrap();
                 c.follow.gaze = Some(crate::follow::Gaze {
@@ -28146,7 +28169,7 @@ mod tests {
     fn the_follow_card_shows_the_turn_as_knots_and_words() {
         let mut ed = threaded_turn();
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        c.unfolded = false;
+        c.hidden = true;
         c.follow.on = true;
         c.state = crate::chat::State::Writing;
         c.msgs.pop();
@@ -28154,7 +28177,7 @@ mod tests {
         let run = c.msgs[5].look.clone().unwrap();
         c.follow.gaze =
             Some(crate::follow::Gaze { call: "x1".into(), ..crate::follow::Gaze::new(run, None, None) });
-        assert!(c.compact(), "minimized: follow's card");
+        assert!(c.hidden, "minimized: follow's card");
         let card = follow_card(&mut ed, 160);
         assert!(card[0].contains(" writing ") && card[0].ends_with('s'), "what it's at, how long: {card:#?}");
         let edit = format!("● edit   src/main.rs{}▐y▌", " ".repeat(30));
@@ -28192,9 +28215,9 @@ mod tests {
             ["▸ run    cargo test", "…", "Line 10.", "", "Line 11.", "", "Line 12."],
             "{card:#?}"
         );
-        // Replay at the read, the turn over: the stop with the words before it and after
+        // Replay at the read, the turn over, the chat in sight: the stop with the words before it and after
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        c.state = crate::chat::State::Idle;
+        (c.state, c.hidden) = (crate::chat::State::Idle, false);
         let look = c.msgs[2].look.clone().unwrap();
         c.follow.replaying = Some(crate::follow::Gaze {
             call: "r1".into(),
@@ -28203,7 +28226,7 @@ mod tests {
         });
         let card = follow_card(&mut ed, 160);
         assert!(card[0].ends_with(" 1/3"), "which stop: {card:#?}");
-        // (the turn over, the panel's back: the card beside it, no question)
+        // (the turn over, the chat in sight: the card beside it, no question)
         let edit = format!("● edit   src/main.rs{}▐y▌", " ".repeat(11));
         assert_eq!(
             card[1..],
@@ -28240,7 +28263,8 @@ mod tests {
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.follow.replaying = None;
         c.msgs.truncate(6);
-        c.state = crate::chat::State::Thinking;
+        // (at work again, the chat out of sight: the card's question over its rows)
+        (c.state, c.hidden) = (crate::chat::State::Thinking, true);
         let failed = crate::chat::Look {
             verb: "failed",
             what: "tests::adds".into(),
@@ -28290,7 +28314,7 @@ mod tests {
     fn strip_turn(n: usize) -> Editor {
         let mut ed = threaded_turn();
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        (c.unfolded, c.follow.on, c.state) = (false, true, crate::chat::State::Thinking);
+        (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Thinking);
         c.follow.replay.begin();
         for (i, (verb, what, range)) in STRIP_STOPS.into_iter().take(n).enumerate() {
             let look = crate::chat::Look {
@@ -28490,7 +28514,7 @@ mod tests {
         crossterm::style::force_color_output(true);
         let mut ed = threaded_turn();
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        (c.unfolded, c.follow.on, c.state) = (false, true, crate::chat::State::Thinking);
+        (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Thinking);
         c.msgs.truncate(6);
         c.follow.replay.begin();
         for m in &c.msgs[2..6] {
@@ -28621,7 +28645,7 @@ mod tests {
     }
 
     /// The user, 2026-10-25: the follow card's keys are its bottom line, never a row inside — in order of use, one that
-    /// doesn't fit skipped (narrow: `space l` alone, `[r replay` gone); the mouse over a strip's mark puts its words in
+    /// doesn't fit skipped; the mouse over a strip's mark puts its words in
     /// their place, and the keys come back as it leaves.
     #[test]
     fn the_follow_cards_keys_are_its_bottom_line() {
@@ -28634,35 +28658,27 @@ mod tests {
             let rows: Vec<String> = vt.screen().rows(x as u16, cw as u16).skip(y).take(h).collect();
             (rows[h - 1].clone(), rows[1..h - 1].to_vec())
         };
-        // The chat's input has the keys: how to stop it, how to stop following
+        // The chat out of sight, the keys the code's: the way to read it and the replay, in order of use
+        ed.workspace.viewer.at = At::Code;
         let (bottom, inside) = card(&mut ed, 160);
-        assert!(bottom.starts_with("╰─ C-c stop · C-f unfollow ─") && bottom.ends_with('╯'), "{bottom:?}");
-        assert!(!inside.iter().any(|r| r.contains("C-c") || r.contains("C-f")), "no key inside: {inside:#?}");
+        assert!(bottom.starts_with("╰─ space L read · [r replay ─") && bottom.ends_with('╯'), "{bottom:?}");
+        assert!(!inside.iter().any(|r| r.contains("space L")), "no key inside: {inside:#?}");
         assert!(
             inside.last().is_some_and(|r| !r.trim_matches(['│', ' ']).is_empty()),
             "the turn down to the frame, no blank row for keys: {inside:#?}"
         );
-        // Paused: `C-f` follows again, and says so (as the chat's hints do)
-        ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
-        let (bottom, _) = card(&mut ed, 160);
-        assert!(bottom.starts_with("╰─ C-c stop · C-f follow ─"), "{bottom:?}");
-        ed.workspace.claude.chat.as_mut().unwrap().follow.paused = false;
-        // The code has them: the chat's way back and the replay, in order of use
-        ed.workspace.viewer.at = At::Code;
-        let (bottom, _) = card(&mut ed, 160);
-        assert!(bottom.starts_with("╰─ space l open the chat · [r replay ─"), "{bottom:?}");
-        // Narrow: a pair that doesn't fit is skipped, the line whole
+        // Narrow: both still fit, whole pairs (one that didn't would be skipped)
         let (bottom, _) = card(&mut ed, 80);
-        assert!(bottom.starts_with("╰─ space l open the chat ─") && !bottom.contains("[r"), "{bottom:?}");
+        assert!(bottom.starts_with("╰─ space L read · [r replay ─"), "{bottom:?}");
         // The mouse over a mark: its words in the keys' place; away, the keys again
         card(&mut ed, 160);
         let &(y, x, _) = ed.screen.stop_marks.borrow().last().expect("a mark");
         ed.handle_event(Event::Hover(x as u16, y as u16));
         let (bottom, _) = card(&mut ed, 160);
-        assert!(bottom.starts_with("╰─ references Thread ") && !bottom.contains("space l"), "{bottom:?}");
+        assert!(bottom.starts_with("╰─ references Thread ") && !bottom.contains("space L"), "{bottom:?}");
         ed.handle_event(Event::Hover(0, 0));
         let (bottom, _) = card(&mut ed, 160);
-        assert!(bottom.starts_with("╰─ space l open the chat · [r replay ─"), "the keys back: {bottom:?}");
+        assert!(bottom.starts_with("╰─ space L read · [r replay ─"), "the keys back: {bottom:?}");
     }
 
     /// The code's cursor under the follow card in replay (`[r`) is hidden — never drawn inside the card — and
@@ -28675,7 +28691,6 @@ mod tests {
         ed.docs[0].text = Rope::from_str(&line.repeat(100));
         ed.workspace.viewer.at = At::Code;
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        c.unfolded = false;
         c.follow.on = true;
         let look = c.msgs[2].look.clone().unwrap();
         c.follow.replaying = Some(crate::follow::Gaze {
@@ -28712,7 +28727,7 @@ mod tests {
         BLEED_SEEN.with_borrow(|w| w.iter().filter(|(s, _)| *s == surface).map(|(_, t)| t.clone()).collect())
     }
 
-    /// Follow's card while the answer is written (the chat minimized): its newest answer's head bleeding; once the
+    /// Follow's card while the answer is written (the chat out of sight): its newest answer's head bleeding; once the
     /// turn ends, nothing bleeding.
     #[test]
     fn the_follow_cards_answer_bleeds_at_its_head() {
@@ -28721,9 +28736,9 @@ mod tests {
         // (some code, not the start screen: the card sits on it)
         ed.docs[0].text = Rope::from_str("fn main() {}\n");
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        c.unfolded = false;
+        c.hidden = true;
         c.follow.on = true;
-        assert!(c.compact(), "follow's card, the chat minimized");
+        assert!(c.hidden, "follow's card, the chat out of sight");
         c.msgs[4].text = "Starting the answer so far".into();
         let bleeding = bleed_in_frame(&mut ed, "follow");
         assert_eq!(bleeding, ["so far"], "the head of the answer being written");
@@ -28934,7 +28949,7 @@ mod tests {
         let at = |k: usize| {
             let mut ed = Editor::new(Config::default());
             let mut c = crate::chat::Chat::new();
-            c.unfold();
+            c.hidden = false;
             c.msgs.push(Msg::new(Role::User, "why?", ""));
             c.msgs.push(Msg::new(Role::Thought, thought.as_str(), ""));
             if k >= 1 {
@@ -29751,7 +29766,7 @@ mod tests {
         crate::chat::open(&mut ed);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         // (the panel, not the minimized card follow mode makes of it while Claude works)
-        (c.state, c.unfolded) = (crate::chat::State::Thinking, true);
+        c.state = crate::chat::State::Thinking;
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "check it", ""));
         let look = crate::chat::Look {
             verb: "run",
@@ -29857,7 +29872,7 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        (c.state, c.unfolded) = (crate::chat::State::Thinking, true);
+        c.state = crate::chat::State::Thinking;
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "check it", ""));
         let mut m = crate::chat::Msg::new(crate::chat::Role::Tool, "", "");
         m.look = Some(crate::chat::Look {
@@ -30686,24 +30701,24 @@ mod tests {
         );
         // The chat's input says its `esc` as bound (`chatinput::esc_said`), out of the text's sight: with a conversation
         // `normal` — the keys stay on the chat, in normal mode on the conversation (neither the code nor a close: the
-        // flow plan's §6, piece 2) — the same docked, floating and grown from the ask line; with nothing said `code`
-        // docked, `close` floating (it goes with the keys — `chat::keys_left`). The ask line's own is `close` (a pair
-        // above: it closes, as a prompt's)
+        // flow plan's §6, piece 2); with nothing said `code` (the column stays). The ask line's own is `close`, a
+        // conversation there or not (it closes, as a prompt's)
         let mut ed = Editor::new(Config::default());
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        for (docked, said, word) in
-            [(true, false, "code"), (false, false, "close"), (true, true, "normal"), (false, true, "normal")]
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        for (asking, said, word) in
+            [(false, false, "code"), (true, false, "close"), (false, true, "normal"), (true, true, "close")]
         {
-            ed.sizes.chat_docked = docked;
             let c = ed.workspace.claude.chat.as_mut().unwrap();
             c.msgs.clear();
+            c.asking = asking;
             if said {
                 c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
             }
             assert_eq!(
                 crate::chatinput::esc_said(&ed),
                 ("esc".to_string(), word),
-                "the chat's input, docked {docked}, a conversation {said}"
+                "the chat's input, the ask line {asking}, a conversation {said}"
             );
         }
     }

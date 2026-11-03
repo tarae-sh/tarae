@@ -60,6 +60,7 @@ mod presence;
 mod ptybroker;
 mod quota;
 mod quotes;
+mod readself;
 mod rebasemsg;
 mod rebaserecheck;
 mod replyline;

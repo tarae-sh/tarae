@@ -91,23 +91,15 @@ pub fn under_way(ed: &mut Editor, key: Key) -> bool {
 }
 
 /// Where `esc` goes from the input, as its hint and its notices say it: normal mode on the conversation (`esc
-/// normal`, its key as bound) — nothing to read yet, the code; the chat floating, it closes with the keys
-/// (`chat::keys_left`).
+/// normal`, its key as bound) — nothing to read yet, the code; the ask line closes (`chat::ask_close`).
 pub fn esc_said(ed: &Editor) -> (String, &'static str) {
     let to_view = ed.keymaps.chat.keys_for("chat_view").into_iter().next();
     match to_view {
-        Some(k) if ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.msgs.is_empty()) => (k, "normal"),
         // (`esc code` where the surface stays, `esc close` where it goes — the user, 2026-10-20)
-        _ if !ed.sizes.chat_docked => ("esc".into(), "close"),
+        _ if ed.chat_asking() => ("esc".into(), "close"),
+        Some(k) if ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.msgs.is_empty()) => (k, "normal"),
         _ => ("esc".into(), "code"),
     }
-}
-
-/// The input's keys to the next pane (`[chat]`'s `rotate_view`, #230 — `S-tab` by default, yours wherever you put
-/// it): the minimized chat passes them on as it passes `esc`, the chat left folded (`chat::unfold_key`, and
-/// `keys_to`'s layer for it).
-pub fn next_pane_keys(keymaps: &crate::keymap::Keymaps) -> impl Iterator<Item = Key> + '_ {
-    keymaps.chat.bound_to("rotate_view")
 }
 
 /// `key` with the input swapped in.

@@ -424,13 +424,9 @@ fn perf_e2e_busy_session_behind() {
     t.send(" l");
     t.send("go\r");
     t.wait_text("word word");
-    // (the chat minimized while Claude works, the keys still its — slip 3 — then Esc alone: with a key right
-    // behind it, it reads as alt+that key: on a loaded machine the `:` went out right behind it, both came in one
-    // read, alt+`:`, the switch typed into the chat, a timeout — :preflight 2026-10-04. A screen grep for the
-    // follow card's words passed too early once. Now: the Esc handled and drawn — `after_input` — and the state
-    // saying the code has the keys)
-    t.wait_state("the chat minimized, working", |s| s["keys"]["region"] == "chat-minimized");
-    t.esc_state("the chat let go of the keys", |s| s["keys"]["region"] == "code");
+    // (the ask line gone with its message, the keys back in the code — the state saying so, never a screen grep for the
+    // follow card's words, which passed too early once: the `:` below must reach the code, not the chat)
+    t.wait_state("the ask line gone, the code's keys", |s| s["keys"]["region"] == "code");
     t.send(":workspace-switch 0\r");
     t.wait_for("the first session in front", |s| !s.contains("word word") && s.contains("fn f1("));
     // (past the toasts' fade and the switch's frames: none up, nothing on a clock, every frame owed read —

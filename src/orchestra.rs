@@ -584,13 +584,13 @@ fn anew(ed: &mut Editor, from: &str) -> Result<(), String> {
         ));
     }
     let at = ed.workspace.viewer.at;
-    let unfolded = ed.workspace.claude.chat.as_ref().map(|c| c.unfolded);
+    let hidden = ed.workspace.claude.chat.as_ref().map(|c| c.hidden);
     // (its toast says whose it was in its row's words — not yours: `:chat-new`'s)
     let said = format!("a new conversation — {from}'s Claude asked for it");
     crate::chat::reset_said(ed, &said);
     ed.workspace.viewer.at = at;
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
-        c.unfolded = unfolded.unwrap_or(c.unfolded);
+        c.hidden = hidden.unwrap_or(c.hidden);
         c.note(&said);
     }
     Ok(())

@@ -910,7 +910,9 @@ impl Editor {
         if s.chat_input_row(y).is_some() {
             return at(S::Input, self.input_text(x, y));
         }
-        if s.chat_row(y).is_some() {
+        // (a row of the frame's own among the conversation's — `── new ──`, what a run waits on — is no text: a gap's)
+        let text = s.chat_row(y).is_some_and(|r| crate::chatdoc::doc_row(&s.chat_laid.borrow(), r).is_some());
+        if text {
             return at(S::Transcript, self.transcript_text(x, y));
         }
         at(S::Chat, Part::Blank)
@@ -950,6 +952,11 @@ impl Editor {
 /// pressed, a session's spot goes to the card, the list, a session). A prompt or picker pressed outside closes as its
 /// surface's own act; a press on a card is the card's.
 pub fn let_go(ed: &mut Editor, u: Under) {
+    // (the follow card with the keys: a press elsewhere takes them where it lands — never the status line's blank, which
+    // takes none)
+    if u.surface != Surface::FollowCard && !(u.surface == Surface::Status && u.part == Part::Blank) {
+        ed.follow_focus = false;
+    }
     let modal = matches!(u.surface, Surface::Prompt | Surface::Card)
         || (u.surface == Surface::Picker && u.part == Part::Outside);
     if modal || !ed.card_has_keys() {
@@ -1783,7 +1790,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The note card", "a key on its bottom line", Su::NoteCard, Part::Word(Word::Does(0))),
         (
             "The status line",
-            "a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`)",
+            "a word (`▲N waiting · C-q`, the chip, what Claude does now, `◂ new · space L`, the branch, `▲ N`, `full screen`)",
             Su::Status,
             Part::Word(Word::Now),
         ),

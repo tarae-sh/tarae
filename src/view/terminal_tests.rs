@@ -203,17 +203,16 @@ fn ctrl_s_leaves_the_terminal_out_when_its_rows_dont_go() {
     }
 }
 
-/// The flow plan's reader: under a chat floating over the code the bottom slot runs the screen's whole width — a press
-/// right of the frame's left edge, on the terminal's last row, is the terminal's as at the screen's left (`slot_end`) —
-/// and `llm.screen-terminal` off leaves the terminal's rows out whole, not only up to the frame's left edge as beside
-/// a docked chat.
+/// The flow plan's ask line: under the chat floating over the code the bottom slot runs the screen's whole width — a
+/// press right of the frame's left edge, on the terminal's last row, is the terminal's as at the screen's left
+/// (`slot_end`) — and `llm.screen-terminal` off leaves the terminal's rows out whole, not only up to the frame's left
+/// edge as beside a docked chat.
 #[test]
 fn under_a_floating_chat_the_terminal_runs_the_whole_width() {
     let (mut ed, _sent) = term(Config::default(), 30);
     (ed.config.llm.command, ed.config.llm.args) = ("sh".into(), vec!["-c".into(), "cat > /dev/null".into()]);
     ed.config.llm.screen_terminal = false;
-    crate::chat::open(&mut ed);
-    ed.sizes.chat_docked = false;
+    crate::chat::ask(&mut ed);
     print(&mut ed, &format!("{}tail-past-the-frame\r\n$ ", "x".repeat(96)));
     let (x, _, w, _) = ed.screen.chat_frame.expect("floating");
     let (_, y1) = ed.screen.terminal_rows.expect("the terminal in sight");

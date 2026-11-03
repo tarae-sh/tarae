@@ -61,7 +61,9 @@ use crate::workspace::At;
 /// `lead`, `must`), bottom first; a watcher asking `regions` is told them as they change, with the frame `written`.
 /// 26: a finding's `thread` names the session's Claude `claude` (was `author`), as the note's card and `kind` do (#254).
 /// 27: the turn's map (`turnmap.rs`): `panels.lists` may hold a `map` list, its marks as drawn (`map:src/a.rs:●`).
-pub const V: u64 = 27;
+/// 28: the minimized chat gone (the flow plan's piece 3): `panels.chat.minimized` is `hidden` (out of sight), `unread` the
+/// status line's `◂ new`; `keys.region` `chat-minimized` and `takes` `unfold` gone.
+pub const V: u64 = 28;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -75,9 +77,6 @@ pub enum Region {
     Prompt,
     Picker,
     Chat,
-    /// The chat minimized while Claude works: a key that would type there brings it back instead
-    /// (`chat::unfold_key`).
-    Unfold,
     Side(crate::sidebar::Mode),
     /// The code review's file rail.
     Rail,
@@ -109,6 +108,8 @@ pub enum Region {
     Page,
     /// `C-w m` moving a floating pane (`float.rs`): its moves, `enter`/`esc` end it, the rest said.
     Move,
+    /// The follow card with the keys (`Editor::follow_key`, #267): the window's sizes are its, `esc` gives them back.
+    Follow,
 }
 
 impl Region {
@@ -119,7 +120,6 @@ impl Region {
             Region::Prompt => "prompt".into(),
             Region::Picker => "picker".into(),
             Region::Chat => "chat".into(),
-            Region::Unfold => "chat-minimized".into(),
             Region::Side(m) => format!("side:{}", side_tab(m)),
             Region::Rail => "review".into(),
             Region::EditReview => "edit-review".into(),
@@ -136,6 +136,7 @@ impl Region {
             Region::NoteCard => "note-card".into(),
             Region::Page => "page".into(),
             Region::Move => "move".into(),
+            Region::Follow => "follow".into(),
         }
     }
 
@@ -147,7 +148,6 @@ impl Region {
             Region::Prompt => Handler::Prompt,
             Region::Picker => Handler::Picker,
             Region::Chat => Handler::Chat,
-            Region::Unfold => Handler::Unfold,
             Region::Side(_) => Handler::Side,
             Region::Rail => Handler::Rail,
             Region::EditReview => Handler::EditReview,
@@ -167,6 +167,7 @@ impl Region {
             Region::NoteCard => Handler::NoteCard,
             Region::Page => Handler::Page,
             Region::Move => Handler::Move,
+            Region::Follow => Handler::Follow,
         }
     }
 }
@@ -206,7 +207,6 @@ pub enum Handler {
     ChatView,
     TerminalView,
     Output,
-    Unfold,
     Chat,
     Rail,
     Side,
@@ -217,6 +217,7 @@ pub enum Handler {
     NoteCard,
     Page,
     Move,
+    Follow,
     Code,
 }
 
@@ -239,8 +240,6 @@ pub enum Takes {
     Program,
     /// A card's keys (or an edit review's `y` `n` `a`).
     Answers,
-    /// The next key that would type brings the minimized chat back — it isn't typed.
-    Unfold,
     /// Letters pick a label (pointing at an element).
     Label,
 }
@@ -252,7 +251,6 @@ impl Takes {
             Takes::Text => "text",
             Takes::Program => "program",
             Takes::Answers => "answers",
-            Takes::Unfold => "unfold",
             Takes::Label => "label",
         }
     }
@@ -399,6 +397,12 @@ impl Editor {
         if !modal && !held && elsewhere {
             v.push(shortcut(Region::NextCard, Filter::Only(vec![ctrl('q')])));
         }
+        // `follow_key`: the follow card with the keys — every key but the window prefix (its sizes, the keys staying):
+        // `esc` gives them back, the rest give them back and go on
+        if self.follow_in_hand() && !modal && !held && self.pending.is_empty() {
+            let prefix = self.keymaps.window_prefix();
+            v.push(layer(Region::Follow, Filter::Except(prefix.into_iter().collect())));
+        }
         // `terminal_key`: the program has them all — after the window prefix taken from it (`C-w`), only the prefix
         // again (the program's one), the rest the window table's
         let program = self.workspace.program_has_keys();
@@ -471,37 +475,13 @@ impl Editor {
                 v.push(layer(Region::Output(r), Filter::All));
             }
         }
-        // `chat::unfold_key`: minimized, what would type brings it back — its own keys (and `C-w` from an
-        // empty input) go on; a line open over the chat has them all, it or `chat::key` none
+        // `chat::key` (a line open over the chat has them all, it none)
         let chat = self
             .workspace
             .claude
             .chat
             .as_ref()
             .filter(|_| self.workspace.is_at(At::Chat) && self.prompt.is_none());
-        if let Some(c) = chat.filter(|c| c.compact() && !pending) {
-            let mut passes: Vec<Key> = [
-                Key::plain(Code::Esc),
-                ctrl('c'),
-                ctrl('f'),
-                ctrl('g'),
-                ctrl(']'),
-                ctrl('z'),
-                ctrl('t'),
-                ctrl('p'),
-                ctrl('l'),
-                ctrl('y'),
-                ctrl('r'),
-            ]
-            .into();
-            if c.input.is_empty() {
-                passes.extend([ctrl('w'), Key { alt: true, ..ctrl('w') }]);
-            }
-            // (the input's keys to the next pane, as bound — #230)
-            passes.extend(crate::chatinput::next_pane_keys(&self.keymaps));
-            v.push(layer(Region::Unfold, Filter::Except(passes)));
-        }
-        // `chat::key`
         if let Some(c) = chat.filter(|_| !pending && viewing.is_none()) {
             v.push(match c.input.is_empty() {
                 true => layer(Region::Chat, Filter::Except(vec![ctrl('w'), Key { alt: true, ..ctrl('w') }])),
@@ -562,7 +542,6 @@ impl Editor {
         match region {
             Region::Card(_) | Region::EditReview => Takes::Answers,
             Region::Program => Takes::Program,
-            Region::Unfold => Takes::Unfold,
             Region::Point => Takes::Label,
             Region::Picker | Region::Prompt | Region::Chat => Takes::Text,
             Region::Code if self.mode == Mode::Insert => Takes::Text,
@@ -654,10 +633,8 @@ impl Editor {
             }
             Region::Prompt => s.width.is_some(),
             Region::Picker => s.picker_list.is_some(),
-            // (docked, its column; floating — the reader, the ask line — its frame)
+            // (docked, its column; floating — the ask line — its frame)
             Region::Chat => s.chat_w > 0 || s.chat_frame.is_some(),
-            // (its input isn't on screen — the minimized card is, and the first key brings the panel back)
-            Region::Unfold => s.chat_mini.get().is_some() || s.chat_w > 0,
             Region::Side(_) => s.side_w > 0,
             Region::Rail => s.rail_w > 0,
             Region::EditReview => s.review_change.get().is_some(),
@@ -665,6 +642,7 @@ impl Editor {
             Region::Slot(Slot::Test) => s.test_panel.get().is_some(),
             Region::List(k) => crate::grouplist::drawn(self, k),
             Region::Move => s.floating.borrow().iter().any(|f| Some(f.0) == self.float_moving),
+            Region::Follow => s.thought_card.get().is_some(),
             Region::Slot(Slot::Task) => s.task_panel.get().is_some(),
             Region::Slot(Slot::Procs) => s.procs_panel.get().is_some(),
             Region::Slot(Slot::Plugin) => s.plugin_panel.get().is_some(),
@@ -699,7 +677,7 @@ impl Editor {
                 None => r.name(),
             },
             Region::Rail => "review".into(),
-            Region::Unfold | Region::View(crate::view::Surface::Chat) => "chat".into(),
+            Region::View(crate::view::Surface::Chat) => "chat".into(),
             Region::Output(r) => slot_name(r.slot()).into(),
             other => other.name(),
         }

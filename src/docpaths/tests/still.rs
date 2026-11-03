@@ -208,9 +208,7 @@ fn an_event_of_nothing_shared_is_the_same_work_at_17_sessions_and_34() {
         if docked {
             // (the front's chat open in its column, idle: its top line names the sessions)
             for ed in [&mut few, &mut more] {
-                let mut c = crate::chat::Chat::new();
-                c.unfolded = true;
-                ed.workspace.claude.chat = Some(c);
+                ed.workspace.claude.chat = Some(crate::chat::Chat::new());
             }
         }
         let at_few = per_kind(&mut few);

@@ -1372,11 +1372,12 @@ impl Editor {
     /// answering something else, once that turn ends.
     fn rebase_ask(&mut self, a: Ask) {
         if self.workspace.claude.chat.is_none() {
+            // (the keys where they were — out of sight)
             let at = self.workspace.viewer.at;
             crate::chat::open(self);
             self.workspace.viewer.at = at;
             if let Some(c) = &mut self.workspace.claude.chat {
-                c.unfolded = false;
+                c.hidden = true;
             }
         }
         let Some(r) = self.workspace.rebase.as_mut() else { return };

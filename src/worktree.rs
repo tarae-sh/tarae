@@ -7270,8 +7270,8 @@ mod tests {
             mark: None,
         };
         ed.workspaces_back(vec![k], Vec::new(), None, false);
-        // The start: a new conversation, the last one offered
-        feed(&mut ed, "<space>l");
+        // The start: a new conversation, the last one offered (the column, `space L`)
+        feed(&mut ed, "<space>L");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().past.is_empty());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         let texts: Vec<&str> = c.msgs.iter().map(|m| m.text.as_str()).collect();
@@ -7281,7 +7281,7 @@ mod tests {
         let id = ed.workspaces.iter().find(|l| l.root == kid).expect("back").id;
         assert!(ed.workspaces[0].claude.brought_back);
         ed.workspace_switch(id);
-        feed(&mut ed, "<space>l");
+        feed(&mut ed, "<space>L");
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().continued.is_some());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!(c.conversation.as_deref(), Some("c-kid"));

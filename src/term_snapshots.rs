@@ -1628,7 +1628,7 @@ fn frames_of_frictions30() {
         // 18: Claude answering; two messages and the review's notes wait for its turn's end
         let mut s = shot();
         let mut c = crate::chat::Chat::new();
-        (c.unfolded, c.state) = (true, crate::chat::State::Thinking);
+        c.state = crate::chat::State::Thinking;
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does insert clone the name?", ""));
         c.queue("and keep the first one".into(), false);
         c.queue("then add a test for it".into(), false);
@@ -1848,7 +1848,7 @@ fn snapshot_chat_empty() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     assert!(
         s.ed.workspace.claude.chat.as_ref().is_some_and(|c| c.msgs.is_empty()),
         "chat opened without a note"
@@ -1864,7 +1864,7 @@ fn snapshot_chat_slash() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let rows = |s: &mut Shot| -> Vec<String> {
         let mut parser = vt100::Parser::new(s.h, s.w, 0);
         parser.process(&s.frame());
@@ -1897,7 +1897,7 @@ fn snapshot_chat_explore() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let msg = |role, text: &str, chip: &str, look: Option<Look>| {
         let mut m = Msg::new(role, text, chip);
         m.look = look;
@@ -1946,7 +1946,7 @@ fn snapshot_chat_table() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let msg = |role, text: &str| Msg::new(role, text, "");
     let answer = "Two ways to draw a cell that doesn't fit:\n\n\
                   | 방식 | 장점 | 단점 |\n|---|---|---|\n\
@@ -1974,7 +1974,7 @@ fn snapshot_chat_measure() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let msg = |role, text: &str| Msg::new(role, text, "");
     let question = "why does the map keep the last strand when two have the same name, and is there a way to keep the first?";
     let answer = "The name is cloned because insert takes the key by value, and the strand moves into the map in the \
@@ -2013,7 +2013,7 @@ fn the_chats_prose_fills_a_width_you_set() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let answer = "The name is cloned because insert takes the key by value, and the strand moves into the map in the \
                   same call. Keying by the name alone means a second strand with the same name replaces the first, \
                   and entry keeps the first one it was given while every later strand with that name is dropped.";
@@ -2052,33 +2052,8 @@ fn the_chats_prose_fills_a_width_you_set() {
     assert!(s.ed.sizes.chat.is_none() && back <= MEASURE, "automatic again: the measure — {back}");
 }
 
-/// While Claude works in follow mode the panel is minimized to a floating card (the code gets the whole
-/// width); `space l` brings it back for the turn, and without follow it stays docked.
-#[test]
-fn chat_minimizes_while_following() {
-    let mut s = Shot::new(100, 30);
-    s.file("src/demo.rs", DEMO_RS);
-    s.ed.config.llm.command = "sh".into();
-    s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
-    s.frame();
-    let docked = s.ed.screen.chat_x;
-    assert!(docked.is_some());
-    s.keys("why?<ret>");
-    assert!(s.ed.workspace.claude.chat.as_ref().unwrap().busy());
-    s.frame();
-    assert_eq!(s.ed.screen.chat_x, None, "minimized: no docked panel");
-    assert!(s.ed.screen.chat_mini.get().is_some(), "a floating card instead");
-    s.keys("<esc> l");
-    assert_eq!(s.ed.screen.chat_x, docked, "space l brings the panel back for this turn");
-    s.ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
-    s.ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
-    s.frame();
-    assert_eq!(s.ed.screen.chat_x, docked, "not following = docked");
-}
-
-/// A command Claude wants to run outside the sandbox, asked while it works in follow mode: the minimized chat
-/// moves to the top right, out of the card's way, the card's buttons in sight.
+/// A command Claude wants to run outside the sandbox, asked while it works in follow mode, the chat out of sight: the
+/// follow card moves to the top right, out of the card's way, the card's buttons in sight.
 #[test]
 fn snapshot_follow_offer_run() {
     // (the turn's time drawn from a clock held still)
@@ -2087,13 +2062,14 @@ fn snapshot_follow_offer_run() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" lcommit it<ret>");
+    s.keys(" Lcommit it<ret>");
+    crate::chat::hide(&mut s.ed);
     let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "run", "arguments": {"command": "git commit -am 'Count words'",
             "outside_sandbox": true, "reason": "the hooks sign with the key in your agent"}}});
     assert!(crate::tools::mcp(&mut s.ed, 0, "c1", &msg).is_none());
     s.frame();
-    let mini = s.ed.screen.chat_mini.get().expect("the minimized chat shows");
+    let mini = s.ed.screen.chat_mini.get().expect("the follow card stands for the chat");
     for &(row, from, to, _) in &s.ed.screen.offer_buttons {
         let covers = mini.1 <= row && row < mini.1 + mini.3 && mini.0 < to && from < mini.0 + mini.2;
         assert!(!covers, "the chat {mini:?} is under the card's buttons (row {row})");
@@ -2615,7 +2591,7 @@ fn elapsed_time_frames() {
     let mut s = Shot::new(160, 40);
     s.file("src/demo.rs", DEMO_RS);
     let mut chat = crate::chat::Chat::new();
-    (chat.state, chat.unfolded) = (State::Thinking, true);
+    chat.state = State::Thinking;
     chat.started = now - Duration::from_millis(4_853_500);
     chat.msgs.push(Msg::new(Role::User, "rebuild the index, then check every link in docs/", ""));
     chat.msgs.push(Msg::new(
@@ -2898,7 +2874,7 @@ fn the_empty_chat_offers_the_latest_conversation_on_its_first_row() {
         let mut s = Shot::new(w, 30);
         s.file("src/demo.rs", DEMO_RS);
         let mut chat = crate::chat::Chat::new();
-        chat.unfold();
+        chat.hidden = false;
         chat.past = past;
         s.ed.workspace.claude.chat = Some(chat);
         s.ed.workspace.viewer.at = crate::workspace::At::Chat;
@@ -2985,7 +2961,7 @@ fn a_press_on_the_top_line_lands_after_a_part_folded() {
         let mut s = Shot::new(w, 30);
         s.file("src/demo.rs", DEMO_RS);
         let mut chat = crate::chat::Chat::new();
-        chat.unfold();
+        chat.hidden = false;
         chat.follow.on = true;
         chat.continued = Some(crate::chats::Past {
             id: "c".into(),
@@ -3223,7 +3199,7 @@ fn queued_behind_a_stopped_turn(ran: Duration, w: u16) -> Shot {
     r.last_output = Instant::now();
     s.ed.workspace.task_run = Some(r);
     let mut chat = crate::chat::Chat::new();
-    (chat.state, chat.unfolded) = (crate::chat::State::Thinking, true);
+    chat.state = crate::chat::State::Thinking;
     chat.msgs.push(Msg::new(Role::User, "now run the tests", ""));
     let look = crate::chat::Look {
         verb: "run",
@@ -3563,7 +3539,7 @@ fn a_users_message_keeps_its_lines() {
     let mut s = Shot::new(112, 30);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(Msg::new(Role::User, "First paragraph here.\n\nSecond paragraph\r\nthird line", ""));
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
@@ -3604,7 +3580,7 @@ fn the_thought_card_keeps_the_turns_thinking() {
     assert!(at("read the picker") < at("Let me check") && at("Let me check") < at("I should"), "{card:#?}");
 }
 
-/// Follow mode is one card in one place (U4): the minimized chat and Claude's words are the same card, at the
+/// Follow mode is one card in one place (U4): the chat out of sight and Claude's words are the same card, at the
 /// bottom right of the code — it stays there as Claude reads elsewhere, and goes to the top right only while
 /// the lines it reads run under it.
 #[test]
@@ -3622,6 +3598,7 @@ fn follow_is_one_card_in_one_place() {
     let path = s.ed.doc().path.clone().unwrap();
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    // (asked from the ask line: the chat out of sight once it went)
     s.keys(" lwhere?<ret>");
     let gaze = |s: &mut Shot, lines: std::ops::Range<usize>| {
         let look = Look {
@@ -3637,7 +3614,7 @@ fn follow_is_one_card_in_one_place() {
         c.follow.gaze = Some(crate::follow::Gaze::new(look, Some(path.clone()), Some(lines)));
         s.frame();
         let card = s.ed.screen.thought_card.get().expect("the card shows");
-        assert_eq!(s.ed.screen.chat_mini.get(), Some(card), "the minimized chat is this card");
+        assert_eq!(s.ed.screen.chat_mini.get(), Some(card), "the chat out of sight: this card stands for it");
         card
     };
     // (its corner — the card grows with the words, up from the bottom)
@@ -3744,6 +3721,7 @@ fn floating_cards_never_overlap() {
         s.file("src/demo.rs", &text);
         s.ed.config.llm.command = "sh".into();
         s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        // (asked from the ask line: the chat out of sight once it went)
         s.keys(" lwhy?<ret>");
         let path = s.ed.doc().path.clone().unwrap();
         let long = "A longer note that wraps over a few rows so the card is tall — the kind Claude writes when \
@@ -3767,7 +3745,7 @@ fn floating_cards_never_overlap() {
         c.follow.gaze = Some(crate::follow::Gaze::new(look, Some(path.clone()), Some(39..60)));
         s.ed.set_status("Saved src/demo.rs · 80 lines");
         let bytes = s.frame();
-        // (the minimized chat and the thought card are one card — U4)
+        // (the chat out of sight and the thought card are one card — U4)
         assert_eq!(s.ed.screen.chat_mini.get(), s.ed.screen.thought_card.get(), "{w}x{h}: one follow card");
         let cards: Vec<_> = [&s.ed.screen.note_card, &s.ed.screen.thought_card, &s.ed.screen.toast_card]
             .iter()
@@ -6991,7 +6969,7 @@ fn reading_the_answer_moves_the_editor() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let filler = "A line of the answer that says something.\n\n".repeat(30);
     let answer = format!(
         "The tree is built in src/filetree.rs:30.\n\n{filler}The side panel keeps it at src/sidebar.rs:60."
@@ -7037,7 +7015,7 @@ fn a_place_the_wrap_breaks_is_underlined_on_every_row() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     let answer = "The device is set up in TestDevice.java:61 — a name alone, found once. Its fixtures are in \
                   src/test/java/com/example/devices/fixtures/Registry.java:1, which the wrap breaks. Gone.java:3 \
                   is in no file.";
@@ -7206,7 +7184,7 @@ fn the_panels_follow_one_set_of_rules() {
     s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
     s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
@@ -7292,7 +7270,7 @@ fn the_edges_light_with_the_keys() {
     s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
     s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
@@ -7514,7 +7492,7 @@ fn what_takes_the_keys_is_framed_with_its_name() {
     // The chat takes the keys: the card stays framed, faint (it says `C-q answer` again)
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     assert!(!s.ed.card_has_keys());
     assert!(rows(&mut s).iter().any(|row| row.contains("╭─ Claude asks")), "framed, waiting");
     s.keys("<esc><C-w>h");
@@ -8067,7 +8045,7 @@ fn the_chats_edge_is_one_line_on_every_row() {
     s.file("src/demo.rs", &text);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l");
+    s.keys(" L");
     for line in [1, 2, 20, 200, 400] {
         s.ed.goto_line(line);
         let p = cells(&s.frame(), w, h);
@@ -8283,7 +8261,7 @@ fn every_panel_starts_its_text_the_same_distance_in() {
     s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
     s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
@@ -8410,7 +8388,7 @@ fn chat_cut(w: u16, h: u16, live: bool) -> Shot {
     use crate::chat::{Look, Msg, Role, State};
     let mut s = chat_of(w, h, 0);
     let c = s.ed.workspace.claude.chat.as_mut().unwrap();
-    (c.state, c.unfolded) = (State::Thinking, true);
+    c.state = State::Thinking;
     c.msgs.push(Msg::new(Role::Thought, words_of("strands", 160).join(" "), ""));
     let look = |verb, what: String, range: &str| Look {
         verb,
@@ -8820,7 +8798,7 @@ fn the_gutters_hold_at_their_edges() {
     s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     let (_, _, accent) = chrome_colors(&s.ed);
     let (side, chat, top, end) =
         (s.ed.screen.side_w, s.ed.screen.chat_x.unwrap(), s.ed.screen.text_top, s.ed.screen.body_h);
@@ -8853,7 +8831,7 @@ fn the_chat_input_says_where_the_keys_are() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" lhalf a thought");
+    s.keys(" Lhalf a thought");
     let (_, _, accent) = chrome_colors(&s.ed);
     let chat = s.ed.screen.chat_x.unwrap();
     let look = |s: &mut Shot| {
@@ -8886,7 +8864,7 @@ fn the_picker_floats_with_equal_margins() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     let (_, root) = demo_copy("floats");
     s.ed.open_picker(
         crate::picker::Picker::new("files", Vec::new(), true).with_tree(root.clone(), None),
@@ -9119,6 +9097,7 @@ fn a_one_row_follow_log_still_says_its_cut() {
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    // (asked from the ask line: the chat out of sight once it went)
     s.keys(" lwhy does insert clone the name?<ret>");
     let said = "The name is cloned because insert takes the key by value, and first moves into the map in the \
                 same call. Keying by the name alone means a second strand with the same name replaces it.";
@@ -9418,7 +9397,7 @@ fn a_toasts_place_is_kept_for_its_card() {
     s.keys("8gg");
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     s.ed.set_success("Saved a.rs");
     s.frame();
     assert!(s.ed.screen.toast_card.get().is_some(), "short: a card");
@@ -9439,7 +9418,7 @@ fn narrow_code() -> Shot {
     s.keys("8gg");
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     s
 }
 
@@ -9498,7 +9477,7 @@ fn a_narrow_codes_routine_toast_goes_to_the_status_line() {
     // (the chat beside it: the code keeps 48 columns)
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     s.ed.set_success("Saved main.rs · Claude's change");
     s.frame();
     assert_eq!(s.ed.screen.toast_card.get(), None, "no card over the code");
@@ -9559,7 +9538,7 @@ fn three_columns(w: u16, h: u16) -> Shot {
     s.ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(cwd, rels));
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    s.keys(" l<esc>");
+    s.keys(" L<esc>");
     s
 }
 
@@ -9945,7 +9924,7 @@ fn frames_of_f235() {
             .collect();
         chat(s, vec![Msg::new(Role::User, "go", ""), Msg::new(Role::Assistant, words.join("\n\n"), "")]);
         let c = s.ed.workspace.claude.chat.as_mut().unwrap();
-        c.unfolded = false;
+        c.hidden = true;
         c.follow.on = true;
         c.state = crate::chat::State::Writing;
     });

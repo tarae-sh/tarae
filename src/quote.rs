@@ -348,7 +348,7 @@ pub fn add(ed: &mut Editor, taken: Vec<Taken>) {
     crate::chat::ask_for(ed);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     ed.workspace.viewer.at = crate::workspace::At::Chat;
-    c.unfold();
+    c.hidden = false;
     let mut left = 0;
     for t in taken {
         let Some(c) = ed.workspace.claude.chat.as_ref() else { return };

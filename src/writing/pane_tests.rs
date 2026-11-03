@@ -383,7 +383,6 @@ fn the_key_to_follow_again_is_said_where_the_keys_are() {
     let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
     assert!(follow(&ed).paused && said(&ed, "you took over — C-f follows Claude again"), "{toasts:?}");
     assert_eq!(top(&ed), before + 3, "the pane under it scrolled");
-    // (minimized into the follow card while followed: its keys `Unfold`'s)
     assert!(ed.workspace.chat_has_keys(), "the keys still the chat's: {:?}", ed.keys_to().region);
     assert_eq!(ed.workspace.viewer.focus, b, "the focus where it was");
     assert_eq!(ed.doc().selection(), &cursor, "the cursor where it was");

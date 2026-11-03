@@ -178,7 +178,7 @@ fn from(ed: &Editor, region: Region) -> Vec<String> {
         Region::Chat => {
             let view = bound(&km.chat, "chat_view", "esc");
             match ed.workspace.claude.chat.as_ref() {
-                Some(c) if !c.msgs.is_empty() && !c.compact() => vec![view, leave(Surface::Chat)],
+                Some(c) if !c.msgs.is_empty() && !c.hidden => vec![view, leave(Surface::Chat)],
                 _ => vec![view],
             }
         }

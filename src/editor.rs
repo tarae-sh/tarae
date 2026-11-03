@@ -1310,6 +1310,10 @@ pub struct Editor {
     /// when it got them (one rewritten, or another in front, has them only once focused itself). The chat's draft,
     /// insert mode, a review stay as they were; an answer, `esc` or `C-w` gives them back.
     pub card_focus: Option<(u64, u64)>,
+    /// The follow card has the keys (#267; the user, 2026-11-03: as every floating pane's) — by `C-w w`'s round or a
+    /// press on it: `C-w < > - +` size it, `C-w =` makes it automatic again; `esc` gives them back, any other key gives
+    /// them back and goes on (`follow_key`). Only while it's drawn (`follow_in_hand`).
+    pub follow_focus: bool,
     /// The card an answer handed the keys on to (id, `rev`): focused once a frame has drawn it as it is
     /// (`term::render_frame`) — a key typed on after the answer (`y y`, a repeat) never answers one not yet in sight.
     pub card_next: Option<(u64, u64)>,
@@ -1558,11 +1562,11 @@ impl Editor {
             last_frame: None,
             term_out: Vec::new(),
             unfocused: false,
-            // (a few bytes, read before the first frame — it's drawn at the sizes you left)
-            // (tests: the chat docked, the column most of them were written on — the ask line's and the floating reader's
-            // own tests float it, `chat_docked = false`, as you start)
+            // (a few bytes, read before the first frame — it's drawn at the sizes you left; tests: every size automatic —
+            // where the chat stands is no choice of yours now: the conversation is the docked column, `space L` shows it,
+            // `space l` is the ask line)
             sizes: if cfg!(test) {
-                crate::sizes::Sizes { chat_docked: true, ..Default::default() }
+                crate::sizes::Sizes::default()
             } else {
                 crate::sizes::Sizes::read(crate::sizes::Sizes::path().as_deref())
             },
@@ -1632,6 +1636,7 @@ impl Editor {
             list_click: None,
             card_pressed: None,
             card_focus: None,
+            follow_focus: false,
             card_next: None,
             offer_drawn: Default::default(),
             offer_unshown: Default::default(),
@@ -2276,9 +2281,16 @@ impl Editor {
         let card = (self.screen.offer_card.is_some() || self.screen.offer_held)
             && self.card_waits()
             && !matches!(left, Some(Floating::Card(l)) if self.offers.first().is_some_and(|o| o.id == l));
+        // (the follow card the same way, after a waiting card — #267: from it, the round goes on from the code)
+        let from_follow = std::mem::take(&mut self.follow_focus) || left == Some(Floating::Follow);
+        let follow = !card && !from_follow && self.screen.thought_card.get().is_some();
         let edge = |end: Option<&crate::split::PaneId>| self.at_pane().is_some_and(|h| end == Some(&h));
         let (last, first) = (edge(order.last()) && left.is_none(), edge(order.first()) && left.is_none());
-        if card && (if delta > 0 { last } else { first }) {
+        if (card || follow) && (if delta > 0 { last } else { first }) {
+            if follow {
+                self.follow_focus = true;
+                return;
+            }
             return self.card_focus_front();
         }
         let mut here = self.at_pane().unwrap_or(self.workspace.viewer.focus);
@@ -3024,6 +3036,7 @@ impl Editor {
         crate::motion::wet_sync(self);
         crate::web::open::sync(self);
         crate::chatnotes::sync(self);
+        crate::chat::read_sync(self);
         crate::notes::attach(self);
         crate::edits::lost_review(self);
         crate::refactor::next(self);
@@ -3098,11 +3111,6 @@ impl Editor {
             c.input.insert_str(&text);
             // (typed, as a key typed: the conversation back to its bottom)
             (c.scroll, c.read_lift) = (0, None);
-            // (minimized, its input isn't on screen: it comes back with what was pasted — never text unseen)
-            if c.compact() {
-                c.unfold();
-                self.set_status("pasted into the chat — it was minimized; it's back");
-            }
             return;
         }
         if self.workspace.claude.review.is_some() {
@@ -3829,8 +3837,8 @@ impl Editor {
                 took_mouse(S::Side);
                 self.side_mouse(m.kind, row_of(part), s.sidebar.borrow().len());
             }
-            // The follow card: a mark of its strip replays its stop, as `]r`/`[r` step to it (motion §4); minimized, a
-            // trail row jumps there, anywhere else brings the panel back
+            // The follow card: a mark of its strip replays its stop, as `]r`/`[r` step to it (motion §4); a trail row
+            // jumps there, anywhere else gives it the keys
             (S::FollowCard, part) => {
                 took_mouse(S::FollowCard);
                 if !down {
@@ -3848,12 +3856,8 @@ impl Editor {
                             crate::chat::jump(self, link);
                         }
                     }
-                    _ => {
-                        if let Some(c) = self.workspace.claude.chat.as_mut() {
-                            c.unfold();
-                        }
-                        self.workspace.viewer.at = At::Chat;
-                    }
+                    // (anywhere else: the keys its, as every floating pane's — `C-w < > - +` size it, #267)
+                    _ => self.follow_focus = true,
                 }
             }
             (S::Chat | S::Transcript | S::Input, part) => {
@@ -5471,6 +5475,34 @@ impl Editor {
         }
     }
 
+    /// The follow card with the keys (`follow_focus`): the window prefix and what follows it are the window's, the keys
+    /// staying — `C-w < > - +` and `C-w =` are its (`size_width`, `size_height`, `sizes_auto`); `esc` gives them back;
+    /// any other key gives them back and goes on where they were (its bottom line's `space L`, `[r` act there). Not
+    /// drawn, or a modal pane or a card up with the keys: let go. True: taken (the routing's `Region::Follow`).
+    fn follow_key(&mut self, key: Key) -> bool {
+        if !self.follow_focus {
+            return false;
+        }
+        if !self.follow_in_hand() || self.picker.is_some() || self.prompt.is_some() || self.card_has_keys() {
+            self.follow_focus = false;
+            return false;
+        }
+        if !self.pending.is_empty() || self.keymaps.window_prefix() == Some(key) {
+            return false;
+        }
+        self.follow_focus = false;
+        self.focus_sync();
+        if key != Key::plain(Code::Esc) {
+            // (the round's key goes on from the card, never back to it — `cycle_view`)
+            self.float_left = Some(crate::pane::Floating::Follow);
+            self.handle_key_now(key);
+            if self.float_left == Some(crate::pane::Floating::Follow) {
+                self.float_left = None;
+            }
+        }
+        true
+    }
+
     /// Whether the front card has the keys: focused (`card_focus` — P3 §3.8) as it says now, asking. One that came
     /// on its own waits in its faint frame until `C-q`, a click or `C-w w` focuses it, so no key meant for anything
     /// else is ever its answer — nothing guesses at what a key meant (the settle and the typing quiet went with it).
@@ -5491,8 +5523,8 @@ impl Editor {
     /// on from where they were — other keys are said on it, what it asks. True if the key was the card's.
     fn card_key(&mut self, key: Key) -> bool {
         // (a sequence's first key: the floating pane a window prefix left is forgotten — `C-w w` reaches it again
-        // after)
-        if self.pending.is_empty() {
+        // after; the follow card's own, set for the one key it hands on, `follow_key` forgets)
+        if self.pending.is_empty() && self.float_left != Some(crate::pane::Floating::Follow) {
             self.float_left = None;
         }
         let up = self.offers.first().filter(|o| !o.installing()).map(|o| (o.id, o.rev));
@@ -5677,6 +5709,7 @@ impl Editor {
             )
         {
             took(Handler::NextCard);
+            self.follow_focus = false;
             if !self.inbox_next() {
                 // (one about to come — its call held back until the run before it ends: said, #5)
                 match self.cards_coming().as_slice() {
@@ -5686,6 +5719,10 @@ impl Editor {
                 }
             }
             return;
+        }
+        // (after the next-up `C-q`, as `keys_chain` lays it: that one goes wherever the follow card has the keys)
+        if self.follow_key(key) {
+            return took(Handler::Follow);
         }
         // The terminal has the keys: all of them go to its program (`C-\` gives them back)
         if self.picker.is_none() && self.prompt.is_none() && self.terminal_key(key) {
@@ -5830,9 +5867,6 @@ impl Editor {
         // A run panel's output: normal mode on its document, the panel's keys over it
         if let Some(h) = crate::rundoc::key(self, key) {
             return took(h);
-        }
-        if crate::chat::unfold_key(self, key) {
-            return took(Handler::Unfold);
         }
         if crate::chat::key(self, key) {
             return took(Handler::Chat);
@@ -7455,8 +7489,8 @@ mod tests {
         let mut ed = editor("foo bar");
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), script];
-        feed(&mut ed, "ww<space>l");
-        assert!(ed.workspace.chat_has_keys(), "space l = open and focus");
+        feed(&mut ed, "ww<space>L");
+        assert!(ed.workspace.chat_has_keys(), "space L = the column, open and focused");
         feed(&mut ed, "explain<ret>");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!(c.msgs[0].text, "explain");
@@ -7527,7 +7561,7 @@ mod tests {
         ed.open(&main).unwrap();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), script];
-        feed(&mut ed, "<space>lwhere is add?<ret>");
+        feed(&mut ed, "<space>Lwhere is add?<ret>");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         let roles: Vec<_> = c.msgs.iter().map(|m| m.role).collect();
@@ -7977,7 +8011,7 @@ mod tests {
                 json!({"type": "result", "result": "done"}),
             ],
         );
-        feed(&mut ed, "<space>lwhere?<ret>");
+        feed(&mut ed, "<space>Lwhere?<ret>");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(c.msgs.iter().any(|m| m.role == crate::chat::Role::Thought && m.text.contains("helpers")));
@@ -8356,7 +8390,7 @@ mod tests {
             &mut ed,
             &[json!("sleep 0.3"), read, json!("sleep 0.3"), json!({"type": "result", "result": "done"})],
         );
-        feed(&mut ed, "<space>lwhere?<ret>");
+        feed(&mut ed, "<space>Lwhere?<ret>");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         assert_eq!(
             (led_line(&ed), cursor_line(&ed)),
@@ -8499,8 +8533,8 @@ mod tests {
             vt.screen().rows(0, 240).collect()
         };
         if claude {
-            // (an empty chat: `esc` goes straight to the code)
-            feed(&mut ed, "<space>l<esc>");
+            // (an empty chat: `esc` goes straight to the code, the column standing)
+            feed(&mut ed, "<space>L<esc>");
             assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.on, "off before");
             // (the chat's top line: `follow` while it's on, no word while it's off — one session's: with two the
             // names take it)
@@ -8521,8 +8555,8 @@ mod tests {
         } else {
             assert!(ed.workspace.claude.chat.is_none(), "no Claude started by it");
         }
-        // (the chat with the keys: its foot says it's on — a chat opened after too)
-        feed(&mut ed, "<space>l");
+        // (the chat with the keys: its foot says it's on — a chat opened after too, the column)
+        feed(&mut ed, if claude { "<space>l" } else { "<space>L" });
         let r = rows(&mut ed);
         assert!(r.iter().any(|r| r.contains("C-f unfollow")), "its state says it: {r:#?}");
         feed(&mut ed, "where?<ret>");
@@ -9451,7 +9485,7 @@ mod tests {
         let card_buffers = |ed: &Editor| {
             ed.docs.iter().filter(|d| d.title.as_deref().is_some_and(|t| t.starts_with("card ·"))).count()
         };
-        feed(&mut ed, "<space>ldo it<ret>");
+        feed(&mut ed, "<space>Ldo it<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
         assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the chat keeps the keys (frictions26)");
         assert!(ed.workspace.claude.review.is_none(), "no change of it in review yet");
@@ -10128,14 +10162,11 @@ mod tests {
         ed.config.llm.sandbox = false;
         ed.offer_popups = true;
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
-        feed(&mut ed, "<space>ltouch it<ret>");
+        feed(&mut ed, "<space>Ltouch it<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
         // A draft in the chat's input: what's typed is the draft's, the card says how to reach it
         ed.workspace.viewer.at = crate::workspace::At::Chat;
-        // (minimized while Claude works: its first letter brings it back, typed — #151 — then the rest)
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().compact());
-        feed(&mut ed, "m");
-        feed(&mut ed, "y draft y");
+        feed(&mut ed, "my draft y");
         let input = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().input.text();
         assert_eq!(input(&ed), "my draft y");
         assert!(!made.exists() && ed.offers.len() == 1);
@@ -10220,14 +10251,12 @@ mod tests {
             &[json_str(&logged), json_str("sleep 1"), serde_json::json!({"type": "result", "result": "ok"})],
         );
         let sent = |log: &Path| std::fs::read_to_string(log).unwrap_or_default().lines().count();
-        feed(&mut ed, "<space>lfirst<ret>");
+        feed(&mut ed, "<space>Lfirst<ret>");
         // (its first turn takes a second: no events handled meanwhile, so it's still in flight)
         while sent(&log) < 1 {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(ed.workspace.claude.chat.as_ref().unwrap().busy());
-        // (the panel in full while Claude works, not folded to the following card)
-        ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
         feed(&mut ed, "second<ret>");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!((c.queued.as_deref(), c.input.text().as_str()), (Some("second"), ""));
@@ -10270,12 +10299,11 @@ mod tests {
             &[json_str(&logged), json_str("sleep 1"), serde_json::json!({"type": "result", "result": "ok"})],
         );
         let sent = |log: &Path| std::fs::read_to_string(log).unwrap_or_default();
-        feed(&mut ed, "<space>lfirst<ret>");
+        feed(&mut ed, "<space>Lfirst<ret>");
         while sent(&log).lines().count() < 1 {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(ed.workspace.claude.chat.as_ref().unwrap().busy());
-        ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
         // Two messages: one queue, the row counts them and shows the last
         feed(&mut ed, "second<ret>third<ret>");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
@@ -10677,15 +10705,6 @@ mod tests {
         feed(&mut ed, "<space>vz");
         let (x, _, chat, _) = frame(&mut ed);
         assert!(x > 0 && chat > 0, "both back");
-        // The chat floating (the flow plan's reader): read wide, it's out of sight as the docked one is — not floating,
-        // so an answer's note card stays (`notes::stepped_aside`); the chat with the keys, its frame back
-        ed.sizes.chat_docked = false;
-        feed(&mut ed, "<space>vz");
-        frame(&mut ed);
-        assert!(!ed.chat_floating() && ed.screen.chat_frame.is_none(), "read wide: no frame, not floating");
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
-        frame(&mut ed);
-        assert!(ed.chat_floating() && ed.screen.chat_frame.is_some(), "the chat has the keys: its frame");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -12399,7 +12418,7 @@ mod tests {
         ed.workspace.root = dir.clone();
         ed.open(&lib).unwrap();
         two_edit_calls(&mut ed, &dir, &lib);
-        feed(&mut ed, "<space>ltwo edits please<ret>");
+        feed(&mut ed, "<space>Ltwo edits please<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         assert_eq!(ed.workspace.claude.review.as_ref().unwrap().hunks.len(), 2, "two changes in its review");
         // (answered `n`, then `y`: stamped `y` first, whichever came first)
@@ -12538,6 +12557,7 @@ mod tests {
                 log.display()
             ),
         ];
+        // (asked from the ask line: the chat out of sight once it went)
         feed(&mut ed, "<space>lfix it<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         let r = ed.workspace.claude.review.as_ref().unwrap();
@@ -12576,6 +12596,7 @@ mod tests {
                 "while read -r line; do case \"$line\" in '{{\"message\"'*) printf '%s\\n' '{ask}';; esac; done"
             ),
         ];
+        // (asked from the ask line: the chat out of sight once it went)
         feed(&mut ed, "<space>lshout<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         assert_eq!(ed.workspace.claude.review.as_ref().unwrap().hunks.len(), 2);
@@ -12828,7 +12849,7 @@ mod tests {
                 log.display()
             ),
         ];
-        feed(&mut ed, "<space>l");
+        feed(&mut ed, "<space>L");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().models.is_empty());
         let title = |ed: &mut Editor| {
             let mut bytes = Vec::new();
@@ -12924,7 +12945,7 @@ mod tests {
             parser.process(&bytes);
             parser.screen().rows(0, 200).find(|r| r.contains("claude")).unwrap_or_default()
         };
-        feed(&mut ed, "<space>l");
+        feed(&mut ed, "<space>L");
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.model.is_empty()));
         assert!(title(&mut ed).contains("claude-sonnet-5-5 · asked opus"), "{}", title(&mut ed));
         feed(&mut ed, "hello<ret>");
@@ -13135,7 +13156,7 @@ mod tests {
         let mut ed = editor("");
         ed.open(&main).unwrap();
         let log = fake_two_edits(&mut ed, &dir, &main);
-        feed(&mut ed, "<space>ltwo edits<ret>");
+        feed(&mut ed, "<space>Ltwo edits<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         // A slow disk: the first's save on its way — Claude not answered meanwhile
         ed.saver.held.hold();
@@ -13171,7 +13192,7 @@ mod tests {
         let mut ed = editor("");
         ed.open(&main).unwrap();
         let log = fake_two_edits(&mut ed, &dir, &main);
-        feed(&mut ed, "<space>ltwo edits<ret>");
+        feed(&mut ed, "<space>Ltwo edits<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
         // (the answer gave the keys back to the chat: Esc to the code, then typed — before c2 is read, events
@@ -13235,6 +13256,9 @@ mod tests {
         let c = ed.workspace.claude.chat.as_ref().expect("the chat it's for");
         assert!(!ed.workspace.is_at(At::Chat), "the keys stay in the editor");
         assert!(c.msgs.iter().any(|m| m.text.contains("space v a turns it off")));
+        // (opened out of sight, as a chat opened for something else starts; shown, its title says it)
+        assert!(c.hidden, "out of sight");
+        ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
         assert!(chat_title(&mut ed).contains("review at end"), "{}", chat_title(&mut ed));
         assert_eq!(ed.workspace.claude.checkpoints.tell.len(), 1);
         assert!(
@@ -13795,7 +13819,7 @@ mod tests {
                 edit(&lib, "line 9", "LINE 9"),
             ],
         );
-        feed(&mut ed, "<space>l");
+        feed(&mut ed, "<space>L");
         // (the setting's too: every chat follows it at its turn's end — frictions #134)
         ed.config.llm.review_at_end = true;
         ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
@@ -15884,8 +15908,7 @@ mod tests {
         // C-w =: all automatic again
         feed(&mut ed, "<C-w>=");
         draw(&mut ed, 140);
-        // (where the chat stands is no size: kept)
-        assert_eq!(ed.sizes, crate::sizes::Sizes { chat_docked: true, ..Default::default() });
+        assert_eq!(ed.sizes, crate::sizes::Sizes::default());
         assert_eq!((ed.screen.bottom_h, ed.screen.side_w), (3, side));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -18971,7 +18994,7 @@ mod tests {
             parser.process(&bytes);
             parser.screen().contents()
         };
-        feed(&mut ed, "<space>l");
+        feed(&mut ed, "<space>L");
         screen(&mut ed);
         feed(&mut ed, "<C-s>");
         let shot = ed.workspace.claude.chat.as_ref().unwrap().screen.clone().expect("attached");
@@ -18991,8 +19014,6 @@ mod tests {
         let copy = m.attached.clone().expect("a copy").path;
         assert!(c.links(&ed.workspace.root).iter().any(|l| l.path == copy), "C-] reaches it");
         // On its chip row it looks like the link it is: `screen 100×30` underlined, the rest of the chip not
-        // (the panel back while Claude works, as `space l` brings it)
-        ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 100, 30).unwrap();
         let mut parser = vt100::Parser::new(30, 100, 0);

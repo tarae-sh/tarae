@@ -69,35 +69,39 @@ the conversation, because it has none.
 
 ![Chat panel — ask with the selection as context; code in answers sits in a well in its language's colors](screenshots/m4-chat.png)
 
-The chat is a card you summon, not a standing column: it floats over the code, and docks on the right only by your
-choice (`C-w e`, below; [docked, in hanji](screenshots/m4-chat-hanji.png)). **The ask line.** `space l` (or `:chat [question]`) opens the chat's input alone as a
+You ask in one line over the code; the conversation is the column docked on the right, shown when you call it or when
+something is said only there ([in hanji](screenshots/m4-chat-hanji.png)). **The ask line.** `space l` (or `:chat [question]`) opens the chat's input alone as a
 one-row card over the code — the reader's columns, its top at a quarter of the screen, but never over the lines it
 carries: it steps just above or below them. Its top line says what goes with the message: `ask claude ── spool.rs:21`,
 or with a selection `spool.rs:21–23 · 3 lines` (`C-x drop lines` takes the selection off the message), then a quote,
 the screen, an element pointed at. It's a prompt: `enter` sends and it goes, the keys back in the code (Claude's answer
-comes to its lines); `esc` or a press off it closes it, your draft kept for the next `space l`; `pageup` grows it into
-the reader, the same card. An empty chat says its `C-p continue` row under it. `space >` and pointing bring it too,
-what they add named in its top line. With the chat docked, `space l` gives its input the keys as before. `space L`
-shows and hides the conversation: shown, it hides — the conversation, a turn under way and follow go on, as with the
-chat minimized while Claude works, the keys back to the code; hidden or minimized, it's shown with the keys in it.
+comes to its lines); `esc` or a press off it closes it, your draft kept for the next `space l`; `pageup` shows the
+conversation, the keys in its input. An empty chat says its `C-p continue` row under it. `space >` and pointing bring it
+too, what they add named in its top line. With the conversation in sight, `space l` gives its input the keys. `space L`
+shows and hides the conversation: shown, it hides — the conversation, a turn under way and follow go on, the keys
+back to the code; hidden, it's shown with the keys in it. While it's out of sight, the status line says `◂ new · space L`
+once an answer (or an error said only there) came that you haven't had in front of you — a press reads it, and the
+conversation shows `── new ──` where you'd read to. No toast says a turn ended. An answer no place in the code holds —
+none of the files it names is here, no line it stopped at — and an error said only in the conversation (no claude, a
+refused start, a turn that failed) show the conversation by themselves, the keys where they were, never while you type
+(in insert mode, a prompt, a picker or the terminal: it waits until you stop).
 `:chat-close` ends the conversation (its process, a turn under way cut off) and `:chat-new` starts over. One process
-lives for the whole conversation, so Claude remembers what came before. While the chat floats, the sessions it named
-on its top line are named at the screen's top row's right, over the code's line (a press on one switches to it, on
-your own the conversation).
+lives for the whole conversation, so Claude remembers what came before. While the column is out of sight, the sessions
+it named on its top line are named at the screen's top row's right, over the code's line (a press on one switches to
+it, on your own the conversation).
 
-**The reader.** Floating, the conversation stands over the code in a frame of its own, the code keeping its whole width:
-as wide as the chat's prose (78 columns, centred; a narrower screen's whole width), its top at a quarter of the screen,
-half of it tall, its keys in the frame's bottom line (`C-w e dock`, `space L hide`), its usage row (`warm until`) over
-that line. `C-w e`, or `C-w L`, docks it on the right; `C-w e` floats it again; your choice is kept (`sizes.json`)
-until you change it. Opened at a line's paragraph, it stands clear of that line, as the ask line does. Floating, it goes once used, as a floating
-list does: `esc` from its input (to its view mode first when there's something to read, as docked) and its view
-mode's `esc` or `q` hide it, the conversation going on; docked, it stays. Nothing is said for hiding, showing,
-floating or docking it: the change is in sight. `space L` showing the chat, floating or docked, opens it at the
-paragraph about your cursor's line — the answer's note there, as a card's `enter reads on` does — at the top, with a
-faint `▎` down its rows while you read it (near the conversation's end, air under the last row); with no answer's
-note on your line, at the first answer you haven't had in sight, from its question; else at the end. While the reader
-floats, an answer's note card steps aside — its words are the reader's —, its line's `¶` staying, and comes back as
-the reader closes; a note of yours or the reviewer's keeps its card.
+**The conversation** is the docked column — there's no floating reader: `C-w e` from it says so, and `space l` asks in
+one line. `esc` from its input (to its view mode first when there's something to read) and its view mode's `esc` leave
+it standing, the keys back in the code; `space L` hides it. Nothing is said for hiding or showing it: the change is in
+sight. `space L` opens it at the paragraph about your cursor's line — the answer's note there — at the top, with a
+faint `▎` down its rows while you read it (near the conversation's end, air under the last row), and closes that
+line's card, its words being the column's now (the line end keeps its sentence); with no answer's note on your line,
+at the first answer you haven't had in sight, from its question; else at the end. A press on an answer's `¶`, or
+`enter` on its line, does the same with the keys staying in the code — no card between the lines; a thread and a reply
+are `space n`'s, and a note of yours or the reviewer's keeps its card. Off an answer's line, `enter` is the open card's
+own: it unfolds the line's earlier answers, or reads on in the column where the card is cut. While the column is in
+sight, the follow card keeps only its head (the step and its time; the turn's words are the column's), and an answer's
+card doesn't open by itself at the turn's end.
 
 **What it's doing now** is said once: on the follow card while it's drawn, else on the status line, right after the
 mode word (and after whose turn it is, where the status line names the session):
@@ -120,8 +124,8 @@ While the follow card is drawn for the turn (following, the code in sight with r
 status line keeps only the turn's cell (`● follow  ▃`, or `▲1 waiting · C-q` when something waits on you): the card's
 head has the step's verb and its own time (`follow ── ▃ running 41s`), its selected row what the step acts on
 (`▸ run  cargo test -q`) — the head says that too where no row does (`▃ writing src/trust.rs`, an edit as it comes) —
-its body the sentence Claude finished, and the plan's step is the minimized card's row above the turn (with the chat
-open, its plan). A press on the head's step follows Claude. Where no card is drawn — follow off, the code hidden or
+its body the sentence Claude finished, and the plan's step is the card's row above the turn while the chat is out of
+sight (with the chat open, its plan). A press on the head's step follows Claude. Where no card is drawn — follow off, the code hidden or
 too narrow for it, a review in its place, a stop replayed on it — or its head is out of sight under what's open over
 it (a picker, the palette, which-key, a prompt, a card), the status line says it all, as above.
 
@@ -183,8 +187,8 @@ where it happened, a beat of its own between what came before and after: `≈ Cl
 tokens before) — what it worked out before may be only in its summary now` (`manual` when you asked). If Claude
 later seems to have forgotten something, that note is why. When the chat is out of sight (the code zoomed with
 `C-w z`, a review read wide), a toast says it too: `Claude compacted its conversation (automatic, 812k tokens
-before) — space l shows it`, a warning when it came by itself. Minimized while following, the chat comes back
-with the answer and the note in it, so no toast. The context figure under the chat drops to what the summary kept, and a `/compact` turn says
+before) — space L shows it`, a warning when it came by itself. Hidden, the note is in the conversation as it's read,
+so no toast. The context figure under the chat drops to what the summary kept, and a `/compact` turn says
 `compacted` where its token counts would be zeros (in `:usage` too). `tarae state` counts each session's
 compactions, with the last one's time and trigger, and `--watch usage` is told when one happens.
 
@@ -363,8 +367,8 @@ the chat (or the status line's chip, with the chat closed) keeps saying `▲ wai
 `done` until you look. A card still waiting there two minutes on is named once more, as a warning: `fix-login ·
 waiting 2 min — Claude changes 3 files · C-q goes there` — once for each card, never again. Once
 nothing waits, `C-q` goes to the sessions whose turn ended — the first to end first — and says when. In the front
-session, a turn that ends while the chat is out of sight (something else zoomed with `C-w z`, a review read wide)
-is said the same way: `Claude's turn ended — space l shows it`. A session behind whose Claude
+session, a turn that ends while the chat is out of sight is the status line's `◂ new · space L`, no toast. A session
+behind whose Claude
 [compacts](#chat-panel) says so too: `fix-login · Claude compacted its conversation (automatic, 812k tokens
 before)`, as a warning when it came by itself. Its row in the session list says `≈ compacted` until it's been in
 front. Claude's own view of the screen leaves out other sessions' news (they're counts there).
@@ -517,7 +521,7 @@ end, follow goes to the answer's first underlined place once its names are found
 | `C-]` (`C-g`) | Go to where Claude looked or pointed, or to an element it cites by id (again = one further back) |
 | `C-f` | Follow mode on/off (resumes if you took over) |
 | `C-z` | Undo what Claude changed in its last turn ([more](#undoing-a-turn)) |
-| `C-l` `C-l` | New conversation. With a conversation there the first `C-l` only asks — the chat's foot says `C-l again — a new conversation` (minimized, the follow card's bottom line) — and the second, right after it, starts the new one; any other key or press between and it's forgotten. An empty chat starts anew at once (`C-l` alone); `/clear` and `:chat-new` as ever |
+| `C-l` `C-l` | New conversation. With a conversation there the first `C-l` only asks — the chat's foot says `C-l again — a new conversation` — and the second, right after it, starts the new one; any other key or press between and it's forgotten. An empty chat starts anew at once (`C-l` alone); `/clear` and `:chat-new` as ever |
 | `C-p` | Continue an earlier conversation |
 | `C-t` | Choose the model (`:effort` — how hard it thinks) |
 | `esc` | The conversation's view mode ([below](#reading-the-conversation-view-mode)); `esc` again, back to the code. An empty conversation has nothing to read: `esc` goes straight to the code |
@@ -656,14 +660,14 @@ the mark replay lands on is the one in hand — an older one keeps its place in 
 +15`). Pointing (`C-o`) labels the marks too. Claude's thinking arrives as summaries, and the chat keeps each one as a folded italic aside — its first two rows, `…`
 at the second's end; the mouse on either row, or the view mode's cursor, shows it whole on one card from its first row
 (every cut text drawn over several rows reads so, an edit review's reason too). While
-Claude works, the chat minimizes to a small card at the bottom right: your question, its last few lookups
-(each a link) and the keys. The code gets the whole width, and the thought card takes the room above the lines
-being read. The panel comes back with the finished answer, or right away with `space l` or a click on the card;
-before Claude's first words the card beside the code says your question, so it's never an empty frame.
+Claude works with the chat out of sight (the ask line goes once its message does), the card at the bottom right
+stands for it: your question, its last few lookups (each a link) and its key, `space L read`. The code has the whole
+width, and the thought card takes the room above the lines being read. `space L` or a click on the card brings the
+conversation; a chat you docked stays docked while Claude works. Before Claude's first words the card says your
+question, so it's never an empty frame.
 **Its size is yours**: drag its left line for its width, and its line toward the code (its top line where it stands at
 the foot, else its bottom line) for its height — the corner both; its right edge and its other line stay where they
-are. With the minimized chat on it holding the keys, `C-w < >` narrow or widen it and `C-w - +` shorten or lengthen
-it, and `C-w =` makes it automatic again (it alone). The size is kept in `sizes.json` with the others; smaller, its
+are. `C-w =` makes it automatic again, with every other size. The size is kept in `sizes.json` with the others; smaller, its
 words fold as they do on a narrow screen, taller, the newest still at its foot. The line under the pointer lights the
 card half, as anywhere on it, and in the accent while you drag it.
 While Claude waits on you (a command or a read on its card, an edit under review), the card says `waiting for
@@ -850,7 +854,7 @@ An empty conversation shows a short guide and example questions you can pick wit
 When the work takes several steps, Claude lays them out first and keeps the list current as it goes. It uses
 tarae's `plan` tool for this. The plan is pinned under the chat's title with how far along it is (`2/4`).
 Finished steps recede (`●`), the step in hand is in the accent (`›`), and the rest wait (`◦`). While Claude
-works and the chat is minimized, the card shows the step in hand. A review of an edit made with no words
+works and the chat is out of sight, the card shows the step in hand. A review of an edit made with no words
 before it is headed by that step. When everything is done, the plan folds into one row (`all 4 done`). The
 plan belongs to its conversation: it's kept and continued with it, and `C-l` starts without one.
 

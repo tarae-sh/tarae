@@ -1825,10 +1825,10 @@ fn a_signature_cut_at_its_end_is_whole_under_the_mouse() {
 fn a_cut_code_row_in_the_follow_card_is_one_spot() {
     let mut ed = code_answer();
     let c = chat_of(&mut ed);
-    c.unfolded = false;
+    c.hidden = true;
     c.follow.on = true;
     c.state = crate::chat::State::Writing;
-    assert!(c.compact(), "follow's card, the chat minimized");
+    assert!(c.hidden, "follow's card, the chat minimized");
     let screen = frame(&mut ed);
     let spots = ed.screen.cut_spots.borrow();
     let on_card: Vec<_> = spots
@@ -1930,10 +1930,10 @@ fn the_follow_cards_folded_log_is_whole_under_the_mouse() {
         chat(vec![Msg::new(Role::User, "go", ""), Msg::new(Role::Assistant, words.join("\n\n"), "")]);
     ed.workspace.viewer.at = crate::workspace::At::Code;
     let c = chat_of(&mut ed);
-    c.unfolded = false;
+    c.hidden = true;
     c.follow.on = true;
     c.state = crate::chat::State::Writing;
-    assert!(c.compact(), "follow's card, the chat minimized");
+    assert!(c.hidden, "follow's card, the chat minimized");
     // (as `whole_under_the_mouse`, but for the card's turn timer, which goes on between frames)
     let before = frame(&mut ed);
     assert!(!before.contains("Firstly"), "folded away:\n{before}");

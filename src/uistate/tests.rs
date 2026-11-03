@@ -288,13 +288,14 @@ pub(crate) fn chat(ed: &mut Editor, draft: &str) {
     ed.workspace.viewer.at = crate::workspace::At::Chat;
 }
 
-/// Minimized while Claude works (follow on): the panel is a small card, its input not on screen.
-pub(crate) fn chat_minimized(ed: &mut Editor) {
+/// Claude at work, follow on, the chat out of sight: the follow card stands for it, the keys in the code.
+pub(crate) fn chat_out_of_sight(ed: &mut Editor) {
     chat(ed, "");
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     c.follow.on = true;
-    c.unfolded = false;
+    c.hidden = true;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
 }
 
 pub(crate) fn edit_review(ed: &mut Editor) {
@@ -379,30 +380,52 @@ pub(crate) const SCENES: &[Scene] = &[
     // its own)
     ("the ask line, a draft", |ed| {
         chat(ed, "hello");
-        ed.sizes.chat_docked = false;
         ed.workspace.claude.chat.as_mut().unwrap().asking = true;
         assert!(ed.chat_asking(), "the ask line");
     }),
     ("the ask line, empty", |ed| {
         chat(ed, "");
-        ed.sizes.chat_docked = false;
         ed.workspace.claude.chat.as_mut().unwrap().asking = true;
     }),
-    ("the chat minimized while Claude works", chat_minimized),
-    ("the chat minimized, a draft in it", |ed| {
-        chat_minimized(ed);
+    ("the chat out of sight while Claude works", chat_out_of_sight),
+    // (#267: the follow card with the keys, as `C-w w` or a press leaves it — its sizes the window's, any other key back)
+    ("the follow card with the keys", |ed| {
+        chat_out_of_sight(ed);
+        frame(ed);
+        assert!(ed.screen.thought_card.get().is_some(), "the follow card drawn");
+        ed.follow_focus = true;
+    }),
+    ("the chat out of sight, a draft in it", |ed| {
+        chat_out_of_sight(ed);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.input.set("half a thought");
     }),
+    // (the flow plan's piece 3: the reader that opened by itself — an answer with no place — the keys staying in the code)
+    ("the reader opened by itself", |ed| {
+        chat(ed, "");
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.hidden = true;
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "what is it?", ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "No place in it, a few words.", ""));
+        c.news = Some(c.msgs.len() - 1);
+        crate::chat::read_by_itself(ed);
+        assert!(
+            !ed.workspace.claude.chat.as_ref().unwrap().hidden
+                && !ed.chat_floating()
+                && ed.workspace.is_at(crate::workspace::At::Code),
+            "the column shown, the keys the code's"
+        );
+    }),
     // (the user, 2026-11-02, #256: a line open over the chat has the keys however it opened, a key or a press — `chat::key`
-    // and `chat::unfold_key` give way, `keys_to()` says so, and under it the chat stays where the keys go back to)
+    // gives way, `keys_to()` says so, and under it the chat stays where the keys go back to)
     ("the chat, a prompt opened over it", |ed| {
         chat(ed, "hello");
         ed.open_prompt(crate::editor::PromptKind::Command, "");
         assert_eq!(ed.keys_region(), Region::Prompt, "the line has the keys");
     }),
-    ("the chat minimized, a prompt opened over it", |ed| {
-        chat_minimized(ed);
+    ("the chat out of sight, a prompt opened", |ed| {
+        chat_out_of_sight(ed);
         ed.open_prompt(crate::editor::PromptKind::Command, "");
         assert_eq!(ed.keys_region(), Region::Prompt, "the line has the keys");
     }),
@@ -1179,9 +1202,7 @@ fn notation_shown_in(scenes: &[Scene]) -> Vec<String> {
             setup(&mut ed);
             let before = shown(&mut ed);
             let k = key(probe);
-            if k.code == crate::key::Code::Enter
-                && matches!(ed.keys_to().region, Region::Chat | Region::Unfold)
-            {
+            if k.code == crate::key::Code::Enter && ed.keys_to().region == Region::Chat {
                 continue;
             }
             let said_from = ed.messages.len();
@@ -1478,51 +1499,17 @@ fn slip_2_the_terminal_program_has_the_keys_or_tarae_has_them_on_its_panel() {
     assert!(status.contains("● view · terminal   i type  esc code"), "{shown}");
 }
 
-/// Slip 3: ` W` typed into a chat input that wasn't on screen — minimized while Claude worked. Now the
-/// first key that would type brings the panel back instead, isn't typed, and says so; the state said so
-/// before it (`takes: unfold`). The chat's own keys (`C-c` stop, Esc) still act while it's minimized.
+/// Slip 3 (` W` typed into a chat input that wasn't on screen, the chat minimized while Claude worked) has no ground
+/// left: a chat out of sight holds no keys (`focus_sync`) — they're the code's, nothing typed into the chat unseen.
 #[test]
-fn slip_3_the_minimized_chat_comes_back_before_anything_is_typed() {
+fn slip_3_a_chat_out_of_sight_holds_no_keys() {
     let mut ed = editor();
-    chat_minimized(&mut ed);
+    chat_out_of_sight(&mut ed);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed);
-    assert!(ed.screen.chat_mini.get().is_some(), "minimized: its card is drawn");
-    let k = ed.keys_to();
-    assert_eq!((k.region, k.takes, k.to.as_str(), k.drawn), (Region::Unfold, Takes::Unfold, "chat", true));
-    assert_eq!(k.route(key(" ")), Region::Unfold, "space brings it back — no menu, no text");
-    assert_eq!(k.route(key("<C-c>")), Region::Chat, "C-c still stops Claude");
-    assert!(ed.ui_state().text().contains("keys → chat (unfold)"));
-    let said = ed.said;
-    feed(&mut ed, &[" ", "W"]);
-    let c = ed.workspace.claude.chat.as_ref().unwrap();
-    assert!(!c.compact() && ed.workspace.is_at(crate::workspace::At::Chat), "back, with the keys");
-    assert_eq!(c.input, "W", "the first key brought it back; the next typed");
-    assert!(ed.said > said, "said");
-    frame(&mut ed);
-    assert!(ed.screen.chat_w > 0 && ed.keys_to().drawn && ed.keys_to().takes == Takes::Text);
-}
-
-/// #151: a follow-up typed into the minimized chat (follow mode, Claude working) keeps its first letter —
-/// it brings the panel back and is typed there, in sight; Enter only brings it back (nothing is sent unseen).
-#[test]
-fn the_first_letter_into_the_minimized_chat_is_typed() {
-    let mut ed = editor();
-    chat_minimized(&mut ed);
-    frame(&mut ed);
-    feed(&mut ed, &["h", "i"]);
-    let c = ed.workspace.claude.chat.as_ref().unwrap();
-    assert!(!c.compact() && ed.workspace.is_at(crate::workspace::At::Chat), "back, with the keys");
-    assert_eq!(c.input, "hi", "the first letter isn't swallowed");
-    frame(&mut ed);
-    assert!(ed.screen.chat_w > 0, "in sight");
-    // Minimized again: Enter brings it back, sends nothing
-    chat_minimized(&mut ed);
-    let c = ed.workspace.claude.chat.as_mut().unwrap();
-    c.input.set("hi");
-    let queued = c.queued.clone();
-    feed(&mut ed, &["<ret>"]);
-    let c = ed.workspace.claude.chat.as_ref().unwrap();
-    assert!(!c.compact() && c.queued == queued && c.input == "hi", "not sent: {:?}", c.queued);
+    assert_eq!(ed.keys_to().region, Region::Code, "the keys the code's");
+    feed(&mut ed, &["W"]);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
 }
 
 /// Slip 4: a card nobody noticed for minutes. Every card is in the state — up front, stacked behind it,
@@ -2369,7 +2356,7 @@ fn a_cards_text_is_whole_in_the_state_each_line_with_its_part() {
 
 /// A paste in normal mode: a `:` line opens the command line with it, not run (`:w` pasted into a commit
 /// message became part of its subject, unsaid); any other text is held for `p`, not put in, and said
-/// (#124); into the minimized chat, it comes back with it.
+/// (#124).
 #[test]
 fn a_paste_in_normal_mode_is_never_silent() {
     let mut ed = editor();
@@ -2389,11 +2376,6 @@ fn a_paste_in_normal_mode_is_never_silent() {
     let said = ed.said;
     ed.handle_paste(":not a command".into());
     assert!(ed.prompt.is_none() && ed.said == said && ed.doc().text.to_string().contains(":not a command"));
-    feed(&mut ed, &["<esc>"]);
-    chat_minimized(&mut ed);
-    ed.handle_paste("for claude".into());
-    let c = ed.workspace.claude.chat.as_ref().unwrap();
-    assert!(c.input == "for claude" && !c.compact(), "the chat back, with it");
 }
 
 // ── Phase 2: panels, runs, the gone ring, watching ───────────────────────
@@ -2493,7 +2475,7 @@ fn drawn_regions(ed: &mut Editor, (w, h): (u16, u16), what: &str) -> Vec<crate::
 
 /// Focus D1: every region the state lists was drawn — inside the screen, something in it — and every cell drawn is
 /// in one (`other` stays 0): the side panel, a task in the slot, the chat with a conversation, a card, a toast; then
-/// the chat minimized while Claude works (the follow card), then a picker over it all. Never at Claude's level.
+/// the chat out of sight while Claude works (the follow card), then a picker over it all. Never at Claude's level.
 #[test]
 fn every_region_the_state_lists_is_drawn_and_every_cell_drawn_is_in_one() {
     let dir = sock_dir("regions");
@@ -2525,11 +2507,11 @@ fn every_region_the_state_lists_is_drawn_and_every_cell_drawn_is_in_one() {
     assert!(ed.ui_state().json()["regions"].as_array().is_some_and(|a| !a.is_empty()), "in the JSON");
     assert!(ed.ui_state_claude().regions.is_empty(), "never Claude's level");
     assert!(ed.ui_state_claude().json().get("regions").is_none(), "never in Claude's JSON");
-    // Minimized while Claude works: the follow card over the code
+    // The chat out of sight while Claude works: the follow card over the code
     ed.offers.clear();
-    chat_minimized(&mut ed);
-    let kinds = check(&mut ed, "minimized");
-    assert!(kinds.contains(&"follow"), "minimized: the follow card listed: {kinds:?}");
+    chat_out_of_sight(&mut ed);
+    let kinds = check(&mut ed, "out of sight");
+    assert!(kinds.contains(&"follow"), "out of sight: the follow card listed: {kinds:?}");
     // A picker over it all
     open_a_picker(&mut ed, "first message");
     let kinds = check(&mut ed, "a picker");

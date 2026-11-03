@@ -268,7 +268,7 @@ pub fn reading(ed: &mut Editor) -> bool {
 pub fn had_in_sight(ed: &mut Editor) {
     let Some((_, _, area, from)) = ed.screen.chat_view.get() else { return };
     let laid = ed.screen.chat_laid.borrow();
-    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.compact()) else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.hidden) else { return };
     // (a frame about to be moved — to a paragraph, to what's unread — is drawn again before it's seen)
     if c.unread_at.is_some() || matches!(c.reading, Some((_, false))) {
         return;
@@ -924,9 +924,7 @@ pub fn keyed(ed: &Editor) -> bool {
 
 /// The chat's view mode has the keys now: on, the chat's keys, the chat unfolded.
 pub fn has_keys(ed: &Editor) -> bool {
-    keyed(ed)
-        && ed.workspace.is_at(At::Chat)
-        && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact())
+    keyed(ed) && ed.workspace.is_at(At::Chat) && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden)
 }
 
 /// What the conversation holds now, as one number: what came changes it.
@@ -996,11 +994,11 @@ pub fn view(ed: &mut Editor) {
         crate::chat::open(ed);
         return want(ed);
     };
-    if c.compact() {
+    if c.hidden {
         match from_input {
             true => ed.workspace.viewer.at = At::Code,
             false => {
-                c.unfold();
+                c.hidden = false;
                 want(ed);
             }
         }

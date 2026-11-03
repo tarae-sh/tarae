@@ -327,7 +327,7 @@ side git · 4 rows · in hand git:src/term.rs
     4b).
   - `picker`: title, query (full level), rows, total, loading or searching.
   - `slot`: tabs with their badges, which is in front, has the keys.
-  - `chat`: open, focused, minimized, busy, queued count, conversation, plan step, last call. Draft length
+  - `chat`: open, focused, hidden, unread (the status line's `◂ new`), busy, queued count, conversation, plan step, last call. Draft length
     (full level adds its text).
   - `follow`: on, paused, the gaze.
   - Where the keys are is one value, the session's `at` (panes P2a, `session::At`: the code, the chat, the
@@ -618,7 +618,7 @@ the long-path rule above. What it found and what it cost: see "Phase 1, measured
 
 - **`Editor::keys_to()`:** finer than `chrome::Keys` (`takes`, `pending`, `drawn`, `under`). `keys_at` and
   the status line read it too, so TERMINAL can say whether `i` types in it or the program has the keys.
-- **The routing test:** a matrix of states (mode × prompt × picker × chat focused/minimized/draft ×
+- **The routing test:** a matrix of states (mode × prompt × picker × chat focused/out of sight/draft ×
   card/`C-q` × terminal program/panel × side/review focus × pending prefix) times a probe key. Under
   `cfg(test)`, each handler in `handle_key`'s chain records that it took the key, and that must be what
   `keys_to()` said. Each case is broken once to see it fail.
@@ -766,7 +766,8 @@ What the routing test and the pulled-out answers found:
   it` for the second.
 - The close-a-reviewed-buffer card's hint row said `y Install · n Not now` (the download card's default) while
   its text said `y` declines Claude's change.
-- The only state where the keys go somewhere not on screen is the chat minimized while Claude works (slip 3).
+- The only state where the keys went somewhere not on screen was the chat minimized while Claude works (slip 3) —
+  gone with the minimize (the flow plan's piece 3, 2026-11-03).
 
 ## Phase 2, measured (2026-10-04, `perf` profile, this Mac)
 
@@ -796,11 +797,8 @@ one-word question in the same project, the kept phase-2 build against this one (
 ## No silent state change (user decision, 2026-10-04)
 
 Whatever changes state the user didn't see change, or refuses a key, says so where they're looking.
-- **The minimized chat**: the first key that would type, edit or send there brings it back first
-  (`chat::unfold_key`; `takes: "unfold"` in the state). A letter comes back typed, in sight (#151, 2026-10-05:
-  a follow-up lost its first letter); space (the leader — slip 3), Enter and editing keys aren't, and that's
-  said. Its own keys (Esc, `C-c` stop,
-  `C-f` …) act as before. A paste into it brings it back with what was pasted.
+- **A chat out of sight holds no keys** (the flow plan's piece 3, which took the minimized chat away — slip 3 and
+  #151 were its): `focus_sync` gives them to the code, so nothing is typed, sent or pasted where it isn't seen.
 - **Cards**: a key a card refuses — a `y` before its text was read, a key as it came up, one that isn't an
   answer, a click as it came up — is said on the card itself (a row in the warning colour over its answers,
   or its bar's text), and kept in `:messages`; it went to the status line, or nowhere. While a card holds the

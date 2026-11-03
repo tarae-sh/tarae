@@ -825,6 +825,30 @@ fn drive_with(
             }
             continue;
         }
+        if let Some(max) = state_key(k) {
+            // (its socket where it binds one: the state folder its homes give it, by its pid)
+            let home = homes.iter().find(|h| h.0 == "XDG_STATE_HOME").map(|h| PathBuf::from(&h.1));
+            let sock = home
+                .unwrap_or_else(|| state.to_path_buf())
+                .join("tarae/ui")
+                .join(format!("{}.sock", child.id()));
+            let ask = serde_json::json!({ "get": "state", "timeout_ms": 2000 });
+            let t = Instant::now();
+            let mut done = false;
+            while !done && t.elapsed().as_secs_f64() < max {
+                pump(vt, 0.2);
+                done = ui_ask(&sock, &ask).is_ok_and(|v| v["panels"]["chat"]["busy"] == false);
+            }
+            match done {
+                // (and the frame the turn's end drew)
+                true => {
+                    pump(vt, 0.35);
+                    eprintln!("shot: the turn over after {:.1}s", t.elapsed().as_secs_f64());
+                }
+                false => missed.push(format!("waited {max} s for the turn to end: still under way")),
+            }
+            continue;
+        }
         if let Some((max, text)) = gone_key(k) {
             let t = Instant::now();
             if pump_until(vt, text, max, true) {
@@ -945,6 +969,15 @@ fn button_key(key: &str) -> Option<(Report, u16, At<'_>)> {
 enum At<'a> {
     Text(&'a str),
     Cell(u16, u16),
+}
+
+/// `@=done` / `@30=done`: wait until the front session's chat has a turn over, as its UI state says
+/// (`panels.chat.busy` false) — for what two builds may draw differently at a turn's end (the column's words, a card's,
+/// the reader's): the state, never a text. As `wait_key`'s limits.
+fn state_key(key: &str) -> Option<f64> {
+    let (secs, what) = key.strip_prefix('@')?.split_once('=')?;
+    let max = if secs.is_empty() { WAIT_MAX } else { secs.parse().ok()? };
+    (what == "done").then_some(max)
 }
 
 /// `@!text` / `@30!text`: wait until `text` is gone from the screen — as `wait_key`'s limits.

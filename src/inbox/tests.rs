@@ -402,7 +402,7 @@ fn c_q_from_a_chat_holding_the_keys_reaches_the_card() {
     let chat = |busy: bool| {
         let mut c = crate::chat::Chat::new();
         if busy {
-            (c.state, c.follow.on, c.unfolded) = (crate::chat::State::Thinking, true, false);
+            (c.state, c.follow.on) = (crate::chat::State::Thinking, true);
         }
         c
     };
@@ -421,10 +421,9 @@ fn c_q_from_a_chat_holding_the_keys_reaches_the_card() {
     feed(&mut ed, "n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());
     assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat there");
-    // Minimized while Claude works, holding the keys: a card up here
+    // While Claude works, holding the keys: a card up here
     ed.workspace.claude.chat = Some(chat(true));
     ed.workspace.viewer.at = crate::workspace::At::Chat;
-    assert!(ed.workspace.claude.chat.as_ref().unwrap().compact());
     up(&mut ed, claudes(2, 5));
     feed(&mut ed, "<C-q>n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());

@@ -378,52 +378,6 @@ fn s_tab_goes_to_the_next_pane_from_the_chats_input() {
     }
     feed(&mut ed, "!");
     assert_eq!(input(&ed).0, "a dra!ft", "typed where its cursor was");
-    // Minimized while Claude works: the next pane, the chat still folded, nothing typed
-    let mut ed = every_surface();
-    let c = ed.workspace.claude.chat.as_mut().unwrap();
-    c.state = crate::chat::State::Thinking;
-    c.follow.on = true;
-    c.unfolded = false;
-    ed.workspace.viewer.at = At::Chat;
-    frame(&mut ed);
-    assert_eq!(ed.keys_to().region.name(), "chat-minimized");
-    assert_eq!(
-        ed.keys_to().route(crate::key::Key::plain(crate::key::Code::BackTab)).name(),
-        "chat",
-        "passed on"
-    );
-    feed(&mut ed, "<S-tab>");
-    let c = ed.workspace.claude.chat.as_ref().unwrap();
-    assert!(
-        !ed.workspace.is_at(At::Chat) && c.compact() && c.input.is_empty(),
-        "the next pane, still folded"
-    );
-    // (yours moved: `rotate_view` on `A-n`, `S-tab` another command — the minimized chat passes `A-n` on, as bound,
-    // and `S-tab` brings it back as any key of the input's does)
-    let moved = || {
-        let mut ed = every_surface();
-        let (config, w) =
-            crate::config::parse("[keys.chat]\n\"A-n\" = \"rotate_view\"\n\"S-tab\" = \"goto_line_start\"\n");
-        assert!(w.is_empty(), "{w:?}");
-        ed.keymaps = config.keymaps;
-        let c = ed.workspace.claude.chat.as_mut().unwrap();
-        c.state = crate::chat::State::Thinking;
-        c.follow.on = true;
-        c.unfolded = false;
-        ed.workspace.viewer.at = At::Chat;
-        frame(&mut ed);
-        ed
-    };
-    let mut ed = moved();
-    let to = |ed: &Editor, k: &str| ed.keys_to().route(k.parse().unwrap()).name();
-    assert_eq!((to(&ed, "A-n"), to(&ed, "S-tab")), ("chat".into(), "chat-minimized".into()));
-    feed(&mut ed, "<A-n>");
-    let c = ed.workspace.claude.chat.as_ref().unwrap();
-    assert!(!ed.workspace.is_at(At::Chat) && c.compact(), "your key: the next pane, still folded");
-    let mut ed = moved();
-    feed(&mut ed, "<S-tab>");
-    let c = ed.workspace.claude.chat.as_ref().unwrap();
-    assert!(ed.workspace.is_at(At::Chat) && !c.compact(), "S-tab, no longer the round: back, unfolded");
     // `tab` from an empty chat: its suggestions, the keys kept
     let mut ed = at_chat("");
     feed(&mut ed, "<tab>");

@@ -266,8 +266,9 @@ impl Editor {
         };
         match region {
             R::Picker => Keys::Picker,
-            R::Card(_) => Keys::Card,
-            R::Chat | R::Unfold => Keys::Chat,
+            // (the follow card with the keys: a card, as the status line says one)
+            R::Card(_) | R::Follow => Keys::Card,
+            R::Chat => Keys::Chat,
             R::Rail => Keys::Review,
             R::EditReview => Keys::Change,
             R::Side(m) => Keys::Side(m),

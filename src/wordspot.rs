@@ -40,8 +40,8 @@ pub enum Press {
     /// A folder's or the file's name in a code pane's path (`tarae › src › main.rs`): its row in the side panel's files,
     /// opened and unfolded down to it, the keys there (`space e`'s).
     Reveal(std::path::PathBuf),
-    /// A note's `¶` at its line's end: its card between the lines opens, or closes when it's the one open
-    /// (`notes::pressed`, focus A1b).
+    /// A note's `¶` at its line's end: an answer's takes the chat's column to its paragraph, the keys staying in the
+    /// code; another's card between the lines opens, or closes when it's the one open (`notes::pressed`, focus A1b).
     Note(u64),
     /// A mark of the turn's map (`turnmap.rs`): its stop, as `]r`/`[r` step to it.
     Stop((usize, usize)),
@@ -278,6 +278,8 @@ const COSTS: &[(Option<&str>, &str)] = &[
     (Some("space v s"), "*"),
     (Some("space v h"), "*"),
     (Some("A-x"), "*"),
+    // (the follow card's sizes, four keys in one pair: no one press does them — #267)
+    (Some("C-w < > - +"), "size"),
 ];
 
 /// The keys a hint draws as a button (piece B, the user 2026-10-29) — with `COSTS`, the pairs drawn as plain words, the
@@ -315,6 +317,7 @@ const BUTTONS: &[&str] = &[
     "C-\\",
     "C-w j",
     "C-w z",
+    "C-w =",
     // (the floating chat's bottom line: docked back, the keys staying in it — and the ask line's: grown into the reader)
     "C-w e",
     "pageup",

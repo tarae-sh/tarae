@@ -21,7 +21,8 @@
 //!   places only — the name as written, the path, the lines, the line's text —, the words cut again from its rows. One
 //!   line's answers are one card, newest first (`notes::group`); the line end says the newest answer's places only.
 //! - The newest answer opens its own card at the turn's end (`notes::open_by_turn`), never while you type; it stays
-//!   until the next answer opens its own or you close it. One you answered with `space n` is a thread — kept, as
+//!   until the next answer opens its own or you close it. An answer no place holds — none of its names a file here,
+//!   no stop for its words — opens the reader instead (`chat::read_by_itself`, the flow plan's Q7). One you answered with `space n` is a thread — kept, as
 //!   every note is.
 //! - A line where the same answer's own `note` sits gets no chat note there (Claude said it there already); a turn that
 //!   wrote at a note at all (a new one or a reply) gets no flow — its answer is at the code already.
@@ -422,6 +423,11 @@ pub fn turn_over(ed: &mut Editor, ok: bool) {
     let mut said = read_answer(&c.msgs[turn..]);
     let stops = stops(c);
     if said.places.is_empty() && (noted || said.blocks.len() <= said.last || stops.is_empty()) {
+        // (words of its own after its last call, no place to hold them and no note it wrote at: the reader opens by
+        // itself — the flow plan's Q7)
+        if !noted && said.blocks.len() > said.last {
+            crate::chat::read_by_itself(ed);
+        }
         return;
     }
     // (asked after this frame — a turn's end draws one)
@@ -676,6 +682,17 @@ pub fn sync(ed: &mut Editor) {
     let placed = placed(said, &found, &own, end.clone(), &|p| crate::chat::shown(&root, p));
     let Some(w) = ed.workspace.claude.notes.answer.take() else { return };
     if placed.is_empty() {
+        // (no name came to a file here and no stop held its words: the answer on no card — the reader opens by itself;
+        // an older answer's search landing after a newer turn opens nothing)
+        let users = ed
+            .workspace
+            .claude
+            .chat
+            .as_ref()
+            .map_or(0, |c| c.msgs.iter().filter(|m| m.role == Role::User).count());
+        if !w.noted && w.blocks.len() > w.last && w.turn + 1 == users {
+            crate::chat::read_by_itself(ed);
+        }
         return;
     }
     let notes = &mut ed.workspace.claude.notes;

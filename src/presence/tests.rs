@@ -49,6 +49,8 @@ fn scene(name: &str) -> Scene {
     let _ = crate::chat::stand_in(&mut c);
     c.state = State::Thinking;
     c.follow.on = true;
+    // (out of sight, as the ask line leaves it once its message went)
+    c.hidden = true;
     ed.workspace.claude.chat = Some(c);
     let fix = ed.workspace_add(other.clone());
     ed.workspace_by_id(fix).unwrap().name = "fix".into();
@@ -329,7 +331,7 @@ fn two_sessions_on_one_line_each_its_colour() {
     let mut c = crate::chat::Chat::new();
     let _ = crate::chat::stand_in(&mut c);
     c.state = State::Thinking;
-    c.follow.on = true;
+    (c.follow.on, c.hidden) = (true, true);
     let look = Look { verb: "read", what: String::new(), pattern: false, range: String::new(), link: None };
     c.follow.gaze = Some(crate::follow::Gaze::new(look, Some(other.join("a.rs")), Some(3..5)));
     ed.workspace.claude.chat = Some(c);

@@ -26,7 +26,8 @@ fn scene(name: &str) -> (Editor, crate::scratch::Scratch, u64) {
     let _ = crate::chat::stand_in(&mut c);
     c.state = State::Thinking;
     c.follow.on = true;
-    // (you in the code while Claude works: the keys stay `At::Code`)
+    // (you in the code while Claude works: the keys stay `At::Code`, the chat out of sight as the ask line leaves it)
+    c.hidden = true;
     let g = c.generation();
     ed.workspace.claude.chat = Some(c);
     (ed, dir, g)
@@ -80,11 +81,11 @@ fn write(ed: &mut Editor, g: u64, call: &str, json: &str, cuts: &[usize]) {
     Writer::new(call).send(ed, g, json, cuts, true);
 }
 
-/// The code area's rows of a frame `w` wide (the chat's columns left out).
+/// The code area's rows of a frame `w` wide (the docked chat's columns left out).
 fn frame(ed: &mut Editor, w: u16, h: u16) -> Vec<String> {
     let mut buf = Vec::new();
     crate::term::render(ed, &mut buf, w, h).unwrap();
-    let code = ed.screen.chat_x.unwrap_or(w as usize);
+    let code = ed.screen.chat_x.filter(|_| ed.screen.chat_frame.is_none()).unwrap_or(w as usize);
     let text = crate::screen::text(&buf, w, h).unwrap();
     // (Claude's caret right after a row's text is left out — the rows read as their text; a scrollbar's `▎`
     // after spaces stays)
@@ -727,6 +728,9 @@ fn claude_colour(ed: &Editor) -> vt100::Color {
 #[test]
 fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     let (mut ed, dir, g) = scene("writing-mark");
+    // (the ask line over the code, its keys: the code keeps its width)
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    (c.hidden, c.asking) = (false, true);
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 20;\n    let c = a");
@@ -748,7 +752,8 @@ fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
         "the view on the line it rewrites, your cursor never led"
     );
     assert_ne!(written, claude_colour(&ed), "the rows written: their own bar");
-    assert!(status(&frame(&mut ed, 100, 30)).contains("● chat · follow"));
+    let line = status(&frame(&mut ed, 100, 30));
+    assert!(line.contains("● chat · follow"), "{line}");
     // Nothing written any more, a read: the accent bar on its line
     crate::chat::stream_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
     ed.workspace.claude.chat.as_mut().unwrap().state = State::Thinking;

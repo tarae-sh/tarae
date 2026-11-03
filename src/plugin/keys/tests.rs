@@ -481,7 +481,7 @@ fn no_typed_character_reaches_a_plugin_on_any_surface() {
             let named = ev.as_ref().map(|e| e.keys.join(" "));
             let fine = match (took, &ev) {
                 (_, None) => true,
-                (Some(Handler::Point | Handler::Unfold), Some(_)) => false,
+                (Some(Handler::Point), Some(_)) => false,
                 (Some(Handler::Program), Some(_)) => row,
                 (Some(Handler::Picker | Handler::Prompt | Handler::Chat), Some(_)) => act(k),
                 (Some(Handler::Card | Handler::EditReview), Some(_)) => {

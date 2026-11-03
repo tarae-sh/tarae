@@ -31,7 +31,6 @@ fn working(ed: &mut Editor) {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     c.follow.on = true;
-    c.unfolded = true;
     frame(ed);
 }
 
@@ -83,8 +82,8 @@ fn the_turns_word_follows_claudes_place() {
 fn the_follow_cards_waits_is_c_q() {
     let mut ed = editor();
     working(&mut ed);
-    // (minimized: the follow card stands for the chat)
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
+    // (out of sight: the follow card stands for the chat)
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
     ed.workspace.viewer.at = At::Code;
     let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
     ed.push_offer(crate::offer::Offer::new("Claude asks".into(), "?", "", String::new(), what));
@@ -259,8 +258,8 @@ fn status(ed: &Editor) -> String {
 }
 
 /// `C-c stop` at the chat's foot, pressed while a turn runs: the turn is stopping — the interrupt reaches its claude (a
-/// stand-in writing what it's sent to a file) — and it's said at once, the turn ending as claude answers. Minimized, with
-/// no claude behind the turn, it says there's nothing to stop.
+/// stand-in writing what it's sent to a file) — and it's said at once, the turn ending as claude answers. With no claude
+/// behind the turn, it says there's nothing to stop.
 #[test]
 fn stop_pressed_stops_the_turn() {
     let dir = crate::scratch::Scratch::new("wordspot-stop");
@@ -270,7 +269,6 @@ fn stop_pressed_stops_the_turn() {
     let sent = root.join("sent");
     ed.config.llm.args = vec!["-c".into(), format!("cat > '{}'", sent.display())];
     chat(&mut ed, "hello");
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
     crate::chat::send(&mut ed);
     until(&mut ed, "the turn under way, its claude running", |ed| {
         ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy() && c.running())
@@ -288,9 +286,7 @@ fn stop_pressed_stops_the_turn() {
     // (no claude behind a turn: nothing stops, and that's said)
     let mut ed = editor();
     working(&mut ed);
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
-    frame(&mut ed);
-    assert_eq!(spot(&ed, &stop).on, Surface::FollowCard);
+    assert_eq!(spot(&ed, &stop).on, Surface::Chat);
     press_word(&mut ed, &stop);
     assert!(!ed.workspace.claude.chat.as_ref().unwrap().stopping);
     assert_eq!(status(&ed), "nothing to stop: its claude isn't running");
@@ -365,7 +361,7 @@ fn a_panes_hint_as_drawn_goes_to_that_pane() {
     assert_eq!((c.input.text().to_string(), c.msgs.len()), ("hello".to_string(), 0), "the chat untouched");
 }
 
-/// A hint goes to the surface it was drawn for, wherever the keys went since: the minimized chat's `C-c stop` with the
+/// A hint goes to the surface it was drawn for, wherever the keys went since: the chat's `C-c stop` with the
 /// keys in the code stops the turn (here: says there's nothing to stop) — never the code's `C-c`, its comment; the chat's
 /// foot `enter send` with the keys in the code sends the chat's draft, never the code's `enter`.
 #[test]
@@ -373,10 +369,8 @@ fn a_hint_goes_to_the_surface_it_was_drawn_for() {
     let mut ed = editor();
     ed.docs[0].text = ropey::Rope::from_str("fn a() {}\n");
     working(&mut ed);
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
-    frame(&mut ed);
     let stop = Press::Keys("C-c".into());
-    let s = spot_on(&ed, Surface::FollowCard, &stop);
+    let s = spot_on(&ed, Surface::Chat, &stop);
     assert_eq!((drawn(&ed, &s).as_str(), s.home), ("C-c stop", Some(At::Chat)));
     ed.workspace.viewer.at = At::Code;
     press_word(&mut ed, &stop);
@@ -386,7 +380,6 @@ fn a_hint_goes_to_the_surface_it_was_drawn_for() {
     // The chat's foot
     let mut ed = editor();
     chat(&mut ed, "hello");
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
     frame(&mut ed);
     let send = Press::Keys("enter".into());
     let s = spot_on(&ed, Surface::Chat, &send);
@@ -436,7 +429,6 @@ fn a_slot_lines_hint_drawn_with_the_keys_elsewhere_is_the_slots() {
     let lines = (0..20).map(|i| format!("output line {i}")).collect();
     ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
     chat(&mut ed, "hello");
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
     frame(&mut ed);
     assert!(ed.workspace.is_at(At::Chat));
     let close = Press::Keys("space x c".into());
@@ -452,23 +444,23 @@ fn a_slot_lines_hint_drawn_with_the_keys_elsewhere_is_the_slots() {
     assert!(ed.workspace.is_at(At::Chat), "the keys back in the chat");
 }
 
-/// frictions #266: a press on the minimized chat's card brings the panel back, and the follow card left over the code
-/// says something — never a frame with nothing in it.
+/// frictions #266: a press on the follow card, the chat out of sight, gives the card the keys (as every floating pane's —
+/// #267, the user 2026-11-03), and the card says something — never a frame with nothing in it.
 #[test]
 fn a_press_on_the_follow_card_leaves_no_empty_card() {
     let mut ed = editor();
     working(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
-    c.unfolded = false;
+    c.hidden = true;
     ed.workspace.viewer.at = At::Code;
     frame(&mut ed);
-    let (x, y, w, h) = ed.screen.chat_mini.get().expect("the minimized chat's card");
+    let (x, y, w, h) = ed.screen.chat_mini.get().expect("the follow card standing for the chat");
     let at = (x + w / 2, y + h / 2);
     mouse(&mut ed, MouseKind::Down, at);
     mouse(&mut ed, MouseKind::Up, at);
     frame(&mut ed);
-    assert!(ed.workspace.is_at(At::Chat), "the chat opened, its keys");
+    assert!(ed.follow_focus && ed.keys_to().region.name() == "follow", "the card's keys");
     let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
     let rows: Vec<&str> = text.lines().collect();
     if let Some((x, y, w, h)) = ed.screen.thought_card.get() {
@@ -479,10 +471,11 @@ fn a_press_on_the_follow_card_leaves_no_empty_card() {
             "an empty follow card:\n{}",
             rows[y..y + h].join("\n")
         );
-        // (nothing of the turn yet: what it was asked, as the minimized card said it)
+        // (nothing of the turn yet: what it was asked, as the card said it with the chat out of sight)
         assert!(body.iter().any(|r| r.contains("why does it fail?")), "{}", rows[y..y + h].join("\n"));
     }
-    // Claude's first words take the question's place
+    // Claude's first words under it — the chat still out of sight, the card standing for it keeps the question above the
+    // turn (`draw_follow_card`)
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "Looking at the parser.", ""));
     frame(&mut ed);
@@ -490,7 +483,78 @@ fn a_press_on_the_follow_card_leaves_no_empty_card() {
     let rows: Vec<&str> = text.lines().collect();
     let (_, y, _, h) = ed.screen.thought_card.get().expect("the follow card");
     let card = rows[y..y + h].join("\n");
-    assert!(card.contains("Looking at the parser.") && !card.contains("why does it fail?"), "{card}");
+    let (q, w) = (card.find("why does it fail?"), card.find("Looking at the parser."));
+    assert!(q.zip(w).is_some_and(|(q, w)| q < w), "{card}");
+}
+
+/// panes4's polish audit, decision 2 (the user, 2026-11-03): beside the chat's column the follow card is only its head —
+/// the step and its time on its top line, its keys on its bottom line — the turn's words being the column's, never said
+/// twice; out of sight it carries them.
+#[test]
+fn beside_the_column_the_follow_card_is_its_head() {
+    let mut ed = editor();
+    working(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "Looking at the parser.", ""));
+    c.hidden = false;
+    ed.workspace.viewer.at = At::Code;
+    let card = |ed: &mut Editor| {
+        frame(ed);
+        let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        let (x, y, w, h) = ed.screen.thought_card.get().expect("the follow card");
+        let rows: Vec<String> =
+            text.lines().skip(y).take(h).map(|r| r.chars().skip(x).take(w).collect()).collect();
+        (h, rows.join("\n"))
+    };
+    let (h, rows) = card(&mut ed);
+    assert!(ed.screen.chat_x.is_some(), "the column in sight");
+    assert_eq!(h, 2, "its head and its foot:\n{rows}");
+    assert!(rows.contains("╭─ follow") && !rows.contains("Looking at the parser."), "{rows}");
+    // Out of sight: the turn's words its own again
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
+    let (h, rows) = card(&mut ed);
+    assert!(h > 2 && rows.contains("Looking at the parser."), "{rows}");
+}
+
+/// #267 (the user, 2026-11-03): the follow card takes the keys as every floating pane does — `C-w w`'s round reaches it
+/// after the code — and `C-w < > - +` size it, `C-w =` automatic again; its frame lit and its bottom line saying those keys
+/// while it has them; `esc` gives them back to the code, the size kept.
+#[test]
+fn the_follow_card_is_sized_by_keys_once_it_has_them() {
+    let mut ed = editor();
+    working(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
+    c.hidden = true;
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    let keys = |ed: &mut Editor, k: &str| {
+        for k in crate::wordspot::keys(k).expect("keys") {
+            ed.handle_key(k);
+        }
+        frame(ed);
+    };
+    let card = |ed: &Editor| ed.screen.thought_card.get().expect("the follow card");
+    let foot = |ed: &Editor| {
+        let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        let (x, y, w, h) = card(ed);
+        text.lines().nth(y + h - 1).unwrap_or_default().chars().skip(x).take(w).collect::<String>()
+    };
+    let (_, _, w0, _) = card(&ed);
+    assert!(!foot(&ed).contains("C-w < > - + size"), "not its keys yet: {}", foot(&ed));
+    keys(&mut ed, "C-w w");
+    assert!(ed.follow_focus && ed.keys_to().region.name() == "follow", "C-w w: the card's keys");
+    assert!(foot(&ed).contains("C-w < > - + size"), "its keys said: {}", foot(&ed));
+    keys(&mut ed, "C-w >");
+    let (_, _, w1, _) = card(&ed);
+    assert!(w1 > w0 && ed.sizes.follow_w == Some(w1 as u16), "wider: {w0} → {w1}");
+    assert!(ed.follow_focus, "the keys still its");
+    keys(&mut ed, "C-w =");
+    assert_eq!((card(&ed).2, ed.sizes.follow_w), (w0, None), "automatic again");
+    keys(&mut ed, "C-w > esc");
+    assert!(!ed.follow_focus && ed.keys_to().region.name() == "code", "esc: the code's");
+    assert!(ed.sizes.follow_w.is_some(), "the size kept");
 }
 
 /// #266's review: the stop with no row of its own shows its row alone only in a replay — a live gaze whose call has no
@@ -511,7 +575,7 @@ fn a_live_gaze_with_no_row_keeps_the_turns_words() {
     };
     c.follow.gaze = Some(crate::follow::Gaze::new(look, None, None));
     assert!(c.in_hand().is_none(), "no call in hand");
-    c.unfolded = false;
+    c.hidden = true;
     frame(&mut ed);
     let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
     let (_, y, _, h) = ed.screen.thought_card.get().expect("the follow card");
@@ -532,7 +596,7 @@ fn the_follow_cards_edges_size_it() {
     working(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
-    c.unfolded = false;
+    c.hidden = true;
     frame(&mut ed);
     let card = |ed: &Editor| ed.screen.thought_card.get().expect("the follow card");
     let (x, y, w, h) = card(&ed);
@@ -604,69 +668,25 @@ fn the_follow_cards_edges_size_it() {
     let (x, y, _, h) = card(&ed);
     mouse(&mut ed, MouseKind::Down, (x, y + h / 2));
     mouse(&mut ed, MouseKind::Up, (x, y + h / 2));
-    assert!(ed.workspace.is_at(At::Chat) && !ed.workspace.claude.chat.as_ref().unwrap().compact());
-}
-
-/// frictions #267: with the minimized chat on the follow card holding the keys, `C-w < > - +` size the card and `C-w =`
-/// makes it automatic again — the card alone, the chat's width as it was; with the chat open they're the chat's.
-#[test]
-fn c_w_sizes_the_follow_card_in_hand() {
-    let mut ed = editor();
-    working(&mut ed);
-    let c = ed.workspace.claude.chat.as_mut().unwrap();
-    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
-    c.unfolded = false;
-    ed.sizes.chat = Some(50);
-    frame(&mut ed);
-    let (_, _, w, h) = ed.screen.thought_card.get().expect("the follow card");
-    let keys = |ed: &mut Editor, k: &str| {
-        for k in keys(k).expect("keys") {
-            ed.handle_key(k);
-        }
-        frame(ed);
-        ed.screen.thought_card.get().map(|r| (r.2, r.3)).expect("the follow card")
-    };
-    assert_eq!(keys(&mut ed, "C-w <"), (w - crate::sizes::STEP_COLS, h));
-    assert_eq!(keys(&mut ed, "C-w > C-w >"), (w + crate::sizes::STEP_COLS, h));
-    assert_eq!(keys(&mut ed, "C-w +"), (w + crate::sizes::STEP_COLS, h + crate::sizes::STEP_ROWS));
-    assert!(ed.toasts.iter().any(|t| t.text.starts_with("follow card ")), "said");
-    assert_eq!(keys(&mut ed, "C-w ="), (w, h), "automatic again");
-    assert_eq!(
-        (ed.sizes.follow_w, ed.sizes.follow_h, ed.sizes.chat),
-        (None, None, Some(50)),
-        "the card alone"
-    );
-    // The chat open: `C-w >` is the chat's
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
-    frame(&mut ed);
-    keys(&mut ed, "C-w >");
-    assert_eq!((ed.sizes.follow_w, ed.sizes.chat), (None, Some(54)), "the chat's");
+    assert!(ed.workspace.is_at(At::Chat) && !ed.workspace.claude.chat.as_ref().unwrap().hidden);
 }
 
 /// The follow card's foot keys take their home from what each key is, never from where the keys are: drawn with the
-/// keys in the side panel, `space l open the chat` is the code's way in — pressed, it opens the chat from the code;
-/// drawn with the keys in the minimized chat, `C-c stop` and `C-f unfollow` are the chat's.
+/// keys in the side panel, `space L read` is the code's way in — pressed, it shows the chat from the code, the keys in
+/// it.
 #[test]
 fn the_follow_cards_keys_are_homed_by_what_they_are() {
     let mut ed = editor();
     working(&mut ed);
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), Vec::new()));
     ed.workspace.viewer.at = At::Side;
     frame(&mut ed);
-    let open = Press::Keys("space l".into());
-    let s = spot_on(&ed, Surface::FollowCard, &open);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("space l open the chat", Some(At::Code)));
-    press_word(&mut ed, &open);
-    assert!(ed.workspace.is_at(At::Chat), "the chat opened, its keys — {:?}", ed.keys_to().region);
-    // (the keys in the minimized chat: its turn's own keys)
-    let mut ed = editor();
-    working(&mut ed);
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
-    frame(&mut ed);
-    for k in ["C-c", "C-f"] {
-        assert_eq!(spot_on(&ed, Surface::FollowCard, &Press::Keys(k.into())).home, Some(At::Chat), "{k}");
-    }
+    let read = Press::Keys("space L".into());
+    let s = spot_on(&ed, Surface::FollowCard, &read);
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("space L read", Some(At::Code)));
+    press_word(&mut ed, &read);
+    assert!(ed.workspace.is_at(At::Chat), "the chat shown, its keys — {:?}", ed.keys_to().region);
 }
 
 /// Every hint is a word but the pairs whose key costs (piece B, the user 2026-10-29): the idle chat's foot has `enter
@@ -676,7 +696,6 @@ fn the_follow_cards_keys_are_homed_by_what_they_are() {
 fn only_named_hints_are_words() {
     let mut ed = editor();
     chat(&mut ed, "");
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
     // (wide enough for the foot's every pair)
     ed.sizes.chat = Some(96);
     frame(&mut ed);
@@ -853,7 +872,6 @@ fn a_panels_word_in_insert_mode_never_types_into_the_file() {
 fn a_hint_that_goes_there_leaves_the_keys_there() {
     let mut ed = editor();
     chat(&mut ed, "");
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
     frame(&mut ed);
     let esc = Press::Keys("esc".into());
     let s = spot_on(&ed, Surface::Chat, &esc);
@@ -872,15 +890,15 @@ fn a_hint_that_goes_there_leaves_the_keys_there() {
     assert!(ed.workspace.is_at(At::Chat), "space l focus: the chat's, not back to the side panel");
 }
 
-/// The minimized chat's card over a word: the press and the light are the card's — a word it covers isn't pressed or
+/// The follow card over a word, the chat out of sight: the press and the light are the card's — a word it covers isn't pressed or
 /// lit through it; the card's own words are.
 #[test]
 fn a_word_under_the_follow_card_is_neither_pressed_nor_lit() {
     let mut ed = editor();
     working(&mut ed);
-    ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
     frame(&mut ed);
-    let (x0, y0, w, h) = ed.screen.chat_mini.get().expect("the minimized chat's card");
+    let (x0, y0, w, h) = ed.screen.chat_mini.get().expect("the follow card standing for the chat");
     // (a word of the code's line drawn under the card's middle row — a pane's, as if its line ran there)
     let (x, y) = (x0 + w / 2, y0 + h / 2);
     let pane = Surface::PaneTop(ed.workspace.viewer.focus);
@@ -936,7 +954,6 @@ fn the_models_name_as_drawn_is_c_t() {
     let mut ed = editor();
     chat(&mut ed, "");
     let c = ed.workspace.claude.chat.as_mut().unwrap();
-    c.unfolded = true;
     c.model = "claude-stand-in".into();
     frame(&mut ed);
     let s = spot_on(&ed, Surface::Chat, &Press::Model);

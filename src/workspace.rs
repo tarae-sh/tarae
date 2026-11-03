@@ -1976,8 +1976,7 @@ mod tests {
     }
 
     /// A message typed in a chat whose input isn't on screen is marked: a session behind's on its tab, the
-    /// front's on the status line while its chat is minimized (Claude at work, followed) — and not once the
-    /// chat is up, or the input empty.
+    /// front's on the status line while its chat is hidden — and not once the chat is up, or the input empty.
     #[test]
     fn a_draft_out_of_sight_is_marked_unsent() {
         let (mut ed, _front, back) = two_projects("unsent");
@@ -1994,17 +1993,16 @@ mod tests {
         workspace_by_mut(&mut ed, id).claude.chat.as_mut().unwrap().input.clear();
         let rows = screen(&mut ed, 160, 24);
         assert!(!rows.iter().any(|r| r.contains("unsent")), "{rows:#?}");
-        // The front's chat minimized while Claude works: its draft on the status line
+        // The front's chat hidden: its draft on the status line
         let c = ed.workspace.claude.chat.as_mut().unwrap();
-        (c.input, c.follow.on, c.state) = ("half a thought\nmore".into(), true, crate::chat::State::Thinking);
+        (c.input, c.hidden) = ("half a thought\nmore".into(), true);
         ed.workspace.viewer.at = At::Code;
         let rows = screen(&mut ed, 160, 24);
         let status = rows.iter().find(|r| r.contains("● normal")).unwrap_or_else(|| panic!("{rows:#?}"));
         assert!(status.contains("unsent half a thought"), "{status}");
-        ed.workspace.claude.chat.as_mut().unwrap().unfolded = true;
+        ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
         let rows = screen(&mut ed, 160, 24);
         assert!(!rows.iter().any(|r| r.contains("unsent")), "the chat up: its input says it");
-        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         std::fs::remove_dir_all(back.parent().unwrap()).ok();
     }
 
@@ -2894,39 +2892,38 @@ mod tests {
         std::fs::remove_dir_all(front.parent().unwrap()).ok();
     }
 
-    /// The front session's turn ends with its chat out of sight past the turn — the code zoomed (`C-w z`):
-    /// said, with where it's seen. In sight, or minimized only by follow mode while Claude worked (it's back
-    /// with the answer): nothing.
+    /// The front session's turn ends with its chat out of sight — the code zoomed (`C-w z`): no toast (the flow plan's
+    /// piece 3), the status line's `◂ new · space L` while the chat isn't in sight. In sight: neither.
     #[test]
-    fn the_fronts_turn_ended_out_of_sight_is_said() {
+    fn the_fronts_turn_ended_out_of_sight_is_new_on_the_status_line() {
         let (mut ed, front, _) = two_projects("front-ended");
         claude_ends(&mut ed, &[json!({"type": "result", "result": "done"})]);
-        let said = |ed: &Editor| ed.toasts.iter().filter(|t| t.text.starts_with("Claude's turn")).count();
-        feed(&mut ed, "<space>l<esc><esc>");
+        let said = |ed: &Editor| ed.toasts.iter().filter(|t| t.text.starts_with("Claude's")).count();
+        let new = |ed: &mut Editor| {
+            let rows = screen(ed, 160, 30);
+            rows.last().is_some_and(|r| r.contains("◂ new · space L"))
+        };
+        feed(&mut ed, "<space>L<esc><esc>");
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         // In sight
         feed(&mut ed, "<space>lone<ret><esc><esc>");
         screen(&mut ed, 160, 30);
         assert!(ed.screen.chat_x.is_some());
         turn_ends(&mut ed, WorkspaceId::HOME);
-        assert_eq!(said(&ed), 0, "{:?}", ed.toasts);
-        // Minimized by follow mode while Claude works: nothing
-        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
-        feed(&mut ed, "<space>ltwo<ret><esc><esc>");
-        screen(&mut ed, 160, 30);
-        assert!(ed.screen.chat_x.is_none(), "minimized while it works");
-        turn_ends(&mut ed, WorkspaceId::HOME);
-        assert_eq!(said(&ed), 0, "{:?}", ed.toasts);
-        // The code zoomed: said
-        ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
+        assert!(!new(&mut ed) && said(&ed) == 0, "{:?}", ed.toasts);
+        // The code zoomed: new, no toast
         feed(&mut ed, "<space>lthree<ret><esc><esc>");
         screen(&mut ed, 160, 30);
         feed(&mut ed, "<C-w>z");
         screen(&mut ed, 160, 30);
         assert!(ed.zoomed().is_some() && ed.screen.chat_x.is_none());
         turn_ends(&mut ed, WorkspaceId::HOME);
-        let t = ed.toasts.iter().find(|t| t.text.starts_with("Claude's turn")).map(|t| t.text.as_str());
-        assert_eq!(t, Some("Claude's turn ended — space l shows it"), "{:?}", ed.toasts);
+        assert!(new(&mut ed), "◂ new on the status line");
+        assert_eq!(said(&ed), 0, "{:?}", ed.toasts);
+        // The zoom gone: the chat in sight — read, and gone from the status line
+        feed(&mut ed, "<C-w>z");
+        assert!(!new(&mut ed), "in sight");
+        assert!(!new(&mut ed) && !ed.workspace.claude.chat.as_ref().unwrap().unread(), "read");
         std::fs::remove_dir_all(front.parent().unwrap()).ok();
     }
 }

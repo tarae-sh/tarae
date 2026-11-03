@@ -74,30 +74,19 @@ const MOUSE_SCENES: &[Scene] = &[
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
     }),
-    // (the flow plan's reader: the chat floating over the code in its frame, its keys in the frame's bottom line — the
-    // keys in it, then in the code under it)
-    ("the chat floating over a long file", |ed| {
-        long_text(ed);
-        chat(ed, "a draft");
-        ed.sizes.chat_docked = false;
-        let c = ed.workspace.claude.chat.as_mut().unwrap();
-        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
-        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
-    }),
     // (the flow plan's piece 2: the ask line — the chat's input alone in its frame, a press off it closing it)
     ("the ask line over a long file", |ed| {
         long_text(ed);
         chat(ed, "a draft");
-        ed.sizes.chat_docked = false;
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.asking = true;
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
     }),
-    ("the chat floating, the keys in the code", |ed| {
+    // (the flow plan's piece 3: the column standing with the keys in the code — as an answer no place holds leaves it)
+    ("the chat docked, the keys in the code", |ed| {
         long_text(ed);
         chat(ed, "");
-        ed.sizes.chat_docked = false;
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
@@ -231,6 +220,24 @@ const MOUSE_SCENES: &[Scene] = &[
         ed.completion = Some(c);
     }),
     ("a note's card open under its line", note_card),
+    // (the flow plan's piece 3: an answer's `¶` at its line, its card shut, the chat out of sight — a press takes the
+    // column to its paragraph, the keys staying in the code)
+    ("an answer's line end, the chat out of sight", |ed| {
+        chat(ed, "");
+        long_text(ed);
+        let path = std::env::temp_dir().join("tarae-mouse-walk-answer.rs");
+        ed.docs[0].path.set(Some(path.clone()));
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "where?", ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "It is read here, once.", ""));
+        c.hidden = true;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Chat, "It is read here, once.");
+        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
+        let name = "tarae-mouse-walk-answer.rs:1".into();
+        n.answer = Some(crate::chatnotes::Origin { n: 1, at: 0, turn: 0, name, said: 0, text: None });
+        ed.workspace.claude.notes.open = None;
+    }),
     ("a note's card open, the chat holding the keys", |ed| {
         chat(ed, "");
         note_card(ed);
@@ -260,7 +267,8 @@ const MOUSE_SCENES: &[Scene] = &[
         chat(ed, "");
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
-        (c.state, c.follow.on) = (crate::chat::State::Thinking, true);
+        // (out of sight, as the ask line leaves it once its message went)
+        (c.state, c.follow.on, c.hidden) = (crate::chat::State::Thinking, true, true);
         ed.workspace.viewer.at = crate::workspace::At::Code;
     }),
     // (#207: the review's rail with files, the code reading one — its rows and marks pressed from the code's keys)
@@ -699,6 +707,8 @@ fn holds(ed: &Editor, u: Under) -> bool {
         Surface::Side => matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::At::Side),
         Surface::Rail => r == R::Rail,
         Surface::Card => matches!(r, R::Card(_)),
+        // (its blank gives it the keys — #267; its rows and marks do their own acts)
+        Surface::FollowCard if u.part == Part::Blank => r == R::Follow,
         Surface::EditReview => r == R::EditReview,
         Surface::Picker | Surface::PickerPreview => r == R::Picker,
         // (the note card's body gives them to its reply's line as it opens it)
@@ -726,7 +736,7 @@ fn holds(ed: &Editor, u: Under) -> bool {
             Part::Border(Border::Divider { heads, .. }) => {
                 matches!(r, R::Code | R::Weave | R::Page) && ed.workspace.viewer.focus == heads
             }
-            Part::Border(Border::Follow { .. }) => matches!(r, R::Chat | R::Unfold | R::View(_)),
+            Part::Border(Border::Follow { .. }) => matches!(r, R::Chat | R::View(_)),
             _ => false,
         },
         _ => false,
@@ -742,7 +752,7 @@ fn keyed_lights(ed: &Editor) -> Option<Lights> {
     match ed.keys_to().region {
         R::Code | R::Weave | R::Page | R::EditReview => Some(Lights::Code(ed.workspace.viewer.focus)),
         R::Side(_) | R::Rail => Some(Lights::Side),
-        R::Chat | R::Unfold | R::View(crate::view::Surface::Chat) => Some(Lights::Chat),
+        R::Chat | R::View(crate::view::Surface::Chat) => Some(Lights::Chat),
         R::List(k) if crate::floatlist::is_list(k) => Some(Lights::Dock(k)),
         R::Slot(_) | R::List(_) | R::Program | R::View(_) | R::Output(_) => {
             match ed.slot_in_hand().and(ed.workspace.viewer.hand) {
