@@ -2677,6 +2677,119 @@ const FOLLOW_REPLAY: &[&str] = &[
     "@zoom:code:44-48",
     "@3",
 ];
+/// The first short video, V1 "Three Claudes, one file" (`--video three-claudes`, ~60 s at 120×34; collab's
+/// `.sb/videos-plan.md`): each session its own Claude, by its checkout (`script_for`: `v1-main`, `v1-fix`, `v1-docs`).
+/// On V2's file (`MAIN_MOVED_RS`: lines short enough for a line and its tag to read on a phone). Off camera, fix and
+/// docs opened beside main and each asked: docs explains `thread.rs` slowly, fix's edit of `wind`'s key (line 30) held
+/// mid-line until main's own edit is on main's disk. On camera, the floating list (three at work); main's view at
+/// `wind`, fix's mark and `‹fix writing›` there; main asked, its edit of `m.insert` (line 31) written and landing
+/// unseen (review at the end), so fix's lands too —
+/// the same line two ways, and C2's `would conflict` once the trees are still; `:weave`, the conflict (side by side,
+/// stacked at 80); a press on fix's part and `enter`: fix's workspace at that line, main's `‹main editing›` on it. The
+/// Claudes go on talking after their edits (`v1_talk`): no turn ends on camera — a turn's end opens its review, its
+/// answer's card and its toasts over the beats. Its Short opens on the woven conflict (`@punch`); the tags are its
+/// zooms' targets (a line and its tag are wider than a phone reads).
+const THREE_CLAUDES: &[&str] = &[
+    "@1",
+    ":",
+    "sh git worktree add -q ../fix && git worktree add -q ../docs",
+    "\r",
+    "@3",
+    ":",
+    "workspace-open ../docs",
+    "\r",
+    "@3",
+    " ",
+    "l",
+    "@1",
+    "how is a thread measured?",
+    "\r",
+    "@10?thread.rs",
+    ":",
+    "workspace-open ../fix",
+    "\r",
+    "@3",
+    ":",
+    "e src/main.rs",
+    "\r",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "trim a name before it keys the map",
+    "\r",
+    "@20?name.trim",
+    ":",
+    "workspace-switch 0",
+    "\r",
+    "@10?tarae-demo › src › main.rs",
+    // (main's cursor on `wind`'s key, where fix is writing: its tag stands while your cursor is on its line)
+    "/",
+    "t.name.clone",
+    "\r",
+    "z",
+    "z",
+    "@1",
+    " ",
+    "W",
+    "@10?sessions",
+    "@1",
+    "@rec",
+    "@beat:Three Claudes, each in a workspace of its own.",
+    // (a Short: the rows' names and states, their reports cut)
+    "@zoom:card:sessions|42",
+    "@4",
+    "@beat:You see where each one reads and writes, in its colour.",
+    "q",
+    // (a Short: `wind`, fix's tag on its key)
+    "@zoom:code:29-32",
+    "@2.5",
+    " ",
+    "l",
+    "@zoom:card:ask claude|40",
+    "@1",
+    "@type:keep the first strand of a name",
+    "@1",
+    "\r",
+    // (a Short: `wind` as main writes in it, both tags there)
+    "@10?main writing",
+    "@sound:writing",
+    "@zoom:code:29-32",
+    "@20?or_insert",
+    "@sound:still",
+    "@20?would conflict",
+    "@beat:The moment two would conflict, tarae says so.",
+    "@zoom:card:would conflict",
+    "@2",
+    "@zoom:code:29-32",
+    "@2",
+    "@beat:Every workspace's changes woven into one file.",
+    // (a Short: the camera stays on `wind` as `:weave` is typed — the prompt's card is wider than a phone reads, and a
+    // card the window cuts is left out — and the woven view comes in its place)
+    "@zoom:code:29-32",
+    ":",
+    "@type:weave",
+    "@1",
+    "\r",
+    "@10?conflict 1 of 1",
+    // (the conflict to the middle: opened at line 1 it stands at the foot, where a press scrolls it under the follow
+    // card)
+    "30G",
+    "zz",
+    "@zoom:code:29-32",
+    "@punch",
+    "@5",
+    "@beat:Enter takes you to whoever wrote it.",
+    "@zoom:code:29-32",
+    "@press?let _ = m.insert",
+    "@release?let _ = m.insert",
+    "@1.5",
+    "\r",
+    "@10?fix › src › main.rs",
+    // (a Short: fix's `wind`, main's tag on the line they share)
+    "@zoom:code:29-32",
+    "@5",
+];
 /// Polish landing 4's one bring card in motion (`--record bring`): fix's own commit (the readme), main moved since (a
 /// line of `thread.rs`, apart from it), the project's quick preflight two passing steps (`run_files`) — then
 /// `:workspace-bring` from fix: the card, its `y`, the strip's `bringing · rebasing`, `bringing · rebased · preflight
@@ -4716,6 +4829,12 @@ const SCENES: &[Scene] = &[
     Scene { name: "main-moved", claude: "idle", files: MAIN, keys: MAIN_MOVED },
     Scene { name: "edit-in-buffer", claude: "v3", files: MAIN, keys: EDIT_IN_BUFFER },
     Scene { name: "follow-replay", claude: "v4", files: SPOOL, keys: FOLLOW_REPLAY },
+    Scene {
+        name: "three-claudes",
+        claude: "main=v1-main,fix=v1-fix,docs=v1-docs",
+        files: MAIN,
+        keys: THREE_CLAUDES,
+    },
     // (polish landing 4: the one bring card — rebased, its quick preflight, brought — said in the strip as it goes)
     Scene { name: "bring", claude: "idle", files: MAIN, keys: BRING },
     // (panes P3 step 7d: Claude's card with the chat closed — the screen's right, above the status line)
@@ -5647,6 +5766,7 @@ fn video_title(scene: &str) -> &'static str {
         "main-moved" => "When main moves, every workspace hears",
         "edit-in-buffer" => "Claude's edit, in your buffer",
         "follow-replay" => "Watch it work: follow and replay",
+        "three-claudes" => "Three Claudes, one file",
         _ => "",
     }
 }
@@ -5784,6 +5904,8 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
         "sixfollow" => "review-at-end = true\nfollow = true\n",
         // (V4's: the edits land unseen, so the turn runs through to its replay)
         "v4" => "review-at-end = true\n",
+        // (V1's: main's edit lands unseen, so fix's — waiting on it — lands too, and the two meet)
+        s if s.contains("=v1-main") => "review-at-end = true\n",
         _ => "",
     };
     format!(
@@ -6336,7 +6458,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         // (#157: as many lines as the followed pane's rows less one, each wide enough to reach under the card)
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-replay" => vec![("src/spool.rs", SPOOL_V4_RS.into())],
-        "main-moved" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
+        "main-moved" | "three-claudes" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
         "edit-in-buffer" => vec![("src/main.rs", MAIN_V3_RS.into())],
         // (its lines ended CRLF, committed so: the gutter calm, the status line's form the one thing said)
         "status-crlf" => vec![("src/main.rs", MAIN_RS.replace('\n', "\r\n"))],
@@ -6380,6 +6502,9 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "three",
     "v3",
     "v4",
+    "v1-main",
+    "v1-fix",
+    "v1-docs",
     "two",
     "six",
     "sixfollow",
@@ -6524,6 +6649,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "v3" => turn.edit_in_buffer()?,
             // (V4's video: three reads far apart, a pause to take the view back, two edits under review at the end)
             "v4" => turn.follow_replay()?,
+            // (V1's: three sessions' Claudes, fix's edit waiting on main's, docs talking all through)
+            "v1-main" => turn.v1_main()?,
+            "v1-fix" => turn.v1_fix()?,
+            "v1-docs" => turn.v1_docs()?,
             // (two changes: the press's sheet — the first answered, the second in hand)
             "two" => turn.explain_items(2)?,
             // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
@@ -8140,6 +8269,93 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     }
 }
 
+impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
+    /// V1's main: a read, then its edit of `wind`'s `m.insert` (line 31) written, held mid-line a while so fix's mark
+    /// and main's writing stand together, landing unseen (review at the end).
+    fn v1_main(&mut self) -> io::Result<()> {
+        self.words("Keying by the name alone lets a repeat replace the first strand.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:28-32"]}))?;
+        self.words("Switching to `entry` keeps the first one.")?;
+        self.text("\n")?;
+        let input = format!(
+            r#"{{"edits": [{}]}}"#,
+            v1_item("    m.insert(k, t);\n", "    m.entry(k).or_insert(t);\n")
+        );
+        self.input_pause(1, 2, "edit", &input, ".or_insert", || {
+            std::thread::sleep(Duration::from_millis(2500));
+            Ok(())
+        })?;
+        self.call(2, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
+        self.v1_talk(&[
+            "Now a repeat keeps the first strand.",
+            "`main` winds the map as before,",
+            "so nothing else in **main.rs** changes.",
+            "`entry` hands back the strand that stays,",
+            "which a later knot could be tied on.",
+            "Nothing else reads the map.",
+        ])
+    }
+
+    /// The rest of a V1 turn: `said` a sentence at a time, slowly, then the turn's end — its turn at work through the take,
+    /// so no turn's end (its review, its answer's card, its toasts) comes on camera.
+    fn v1_talk(&mut self, said: &[&str]) -> io::Result<()> {
+        for s in said {
+            if !self.pause.is_zero() {
+                std::thread::sleep(Duration::from_millis(9000));
+            }
+            self.words(s)?;
+        }
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// V1's fix: its edit of `wind`'s key (line 30) and of its `m.insert` its own way, held mid-line on the key until
+    /// main's edit is on main's disk (`../tarae-demo`), then written and landing: the same line changed two ways.
+    fn v1_fix(&mut self) -> io::Result<()> {
+        self.words("Trimming a name before it keys the map.")?;
+        self.text("\n")?;
+        let key = v1_item("    let k = t.name.clone();\n", "    let k = t.name.trim().to_string();\n");
+        let insert = v1_item("    m.insert(k, t);\n", "    let _ = m.insert(k, t);\n");
+        let input = format!(r#"{{"edits": [{key}, {insert}]}}"#);
+        self.input_pause(1, 1, "edit", &input, ".to_string()", || {
+            wait_file_contains(Path::new("../tarae-demo/src/main.rs"), "or_insert", Duration::from_secs(90))
+        })?;
+        self.call(1, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
+        self.v1_talk(&[
+            "A name with a space at its end keys the same strand now.",
+            "The insert's result is dropped on purpose:",
+            "a repeat replaces the strand before it.",
+            "Nothing else keys the map.",
+            "The tests don't wind a name with spaces.",
+            "That's the whole change.",
+        ])
+    }
+
+    /// V1's docs: a read of `thread.rs`, then an answer said a sentence at a time, slowly — at work all through the take.
+    fn v1_docs(&mut self) -> io::Result<()> {
+        self.words("Let me read how a thread is measured.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/thread.rs:1-13"]}))?;
+        self.v1_talk(&[
+            "A thread is a name and the knots tied along it.",
+            "Its length is the sum of the gaps between its knots,",
+            "so a knot tied at the end lengthens it by that gap.",
+            "Nothing keeps the knots in order:",
+            "a knot tied before the last one still adds its whole gap.",
+            "The doc comment on `length` could say so.",
+            "The tests measure a thread of three knots,",
+            "and one with a knot tied after two.",
+        ])
+    }
+}
+
+/// One item of an `edit` call on `src/main.rs`, its keys in the order the model writes them: what it replaces, then
+/// what it writes.
+fn v1_item(old: &str, new: &str) -> String {
+    let s = |t: &str| Value::from(t).to_string();
+    format!(r#"{{"file_path": "src/main.rs", "old_string": {}, "new_string": {}}}"#, s(old), s(new))
+}
+
 fn wait_file_contains(path: &Path, needle: &str, timeout: Duration) -> io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
@@ -8286,6 +8502,53 @@ mod tests {
         assert_eq!(listed, played);
         assert!(knows("full") && knows("main=home-main, fix=card"));
         assert!(!knows("fulll") && !knows("main=home-main,fix=nope"));
+    }
+
+    /// V1's three Claudes (`three-claudes`): each checkout its own script, edits landing unseen (so fix's, waiting on
+    /// main's, lands too); main's and fix's edit inputs streamed as the model writes them — what an item replaces
+    /// before what it writes, whole once streamed —, each item found in the file the scene runs on, the same line
+    /// changed two ways; every turn ends.
+    #[test]
+    fn v1s_three_claudes_each_play_their_own_turn_on_one_line() {
+        let spec = SCENES.iter().find(|s| s.name == "three-claudes").unwrap().claude;
+        assert_eq!(script_for(spec, Some(Path::new("/h/tarae-demo"))), "v1-main");
+        assert_eq!(script_for(spec, Some(Path::new("/h/fix"))), "v1-fix");
+        assert_eq!(script_for(spec, Some(Path::new("/h/docs"))), "v1-docs");
+        let t: toml::Table = config_toml(Path::new("/x"), spec).parse().unwrap();
+        assert_eq!(t["llm"]["review-at-end"].as_bool(), Some(true));
+        let file = &run_files("three-claudes")[0];
+        assert_eq!((file.0, file.1.as_str()), ("src/main.rs", MAIN_MOVED_RS));
+        let played = |who: &str| -> Vec<Value> {
+            let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+            let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
+            match who {
+                "main" => turn.v1_main(),
+                "fix" => turn.v1_fix(),
+                _ => turn.v1_docs(),
+            }
+            .unwrap();
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+        };
+        let mut replaced = Vec::new();
+        for who in ["main", "fix", "docs"] {
+            let said = played(who);
+            assert_eq!(said.last().unwrap()["type"], "result", "{who}'s turn ends");
+            let input: String = (said.iter())
+                .filter_map(|v| v.pointer("/event/delta/partial_json").and_then(Value::as_str))
+                .collect();
+            if who == "docs" {
+                assert!(input.is_empty(), "docs edits nothing");
+                continue;
+            }
+            let edits: Value = serde_json::from_str(&input).unwrap();
+            for item in edits["edits"].as_array().unwrap() {
+                let old = item["old_string"].as_str().unwrap();
+                assert!(MAIN_MOVED_RS.contains(old), "{who}'s {old:?} is in the file");
+                replaced.push(old.to_string());
+            }
+            assert!(input.find("old_string") < input.find("new_string"), "{who}: {input}");
+        }
+        assert_eq!(replaced.iter().filter(|o| *o == "    m.insert(k, t);\n").count(), 2, "{replaced:?}");
     }
 
     /// A per-session script specification picks each session's script by its checkout folder (`tarae-demo` →
