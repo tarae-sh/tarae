@@ -9,6 +9,8 @@
 //! came while a zoom holds too, is left out on the window's ground (`cut`), a row of text the window's edge cuts drawn
 //! cut there as a zoomed video crops (`Window`), a sliver of one the left edge leaves erased. A news beat
 //! (`news:<text> over <target>`) frames what its toast is about and lays the toast over the window's top (`callout`).
+//! A target that floats over the code (a list, a card, a prompt — `spotlit`) is a spotlight's: what's round it dimmed
+//! toward the ground, eased in and out with the camera (`lit`); the code's targets and a news beat's toast stay bright.
 //! Pure: the frames' drawing is `video.rs`'s.
 
 /// A screen as the camera reads it: each cell's text and its ground (its background, as a number), row by row.
@@ -249,6 +251,48 @@ pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
 /// A news target's toast text and the target it's about (`news:<text> over <target>`).
 pub(crate) fn news(spec: &str) -> Option<(&str, &str)> {
     spec.strip_prefix("news:")?.split_once(" over ")
+}
+
+/// What the spotlight lights on `on` for `spec`'s target: the card it floats in (a list, a card, a prompt, a toast or a
+/// peek — `cards`) — a prompt's with the status line under it, where its keys are said (a card standing on it at the
+/// screen's left, a cell in: its foot the row above or the line itself; the asks stand at the right). Nothing for the code's targets (`all`, `status`, `strip`, `code:`, a row's stretch of
+/// text), a card standing between the code's lines (an answer's or a note's: rows of the document — `between`), a news
+/// beat (its toast is laid over the window, bright, and what it's about is code), nor a card this screen doesn't draw.
+pub(crate) fn spotlit(on: &Cells, spec: &str) -> Vec<Card> {
+    let card = || {
+        if news(spec).is_some() {
+            return None;
+        }
+        let spec = spec.rsplit_once('|').filter(|(_, n)| n.parse::<u16>().is_ok()).map_or(spec, |(s, _)| s);
+        if matches!(spec, "all" | "status" | "strip") || spec.starts_with("code:") {
+            return None;
+        }
+        let text = spec.strip_prefix("card:").unwrap_or(spec);
+        holding(on, find(&on.text, text)?).filter(|&b| !between(on, b))
+    };
+    let Some(b) = card() else { return Vec::new() };
+    let rows = on.text.len();
+    let standing = b.2 + 2 == rows && b.1 <= 1;
+    match standing {
+        true => vec![b, (rows - 1, 0, rows - 1, on.text[rows - 1].len().saturating_sub(1))],
+        false => vec![b],
+    }
+}
+
+/// How lit the spotlight is `ms` into the take (0 none, 1 full), given when it turns on and off (each: when, whether its
+/// target is `spotlit` — a camera move, or its card gone from the screen while the camera holds there; in order): eased
+/// as the camera is (`EASE_MS`, `ease_out`), from wherever it was as a change began — in with a move to a floating
+/// target, out with the next move to the code or as its card goes.
+pub(crate) fn lit(spots: impl IntoIterator<Item = (u64, bool)>, ms: u64) -> f32 {
+    let (mut from, mut to, mut since) = (0.0f32, 0.0f32, 0u64);
+    let eased = |from: f32, to: f32, since: u64, now: u64| {
+        from + (to - from) * ease_out(now.saturating_sub(since) as f32 / EASE_MS as f32)
+    };
+    for (t, on) in spots.into_iter().take_while(|m| m.0 <= ms) {
+        from = eased(from, to, since, t);
+        (to, since) = (if on { 1.0 } else { 0.0 }, t);
+    }
+    eased(from, to, since, ms)
 }
 
 /// The smallest card holding the text found at (row, first cell, past its last).
@@ -1257,5 +1301,67 @@ mod tests {
         assert_eq!(target(&cells, "card:command"), Some(region(6.0, 8.0, 16.0, 4.0)));
         assert_eq!(target(&cells, "card:nowhere"), None);
         assert_eq!(target(&cells, "code:40-50"), None);
+    }
+
+    /// The spotlight lights a target floating over the code — a card, a prompt, a toast, cut to `|N` or not — by its
+    /// whole card; never the code's targets, a row's text, a news beat, nor a card standing between the code's lines.
+    #[test]
+    fn a_floating_target_is_lit_and_the_codes_are_not() {
+        let mut cells = grid(&[
+            "─ demo ┬ main.rs ────────────────────────────────────",
+            "src/a  │ 1 fn main() {",
+            "  b.rs │ 2     let x = 1;",
+            "       │ 3 ╭─ sessions ───────╮",
+            "       │   │ main working     │",
+            "       │   ╰─ enter switch ───╯",
+            "       │ 4 }",
+            "       │     ╭─ note ─────╮",
+            "       │     │ a thread   │",
+            "       │     ╰────────────╯",
+            "       │ 5 fn more() {}",
+            "▎yanked 2 lines                         ╭─ main asks ─╮",
+            " ╭─ command ──╮                         │ y run       │",
+            " │ :sh git    │                         ╰─ y · n ─────╯",
+            "● normal  enter run  esc close",
+        ]);
+        cells.ground[11][0..16].fill(5);
+        let list = vec![(3, 11, 5, 30)];
+        assert_eq!(spotlit(&cells, "card:sessions"), list);
+        assert_eq!(spotlit(&cells, "card:sessions|20"), list, "cut to its left: lit whole");
+        assert_eq!(spotlit(&cells, "main working"), list);
+        // (a prompt standing on the status line: the line its keys are said on lit with it; an ask beside it, its keys
+        // on its own foot, alone)
+        let cols = cells.text[0].len();
+        assert_eq!(spotlit(&cells, "card:command"), vec![(12, 1, 13, 14), (14, 0, 14, cols - 1)]);
+        assert_eq!(spotlit(&cells, "card:y run"), vec![(11, 40, 13, 54)]);
+        assert_eq!(spotlit(&cells, "card:yanked"), vec![(11, 0, 11, 15)]);
+        // (the code's targets, a row's text and a news beat stay bright)
+        for spec in
+            ["all", "status", "strip", "code:1-2", "code:1-2|20", "let x", "news:yanked over code:1-2"]
+        {
+            assert_eq!(spotlit(&cells, spec), [], "{spec}");
+        }
+        // (a note's card between lines 4 and 5: rows of the document, no spotlight)
+        assert_eq!(spotlit(&cells, "card:a thread"), []);
+        assert_eq!(spotlit(&cells, "card:nowhere"), []);
+    }
+
+    /// The spotlight eases in with a move to a floating target and out with the next to the code, as the camera does
+    /// (`EASE_MS`, an ease-out), a move begun mid-way starting from where it had got to; dark before any.
+    #[test]
+    fn the_spotlight_eases_in_and_out_with_the_camera() {
+        let moves = [(1_000, true), (3_000, false), (3_100, true), (6_000, false)];
+        assert_eq!(lit(moves, 0), 0.0);
+        assert_eq!(lit(moves, 999), 0.0);
+        assert!(lit(moves, 1_000 + EASE_MS / 4) > 0.5, "not an ease-out");
+        assert_eq!(lit(moves, 1_000 + EASE_MS), 1.0);
+        assert_eq!(lit(moves, 2_999), 1.0, "held until the next move");
+        // (out from 3 s, back in at 3.1 s from where it had got to: never a jump)
+        let (out, back) = (lit(moves, 3_100), lit(moves, 3_133));
+        assert!(0.0 < out && out < 1.0 && back > out, "{out} {back}");
+        assert!((lit(moves, 3_100 + EASE_MS) - 1.0).abs() < 1e-6);
+        assert_eq!(lit(moves, 6_000 + EASE_MS), 0.0);
+        let frames: Vec<f32> = (0..7_000u64).step_by(33).map(|ms| lit(moves, ms)).collect();
+        assert!(frames.windows(2).all(|p| (p[1] - p[0]).abs() < 0.3), "a jump");
     }
 }

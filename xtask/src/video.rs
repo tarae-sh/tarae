@@ -72,6 +72,9 @@ const SHORT_PX_MAX: u32 = 40;
 /// reads as going on, never as broken off.
 const FADE_CELLS: usize = 2;
 const FADE_MAX: u8 = 200;
+/// A spotlight at full (a target floating over the code: a list, a card, a prompt): what's round it this much of the
+/// way to the ground (of 255) — the code still read as code, faint, the card the one thing lit.
+const SPOT_DIM: u8 = 179;
 /// A Short's title card and end card: it's swiped past in a second, so its title stands shorter.
 const SHORT_TITLE_MS: u64 = 1_200;
 const SHORT_END_MS: u64 = 2_500;
@@ -229,7 +232,7 @@ pub(crate) fn make(
     };
     let zooms = moves
         .iter()
-        .map(|(t, spec, region, _)| {
+        .map(|(t, spec, region, ..)| {
             let (_, _, ww, wh) = short_window();
             let px = camera::fit(*region, (ww, wh), SHORT_PX_MAX, |p| shot::cell(&fonts, p));
             let (cw, ch) = shot::cell(&fonts, px);
@@ -245,6 +248,7 @@ pub(crate) fn make(
     let shown_ms = times.last().copied().unwrap_or(0) + LAST_MS;
     let named = moves.iter().map(|m| m.1.clone()).collect();
     let targets = moves.iter().map(|m| (m.0, m.3)).collect();
+    let spots = moves.iter().map(|m| m.4).collect();
     let moves = moves.iter().map(|m| (m.0, m.2)).collect();
     // (a Short opens on its punchline where the scene marks one)
     let punch = rec.punch.filter(|_| form == Form::Short);
@@ -261,6 +265,7 @@ pub(crate) fn make(
         moves,
         targets,
         named,
+        spots,
         screen,
         punch,
         lead,
@@ -300,13 +305,15 @@ pub(crate) fn make(
     Ok(Made { seconds: frames as f64 / FPS as f64, px, frames, sheet, zooms, sound, heard: counted, missed })
 }
 
-/// A Short's camera moves from the take (each: when, its target as written, the window's region, the target's): each
+/// A Short's camera moves from the take (each: when, its target as written, the window's region, the target's, and the
+/// spotlight's: whether the target floats over the code — `camera::spotlit` — and when its card goes while the camera
+/// holds there, `card_gone`): each
 /// `@zoom` found on the first screen at or after its time that draws its target (within `FIND_MS`), shaped to the
 /// window there (`camera::framed`: `aspect` columns a row, its centre `eye` down, `legible` columns at most taken in) —
 /// as wide as it grows on the same rows while the camera holds there (`camera::widened`: a line Claude is writing reaches
 /// its end, never past the window's edge) —, and each beat with no `@zoom` of its own (none within `OWN_MS` after it)
 /// back to the whole screen. A target never found is said, the camera staying where it was.
-type Move = (u64, String, Region, Region);
+type Move = (u64, String, Region, Region, (bool, Option<u64>));
 
 fn moves(rec: &Recorded, aspect: f32, eye: f32, legible: f32) -> (Vec<Move>, Vec<String>) {
     let (mut out, mut missed) = (Vec::new(), Vec::new());
@@ -333,10 +340,13 @@ fn moves(rec: &Recorded, aspect: f32, eye: f32, legible: f32) -> (Vec<Move>, Vec
                 Some((text, _)) => camera::news_framed(&cells, text, region, aspect, eye, legible),
                 None => camera::framed(&cells, region, aspect, eye, legible),
             };
-            Some((*at.max(&t), window, region))
+            Some((*at.max(&t), window, region, !camera::spotlit(&cells, spec).is_empty()))
         });
         match found {
-            Some((at, window, region)) => out.push((at, spec.to_string(), window, region)),
+            Some((at, window, region, spot)) => {
+                let gone = spot.then(|| card_gone(rec, spec, at, until)).flatten();
+                out.push((at, spec.to_string(), window, region, (spot, gone)))
+            }
             None => missed.push(format!(
                 "@zoom:{spec} at {:.1} s: not on screen within {} s — the camera stayed",
                 t as f64 / 1000.0,
@@ -345,6 +355,19 @@ fn moves(rec: &Recorded, aspect: f32, eye: f32, legible: f32) -> (Vec<Move>, Vec
         }
     }
     (out, missed)
+}
+
+/// When a floating target's card leaves the screen while the camera holds on it (from `at` until `until`): the first
+/// screen after the last one that draws it (`camera::spotlit`) — none while one to the hold's end does; `at` where none
+/// does.
+fn card_gone(rec: &Recorded, spec: &str, at: u64, until: u64) -> Option<u64> {
+    let from = rec.frames.partition_point(|f| f.0 <= at).saturating_sub(1);
+    let end = rec.frames.partition_point(|f| f.0 < until).max(from);
+    let hold = &rec.frames[from..end];
+    match hold.iter().rposition(|f| !camera::spotlit(&camera::Cells::of(&f.1), spec).is_empty()) {
+        Some(last) => hold.get(last + 1).map(|f| f.0),
+        None => Some(at),
+    }
 }
 
 /// What a Short hears, at its time in the video (the take's after `lead` ms: the punchline and the title card, both
@@ -632,8 +655,9 @@ fn part(t: u64, punch: Option<u64>, lead: u64, shown: u64) -> Part {
 enum Shows {
     Title,
     /// The take's screen, its caption (the beat's), how far that has come in (of 255), the camera's region, its
-    /// target's (a card meeting it never left out) and the move whose target is a news beat's (its toast laid over).
-    Screen(usize, Option<usize>, u8, Region, Region, Option<usize>),
+    /// target's (a card meeting it never left out), the move whose target is a news beat's (its toast laid over) and
+    /// the spotlight: the move whose card it lights and how lit it is (of 255).
+    Screen(usize, Option<usize>, u8, Region, Region, Option<usize>, Option<(usize, u8)>),
     End,
 }
 
@@ -656,6 +680,8 @@ struct Video<'a> {
     moves: Vec<(u64, Region)>,
     targets: Vec<(u64, Region)>,
     named: Vec<String>,
+    /// Each move's spotlight: whether its target floats over the code (`camera::spotlit`), and when its card went.
+    spots: Vec<(bool, Option<u64>)>,
     screen: (u16, u16),
     /// A Short's punchline: the take's ms it opens on (`PUNCH_MS` of it, before the title card).
     punch: Option<u64>,
@@ -669,21 +695,30 @@ impl Video<'_> {
     }
 
     /// The take as it stands at its `ms`: the screen in force, the beat (and how far its caption has come in), the
-    /// camera's region and its target's.
+    /// camera's region and its target's, and the spotlight (`camera::lit`: on the last move whose target floats, while
+    /// it's lit at all).
     fn take_at(&self, ms: u64, screen: usize) -> Shows {
         let beat =
             self.rec.beats.iter().rposition(|b| b.0 <= ms).filter(|&i| !self.rec.beats[i].1.is_empty());
         let came = beat.map_or(255, |i| ((ms - self.rec.beats[i].0) * 255 / FADE_MS).min(255) as u8);
-        let (region, target, news) = match self.form {
-            Form::Wide => (Region::all(self.screen), Region::all(self.screen), None),
+        let (region, target, news, spot) = match self.form {
+            Form::Wide => (Region::all(self.screen), Region::all(self.screen), None, None),
             Form::Short => {
                 let i = self.targets.partition_point(|t| t.0 <= ms).checked_sub(1);
                 let target = i.map_or(Region::all(self.screen), |i| self.targets[i].1);
                 let news = i.filter(|&i| camera::news(&self.named[i]).is_some());
-                (camera::at(&self.moves, self.screen, ms), target, news)
+                let changes = (self.moves.iter().zip(&self.spots))
+                    .flat_map(|(m, &(on, gone))| [Some((m.0, on)), gone.map(|g| (g, false))])
+                    .flatten();
+                let level = (camera::lit(changes, ms) * 255.0).round() as u8;
+                let spot = i
+                    .and_then(|i| self.spots[..=i].iter().rposition(|s| s.0))
+                    .filter(|_| level > 0)
+                    .map(|m| (m, level));
+                (camera::at(&self.moves, self.screen, ms), target, news, spot)
             }
         };
-        Shows::Screen(screen, beat, came, region, target, news)
+        Shows::Screen(screen, beat, came, region, target, news, spot)
     }
 
     /// The `k`th frame's ms in the video.
@@ -695,12 +730,12 @@ impl Video<'_> {
         match part(Self::ms(k), self.punch, self.lead, self.shown_ms) {
             // (the punchline: the take from its mark, its caption standing as it was there)
             Part::Punch(at) => {
-                let Shows::Screen(i, beat, _, region, target, news) =
+                let Shows::Screen(i, beat, _, region, target, news, spot) =
                     self.take_at(at, self.times.partition_point(|&s| s <= at).saturating_sub(1))
                 else {
                     unreachable!("take_at is a screen")
                 };
-                Shows::Screen(i, beat, 255, region, target, news)
+                Shows::Screen(i, beat, 255, region, target, news, spot)
             }
             Part::Title => Shows::Title,
             Part::Take(at) => self.take_at(at, screen_at(&self.times, k - self.lead * FPS / 1000)),
@@ -711,14 +746,16 @@ impl Video<'_> {
     /// The frame `shows` says, its screen drawn into `drawn` when it isn't the one there and its captions' pictures kept
     /// in `captions`.
     fn frame(&self, shows: Shows, drawn: &mut Drawn, captions: &mut HashMap<usize, Picture>) -> Vec<u8> {
-        let (i, beat, came, region, target, news) = match shows {
+        let (i, beat, came, region, target, news, spot) = match shows {
             Shows::Title => return self.cards.0.clone(),
             Shows::End => return self.cards.1.clone(),
-            Shows::Screen(i, beat, came, region, target, news) => (i, beat, came, region, target, news),
+            Shows::Screen(i, beat, came, region, target, news, spot) => {
+                (i, beat, came, region, target, news, spot)
+            }
         };
         if self.form == Form::Short {
             let news = news.and_then(|m| camera::news(&self.named[m])).map(|(text, _)| text);
-            return self.short_frame(i, (beat, came), (region, target, news), drawn, captions);
+            return self.short_frame(i, (beat, came), (region, target, news, spot), drawn, captions);
         }
         let key = (i, self.px as u32);
         if drawn.as_ref().is_none_or(|d| d.0 != key) {
@@ -752,14 +789,16 @@ impl Video<'_> {
     /// A Short's frame: screen `i` drawn at the glyph size `region` fits the window at, cropped there — only whole
     /// cells, every card the window cuts (but the one `target` is in) left out on the window's ground, and a row whose
     /// text its left or right edge cuts drawn cut there, fading into its ground, a sliver the left edge leaves erased
-    /// (`camera::Window`) —, a news beat's toast (`news`: its text) laid over the window's top as it stands on the
-    /// screen, each of its cells copied from the screen's picture (`camera::callout`), the beat's caption (and how far it
-    /// has come in) wrapped in the band above.
+    /// (`camera::Window`) —, every cell round the card a floating target is in dimmed toward the ground by the spotlight
+    /// (`spot`: the move whose card it is and how lit, of 255; `SPOT_DIM` at full — every cell, as it eases out, where
+    /// this screen no longer draws the card), a news beat's toast (`news`: its text) laid over the window's top as it stands on the
+    /// screen, bright, each of its cells copied from the screen's picture (`camera::callout`), the beat's caption (and how
+    /// far it has come in) wrapped in the band above.
     fn short_frame(
         &self,
         i: usize,
         (beat, came): (Option<usize>, u8),
-        (region, target, news): (Region, Region, Option<&str>),
+        (region, target, news, spot): (Region, Region, Option<&str>, Option<(usize, u8)>),
         drawn: &mut Drawn,
         captions: &mut HashMap<usize, Picture>,
     ) -> Vec<u8> {
@@ -841,6 +880,22 @@ impl Video<'_> {
                     let a = (f32::from(FADE_MAX) * (1.0 - d as f32 / span)).max(0.0) as u8;
                     for y in y0..y1 {
                         mix(&mut out[to(x, y)..][..3], ground, a);
+                    }
+                }
+            }
+        }
+        // (the spotlight: every cell round the card dimmed toward the window's ground)
+        if let Some((m, level)) = spot {
+            let lit = camera::spotlit(&cells, &self.named[m]);
+            let a = (u32::from(SPOT_DIM) * u32::from(level) / 255) as u8;
+            for r in r0..r1 {
+                for c in
+                    (c0..c1).filter(|&c| !lit.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3))
+                {
+                    for y in (PAD + r * ch)..(PAD + (r + 1) * ch).min(ph) {
+                        for x in (PAD + c * cw)..(PAD + (c + 1) * cw).min(pw) {
+                            mix(&mut out[to(x, y)..][..3], self.look.ground, a);
+                        }
                     }
                 }
             }
@@ -1088,5 +1143,36 @@ mod tests {
                 (1_100 + LANDS_MS, Heard::Settle),
             ]
         );
+    }
+
+    /// A spotlight goes as its card does: a move to a floating card is lit, one to the code isn't; the card's going while
+    /// the camera holds there is the first screen after the last that draws it — none while it's drawn to the hold's end,
+    /// the move's own time where it's drawn nowhere.
+    #[test]
+    fn a_spotlight_goes_as_its_card_does() {
+        let asks = || screen(1, &["fn main() {", "╭─ asks ──╮", "│ y move  │", "╰─────────╯"]);
+        let plain = || screen(1, &["fn main() {", "    let x = 1;", "}"]);
+        let rec = |frames: Vec<(u64, vt100::Screen)>, zooms: &[(u64, &str)]| Recorded {
+            frames,
+            beats: Vec::new(),
+            waits: Vec::new(),
+            zooms: zooms.iter().map(|(t, z)| (*t, z.to_string())).collect(),
+            keys: Vec::new(),
+            sounds: Vec::new(),
+            punch: None,
+            missed: Vec::new(),
+            wire: Vec::new(),
+        };
+        let zooms = [(0, "card:asks"), (500, "code:1-1")];
+        let gone = rec(vec![(0, asks()), (100, asks()), (200, plain()), (400, plain())], &zooms);
+        assert_eq!(card_gone(&gone, "card:asks", 0, 1_000), Some(200));
+        assert_eq!(card_gone(&gone, "card:asks", 0, 150), None, "drawn to the hold's end");
+        assert_eq!(card_gone(&gone, "card:nowhere", 50, 1_000), Some(50));
+        let back = rec(vec![(0, asks()), (200, plain()), (400, asks())], &zooms);
+        assert_eq!(card_gone(&back, "card:asks", 0, 1_000), None, "back before the hold's end");
+        let (moved, missed) = moves(&gone, 0.6, 0.33, 40.0);
+        assert!(missed.is_empty(), "{missed:?}");
+        let spots: Vec<_> = moved.iter().map(|m| m.4).collect();
+        assert_eq!(spots, [(true, Some(200)), (false, None)]);
     }
 }
