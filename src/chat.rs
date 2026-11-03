@@ -2997,16 +2997,19 @@ pub(crate) fn out_of_sight(ed: &Editor) -> bool {
 
 // ── Send ───────────────────────────────────────────────────────────────────
 
-/// `C-s` in the chat · `:chat-screen` — the screen as the user sees it now (the last frame, as text) goes
-/// with their next message, a pane showing a file named like a key Claude may not read blanked
-/// (`reads::key_panes`), the terminal panel too when `llm.screen-terminal` is off (`screen_hidden`); the chat
-/// opens if it isn't, and the line over the input says so.
+/// `C-s` in the chat · `:chat-screen` — the screen as the user sees it now (the last frame, as text — an
+/// interface that presents late: the frame it presented, `Editor.kept`) goes with their next message, a pane showing a
+/// file named like a key Claude may not read blanked (`reads::key_panes`), the terminal panel too when
+/// `llm.screen-terminal` is off (`screen_hidden`) — each as that frame laid them out; the chat opens if it isn't, and
+/// the line over the input says so.
 pub fn attach_screen(ed: &mut Editor) -> Result<(), String> {
-    let (frame, cols, rows) = ed.last_frame.as_ref().ok_or("nothing is on screen yet")?;
-    let (cols, rows) = (*cols, *rows);
-    let hidden = screen_hidden(ed);
-    let text =
-        crate::screen::text_hiding(frame, cols, rows, &hidden).ok_or("this screen can't be read as text")?;
+    let (text, cols, rows) = match ed.interface.presents_late {
+        true => {
+            let i = ed.presented_kept().ok_or("nothing is on screen yet")?;
+            ed.as_kept(i, |ed, f| shot(ed, f))?
+        }
+        false => shot(ed, ed.last_frame.as_ref().ok_or("nothing is on screen yet")?)?,
+    };
     if ed.workspace.claude.chat.is_none() {
         open(ed);
     }
@@ -3021,10 +3024,17 @@ pub fn attach_screen(ed: &mut Editor) -> Result<(), String> {
 /// The note in place of the terminal panel when it's left out.
 pub const LEFT_OUT: &str = "[the terminal panel — left out: llm.screen-terminal]";
 
-/// What of the last frame `C-s` doesn't send — every pane showing a file named like a key Claude may not read
+/// A frame as `C-s` sends it, laid out as `ed.screen` says: its text, less what `screen_hidden` leaves out.
+fn shot(ed: &Editor, (frame, cols, rows): &(Vec<u8>, u16, u16)) -> Result<(String, u16, u16), String> {
+    let hidden = screen_hidden(ed, *cols as usize);
+    let text = crate::screen::text_hiding(frame, *cols, *rows, &hidden)
+        .ok_or("this screen can't be read as text")?;
+    Ok((text, *cols, *rows))
+}
+
+/// What of a frame `cols` wide `C-s` doesn't send — every pane showing a file named like a key Claude may not read
 /// (`reads::key_panes`), the terminal panel when `llm.screen-terminal` is off.
-fn screen_hidden(ed: &Editor) -> Vec<crate::screen::Hidden> {
-    let cols = ed.last_frame.as_ref().map_or(0, |f| f.1 as usize);
+fn screen_hidden(ed: &Editor, cols: usize) -> Vec<crate::screen::Hidden> {
     let mut hidden = crate::reads::key_panes(ed);
     hidden.extend(ed.screen.terminal_rows.filter(|_| !ed.config.llm.screen_terminal).map(|rows| {
         // (the chat beside them: up to it; floating over them, the whole width)
@@ -6576,6 +6586,34 @@ mod tests {
             turn_done(&mut ed);
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// `C-s` sends the frame the interface presented (the remote plan's §8b): one that presents late, drawn newer and
+    /// not presented yet, sends the older one the person sees — once its input says it presented the newer, that one.
+    #[test]
+    fn c_s_sends_the_frame_the_interface_presented() {
+        let scratch = crate::scratch::Scratch::new("c-s-presented");
+        let (a, b) = (scratch.join("a.txt"), scratch.join("b.txt"));
+        std::fs::write(&a, "alpha-words\n").unwrap();
+        std::fs::write(&b, "beta-words\n").unwrap();
+        let mut ed = editor("");
+        ed.interface.presents_late = true;
+        ed.workspace.claude.chat = Some(Chat::new());
+        let sent = |ed: &mut Editor| {
+            attach_screen(ed).unwrap();
+            ed.workspace.claude.chat.as_mut().unwrap().screen.take().unwrap().text
+        };
+        assert!(attach_screen(&mut ed).is_err(), "nothing presented: nothing to send");
+        ed.open(&a).unwrap();
+        crate::term::render(&mut ed, &mut Vec::<u8>::new(), 100, 30).unwrap();
+        ed.frame_presented(ed.frames);
+        ed.open(&b).unwrap();
+        crate::term::render(&mut ed, &mut Vec::<u8>::new(), 100, 30).unwrap();
+        let s = sent(&mut ed);
+        assert!(s.contains("alpha-words") && !s.contains("beta-words"), "the frame presented: {s}");
+        ed.frame_presented(ed.frames);
+        let s = sent(&mut ed);
+        assert!(s.contains("beta-words") && !s.contains("alpha-words"), "the newer one presented: {s}");
     }
 
     /// 7c′: the screen as text — `C-s`'s — blanks a pane showing a file named like

@@ -387,6 +387,9 @@ pub fn swap(ed: &mut Editor, iface: &mut Option<Interface>) -> bool {
     ed.attach.input = 0;
     // (what an interface before it presented counts no more — decision D)
     ed.attached_at = ed.frames;
+    // (the frames kept were the one before's to show)
+    ed.kept.clear();
+    ed.press_refused = false;
     ed.drawn_by.push(crate::editor::DrawnFor::Named("an attach"));
     *iface = Some(new);
     true

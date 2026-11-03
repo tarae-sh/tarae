@@ -90,6 +90,10 @@ impl crate::editor::Editor {
             return;
         }
         self.presented = n;
+        // (the ring keeps the newest presented and what's newer: the ones before it can't be shown any more)
+        while self.kept.get(1).is_some_and(|k| k.n <= n) {
+            self.kept.pop_front();
+        }
         if self.card_handed.is_some_and(|h| h.2 <= n) {
             self.card_handed = None;
         }
@@ -118,6 +122,84 @@ impl crate::editor::Editor {
         crate::reviews::after_frame(self);
     }
 
+    /// A press (`m`) the interface made on frame `seen`, older than the newest drawn: it goes on only where the same
+    /// element is under it now as on the frame it was made on (the remote plan's decision E) — the same surface and
+    /// part (`mouse_under` over each frame's `Screen`), and what says which one it is: the code pane's document, the
+    /// front card, else the row's text. Refused, it's said (on a card, as a key typed before it was in sight) and its
+    /// drag and release go nowhere (`Editor.press_refused`). The wheel and hover go by the frame now: a misplaced
+    /// scroll moves nothing of yours, hover is no input.
+    pub fn press_holds(&mut self, seen: Frame, m: &crate::event::Mouse) -> bool {
+        use crate::event::MouseKind as K;
+        match m.kind {
+            K::Down | K::Middle => {}
+            K::Drag | K::Up if self.press_refused => {
+                self.press_refused = m.kind == K::Drag;
+                self.unchanged = true;
+                return false;
+            }
+            _ => return true,
+        }
+        self.press_refused = false;
+        if !self.interface.presents_late || seen >= self.frames {
+            return true;
+        }
+        let (x, y) = (m.x as usize, m.y as usize);
+        let now = self.mouse_under(K::Down, x, y);
+        let same = match self.kept.iter().position(|k| k.n == seen) {
+            Some(i) => {
+                let card = self.kept[i].card;
+                let (then, row) = self.as_kept(i, |ed, f| (ed.mouse_under(K::Down, x, y), row_text(f, y)));
+                let doc = |s: &crate::editor::Screen, p| {
+                    s.panes.iter().position(|q| q.0 == p).and_then(|i| s.pane_docs.get(i).copied())
+                };
+                use crate::mouse::{Part as P, Surface as S};
+                then == now
+                    && match (now.surface, now.part) {
+                        (S::Code(p) | S::PaneTop(p), _) => {
+                            let then = self.kept.get(i).and_then(|k| doc(&k.screen, p));
+                            then.is_some() && then == doc(&self.screen, p)
+                        }
+                        (S::Card, _) => card == self.offer_drawn.get().map(|d| (d.0, d.1)),
+                        (_, P::Text { .. } | P::Blank | P::Border(_) | P::Frame(_) | P::Outside) => true,
+                        _ => row.is_some_and(|r| {
+                            Some(r) == self.last_frame.as_ref().and_then(|f| row_text(f, y))
+                        }),
+                    }
+            }
+            // (a frame the ring let go — or none presented: what was under it isn't known)
+            None => false,
+        };
+        if same {
+            return true;
+        }
+        self.press_refused = true;
+        let said = format!("frame {seen} pressed at {x},{y}, frame {} under it now: {now:?}", self.frames);
+        crate::log::line("attach", "info", &format!("a press refused — {said}"));
+        match now.surface {
+            crate::mouse::Surface::Card => {
+                self.offer_refused("a press came before this card was in sight — not taken")
+            }
+            _ => self.set_status("the screen moved under that press — not taken"),
+        }
+        false
+    }
+
+    /// The kept frame the interface shows now: the newest it presented (`Editor.kept`'s index) — None: none yet.
+    pub fn presented_kept(&self) -> Option<usize> {
+        self.kept.iter().rposition(|k| k.n <= self.presented)
+    }
+
+    /// `f` with kept frame `i`'s layout as `Editor.screen` and its bytes — the layout now put back after (the
+    /// `docpane::swap` pattern).
+    pub fn as_kept<R>(&mut self, i: usize, f: impl FnOnce(&mut Self, &(Vec<u8>, u16, u16)) -> R) -> R {
+        let mut k = self.kept.remove(i).expect("a kept frame");
+        std::mem::swap(&mut self.screen, &mut k.screen);
+        let r = f(self, &k.frame);
+        std::mem::swap(&mut self.screen, &mut k.screen);
+        self.kept.insert(i, k);
+        r
+    }
+
     /// The front card is drawn as it is, but the frame that drew it so isn't presented yet: a weighty one (its answers
     /// count only in sight — `Stands.drawn`), or one the keys were handed on to in that frame (`card_handed`). Its
     /// answers are refused as typed before it was in sight (`card_key`).
@@ -138,6 +220,43 @@ impl crate::editor::Editor {
             Some(d) if self.saw(d.2) => None,
             _ => Some((u.0, u.1)),
         }
+    }
+}
+
+/// Row `y` of a frame as text (trailing blanks dropped) — None: a frame this doesn't read, or no such row.
+fn row_text((frame, w, h): &(Vec<u8>, u16, u16), y: usize) -> Option<String> {
+    let text = crate::screen::text_hiding(frame, *w, *h, &[])?;
+    Some(text.lines().nth(y).unwrap_or_default().to_string())
+}
+
+/// How many frames drawn since the one presented the ring keeps (`Editor.kept`): with credits (`tarae_wire`'s
+/// `IN_FLIGHT`) an interface is never further behind than that — one older was skipped.
+pub const KEPT: usize = 4;
+
+/// A frame drawn for an interface that presents late, kept while it may be what the person sees: its number, its
+/// layout (what a press there landed on — `Editor::press_holds`), its bytes (what `C-s` sends) and the front card it
+/// drew (id, `rev`).
+pub struct Kept {
+    pub n: Frame,
+    pub screen: crate::editor::Screen,
+    pub frame: (Vec<u8>, u16, u16),
+    pub card: Option<(u64, u64)>,
+}
+
+/// The frame just drawn kept (`Editor.kept`), for an interface that presents late — past `KEPT` drawn since the one
+/// presented, the oldest of those goes. The terminal keeps none.
+pub(crate) fn keep(ed: &mut crate::editor::Editor) {
+    if !ed.interface.presents_late {
+        return;
+    }
+    let Some(frame) = ed.last_frame.clone() else { return };
+    let card = ed.offer_drawn.get().map(|d| (d.0, d.1));
+    ed.kept.push_back(Kept { n: ed.frames, screen: ed.screen.clone(), frame, card });
+    let newer = ed.kept.iter().filter(|k| k.n > ed.presented).count();
+    if newer > KEPT
+        && let Some(i) = ed.kept.iter().position(|k| k.n > ed.presented)
+    {
+        ed.kept.remove(i);
     }
 }
 
@@ -450,6 +569,60 @@ mod tests {
         assert!(said.contains("a press came before this card was in sight"), "{said}");
         ed.handle_event(press(ed.frames));
         assert!(!up(&ed, id), "its frame presented: the press answered");
+    }
+
+    /// A press made on an older frame acts only where the same thing is under it now (the remote plan's decision E):
+    /// the code scrolled since — another line under the press — it's refused and said, its drag goes nowhere and the
+    /// cursor stays; on the frame drawn now, or one older that drew the same there, it's taken.
+    #[test]
+    fn a_press_on_an_older_frame_counts_only_where_the_same_thing_is_still_under_it() {
+        let scratch = crate::scratch::Scratch::new("press-older");
+        let path = scratch.join("a.txt");
+        let text: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&path, text).unwrap();
+        let (x, y) = (20u16, 5u16);
+        let mouse = |seen, kind| Event::Input {
+            seen,
+            seq: 0,
+            event: Box::new(Event::Mouse(crate::event::Mouse { kind, x, y, alt: false, ctrl: false })),
+        };
+        use crate::event::MouseKind as K;
+        let mut ed = late();
+        ed.open(&path).unwrap();
+        frame(&mut ed);
+        ed.frame_presented(1);
+        // (a press taken on the frame drawn now: what a drag would select from)
+        ed.handle_event(mouse(1, K::Down));
+        ed.goto_line(150);
+        frame(&mut ed);
+        let line_now = match ed.mouse_at(x as usize, y as usize).part {
+            crate::mouse::Part::Text { line, .. } => line,
+            p => panic!("the code's text under it: {p:?}"),
+        };
+        assert_ne!(line_now, 150, "the press lands elsewhere than the cursor");
+        ed.handle_event(mouse(1, K::Down));
+        assert_eq!(ed.cursor_line(), 150, "pressed on frame 1's line, another under it now: not taken");
+        let said = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+        assert!(said.contains("the screen moved under that press"), "{said}");
+        ed.handle_event(mouse(1, K::Drag));
+        ed.handle_event(mouse(1, K::Up));
+        assert_eq!(ed.cursor_line(), 150, "its drag went nowhere");
+        // (frame 2 presented: the press is on what's there)
+        ed.handle_event(mouse(2, K::Down));
+        ed.handle_event(mouse(2, K::Up));
+        assert_eq!(ed.cursor_line(), line_now, "pressed on the frame drawn now: taken");
+        // (a frame drawn since with the same line there: the press on frame 2 still lands on it)
+        frame(&mut ed);
+        frame(&mut ed);
+        let line_now = match ed.mouse_at(x as usize, y as usize).part {
+            crate::mouse::Part::Text { line, .. } => line,
+            p => panic!("the code's text under it: {p:?}"),
+        };
+        ed.goto_line(150);
+        ed.handle_event(mouse(3, K::Down));
+        assert!(ed.frames > 3);
+        assert_eq!(ed.cursor_line(), line_now, "the same line under it on frame 3 and now: taken");
+        assert!(ed.kept.len() <= KEPT + 1, "the ring kept {}", ed.kept.len());
     }
 
     /// A card read whole counts for a key once the frame it was whole in was presented — and for the frame being

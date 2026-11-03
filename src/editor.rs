@@ -1206,6 +1206,12 @@ pub struct Editor {
     /// The last frame drawn before the interface there now attached (`attach::swap`): what an interface presented
     /// counts from after it (`Editor::saw` — the remote plan's decision D). 0: the terminal, there from the start.
     pub attached_at: crate::interface::Frame,
+    /// The frames an interface that presents late may still be showing, oldest first (`interface::keep`): the newest
+    /// presented and up to `interface::KEPT` drawn since — a press judged on the one it was made on (`press_holds`),
+    /// `C-s` sending the one presented. Empty for the terminal (its frame written is its frame presented).
+    pub kept: std::collections::VecDeque<crate::interface::Kept>,
+    /// A press from an older frame was refused (`press_holds`): its drag and release go nowhere.
+    pub press_refused: bool,
     /// (Tests: the home a session's `Caps` are made for — `caps::Basis.home`; None: the process's.)
     #[cfg(test)]
     pub caps_home: Option<PathBuf>,
@@ -1577,6 +1583,8 @@ impl Editor {
             host: false,
             attach: Default::default(),
             attached_at: 0,
+            kept: Default::default(),
+            press_refused: false,
             #[cfg(test)]
             caps_home: None,
             shellcheck: if cfg!(test) {
@@ -2970,6 +2978,12 @@ impl Editor {
             Event::Input { seen, seq, event } => {
                 self.frame_presented(seen);
                 self.attach.input = self.attach.input.max(seq);
+                // (a press made on an older frame: taken only where the same thing is under it now — decision E)
+                if let Event::Mouse(m) = &*event
+                    && !self.press_holds(seen, m)
+                {
+                    return;
+                }
                 *event
             }
             ev => ev,

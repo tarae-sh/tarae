@@ -700,6 +700,8 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
     drawn?;
     // (what it showed you waits until it's been presented: the newest frame's)
     editor.presented_marks = Some(editor.frames);
+    // (an interface that presents late: kept while it may be what it shows — its presses judged on it, `C-s` sending it)
+    crate::interface::keep(editor);
     Ok(())
 }
 

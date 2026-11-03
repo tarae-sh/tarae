@@ -3540,8 +3540,14 @@ fn take(ed: &mut Editor, whole_file: bool) {
         };
         need.into_iter().filter(|&l| !drawn.contains(&l) && !ever(l)).collect()
     };
-    let on_line =
+    let under =
         |g: &crate::risk::Graded| spans.iter().any(|&(a, b)| b == a + 1 && g.at < b && a < g.at + g.lines);
+    // (the cursor's change counts once every line of it was on a frame the interface presented — the remote plan's
+    // decision F, every interface: a key typed on before the frame showing it, `space v h` twice in one batch, isn't a
+    // look)
+    let on_line = |g: &crate::risk::Graded| {
+        under(g) && (g.at..g.at + g.lines).all(|l| l >= doc.text.len_lines() || drawn.contains(&l) || ever(l))
+    };
     let shown = |g: &crate::risk::Graded| {
         !drawn.is_empty()
             && ((g.at..g.at + g.lines).all(|l| drawn.contains(&l))
@@ -3637,6 +3643,16 @@ fn take(ed: &mut Editor, whole_file: bool) {
                     line_ranges(&lines, 3)
                 ),
             });
+        }
+        // (the cursor's change, typed on before a frame showing it was presented: once more, now it shows)
+        if unshown.iter().any(|g| under(g)) {
+            let g = unshown.iter().find(|g| under(g)).expect("one");
+            let said =
+                format!("{}: the change at line {} under the cursor not presented yet", f.rel, g.at + 1);
+            ed.workspace.log().line("review", "unpresented", &said);
+            return ed.set_warning(
+                "this high-risk change wasn't on screen yet as space v h came — not looked at · space v h again",
+            );
         }
         return ed.set_status(format!(
             "{} under the selection not on screen — not looked at · ]h goes to the next",
@@ -5773,6 +5789,61 @@ mod tests {
         assert!(ed.offers[0].held.is_none(), "its own session's look frees it");
     }
 
+    /// The short high-risk change under the cursor counts once every line of it was on a frame the interface presented
+    /// (the remote plan's decision F, every interface): `space v h` typed before any frame showed it — the terminal's
+    /// same batch — is no look, said as one; once a frame drew it, the same key takes it. An interface that presents
+    /// late: drawn isn't enough, its input has to say it presented that frame.
+    #[test]
+    fn a_short_change_under_the_cursor_is_taken_once_a_presented_frame_drew_it() {
+        let scratch = crate::scratch::Scratch::new("review-presented");
+        let dir = scratch.to_path_buf();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let run = |args: &[&str]| {
+            let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+            let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
+            assert!(ok.unwrap().status.success(), "git {args:?}");
+        };
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
+        run(&["init", "-q"]);
+        run(&["add", "."]);
+        run(&["commit", "-qm", "x"]);
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\nfn b() { unsafe { c() } }\n").unwrap();
+        let high = |ed: &Editor| ed.workspace.code_review.as_ref().map(|r| r.high_unseen(ed).len());
+        let said = |ed: &Editor| ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 30).unwrap();
+        // The terminal: the key before any frame showed the change, then after one
+        let mut ed = Editor::new(crate::config::Config::default());
+        start_in(&mut ed, dir.clone(), None);
+        settle_until(&mut ed, landed);
+        ed.goto_line(1);
+        feed(&mut ed, "<space>vh");
+        assert_eq!(high(&ed), Some(1), "no frame showed it: not a look");
+        assert!(said(&ed).contains("wasn't on screen yet as space v h came"), "{}", said(&ed));
+        frame(&mut ed);
+        feed(&mut ed, "<space>vh");
+        assert_eq!(high(&ed), Some(0), "a frame showed it: looked at");
+        // An interface that presents late: drawn, then presented by its input's word
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.interface.presents_late = true;
+        start_in(&mut ed, dir.clone(), None);
+        settle_until(&mut ed, landed);
+        ed.goto_line(1);
+        frame(&mut ed);
+        let key = |ed: &mut Editor, seen, k: &str| {
+            let event = Box::new(crate::event::Event::Key(k.parse().unwrap()));
+            ed.handle_event(crate::event::Event::Input { seen, seq: 0, event });
+        };
+        let n = ed.frames;
+        for k in ["space", "v", "h"] {
+            key(&mut ed, 0, k);
+        }
+        assert_eq!(high(&ed), Some(1), "drawn, not presented: not a look");
+        for k in ["space", "v", "h"] {
+            key(&mut ed, n, k);
+        }
+        assert_eq!(high(&ed), Some(0), "presented: looked at");
+    }
+
     /// A high-risk change (the Rust pack's `unsafe`) holds the review's end until a person looks at it: the
     /// end card names it and has no yes (`y` refused on it); the file's mark isn't a look (`space v m`, a click
     /// on it, refused); `space v h` on it is — then the file is marked and the review ends.
@@ -5815,8 +5886,9 @@ mod tests {
         feed(&mut ed, "<space>vm");
         mark_clicked(&mut ed, 0);
         assert!(ed.workspace.viewed.is_empty(), "not marked");
-        // On it, the key
+        // On it, the key — once a frame showed it (decision F)
         ed.goto_line(1);
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vh");
         assert_eq!(high(&ed), Some(0));
         feed(&mut ed, "<space>vm<space>vq");
@@ -6018,6 +6090,7 @@ mod tests {
         go(&mut ed, "h", "b.rs");
         assert_eq!((at(&ed), left(&ed)), (("b.rs".into(), 0), 1), "there, not looked at");
         assert!(!ed.offers.is_empty(), "the card stays");
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vh");
         assert_eq!(left(&ed), 0);
         let o = ed.offers.first().expect("the end card");
@@ -9191,6 +9264,7 @@ mod tests {
         let r = ed.workspace.code_review.as_ref().unwrap();
         assert_eq!(r.high_left(&ed, &r.files[i]), 1, "open, still high");
         ed.goto_line(0);
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vh");
         let r = ed.workspace.code_review.as_ref().unwrap();
         assert_eq!(r.high_left(&ed, &r.files[i]), 0, "looked at");
@@ -9200,6 +9274,7 @@ mod tests {
             landed(ed) && ed.doc().path.as_deref() == Some(dir.join("ü/build.rs").as_path())
         });
         ed.goto_line(0);
+        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vh");
         // Committed: the bring's diff names the same changes, by the same keys
         git_out(&["add", "-A"]);
@@ -9315,6 +9390,7 @@ mod tests {
             let r = ed.workspace.code_review.as_ref().unwrap();
             let Some(&(_, at)) = r.high_unseen(&ed).first() else { break };
             ed.goto_line(at);
+            crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
             feed(&mut ed, "<space>vh");
         }
         let r = ed.workspace.code_review.as_ref().unwrap();
