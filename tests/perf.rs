@@ -134,6 +134,125 @@ fn perf_e2e_key_in_a_big_file() {
     report("e2e_key_to_frame_big_file_ms", median(runs), 16.0, 0.05);
 }
 
+fn p90(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[(v.len() - 1) * 9 / 10]
+}
+
+/// From starting `tarae attach` to the host's first frame on its terminal (the remote plan's step 3), a host up with a
+/// file open — each attach taking over the one before, as a second `tarae attach` does. Beside
+/// `e2e_startup_to_first_frame_ms`.
+#[test]
+fn perf_e2e_attach_to_first_frame() {
+    if unoptimized("perf_e2e_attach_to_first_frame") {
+        return;
+    }
+    let sb = Sandbox::new("perf-attach");
+    big_file(&sb, "a.rs", 2_000);
+    let host = sb.host(&["a.rs"]);
+    let mut runs = Vec::new();
+    let mut was = None;
+    for _ in 0..REPEAT {
+        let t0 = Instant::now();
+        let t = Term::attach(&sb, &host, COLS, ROWS);
+        runs.push(ms(t.first_frame_at().expect("a frame").saturating_duration_since(t0)));
+        drop(was.replace(t));
+    }
+    report("e2e_attach_to_first_frame_ms", median(runs), 500.0, 0.5);
+}
+
+/// A key in a 200k-line file to its frame on an attached client's terminal: the key through the client and the
+/// socket, the host's frame, its writer's diff, the client presenting it (median and p90 of many moves) — beside
+/// `e2e_key_to_frame_big_file_ms`, the terminal's. And what the client wrote its terminal a key: the wire's frame
+/// bytes are the terminal's diff (`Writer::step` is `present_drawn`), so this is the spike's per-frame number.
+#[test]
+fn perf_e2e_key_in_a_big_file_attached() {
+    if unoptimized("perf_e2e_key_in_a_big_file_attached") {
+        return;
+    }
+    let sb = Sandbox::new("perf-key-attached");
+    big_file(&sb, "big.rs", 200_000);
+    let host = sb.host(&["big.rs"]);
+    let mut t = Term::attach(&sb, &host, COLS, ROWS);
+    t.wait_text("fn f1(");
+    std::thread::sleep(Duration::from_millis(600)); // (the whole-screen redraw after the first frames)
+    let mut runs = Vec::new();
+    let wrote = t.written();
+    for k in ["j", "j", "w", "w", "e", "b", "k", "l", "h", "j"].iter().cycle().take(40) {
+        runs.extend(t.key_to_frame(k, Duration::from_secs(2)).map(ms));
+    }
+    assert!(runs.len() >= 30, "frames came for {} of 40 keys", runs.len());
+    let bytes = (t.written() - wrote) as f64 / runs.len() as f64;
+    eprintln!(
+        "attached: a key's frame median {:.2} ms, p90 {:.2} ms, {bytes:.0} B",
+        median(runs.clone()),
+        p90(runs.clone())
+    );
+    report("e2e_key_to_frame_big_file_attached_ms", median(runs.clone()), 24.0, 0.1);
+    report("e2e_key_to_frame_big_file_attached_p90_ms", p90(runs), 40.0, 0.3);
+    report("e2e_key_bytes_big_file_attached", bytes, 4096.0, 8.0);
+}
+
+/// A slow interface (its terminal reads 256 bytes every 20 ms, ~12 KB/s: a phone on a bad link) while it's busy —
+/// 40 half-pages scrolled in a 200k-line file as fast as they're typed: the host's own loop answers `tarae state`
+/// as it does with a quick one (it never waits on the client: frames the client hasn't taken are replaced in the
+/// writer's mailbox), the client skips frames and comes to the newest once the keys stop.
+#[test]
+fn perf_e2e_a_slow_client() {
+    if unoptimized("perf_e2e_a_slow_client") {
+        return;
+    }
+    let sb = Sandbox::new("perf-slow-client");
+    big_file(&sb, "big.rs", 200_000);
+    let host = sb.host(&["big.rs"]);
+    let round = |n: usize| -> Vec<f64> {
+        (0..n)
+            .map(|_| {
+                let t0 = Instant::now();
+                host.state(&["--json"]);
+                ms(t0.elapsed())
+            })
+            .collect()
+    };
+    let pace = Pace { chunk: 256, pause: Duration::from_millis(20) };
+    let mut t = Term::attach_paced(&sb, &host, COLS, ROWS, pace);
+    t.wait_text("fn f1(");
+    std::thread::sleep(Duration::from_millis(600));
+    let quiet = median(round(10));
+    let n = |v: &serde_json::Value, k: &str| v.pointer(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let input0 = n(&host.state_json(), "/input");
+    let shown0 = t.frames();
+    let t0 = Instant::now();
+    for i in 0..40 {
+        t.send(if i % 2 == 0 { "\x04" } else { "\x15" }); // C-d, C-u
+    }
+    let busy = median(round(10));
+    // (the client's terminal quiet a second: it has what the host last drew — a `tarae state` draws a frame of its
+    // own, so it isn't polled meanwhile)
+    let mut last = (t.written(), Instant::now());
+    while last.1.elapsed() < Duration::from_secs(1) {
+        std::thread::sleep(Duration::from_millis(50));
+        if t.written() != last.0 {
+            last = (t.written(), Instant::now());
+        }
+        assert!(t0.elapsed() < Duration::from_secs(120), "the client never went quiet");
+    }
+    let caught_up = ms(t.last_frame_at().expect("frames").saturating_duration_since(t0));
+    let s = host.state_json();
+    let (frame, presented) = (n(&s, "/frame"), n(&s, "/interface/presented"));
+    assert!(n(&s, "/input") >= input0 + 40, "the 40 keys handled: {s:#}");
+    // (the frame drawn for that very `tarae state` the only one not presented yet)
+    assert!(presented + 1 >= frame, "the client at the newest frame: presented {presented} of {frame}");
+    let shown = t.frames() - shown0;
+    eprintln!(
+        "a slow client: the host's state {quiet:.1} ms quiet, {busy:.1} ms busy; 40 half-pages typed, {shown} frames \
+         presented for them and the 10 states (the rest replaced in the host's mailbox); the newest on its terminal \
+         {caught_up:.0} ms after the first key, {} B written",
+        t.written()
+    );
+    report("e2e_host_state_with_a_slow_client_busy_ms", busy, 200.0, 1.0);
+}
+
 /// The UI state over its socket (`tarae state`): a request to its answer, the frame it waits for included —
 /// straight over the socket, and as the `tarae state` command (its process start too). Medians of 30.
 #[test]

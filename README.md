@@ -55,8 +55,8 @@ macOS or Linux (WSL on Windows), with rustup and a C compiler. Claude features n
 ## Docs
 
 [Features](docs/features.md) · [Claude](docs/claude-integration.md) · [Threat model](docs/threat-model.md) ·
-[Web pages](docs/web.md) · [Configuration](docs/configuration.md) · [Languages](docs/languages.md) ·
-[Plugins](docs/plugins.md) · [Keymap](docs/reference/keymap.md) · [Architecture](docs/architecture.md) ·
+[Web pages](docs/web.md) · [A host and its interface](docs/remote.md) · [Configuration](docs/configuration.md) ·
+[Languages](docs/languages.md) · [Plugins](docs/plugins.md) · [Keymap](docs/reference/keymap.md) · [Architecture](docs/architecture.md) ·
 [Roadmap](docs/roadmap.md)
 
 ## License

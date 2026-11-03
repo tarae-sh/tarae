@@ -625,6 +625,158 @@ mod tests {
         assert!(ed.kept.len() <= KEPT + 1, "the ring kept {}", ed.kept.len());
     }
 
+    /// A press on an older frame's list row acts only while that row says the same now (decision E: a row's index is
+    /// no element's identity, its text stands in for one): a row of `:messages` that says another thing under the
+    /// same index — refused, said, the selection stays; a frame drawn since with the same rows there, taken.
+    #[test]
+    fn a_press_on_an_older_frames_list_row_counts_only_while_the_row_says_the_same() {
+        use crate::event::MouseKind as K;
+        use crate::pane::GroupKind;
+        let mut ed = late();
+        for i in 0..60 {
+            ed.recorded(crate::editor::ToastKind::Info, format!("message {i}"));
+        }
+        let ids = ed.message_ids();
+        ed.messages_open(Some(ids[40]));
+        frame(&mut ed);
+        ed.frame_presented(1);
+        let here = |ed: &Editor| ed.float_list_here(GroupKind::Messages);
+        let x = 50;
+        let rows = |ed: &Editor| -> Vec<(usize, usize)> {
+            (0..30)
+                .filter_map(|y| match ed.mouse_at(x, y) {
+                    crate::mouse::Under {
+                        surface: crate::mouse::Surface::Floatlist(_),
+                        part: crate::mouse::Part::Row(i),
+                        ..
+                    } => Some((y, i)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let (y, i) =
+            rows(&ed).into_iter().find(|&(_, i)| Some(ids[i]) != here(&ed)).expect("a row not selected");
+        let press = |seen, kind| Event::Input {
+            seen,
+            seq: 0,
+            event: Box::new(Event::Mouse(crate::event::Mouse {
+                kind,
+                x: x as u16,
+                y: y as u16,
+                alt: false,
+                ctrl: false,
+            })),
+        };
+        // (the row under the press says another thing, its index the same — a stand-in for any list's: `:messages`
+        // holds its view by id, so the oldest let go past `MESSAGES_KEPT` moves the index, refused by the part itself)
+        ed.messages[i].2 = "another message".into();
+        frame(&mut ed);
+        assert!(rows(&ed).contains(&(y, i)), "the same index under the press");
+        let was = here(&ed);
+        ed.handle_event(press(1, K::Down));
+        ed.handle_event(press(1, K::Up));
+        assert_eq!(here(&ed), was, "pressed on frame 1's row, another message there now: not taken");
+        let said = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+        assert!(said.contains("the screen moved under that press"), "{said}");
+        // (drawn twice since, the rows the same: a press on the older of the two lands on what's there)
+        frame(&mut ed);
+        let seen = ed.frames;
+        frame(&mut ed);
+        let ids = ed.message_ids();
+        let i = rows(&ed).into_iter().find(|&(at, _)| at == y).expect("a row under the press").1;
+        assert_ne!(Some(ids[i]), here(&ed), "not the one selected");
+        ed.handle_event(press(seen, K::Down));
+        assert_eq!(here(&ed), Some(ids[i]), "the same row's text on frame {seen} and now: taken");
+    }
+
+    /// A press on an older frame's card acts only while the front card is the one it drew (decision E: its id and
+    /// `rev`) — what it says changed since, a press on its way in is refused and said on it; the same card drawn again,
+    /// taken.
+    #[test]
+    fn a_press_on_an_older_frames_card_counts_only_while_its_rev_stands() {
+        let mut ed = late();
+        weighty(&mut ed);
+        frame(&mut ed);
+        ed.frame_presented(1);
+        frame(&mut ed);
+        let (row, x, _) = ed.screen.offer_way.expect("its way in on the card");
+        let press = |seen| Event::Input {
+            seen,
+            seq: 0,
+            event: Box::new(Event::Mouse(crate::event::Mouse {
+                kind: crate::event::MouseKind::Down,
+                x: x as u16,
+                y: row as u16,
+                alt: false,
+                ctrl: false,
+            })),
+        };
+        ed.handle_event(press(1));
+        assert!(ed.card_has_keys(), "the same card on frame 1 and frame 2: its way in taken");
+        key(&mut ed, 2, "esc");
+        assert!(!ed.card_has_keys(), "given back");
+        // (what it says changed: drawn again at its next rev)
+        ed.offers[0].rev += 1;
+        frame(&mut ed);
+        assert_eq!(ed.screen.offer_way.map(|w| (w.0, w.1)), Some((row, x)), "its way in where it was");
+        ed.handle_event(press(2));
+        assert!(!ed.card_has_keys(), "pressed on frame 2's card, another rev of it now: not taken");
+        let said = ed.offer_said_now().unwrap_or_default().to_string();
+        assert!(said.contains("a press came before this card was in sight"), "{said}");
+        ed.handle_event(press(ed.frames));
+        assert!(ed.card_has_keys(), "its frame presented: taken");
+    }
+
+    /// What the `kept` ring costs a frame (the remote plan's §8b): a 200×50 frame of code drawn 400 times with `j`/`k`
+    /// between, for an interface that presents late (each frame kept: its layout cloned, its bytes copied — then
+    /// presented, as an ack lets it go) and for the terminal (none kept); the difference of the medians, and what one
+    /// kept frame holds. Said for `cargo perf`.
+    #[test]
+    fn perf_kept_ring() {
+        if crate::test_results::unoptimized("interface::tests::perf_kept_ring") {
+            return;
+        }
+        let dir = crate::scratch::Scratch::new("perf-kept");
+        let path = dir.join("a.rs");
+        let text: String =
+            (0..2_000).map(|i| format!("fn f{i}() {{ let x = {i}; }} // line {i}\n")).collect();
+        std::fs::write(&path, &text).unwrap();
+        let (w, h) = (200u16, 50u16);
+        let run = |late: bool| {
+            let mut ed = Editor::new(crate::config::Config::default());
+            ed.interface.presents_late = late;
+            ed.open(&path).unwrap();
+            ed.goto_line(10);
+            let mut buf = Vec::with_capacity(1 << 16);
+            let mut frames = Vec::new();
+            for i in 0..400 {
+                ed.handle_event(Event::Key((if i % 2 == 0 { "j" } else { "k" }).parse().unwrap()));
+                buf.clear();
+                let t = std::time::Instant::now();
+                crate::term::render(&mut ed, &mut buf, w, h).unwrap();
+                frames.push(t.elapsed());
+                ed.frame_presented(ed.frames);
+            }
+            assert_eq!(ed.kept.is_empty(), !late, "kept only for an interface that presents late");
+            let bytes = ed.kept.back().map_or(0, |k| k.frame.0.len());
+            frames.sort();
+            (frames[frames.len() / 2], bytes)
+        };
+        // (each its best of 3 — the first run in a process also pays the clock ramping up)
+        let best = |late| (0..3).map(|_| run(late)).min().unwrap();
+        let (terminal, _) = best(false);
+        let (late, bytes) = best(true);
+        let us = |d: std::time::Duration| d.as_secs_f64() * 1e6;
+        let added = us(late) - us(terminal);
+        let said = format!(
+            "kept ring: a frame {:.1} µs kept, {:.1} µs not; one kept frame's bytes {bytes}\n",
+            us(late),
+            us(terminal)
+        );
+        let line = format!("PERF kept_ring_added_us {added:.1} budget=2000 noise=20\n");
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), format!("{said}{line}").as_bytes());
+    }
+
     /// A card read whole counts for a key once the frame it was whole in was presented — and for the frame being
     /// drawn, its own look, at once.
     #[test]

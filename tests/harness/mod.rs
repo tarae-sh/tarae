@@ -518,8 +518,18 @@ impl Term {
     /// `tarae attach --pid <host>` in a terminal of its own (`spawn`'s, `cols`×`rows`), ready once the host's first
     /// frame is on it; its `state` is the host's.
     pub fn attach(sb: &Sandbox, host: &Host, cols: u16, rows: u16) -> Term {
+        Term::attach_with(sb, host, cols, rows, None)
+    }
+
+    /// `attach` on a terminal that reads at `pace` (a slow interface: its client waits on its terminal, the host's
+    /// writer on the client).
+    pub fn attach_paced(sb: &Sandbox, host: &Host, cols: u16, rows: u16, pace: Pace) -> Term {
+        Term::attach_with(sb, host, cols, rows, Some(pace))
+    }
+
+    fn attach_with(sb: &Sandbox, host: &Host, cols: u16, rows: u16, pace: Option<Pace>) -> Term {
         let pid = host.pid().to_string();
-        let mut t = Term::spawn_unready(sb, &sb.work(), &["attach", "--pid", &pid], cols, rows, None);
+        let mut t = Term::spawn_unready(sb, &sb.work(), &["attach", "--pid", &pid], cols, rows, pace);
         t.asks = Some(host.pid());
         let deadline = Instant::now() + t.timeout;
         while t.poll_for(POLL, |s| s.status().contains("● ")).is_none() {
