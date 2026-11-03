@@ -779,6 +779,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         note_more: Default::default(),
         thought_card: Default::default(),
         follow_at_foot: Default::default(),
+        follow_foot: Default::default(),
         follow_room: Default::default(),
         ask_card: Default::default(),
         toast_card: Default::default(),
@@ -15289,6 +15290,9 @@ fn draw_follow_card(
     // drawn beside the column only in a replay — #295); the replay's pair once there are stops (in the code — the chat's
     // input would take them as letters)
     let stops = c.follow.replay.latest() > 0 && !editor.workspace.is_at(At::Chat);
+    // (paused by you: the key that follows again first — where it's said, never a toast, #308)
+    let again =
+        crate::follow::again_key_here(editor).filter(|_| paused && !editor.follow_focus && !replaying);
     let keys: &[(&str, &str)] = match () {
         // (with the keys, its sizes first — #267, said only then; `follow_focus`, not `follow_in_hand`: this frame is the
         // one drawing it, the last one's rect may be gone)
@@ -15298,6 +15302,8 @@ fn draw_follow_card(
         _ if stops => &[("space L", "read"), ("[r", "replay")],
         _ => &[("space L", "read")],
     };
+    let keys: Vec<(&str, &str)> =
+        again.as_deref().map(|k| (k, "follow")).into_iter().chain(keys.iter().copied()).collect();
     // The chat out of sight, its part above the turn: the question, the plan's step (the title is the frame's line); the
     // chat in sight, the question only while the turn has nothing of its own yet — never a frame with nothing in it
     // (#266: a press on the card opened the chat at a turn's start and left this card empty)
@@ -15323,24 +15329,34 @@ fn draw_follow_card(
     let width = inner + 4;
     let x0 = (px + pw).saturating_sub(width + 1);
     // The lines being read stay readable: their rows, where their text reaches into the card's columns
-    let read: Vec<usize> = match (pane, gaze.filter(|g| g.path.is_some() && g.path == *doc.path)) {
-        (Some((_, _, gutter, view)), Some(g)) => g
-            .lines
-            .clone()
-            .map(|lines| {
-                view.iter()
-                    .enumerate()
-                    .filter(|(_, o)| lines.contains(&o.0))
-                    .filter(|(_, o)| {
-                        let text = doc.text.line(o.0.min(mv::last_line(&doc.text))).to_string();
-                        let width = text.trim_end().replace('\t', "    ").width();
-                        px + gutter + o.2 + width.saturating_sub(o.1) > x0
-                    })
-                    .map(|(i, _)| py + i)
-                    .collect()
-            })
-            .unwrap_or_default(),
+    let named = gaze.filter(|g| g.path.is_some() && g.path == *doc.path).and_then(|g| g.lines.clone());
+    let reaches = |gutter: usize, o: &(usize, usize, usize)| {
+        let text = doc.text.line(o.0.min(mv::last_line(&doc.text))).to_string();
+        let width = text.trim_end().replace('\t', "    ").width();
+        px + gutter + o.2 + width.saturating_sub(o.1) > x0
+    };
+    let read: Vec<usize> = match (pane, &named) {
+        (Some((_, _, gutter, view)), Some(lines)) => view
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| lines.contains(&o.0) && reaches(*gutter, &(o.0, o.1, o.2)))
+            .map(|(i, _)| py + i)
+            .collect(),
         _ => Vec::new(),
+    };
+    // (a replay's stop, read at your pace: its lines kept whole, as a card about lines keeps them — `float_geom_around`
+    // — and every row whose code reaches the card's columns, the card whole beside them where it fits; else whole off
+    // its stop's lines alone — its words outrank the ends of lines it isn't about; then shorter — #312)
+    let (stop, clear): (Vec<usize>, Vec<usize>) = match (pane, replaying) {
+        (Some((_, _, gutter, view)), true) => {
+            let named = |o: &(usize, usize, usize)| named.as_ref().is_some_and(|l| l.contains(&o.0));
+            let rows = |keep: &dyn Fn(&(usize, usize, usize)) -> bool| -> Vec<usize> {
+                let laid = view.iter().map(|o| (o.0, o.1, o.2));
+                laid.enumerate().filter(|(_, o)| keep(o)).map(|(i, _)| py + i).collect()
+            };
+            (rows(&named), rows(&|o| named(o) || reaches(*gutter, o)))
+        }
+        _ => (Vec::new(), Vec::new()),
     };
     // Where: the bottom right — the top right if that's taken, else the biggest gap between (an edit
     // review's changes); none free of the lines read and the review's changes: free of the change in hand,
@@ -15361,8 +15377,8 @@ fn draw_follow_card(
     // (its foot: on the cards standing at the code's foot — the asks' stack — as they stand on its row of air; so a card
     // coming there lifts it by the stack's rows, never sends it to the top, #299)
     let floor = cards.iter().rev().fold(end, |f, b| if b.0 < f && b.1 >= f { b.0 } else { f });
-    // (first row, end, anchored at its end)
-    let place = |keep: &[usize]| -> Option<(usize, usize, bool)> {
+    // (first row, end, anchored at its end — a gap of `min_h` rows at least)
+    let place = |keep: &[usize], min_h: usize| -> Option<(usize, usize, bool)> {
         // Rows other cards (and what's kept in sight) hold in the card's columns
         let mut blocks: Vec<(usize, usize)> = cards
             .iter()
@@ -15397,10 +15413,24 @@ fn draw_follow_card(
         editor.screen.review_change.get().map_or(Vec::new(), |(a, b)| (a..=b).collect());
     current.extend(editor.screen.writing_head);
     let and = |a: &[usize], b: &[usize]| -> Vec<usize> { a.iter().chain(b).copied().collect() };
-    let Some((gap_top, gap_end, at_bottom)) = place(&and(&read, &changes))
-        .or_else(|| place(&and(&read, &current)))
-        .or_else(|| place(&read))
-        .or_else(|| place(&[]))
+    // (its whole height: yours where you set it, else `BODY` up to half the pane; and in replay the least that keeps
+    // the stop in hand whole — its row and the words written right after it, up to the next stop)
+    let whole = match editor.sizes.follow_h {
+        Some(h) => (h as usize).max(min_h),
+        None => fixed + BODY.min((ph / 2).saturating_sub(fixed)).max(1),
+    };
+    let kept = (fixed + turn_rows_kept(&turn_rows, &knots, hand_row)).clamp(min_h, whole);
+    let replay =
+        |keep: &[usize], h: usize| (!keep.is_empty()).then(|| place(&and(keep, &changes), h)).flatten();
+    // (the stop in hand whole: clear of its lines and the code's ends, whole where that fits, else as short as keeps
+    // it; only where none does, a whole card over other lines' ends, clear of its stop's lines)
+    let Some((gap_top, gap_end, at_bottom)) = replay(&clear, whole)
+        .or_else(|| replay(&clear, kept))
+        .or_else(|| replay(&stop, whole))
+        .or_else(|| place(&and(&read, &changes), min_h))
+        .or_else(|| place(&and(&read, &current), min_h))
+        .or_else(|| place(&read, min_h))
+        .or_else(|| place(&[], min_h))
     else {
         return Ok(None);
     };
@@ -15423,7 +15453,10 @@ fn draw_follow_card(
     rows.extend(std::iter::repeat_n((Vec::new(), None), fill));
     rows.extend(body);
     let h = rows.len() + 2 * pad;
-    let y0 = if at_bottom { gap_end - h } else { gap_top };
+    // (its top never moves as words come — a floating pane's top stays as it changes, growing down, #310: at the foot it
+    // stands where its whole height would, on the asks or its row of air, and grows down to there — never an empty frame)
+    let y0 = if at_bottom { gap_end - (fixed + body_max).max(h) } else { gap_top };
+    editor.screen.follow_foot.set(if at_bottom { y0 + (fixed + body_max).max(h) } else { y0 + h });
     let rect = (x0, y0, width, h);
     editor.screen.thought_card.set(Some(rect));
     editor.screen.follow_at_foot.set(at_bottom);
@@ -15468,7 +15501,7 @@ fn draw_follow_card(
     let hovered = c.follow.hover.as_deref().and_then(|h| shown_marks.iter().find(|m| m.call == h));
     let bottom = match hovered {
         Some(m) => vec![(m.said.clone(), dim)],
-        None => bottom_keys(keys, width.saturating_sub(6), key, faint, frame_line(ui, card)),
+        None => bottom_keys(&keys, width.saturating_sub(6), key, faint, frame_line(ui, card)),
     };
     use crate::wordspot::Press;
     let on = crate::mouse::Surface::FollowCard;
@@ -21062,6 +21095,17 @@ fn turn_window(
         }
         _ => (rows, hand),
     }
+}
+
+/// The least `max` at which `turn_window` in replay keeps the knot in hand whole with the words written right after
+/// it, up to the next knot (blank rows before that one aside): its window ends `(max - 1) / 2` rows past the knot in
+/// hand, and takes 3 rows at least. No knot in hand: every row.
+fn turn_rows_kept(rows: &[CardRow], knots: &[bool], hand: Option<usize>) -> usize {
+    let n = rows.len();
+    let Some(h) = hand.filter(|&h| h < n) else { return n.max(1) };
+    let next = (h + 1..n).find(|&i| knots.get(i).copied().unwrap_or(false)).unwrap_or(n);
+    let last = (h + 1..next).rev().find(|&i| !blank(&rows[i].0)).unwrap_or(h);
+    (2 * (last - h) + 1).max(3).min(n.max(1))
 }
 
 fn blank(row: &[crate::markdown::Span]) -> bool {
@@ -28102,7 +28146,10 @@ mod tests {
                     }
                     false => {
                         let card = ed.screen.thought_card.get().expect("the follow card");
-                        assert_eq!(bottom(card), floor, "{at}: the follow card\n{s}");
+                        // (its whole height's foot: it grows down to there, its top kept — #310)
+                        let foot = ed.screen.follow_foot.get();
+                        assert_eq!(foot - 1, floor, "{at}: the follow card\n{s}");
+                        assert!(bottom(card) <= floor, "{at}: the follow card within it\n{s}");
                         // (the state lists it as a floating pane that takes no keys, where the frame drew it)
                         let pane = pane.unwrap_or_else(|| panic!("{at}: the follow card's pane"));
                         assert_eq!(
@@ -28198,11 +28245,13 @@ mod tests {
             );
             assert!(ed.screen.follow_at_foot.get(), "{at}: no jump to the top\n{s}");
             if overlaps((card.0, 0, card.2, h as usize), ask) {
+                // (the foot of its whole height: it grows down to there, its top kept — #310)
                 assert_eq!(
-                    card.1 + card.3 + 1,
+                    ed.screen.follow_foot.get() + 1,
                     ask.1,
                     "{at}: its foot right over the ask, a row of air\n{s}"
                 );
+                assert!(card.1 + card.3 < ask.1, "{at}: above the ask\n{s}");
             }
         }
     }
@@ -28806,6 +28855,187 @@ mod tests {
         ed.handle_event(Event::Hover(0, 0));
         let (bottom, _) = card(&mut ed, 160);
         assert!(bottom.starts_with("╰─ space L read · [r replay ─"), "the keys back: {bottom:?}");
+        // Paused by you: the key that follows again first — where taking over is said, never a toast (#308)
+        ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
+        let (bottom, _) = card(&mut ed, 160);
+        assert!(bottom.starts_with("╰─ space F follow · space L read · [r replay ─"), "{bottom:?}");
+    }
+
+    /// #310: the follow card's top never moves as the turn's words come (a floating pane's top stays as it changes): at
+    /// the pane's foot it stands where its whole height would and grows down to there.
+    #[test]
+    fn the_follow_cards_top_stays_as_the_turn_grows() {
+        use crate::chat::Role;
+        let mut ed = threaded_turn();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let rest: Vec<crate::chat::Msg> = c.msgs.drain(2..).filter(|m| m.role != Role::Note).collect();
+        (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Thinking);
+        ed.workspace.viewer.at = At::Code;
+        let mut seen = Vec::new();
+        for m in rest {
+            screen_at(&mut ed, 120);
+            seen.push(ed.screen.thought_card.get().expect("the card"));
+            ed.workspace.claude.chat.as_mut().unwrap().msgs.push(m);
+        }
+        screen_at(&mut ed, 120);
+        seen.push(ed.screen.thought_card.get().expect("the card"));
+        assert!(seen.windows(2).all(|w| w[0].1 == w[1].1), "its top where it was: {seen:?}");
+        assert!(seen[0].3 < seen[seen.len() - 1].3, "it grew: {seen:?}");
+        assert!(seen.iter().all(|r| r.1 + r.3 <= 38), "above the status line's row of air: {seen:?}");
+    }
+
+    /// #312: stepping through the replay, the follow card keeps off the lines its stop names, as a card about lines
+    /// does (`float_geom_around`) — and off every line whose code reaches its columns, where it fits whole beside them:
+    /// none of their ends hidden.
+    #[test]
+    fn the_replays_follow_card_keeps_off_its_stop_and_the_codes_ends() {
+        let dir = crate::scratch::Scratch::new("follow-replay-place");
+        let file = dir.join("long.rs");
+        let long = |n: usize| format!("let long_{n} = \"{}\"; // END{n}", "x".repeat(76));
+        let text: String = (1..=40)
+            .map(|n| match n {
+                3..=7 | 28..=36 => long(n),
+                n => format!("let short_{n} = {n};"),
+            })
+            .map(|l| l + "\n")
+            .collect();
+        std::fs::write(&file, text).unwrap();
+        let mut ed = threaded_turn();
+        ed.open(&file).unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.hidden, c.follow.on) = (true, true);
+        let look = crate::chat::Look {
+            verb: "read",
+            what: "long.rs".into(),
+            pattern: false,
+            range: "3-7".into(),
+            link: None,
+        };
+        c.follow.replaying = Some(crate::follow::Gaze::new(look, Some(file.clone()), Some(2..7)));
+        ed.workspace.viewer.at = At::Code;
+        let vt = screen_at(&mut ed, 120);
+        let (_, y, _, h) = ed.screen.thought_card.get().expect("the card");
+        let screen = vt.screen().contents();
+        let hidden: Vec<usize> =
+            (3..=7).chain(28..=36).filter(|n| !screen.contains(&format!("END{n}"))).collect();
+        assert!(hidden.is_empty(), "the card at rows {y}..{} hides the ends of lines {hidden:?}", y + h);
+        // No room clear of every long line (one every other line, the stop's own short at the foot): off the stop's
+        // lines still, whatever it covers elsewhere
+        let text: String = (1..=40)
+            .map(|n| match n {
+                28..=36 => format!("let short_{n} = {n};"),
+                n if n % 2 == 1 => long(n),
+                n => format!("let short_{n} = {n};"),
+            })
+            .map(|l| l + "\n")
+            .collect();
+        std::fs::write(&file, text).unwrap();
+        crate::typed::execute(&mut ed, "reload").unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        if let Some(g) = c.follow.replaying.as_mut() {
+            g.lines = Some(27..36);
+        }
+        screen_at(&mut ed, 120);
+        let (_, y, _, h) = ed.screen.thought_card.get().expect("the card");
+        // (the code's rows from the screen's second: line n on row n)
+        assert!(
+            (28..=36).all(|r| !(y..y + h).contains(&r)),
+            "the card at rows {y}..{} over lines 28-36",
+            y + h
+        );
+    }
+
+    /// #312, V4's 5/5: where only a few rows at the top are clear of the code's ends, the replay's card at its last
+    /// stop stands whole off its stop's lines, over the ends of lines it isn't about — never cut to those few rows, its
+    /// answer gone.
+    #[test]
+    fn the_replays_follow_card_keeps_its_words_over_other_lines_ends() {
+        let (vt, card, (y, h)) =
+            replayed_at_stop("follow-replay-words", |n| matches!(n, 1..=4 | 10..=11), "x1", 10);
+        assert!(!card.is_empty(), "{}", vt.screen().contents());
+        for words in ["run    cargo test", "Done now."] {
+            assert!(card.contains(words), "{words:?} not on the card at rows {y}..{}:\n{card}", y + h);
+        }
+    }
+
+    /// #312, V4's 4/5: where a card shorter than its whole height keeps the stop in hand whole — its row and the words
+    /// written right after it — it stands there clear of its stop's lines and the code's ends, fewer of the earlier
+    /// words on it, rather than whole over other lines' ends.
+    #[test]
+    fn the_replays_follow_card_keeps_its_stop_whole_off_the_codes_ends() {
+        let (vt, card, (y, h)) =
+            replayed_at_stop("follow-replay-least", |n| matches!(n, 1..=6 | 20..=21), "r1", 20);
+        let screen = vt.screen().contents();
+        // (the long lines in sight, their ends whole)
+        let hidden: Vec<usize> = (10..=40)
+            .filter(|n| screen.contains(&format!("long_{n} ")) && !screen.contains(&format!("END{n}")))
+            .collect();
+        assert!(
+            hidden.is_empty(),
+            "the card at rows {y}..{} hides the ends of lines {hidden:?}:\n{card}",
+            y + h
+        );
+        for words in ["read   src/main.rs", "Between the stops."] {
+            assert!(card.contains(words), "{words:?} not on the card at rows {y}..{}:\n{card}", y + h);
+        }
+    }
+
+    /// `threaded_turn` replayed at its stop `call` (`r1` the read, `e1` the edit, `x1` the run), about lines `stop` and
+    /// `stop + 1` of a 40-line file whose lines are long (past the card's columns, `END<n>` at their ends) but where
+    /// `short` says: the screen at 120×40, the card's rows, its (top, height) — its stop's lines checked in sight and
+    /// clear of it.
+    fn replayed_at_stop(
+        name: &str,
+        short: impl Fn(usize) -> bool,
+        call: &str,
+        stop: usize,
+    ) -> (vt100::Parser, String, (usize, usize)) {
+        let dir = crate::scratch::Scratch::new(name);
+        let file = dir.join("long.rs");
+        let text: String = (1..=40)
+            .map(|n| match short(n) {
+                true => format!("let short_{n} = {n};"),
+                false => format!("let long_{n} = \"{}\"; // END{n}", "x".repeat(76)),
+            })
+            .map(|l| l + "\n")
+            .collect();
+        std::fs::write(&file, text).unwrap();
+        let mut ed = threaded_turn();
+        ed.open(&file).unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.hidden, c.follow.on) = (true, true);
+        // (the stop `call` about lines `stop`-`stop + 1`)
+        c.follow.replay.begin();
+        for m in &c.msgs {
+            let Some(look) = m.look.clone() else { continue };
+            let this = m.call == call;
+            c.follow.replay.add(crate::replay::Stop {
+                call: m.call.clone(),
+                look,
+                path: this.then(|| file.clone()),
+                lines: this.then_some(stop - 1..stop + 1),
+                hunks: Vec::new(),
+                why: String::new(),
+                page: None,
+                map: Default::default(),
+            });
+        }
+        ed.workspace.viewer.at = At::Code;
+        assert!(crate::follow::replay_stop(&mut ed, call));
+        let vt = screen_at(&mut ed, 120);
+        let s = vt.screen();
+        let (x, y, w, h) = ed.screen.thought_card.get().expect("the card");
+        let row = |r: usize| s.contents_between(r as u16, x as u16, r as u16, (x + w) as u16);
+        let card = (y..y + h).map(row).collect::<Vec<_>>().join("\n");
+        let line = |r: u16| s.contents_between(r, 0, r, 120);
+        let names = [format!("short_{stop} "), format!("short_{} ", stop + 1)];
+        let at: Vec<u16> = (0..40).filter(|&r| names.iter().any(|l| line(r).contains(l))).collect();
+        assert_eq!(at.len(), 2, "its stop's lines {stop}-{} in sight:\n{}", stop + 1, s.contents());
+        assert!(
+            at.iter().all(|&r| !(y..y + h).contains(&(r as usize))),
+            "the card over its stop's lines:\n{card}"
+        );
+        (vt, card, (y, h))
     }
 
     /// The code's cursor under the follow card in replay (`[r`) is hidden — never drawn inside the card — and

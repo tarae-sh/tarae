@@ -518,8 +518,9 @@ pub fn led_in(ed: &Editor, id: crate::split::PaneId) -> Option<usize> {
     (doc_id == doc.id && !doc.loading).then(|| line.min(crate::movement::last_line(&doc.text)))
 }
 
-/// A key of yours that moves the view (`C-e`/`C-y`, the pages, `z…`, the wheel) while follow holds it: follow pauses,
-/// said, and the view comes back to your cursor first — the key acts from there, at your cursor.
+/// A key of yours that moves the view (`C-e`/`C-y`, the pages, `z…`, the wheel) while follow holds it: follow pauses
+/// and the view comes back to your cursor first — the key acts from there, at your cursor. No toast: follow's state is
+/// the status line's word and the follow card's head (`paused`), its way back that card's bottom line (#308).
 pub fn your_view(ed: &mut Editor) {
     if view_line(ed).is_none() {
         return;
@@ -529,13 +530,10 @@ pub fn your_view(ed: &mut Editor) {
     }
     let line = ed.cursor_line();
     ed.show_range(line..line + 1);
-    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-        took_over(ed);
-    }
 }
 
-/// A press that opens a line on the note's card at the view follow holds: follow pauses, said, the view staying — the
-/// card you pressed is what's in sight, wherever your cursor is.
+/// A press that opens a line on the note's card at the view follow holds: follow pauses, the view staying — the card
+/// you pressed is what's in sight, wherever your cursor is.
 pub fn pause_at_card(ed: &mut Editor) {
     if view_line(ed).is_none() {
         return;
@@ -543,27 +541,20 @@ pub fn pause_at_card(ed: &mut Editor) {
     if let Some(f) = follow(ed) {
         f.paused = true;
     }
-    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-        took_over(ed);
-    }
 }
 
 /// The wheel over the pane follow leads: the focused one's view back at your cursor first (`your_view`), one aside
-/// scrolled from where Claude was — either way follow pauses while it leads, said with the key that follows again where
-/// the keys are (the wheel never moves them).
+/// scrolled from where Claude was — either way follow pauses while it leads (the wheel never moves the keys).
 pub fn wheel(ed: &mut Editor, focused: bool) {
     if focused {
         your_view(ed);
     }
     let Some(f) = follow(ed).filter(|f| f.active()) else { return };
     f.paused = true;
-    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-        took_over(ed);
-    }
 }
 
 /// A press of yours that put another file in code pane `p` (a buffer's name on its top line — `wordspot::Press::Buffer`):
-/// follow leading that pane pauses, said, as a key of yours that moves its view (`your_view`) — never Claude's file
+/// follow leading that pane pauses, as a key of yours that moves its view (`your_view`) — never Claude's file
 /// put back over the one you chose (#215).
 pub fn shown_by_you(ed: &mut Editor, p: crate::split::PaneId) {
     if pane(ed) != p {
@@ -571,27 +562,23 @@ pub fn shown_by_you(ed: &mut Editor, p: crate::split::PaneId) {
     }
     let Some(f) = follow(ed).filter(|f| f.active()) else { return };
     f.paused = true;
-    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-        took_over(ed);
-    }
 }
 
-/// Follow paused by you, said with the key that follows Claude again where your keys are — the chat's `C-f` (the code's
-/// pages down), from the code `space F` (`follow_next`) while it comes back to this session, else the chat's named so.
-fn took_over(ed: &mut Editor) {
-    let key = again_key(ed);
-    ed.set_status(format!("you took over — {key} follows Claude again"));
-}
-
-/// The key that follows this session's Claude where the keys are now (`took_over`).
-pub(crate) fn again_key(ed: &Editor) -> String {
-    let chat = ed.key_said("C-f");
+/// The key that follows this session's Claude again from where your keys are, when one does — the chat's `C-f` (the
+/// code's pages down), from the code `space F` (`follow_next`) while it comes back to this session: the follow card's
+/// bottom line while follow is paused (#308: taking over is said by the status line and the card's `paused`, no toast).
+pub(crate) fn again_key_here(ed: &Editor) -> Option<String> {
     let code = ed.keymaps.bindings().get("follow_next").cloned();
     match code {
-        _ if ed.workspace.chat_has_keys() => chat,
-        Some(k) if next_session(ed) == Some(ed.workspace.id) => k,
-        _ => format!("{chat} in the chat"),
+        _ if ed.workspace.chat_has_keys() => Some(ed.key_said("C-f")),
+        Some(k) if next_session(ed) == Some(ed.workspace.id) => Some(k),
+        _ => None,
     }
+}
+
+/// The key that follows this session's Claude where the keys are now, else the chat's named so.
+pub(crate) fn again_key(ed: &Editor) -> String {
+    again_key_here(ed).unwrap_or_else(|| format!("{} in the chat", ed.key_said("C-f")))
 }
 
 /// Nothing of yours under way in the code: normal mode, no keys pending (a count, `g`…, `f`…) — follow moves the
@@ -1598,7 +1585,6 @@ pub fn watch(ed: &mut Editor) {
         f.seen_text = Some(text);
     }
     let input = std::mem::replace(&mut f.seen_input, input_seq) != input_seq;
-    let was = f.active();
     // (the text in front changed since: by a key of yours in the code, it's you editing there)
     let seen = f.seen_text.replace(text);
     let edited = in_code && seen.is_some_and(|s| s.0 == text.0 && s.1 != text.1);
@@ -1613,14 +1599,10 @@ pub fn watch(ed: &mut Editor) {
     if input && f.active() && !aside && (under_way || moved || edited) {
         f.paused = true;
     }
-    let paused = was && f.paused;
+    // (said where follow's state is: the status line's `● follow` goes, the card's head says `paused` — no toast, #308)
     if input && f.paused {
         f.last_input = Some(crate::clock::now());
         arm_resume(ed);
-    }
-    // Said: the status line's `● follow` goes, and why
-    if paused && ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-        took_over(ed);
     }
 }
 
@@ -1708,11 +1690,7 @@ fn resume_due(ed: &mut Editor) {
     f.replaying = None;
     f.replay.at = None;
     let target = f.gaze.as_ref().and_then(|g| Some((g.path.clone()?, g.lines.clone().unwrap_or(0..1))));
-    // (the chat's `C-f` stops it; in the code that key pages down — a key of yours there takes over, `watch`)
-    ed.set_status(match ed.workspace.chat_has_keys() {
-        true => format!("following Claude again — {} stops it", ed.key_said("C-f")),
-        false => "following Claude again — move in the editor to take over".into(),
-    });
+    // (no toast: the status line's `● follow` is back — #308)
     if let Some((path, lines)) = target {
         go_range(ed, &path, lines);
     }
@@ -2028,20 +2006,16 @@ pub fn settle(ed: &mut Editor) {
 }
 
 /// `C-f`: off → on · paused → following again · on → off — in the code pane last focused: on in another pane, follow
-/// moves there (panes P3 step 8). Turning it on goes to the current gaze.
+/// moves there (panes P3 step 8). Turning it on goes to the current gaze. No toast: follow's state is the status line's
+/// word, the chat's top line and the follow card's head (#308).
 pub fn toggle(ed: &mut Editor) {
     let aside = aside(ed).is_some();
     let Some(f) = follow(ed) else { return };
-    if f.active() && aside {
-        resume(ed);
-        return ed.set_status("following in this pane — C-f again stops it");
-    }
-    if f.active() {
+    if f.active() && !aside {
         f.on = false;
-        return ed.set_status("follow off");
+        return;
     }
     resume(ed);
-    ed.set_status("following Claude — move in the editor to take over");
 }
 
 /// Code panes `gone` closed (`C-w q`, `C-w o`): the one follow leads among them ends it, said — `C-f` follows in
@@ -2070,11 +2044,12 @@ fn resume(ed: &mut Editor) {
     f.pane = Some(focus);
     // (a stop taken aside is in the pane follow leads now: live again as anywhere — the next move ends its showing)
     f.replay_aside = false;
-    let gaze = f.gaze.as_ref().and_then(|g| Some((g.path.clone()?, g.lines.as_ref().map_or(0, |l| l.start))));
+    // (what it reads shown as follow showed it: the range placed whole, never its first line alone at the foot — #309)
+    let gaze = f.gaze.as_ref().and_then(|g| Some((g.path.clone()?, g.lines.clone().unwrap_or(0..1))));
     // (an edit being written is where Claude is now: there first — a pane C-f took follows it at once)
-    let target = crate::writing::writing_now(ed).map(|(p, l)| (p, l.start)).or(gaze);
-    if let Some((path, line)) = target {
-        go(ed, &path, line);
+    let target = crate::writing::writing_now(ed).map(|(p, l)| (p, l.start..l.start + 1)).or(gaze);
+    if let Some((path, lines)) = target {
+        go_range(ed, &path, lines);
     }
     play(ed);
 }
@@ -2096,8 +2071,13 @@ pub fn follow_session(ed: &mut Editor, id: crate::event::WorkspaceId) {
     if ed.workspace.claude.chat.is_none() {
         return ed.set_status(format!("{name} has no Claude to follow"));
     }
+    // (no toast: the status line's `● follow` and the chip after it say whom — #308; following already, nothing moves:
+    // said, as `space F`'s no-op is)
+    let already = follow(ed).is_some_and(|f| f.active());
     resume(ed);
-    ed.set_status(format!("following {name} — move in the editor to take over"));
+    if already {
+        ed.set_status(format!("already following {name}"));
+    }
 }
 
 /// `space F`: follow the next session at work after the one in front (Zed's "follow next collaborator") — the one in
@@ -2113,10 +2093,7 @@ pub fn follow_next(ed: &mut Editor) {
             ed.set_status(format!("already following {} — no other session is at work", ed.workspace.label()))
         }
         // (a turn under way but not working — waiting on you, stuck, queued: that turn followed now)
-        None if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) => {
-            resume(ed);
-            ed.set_status(format!("following {}", ed.workspace.label()));
-        }
+        None if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) => resume(ed),
         None => {
             // (nothing runs: on, the view left where it is — the next turn's first look moves it, never the last
             // turn's gaze nor its walk-through)

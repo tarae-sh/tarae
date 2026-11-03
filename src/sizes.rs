@@ -661,7 +661,11 @@ impl crate::editor::Editor {
                     self.sizes.follow_w = Some(w as u16);
                 }
                 if rows {
-                    let h = if foot { (cy + ch).saturating_sub(y) } else { (y + 1).saturating_sub(cy) };
+                    // (at the foot, from where its whole height ends: it grows down to there, #310)
+                    let h = match foot {
+                        true => s.follow_foot.get().max(cy + ch).saturating_sub(y),
+                        false => (y + 1).saturating_sub(cy),
+                    };
                     self.sizes.follow_h = Some(h.clamp(FOLLOW_MIN_H, max_h.max(FOLLOW_MIN_H)) as u16);
                 }
             }
@@ -714,7 +718,12 @@ impl crate::editor::Editor {
         if !self.follow_in_hand() {
             return false;
         }
-        let Some((_, _, w, h)) = self.screen.thought_card.get() else { return false };
+        let Some((_, y, w, h)) = self.screen.thought_card.get() else { return false };
+        // (at the foot, its whole height: it grows down to there, #310)
+        let h = match self.screen.follow_at_foot.get() {
+            true => self.screen.follow_foot.get().max(y + h) - y,
+            false => h,
+        };
         let (max_w, max_h) = self.screen.follow_room.get();
         let step = |kept: Option<u16>, shown: usize, n: usize, (min, max): (usize, usize)| {
             let from = kept.map_or(shown, |k| (k as usize).min(max));

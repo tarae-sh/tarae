@@ -310,7 +310,7 @@ fn space_f_follows_the_next_session_at_work() {
     press(&mut ed, "j");
     assert_eq!((ed.workspace.id, ed.cursor_line()), (crate::event::WorkspaceId::HOME, 1));
     assert_eq!(followed(&ed), None);
-    assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "said");
+    assert!(!ed.toasts.iter().any(|t| t.text.contains("you took over")), "no toast: the status line says it");
     let r = rows(&frame(&mut ed, 100));
     assert!(r.last().unwrap().contains("● normal"), "{}", r.last().unwrap());
     // Again: followed again (the only one at work)

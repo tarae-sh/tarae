@@ -660,13 +660,16 @@ fn the_follow_cards_edges_size_it() {
     );
     assert_eq!(ed.sizes.follow_w, Some(w2 as u16));
     assert!(ed.toasts.iter().any(|t| t.text.starts_with("follow card ")), "said");
-    // (its top line: the height — the blank rows above the newest)
+    // (its top line: the height — the blank rows above the newest; from where its whole height ends, as it grows down
+    // to there with its top kept, #310)
+    let foot = ed.screen.follow_foot.get();
+    assert!(foot >= y2 + h2, "its whole height's foot {foot} at or below its drawn one {}", y2 + h2);
     mouse(&mut ed, MouseKind::Down, (x2 + 1, y2));
     mouse(&mut ed, MouseKind::Drag, (x2 + 1, y2 - 4));
     mouse(&mut ed, MouseKind::Up, (x2 + 1, y2 - 4));
     frame(&mut ed);
     let (x3, y3, w3, h3) = card(&ed);
-    assert_eq!((x3, w3, y3 + h3, h3), (x2, w2, y2 + h2, h2 + 4), "taller upward");
+    assert_eq!((x3, w3, y3, y3 + h3), (x2, w2, y2 - 4, foot), "taller upward, its top where you let go");
     assert_eq!(ed.sizes.follow_h, Some(h3 as u16));
     // (wider than the pane: as wide as it goes, the size you set kept)
     ed.sizes.follow_w = Some(500);

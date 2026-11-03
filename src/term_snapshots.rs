@@ -3620,9 +3620,10 @@ fn follow_is_one_card_in_one_place() {
         s.frame();
         let card = s.ed.screen.thought_card.get().expect("the card shows");
         assert_eq!(s.ed.screen.chat_mini.get(), Some(card), "the chat out of sight: this card stands for it");
-        card
+        // (as tall as it grows to: its top kept, it grows down to its whole height's foot — #310)
+        (card.0, card.1, card.2, s.ed.screen.follow_foot.get() - card.1)
     };
-    // (its corner — the card grows with the words, up from the bottom)
+    // (its corner — where its whole height ends)
     let corner = |r: (usize, usize, usize, usize)| (r.0 + r.2, r.1 + r.3);
     let first = gaze(&mut s, 1..5);
     let pane = s.ed.screen.panes[0].1;
@@ -3681,7 +3682,10 @@ fn the_follow_card_stands_in_its_split_panes_rows() {
         );
         // Read off screen: at the pane's foot, on its row of air
         let (card, vt) = gaze(&mut s, 70..72);
-        assert_eq!(card.1 + card.3, rect.y + rect.h - 1, "{which}: the foot, {card:?} in {rect:?}");
+        // (the foot of its whole height: it grows down to there, its top kept — #310)
+        let foot = s.ed.screen.follow_foot.get();
+        assert_eq!(foot, rect.y + rect.h - 1, "{which}: the foot, {card:?} in {rect:?}");
+        assert!(card.1 + card.3 <= foot, "{which}: {card:?} within it");
         // (the pane's rows of text, as drawn: where its lines are on screen — its first row and each line's rows)
         let rows_of = |vt: &vt100::Parser, line: usize| -> Vec<usize> {
             let label = format!("let line_{:02} ", line + 1);

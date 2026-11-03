@@ -694,6 +694,9 @@ pub struct Screen {
     /// The follow card stands at the foot of its gap this frame (its top line the edge that sizes its height, #267),
     /// else at its top (its bottom line that edge).
     pub follow_at_foot: std::cell::Cell<bool>,
+    /// At the foot, the row its whole height ends on (#310: it grows down to there, its top never moving) — what a drag
+    /// of its top line sizes it from.
+    pub follow_foot: std::cell::Cell<usize>,
     /// How big the follow card could be this frame (its width and height at most, in the pane and the gap it stands
     /// in): what a drag of its edges or `C-w < > - +` sizes it within (#267).
     pub follow_room: std::cell::Cell<(usize, usize)>,
@@ -8327,14 +8330,8 @@ mod tests {
             (Some(util.as_path()), 0),
             "back where Claude is — its next read is still held"
         );
-        // (said where the keys are — the code's: its `C-f` pages down, a key of yours there takes over)
-        assert!(
-            ed.status
-                .as_ref()
-                .is_some_and(|(m, _)| m == "following Claude again — move in the editor to take over"),
-            "{:?}",
-            ed.status
-        );
+        // (no toast: the status line's `● follow` says it — #308)
+        assert!(ed.status.as_ref().is_none_or(|(m, _)| !m.contains("following")), "{:?}", ed.status);
         std::fs::write(&go, "").unwrap();
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         assert_eq!(ed.doc().path.as_deref(), Some(lib.as_path()), "and on with it");
@@ -8611,8 +8608,8 @@ mod tests {
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.on, "off before");
         feed(&mut ed, "<space>F");
         let said: Vec<_> = ed.toasts.iter().map(|t| t.text.clone()).collect();
-        assert!(said.iter().any(|t| t == "following main"), "said: {said:?}");
-        assert!(!said.iter().any(|t| t.contains("next turn")), "not its next turn: {said:?}");
+        // (no toast: the status line's `● follow` says it — #308)
+        assert!(!said.iter().any(|t| t.contains("following")), "said: {said:?}");
         assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "this turn followed");
     }
 

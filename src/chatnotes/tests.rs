@@ -538,16 +538,16 @@ fn a_press_on_the_card_at_claudes_place_holds_it_in_sight() {
     assert!(rows.contains("sure"), "sent, what you wrote in sight: {rows}");
 }
 
-/// That press with a turn under way takes it over: said, with the key that follows Claude again, as any key of yours that
-/// pauses follow — no silent state change.
+/// That press with a turn under way takes it over, as any key of yours that pauses follow — said where follow's state is
+/// (the status line, the follow card's `paused`), no toast (#308).
 #[test]
-fn a_press_on_the_card_at_claudes_place_mid_turn_says_you_took_over() {
+fn a_press_on_the_card_at_claudes_place_mid_turn_takes_over() {
     let (_s, _root, mut ed) = led_apart("chatnotes-press-said", false);
     ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
     assert!(crate::follow::view_line(&ed).is_some(), "follow holds the view");
     crate::notes::start_card(&mut ed);
     assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "follow paused");
-    assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "said");
+    assert!(!ed.toasts.iter().any(|t| t.text.contains("you took over")), "no toast");
 }
 
 /// Reading step 2 over: a line inside an older answer's range acts on the note whose `¶` is on it — what the line end

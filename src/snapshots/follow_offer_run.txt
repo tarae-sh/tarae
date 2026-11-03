@@ -9,16 +9,16 @@
 06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize> {
 07   7     let mut counts = HashMap::new();
 08   8     for word in text.split_whitespace() {
-09   9     │   *counts.entry(word).or_insert(0) += 1;
-10  10     }
-11  11     counts
+09   9     │   *counts.entry(word).or_insert(0) += 1;           ╭─ follow ▲ waits ───────────   0ms ─╮
+10  10     }                                                    │ ▎ commit it                        │
+11  11     counts                                               ╰─ space L read ─────────────────────╯
 12  12 }
 13  13
 14  14 fn main() {
 15  15     let text = "the quick brown fox jumps over the lazy dog";
-16  16     let counts = word_counts(text);                      ╭─ follow ▲ waits ───────────   0ms ─╮
-17  17     println!("{} distinct words", counts.len()); // 타래 │ ▎ commit it                        │
-18  18 }                                                        ╰─ space L read ─────────────────────╯
+16  16     let counts = word_counts(text);
+17  17     println!("{} distinct words", counts.len()); // 타래
+18  18 }
 19
 20                                           ╭─ Claude wants to run — outside the sandbox ───────────╮
 21                                           │ git commit -am 'Count words'                          │
@@ -71,16 +71,16 @@
 06   f
 07   f
 08   f
-09   f
-10  ff
-11  ff
+09   f                                                          ff TTTTTT w wwwww fffffffffff   fff ff
+10  ff                                                          f a TTTTTT TT                        f
+11  ff                                                          ff DDDDD D ffff ffffffffffffffffffffff
 12  ff
 13  ff
 14  ff
 15  ff                gggg ggggg ggggg ggg ggggg gggg ggg gggg gggg
-16  ff                                                          ff TTTTTT w wwwww fffffffffff   fff ff
-17  ff              ggg gggggggg gggggg                         f a TTTTTT TT                        f
-18  ff                                                          ff DDDDD D ffff ffffffffffffffffffffff
+16  ff
+17  ff              ggg gggggggg gggggg
+18  ff
 19
 20                                           ff TTTTTT TTTTT TT TTT T TTTTTTT TTT TTTTTTT ffffffffffff
 21                                           f                                                       f

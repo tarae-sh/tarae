@@ -440,12 +440,13 @@ fn follow_keeps_the_line_being_rewritten_in_sight() {
         assert_ne!(a.cursor, Some(a.at), "{t:?}: a mark, not the terminal's cursor");
         assert_eq!((led(&ed), ed.cursor_line()), (Some(3), 0), "{t:?}: the view on the line rewritten");
     }
-    // Your key: follow pauses, says so, leads no more; it acted at your cursor, and the view is yours again
+    // Your key: follow pauses, the status line says so (no toast — #308), leads no more; it acted at your cursor, and the
+    // view is yours again
     press(&mut ed, "j");
     assert_eq!((ed.cursor_line(), led(&ed)), (1, None));
     let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
     assert!(f.paused, "your key paused it");
-    assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "said");
+    assert!(!ed.toasts.iter().any(|t| t.text.contains("you took over")), "no toast");
     assert!(status(&frame(&mut ed, 100, 30)).contains("● normal"));
 }
 
@@ -684,7 +685,7 @@ fn an_edit_of_yours_where_the_cursor_is_pauses_follow() {
         assert_ne!(ed.doc().text.to_string(), before, "{keys}: an edit");
         let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
         assert!(f.paused, "{keys}: paused");
-        assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "{keys}: said");
+        assert!(!ed.toasts.iter().any(|t| t.text.contains("you took over")), "{keys}: no toast");
         assert!(status(&frame(&mut ed, 100, 30)).contains("● normal"), "{keys}");
         // (Claude reads elsewhere: the editor stays with you)
         let read = json!({"file_path": dir.join("a.rs"), "offset": 4, "limit": 1});
@@ -866,7 +867,7 @@ fn a_view_key_of_yours_takes_the_view_back_to_your_cursor() {
         frame(&mut ed, 100, 30);
         let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
         assert!(f.paused, "{k}: you took over");
-        assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "{k}: said");
+        assert!(!ed.toasts.iter().any(|t| t.text.contains("you took over")), "{k}: no toast");
         assert_eq!(led(&ed), None, "{k}: the view yours");
         assert!(ed.doc().top <= near, "{k}: from your cursor, not from Claude's place: top {}", ed.doc().top);
         assert!(ed.cursor_line() <= near, "{k}: from your cursor: {}", ed.cursor_line());
