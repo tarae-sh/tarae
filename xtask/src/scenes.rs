@@ -2791,6 +2791,142 @@ const THREE_CLAUDES: &[&str] = &[
     "@zoom:code:29-32",
     "@5",
 ];
+/// The sixth short video, V6 "The manager's view" (`--video managers-view`, ~40 s at 120×34; collab's
+/// `.sb/videos-plan.md` V6): three sessions, each its own Claude by its checkout (`v6-main`, `v6-fix`, `v6-docs`), on
+/// V2's file. Off camera, main's commit (a line of `thread.rs`) leaves fix and docs a commit behind (`↓ 1`), and each
+/// session is asked twice — the first turn a short answer whose result names its context window (the list says a
+/// context only once a result has: `ctx 34%`, `62%`, `87%` in warning), the second the work, which never ends on camera:
+/// fix's edit of `m.insert` (line 31) lands at once and main's own way of it after, so C2 says they'd conflict; docs asks
+/// to run its tests outside the sandbox, its card left waiting. The columns each Claude's opened by itself at its first
+/// answer hidden again (`space L`). On camera, the floating list (`▲ waits`, `≈`, `↓ 1`, `ctx`), `j` `f`: into fix's
+/// workspace following it — the moment it's followed (`@touch:`) fix writes `wind`'s key (line 30) —; docs' card a peek
+/// there, `C-q` and `y` from fix's workspace; the list again, docs at work. Its Short opens on the list (`@punch`).
+const MANAGERS_VIEW: &[&str] = &[
+    "@1",
+    ":",
+    "sh git worktree add -q ../fix && git worktree add -q ../docs && echo '// main moved on' >> src/thread.rs \
+     && git -c user.name=demo -c user.email=demo@example.com -c commit.gpgsign=false commit -qm 'main: a note' \
+     src/thread.rs",
+    "\r",
+    "@3",
+    ":",
+    "workspace-open ../fix",
+    "\r",
+    "@3",
+    ":",
+    "e src/main.rs",
+    "\r",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "how is a thread keyed?",
+    "\r",
+    // (the first answer's last word: `@=done` asks the state socket, whose answer now and then never came — 20 s)
+    "@20?spaces",
+    " ",
+    "L",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "trim a name before it keys the map",
+    "\r",
+    "@3",
+    // (fix's view your own again — a move of your cursor, which stands on line 1: the take's `f` follows it from main,
+    // and following it there already, `f` says so)
+    "G",
+    "@1",
+    ":",
+    "workspace-open ../docs",
+    "\r",
+    "@3",
+    " ",
+    "l",
+    "@1",
+    "how is a thread measured?",
+    "\r",
+    "@20?summed",
+    " ",
+    "L",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "run its tests",
+    "\r",
+    "@20?Its reason",
+    "@1",
+    ":",
+    "workspace-switch 0",
+    "\r",
+    "@3",
+    " ",
+    "l",
+    "@1",
+    "why does a repeat replace a strand?",
+    "\r",
+    "@20?newest",
+    " ",
+    "L",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "keep the first strand of a name",
+    "\r",
+    "@30?would conflict",
+    "\x1b",
+    "@15!would conflict",
+    " ",
+    "W",
+    "@10?sessions",
+    "@1",
+    "@rec",
+    "@beat:Every Claude at work, in one list.",
+    // (a Short: the list's frame, no code beside it)
+    "@zoom:card:sessions|44",
+    // (a Short opens here: the list whole)
+    "@punch",
+    "@5",
+    "@beat:What waits for you, a clash ahead, how far behind.",
+    // (a Short: the columns that say it, the names before them)
+    "@zoom:card:sessions|40",
+    "@6",
+    "@beat:f follows one, in its own workspace.",
+    "@zoom:card:sessions|40",
+    "j",
+    "@1",
+    "f",
+    "@touch:.v6-follow",
+    "@10?fix › src › main.rs",
+    "@sound:writing",
+    "@zoom:code:29-32",
+    "@20?trim().to_string()",
+    "@sound:still",
+    "@2",
+    "@beat:Another Claude's card waits here, never in your way.",
+    // (a Short: a news beat — fix's lines framed, docs' peek laid over them: framed where it stands it took fix's follow
+    // card in whole, 63 columns)
+    "@zoom:news:docs asks over code:29-32",
+    "@3",
+    "@beat:C-q takes you to it, and one key answers.",
+    "\x11",
+    "@10?Its reason",
+    "@zoom:card:Its reason",
+    "@2",
+    "@sound:stamp",
+    "y",
+    // (a Short: docs' follow card, its run under way)
+    "@zoom:card:run its tests",
+    "@2",
+    "@beat:And the list says it as it happens.",
+    " ",
+    "W",
+    "@10?sessions",
+    "@zoom:card:sessions|44",
+    "@5",
+];
 /// Polish landing 4's one bring card in motion (`--record bring`): fix's own commit (the readme), main moved since (a
 /// line of `thread.rs`, apart from it), the project's quick preflight two passing steps (`run_files`) — then
 /// `:workspace-bring` from fix: the card, its `y`, the strip's `bringing · rebasing`, `bringing · rebased · preflight
@@ -4836,6 +4972,12 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: THREE_CLAUDES,
     },
+    Scene {
+        name: "managers-view",
+        claude: "main=v6-main,fix=v6-fix,docs=v6-docs",
+        files: MAIN,
+        keys: MANAGERS_VIEW,
+    },
     // (polish landing 4: the one bring card — rebased, its quick preflight, brought — said in the strip as it goes)
     Scene { name: "bring", claude: "idle", files: MAIN, keys: BRING },
     // (panes P3 step 7d: Claude's card with the chat closed — the screen's right, above the status line)
@@ -5768,19 +5910,18 @@ fn video_title(scene: &str) -> &'static str {
         "edit-in-buffer" => "Claude's edit, in your buffer",
         "follow-replay" => "Watch it work: follow and replay",
         "three-claudes" => "Three Claudes, one file",
+        "managers-view" => "The manager's view",
         _ => "",
     }
 }
 
 /// A recording's cargo builds `demo` in its own `target/`: the toolchain's home is yours (`homes`), and a `build-dir`
 /// your cargo config names there put your home on screen as a run of the scene's built (`~/.cargo/build/…` in its
-/// output). Kept out of the demo's git status (`info/exclude`), so no frame shows it.
+/// output). In the folder above the demo, which cargo reads from any folder under it: every checkout beside the demo
+/// (V6's docs runs its tests) builds in its own, and no git status shows it.
 fn own_build_dir(demo: &Path) -> Result<()> {
-    write(&demo.join(".cargo/config.toml"), "[build]\nbuild-dir = \"{workspace-root}/target\"\n")?;
-    let exclude = demo.join(".git/info/exclude");
-    let mut lines = std::fs::read_to_string(&exclude).unwrap_or_default();
-    lines.push_str("/.cargo/\n");
-    write(&exclude, &lines)
+    let above = demo.parent().ok_or("the demo has no folder above it")?;
+    write(&above.join(".cargo/config.toml"), "[build]\nbuild-dir = \"{workspace-root}/target\"\n")
 }
 
 /// A shot's demo crate at `demo`, its config at `dir`'s `xdg` and what it seeds in `dir`'s `state`: tarae's setup for
@@ -5804,22 +5945,7 @@ fn prepare(
         std::fs::write(config.join("tarae/plugins/demo.wasm"), wasm)
             .map_err(|e| format!("demo.wasm: {e}"))?;
     }
-    let mut toml = config_toml(me, scene.claude);
-    // (#237's: Claude's commands without a sandbox — the chat's top line says so)
-    if scene.name.ends_with("-nosandbox") {
-        toml = toml.replacen("[llm]\n", "[llm]\nsandbox = false\n", 1);
-    }
-    if scene.name == "diag" {
-        toml = stand_in_lsp(me, toml);
-    }
-    if transparent {
-        let theme = if bg == "dark" { "meok-transparent" } else { "hanji-transparent" };
-        toml = format!("theme = \"{theme}\"\n{toml}");
-    }
-    // (a session's checkout made by tarae — orchestra's set — in the shot's own folder, never yours)
-    let worktrees = toml::Value::String(dir.join("worktrees").to_string_lossy().into_owned());
-    toml = format!("{toml}\n[workspace]\nworktrees = {worktrees}\n");
-    write(&config.join("tarae/config.toml"), &toml)?;
+    write(&config.join("tarae/config.toml"), &scene_config(scene, bg, transparent, me, dir))?;
     // (orchestra P2's set card: what the last five sessions started so cost, and three wakes — the call-order record
     // in the shot's own state, as tarae keeps it: `$state/tarae/calls/<month>.jsonl`)
     if scene.name == "orchestra-estimate" {
@@ -5890,6 +6016,34 @@ fn commits_env() -> Vec<(&'static str, Option<&'static str>)> {
     ]
 }
 
+/// `scene`'s config as its take writes it (`dir` the take's folder): `config_toml`'s, and what the scene adds.
+fn scene_config(scene: &Scene, bg: &str, transparent: bool, me: &Path, dir: &Path) -> String {
+    let mut toml = config_toml(me, scene.claude);
+    // (#237's: Claude's commands without a sandbox — the chat's top line says so)
+    if scene.name.ends_with("-nosandbox") {
+        toml = toml.replacen("[llm]\n", "[llm]\nsandbox = false\n", 1);
+    }
+    if scene.name == "diag" {
+        toml = stand_in_lsp(me, toml);
+    }
+    if transparent {
+        let theme = if bg == "dark" { "meok-transparent" } else { "hanji-transparent" };
+        toml = format!("theme = \"{theme}\"\n{toml}");
+    }
+    // (a session's checkout made by tarae — orchestra's set — in the shot's own folder, never yours)
+    with_worktrees(toml, &dir.join("worktrees"))
+}
+
+/// `toml` with `[workspace] worktrees` at `at` — in its own `[workspace]` where it has one (V6's `sync`): a table named
+/// twice is no TOML, and tarae with no config of yours starts the real claude.
+fn with_worktrees(toml: String, at: &Path) -> String {
+    let line = format!("worktrees = {}\n", toml::Value::String(at.to_string_lossy().into_owned()));
+    match toml.contains("\n[workspace]\n") {
+        true => toml.replacen("\n[workspace]\n", &format!("\n[workspace]\n{line}"), 1),
+        false => format!("{toml}\n[workspace]\n{line}"),
+    }
+}
+
 /// The shot's config: language servers off, this xtask as claude running `script` — and for the board's
 /// scripts, the review settings that bring their angles (`knot.rs` high-risk, `thread.rs` the screen's).
 pub(crate) fn config_toml(me: &Path, script: &str) -> String {
@@ -5907,10 +6061,17 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
         "v4" => "review-at-end = true\n",
         // (V1's: main's edit lands unseen, so fix's — waiting on it — lands too, and the two meet)
         s if s.contains("=v1-main") => "review-at-end = true\n",
+        // (V6's: fix's and main's edits land unseen and meet, the turns going on)
+        s if s.contains("=v6-main") => "review-at-end = true\n",
+        _ => "",
+    };
+    // (V6's: main's commit leaves fix and docs behind it, said by the list alone — no card for the move)
+    let workspace = match script {
+        s if s.contains("=v6-main") => "\n[workspace]\nsync = \"off\"\n",
         _ => "",
     };
     format!(
-        "[editor]\nlsp = false\n\n[llm]\ncommand = {}\nargs = [\"scenes\", \"--claude\", {}]\n{llm}{review}",
+        "[editor]\nlsp = false\n\n[llm]\ncommand = {}\nargs = [\"scenes\", \"--claude\", {}]\n{llm}{review}{workspace}",
         quoted(&me.to_string_lossy()),
         quoted(script)
     )
@@ -6459,7 +6620,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         // (#157: as many lines as the followed pane's rows less one, each wide enough to reach under the card)
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-replay" => vec![("src/spool.rs", SPOOL_V4_RS.into())],
-        "main-moved" | "three-claudes" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
+        "main-moved" | "three-claudes" | "managers-view" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
         "edit-in-buffer" => vec![("src/main.rs", MAIN_V3_RS.into())],
         // (its lines ended CRLF, committed so: the gutter calm, the status line's form the one thing said)
         "status-crlf" => vec![("src/main.rs", MAIN_RS.replace('\n', "\r\n"))],
@@ -6588,6 +6749,9 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "answer",
     "askdone",
     "commitdraft",
+    "v6-main",
+    "v6-fix",
+    "v6-docs",
 ];
 
 /// Whether the stand-in plays `spec`: a script it knows, or a specification by checkout whose every script it
@@ -6654,6 +6818,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "v1-main" => turn.v1_main()?,
             "v1-fix" => turn.v1_fix()?,
             "v1-docs" => turn.v1_docs()?,
+            // (V6's: each session's first turn short, naming its context window, the second its work)
+            "v6-main" | "v6-fix" | "v6-docs" => turn.v6(&script[3..], turns)?,
             // (two changes: the press's sheet — the first answered, the second in hand)
             "two" => turn.explain_items(2)?,
             // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
@@ -8350,6 +8516,160 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     }
 }
 
+/// V6's contexts, each session's two requests' (of a 200k window): main's, fix's, docs' — docs' second past the
+/// list's 80 % (its `ctx` in warning).
+const V6_CONTEXT: [(&str, u64, u64); 3] =
+    [("main", 31_000, 68_000), ("fix", 96_000, 124_000), ("docs", 151_000, 174_000)];
+/// The window V6's first results name (`modelUsage`'s `contextWindow`).
+const V6_WINDOW: u64 = 200_000;
+/// Where fix's writing waits for the moment you follow it: made beside the checkouts by the scene's `@touch:`.
+const V6_FOLLOWED: &str = "../.v6-follow";
+
+impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
+    /// A V6 turn of session `who` (`main`, `fix`, `docs`): its request as a conversation's (`context` tokens carried),
+    /// then the first a short answer and its result naming the window — the list says a context only once a result has —,
+    /// the second its work.
+    fn v6(&mut self, who: &str, turns: usize) -> io::Result<()> {
+        let (_, first, second) = V6_CONTEXT.into_iter().find(|c| c.0 == who).unwrap_or(V6_CONTEXT[0]);
+        let id = format!("conv-v6-{who}");
+        let usage = |context: u64| {
+            json!({"input_tokens": 4, "cache_read_input_tokens": context - 1_204, "cache_creation_input_tokens": 1_200,
+                "cache_creation": {"ephemeral_1h_input_tokens": 1_200}, "output_tokens": 240})
+        };
+        let context = if turns == 1 { first } else { second };
+        self.line(
+            json!({"type": "system", "subtype": "init", "session_id": id, "model": "claude-opus-5-5"}),
+        )?;
+        let message =
+            json!({"id": format!("{id}-{turns}"), "model": "claude-opus-5-5", "usage": usage(context)});
+        self.line(json!({"type": "stream_event", "event": {"type": "message_start", "message": message}}))?;
+        if turns > 1 {
+            return match who {
+                "main" => self.v6_main(),
+                "fix" => self.v6_fix(),
+                _ => self.v6_docs(),
+            };
+        }
+        self.words(match who {
+            // (each ends on a word the scene waits for: in no file of the demo's)
+            "main" => "A repeated name replaces the strand before it: insert keeps the newest.",
+            "fix" => "By its name, cloned as it is: tabs and spaces.",
+            _ => "By the gaps between its knots, summed.",
+        })?;
+        let model = json!({"claude-opus-5-5": {"inputTokens": 4, "cacheReadInputTokens": context - 1_204,
+            "cacheCreationInputTokens": 1_200, "outputTokens": 240, "contextWindow": V6_WINDOW}});
+        self.line(json!({"type": "result", "result": "ok", "session_id": id, "total_cost_usd": 0.04,
+            "usage": usage(context), "modelUsage": model}))
+    }
+
+    /// V6's main: a read, then its edit of `wind`'s `m.insert` (line 31) landing unseen — fix's own way of that line is
+    /// there already, so C2 says they'd conflict —, then talk all through the take.
+    fn v6_main(&mut self) -> io::Result<()> {
+        self.words("Switching to `entry` keeps the first strand.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:28-32"]}))?;
+        let input = format!(
+            r#"{{"edits": [{}]}}"#,
+            v1_item("    m.insert(k, t);\n", "    m.entry(k).or_insert(t);\n")
+        );
+        self.call(2, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
+        self.v1_talk(&[
+            "Now a repeat keeps the first strand.",
+            "`main` winds the map as before,",
+            "so nothing else in **main.rs** changes.",
+            "`entry` hands back the strand that stays,",
+            "which a later knot could be tied on.",
+            "Nothing else reads the map.",
+            "The tests wind two names, each once.",
+            "A test with a repeat would show it.",
+        ])
+    }
+
+    /// V6's fix: its edit of `m.insert` (line 31) landing at once, then `wind`'s key (line 30) — what it replaces
+    /// streamed, then held until you follow it (`V6_FOLLOWED`), then its new line written slowly enough to read —, then
+    /// talk.
+    fn v6_fix(&mut self) -> io::Result<()> {
+        self.words("The insert's result is dropped on purpose.")?;
+        self.text("\n")?;
+        let insert = format!(
+            r#"{{"edits": [{}]}}"#,
+            v1_item("    m.insert(k, t);\n", "    let _ = m.insert(k, t);\n")
+        );
+        self.call(1, "edit", serde_json::from_str(&insert).map_err(io::Error::other)?)?;
+        self.words("Now the key: a name trimmed before it keys the map.")?;
+        self.text("\n")?;
+        let key = format!(
+            r#"{{"edits": [{}]}}"#,
+            v1_item("    let k = t.name.clone();\n", "    let k = t.name.trim().to_string();\n")
+        );
+        self.v6_written(2, &key, "\"new_string\"")?;
+        self.call(2, "edit", serde_json::from_str(&key).map_err(io::Error::other)?)?;
+        self.v1_talk(&[
+            "A name with a space at its end keys the same strand now.",
+            "Nothing else keys the map.",
+            "The tests don't wind a name with spaces.",
+            "That's the whole change.",
+        ])
+    }
+
+    /// The turn's `n`th call, an `edit` whose `input` streams up to `hold` at once, waits there until you follow it
+    /// (`V6_FOLLOWED`, 120 s at most), then streams the rest a character every 80 ms — a line written as a video reads it.
+    fn v6_written(&mut self, n: u64, input: &str, hold: &str) -> io::Result<()> {
+        let block =
+            json!({"type": "tool_use", "id": format!("t{n}"), "name": "mcp__tarae__edit", "input": {}});
+        let ev = |e: Value| json!({"type": "stream_event", "event": e});
+        self.line(ev(json!({"type": "content_block_start", "index": 1, "content_block": block})))?;
+        let delta = |s: &str| {
+            ev(json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": s}}))
+        };
+        let mid = input.find(hold).unwrap_or(input.len());
+        self.line(delta(&input[..mid]))?;
+        if !self.pause.is_zero() {
+            wait_file(Path::new(V6_FOLLOWED), Duration::from_secs(120))?;
+        }
+        for c in input[mid..].chars() {
+            self.line(delta(&c.to_string()))?;
+            if !self.pause.is_zero() {
+                std::thread::sleep(Duration::from_millis(80));
+            }
+        }
+        self.line(ev(json!({"type": "content_block_stop", "index": 1})))
+    }
+
+    /// V6's docs: a read of `thread.rs`, then a run of its tests asked outside the sandbox — its card waits for you —,
+    /// then talk all through the take.
+    fn v6_docs(&mut self) -> io::Result<()> {
+        self.words("Let me read what the tests measure.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/thread.rs:1-13"]}))?;
+        self.words("The tests need the registry, so I will ask to run them outside the sandbox.")?;
+        self.text("\n")?;
+        let run = json!({"command": "cargo test --quiet", "outside_sandbox": true,
+            "reason": "cargo needs to fetch the registry index"});
+        self.call(2, "run", run)?;
+        self.v1_talk(&[
+            "It builds; `tie` is never used, in either file.",
+            "No test measures a thread yet.",
+            "The doc comment on `length` could say what one would check.",
+            "Nothing else needs a change.",
+        ])
+    }
+}
+
+/// Waits until `path` is there, `timeout` at most.
+fn wait_file(path: &Path, timeout: Duration) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            let said = format!("timed out waiting for {}", path.display());
+            return Err(io::Error::new(io::ErrorKind::TimedOut, said));
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    Ok(())
+}
+
 /// One item of an `edit` call on `src/main.rs`, its keys in the order the model writes them: what it replaces, then
 /// what it writes.
 fn v1_item(old: &str, new: &str) -> String {
@@ -8550,6 +8870,92 @@ mod tests {
             assert!(input.find("old_string") < input.find("new_string"), "{who}: {input}");
         }
         assert_eq!(replaced.iter().filter(|o| *o == "    m.insert(k, t);\n").count(), 2, "{replaced:?}");
+    }
+
+    /// V6's three Claudes (`managers-view`): each checkout its own script; edits landing unseen and no card for main's
+    /// move; each session's first turn ends naming its window, its request carrying the context the list shows (docs'
+    /// second past 80 %); the second turns' edits found in the scene's file, fix's and main's the same line two ways,
+    /// fix's key streamed what it replaces first; docs asks to run outside the sandbox; every turn ends.
+    #[test]
+    fn v6s_three_claudes_each_say_their_context_and_meet_on_one_line() {
+        let spec = SCENES.iter().find(|s| s.name == "managers-view").unwrap().claude;
+        for who in ["main", "fix", "docs"] {
+            let at = if who == "main" { "/h/tarae-demo".to_string() } else { format!("/h/{who}") };
+            assert_eq!(script_for(spec, Some(Path::new(&at))), format!("v6-{who}"));
+        }
+        // (as the shot writes it: the worktrees' folder in the same table)
+        let t: toml::Table =
+            with_worktrees(config_toml(Path::new("/x"), spec), Path::new("/w")).parse().unwrap();
+        assert_eq!(t["llm"]["review-at-end"].as_bool(), Some(true));
+        assert_eq!(t["workspace"]["sync"].as_str(), Some("off"));
+        assert_eq!(t["workspace"]["worktrees"].as_str(), Some("/w"));
+        let plain: toml::Table =
+            with_worktrees(config_toml(Path::new("/x"), "idle"), Path::new("/w")).parse().unwrap();
+        assert_eq!(plain["workspace"]["worktrees"].as_str(), Some("/w"));
+        let file = &run_files("managers-view")[0];
+        assert_eq!((file.0, file.1.as_str()), ("src/main.rs", MAIN_MOVED_RS));
+        let played = |who: &str, turns: usize| -> Vec<Value> {
+            let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+            let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
+            turn.v6(who, turns).unwrap();
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+        };
+        let carried = |said: &[Value]| -> u64 {
+            let u = said.iter().find_map(|v| v.pointer("/event/message/usage")).unwrap();
+            ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+                .iter()
+                .map(|k| u[k].as_u64().unwrap())
+                .sum()
+        };
+        let mut replaced = Vec::new();
+        for (who, first, second) in V6_CONTEXT {
+            let said = played(who, 1);
+            let end = said.last().unwrap();
+            assert_eq!(end["type"], "result", "{who}'s first turn ends");
+            assert_eq!(end.pointer("/modelUsage/claude-opus-5-5/contextWindow"), Some(&json!(V6_WINDOW)));
+            assert_eq!(carried(&said), first, "{who}");
+            let said = played(who, 2);
+            assert_eq!(said.last().unwrap()["type"], "result", "{who}'s second turn ends");
+            assert_eq!(carried(&said), second, "{who}");
+            assert_eq!(second * 100 / V6_WINDOW >= 80, who == "docs", "{who}: only docs' in warning");
+            let calls: Vec<&Value> =
+                said.iter().filter_map(|v| v.pointer("/request/message/params")).collect();
+            if who == "docs" {
+                let run = calls.iter().find(|c| c["name"] == "run").unwrap();
+                assert_eq!(run["arguments"]["outside_sandbox"], true);
+                continue;
+            }
+            for c in calls.iter().filter(|c| c["name"] == "edit") {
+                for item in c["arguments"]["edits"].as_array().unwrap() {
+                    let old = item["old_string"].as_str().unwrap();
+                    assert!(MAIN_MOVED_RS.contains(old), "{who}'s {old:?} is in the file");
+                    replaced.push(old.to_string());
+                }
+            }
+            if who == "fix" {
+                let input: String = (said.iter())
+                    .filter_map(|v| v.pointer("/event/delta/partial_json").and_then(Value::as_str))
+                    .collect();
+                assert!(input.find("old_string") < input.find("new_string"), "{input}");
+                assert!(input.contains("trim().to_string()"), "{input}");
+            }
+        }
+        assert_eq!(replaced.iter().filter(|o| *o == "    m.insert(k, t);\n").count(), 2, "{replaced:?}");
+    }
+
+    /// Every scene's config, as its take writes it, gets the stand-in (docs shots': docshots' own test) (`shot::stand_in_only`): TOML tarae
+    /// reads, its own `llm.command`, never the real claude. V6's first take wrote `[workspace]` twice, and its tarae
+    /// started on its defaults — the real claude, which reached for api.anthropic.com.
+    #[test]
+    fn every_scenes_config_gets_the_stand_in() {
+        let (me, dir) = (Path::new("/bin/xtask"), Path::new("/take"));
+        let file = Path::new("config.toml");
+        for scene in SCENES {
+            for (bg, transparent) in [("dark", false), ("light", true)] {
+                let text = scene_config(scene, bg, transparent, me, dir);
+                crate::shot::stand_in_only(&text, file).unwrap_or_else(|e| panic!("{}: {e}", scene.name));
+            }
+        }
     }
 
     /// A per-session script specification picks each session's script by its checkout folder (`tarae-demo` →

@@ -216,6 +216,47 @@ fn with_stand_in(
     toml::to_string(&t).map(Some).map_err(|e| format!("{}: {e}", file.display()))
 }
 
+/// A take's config as tarae reads it, refused unless its Claude is a stand-in: TOML tarae reads (a table named twice
+/// isn't — V6's first take: tarae started on its defaults, whose `llm.command` is the real `claude`, and it reached for
+/// api.anthropic.com), an `llm.command` of its own (none is that default), and not the real claude (`names_claude`).
+pub(crate) fn stand_in_only(text: &str, file: &Path) -> Result<()> {
+    let t: toml::Table = text.parse().map_err(|e| {
+        format!(
+            "{}: not TOML tarae reads — it would start on its defaults, the real claude: {e}",
+            file.display()
+        )
+    })?;
+    if let Some(c) = names_claude(&t) {
+        return Err(format!(
+            "{}: llm.command {c:?} starts the real claude — a take never starts it",
+            file.display()
+        ));
+    }
+    match t.get("llm").and_then(|l| l.get("command")).and_then(toml::Value::as_str) {
+        Some(_) => Ok(()),
+        None => Err(format!(
+            "{}: no llm.command — tarae's default is the real claude, which a take never starts",
+            file.display()
+        )),
+    }
+}
+
+/// The PATH a take's tarae gets: `path` with a folder of `state`'s first, holding a `claude` that refuses and says so —
+/// so whatever sends tarae to its default `llm.command` (a config it couldn't take, a setting it refused) meets that,
+/// never the real one.
+fn no_claude_path(state: &Path, path: Option<&std::ffi::OsStr>) -> Result<std::ffi::OsString> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = state.join("no-claude");
+    let claude = dir.join("claude");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let refusal = "#!/bin/sh\necho 'xtask: a take never starts the real claude — its config gave tarae none of its own' >&2\nexit 127\n";
+    std::fs::write(&claude, refusal).map_err(|e| format!("{}: {e}", claude.display()))?;
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("{}: {e}", claude.display()))?;
+    let rest = path.map(std::env::split_paths).into_iter().flatten();
+    std::env::join_paths(std::iter::once(dir).chain(rest)).map_err(|e| format!("PATH: {e}"))
+}
+
 /// `t`'s `llm.command` with its `llm.args`, as one line, when it starts the real claude: a program named `claude`
 /// (on PATH or by its path) as the command or one of its words — `env claude`, `sh -c 'claude …'`. It catches a
 /// slip, not every way there: a script of yours that runs claude, or a package runner's name for it, it can't see.
@@ -744,6 +785,12 @@ fn drive_with(
     rows: u16,
     on_spawn: &dyn Fn(u32),
 ) -> Result<Vec<String>> {
+    // (#247 at the one place a take starts tarae, whoever wrote its config: scenes, docs, homepage, focus, sign, shot)
+    let file = setup.config.join("tarae/config.toml");
+    let text = std::fs::read_to_string(&file).map_err(|e| {
+        format!("{}: {e} — a take never starts tarae on its defaults (the real claude)", file.display())
+    })?;
+    stand_in_only(&text, &file)?;
     if !setup.bin.is_file() {
         return Err(format!("{} not found", setup.bin.display()));
     }
@@ -768,6 +815,7 @@ fn drive_with(
     for (k, v) in homes {
         cmd.env(k, v);
     }
+    cmd.env("PATH", no_claude_path(state, std::env::var_os("PATH").as_deref())?);
     // SAFETY: only async-signal-safe calls between fork and exec.
     unsafe {
         cmd.pre_exec(|| {
@@ -881,6 +929,13 @@ fn drive_with(
         }
         if k == "@punch" {
             vt.punch = vt.capturing.map(|since| since.elapsed());
+            continue;
+        }
+        if let Some(name) = touch_key(k) {
+            let at = setup.cwd.parent().unwrap_or(&setup.cwd).join(name);
+            if let Err(e) = std::fs::write(&at, "") {
+                missed.push(format!("{k}: {}: {e}", at.display()));
+            }
             continue;
         }
         if let Some(text) = k.strip_prefix("@type:") {
@@ -1024,6 +1079,14 @@ fn beat_key(key: &str) -> Option<&str> {
         "@beat" => Some(""),
         k => k.strip_prefix("@beat:"),
     }
+}
+
+/// `@touch:<name>`: an empty file `name` made in the folder above the scene's — where its checkouts are, so a stand-in
+/// Claude in any of them waits on `../<name>` for a moment the keys reach (V6: fix's writing once you follow it). A
+/// plain name only: no folder, nothing above.
+fn touch_key(key: &str) -> Option<&str> {
+    let name = key.strip_prefix("@touch:")?;
+    (!name.is_empty() && name != "." && name != ".." && !name.contains('/')).then_some(name)
 }
 
 /// The longest `@?text` waits unless it says (`@30?text`).
@@ -1608,6 +1671,78 @@ mod tests {
         }
     }
 
+    /// A config home at `dir` whose config gets the stand-in — what every take asks before it starts its program.
+    fn stand_in_config(dir: &Path) {
+        std::fs::create_dir_all(dir.join("tarae")).unwrap();
+        let text = crate::scenes::config_toml(Path::new("/bin/xtask"), "idle");
+        std::fs::write(dir.join("tarae/config.toml"), text).unwrap();
+    }
+
+    /// A take's config gets the stand-in or the take is refused: one tarae can't read (a table named twice), one with no
+    /// `llm.command` (tarae's default is the real claude) and one naming the real claude, each refused; the scenes' own
+    /// taken.
+    #[test]
+    fn a_takes_config_gets_the_stand_in_or_is_refused() {
+        let f = Path::new("/x/tarae/config.toml");
+        let ours = crate::scenes::config_toml(Path::new("/bin/xtask"), "idle");
+        assert_eq!(stand_in_only(&ours, f), Ok(()));
+        let twice = format!("{ours}\n[workspace]\nsync = \"off\"\n\n[workspace]\nworktrees = \"/w\"\n");
+        assert!(stand_in_only(&twice, f).unwrap_err().contains("not TOML"));
+        assert!(stand_in_only("[editor]\nlsp = false\n", f).unwrap_err().contains("no llm.command"));
+        let real = "[llm]\ncommand = \"/opt/bin/claude\"\n";
+        assert!(stand_in_only(real, f).unwrap_err().contains("starts the real claude"));
+    }
+
+    /// A take with a config that doesn't get the stand-in stops before anything starts — its tarae here a path with
+    /// nothing there, so a guard gone says "not found" instead.
+    #[test]
+    fn a_take_with_no_stand_in_starts_nothing() {
+        let dir = crate::scenes::Fresh::new("xtask-no-stand-in").unwrap();
+        let config = dir.0.join("xdg");
+        std::fs::create_dir_all(config.join("tarae")).unwrap();
+        std::fs::write(config.join("tarae/config.toml"), "[workspace]\n[workspace]\n").unwrap();
+        let setup = Setup {
+            bin: dir.0.join("no-tarae-here"),
+            files: Vec::new(),
+            cwd: dir.0.clone(),
+            config,
+            background: None,
+            env: Vec::new(),
+        };
+        let mut vt = Vt::new(24, 80);
+        let e = drive_with(&mut vt, &setup, &[], &dir.0, &[], 80, 24, &|_| {}).unwrap_err();
+        assert!(e.contains("not TOML"), "{e}");
+    }
+
+    /// The first `claude` on a take's PATH is the refusal in its own state folder, executable — found by walking the
+    /// PATH, never run (a test never starts the real one, even by a slip).
+    #[test]
+    fn the_first_claude_on_a_takes_path_is_the_refusal() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::scenes::Fresh::new("xtask-no-claude").unwrap();
+        let given = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        let path = no_claude_path(&dir.0, Some(&given)).unwrap();
+        let first = std::env::split_paths(&path).map(|p| p.join("claude")).find(|c| c.is_file()).unwrap();
+        assert_eq!(first, dir.0.join("no-claude/claude"));
+        assert_ne!(std::fs::metadata(&first).unwrap().permissions().mode() & 0o111, 0);
+        assert!(std::fs::read_to_string(&first).unwrap().contains("exit 127"));
+        assert_eq!(
+            std::env::split_paths(&path).skip(1).collect::<Vec<_>>(),
+            std::env::split_paths(&given).collect::<Vec<_>>()
+        );
+    }
+
+    /// `@touch:` names a plain file beside the scene's checkouts — never a folder's, nor one above them.
+    #[test]
+    fn a_touch_key_names_a_plain_file_only() {
+        assert_eq!(touch_key("@touch:.v6-follow"), Some(".v6-follow"));
+        for bad in
+            ["@touch:", "@touch:..", "@touch:.", "@touch:a/b", "@touch:../x", "@touch:/tmp/x", "@touchx"]
+        {
+            assert_eq!(touch_key(bad), None, "{bad}");
+        }
+    }
+
     #[test]
     fn a_sheets_rows_are_single_rows_and_ranges() {
         assert_eq!(sheet_rows(None), Ok(None));
@@ -1653,6 +1788,7 @@ mod tests {
             return;
         }
         let dir = crate::scenes::Fresh::new("tarae-shot-missed").unwrap();
+        stand_in_config(&dir.0);
         let setup = Setup {
             bin: "/bin/sh".into(),
             files: vec!["-c".into(), r"printf '\033[?2026hready\033[?2026l'; exec cat >/dev/null".into()],
@@ -1689,6 +1825,7 @@ mod tests {
             return;
         }
         let dir = crate::scenes::Fresh::new("tarae-shot-homes").unwrap();
+        stand_in_config(&dir.0);
         let check = r#"v="$HOME|$XDG_CACHE_HOME|$XDG_STATE_HOME"; [ "$v" = "/t/home|/t/cache|/t/state" ] && m=ok || m="no:$v"
             printf '\033[?2026h%s\033[?2026l' "$m"; exec cat >/dev/null"#;
         let setup = Setup {

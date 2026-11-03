@@ -1037,6 +1037,15 @@ struct Prepared {
     keys: Vec<String>,
 }
 
+/// `scene`'s config as its shot writes it: `config_toml`'s, and what the docs scene adds.
+fn docs_config(scene: &DocScene, me: &Path) -> String {
+    let mut toml = config_toml(me, scene.claude);
+    if scene.name == "diag" {
+        toml = stand_in_lsp(me, toml);
+    }
+    format!("{toml}{}", scene.config)
+}
+
 fn prepared(scene: &DocScene, bg: Bg, bin: &Path, me: &Path) -> Result<Prepared> {
     let dir = Named::new(scene.name)?;
     let real = std::fs::canonicalize(&dir.0).map_err(|e| format!("{}: {e}", dir.0.display()))?;
@@ -1048,11 +1057,7 @@ fn prepared(scene: &DocScene, bg: Bg, bin: &Path, me: &Path) -> Result<Prepared>
     let state = real.join("state");
     fixtures::seed(scene.seed, &state.join("tarae"), &home, &cwd, now())?;
     let config = real.join("xdg");
-    let mut toml = config_toml(me, scene.claude);
-    if scene.name == "diag" {
-        toml = stand_in_lsp(me, toml);
-    }
-    write(&config.join("tarae/config.toml"), &format!("{toml}{}", scene.config))?;
+    write(&config.join("tarae/config.toml"), &docs_config(scene, me))?;
     let setup = Setup {
         bin: bin.to_path_buf(),
         files: scene.files.iter().map(|f| f.to_string()).collect(),
@@ -1236,6 +1241,17 @@ fn pages(root: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// Every docs scene's config, as its shot writes it, gets the stand-in (`shot::stand_in_only`) — as every scene's
+    /// (`scenes::tests::every_scenes_config_gets_the_stand_in`).
+    #[test]
+    fn every_docs_scenes_config_gets_the_stand_in() {
+        for scene in super::DOC_SCENES {
+            let text = super::docs_config(scene, std::path::Path::new("/bin/xtask"));
+            crate::shot::stand_in_only(&text, std::path::Path::new("config.toml"))
+                .unwrap_or_else(|e| panic!("{}: {e}", scene.name));
+        }
+    }
+
     use std::collections::BTreeSet;
 
     use super::super::compared;
