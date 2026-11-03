@@ -25,6 +25,14 @@
 //! `sizes.txt`, one row a mode in `.sb/kernels/history.tsv` — never `target/`. A VM that didn't come up is
 //! **not measured**, never a pass. `--dry-run` prints every command in order, and each Lima VM's file, running
 //! nothing.
+//!
+//! **The current Docker context is yours** (#315): the run reads it first and puts it back after each colima start and
+//! stop it makes. A start never makes its profile's context current (`--activate=false`), but no flag keeps a stop's
+//! hands off: `colima stop` removes its profile's context (`docker context rm --force`), and Docker makes `default`
+//! current when that was the current one — a profile whose VM went down without colima's stop (a restart) keeps its
+//! context, current or not. Each row's Docker is named on each command (`DOCKER_CONTEXT`, `DOCKER_HOST`), never by
+//! the current context; colima's own commands run with neither, so its `context rm` judges the current one by the
+//! context alone.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, Write as _};
@@ -43,6 +51,9 @@ const USAGE: &str =
 
 /// The tests a mode runs: the sandbox's, the must-be-refused suite among them.
 const FILTER: &str = "sandbox::";
+
+/// The dry run's word on `docker context show`.
+const READ_FIRST: &str = "the current context, read first: put back after each colima start and stop";
 
 /// How a mode's container runs (`cargo xtask linux`'s options) — the tier it reaches is the kernel's to say.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -640,6 +651,7 @@ fn plan(k: &Kernel, repeat: u32, from: &Docker, n: &Needs) -> Vec<String> {
                 "{}    # only if it isn't running; stopped after",
                 Cmd::new(&["colima", "start", "-p", profile, "--activate=false"]).args(start).line()
             ));
+            l.extend(put_back_lines(profile, false));
             for s in &k.sysctl {
                 l.push(Cmd::new(&["colima", "ssh", "-p", profile, "--", "sudo", "sysctl", "-w", s]).line());
             }
@@ -683,10 +695,13 @@ fn plan(k: &Kernel, repeat: u32, from: &Docker, n: &Needs) -> Vec<String> {
     }
     l.push(format!("{}    # ×{repeat}, the whole", suite_cmd(k, k.whole, None, &docker).line()));
     match &k.at {
-        At::Colima { profile, .. } => l.push(format!(
-            "{}    # only if this run started it",
-            Cmd::new(&["colima", "stop", "-p", profile]).line()
-        )),
+        At::Colima { profile, .. } => {
+            l.push(format!(
+                "{}    # only if this run started it",
+                Cmd::new(&["colima", "stop", "-p", profile]).line()
+            ));
+            l.extend(put_back_lines(profile, true));
+        }
         At::Lima { .. } => {
             let name = vm_name(k);
             l.push(Cmd::new(&["limactl", "stop", &name]).line());
@@ -826,6 +841,8 @@ struct Run {
     keep_going: bool,
     /// Each mode's count of its failing tests, said again at the end (`--keep-going`).
     tallies: Vec<String>,
+    /// The current Docker context as the run began, put back after each colima start and stop (None: not read).
+    context: Option<String>,
 }
 
 impl Run {
@@ -987,22 +1004,101 @@ fn colima_running(profile: &str) -> bool {
 }
 
 /// Starts a colima profile unless it's running — whether this run started it.
-fn colima_up(profile: &str, start: &[String], x: &Path) -> Result<bool> {
+/// `--activate=false`: its profile's context isn't made current (colima reads the flag on every start); the current
+/// one is put back after all the same.
+fn colima_up(profile: &str, start: &[String], was: Option<&str>, x: &Path) -> Result<bool> {
     if colima_running(profile) {
         return Ok(false);
     }
     let c = Cmd::new(&["colima", "start", "-p", profile, "--activate=false"]).args(start);
     eprintln!("$ {}", c.line());
-    match c.command(x).status() {
+    let started = no_docker_env(&c, x).status();
+    put_back(was, None, x);
+    match started {
         Ok(s) if s.success() => Ok(true),
         _ => Err(format!("colima start -p {profile} failed")),
     }
 }
 
-fn colima_down(profile: &str, x: &Path) {
+/// Stops a colima profile, the current Docker context put back after — remade first where the stop removed it
+/// (`was` is that profile's own: its endpoint read before the stop).
+fn colima_down(profile: &str, was: Option<&str>, x: &Path) {
+    let ctx = colima_context(profile);
+    let again = (was == Some(ctx.as_str())).then(|| remade(&ctx, x)).flatten();
     let c = Cmd::new(&["colima", "stop", "-p", profile]);
     eprintln!("$ {}", c.line());
-    let _ = c.command(x).status();
+    let _ = no_docker_env(&c, x).status();
+    put_back(was, again, x);
+}
+
+/// A command with neither `DOCKER_CONTEXT` nor `DOCKER_HOST`, which outrank the current context: what reads or
+/// changes the current context, and colima's start and stop (its stop's `docker context rm --force` unsets the
+/// current one when it's the one it removes — by the variable too).
+fn no_docker_env(c: &Cmd, x: &Path) -> Command {
+    let mut c = c.command(x);
+    c.env_remove("DOCKER_CONTEXT").env_remove("DOCKER_HOST");
+    c
+}
+
+fn context_show() -> Cmd {
+    Cmd::new(&["docker", "context", "show"])
+}
+
+fn context_use(name: &str) -> Cmd {
+    Cmd::new(&["docker", "context", "use", name])
+}
+
+/// The current Docker context; None where it can't be read (nothing is put back then).
+fn current_context(x: &Path) -> Option<String> {
+    quiet(no_docker_env(&context_show(), x)).filter(|s| !s.is_empty())
+}
+
+/// What makes `ctx` again as it is now — its endpoint and description —, for after a stop that removes it.
+fn remade(ctx: &str, x: &Path) -> Option<Cmd> {
+    let format = "{{.Endpoints.docker.Host}}\n{{.Metadata.Description}}";
+    let said =
+        quiet(no_docker_env(&Cmd::new(&["docker", "context", "inspect", ctx, "--format", format]), x))?;
+    let mut lines = said.lines();
+    let host = lines.next().filter(|h| !h.is_empty())?;
+    let c = Cmd::new(&["docker", "context", "create", ctx, "--docker"]).args([format!("host={host}")]);
+    Some(match lines.next().filter(|d| !d.is_empty()) {
+        Some(d) => c.args(["--description", d]),
+        None => c,
+    })
+}
+
+/// The current Docker context made `was` again where it isn't — `again` making it first, where a stop removed it.
+/// One that can't be put back is said with the way (and again at the run's end).
+fn put_back(was: Option<&str>, again: Option<Cmd>, x: &Path) {
+    let Some(was) = was else { return };
+    if current_context(x).as_deref() == Some(was) {
+        return;
+    }
+    for c in again.into_iter().chain([context_use(was)]) {
+        eprintln!("$ {}", c.line());
+        let _ = quiet(no_docker_env(&c, x));
+    }
+    if current_context(x).as_deref() != Some(was) {
+        eprintln!("{}", not_put_back(was));
+    }
+}
+
+fn not_put_back(was: &str) -> String {
+    format!(
+        "the current Docker context was {was} as the run began and isn't now — `docker context use {was}` puts it back"
+    )
+}
+
+/// `--dry-run`'s lines for the put-back after a colima start (`stopped`: a stop, the profile's context remade first).
+fn put_back_lines(profile: &str, stopped: bool) -> Vec<String> {
+    let mut l = Vec::new();
+    if stopped {
+        let ctx = colima_context(profile);
+        let c = Cmd::new(&["docker", "context", "create", &ctx, "--docker", "host=<its endpoint>"]);
+        l.push(format!("{}    # only if it was the current one: colima's stop removes it", c.line()));
+    }
+    l.push(format!("{}    # only if it isn't current now", context_use("<current>").line()));
+    l
 }
 
 fn said_status(c: &Cmd, x: &Path) -> bool {
@@ -1045,7 +1141,7 @@ fn one_kernel(
     let mut stop_colima = None;
     match &k.at {
         At::Colima { profile, start } => {
-            match colima_up(profile, start, x) {
+            match colima_up(profile, start, run.context.as_deref(), x) {
                 Ok(started) => stop_colima = started.then(|| profile.clone()),
                 Err(why) => return run.not_measured(k, &why),
             }
@@ -1104,8 +1200,9 @@ fn one_kernel(
             }
         }
     }
+    let was = run.context.clone();
     let down = |x: &Path| match &k.at {
-        At::Colima { .. } => stop_colima.iter().for_each(|p| colima_down(p, x)),
+        At::Colima { .. } => stop_colima.iter().for_each(|p| colima_down(p, was.as_deref(), x)),
         At::Lima { .. } => lima_down(k, keep_vm, x),
     };
     // (the build's binary, in a Docker of its own: a Lima VM's, another colima profile's — Y2's)
@@ -1234,6 +1331,7 @@ pub fn run(args: &[String]) -> Result<()> {
             "# the one build, in colima's {} (started if it isn't, stopped after if this run started it)",
             t.build
         );
+        println!("{}    # {READ_FIRST}", context_show().line());
         if a.build {
             println!("{}", build_cmd(&from).line());
         }
@@ -1272,10 +1370,18 @@ pub fn run(args: &[String]) -> Result<()> {
         failed: Vec::new(),
         keep_going: a.keep_going,
         tallies: Vec::new(),
+        context: current_context(&x),
     };
+    match &run.context {
+        Some(c) => eprintln!("the current Docker context: {c} — put back after each colima start and stop"),
+        None => {
+            eprintln!("the current Docker context couldn't be read (`docker context show`): nothing put back")
+        }
+    }
+    let was = run.context.clone();
     let started = Instant::now();
     let build_profile = t.build.clone();
-    let stop_build = colima_up(&build_profile, &[], &x)?;
+    let stop_build = colima_up(&build_profile, &[], was.as_deref(), &x)?;
     if a.build {
         let t0 = Instant::now();
         let c = build_cmd(&from);
@@ -1293,7 +1399,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let said = quiet(c.command(&x)).unwrap_or_default();
     let Some(sum) = sum_of(&said) else {
         if stop_build {
-            colima_down(&build_profile, &x);
+            colima_down(&build_profile, was.as_deref(), &x);
         }
         return Err(no_kept(&from, &from, None));
     };
@@ -1305,7 +1411,13 @@ pub fn run(args: &[String]) -> Result<()> {
         one_kernel(&mut run, k, repeat, &from, (&n, sum), a.keep_vm, &x);
     }
     if stop_build {
-        colima_down(&build_profile, &x);
+        colima_down(&build_profile, was.as_deref(), &x);
+    }
+    // (said where a long run is read, as its last word: the next `cargo xtask linux` reaches no Docker otherwise)
+    if let Some(w) = &was
+        && current_context(&x).as_deref() != Some(w)
+    {
+        run.failed.push(not_put_back(w));
     }
     let history = root.join(OUT).join("history.tsv");
     let mut kept = std::fs::read_to_string(&history).unwrap_or_else(|_| HISTORY_HEAD.into());
@@ -1716,6 +1828,50 @@ mod tests {
             all.contains("limactl start --name=tarae-k3") && all.contains("limactl delete --force tarae-k3"),
             "{all}"
         );
+    }
+
+    /// #315: every kernel's plan leaves the current Docker context as it was — each `colima start` with
+    /// `--activate=false`, each colima start and stop followed by the put-back of the context read first (a stop's
+    /// profile context remade before it), no `docker context use` but that one; and every other command that talks
+    /// to Docker names its own (`DOCKER_CONTEXT` or `DOCKER_HOST`), each side of a pipe alike.
+    #[test]
+    fn the_plan_leaves_the_current_docker_context_as_it_was() {
+        let t = the_table();
+        let from = Docker::Context(colima_context(&t.build));
+        let back = context_use("<current>").line();
+        let mut colimas = 0;
+        for k in &t.kernels {
+            let l = plan(k, 1, &from, &needs());
+            let all = l.join("\n");
+            for (i, line) in l.iter().enumerate() {
+                let next = |n: usize| l.get(i + n).map(String::as_str).unwrap_or_default();
+                if line.starts_with("colima start") {
+                    colimas += 1;
+                    assert!(line.contains(" --activate=false"), "{}: {line}", k.name);
+                    assert!(next(1).starts_with(&back), "{}: put back after the start:\n{all}", k.name);
+                }
+                if line.starts_with("colima stop") {
+                    let At::Colima { profile, .. } = &k.at else { unreachable!("{line}") };
+                    let made = format!("docker context create {} ", colima_context(profile));
+                    assert!(next(1).starts_with(&made), "{}: remade after the stop:\n{all}", k.name);
+                    assert!(next(2).starts_with(&back), "{}: put back after the stop:\n{all}", k.name);
+                }
+                if line.contains("docker context use") {
+                    assert!(line.starts_with(&back), "{}: only the put-back: {line}", k.name);
+                }
+                for part in line.split(" | ").filter(|p| !p.starts_with('#')) {
+                    let words = part.split_whitespace().skip_while(|w| w.starts_with("DOCKER_"));
+                    let talks = matches!(words.clone().next(), Some("docker" | "xtask"))
+                        && !part.contains("docker context");
+                    assert!(
+                        !talks || part.starts_with("DOCKER_CONTEXT=") || part.starts_with("DOCKER_HOST="),
+                        "{}: its Docker named: {part}",
+                        k.name
+                    );
+                }
+            }
+        }
+        assert!(colimas >= 2, "the table's colima rows (K4, Y2) are looked at");
     }
 
     /// #280: a kernel whose Docker disk is past 90 % (its facts' `disk`) isn't measured — said before its runs, with
