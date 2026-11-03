@@ -45,8 +45,9 @@ fn card(ed: &mut Editor) {
 
 /// One wave on the screen (the user, 2026-11-03: two or more waving at once distract): two sessions at work and a run
 /// going in the bottom slot — the sign's cells in one place only: the follow card's head while it says the step, else
-/// the status line, the chat open or not; the other session says `working` (faint, as the session list), the run its
-/// `▸`.
+/// the status line, the chat open or not — its column in sight beside the head-only card, the column's line keeps its
+/// cells blank, its word where it stands without the card; the other session says `working` (faint, as the session
+/// list), the run its `▸`.
 #[test]
 fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
     use crate::shimmer::CELLS;
@@ -81,22 +82,39 @@ fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
         }
         at
     };
+    // (the follow card's head: its frame's top row, named by its session)
+    let head = |rows: &[String]| rows.iter().position(|r| r.contains("╭─ main "));
+    // (the column's top line, its turn's word: the cell where it starts)
+    let word_at = |rows: &[String]| rows[0].find(" thinking").map(|b| rows[0][..b].chars().count());
     for (w, h) in [(160, 40), (80, 24)] {
-        // The follow card drawn: its head
+        // The follow card drawn: its head (the column hidden — the card whole)
+        crate::chat::hide(&mut ed);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.follow.on = true;
         ed.workspace.viewer.at = crate::workspace::At::Code;
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
-        let head = drawn.iter().position(|r| r.contains("main ") && r.contains(" thinking"));
+        let at = head(&drawn);
+        assert!(at.is_some(), "{w}: the card —\n{all}");
         assert_eq!(
             waves(&drawn),
-            head.into_iter().collect::<Vec<_>>(),
+            at.into_iter().collect::<Vec<_>>(),
             "{w}: on the card's head alone —\n{all}"
         );
         assert!(all.contains("check ▸"), "{w}: the run its mark —\n{all}");
+        // The column in sight: the card its head only, the wave still there — the column's line its cells blank (where
+        // the card doesn't fit, the status line's)
+        crate::chat::open(&mut ed);
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        let drawn = rows(&mut ed, w, h);
+        let all = drawn.join("\n");
+        let one = head(&drawn).unwrap_or(h as usize - 1);
+        assert_eq!(waves(&drawn), [one], "{w}: the column in sight, on the card's head alone —\n{all}");
+        let with_card = word_at(&drawn);
+        assert!(with_card.is_some(), "{w}: the column's word —\n{all}");
         // No card: the status line
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
+        crate::chat::hide(&mut ed);
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
         assert_eq!(waves(&drawn), [h as usize - 1], "{w}: on the status line alone —\n{all}");
@@ -105,9 +123,10 @@ fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
         assert_eq!(waves(&drawn), [h as usize - 1], "{w}: the chat open —\n{all}");
+        // (the column's word where it stood beside the card: nothing moves as the card goes)
+        assert_eq!(word_at(&drawn), with_card, "{w}: the column's word kept its cell —\n{all}");
         // (narrow, the names past the line's room fold into `+1`)
         assert!(w < 120 || all.contains("fix working"), "{w}: the other session's word —\n{all}");
-        crate::chat::hide(&mut ed);
     }
     crate::clock::release();
 }
