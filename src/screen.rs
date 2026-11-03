@@ -666,6 +666,41 @@ impl Screen {
     }
 }
 
+/// What an attached client's terminal shows, as its host's frames left it (`client.rs`): each frame read into its
+/// cells as it passes through, and the whole screen written from them again once input rests (its resting redraw —
+/// the wire never carries one: `interface::Resting` is the terminal's).
+pub struct Held {
+    grid: Grid,
+    /// The cells are what the terminal was sent (false after a frame this can't read, until the size changes:
+    /// the host's next frame at a new size is whole).
+    known: bool,
+}
+
+impl Held {
+    pub fn new() -> Held {
+        Held { grid: Grid::new(0, 0), known: true }
+    }
+
+    /// A frame's bytes, at `w`×`h`, read over what's held (none: it showed what the last one did).
+    pub fn apply(&mut self, bytes: &[u8], w: u16, h: u16) {
+        let (w, h) = (w as usize, h as usize);
+        if (w, h) != (self.grid.w, self.grid.h) {
+            self.grid = Grid::new(w, h);
+            self.known = true;
+        }
+        if self.known && !bytes.is_empty() && self.grid.apply(bytes).is_none() {
+            self.known = false;
+        }
+    }
+
+    /// The whole screen as held, on the end of `out` — nothing when it isn't known.
+    pub fn whole(&self, out: &mut Vec<u8>) {
+        if self.known && self.grid.w > 0 && self.grid.h > 0 {
+            diff(&self.grid, &self.grid, true, out);
+        }
+    }
+}
+
 /// Which write each cell of a whole `w`×`h` frame shows: the byte offset in `frame` of the text run (or erase) that
 /// last drew it, `usize::MAX` where nothing did. What the finished frame shows of an element is the cells its own bytes
 /// still hold after every later layer (`term::shown_whole`). None: a frame this doesn't read.

@@ -43,8 +43,9 @@ use crate::workspace::At;
 use tree_sitter::QueryCursor;
 
 /// The main loop, drawing for `iface` until tarae quits — made ready first, left as found after. With none (a host
-/// no interface is attached to, `tarae --host`) it draws nothing.
-pub fn run(editor: &mut Editor, mut iface: Option<Interface>) -> Result<()> {
+/// no interface is attached to, `tarae --host`) it draws nothing; one attaches and goes as it runs (`attach::swap`).
+/// The interface there as it ended comes back: a wire's last words (`Link::bye`) are said once the quit knows them.
+pub fn run(editor: &mut Editor, mut iface: Option<Interface>) -> Result<Option<Interface>> {
     if let Some(i) = iface.as_mut() {
         i.link.begin()?;
     }
@@ -52,7 +53,7 @@ pub fn run(editor: &mut Editor, mut iface: Option<Interface>) -> Result<()> {
     if let Some(i) = iface.as_mut() {
         i.link.end()?;
     }
-    res
+    res.map(|()| iface)
 }
 
 /// What a host with no interface attached says of one (`tarae --host`): nothing — no ground (meok), no twins, no
@@ -86,8 +87,8 @@ struct Terminal {
     out: io::Stdout,
 }
 
-impl crate::interface::Link for Terminal {
-    fn begin(&mut self) -> io::Result<()> {
+impl Terminal {
+    fn begin_here(&mut self) -> io::Result<()> {
         terminal::enable_raw_mode()?;
         execute!(
             self.out,
@@ -102,6 +103,12 @@ impl crate::interface::Link for Terminal {
             prev(info);
         }));
         Ok(())
+    }
+}
+
+impl crate::interface::Link for Terminal {
+    fn begin(&mut self) -> io::Result<()> {
+        self.begin_here()
     }
 
     fn end(&mut self) -> io::Result<()> {
@@ -230,6 +237,10 @@ fn event_loop(editor: &mut Editor, iface: &mut Option<Interface>) -> Result<()> 
     let mut frame = Vec::with_capacity(1 << 16);
     editor.drawn_by.push(crate::editor::DrawnFor::Named("the first frame"));
     while !editor.should_quit {
+        // (an interface attached or let go in the last batch: swapped in here, between frames — `attach.rs`)
+        if crate::attach::swap(editor, iface) {
+            draw = true;
+        }
         let Some(iface) = iface.as_mut() else {
             detached_batch(editor);
             continue;
@@ -242,14 +253,15 @@ fn event_loop(editor: &mut Editor, iface: &mut Option<Interface>) -> Result<()> 
         // or anything else that drifted is gone a moment later — the next frame used to wipe it anyway. Its time
         // runs from the last write, not the last event (`interface::Resting`).
         editor.stall.idle();
-        let ev = if let Some(wait) = iface.resting.wait(crate::clock::now()) {
+        let ev = if let Some(wait) = iface.resting.as_ref().and_then(|r| r.wait(crate::clock::now())) {
             match editor.events.recv_within(wait) {
                 Ok(Some(ev)) => ev,
                 Ok(None) => {
-                    if !iface.resting.now_or_after(editor.tick_due(), crate::clock::now()) {
+                    let resting = iface.resting.as_mut().expect("waited on");
+                    if !resting.now_or_after(editor.tick_due(), crate::clock::now()) {
                         continue;
                     }
-                    iface.screen.invalidate();
+                    iface.invalidate();
                     editor.drawn_by.push(crate::editor::DrawnFor::Named("the resting redraw"));
                     draw = true;
                     continue;
@@ -265,7 +277,7 @@ fn event_loop(editor: &mut Editor, iface: &mut Option<Interface>) -> Result<()> 
         editor.features_turn();
         let (unchanged, whole) = handle_batch(editor, ev, until);
         if whole {
-            iface.screen.invalidate();
+            iface.invalidate();
         }
         draw = batch_done(editor, unchanged);
     }
@@ -461,62 +473,109 @@ fn spawn_signals(tx: crate::event::Tx) {
 
 /// Input thread — so terminal reads don't block the main loop.
 fn spawn_input(tx: crate::event::Tx) {
-    crate::event::thread("tarae-input", move || {
-        // (what was read past a sweep of the mouse: the next one handled)
-        let mut next: Option<CtEvent> = None;
-        loop {
-            let ev = match next.take() {
-                Some(ev) => ev,
-                None => match event::read() {
-                    Ok(ev) => ev,
-                    Err(_) => break,
-                },
-            };
-            let ev = match ev {
-                CtEvent::Key(k) if k.kind != KeyEventKind::Release => Key::from_event(k).map(Event::Key),
-                CtEvent::Resize(..) => Some(Event::Resize),
-                CtEvent::FocusGained => Some(Event::Focus(true)),
-                CtEvent::FocusLost => Some(Event::Focus(false)),
-                CtEvent::Paste(text) => Some(Event::Paste(text)),
-                // (a move with no button down: what's under it, never input — `Event::Hover`; of a sweep already
-                // read in, only its newest place)
-                CtEvent::Mouse(m) if m.kind == MouseEventKind::Moved => {
-                    let mut at = (m.column, m.row);
-                    while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-                        match event::read() {
-                            Ok(CtEvent::Mouse(m)) if m.kind == MouseEventKind::Moved => {
-                                at = (m.column, m.row)
-                            }
-                            Ok(other) => {
-                                next = Some(other);
-                                break;
-                            }
-                            Err(_) => break,
+    crate::event::thread("tarae-input", move || read_input(|ev| tx.send(ev).is_ok()));
+}
+
+/// The terminal's input read as tarae's events until it ends or `send` says nobody takes them (false) — the main
+/// loop's (`spawn_input`) or an attached client's, which sends them on to its host (`client.rs`).
+pub(crate) fn read_input(mut send: impl FnMut(Event) -> bool) {
+    // (what was read past a sweep of the mouse: the next one handled)
+    let mut next: Option<CtEvent> = None;
+    loop {
+        let ev = match next.take() {
+            Some(ev) => ev,
+            None => match event::read() {
+                Ok(ev) => ev,
+                Err(_) => break,
+            },
+        };
+        let ev = match ev {
+            CtEvent::Key(k) if k.kind != KeyEventKind::Release => Key::from_event(k).map(Event::Key),
+            CtEvent::Resize(..) => Some(Event::Resize),
+            CtEvent::FocusGained => Some(Event::Focus(true)),
+            CtEvent::FocusLost => Some(Event::Focus(false)),
+            CtEvent::Paste(text) => Some(Event::Paste(text)),
+            // (a move with no button down: what's under it, never input — `Event::Hover`; of a sweep already
+            // read in, only its newest place)
+            CtEvent::Mouse(m) if m.kind == MouseEventKind::Moved => {
+                let mut at = (m.column, m.row);
+                while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                    match event::read() {
+                        Ok(CtEvent::Mouse(m)) if m.kind == MouseEventKind::Moved => at = (m.column, m.row),
+                        Ok(other) => {
+                            next = Some(other);
+                            break;
                         }
+                        Err(_) => break,
                     }
-                    Some(Event::Hover(at.0, at.1))
                 }
-                CtEvent::Mouse(m) => {
-                    use crate::event::Mouse;
-                    mouse_kind(m.kind, m.modifiers).map(|kind| {
-                        Event::Mouse(Mouse {
-                            kind,
-                            x: m.column,
-                            y: m.row,
-                            alt: m.modifiers.contains(KeyModifiers::ALT),
-                            ctrl: m.modifiers.contains(KeyModifiers::CONTROL),
-                        })
-                    })
-                }
-                _ => None,
-            };
-            if let Some(ev) = ev
-                && tx.send(ev).is_err()
-            {
-                break;
+                Some(Event::Hover(at.0, at.1))
             }
+            CtEvent::Mouse(m) => {
+                use crate::event::Mouse;
+                mouse_kind(m.kind, m.modifiers).map(|kind| {
+                    Event::Mouse(Mouse {
+                        kind,
+                        x: m.column,
+                        y: m.row,
+                        alt: m.modifiers.contains(KeyModifiers::ALT),
+                        ctrl: m.modifiers.contains(KeyModifiers::CONTROL),
+                    })
+                })
+            }
+            _ => None,
+        };
+        if let Some(ev) = ev
+            && !send(ev)
+        {
+            break;
         }
-    });
+    }
+}
+
+/// The read end a caught signal is said on (`catch_signals`), for a process with no editor's loop to quit (an
+/// attached client: `client.rs`) — a byte a signal; None once taken.
+pub(crate) fn signal_reader() -> Option<io::PipeReader> {
+    SIGNAL_READ.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+/// The terminal tarae runs in, made ready and left as found (raw mode, the alternate screen, the mouse) — an attached
+/// client's own (`client.rs`), as the main loop's `Terminal` link's.
+pub(crate) fn terminal_begin() -> io::Result<()> {
+    Terminal { out: io::stdout() }.begin_here()
+}
+
+pub(crate) fn terminal_end() -> io::Result<()> {
+    restore()
+}
+
+/// Whether the terminal tarae runs in takes undercurl, as its environment says (`terminal`) — an attached client's.
+pub(crate) fn undercurl_here() -> bool {
+    undercurl_in(|k: &str| std::env::var(k).ok())
+}
+
+/// The terminal's size in cells — an attached client's (`client.rs`).
+pub(crate) fn size() -> io::Result<(u16, u16)> {
+    terminal::size()
+}
+
+/// `text` alone on the terminal's last row, the cursor hidden — an attached client's own line over the host's last
+/// frame (`client.rs`: the host ended).
+pub(crate) fn last_line(text: &str) -> io::Result<()> {
+    let (w, h) = terminal::size()?;
+    let text: String = text.chars().take(w as usize).collect();
+    let mut out = io::stdout();
+    queue!(
+        out,
+        BeginSynchronizedUpdate,
+        Hide,
+        MoveTo(0, h.saturating_sub(1)),
+        ResetColor,
+        Clear(ClearType::CurrentLine),
+        Print(text),
+        EndSynchronizedUpdate
+    )?;
+    out.flush()
 }
 
 /// A mouse event's kind as tarae takes it: the left button, the wheel and the middle button (the right one stays the
@@ -547,11 +606,15 @@ pub(crate) fn present(editor: &mut Editor, iface: &mut Interface, frame: &mut Ve
     editor.stall.begin(Frame("draw"));
     let (w, h) = iface.link.size()?;
     if std::mem::take(&mut editor.redraw) {
-        iface.screen.invalidate();
+        iface.invalidate();
     }
     frame.clear();
     render_drawn(editor, frame, w, h)?;
     editor.stall.begin(Frame("what changed"));
+    if iface.link.whole() {
+        return hand(editor, iface, frame, w, h);
+    }
+    iface.unknown = false;
     // (read on from where its lit row's reading stopped — `light_rows`)
     let bytes = iface.screen.present_drawn(frame, w, h, editor.drawn.take());
     let (own, wrote) = (std::mem::take(&mut editor.term_out), !bytes.is_empty());
@@ -562,8 +625,8 @@ pub(crate) fn present(editor: &mut Editor, iface: &mut Interface, frame: &mut Ve
     if wrote || !own.is_empty() {
         iface.link.write(bytes, &own)?;
     }
-    if wrote {
-        iface.resting.wrote(iface.screen.patched(), crate::clock::now());
+    if wrote && let Some(r) = iface.resting.as_mut() {
+        r.wrote(iface.screen.patched(), crate::clock::now());
     }
     editor.stall.begin(Frame("after it"));
     // (a frame written is a frame presented, to an interface that doesn't say otherwise — the terminal; unchanged, it
@@ -575,8 +638,35 @@ pub(crate) fn present(editor: &mut Editor, iface: &mut Interface, frame: &mut Ve
     // (the first frame drawn: the start is over — what runs from here is its only as its jobs' results)
     editor.events.started();
     editor.frame_went(ended);
-    editor.redraw_due = iface.resting.due();
+    editor.redraw_due = iface.resting.as_ref().is_some_and(crate::interface::Resting::due);
     // (snapshots asked: as of this frame, written — what went to the interface and what's still to go)
+    crate::uistate::after_frame(editor);
+    Ok(())
+}
+
+/// `present` for a link that takes frames whole (a wire, `attach::Wire`): the frame handed to its writer, which finds
+/// what changed off the main loop against what it last sent — nothing here waits on the interface. It's presented once
+/// the interface says so (its `Ack`). Its OSC 52 is the interface's own to write (the remote plan's step 3, piece 4):
+/// until then a copy goes this machine's way (`no_interface`'s clipboard).
+fn hand(editor: &mut Editor, iface: &mut Interface, frame: &mut Vec<u8>, w: u16, h: u16) -> io::Result<()> {
+    let whole = crate::interface::Whole {
+        n: editor.frames,
+        input: editor.attach.input,
+        w,
+        h,
+        bytes: std::mem::take(frame),
+        drawn: editor.drawn.take(),
+        unknown: std::mem::take(&mut iface.unknown),
+    };
+    editor.stall.begin(crate::stall::Label::Frame("handed to the attach's writer"));
+    if let Some(back) = iface.link.hand(whole)? {
+        *frame = back;
+    }
+    editor.term_out.clear();
+    editor.frames_written += 1;
+    editor.events.started();
+    editor.frame_went(true);
+    editor.redraw_due = false;
     crate::uistate::after_frame(editor);
     Ok(())
 }
@@ -30852,6 +30942,7 @@ mod tests {
     /// that counts whole seconds, then minutes, and wakes only as that changes; `run_duration` itself.
     const HAND_TIMES: &[(&str, usize)] = &[
         ("chat.rs", 1),                   // a tool call's own `wait` argument, as Claude gave it
+        ("client.rs", 1),                 // a limit as given: the host's `Welcome` waited for
         ("commands.rs", 1),               // a plural
         ("limits.rs", 1),                 // the plan's next try, a time to come
         ("nav.rs", 4),                    // plurals

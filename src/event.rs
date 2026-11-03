@@ -33,11 +33,11 @@ pub enum Event {
     /// Input from an interface that presents late (`interface::Facts::presents_late`): the last frame it presented
     /// as it sent `event` (the remote plan's `Input.seen`) — what the "only once drawn" rules judge it by
     /// (`Editor::frame_presented`, `Editor::saw`). The terminal's input comes bare: its frames are presented as
-    /// they're written.
-    #[cfg_attr(not(test), allow(dead_code))]
-    // (the simulation's late interface sends it; a socket's is step 3's)
+    /// they're written. `seq`: the interface's own count of its inputs, said back with each frame drawn after it
+    /// (`Frame.input`; 0 for one that doesn't count them).
     Input {
         seen: crate::interface::Frame,
+        seq: u64,
         event: Box<Event>,
     },
 }

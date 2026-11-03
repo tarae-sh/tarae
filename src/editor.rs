@@ -1201,6 +1201,11 @@ pub struct Editor {
     pub detached: bool,
     /// Started as a host (`tarae --host`): no terminal of its own, its interfaces attach (`:restart` keeps it one).
     pub host: bool,
+    /// An interface attaching or going, swapped in or out between frames (`attach::swap`), and the one attached.
+    pub attach: crate::attach::Pending,
+    /// The last frame drawn before the interface there now attached (`attach::swap`): what an interface presented
+    /// counts from after it (`Editor::saw` — the remote plan's decision D). 0: the terminal, there from the start.
+    pub attached_at: crate::interface::Frame,
     /// (Tests: the home a session's `Caps` are made for — `caps::Basis.home`; None: the process's.)
     #[cfg(test)]
     pub caps_home: Option<PathBuf>,
@@ -1570,6 +1575,8 @@ impl Editor {
             interface: Default::default(),
             detached: false,
             host: false,
+            attach: Default::default(),
+            attached_at: 0,
             #[cfg(test)]
             caps_home: None,
             shellcheck: if cfg!(test) {
@@ -2960,8 +2967,9 @@ impl Editor {
     pub fn handle_event(&mut self, ev: Event) {
         // (an input that says what its interface presented: that first, then the input as any — judged by it)
         let ev = match ev {
-            Event::Input { seen, event } => {
+            Event::Input { seen, seq, event } => {
                 self.frame_presented(seen);
+                self.attach.input = self.attach.input.max(seq);
                 *event
             }
             ev => ev,

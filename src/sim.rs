@@ -27,6 +27,7 @@ use crate::event::Event;
 mod answerskept;
 mod applies;
 mod ask;
+mod attach;
 mod bigturn;
 mod board;
 mod brings;

@@ -484,6 +484,8 @@ pub struct Term {
     bin: OsString,
     /// How often `state` asked again past tarae's own wait for a frame (`uisocket::WAIT`) — #258's test waits on it.
     asked_again: AtomicUsize,
+    /// The tarae `state` asks: an attached client's host (`Term::attach`) — None: this one.
+    asks: Option<u32>,
 }
 
 pub fn cvt(rc: libc::c_int) -> io::Result<libc::c_int> {
@@ -513,7 +515,36 @@ impl Term {
         Term::spawn_with(sb, cwd, args, cols, rows, None)
     }
 
+    /// `tarae attach --pid <host>` in a terminal of its own (`spawn`'s, `cols`×`rows`), ready once the host's first
+    /// frame is on it; its `state` is the host's.
+    pub fn attach(sb: &Sandbox, host: &Host, cols: u16, rows: u16) -> Term {
+        let pid = host.pid().to_string();
+        let mut t = Term::spawn_unready(sb, &sb.work(), &["attach", "--pid", &pid], cols, rows, None);
+        t.asks = Some(host.pid());
+        let deadline = Instant::now() + t.timeout;
+        while t.poll_for(POLL, |s| s.status().contains("● ")).is_none() {
+            if !t.running() || Instant::now() > deadline {
+                panic!("no first frame from the host\n{}\nthe host's output:\n{}", t.screen(), host.output());
+            }
+        }
+        t
+    }
+
     fn spawn_with(sb: &Sandbox, cwd: &Path, args: &[&str], cols: u16, rows: u16, pace: Option<Pace>) -> Term {
+        let mut term = Term::spawn_unready(sb, cwd, args, cols, rows, pace);
+        // First frame drawn = raw mode is on — safe to type from here.
+        term.wait_for("the first frame (status line with the mode)", |s| s.status().contains("● normal"));
+        term
+    }
+
+    fn spawn_unready(
+        sb: &Sandbox,
+        cwd: &Path,
+        args: &[&str],
+        cols: u16,
+        rows: u16,
+        pace: Option<Pace>,
+    ) -> Term {
         // Tests run in parallel threads: another test's tarae mustn't get this pty — close-on-exec from the
         // start, or its master would outlive this test in that tarae (and in what it starts), and this
         // tarae would never hang up when the test binary dies.
@@ -609,7 +640,7 @@ impl Term {
             }
         });
 
-        let mut term = Term {
+        Term {
             child,
             master,
             _slave: slave,
@@ -618,10 +649,8 @@ impl Term {
             env: sb.env(),
             bin: sb.bin(),
             asked_again: Default::default(),
-        };
-        // First frame drawn = raw mode is on — safe to type from here.
-        term.wait_for("the first frame (status line with the mode)", |s| s.status().contains("● normal"));
-        term
+            asks: None,
+        }
     }
 
     /// Types keys (UTF-8). Esc = "\x1b" (send it alone), Enter = "\r". (`&self`: typed while another thread waits
@@ -838,7 +867,8 @@ impl Term {
     /// for a frame after the input (`uisocket::WAIT`) passes — a loaded machine's slow frame, never the harness's
     /// condition failing — so that's asked again until `timeout`, and only then a failure.
     pub fn state(&self, args: &[&str]) -> String {
-        let asked = Asked { bin: &self.bin, env: &self.env, pid: self.pid(), timeout: self.timeout };
+        let pid = self.asks.unwrap_or(self.pid());
+        let asked = Asked { bin: &self.bin, env: &self.env, pid, timeout: self.timeout };
         asked.state(args, &self.asked_again, || self.screen().to_string())
     }
 
@@ -857,7 +887,7 @@ impl Term {
     /// gathered as they come (`Watching::events`); stopped when dropped.
     pub fn watch(&self, kinds: &str) -> Watching {
         let mut cmd = Command::new(&self.bin);
-        cmd.arg("state").args(["--pid", &self.pid().to_string(), "--json", "--watch"]);
+        cmd.arg("state").args(["--pid", &self.asks.unwrap_or(self.pid()).to_string(), "--json", "--watch"]);
         if !kinds.is_empty() {
             cmd.arg(kinds);
         }

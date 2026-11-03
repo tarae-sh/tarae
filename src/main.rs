@@ -10,6 +10,7 @@ mod allow;
 mod apply;
 mod aside;
 mod ask;
+mod attach;
 mod basetree;
 mod beneath;
 mod billing;
@@ -30,6 +31,7 @@ mod checkpoint;
 mod chrome;
 mod claudetrust;
 mod claudeupdate;
+mod client;
 mod clipboard;
 mod clock;
 mod cmdline;
@@ -255,6 +257,8 @@ usage: tarae [FILE]...
        tarae FOLDER                          work in FOLDER (its config, its last files)
        tarae --host [FILE]...                the editor with no terminal of its own: it works on in the
                                              foreground until :q, SIGTERM or C-c (not SIGHUP)
+       tarae attach [--pid PID]              show a host (tarae --host) in this terminal, your keys
+                                             its; :detach leaves it working, attach comes back
        tarae --diff OLD NEW                  NEW, with its changes from OLD shown in place
                                              (git difftool -x 'tarae --diff')
        tarae grammar install [LANG]...       fetch and build syntax grammars (no LANG = all;
@@ -323,6 +327,10 @@ fn main() -> Result<()> {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 return uisocket::cli(&rest);
             }
+            "attach" if files.is_empty() && !host => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                return client::main(&rest);
+            }
             "-V" | "--version" => {
                 println!("tarae {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
@@ -363,6 +371,8 @@ fn main() -> Result<()> {
     // The UI state's socket — now, while no thread runs (its umask, and for a long path its folder, are the
     // process's for a moment); served once the editor is there
     let ui = uisocket::bind();
+    // (a host's attach socket, as the state's — with the same guards, at the same moment)
+    let attach = host.then(attach::bind);
     // (threads may start now: the last tarae's children still running, waited for as they end — #136)
     restart::wait_for(old_children);
     if let Some(said) = raised {
@@ -513,12 +523,24 @@ fn main() -> Result<()> {
         Ok(listener) => uisocket::serve(listener, editor.events.shared_sender()),
         Err(e) => log::line("ui", "info", &format!("no UI state socket: {e}")),
     }
-    let result = term::run(&mut editor, interface);
+    match attach {
+        Some(Ok(listener)) => attach::serve(listener, editor.events.shared_sender()),
+        Some(Err(e)) => {
+            log::line("attach", "warn", &format!("no attach socket: {e}"));
+            eprintln!("tarae --host: no attach socket — {e}");
+        }
+        None => {}
+    }
+    let (result, left) = match term::run(&mut editor, interface) {
+        Ok(left) => (Ok(()), left),
+        Err(e) => (Err(e), None),
+    };
     // What Claude's runs left running ends with tarae — a `:restart` too (their supervisors don't survive the
     // exec: a daemon kept would have every connect refused)
     sandbox::end_leftovers(None);
     // (`:restart`'s new binary binds its own at the same path; a failed one ends here too)
     uisocket::remove();
+    attach::remove();
     editor.save_restore();
     // The last saves' undo history, an answer just kept (`sandbox.json`, the sessions' store) may still be being
     // written on workers — exiting or exec'ing cuts them off
@@ -531,6 +553,19 @@ fn main() -> Result<()> {
     let unwritten = editor.unwritten(flushed);
     if !restarting {
         unwritten.iter().for_each(|said| eprintln!("{said}"));
+    }
+    // (an attached interface's last words: what the quit didn't write, for its terminal once it's back — or where the
+    // restarted host is, its client exec'ing into it)
+    if let Some(mut left) = left {
+        let ready = editor.restart.as_ref().and_then(|r| r.ready()).map(PathBuf::from);
+        let (gone, said) = match ready {
+            Some(bin) if result.is_ok() => {
+                (tarae_wire::Gone::Restarting { bin: bin.display().to_string() }, String::new())
+            }
+            _ => (tarae_wire::Gone::Quit, unwritten.join("\n")),
+        };
+        left.link.bye(gone, said);
+        left.link.flushed(std::time::Duration::from_secs(2));
     }
     editor.recovery_end(result.is_err() || restarting);
     // (a `:restart`'s new tarae pins its own binary)

@@ -628,6 +628,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:sound` |  | Hear Claude's writing as it appears (on/off) |
 | `:features-reset` |  | Empty the feature counts (a card asks first) |
 | `:redraw` |  | Draw the whole screen again (when something else wrote over it) |
+| `:detach` |  | Leave a host working: tarae attach comes back (tarae --host) |
 | `:lsp-restart` |  | Restart this file's language server |
 | `:plugin-permissions` |  | What each plugin may do beyond the buffer |
 | `:plugin-revoke` |  | Take back a plugin's permissions: :plugin-revoke &lt;plugin> |

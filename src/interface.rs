@@ -41,8 +41,17 @@ impl crate::editor::Editor {
     /// being drawn, asked for its own look. Every rule that says "only once drawn" asks this of the frame its fact was
     /// drawn in — a weighty card's answers, the keys an answer handed on, a card with no room, a card read whole, a
     /// review's high-risk lines on screen, a bring's change looked at.
+    ///
+    /// What an interface attached before the one there now presented doesn't count (`Editor.attached_at`, the remote
+    /// plan's decision D): "in sight now" starts over at an attach — a fact drawn before it and drawn on since (each
+    /// rule checks it's the same) counts from the first frame drawn for the interface there now; what was seen before
+    /// is kept where it was marked.
     pub fn saw(&self, frame: Frame) -> bool {
-        self.drawing || frame <= self.presented
+        let from = match self.attached_at {
+            0 => frame,
+            at => frame.max(at + 1),
+        };
+        self.drawing || from <= self.presented
     }
 
     /// The interface presented frame `n` (the terminal: as it was written — `term::present`; else as its input says):
@@ -120,20 +129,62 @@ pub trait Link {
     /// What changed of a frame (`frame`), then what goes after it (`own`: OSC 52 — `Editor.term_out`), written and
     /// flushed. The main loop waits while it's written.
     fn write(&mut self, frame: &[u8], own: &[u8]) -> io::Result<()>;
+    /// It takes each frame whole and finds what changed off the main loop (a wire: `attach::Wire`) — `hand`, never
+    /// `write`, and no resting redraw: its interface redraws from the grid it holds.
+    fn whole(&self) -> bool {
+        false
+    }
+    /// A frame drawn whole handed over at once, never waited on; a buffer comes back for the next frame (one sent).
+    fn hand(&mut self, f: Whole) -> io::Result<Option<Vec<u8>>> {
+        drop(f);
+        Err(io::Error::other("this interface takes what changed, not whole frames"))
+    }
+    /// It's let go, told why (`said`: what a quit didn't write, printed once its terminal is back) — a wire's words;
+    /// the terminal has nobody to tell.
+    fn bye(&mut self, _gone: tarae_wire::Gone, _said: String) {}
+    /// What `bye` said written, waited for `within` at most: tarae is ending, its last words go before it does.
+    fn flushed(&mut self, _within: Duration) {}
+}
+
+/// A frame drawn whole for a link that finds what changed itself (`Link::whole`).
+pub struct Whole {
+    pub n: Frame,
+    /// The last input the interface sent that was handled before it was drawn (`Event::Input`'s `seq`).
+    pub input: u64,
+    pub w: u16,
+    pub h: u16,
+    pub bytes: Vec<u8>,
+    /// Its first part read while it was drawn (`Editor.drawn`): read on from there.
+    pub drawn: Option<crate::screen::Drawn>,
+    /// What the interface shows isn't known: this one goes whole (a focus back, `:redraw`).
+    pub unknown: bool,
 }
 
 /// An interface the main loop draws for: its facts, its grid and resting redraw, its link.
 pub struct Interface {
     pub facts: Facts,
-    /// The grid it shows: a frame's diff is made against it (`Screen::present_drawn`).
+    /// The grid it shows: a frame's diff is made against it (`Screen::present_drawn`) — a whole-frame link's own.
     pub(crate) screen: Screen,
-    pub(crate) resting: Resting,
+    /// None: the interface redraws from its own grid (a wire's client — `Link::whole`).
+    pub(crate) resting: Option<Resting>,
     pub(crate) link: Box<dyn Link>,
+    /// The attach that made it (`attach::Pending.link`) — 0: the terminal tarae runs in.
+    pub(crate) id: u64,
+    /// The next frame goes whole (`invalidate`) — a whole-frame link's, told with the frame.
+    pub(crate) unknown: bool,
 }
 
 impl Interface {
     pub fn new(facts: Facts, link: Box<dyn Link>) -> Interface {
-        Interface { facts, screen: Screen::new(), resting: Resting::default(), link }
+        let resting = (!link.whole()).then(Resting::default);
+        Interface { facts, screen: Screen::new(), resting, link, id: 0, unknown: false }
+    }
+
+    /// What it shows may not be the last frame (a resize, focus back, `:redraw`, the resting redraw): the next goes
+    /// whole.
+    pub fn invalidate(&mut self) {
+        self.screen.invalidate();
+        self.unknown = true;
     }
 }
 
@@ -266,7 +317,7 @@ mod tests {
 
     /// Key `k` as an interface that had presented frame `seen` sends it.
     fn key(ed: &mut Editor, seen: Frame, k: &str) {
-        ed.handle_event(Event::Input { seen, event: Box::new(Event::Key(k.parse().unwrap())) });
+        ed.handle_event(Event::Input { seen, seq: 0, event: Box::new(Event::Key(k.parse().unwrap())) });
     }
 
     /// A weighty card up (its `y` brings back no conversation: nothing starts) — its id.
@@ -314,6 +365,35 @@ mod tests {
         assert!(!up(&ed, id), "answered");
     }
 
+    /// At an attach "in sight now" starts over (the remote plan's decision D): a weighty card the interface before
+    /// presented isn't in sight for the one that took over until a frame of its own that draws it is presented — its
+    /// `y` on what it hasn't presented yet is refused, said; once it has, an answer. The one before is let go, told.
+    #[test]
+    fn an_attach_starts_in_sight_over() {
+        let mut ed = late();
+        let id = weighty(&mut ed);
+        frame(&mut ed);
+        key(&mut ed, 1, "C-q");
+        assert!(ed.saw(1) && ed.card_has_keys(), "presented by the first interface");
+        let fake = || Fake { size: (100, 30), wrote: Arc::default() };
+        let mut there =
+            Some(Interface::new(Facts { presents_late: true, ..Facts::default() }, Box::new(fake())));
+        ed.host = true;
+        let mut coming = Interface::new(Facts { presents_late: true, ..Facts::default() }, Box::new(fake()));
+        coming.id = 7;
+        ed.attach.coming = Some(coming);
+        assert!(crate::attach::swap(&mut ed, &mut there), "a frame owed for the one attached");
+        assert_eq!((there.as_ref().map(|i| i.id), ed.attach.current, ed.attached_at), (Some(7), 7, 1));
+        assert!(!ed.saw(1), "what the interface before presented isn't in sight for this one");
+        key(&mut ed, 1, "y");
+        assert!(up(&ed, id), "y on a frame only the interface before presented answered it");
+        let said = ed.offer_said_now().unwrap_or_default().to_string();
+        assert!(said.contains("came before this card was in sight"), "{said}");
+        frame(&mut ed);
+        key(&mut ed, 2, "y");
+        assert!(!up(&ed, id), "its own frame presented: answered");
+    }
+
     /// A press on a weighty card's `y` is judged as its key: on a frame not presented yet, refused and said; once it
     /// was, an answer.
     #[test]
@@ -326,6 +406,7 @@ mod tests {
         let &(row, x, _, _) = ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').expect("its y on the card");
         let press = |seen| Event::Input {
             seen,
+            seq: 0,
             event: Box::new(Event::Mouse(crate::event::Mouse {
                 kind: crate::event::MouseKind::Down,
                 x: x as u16,

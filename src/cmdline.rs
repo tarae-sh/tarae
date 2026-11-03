@@ -118,6 +118,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["sound"], Arg::None, "Hear Claude's writing as it appears (on/off)"),
     c(&["features-reset"], Arg::None, "Empty the feature counts (a card asks first)"),
     c(&["redraw"], Arg::None, "Draw the whole screen again (when something else wrote over it)"),
+    c(&["detach"], Arg::None, "Leave a host working: tarae attach comes back (tarae --host)"),
     c(&["lsp-restart"], Arg::None, "Restart this file's language server"),
     c(&["plugin-permissions"], Arg::None, "What each plugin may do beyond the buffer"),
     c(&["plugin-revoke"], Arg::None, "Take back a plugin's permissions: :plugin-revoke <plugin>"),

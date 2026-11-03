@@ -46,6 +46,8 @@ rustls-platform-verifier = "=0.7.1"
 tarae-wasm = { path = "crates/tarae-wasm" }
 # The one sort (clippy.toml), shared with the runtime's crate: `crate::sorting` re-exports it
 tarae-sorting = { path = "crates/tarae-sorting" }
+# The attach protocol (crates/tarae-wire): a host and the interface showing it — src/attach.rs, src/client.rs
+tarae-wire = { path = "crates/tarae-wire" }
 
 [profile.release]
 lto = true

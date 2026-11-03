@@ -119,7 +119,7 @@ fn key(
     model.borrow_mut().sync(ed);
     let (before, had) = (front(ed), ed.card_has_keys());
     let seen = model.borrow().shown;
-    let event = Event::Input { seen, event: Box::new(Event::Key(k.parse::<Key>().unwrap())) };
+    let event = Event::Input { seen, seq: 0, event: Box::new(Event::Key(k.parse::<Key>().unwrap())) };
     match framed {
         true => sim.batch(ed, event),
         false => ed.handle_event(event),

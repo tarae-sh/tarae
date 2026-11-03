@@ -263,8 +263,9 @@ side git · 4 rows · in hand git:src/term.rs
   leaves only itself. A turn's reading path is read from them (`cargo xtask focus`). Not at Claude's level.
 - **`interface`** (V 29, the remote plan's step 3, `interface.rs`) — the interface tarae draws for: `null` for a host
   no interface is attached to (`tarae --host`: nothing drawn, snapshots answered after each batch of events, no
-  animation's tick), else `kind` (`terminal`) and `presented`, the last frame it presented (`Editor::frame_presented`).
-  Not at Claude's level.
+  animation's tick), else `kind` — `terminal`, or `wire` (V 30) for one attached across the host's socket (`tarae
+  attach`, `attach.rs`) — and `presented`, the last frame it presented (`Editor::frame_presented`; a wire's, its ack or
+  an input's `seen`). Not at Claude's level.
 - **`limits`** (apibill, `limits.rs`) — the account's plan limits as any claude said them: each window known now
   by Claude Code's name (`five_hour`, `seven_day`, `seven_day_<family>`, `seven_day:<model_scoped name>`) →
   `percent` (whole), `resets_at` and `seen_at` (unix ms), `status` (`allowed` · `allowed_warning` · `rejected`,
@@ -397,7 +398,7 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 
 - `v` is the schema version.
 - A field added, gone, renamed or changing what it means bumps `v` — one way for every change of the shape. Readers
-  still ignore fields they don't know. Each bump and its reason is on `uistate::V` — now 29: the interface drawn for, `interface`; 26: a finding's
+  still ignore fields they don't know. Each bump and its reason is on `uistate::V` — now 30: `interface.kind` `wire`; 29: the interface drawn for, `interface`; 26: a finding's
   thread names the session's Claude `claude`; 25: where each thing to read was drawn, `regions[]`; 24: a note's `kind` may be `chat`; 23: where tarae was started
   in a workspace's project, `workspaces[].start`; 22: where the mouse is, `pointer`; 21: the plugins' overlays, `overlays[]`; 20: a key is its shown name (#202): `keys.pending` and
   a card's `answers[].key` say `enter`, `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the

@@ -2314,6 +2314,7 @@ mod tests {
             ("TestRun", "testing.rs"),
             ("Turn", "storewrite.rs"),
             ("Watch", "sandbox.rs"),
+            ("Wire", "attach.rs"),
             ("Within", "whole.rs"),
             ("Working", "event.rs"),
             ("World", "caps/props.rs"),

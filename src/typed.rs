@@ -25,6 +25,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             editor.redraw = true;
             Ok(())
         }
+        "detach" => crate::attach::detach(editor),
         "vs" | "vsplit" | "hs" | "sp" | "hsplit" | "split" => {
             let dir = if cmd.starts_with('v') {
                 crate::split::Dir::Vertical

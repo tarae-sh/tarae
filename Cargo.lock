@@ -1293,6 +1293,7 @@ dependencies = [
  "tarae-testkit",
  "tarae-wasm",
  "tarae-web",
+ "tarae-wire",
  "toml",
  "toml_edit",
  "tree-sitter",

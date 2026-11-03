@@ -66,7 +66,8 @@ use crate::workspace::At;
 /// `follow`): the follow card with the keys (#267).
 /// 29: the interface drawn for (the remote plan's step 3): `interface` is `null` for a host no interface is attached to
 /// (`tarae --host`), else its `kind` (`terminal`) and the last frame it `presented`.
-pub const V: u64 = 29;
+/// 30: `interface.kind` `wire`: an interface attached to a host across its socket (`tarae attach`).
+pub const V: u64 = 30;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -799,6 +800,8 @@ pub enum Iface {
     None,
     /// The terminal tarae runs in, and the last frame it presented.
     Terminal { presented: u64 },
+    /// An interface attached across the socket (`tarae attach`, `attach.rs`), and the last frame it acked.
+    Wire { presented: u64 },
     /// Not said (Claude's level).
     Unsaid,
 }
@@ -808,6 +811,7 @@ impl Iface {
         match self {
             Iface::None => Some(Value::Null),
             Iface::Terminal { presented } => Some(json!({ "kind": "terminal", "presented": presented })),
+            Iface::Wire { presented } => Some(json!({ "kind": "wire", "presented": presented })),
             Iface::Unsaid => None,
         }
     }
@@ -1873,9 +1877,10 @@ impl Editor {
             unfocused: self.unfocused,
             pointer: self.ui_pointer(),
             regions: self.screen.regions.list(),
-            interface: match self.detached {
-                true => Iface::None,
-                false => Iface::Terminal { presented: self.presented },
+            interface: match (self.detached, self.attach.current) {
+                (true, _) => Iface::None,
+                (false, 0) => Iface::Terminal { presented: self.presented },
+                (false, _) => Iface::Wire { presented: self.presented },
             },
         }
     }

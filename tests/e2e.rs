@@ -1492,6 +1492,318 @@ fn an_idle_host_draws_nothing_and_sleeps() {
     assert_eq!(h.output(), "", "nothing printed");
 }
 
+/// Whether a client's terminal was left as it found it: the alternate screen left and the cursor shown, after the last
+/// time it was entered.
+fn restored(raw: &[u8]) -> bool {
+    let entered = rfind(raw, b"\x1b[?1049h").unwrap_or(0);
+    rfind(raw, b"\x1b[?1049l").is_some_and(|l| l > entered)
+        && rfind(raw, b"\x1b[?25h").is_some_and(|s| s > entered)
+}
+
+/// The session's turn state on a host (`doing`: `working`, `idle`, …).
+fn doing(s: &serde_json::Value) -> &str {
+    s["workspaces"][0]["sessions"][0]["doing"].as_str().unwrap_or_default()
+}
+
+/// An attached client (`tarae attach`, the remote plan's step 3) shows the host's screen and its keys are the host's:
+/// typed in it, they're in the host's buffer and counted as its input; the state says the interface is a wire, and
+/// the frames it presented (its acks).
+#[test]
+fn an_attached_client_shows_the_hosts_screen_and_its_keys_reach_it() {
+    let sb = Sandbox::new("attach");
+    sb.write("a.txt", "one\n");
+    let h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    let s = t.wait_state("a frame presented", |s| s["interface"]["presented"].as_u64() > Some(0));
+    assert_eq!(s["interface"]["kind"], "wire", "{s:#}");
+    let input = s["input"].as_u64().unwrap();
+    t.send("ihello");
+    t.wait_text("helloone");
+    let s = t.state_json(input + 6);
+    assert_eq!(s["input"].as_u64(), Some(input + 6), "each key the host's input\n{s:#}");
+    assert_eq!(s["mode"], "insert", "{s:#}");
+    assert_eq!(h.output(), "", "the host prints nothing of its own");
+}
+
+/// `:detach` lets the client go — it exits 0, its terminal restored, saying how to come back — and the host works
+/// on: a stand-in Claude's turn under way as it detached ends meanwhile, and the next attach shows the host whole in
+/// its first frame (the unsaved edit, the turn's answer).
+#[test]
+fn detach_leaves_the_host_working_and_reattach_shows_it_whole() {
+    let sb = Sandbox::new("attach-detach");
+    sb.write("a.txt", "one\n");
+    // (the stand-in claude: its answer 3 s after each message)
+    let fake = "while read -r line; do\n  case \"$line\" in '{\"message\"'*) ;; *) continue;; esac\n  sleep 3\n  \
+                printf '%s\\n' '{\"type\":\"result\",\"result\":\"the-answer\"}'\ndone\n";
+    let script = sb.write("fake-claude.sh", fake);
+    sb.write_config(&format!("{BASE_CONFIG}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\n", script.display()));
+    let h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    t.insert("unsaved ");
+    t.send(" L");
+    t.send("wait for it\r");
+    t.wait_state("the turn under way", |s| doing(s) == "working");
+    // (out of the chat's input: `:` is the editor's in its view mode)
+    t.esc_state("the chat's view mode", |s| s["keys"]["region"] == "view:chat");
+    t.command("detach");
+    assert_eq!(t.wait_exit().code(), Some(0), "{}", t.screen());
+    let raw = t.raw();
+    assert!(
+        restored(&raw),
+        "the client's terminal restored:\n{:?}",
+        String::from_utf8_lossy(&raw[raw.len() - 200..])
+    );
+    t.wait_text("detached — tarae attach comes back");
+    let s = h.wait_state("the turn ended while detached", |s| doing(s) == "idle");
+    assert_eq!(s["interface"], serde_json::Value::Null, "nothing attached\n{s:#}");
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    let s = t.wait_text("the-answer");
+    assert!(s.contains("unsaved one"), "the unsaved edit in the first frames:\n{s}");
+}
+
+/// A client killed (no `Bye`, its socket just gone) leaves the host working, detached; attaching again works.
+#[test]
+fn a_killed_client_leaves_the_host_running() {
+    let sb = Sandbox::new("attach-killed");
+    sb.write("a.txt", "one\n");
+    let mut h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    t.child.kill().unwrap();
+    t.wait_exit();
+    h.wait_state("detached", |s| s["interface"].is_null());
+    assert!(h.running(), "{}", h.output());
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    t.send("ix");
+    t.wait_text("xone");
+}
+
+/// A host killed (a crash: no `Gone`) leaves its client up, saying so on a line of its own over the last frame; `q`
+/// quits it, its terminal restored. The next host offers back the unsaved edit (`recovery.rs`, as after any crash).
+#[test]
+fn a_killed_host_leaves_the_client_saying_so() {
+    let sb = Sandbox::new("attach-host-killed");
+    sb.write("a.txt", "alpha\n");
+    let mut h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("alpha");
+    t.insert("unsaved-edit ");
+    // (kept after a pause in typing — waited for where it's written)
+    let deadline = std::time::Instant::now() + sb.timeout();
+    while recovery_copies(&sb).is_empty() {
+        assert!(std::time::Instant::now() < deadline, "no copy of the unsaved buffer was kept");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.child.kill().unwrap();
+    h.wait_exit();
+    t.wait_text("the host ended");
+    assert!(t.running(), "the client outlives its host");
+    t.send("q");
+    assert_eq!(t.wait_exit().code(), Some(0));
+    assert!(restored(&t.raw()), "the client's terminal restored");
+    let h = sb.host(&["a.txt"]);
+    let s = h.wait_state("the recovery card", |s| {
+        s["cards"].as_array().into_iter().flatten().any(|c| c["kind"] == "recover")
+    });
+    assert_eq!(sb.read("a.txt"), "alpha\n", "never written\n{s:#}");
+}
+
+/// A host ended by SIGTERM (`:q!`, recovery kept) with an edit its client typed unsaved: the client is told it quit and
+/// exits 0, its terminal restored; the next host offers the edit back.
+#[test]
+fn a_sigtermed_host_keeps_what_its_client_typed() {
+    let sb = Sandbox::new("attach-sigterm");
+    sb.write("a.txt", "alpha\n");
+    let mut h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("alpha");
+    t.insert("typed-there ");
+    h.signal(libc::SIGTERM);
+    assert!(h.wait_exit().success(), "{}", h.output());
+    assert_eq!(t.wait_exit().code(), Some(0), "the client told the host quit\n{}", t.screen());
+    assert!(restored(&t.raw()), "the client's terminal restored");
+    assert_eq!(sb.read("a.txt"), "alpha\n", "never written");
+    let h = sb.host(&["a.txt"]);
+    h.wait_state("the recovery card", |s| {
+        s["cards"].as_array().into_iter().flatten().any(|c| c["kind"] == "recover")
+    });
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    focus_card(&mut t, "the recovery card", |c| c["kind"] == "recover");
+    t.send("y");
+    t.wait_text("typed-there alpha");
+}
+
+/// A second attach takes over: the first client is told and exits 0, its terminal restored; the second draws whole and
+/// its keys are the host's.
+#[test]
+fn a_second_attach_takes_over() {
+    let sb = Sandbox::new("attach-twice");
+    sb.write("a.txt", "one\n");
+    let h = sb.host(&["a.txt"]);
+    let mut first = Term::attach(&sb, &h, COLS, ROWS);
+    first.wait_text("one");
+    let mut second = Term::attach(&sb, &h, COLS, ROWS);
+    second.wait_text("one");
+    assert_eq!(first.wait_exit().code(), Some(0));
+    first.wait_text("taken over by another tarae attach");
+    assert!(restored(&first.raw()), "the first client's terminal restored");
+    second.send("ix");
+    second.wait_text("xone");
+}
+
+/// `tarae attach` typed in the host's own terminal panel is refused (it would draw the host inside itself), said where
+/// it was typed; the client attached stays.
+#[test]
+fn an_attach_is_refused_from_inside_the_hosts_own_terminal() {
+    let sb = Sandbox::new("attach-inside");
+    sb.write("a.txt", "one\n");
+    let h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    t.send(" T");
+    t.wait_for("the shell", |s| s.contains("$ ") || s.contains("# "));
+    t.send(&format!("'{BIN}' attach --pid {}\r", h.pid()));
+    t.wait_text("own terminal panel");
+    let s = t.state_json(0);
+    assert_eq!(s["interface"]["kind"], "wire", "the client attached stays\n{s:#}");
+    assert!(t.running());
+}
+
+/// An attach in another protocol's words is refused at its `Hello`, the refusal naming both builds.
+#[test]
+fn a_wrong_version_is_refused() {
+    use std::io::{Read, Write};
+    let sb = Sandbox::new("attach-version");
+    let h = sb.host(&[]);
+    let real = sb.state().join("ui").join(format!("{}.attach", h.pid()));
+    // (by a link at a short path: the real one may be past `sun_path`)
+    let at = sb.socket("attach");
+    std::os::unix::fs::symlink(&real, &at).unwrap();
+    let mut s = std::os::unix::net::UnixStream::connect(&at).expect("the host's attach socket");
+    let hello = tarae_wire::Hello {
+        v: tarae_wire::V + 1,
+        build: "0.0.0-other".into(),
+        w: 80,
+        h: 24,
+        ground: tarae_wire::Ground::Unsaid,
+        undercurl: false,
+        zellij: false,
+        clipboard: tarae_wire::Clip::None,
+        sound: false,
+        open: false,
+        zone: String::new(),
+        offset: 0,
+    };
+    let mut out = Vec::new();
+    tarae_wire::encode(&tarae_wire::ToHost::Hello(hello), &mut out).unwrap();
+    s.write_all(&out).unwrap();
+    s.set_read_timeout(Some(sb.timeout())).unwrap();
+    let mut got = Vec::new();
+    s.read_to_end(&mut got).unwrap();
+    let mut dec = tarae_wire::Decoder::<tarae_wire::ToInterface>::new();
+    dec.push(&got);
+    match dec.message() {
+        Ok(Some(tarae_wire::ToInterface::Gone { why: tarae_wire::Gone::Refused { said }, .. })) => {
+            assert!(said.contains("0.0.0-other") && said.contains(env!("CARGO_PKG_VERSION")), "{said}");
+        }
+        other => panic!("not refused: {other:?}"),
+    }
+    let _ = fs::remove_file(&at);
+    assert_eq!(h.state_json()["interface"], serde_json::Value::Null);
+}
+
+/// An idle host with a client attached sleeps, both of them: no frame, no event of the host's but its clocks, their
+/// threads' work near nothing (`an_idle_editor_draws_nothing_and_sleeps`, for two processes).
+#[test]
+fn an_idle_attached_host_draws_nothing_and_sleeps() {
+    let sb = Sandbox::new("attach-idle");
+    sb.write("a.txt", "one\n");
+    let mut h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    // Settled: every frame the host drew presented (acked) but the one the ask drew itself (an answer is made after its
+    // frame went to the writer), then that one and the client's own whole-screen redraw after it
+    // (`interface::RESTING_REDRAW`) gone out — its last frame twice that long ago
+    let s = t.wait_state("every frame presented", |s| {
+        s["interface"]["presented"].as_u64().is_some_and(|p| Some(p + 1) >= s["frame"].as_u64())
+            && s.get("starting").is_none()
+    });
+    let deadline = std::time::Instant::now() + sb.timeout();
+    while t.last_frame_at().is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(1000)) {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(POLL);
+    }
+    // (each rest's baseline ask draws a frame of its own, acked after its answer: that ack is the one event it brings)
+    let one_ack = |mut rest: Rest| {
+        if let Some(i) = rest.was.iter().position(|e| e == "an interface's ack") {
+            rest.was.remove(i);
+            rest.events -= 1;
+        }
+        rest
+    };
+    let rest = one_ack(t.rest(&s));
+    assert!(rest.woken().is_none(), "the client and the host's events: {rest}\n{}", h.output());
+    let s = h.state_json();
+    let rest = one_ack(h.rest(&s));
+    assert!(rest.woken().is_none(), "the host: {rest}\n{}", h.output());
+}
+
+/// `:restart` under a client: the host execs its new binary (this same one here), and the client execs itself into it
+/// — the same two processes, the terminal kept — and is attached again, the host as it was.
+#[test]
+fn restart_under_a_client_keeps_the_client() {
+    let sb = Sandbox::new("attach-restart");
+    sb.write(
+        ".tarae.toml",
+        &format!("[editor]\nrestart-build = \"echo built\"\nrestart-binary = \"{BIN}\"\n"),
+    );
+    sb.write("a.txt", "line one\nline two\n");
+    let h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("line one");
+    let (client, host) = (t.pid(), h.pid());
+    t.command("restart");
+    yes_to_restart(&mut t);
+    t.wait_text("Restarted");
+    assert!(t.running(), "the client lives on");
+    assert_eq!((t.pid(), h.pid()), (client, host));
+    let s = t.wait_state("attached again", |s| s["interface"]["kind"] == "wire");
+    assert_eq!(s["tarae"]["pid"], host, "{s:#}");
+    t.send("ix");
+    t.wait_text("xline one");
+}
+
+/// A quit's unwritten lines (`Editor::unwritten`: here the trust store's `n` — what narrows is said when it fails —,
+/// its file a folder) reach the client's terminal, printed once it's restored.
+#[test]
+fn the_quits_unwritten_lines_reach_the_clients_terminal() {
+    let sb = Sandbox::new("attach-unwritten");
+    sb.write(".tarae.toml", "[editor]\nrestart-build = \"echo built\"\n");
+    sb.write("a.txt", "one\n");
+    fs::create_dir_all(sb.state().join("trust.json")).unwrap();
+    let h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    focus_card(&mut t, "the trust card", |c| c["kind"] == "project-trust");
+    t.send("n");
+    t.wait_state("answered", |s| {
+        !s["cards"].as_array().into_iter().flatten().any(|c| c["kind"] == "project-trust")
+    });
+    t.command("q");
+    assert_eq!(t.wait_exit().code(), Some(0));
+    let raw = t.raw();
+    let (left, said) = (rfind(&raw, b"\x1b[?1049l"), rfind(&raw, b"tarae: not written"));
+    assert!(
+        restored(&raw) && said > left,
+        "said after its terminal was restored: {:?}\nthe host's output:\n{}",
+        String::from_utf8_lossy(&raw[raw.len().saturating_sub(300)..]),
+        h.output()
+    );
+}
+
 fn connected(sock: &std::path::Path) -> Option<std::process::Child> {
     let child = std::process::Command::new("/bin/sh")
         .args(["-c", "exec nc -U \"$0\"", &sock.file_name().unwrap().to_string_lossy()])
@@ -1521,7 +1833,7 @@ fn a_driver_reads_where_the_keys_go() {
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("one");
     let s = t.state_json(0);
-    assert_eq!(s["v"], 29, "the schema's version (`uistate::V`)");
+    assert_eq!(s["v"], 30, "the schema's version (`uistate::V`)");
     assert_eq!((s["keys"]["region"].as_str(), s["keys"]["takes"].as_str()), (Some("code"), Some("commands")));
     assert_eq!(s["tarae"]["pid"], t.pid());
     let input = s["input"].as_u64().unwrap();

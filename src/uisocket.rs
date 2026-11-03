@@ -62,8 +62,13 @@ pub fn bind() -> Result<UnixListener, String> {
 /// `<dir>/<pid>.sock`, bound: the folder made or closed (0700, this user's), a dead tarae's socket at that
 /// path replaced (nothing else there is touched), bound under umask 077 and checked.
 pub fn bind_in(dir: &Path, pid: u32) -> Result<UnixListener, String> {
+    bind_named(dir, &format!("{pid}.sock"))
+}
+
+/// `bind_in`'s guards for the socket `name` in `dir` (`<pid>.sock`, a host's `<pid>.attach` — `attach::bind`).
+pub(crate) fn bind_named(dir: &Path, name: &str) -> Result<UnixListener, String> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-    let path = dir.join(format!("{pid}.sock"));
+    let path = dir.join(name);
     let say = |what: &str, e: std::io::Error| format!("{what} {}: {e}", dir.display());
     if let Some(state) = dir.parent() {
         std::fs::create_dir_all(state).map_err(|e| say("can't make", e))?;
@@ -114,7 +119,7 @@ pub fn bind_in(dir: &Path, pid: u32) -> Result<UnixListener, String> {
 
 /// `f` on `path` — from its folder when the path is too long for `sun_path` (single-threaded callers only:
 /// the working folder is the process's).
-fn at<T>(path: &Path, f: impl FnOnce(&Path) -> std::io::Result<T>) -> std::io::Result<T> {
+pub(crate) fn at<T>(path: &Path, f: impl FnOnce(&Path) -> std::io::Result<T>) -> std::io::Result<T> {
     if path.as_os_str().len() < SUN_PATH {
         return f(path);
     }
@@ -310,7 +315,7 @@ fn answer(req: &str, line: &[u32], tx: &crate::event::Tx) -> Value {
 
 /// The peer's user and process.
 #[cfg(target_os = "macos")]
-fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, u32)> {
+pub(crate) fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, u32)> {
     use std::os::fd::AsRawFd;
     let fd = s.as_raw_fd();
     let (mut uid, mut gid) = (0, 0);
@@ -330,7 +335,7 @@ fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, u32)> {
 
 /// The peer's user and process (`SO_PEERCRED`).
 #[cfg(target_os = "linux")]
-fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, u32)> {
+pub(crate) fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, u32)> {
     use std::os::fd::AsRawFd;
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -345,12 +350,12 @@ fn peer_cred(s: &UnixStream) -> std::io::Result<(u32, u32)> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn peer_cred(_s: &UnixStream) -> std::io::Result<(u32, u32)> {
+pub(crate) fn peer_cred(_s: &UnixStream) -> std::io::Result<(u32, u32)> {
     Err(std::io::Error::other("no peer credentials on this system"))
 }
 
 /// `pid` and its parents, up to the first process, pid 1 (launchd, init) included — as far as the OS shows them.
-fn ancestors(pid: u32) -> Vec<u32> {
+pub(crate) fn ancestors(pid: u32) -> Vec<u32> {
     let mut v = vec![pid];
     while v.len() < 64 && v.last() != Some(&1) {
         match crate::procs::read(*v.last().expect("one")).map(|os| os.ppid) {
@@ -506,7 +511,7 @@ fn ask(path: &Path, req: &Value) -> std::io::Result<Value> {
 
 /// Which tarae: `$TARAE_UI`'s (a script run inside one), the only one running, or the one whose session
 /// holds this folder — several and none does: they're listed.
-fn find() -> anyhow::Result<PathBuf> {
+pub(crate) fn find() -> anyhow::Result<PathBuf> {
     if let Some(p) = std::env::var_os("TARAE_UI") {
         return Ok(PathBuf::from(p));
     }
