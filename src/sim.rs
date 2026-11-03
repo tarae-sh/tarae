@@ -41,6 +41,7 @@ mod diskwatch;
 mod folders;
 mod follow_pane;
 mod gitbase;
+mod gittab;
 mod hosts;
 mod hoverrest;
 mod idlecompact;

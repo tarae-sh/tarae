@@ -163,10 +163,12 @@ pub struct Workspace {
     /// The commit message being opened is for ending the session after it (`worktree.rs`).
     pub commit_then_end: bool,
     /// Git work waiting its turn (one at a time), each with whether it rewrites the working tree
-    /// (`gitpanel::git_do_rewriting`) · one running · reads of the status asked for (the latest lands).
+    /// (`gitpanel::git_do_rewriting`) · one running · reads of the status asked for (the latest lands) · the
+    /// last that landed, found or not (below `git_reads`: one is under way — the tab says `reading…`).
     pub git_queue: std::collections::VecDeque<(bool, crate::gitpanel::GitJob)>,
     pub git_busy: bool,
     pub git_reads: u64,
+    pub git_landed: u64,
     /// Current git branch (filled by the watcher thread — for the status line).
     pub git_branch: Option<String>,
     /// The repository's git common folder (a real path), filled by the watcher thread with the branch — what tells
@@ -423,6 +425,7 @@ impl Workspace {
             git_queue: Default::default(),
             git_busy: false,
             git_reads: 0,
+            git_landed: 0,
             git_branch: None,
             git_common: None,
             changed_files: Vec::new(),

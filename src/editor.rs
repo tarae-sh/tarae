@@ -15062,6 +15062,32 @@ mod tests {
     /// own hook runs as git runs it from a terminal: no `GIT_DIR`/`GIT_WORK_TREE` handed to it (`gitrepo`'s
     /// hooked form) — a stand-in that only writes what it was given into the test's own folder.
     #[test]
+    fn git_tab_brought_back_unfocused_reads_its_status() {
+        // (#301: restored on the git tab with the keys in the code, it said "not a git repository" until `space g`)
+        let note = |ed: &Editor| ed.workspace.viewer.sidebar.as_ref().unwrap().empty_note(ed);
+        let repo = git_repo("gitback", &[("a.txt", "one\n")]);
+        let mut ed = editor("");
+        ed.workspace.root = repo.clone();
+        // as `restart::restore_session` brings it back: shown, the keys left where they were
+        ed.sidebar_show(crate::sidebar::Mode::Git);
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        assert_eq!(note(&ed), "reading…");
+        settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
+        assert_eq!(note(&ed), "nothing to commit — the tree is clean");
+        std::fs::remove_dir_all(&repo).ok();
+        // a folder git has no repository for: said once git said so
+        let plain = crate::scratch::Scratch::new("gitback-plain");
+        let mut ed = editor("");
+        ed.workspace.root = plain.to_path_buf();
+        ed.sidebar_show(crate::sidebar::Mode::Git);
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        assert_eq!(note(&ed), "reading…");
+        settle_until(&mut ed, |ed| !ed.git_reading());
+        assert!(ed.workspace.git_status.is_none());
+        assert_eq!(note(&ed), "not a git repository");
+    }
+
+    #[test]
     fn git_tab_stage_commit_discard() {
         let repo = git_repo("gittab", &[("a.txt", "one\n")]);
         std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();

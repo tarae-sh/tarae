@@ -774,6 +774,11 @@ impl Editor {
         self.step(jobs, "git-status", "reading git's status", work, move |ed, r| ed.git_read_landed(read, r));
     }
 
+    /// The git tab's status not read yet: none asked, or the latest still under way.
+    pub(crate) fn git_reading(&self) -> bool {
+        self.workspace.git_reads == 0 || self.workspace.git_landed != self.workspace.git_reads
+    }
+
     /// A status read starting: where it reads, the session's base, and its number (only the latest lands).
     fn git_read(&mut self) -> (PathBuf, Option<String>, u64) {
         let cwd = self.git_cwd();
@@ -790,6 +795,7 @@ impl Editor {
         if read != self.workspace.git_reads {
             return;
         }
+        self.workspace.git_landed = read;
         match result {
             Ok(mut st) => {
                 st.generation = read;

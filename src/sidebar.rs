@@ -374,7 +374,9 @@ impl Sidebar {
             Mode::Outline if self.outline_of.is_none() => "reading…",
             Mode::Outline => "nothing defined here",
             Mode::List => "the list is empty",
-            Mode::Git if ed.workspace.git_status.is_none() => "not a git repository (yet — reading…)",
+            // (`not a git repository` only once git said so: a read under way, or none asked yet, is reading)
+            Mode::Git if ed.workspace.git_status.is_none() && ed.git_reading() => "reading…",
+            Mode::Git if ed.workspace.git_status.is_none() => "not a git repository",
             Mode::Git => "nothing to commit — the tree is clean",
             Mode::Plugin => "nothing to show yet",
         }
@@ -852,6 +854,14 @@ impl Editor {
     /// Every event: follow the editor — open the current file's folders, keep the outline current (worked
     /// out on a worker per document version), and, unfocused, select what the editor is on.
     pub fn sidebar_sync(&mut self) {
+        // The git tab's first read, asked as the tab is there whatever has the keys — one restored, or opened by
+        // another way than `space g` (#301: it waited for `space g`, saying it wasn't a repository meanwhile)
+        if self.workspace.git_reads == 0
+            && self.workspace.git_status.is_none()
+            && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == Mode::Git)
+        {
+            self.git_refresh();
+        }
         let Some(s) = self.workspace.viewer.sidebar.as_mut() else { return };
         let doc = &self.docs[self.current];
         match s.mode {
