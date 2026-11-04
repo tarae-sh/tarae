@@ -1039,6 +1039,35 @@ pub(crate) enum Bringing {
     /// A rebase is under way in its checkout (tarae's or not — taken up then).
     Rebasing(crate::rebase::Stop),
     Refused(String),
+    /// Its preflight passed on `tested`, but its HEAD is `head` now (#373): nothing landed, its card asks for the
+    /// preflight again.
+    Untested {
+        m: crate::rebase::Moved,
+        tested: String,
+        head: String,
+    },
+}
+
+/// A bring after its preflight passed on `tested`: None when HEAD is still that commit (it lands), else what's
+/// there now — a commit made while the preflight ran was never tested, so nothing lands (#373).
+fn untested(
+    root: &Path,
+    name: &str,
+    base: Option<String>,
+    start: &Path,
+    unsaved: &[PathBuf],
+    tested: &str,
+) -> Option<Bringing> {
+    let head = match sha(root, "HEAD") {
+        Ok(head) if head == tested => return None,
+        Ok(head) => head,
+        Err(e) => return Some(Bringing::Refused(e)),
+    };
+    Some(match ready(root, name, base, start, unsaved) {
+        Ok(m) if m.ahead > 0 => Bringing::Untested { m, tested: tested.into(), head },
+        Ok(m) => Bringing::Ready(m),
+        Err(e) => Bringing::Refused(e),
+    })
 }
 
 /// Its base moved since it left it, and it has commits of its own: a rebase first, not a bring — None when
@@ -1096,18 +1125,23 @@ fn ready(
 
 /// Its base moved up to its branch — fast-forward only, in the checkout that has the base (refused if that
 /// one has changes, saved or not, in the files it brings), else the ref alone (on a worker). Refused while a
-/// high-risk change it brings waits for a person's look (`looked`, graded by `rules` — `risk.rs`).
+/// high-risk change it brings waits for a person's look (`looked`, graded by `rules` — `risk.rs`). What moves
+/// there is the commit its preflight tested (`tested`, #373 — `untested` checked HEAD is still it), else HEAD.
 fn bring(
     root: &Path,
     base: Option<String>,
     start: &Path,
     unsaved: &[PathBuf],
+    tested: Option<&str>,
     (looked, rules): (&std::collections::HashSet<crate::risk::Key>, &crate::risk::Rules),
 ) -> Result<Brought, String> {
     let branch = current_branch(root).ok_or("its checkout is on no branch — nothing to bring")?;
     let base = base_or_start(base, start)?;
     let base_tip = local_branch(root, &base)?;
-    let tip = sha(root, "HEAD")?;
+    let tip = match tested {
+        Some(t) => t.to_string(),
+        None => sha(root, "HEAD")?,
+    };
     if tip == base_tip || count(root, &format!("{base_tip}..{tip}")) == 0 {
         return Err(format!("nothing to bring — {branch} has no commits past {base}"));
     }
@@ -2467,7 +2501,7 @@ impl Editor {
     /// quick preflight, then brings: #155, it brought at once). The base moved since: a card offers to rebase
     /// it first (`rebase.rs`). Not while a rebase is under way there.
     pub fn workspace_bring(&mut self, which: &str) -> Result<(), String> {
-        self.bringing(which, How::Card, None)
+        self.bringing(which, How::Card, None, None)
     }
 
     /// `workspace_bring` — `proposed`: `session_act bring`, the card it raises carrying that (`orchestra::carry`), or
@@ -2477,19 +2511,45 @@ impl Editor {
         which: &str,
         proposed: Option<crate::orchestra::Proposal>,
     ) -> Result<(), String> {
-        self.bringing(which, How::Card, proposed)
+        self.bringing(which, How::Card, proposed, None)
     }
 
     /// The bring card's `y` (or its preflight passed): its base moved up to its branch, fast-forward only (a
     /// worker).
     pub(crate) fn workspace_bring_now(&mut self, which: &str) -> Result<(), String> {
-        self.bringing(which, How::Now, None)
+        self.bringing(which, How::Now, None, None)
+    }
+
+    /// Its preflight passed on commit `tested` (`Workspace.bring_tested`, read as it began): that commit brought —
+    /// or, HEAD moved since, nothing, its card asking for the preflight again (#373).
+    pub(crate) fn workspace_bring_tested(
+        &mut self,
+        which: &str,
+        tested: Option<String>,
+    ) -> Result<(), String> {
+        self.bringing(which, How::Now, None, tested)
+    }
+
+    /// The bring card again for session `id`, its HEAD moved from `tested` to `head` while its preflight ran: nothing
+    /// landed, the card says so and its `y` runs the preflight again (#373).
+    pub(crate) fn bring_untested_card(
+        &mut self,
+        id: WorkspaceId,
+        m: crate::rebase::Moved,
+        tested: &str,
+        head: &str,
+    ) {
+        let mut quick = None;
+        self.with_workspace(id, |ed| quick = ed.preflight_quick());
+        let (root, base) = (m.root.clone(), m.base.clone());
+        let card = m.untested_card(quick, tested, head);
+        crate::codereview::push_bring_card(self, id, card, root, base);
     }
 
     /// The bring queue's one under way, looked at as `:workspace-bring` does — what's found goes to the queue
     /// (`bring_queue_looked`), never a card.
     pub(crate) fn bringing_queued(&mut self, id: WorkspaceId) -> Result<(), String> {
-        self.bringing(&id.to_string(), How::Queue, None)
+        self.bringing(&id.to_string(), How::Queue, None, None)
     }
 
     /// A bring into `base` landed (session `landed`'s): the other sessions waiting with a card that brings into
@@ -2528,6 +2588,7 @@ impl Editor {
         which: &str,
         how: How,
         proposed: Option<crate::orchestra::Proposal>,
+        tested: Option<String>,
     ) -> Result<(), String> {
         let (id, name) = self.session_named(which)?;
         if id == WorkspaceId::HOME {
@@ -2579,8 +2640,15 @@ impl Editor {
                 None if !now => {
                     ready(&root, &who, base, &start, &unsaved).map_or_else(Bringing::Refused, Bringing::Ready)
                 }
-                None => bring(&root, base, &start, &unsaved, (&looked, &rules))
-                    .map_or_else(Bringing::Refused, Bringing::Brought),
+                None => {
+                    let moved = tested
+                        .as_deref()
+                        .and_then(|t| untested(&root, &who, base.clone(), &start, &unsaved, t));
+                    moved.unwrap_or_else(|| {
+                        bring(&root, base, &start, &unsaved, tested.as_deref(), (&looked, &rules))
+                            .map_or_else(Bringing::Refused, Bringing::Brought)
+                    })
+                }
             },
         };
         self.step(self.events.shared_jobs(), "session", said, work, move |ed, result| {
@@ -2680,6 +2748,7 @@ impl Editor {
                         ed.set_error(format!("bring {name}: {e}"));
                     }
                 }
+                Bringing::Untested { m, tested, head } => ed.bring_untested_card(id, m, &tested, &head),
                 Bringing::Refused(e) => {
                     if let Some(p) = proposed.filter(|_| !proposed_up(ed, &checkout)) {
                         crate::orchestra::no_card(ed, p, e.clone());
@@ -7639,6 +7708,113 @@ mod tests {
             "{}",
             said(&ed)
         );
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #373: a bring lands the commit its preflight tested, never HEAD as the bring runs. `feat`'s preflight makes a
+    /// commit while it runs (as one made in the git tab) and passes: nothing lands, its bring card says so, warned,
+    /// and its `y` runs the preflight again — never a bring anyway — which lands what's there now.
+    #[test]
+    fn a_bring_lands_only_the_commit_its_preflight_tested() {
+        let (repo, dir) = place("bring-tested");
+        let mut ed = editor(&repo, &dir);
+        let script = dir.join("check.sh");
+        let mid =
+            "git -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null commit -q --allow-empty -m mid";
+        std::fs::write(&script, format!("{mid}\nexit 0\n")).unwrap();
+        ed.config.preflight = vec![crate::preflight::Step {
+            name: "check".into(),
+            cmd: format!("sh '{}'", script.display()),
+            note: None,
+            from: ".tarae.toml".into(),
+            full: false,
+        }];
+        let wt = new_session(&mut ed, "feat");
+        std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+        git_in(&wt, &["add", "-A"]);
+        git_in(&wt, &["commit", "-qm", "add b"]);
+        let (main, tested) = (git_in(&repo, &["rev-parse", "main"]), git_in(&wt, &["rev-parse", "HEAD"]));
+        feed(&mut ed, ":workspace-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "{}", said(&ed));
+        feed(&mut ed, "y");
+        let untested = |ed: &Editor| {
+            card(ed, "Bring feat into main")
+                .is_some_and(|o| o.question.contains("moved while its preflight ran"))
+        };
+        settle_until(&mut ed, untested);
+        let head = git_in(&wt, &["rev-parse", "HEAD"]);
+        assert_ne!(head, tested, "a commit made while it ran");
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), main, "nothing landed: {}", said(&ed));
+        let o = card(&ed, "Bring feat into main").unwrap();
+        let line = format!(
+            "feat moved while its preflight ran — it tested {}, feat is at {} now. Nothing brought: {} wasn't tested.",
+            &tested.trim()[..7],
+            &head.trim()[..7],
+            &head.trim()[..7]
+        );
+        assert_eq!(o.question.lines().nth(1), Some(line.as_str()), "{}", o.question);
+        assert_eq!(
+            (o.warning.clone(), o.warnings.is_empty()),
+            (Some(1..2), true),
+            "warned, never the failed card"
+        );
+        // Its `y`: the preflight again, on what's there now — which lands
+        std::fs::write(&script, "exit 0\n").unwrap();
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "{}", said(&ed));
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| says(ed, "Brought ") || says(ed, "not brought"));
+        assert!(says(&ed, "Brought 2 commits of feat into main"), "{}", said(&ed));
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), head);
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #373 in the bring queue: `a`'s HEAD moves while its preflight runs (stood in for, `Queue.stand_in`) — it
+    /// passes, but nothing of `a` lands: it's out, said, its bring card up asking for the preflight again; `b` goes on
+    /// and lands.
+    #[test]
+    fn the_bring_queue_lands_only_the_commit_its_preflight_tested() {
+        use crate::bringqueue::Stage;
+        let (repo, dir) = place("bring-queue-tested");
+        let mut ed = editor(&repo, &dir);
+        ed.bring_queue.stand_in = true;
+        let (mut ids, mut wts) = (Vec::new(), Vec::new());
+        for name in ["a", "b"] {
+            let wt = new_session(&mut ed, name);
+            std::fs::write(wt.join(format!("{name}.txt")), "x\n").unwrap();
+            git_in(&wt, &["add", "-A"]);
+            git_in(&wt, &["commit", "-qm", name]);
+            ids.push(ed.workspace.id);
+            wts.push(wt);
+        }
+        ed.workspace_switch(WorkspaceId::HOME);
+        let main = git_in(&repo, &["rev-parse", "main"]);
+        let at = |ed: &Editor, i: usize| ed.bring_queue_at(ids[i]);
+        queue_of(&mut ed, &ids, &["a", "b"]);
+        settle_until(&mut ed, |ed| at(ed, 0) == Some(Stage::Preflight));
+        git_in(&wts[0], &["commit", "-q", "--allow-empty", "-m", "mid"]);
+        ed.with_workspace(ids[0], |ed| ed.rebase_preflight_done(true, "quick preflight"));
+        let untested = |ed: &Editor| {
+            let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+            ed.offers.iter().chain(parked).any(|o| {
+                o.title == "Bring a into main" && o.question.contains("a moved while its preflight ran")
+            })
+        };
+        settle_until(&mut ed, |ed| untested(ed) && at(ed, 1) == Some(Stage::Preflight));
+        assert_eq!(git_in(&repo, &["rev-parse", "main"]), main, "nothing of a landed: {}", said(&ed));
+        assert!(
+            says(
+                &ed,
+                "Bring queue: a not brought — a moved while its preflight ran — its card asks to run it again"
+            ),
+            "{}",
+            said(&ed)
+        );
+        ed.with_workspace(ids[1], |ed| ed.rebase_preflight_done(true, "quick preflight"));
+        queue_over(&mut ed);
+        assert_eq!(git_in(&repo, &["log", "-1", "--format=%s", "main"]), "b", "{}", said(&ed));
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }

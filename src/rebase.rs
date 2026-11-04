@@ -133,6 +133,36 @@ impl Moved {
         card
     }
 
+    /// The bring card again once its preflight passed but its HEAD moved since that preflight began (#373: a commit
+    /// made in the git tab while it ran): nothing landed — what lands is the commit tested (`tested`), never another
+    /// — and `y` runs the preflight again on what's there now (`head`), said in the warning colour.
+    pub fn untested_card(&self, quick: Option<Vec<String>>, tested: &str, head: &str) -> Offer {
+        let (base, branch, them) = (&self.base, &self.branch, if self.ahead == 1 { "it" } else { "them" });
+        let short = |s: &str| s.get(..7).unwrap_or(s).to_string();
+        let q = format!(
+            "Run {} again, then bring {them} into {base}?\n\
+             {branch} moved while its preflight ran — it tested {}, {branch} is at {} now. Nothing brought: {} \
+             wasn't tested.\n{} on {base}'s tip. A failed preflight stops here.",
+            preflight_said(&quick),
+            short(tested),
+            short(head),
+            short(head),
+            crate::worktree::commits(self.ahead),
+        );
+        let mut card = Offer::new(
+            format!("Bring {branch} into {base}"),
+            &q,
+            "Bringing…",
+            format!("Couldn't bring {branch}"),
+            What::Rebased(Box::new(self.clone())),
+        );
+        card.decided = Some(0..1);
+        // (`warning`, not `warnings`: those make it the failed card, its `y` a bring anyway with no preflight)
+        card.warning = Some(1..2);
+        steps_folded(&mut card, quick);
+        card
+    }
+
     /// The bring card once the preflight its `p` ran (`title`) failed: what's decided is a bring anyway (its
     /// first paragraph, `y bring anyway`), and the risk — the first test that failed and its panic line — in the
     /// warning colour, up front (frictions29 91: at the card's foot, under the passing card's words, a driver read
@@ -2439,8 +2469,11 @@ impl Editor {
     pub(crate) fn rebase_preflight_done(&mut self, passed: bool, title: &str) {
         // (taken whatever happens: one left from a preflight that didn't start isn't the next one's)
         let card = self.workspace.bring_card_after.take();
+        // (what it tested is what lands, never HEAD as the bring runs — #373)
+        let mut tested = None;
         if passed {
-            (self.workspace.bring_failed, self.workspace.bring_tested) = (None, None);
+            self.workspace.bring_failed = None;
+            tested = self.workspace.bring_tested.take();
         }
         if !std::mem::take(&mut self.workspace.bring_after_preflight) {
             return;
@@ -2463,7 +2496,7 @@ impl Editor {
         // (said as landing until it has: the preflight's end and the bring's start one instant — #321)
         // (a rebase there gets its card instead, nothing landing)
         self.workspace.bring_landing = self.bring_queue_at(id).is_none() && self.workspace.rebase.is_none();
-        if let Err(e) = self.workspace_bring_now(&id.to_string()) {
+        if let Err(e) = self.workspace_bring_tested(&id.to_string(), tested) {
             self.workspace.bring_landing = false;
             // (the queue's one under way: out, the next going on — else it waited at its bring for good)
             match self.bring_queue_at(id) {

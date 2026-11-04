@@ -2,8 +2,9 @@
 //! their base one after another on its tip — each rebased onto it when it moved (`rebase_check`, as the rebase card's
 //! `y`), its quick preflight run there, then brought (fast-forward only, as the bring card's `y`); the next starts
 //! once one lands. One `y` for the queue (`What::BringQueue`). A conflict, a failed or declined preflight, changes
-//! not in a commit, a fast-forward refused twice — that one is out, said, and the rest go on; its own card (the
-//! rebase's, the held one's) stays as a single bring has it.
+//! not in a commit, a fast-forward refused twice, its HEAD moved while its preflight ran (what lands is the commit
+//! tested, #373) — that one is out, said, and the rest go on; its own card (the rebase's, the held one's, the bring
+//! card asking for the preflight again) stays as a single bring has it.
 //!
 //! `space W`: `m` marks the row in hand (again: unmarks) — the order marked is the order brought — and `B` asks to
 //! bring the marked ones. The queue is the editor's, not a session's: one at a time, whatever's in front.
@@ -322,23 +323,14 @@ impl Editor {
             Bringing::Ready(m) if m.ahead == 0 => {
                 self.bring_queue_out(id, format!("nothing to bring — no commits past {}", m.base));
             }
-            Bringing::Ready(_) => {
-                self.bring_queue_stage(id, Stage::Preflight);
-                let mut failed = None;
-                let stands_in = self.bring_queue_stands_in();
-                self.with_workspace(id, |ed| {
-                    ed.workspace.bring_after_preflight = true;
-                    if stands_in {
-                        return;
-                    }
-                    if let Err(e) = ed.preflight_start(crate::preflight::Set::Quick) {
-                        ed.workspace.bring_after_preflight = false;
-                        failed = Some(e);
-                    }
+            // (the commit its preflight tests read first, as a single bring's `p` has it: that one lands, or none —
+            // #373)
+            Bringing::Ready(m) => {
+                let root = m.root;
+                self.events.shared_jobs().spawn(move || {
+                    let head = crate::worktree::sha(&root, "HEAD").ok();
+                    move |ed: &mut Editor| ed.bring_queue_preflight_start(id, head)
                 });
-                if let Some(e) = failed {
-                    self.bring_queue_out(id, format!("its preflight didn't start: {e}"));
-                }
             }
             // (one tarae didn't start: taken up, its card up — as a single bring has it)
             Bringing::Rebasing(stop) => {
@@ -351,7 +343,31 @@ impl Editor {
                 self.bring_queue_out(id, "a rebase is under way there — its card".into());
             }
             Bringing::Refused(e) => self.bring_queue_out(id, e),
-            Bringing::Brought(_) => {}
+            // (a look brings nothing)
+            Bringing::Brought(_) | Bringing::Untested { .. } => {}
+        }
+    }
+
+    /// The one under way (`id`), still looked at, its HEAD read (`head`): its quick preflight on that commit.
+    fn bring_queue_preflight_start(&mut self, id: WorkspaceId, head: Option<String>) {
+        if self.bring_queue_at(id) != Some(Stage::Looking) {
+            return;
+        }
+        self.bring_queue_stage(id, Stage::Preflight);
+        let mut failed = None;
+        let stands_in = self.bring_queue_stands_in();
+        self.with_workspace(id, |ed| {
+            (ed.workspace.bring_after_preflight, ed.workspace.bring_tested) = (true, head);
+            if stands_in {
+                return;
+            }
+            if let Err(e) = ed.preflight_start(crate::preflight::Set::Quick) {
+                ed.workspace.bring_after_preflight = false;
+                failed = Some(e);
+            }
+        });
+        if let Some(e) = failed {
+            self.bring_queue_out(id, format!("its preflight didn't start: {e}"));
         }
     }
 
@@ -378,6 +394,13 @@ impl Editor {
         }
         let why = match found {
             Bringing::Brought(_) => return,
+            // (its HEAD moved while its preflight ran: out, its card asking for the preflight again — #373)
+            Bringing::Untested { m, tested, head } => {
+                let why =
+                    format!("{} moved while its preflight ran — its card asks to run it again", m.branch);
+                self.bring_untested_card(id, m, &tested, &head);
+                return self.bring_queue_out(id, why);
+            }
             Bringing::Moved(m) => format!("{} moved again while it was checked", m.base),
             Bringing::Refused(e) => e,
             Bringing::Ready(m) => format!("not brought into {}", m.base),
