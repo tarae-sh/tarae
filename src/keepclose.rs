@@ -4,7 +4,8 @@
 //! - **The base watched**: a thread per base (its repository's git folder and branch — `watch`), its loose ref and
 //!   `packed-refs`, the tip read from those files (no git run); the first read is the baseline. Never in tests: they
 //!   say a tip by `tip`, as the watch's job does.
-//! - **On a move**: an overlap round on the new tip (`overlap::ask`, no tree taken again), then a look at every
+//! - **On a move**: an overlap round on the new tip at once (`overlap::tip_moved`, no tree taken again; the HEAD move
+//!   of the checkout on that branch, heard before or after, holds no quiet — #368), then a look at every
 //!   workspace on that base (`look`, a worker): how far behind and ahead, its changes in no commit, its instruction
 //!   files behind the main checkout's — and where it would conflict, from that round (`Editor.overlap.now`).
 //! - **One card for all of them** (`What::BaseMoved`, the person's one decision for every workspace — what would
@@ -471,7 +472,7 @@ pub fn tip(ed: &mut Editor, base: Base, tip: String) {
     if ed.overlap.dir.is_none() || ed.workspaces.is_empty() {
         return look(ed, &base);
     }
-    crate::overlap::ask(ed);
+    crate::overlap::tip_moved(ed, base);
 }
 
 /// An overlap round landed (`seq`: begun as the `seq`th): each base's move it predicts on looked at.

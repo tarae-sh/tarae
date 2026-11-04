@@ -527,6 +527,120 @@ fn still(ed: &Editor, w: &World) -> Result<(), String> {
     owed(ed, w)
 }
 
+/// #368: main commits and tarae hears it twice — the git watch's HEAD move of the main checkout, and the base watch's
+/// new tip — here the HEAD move first; the rounds, their quiet and a frame's work landing between them in the seed's
+/// order. The round the card is looked at from (the first begun after the tip) waits no quiet past the tip's news —
+/// due as it's armed, or by then — and the card comes.
+#[test]
+fn a_base_moves_card_waits_no_quiet_when_its_head_move_is_heard_first() {
+    let name = "a_base_moves_card_waits_no_quiet_when_its_head_move_is_heard_first";
+    super::seeds(name, HEARD_SEEDS, |c| heard(name, c, true));
+}
+
+/// #368, the other order: the tip first — its round landed before the HEAD move comes, or not yet begun.
+#[test]
+fn a_base_moves_card_waits_no_quiet_when_its_tip_is_heard_first() {
+    let name = "a_base_moves_card_waits_no_quiet_when_its_tip_is_heard_first";
+    super::seeds(name, HEARD_SEEDS, |c| heard(name, c, false));
+}
+
+/// Of seeds 0–7, each order's every case: the tip's round begun before the HEAD move lands and after it, and the
+/// HEAD move's own quiet over before the tip comes and not.
+const HEARD_SEEDS: &[u64] = &[0, 1, 2, 3, 4, 5, 6, 7];
+
+/// main, fix and up as `walked` has them, the quiet as tarae has it (`QUIET`), settled; then main's commit heard as
+/// two inputs — the HEAD move and the tip, `head_first` or not — each as its watch's job lands, racing in one walk
+/// or apart (the first's rounds landed before the second), by seed.
+fn heard(name: &str, choices: Choices, head_first: bool) -> Vec<String> {
+    let mut sim = Sim::new(name, choices, LIMIT);
+    let world = super::sessions::World::new();
+    let main = std::fs::canonicalize(&world.repo).unwrap();
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.root = main.clone();
+    ed.workspace.name = "main".into();
+    crate::git::watched(&mut ed.workspace, "main");
+    ed.overlap.dir = Some(world.dir.join("overlap"));
+    for (name, root) in &world.sessions {
+        let id = ed.workspace_add(std::fs::canonicalize(root).unwrap());
+        let l = ed.workspace_by_id(id).unwrap();
+        l.base = Some("main".into());
+        crate::git::watched(l, name);
+    }
+    let common = crate::gitrepo::repo(&main).unwrap().common_dir.clone();
+    let base = (common.clone(), "main".to_string());
+    crate::keepclose::tip(&mut ed, base.clone(), tip_of(&main));
+    let print = |ed: &Editor| {
+        let q: Vec<String> =
+            ed.overlap.waited.iter().map(|(a, d)| format!("{}ms", (*d - *a).as_millis())).collect();
+        let card = card(ed).map_or("none".into(), |o| format!("#{}", o.id));
+        format!("card {card} · rounds' quiets [{}] · waiting {}", q.join(" "), crate::overlap::waiting(ed))
+    };
+    // (the workspaces' first round, over before main moves)
+    sim.batch(&mut ed, Event::Job(Box::new(|ed: &mut Editor| ed.unchanged = true)));
+    sim.walk(&mut ed, 0, |_, _| unreachable!(), |_| Ok(()), print);
+    let before = ed.overlap.started;
+    std::fs::write(main.join("main.txt"), "moved\n").unwrap();
+    super::sessions::git(&main, &["add", "main.txt"]);
+    super::sessions::git(&main, &["commit", "-q", "-m", "moved"]);
+    let t = tip_of(&main);
+    // (the rounds begun before the tip was heard, and when it was: the card is looked at from the next)
+    let after = std::cell::Cell::new(None);
+    let mut heard = 0;
+    let input = |sim: &mut Sim, ed: &mut Editor| {
+        heard += 1;
+        let head = (heard == 1) == head_first;
+        let job: Box<dyn FnOnce(&mut Editor) + Send> = match head {
+            true => {
+                let (dir, common) = (main.clone(), Some(common.clone()));
+                Box::new(move |ed: &mut Editor| {
+                    crate::git::watch_round(ed, &dir, (Some("main".into()), common), true)
+                })
+            }
+            false => {
+                after.set(Some((ed.overlap.started, crate::clock::now())));
+                let (base, t) = (base.clone(), t.clone());
+                Box::new(move |ed: &mut Editor| crate::keepclose::tip(ed, base, t))
+            }
+        };
+        sim.batch(ed, Event::Job(job));
+        match head {
+            true => "main's HEAD moved".into(),
+            false => "main's tip moved".into(),
+        }
+    };
+    // (racing: both in one walk; apart: all the first brought on landed before the second)
+    let mut input = input;
+    match sim.choices.below(2) {
+        0 => sim.walk(&mut ed, 2, &mut input, |_| Ok(()), print),
+        _ => {
+            sim.walk(&mut ed, 1, &mut input, |_| Ok(()), print);
+            sim.walk(&mut ed, 1, &mut input, |_| Ok(()), print);
+        }
+    }
+    let (after, at) = after.get().unwrap();
+    let waited = ed.overlap.waited.clone();
+    let came = card(&ed).is_some();
+    sim.at_end(|| {
+        if !came {
+            return Err("main moved and no card came".into());
+        }
+        match waited.get(after as usize) {
+            Some((armed, due)) if *due <= at.max(*armed) => Ok(()),
+            Some((armed, due)) => Err(format!(
+                "the round the card is looked at from was due {:?} after the tip was heard (armed {:?} after)",
+                *due - at,
+                armed.saturating_duration_since(at),
+            )),
+            None => Err(format!("no round began after the tip ({before} before main moved)")),
+        }
+    });
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    drop(ed);
+    drop(world);
+    trace
+}
+
 fn print(ed: &Editor) -> String {
     let moving = ed.keep_close.moving.map(|id| format!(" · moving {id}")).unwrap_or_default();
     format!(

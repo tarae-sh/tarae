@@ -3,7 +3,10 @@
 //! early.
 //!
 //! A round (one `shared_jobs` job, on a worker — never git on the main thread) once a workspace's tree moved
-//! (`Workspace.wrote`: a save, Claude's edit, a change set; its HEAD moved) and stayed quiet `QUIET`:
+//! (`Workspace.wrote`: a save, Claude's edit, a change set; its HEAD moved) and stayed quiet `QUIET` — but a HEAD move
+//! a base's tip move explains (the checkout on that branch) holds no quiet: git writes the tree before the ref, and a
+//! tip move's round starts at once whichever of the two tarae heard first (#368: the base moved card came 0.6 s or
+//! 3.7 s after a commit by which arrived first):
 //! 1. each moved workspace's working tree as a commit on its HEAD (`snapshot::snap_apart` + `commit-tree`) — its
 //!    index and every object git writes in a folder of tarae's own (`Folder`, in tarae's cache), the repository's
 //!    objects read as an alternate: nothing is written in the repository, and the folder goes when the workspace
@@ -202,8 +205,11 @@ struct Place {
     folder: Arc<Folder>,
     /// `Workspace.wrote` as last seen.
     wrote: Option<Instant>,
-    /// Moved since it was last taken — when (`clock`): it's taken once it has been still `quiet`.
+    /// Written since it was last taken — when (`clock`): it's taken once it has been still `quiet`.
     moved: Option<Instant>,
+    /// Its HEAD moved since it was last taken (`moved`) — when: still `quiet` as a write is, unless a base's tip move
+    /// explains it (`tips`).
+    head: Option<Instant>,
     snap: Option<Snap>,
     /// Takes failed in a row since its last change (`TRIES`).
     tries: u8,
@@ -219,8 +225,21 @@ pub struct State {
     /// A round's wait (the quiet) or the round itself under way.
     waiting: bool,
     running: bool,
-    /// A round asked with nothing moved (`ask`: a base's tip moved — `keepclose.rs`).
+    /// A round asked with nothing moved (`ask`, `tip_moved`: a base's tip moved — `keepclose.rs`).
     asked: bool,
+    /// The bases whose tip moved since a round last began (`tip_moved`): a checkout on one of those branches whose
+    /// HEAD moved is that move as git ended it — its HEAD move holds no quiet (#368).
+    tips: Vec<(PathBuf, String)>,
+    /// The wait in flight: when it ends, and its number — a wait due sooner takes its place, the one it replaced
+    /// landing as nothing (`arm`).
+    due: Option<Instant>,
+    waits: u64,
+    /// Each round's wait, by its number less one: when it was armed and when it was due (simulations: #368's two
+    /// orders).
+    #[cfg(test)]
+    pub waited: Vec<(Instant, Instant)>,
+    #[cfg(test)]
+    armed: Option<(Instant, Instant)>,
     /// Rounds begun since tarae started — a round's number is this as it began (`keepclose::landed`).
     pub started: u64,
     /// Merges worked out, by the two commits — those of the last round only.
@@ -251,6 +270,13 @@ impl Default for State {
             waiting: false,
             running: false,
             asked: false,
+            tips: Vec::new(),
+            due: None,
+            waits: 0,
+            #[cfg(test)]
+            waited: Vec::new(),
+            #[cfg(test)]
+            armed: None,
             started: 0,
             merges: HashMap::new(),
             dir: match cfg!(test) {
@@ -281,7 +307,7 @@ impl State {
             |l: &crate::workspace::Workspace| self.places.get(&l.id).is_some_and(|p| p.wrote == l.wrote);
         !self.waiting
             && !self.running
-            && self.places.values().all(|p| p.moved.is_none() && p.snap.is_some())
+            && self.places.values().all(|p| p.moved.is_none() && p.head.is_none() && p.snap.is_some())
             && sessions(ed).all(seen)
     }
 
@@ -293,7 +319,8 @@ impl State {
         if ed.workspaces.is_empty() || !sessions(ed).all(seen) {
             return None;
         }
-        let moved = self.places.iter().find(|(_, p)| p.moved.is_some()).map(|(id, _)| *id);
+        let moved =
+            self.places.iter().find(|(_, p)| p.moved.is_some() || p.head.is_some()).map(|(id, _)| *id);
         moved
             .filter(|_| !self.waiting && !self.running)
             .map(|id| format!("session {id} moved, no round coming"))
@@ -323,6 +350,7 @@ pub fn sync(ed: &mut Editor) {
             folder: Arc::new(Folder::new(folder_of(&dir, &root))),
             wrote,
             moved: Some(now),
+            head: None,
             snap: None,
             tries: 0,
         });
@@ -341,36 +369,81 @@ pub fn moved(ed: &mut Editor, dir: &Path) {
     let ids: Vec<WorkspaceId> = sessions(ed).filter(|l| l.root.starts_with(dir)).map(|l| l.id).collect();
     for id in ids {
         if let Some(p) = ed.overlap.places.get_mut(&id) {
-            p.moved = Some(now);
+            p.head = Some(now);
             p.tries = 0;
         }
     }
 }
 
-/// A round with no tree taken again — a base's tip moved (`keepclose.rs`): each take reads its base's tip anew.
+/// A round with no tree taken again (simulations: the disk's room back): each take reads its base's tip anew.
+#[cfg(test)]
 pub fn ask(ed: &mut Editor) {
     ed.overlap.asked = true;
     arm(ed);
 }
 
-/// The quiet waited for, on a worker, while a workspace has moved (or a round was asked) and no round waits or runs.
+/// `base`'s tip moved (`keepclose.rs`): a round at once — no tree to wait for in a commit, and the HEAD move of the
+/// checkout on that branch, heard before or after, is that move as git ended it (the tree written before the ref).
+/// A write anywhere still holds its quiet.
+pub fn tip_moved(ed: &mut Editor, base: (PathBuf, String)) {
+    if !ed.overlap.tips.contains(&base) {
+        ed.overlap.tips.push(base);
+    }
+    ed.overlap.asked = true;
+    arm(ed);
+}
+
+/// When workspace `l`'s tree last stirred, as the quiet counts it: its last write, and its HEAD's move unless a base's
+/// tip move explains it (its checkout on that branch).
+fn stirred(o: &State, l: &crate::workspace::Workspace) -> Option<Instant> {
+    let p = o.places.get(&l.id)?;
+    let on_tip = |(common, branch): &(PathBuf, String)| {
+        l.git_common.as_ref() == Some(common) && l.git_branch.as_deref() == Some(branch.as_str())
+    };
+    let head = p.head.filter(|_| !o.tips.iter().any(on_tip));
+    p.moved.max(head)
+}
+
+/// The last stir of every workspace (`stirred`).
+fn last_stirred(ed: &Editor) -> Option<Instant> {
+    sessions(ed).filter_map(|l| stirred(&ed.overlap, l)).max()
+}
+
+/// The quiet waited for, on a worker, while a workspace has moved (or a round was asked) and no round runs — a wait
+/// due sooner than the one in flight (a tip move explaining a HEAD move) taking its place.
 fn arm(ed: &mut Editor) {
     let o = &ed.overlap;
     // (the disk at its reserve: no round writes its trees until there's room — `diskroom.rs`, then `resume`)
-    if o.waiting || o.running || ed.disk.held().is_some() {
+    if o.running || ed.disk.held().is_some() {
         return;
     }
-    let last = o.places.values().filter_map(|p| p.moved).max();
-    if last.is_none() && !o.asked {
+    let moved = o.places.values().any(|p| p.moved.is_some() || p.head.is_some());
+    if !moved && !o.asked {
         return;
     }
-    let wait = last.map_or(Duration::ZERO, |l| o.quiet.saturating_sub(crate::clock::since(l)));
+    let wait = last_stirred(ed).map_or(Duration::ZERO, |l| o.quiet.saturating_sub(crate::clock::since(l)));
+    let due = crate::clock::now() + wait;
+    if o.waiting && o.due.is_some_and(|d| d <= due) {
+        return;
+    }
     ed.overlap.waiting = true;
+    ed.overlap.due = Some(due);
+    ed.overlap.waits += 1;
+    #[cfg(test)]
+    {
+        ed.overlap.armed = Some((crate::clock::now(), due));
+    }
+    let n = ed.overlap.waits;
     ed.events.shared_jobs().spawn(move || {
         crate::event::sleep(wait);
-        |ed: &mut Editor| {
-            ed.overlap.waiting = false;
+        move |ed: &mut Editor| {
             ed.unchanged = true;
+            // (one due sooner took its place)
+            if ed.overlap.waits != n {
+                return;
+            }
+            ed.overlap.waiting = false;
+            ed.overlap.due = None;
             start(ed);
         }
     });
@@ -404,8 +477,7 @@ fn start(ed: &mut Editor) {
     if ed.workspaces.is_empty() {
         return;
     }
-    let stirring =
-        ed.overlap.places.values().any(|p| p.moved.is_some_and(|m| crate::clock::since(m) < quiet));
+    let stirring = last_stirred(ed).is_some_and(|m| crate::clock::since(m) < quiet);
     if stirring {
         return arm(ed);
     }
@@ -423,17 +495,23 @@ fn start(ed: &mut Editor) {
             root: l.root.clone(),
             base,
             folder: p.folder.clone(),
-            take: p.moved.is_some() || p.snap.is_none(),
+            take: p.moved.is_some() || p.head.is_some() || p.snap.is_none(),
             had: p.snap.clone(),
             max: ed.overlap.objects_max,
         });
     }
     // (taken now — one whose take fails is moved again as it lands: `landed`)
     for p in ed.overlap.places.values_mut() {
-        p.moved = None;
+        (p.moved, p.head) = (None, None);
     }
     ed.overlap.running = true;
     ed.overlap.asked = false;
+    ed.overlap.tips.clear();
+    #[cfg(test)]
+    {
+        let now = crate::clock::now();
+        ed.overlap.waited.push(ed.overlap.armed.unwrap_or((now, now)));
+    }
     ed.overlap.started += 1;
     let seq = ed.overlap.started;
     let merges = ed.overlap.merges.clone();
