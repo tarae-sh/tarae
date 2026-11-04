@@ -574,7 +574,7 @@ pub fn reader(ed: &mut Editor, rest: &str) -> Result<(), String> {
 }
 
 /// `:web-open`: the page's own address — http(s) only, nothing else of it — handed to the interface's opener
-/// (`Facts.opener`: the terminal's `open`, `xdg-open` on a worker; an attached interface's machine, asked across its
+/// (`Facts.opener`: the terminal's, `opener_here`, on a worker; an attached interface's machine, asked across its
 /// wire — `attach::ask`); what it says when it fails said.
 pub fn web_open(ed: &mut Editor) -> Result<(), String> {
     use crate::interface::Opener;
@@ -613,6 +613,27 @@ pub fn web_open(ed: &mut Editor) -> Result<(), String> {
     }
 }
 
+/// What opens an address in a browser on this machine (the terminal's `Facts.opener`, an attached client's `Ask::Open`):
+/// macOS `open`; WSL `wslview` where it's on PATH, else Windows' `explorer.exe` (never `cmd.exe /c start`, whose `&`
+/// would split an address); else `xdg-open`.
+pub fn opener_here() -> &'static str {
+    let on_path = |p: &str| {
+        std::env::var_os("PATH").is_some_and(|v| std::env::split_paths(&v).any(|d| d.join(p).is_file()))
+    };
+    let macos = cfg!(target_os = "macos");
+    opener(macos, !macos && crate::clipboard::wsl(), on_path)
+}
+
+/// The opener on a machine that's `macos`, `wsl` (else Linux), `has` saying what's on PATH.
+pub(crate) fn opener(macos: bool, wsl: bool, has: impl Fn(&str) -> bool) -> &'static str {
+    match (macos, wsl) {
+        (true, _) => "open",
+        (false, true) if has("wslview") => "wslview",
+        (false, true) => "explorer.exe",
+        (false, false) => "xdg-open",
+    }
+}
+
 /// `program url`, in a session of its own (it never takes the terminal), waited for here on the worker: its last
 /// line of errors where it fails.
 #[cfg(not(test))]
@@ -632,7 +653,8 @@ pub(crate) fn opened_by(program: &str, url: &str) -> Result<(), String> {
         }
     });
     let status = crate::spawn::wait(s.pid).map_err(|e| e.to_string())?;
-    match status.success() {
+    // (explorer.exe exits 1 whether it opened the address or not: its status says nothing)
+    match status.success() || program == "explorer.exe" {
         true => Ok(()),
         false => Err(err
             .lines()

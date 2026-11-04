@@ -425,7 +425,7 @@ pub fn read_here() -> Result<Read, String> {
 }
 
 /// WSL: the Linux side usually has no clipboard tool — use the Windows clipboard.
-fn wsl() -> bool {
+pub(crate) fn wsl() -> bool {
     std::env::var_os("WSL_DISTRO_NAME").is_some()
         || std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .is_ok_and(|s| s.to_lowercase().contains("microsoft"))

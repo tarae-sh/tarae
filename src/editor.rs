@@ -9947,6 +9947,35 @@ mod tests {
         assert_eq!(printed(&mut ed, "claudes"), "cdpath=none");
     }
 
+    /// A command of Claude's carries `TARAE_RUN` (S-E: `tarae attach` refuses under it, sandboxed or not); the user's
+    /// own task never — not even where tarae itself was started under one.
+    #[test]
+    fn claudes_commands_carry_the_run_mark_and_the_users_dont() {
+        let mut ed = editor("");
+        let task = |name: &str| crate::task::Task {
+            name: name.into(),
+            cmd: "echo \"run=${TARAE_RUN-none}\"".into(),
+            cwd: std::env::temp_dir(),
+        };
+        let printed = |ed: &mut Editor, name: &str| {
+            settle_until(ed, |ed| {
+                ed.workspace
+                    .task_run
+                    .as_ref()
+                    .is_some_and(|r| r.task.name == name && r.state != crate::task::State::Running)
+            });
+            let r = ed.workspace.task_run.as_ref().unwrap();
+            r.output.iter().map(|(_, l)| l.clone()).collect::<Vec<_>>().join("\n")
+        };
+        ed.task_start(task("mine"));
+        assert_eq!(printed(&mut ed, "mine"), "run=none", "the user's");
+        assert!(
+            ed.task_start_for(task("claudes"), crate::tools::For::User("t".into()), None, Default::default())
+                .is_ok()
+        );
+        assert_eq!(printed(&mut ed, "claudes"), "run=1", "Claude's");
+    }
+
     /// #27: a card's `a` lets its command (`tools::again` — this exact one, #193) run without asking for the
     /// rest of the chat: the same command the next turn has no card. The card says so.
     #[test]

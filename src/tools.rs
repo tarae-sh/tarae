@@ -2081,6 +2081,19 @@ thread_local! {
 }
 
 /// Runs `command` now (allowed), or once the user says yes on its card — answered when it ends.
+/// Whether command line `cmd` runs `tarae attach`: a word that is tarae (by its last part — `tarae`,
+/// `./target/release/tarae`, quoted or not) with `attach` among the words after it.
+fn runs_tarae_attach(cmd: &str) -> bool {
+    let words: Vec<&str> = cmd
+        .split(|c: char| c.is_whitespace() || ";&|()`$'\"<>{}\\=".contains(c))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words
+        .iter()
+        .enumerate()
+        .any(|(i, w)| w.rsplit('/').next() == Some("tarae") && words[i + 1..].contains(&"attach"))
+}
+
 pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     let cmd =
         args["command"].as_str().map(str::trim).filter(|c| !c.is_empty()).ok_or("command is required")?;
@@ -2098,6 +2111,15 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
             "too long to put to the user: {} — put it in a script file, then run that",
             crossed.join(", and ")
         ));
+    }
+    // (an interface is yours, its keys a host's — in any form, outside the sandbox too: S-E; what the words can't show,
+    // the run's `TARAE_RUN` does)
+    if runs_tarae_attach(cmd) {
+        return Err(
+            "tarae attach is the user's: an interface to a tarae host, its keys and screen — a run of \
+                    Claude's never starts one, outside the sandbox neither. Ask the user to run it"
+                .into(),
+        );
     }
     // Outside the sandbox, or with one socket past it: always asked, with Claude's reason on the card — a
     // check or a read-only command too
@@ -6226,6 +6248,29 @@ mod tests {
             }
         }
         ed.offers.first().map(|o| o.question.clone())
+    }
+
+    /// S-E: `run` refuses any line that runs `tarae attach` — bare, by a path, quoted, after another command or an
+    /// assignment, outside the sandbox too — before any card; lines that only name tarae or attach run as ever.
+    #[test]
+    fn a_run_of_tarae_attach_is_refused_in_any_form() {
+        for cmd in [
+            "tarae attach",
+            "./target/release/tarae attach ssh://mac",
+            "'tarae' --pid 3 attach",
+            "cd x && env A=1 \"/opt/bin/tarae\" attach --stdio",
+            "echo hi; tarae attach",
+        ] {
+            assert!(super::runs_tarae_attach(cmd), "{cmd}");
+        }
+        for cmd in ["tarae state", "grep attach src/tarae.rs", "cargo test attach", "vim tarae.attach"] {
+            assert!(!super::runs_tarae_attach(cmd), "{cmd}");
+        }
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        let args = serde_json::json!({ "command": "tarae attach", "outside_sandbox": true, "reason": "r" });
+        let e = super::run(&mut ed, super::Call::test(1), &args).unwrap_err();
+        assert!(e.starts_with("tarae attach is the user's"), "{e}");
+        assert!(ed.offers.is_empty(), "no card for it");
     }
 
     /// The card `run` puts up for `cmd` (through the worker it asks on, as Claude's call does) — its text.

@@ -25,6 +25,53 @@ pub fn inside() -> bool {
     std::env::var_os("ZELLIJ").is_some()
 }
 
+/// The letters zellij takes in front of an attached client, as it tells its host (`Hello.taken`, S-G): none outside
+/// zellij; inside, `editor.zellij-keys` from your config on this machine — the one setting a client reads. One that
+/// doesn't read gives zellij's defaults, and why (said before the client's terminal is raw, and logged).
+pub fn taken_here() -> (String, Option<String>) {
+    if !inside() {
+        return (String::new(), None);
+    }
+    let Some(path) = crate::config::config_path() else { return letters_in(None, "") };
+    match std::fs::read_to_string(&path) {
+        Ok(src) => letters_in(Some(&src), &crate::allow::tilde(&path)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => letters_in(None, ""),
+        Err(e) => {
+            let (letters, _) = letters_in(None, "");
+            (
+                letters,
+                Some(format!("{}: {e} — zellij's default keys told the host", crate::allow::tilde(&path))),
+            )
+        }
+    }
+}
+
+/// `editor.zellij-keys` as config `src` (`file`'s; None: there's none) sets it, read by the setting's own row — the
+/// letters, and why the defaults where it doesn't read.
+fn letters_in(src: Option<&str>, file: &str) -> (String, Option<String>) {
+    let defaults = |why: Option<String>| (DEFAULT_KEYS.iter().collect(), why);
+    let Some(src) = src else { return defaults(None) };
+    let table: toml::Table = match src.parse() {
+        Ok(t) => t,
+        Err(e) => {
+            let e = e.message().to_string();
+            return defaults(Some(format!(
+                "{file} doesn't read ({e}) — zellij's default keys told the host"
+            )));
+        }
+    };
+    let Some(v) = table.get("editor").and_then(|e| e.get("zellij-keys")) else { return defaults(None) };
+    if !v.is_array() {
+        return defaults(Some(format!(
+            "{file}: editor.zellij-keys isn't a list of letters — zellij's default keys told the host"
+        )));
+    }
+    let row = crate::settings::find("editor.zellij-keys").expect("its row");
+    let mut config = crate::config::EditorConfig::default();
+    (row.set)(&mut config, v);
+    (config.zellij_keys.iter().collect(), None)
+}
+
 /// Whether zellij takes `key` before tarae sees it, zellij taking `letters` with `C-`.
 pub fn takes(key: &Key, letters: &[char]) -> bool {
     key.ctrl && !key.alt && matches!(key.code, Code::Char(c) if letters.contains(&c))
@@ -37,9 +84,10 @@ pub fn said(letters: &[char], ticks: bool) -> String {
 }
 
 impl Editor {
-    /// The letters zellij takes with `C-` (`editor.zellij-keys`).
+    /// The letters zellij takes with `C-`: the interface's own where it told them (a wire's, S-G), else
+    /// `editor.zellij-keys`.
     pub fn zellij_letters(&self) -> &[char] {
-        &self.config.zellij_keys
+        self.interface.taken.as_deref().unwrap_or(&self.config.zellij_keys)
     }
 
     /// Whether the twins are said and zellij takes `key` (as written: `C-q`).

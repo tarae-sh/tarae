@@ -718,8 +718,14 @@ fn shell(editor: &mut Editor, cmd: &str) -> Result<(), String> {
         return Err("usage: :sh <command>".into());
     }
     let (cmd, dir) = (cmd.to_string(), editor.workspace.root.clone());
+    // (an interface attached across a wire is elsewhere: zellij here would act out of its sight — S-G)
+    let held = if editor.attach.current != 0 {
+        zellij_vars(std::env::vars_os().map(|(k, _)| k))
+    } else {
+        Vec::new()
+    };
     editor.events.jobs().spawn(move || {
-        let result = run_shell(&cmd, &dir);
+        let result = run_shell(&cmd, &dir, &held);
         move |ed: &mut Editor| match result {
             Ok(Some(line)) => ed.set_status(line),
             Ok(None) => {}
@@ -729,12 +735,25 @@ fn shell(editor: &mut Editor, cmd: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `:sh`'s command, run by your shell in `dir` (the editor's root).
-fn run_shell(cmd: &str, dir: &std::path::Path) -> Result<Option<String>, String> {
+/// The names among `vars` that are zellij's (`ZELLIJ`, `ZELLIJ_SESSION_NAME`, …): what tells `zellij run` and the
+/// rest which session to act in.
+fn zellij_vars(vars: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    vars.filter(|k| k.as_encoded_bytes().starts_with(b"ZELLIJ")).collect()
+}
+
+/// `:sh`'s command, run by your shell in `dir` (the editor's root), without the variables `held` names.
+fn run_shell(
+    cmd: &str,
+    dir: &std::path::Path,
+    held: &[std::ffi::OsString],
+) -> Result<Option<String>, String> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
     // (the descriptor limit tarae started with — `nofile`)
-    let out =
-        crate::nofile::command(shell, Some(dir)).arg("-c").arg(cmd).output().map_err(|e| e.to_string())?;
+    let mut c = crate::nofile::command(shell, Some(dir));
+    for k in held {
+        c.env_remove(k);
+    }
+    let out = c.arg("-c").arg(cmd).output().map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(if out.status.success() { &out.stdout } else { &out.stderr });
     let first = text.lines().find(|l| !l.trim().is_empty()).map(str::to_string);
     if out.status.success() {
@@ -836,6 +855,15 @@ pub fn shell_words(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `:sh` while a wire interface is attached runs without zellij's variables (S-G): these names, no others.
+    #[test]
+    fn zellijs_variables_are_the_ones_held() {
+        let vars = ["ZELLIJ", "ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID", "PATH", "MY_ZELLIJ"].map(Into::into);
+        let held: Vec<std::ffi::OsString> =
+            ["ZELLIJ", "ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"].map(Into::into).into();
+        assert_eq!(zellij_vars(vars.into_iter()), held);
+    }
 
     #[test]
     fn shell_words_handles_escapes_and_quotes() {

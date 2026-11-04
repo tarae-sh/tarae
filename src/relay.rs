@@ -215,7 +215,7 @@ fn no_host(place: Option<&str>, machine: &str, ui: &Path, gui: bool) -> String {
 }
 
 /// This machine's name.
-fn machine() -> String {
+pub(crate) fn machine() -> String {
     let mut name = [0u8; 256];
     // SAFETY: gethostname writes at most the length given into the buffer.
     if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len() - 1) } != 0 {

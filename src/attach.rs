@@ -297,12 +297,17 @@ fn arrive(ed: &mut Editor, stream: UnixStream, hello: Hello, line: Vec<u32>, dec
         .collect();
     let why = if let Some(p) = line.iter().find(|p| claude.contains(p)) {
         Some(format!("under a process of Claude's (pid {p}) — Claude has a view of its own"))
+    } else if let Some(p) = line.iter().find(|p| shells.contains(p)) {
+        Some(format!(
+            "from inside this host's own terminal panel (pid {p}) — it would draw the host inside itself; \
+             attach from another terminal"
+        ))
     } else {
-        line.iter().find(|p| shells.contains(p)).map(|p| {
-            format!(
-                "from inside this host's own terminal panel (pid {p}) — it would draw the host inside itself; \
-                 attach from another terminal"
-            )
+        // (through ssh the ancestry ends at sshd: the panel is told by what the client says it runs in — S-E)
+        own_panel(&hello.inside, &crate::relay::machine(), crate::uisocket::bound()).then(|| {
+            "from inside this host's own terminal panel (through ssh) — it would draw the host inside itself; \
+             attach from another terminal"
+                .to_string()
         })
     };
     if let Some(why) = why {
@@ -338,6 +343,37 @@ fn arrive(ed: &mut Editor, stream: UnixStream, hello: Hello, line: Vec<u32>, dec
     }
 }
 
+/// Whether `inside` (a `Hello`'s: `machine:socket`) names this host's own terminal panel: its machine `here`, its
+/// state socket `ours` — as written, else as real paths.
+fn own_panel(inside: &str, here: &str, ours: Option<&Path>) -> bool {
+    let (Some((machine, socket)), Some(ours)) = (inside.split_once(':'), ours) else { return false };
+    let socket = Path::new(socket);
+    machine == here
+        && (socket == ours
+            || std::fs::canonicalize(socket).is_ok_and(|s| std::fs::canonicalize(ours).is_ok_and(|o| o == s)))
+}
+
+/// What a tarae terminal panel this process runs in says of it (`Hello.inside`): `machine:socket`, its `TARAE_UI` —
+/// empty where there's none.
+pub fn inside_here() -> String {
+    match std::env::var("TARAE_UI") {
+        Ok(ui) if !ui.is_empty() => format!("{}:{ui}", crate::relay::machine()),
+        _ => String::new(),
+    }
+}
+
+/// Set in every run of Claude's, sandboxed or not (`task::task_spawn`, `testing.rs`): `tarae attach` refuses to run
+/// under it — an interface is yours (S-E).
+pub const RUN: &str = "TARAE_RUN";
+
+/// `cmd` marked as a run of Claude's (`claudes`), else not.
+pub fn mark_run(cmd: &mut std::process::Command, claudes: bool) {
+    match claudes {
+        true => cmd.env(RUN, "1"),
+        false => cmd.env_remove(RUN),
+    };
+}
+
 /// What an interface says of itself in its `Hello`, as the editor reads it: its clipboard, speaker and browser are its
 /// machine's, asked across the wire; the times it shows are told by its offset.
 fn facts_of(h: &Hello) -> Facts {
@@ -350,7 +386,8 @@ fn facts_of(h: &Hello) -> Facts {
             wire::Ground::Light => Some(true),
         },
         undercurl: h.undercurl,
-        zellij: h.zellij,
+        zellij: !h.taken.is_empty(),
+        taken: Some(h.taken.chars().collect()),
         clipboard: match h.clipboard {
             wire::Clip::None => Clip::None,
             wire::Clip::CopyAndPaste => Clip::Wire { paste: true },
@@ -879,4 +916,27 @@ pub fn find(pid: Option<u32>) -> anyhow::Result<(u32, PathBuf)> {
 /// Connects to the attach socket at `path` (a long path from its folder, as the state socket's).
 pub fn connect(path: &Path) -> io::Result<UnixStream> {
     crate::uisocket::at(path, |p: &Path| UnixStream::connect(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An attach whose `Hello.inside` names this host's own panel — this machine, this host's state socket, as written
+    /// or as the same real path — is from inside it; another machine's, another host's socket or none isn't.
+    #[test]
+    fn an_attach_from_this_hosts_own_panel_is_told_by_its_hello() {
+        let dir = crate::scratch::Scratch::new("attach-inside");
+        let ours = dir.path().join("42.sock");
+        std::fs::write(&ours, "").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        let said = |p: &Path| format!("mac:{}", p.display());
+        assert!(own_panel(&said(&ours), "mac", Some(&ours)));
+        assert!(own_panel(&said(&link.join("42.sock")), "mac", Some(&ours)), "the same real path");
+        assert!(!own_panel(&said(&ours), "laptop", Some(&ours)), "another machine's");
+        assert!(!own_panel(&said(&dir.path().join("43.sock")), "mac", Some(&ours)), "another host's");
+        assert!(!own_panel("", "mac", Some(&ours)), "no panel");
+        assert!(!own_panel(&said(&ours), "mac", None), "no socket of its own");
+    }
 }

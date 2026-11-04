@@ -981,6 +981,8 @@ impl Editor {
         if claudes {
             cmd.env_remove("CDPATH");
         }
+        // (Claude's, sandboxed or not: `tarae attach` refuses under it — an interface is yours)
+        crate::attach::mark_run(&mut cmd, claudes);
         // (Claude's: the prefix its containers are named from, stopped with it — `containers.rs`)
         let containers = claudes.then(|| crate::containers::prefix(self.workspace.id, trace.id()));
         match &containers {

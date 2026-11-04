@@ -23,6 +23,9 @@ pub struct Facts {
     pub undercurl: bool,
     /// It runs inside zellij: a hinted key zellij takes is said by its twin (`zellij.rs`).
     pub zellij: bool,
+    /// The letters that zellij takes, as the interface's own machine names them (a wire's `Hello.taken`, S-G: the
+    /// laptop's zellij config may differ from the host's) — None: this machine's `editor.zellij-keys`.
+    pub taken: Option<Vec<char>>,
     /// Where a copy or paste goes: this machine's way (`clipboard::pick` — its programs looked for on PATH at each
     /// copy), or the interface's, asked across its wire (`attach::ask`).
     pub clipboard: crate::clipboard::Clip,

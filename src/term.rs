@@ -72,9 +72,11 @@ pub fn terminal(light: Option<bool>) -> Interface {
         light: light.or_else(|| light_background(var, query_background)),
         undercurl: undercurl_in(var),
         zellij: crate::zellij::inside(),
+        // (this machine's config: `editor.zellij-keys`)
+        taken: None,
         clipboard: crate::clipboard::Clip::Here(crate::clipboard::Env::here()),
         sound: crate::interface::Speaker::Here,
-        opener: crate::interface::Opener::Here(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }),
+        opener: crate::interface::Opener::Here(crate::web::page::opener_here()),
         zone: crate::log::Zone::Here,
         // (what's written to it is on its screen)
         presents_late: false,
@@ -31379,7 +31381,7 @@ mod tests {
     const HAND_TIMES: &[(&str, usize)] = &[
         ("attach.rs", 2),                 // limits as given: an interface's answer waited for
         ("chat.rs", 1),                   // a tool call's own `wait` argument, as Claude gave it
-        ("client.rs", 1),                 // a limit as given: the host's `Welcome` waited for
+        ("client.rs", 2),                 // limits as given: the host's `Welcome` waited for, S-F's window
         ("commands.rs", 1),               // a plural
         ("limits.rs", 1),                 // the plan's next try, a time to come
         ("nav.rs", 4),                    // plurals

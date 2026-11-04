@@ -8,7 +8,7 @@ use crate::codec::{Error, Get, Message, Put, bad_tag};
 /// builds may differ, across two machines they mostly do). It goes up with any change to what the other side reads:
 /// a message's bytes, `Code`'s and `MouseKind`'s order, the escapes a frame is written in — all of it pinned by
 /// tarae's `src/snapshots/wire.txt`.
-pub const V: u16 = 1;
+pub const V: u16 = 2;
 
 /// This build, as `Hello` and `Welcome` tell it: the version, the commit its sources are at and a `+` where they
 /// differ from it (`build.rs`). Said, never checked.
@@ -61,8 +61,9 @@ pub struct Hello {
     pub h: u16,
     pub ground: Ground,
     pub undercurl: bool,
-    /// Inside zellij: the keys it takes first have their twins.
-    pub zellij: bool,
+    /// The letters zellij takes with `C-` before the interface's keys reach it, as its own machine's config names them
+    /// (`g q p n s t h o b` by default) — their hints say their twins. Empty: not inside zellij.
+    pub taken: String,
     pub clipboard: Clip,
     pub sound: bool,
     /// It can open an address in a browser.
@@ -70,6 +71,10 @@ pub struct Hello {
     /// An IANA zone's name (may be empty) and its offset now, seconds east of UTC.
     pub zone: String,
     pub offset: i32,
+    /// The tarae terminal panel the interface runs in, if any: `machine:socket` — its machine's name and the state
+    /// socket its `TARAE_UI` names. A host refuses its own (an attach typed in its panel, through ssh: ancestry ends at
+    /// sshd). Empty: none.
+    pub inside: String,
 }
 
 /// The terminal's ground, as its OSC 11 answer said.
@@ -262,12 +267,13 @@ impl Message for ToHost {
                 w.u16(h.h);
                 w.u8(h.ground as u8);
                 w.bool(h.undercurl);
-                w.bool(h.zellij);
+                w.str(&h.taken);
                 w.u8(h.clipboard as u8);
                 w.bool(h.sound);
                 w.bool(h.open);
                 w.str(&h.zone);
                 w.i32(h.offset);
+                w.str(&h.inside);
             }
             ToHost::Input { seq, seen, event } => {
                 w.u64(*seq);
@@ -328,7 +334,7 @@ impl Message for ToHost {
                     t => return bad_tag("a ground", t),
                 },
                 undercurl: r.bool()?,
-                zellij: r.bool()?,
+                taken: r.str()?,
                 clipboard: match r.u8()? {
                     0 => Clip::None,
                     1 => Clip::CopyAndPaste,
@@ -339,6 +345,7 @@ impl Message for ToHost {
                 open: r.bool()?,
                 zone: r.str()?,
                 offset: r.i32()?,
+                inside: r.str()?,
             }),
             0x02 => ToHost::Input { seq: r.u64()?, seen: r.u64()?, event: get_input(r)? },
             0x03 => ToHost::Resize { w: r.u16()?, h: r.u16()? },

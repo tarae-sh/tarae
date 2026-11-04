@@ -4362,7 +4362,8 @@ static DEVICE_PLACES: std::sync::LazyLock<Vec<&'static str>> =
 /// the user, 2026-10-02) — so "localhost but these" can't be written. Beyond this machine tarae's proxy refuses
 /// them at every host unless a rule of `llm.sandbox-hosts` names the host with the port (`Egress::names_port`).
 /// `docs/claude-integration.md` lists them (a test checks).
-pub const RISKY_PORTS: [(u16, &str); 10] = [
+pub const RISKY_PORTS: [(u16, &str); 11] = [
+    (22, "sshd — a shell as you, an attach to a tarae host's keys among what it runs"),
     (2375, "Docker API — starts containers that mount any folder"),
     (2376, "Docker API over TLS — the same"),
     (4243, "Docker API on its old port — the same"),
@@ -6029,6 +6030,7 @@ const SET_IN_RUNS: &[&str] = &[
     "npm_config_update_notifier",
     "NO_COLOR",
     "TARAE_UI",
+    crate::attach::RUN,
     crate::containers::VAR,
 ];
 
@@ -6935,6 +6937,14 @@ mod tests {
     }
 
     /// The docs say which local ports are closed and why — every one of them.
+    #[test]
+    fn sshds_port_is_risky_and_said_on_the_localhost_card() {
+        // (S-E: `ssh localhost` from a run is a shell as you — no key or agent reaches a run, and this is the belt)
+        assert!(RISKY_PORTS.iter().any(|(p, _)| *p == 22), "22 isn't risky");
+        let risk = crate::allow::Grant::Localhost.risk().unwrap();
+        assert!(risk.contains("22 sshd"), "{risk}");
+    }
+
     #[test]
     fn the_docs_name_every_risky_port() {
         let doc = include_str!("../docs/claude-integration.md");

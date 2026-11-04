@@ -15,8 +15,17 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// The log's name in the state folder, where it isn't tarae's own (`own`).
+static NAME: OnceLock<&'static str> = OnceLock::new();
+
 pub fn path() -> Option<PathBuf> {
-    crate::config::state_dir().map(|d| d.join("tarae.log"))
+    crate::config::state_dir().map(|d| d.join(NAME.get().copied().unwrap_or("tarae.log")))
+}
+
+/// This process's log is `name`, not `tarae.log` — before its first line: an attached client (`attach.log`, #376) on
+/// the host's machine started its log afresh, the host's moved to `.old` under it.
+pub fn own(name: &'static str) {
+    let _ = NAME.set(name);
 }
 
 /// Whether `p` is the log — open, it's followed quietly (a toast about it would be logged, change the file
@@ -58,7 +67,8 @@ fn keep(path: &Path, rx: Receiver<Entry>, cap: usize) {
     let _ = std::fs::rename(path, path.with_extension("log.old"));
     let Ok(mut file) = std::fs::File::create(path) else { return };
     let (y, mo, d, h, m, sec) = now();
-    let started = format!("tarae {} · started {y}-{mo:02}-{d:02} {h:02}:{m:02}:{sec:02}", tarae_wire::BUILD);
+    let who = if NAME.get().is_some() { "tarae attach" } else { "tarae" };
+    let started = format!("{who} {} · started {y}-{mo:02}-{d:02} {h:02}:{m:02}:{sec:02}", tarae_wire::BUILD);
     let _ = write!(file, "{started}\n\n");
     let mut kept = Kept::new(cap);
     while let Ok(first) = rx.recv() {

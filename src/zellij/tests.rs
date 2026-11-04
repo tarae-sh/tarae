@@ -374,6 +374,35 @@ fn the_keys_zellij_takes_are_the_settings() {
     }
 }
 
+/// An attached interface's letters are its own machine's (`Hello.taken`, S-G): its zellij's session on `C-y` twins `C-y`
+/// and leaves the chat's `C-o` alone, whatever this host's `editor.zellij-keys` says; with none told, the host's.
+#[test]
+fn an_attached_interfaces_letters_are_its_own_machines() {
+    let mut ed = editor(true);
+    assert!(ed.twinned("C-o") && !ed.twinned("C-y"), "the host's: zellij's defaults");
+    ed.interface.taken = Some("gqpnsythb".chars().collect());
+    assert!(!ed.twinned("C-o") && ed.twinned("C-y"), "the interface's");
+    assert_eq!(ed.zellij_letters(), ['g', 'q', 'p', 'n', 's', 'y', 't', 'h', 'b']);
+}
+
+/// A client reads `editor.zellij-keys` from its own machine's config, the one setting it reads: as the setting's row
+/// reads it; none there (no file, no such key) zellij's defaults unsaid; one that doesn't read the defaults, said.
+#[test]
+fn a_clients_letters_come_from_its_own_config() {
+    let defaults: String = DEFAULT_KEYS.iter().collect();
+    assert_eq!(letters_in(None, "c"), (defaults.clone(), None));
+    assert_eq!(letters_in(Some("[editor]\ntheme = \"x\"\n"), "c"), (defaults.clone(), None));
+    let mine = "[editor]\nzellij-keys = [\"g\", \"Q\", \"y\", \"long\"]\n";
+    assert_eq!(letters_in(Some(mine), "c"), ("gqy".into(), None), "as the row reads it");
+    assert_eq!(letters_in(Some("[editor]\nzellij-keys = []\n"), "c"), (String::new(), None));
+    let (letters, why) = letters_in(Some("[editor\n"), "~/.config/tarae/config.toml");
+    assert_eq!(letters, defaults);
+    assert!(why.is_some_and(|w| w.starts_with("~/.config/tarae/config.toml doesn't read (")));
+    let (letters, why) = letters_in(Some("[editor]\nzellij-keys = \"gq\"\n"), "c");
+    assert_eq!(letters, defaults);
+    assert!(why.is_some_and(|w| w.contains("isn't a list of letters")));
+}
+
 /// The keymap's twin: the shortest key of the mode bound to the same, none of it zellij's — none when it has
 /// no other; the palette says it inside zellij only.
 #[test]

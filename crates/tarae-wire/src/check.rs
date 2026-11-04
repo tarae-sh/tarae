@@ -48,12 +48,13 @@ pub fn to_host() -> Vec<ToHost> {
         h: 34,
         ground: Ground::Dark,
         undercurl: true,
-        zellij: false,
+        taken: String::new(),
         clipboard: Clip::CopyAndPaste,
         sound: true,
         open: false,
         zone: "Asia/Seoul".into(),
         offset: 9 * 3600,
+        inside: String::new(),
     };
     let mut m = vec![
         ToHost::Hello(hello.clone()),
@@ -64,7 +65,13 @@ pub fn to_host() -> Vec<ToHost> {
             offset: -18000,
             ..hello.clone()
         }),
-        ToHost::Hello(Hello { ground: Ground::Light, clipboard: Clip::CopyOnly, ..hello }),
+        ToHost::Hello(Hello {
+            ground: Ground::Light,
+            clipboard: Clip::CopyOnly,
+            taken: "gqpnsthyb".into(),
+            inside: "mac:/Users/u/.local/state/tarae/ui/4242.sock".into(),
+            ..hello
+        }),
     ];
     let codes = [
         Code::Char('a'),

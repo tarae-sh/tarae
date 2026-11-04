@@ -76,6 +76,16 @@ impl Failed {
 
 /// `tarae attach [--pid PID | ssh://… [--remote-tarae PATH]]`; `--stdio …` the relay (`relay.rs`).
 pub fn main(args: &[String]) -> anyhow::Result<()> {
+    // (a client's log is its own: on the host's machine it never starts the host's afresh — #376)
+    crate::log::own("attach.log");
+    // (never under a run of Claude's, sandboxed or not, nor its relay: an interface's keys are the person's — S-E)
+    if std::env::var_os(crate::attach::RUN).is_some() {
+        anyhow::bail!(
+            "tarae attach doesn't run under a run of Claude's ({} is set) — an interface is yours: run it in a \
+             terminal of your own",
+            crate::attach::RUN
+        );
+    }
     if args.iter().any(|a| a == "--stdio") {
         crate::relay::main(args);
     }
@@ -132,8 +142,15 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
             Way::Here { pid, path }
         }
     };
+    // (the letters zellij takes here, from this machine's config — one that doesn't read said while it can be read)
+    let (taken, said) = crate::zellij::taken_here();
+    if let Some(said) = said {
+        eprintln!("tarae attach: {said}");
+        crate::log::line("attach", "warn", &said);
+    }
+    let me = Me { ground, taken, inside: crate::attach::inside_here() };
     let wait = restarted.then_some(RESTART_WAIT);
-    let (link, dec) = match attach_to(&mut way, ground, wait, false) {
+    let (link, dec) = match attach_to(&mut way, &me, wait, false) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("tarae attach: {}", e.said);
@@ -175,7 +192,8 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
         back,
         try_n: 0,
         back_from: None,
-        ground,
+        me,
+        prompted: None,
         to,
         ssh,
         link_n: 0,
@@ -208,7 +226,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
         }
         End::Exec(bin) => {
             use std::os::unix::process::CommandExt;
-            let g = match c.ground {
+            let g = match c.me.ground {
                 wire::Ground::Unsaid => "0",
                 wire::Ground::Dark => "1",
                 wire::Ground::Light => "2",
@@ -230,6 +248,16 @@ enum End {
     Failed(String),
     /// Into the restarted host's binary.
     Exec(PathBuf),
+}
+
+/// What this client says of itself in each `Hello` besides its size and zone, read once at its start.
+#[derive(Clone)]
+struct Me {
+    ground: wire::Ground,
+    /// The letters zellij takes here (`zellij::taken_here`; empty: not inside zellij).
+    taken: String,
+    /// The tarae terminal panel it runs in (`attach::inside_here`; empty: none).
+    inside: String,
 }
 
 /// Where the host is.
@@ -322,14 +350,9 @@ fn connect_here(path: &Path, wait: Option<Duration>) -> Result<UnixStream, Strin
 }
 
 /// The way opened, the host's `Hello` said and its `Welcome` in. What came after the `Welcome` stays in the decoder.
-fn attach_to(
-    way: &mut Way,
-    ground: wire::Ground,
-    wait: Option<Duration>,
-    batch: bool,
-) -> Result<Attached, Failed> {
+fn attach_to(way: &mut Way, me: &Me, wait: Option<Duration>, batch: bool) -> Result<Attached, Failed> {
     let mut link = open_way(way, wait, batch).map_err(Failed::said)?;
-    match greet(&mut link, ground) {
+    match greet(&mut link, me) {
         Ok(dec) => Ok((link, dec)),
         Err(mut e) => {
             let ssh_said = link.ssh.as_ref().and_then(|s| s.last_line());
@@ -344,7 +367,7 @@ fn attach_to(
 
 /// `Hello` said on `link`, the host's `Welcome` read within `WELCOME_WITHIN` — in the protocol this speaks (S-C: the
 /// version is the rule on both sides, the builds only told).
-fn greet(link: &mut Link, ground: wire::Ground) -> Result<Decoder<ToInterface>, Failed> {
+fn greet(link: &mut Link, me: &Me) -> Result<Decoder<ToInterface>, Failed> {
     let (w, h) = crate::term::size().unwrap_or((80, 24));
     let v = crate::attach::said_v();
     let hello = Hello {
@@ -352,9 +375,9 @@ fn greet(link: &mut Link, ground: wire::Ground) -> Result<Decoder<ToInterface>, 
         build: wire::BUILD.into(),
         w,
         h,
-        ground,
+        ground: me.ground,
         undercurl: crate::term::undercurl_here(),
-        zellij: crate::zellij::inside(),
+        taken: me.taken.clone(),
         // (this machine's clipboard, speaker and browser, the host's to ask: a clipboard with no program here is this
         // terminal's — a copy by OSC 52, a paste said)
         clipboard: wire::Clip::CopyAndPaste,
@@ -363,6 +386,7 @@ fn greet(link: &mut Link, ground: wire::Ground) -> Result<Decoder<ToInterface>, 
         open: true,
         zone: std::env::var("TZ").unwrap_or_default(),
         offset: offset_now(),
+        inside: me.inside.clone(),
     };
     let said = |s: String| Err(Failed::said(s));
     let gone = |said: String| Err(Failed { said, gone: true });
@@ -452,7 +476,10 @@ struct Client {
     try_n: u32,
     /// Down since then, until the new link's first frame is presented (the wake-to-a-live-frame measure, logged).
     back_from: Option<std::time::Instant>,
-    ground: wire::Ground,
+    me: Me,
+    /// When an input of the person's last went to the host: what it asks of this machine (a copy, a paste, an
+    /// address opened) is answered only within `PROMPTED_WITHIN` of it (S-F).
+    prompted: Option<std::time::Instant>,
     /// The link's end toward the host (its other end is `listen`'s thread's).
     to: Box<dyn Write + Send>,
     /// ssh while it's the way.
@@ -651,6 +678,9 @@ impl Client {
                         self.ping(now);
                     }
                     if let Some(event) = crate::attach::input_of(ev) {
+                        if prompts(&event) {
+                            self.prompted = Some(now);
+                        }
                         self.seq += 1;
                         let _ = send(&mut self.to, &ToHost::Input { seq: self.seq, seen: self.seen, event });
                     }
@@ -696,9 +726,9 @@ impl Client {
     /// A try at the way back on a thread of its own, asking nothing (`wait`: the relay waits for the host's socket).
     fn start_try(&mut self, wait: Option<Duration>) {
         self.try_n += 1;
-        let (n, tx, mut way, ground) = (self.try_n, self.tx.clone(), self.way.clone(), self.ground);
+        let (n, tx, mut way, me) = (self.try_n, self.tx.clone(), self.way.clone(), self.me.clone());
         crate::event::thread("tarae-wire-back", move || {
-            let got = attach_to(&mut way, ground, wait, true);
+            let got = attach_to(&mut way, &me, wait, true);
             let _ = tx.send(Heard::Tried(n, Box::new((way, got))));
         });
     }
@@ -709,7 +739,7 @@ impl Client {
         // (a try under way is let go: its answer comes to an older number)
         self.try_n += 1;
         let _ = crate::term::terminal_end();
-        let got = attach_to(&mut self.way, self.ground, None, false);
+        let got = attach_to(&mut self.way, &self.me, None, false);
         let _ = crate::term::terminal_begin();
         let mut out = Vec::new();
         self.held.whole(&mut out);
@@ -783,6 +813,11 @@ impl Client {
                 }
             }),
             ToInterface::Ask { id, ask } => {
+                if let Some(refused) = unprompted(&ask, self.prompted, crate::clock::now()) {
+                    crate::log::line("attach", "info", &format!("the host's {ask:?}: {refused:?}"));
+                    let _ = send(&mut self.to, &ToHost::Answer { id, answer: refused });
+                    return None;
+                }
                 let tx = self.tx.clone();
                 crate::event::thread("tarae-wire-ask", move || {
                     let (answer, osc) = asked(ask);
@@ -824,10 +859,45 @@ impl Client {
         {
             (*pid, *path) = (p, at);
         }
-        let (link, dec) = attach_to(&mut self.way, self.ground, wait, true)?;
+        let (link, dec) = attach_to(&mut self.way, &self.me, wait, true)?;
         self.take(link, dec);
         Ok(())
     }
+}
+
+/// How long after an input of the person's the host may use this machine's clipboard or browser (S-F).
+const PROMPTED_WITHIN: Duration = Duration::from_secs(5);
+
+/// Whether `event` is the person's act, which may ask for a copy, a paste or an address opened: a key, a press or a
+/// drag, a paste — not the wheel, the pointer resting, nor a focus (the laptop opened).
+fn prompts(event: &wire::Input) -> bool {
+    use wire::MouseKind as K;
+    match event {
+        wire::Input::Key(_) | wire::Input::Paste(_) => true,
+        wire::Input::Mouse(m) => matches!(m.kind, K::Down | K::Drag | K::Up | K::Middle),
+        wire::Input::Hover { .. } | wire::Input::Focus(_) => false,
+    }
+}
+
+/// `ask` refused, its answer, where no input of the person's went to the host within `PROMPTED_WITHIN` before `now`
+/// (`last`): a host never reads or sets this machine's clipboard, nor opens its browser, unprompted (S-F).
+fn unprompted(
+    ask: &wire::Ask,
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Option<wire::Answer> {
+    if last.is_some_and(|t| now.saturating_duration_since(t) <= PROMPTED_WITHIN) {
+        return None;
+    }
+    let what = match ask {
+        wire::Ask::Copy(_) => "a copy",
+        wire::Ask::Paste => "a paste",
+        wire::Ask::Open(_) => "an address opened",
+    };
+    Some(wire::Answer::Failed(format!(
+        "refused by the attached interface — it answers {what} only within {} s of a key pressed there, and none was",
+        PROMPTED_WITHIN.as_secs()
+    )))
 }
 
 /// What the host asked of this machine done here, on a thread of its own (a clipboard program, a browser waited for):
@@ -856,7 +926,7 @@ fn asked(ask: wire::Ask) -> (wire::Answer, Vec<u8>) {
             (wire::Answer::Failed("only http(s) addresses are opened".into()), Vec::new())
         }
         wire::Ask::Open(url) => {
-            let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+            let program = crate::web::page::opener_here();
             match open(program, &url) {
                 Ok(()) => (wire::Answer::Opened, Vec::new()),
                 Err(e) => (wire::Answer::Failed(format!("{program}: {e}")), Vec::new()),
@@ -880,4 +950,39 @@ fn write_out(bytes: &[u8]) -> io::Result<()> {
     let mut out = io::stdout().lock();
     out.write_all(bytes)?;
     out.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S-F: what the host asks of this machine (a copy, a paste, an address opened) is answered only within 5 s of the
+    /// person's own input — a key, a press or a drag, a paste; never after the wheel, the pointer resting or a focus
+    /// alone, never with none at all — refused in words that say why.
+    #[test]
+    fn the_host_reaches_this_machine_only_within_5_s_of_a_key() {
+        let now = crate::clock::now();
+        let asks =
+            [wire::Ask::Copy("x".into()), wire::Ask::Paste, wire::Ask::Open("https://tarae.sh".into())];
+        for ask in &asks {
+            assert_eq!(unprompted(ask, Some(now - Duration::from_secs(4)), now), None, "{ask:?}");
+            assert_eq!(unprompted(ask, Some(now - PROMPTED_WITHIN), now), None, "{ask:?}: at 5 s");
+            for last in [None, Some(now - Duration::from_millis(5001))] {
+                let Some(wire::Answer::Failed(said)) = unprompted(ask, last, now) else {
+                    panic!("{ask:?} after {last:?} answered")
+                };
+                assert!(said.contains("only within 5 s of a key pressed there"), "{said}");
+            }
+        }
+        let key = wire::Key { code: wire::Code::Char('y'), ctrl: false, alt: false, shift: false };
+        let mouse = |kind| wire::Input::Mouse(wire::Mouse { kind, x: 0, y: 0, alt: false, ctrl: false });
+        for yes in [wire::Input::Key(key), wire::Input::Paste("p".into()), mouse(wire::MouseKind::Up)] {
+            assert!(prompts(&yes), "{yes:?}");
+        }
+        for no in
+            [wire::Input::Focus(true), wire::Input::Hover { x: 1, y: 1 }, mouse(wire::MouseKind::ScrollDown)]
+        {
+            assert!(!prompts(&no), "{no:?}");
+        }
+    }
 }

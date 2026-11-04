@@ -673,6 +673,8 @@ impl Editor {
         crate::task::color_off(&mut cmd);
         // (Claude's: the prefix its containers are named from, stopped with it — `containers.rs`)
         let claudes = acts == crate::spawn::Acts::Claude;
+        // (Claude's, sandboxed or not: `tarae attach` refuses under it — an interface is yours)
+        crate::attach::mark_run(&mut cmd, claudes);
         let containers = claudes.then(|| crate::containers::prefix(self.workspace.id, trace.id()));
         match &containers {
             Some(p) => cmd.env(crate::containers::VAR, p),

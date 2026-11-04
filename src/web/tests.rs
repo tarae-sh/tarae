@@ -5,6 +5,18 @@ use super::{Prefer, read};
 use crate::test_results::settle_until;
 use std::path::{Path, PathBuf};
 
+/// What opens an address here: macOS `open`; WSL `wslview` where it's there, else `explorer.exe` (never `cmd.exe`);
+/// Linux `xdg-open`.
+#[test]
+fn the_opener_is_this_machines() {
+    use super::page::opener;
+    let has = |names: &'static [&'static str]| move |p: &str| names.contains(&p);
+    assert_eq!(opener(true, false, has(&["xdg-open"])), "open");
+    assert_eq!(opener(false, true, has(&["wslview", "xdg-open"])), "wslview");
+    assert_eq!(opener(false, true, has(&["xdg-open"])), "explorer.exe");
+    assert_eq!(opener(false, false, has(&[])), "xdg-open");
+}
+
 fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/web")
 }

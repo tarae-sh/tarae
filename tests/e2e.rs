@@ -1698,12 +1698,13 @@ fn a_wrong_version_is_refused() {
         h: 24,
         ground: tarae_wire::Ground::Unsaid,
         undercurl: false,
-        zellij: false,
+        taken: String::new(),
         clipboard: tarae_wire::Clip::None,
         sound: false,
         open: false,
         zone: String::new(),
         offset: 0,
+        inside: String::new(),
     };
     let mut out = Vec::new();
     tarae_wire::encode(&tarae_wire::ToHost::Hello(hello.clone()), &mut out).unwrap();
@@ -1757,6 +1758,114 @@ fn a_wrong_version_is_refused() {
     }
     drop(s);
     let _ = fs::remove_file(&at);
+}
+
+/// This machine's name, as a client says it in `Hello.inside`.
+fn machine() -> String {
+    let mut name = [0u8; 256];
+    // SAFETY: gethostname writes at most the length given into the buffer.
+    assert_eq!(unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len() - 1) }, 0);
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    String::from_utf8_lossy(&name[..end]).into_owned()
+}
+
+/// S-E: an attach whose `Hello` says it runs inside this host's own terminal panel — this machine, the host's state
+/// socket (`TARAE_UI` there; through ssh the ancestry ends at sshd, so only the client can say it) — is refused, said
+/// so; one inside another machine's panel is let in.
+#[test]
+fn an_attach_saying_it_runs_in_the_hosts_own_panel_is_refused() {
+    use std::io::{Read, Write};
+    let sb = Sandbox::new("attach-inside-ssh");
+    let h = sb.host(&[]);
+    let real = sb.state().join("ui").join(format!("{}.attach", h.pid()));
+    let at = sb.socket("attach");
+    std::os::unix::fs::symlink(&real, &at).unwrap();
+    let panel = sb.state().join("ui").join(format!("{}.sock", h.pid()));
+    let first = |inside: String| {
+        let mut s = std::os::unix::net::UnixStream::connect(&at).expect("the host's attach socket");
+        let hello = tarae_wire::Hello {
+            v: tarae_wire::V,
+            build: tarae_wire::BUILD.into(),
+            w: 80,
+            h: 24,
+            ground: tarae_wire::Ground::Unsaid,
+            undercurl: false,
+            taken: String::new(),
+            clipboard: tarae_wire::Clip::None,
+            sound: false,
+            open: false,
+            zone: String::new(),
+            offset: 0,
+            inside,
+        };
+        let mut out = Vec::new();
+        tarae_wire::encode(&tarae_wire::ToHost::Hello(hello), &mut out).unwrap();
+        s.write_all(&out).unwrap();
+        s.set_read_timeout(Some(sb.timeout())).unwrap();
+        let mut dec = tarae_wire::Decoder::<tarae_wire::ToInterface>::new();
+        loop {
+            match dec.message() {
+                Ok(Some(m)) => return m,
+                Ok(None) => {
+                    let mut b = [0u8; 4096];
+                    let n = s.read(&mut b).unwrap();
+                    assert!(n > 0, "the host's end closed");
+                    dec.push(&b[..n]);
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+    };
+    match first(format!("{}:{}", machine(), panel.display())) {
+        tarae_wire::ToInterface::Gone { why: tarae_wire::Gone::Refused { said }, .. } => {
+            assert!(said.contains("own terminal panel (through ssh)"), "{said}")
+        }
+        other => panic!("not refused: {other:?}"),
+    }
+    assert_eq!(h.state_json()["interface"], serde_json::Value::Null);
+    let elsewhere = first(format!("another-{}:{}", machine(), panel.display()));
+    assert!(matches!(elsewhere, tarae_wire::ToInterface::Welcome { .. }), "{elsewhere:?}");
+    let _ = fs::remove_file(&at);
+}
+
+/// S-E: `tarae attach` never runs under a run of Claude's (`TARAE_RUN`, set in every one, sandboxed or not): it says
+/// so and exits 1 before it looks for a host — its relay too.
+#[test]
+fn tarae_attach_refuses_under_a_run_of_claudes() {
+    let sb = Sandbox::new("attach-run");
+    let h = sb.host(&[]);
+    for args in [
+        vec!["attach".to_string(), "--pid".into(), h.pid().to_string()],
+        vec!["attach".into(), "--stdio".into()],
+    ] {
+        let out = Command::new(BIN)
+            .args(&args)
+            .current_dir(sb.work())
+            .env_clear()
+            .envs(sb.env())
+            .env("TARAE_RUN", "1")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {err}");
+        assert!(err.contains("doesn't run under a run of Claude's (TARAE_RUN is set)"), "{args:?}: {err}");
+        assert!(out.stdout.is_empty(), "{args:?}: nothing relayed");
+    }
+    assert_eq!(h.state_json()["interface"], serde_json::Value::Null);
+}
+
+/// S-G: while an interface is attached across a wire, `:sh` runs without zellij's variables — a `zellij run` would
+/// act in the host's session, out of the person's sight.
+#[test]
+fn sh_runs_without_zellijs_variables_while_attached() {
+    let sb = Sandbox::new("attach-sh").with_env("ZELLIJ_SESSION_NAME", "the-hosts");
+    sb.write("a.txt", "one\n");
+    let h = sb.host(&["a.txt"]);
+    let mut t = Term::attach(&sb, &h, COLS, ROWS);
+    t.wait_text("one");
+    t.command(r#"sh echo "session=${ZELLIJ_SESSION_NAME:-none}""#);
+    t.wait_text("session=none");
 }
 
 /// An idle host with a client attached sleeps, both of them: no frame, no event of the host's but its clocks, their
@@ -1877,7 +1986,7 @@ fn over_ssh(name: &str, cols: u16) -> (Sandbox, Host, Term, String) {
 
 /// The client's log's "back in" lines: each way back, its new link's first frame presented.
 fn backs(sb: &Sandbox) -> Vec<String> {
-    let log = fs::read_to_string(sb.state().join("tarae.log")).unwrap_or_default();
+    let log = fs::read_to_string(sb.state().join("attach.log")).unwrap_or_default();
     log.lines().filter(|l| l.contains(" back in ")).map(String::from).collect()
 }
 
@@ -2007,6 +2116,17 @@ fn a_client_over_ssh_shows_the_host_and_its_keys_reach_it() {
     t.send("ihello");
     t.wait_text("helloone");
     assert_eq!(t.state_json(input + 6)["input"].as_u64(), Some(input + 6), "each key the host's input");
+    // (#376: the client's log is its own — the host's, on the same machine, never started afresh under it)
+    let log = |name: &str| fs::read_to_string(sb.state().join(name)).unwrap_or_default();
+    let deadline = std::time::Instant::now() + sb.timeout();
+    while !log("attach.log").contains("attached to tarae") {
+        assert!(std::time::Instant::now() < deadline, "the client's log: {:?}", log("attach.log"));
+        std::thread::sleep(POLL);
+    }
+    assert!(log("attach.log").starts_with("tarae attach "), "{}", log("attach.log"));
+    assert!(!sb.state().join("tarae.log.old").exists(), "the host's log moved aside by its client");
+    let host = log("tarae.log");
+    assert!(host.contains("Hello from tarae") && !host.contains("attached to tarae"), "{host}");
     t.esc_state("normal mode", |s| s["mode"] == "normal");
     t.command("detach");
     assert_eq!(t.wait_exit().code(), Some(0), "{}", t.screen());

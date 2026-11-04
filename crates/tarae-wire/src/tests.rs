@@ -129,7 +129,8 @@ fn every_malformed_message_ends_the_stream_with_what_was_wrong() {
     bad[ground] = 3;
     assert!(refused::<ToHost>(&bad).contains("a ground of tag 3"));
     let mut bad = hello.clone();
-    bad[ground + 3] = 3;
+    // (past the ground, undercurl and `taken`'s length — empty in the sample)
+    bad[ground + 6] = 3;
     assert!(refused::<ToHost>(&bad).contains("a clipboard of tag 3"));
 
     let frame = |tail: &[u8]| raw(0x82, &[[0; 20].as_slice(), tail].concat());

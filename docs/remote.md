@@ -17,8 +17,9 @@ tarae attach [--pid PID]    # in any terminal: the host's screen, your keys its
 
 Without `--pid`, `attach` picks the host `tarae state` would: the one running, or the one whose session holds the
 folder you're in (several and none does: they're listed). The client says what it is as it connects — its size, a
-light or dark ground, whether it draws curly underlines, whether it's inside zellij — and the host draws for that from
-the next frame. The first frame goes whole; after it, only what changed.
+light or dark ground, whether it draws curly underlines, inside zellij the keys zellij takes there (`editor.zellij-keys`
+in your config on the client's machine, the one setting a client reads) — and the host draws for that from the next
+frame: a hint for a key zellij takes there says its twin. The first frame goes whole; after it, only what changed.
 
 - **`:detach`** lets the client go and leaves the host working. The client restores its terminal and says
   `detached — tarae attach comes back`. In a plain `tarae` it says it needs `--host`.
@@ -44,12 +45,18 @@ socket only you can open, bound before the host starts any thread. Past that, an
 the client's terminal — when:
 
 - **it's another user's** (the socket's peer is checked, not trusted);
-- **it's another build** — the client and the host must be the same tarae (protocol and version, both named in the
-  refusal: attach with the host's own build);
+- **it speaks another protocol** — another build is let in while its protocol is the host's (two machines' builds
+  mostly differ); the refusal names both protocols and both builds;
 - **its first message isn't `Hello` within 5 s**, or its bytes don't read: the connection goes;
 - **it runs under one of Claude's processes** — Claude has its own view of the screen (`tarae state`'s, its `ui` tool),
   never your keys;
 - **it runs inside the host's own terminal panel** — it would draw the host inside itself; attach from another terminal.
+  Through ssh the processes' line ends at sshd, so the client says which panel it runs in, if any (its `TARAE_UI` and
+  machine), and the host refuses its own.
+
+The client itself refuses to run under a run of Claude's (`TARAE_RUN`, set in every one, sandboxed or not), and
+Claude's `run` refuses any line that runs `tarae attach`: an interface is yours. Port 22 is one of the sandbox's risky
+ports (a shell as you).
 
 ## What's the interface's
 
@@ -58,10 +65,16 @@ What you touch is the machine the client runs on, not the host's:
 - **The clipboard.** A copy to the clipboard is asked of the client, which copies with its own
   programs, else its terminal's OSC 52; a paste reads its clipboard. Said as it's done, from the client's answer. With
   nothing attached a copy or paste says `no interface is attached (tarae attach)`. An answer that doesn't come within
-  10 s, or a client that goes first, is said — never carried over to the next client.
+  10 s, or a client that goes first, is said — never carried over to the next client. The client answers a copy, a
+  paste or an address opened only within 5 s of a key, a press or a paste you sent it, else refuses and says so: a host
+  never reads or sets your clipboard, nor opens your browser, unprompted.
 - **Sound** plays on the client's speaker (`editor.sound`; macOS clients only, yet). A sound held up past half a second
   is dropped rather than played late.
-- **`:web-open`** opens the address in the client's browser.
+- **`:web-open`** opens the address in the client's browser: `open` on macOS; in WSL `wslview` where it's there, else
+  Windows' `explorer.exe`; `xdg-open` elsewhere.
+- **`:sh`** runs on the host, and while an interface is attached without zellij's variables: a `zellij run` would act
+  in the host's zellij, out of your sight.
+- **The client's log** is its own, `attach.log` beside `tarae.log` in the state folder.
 - **Times shown** — ages, `warm until`, a limit's reset, a card's times — are in the client's time zone; the host's
   logs and files keep the host's.
 - **The screen it shows.** The client holds its own copy of the screen and redraws it whole when things rest, so the

@@ -1407,6 +1407,7 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
 
   | Port | What usually listens there |
   |---|---|
+  | 22 | sshd: a shell as you (a run has no key or agent for it, and `tarae attach` refuses under Claude's runs) |
   | 2375, 2376, 4243 | Docker's API: it starts containers that mount any folder |
   | 8888 | Jupyter: it runs code in its kernels |
   | 9222 | Chrome DevTools: it drives the browser, signed in as you |
