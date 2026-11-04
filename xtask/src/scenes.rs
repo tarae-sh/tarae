@@ -2582,6 +2582,8 @@ const EDIT_IN_BUFFER: &[&str] = &[
     "@1",
     "@rec",
     "@beat:Ask Claude about the code in front of you.",
+    // (a Short: the code it's about, so the whole opens it ~1.5 s only)
+    "@zoom:code:9-16",
     "@2",
     " ",
     "l",
@@ -2634,6 +2636,8 @@ const FOLLOW_REPLAY: &[&str] = &[
     "@1",
     "@rec",
     "@beat:Follow Claude as it reads and writes.",
+    // (a Short: your cursor's lines, so the whole opens it ~1.5 s only)
+    "@zoom:code:1-10|40",
     "@1.5",
     " ",
     "l",

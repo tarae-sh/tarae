@@ -1,6 +1,9 @@
 //! A Short's camera (`scenes --video --shorts`, `video.rs`): the scene's `@zoom:<target>` lines, each found on the
 //! screen in force at its time (`target`) and eased to (`at`: `EASE_MS`, an ease-out — the motion rule's), held until
-//! the next `@zoom` or beat (a beat with none of its own goes back to the whole screen). Where the camera is is a
+//! the next `@zoom` or beat (a beat with none of its own goes back to the whole screen). The whole screen shows where
+//! each part lives (`wholes`): before the take's first move, pulled out to between two beats whose targets are apart
+//! (a pan where they sit side by side — `side_by_side`) and wherever the screen comes to name another file or
+//! workspace (`place`: the lines may stay put, the "where" changed), and once more after the take. Where the camera is is a
 //! region of the screen in cells; a frame draws the screen with glyphs at the largest whole size the region fits the
 //! window at (`fit`) and crops it there (`crop`) — never past the picture's edge, the region always whole in it. A
 //! target's region is shaped to the window as it's found (`framed`), the target's centre at the eye's height: the rows
@@ -114,6 +117,115 @@ pub(crate) fn at(moves: &[(u64, Region)], screen: (u16, u16), ms: u64) -> Region
         (to, since) = (region.inside(screen), t);
     }
     eased(from, to, since, ms)
+}
+
+/// The whole screen held before the take's first move (after the title card) and after its last screen (before the end
+/// card): too small to read, its shape seen.
+pub(crate) const WHOLE_MS: u64 = 1_500;
+/// The whole held between two beats' targets, from the ease out's end to the ease in's start.
+pub(crate) const BETWEEN_MS: u64 = 300;
+/// The least a target stands once the camera is there, before a pull-out may take the camera from it.
+pub(crate) const HELD_MIN_MS: u64 = 1_000;
+
+/// A move as `wholes` lays it: when the camera goes (its target found on the screen), its window and its target's
+/// region, and when the beat it's the first move of came (none: a move within a beat).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Planned {
+    pub(crate) at: u64,
+    pub(crate) window: Region,
+    pub(crate) target: Region,
+    pub(crate) beat: Option<u64>,
+}
+
+/// How a beat's move, or one to another place, went from the last target to its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Way {
+    /// Out to the whole and in again, its target reached this many ms past its own time.
+    Pulled(u64),
+    /// Out to the whole as the screen came to name another place (`place`), in again this many ms past its own time.
+    Elsewhere(u64),
+    /// Panned: the two targets side by side.
+    Pan,
+    /// Panned: its target would stand only this many ms after the pull-out (under `HELD_MIN_MS`), or the last one would.
+    NoRoom(u64),
+}
+
+/// The camera's path with the whole in it: each step when, and which of `moves` it goes to (none: the whole screen).
+pub(crate) struct Course {
+    pub(crate) steps: Vec<(u64, Option<usize>)>,
+    /// Each beat's move that left a target for another: how it went.
+    pub(crate) ways: Vec<(usize, Way)>,
+    /// When the camera leaves the last target for the whole, `end` or later (the last target held its least).
+    pub(crate) out: u64,
+}
+
+/// Two targets side by side: both fit in one window the larger of their two windows' size — a pan from one to the
+/// other keeps the way between them in sight (the same target, too).
+pub(crate) fn side_by_side(a: (Region, Region), b: (Region, Region)) -> bool {
+    let ((at, aw), (bt, bw)) = (a, b);
+    let w = (at.x + at.w).max(bt.x + bt.w) - at.x.min(bt.x);
+    let h = (at.y + at.h).max(bt.y + bt.h) - at.y.min(bt.y);
+    w <= aw.w.max(bw.w) && h <= aw.h.max(bw.h)
+}
+
+/// The camera's path over `moves` (in order), the whole screen laid in: the take starts on it (the first move eased
+/// to from there); a beat's first move from a target to another not `side_by_side` goes out to the whole as its beat
+/// comes (`EASE_MS`), and any move to a target on a screen that names another place than the last target's (`places`:
+/// each time the screen's `place` changed, and to what) goes out as the first screen naming another comes, side by
+/// side or not, within a beat too (the earlier of the two where both hold); it stands `BETWEEN_MS` there and eases in
+/// to its target — at its own time where the whole has stood by then, else that much later —, the last target held
+/// `HELD_MIN_MS` at least before it leaves and its own as long before the next move, else (no room) panned; a move
+/// within a beat in the same place never pulls out; at `end` (or once the last target has stood its least) the camera
+/// goes out to the whole.
+pub(crate) fn wholes(moves: &[Planned], places: &[(u64, String)], end: u64, screen: (u16, u16)) -> Course {
+    let all = Region::all(screen);
+    let (mut steps, mut ways) = (Vec::new(), Vec::new());
+    let place_at = |t: u64| places[..places.partition_point(|p| p.0 <= t)].last().map(|p| p.1.as_str());
+    // (where the camera last went: when, and the move — none: the whole)
+    let mut last: Option<(u64, Planned)> = None;
+    for (i, m) in moves.iter().enumerate() {
+        let from = last.filter(|(_, l)| l.window != all && m.window != all);
+        // (another place since the last target: when the first screen naming another came)
+        let moved = from.and_then(|(_, l)| {
+            let was = place_at(l.at);
+            (place_at(m.at) != was)
+                .then(|| places.iter().find(|p| l.at < p.0 && p.0 <= m.at && Some(p.1.as_str()) != was))
+                .flatten()
+                .map(|p| p.0)
+        });
+        let cue = match (moved, m.beat) {
+            (Some(t), Some(beat)) => Some(t.min(beat)),
+            (t, beat) => t.or(beat),
+        };
+        if let (Some(cue), Some((since, l))) = (cue, from) {
+            if moved.is_none() && side_by_side((l.target, l.window), (m.target, m.window)) {
+                ways.push((i, Way::Pan));
+            } else {
+                let out = cue.max(since + EASE_MS + HELD_MIN_MS);
+                let into = m.at.max(out + EASE_MS + BETWEEN_MS);
+                let next = moves.get(i + 1).map_or(end, |n| n.at);
+                if into + EASE_MS + HELD_MIN_MS <= next {
+                    steps.extend([(out, None), (into, Some(i))]);
+                    let late = into - m.at;
+                    ways.push((i, if moved.is_some() { Way::Elsewhere(late) } else { Way::Pulled(late) }));
+                    last = Some((into, *m));
+                    continue;
+                }
+                ways.push((i, Way::NoRoom(next.saturating_sub(into + EASE_MS))));
+            }
+        }
+        steps.push((m.at, Some(i)));
+        last = Some((m.at, *m));
+    }
+    let out = match last.filter(|(_, l)| l.window != all) {
+        Some((since, _)) => {
+            let out = end.max(since + EASE_MS + HELD_MIN_MS);
+            steps.push((out, None));
+            out
+        }
+        None => end,
+    };
+    Course { steps, ways, out }
 }
 
 /// The largest whole glyph size (8 ..= `max`) whose cells, `cell(px)` each, show `region` whole in a `view` window.
@@ -423,6 +535,26 @@ pub(crate) fn news_framed(
     let size = (screen.text.first().map_or(0, Vec::len) as u16, screen.text.len() as u16);
     let need = 1.0 + c.lines.len() as f32;
     Region { y: r.y.min((target.y - need).floor()).max(0.0), ..r }.inside(size)
+}
+
+/// Where the screen is: the top line's first stretch of names, to a line or two blanks — the code's path bar there
+/// (`tarae-demo › src › main.rs`; another workspace's `fix › src › main.rs`; `woven · src/main.rs`), so another file or
+/// workspace in front reads as another place; the sessions' strip after it (its states change) is no part of it, nor
+/// the definitions the bar names after the file (`› ƒ wind`: the cursor's, a move within the file).
+pub(crate) fn place(on: &Cells) -> String {
+    let Some(row) = on.text.first() else { return String::new() };
+    let line = |c: usize| matches!(row[c].as_str(), "─" | "┬" | "┴" | "│" | "├" | "┤" | "┼");
+    let blank = |c: usize| row[c].trim().is_empty();
+    let Some(first) = (0..row.len()).find(|&c| !line(c) && !row[c].trim().is_empty()) else {
+        return String::new();
+    };
+    let end = (first..row.len())
+        .find(|&c| line(c) || blank(c) && (c + 1 >= row.len() || blank(c + 1) || line(c + 1)))
+        .unwrap_or(row.len());
+    // (a definition's part starts with its kind's glyph — `lsp_editor::symbol_glyph`'s)
+    let names = row[first..end].concat();
+    let file = names.split(" › ").take_while(|p| !p.starts_with(['ƒ', 'τ', '§', '◦', 'π', 'ν', '·']));
+    file.collect::<Vec<_>>().join(" › ")
 }
 
 /// A row's text between `from` and `to`: its first and past-its-last non-blank cell.
@@ -921,6 +1053,157 @@ mod tests {
         }
         // (whole screen at 80×43: 19 px glyphs fit 882 px across)
         assert_eq!(fit(Region::all(SCREEN), view, 64, cell), 19.0);
+    }
+
+    /// The whole screen in a Short's course: the take starts on it (the first move eased to from there); a beat's move
+    /// from one target to another apart goes out to the whole as its beat comes, stands there `BETWEEN_MS` and eases in
+    /// — its target reached late where the whole needed the time; never a pull-out within a beat, none between targets
+    /// side by side (a pan), none where the target would then stand under `HELD_MIN_MS` (a pan, said); the whole again
+    /// at the end; every ease `EASE_MS`.
+    #[test]
+    fn the_whole_shows_first_between_beats_apart_and_last() {
+        let all = Region::all(SCREEN);
+        let planned =
+            |at: u64, beat: Option<u64>, target: Region, window: Region| Planned { at, window, target, beat };
+        // (the session list up top, a row of it, the code's lines low, the lines a toast is about among them, an ask at
+        // the right's foot)
+        let list = (region(16.0, 8.0, 42.0, 12.0), region(15.0, 2.0, 44.0, 24.0));
+        let row = (region(16.0, 10.0, 30.0, 3.0), region(9.0, 3.0, 44.0, 24.0));
+        let code = (region(0.0, 27.0, 40.0, 7.0), region(0.0, 18.0, 44.0, 24.0));
+        let news = (region(0.0, 29.0, 40.0, 4.0), region(0.0, 19.0, 44.0, 24.0));
+        let ask = (region(40.0, 34.0, 38.0, 6.0), region(36.0, 19.0, 44.0, 24.0));
+        let moves = [
+            planned(100, Some(0), list.0, list.1),
+            planned(2_000, None, row.0, row.1),
+            planned(5_200, Some(5_000), code.0, code.1),
+            planned(9_000, Some(9_000), news.0, news.1),
+            planned(10_000, Some(10_000), ask.0, ask.1),
+            planned(12_000, Some(12_000), all, all),
+            planned(13_000, Some(13_000), list.0, list.1),
+        ];
+        let course = wholes(&moves, &[], 16_000, SCREEN);
+        assert_eq!(
+            course.steps,
+            [
+                (100, Some(0)),
+                (2_000, Some(1)),
+                (5_000, None),
+                (5_700, Some(2)),
+                (9_000, Some(3)),
+                (10_000, Some(4)),
+                (12_000, Some(5)),
+                (13_000, Some(6)),
+                (16_000, None),
+            ],
+            "the first from the whole as the take starts; out at the beat, in once the whole has stood"
+        );
+        assert_eq!(
+            course.ways,
+            [(2, Way::Pulled(500)), (3, Way::Pan), (4, Way::NoRoom(500))],
+            "code apart from the list's row: pulled, 0.5 s late; the toast's lines beside the code's: a pan; the ask's \
+             beat, 2 s before the next: no room (it would stand 0.5 s)"
+        );
+        assert_eq!(course.out, 16_000);
+        // (the camera's path: the whole, eased out and in, never past `EASE_MS`)
+        let regions: Vec<(u64, Region)> =
+            (course.steps.iter()).map(|&(t, m)| (t, m.map_or(all, |i| moves[i].window))).collect();
+        assert_eq!(at(&regions, SCREEN, 99), all, "the take starts on the whole");
+        assert_eq!(at(&regions, SCREEN, 100 + EASE_MS), list.1);
+        assert_eq!(at(&regions, SCREEN, 4_999), row.1, "held to the beat");
+        assert_eq!(at(&regions, SCREEN, 5_000 + EASE_MS), all);
+        assert_eq!(at(&regions, SCREEN, 5_700), all, "the whole stands between");
+        assert_eq!(at(&regions, SCREEN, 5_700 + EASE_MS), code.1);
+        assert_eq!(at(&regions, SCREEN, 10_000 + EASE_MS), ask.1, "no room: a pan at its own time");
+        assert_eq!(at(&regions, SCREEN, 12_000 + EASE_MS), all, "a beat of the whole's own");
+        assert_eq!(at(&regions, SCREEN, 13_000 + EASE_MS), list.1, "from the whole: no pull-out");
+        assert_eq!(at(&regions, SCREEN, 16_000 + EASE_MS), all, "the whole before the end card");
+        // (a last target that came late holds its least before the whole; a take ending on the whole adds nothing)
+        let late = wholes(&moves[..1], &[], 600, SCREEN);
+        assert_eq!((late.out, late.steps.last()), (100 + EASE_MS + HELD_MIN_MS, Some(&(1_500, None))));
+        let whole = wholes(&moves[5..6], &[], 15_000, SCREEN);
+        assert_eq!((whole.out, whole.steps.as_slice()), (15_000, &[(12_000, Some(0))][..]));
+    }
+
+    /// Two targets are side by side when both fit one window the larger of theirs: the same target, the lines a toast
+    /// is about among the code's; never the list up top and the code's lines low, nor the code at the left and an ask
+    /// at the right.
+    #[test]
+    fn targets_side_by_side_fit_one_window() {
+        let code = (region(0.0, 27.0, 40.0, 7.0), region(0.0, 18.0, 44.0, 24.0));
+        let news = (region(0.0, 29.0, 40.0, 4.0), region(0.0, 19.0, 44.0, 24.0));
+        let list = (region(16.0, 8.0, 42.0, 12.0), region(15.0, 2.0, 44.0, 24.0));
+        let ask = (region(40.0, 34.0, 38.0, 6.0), region(36.0, 19.0, 44.0, 24.0));
+        assert!(side_by_side(code, code));
+        assert!(side_by_side(code, news) && side_by_side(news, code));
+        assert!(!side_by_side(list, code), "rows 8 to 34: past a window's 24");
+        assert!(!side_by_side(code, ask), "columns 0 to 78: past a window's 44");
+    }
+
+    /// Another file or workspace in front pulls out, the lines staying put or side by side, within a beat too: out as
+    /// the first screen naming another place comes (a beat's own time where that's earlier), in once the whole has
+    /// stood; the same place within a beat never pulls out (a pan), nor does a place that came and went before the move.
+    #[test]
+    fn another_file_or_workspace_pulls_out_as_it_comes() {
+        let planned =
+            |at: u64, beat: Option<u64>, target: Region, window: Region| Planned { at, window, target, beat };
+        // (`wind`'s lines, a line of them, the ask line's card at the screen's foot)
+        let code = (region(4.0, 14.0, 40.0, 4.0), region(0.0, 4.0, 44.0, 24.0));
+        let line = (region(4.0, 15.0, 40.0, 1.0), region(0.0, 4.0, 44.0, 24.0));
+        let ask = (region(0.0, 38.0, 60.0, 3.0), region(0.0, 17.0, 44.0, 24.0));
+        let places = |p: &[(u64, &str)]| -> Vec<(u64, String)> {
+            p.iter().map(|(t, s)| (*t, s.to_string())).collect()
+        };
+        let woven = places(&[(0, "tarae-demo › src › main.rs"), (3_000, "woven · src/main.rs")]);
+        // (the lines stay put, the woven view comes in their place mid-beat)
+        let moves = [planned(100, Some(0), code.0, code.1), planned(3_200, None, code.0, code.1)];
+        let course = wholes(&moves, &woven, 10_000, SCREEN);
+        assert_eq!(
+            course.steps,
+            [(100, Some(0)), (3_000, None), (3_700, Some(1)), (10_000, None)],
+            "out as it comes"
+        );
+        assert_eq!(course.ways, [(1, Way::Elsewhere(500))]);
+        // (a beat after the place came: out at the place; one before it: out at the beat)
+        let beat_late = [moves[0], Planned { beat: Some(3_100), ..moves[1] }];
+        assert_eq!(wholes(&beat_late, &woven, 10_000, SCREEN).steps[1], (3_000, None));
+        let beat_first = [moves[0], Planned { beat: Some(2_500), ..moves[1] }];
+        assert_eq!(wholes(&beat_first, &woven, 10_000, SCREEN).steps[1], (2_500, None));
+        // (side by side, another workspace in front: still out; held its least first)
+        let fix = places(&[(0, "woven · src/main.rs"), (1_000, "fix › src › main.rs")]);
+        let jump = [planned(100, Some(0), code.0, code.1), planned(1_200, None, line.0, line.1)];
+        let course = wholes(&jump, &fix, 10_000, SCREEN);
+        assert_eq!(course.steps[1..3], [(100 + EASE_MS + HELD_MIN_MS, None), (2_200, Some(1))]);
+        assert_eq!(course.ways, [(1, Way::Elsewhere(1_000))]);
+        // (the same place within a beat: no pull-out, whatever lies between; a place come and gone before the move: none)
+        let same = places(&[(0, "tarae-demo › src › main.rs")]);
+        let to_ask = [planned(100, Some(0), code.0, code.1), planned(3_000, None, ask.0, ask.1)];
+        assert_eq!(wholes(&to_ask, &same, 10_000, SCREEN).steps[..2], [(100, Some(0)), (3_000, Some(1))]);
+        let gone = places(&[(0, "a.rs"), (1_500, "b.rs"), (2_000, "a.rs")]);
+        assert_eq!(wholes(&to_ask, &gone, 10_000, SCREEN).steps[..2], [(100, Some(0)), (3_000, Some(1))]);
+        // (no room: a pan, said — in at 3.7 s, it would stand 0.4 s before the take's end)
+        let tight = wholes(&moves, &woven, 4_500, SCREEN);
+        assert_eq!(tight.ways, [(1, Way::NoRoom(400))]);
+    }
+
+    /// A screen's place is its top line's first names: the path bar's, a workspace's, the woven view's; never the strip
+    /// after them.
+    #[test]
+    fn the_place_is_the_top_lines_first_names() {
+        let top = |line: &str| place(&grid(&[line, "  1 fn main() {"]));
+        assert_eq!(
+            top("─ tarae-demo › src › main.rs ─────────────── main working · fix ▲ waits ─"),
+            "tarae-demo › src › main.rs"
+        );
+        assert_eq!(top("─ fix › src › main.rs ───────"), "fix › src › main.rs");
+        assert_eq!(
+            top("─ fix › src › main.rs › ƒ wind ───"),
+            "fix › src › main.rs",
+            "the cursor's definition"
+        );
+        assert_eq!(top("─ a › b.rs › τ Spool › ƒ pop ───"), "a › b.rs");
+        assert_eq!(top("─ woven · src/main.rs  conflict 1 of 1 ─"), "woven · src/main.rs");
+        assert_eq!(top("─ thread.rs ─┬─ main.rs ─"), "thread.rs");
+        assert_eq!(top("────────────"), "");
     }
 
     /// A screen of `rows`, every cell on one ground.

@@ -119,6 +119,11 @@ impl Form {
     fn end_ms(self) -> u64 {
         if self == Form::Short { SHORT_END_MS } else { END_MS }
     }
+
+    /// The whole screen after the title card, before the take: a Short's (its camera reads the parts after it).
+    fn whole_ms(self) -> u64 {
+        if self == Form::Short { camera::WHOLE_MS } else { 0 }
+    }
 }
 
 /// A Short's window, where the camera's picture goes (x, y, width, height): inside `SAFE`, under the captions' band.
@@ -230,29 +235,85 @@ pub(crate) fn make(
         }
         Form::Wide => (Vec::new(), Vec::new()),
     };
-    let zooms = moves
-        .iter()
-        .map(|(t, spec, region, ..)| {
-            let (_, _, ww, wh) = short_window();
-            let px = camera::fit(*region, (ww, wh), SHORT_PX_MAX, |p| shot::cell(&fonts, p));
-            let (cw, ch) = shot::cell(&fonts, px);
-            let mm = px / SHORT.0 as f32 * PHONE_MM;
-            format!(
-                "{:.1} s {spec}: {px} px glyphs, cells {cw}×{ch} px ({:.0} columns across; ~{mm:.1} mm a glyph on a phone)",
-                *t as f64 / 1000.0,
-                region.w
-            )
-        })
-        .collect();
     let times: Vec<u64> = rec.frames.iter().map(|f| f.0).collect();
-    let shown_ms = times.last().copied().unwrap_or(0) + LAST_MS;
+    let last_ms = times.last().copied().unwrap_or(0) + LAST_MS;
+    // (a Short's whole screen laid in: the camera's course, each step a move or the whole)
+    let all = Region::all(screen);
+    let planned: Vec<camera::Planned> =
+        (moves.iter()).map(|m| camera::Planned { at: m.0, window: m.2, target: m.3, beat: m.5 }).collect();
+    // (where each screen is — its path bar's file and workspace —, as it changes)
+    let mut places: Vec<(u64, String)> = Vec::new();
+    for (t, s) in rec.frames.iter().filter(|_| form == Form::Short) {
+        let here = camera::place(&camera::Cells::of(s));
+        if places.last().is_none_or(|p| p.1 != here) {
+            places.push((*t, here));
+        }
+    }
+    let course = camera::wholes(&planned, &places, last_ms, screen);
+    let place_at =
+        |t: u64| places[..places.partition_point(|p| p.0 <= t)].last().map_or("", |p| p.1.as_str());
+    let s = |t: u64| t as f64 / 1000.0;
+    let zooms = match form {
+        Form::Wide => Vec::new(),
+        Form::Short => std::iter::once(format!("the whole: {:.1} s before the take", s(camera::WHOLE_MS)))
+            .chain(course.steps.iter().map(|&(t, which)| {
+                let Some(i) = which else {
+                    return match t == course.out {
+                        true => format!("{:.1} s the whole, {:.1} s before the end card", s(t), s(camera::WHOLE_MS)),
+                        false => format!("{:.1} s the whole, between beats", s(t)),
+                    };
+                };
+                let (_, spec, region, ..) = &moves[i];
+                let (_, _, ww, wh) = short_window();
+                let px = camera::fit(*region, (ww, wh), SHORT_PX_MAX, |p| shot::cell(&fonts, p));
+                let (cw, ch) = shot::cell(&fonts, px);
+                let mm = px / SHORT.0 as f32 * PHONE_MM;
+                let way = match course.ways.iter().find(|w| w.0 == i).map(|w| w.1) {
+                    Some(camera::Way::Pulled(0)) => " — in from the whole".to_string(),
+                    Some(camera::Way::Pulled(late)) => format!(" — in from the whole, {:.1} s past its time", s(late)),
+                    Some(camera::Way::Elsewhere(late)) => format!(
+                        " — in from the whole, another place ({}), {:.1} s past its time",
+                        place_at(moves[i].0),
+                        s(late)
+                    ),
+                    Some(camera::Way::Pan) => " — a pan: side by side with the last target".to_string(),
+                    Some(camera::Way::NoRoom(held)) => {
+                        format!(" — a pan: no room for the whole (its target would stand {:.1} s)", s(held))
+                    }
+                    None => String::new(),
+                };
+                format!(
+                    "{:.1} s {spec}: {px} px glyphs, cells {cw}×{ch} px ({:.0} columns across; ~{mm:.1} mm a glyph on a \
+                     phone){way}",
+                    s(t),
+                    region.w
+                )
+            }))
+            .collect(),
+    };
+    let moves: Vec<Move> = match form {
+        Form::Wide => moves,
+        Form::Short => (course.steps.iter())
+            .map(|&(t, which)| match which {
+                Some(i) => {
+                    let (_, spec, window, target, spot, beat) = moves[i].clone();
+                    (t, spec, window, target, spot, beat)
+                }
+                None => (t, "all".to_string(), all, all, (false, None), None),
+            })
+            .collect(),
+    };
+    let shown_ms = match form {
+        Form::Wide => last_ms,
+        Form::Short => course.out + camera::WHOLE_MS,
+    };
     let named = moves.iter().map(|m| m.1.clone()).collect();
     let targets = moves.iter().map(|m| (m.0, m.3)).collect();
     let spots = moves.iter().map(|m| m.4).collect();
     let moves = moves.iter().map(|m| (m.0, m.2)).collect();
     // (a Short opens on its punchline where the scene marks one)
     let punch = rec.punch.filter(|_| form == Form::Short);
-    let lead = punch.map_or(0, |_| PUNCH_MS) + form.title_ms();
+    let lead = punch.map_or(0, |_| PUNCH_MS) + form.title_ms() + form.whole_ms();
     let video = Video {
         rec,
         times,
@@ -312,19 +373,23 @@ pub(crate) fn make(
 /// window there (`camera::framed`: `aspect` columns a row, its centre `eye` down, `legible` columns at most taken in) —
 /// as wide as it grows on the same rows while the camera holds there (`camera::widened`: a line Claude is writing reaches
 /// its end, never past the window's edge) —, and each beat with no `@zoom` of its own (none within `OWN_MS` after it)
-/// back to the whole screen. A target never found is said, the camera staying where it was.
-type Move = (u64, String, Region, Region, (bool, Option<u64>));
+/// back to the whole screen; each move a beat's first (its `@zoom`, or its whole) carries the beat's time (`wholes`
+/// pulls out to the whole there). A target never found is said, the camera staying where it was.
+type Move = (u64, String, Region, Region, (bool, Option<u64>), Option<u64>);
 
 fn moves(rec: &Recorded, aspect: f32, eye: f32, legible: f32) -> (Vec<Move>, Vec<String>) {
     let (mut out, mut missed) = (Vec::new(), Vec::new());
-    let mut marks: Vec<(u64, &str)> = rec.zooms.iter().map(|(t, z)| (*t, z.as_str())).collect();
+    let mut marks: Vec<(u64, &str, Option<u64>)> =
+        rec.zooms.iter().map(|(t, z)| (*t, z.as_str(), None)).collect();
     for (t, _) in &rec.beats {
-        if !rec.zooms.iter().any(|(z, _)| (*t..=t + OWN_MS).contains(z)) {
-            marks.push((*t, "all"));
+        // (the beat's own: the first `@zoom` within `OWN_MS` of it)
+        match marks.iter_mut().filter(|m| (*t..=t + OWN_MS).contains(&m.0)).min_by_key(|m| m.0) {
+            Some(own) => own.2 = Some(*t),
+            None => marks.push((*t, "all", Some(*t))),
         }
     }
     marks.sort_by_key(|m| m.0);
-    for (i, &(t, spec)) in marks.iter().enumerate() {
+    for (i, &(t, spec, beat)) in marks.iter().enumerate() {
         let until = marks.get(i + 1).map_or(u64::MAX, |m| m.0);
         let from = rec.frames.partition_point(|f| f.0 <= t).saturating_sub(1);
         let found = rec.frames[from..].iter().take_while(|f| f.0 <= t + FIND_MS).find_map(|(at, s)| {
@@ -345,7 +410,7 @@ fn moves(rec: &Recorded, aspect: f32, eye: f32, legible: f32) -> (Vec<Move>, Vec
         match found {
             Some((at, window, region, spot)) => {
                 let gone = spot.then(|| card_gone(rec, spec, at, until)).flatten();
-                out.push((at, spec.to_string(), window, region, (spot, gone)))
+                out.push((at, spec.to_string(), window, region, (spot, gone), beat))
             }
             None => missed.push(format!(
                 "@zoom:{spec} at {:.1} s: not on screen within {} s — the camera stayed",
@@ -632,19 +697,22 @@ fn ffmpeg() -> Option<PathBuf> {
 }
 
 /// Which part of the video its `t` ms is in: a Short's punchline (the take's ms from its mark `punch`, `PUNCH_MS`
-/// long), the title card (to `lead`), the take (its ms, `shown` long), then the end card.
+/// long), the title card, a Short's whole screen (the take's first, its last `whole` ms before `lead`), the take (its
+/// ms, `shown` long), then the end card.
 #[derive(Debug, PartialEq)]
 enum Part {
     Punch(u64),
     Title,
+    Whole,
     Take(u64),
     End,
 }
 
-fn part(t: u64, punch: Option<u64>, lead: u64, shown: u64) -> Part {
+fn part(t: u64, punch: Option<u64>, whole: u64, lead: u64, shown: u64) -> Part {
     match punch {
         Some(from) if t < PUNCH_MS => Part::Punch(from + t),
-        _ if t < lead => Part::Title,
+        _ if t + whole < lead => Part::Title,
+        _ if t < lead => Part::Whole,
         _ if t < lead + shown => Part::Take(t - lead),
         _ => Part::End,
     }
@@ -727,7 +795,7 @@ impl Video<'_> {
     }
 
     fn shows(&self, k: u64) -> Shows {
-        match part(Self::ms(k), self.punch, self.lead, self.shown_ms) {
+        match part(Self::ms(k), self.punch, self.form.whole_ms(), self.lead, self.shown_ms) {
             // (the punchline: the take from its mark, its caption standing as it was there)
             Part::Punch(at) => {
                 let Shows::Screen(i, beat, _, region, target, news, spot) =
@@ -738,6 +806,11 @@ impl Video<'_> {
                 Shows::Screen(i, beat, 255, region, target, news, spot)
             }
             Part::Title => Shows::Title,
+            // (the take's first screen, whole, no caption yet: the camera eases in from it as the take starts)
+            Part::Whole => {
+                let all = Region::all(self.screen);
+                Shows::Screen(0, None, 255, all, all, None, None)
+            }
             Part::Take(at) => self.take_at(at, screen_at(&self.times, k - self.lead * FPS / 1000)),
             Part::End => Shows::End,
         }
@@ -1012,7 +1085,11 @@ impl Video<'_> {
         let mut marks: Vec<(u64, String)> =
             self.rec.beats.iter().filter(|b| !b.1.is_empty()).map(|(t, c)| (lead + t, c.clone())).collect();
         for ((t, _), name) in self.moves.iter().zip(&self.named) {
-            marks.push((lead + t + camera::EASE_MS, format!("zoom:{name}")));
+            let said = if name == "all" { "the whole".to_string() } else { format!("zoom:{name}") };
+            marks.push((lead + t + camera::EASE_MS, said));
+        }
+        if self.form.whole_ms() > 0 {
+            marks.push((lead - self.form.whole_ms() / 2, "the whole".into()));
         }
         if self.punch.is_some() {
             marks.push((PUNCH_MS / 2, "punchline".into()));
@@ -1059,19 +1136,25 @@ mod tests {
         assert_eq!(screen_at(&[50], 0), 0);
     }
 
-    /// A Short with a punchline opens on the take from its mark for `PUNCH_MS`, then the title card, then the take from
-    /// its start, then the end card; without one, the title card first.
+    /// A Short with a punchline opens on the take from its mark for `PUNCH_MS`, then the title card, then the whole
+    /// screen, then the take from its start, then the end card; without one, the title card first; the wide video has
+    /// no whole of its own.
     #[test]
-    fn a_punchline_opens_the_video_then_the_take_from_its_start() {
-        let (title, shown) = (1_200, 10_000);
-        let lead = PUNCH_MS + title;
-        assert_eq!(part(0, Some(7_000), lead, shown), Part::Punch(7_000));
-        assert_eq!(part(PUNCH_MS - 1, Some(7_000), lead, shown), Part::Punch(7_000 + PUNCH_MS - 1));
-        assert_eq!(part(PUNCH_MS, Some(7_000), lead, shown), Part::Title);
-        assert_eq!(part(lead, Some(7_000), lead, shown), Part::Take(0));
-        assert_eq!(part(lead + shown, Some(7_000), lead, shown), Part::End);
-        assert_eq!(part(0, None, title, shown), Part::Title);
-        assert_eq!(part(title + 5, None, title, shown), Part::Take(5));
+    fn a_punchline_opens_the_video_then_the_whole_then_the_take_from_its_start() {
+        let (title, whole, shown) = (1_200, camera::WHOLE_MS, 10_000);
+        let lead = PUNCH_MS + title + whole;
+        assert_eq!(part(0, Some(7_000), whole, lead, shown), Part::Punch(7_000));
+        assert_eq!(part(PUNCH_MS - 1, Some(7_000), whole, lead, shown), Part::Punch(7_000 + PUNCH_MS - 1));
+        assert_eq!(part(PUNCH_MS, Some(7_000), whole, lead, shown), Part::Title);
+        assert_eq!(part(PUNCH_MS + title - 1, Some(7_000), whole, lead, shown), Part::Title);
+        assert_eq!(part(PUNCH_MS + title, Some(7_000), whole, lead, shown), Part::Whole);
+        assert_eq!(part(lead - 1, Some(7_000), whole, lead, shown), Part::Whole);
+        assert_eq!(part(lead, Some(7_000), whole, lead, shown), Part::Take(0));
+        assert_eq!(part(lead + shown, Some(7_000), whole, lead, shown), Part::End);
+        assert_eq!(part(0, None, whole, title + whole, shown), Part::Title);
+        assert_eq!(part(title, None, whole, title + whole, shown), Part::Whole);
+        assert_eq!(part(title + whole + 5, None, whole, title + whole, shown), Part::Take(5));
+        assert_eq!(part(title + 5, None, 0, title, shown), Part::Take(5));
     }
 
     fn rows(text: &[&str]) -> Vec<Option<String>> {
