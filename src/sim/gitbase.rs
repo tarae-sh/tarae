@@ -1,9 +1,10 @@
 //! A buffer's index reads landing out of order, simulated: a file open in a repository of the scenario's own, and
 //! at random the index changed then read again (a hunk staged, `space g s`: staged, then `git_load_base`) or only
-//! read again (a focus regain's, a git tab action's) — each read a job, run and landed in the seed's order, so an
-//! older one, which read the index before a later stage, may land after the newer. Once it's all quiet: the
-//! buffer's base is the index as it is now (an older read landing last put back one that's gone, and nothing
-//! asked again).
+//! read again (a focus regain's, a git tab action's), or a commit as git makes it (#348: the ref moved, the git
+//! watch's round reading the index while git still holds the new one in `index.lock`; at the next input that lock
+//! renamed in and the watch's `index_settled`) — each read a job, run and landed in the seed's order, so an older
+//! one, which read the index before a later stage, may land after the newer. Once it's all quiet: the buffer's base
+//! is the index as it is now (an older read landing last put back one that's gone, and nothing asked again).
 
 use std::path::Path;
 use std::time::Duration;
@@ -12,8 +13,9 @@ use super::sessions::{git, git_out};
 use super::{Choices, Sim};
 use crate::editor::Editor;
 
-/// (3: an older read, of the index before two stages, lands after the newest)
-const SEEDS: &[u64] = &[0, 1, 2, 3];
+/// (3: an older read, of the index before two stages, lands after the newest; 11: a commit last, its round's read of
+/// the index git still held landed before the lock was renamed in — only the watch's read after brings the new one)
+const SEEDS: &[u64] = &[0, 1, 2, 3, 11];
 
 const INPUTS: usize = 12;
 
@@ -37,8 +39,8 @@ fn run(choices: Choices) -> Vec<String> {
     ed.workspace.root = repo.clone();
     ed.git_auto = true;
     ed.open(&repo.join("a.txt")).unwrap();
-    let mut staged = 0;
-    sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &repo, &mut staged), |_| Ok(()), print);
+    let (mut staged, mut held) = (0, false);
+    sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &repo, &mut staged, &mut held), |_| Ok(()), print);
     let index = index(&repo);
     sim.at_end(|| match ed.doc().git_base.as_deref() {
         Some(base) if *base == index => Ok(()),
@@ -50,18 +52,36 @@ fn run(choices: Choices) -> Vec<String> {
     trace
 }
 
-fn input(sim: &mut Sim, ed: &mut Editor, repo: &Path, staged: &mut usize) -> String {
-    // (by arm: a hunk staged 1, a read alone 1)
-    match sim.choices.weighted(&[1, 1]) {
+fn input(sim: &mut Sim, ed: &mut Editor, repo: &Path, staged: &mut usize, held: &mut bool) -> String {
+    let (index, lock) = (repo.join(".git/index"), repo.join(".git/index.lock"));
+    // (git holds the index: what it does next is put the new one in — the watch's read once it's there)
+    if std::mem::take(held) {
+        std::fs::rename(&lock, &index).unwrap();
+        crate::git::index_settled(ed, repo);
+        return "index.lock renamed in, read".into();
+    }
+    // (by arm: a hunk staged 1, a read alone 1, a commit's ref moved before its index 1)
+    match sim.choices.weighted(&[1, 1, 1]) {
         0 => {
             *staged += 1;
             stage(repo, &format!("one\nstaged {staged}\n"));
             ed.git_load_base(ed.doc().id);
             format!("staged {staged}, read")
         }
-        _ => {
+        1 => {
             ed.git_reload_bases();
             "read".into()
+        }
+        _ => {
+            *staged += 1;
+            let old = std::fs::read(&index).unwrap();
+            stage(repo, &format!("one\ncommitted {staged}\n"));
+            std::fs::rename(&index, &lock).unwrap();
+            std::fs::write(&index, old).unwrap();
+            *held = true;
+            // (the ref moved: the watch's round, its thread off here)
+            crate::git::watch_round(ed, repo, (Some("main".into()), None), true);
+            format!("committed {staged}: the ref moved, the index held")
         }
     }
 }

@@ -57,8 +57,12 @@ fn head_ref(head: &Path) -> Option<PathBuf> {
 /// Watcher thread for `dir`'s repository — reads once at first, then whenever HEAD moves: its file (a
 /// checkout, a rebase) or the ref it points to (a commit, a rebase's end, a reset). Then the branch is read
 /// again and the session's buffers take the index as it is now (#74: after a rebase in a session's
-/// terminal the status line said +62 −62 over a clean tree). Its results are `events`' workspace in front now; made
-/// in the start, its first round is the start's until applied (`Queue::start_out`).
+/// terminal the status line said +62 −62 over a clean tree). Git moves the ref before it puts the new index in
+/// (`commit -a` renames `index.lock` to `index` after), so a move seen while the lock is there watches the lock too
+/// and, once it's gone, has the buffers read the index again (`index_settled`, #348: a round between the two read
+/// the old one, and nothing watched moved again) — only then, so an index written by anyone else (a prompt's
+/// `git status`) wakes nothing. Its results are `events`' workspace in front now; made in the start, its first
+/// round is the start's until applied (`Queue::start_out`).
 pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
     let (tx, mut start) = (events.sender(), events.start_out());
     crate::event::thread("tarae-git-watch", move || {
@@ -74,12 +78,17 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
         let mut told = false;
         let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
         let (mut last, mut first) = (None, true);
+        // (beside HEAD: a worktree's own index; `held` — HEAD moved while git held it, its new one not in yet)
+        let (lock, mut held) = (head.with_file_name("index.lock"), false);
         loop {
             let mut watcher = crate::fswatch::Watcher::new(); // (armed before the stat — see `fswatch`)
             watcher.file(&head);
             let reference = head_ref(&head);
             if let Some(r) = &reference {
                 watcher.file(r);
+            }
+            if held {
+                watcher.file(&lock);
             }
             let now = mtime(&head);
             // (HEAD gone: the worktree was removed — a session ended — and so is its session)
@@ -107,6 +116,18 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
                     drop(start);
                 };
                 if tx.send(Event::Job(Box::new(apply))).is_err() {
+                    break;
+                }
+                if moved && !held && lock.exists() {
+                    held = true;
+                    continue; // (the lock armed before it's looked at again)
+                }
+            }
+            if held && !lock.exists() {
+                held = false;
+                let dir = dir.clone();
+                let settled = move |ed: &mut Editor| index_settled(ed, &dir);
+                if tx.send(Event::Job(Box::new(settled))).is_err() {
                     break;
                 }
             }
@@ -147,6 +168,16 @@ pub(crate) fn watch_round(
         crate::reviewer::since_sync_shown(ed);
         // (a rebase stopped here, continued or aborted by hand: let go — #325)
         ed.rebase_head_moved();
+    }
+}
+
+/// The index git put in after HEAD moved, applied (`watch`: the lock it held gone — #348): the buffers of files under
+/// `dir` read it again, as a round's do. Only the session it's for; the reads' own results draw what they change.
+pub(crate) fn index_settled(ed: &mut Editor, dir: &Path) {
+    ed.drawn_for("a git watch's index settled");
+    ed.unchanged = true;
+    if ed.workspace.root == dir {
+        ed.git_load_bases_in(dir);
     }
 }
 
@@ -376,21 +407,27 @@ impl Editor {
     /// blame of the one in view is asked again (it's kept per text version, which a commit doesn't change: a
     /// rebased line said "not committed yet" — a shot, 2026-10-04).
     pub fn git_reload_bases_in(&mut self, dir: &Path) {
+        let ids = self.git_load_bases_in(dir);
+        if self.blame.of.is_some_and(|(id, _)| ids.contains(&id)) {
+            self.blame.of = None;
+        }
+        // (its tree may have moved with it: taken again for overlaps, the chat's names found again)
+        crate::overlap::moved(self, dir);
+        self.files_moved(dir);
+    }
+
+    /// The buffers of files under `dir` read the index again (`git_load_base` each) — their ids.
+    fn git_load_bases_in(&mut self, dir: &Path) -> Vec<crate::document::DocId> {
         let ids: Vec<_> = self
             .docs
             .iter()
             .filter(|d| d.path.as_deref().is_some_and(|p| p.starts_with(dir)))
             .map(|d| d.id)
             .collect();
-        if self.blame.of.is_some_and(|(id, _)| ids.contains(&id)) {
-            self.blame.of = None;
-        }
-        for id in ids {
+        for &id in &ids {
             self.git_load_base(id);
         }
-        // (its tree may have moved with it: taken again for overlaps, the chat's names found again)
-        crate::overlap::moved(self, dir);
-        self.files_moved(dir);
+        ids
     }
 
     /// On every event: if the current document's diff is stale, redo it on a worker thread shortly after

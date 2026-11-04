@@ -9414,6 +9414,44 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #348: `git commit -a` moves the ref before it renames `index.lock` to `index` — a round between the two reads
+    /// the old index. The watch, having seen the lock there, reads again once it's gone: the base is the new index.
+    #[test]
+    fn git_bases_follow_the_index_git_puts_in_after_head_moved() {
+        let dir = git_repo("index-after", &[("a.txt", "one\n")]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        let mut ed = editor("");
+        ed.git_auto = true;
+        ed.workspace.root = dir.clone();
+        ed.open(&dir.join("a.txt")).unwrap();
+        let base = |ed: &Editor| ed.doc().git_base.as_deref().map(|b| b.to_string());
+        settle_until(&mut ed, |ed| base(ed).as_deref() == Some("one\n"));
+        crate::git::watch(&ed.events, dir.clone());
+        settle_until(&mut ed, |ed| ed.workspace.git_branch.is_some());
+        // The commit as git makes it, stopped between its two steps: the new index in `index.lock`, the old one still
+        // `index`, the ref moved
+        let out = |args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+            assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8(o.stdout).unwrap().trim().to_string()
+        };
+        let (index, lock) = (dir.join(".git/index"), dir.join(".git/index.lock"));
+        let old = std::fs::read(&index).unwrap();
+        git_in(&dir, &["add", "a.txt"]);
+        let tree = out(&["write-tree"]);
+        let commit = out(&["commit-tree", &tree, "-p", "HEAD", "-m", "two"]);
+        std::fs::rename(&index, &lock).unwrap();
+        std::fs::write(&index, old).unwrap();
+        let read = ed.git_bases_read;
+        git_in(&dir, &["update-ref", "HEAD", &commit]);
+        settle_until(&mut ed, |ed| ed.git_bases_read > read);
+        assert_eq!(base(&ed).as_deref(), Some("one\n"), "the round read the index git hadn't replaced yet");
+        // git puts the new index in: read again
+        std::fs::rename(&lock, &index).unwrap();
+        settle_until(&mut ed, |ed| base(ed).as_deref() == Some("one\ntwo\n"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The start's jobs out from `file` (`src/git.rs`) on queue `q`, how long each has been.
     fn starts_from(q: &crate::event::Queue, file: &str) -> Vec<std::time::Duration> {
         q.starts_out().into_iter().filter(|(at, _)| at.file() == file).map(|(_, d)| d).collect()
