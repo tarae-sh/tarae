@@ -899,7 +899,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         sidebar: Default::default(),
         width: Some(lay.width),
         over_folded: editor.screen.over_folded,
-        chat_w: lay.chat_w,
+        chat_w: lay.chat().map_or(0, |r| r.w),
         side_w: if editor.review_rail_up() { 0 } else { lay.side().map_or(0, |r| r.w) },
         rail_w: if editor.review_rail_up() && lay.zoom.is_none() { lay.side().map_or(0, |r| r.w) } else { 0 },
         bottom_h: lay.slot.h,
@@ -1208,9 +1208,8 @@ struct Layout {
     width: usize,
     /// Leftmost column of this pane (differs per pane when split).
     x0: usize,
-    /// Editing area width (minus the chat panel on the right) · chat panel width (0 when closed).
+    /// Editing area width (minus the chat panel on the right).
     edit_w: usize,
-    chat_w: usize,
     /// Every leaf laid out with room (wider and taller than 0) that shows something: its kind and rect (`rect`).
     shown: Vec<(crate::pane::Shows, crate::split::Rect)>,
     header: bool,
@@ -1251,7 +1250,7 @@ struct Layout {
     /// …and its files under their folders (`CodeReview::rail_rows`), built once a frame for both.
     rail_rows: std::cell::OnceCell<Vec<crate::filetree::Row>>,
     /// The chat floating over the code (`Editor::chat_floating`, the flow plan's reader): its frame's cells on the
-    /// screen — `chat_w` 0 then, the code its whole width.
+    /// screen — no chat column then (`chat`), the code its whole width.
     chat_frame: Option<crate::split::Rect>,
 }
 
@@ -1285,8 +1284,12 @@ impl Layout {
         self.rect(crate::pane::Shows::Side).or(self.rect(crate::pane::Shows::Rail))
     }
 
-    /// Where the chat is drawn: its column beside the code, from the screen's first row to the status line; or in its
-    /// floating frame. None: not drawn.
+    /// The chat's column, docked in the tree (onetree S1d): None where it's closed, floating or has no room.
+    fn chat(&self) -> Option<crate::split::Rect> {
+        self.rect(crate::pane::Shows::Chat)
+    }
+
+    /// Where the chat is drawn: its column (`chat`); or in its floating frame. None: not drawn.
     fn chat_at(&self) -> Option<ChatAt> {
         match self.chat_frame {
             Some(r) => Some(ChatAt {
@@ -1296,13 +1299,7 @@ impl Layout {
                 h: r.h.saturating_sub(1),
                 framed: true,
             }),
-            None => (self.chat_w > 0).then_some(ChatAt {
-                x: self.edit_w,
-                y: 0,
-                w: self.chat_w,
-                h: self.body_h,
-                framed: false,
-            }),
+            None => self.chat().map(|r| ChatAt { x: r.x, y: r.y, w: r.w, h: r.h, framed: false }),
         }
     }
 
@@ -1837,8 +1834,7 @@ impl Layout {
             .collect();
         let rect = |s: Shows| shown.iter().find(|l| l.0 == s).map(|l| l.1);
         let rail_w = rect(Shows::Side).or(rect(Shows::Rail)).map_or(0, |r| r.w);
-        let chat_w = rect(Shows::Chat).map_or(0, |r| r.w);
-        let edit_w = w as usize - chat_w;
+        let edit_w = w as usize - rect(Shows::Chat).map_or(0, |r| r.w);
         let slot = rect(Shows::Slot);
         let slot_h = slot.map_or(0, |r| r.h);
         // (a group docked over the code: the code's rows start under it)
@@ -1853,7 +1849,6 @@ impl Layout {
             rows: total,
             x0: 0,
             edit_w,
-            chat_w,
             shown,
             header,
             scrollbar,
@@ -10858,7 +10853,7 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         let doc = &editor.docs[*idx];
         // (the sessions' strip at the screen's top row's right while no chat column stands there to name them — the
         // flow plan's piece 2: the chat floats by default — on the rule the path's own text leaves: `top_strip`)
-        let up = y == 0 && r.x + r.w == lay.edit_w && lay.chat_w == 0;
+        let up = y == 0 && r.x + r.w == lay.edit_w && lay.chat().is_none();
         let mut strip = None;
         let mut beside = |text_w: &dyn Fn(usize) -> usize| {
             strip = top_strip(editor, ui, r.w, text_w);
@@ -11623,7 +11618,7 @@ fn draw_statusline(
     // terminal's and a run panel's header, the chat's foot — never said here too, polish landing 5)
     // The session in front, when there's more than one and the chat (whose top row has them all) isn't
     // up: its name — a click opens the list — and how the others are
-    let chip = !editor.workspaces.is_empty() && lay.chat_w == 0;
+    let chip = !editor.workspaces.is_empty() && lay.chat().is_none();
     let warn = t.try_get("warning").map(|s| Style { bg: None, ..s }).unwrap_or_default();
     if chip {
         // (a session named as everywhere in the chrome — collab C1, the user 2026-10-22: its name in its participant
@@ -16634,7 +16629,7 @@ fn chat_gutter<'a>(
     let parts = beside_rows(editor, lay, crate::pane::Side::Right);
     let dragged = grab(editor, |b| b == crate::sizes::Border::Chat);
     let over = editor.picker.as_ref().is_some_and(|p| !p.compact);
-    let whole = lay.edit_w == 0;
+    let whole = lay.chat().is_some_and(|r| r.x == 0);
     move |y| match whole {
         false => meeting_line(ui, &parts, Region::Chat, "┤", (dragged, over), y),
         true => (" ", card),
@@ -18763,8 +18758,9 @@ const BESIDE_MIN: usize = 12;
 /// their own width, #177): its columns from `x`, `w` wide (the card's right a cell in), and the row its input's line is on —
 /// as `draw_chat` lays them out. None: the chat isn't open beside the code (closed, minimized).
 fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
-    let c = editor.workspace.claude.chat.as_ref().filter(|_| lay.chat_w > 0)?;
-    let (w, _) = chat_widths(lay.chat_w, editor.sizes.chat.is_some());
+    let c = editor.workspace.claude.chat.as_ref()?;
+    let at = lay.chat()?;
+    let (w, _) = chat_widths(at.w, editor.sizes.chat.is_some());
     let input_h = c.input.laid(w).height().min(CHAT_INPUT_MAX);
     let now_ms = crate::usage::now_ms();
     let compacts = crate::idlecompact::next_at(editor, &editor.workspace, now_ms);
@@ -18773,10 +18769,11 @@ fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
     let (billing, zone) = (editor.workspace.claude.billing, editor.interface.zone);
     let usage = usage_spans(u, compacts, &editor.limits, billing, (now_ms, zone), w, [s; 4]).is_some();
     // (its top line, the transcript, the input's line, its rows, the hint row, the usage row — `draw_chat`)
-    let rule = lay.body_h.checked_sub(input_h + 2 + usize::from(usage))?;
-    let (x, w) = match lay.edit_w {
-        0 => (0, lay.chat_w),
-        e => (e + crate::chrome::GAP, lay.chat_w.saturating_sub(crate::chrome::GAP)),
+    let rule = (at.y + at.h).checked_sub(input_h + 2 + usize::from(usage))?;
+    // (against the screen's left edge — the chat filling it — no gutter cell before it)
+    let (x, w) = match at.x {
+        0 => (0, at.w),
+        x => (x + crate::chrome::GAP, at.w.saturating_sub(crate::chrome::GAP)),
     };
     Some((x, w, rule))
 }
@@ -18793,7 +18790,7 @@ fn asks_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize, usiz
         return Some((x, w, 1, rule));
     }
     let g = editor.workspace.group(GroupKind::Sessions).filter(|g| g.place == Place::Docked(Side::Right))?;
-    if !editor.docked_in_sight(g.kind) || lay.chat_w > 0 {
+    if !editor.docked_in_sight(g.kind) || lay.chat().is_some() {
         return None;
     }
     let r = lay.leaves.iter().find(|l| l.0 == g.host)?.1;
@@ -19500,7 +19497,7 @@ fn draw_chat(
     let line = if framed { frame_line } else { edge_style(ui, card, Region::Chat) };
     // (against the screen's edge — the chat filling it — the line takes the gutter's cell too; floating, its frame's top
     // line, corner to corner)
-    let ((lx, lw), ends) = match lay.edit_w {
+    let ((lx, lw), ends) = match x0 {
         _ if framed => ((x0, cw + 1), ("╭", "╮", "┬")),
         0 => ((x0, cw), ("", "", "┬")),
         _ => ((x0 + GAP, cw.saturating_sub(GAP)), ("", "", "┬")),
