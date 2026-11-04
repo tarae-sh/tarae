@@ -21,9 +21,15 @@
 //!   too (checked against the debug map by hand: `.sb/buildcache/oso.sh`). A unit none of whose objects is linked
 //!   from elsewhere is left whole — nothing says which of them a binary names (a dependency built without
 //!   incremental). One written in the last `GRACE` is left: a build may have only just let the lock go.
-//! - `--age`: **incremental caches**, `incremental/<crate>-<hash>/` whose newest session is older (a configuration
-//!   not built since); **old test binaries**, `deps/<name>-<16 hex>` (and its `.d`) older, another of that name
-//!   newer.
+//! - `--age`: **replaced test binaries**, `deps/<name>-<16 hex>` (and its `.d`) older, and another binary of the
+//!   same target built after it: the same name and, by their fingerprints (`.fingerprint/<package>-<16 hex>/
+//!   <kind>-<target>.json`, `units`), the same target, profile, features, flags and kind of build — only rustc or a
+//!   dependency differ (`SHAPE`). A target's newest binary stays whatever its age, and so does one whose fingerprint
+//!   can't be read (#351: by name alone two current binaries, one target built two ways — `cargo test` and another
+//!   command's profile —, took turns being "the older"; an unchanged crate's current binary is days old by its
+//!   time). **Stale incremental caches**, `incremental/<crate>-<hash>/` whose newest session is older and none of
+//!   whose sessions was written near (`NEAR`) the time a current unit of that crate was last built (the newest of
+//!   its shape, its fingerprint written as rustc ended) — a unit still built keeps its cache however old.
 //! - `--whole` (with `--age`): a **build folder no checkout of this repository builds in** (each asked `cargo
 //!   metadata`), untouched for the age, that built this repository's own package (its `.fingerprint/<name>-<16
 //!   hex>`) — another project's (the global build-dir holds every project's, and none of them is a checkout here)
@@ -37,6 +43,13 @@
 //!
 //! Nothing else: fingerprints, build scripts' output, libraries (a proc macro's may be loaded), `tmp/`. All of it
 //! is cache: what's gone is built again when it's needed, never built wrong.
+//!
+//! **A test run holds no lock** (#351, checked by hand on cargo 1.99: `.sb/f351/lock.sh`): cargo's lock covers
+//! the freshness check and the build only — while a run's test binaries run, `.cargo-build-lock` (and the target's
+//! `.cargo-lock`) are free, so a binary cargo found fresh could go before its turn came. So a profile folder a
+//! process runs from (its executable inside it, by the process table — `running`) is left as it is, and said; where
+//! the table can't be read (a sandbox's view) no test binary goes, said. Between two binaries of one run, when
+//! none runs, each is still the newest of its target.
 //!
 //! **Through no link.** A build folder is written by sandboxed runs, and this isn't sandboxed. std's
 //! `remove_dir_all` (1.58.1 on, CVE-2022-21658) goes through no link below the path it's given, but it follows
@@ -52,6 +65,8 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStringExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -78,6 +93,14 @@ const TREE_DEPTH: usize = 32;
 /// What cargo never makes in a build folder or one below it — a project's root, or a checkout: never removed whole.
 const FOREIGN: &[&str] =
     &[".git", ".hg", ".jj", ".svn", "Cargo.toml", "Cargo.lock", ".cargo", "src", "target"];
+/// What makes a unit this target built this way, from its fingerprint's fields: two units alike in these differ
+/// only in rustc or a dependency, and the later one replaced the other.
+const SHAPE: [&str; 7] = ["target", "profile", "path", "features", "compile_kind", "rustflags", "config"];
+/// A cache whose session was written this near a current unit's build is that unit's (rustc writes its session,
+/// links, finalizes it, then cargo its fingerprint: a link of tarae's tests is under a minute).
+const NEAR: Duration = Duration::from_secs(10 * 60);
+/// A fingerprint read at most this far (cargo's are a few hundred bytes).
+const JSON_MAX: u64 = 64 * 1024;
 
 pub fn run(args: &[String]) -> Result<()> {
     let a = Args::read(args)?;
@@ -266,6 +289,8 @@ struct Pruned {
     folders: usize,
     /// Profile folders left alone, or left partway: a build held their lock.
     busy: usize,
+    /// The process table couldn't be read: no test binary removed, one might be running.
+    blind: bool,
     /// Why no folder was removed whole though asked (a checkout that didn't say where it builds).
     unsure: Option<String>,
     /// What it meant to remove and left, each with why (a folder not cargo's or with no lock file, a removal that
@@ -283,6 +308,7 @@ impl Pruned {
         self.binaries += o.binaries;
         self.folders += o.folders;
         self.busy += o.busy;
+        self.blind |= o.blind;
         self.left.extend(o.left);
         self.each.extend(o.each);
     }
@@ -370,6 +396,9 @@ fn report(p: &Pruned, removed: bool, home: Option<&Path>) -> String {
         0 => {}
         1 => out += "1 profile left while a build holds its lock\n",
         n => out += &format!("{n} profiles left while builds hold their locks\n"),
+    }
+    if p.blind {
+        out += "the process table can't be read here — no test binary removed (a test run may be using it)\n";
     }
     out += &match (p.said(), removed) {
         (Some(s), true) => format!("Freed {s}\n"),
@@ -467,6 +496,9 @@ thread_local! {
     static BETWEEN: Hook = const { std::cell::RefCell::new(None) };
     /// Tests: run once a folder is set aside and its locks let go, before it's removed (its path there).
     static ASIDE_THEN: Hook = const { std::cell::RefCell::new(None) };
+    /// Tests: what runs (`processes`) — unset, nothing; `Some(None)`, a table that can't be read.
+    static PROCS_FOR: std::cell::RefCell<Option<Option<Procs>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 fn slice() -> Duration {
@@ -588,6 +620,22 @@ fn one(parent: &Dir, rel: &Path, name: &OsStr, opts: &Opts, now: SystemTime) -> 
         }
     }
     out.busy = busy;
+    // (a test run holds no lock: a profile a process runs from is left as it is, its hold let go)
+    let procs = processes();
+    let mut runs = 0;
+    held.retain(|(p, _)| match procs.as_deref().and_then(|ps| runs_in(ps, &p.at)) {
+        Some((pid, exe)) => {
+            runs += 1;
+            out.left.push(format!(
+                "{}: {} runs from it (pid {pid}) — left as it is",
+                p.at.display(),
+                exe.display()
+            ));
+            false
+        }
+        None => true,
+    });
+    out.blind = procs.is_none();
     if let (true, Some(age), Ok(claims)) = (opts.whole, opts.age, &opts.claimed) {
         let claimed = claims.dirs.iter().any(|c| c.starts_with(&b.at) || b.at.starts_with(c));
         let mut times: Vec<Meta> = b.stat_self().into_iter().collect();
@@ -619,7 +667,7 @@ fn one(parent: &Dir, rel: &Path, name: &OsStr, opts: &Opts, now: SystemTime) -> 
                          {untouched}"
                     ),
                 ));
-            } else if busy == 0 && !held.is_empty() {
+            } else if busy == 0 && runs == 0 && !held.is_empty() {
                 let whose = match &ours {
                     Some(pkg) => format!("this repository's (it built {pkg})"),
                     None => "another project's, as far as this can tell".to_string(),
@@ -667,14 +715,21 @@ fn one(parent: &Dir, rel: &Path, name: &OsStr, opts: &Opts, now: SystemTime) -> 
     }
     for (p, hold) in &mut held {
         let deps = p.sub(OsStr::new("deps")).ok();
-        if let (Some(age), Some(d)) = (opts.age, &deps) {
-            binaries(d, age, now, opts.remove, hold, &mut out);
+        let units = opts.age.and_then(|_| units(p));
+        if opts.age.is_some() && units.is_none() {
+            out.left.push(format!(
+                "{}: its .fingerprint can't be read — no test binary or incremental cache removed there",
+                p.at.display()
+            ));
+        }
+        if let (Some(age), Some(d), Some(u), false) = (opts.age, &deps, &units, out.blind) {
+            binaries(d, u, age, now, opts.remove, hold, &mut out);
         }
         if let Some(d) = &deps {
             objects(d, now, opts.remove, hold, &mut out);
         }
-        if let (Some(age), Ok(i)) = (opts.age, p.sub(OsStr::new("incremental"))) {
-            caches(&i, age, now, opts.remove, hold, &mut out);
+        if let (Some(age), Ok(i), Some(u)) = (opts.age, p.sub(OsStr::new("incremental")), &units) {
+            caches(&i, u, age, now, opts.remove, hold, &mut out);
         }
         if hold.lost {
             out.busy += 1;
@@ -754,24 +809,109 @@ fn objects(deps: &Dir, now: SystemTime, remove: bool, hold: &mut Hold, out: &mut
     }
 }
 
-/// Old test binaries in `deps`: `<name>-<16 hex>` with no extension, older than `age`, another of that name newer.
-fn binaries(deps: &Dir, age: Duration, now: SystemTime, remove: bool, hold: &mut Hold, out: &mut Pruned) {
+/// `<name>-<16 hex>` with no extension — a binary in `deps/`, a fingerprint's folder — as its name and hash.
+fn hashed(name: &str) -> Option<(&str, &str)> {
+    let (s, h) = name.rsplit_once('-')?;
+    let hex = h.len() == 16 && h.bytes().all(|c| c.is_ascii_hexdigit()) && !name.contains('.');
+    hex.then_some((s, h))
+}
+
+/// A unit cargo built in a profile, as its fingerprint says: `.fingerprint/<package>-<hash>/<kind>-<target>.json`.
+struct Unit {
+    /// The 16 hex digits its outputs in `deps/` carry.
+    hash: String,
+    /// Its fingerprint's name, `.json` and `-` taken off as a crate's name has them: `test_lib_tarae_sorting`.
+    target: String,
+    /// Its fingerprint's name and `SHAPE`'s fields: alike, one unit replaced the other.
+    shape: String,
+    /// When cargo last built it: its fingerprint's time, written as rustc ended.
+    built: SystemTime,
+}
+
+impl Unit {
+    /// Whether it builds the crate `name` (an incremental cache's): its target's name ends with it.
+    fn of(&self, name: &str) -> bool {
+        self.target.strip_suffix(name).is_some_and(|rest| rest.is_empty() || rest.ends_with('_'))
+    }
+}
+
+/// The units the profile folder `p` built, from its fingerprints (one unreadable left out) — None when there's no
+/// `.fingerprint` to read: then nothing tells a current binary or cache from a replaced one.
+fn units(p: &Dir) -> Option<Vec<Unit>> {
+    use std::io::Read as _;
+    let fp = p.sub(OsStr::new(".fingerprint")).ok()?;
+    let mut out = Vec::new();
+    for folder in fp.folders() {
+        let Some((_, hash)) = folder.to_str().and_then(hashed) else { continue };
+        let Ok(d) = fp.sub(&folder) else { continue };
+        for (name, meta) in d.entries().unwrap_or_default() {
+            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".json")) else { continue };
+            let mut text = String::new();
+            let read = d.open_file(&name).and_then(|f| f.take(JSON_MAX).read_to_string(&mut text));
+            let Some(shape) = read.ok().and_then(|_| shape_of(&text)) else { continue };
+            out.push(Unit {
+                hash: hash.to_string(),
+                target: stem.replace('-', "_"),
+                shape: format!("{stem} {shape}"),
+                built: meta.modified,
+            });
+        }
+    }
+    Some(out)
+}
+
+/// A fingerprint's `SHAPE` fields, as written — None when it isn't one (no target or profile).
+fn shape_of(json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    v.get("target")?;
+    v.get("profile")?;
+    let fields: Vec<String> = SHAPE.iter().map(|k| v.get(k).map_or("-".into(), |x| x.to_string())).collect();
+    Some(fields.join(" "))
+}
+
+/// The units no later one of the same shape replaced.
+fn current(units: &[Unit]) -> Vec<&Unit> {
+    let mut newest: HashMap<&str, SystemTime> = HashMap::new();
+    for u in units {
+        let t = newest.entry(&u.shape).or_insert(u.built);
+        *t = (*t).max(u.built);
+    }
+    units.iter().filter(|u| u.built >= newest[u.shape.as_str()]).collect()
+}
+
+/// Replaced test binaries in `deps`: `<name>-<16 hex>` with no extension, older than `age`, and a binary of the
+/// same target built later — its name and its fingerprint's shape (`units`) the same. One whose unit isn't known
+/// stays.
+fn binaries(
+    deps: &Dir,
+    units: &[Unit],
+    age: Duration,
+    now: SystemTime,
+    remove: bool,
+    hold: &mut Hold,
+    out: &mut Pruned,
+) {
     let all = files_in(deps);
-    let stem = |n: &str| -> Option<String> {
-        let (s, h) = n.rsplit_once('-')?;
-        let hex = h.len() == 16 && h.bytes().all(|c| c.is_ascii_hexdigit()) && !n.contains('.');
-        hex.then(|| s.to_string())
+    let mut shapes: HashMap<&str, Vec<&str>> = HashMap::new();
+    for u in units {
+        shapes.entry(&u.hash).or_default().push(&u.shape);
+    }
+    let target = |e: &Entry| -> Option<String> {
+        let (name, hash) = hashed(&e.text)?;
+        let mut s = shapes.get(hash)?.clone();
+        s.sort();
+        Some(format!("{name}\n{}", s.join("\n")))
     };
     let mut newest: HashMap<String, SystemTime> = HashMap::new();
     for e in &all {
-        if let Some(s) = stem(&e.text) {
-            let t = newest.entry(s).or_insert(e.meta.modified);
-            *t = (*t).max(e.meta.modified);
+        if let Some(t) = target(e) {
+            let n = newest.entry(t).or_insert(e.meta.modified);
+            *n = (*n).max(e.meta.modified);
         }
     }
     for e in &all {
-        let Some(s) = stem(&e.text) else { continue };
-        if !older(e.meta.modified, now, age) || e.meta.modified >= newest[&s] {
+        let Some(t) = target(e) else { continue };
+        if !older(e.meta.modified, now, age) || e.meta.modified >= newest[&t] {
             continue;
         }
         if !hold.breathe() {
@@ -793,13 +933,33 @@ fn binaries(deps: &Dir, age: Duration, now: SystemTime, remove: bool, hold: &mut
     }
 }
 
-/// Stale incremental caches in `incr`: a crate's folder whose newest entry is older than `age`.
-fn caches(incr: &Dir, age: Duration, now: SystemTime, remove: bool, hold: &mut Hold, out: &mut Pruned) {
+/// Whether `a` and `b` are within `NEAR` of each other.
+fn near(a: SystemTime, b: SystemTime) -> bool {
+    a.duration_since(b).unwrap_or_else(|e| e.duration()) <= NEAR
+}
+
+/// Stale incremental caches in `incr`: a crate's folder (`<crate>-<hash>`) whose newest entry is older than `age`,
+/// none of its times (its own, each session's) near a current unit's build of that crate (`units`, `current`) — a
+/// failed build's session leaves the folder's time apart, the last good one's stays near.
+fn caches(
+    incr: &Dir,
+    units: &[Unit],
+    age: Duration,
+    now: SystemTime,
+    remove: bool,
+    hold: &mut Hold,
+    out: &mut Pruned,
+) {
+    let current = current(units);
     for name in incr.folders() {
+        let Some((krate, _)) = name.to_str().and_then(|n| n.rsplit_once('-')) else { continue };
         let Ok(dir) = incr.sub(&name) else { continue };
         let mut times: Vec<SystemTime> = dir.stat_self().map(|m| m.modified).into_iter().collect();
         times.extend(dir.entries().unwrap_or_default().iter().map(|(_, m)| m.modified));
-        if !times.into_iter().max().is_some_and(|t| older(t, now, age)) {
+        if !times.iter().max().is_some_and(|t| older(*t, now, age)) {
+            continue;
+        }
+        if current.iter().any(|u| u.of(krate) && times.iter().any(|t| near(*t, u.built))) {
             continue;
         }
         if !hold.breathe() {
@@ -813,6 +973,72 @@ fn caches(incr: &Dir, age: Duration, now: SystemTime, remove: bool, hold: &mut H
             Err(e) => out.left.push(format!("{}: won't go — {e}", incr.at.join(&name).display())),
         }
     }
+}
+
+/// Each process's pid and executable.
+type Procs = Vec<(u32, PathBuf)>;
+
+/// The first of `procs` whose executable is inside `at` (a profile folder's real path).
+fn runs_in(procs: &[(u32, PathBuf)], at: &Path) -> Option<(u32, PathBuf)> {
+    procs.iter().find(|(_, exe)| exe.starts_with(at)).cloned()
+}
+
+/// What runs now (`running`); tests: what `PROCS_FOR` says, else nothing.
+fn processes() -> Option<Procs> {
+    #[cfg(test)]
+    return PROCS_FOR.with(|p| p.borrow().clone()).unwrap_or(Some(Vec::new()));
+    #[cfg(not(test))]
+    running()
+}
+
+/// Every process's pid and executable (its real path) — None when the table can't be read: none listed, or most
+/// paths refused (a sandbox lets a run see its own processes only; outside one, any process's path is read).
+#[cfg(target_os = "macos")]
+fn running() -> Option<Procs> {
+    let size = std::mem::size_of::<libc::pid_t>();
+    // SAFETY: a null buffer asks the count only.
+    let n = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if n <= 0 {
+        return None;
+    }
+    // (room for what starts meanwhile)
+    let mut pids: Vec<libc::pid_t> = vec![0; n as usize + 64];
+    let bytes = (pids.len() * size) as libc::c_int;
+    // SAFETY: a buffer of `bytes`, filled with pids; the count of them returned.
+    let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    if n <= 0 {
+        return None;
+    }
+    pids.truncate(n as usize);
+    let (mut out, mut refused) = (Vec::new(), 0);
+    for pid in pids {
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: a buffer of its length, filled with the path; its length returned.
+        let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+        if len <= 0 {
+            refused += 1;
+            continue;
+        }
+        buf.truncate(len as usize);
+        out.push((pid as u32, PathBuf::from(OsString::from_vec(buf))));
+    }
+    (refused <= out.len()).then_some(out)
+}
+
+/// Every process's pid and executable whose `/proc/<pid>/exe` this user may read (its own; one removed since
+/// still named) — None when `/proc` can't be read. (In a pid namespace — tarae's sandbox — only its own.)
+#[cfg(not(target_os = "macos"))]
+fn running() -> Option<Procs> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        if let Ok(exe) = std::fs::read_link(e.path().join("exe")) {
+            let b = exe.as_os_str().as_bytes();
+            let b = b.strip_suffix(b" (deleted)").unwrap_or(b);
+            out.push((pid, PathBuf::from(OsStr::from_bytes(b))));
+        }
+    }
+    Some(out)
 }
 
 /// What a name is, not followed.

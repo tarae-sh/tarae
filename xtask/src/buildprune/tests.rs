@@ -134,8 +134,31 @@ fn orphaned_objects_go_and_what_a_binary_names_stays() {
     assert_eq!(p.each[0].0, b);
 }
 
+/// A unit's fingerprint in the build folder `b`'s `debug/`: `.fingerprint/<pkg>-<hash>/<stem>.json` as cargo 1.99
+/// writes one (#351's pair's fields), its `profile` and `rustc` as given, written `ago`.
+fn unit(b: &Path, pkg: &str, hash: &str, stem: &str, (profile, rustc): (u64, u64), ago: Duration) {
+    let f = b.join(format!("debug/.fingerprint/{pkg}-{hash}/{stem}.json"));
+    let json = format!(
+        r#"{{"rustc":{rustc},"features":"[]","declared_features":"[]","target":7472985870560619705,"profile":{profile},"path":6006881632787475481,"deps":[[1,"tarae_testkit",false,{rustc}]],"local":[],"rustflags":[],"config":9396254390672932401,"compile_kind":0}}"#
+    );
+    write(&f, 0);
+    std::fs::write(&f, json).unwrap();
+    aged(&f, ago);
+}
+
+/// A test binary `<name>-<hash>` in `b`'s `debug/deps/` with its `.d`, both written `ago`.
+fn binary(b: &Path, name: &str, hash: &str, ago: Duration) {
+    let bin = b.join(format!("debug/deps/{name}-{hash}"));
+    let d = b.join(format!("debug/deps/{name}-{hash}.d"));
+    write(&bin, 4096);
+    write(&d, 64);
+    aged(&bin, ago);
+    aged(&d, ago);
+}
+
 /// With an age: an incremental cache whose newest session is older goes (what of it has no link elsewhere
-/// counted), a newer one stays; a test binary older than another of its name goes with its `.d`, one alone stays.
+/// counted), a newer one stays; a test binary a later one of its target replaced goes with its `.d`, one alone
+/// stays.
 #[test]
 fn stale_caches_and_old_binaries_go_with_an_age() {
     let h = home("buildprune-age");
@@ -146,12 +169,12 @@ fn stale_caches_and_old_binaries_go_with_an_age() {
     for p in ["tarae-old/s-1/a.o", "tarae-old/s-1", "tarae-old"] {
         aged(&incr.join(p), 3 * DAY);
     }
-    write(&deps.join("tarae-4444444444444444"), 4096);
-    write(&deps.join("tarae-4444444444444444.d"), 64);
-    write(&deps.join("tarae-1111111111111111"), 4096);
-    write(&deps.join("xtask-5555555555555555"), 4096);
-    aged(&deps.join("tarae-4444444444444444"), 3 * DAY);
-    aged(&deps.join("xtask-5555555555555555"), 3 * DAY);
+    binary(&b, "tarae", "4444444444444444", 3 * DAY);
+    binary(&b, "tarae", "1111111111111111", Duration::ZERO);
+    binary(&b, "xtask", "5555555555555555", 3 * DAY);
+    unit(&b, "tarae", "4444444444444444", "test-bin-tarae", (1, 1), 3 * DAY);
+    unit(&b, "tarae", "1111111111111111", "test-bin-tarae", (1, 2), Duration::ZERO);
+    unit(&b, "xtask", "5555555555555555", "test-bin-xtask", (1, 1), 3 * DAY);
     let p = prune(&h, &opts(Some(DAY), false, Ok(Vec::new())));
     assert!(!incr.join("tarae-old").exists() && incr.join("tarae-new").exists());
     assert!(!deps.join("tarae-4444444444444444").exists() && !deps.join("tarae-4444444444444444.d").exists());
@@ -164,6 +187,180 @@ fn stale_caches_and_old_binaries_go_with_an_age() {
     let p = prune(&h, &opts(None, false, Ok(Vec::new())));
     assert_eq!(p, Pruned::default());
     assert!(incr.join("tarae-other").exists());
+}
+
+/// #351: a target's newest test binary stays whatever its age. One target built two ways (its fingerprint's
+/// profile apart: `cargo test` and another command) is two targets, each binary the newest of its own — by name
+/// alone the older went, and the run about to execute it failed. What goes: a binary a later one of the same
+/// target replaced (only rustc or a dependency apart), past the age. A replaced one within the age stays, and one
+/// whose fingerprint isn't there (its target unknown).
+#[test]
+fn a_targets_newest_binary_stays_whatever_its_age() {
+    let h = home("buildprune-newest");
+    let b = folder(&h, "ab/cdef0123");
+    let deps = b.join("debug/deps");
+    let built = |name: &str, hash: &str, stem: &str, shape, ago| {
+        binary(&b, name, hash, ago);
+        unit(&b, &name.replace('_', "-"), hash, stem, shape, ago);
+    };
+    let sorting = "test-lib-tarae_sorting";
+    built("tarae_sorting", "5e00065f00dd432d", sorting, (3463, 17), 4 * DAY);
+    built("tarae_sorting", "c8e23526ca98b477", sorting, (5137, 17), 3 * DAY);
+    built("tarae_sorting", "0000000000000009", sorting, (3463, 16), 9 * DAY);
+    built("live", "dddddddddddddddd", "test-integration-test-live", (3463, 17), 30 * DAY);
+    built(
+        "e2e",
+        "8888888888888888",
+        "test-integration-test-e2e",
+        (3463, 16),
+        2 * 3600 * Duration::from_secs(1),
+    );
+    built("e2e", "9999999999999999", "test-integration-test-e2e", (3463, 17), Duration::from_secs(3600));
+    binary(&b, "tarae", "eeeeeeeeeeeeeeee", 5 * DAY);
+    binary(&b, "tarae", "ffffffffffffffff", 2 * DAY);
+    let p = prune(&h, &opts(Some(DAY), false, Ok(Vec::new())));
+    let bins: Vec<String> = names(&deps).into_iter().filter(|n| !n.ends_with(".d")).collect();
+    assert_eq!(
+        bins,
+        [
+            "e2e-8888888888888888",
+            "e2e-9999999999999999",
+            "live-dddddddddddddddd",
+            "tarae-eeeeeeeeeeeeeeee",
+            "tarae-ffffffffffffffff",
+            "tarae_sorting-5e00065f00dd432d",
+            "tarae_sorting-c8e23526ca98b477",
+        ],
+        "only the one replaced past the age: {p:?}"
+    );
+    assert!(!deps.join("tarae_sorting-0000000000000009.d").exists(), "its .d with it");
+    assert_eq!(p.binaries, 1, "{p:?}");
+}
+
+/// An incremental cache stays however old while a current unit of its crate (the newest of its shape) was last
+/// built near one of its times — its folder's, a session's: a failed build later moves the folder's time, the last
+/// good session's stays near. What goes past the age: one near a replaced unit only, near none, or near a unit of
+/// another crate.
+#[test]
+fn a_cache_of_a_unit_still_built_stays_however_old() {
+    let h = home("buildprune-caches");
+    let b = folder(&h, "ab/cdef0123");
+    let incr = b.join("debug/incremental");
+    let stem = "test-lib-tarae_sorting";
+    unit(&b, "tarae-sorting", "5e00065f00dd432d", stem, (3463, 17), 3 * DAY);
+    unit(&b, "tarae-sorting", "0000000000000009", stem, (3463, 16), 9 * DAY);
+    // (each written, then aged deepest first: a name made in a folder moves the folder's time)
+    let cache = |name: &str, sessions: &[(&str, Duration)], own: Duration| {
+        for (s, ago) in sessions {
+            write(&incr.join(format!("{name}/{s}/dep-graph.bin")), 4096);
+            aged(&incr.join(format!("{name}/{s}/dep-graph.bin")), *ago);
+            aged(&incr.join(format!("{name}/{s}")), *ago);
+        }
+        aged(&incr.join(name), own);
+    };
+    let near = 3 * DAY + Duration::from_secs(20);
+    cache("tarae_sorting-cur", &[("s-1", near)], near);
+    cache("tarae_sorting-failed", &[("s-1", near), ("s-2", 2 * DAY)], 2 * DAY);
+    cache("tarae_sorting-replaced", &[("s-1", 9 * DAY)], 9 * DAY);
+    cache("tarae_sorting-none", &[("s-1", 5 * DAY)], 5 * DAY);
+    cache("tarae_wasm-other", &[("s-1", near)], near);
+    let p = prune(&h, &opts(Some(DAY), false, Ok(Vec::new())));
+    assert_eq!(names(&incr), ["tarae_sorting-cur", "tarae_sorting-failed"], "{p:?}");
+    assert_eq!(p.caches, 3, "{p:?}");
+}
+
+/// #351: cargo's lock covers the build, not the run (`.sb/f351/lock.sh`). A profile folder a process runs from is
+/// left as it is — its replaced binary, orphaned object and stale cache all stay — and said; another profile is
+/// pruned as ever; and a folder no checkout builds in isn't removed whole while one runs from it.
+#[test]
+fn a_profile_a_binary_runs_from_is_left_as_it_is() {
+    let h = home("buildprune-running");
+    let old = |b: &Path| {
+        let stem = "test-lib-tarae_sorting";
+        for (hash, shape, ago) in
+            [("5e00065f00dd432d", (3463, 17), 3 * DAY), ("0000000000000009", (3463, 16), 9 * DAY)]
+        {
+            binary(b, "tarae_sorting", hash, ago);
+            unit(b, "tarae-sorting", hash, stem, shape, ago);
+        }
+        write(&b.join("debug/deps/gone-3333333333333333.x.y.rcgu.o"), 4096);
+        aged(&b.join("debug/deps/gone-3333333333333333.x.y.rcgu.o"), DAY);
+        write(&b.join("debug/incremental/tarae_sorting-none/s-1/a.bin"), 4096);
+        for p in ["tarae_sorting-none/s-1/a.bin", "tarae_sorting-none/s-1", "tarae_sorting-none"] {
+            aged(&b.join("debug/incremental").join(p), 5 * DAY);
+        }
+    };
+    let (b, quiet, unclaimed) =
+        (folder(&h, "ab/cdef0123"), folder(&h, "ab/cdef0124"), folder(&h, "cd/00000000000002"));
+    old(&b);
+    old(&quiet);
+    // (two profiles: the one nothing runs from still held — by the holds alone it would go whole)
+    std::fs::create_dir_all(unclaimed.join("perf/deps")).unwrap();
+    File::create(unclaimed.join("perf/.cargo-build-lock")).unwrap();
+    untouched(&unclaimed, 3 * DAY);
+    for d in ["perf/deps", "perf"] {
+        aged(&unclaimed.join(d), 3 * DAY);
+    }
+    let running = b.join("debug/deps/tarae_sorting-5e00065f00dd432d");
+    let there = unclaimed.join("debug/deps/x-1111111111111111");
+    PROCS_FOR.set(Some(Some(vec![(42, running.clone()), (43, there.clone())])));
+    let before = (names(&b.join("debug/deps")), names(&b.join("debug/incremental")));
+    let p = prune(&h, &opts(Some(DAY), true, Ok(vec![b.clone(), quiet.clone()])));
+    PROCS_FOR.set(None);
+    assert_eq!((names(&b.join("debug/deps")), names(&b.join("debug/incremental"))), before, "{p:?}");
+    assert!(
+        p.left.contains(&format!(
+            "{}: {} runs from it (pid 42) — left as it is",
+            b.join("debug").display(),
+            running.display()
+        )),
+        "{:?}",
+        p.left
+    );
+    assert!(unclaimed.exists(), "not removed whole while pid 43 runs from it: {p:?}");
+    assert!(p.left.iter().any(|l| l.contains("(pid 43)")), "{:?}", p.left);
+    assert!(!quiet.join("debug/deps/tarae_sorting-0000000000000009").exists(), "the quiet one pruned");
+    assert_eq!((p.binaries, p.objects, p.caches, p.folders), (1, 1, 1, 0), "the quiet one's only: {p:?}");
+    assert!(!p.blind);
+}
+
+/// Where the process table can't be read (a sandbox's view) no test binary goes, said once; caches and objects,
+/// which no run executes, still do.
+#[test]
+fn where_the_process_table_cant_be_read_no_test_binary_goes() {
+    let h = home("buildprune-blind");
+    let b = folder(&h, "ab/cdef0123");
+    let stem = "test-lib-tarae_sorting";
+    for (hash, shape, ago) in
+        [("5e00065f00dd432d", (3463, 17), 3 * DAY), ("0000000000000009", (3463, 16), 9 * DAY)]
+    {
+        binary(&b, "tarae_sorting", hash, ago);
+        unit(&b, "tarae-sorting", hash, stem, shape, ago);
+    }
+    write(&b.join("debug/incremental/tarae_sorting-none/s-1/a.bin"), 4096);
+    for p in ["tarae_sorting-none/s-1/a.bin", "tarae_sorting-none/s-1", "tarae_sorting-none"] {
+        aged(&b.join("debug/incremental").join(p), 5 * DAY);
+    }
+    PROCS_FOR.set(Some(None));
+    let p = prune(&h, &opts(Some(DAY), false, Ok(Vec::new())));
+    PROCS_FOR.set(None);
+    assert!(b.join("debug/deps/tarae_sorting-0000000000000009").exists(), "{p:?}");
+    assert_eq!((p.binaries, p.caches, p.blind), (0, 1, true), "{p:?}");
+    let text = report(&p, true, None);
+    assert_eq!(text.matches("the process table can't be read here").count(), 1, "{text}");
+}
+
+/// The process table as `running` reads it names this test's own process by its executable's real path — where
+/// it can be read (in tarae's sandbox on macOS it can't: None, and nothing to check).
+#[test]
+fn the_process_table_names_this_process() {
+    let Some(procs) = running() else { return };
+    let me = std::env::current_exe().unwrap().canonicalize().unwrap();
+    assert!(
+        procs.iter().any(|(pid, exe)| *pid == std::process::id() && *exe == me),
+        "{me:?} not in {} processes",
+        procs.len()
+    );
 }
 
 /// Without `--yes` nothing is removed: the listing says what a removing pass then does, folder by folder.
