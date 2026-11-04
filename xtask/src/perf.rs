@@ -435,9 +435,13 @@ fn report(
 /// with the web reader (rustls, ring, the platform verifier, html5ever, encoding_rs), the image decoder
 /// (readimg), panes P3 and collab C1–C3, hidden while `cargo perf` passed "not measured"; the size pass stays at
 /// stabilization (§9), `SIZE_JUMP` catches a dependency's jump meanwhile.
+/// 19 and bundled 24 (2026-11-05, 18.17 and 23.27 then, after the one cheap cut — `Jobs::spawn`'s copies; 16.55
+/// and 21.62 on 2026-10-24): the user's call (#365) — grown with tarae's own code (`term.rs`'s UI rules, the flow
+/// plan, bring and base moves), found only once #363/#364 let `cargo perf` reach them; the size pass stays at
+/// stabilization (§9), `SIZE_JUMP` catches a dependency's jump meanwhile.
 const SIZES: [(&str, &[&str], &str, f64); 2] = [
-    ("release_size_mb", &[], "target", 17.0),
-    ("release_size_bundled_mb", &["--features", "bundled-grammars"], "target/bundled-size", 22.0),
+    ("release_size_mb", &[], "target", 19.0),
+    ("release_size_bundled_mb", &["--features", "bundled-grammars"], "target/bundled-size", 24.0),
 ];
 const SIZE_NOISE: f64 = 0.05;
 
