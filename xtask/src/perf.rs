@@ -20,8 +20,9 @@
 //! A run during which other processes kept `OTHERS_BUSY` cores busy is dropped (`others_cores`,
 //! `quiet_runs`) and run again once the machine is quiet, `TRIES` runs in all at most. "Not measured" is
 //! never a pass (user, 2026-10-24: a preflight that passed it hid two broken budgets): a machine still busy
-//! after the wait, or fewer than `RUNS` quiet runs, fails, saying it couldn't measure. A budget broken on a
-//! quiet machine is a failure.
+//! after the wait, or fewer than `RUNS` quiet runs, fails, saying it couldn't measure — and so does a load or
+//! a CPU counter that can't be read (#363: a sandbox refuses `getloadavg`, and its 0 read as quiet). A budget
+//! broken on a quiet machine is a failure.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -75,9 +76,7 @@ fn filters(first: bool) -> Vec<&'static str> {
 pub fn run(args: &[String]) -> Result<()> {
     let all_sizes = args.iter().any(|a| a == "--sizes");
     let root = root();
-    if let Some(load) = wait_quiet() {
-        return Err(not_measured(load, "before the first run"));
-    }
+    quiet_before("before the first run", load_now, wait_s())?;
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let test = |extra: &[&str]| {
         let mut c = Command::new(&cargo);
@@ -103,13 +102,11 @@ pub fn run(args: &[String]) -> Result<()> {
         return Err("building the perf profile failed".into());
     }
     let runs = runs(|i, first| {
-        if let Some(load) = wait_quiet() {
-            return Err(not_measured(load, &format!("before run {}", i + 1)));
-        }
+        quiet_before(&format!("before run {}", i + 1), load_now, wait_s())?;
         eprintln!("run {} ({RUNS} needed, {TRIES} at most) …", i + 1);
-        let before = Cpu::now();
+        let before = Cpu::now()?;
         let out = test(&filters(first)).output();
-        let others = Cpu::now().others_since(&before);
+        let others = Cpu::now()?.others_since(&before);
         let out = out.map_err(|e| format!("cargo: {e}"))?;
         let text =
             format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -245,14 +242,26 @@ struct Cpu {
     at: std::time::Instant,
 }
 
+/// What CPU counters that can't be read say: a run they can't judge is no quiet run (`Cpu::now`).
+const COUNTERS_UNREADABLE: &str =
+    "not measured: the machine's CPU counters can't be read here — run it outside the sandbox";
+
 impl Cpu {
-    fn now() -> Cpu {
-        let (busy, all) = machine_ticks();
+    fn now() -> Result<Cpu> {
         // SAFETY: getrusage fills the struct given.
         let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-        unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) };
+        let read = unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) } == 0;
         let secs = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
-        Cpu { busy, all, own_s: secs(ru.ru_utime) + secs(ru.ru_stime), at: std::time::Instant::now() }
+        Cpu::of(machine_ticks(), read.then(|| secs(ru.ru_utime) + secs(ru.ru_stime)))
+    }
+
+    /// A reading of the machine's busy and total ticks and the run's own CPU seconds; either unread is
+    /// `COUNTERS_UNREADABLE`, never a 0 that reads as quiet.
+    fn of(ticks: Option<(u64, u64)>, own_s: Option<f64>) -> Result<Cpu> {
+        match (ticks, own_s) {
+            (Some((busy, all)), Some(own_s)) => Ok(Cpu { busy, all, own_s, at: std::time::Instant::now() }),
+            _ => Err(COUNTERS_UNREADABLE.into()),
+        }
     }
 
     /// The cores other processes kept busy from `before` to now (`others_cores`).
@@ -277,9 +286,9 @@ fn others_cores((busy, all): (u64, u64), cores: f64, own_s: f64, wall_s: f64) ->
     (busy as f64 / all as f64 * cores - own_s / wall_s).max(0.0)
 }
 
-/// The machine's busy and total CPU ticks since boot, all cores together (0, 0 when they can't be read).
+/// The machine's busy and total CPU ticks since boot, all cores together (None when they can't be read).
 #[cfg(target_os = "macos")]
-fn machine_ticks() -> (u64, u64) {
+fn machine_ticks() -> Option<(u64, u64)> {
     // SAFETY: a struct of plain integers, all-zero valid.
     let mut info: libc::host_cpu_load_info = unsafe { std::mem::zeroed() };
     let mut count = libc::HOST_CPU_LOAD_INFO_COUNT;
@@ -294,18 +303,18 @@ fn machine_ticks() -> (u64, u64) {
     let info_out = &mut info as *mut libc::host_cpu_load_info as *mut i32;
     let r = unsafe { libc::host_statistics(host, libc::HOST_CPU_LOAD_INFO, info_out, &mut count) };
     if r != 0 {
-        return (0, 0);
+        return None;
     }
     let t = info.cpu_ticks.map(u64::from);
     let (user, system, idle, nice) = (t[0], t[1], t[2], t[3]);
-    (user + system + nice, user + system + idle + nice)
+    Some((user + system + nice, user + system + idle + nice))
 }
 
-/// The machine's busy and total CPU ticks since boot, all cores together (0, 0 when they can't be read).
+/// The machine's busy and total CPU ticks since boot, all cores together (None when they can't be read).
 #[cfg(not(target_os = "macos"))]
-fn machine_ticks() -> (u64, u64) {
+fn machine_ticks() -> Option<(u64, u64)> {
     // /proc/stat's first line: cpu user nice system idle iowait irq softirq steal (guest counted in user)
-    let stat = std::fs::read_to_string("/proc/stat").unwrap_or_default();
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
     let t: Vec<u64> = stat
         .lines()
         .next()
@@ -316,10 +325,10 @@ fn machine_ticks() -> (u64, u64) {
         .filter_map(|v| v.parse().ok())
         .collect();
     if t.len() < 8 {
-        return (0, 0);
+        return None;
     }
     let idle = t[3] + t[4];
-    (t.iter().sum::<u64>() - idle, t.iter().sum())
+    Some((t.iter().sum::<u64>() - idle, t.iter().sum()))
 }
 
 /// The ticks' width: Mach's are 32-bit counters per state (a sum's difference is right modulo 2³²), Linux's
@@ -619,21 +628,30 @@ fn failures(text: &str) -> String {
         let tail: Vec<&str> = lines.iter().rev().take(20).rev().copied().collect();
         return tail.join("\n");
     }
-    let load = busy().map_or(format!("under {BUSY}"), |l| format!("{l:.1}"));
+    let load = match load_now() {
+        Ok(l) if l >= BUSY => format!("{l:.1}"),
+        Ok(_) => format!("under {BUSY}"),
+        Err(_) => "can't be read here".into(),
+    };
     format!("{}\n(load now: {load})", out.join("\n"))
 }
 
-/// None once the machine is quiet — waiting up to `WAIT` for it, saying so; else the load it stayed at.
-fn wait_quiet() -> Option<f64> {
-    let mut load = busy()?;
-    let wait = wait_s();
+/// Before a run (`when`): Ok once the machine is quiet — waiting up to `wait` seconds for it, saying so; else
+/// why nothing is measured: the machine stayed busy (`not_measured`), or its load can't be read (`load`'s
+/// `UNREADABLE`, at once or during the wait).
+fn quiet_before(when: &str, mut load: impl FnMut() -> Result<f64>, wait: u64) -> Result<()> {
+    let busy = |l: f64| (l >= BUSY).then_some(l);
+    let Some(mut now) = busy(load()?) else { return Ok(()) };
     let end = std::time::Instant::now() + std::time::Duration::from_secs(wait);
-    eprintln!("waiting up to {wait}s for the machine to quiet down (load {load:.1}) …");
+    eprintln!("waiting up to {wait}s for the machine to quiet down (load {now:.1}) …");
     while std::time::Instant::now() < end {
         std::thread::sleep(std::time::Duration::from_secs(5).min(end - std::time::Instant::now()));
-        load = busy()?;
+        match busy(load()?) {
+            None => return Ok(()),
+            Some(l) => now = l,
+        }
     }
-    Some(load)
+    Err(not_measured(now, when))
 }
 
 /// How long a busy machine is waited for, in seconds (`WAIT`, `TARAE_PERF_WAIT`).
@@ -641,21 +659,29 @@ fn wait_s() -> u64 {
     std::env::var("TARAE_PERF_WAIT").ok().and_then(|w| w.parse().ok()).unwrap_or(WAIT)
 }
 
-/// The 1-minute load when it's `BUSY` or more.
-fn busy() -> Option<f64> {
-    let load = load_now();
-    (load >= BUSY).then_some(load)
+/// What a load that can't be read says (#363): Seatbelt refuses `getloadavg` (its `vm.loadavg` sysctl, EPERM) to
+/// Claude's runs, and a load unread is no quiet machine.
+const UNREADABLE: &str = "not measured: the load can't be read here — run it outside the sandbox";
+
+/// The 1-minute load, else `UNREADABLE`. `TARAE_PERF_LOAD` stands in for it: a number (to see the busy path)
+/// or `unreadable` (to see that one).
+fn load_now() -> Result<f64> {
+    load_from(std::env::var("TARAE_PERF_LOAD").ok().as_deref(), || {
+        let mut load = [0f64; 3];
+        // SAFETY: fills up to 3 values into the array given.
+        let n = unsafe { libc::getloadavg(load.as_mut_ptr(), 3) };
+        (n >= 1).then_some(load[0])
+    })
 }
 
-/// The 1-minute load (0 when it can't be read). `TARAE_PERF_LOAD` stands in for it (to see the busy path).
-fn load_now() -> f64 {
-    if let Some(l) = std::env::var("TARAE_PERF_LOAD").ok().and_then(|l| l.parse().ok()) {
-        return l;
-    }
-    let mut load = [0f64; 3];
-    // SAFETY: fills up to 3 values into the array given.
-    let n = unsafe { libc::getloadavg(load.as_mut_ptr(), 3) };
-    if n < 1 { 0.0 } else { load[0] }
+/// The load as `stand_in` says it (`TARAE_PERF_LOAD`: a number, or `unreadable`), else as `read` reads it
+/// (None: it can't be) — `UNREADABLE` when there's none.
+fn load_from(stand_in: Option<&str>, read: impl FnOnce() -> Option<f64>) -> Result<f64> {
+    let load = match stand_in {
+        Some("unreadable") => None,
+        s => s.and_then(|l| l.parse().ok()).or_else(read),
+    };
+    load.ok_or_else(|| UNREADABLE.to_string())
 }
 
 /// The `PERF <name> <value> budget=<value> [noise=<value>]` lines in a run's output.
@@ -919,6 +945,45 @@ mod tests {
             why.starts_with("not measured: the machine stayed busy before run 2 (load 6.0 after "),
             "{why}"
         );
+    }
+
+    /// #363: a load that can't be read (a sandbox refuses `getloadavg`) is never a quiet machine — said, and the
+    /// runs end there, before the first or any later one and during a wait alike; `TARAE_PERF_LOAD=unreadable`
+    /// stands in for it, a number for a load read.
+    #[test]
+    fn a_load_that_cant_be_read_is_not_measured() {
+        assert_eq!(load_from(Some("unreadable"), || Some(0.5)), Err(UNREADABLE.into()), "the stand-in");
+        assert_eq!(load_from(None, || None), Err(UNREADABLE.into()), "the OS's refusal");
+        assert_eq!(load_from(Some("x"), || None), Err(UNREADABLE.into()), "no number, nothing read");
+        assert_eq!((load_from(Some("6.5"), || None), load_from(None, || Some(0.5))), (Ok(6.5), Ok(0.5)));
+        assert_eq!(UNREADABLE, "not measured: the load can't be read here — run it outside the sandbox");
+        let unread = || load_from(Some("unreadable"), || Some(0.5));
+        assert_eq!(quiet_before("before the first run", unread, 0), Err(UNREADABLE.into()));
+        assert_eq!(quiet_before("before the first run", || Ok(BUSY - 0.1), 0), Ok(()));
+        // (busy, then unread while waited for: said as unread, not as busy)
+        let mut loads = [Ok(BUSY + 1.0), Err(UNREADABLE.to_string())].into_iter();
+        assert_eq!(quiet_before("before run 2", || loads.next().unwrap(), 1), Err(UNREADABLE.into()));
+        // Through the loop: run 2's gate unread ends it, nothing after
+        let mut started = 0;
+        let ran = runs(|i, _| {
+            let load = if i == 1 { unread() } else { Ok(1.0) };
+            quiet_before(&format!("before run {}", i + 1), || load.clone(), 0)?;
+            started += 1;
+            Ok((Vec::new(), 1.0))
+        });
+        assert_eq!((started, ran.err()), (1, Some(UNREADABLE.to_string())));
+    }
+
+    /// #363: CPU counters that can't be read — the machine's ticks or the run's own time — judge no run quiet:
+    /// said, where a 0 would read as nothing busy outside it.
+    #[test]
+    fn cpu_counters_that_cant_be_read_are_not_measured() {
+        let said = |c: Result<Cpu>| c.err();
+        assert_eq!(said(Cpu::of(None, Some(1.0))), Some(COUNTERS_UNREADABLE.into()), "the ticks");
+        assert_eq!(said(Cpu::of(Some((1, 2)), None)), Some(COUNTERS_UNREADABLE.into()), "its own time");
+        let read = Cpu::of(Some((700, 1400)), Some(0.0)).expect("read");
+        assert_eq!((read.busy, read.all), (700, 1400));
+        assert!(Cpu::now().is_ok(), "this machine's are read here");
     }
 
     /// The bundled size's key is written only with the numbers: a run that keeps nothing writes neither (and
