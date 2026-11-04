@@ -128,6 +128,8 @@ pub struct Kept {
     pub parent: Option<PathBuf>,
     /// A child's mark in the call-order record (`Session.mark`).
     pub mark: Option<String>,
+    /// The model and effort its Claude runs on when not your default (`Session.choice`).
+    pub choice: Option<crate::models::Choice>,
 }
 
 impl Kept {
@@ -143,6 +145,7 @@ impl Kept {
             folders: l.folders.iter().chain(&l.folders_judging).cloned().collect(),
             parent: None,
             mark: l.claude.mark.clone(),
+            choice: l.claude.choice.clone(),
         }
     }
 
@@ -175,6 +178,9 @@ impl Kept {
         if let Some(m) = &self.mark {
             v["mark"] = json!(m);
         }
+        if let Some(c) = &self.choice {
+            v["choice"] = json!({ "model": c.model, "effort": c.effort });
+        }
         v
     }
 
@@ -195,6 +201,10 @@ impl Kept {
                 .collect(),
             parent: v["parent"].as_str().map(PathBuf::from),
             mark: v["mark"].as_str().map(str::to_string),
+            choice: v["choice"].as_object().map(|c| crate::models::Choice {
+                model: c.get("model").and_then(Value::as_str).map(str::to_string),
+                effort: c.get("effort").and_then(Value::as_str).unwrap_or_default().to_string(),
+            }),
         })
     }
 }
@@ -1774,6 +1784,8 @@ impl Editor {
             if let Some(l) = self.workspace_by_id(id) {
                 (l.name, l.branch, l.base) = (k.name, k.branch, k.base);
                 l.claude.mark = k.mark.take();
+                // (what its `C-t` chose, its own again — its chat starts on it)
+                l.claude.choice = k.choice.take();
                 // (judged again before they're read as the workspace's — `folders_back`)
                 l.folders_judging = k.folders;
                 // (its claude, if one already runs — session 0's chat opened before the list came back — keeps the
@@ -7932,6 +7944,7 @@ mod tests {
             folders: Vec::new(),
             parent: None,
             mark: None,
+            choice: None,
         };
         ed.workspaces_back(vec![k], Vec::new(), None, false);
         // The start: a new conversation, the last one offered (the column, `space L`)
@@ -8051,6 +8064,7 @@ mod tests {
             folders: Vec::new(),
             parent: None,
             mark: None,
+            choice: None,
         };
         let s = Stored { sessions: vec![kept.clone()], front: Some("/wt/a".into()), rev: Default::default() };
         save(&dir, &common, s, &[], Default::default()).unwrap();
@@ -8067,6 +8081,30 @@ mod tests {
         std::fs::write(&file, before.to_string()).unwrap();
         let back = load(&dir, &common);
         assert_eq!((back.sessions, back.front), (vec![kept], Some(PathBuf::from("/wt/a"))));
+    }
+
+    /// #361: what a session's `C-t` or `:effort` chose is kept in the store with it and read back — a default model
+    /// (none named) and the model's own effort too.
+    #[test]
+    fn the_store_keeps_a_sessions_model_and_effort() {
+        let scratch = crate::scratch::Scratch::new("store-choice");
+        let (dir, common) = (scratch.join("sessions"), scratch.join("repo.git"));
+        let kept = |root: &str, model: Option<&str>, effort: &str| Kept {
+            root: root.into(),
+            name: "a".into(),
+            branch: Some("a".into()),
+            base: None,
+            billing: None,
+            allowed: Default::default(),
+            folders: Vec::new(),
+            parent: None,
+            mark: None,
+            choice: Some(crate::models::Choice { model: model.map(str::to_string), effort: effort.into() }),
+        };
+        let sessions = vec![kept("/wt/a", Some("sonnet"), "low"), kept("/wt/b", None, "")];
+        let s = Stored { sessions: sessions.clone(), front: None, rev: Default::default() };
+        save(&dir, &common, s, &[], Default::default()).unwrap();
+        assert_eq!(load(&dir, &common).sessions, sessions);
     }
 
     /// #251: a take-back of a checkout that's no text is no panic where its ticket is made (on the main loop): nothing
@@ -8104,6 +8142,7 @@ mod tests {
             folders: vec![folder.clone()],
             parent: Some(bad.clone()),
             mark: None,
+            choice: None,
         };
         let sessions = vec![Kept { root: bad.clone(), ..kept("") }, kept("/wt/a")];
         let s = Stored { sessions, front: Some(bad.clone()), rev: Default::default() };

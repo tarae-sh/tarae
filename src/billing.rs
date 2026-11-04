@@ -526,7 +526,7 @@ impl Editor {
     /// The plan's weekly windows a session's Claude counts against: the account's, and the chosen model's
     /// family's (`seven_day_opus` for an Opus session).
     fn weekly_windows(&self) -> Vec<String> {
-        let model = self.config.llm.model.clone().unwrap_or_default().to_lowercase();
+        let model = crate::models::of(self).model.unwrap_or_default().to_lowercase();
         let family =
             ["opus", "sonnet"].into_iter().find(|f| model.contains(f)).map(|f| format!("seven_day_{f}"));
         std::iter::once(crate::limits::WEEKLY.to_string()).chain(family).collect()

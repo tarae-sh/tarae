@@ -70,6 +70,10 @@ pub struct Session {
     /// Its conversation compacted before its cache expires while it's idle: the rule as read, the `/compact` sent
     /// (`idlecompact.rs`).
     pub idle: crate::idlecompact::Idle,
+    /// The model and effort its Claude runs on when they aren't your default (`models::Choice`, #361): what its `C-t`
+    /// or `:effort` chose outside the home session — its alone until it ends, kept with its workspace
+    /// (`worktree::Kept`). None: `llm.model` and `llm.effort`.
+    pub choice: Option<crate::models::Choice>,
     /// Who pays for its Claude — the chat's, the ask's, the reviewer's unless `llm.reviewer-billing` says
     /// (`billing.rs`): `llm.billing` when it's made, kept with it (`worktree::Kept`), `:session-billing` switches it.
     pub billing: crate::billing::Billing,
@@ -157,6 +161,7 @@ impl Session {
             asking: Vec::new(),
             usage: Default::default(),
             idle: Default::default(),
+            choice: None,
             billing: Default::default(),
             billing_next: None,
             limit_asked: None,

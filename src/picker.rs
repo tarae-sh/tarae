@@ -427,6 +427,8 @@ pub struct Picker {
     pub tallest: std::cell::Cell<usize>,
     /// Rows painted by their item's action (the inbox's session names).
     pub paints: Vec<(Action, Paint)>,
+    /// A few faint words beside its title on the frame's top line (`C-t`'s `your default` · `this session`).
+    pub aside: Option<String>,
 }
 
 impl Picker {
@@ -493,6 +495,7 @@ impl Picker {
             kind: "test",
             tallest: std::cell::Cell::new(0),
             paints: Vec::new(),
+            aside: None,
         };
         p.refilter();
         p

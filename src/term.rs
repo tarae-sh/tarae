@@ -10342,6 +10342,9 @@ fn draw_picker(
     }
     let splits: Vec<usize> = (right_w > 0).then_some(b.x + left_w).into_iter().collect();
     let mut name = pane_names(ui, editor, card, &[&p.title], 0);
+    if let Some(aside) = &p.aside {
+        name.push((format!(" {aside}"), faint));
+    }
     // (the notes list: how many drafts went stale, and the key closing them — polish landing 4, no card)
     let stale = crate::notes::stale_said(editor).filter(|_| crate::notes::is_list(&p.title));
     let mut button = None;

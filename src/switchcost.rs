@@ -197,8 +197,8 @@ impl Editor {
     pub fn setup(&self) -> Setup {
         Setup {
             billing: self.workspace.claude.billing,
-            model: self.config.llm.model.clone().unwrap_or_else(|| "default".into()),
-            effort: self.config.llm.effort.clone(),
+            model: crate::models::of(self).model.unwrap_or_else(|| "default".into()),
+            effort: crate::models::of(self).effort,
         }
     }
 

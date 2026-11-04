@@ -2,8 +2,9 @@
 //! measured: value · displayName · description · resolvedModel · supportedEffortLevels).
 //!
 //! - `C-t` in the chat · `:model` · the palette: the models, the one in use marked; `:effort`: the levels
-//!   the model takes. A choice is saved (`llm.model` · `llm.effort` — `space i` uses them too) and applied to
-//!   the conversation at once: `set_model` and `apply_flag_settings {effortLevel}` control requests
+//!   the model takes. From the home session a choice is saved as your default (`llm.model` · `llm.effort` —
+//!   `space i` uses them too); from any other it's that session's alone until it ends (`Session.choice`, kept with
+//!   its workspace — #361), the picker's title saying which. Either is applied to the conversation at once: `set_model` and `apply_flag_settings {effortLevel}` control requests
 //!   (measured: the next answer comes from the new model; `low`/`max` changed the thinking 47 → 174 tokens).
 //!   Back to the model's own effort: `effortLevel: null` (measured: thinking back at the default's).
 //! - The chat's title says which (`Opus 5.5 · high`) while it's idle — the model that answered (`init`, then
@@ -12,6 +13,9 @@
 use serde_json::json;
 
 use crate::editor::Editor;
+
+#[cfg(test)]
+mod tests;
 use crate::llm::ModelInfo;
 
 /// Before claude has said which it offers (the chat not open yet): the aliases every claude knows.
@@ -33,6 +37,36 @@ fn fallback() -> Vec<ModelInfo> {
     .collect()
 }
 
+/// A session's own model and effort, in `llm.model`'s and `llm.effort`'s forms (None: `default`; empty: the model's
+/// own) — what a session other than the home one switched to (`Session.choice`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Choice {
+    pub model: Option<String>,
+    pub effort: String,
+}
+
+/// Whether a choice here is your default: the home session's (the checkout tarae started in) — any other session's
+/// `C-t` and `:effort` switch that session alone.
+pub fn saves_default(ed: &Editor) -> bool {
+    ed.workspace.id == crate::event::WorkspaceId::HOME
+}
+
+/// What the session in front's Claude starts on: its own choice, else your default.
+pub fn of(ed: &Editor) -> Choice {
+    let llm = &ed.config.llm;
+    ed.workspace
+        .claude
+        .choice
+        .clone()
+        .unwrap_or_else(|| Choice { model: llm.model.clone(), effort: llm.effort.clone() })
+}
+
+/// The config a Claude of the session in front starts with — `llm`, its model and effort the session's (`of`).
+pub fn config(ed: &Editor) -> crate::llm::LlmConfig {
+    let Choice { model, effort } = of(ed);
+    crate::llm::LlmConfig { model, effort, ..ed.config.llm.clone() }
+}
+
 fn offered(ed: &Editor) -> Vec<ModelInfo> {
     match ed.workspace.claude.chat.as_ref().map(|c| &c.models).filter(|m| !m.is_empty()) {
         Some(m) => m.clone(),
@@ -42,7 +76,7 @@ fn offered(ed: &Editor) -> Vec<ModelInfo> {
 
 /// The value chosen (`default` when none is).
 fn chosen(ed: &Editor) -> String {
-    ed.config.llm.model.clone().unwrap_or_else(|| "default".into())
+    of(ed).model.unwrap_or_else(|| "default".into())
 }
 
 /// The model in use as the title says it: its name (for `default`, the model it stands for), and the effort
@@ -62,11 +96,11 @@ pub fn label(ed: &Editor) -> Option<String> {
             .find(|o| o.value != "default" && o.resolved == m.resolved)
             .map_or(m.name.clone(), |o| o.name.clone()),
         Some(m) => m.name.clone(),
-        None if ed.config.llm.model.is_some() => value.clone(),
+        None if of(ed).model.is_some() => value.clone(),
         None => return Some(c.model.clone()).filter(|m| !m.is_empty()),
     };
-    let effort = &ed.config.llm.effort;
-    let takes = m.is_some_and(|m| m.efforts.iter().any(|e| e == effort));
+    let effort = of(ed).effort;
+    let takes = m.is_some_and(|m| m.efforts.contains(&effort));
     Some(if takes { format!("{name} · {effort}") } else { name })
 }
 
@@ -101,6 +135,7 @@ pub fn picker(ed: &mut Editor) {
     let mut p = crate::picker::Picker::of("model", "model", items, false).without_preview();
     p.compact = true;
     p.selected = at;
+    p.aside = Some(whose(ed).into());
     ed.open_picker(p, None);
 }
 
@@ -115,7 +150,7 @@ pub fn effort_picker(ed: &mut Editor) {
         Some(m) if !m.efforts.is_empty() => m.efforts,
         _ => ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec(),
     };
-    let now = ed.config.llm.effort.clone();
+    let now = of(ed).effort;
     let about = |l: &str| match l {
         "low" => "Quick — thinks little",
         "medium" => "Balanced",
@@ -138,8 +173,30 @@ pub fn effort_picker(ed: &mut Editor) {
     }));
     let mut p = crate::picker::Picker::of("effort", "effort", items, false).without_preview();
     p.compact = true;
+    p.aside = Some(whose(ed).into());
     p.selected = if now.is_empty() { 0 } else { levels.iter().position(|l| *l == now).map_or(0, |i| i + 1) };
     ed.open_picker(p, None);
+}
+
+/// What a choice in the pickers will do, said faint beside their title.
+fn whose(ed: &Editor) -> &'static str {
+    if saves_default(ed) { "your default" } else { "this session" }
+}
+
+/// `llm.model` or `llm.effort` set to `v` where a choice goes (`saves_default`): saved as your default (`save`), or
+/// this session's own, kept with its workspace — what isn't saved, why.
+fn choose(ed: &mut Editor, path: &str, v: &str) -> Result<Option<String>, String> {
+    if saves_default(ed) {
+        return save(ed, path, v);
+    }
+    let mut c = of(ed);
+    match path {
+        "llm.model" => c.model = Some(v.to_string()).filter(|v| !v.is_empty()),
+        _ => c.effort = v.to_string(),
+    }
+    ed.workspace.claude.choice = Some(c);
+    ed.workspaces_keep();
+    Ok(None)
 }
 
 /// A setting changed and saved, as `:set!` saves it (`Editor::save_setting`: the editor's own config file — none
@@ -164,14 +221,20 @@ fn said(ed: &mut Editor, what: String, unsaved: Option<String>) {
     }
 }
 
-/// `:model <value>` — saved, and the conversation goes on with it.
+/// After what a switch chose, outside the home session: that it's this session's alone.
+fn alone(ed: &Editor) -> &'static str {
+    if saves_default(ed) { "" } else { " for this session" }
+}
+
+/// `:model <value>` — your default from the home session, else this session's (`choose`), and the conversation goes
+/// on with it.
 pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     let known = offered(ed);
     let m = known.iter().find(|m| m.value == value || m.name.eq_ignore_ascii_case(value));
     let value = m.map_or(value.to_string(), |m| m.value.clone());
     // (what the conversation ran on — the line over the input says what the next message costs)
     ed.switching();
-    let mut unsaved = save(ed, "llm.model", if value == "default" { "" } else { &value })?;
+    let mut unsaved = choose(ed, "llm.model", if value == "default" { "" } else { &value })?;
     crate::chat::request(ed, json!({ "subtype": "set_model", "model": value }));
     // (what answers is known again from the next answer — until then the title says what was asked for; what it
     // runs on now is this chat's)
@@ -180,24 +243,25 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
         c.runs_on.0 = Some(value.clone()).filter(|v| v != "default");
     }
     // An effort the new model doesn't take goes (it'd be refused)
-    let effort = ed.config.llm.effort.clone();
+    let effort = of(ed).effort;
     if m.is_some_and(|m| !m.resolved.is_empty() && !effort.is_empty() && !m.efforts.contains(&effort)) {
-        unsaved = unsaved.or(save(ed, "llm.effort", "")?);
+        unsaved = unsaved.or(choose(ed, "llm.effort", "")?);
         if let Some(c) = ed.workspace.claude.chat.as_mut() {
             c.runs_on.1.clear();
         }
     }
     let name = label(ed).or_else(|| m.map(|m| m.name.clone())).unwrap_or(value);
     let cost = ed.switched_said();
-    said(ed, format!("Claude: {name}{cost}"), unsaved);
+    said(ed, format!("Claude: {name}{}{cost}", alone(ed)), unsaved);
     Ok(())
 }
 
-/// `:effort <level>` — saved, and applied to the conversation.
+/// `:effort <level>` — your default from the home session, else this session's (`choose`), and applied to the
+/// conversation.
 pub fn set_effort(ed: &mut Editor, level: &str) -> Result<(), String> {
     let level = if level == "default" { "" } else { level };
     ed.switching();
-    let unsaved = save(ed, "llm.effort", level)?;
+    let unsaved = choose(ed, "llm.effort", level)?;
     // (null = the model's own — measured: thinking back at the untouched default's)
     let effort = if level.is_empty() { serde_json::Value::Null } else { json!(level) };
     crate::chat::request(
@@ -209,6 +273,6 @@ pub fn set_effort(ed: &mut Editor, level: &str) -> Result<(), String> {
     }
     let what = if level.is_empty() { "the model's default".to_string() } else { level.to_string() };
     let cost = ed.switched_said();
-    said(ed, format!("Effort: {what}{cost}"), unsaved);
+    said(ed, format!("Effort: {what}{}{cost}", alone(ed)), unsaved);
     Ok(())
 }

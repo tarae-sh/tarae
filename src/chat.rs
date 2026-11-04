@@ -815,7 +815,8 @@ pub struct Chat {
     /// it loads, which idle compaction's rule is read from (`idlecompact::Places`).
     pub launched: Option<(llm::LlmConfig, Vec<String>)>,
     /// The model and effort its claude runs on now (`llm.model`, `llm.effort`'s form): as started, then as `:model`
-    /// and `:effort` switched this chat — they save the setting for all, but switch only the chat in front.
+    /// and `:effort` switched this chat — from the home session they save your default, but switch only the chat in
+    /// front.
     pub runs_on: (Option<String>, String),
     /// What its conversation ran on before a switch of billing, model or effort since the last message went
     /// (`switchcost.rs`) — the line over the input says what the next one costs; sending clears it.
@@ -2361,7 +2362,8 @@ pub(crate) fn stand_in_broke(ed: &mut Editor) {
 
 fn ensure_proc(ed: &mut Editor) {
     // (a key passed on until the session ends — the key card's `y`, `envkey.rs`)
-    let cfg = llm::LlmConfig { keep_env_key: llm::keeps_key(ed), ..ed.config.llm.clone() };
+    // (the session's own model and effort, else your default — `models::of`)
+    let cfg = llm::LlmConfig { keep_env_key: llm::keeps_key(ed), ..crate::models::config(ed) };
     let tx = ed.events.sender();
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);

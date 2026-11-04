@@ -157,7 +157,7 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     let quotes = crate::quote::taken(ed, &ranges, buffer.as_deref())?;
     let blocks: Vec<String> = quotes.into_iter().map(|t| crate::quote::whole(t).block()).collect();
     let message = format!("{}\n\n{ASKS}{instruction}", blocks.join("\n"));
-    let cfg = ed.config.llm.clone();
+    let cfg = crate::models::config(ed);
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
     let (stdin, child) = match stand_in(ed) {
