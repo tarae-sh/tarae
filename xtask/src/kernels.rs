@@ -22,7 +22,9 @@
 //! first (uname, arch, Landlock's ABI read by the kernel, Yama, the user-namespace restriction, the LSMs).
 //! Results: `.sb/kernels/<date>-<commit>/<kernel>-<mode>.txt` (the facts, every run's output and time), the tables
 //! a run printed for a snapshot it had none of or that differed in `tables/` (to bless from), sizes in
-//! `sizes.txt`, one row a mode in `.sb/kernels/history.tsv` — never `target/`. A VM that didn't come up is
+//! `sizes.txt`, one row a mode in `.sb/kernels/history.tsv` (its `date` the minute the invocation began, UTC), and
+//! the folder's `summary.tsv` every invocation's rows for its commit from there, how many runs each row is beside
+//! it (`summary`) — never `target/`. A VM that didn't come up is
 //! **not measured**, never a pass. `--dry-run` prints every command in order, and each Lima VM's file, running
 //! nothing.
 //!
@@ -854,6 +856,40 @@ fn minutes(d: Duration) -> String {
     format!("{:.1}", d.as_secs_f64() / 60.0)
 }
 
+/// When an invocation began, its rows' `date`: `YYYY-MM-DD HH:MM` (UTC) — two on one day told apart.
+fn when(t: std::time::SystemTime) -> String {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let (y, m, d) = crate::perf::civil(secs.div_euclid(86_400));
+    let s = secs.rem_euclid(86_400);
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", s / 3600, s / 60 % 60)
+}
+
+/// A run folder's `summary.tsv`: every row `history` holds for `commit` (as written, `+` and all), in the order
+/// they ran — every invocation's, two of one kernel and mode both, each with its time — and how many runs each
+/// row is (`runs`, after `passed`).
+fn summary(history: &str, commit: &str) -> String {
+    let head = HISTORY_HEAD.replace("\tpassed\t", "\tpassed\truns\t");
+    let rows = history.lines().filter(|l| *l != HISTORY_HEAD.trim_end()).filter_map(|l| {
+        let cols: Vec<&str> = l.split('\t').collect();
+        (cols.len() > 10 && cols[1] == commit).then(|| {
+            let (to, rest) = cols.split_at(11);
+            format!("{}\t{}\t{}\n", to.join("\t"), runs_of(cols[10]), rest.join("\t"))
+        })
+    });
+    std::iter::once(head).chain(rows).collect()
+}
+
+/// How many runs a row's `passed` stands for: `ok 3/3` and `--keep-going`'s `failed 1 of 3` every one, `failed on
+/// run 2 of 3` up to the one that stopped it; not measured, no kept binary none.
+fn runs_of(passed: &str) -> u32 {
+    let last = |s: &str| s.rsplit([' ', '/']).next().and_then(|n| n.parse().ok()).unwrap_or(0);
+    match passed.strip_prefix("failed on run ") {
+        Some(rest) => rest.split(' ').next().and_then(|n| n.parse().ok()).unwrap_or(0),
+        None if passed.starts_with("ok ") || passed.starts_with("failed ") => last(passed),
+        None => 0,
+    }
+}
+
 struct Run {
     dir: PathBuf,
     /// The Docker the one build keeps the binary in (`no_kept`'s way).
@@ -1395,8 +1431,8 @@ pub fn run(args: &[String]) -> Result<()> {
         println!("(`xtask` is `cargo xtask`)");
         return Ok(());
     }
-    let (date, commit) = (crate::perf::today(), crate::perf::commit(&root));
-    let dir = root.join(OUT).join(format!("{date}-{commit}"));
+    let (date, commit) = (when(std::time::SystemTime::now()), crate::perf::commit(&root));
+    let dir = root.join(OUT).join(format!("{}-{commit}", &date[..10]));
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut run = Run {
         dir: dir.clone(),
@@ -1462,10 +1498,11 @@ pub fn run(args: &[String]) -> Result<()> {
         kept.push_str(r);
         kept.push('\n');
     }
-    std::fs::write(&history, kept).map_err(|e| format!("{}: {e}", history.display()))?;
-    let summary: String = run.rows.iter().map(|r| format!("{r}\n")).collect();
-    let _ = std::fs::write(dir.join("summary.tsv"), format!("{HISTORY_HEAD}{summary}"));
-    let _ = std::io::stdout().write_all(format!("\n{HISTORY_HEAD}{summary}").as_bytes());
+    std::fs::write(&history, &kept).map_err(|e| format!("{}: {e}", history.display()))?;
+    // (the folder is the commit's: its summary every invocation's rows for it, never only this one's — #359)
+    let _ = std::fs::write(dir.join("summary.tsv"), summary(&kept, &run.commit));
+    let these: String = run.rows.iter().map(|r| format!("{r}\n")).collect();
+    let _ = std::io::stdout().write_all(format!("\n{HISTORY_HEAD}{these}").as_bytes());
     // (`--keep-going`: every mode's failing tests, at the end, where a long run is read)
     for t in &run.tallies {
         println!("\n{t}");
@@ -1491,6 +1528,64 @@ mod tests {
 
     fn the_table() -> Table {
         table(&std::fs::read_to_string(root().join(TABLE)).unwrap()).unwrap()
+    }
+
+    /// A folder's summary is every invocation's rows for its commit (#359: K1's run overwrote K4's, Y2's K1's) —
+    /// two of one kernel and mode both, each with its time and its runs; another commit's, `+` or not, none.
+    #[test]
+    fn a_summary_gathers_every_invocation_of_its_commit() {
+        let row = |when: &str, commit: &str, kernel: &str, mode: &str, passed: &str| {
+            format!(
+                "{when}\t{commit}\t{kernel}\tu\taarch64\t4\t1\t{mode}\thost\thost\t{passed}\tcompared\t1.1\n"
+            )
+        };
+        let history = [
+            HISTORY_HEAD.to_string(),
+            "2026-11-04\tc9be46f1\tK1\tu\taarch64\t6\t0\town\town\town\tok 3/3\t-\t1.6\n".into(),
+            row("2026-11-04 09:10", "eac24947", "K4", "host", "ok 3/3"),
+            row("2026-11-04 09:10", "eac24947+", "K4", "host", "ok 1/1"),
+            row("2026-11-04 11:30", "eac24947", "K1", "own", "failed 1 of 3"),
+            "2026-11-04 13:02\teac24947\tK6\t-\t-\t-\t-\t-\t-\t-\tnot measured\tits VM didn't come up\t-\n"
+                .into(),
+            row("2026-11-04 14:45", "eac24947", "K4", "host", "failed on run 2 of 3"),
+            row("2026-11-05 08:00", "ff5f5fdb", "K4", "host", "ok 3/3"),
+        ]
+        .concat();
+        let s = summary(&history, "eac24947");
+        let lines: Vec<&str> = s.lines().collect();
+        assert_eq!(
+            lines[0],
+            "date\tcommit\tkernel\tuname\tarch\tabi\tyama\tmode\texpected\tfound\tpassed\truns\tcompared\tminutes"
+        );
+        let said: Vec<[&str; 4]> = lines[1..]
+            .iter()
+            .map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                assert_eq!((c.len(), c[1]), (14, "eac24947"), "{l}");
+                [c[0], c[2], c[10], c[11]]
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ["2026-11-04 09:10", "K4", "ok 3/3", "3"],
+                ["2026-11-04 11:30", "K1", "failed 1 of 3", "3"],
+                ["2026-11-04 13:02", "K6", "not measured", "0"],
+                ["2026-11-04 14:45", "K4", "failed on run 2 of 3", "2"],
+            ],
+            "every invocation's, in the order they ran; K4 host twice"
+        );
+        assert_eq!(summary(&history, "eac24947+").lines().count(), 2, "the `+` commit its own");
+        assert_eq!(summary(&history, "0000000"), lines[0].to_string() + "\n", "none: the head alone");
+        assert_eq!(runs_of("no kept binary"), 0);
+    }
+
+    /// An invocation's time: the UTC day and minute.
+    #[test]
+    fn a_rows_date_carries_its_minute() {
+        let t = std::time::UNIX_EPOCH + Duration::from_secs(1_793_193_930); // 2026-10-28 13:25:30 UTC
+        assert_eq!(when(t), "2026-10-28 13:25");
+        assert_eq!(when(std::time::UNIX_EPOCH), "1970-01-01 00:00");
     }
 
     /// What the runs need, by stand-in names.
