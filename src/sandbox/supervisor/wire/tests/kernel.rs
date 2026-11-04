@@ -366,8 +366,10 @@ fn a_buffer_past_user_space_faults_in_the_kernel_as_in_tarae() {
     // A lone buffer's reach is cut to `MAX_RW_COUNT` before it's judged (`import_ubuf`, from 6.4's 3b2deb0e46da): a
     // datagram far past the send buffer, the protocol's `EMSGSIZE` (tarae's past 1 MiB), not a fault. Before 6.4
     // `__import_iovec` judged each buffer's whole reach first: the kernel's `EFAULT`, where tarae says its own limit
-    // first — both refuse. Its byte in the binary's own image, low in user space, where the cut reach ends inside it —
-    // a thread's stack lies where ASLR put it, near the top, and its cut reach may pass the end (`EFAULT` again).
+    // first — both refuse. A kernel below 6.4 may have the cut backported (RHEL 9's 5.14.0-687, K1: `EMSGSIZE`), so
+    // there either refusal is the kernel's; from 6.4 only the cut's. Its byte in the binary's own image, low in user
+    // space, where the cut reach ends inside it — a thread's stack lies where ASLR put it, near the top, and its cut
+    // reach may pass the end (`EFAULT` again).
     static LOW: [u8; 1] = [7];
     let low = LOW.as_ptr() as u64;
     assert!(low + MAX_RW_COUNT <= USER_MAX, "a byte at {low:#x}: its cut reach past user space");
@@ -382,8 +384,14 @@ fn a_buffer_past_user_space_faults_in_the_kernel_as_in_tarae() {
     };
     let m = Fake::default().at(HEAD, msghdr((0, 0), (IOV, 1), (0, 0))).at(IOV, iovecs(&[(BUFS, 1 << 60)]));
     let tarae = read_msg(&m, passer(&mut Vec::new()), HEAD, true).map(|_| ()).map_err(|u| u.errno());
-    let cut = if release() >= (6, 4) { libc::EMSGSIZE } else { libc::EFAULT };
-    assert_eq!((kernel, tarae), (Err(cut), Err(libc::EMSGSIZE)), "a lone long buffer at {low:#x}");
+    let theirs: &[i32] =
+        if release() >= (6, 4) { &[libc::EMSGSIZE] } else { &[libc::EFAULT, libc::EMSGSIZE] };
+    assert!(
+        kernel.is_err_and(|e| theirs.contains(&e)),
+        "a lone long buffer at {low:#x}: the kernel's {kernel:?}, not one of {theirs:?}"
+    );
+    assert_eq!(tarae, Err(libc::EMSGSIZE), "a lone long buffer at {low:#x}: tarae's");
+    println!("a lone long buffer: the kernel's {kernel:?} ({}.{})", release().0, release().1);
     // A pointer to that byte with a tag in its top byte: the kernel's `EFAULT` (no run here turned the tagged ABI
     // on), and tarae's reads of a run's memory say `EFAULT` too — refused by tarae itself (`USER_MAX`), so what this
     // kernel's `/proc/<pid>/mem` does there (arm64's reads the byte) is only said.

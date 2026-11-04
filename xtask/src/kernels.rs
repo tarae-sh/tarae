@@ -464,11 +464,16 @@ fn made_here(yaml: &str) -> bool {
     yaml.starts_with(MADE)
 }
 
+/// Where a Lima VM's provision says the step it failed at (`lima_yaml`): its probe stops at it, the run's
+/// not-measured row says it.
+const PROVISION_FAILED: &str = "/run/tarae-provision.failed";
+
 /// The Lima VM's file for `k`: Lima's own template for its image — or the table's `download`, alone (a template's
 /// images would be tried after it, its refusing place again) —, 4 CPUs and 8 GiB as colima's test VMs, only the
 /// checkout and its git folder mounted (read-only), no containerd of Lima's, Docker put in as root (its socket
 /// the user's, forwarded to the Mac), the sysctls set at each boot.
 fn lima_yaml(k: &Kernel, mounts: &[&Path]) -> Result<String> {
+    const FAILED: &str = PROVISION_FAILED;
     let At::Lima { image, install, download } = &k.at else {
         return Err(format!("{}: not a Lima kernel", k.name));
     };
@@ -501,10 +506,28 @@ fn lima_yaml(k: &Kernel, mounts: &[&Path]) -> Result<String> {
     }
     y.push_str("containerd:\n  system: false\n  user: false\nprovision:\n- mode: system\n  script: |\n");
     let mut script = vec!["#!/bin/bash".to_string(), "set -eux -o pipefail".into()];
+    // (a step that fails says so where the probe looks, which stops waiting then: K1's dnf read an empty
+    // repomd.xml once, 2026-11-04, and the probe waited out Lima's 10 min for a Docker never installed)
+    script.push(format!("rm -f {FAILED}"));
+    script.push(format!("trap 'echo \"$BASH_COMMAND (exit $?)\" > {FAILED}' ERR"));
     script.extend(k.sysctl.iter().map(|s| format!("sysctl -w {s}")));
-    script.push("if ! command -v docker >/dev/null 2>&1; then".into());
-    script.push(format!("  {}", install.replace('\n', "\n  ")));
-    script.push("fi".into());
+    // (the install a script of its own, so `set -e` holds in it — an `&&` chain's failure too —, tried three times:
+    // a mirror's one bad answer isn't the kernel's)
+    script.push("cat > /run/tarae-install-docker.sh <<'TARAE_INSTALL'".into());
+    script.push(install.clone());
+    script.push("TARAE_INSTALL".into());
+    script.extend(
+        [
+            "if ! command -v docker >/dev/null 2>&1; then",
+            "  for try in 1 2 3; do",
+            "    if bash -eux -o pipefail /run/tarae-install-docker.sh; then break; fi",
+        ]
+        .map(String::from),
+    );
+    script.push(format!(
+        "    if [ \"$try\" = 3 ]; then echo \"Docker's install failed 3 times\" > {FAILED}; exit 1; fi"
+    ));
+    script.extend(["    sleep 15", "  done", "fi"].map(String::from));
     // (the socket the user's, so Lima's forward reaches it; restarted after the override)
     script.extend(
         [
@@ -524,7 +547,9 @@ fn lima_yaml(k: &Kernel, mounts: &[&Path]) -> Result<String> {
         "probes:\n- script: |\n\
          \x20   #!/bin/bash\n\
          \x20   set -eux -o pipefail\n\
-         \x20   timeout 900s bash -c \"until docker info >/dev/null 2>&1; do sleep 3; done\"\n\
+         \x20   timeout 900s bash -c \"until docker info >/dev/null 2>&1; do \
+         if [ -e /run/tarae-provision.failed ]; then cat /run/tarae-provision.failed >&2; exit 1; fi; \
+         sleep 3; done\"\n\
          \x20 hint: See /var/log/cloud-init-output.log in the guest\n\
          portForwards:\n\
          - guestSocket: \"/var/run/docker.sock\"\n\
@@ -1191,10 +1216,22 @@ fn one_kernel(
             let start_file = format!("{name}-start.txt");
             let _ = std::fs::write(run.dir.join(&start_file), &said);
             if !came_up {
+                // (asked while it's there: a VM that booted says the step its provision failed at)
+                let failed = quiet(vm_shell(k, &format!("cat {PROVISION_FAILED}")).command(x))
+                    .filter(|f| !f.is_empty());
                 lima_down(k, keep_vm, x);
-                let why = match download_refused(&said) {
-                    Some((url, status)) => refused_why(&url, &status, asked_again(&url).as_deref()),
-                    None => format!("its VM didn't come up (limactl start, its output in {start_file})"),
+                let why = match (download_refused(&said), failed) {
+                    (Some((url, status)), _) => refused_why(&url, &status, asked_again(&url).as_deref()),
+                    (None, Some(f)) => {
+                        let f: String = f.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                        format!(
+                            "its VM came up, its provision failed: {f} (the guest's /var/log/cloud-init-output.log; \
+                             limactl start's output in {start_file})"
+                        )
+                    }
+                    (None, None) => {
+                        format!("its VM didn't come up (limactl start, its output in {start_file})")
+                    }
                 };
                 return run.not_measured(k, &why);
             }
@@ -1598,7 +1635,25 @@ mod tests {
         );
         assert!(y.contains("containerd:\n  system: false\n  user: false\n"), "{y}");
         assert!(y.contains("    sysctl -w kernel.yama.ptrace_scope=1\n"), "{y}");
-        assert!(y.contains("      curl -fsSL https://get.docker.com | sh\n"), "{y}");
+        // (the install a script of its own, tried three times; a failed step said where the probe stops at it)
+        assert!(
+            y.contains(
+                "    cat > /run/tarae-install-docker.sh <<'TARAE_INSTALL'\n    curl -fsSL https://get.docker.com | sh\n    TARAE_INSTALL\n"
+            ),
+            "{y}"
+        );
+        assert!(y.contains("if bash -eux -o pipefail /run/tarae-install-docker.sh; then break; fi"), "{y}");
+        assert!(
+            y.contains(&format!("trap 'echo \"$BASH_COMMAND (exit $?)\" > {PROVISION_FAILED}' ERR")),
+            "{y}"
+        );
+        let probe = y.split("probes:").nth(1).unwrap();
+        assert!(
+            probe.contains(&format!(
+                "if [ -e {PROVISION_FAILED} ]; then cat {PROVISION_FAILED} >&2; exit 1; fi"
+            )),
+            "{probe}"
+        );
         assert!(
             y.contains("SocketUser=%s") && y.contains("hostSocket: \"{{.Dir}}/sock/docker.sock\""),
             "{y}"
