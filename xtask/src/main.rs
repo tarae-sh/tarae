@@ -92,6 +92,31 @@ mod wire;
 
 type Result<T> = std::result::Result<T, String>;
 
+/// A check refused before it started (#354: the Docker disk past 90 %, no Docker under `--no-skip`): not a failure of
+/// the change, never a pass. Its error starts with this, then its reason and way out (`not_run`); `main` prints
+/// whatever it says besides first and that line last, as `not run: <reason> · <way>`, and exits `NOT_RUN_EXIT`.
+const NOT_RUN: &str = "not run: ";
+
+/// …its exit status: sysexits' `EX_TEMPFAIL` ("try again later"), given for nothing else — every other error exits 1, a
+/// signal 128 + its number, a panic 101. tarae's preflight and run report read the status and that last line
+/// together (`preflight::not_run`): a real failure can't be read as not run by what its output printed.
+const NOT_RUN_EXIT: i32 = 75;
+
+/// The error of a check refused before it started: `why` (`Docker's disk 90 % used`) and `way` out (`cargo xtask
+/// linux prune`) on its line, `more` — what else there is to say — before it.
+pub(crate) fn not_run(why: &str, way: &str, more: &str) -> String {
+    format!("{NOT_RUN}{why} · {way}\n{more}")
+}
+
+/// How an error is said and the status xtask exits with (`NOT_RUN`): its lines, the last one read by tarae.
+fn ended(e: &str) -> (String, i32) {
+    match e.strip_prefix(NOT_RUN).map(|r| r.split_once('\n').unwrap_or((r, ""))) {
+        Some((said, "")) => (format!("{NOT_RUN}{said}"), NOT_RUN_EXIT),
+        Some((said, more)) => (format!("{}\n{NOT_RUN}{said}", more.trim_end()), NOT_RUN_EXIT),
+        None => (format!("error: {e}"), 1),
+    }
+}
+
 /// How long a test waits for what it waits on before it calls it a hang — tarae's `test_results::PATIENCE`, the
 /// same value (why it's this long is said there).
 #[cfg(test)]
@@ -136,8 +161,9 @@ fn main() {
     };
     drop(docker);
     if let Err(e) = result {
-        eprintln!("error: {e}");
-        std::process::exit(1);
+        let (said, code) = ended(&e);
+        eprintln!("{said}");
+        std::process::exit(code);
     }
 }
 

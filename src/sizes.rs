@@ -305,7 +305,7 @@ impl crate::editor::Editor {
                 .workspace
                 .task_run
                 .as_ref()
-                .is_some_and(|r| matches!(r.state, State::Passed | State::Failed(_))),
+                .is_some_and(|r| matches!(r.state, State::Passed | State::Failed(_) | State::NotRun(_))),
             Slot::Procs => self.procs_up(),
             _ => false,
         }

@@ -51,6 +51,22 @@ pub fn key() -> Result<String, String> {
 /// A step's note in the summary, at most (chars).
 const NOTE_SHOWN: usize = 40;
 
+/// What a check refused before it started prints as its last line (#354, xtask's `NOT_RUN`): its reason and its way
+/// out after it — `not run: Docker's disk 90 % used · cargo xtask linux prune`.
+const NOT_RUN: &str = "not run:";
+
+/// …and the status it ends with: sysexits' `EX_TEMPFAIL` ("try again later"), which xtask gives nothing else.
+pub const NOT_RUN_EXIT: i32 = 75;
+
+/// A step or run that ended with `code`, its last line of output `last`, read as refused before it started (#354):
+/// its reason and way out. Both together, never one: the status is the program's own (a real failure of xtask's
+/// exits 1 whatever its output printed), the line the words; a tool that exits 75 for its own reasons prints no
+/// such line. Never a pass — only its words aren't a failure's.
+pub fn not_run(code: i32, last: &str) -> Option<&str> {
+    let why = last.trim().strip_prefix(NOT_RUN)?.trim();
+    (code == NOT_RUN_EXIT && !why.is_empty()).then_some(why)
+}
+
 /// What the card before pack defaults run says of them: the commands are tarae's, but what they run is the
 /// project's — its tests and build scripts — so running them is running its code.
 pub const DEFAULTS_SAY: &str = "These are tarae's defaults, but they build and run this project's code (its \
@@ -187,6 +203,8 @@ pub enum State {
     Running,
     Passed,
     Failed(i32),
+    /// Refused before it started (`not_run`): its reason and way out. Not a pass.
+    NotRun(String),
 }
 
 /// A step in a run: how it's going.
@@ -199,6 +217,8 @@ pub struct StepRun {
     /// The first line of its output its `note` matched.
     pub note: Option<String>,
     note_re: Option<regex::Regex>,
+    /// Its last line of output when that one says it wasn't run (`NOT_RUN`) — read with its status at its end.
+    not_run: Option<String>,
 }
 
 /// A `:preflight` under way, or the last one (its rows stay while its run is in the panel).
@@ -240,6 +260,7 @@ impl Preflight {
                 took: None,
                 note: None,
                 note_re: s.note.as_deref().and_then(|n| regex::Regex::new(n).ok()),
+                not_run: None,
             })
             .collect();
         let (title, left_out) = (set.title(all), all.len() - ours.len());
@@ -290,11 +311,14 @@ impl Preflight {
     /// output goes under); any other line is the running step's (its note, if it matches).
     pub fn line(&mut self, line: &str) -> Option<String> {
         let Some(rest) = self.marked(line) else {
-            if let Some(s) = self.steps.iter_mut().find(|s| s.state == State::Running)
-                && s.note.is_none()
-                && s.note_re.as_ref().is_some_and(|re| re.is_match(line))
-            {
-                s.note = Some(line.trim().to_string());
+            if let Some(s) = self.steps.iter_mut().find(|s| s.state == State::Running) {
+                if s.note.is_none() && s.note_re.as_ref().is_some_and(|re| re.is_match(line)) {
+                    s.note = Some(line.trim().to_string());
+                }
+                // (its last line only: a blank one after it leaves it so)
+                if !line.trim().is_empty() {
+                    s.not_run = line.trim().starts_with(NOT_RUN).then(|| line.to_string());
+                }
             }
             return Some(line.to_string());
         };
@@ -309,7 +333,12 @@ impl Preflight {
             }
             Some("end") => {
                 let code = w.next().and_then(|c| c.parse::<i32>().ok()).unwrap_or(-1);
-                s.state = if code == 0 { State::Passed } else { State::Failed(code) };
+                let last = s.not_run.take();
+                s.state = match last.as_deref().and_then(|l| not_run(code, l)) {
+                    _ if code == 0 => State::Passed,
+                    Some(why) => State::NotRun(why.to_string()),
+                    None => State::Failed(code),
+                };
                 s.took = s.started.map(|t| t.elapsed());
                 None
             }
@@ -355,6 +384,10 @@ impl Preflight {
         if !failed.is_empty() {
             out.push_str(&format!(" — {} failed", failed.join(", ")));
         }
+        // (refused before it started, its reason and way out whole — #354: `failed` sent a look for a broken build)
+        for said in self.not_run() {
+            out.push_str(&format!(" — {said}"));
+        }
         if unrun > 0 {
             out.push_str(&format!(" — stopped, {unrun} not run"));
         }
@@ -378,6 +411,20 @@ impl Preflight {
         self.steps.iter().all(|s| s.state == State::Passed)
     }
 
+    /// The steps refused before they started, each said `clippy linux not run — <reason> · <way>` (#354).
+    pub fn not_run(&self) -> Vec<String> {
+        let said = |s: &StepRun| match &s.state {
+            State::NotRun(why) => Some(format!("{} not run — {why}", s.name)),
+            _ => None,
+        };
+        self.steps.iter().filter_map(said).collect()
+    }
+
+    /// Whether a step failed — not one refused before it started (`not_run`), which isn't the change's.
+    pub fn failed(&self) -> bool {
+        self.steps.iter().any(|s| matches!(s.state, State::Failed(_)))
+    }
+
     /// Step `k`'s output in `output` (the run's, as kept): the lines under its heading, up to the next
     /// step's. None: it hasn't printed its heading (or it's gone from what's kept).
     pub fn output_of(&self, k: usize, output: &crate::runout::Output) -> Option<Vec<String>> {
@@ -397,7 +444,11 @@ impl Preflight {
         if !which.is_empty() {
             return self.steps.iter().position(|s| s.name == which);
         }
-        if let Some(k) = self.steps.iter().position(|s| matches!(s.state, State::Failed(_))) {
+        // (else the first not run: what refused it is in its output)
+        let ended = |f: fn(&State) -> bool| self.steps.iter().position(|s| f(&s.state));
+        if let Some(k) =
+            ended(|s| matches!(s, State::Failed(_))).or_else(|| ended(|s| matches!(s, State::NotRun(_))))
+        {
             return Some(k);
         }
         let started = |k: &usize| self.steps[*k].state != State::Waiting;
@@ -1024,7 +1075,16 @@ impl Editor {
         let run = self.workspace.task_run.as_ref().filter(|r| r.generation() == generation);
         let places = run.map_or(0, |r| r.found.0 + r.found.1);
         let output = run.map(|r| r.output.clone()).unwrap_or_default();
-        let (said, passed, title) = (p.said(places, &output), p.passed(), p.title);
+        let (said, passed, failed, title) = (p.said(places, &output), p.passed(), p.failed(), p.title);
+        // (no step failed and one was refused before it started: the run is not run, not failed — its panel's word and
+        // badge, #354; any failure keeps it failed, the step not run said on its row)
+        let not_run = p.not_run();
+        if !failed
+            && !not_run.is_empty()
+            && let Some(r) = self.workspace.task_run.as_mut().filter(|r| r.generation() == generation)
+        {
+            r.state = crate::task::State::NotRun(not_run.join(" — "));
+        }
         // (a failed one's output outlives the panel's next run — frictions34 42)
         if !passed {
             p.kept = output;
@@ -1048,7 +1108,8 @@ impl Editor {
                 Some(env) => env.keys().cloned().collect(),
                 None => std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).collect(),
             };
-            let set = tools_vars(names, &crate::sandboxpack::get().pass);
+            // (none failed — a step not run: nothing a variable changed)
+            let set = if failed { tools_vars(names, &crate::sandboxpack::get().pass) } else { Vec::new() };
             self.set_error(match set.is_empty() {
                 true => said,
                 false => format!(
@@ -1108,6 +1169,48 @@ mod tests {
     /// The key these tests' runs carry, and what their markers start with (`super::MARK` and the key).
     const KEY: &str = "k3y";
     const MARK: &str = "::tarae-preflight:: k3y";
+
+    /// #354: a step refused before it started (xtask's room check, no Docker) — exit 75 and its last line `not run:
+    /// …` — is said not run, its reason and way out whole; never a pass. One of the two alone is a failure: a real
+    /// failure printing such a line, a tool exiting 75 for its own reasons, the line not its last.
+    #[test]
+    fn a_step_refused_before_it_started_is_said_not_run_never_passed() {
+        let said = "not run: Docker's disk 90 % used · cargo xtask linux prune";
+        let ended = |lines: &[&str], code: i32| {
+            let mut p =
+                Preflight::new(1, &[step("fmt", ""), step("clippy linux", "")], Set::Full, KEY.into());
+            p.line(&format!("{MARK} start 0"));
+            p.line(&format!("{MARK} end 0 0"));
+            p.line(&format!("{MARK} start 1"));
+            lines.iter().for_each(|l| drop(p.line(l)));
+            p.line(&format!("{MARK} end 1 {code}"));
+            p.finish();
+            p
+        };
+        let p = ended(&["the disk 90 % used (72 of 84 GB), past 90 %", said, ""], NOT_RUN_EXIT);
+        let why = "Docker's disk 90 % used · cargo xtask linux prune";
+        assert_eq!(p.steps[1].state, State::NotRun(why.into()));
+        assert!(!p.passed() && !p.failed(), "not a pass, not the change's failure");
+        assert_eq!(p.not_run(), [format!("clippy linux not run — {why}")]);
+        let summary = p.summary();
+        assert!(
+            summary.starts_with(&format!("1 of 2 passed — clippy linux not run — {why} · ")),
+            "{summary}"
+        );
+        assert!(!summary.contains("failed"), "{summary}");
+        assert_eq!(p.step_for("", None, &Default::default()), Some(1), "v shows the step not run");
+        // (each half alone, and the line not the last: failed, as ever)
+        for (lines, code) in [
+            (&[said][..], 1),
+            (&["error: no room"][..], NOT_RUN_EXIT),
+            (&[said, "error: and then it ran"][..], NOT_RUN_EXIT),
+            (&["not run:"][..], NOT_RUN_EXIT),
+        ] {
+            let p = ended(lines, code);
+            assert_eq!(p.steps[1].state, State::Failed(code), "{lines:?} exit {code}");
+            assert!(p.failed() && p.not_run().is_empty() && p.summary().contains("clippy linux failed"));
+        }
+    }
 
     /// V2-1: a step's output can print a marker — `MARK`, a key that isn't the run's, none — and it moves no
     /// step: one that failed stays failed after a later step says it ended well, and the line is shown as

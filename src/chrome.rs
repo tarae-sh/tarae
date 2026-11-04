@@ -369,6 +369,8 @@ impl Editor {
                             crate::task::State::Passed => Badge::Warning,
                             crate::task::State::Failed(_) => Badge::Failed,
                             crate::task::State::Stopped(_) => Badge::Stopped,
+                            // (refused before it started: no failure's `▲` — its header says `not run`, #354)
+                            crate::task::State::NotRun(_) => Badge::None,
                         };
                         // (a bring under way: its steps' runs one panel, the bring first — #320; whose, the strip and
                         // the status line say, the step's own name never folded for it)

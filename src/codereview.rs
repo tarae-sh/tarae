@@ -3416,8 +3416,8 @@ fn failed_kept(ed: &mut Editor, card: &mut crate::offer::Offer, head: &str) {
     if !card.warnings.is_empty() {
         f.head.get_or_insert_with(|| head.to_string());
     } else if f.head.as_deref() == Some(head) {
-        let (title, output) = (f.title.clone(), f.output.clone());
-        *card = m.failed_card(&title, output);
+        let (title, how, output) = (f.title.clone(), f.how.clone(), f.output.clone());
+        *card = m.failed_card(&title, &how, output);
     } else if f.head.is_some() {
         ed.workspace.bring_failed = None;
     }

@@ -393,6 +393,7 @@ impl Editor {
                     S::Passed => "passed".into(),
                     S::Failed(_) => "failed".into(),
                     S::Stopped(why) => format!("stopped · {why}"),
+                    S::NotRun(why) => format!("not run · {why}"),
                 };
                 out.push(Run {
                     id: format!("run#{}", r.trace.id()),

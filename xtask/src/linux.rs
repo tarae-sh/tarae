@@ -13,9 +13,10 @@
 //! registry shared).
 //!
 //! Docker not reachable: it says `skipped — …` and exits 0, so a `:preflight` step with `note = "skipped"`
-//! reads it as a pass with a note — a step of yours (`.tarae.local.toml`). `--no-skip` (leading) fails there
+//! reads it as a pass with a note — a step of yours (`.tarae.local.toml`). `--no-skip` (leading) ends there not run
 //! instead, saying why: tarae's own `.tarae.toml` runs `--no-skip clippy` at every landing (#257 — a check not run
-//! is never a pass).
+//! is never a pass). Not run — that, or the disk past `DISK_STOP` — is exit 75 with `not run: <reason> · <way>` as
+//! its last line (`crate::not_run`, #354): tarae says it so, not as the change's failure.
 //!
 //! The target volume is the checkout's own (`target_volume`, labelled with its path and this machine's id):
 //! every checkout's clone is /work/tarae, so one shared target let a session's tests run another session's
@@ -766,8 +767,8 @@ fn no_skip(args: &[String]) -> (bool, &[String]) {
     }
 }
 
-/// No Docker to run in (`why`): a skip said, or with `--no-skip` (`needed`) a failure saying why — the Linux
-/// checks not run are never a pass where they're asked for.
+/// No Docker to run in (`why`): a skip said, or with `--no-skip` (`needed`) not run, saying why and the way — the
+/// Linux checks not run are never a pass where they're asked for, nor a failure of the change (#354: `not_run`).
 fn unreachable(why: &str, needed: bool) -> Result<()> {
     unreachable_with(why, &way_for(why), needed)
 }
@@ -778,7 +779,8 @@ fn unreachable_with(why: &str, way: &str, needed: bool) -> Result<()> {
             println!("{}", skipped_with(why, way));
             Ok(())
         }
-        true => Err(format!("the Linux checks didn't run — Docker isn't reachable: {why} ({way})")),
+        true if why.contains(NOT_ANSWERING) => Err(crate::not_run(why, way, "")),
+        true => Err(crate::not_run(&format!("Docker isn't reachable: {why}"), way, "")),
     }
 }
 
@@ -1367,8 +1369,8 @@ fn disk_of(printed: &str) -> Option<Disk> {
     printed.lines().nth(1).and_then(disk)
 }
 
-/// Whether a run starts on the disk `disk_now` read: Err past `DISK_STOP`, said with what frees it (`run` says what
-/// takes it first), nothing run; a disk that couldn't be read is said and the run goes on.
+/// Whether a run starts on the disk `disk_now` read: Err past `DISK_STOP` — not run (`crate::not_run`, #354), said with
+/// what frees it (`run` says what takes it first); a disk that couldn't be read is said and the run goes on.
 fn room(d: Option<Disk>) -> Result<()> {
     let Some(d) = d else {
         eprintln!("the Docker disk's use couldn't be read before the run");
@@ -1376,9 +1378,11 @@ fn room(d: Option<Disk>) -> Result<()> {
     };
     match too_full(d) {
         None => Ok(()),
-        Some(full) => {
-            Err(format!("not run: {full} — tests would fail for want of room (ENOSPC). {DISK_FREES}"))
-        }
+        Some(full) => Err(crate::not_run(
+            &format!("Docker's disk {} % used", d.pct),
+            "cargo xtask linux prune",
+            &format!("{full} — tests would fail for want of room (ENOSPC). {DISK_FREES}"),
+        )),
     }
 }
 
@@ -3231,12 +3235,15 @@ mod tests {
         let at = |pct| disk_of(&DF_P_PRINTED.replace("48%", &format!("{pct}%")));
         assert_eq!(room(at(89)), Ok(()));
         assert_eq!(room(None), Ok(()));
-        let said = room(at(90)).unwrap_err();
+        // (not run, #354: its reason and way out on the line tarae reads, the rest before it)
+        let (said, code) = crate::ended(&room(at(90)).unwrap_err());
+        let (more, last) = said.rsplit_once('\n').unwrap();
+        assert_eq!((last, code), ("not run: Docker's disk 90 % used · cargo xtask linux prune", 75));
         assert!(
-            said.starts_with(
-                "not run: the disk 90 % used (38 of 84 GB), past 90 % — tests would fail for want of room"
-            ) && said.contains("`cargo xtask linux prune`"),
-            "{said}"
+            more.starts_with(
+                "the disk 90 % used (38 of 84 GB), past 90 % — tests would fail for want of room"
+            ) && more.contains("`cargo xtask linux prune`"),
+            "{more}"
         );
         assert_eq!(too_full(at(97).unwrap()), Some("the disk 97 % used (38 of 84 GB), past 90 %".into()));
     }
@@ -3677,26 +3684,33 @@ mod tests {
             ),
             "{why}"
         );
-        let failed = unreachable(&why, true).unwrap_err();
-        assert!(failed.ends_with(&format!("({LOOK_AT_IT})")), "looked at, not started: {failed}");
+        let (failed, _) = crate::ended(&unreachable(&why, true).unwrap_err());
+        assert!(failed.ends_with(&format!(" · {LOOK_AT_IT}")), "looked at, not started: {failed}");
         assert!(skipped(&why).ends_with(&format!("({LOOK_AT_IT})")));
     }
 
-    /// `--no-skip` (#257, the landing's Linux clippy): no Docker fails, saying why and how to start it — never a
-    /// pass; without it a skip, as before. Only leading.
+    /// `--no-skip` (#257, the landing's Linux clippy): no Docker is not run (#354), saying why and how to start it —
+    /// never a pass, nor the change's failure; without it a skip, as before. Only leading.
     #[test]
-    fn no_skip_makes_no_docker_a_failure() {
+    fn no_skip_makes_no_docker_not_run() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let on = args(&["--no-skip", "clippy"]);
         assert_eq!(no_skip(&on), (true, &on[1..]));
         let off = args(&["clippy", "--no-skip"]);
         assert_eq!(no_skip(&off), (false, &off[..]));
         let why = reachable(&mut Command::new("tarae-no-such-docker")).unwrap_err();
-        let failed = unreachable_with(&why, START_IT, true).unwrap_err();
-        assert!(
-            failed.starts_with("the Linux checks didn't run — Docker isn't reachable: no docker command")
+        // (not run, #354: one line, its reason and way out, and the status tarae reads with it)
+        let (failed, code) = crate::ended(&unreachable_with(&why, START_IT, true).unwrap_err());
+        assert!(failed.starts_with("not run: Docker isn't reachable: no docker command"), "{failed}");
+        assert!(failed.ends_with(&format!(" · {START_IT}")) && !failed.contains('\n'), "{failed}");
+        assert_eq!(code, 75);
+        let hangs = format!("Docker at unix:///x{NOT_ANSWERING} — nothing from `docker version` in 30s");
+        let (said, _) = crate::ended(&unreachable_with(&hangs, LOOK_AT_IT, true).unwrap_err());
+        assert_eq!(said, format!("not run: {hangs} · {LOOK_AT_IT}"), "no 'isn't reachable' before it");
+        assert_eq!(
+            crate::ended("docker volume create x: failed"),
+            ("error: docker volume create x: failed".into(), 1)
         );
-        assert!(failed.ends_with(&format!("({START_IT})")), "{failed}");
         assert_eq!(unreachable_with(&why, START_IT, false), Ok(()), "without it, a skip");
     }
 

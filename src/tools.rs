@@ -4722,7 +4722,7 @@ pub fn run_done(ed: &mut Editor) {
         .workspace
         .task_run
         .as_ref()
-        .is_some_and(|r| matches!(r.state, State::Failed(_) | State::Stopped(_)));
+        .is_some_and(|r| matches!(r.state, State::Failed(_) | State::Stopped(_) | State::NotRun(_)));
     let known = rules_known(ed, failed);
     let Some(r) = ed.workspace.task_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
@@ -5276,6 +5276,11 @@ fn run_report(root: &Path, r: &crate::task::Run, places: &[crate::quickfix::Item
     let took = r.took.map(|d| format!(" in {}", crate::term::run_duration(d))).unwrap_or_default();
     let verdict = match r.state {
         State::Passed => "exit 0".to_string(),
+        // (a check refused before it started — #354)
+        State::NotRun(ref why) => format!(
+            "exit {} — not run: {why} (refused before it started: not a failure of the change, nor a pass)",
+            crate::preflight::NOT_RUN_EXIT
+        ),
         State::Failed(Some(code)) => format!("exit {code}"),
         State::Failed(None) => "killed".to_string(),
         State::Stopped(ref why) => format!("stopped: {why}"),
@@ -9611,6 +9616,38 @@ mod tests {
         r.state = State::Failed(Some(1));
         r.output = [(true, "error: something else")].into_iter().collect();
         assert!(!super::run_report(elsewhere(), &r, &[], super::Waited::No).contains("The disk is full"));
+    }
+
+    /// #354: a check refused before it started — exit 75, its last line `not run: …` — ends not run (`State::of`, as
+    /// the run's end judges it) and is reported so, its reason and way out whole; either alone is an exit as ever.
+    #[test]
+    fn a_check_refused_before_it_started_is_reported_not_run() {
+        use crate::task::{Run, State, Task};
+        let cmd = "cargo xtask linux --no-skip clippy";
+        let mut r = Run::for_test(Task { name: "c".into(), cmd: cmd.into(), cwd: "/p".into() });
+        let said = "not run: Docker's disk 90 % used · cargo xtask linux prune";
+        r.output =
+            [(true, "the disk 90 % used (72 of 84 GB)"), (true, said), (false, "")].into_iter().collect();
+        r.state = State::of(Some(75), &r.output);
+        assert_eq!(r.state, State::NotRun("Docker's disk 90 % used · cargo xtask linux prune".into()));
+        assert_eq!(
+            (State::of(Some(1), &r.output), State::of(None, &r.output)),
+            (State::Failed(Some(1)), State::Failed(None))
+        );
+        assert_eq!(State::of(Some(0), &r.output), State::Passed);
+        let text = super::run_report(elsewhere(), &r, &[], super::Waited::No);
+        assert!(
+            text.starts_with(
+                "exit 75 — not run: Docker's disk 90 % used · cargo xtask linux prune (refused before it started: \
+                 not a failure of the change, nor a pass)\n"
+            ),
+            "{text}"
+        );
+        r.state = State::Failed(Some(1));
+        assert!(super::run_report(elsewhere(), &r, &[], super::Waited::No).starts_with("exit 1\n"));
+        r.output = [(true, said), (true, "error: then it ran")].into_iter().collect();
+        r.state = State::of(Some(75), &r.output);
+        assert!(super::run_report(elsewhere(), &r, &[], super::Waited::No).starts_with("exit 75\n"));
     }
 
     /// #38: a run that isn't a check or a build (a grep) leaves the user's list alone (#28) — and its report

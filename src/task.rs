@@ -295,6 +295,22 @@ pub enum State {
     /// Ended part-way on purpose, waiting for the user — a rebase at its conflicts (`rebase.rs`): what it
     /// waits on (`2 conflicts`).
     Stopped(String),
+    /// Refused before it started (#354: xtask's room check, no Docker — `preflight::not_run`; a preflight whose steps
+    /// failed none and left one not run): its reason and way out. Not a pass, nor the change's failure.
+    NotRun(String),
+}
+
+impl State {
+    /// How a run that exited with `code` ended, its output `output`: refused before it started when its status and
+    /// last line say so together (`preflight::not_run`), else passed or failed by its status.
+    pub fn of(code: Option<i32>, output: &crate::runout::Output) -> State {
+        let last = (0..output.len()).rev().filter_map(|i| output.line(i)).find(|l| !l.trim().is_empty());
+        match (code, last.as_deref().zip(code).and_then(|(l, c)| crate::preflight::not_run(c, l))) {
+            (Some(0), _) => State::Passed,
+            (_, Some(why)) => State::NotRun(why.to_string()),
+            (code, None) => State::Failed(code),
+        }
+    }
 }
 
 /// Places a run keeps, at most.
@@ -687,6 +703,7 @@ fn ended(state: &State) -> String {
         State::Failed(Some(c)) => format!("exit {c}"),
         State::Failed(None) => "killed".into(),
         State::Stopped(why) => format!("stopped: {why}"),
+        State::NotRun(why) => format!("not run: {why}"),
         State::Running => "running".into(),
     }
 }
@@ -1149,10 +1166,7 @@ impl Editor {
                 r.took = Some(r.started.elapsed());
                 r.pid = None;
                 r.ended = over;
-                r.state = match status.and_then(|s| s.code()) {
-                    Some(0) => State::Passed,
-                    code => State::Failed(code),
-                };
+                r.state = State::of(status.and_then(|s| s.code()), &r.output);
                 // (a wait it ended in — killed while it waited — ends with it)
                 r.wait.end(Instant::now(), &r.trace);
                 r.trace.end(ended(&r.state));
@@ -1185,6 +1199,7 @@ impl Editor {
                 let found = errors + warnings;
                 match (state, found) {
                     (State::Passed, 0) => ed.set_success(format!("{name} — all good")),
+                    (State::NotRun(why), _) => ed.set_error(format!("{name} not run — {why}")),
                     (_, 0) => ed.set_error(format!("{name} failed — nothing to point at; the panel has why")),
                     _ => {
                         let n = |k: usize, w: &str| if k == 0 { String::new() } else { format!("{k} {w} ") };

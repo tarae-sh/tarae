@@ -7064,6 +7064,55 @@ mod tests {
     /// each with its row (how it ended, its time), a failure's places in `]q`, a pass with a note, and a
     /// one-line summary; the markers between steps aren't shown, each step's output is under its heading.
     #[test]
+    fn a_preflight_step_not_run_says_so_on_its_row_and_its_header() {
+        use crate::preflight::Step;
+        let dir = crate::scratch::Scratch::new("preflight-not-run");
+        let step = |name: &str, cmd: &str| Step {
+            name: name.into(),
+            cmd: cmd.into(),
+            note: None,
+            from: ".tarae.toml".into(),
+            full: false,
+        };
+        let refused = "echo \"not run: Docker's disk 90 % used · cargo xtask linux prune\" >&2; exit 75";
+        // The run's header and the step's row, as drawn after `steps` ran
+        let drawn = |steps: Vec<Step>| {
+            let mut ed = editor("");
+            ed.workspace.root = std::fs::canonicalize(dir.path()).unwrap();
+            ed.config.preflight = steps;
+            ed.preflight_start(crate::preflight::Set::Quick).unwrap();
+            settle_until(&mut ed, |ed| {
+                ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+            });
+            let mut bytes = Vec::new();
+            crate::term::render(&mut ed, &mut bytes, 120, 30).unwrap();
+            let mut vt = vt100::Parser::new(30, 120, 0);
+            vt.process(&bytes);
+            let rows: Vec<String> = vt.screen().rows(0, 120).collect();
+            let at = rows.iter().position(|r| r.contains("› steps")).unwrap_or(rows.len());
+            let head = rows.get(at).cloned().unwrap_or_default();
+            // (the list's row under it, left of the output's `│` — not the output's `── clippy linux ──`, nor a toast's)
+            let left = rows.iter().skip(at + 1).map(|r| r.split('│').next().unwrap_or_default().to_string());
+            let row = left.into_iter().find(|r| r.contains("clippy linux")).unwrap_or_default();
+            (ed.workspace.task_run.as_ref().unwrap().state.clone(), head, row, rows.join("\n"))
+        };
+        let why = "clippy linux not run — Docker's disk 90 % used · cargo xtask linux prune";
+        // Nothing failed: the run is not run — its header says so, no failure's ▲
+        let (state, head, row, s) = drawn(vec![step("fmt", "true"), step("clippy linux", refused)]);
+        assert_eq!(state, crate::task::State::NotRun(why.into()));
+        assert!(head.contains(" not run") && !head.contains("failed") && !head.contains('▲'), "{head}\n{s}");
+        // (its row: no mark, `not run` where its time goes — never a time)
+        let words: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(words, ["clippy", "linux", "not", "run"], "{row:?}\n{s}");
+        // A real failure beside it: the run failed, the step not run said on its row still
+        let fails = step("clippy", "echo 'error: no'; exit 1");
+        let (state, head, row, s) = drawn(vec![fails, step("clippy linux", refused)]);
+        assert_eq!(state, crate::task::State::Failed(Some(1)));
+        assert!(head.contains("▲") && head.contains(" failed") && !head.contains("not run"), "{head}\n{s}");
+        assert_eq!(row.split_whitespace().collect::<Vec<_>>(), ["clippy", "linux", "not", "run"], "{s}");
+    }
+
+    #[test]
     fn preflight_runs_every_step_and_sums_up() {
         use crate::preflight::{Set, State, Step};
         let dir = std::env::temp_dir().join(format!("tarae-preflight-{}", std::process::id()));

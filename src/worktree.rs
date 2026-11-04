@@ -4516,6 +4516,72 @@ mod tests {
     /// failed and why, and `v` opens the failed step's output (the card's own copy) after another run took the
     /// task panel; `:preflight-output` reads the kept one too. Nothing is brought.
     #[test]
+    fn a_preflight_step_not_run_is_said_so_on_the_card_and_the_toast() {
+        let (repo, dir) = place("rebase-preflight-not-run");
+        let mut ed = editor(&repo, &dir);
+        // (a stand-in for xtask's room check: what it prints, and its status — never Docker)
+        let script = dir.join("clippy-linux.sh");
+        std::fs::write(
+            &script,
+            "echo 'the disk 90 % used (72 of 84 GB), past 90 %'\n\
+             echo \"not run: Docker's disk 90 % used · cargo xtask linux prune\" >&2\nexit 75\n",
+        )
+        .unwrap();
+        let step = |name: &str, cmd: String| crate::preflight::Step {
+            name: name.into(),
+            cmd,
+            note: None,
+            from: ".tarae.toml".into(),
+            full: false,
+        };
+        ed.config.preflight =
+            vec![step("fmt", "true".into()), step("clippy linux", format!("sh '{}'", script.display()))];
+        moved_apart(&mut ed, &repo, true);
+        bring_go_asked(&mut ed);
+        let failed = |ed: &Editor| card(ed, "Bring feat into main").is_some_and(|o| !o.warnings.is_empty());
+        settle_until(&mut ed, failed);
+        let o = card(&ed, "Bring feat into main").unwrap_or_else(|| panic!("{}", said(&ed)));
+        let not_run = "clippy linux not run — Docker's disk 90 % used · cargo xtask linux prune";
+        assert_eq!(
+            o.question,
+            format!(
+                "2 commits on main's tip now. Bring them into main anyway?\n\nThe preflight didn't pass: {not_run}"
+            )
+        );
+        assert_eq!(
+            (o.warnings.first(), o.output.is_some()),
+            (Some(&(2..3)), true),
+            "in warning, v its output"
+        );
+        assert!(
+            says(&ed, &format!("feat · not brought — preflight: 1 of 2 passed — {not_run} · ")),
+            "{}",
+            said(&ed)
+        );
+        let end = ed.messages.iter().map(|m| m.2.as_str()).find(|m| m.contains("not brought")).unwrap();
+        assert!(!end.contains("failed"), "{end}");
+        // (asked again at that HEAD: the same words, kept with the failure)
+        let id = o.id;
+        ed.workspace_bring("feat").unwrap();
+        settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some_and(|o| o.id != id));
+        let o = card(&ed, "Bring feat into main").unwrap();
+        assert!(o.question.ends_with(&format!("didn't pass: {not_run}")), "{}", o.question);
+        // A real failure beside it: the failure up front, the step not run after it
+        std::fs::write(dir.join("fail.sh"), "echo 'error: no'\nexit 1\n").unwrap();
+        ed.config.preflight.insert(0, step("clippy", format!("sh '{}'", dir.join("fail.sh").display())));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'v', 'n']);
+        let id = card(&ed, "Bring feat into main").unwrap().id;
+        feed(&mut ed, "p");
+        settle_until(&mut ed, |ed| {
+            card(ed, "Bring feat into main").is_some_and(|o| o.id != id && !o.warnings.is_empty())
+        });
+        let q = card(&ed, "Bring feat into main").unwrap().question.clone();
+        assert!(q.ends_with(&format!("The preflight failed — v shows its output.\n    {not_run}")), "{q}");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_failed_preflight_brings_its_card_back_with_its_output() {
         let (repo, dir) = place("rebase-preflight-fails");
         let mut ed = editor(&repo, &dir);
@@ -5076,7 +5142,11 @@ mod tests {
             ]
             .map(String::from),
         );
-        ed.push_offer(m.failed_card("quick preflight", Some(("quick preflight · test".into(), output))));
+        ed.push_offer(m.failed_card(
+            "quick preflight",
+            &Default::default(),
+            Some(("quick preflight · test".into(), output)),
+        ));
         let mut out = Vec::new();
         crate::term::render(&mut ed, &mut out, 112, 10).unwrap();
         ed.card_focus_front();

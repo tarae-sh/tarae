@@ -63,8 +63,17 @@ type Unstarted = Box<dyn FnOnce(&mut Editor, String) + Send>;
 #[derive(Clone, Debug)]
 pub struct Failed {
     pub title: String,
+    pub how: Unpassed,
     pub output: Option<(String, Vec<String>)>,
     pub head: Option<String>,
+}
+
+/// How a preflight didn't pass, beside its output: whether a step failed, and the steps refused before they started,
+/// each said whole (`preflight::Preflight::not_run`, #354 — not the change's failure, never a pass).
+#[derive(Clone, Debug, Default)]
+pub struct Unpassed {
+    pub failed: bool,
+    pub not_run: Vec<String>,
 }
 
 /// A session whose base moved since it left it — what the rebase card says (`y` rebases), and once it's
@@ -167,16 +176,26 @@ impl Moved {
     /// first paragraph, `y bring anyway`), and the risk — the first test that failed and its panic line — in the
     /// warning colour, up front (frictions29 91: at the card's foot, under the passing card's words, a driver read
     /// it as the plain one and brought a failing commit); `failed` — the failed step's output (its buffer's
-    /// title, its lines) — behind `v`.
-    pub fn failed_card(&self, title: &str, failed: Option<(String, Vec<String>)>) -> Offer {
+    /// title, its lines) — behind `v`. A step refused before it started (`how`, #354) is said in its own words, its
+    /// reason and way out whole: up front when nothing failed, after the failure when something did.
+    pub fn failed_card(&self, title: &str, how: &Unpassed, failed: Option<(String, Vec<String>)>) -> Offer {
         let (base, them) = (&self.base, if self.ahead == 1 { "it" } else { "them" });
         let first = failed.as_ref().and_then(|(_, lines)| crate::preflight::failed_test(lines));
-        let mut risk = match (first, failed.is_some()) {
-            (Some((test, Some(why))), _) => format!("The {title} failed: {test}\n    {why}"),
-            (Some((test, None)), _) => format!("The {title} failed: {test}"),
-            (None, true) => format!("The {title} failed — v shows its output."),
-            (None, false) => format!("The {title} failed — the task panel says why."),
+        let mut not_run = how.not_run.iter();
+        let lead = match first.is_none() && !how.failed {
+            true => not_run.next(),
+            false => None,
         };
+        let mut risk = match (first, failed.is_some(), lead) {
+            (Some((test, Some(why))), ..) => format!("The {title} failed: {test}\n    {why}"),
+            (Some((test, None)), ..) => format!("The {title} failed: {test}"),
+            (None, _, Some(said)) => format!("The {title} didn't pass: {said}"),
+            (None, true, None) => format!("The {title} failed — v shows its output."),
+            (None, false, None) => format!("The {title} failed — the task panel says why."),
+        };
+        for said in not_run {
+            risk.push_str(&format!("\n    {said}"));
+        }
         // (every other test that failed too, by name — frictions29 93: one known flake named alone read as the
         // only failure; `v` lists them)
         let also = failed.as_ref().and_then(|(_, lines)| crate::preflight::also_failed(lines));
@@ -2386,11 +2405,13 @@ impl Editor {
     /// the output went with the task panel's next run): the first test that failed and why, in the warning
     /// colour, and `v` for the failed step's output (`Offer.output` — kept on the card, whatever runs next).
     fn rebase_bring_failed(&mut self, m: Moved, title: &str) {
-        let failed = self.workspace.preflight.as_ref().and_then(|p| p.step_text("", None, &p.kept).ok());
+        let p = self.workspace.preflight.as_ref();
+        let failed = p.and_then(|p| p.step_text("", None, &p.kept).ok());
+        let how = p.map(|p| Unpassed { failed: p.failed(), not_run: p.not_run() }).unwrap_or_default();
         let output = failed.clone();
         let head = self.workspace.bring_tested.take();
-        self.workspace.bring_failed = Some(Failed { title: title.into(), output, head });
-        let card = m.failed_card(title, failed);
+        let card = m.failed_card(title, &how, failed);
+        self.workspace.bring_failed = Some(Failed { title: title.into(), how, output, head });
         let (sid, root, base) = (self.workspace.id, m.root.clone(), m.base.clone());
         crate::codereview::push_bring_card(self, sid, card, root, base);
     }
@@ -2648,7 +2669,11 @@ mod tests {
         out.extend((0..30).map(|i| format!("test tests::flaky_{i:02} ... FAILED")));
         out.extend(["failures:".into(), "---- tests::flaky_00 stdout ----".into()]);
         out.extend(["thread 'tests::flaky_00' panicked at src/a.rs:1:1:".into(), "boom".into()]);
-        let o = m.failed_card("quick preflight", Some(("quick preflight · test".into(), out)));
+        let o = m.failed_card(
+            "quick preflight",
+            &Default::default(),
+            Some(("quick preflight · test".into(), out)),
+        );
         let last = o.question.lines().last().unwrap();
         assert!(
             o.question.contains(
@@ -2660,7 +2685,7 @@ mod tests {
         assert_eq!(o.warnings, vec![2..5], "the whole risk in the warning colour");
         // One failure: as before
         let one = vec!["test a ... FAILED".to_string()];
-        let o = m.failed_card("quick preflight", Some(("t".into(), one)));
+        let o = m.failed_card("quick preflight", &Default::default(), Some(("t".into(), one)));
         assert!(o.question.ends_with("The quick preflight failed: a"), "{}", o.question);
     }
 

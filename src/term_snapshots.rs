@@ -939,7 +939,7 @@ fn frames_of_frictions34() {
     .to_vec();
     let mut s = shot();
     let failed = Some(("quick preflight · test".to_string(), output));
-    s.ed.push_offer(m.failed_card("quick preflight", failed));
+    s.ed.push_offer(m.failed_card("quick preflight", &Default::default(), failed));
     s.frames_both("f34_bring_after");
 }
 
@@ -981,7 +981,11 @@ fn frames_of_cards4() {
             ]
             .map(String::from)
             .to_vec();
-            m.failed_card("quick preflight", Some(("quick preflight · test".into(), output)))
+            m.failed_card(
+                "quick preflight",
+                &Default::default(),
+                Some(("quick preflight · test".into(), output)),
+            )
         }),
         ("cards4-main-moved", base_moved(true).card()),
     ] {
@@ -1045,7 +1049,7 @@ fn frictions37_frames() {
         .to_vec();
         let mut s = shot(true);
         let failed = Some(("quick preflight · test".to_string(), output));
-        s.ed.push_offer(m.failed_card("quick preflight", failed));
+        s.ed.push_offer(m.failed_card("quick preflight", &Default::default(), failed));
         s.frames_both(&format!("91-{which}-{w}"));
         // 89: the first start's trust card on the start screen
         let mut s = shot(false);
@@ -1120,9 +1124,11 @@ fn frictions38_frames() {
             ahead: 1,
         };
         let mut s = shot();
-        s.ed.push_offer(
-            m.failed_card("quick preflight", Some(("quick preflight · test".into(), lines.clone()))),
-        );
+        s.ed.push_offer(m.failed_card(
+            "quick preflight",
+            &Default::default(),
+            Some(("quick preflight · test".into(), lines.clone())),
+        ));
         s.frames_both(&format!("bring-{which}-{w}"));
         // toast: that preflight's end, as `preflight_done` says it
         let step = |name: &str, full: bool| crate::preflight::Step {
@@ -1153,6 +1159,82 @@ fn frictions38_frames() {
         }
         s.frames_both(&format!("toast-{which}-{w}"));
     }
+}
+
+/// #354's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes, 120×34, `.sb/f354-shots/`):
+/// a real quick preflight whose `clippy linux` is a stand-in for xtask's room check (its line, exit 75) — `panel` its
+/// steps beside a passed one, `panel-failed` the same with a real failure too, `card` the bring card that didn't pass,
+/// `toast` the bring's end as the run said it.
+#[test]
+fn f354_frames() {
+    let Some(_) = std::env::var_os("TARAE_FRAMES_DIR") else { return };
+    let step = |name: &str, cmd: &str, full: bool| crate::preflight::Step {
+        name: name.into(),
+        cmd: cmd.into(),
+        note: None,
+        from: ".tarae.toml".into(),
+        full,
+    };
+    let not_run = "echo 'the disk 90 % used (72 of 84 GB), past 90 %'; \
+                   echo \"not run: Docker's disk 90 % used · cargo xtask linux prune\" >&2; exit 75";
+    let fails = "echo 'error: unused variable: `x`'; echo '  --> src/demo.rs:3:9'; exit 101";
+    // (the steps run, their end said as the run says it — a bring waiting on it: `preflight_done`'s toast)
+    let ran = |steps: Vec<crate::preflight::Step>| {
+        let mut s = Shot::new(120, 34);
+        s.ed.offer_popups = true;
+        s.in_project();
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.config.preflight = steps;
+        s.ed.workspace.bring_after_preflight = true;
+        s.ed.preflight_start(crate::preflight::Set::Quick).unwrap();
+        s.until("the preflight's end", |ed| {
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+        });
+        s
+    };
+    let quiet = |s: &mut Shot| {
+        s.ed.toasts.clear();
+        s.frame();
+    };
+    let one = vec![
+        step("fmt", "echo formatted", false),
+        step("clippy linux", not_run, false),
+        step("test", "true", true),
+    ];
+    let mut s = ran(one);
+    // toast: the bring's end, as the run's end said it
+    let fresh = Instant::now().checked_sub(Duration::from_millis(500)).unwrap();
+    for t in &mut s.ed.toasts {
+        (t.at, t.shown) = (fresh, true);
+    }
+    s.frames_both("toast");
+    quiet(&mut s);
+    s.frames_both("panel");
+    // card: the bring card that didn't pass, from that run (as `rebase_bring_failed` makes it)
+    let p = s.ed.workspace.preflight.as_ref().unwrap();
+    let how = crate::rebase::Unpassed { failed: p.failed(), not_run: p.not_run() };
+    let output = s.ed.workspace.task_run.as_ref().unwrap().output.clone();
+    let failed = p.step_text("", None, &output).ok();
+    let m = crate::rebase::Moved {
+        root: PathBuf::from("/stand-in/sandbox"),
+        name: "sandbox".into(),
+        branch: "sandbox".into(),
+        base: "main".into(),
+        moved: 0,
+        ahead: 2,
+    };
+    s.ed.push_offer(m.failed_card(p.title, &how, failed));
+    s.frames_both("card");
+    // panel-failed: a real failure beside it
+    let two = vec![
+        step("fmt", "echo formatted", false),
+        step("clippy", fails, false),
+        step("clippy linux", not_run, false),
+        step("test", "true", true),
+    ];
+    let mut s = ran(two);
+    quiet(&mut s);
+    s.frames_both("panel-failed");
 }
 
 /// frictions29 #25: a rebase's resolved card, Claude saying the commit's message no longer holds — `m` among its

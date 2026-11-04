@@ -67,7 +67,8 @@ use crate::workspace::At;
 /// 29: the interface drawn for (the remote plan's step 3): `interface` is `null` for a host no interface is attached to
 /// (`tarae --host`), else its `kind` (`terminal`) and the last frame it `presented`.
 /// 30: `interface.kind` `wire`: an interface attached to a host across its socket (`tarae attach`).
-pub const V: u64 = 30;
+/// 31: a run's `state` may be `not run · <why>` (#354: refused before it started — not a pass, nor `failed`).
+pub const V: u64 = 31;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;

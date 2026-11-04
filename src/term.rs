@@ -3014,12 +3014,14 @@ fn preflight_row(
             let (glyph, gs, name) = step_mark(editor, (s, ("steps", k)), card, ui, colors);
             out.push((format!("{glyph} "), gs, Some(k)));
             out.push((s.name.clone(), name, Some(k)));
-            let t = match s.state {
-                State::Running => time(s.started.map(|t| t.elapsed())),
-                _ => time(s.took),
+            // (a step refused before it started has no time: `not run` in its place, timed or not — #354)
+            let (t, st) = match s.state {
+                State::Running => (time(s.started.map(|t| t.elapsed())), dim),
+                State::NotRun(_) => (" not run".to_string(), Style { fg: colors.2, ..card }),
+                _ => (time(s.took), dim),
             };
             if !t.is_empty() {
-                out.push((t, dim, Some(k)));
+                out.push((t, st, Some(k)));
             }
         }
         out
@@ -3053,7 +3055,7 @@ fn preflight_row(
 }
 
 /// A preflight step's mark, its colour and its name's style: passed `●` in the plus colour (a note's pass in
-/// warning), failed `▲` in the error colour and bold, the one running the working sign (`working`) in the accent,
+/// warning), failed `▲` in the error colour and bold, not run none (its words say it), the one running the working sign (`working`) in the accent,
 /// the ones to come `◦` faint — every mark in the sign's cells (`shimmer::mark`), so a row's name and time stay where
 /// the others' are.
 fn step_mark(
@@ -3076,6 +3078,8 @@ fn step_mark(
         State::Passed if s.note.is_some() => (mark("●"), Style { fg: warn, ..card }, card),
         State::Passed => (mark("●"), Style { fg: good, ..card }, card),
         State::Failed(_) => (mark("▲"), Style { fg: bad, ..card }, Style { bold: true, ..card }),
+        // (refused before it started, #354: no mark — `◦` read as a step to come; `not run` where its time goes)
+        State::NotRun(_) => (mark(""), card, card),
     }
 }
 
@@ -3125,7 +3129,7 @@ fn task_ran(r: &crate::task::Run) -> crate::sandbox::RunIs {
     use crate::task::State;
     match r.state {
         State::Running => crate::sandbox::RunIs::Running,
-        State::Failed(_) | State::Stopped(_) => crate::sandbox::RunIs::Failed,
+        State::Failed(_) | State::Stopped(_) | State::NotRun(_) => crate::sandbox::RunIs::Failed,
         State::Passed => crate::sandbox::RunIs::Passed,
     }
 }
@@ -3341,6 +3345,8 @@ fn draw_task_panel(
         State::Passed => vec![("warnings".into(), Style { fg: warn, ..card })],
         State::Failed(_) => vec![("failed".into(), Style { fg: bad, ..card })],
         State::Stopped(ref why) => vec![(format!("stopped: {why}"), Style { fg: warn, ..card })],
+        // (refused before it started, #354: its reason on its row, in the output and the toast)
+        State::NotRun(_) => vec![("not run".into(), Style { fg: warn, ..card })],
     };
     for (n, g, c) in [(r.found.0, "●", bad), (r.found.1, "▲", warn)] {
         if n > 0 {
@@ -3620,8 +3626,12 @@ fn draw_task_group(
                     State::Running => s.started.map(crate::clock::since),
                     _ => s.took,
                 };
-                let time = took.map(run_duration).unwrap_or_default();
-                (glyph, gs, s.name.clone(), ns, String::new(), time)
+                // (refused before it started: `not run` in warning where its time goes — #354)
+                let (time, tone) = match s.state {
+                    State::NotRun(_) => ("not run".to_string(), warn),
+                    _ => (took.map(run_duration).unwrap_or_default(), faint.fg),
+                };
+                (glyph, gs, s.name.clone(), ns, String::new(), (time, tone))
             }
             None => {
                 let p = &r.places[order[idx]];
@@ -3632,9 +3642,11 @@ fn draw_task_group(
                 };
                 let cut = if r.origin(order[idx]).line.is_none() { "cut" } else { "" };
                 let at = place_at(editor, p);
-                (glyph.to_string(), Style { fg: c, ..card }, at, card, p.message.clone(), cut.to_string())
+                let right = (cut.to_string(), faint.fg);
+                (glyph.to_string(), Style { fg: c, ..card }, at, card, p.message.clone(), right)
             }
         };
+        let (right, right_fg) = right;
         apply(out, Style { bg: row_bg.bg, ..mark_st })?;
         queue!(out, Print(format!(" {mark} ")))?;
         // (the bar, the mark between blanks: a step's mark the sign's cells — the name folds, never the mark)
@@ -3659,7 +3671,7 @@ fn draw_task_group(
         }
         // (to the line: what's right-aligned, a cell before it)
         let used = lead + name.width() + if rest.is_empty() { 0 } else { 2 + rest.width() };
-        apply(out, Style { fg: faint.fg, ..row_bg })?;
+        apply(out, Style { fg: right_fg, ..row_bg })?;
         let pad = list_w.saturating_sub(used + right.width() + 1);
         queue!(out, Spaces(pad), Print(&right), Print(" "))?;
     }
