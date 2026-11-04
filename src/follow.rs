@@ -1474,6 +1474,15 @@ fn in_project(ed: &Editor, path: &Path) -> bool {
     std::fs::canonicalize(path).is_ok_and(|p| p.starts_with(&ed.workspace.root))
 }
 
+/// Whether an open for Claude's turn was refused because the file isn't text (`document::NotText`) — a picture Claude
+/// read, which `read` sends to the model as a picture. Taken quietly where follow or the replay asked for it: tarae draws
+/// no pictures, so the view stays where it is and the card says the step, as for any read (#370: the refusal was an
+/// error toast at each one). Known by the read the open makes anyway, or by a big one's name (`open_as`) — no read of
+/// its own.
+fn not_text(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<crate::document::NotText>().is_some()
+}
+
 /// Moves the editor to `line` (when following and the user hasn't taken over) — in the project only.
 fn go(ed: &mut Editor, path: &Path, line: usize) {
     go_range(ed, path, line..line + 1);
@@ -1496,19 +1505,23 @@ fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
         return;
     }
     let line = lines.start;
+    let already = ed.docs.iter().any(|d| d.path.as_deref() == Some(path));
+    let left = ed.doc().id;
+    // The open first: one refused as not text (`not_text`) leaves everything as it was — no jump, a replay shown kept
+    match ed.open_for_claude(path) {
+        Ok(()) => {}
+        Err(e) if not_text(&e) => return,
+        Err(e) => return ed.set_error(format!("{e:#}")),
+    }
+    if !ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.jumped) {
+        ed.push_jump_from(left);
+    }
     // (live again: a replay's stop isn't what's showing any more — unless it shows in your pane, not this one)
     if let Some(f) = follow(ed).filter(|f| !(f.replay_aside && f.replaying.is_some())) {
         f.replaying = None;
         f.replay.at = None;
     }
     sync_shown(ed);
-    let already = ed.docs.iter().any(|d| d.path.as_deref() == Some(path));
-    if !ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.jumped) {
-        ed.push_jump();
-    }
-    if let Err(e) = ed.open_for_claude(path) {
-        return ed.set_error(format!("{e:#}"));
-    }
     let here = ed.doc().id;
     // (one in the build output goes when the turn ends, unless you take it up — #46)
     let aside = ed.doc().path.as_deref().is_some_and(|p| crate::edits::aside_path(&ed.workspace.root, p));
@@ -1837,8 +1850,11 @@ pub fn replay_at(ed: &mut Editor, at: (usize, usize)) {
         return ed.set_status(if gone { format!("{said} — its file is gone") } else { said });
     };
     let lines = stop.lines.unwrap_or(0..1);
-    if let Err(e) = ed.open_for_claude(&path) {
-        return ed.set_error(format!("{e:#}"));
+    match ed.open_for_claude(&path) {
+        Ok(()) => {}
+        // (a picture is no place either — `not_text`)
+        Err(e) if not_text(&e) => return ed.set_status(stop.look.said()),
+        Err(e) => return ed.set_error(format!("{e:#}")),
     }
     if ed.doc().loading {
         ed.goto_after_load = Some((ed.doc().id, lines.start, 0));
@@ -1908,11 +1924,17 @@ fn show_stop(ed: &mut Editor, at: (usize, usize)) {
         .path
         .clone()
         .filter(|p| p.is_file() && std::fs::canonicalize(p).is_ok_and(|p| p.starts_with(&root)));
-    if let Some(path) = place {
+    // (a picture is no place: the card says the stop, the view stays — `not_text`)
+    let opened = match place {
+        Some(path) => match ed.open_for_claude(&path) {
+            Ok(()) => true,
+            Err(e) if not_text(&e) => false,
+            Err(e) => return ed.set_error(format!("{e:#}")),
+        },
+        None => false,
+    };
+    if opened {
         let lines = stop.lines.clone().unwrap_or(0..1);
-        if let Err(e) = ed.open_for_claude(&path) {
-            return ed.set_error(format!("{e:#}"));
-        }
         if !ed.doc().loading {
             let doc = ed.doc();
             // Its changes, if the buffer still has them where they were written

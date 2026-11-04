@@ -118,6 +118,14 @@ impl Editor {
         self.record(v, self.doc().id);
     }
 
+    /// `push_jump` for a spot just left: document `doc`'s selection onto the focused pane's list — for a move whose
+    /// open may be refused, made first (follow's, #370).
+    pub(crate) fn push_jump_from(&mut self, doc: DocId) {
+        let focus = self.workspace.viewer.focus;
+        let Some(v) = self.workspace.views.iter().position(|v| v.id == focus) else { return };
+        self.record(v, doc);
+    }
+
     /// Document `doc`'s current selection onto pane `v`'s list — not twice in a row.
     fn record(&mut self, v: usize, doc: DocId) {
         let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) else { return };

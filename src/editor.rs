@@ -2002,8 +2002,13 @@ impl Editor {
             }
             return Ok(());
         }
-        let id = self.alloc_id();
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // (Claude's big picture, by its name: its bytes would be read on a worker, refused there after a placeholder
+        // had gone in front — #370; a small one's refusal is the read below, made anyway)
+        if by == Opener::Claude && size >= ASYNC_LOAD_BYTES && crate::document::media_named(&path) {
+            return Err(crate::document::NotText { path, size }.into());
+        }
+        let id = self.alloc_id();
         let mut doc = if size < ASYNC_LOAD_BYTES {
             Document::open(id, &path)?
         } else {
@@ -8128,6 +8133,79 @@ mod tests {
         assert!(!listed.contains(&memo), "not in the list: {listed:?}");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&out).ok();
+    }
+
+    /// Claude reading a picture is a read as any (#370: follow opened it as a buffer, and its `binary · 345 KB, not
+    /// text` was an error toast at the same moment). tarae draws no pictures: the view stays where it was, the card
+    /// says `reading sheet-03.png`, the turn's map counts its `◦` and a press on its stop moves nothing — a big one too,
+    /// whose text would have loaded on a worker.
+    #[test]
+    fn claude_reading_a_picture_is_a_read_never_an_error() {
+        use serde_json::json;
+        let s = crate::scratch::Scratch::new("follow-picture");
+        let dir = std::fs::canonicalize(&*s).unwrap();
+        std::fs::write(dir.join("main.rs"), "line 1\nline 2\nline 3\n").unwrap();
+        let png = |len: usize| {
+            let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+            b.resize(len, 7);
+            b
+        };
+        std::fs::write(dir.join("sheet-03.png"), png(345 * 1024)).unwrap();
+        std::fs::write(dir.join("big.png"), png(ASYNC_LOAD_BYTES as usize + 1024)).unwrap();
+        let tool = |id: &str, name: &str, input: serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}});
+        let result = |id: &str, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}});
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        ed.open(&dir.join("main.rs")).unwrap();
+        fake_claude_stream(
+            &mut ed,
+            &[
+                tool("r1", "mcp__tarae__read", json!({"files": ["main.rs:2-3"]})),
+                result("r1", "== main.rs:2-3\n2: line 2\n3: line 3\n"),
+                tool("r2", "mcp__tarae__read", json!({"files": ["sheet-03.png"]})),
+                json!("sleep 0.2"),
+                result("r2", "a picture"),
+                tool("r3", "mcp__tarae__read", json!({"files": ["big.png"]})),
+                result("r3", "a picture"),
+                json!({"type": "result", "result": "done"}),
+            ],
+        );
+        feed(&mut ed, "<space>lwhat's on the sheet?<ret><esc>");
+        let gaze = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().follow.gaze.clone();
+        settle_until(&mut ed, |ed| {
+            gaze(ed).is_some_and(|g| g.path.is_some_and(|p| p.ends_with("sheet-03.png")))
+        });
+        let g = gaze(&ed).unwrap();
+        assert_eq!(
+            (crate::chat::doing(g.look.verb), g.look.what.as_str()),
+            ("reading", "sheet-03.png"),
+            "the card's step"
+        );
+        assert_eq!(
+            ed.doc().path.as_deref(),
+            Some(dir.join("main.rs").as_path()),
+            "the view stays where it was"
+        );
+        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
+        assert_eq!(ed.doc().path.as_deref(), Some(dir.join("main.rs").as_path()));
+        let opened: Vec<_> =
+            ed.docs.iter().filter_map(|d| d.path.clone()).filter(|p| p.ends_with(".png")).collect();
+        assert!(opened.is_empty(), "no picture opened as text: {opened:?}");
+        let errors: Vec<_> = ed.messages.iter().filter(|m| m.1 == ToastKind::Error).collect();
+        assert!(errors.is_empty(), "never an error: {errors:?}");
+        assert!(!ed.toasts.iter().any(|t| t.kind == ToastKind::Error));
+        crate::turnmap::sync(&mut ed);
+        let said = |f: &str| -> Vec<String> {
+            let roles = ed.turnmap.files.get(Path::new(f)).map(|f| f.roles.as_slice()).unwrap_or_default();
+            roles.iter().map(crate::turnmap::Role::said).collect()
+        };
+        assert_eq!(said("sheet-03.png"), ["◦"], "{:?}", ed.turnmap.files.keys());
+        assert_eq!(said("big.png"), ["◦"]);
+        // A press on its stop: the card says it, the view stays
+        let at = ed.workspace.claude.chat.as_ref().unwrap().follow.replay.place_of("r2").unwrap();
+        crate::follow::replay_at(&mut ed, at);
+        assert_eq!(ed.doc().path.as_deref(), Some(dir.join("main.rs").as_path()), "the stop moves nothing");
+        assert!(!ed.messages.iter().any(|m| m.1 == ToastKind::Error), "nor its press");
     }
 
     /// Follow mode: the editor goes to each file Claude reads, to a search's first hit, and at the end to

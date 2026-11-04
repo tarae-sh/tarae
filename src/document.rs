@@ -272,6 +272,14 @@ impl std::fmt::Display for NotText {
 
 impl std::error::Error for NotText {}
 
+/// Whether `path` is named as one of the kinds `media::kind` knows (a picture, a PDF) — by its name alone, for where
+/// nothing has read its bytes: a big file Claude's turn opens, whose text would load on a worker after a placeholder
+/// went in front (`Editor::open_as`, #370). Its bytes, where they're read, decide everywhere else.
+pub fn media_named(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "pdf")
+}
+
 /// File → rope. A missing file gives an empty rope (created on save); one that isn't text is `NotText`.
 pub fn read_file(path: &Path) -> Result<Rope> {
     use std::io::Read as _;
