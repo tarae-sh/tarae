@@ -323,7 +323,7 @@ type Guard = fn(&mut Scene, bool);
 /// What keeps one workspace busy, put on `fix` — and taken off.
 fn guards() -> Vec<(&'static str, Guard)> {
     vec![
-        ("its Claude at work", |s, on| {
+        ("its turn ends", |s, on| {
             let id = s.id("fix");
             let l = s.ed.workspace_by_id(id).unwrap();
             let c = l.claude.chat.get_or_insert_with(|| {
@@ -333,7 +333,7 @@ fn guards() -> Vec<(&'static str, Guard)> {
             });
             c.state = if on { crate::chat::State::Thinking } else { crate::chat::State::Idle };
         }),
-        ("unsaved buffers there", |s, on| {
+        ("its buffers are saved", |s, on| {
             let path = s.root("fix").join("a.rs");
             s.ed.workspace_switch(s.id("fix"));
             s.ed.open(&path).unwrap();
@@ -349,20 +349,20 @@ fn guards() -> Vec<(&'static str, Guard)> {
             }
             s.ed.workspace_switch(WorkspaceId::HOME);
         }),
-        ("a review open", |s, on| {
+        ("its turn's review is closed", |s, on| {
             let (id, root) = (s.id("fix"), s.root("fix"));
             let turn = crate::codereview::Base::Turn { at: 0, question: "do it".into() };
             s.ed.workspace_by_id(id).unwrap().code_review =
                 on.then(|| crate::codereview::CodeReview::for_test(turn, root, Vec::new()));
         }),
-        ("a run under way", |s, on| {
+        ("its runs end", |s, on| {
             let (id, root) = (s.id("fix"), s.root("fix"));
             let task = crate::task::Task { name: "build".into(), cmd: "true".into(), cwd: root };
             let mut r = crate::task::Run::for_test(task);
             r.state = if on { crate::task::State::Running } else { crate::task::State::Passed };
             s.ed.workspace_by_id(id).unwrap().task_run = Some(r);
         }),
-        ("in the bring queue", |s, on| {
+        ("the bring queue is past it", |s, on| {
             s.ed.bring_queue.run = on.then(|| crate::bringqueue::Run {
                 left: [s.id("fix")].into(),
                 now: None,
@@ -374,7 +374,7 @@ fn guards() -> Vec<(&'static str, Guard)> {
             });
         }),
         // (a real one: stopped at a `break` in fix's checkout, taken up as tarae takes one up; `:rebase-abort` ends it)
-        ("a rebase under way", |s, on| {
+        ("its rebase ends", |s, on| {
             let (id, root) = (s.id("fix"), s.root("fix"));
             match on {
                 true => {
@@ -398,7 +398,7 @@ fn guards() -> Vec<(&'static str, Guard)> {
 #[test]
 fn a_busy_workspace_waits_until_its_idle() {
     for (why, set) in guards() {
-        let mut s = scene(&format!("keepclose-busy-{}", why.replace(' ', "-")));
+        let mut s = scene(&format!("keepclose-busy-{}", why.replace([' ', '\''], "-")));
         asked(&mut s);
         set(&mut s, true);
         let fix = s.id("fix");

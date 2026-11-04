@@ -13,7 +13,10 @@
 //!   place (one title a base). `workspace.sync = "idle"`: the clean ones move unasked, a card only for the
 //!   conflicting; `"off"`: nothing.
 //! - **Moved only when idle** (`busy`): never mid-turn, mid-review, mid-rebase or mid-run, nor with unsaved buffers
-//!   there; one at a time (`next`, every event). The move (`move_onto`, a worker): its changes in no commit set aside
+//!   there; a turn ended and not looked at (`done`) is idle, its own review (review at the end) isn't. A `y` leaves a
+//!   busy one waiting, moved once it's idle (`next`, every event) — its card's row says what it waits for (`ci moves
+//!   once its turn ends`, kept current: `card_sync`); a newer move's tip is the one it goes onto; `n` leaves none
+//!   waiting. One at a time. The move (`move_onto`, a worker): its changes in no commit set aside
 //!   (`aside.rs` — never `--autostash`), `git rebase` onto the tip read as it starts — the newest wins — and the
 //!   changes put back; a conflict after all, the rebase's or changes that don't go onto the tip, puts the checkout
 //!   back exactly as it was (HEAD, the changes, the index) and is said. While it runs the workspace's messages, runs and saves wait
@@ -164,10 +167,14 @@ pub struct Ws {
     pub conflicts: Conflicts,
     /// Its instruction files the main checkout changed since its copy, each with the changed lines (`v`).
     pub instructions: Vec<(String, Vec<String>)>,
+    /// What it waits for before it's moved (`busy`: `its turn ends`) — kept current while its card is up
+    /// (`card_sync`). None: idle, moved at the answer.
+    pub holds: Option<&'static str>,
 }
 
 impl Ws {
-    /// `fix — 4 behind, its 2 changed files go with it` · `db — would conflict in src/term.rs L210–260`.
+    /// `fix — 4 behind, its 2 changed files go with it` · `db — would conflict in src/term.rs L210–260` ·
+    /// `ci — 2 behind, moves once its turn ends`.
     fn row(&self) -> String {
         let mut parts = vec![format!("{} behind", self.behind)];
         if !self.conflicts.is_empty() {
@@ -194,6 +201,9 @@ impl Ws {
         if !self.instructions.is_empty() {
             let names: Vec<&str> = self.instructions.iter().map(|(r, _)| r.as_str()).collect();
             parts.push(format!("{} newer in the main checkout", names.join(", ")));
+        }
+        if let Some(why) = self.holds {
+            parts.push(format!("moves once {why}"));
         }
         format!("  {} — {}", self.name, parts.join(", "))
     }
@@ -364,7 +374,8 @@ fn base_of<'a>(home: Option<&'a str>, l: &'a Workspace) -> Option<&'a str> {
     }
 }
 
-/// Every event: each base watched, and the next workspace waiting moved once it's idle.
+/// Every event: each base watched, the next workspace waiting moved once it's idle, and the card up kept saying what
+/// each of its workspaces waits for (`card_sync`).
 pub fn sync(ed: &mut Editor) {
     if mode(ed) == "off" || ed.workspaces.is_empty() {
         return;
@@ -377,6 +388,7 @@ pub fn sync(ed: &mut Editor) {
         }
     }
     next(ed);
+    card_sync(ed, None);
 }
 
 /// The bases no watch is on yet, each once: every session's repository as its git watch read it (`git_common` —
@@ -510,6 +522,7 @@ fn look(ed: &mut Editor, base: &Base) {
                 conflicts,
                 instructions: main.map(|m| crate::instructions::behind(&root, &m)).unwrap_or_default(),
                 root,
+                holds: None,
             });
         }
         let commits = ws.first().map_or(0, |w| crate::worktree::count(&w.root, &format!("{from}..{to}")));
@@ -559,6 +572,10 @@ fn looked(ed: &mut Editor, mut moves: Moves) {
     }
     let open: Vec<WorkspaceId> = sessions(ed).map(|l| l.id).collect();
     moves.ws.retain(|w| w.behind > 0 && open.contains(&w.id));
+    // (a wait from an earlier move's `y` goes on onto this tip — the move reads the newest; one no longer behind it
+    // has nothing left to wait for)
+    let behind: Vec<WorkspaceId> = moves.ws.iter().map(|w| w.id).collect();
+    ed.keep_close.waits.retain(|w| w.base != base || behind.contains(&w.ws.id));
     if mode(ed) == "idle" {
         let (clean, conflicting): (Vec<Ws>, Vec<Ws>) =
             moves.ws.drain(..).partition(|w| w.conflicts.is_empty());
@@ -574,16 +591,65 @@ fn looked(ed: &mut Editor, mut moves: Moves) {
         return next(ed);
     }
     ed.unchanged = false;
-    // (its workspaces named in their colours, as the strip and the list name them)
+    for w in &mut moves.ws {
+        w.holds = sessions(ed).find(|l| l.id == w.id).and_then(|l| busy(ed, l));
+    }
+    let card = shown(ed, &moves);
+    ed.push_offer(card);
+}
+
+/// `moves`' card, its workspaces named in their colours, as the strip and the list name them.
+fn shown(ed: &Editor, moves: &Moves) -> Offer {
     let mut card = moves.card();
     card.paint = (moves.ws.iter())
         .filter_map(|w| {
-            let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == w.id)?;
+            let l = sessions(ed).find(|l| l.id == w.id)?;
             let scope = crate::session::PARTICIPANTS[l.claude.colour as usize % crate::session::COLOURS];
             Some((w.name.clone(), scope))
         })
         .collect();
-    ed.push_offer(card);
+    card
+}
+
+/// Every base's card up kept as things are now: what each workspace waits for said again where it changed (a turn
+/// ended, a review closed), one `moved` since it came left off it — none left, the card goes. Its `rev` moves only
+/// then: a `y` answers what's in sight.
+fn card_sync(ed: &mut Editor, moved: Option<(&Base, WorkspaceId)>) {
+    let cards: Vec<(u64, Moves)> = (ed.offers.iter())
+        .filter_map(|o| match &o.what {
+            What::BaseMoved(m) => Some((o.id, (**m).clone())),
+            _ => None,
+        })
+        .collect();
+    for (id, was) in cards {
+        let mut m = was.clone();
+        m.ws.retain(|w| moved.is_none_or(|(b, gone)| *b != m.base || gone != w.id));
+        for w in &mut m.ws {
+            w.holds = sessions(ed).find(|l| l.id == w.id).and_then(|l| busy(ed, l));
+        }
+        if m == was {
+            continue;
+        }
+        ed.unchanged = false;
+        if m.ws.is_empty() {
+            // (its move answered by the moves themselves — a newer one being looked at stays)
+            let st = &mut ed.keep_close;
+            if st.pending.get(&m.base).is_some_and(|p| p.to == m.to && !p.looking) {
+                st.pending.remove(&m.base);
+            }
+            card_gone(ed, &m.base, "every workspace on it moved");
+            continue;
+        }
+        let new = shown(ed, &m);
+        let Some(o) = ed.offers.iter_mut().find(|o| o.id == id) else { continue };
+        o.question = new.question;
+        o.decided = new.decided;
+        o.warnings = new.warnings;
+        o.output = new.output;
+        o.paint = new.paint;
+        o.what = new.what;
+        o.rev += 1;
+    }
 }
 
 /// The card up for `base`, gone — said why (the gone ring).
@@ -622,53 +688,68 @@ pub fn answered(ed: &mut Editor, m: Moves, c: char) {
                 sessions(ed)
                     .find(|l| l.id == w.id)
                     .and_then(|l| busy(ed, l))
-                    .map(|why| format!("{} — {why}", w.name))
+                    .map(|why| format!("{} moves once {why}", w.name))
             })
             .collect();
     let waiting = match busy.is_empty() {
         true => String::new(),
-        false => format!("; waiting: {}", busy.join(", ")),
+        false => format!(" — {}", busy.join("; ")),
     };
-    ed.set_status(format!("Moving {them} onto {}, each once it's idle{waiting}", m.base.1));
+    ed.set_status(format!("Moving {them} onto {}{waiting}", m.base.1));
     next(ed);
 }
 
-/// `n`: left where they are — the base's next move asks again.
+/// `n`: left where they are, none of them waiting from an earlier `y` either — the base's next move asks again.
 pub fn dismissed(ed: &mut Editor, m: &Moves) {
     ed.keep_close.pending.remove(&m.base);
+    ed.keep_close.waits.retain(|w| w.base != m.base || !m.ws.iter().any(|x| x.id == w.ws.id));
     let base = &m.base.1;
     ed.set_status(format!("Left behind {base} — its next move asks again (or :workspace-bring one)"));
 }
 
-/// Why session `l`'s workspace isn't moved now — None: it's idle.
+/// What session `l`'s workspace waits for before it's moved, as its card and the `y`'s toast say it (`ci moves once
+/// its turn ends`) — None: it's idle. A turn ended and not looked at (`Doing::Done`) is idle; its own review (review
+/// at the end opens one as the turn ends, behind too) isn't: it shows the turn's changes against the files as they
+/// were before it, and a move would put the base's changes among them.
 pub fn busy(ed: &Editor, l: &Workspace) -> Option<&'static str> {
     use crate::workspace::Doing;
-    if l.rebase.is_some() || l.moving.is_some() {
-        return Some("a rebase under way");
+    if l.rebase.is_some() {
+        return Some("its rebase ends");
     }
-    if !matches!(ed.doing(l), Doing::Idle | Doing::Done) {
-        return Some("its Claude at work");
+    if l.moving.is_some() {
+        return Some("its move lands");
     }
-    if l.claude.review.is_some() || l.code_review.is_some() {
-        return Some("a review open");
+    match ed.doing(l) {
+        Doing::Idle | Doing::Done => {}
+        Doing::Waiting => return Some("you answer what it asks"),
+        Doing::Queued { .. } => return Some("its runs end"),
+        Doing::Working | Doing::Stuck { .. } => return Some("its turn ends"),
+    }
+    if l.claude.review.is_some() {
+        return Some("its edit review is answered");
+    }
+    match l.code_review.as_ref().map(|r| &r.base) {
+        Some(crate::codereview::Base::Turn { .. }) => return Some("its turn's review is closed"),
+        Some(_) => return Some("its review is closed"),
+        None => {}
     }
     let task = l.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running);
     let tests = l.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running);
     if task || tests || !l.runs_next.is_empty() {
-        return Some("a run under way");
+        return Some("its runs end");
     }
     if l.applying.is_some() {
-        return Some("a change set landing");
+        return Some("its change set lands");
     }
     let queue = ed.bring_queue.run.as_ref();
     if queue.is_some_and(|r| r.now.is_some_and(|(id, _)| id == l.id) || r.left.contains(&l.id)) {
-        return Some("in the bring queue");
+        return Some("the bring queue is past it");
     }
     let unsaved = |d: &crate::document::Document| {
         d.is_modified() && d.path.as_ref().is_some_and(|p| p.starts_with(&l.root))
     };
     if ed.docs.iter().any(unsaved) {
-        return Some("unsaved buffers there");
+        return Some("its buffers are saved");
     }
     None
 }
@@ -959,6 +1040,9 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
         _ => false,
     };
     release(ed, id, open, &same);
+    if matches!(r, Landed::Done { .. } | Landed::There) {
+        card_sync(ed, Some((&w.base, id)));
+    }
     let by = if w.unasked { " (workspace.sync = \"idle\")" } else { "" };
     let (kind, msg) = match r {
         Landed::Done { tip, under, .. } => (

@@ -7957,6 +7957,7 @@ fn base_moved(instructions: bool) -> crate::keepclose::Moves {
                     true => vec![("CLAUDE.md".into(), vec!["+ a line".into()])],
                     false => Vec::new(),
                 },
+                holds: None,
             })
             .collect(),
         unasked: Vec::new(),
