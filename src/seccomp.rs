@@ -92,9 +92,11 @@ enum Op {
 }
 
 /// The checks, in order — each jumps only forward: to the next, over a block that isn't its call's, or to an
-/// answer. The last block is `socket()`'s; any other call is allowed. `no_userns`: no new user namespace.
-/// `ptys` (served only): the calls on the way to a pty's other end go to tarae too (`sandbox::ptys`).
-fn ops(arch: u32, mode: Mode, no_userns: bool, ptys: bool) -> Vec<Op> {
+/// answer. The last block is `socket()`'s; any other call is allowed. `no_userns`: no new user namespace (served,
+/// handed to tarae to refuse and name). `ptys` (served only): the calls on the way to a pty's other end go to tarae
+/// too (`sandbox::ptys`). `mounts` (served only, where Landlock's audit isn't readable): the mount family goes to
+/// tarae to refuse (`EPERM`, as Landlock does) and name (`MOUNT_OP`).
+fn ops(arch: u32, mode: Mode, no_userns: bool, ptys: bool, mounts: bool) -> Vec<Op> {
     let nr = |n: libc::c_long| n as u32;
     let served = matches!(mode, Mode::Served | Mode::Routed);
     let mut ops = native(arch);
@@ -102,10 +104,15 @@ fn ops(arch: u32, mode: Mode, no_userns: bool, ptys: bool) -> Vec<Op> {
         ops.push(Op::Is(nr(n), To::Missing, To::Next));
     }
     if no_userns {
-        ops.extend(userns_ops());
+        ops.extend(userns_ops(served));
     }
     ops.extend(attr_ops(served));
     if served {
+        if mounts {
+            for n in MOUNT_CALLS {
+                ops.push(Op::Is(nr(n), To::Tarae, To::Next));
+            }
+        }
         // (`listen`: on a socket tarae put out of the session it would listen on this machine's every address)
         for n in [libc::SYS_connect, libc::SYS_bind, libc::SYS_listen, libc::SYS_sendmsg, libc::SYS_sendmmsg]
         {
@@ -202,23 +209,55 @@ fn native(arch: u32) -> Vec<Op> {
 /// memory the filter can't read; glibc falls back to `clone`) — and none joined: `setns` refused whatever it
 /// names, every namespace type and a pidfd alike. Under tarae's profile the user's own tools make capable user
 /// namespaces (the terminal's podman), owned by the same uid: one joined through `/proc/<pid>/ns/user` is as good
-/// as one made (Docker's default profile refuses `setns` outright for the same reason). Starts and ends on the
-/// call's number.
-fn userns_ops() -> Vec<Op> {
+/// as one made (Docker's default profile refuses `setns` outright for the same reason). Served, `unshare`, `clone`
+/// and `setns` go to tarae (`To::Tarae`), which answers `EPERM` and records `USERNS_OP` (`supervisor::refuse_call`).
+/// Starts and ends on the call's number.
+fn userns_ops(served: bool) -> Vec<Op> {
     let nr = |n: libc::c_long| n as u32;
+    let to = if served { To::Tarae } else { To::Refuse };
     let mut ops = Vec::new();
     // (both take their flags first, on every architecture; `CLONE_NEWUSER` is in the low half)
     for n in [libc::SYS_unshare, libc::SYS_clone] {
         ops.extend([
             Op::Is(nr(n), To::Next, To::Skip(3)),
             Op::Load(arg_low(0)),
-            Op::Has(libc::CLONE_NEWUSER as u32, To::Refuse, To::Next),
+            Op::Has(libc::CLONE_NEWUSER as u32, to, To::Next),
             Op::Load(NR), // (back to the call's number for the next block)
         ]);
     }
     ops.push(Op::Is(nr(libc::SYS_clone3), To::Missing, To::Next));
-    ops.push(Op::Is(nr(libc::SYS_setns), To::Refuse, To::Next));
+    ops.push(Op::Is(nr(libc::SYS_setns), to, To::Next));
     ops
+}
+
+/// `open_tree_attr` (Linux 6.15): one number on every architecture, not in libc yet.
+pub const SYS_OPEN_TREE_ATTR: libc::c_long = 467;
+
+/// Every call in the mount family: refused by Landlock (`fs.change_topology`) in every namespace a confined process
+/// makes; where Landlock's audit isn't readable (ABI < 7), a served filter sends them to tarae so the refusal is named
+/// (`MOUNT_OP`), with the same `EPERM` Landlock gives (`supervisor::refuse_call`).
+const MOUNT_CALLS: [libc::c_long; 11] = [
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_open_tree,
+    libc::SYS_move_mount,
+    libc::SYS_fsopen,
+    libc::SYS_fsconfig,
+    libc::SYS_fsmount,
+    libc::SYS_fspick,
+    libc::SYS_mount_setattr,
+    SYS_OPEN_TREE_ATTR,
+];
+
+/// Whether call `nr` is one of `MOUNT_CALLS`.
+pub fn is_mount(nr: libc::c_long) -> bool {
+    MOUNT_CALLS.contains(&nr)
+}
+
+/// Whether call `nr` is a user-namespace call a served filter hands tarae under `no_userns`.
+pub fn is_userns(nr: libc::c_long) -> bool {
+    matches!(nr, libc::SYS_unshare | libc::SYS_clone | libc::SYS_setns)
 }
 
 /// What the filter does with a call that changes a file's attributes (`ATTR_CALLS`).
@@ -323,13 +362,13 @@ fn attr_ops(served: bool) -> Vec<Op> {
 /// every other call as without a filter, sockets and all (another ABI's calls aside, as in every filter here).
 fn outside_ops(arch: u32) -> Vec<Op> {
     let mut ops = native(arch);
-    ops.extend(userns_ops());
+    ops.extend(userns_ops(false));
     ops
 }
 
 /// `ops` for `mode` as classic BPF (`assemble`).
-fn program(arch: u32, mode: Mode, no_userns: bool, ptys: bool) -> Vec<libc::sock_filter> {
-    assemble(&ops(arch, mode, no_userns, ptys))
+fn program(arch: u32, mode: Mode, no_userns: bool, ptys: bool, mounts: bool) -> Vec<libc::sock_filter> {
+    assemble(&ops(arch, mode, no_userns, ptys, mounts))
 }
 
 /// `ops` as classic BPF, the four answers after them — falling off the last check is allowed.
@@ -374,7 +413,7 @@ pub fn available() -> bool {
 /// Puts the filter for `mode` on the calling thread (`Filter::new`, then `Filter::apply`).
 #[cfg(test)]
 pub fn apply(mode: Mode, no_userns: bool) -> io::Result<Option<OwnedFd>> {
-    Filter::new(mode, no_userns, false)?.apply()
+    Filter::new(mode, no_userns, false, false)?.apply()
 }
 
 /// A run's filter, made before it's put on — the keeper's run puts it on in the child of a raw `clone3`, which
@@ -387,12 +426,13 @@ pub struct Filter {
 
 impl Filter {
     /// The filter for `mode` — `no_userns`: no new user namespace either (`tier::runs_refuse_userns`); `ptys`:
-    /// tarae serves the way to a pty's other end (`tier::Ns::serves_ptys`).
-    pub fn new(mode: Mode, no_userns: bool, ptys: bool) -> io::Result<Filter> {
+    /// tarae serves the way to a pty's other end (`tier::Ns::serves_ptys`); `mounts`: tarae refuses and names the
+    /// mount family where Landlock's audit isn't readable (`Confine::audit`).
+    pub fn new(mode: Mode, no_userns: bool, ptys: bool, mounts: bool) -> io::Result<Filter> {
         let arch = ARCH.ok_or_else(|| {
             io::Error::new(io::ErrorKind::Unsupported, "no seccomp filter for this architecture")
         })?;
-        Ok(Filter { prog: program(arch, mode, no_userns, ptys), mode })
+        Ok(Filter { prog: program(arch, mode, no_userns, ptys, mounts), mode })
     }
 
     /// Puts it on the calling thread — and what it starts from now on — for good. Sets `no_new_privs` first
@@ -619,7 +659,7 @@ mod tests {
     /// The program for `mode` (new user namespaces refused or not: `no_userns`) run over one call as the kernel
     /// would (classic BPF: loads, a mask, jumps, returns) — the program this architecture's, the call `call_arch`'s.
     fn eval_with(mode: Mode, no_userns: bool, call_arch: u32, nr: i64, args: &[u64]) -> u32 {
-        eval_prog(&program(ARCH.unwrap(), mode, no_userns, false), call_arch, nr, args)
+        eval_prog(&program(ARCH.unwrap(), mode, no_userns, false, false), call_arch, nr, args)
     }
 
     /// 3b: with `ptys` (served) the three calls on the way to a pty's other end go to tarae —
@@ -629,7 +669,9 @@ mod tests {
     fn the_way_to_a_ptys_other_end_goes_to_tarae() {
         let arch = ARCH.unwrap();
         let (allow, tarae) = (ALLOW, libc::SECCOMP_RET_USER_NOTIF);
-        let ask = |mode, ptys, nr, args: &[u64]| eval_prog(&program(arch, mode, false, ptys), arch, nr, args);
+        let ask = |mode, ptys, nr, args: &[u64]| {
+            eval_prog(&program(arch, mode, false, ptys, false), arch, nr, args)
+        };
         let mode = Mode::Served;
         for c in [libc::TIOCSPTLCK, libc::TIOCGPTN, libc::TIOCGPTPEER] {
             assert_eq!(ask(mode, true, libc::SYS_ioctl, &[3, c, 0x1000]), tarae, "{c:#x}");
@@ -697,15 +739,19 @@ mod tests {
             (libc::CLONE_VM | libc::CLONE_FS | libc::CLONE_FILES | libc::CLONE_SIGHAND | libc::CLONE_THREAD)
                 as u64;
         for mode in [Mode::Plain, Mode::Served, Mode::Routed, Mode::OwnNetwork] {
+            let want = match mode {
+                Mode::Served | Mode::Routed => libc::SECCOMP_RET_USER_NOTIF,
+                Mode::Plain | Mode::OwnNetwork => EPERM,
+            };
             let refused = |nr, args: &[u64]| eval_with(mode, true, arch, nr, args);
-            assert_eq!(refused(libc::SYS_unshare, &[user]), EPERM, "{mode:?}");
-            assert_eq!(refused(libc::SYS_unshare, &[user | libc::CLONE_NEWNET as u64 | (1 << 32)]), EPERM);
-            assert_eq!(refused(libc::SYS_clone, &[user | fork]), EPERM, "{mode:?}");
-            assert_eq!(refused(libc::SYS_clone, &[user | thread | (7 << 32)]), EPERM, "{mode:?}");
+            assert_eq!(refused(libc::SYS_unshare, &[user]), want, "{mode:?}");
+            assert_eq!(refused(libc::SYS_unshare, &[user | libc::CLONE_NEWNET as u64 | (1 << 32)]), want);
+            assert_eq!(refused(libc::SYS_clone, &[user | fork]), want, "{mode:?}");
+            assert_eq!(refused(libc::SYS_clone, &[user | thread | (7 << 32)]), want, "{mode:?}");
             assert_eq!(refused(libc::SYS_clone3, &[0x1000, 88]), ENOSYS, "{mode:?}: its flags unread");
             let setns = [[4, user], [4, 0], [4, (libc::CLONE_NEWNET | libc::CLONE_NEWUSER) as u64]];
             for args in setns {
-                assert_eq!(refused(libc::SYS_setns, &args), EPERM, "{mode:?}: setns {args:?}");
+                assert_eq!(refused(libc::SYS_setns, &args), want, "{mode:?}: setns {args:?}");
             }
             assert_eq!(
                 refused(libc::SYS_unshare, &[libc::CLONE_NEWNS as u64]),
@@ -1009,7 +1055,50 @@ mod tests {
                 assert_eq!(run(libc::SYS_socket, &[libc::AF_PACKET as u64]), EPERM, "the socket block");
                 assert_eq!(
                     run(libc::SYS_unshare, &[libc::CLONE_NEWUSER as u64]),
-                    if no_userns { EPERM } else { ALLOW }
+                    if !no_userns {
+                        ALLOW
+                    } else if served {
+                        tarae
+                    } else {
+                        EPERM
+                    }
+                );
+            }
+        }
+    }
+
+    /// Without Landlock's audit (`mounts: true`), the 11 mount-family calls go to tarae (`SECCOMP_RET_USER_NOTIF`) in
+    /// served modes so the supervisor can answer `EPERM` and name `MOUNT_OP`; with the audit (`mounts: false`) or not
+    /// served, they go on to Landlock (`ALLOW`).
+    #[test]
+    fn without_audit_the_mount_family_goes_to_tarae() {
+        let arch = ARCH.unwrap();
+        let tarae = libc::SECCOMP_RET_USER_NOTIF;
+        for nr in [libc::SYS_unshare, libc::SYS_clone, libc::SYS_setns] {
+            assert!(is_userns(nr) && !is_mount(nr));
+        }
+        assert!(!is_userns(libc::SYS_clone3));
+        for mode in [Mode::Plain, Mode::Served, Mode::Routed, Mode::OwnNetwork] {
+            let served = matches!(mode, Mode::Served | Mode::Routed);
+            for mounts in [false, true] {
+                let prog = program(arch, mode, false, false, mounts);
+                let want = if served && mounts { tarae } else { ALLOW };
+                for nr in MOUNT_CALLS {
+                    assert!(is_mount(nr) && !is_userns(nr));
+                    assert_eq!(
+                        eval_prog(&prog, arch, nr, &[3, 0x1000]),
+                        want,
+                        "{mode:?} mounts={mounts}: {nr}"
+                    );
+                }
+                assert_eq!(
+                    eval_prog(&prog, arch, libc::SYS_chroot, &[0x1000]),
+                    ALLOW,
+                    "chroot isn't a mount"
+                );
+                assert_eq!(
+                    eval_prog(&prog, arch, libc::SYS_connect, &[3]),
+                    if served { tarae } else { ALLOW }
                 );
             }
         }

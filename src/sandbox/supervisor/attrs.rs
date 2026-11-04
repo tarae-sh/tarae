@@ -457,8 +457,9 @@ fn open_in_run(c: &Caller, dirfd: u64, path: &[u8], follow: bool, guarded: bool)
             let named = |w: &Path| w.is_absolute() && stat(&here).is_ok_and(|st| named_there(c, w, &st));
             if let Ok(w) = c.cwd()
                 && named(&w)
+                && let Some(in_root) = in_run_root(c, &w)
             {
-                let at = w.join(OsStr::from_bytes(path));
+                let at = in_root.join(OsStr::from_bytes(path));
                 return open_in_run(c, libc::AT_FDCWD as u64, at.as_os_str().as_bytes(), follow, guarded);
             }
             (here, 0)
@@ -681,9 +682,17 @@ fn refused(
     Some(refuse_with(p, c, errno, change.op(), name.display().to_string()))
 }
 
+/// `name` (a real path from tarae's `/`) as a path from the run's root (`run_root`) — None where `name` is outside
+/// that root (after a `chroot`, a path above it isn't under the run's `/`).
+fn in_run_root(c: &Caller, name: &Path) -> Option<std::path::PathBuf> {
+    let root = name_of(&run_root(c).ok()?).ok()?;
+    Some(Path::new("/").join(name.strip_prefix(&root).ok()?))
+}
+
 /// Whether `name` leads the run, from its own root and through no link, to the file `st` is.
 fn named_there(c: &Caller, name: &Path, st: &libc::stat) -> bool {
-    let there = open_in_run(c, libc::AT_FDCWD as u64, name.as_os_str().as_bytes(), false, true);
+    let Some(in_root) = in_run_root(c, name) else { return false };
+    let there = open_in_run(c, libc::AT_FDCWD as u64, in_root.as_os_str().as_bytes(), false, true);
     there.and_then(|t| stat(&t)).is_ok_and(|t| (t.st_dev, t.st_ino) == (st.st_dev, st.st_ino))
 }
 
@@ -1295,5 +1304,73 @@ mod tests {
         let mut v1 = acl(&[(2, 0)]);
         v1[0] = 1;
         assert_eq!(acl_in(v1.clone(), own, own), Ok(v1));
+
+        // M2: a grandchild user namespace (`0 1000 1` under the session's `1000 1000 1` D5 identity map) —
+        // `/proc/<pid>/uid_map` is shown relative to its parent (the session's), which maps the user's ids to
+        // themselves, so `0` inside the grandchild resolves to the user's id in tarae's namespace.
+        let grandchild = "0 1000 1\n";
+        assert_eq!(acl_in(acl(&[(2, 0), (8, 0)]), grandchild, grandchild), Ok(acl(&[(2, 1000), (8, 1000)])));
+        assert_eq!(acl_in(acl(&[(2, 1000)]), grandchild, grandchild), Err(libc::EINVAL));
+        // Pin what the kernel itself writes in `/proc/<pid>/uid_map` and `gid_map` across a grandchild user
+        // namespace (where this system lets an unprivileged child make two nested ones).
+        // SAFETY: raw calls in a single-threaded forked child before `_exit`.
+        unsafe {
+            let (uid, gid) = (libc::geteuid(), libc::getegid());
+            let own_u = format!("{uid} {uid} 1\n");
+            let own_g = format!("{gid} {gid} 1\n");
+            let grand_u = format!("0 {uid} 1\n");
+            let grand_g = format!("0 {gid} 1\n");
+            let mut ready = [0; 2];
+            let mut hold = [0; 2];
+            assert_eq!(libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC), 0);
+            assert_eq!(libc::pipe2(hold.as_mut_ptr(), libc::O_CLOEXEC), 0);
+            let pid = libc::fork();
+            assert!(pid >= 0);
+            if pid == 0 {
+                libc::close(ready[0]);
+                libc::close(hold[1]);
+                let map = |u: &str, g: &str| -> bool {
+                    if libc::unshare(libc::CLONE_NEWUSER) != 0 {
+                        return false;
+                    }
+                    libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
+                    for (p, s) in [
+                        (c"/proc/self/setgroups", "deny"),
+                        (c"/proc/self/uid_map", u),
+                        (c"/proc/self/gid_map", g),
+                    ] {
+                        let fd = libc::open(p.as_ptr(), libc::O_WRONLY);
+                        if fd < 0 {
+                            return false;
+                        }
+                        let ok = libc::write(fd, s.as_ptr().cast(), s.len()) == s.len() as isize;
+                        libc::close(fd);
+                        if !ok {
+                            return false;
+                        }
+                    }
+                    true
+                };
+                let ok = u8::from(map(&own_u, &own_g) && map(&grand_u, &grand_g));
+                let _ = libc::write(ready[1], (&raw const ok).cast(), 1);
+                let mut b = 0u8;
+                let _ = libc::read(hold[0], (&raw mut b).cast(), 1);
+                libc::_exit(0);
+            }
+            libc::close(ready[1]);
+            libc::close(hold[0]);
+            let mut ok = 0u8;
+            let n = libc::read(ready[0], (&raw mut ok).cast(), 1);
+            libc::close(ready[0]);
+            if n == 1 && ok == 1 {
+                let u = std::fs::read_to_string(format!("/proc/{pid}/uid_map")).unwrap();
+                let g = std::fs::read_to_string(format!("/proc/{pid}/gid_map")).unwrap();
+                assert_eq!(acl_in(acl(&[(2, 0), (8, 0)]), &u, &g), Ok(acl(&[(2, uid), (8, gid)])));
+                assert_eq!(acl_in(acl(&[(2, 1)]), &u, &g), Err(libc::EINVAL));
+            }
+            libc::close(hold[1]);
+            let mut st = 0;
+            libc::waitpid(pid, &mut st, 0);
+        }
     }
 }

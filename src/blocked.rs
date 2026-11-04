@@ -945,6 +945,8 @@ mod tests {
         assert!(choices(&[d(crate::sandbox::MOUNT_OP)], &caps).is_empty());
         let empty = Denial { target: String::new(), ..d(crate::sandbox::MOUNT_OP) };
         assert!(choices(&[empty], &caps).is_empty(), "nor one at no place");
+        let userns = Denial { target: String::new(), ..d(crate::sandbox::USERNS_OP) };
+        assert!(choices(&[d(crate::sandbox::USERNS_OP), userns], &caps).is_empty(), "nor a user namespace");
     }
 
     /// A file named like a key refused in the project (macOS, 7a) offers that one file, once — never a folder of

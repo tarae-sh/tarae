@@ -20,8 +20,8 @@
 1.6      | sysv-and-posix-shm             | shared   | sysv=shared, posix=shared
 1.4, 1.9 | macos-apple-events-ls          | not-here | macos-only
 1.1      | macos-nested-sandbox-exec      | not-here | macos-only
-1.4      | linux-key-mount-and-link       | refused  | hardlink=refused, symlink-read=refused, bind-mount=system, open-tree=system
-1.9      | linux-userns-and-mount         | system   | unshare=system, clone=system, clone3=system, setns=system, mount+umount=system, pivot-root=system, no-userns-run.unshare=system, no-userns-run.clone=system, no-userns-run.clone3=system, no-userns-run.setns=system
+1.4      | linux-key-mount-and-link       | refused  | hardlink=refused, symlink-read=refused, bind-mount=system, open-tree=system, umount=system, tree-clone=system, mount-setattr=system, fsmount-proc=system, chroot=system, sibling-ns=system, said=system
+1.9      | linux-userns-and-mount         | system   | unshare=system, clone=system, clone3=system, setns=system, mount+umount=system, pivot-root=system, no-userns-run.unshare=system, no-userns-run.clone=system, no-userns-run.clone3=system, no-userns-run.setns=system, said=system
 1.9      | linux-nested-seccomp-listener  | refused  | new-listener=refused, precedence=not-tried, plain-filter=allowed
 1.9      | linux-dangerous-syscalls       | refused  | io-uring=system, caps=refused, no-new-privs=refused, packet=refused, netlink-diag=refused, foreign-arch=refused
 1.6, 1.9 | linux-keeper-and-proc          | refused  | parent-is-keeper=true, signals=refused, ptrace=system, proc-files=refused, pidfd-getfd=system

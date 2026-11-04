@@ -538,6 +538,12 @@ pub fn serve(
                 libc::SYS_bind => l.answer(n.id, bind(&l, &n, &policy)),
                 libc::SYS_listen => l.answer(n.id, listen(&l, &n, &policy)),
                 libc::SYS_ioctl => l.answer(n.id, pty_ioctl(&l, &n, &policy)),
+                nr if crate::seccomp::is_userns(nr) => {
+                    l.answer(n.id, refuse_call(&l, &n, &policy, super::USERNS_OP))
+                }
+                nr if crate::seccomp::is_mount(nr) => {
+                    l.answer(n.id, refuse_call(&l, &n, &policy, super::MOUNT_OP))
+                }
                 // (a connect, send, or file attribute call may wait on network or slow/hung mounts — handled in a thread)
                 _ => {
                     let (on, p, stats) = (l.clone(), policy.clone(), run.clone());
@@ -591,6 +597,21 @@ fn call(l: &Listener, n: &libc::seccomp_notif, p: &Served) -> Answer {
         nr if crate::seccomp::serves_attr(nr) => attrs::call(l, n, p),
         _ => Err(libc::ENOSYS),
     }
+}
+
+/// Refuses a call handed over only to be named in the run's report (`USERNS_OP`, or `MOUNT_OP` where Landlock's
+/// audit isn't readable): never emulated, answered `EPERM`.
+fn refuse_call(l: &Listener, n: &libc::seccomp_notif, p: &Served, op: &str) -> Answer {
+    let proc = Proc::of(n.pid as i32).ok();
+    if l.valid(n.id).is_ok() {
+        let comm = proc.and_then(|pr| pr.read("comm").ok()).unwrap_or_default();
+        let process = match String::from_utf8_lossy(&comm).trim() {
+            "" => "the run".into(),
+            c => c.into(),
+        };
+        let _ = p.refused.send(Denial { process, op: op.into(), target: String::new() });
+    }
+    Err(libc::EPERM)
 }
 
 /// The run's seccomp listener.
@@ -2319,17 +2340,40 @@ mod tests {
         }
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
         let yama = yama_says(scope.as_deref(), &status);
-        let sleep = |own: bool| {
+        let sleep = |depth: usize| {
             let mut c = std::process::Command::new("sleep");
             c.arg("30").stdin(std::process::Stdio::null());
-            if own {
-                // SAFETY: between fork and exec: one raw call.
+            if depth > 0 {
+                // SAFETY: between fork and exec: raw calls only.
                 unsafe {
-                    std::os::unix::process::CommandExt::pre_exec(&mut c, || {
-                        match libc::unshare(libc::CLONE_NEWUSER) {
-                            0 => Ok(()),
-                            _ => Err(io::Error::last_os_error()),
+                    let (uid, gid) = (libc::geteuid(), libc::getegid());
+                    let u = format!("{uid} {uid} 1\n");
+                    let g = format!("{gid} {gid} 1\n");
+                    std::os::unix::process::CommandExt::pre_exec(&mut c, move || {
+                        for i in 0..depth {
+                            if libc::unshare(libc::CLONE_NEWUSER) != 0 {
+                                return Err(io::Error::last_os_error());
+                            }
+                            if i + 1 < depth {
+                                libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
+                                for (p, s) in [
+                                    (c"/proc/self/setgroups", "deny"),
+                                    (c"/proc/self/uid_map", u.as_str()),
+                                    (c"/proc/self/gid_map", g.as_str()),
+                                ] {
+                                    let fd = libc::open(p.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                                    if fd < 0 {
+                                        return Err(io::Error::last_os_error());
+                                    }
+                                    let n = libc::write(fd, s.as_ptr().cast(), s.len());
+                                    libc::close(fd);
+                                    if n != s.len() as isize {
+                                        return Err(io::Error::last_os_error());
+                                    }
+                                }
+                            }
                         }
+                        Ok(())
                     });
                 }
             }
@@ -2340,20 +2384,26 @@ mod tests {
             let pidfd = pidfd_open(c.id() as i32).unwrap();
             reaches(c.id(), pidfd.as_fd(), "sleep")
         };
-        let mut here = sleep(false).unwrap();
+        let mut here = sleep(0).unwrap();
         let got = tried(&here);
         let _ = (here.kill(), here.wait());
         match &yama {
             Yama::Allows => assert_eq!(got, Ok(()), "{yama:?}"),
             _ => assert!(got.is_err_and(|e| e.starts_with("its memory")), "{yama:?}"),
         }
-        // (a user namespace of its own: where this system makes none, not tried)
-        let Ok(mut own) = sleep(true) else { return };
-        let got = tried(&own);
-        let _ = (own.kill(), own.wait());
-        match &yama {
-            Yama::Refuses(_) => assert!(got.is_err(), "{yama:?}"),
-            _ => assert_eq!(got, Ok(()), "{yama:?}: a run in a user namespace tarae's process made"),
+        // (a user namespace of its own, and a grandchild below it: where this system makes none, not tried)
+        for depth in [1, 2] {
+            let Ok(mut own) = sleep(depth) else { return };
+            let got = tried(&own);
+            let _ = (own.kill(), own.wait());
+            match &yama {
+                Yama::Refuses(_) => assert!(got.is_err(), "{yama:?}"),
+                _ => assert_eq!(
+                    got,
+                    Ok(()),
+                    "{yama:?} (depth {depth}): a run in a user namespace below tarae's process"
+                ),
+            }
         }
     }
 
@@ -3064,6 +3114,7 @@ mod tests {
                         Ok(unsafe { libc::close(fd) })
                     })
                 }
+                ["own-ns", open_at, closed_at] => own_ns(open_at, closed_at),
                 _ => format!("unknown op {op}"),
             };
             println!("probe: {result}");
@@ -4237,5 +4288,211 @@ mod tests {
             );
             super::super::end_leftovers(Some(&root));
         }
+    }
+
+    /// M2: inside a served run, a child sets a POSIX ACL on `sub/f` (in tier own, `cover` already put the run in a
+    /// grandchild user namespace under the session's), then makes its own user, network and mount namespace
+    /// (`unshare(CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWNS)`), brings up `lo`, connects to an opened host port, its
+    /// own new netns listener, a closed host port and an external address, then `chroot`s into `sub` and runs
+    /// `chmod`/`fchmod` on `/f`, `f`, `/Cargo.toml` and a descriptor opened outside the chroot.
+    fn own_ns(open_at: &str, closed_at: &str) -> String {
+        use std::net::{TcpListener, TcpStream};
+        let (r_fd, w_fd) = {
+            let mut fds = [0; 2];
+            // SAFETY: a two-int array for the call to fill.
+            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+            (fds[0], fds[1])
+        };
+        // SAFETY: fork and raw calls in the child before `_exit`.
+        unsafe {
+            let outside_fd = libc::open(c"outside_f".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            assert!(outside_fd >= 0);
+            let pid = libc::fork();
+            assert!(pid >= 0);
+            if pid == 0 {
+                libc::close(r_fd);
+                let out = (|| -> String {
+                    let uid = libc::geteuid();
+                    let acl_for = |id: u32| {
+                        let none = u32::MAX;
+                        let entries =
+                            [(1u16, 6u16, none), (2, 4, id), (4, 4, none), (0x10, 4, none), (0x20, 4, none)];
+                        let mut v = 2u32.to_le_bytes().to_vec();
+                        for (tag, perm, id) in entries {
+                            v.extend(tag.to_le_bytes());
+                            v.extend(perm.to_le_bytes());
+                            v.extend(id.to_le_bytes());
+                        }
+                        v
+                    };
+                    let acl_me = acl_for(uid);
+                    let acl_other = acl_for(uid.wrapping_add(1));
+                    let r_acl_me = libc::setxattr(
+                        c"sub/f".as_ptr(),
+                        c"system.posix_acl_access".as_ptr(),
+                        acl_me.as_ptr().cast(),
+                        acl_me.len(),
+                        0,
+                    );
+                    let acl_me_said = if r_acl_me == 0 {
+                        let mut got = [0u8; 64];
+                        let n = libc::getxattr(
+                            c"sub/f".as_ptr(),
+                            c"system.posix_acl_access".as_ptr(),
+                            got.as_mut_ptr().cast(),
+                            got.len(),
+                        );
+                        if n == acl_me.len() as isize && got[..acl_me.len()] == acl_me[..] {
+                            "ok".to_string()
+                        } else {
+                            format!("mismatch:{n}")
+                        }
+                    } else {
+                        format!("err {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                    };
+                    let r_acl_other = libc::setxattr(
+                        c"sub/f".as_ptr(),
+                        c"system.posix_acl_access".as_ptr(),
+                        acl_other.as_ptr().cast(),
+                        acl_other.len(),
+                        0,
+                    );
+                    let acl_other_said = if r_acl_other == 0 {
+                        "ok".to_string()
+                    } else {
+                        format!("err {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                    };
+
+                    if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET | libc::CLONE_NEWNS) != 0 {
+                        return "no-userns".into();
+                    }
+                    libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
+                    // Bring up `lo` in the new network namespace
+                    let sock = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+                    if sock >= 0 {
+                        let mut ifr: libc::ifreq = std::mem::zeroed();
+                        ifr.ifr_name[0] = b'l' as libc::c_char;
+                        ifr.ifr_name[1] = b'o' as libc::c_char;
+                        if libc::ioctl(sock, libc::SIOCGIFFLAGS as _, &mut ifr) == 0 {
+                            ifr.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+                            let _ = libc::ioctl(sock, libc::SIOCSIFFLAGS as _, &ifr);
+                        }
+                        libc::close(sock);
+                    }
+                    let c_open = said(TcpStream::connect(open_at));
+                    let c_closed = said(TcpStream::connect(closed_at));
+                    let c_ext = said(TcpStream::connect("192.0.2.1:9"));
+                    let c_own = said(
+                        TcpListener::bind("127.0.0.1:0")
+                            .and_then(|l| TcpStream::connect(l.local_addr()?).map(|_| ())),
+                    );
+
+                    // chroot into `sub` and test served chmod / fchmod
+                    if libc::chroot(c"sub".as_ptr()) != 0 || libc::chdir(c"/".as_ptr()) != 0 {
+                        return format!("chroot-err {}", io::Error::last_os_error());
+                    }
+                    let mode_of = |p: &std::ffi::CStr| -> u32 {
+                        let mut st: libc::stat = std::mem::zeroed();
+                        if libc::stat(p.as_ptr(), &mut st) == 0 { st.st_mode & 0o777 } else { 0 }
+                    };
+                    let ch_abs = if libc::chmod(c"/f".as_ptr(), 0o640) == 0 && mode_of(c"/f") == 0o640 {
+                        "ok".to_string()
+                    } else {
+                        format!("err {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                    };
+                    let ch_rel = if libc::chmod(c"f".as_ptr(), 0o600) == 0 && mode_of(c"f") == 0o600 {
+                        "ok".to_string()
+                    } else {
+                        format!("err {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                    };
+                    let f_fd = libc::open(c"/f".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                    let ch_fd = if f_fd >= 0 && libc::fchmod(f_fd, 0o644) == 0 && mode_of(c"/f") == 0o644 {
+                        "ok".to_string()
+                    } else {
+                        format!("err {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                    };
+                    if f_fd >= 0 {
+                        libc::close(f_fd);
+                    }
+                    let ch_prot = if libc::chmod(c"/Cargo.toml".as_ptr(), 0o644) == 0 {
+                        "ok".to_string()
+                    } else {
+                        let e = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                        if e == libc::EPERM || e == libc::EROFS {
+                            "refused".into()
+                        } else {
+                            format!("err {e}")
+                        }
+                    };
+                    let ch_out = if libc::fchmod(outside_fd, 0o600) == 0 {
+                        "ok".to_string()
+                    } else {
+                        format!("err {}", io::Error::last_os_error().raw_os_error().unwrap_or(0))
+                    };
+                    format!(
+                        "open={c_open} closed={c_closed} ext={c_ext} own={c_own} acl_me={acl_me_said} \
+                         acl_other={acl_other_said} abs={ch_abs} rel={ch_rel} fd={ch_fd} prot={ch_prot} \
+                         out={ch_out}"
+                    )
+                })();
+                let _ = libc::write(w_fd, out.as_ptr().cast(), out.len());
+                libc::close(w_fd);
+                libc::close(outside_fd);
+                libc::_exit(0);
+            }
+            libc::close(w_fd);
+            libc::close(outside_fd);
+            let mut f = std::fs::File::from_raw_fd(r_fd);
+            let mut s = String::new();
+            io::Read::read_to_string(&mut f, &mut s).unwrap();
+            let mut st = 0;
+            libc::waitpid(pid, &mut st, 0);
+            s
+        }
+    }
+
+    /// M2: a served run that makes its own network and mount namespace (`unshare(CLONE_NEWUSER | CLONE_NEWNET |
+    /// CLONE_NEWNS)`) still has its `connect` served (to an opened host port and to its own new netns listener,
+    /// while a closed host port and an external address stay refused), its POSIX ACL ids translated across the
+    /// grandchild user namespace (`cover`'s userns under the session's), and its `chmod` and `fchmod` served after
+    /// a `chroot` (paths read from the run's root: `/f` and `f` allowed, `/Cargo.toml` and a descriptor outside
+    /// the chroot refused).
+    #[test]
+    fn a_run_in_its_own_namespace_is_served() {
+        if !served("a_run_in_its_own_namespace_is_served") {
+            return;
+        }
+        let s = Scratch::new("own-ns");
+        std::fs::create_dir_all(s.root.join("sub")).unwrap();
+        std::fs::write(s.root.join("sub/f"), "f\n").unwrap();
+        std::fs::write(s.root.join("sub/Cargo.toml"), "[package]\nname = \"sub\"\n").unwrap();
+        std::fs::write(s.root.join("outside_f"), "out\n").unwrap();
+        let open = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (open_at, closed_at) = (open.local_addr().unwrap(), closed.local_addr().unwrap());
+        let p = s.policy(vec![open_at.port()], false, Vec::new());
+        let got = &probe_in(&p, &[format!("own-ns {open_at} {closed_at}")])[0];
+        super::super::end_leftovers(Some(&s.root));
+        if got == "no-userns" {
+            let line = format!(
+                "{}sandbox::supervisor::tests::a_run_in_its_own_namespace_is_served — no user namespace for the \
+                 run here\n",
+                crate::test_results::SELF_SKIP
+            );
+            let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+            return;
+        }
+        let c = p.confine.as_ref().and_then(|c| c.as_ref().ok()).unwrap();
+        let routed = c.net == RunNet::Routed;
+        let userns = c.keeper.as_ref().is_some_and(|k| k.ns.user);
+        let closed_want = if routed { format!("err {}", libc::ECONNREFUSED) } else { refused() };
+        let other_want = if userns { format!("err {}", libc::EINVAL) } else { "ok".into() };
+        let want = format!(
+            "open=ok closed={closed_want} ext=err {} own=ok acl_me=ok acl_other={other_want} abs=ok rel=ok fd=ok \
+             prot=refused out=err {}",
+            libc::EPERM,
+            libc::EPERM,
+        );
+        assert_eq!(got, &want);
     }
 }

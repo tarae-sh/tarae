@@ -335,6 +335,8 @@ fn in_stand_in_home() {
     let exe = std::env::current_exe().unwrap();
     let tarae_guard = spawn_stand_in(&exe, None, &root, "tarae-stand-in");
     let other_guard = spawn_sandboxed_stand_in(&exe, &other_policy, "other-stand-in");
+    #[cfg(target_os = "linux")]
+    let sibling_guard = spawn_sandboxed_stand_in(&exe, &policy, "sibling-stand-in");
 
     // Shared memory objects for row 18 (created by this test process, standing in for another session), named
     // by the scratch folder's own `<pid>-<n>` (made new: two runs never meet, whatever their pid namespaces)
@@ -360,6 +362,8 @@ fn in_stand_in_home() {
     #[cfg(target_os = "linux")]
     let keeper_seen =
         keeper_seen(policy.confine.as_ref().unwrap().as_ref().unwrap().keeper.as_ref().unwrap());
+    #[cfg(target_os = "linux")]
+    let sibling_seen = pid_seen_by_runs(sibling_guard.pid);
 
     let cfg = [
         ("BASE", base.display().to_string()),
@@ -384,6 +388,8 @@ fn in_stand_in_home() {
         ("KEEPER_PID", keeper_seen.0.clone()),
         #[cfg(target_os = "linux")]
         ("KEEPER_PIDNS", keeper_seen.1.clone()),
+        #[cfg(target_os = "linux")]
+        ("SIBLING_PID", sibling_seen.to_string()),
     ];
     let cfg_file = own_run.join("refused.cfg");
     let cfg_text: String = cfg.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
@@ -395,11 +401,28 @@ fn in_stand_in_home() {
     // Run the main sandboxed helper covering rows 1–7, 9–13, 16–26 — the stand-ins running before and after
     // (one that ended on its own would read as a refused signal: ESRCH)
     assert!(tarae_guard.running() && other_guard.running(), "a stand-in ended before the run");
+    #[cfg(target_os = "linux")]
+    assert!(sibling_guard.running(), "the sibling stand-in ended before the run");
+    let mut policy = policy;
+    policy.watch = super::watch_for(&policy);
     let (main_out, main_leaked) = run_helper(&exe, &policy, "main", &cfg_file);
     let got = parse_kv(&main_out);
     assert!(tarae_guard.running() && other_guard.running(), "a stand-in ended during the run");
     #[cfg(target_os = "linux")]
-    let refusing_got = refusing_userns_run(&exe, &policy, &cfg_file);
+    assert!(sibling_guard.running(), "the sibling stand-in ended during the run");
+    #[cfg(target_os = "linux")]
+    if let Some(w) = &policy.watch
+        && base_linux.ns["bind"].through()
+    {
+        let start = std::time::Instant::now();
+        while !w.blocked().seen.iter().any(|d| d.op == super::MOUNT_OP)
+            && start.elapsed() < Duration::from_millis(200)
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let (refusing_got, userns_report) = refusing_userns_run(&exe, &policy, &cfg_file);
 
     // Clean up stand-ins and shm early (or on Drop if an earlier step panicked)
     #[cfg(target_os = "linux")]
@@ -432,6 +455,8 @@ fn in_stand_in_home() {
     let since = before.since().unwrap();
     let flagged_move = since.protected.iter().any(|m| m.path == "crates/x/build.rs");
     fs::remove_dir_all(root.join("crates/x")).ok();
+    #[cfg(target_os = "linux")]
+    drop(sibling_guard);
     drop(_policy_cleanup);
     drop(_other_cleanup);
 
@@ -442,6 +467,8 @@ fn in_stand_in_home() {
 
     let g = policy.guarantees().expect("sandboxed policy has guarantees");
     let is_offline = g.tier() == Some(super::guarantees::Tier::Offline);
+    let report = Guard::In(Box::new(policy.clone())).report(&[]);
+    let flat_report = report.split_whitespace().collect::<Vec<_>>().join(" ");
 
     // Assemble the 26 rows
     let mut rows = Vec::new();
@@ -1068,22 +1095,66 @@ fn in_stand_in_home() {
 
         // 21. 1.4 | linux-key-mount-and-link — the links are always the baseline's to make and read, so refused
         // is their only answer; a mount the baseline couldn't make either is the system's
-        let r21 = [
+        let can_userns = !policy.confine.as_ref().and_then(|c| c.as_ref().ok()).is_some_and(|c| c.no_userns);
+        let r21_names = [
             ("hardlink", "hardlink"),
             ("symlink-read", "symlink"),
             ("bind-mount", "bind"),
             ("open-tree", "open_tree"),
-        ]
-        .map(|(w, n)| (w, ns_part(n)));
+            ("umount", "umount"),
+            ("tree-clone", "tree_clone"),
+            ("mount-setattr", "mount_setattr"),
+            ("fsmount-proc", "fsmount_proc"),
+            ("chroot", "chroot"),
+            ("sibling-ns", "sibling_ns"),
+        ];
+        let r21 = r21_names.map(|(w, n)| (w, ns_part(n)));
+        let mount_said = flat_report.contains("mounting or unmounting — no command in the sandbox does")
+            && flat_report.contains("No command of yours mounts or unmounts in the sandbox");
+        let r21_said = if r21[2..9].iter().any(|(_, p)| *p == "refused") {
+            if is_offline && policy.watch.is_none() {
+                "unwatched"
+            } else if mount_said {
+                "refused"
+            } else {
+                "allowed"
+            }
+        } else if !can_userns && r21[2..9].iter().all(|(_, p)| *p == "no-userns") {
+            "no-userns"
+        } else {
+            "system"
+        };
+        let mut r21_parts = r21.to_vec();
+        r21_parts.push(("said", r21_said));
         let r21_ok = r21[..2].iter().all(|(_, p)| *p == "refused")
-            && r21[2..].iter().all(|(_, p)| matches!(*p, "refused" | "system" | "no-userns"));
+            && matches!(r21[9].1, "refused" | "system")
+            && r21[2..9]
+                .iter()
+                .all(|(_, p)| matches!(*p, "refused" | "system") || (!can_userns && *p == "no-userns"))
+            && (matches!(r21_said, "refused" | "system" | "unwatched")
+                || (!can_userns && r21_said == "no-userns"));
         rows.push(Row {
             claim: "1.4",
             id: "linux-key-mount-and-link",
             expected: Verdict::Refused,
             verdict: if r21_ok { Verdict::Refused } else { Verdict::Allowed },
-            witness: witness(&r21).join(", "),
-            detail: ns_detail(&got, "ns", &["hardlink", "symlink", "bind", "open_tree"]),
+            witness: witness(&r21_parts).join(", "),
+            detail: ns_detail(
+                &got,
+                "ns",
+                &[
+                    "hardlink",
+                    "symlink",
+                    "bind",
+                    "open_tree",
+                    "umount",
+                    "tree_clone",
+                    "mount_setattr",
+                    "fsmount_proc",
+                    "chroot",
+                    "sibling_ns",
+                ],
+            ),
             part: None,
             shared_phrase: None,
         });
@@ -1104,6 +1175,26 @@ fn in_stand_in_home() {
             true => want_refused.extend(run_ns.map(|(_, p)| p)),
             false => want_allowed.extend(run_ns.map(|(_, p)| p)),
         }
+        let r22_expected = match userns.iter().any(|n| base_linux.ns[n].through()) {
+            true => Verdict::Refused,
+            false => Verdict::System,
+        };
+        let flat_userns_report = userns_report.split_whitespace().collect::<Vec<_>>().join(" ");
+        let has_userns_words = |r: &str| {
+            r.contains("making or joining a user namespace — refused on this system")
+                && r.contains("No command of yours makes or joins a user namespace here")
+        };
+        let userns_said =
+            has_userns_words(&flat_userns_report) && (!no_userns || has_userns_words(&flat_report));
+        let r22_said = match r22_expected {
+            Verdict::System => "system",
+            _ if is_offline && policy.watch.is_none() => "unwatched",
+            _ if userns_said && (no_userns || mount_said) => "refused",
+            _ => "allowed",
+        };
+        if r22_said != "unwatched" {
+            want_refused.push(r22_said);
+        }
         // (a part not tried shows nothing either way: the row fails, never reads it as tarae's refusal)
         let not_tried = want_refused.iter().chain(&want_allowed).any(|p| *p == "not-tried");
         let r22_verdict =
@@ -1114,13 +1205,10 @@ fn in_stand_in_home() {
             } else {
                 Verdict::System
             };
-        let r22_expected = match userns.iter().any(|n| base_linux.ns[n].through()) {
-            true => Verdict::Refused,
-            false => Verdict::System,
-        };
         let mut r22_witness = witness(&run_ns);
         r22_witness.extend(witness(&mounts));
         r22_witness.extend(refusing.iter().map(|(n, p)| format!("no-userns-run.{n}={p}")));
+        r22_witness.push(format!("said={r22_said}"));
         rows.push(Row {
             claim: "1.9",
             id: "linux-userns-and-mount",
@@ -1314,8 +1402,6 @@ fn in_stand_in_home() {
     found_parts.push((Part::Ipc, Some(!r18_sysv)));
     wrong.extend(said_as_found(&g, &found_parts));
 
-    let report = Guard::In(Box::new(policy.clone())).report(&[]);
-    let flat_report = report.split_whitespace().collect::<Vec<_>>().join(" ");
     for r in &rows {
         if r.verdict == Verdict::Shared
             && let Some(phrase) = r.shared_phrase
@@ -2264,6 +2350,17 @@ fn sandbox_main(cfg: &HashMap<&str, &str>) {
     let outside = Path::new(cfg["OUTSIDE"]);
     let shared_tmp = Path::new(cfg["SHARED_TMP"]);
 
+    #[cfg(target_os = "linux")]
+    check_linux_rows(
+        home,
+        root,
+        own_run,
+        cfg["STAND_IN_PTY"],
+        cfg.get("KEEPER_PID").copied().unwrap_or("0"),
+        cfg.get("KEEPER_PIDNS").copied().unwrap_or(""),
+        cfg.get("SIBLING_PID").and_then(|s| s.parse().ok()).unwrap_or(0),
+    );
+
     // Row 1: write outside project
     record_refused(
         "r1",
@@ -2463,16 +2560,6 @@ fn sandbox_main(cfg: &HashMap<&str, &str>) {
             nested.map(|o| format!("code={:?}", o.status.code())).unwrap_or_else(|e| format!("err={e}")),
         );
     }
-
-    #[cfg(target_os = "linux")]
-    check_linux_rows(
-        home,
-        root,
-        own_run,
-        cfg["STAND_IN_PTY"],
-        cfg.get("KEEPER_PID").copied().unwrap_or("0"),
-        cfg.get("KEEPER_PIDNS").copied().unwrap_or(""),
-    );
 }
 
 fn sandbox_move_in(cfg: &HashMap<&str, &str>) {
@@ -2901,6 +2988,8 @@ enum Probe {
     Reached,
     /// Refused, with its errno.
     Refused(i32),
+    /// Refused at a named step (`umount2`, `open_tree`, `mount_setattr`, `fsconfig`, `open`, `setns`), with its errno.
+    Step(&'static str, i32),
     /// No user namespace to try it in (`in_own_ns` couldn't make one).
     NoUserNs,
     /// A step before the call was refused: it was never made.
@@ -2909,13 +2998,22 @@ enum Probe {
     Signal(i32),
 }
 
-/// `forked`'s exit codes past an errno's.
+/// `forked`'s codes past an errno's, and the step names `at_step` packs into `code >> 8`.
 #[cfg(target_os = "linux")]
 const NOT_TRIED: i32 = 252;
 #[cfg(target_os = "linux")]
 const REACHED: i32 = 253;
 #[cfg(target_os = "linux")]
 const NO_USERNS: i32 = 254;
+#[cfg(target_os = "linux")]
+const STEPS: [&str; 9] =
+    ["umount2", "open_tree", "mount_setattr", "fsopen", "fsconfig", "fsmount", "chroot", "open", "setns"];
+
+#[cfg(target_os = "linux")]
+fn at_step(step: &'static str, err: i32) -> i32 {
+    let idx = STEPS.iter().position(|&s| s == step).expect("a known step") + 1;
+    ((idx as i32) << 8) | (err & 0xff)
+}
 
 impl Probe {
     /// Got through the filters: done, or the kernel's own answer past them.
@@ -2932,16 +3030,18 @@ impl Probe {
             NOT_TRIED => Probe::NotTried,
             REACHED => Probe::Reached,
             NO_USERNS => Probe::NoUserNs,
+            c if c > 255 => Probe::Step(STEPS[(c as usize >> 8) - 1], c & 0xff),
             e => Probe::Refused(e),
         }
     }
 
-    /// What the run sends back — its errno for `detail`, never a witness.
+    /// What the run sends back — its errno (and step, where named) for `detail`, never a witness.
     fn said(self) -> String {
         match self {
             Probe::Done => "done".into(),
             Probe::Reached => "reached".into(),
             Probe::Refused(e) => format!("refused:{e}"),
+            Probe::Step(step, e) => format!("refused:{step}:{e}"),
             Probe::NoUserNs => "no-userns".into(),
             Probe::NotTried => "not-tried".into(),
             Probe::Signal(s) => format!("signal:{s}"),
@@ -2955,7 +3055,13 @@ impl Probe {
             None if s == "reached" => Probe::Reached,
             None if s == "no-userns" => Probe::NoUserNs,
             None if s == "not-tried" => Probe::NotTried,
-            Some(("refused", e)) => Probe::Refused(n(e)),
+            Some(("refused", rest)) => match rest.split_once(':') {
+                Some((step, e)) => {
+                    let step = *STEPS.iter().find(|&&k| k == step).unwrap_or_else(|| panic!("a step: {s}"));
+                    Probe::Step(step, n(e))
+                }
+                None => Probe::Refused(n(rest)),
+            },
             Some(("signal", e)) => Probe::Signal(n(e)),
             _ => panic!("a probe's word: {s}"),
         }
@@ -3010,16 +3116,33 @@ fn errno() -> i32 {
 /// Rust stdio —, what it needs (C strings, buffers) made before.
 #[cfg(target_os = "linux")]
 unsafe fn forked(f: impl FnOnce() -> i32) -> Probe {
-    // SAFETY: the child runs `f` (the caller's promise) and `_exit`s; the parent reaps its own child.
+    let mut pipe = [0; 2];
+    // SAFETY: a pipe of this process's own; the child runs `f` (the caller's promise), writes its answer and `_exit`s.
     unsafe {
+        assert_eq!(
+            libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC),
+            0,
+            "pipe2: {}",
+            io::Error::last_os_error()
+        );
         let pid = libc::fork();
         assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
         if pid == 0 {
-            libc::_exit(f().clamp(0, 255));
+            libc::close(pipe[0]);
+            let code = f();
+            let bytes = code.to_ne_bytes();
+            libc::write(pipe[1], bytes.as_ptr().cast(), bytes.len());
+            libc::close(pipe[1]);
+            libc::_exit(0);
         }
+        libc::close(pipe[1]);
+        let mut bytes = [0u8; 4];
+        let n = libc::read(pipe[0], bytes.as_mut_ptr().cast(), bytes.len());
+        libc::close(pipe[0]);
         let mut status: libc::c_int = 0;
         assert!(libc::waitpid(pid, &mut status, 0) == pid, "waitpid: {}", io::Error::last_os_error());
         match libc::WIFEXITED(status) {
+            true if n == 4 => Probe::of(i32::from_ne_bytes(bytes)),
             true => Probe::of(libc::WEXITSTATUS(status)),
             false => Probe::Signal(libc::WTERMSIG(status)),
         }
@@ -3097,8 +3220,22 @@ unsafe fn in_own_ns(f: impl FnOnce() -> i32) -> Probe {
 /// `dir`); the rest each in a forked child, the mounts in namespaces of the child's own (`in_own_ns`). `dir`: a
 /// new folder of the caller's own (the links, the bind target, the mount points), removed after.
 #[cfg(target_os = "linux")]
-fn ns_probes(env_file: &Path, ssh_file: &Path, dir: &Path) -> Vec<(&'static str, Probe)> {
+fn ns_probes(
+    root: &Path,
+    env_file: &Path,
+    ssh_file: &Path,
+    dir: &Path,
+    sibling_pid: libc::pid_t,
+) -> Vec<(&'static str, Probe)> {
+    #[repr(C)]
+    struct MountAttr {
+        attr_set: u64,
+        attr_clr: u64,
+        propagation: u64,
+        userns_fd: u64,
+    }
     fs::create_dir_all(dir.join("mnt/old")).unwrap();
+    fs::create_dir_all(root.join("new1")).unwrap();
     let refused = |e: io::Error| Probe::Refused(e.raw_os_error().unwrap_or(0));
     let hard = dir.join("hard");
     let hardlink = fs::hard_link(env_file, &hard)
@@ -3111,11 +3248,15 @@ fn ns_probes(env_file: &Path, ssh_file: &Path, dir: &Path) -> Vec<(&'static str,
     let bind_target = dir.join("bind");
     write_file(&bind_target, "");
     let c = |p: &Path| CString::new(p.to_string_lossy().as_bytes()).unwrap();
-    let (c_env, c_bind) = (c(env_file), c(&bind_target));
+    let (c_root, c_env, c_bind) = (c(root), c(env_file), c(&bind_target));
+    let (c_cargo, c_sub, c_new1) = (c(&root.join("Cargo.toml")), c(&root.join("sub")), c(&root.join("new1")));
     let (c_mnt, c_old) = (c(&dir.join("mnt")), c(&dir.join("mnt/old")));
+    let c_sib_user = CString::new(format!("/proc/{sibling_pid}/ns/user")).unwrap();
+    let c_sib_mnt = CString::new(format!("/proc/{sibling_pid}/ns/mnt")).unwrap();
+    let clear_ro = MountAttr { attr_set: 0, attr_clr: 1, propagation: 0, userns_fd: 0 };
     let null = std::ptr::null::<libc::c_void>;
-    // SAFETY (the four below): the child makes raw calls only, on C strings made before the fork; what it
-    // mounts, unmounts or pivots is in the namespaces `in_own_ns` made for it alone.
+    // SAFETY (the calls below): each child makes raw calls only, on C strings made before the fork; what it
+    // mounts, unmounts, chroots or pivots is in the namespaces `in_own_ns` made for it alone.
     let bind = unsafe {
         in_own_ns(|| {
             if libc::mount(c_env.as_ptr(), c_bind.as_ptr(), null().cast(), libc::MS_BIND, null()) != 0 {
@@ -3149,6 +3290,224 @@ fn ns_probes(env_file: &Path, ssh_file: &Path, dir: &Path) -> Vec<(&'static str,
             0
         })
     };
+    // M1.1: `umount2` the cover (`.env`) and the seal (`Cargo.toml`), then open beneath
+    let umount = unsafe {
+        in_own_ns(|| {
+            let r_env = libc::umount2(c_env.as_ptr(), libc::MNT_DETACH);
+            let e_env = errno();
+            let r_cargo = libc::umount2(c_cargo.as_ptr(), libc::MNT_DETACH);
+            let fd_env = libc::open(c_env.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            if fd_env >= 0 {
+                libc::close(fd_env);
+                return 0;
+            }
+            let e_open = errno();
+            let fd_cargo = libc::open(c_cargo.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+            if fd_cargo >= 0 {
+                libc::close(fd_cargo);
+                return 0;
+            }
+            if r_env != 0 && r_cargo != 0 { at_step("umount2", e_env) } else { at_step("open", e_open) }
+        })
+    };
+    // M1.2: `open_tree(root, OPEN_TREE_CLONE)` without `AT_RECURSIVE`, then `openat` the covered key beneath
+    let tree_clone = unsafe {
+        in_own_ns(|| {
+            let tree = libc::syscall(libc::SYS_open_tree, libc::AT_FDCWD, c_root.as_ptr(), 1usize);
+            if tree < 0 {
+                let e_tree = errno();
+                let fd = libc::open(c_env.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                if fd >= 0 {
+                    libc::close(fd);
+                    return 0;
+                }
+                return at_step("open_tree", e_tree);
+            }
+            let fd = libc::openat(tree as libc::c_int, c".env".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            let e = errno();
+            libc::close(tree as libc::c_int);
+            if fd >= 0 {
+                libc::close(fd);
+                0
+            } else {
+                at_step("open", e)
+            }
+        })
+    };
+    // M1.3: recursive clone (`open_tree` with `AT_RECURSIVE`), then `mount_setattr` clearing read-only on the seal's copy
+    let mount_setattr = unsafe {
+        in_own_ns(|| {
+            let flags = (1 | libc::AT_RECURSIVE) as usize;
+            let tree = libc::syscall(libc::SYS_open_tree, libc::AT_FDCWD, c_root.as_ptr(), flags);
+            if tree < 0 {
+                let e_tree = errno();
+                let r = libc::syscall(
+                    libc::SYS_mount_setattr,
+                    libc::AT_FDCWD,
+                    c_cargo.as_ptr(),
+                    0usize,
+                    &raw const clear_ro,
+                    std::mem::size_of::<MountAttr>(),
+                );
+                let e_attr = errno();
+                let fd = libc::open(c_cargo.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                if fd >= 0 {
+                    libc::close(fd);
+                    return 0;
+                }
+                return if r != 0 { at_step("mount_setattr", e_attr) } else { at_step("open_tree", e_tree) };
+            }
+            let r = libc::syscall(
+                libc::SYS_mount_setattr,
+                tree as libc::c_int,
+                c"".as_ptr(),
+                (libc::AT_EMPTY_PATH | libc::AT_RECURSIVE) as usize,
+                &raw const clear_ro,
+                std::mem::size_of::<MountAttr>(),
+            );
+            let e_attr = errno();
+            let fd =
+                libc::openat(tree as libc::c_int, c"Cargo.toml".as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+            let e_open = errno();
+            libc::close(tree as libc::c_int);
+            if fd >= 0 {
+                libc::close(fd);
+                return 0;
+            }
+            if r != 0 { at_step("mount_setattr", e_attr) } else { at_step("open", e_open) }
+        })
+    };
+    // M1.4: `fsopen("proc")` / `fsmount` a fresh `proc` mounted detached and read `.env` beneath
+    let fsmount_proc = unsafe {
+        let try_proc = || {
+            let fs = libc::syscall(libc::SYS_fsopen, c"proc".as_ptr(), 0usize);
+            if fs < 0 {
+                let e_fs = errno();
+                let fd = libc::open(c".env".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                if fd >= 0 {
+                    libc::close(fd);
+                    return 0;
+                }
+                return at_step("fsopen", e_fs);
+            }
+            // FSCONFIG_CMD_CREATE = 6
+            let r = libc::syscall(libc::SYS_fsconfig, fs as libc::c_int, 6usize, null(), null(), 0usize);
+            if r < 0 {
+                let e = errno();
+                libc::close(fs as libc::c_int);
+                return at_step("fsconfig", e);
+            }
+            let mnt = libc::syscall(libc::SYS_fsmount, fs as libc::c_int, 0usize, 0usize);
+            let e = errno();
+            libc::close(fs as libc::c_int);
+            if mnt < 0 {
+                return at_step("fsmount", e);
+            }
+            let fd =
+                libc::openat(mnt as libc::c_int, c"self/cwd/.env".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            let e = errno();
+            libc::close(mnt as libc::c_int);
+            if fd >= 0 {
+                libc::close(fd);
+                0
+            } else {
+                at_step("open", e)
+            }
+        };
+        in_own_ns(|| {
+            if libc::chdir(c_root.as_ptr()) != 0 {
+                return at_step("open", errno());
+            }
+            let first = try_proc();
+            if first == 0 {
+                return 0;
+            }
+            // With `CLONE_NEWPID` the fresh `proc` has an owned PID namespace (`proc_init_fs_context` takes
+            // `task_active_pid_ns(current)->user_ns`): in the baseline this mounts `proc` detached and reads
+            // `self/cwd/.env` (`Done`); in the run it must still be refused.
+            if libc::unshare(libc::CLONE_NEWPID) == 0 {
+                let mut pipe = [0; 2];
+                if libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) == 0 {
+                    let pid = libc::fork();
+                    if pid == 0 {
+                        libc::close(pipe[0]);
+                        let code = try_proc();
+                        let bytes = code.to_ne_bytes();
+                        libc::write(pipe[1], bytes.as_ptr().cast(), bytes.len());
+                        libc::close(pipe[1]);
+                        libc::_exit(0);
+                    }
+                    libc::close(pipe[1]);
+                    if pid > 0 {
+                        let mut bytes = [0u8; 4];
+                        let n = libc::read(pipe[0], bytes.as_mut_ptr().cast(), bytes.len());
+                        libc::close(pipe[0]);
+                        libc::waitpid(pid, std::ptr::null_mut(), 0);
+                        if n == 4 {
+                            return i32::from_ne_bytes(bytes);
+                        }
+                    } else {
+                        libc::close(pipe[0]);
+                    }
+                }
+            }
+            first
+        })
+    };
+    // M1.5: `chroot` with cwd outside the new root, `chdir("..")` to climb out, then open `.env` / `Cargo.toml`
+    let chroot = unsafe {
+        in_own_ns(|| {
+            if libc::chdir(c_sub.as_ptr()) != 0
+                || libc::chroot(c_new1.as_ptr()) != 0
+                || libc::chdir(c"..".as_ptr()) != 0
+            {
+                return at_step("chroot", errno());
+            }
+            let fd_env = libc::open(c".env".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            if fd_env >= 0 {
+                libc::close(fd_env);
+                return 0;
+            }
+            let e_open = errno();
+            let fd_cargo = libc::open(c"Cargo.toml".as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+            if fd_cargo >= 0 {
+                libc::close(fd_cargo);
+                return 0;
+            }
+            at_step("open", e_open)
+        })
+    };
+    // M1.6: `setns` into a sibling run's cover namespace
+    let sibling_ns = match sibling_pid {
+        p if p <= 0 => Probe::NotTried,
+        _ => unsafe {
+            forked(|| {
+                let ufd = libc::open(c_sib_user.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                if ufd < 0 {
+                    return at_step("open", errno());
+                }
+                let mfd = libc::open(c_sib_mnt.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                if mfd < 0 {
+                    let e = errno();
+                    libc::close(ufd);
+                    return at_step("open", e);
+                }
+                let ru = libc::setns(ufd, libc::CLONE_NEWUSER);
+                let eu = errno();
+                let rm = libc::setns(mfd, libc::CLONE_NEWNS);
+                let em = errno();
+                libc::close(ufd);
+                libc::close(mfd);
+                if ru != 0 {
+                    at_step("setns", eu)
+                } else if rm != 0 {
+                    at_step("setns", em)
+                } else {
+                    0
+                }
+            })
+        },
+    };
     // (a mount and its unmount, one part: Landlock refuses the mount first, and an unmount can't be tried
     // without a mount of its own — the kernel's EINVAL on a folder that isn't one comes before the LSM's)
     let mount = unsafe {
@@ -3174,8 +3533,18 @@ fn ns_probes(env_file: &Path, ssh_file: &Path, dir: &Path) -> Vec<(&'static str,
         })
     };
     let _ = fs::remove_dir_all(dir);
-    let mut all =
-        vec![("hardlink", hardlink), ("symlink", symlink), ("bind", bind), ("open_tree", open_tree)];
+    let mut all = vec![
+        ("hardlink", hardlink),
+        ("symlink", symlink),
+        ("bind", bind),
+        ("open_tree", open_tree),
+        ("umount", umount),
+        ("tree_clone", tree_clone),
+        ("mount_setattr", mount_setattr),
+        ("fsmount_proc", fsmount_proc),
+        ("chroot", chroot),
+        ("sibling_ns", sibling_ns),
+    ];
     all.extend(userns_probes());
     all.extend([("mount", mount), ("pivot", pivot)]);
     all
@@ -3248,32 +3617,62 @@ fn userns_probes() -> Vec<(&'static str, Probe)> {
 }
 
 /// Row 22's run that refuses new user namespaces (`no_userns`, what tarae's AppArmor profile brings, off on the
-/// machines the suite runs on): the session's keeper starts it so, asked to (`Keeper::start_userns`), with the
-/// session's rules — without their mounts over key files: it makes user namespaces and reads nothing.
+/// machines the suite runs on): the session's keeper starts it so (`Confine.no_userns`), served where the session
+/// is (`Keeper::start_served`), with the session's rules — without their mounts over key files: it makes user
+/// namespaces and reads nothing.
 #[cfg(target_os = "linux")]
-fn refusing_userns_run(exe: &Path, policy: &Policy, cfg_file: &Path) -> HashMap<String, String> {
-    let c = policy.confine.as_ref().unwrap().as_ref().unwrap();
-    let k = c.keeper.as_ref().expect("a keeper's policy");
+fn refusing_userns_run(exe: &Path, policy: &Policy, cfg_file: &Path) -> (HashMap<String, String>, String) {
+    let mut c = policy.confine.as_ref().unwrap().as_ref().unwrap().clone();
+    c.no_userns = true;
+    c.covers = Default::default();
+    let k = c.keeper.as_ref().expect("a keeper's policy").clone();
+    let mut userns_policy = policy.clone();
+    let watch = c.serve.is_ok().then(|| Watch::quiet("refused-userns."));
+    userns_policy.watch = watch.clone();
+    userns_policy.confine = Some(Ok(c.clone()));
     let mut cmd = Command::new(exe);
     cmd.args(["--exact", "sandbox::refused::in_sandbox", "--ignored", "--nocapture"])
         .env("TARAE_REFUSED_MODE", "userns")
         .env("TARAE_REFUSED_CFG", cfg_file)
         .current_dir(&policy.root);
     let comm = crate::landlock::thread_name();
-    let rules = c.rules_and_covers().0;
-    let s = k.start_userns(&cmd, &comm, rules, super::guarantees::RunNet::Plain, true).unwrap().spawned;
+    let s = match c.net {
+        super::tier::RunNet::Served | super::tier::RunNet::Routed => {
+            let serve = std::sync::Arc::new(userns_policy.clone());
+            k.start_served(&cmd, &comm, &c, serve.clone(), super::told(serve)).unwrap().spawned
+        }
+        _ => k.start_confined(&cmd, &comm, &c).unwrap().spawned,
+    };
     let mut text = String::new();
     io::Read::read_to_string(&mut s.stdout.unwrap(), &mut text).unwrap();
     io::Read::read_to_string(&mut s.stderr.unwrap(), &mut text).unwrap();
     let status = crate::spawn::wait(s.pid).unwrap();
     assert!(status.success(), "in_sandbox (userns) failed:\n{text}");
     assert!(!text.contains(FAKE_TOKEN), "the userns run said the token:\n{text}");
-    parse_kv(&text)
+    if let Some(w) = &watch {
+        let start = std::time::Instant::now();
+        while w.blocked().seen.is_empty() && start.elapsed() < Duration::from_millis(200) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    let report = Guard::In(Box::new(userns_policy)).report(&[]);
+    (parse_kv(&text), report)
 }
 
 #[cfg(target_os = "linux")]
 fn run_linux_baseline(home: &Path, root: &Path, own_run: &Path, stand_in_pty: &str) -> LinuxBaseline {
-    let ns = ns_probes(&root.join(".env"), &home.join(".ssh/id_ed25519"), &own_run.join("base-ns"));
+    let ns = {
+        let sib = CoverTarget::new();
+        let got = ns_probes(
+            root,
+            &root.join(".env"),
+            &home.join(".ssh/id_ed25519"),
+            &own_run.join("base-ns"),
+            sib.pid,
+        );
+        assert!(sib.alive(), "the baseline's cover target ended before its probes did");
+        got
+    };
 
     // (row 25 at a bare child of the test's own, gone before any run; row 26 the terminal `must_be_refused`
     // gave this process)
@@ -3424,9 +3823,12 @@ fn check_linux_rows(
     stand_in_pty: &str,
     keeper_pid_str: &str,
     keeper_pidns: &str,
+    sibling_pid: libc::pid_t,
 ) {
     // Rows 21, 22: the baseline's calls (`ns_probes`), each said with its errno for the parent to judge
-    for (name, got) in ns_probes(&root.join(".env"), &home.join(".ssh/id_ed25519"), &own_run.join("ns")) {
+    for (name, got) in
+        ns_probes(root, &root.join(".env"), &home.join(".ssh/id_ed25519"), &own_run.join("ns"), sibling_pid)
+    {
         emit(&format!("ns_{name}"), got.said());
     }
 
@@ -3639,6 +4041,109 @@ impl BareTarget {
 
 #[cfg(target_os = "linux")]
 impl Drop for BareTarget {
+    fn drop(&mut self) {
+        // SAFETY: the pipe's end this holds, closed once; then its own child, reaped.
+        unsafe {
+            libc::close(self.hold);
+            libc::waitpid(self.pid, std::ptr::null_mut(), 0);
+        }
+    }
+}
+
+/// The PID a run in the session's PID namespace sees for `pid` (the last number on its `NSpid:` line).
+#[cfg(target_os = "linux")]
+fn pid_seen_by_runs(pid: u32) -> libc::pid_t {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("NSpid:"))
+        .and_then(|l| l.split_whitespace().last())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(pid as libc::pid_t)
+}
+
+/// Row 21's baseline sibling target for `sibling_ns`: a forked child of the test's own in a fresh user and mount
+/// namespace (`CLONE_NEWUSER | CLONE_NEWNS`) with its IDs mapped and capabilities dropped, waiting on a pipe until
+/// `Drop` closes it.
+#[cfg(target_os = "linux")]
+struct CoverTarget {
+    pid: libc::pid_t,
+    hold: libc::c_int,
+}
+
+#[cfg(target_os = "linux")]
+impl CoverTarget {
+    fn alive(&self) -> bool {
+        // SAFETY: its own child, not reaped while running.
+        unsafe { libc::waitpid(self.pid, std::ptr::null_mut(), libc::WNOHANG) == 0 }
+    }
+
+    fn new() -> CoverTarget {
+        let (mut hold, mut ready) = ([0; 2], [0; 2]);
+        let header = CapHeader { version: CAP_VERSION_3, pid: 0 };
+        let none = [CapData::default(); 2];
+        // SAFETY: plain getters.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let (mut ubuf, mut gbuf) = ([0u8; 64], [0u8; 64]);
+        let (ulen, glen) = (fmt_id_map(&mut ubuf, uid), fmt_id_map(&mut gbuf, gid));
+        // SAFETY: two pipes of this process's own; the child makes raw calls only on what was made before the fork.
+        unsafe {
+            for p in [&mut hold, &mut ready] {
+                assert_eq!(
+                    libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC),
+                    0,
+                    "pipe2: {}",
+                    io::Error::last_os_error()
+                );
+            }
+            let pid = libc::fork();
+            assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+            if pid == 0 {
+                libc::close(hold[1]);
+                libc::close(ready[0]);
+                if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) == 0 {
+                    libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
+                    let maps = [
+                        (c"/proc/self/setgroups", &b"deny"[..]),
+                        (c"/proc/self/uid_map", &ubuf[..ulen]),
+                        (c"/proc/self/gid_map", &gbuf[..glen]),
+                    ];
+                    for (path, buf) in maps {
+                        let fd = libc::open(path.as_ptr(), libc::O_WRONLY);
+                        if fd >= 0 {
+                            libc::write(fd, buf.as_ptr().cast(), buf.len());
+                            libc::close(fd);
+                        }
+                    }
+                    libc::syscall(libc::SYS_capset, &raw const header, none.as_ptr());
+                }
+                let ok = 1u8;
+                libc::write(ready[1], (&raw const ok).cast(), 1);
+                libc::close(ready[1]);
+                let mut b = 0u8;
+                loop {
+                    match libc::read(hold[0], (&raw mut b).cast(), 1) {
+                        n if n > 0 => {}
+                        -1 if errno() == libc::EINTR => {}
+                        _ => break,
+                    }
+                }
+                libc::_exit(0);
+            }
+            libc::close(hold[0]);
+            libc::close(ready[1]);
+            let mut ok = 0u8;
+            let got = libc::read(ready[0], (&raw mut ok).cast(), 1);
+            libc::close(ready[0]);
+            let target = CoverTarget { pid, hold: hold[1] };
+            assert!(got == 1 && ok == 1, "the baseline's cover target didn't start");
+            target
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for CoverTarget {
     fn drop(&mut self) {
         // SAFETY: the pipe's end this holds, closed once; then its own child, reaped.
         unsafe {

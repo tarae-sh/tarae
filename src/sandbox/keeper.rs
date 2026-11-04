@@ -862,8 +862,9 @@ impl Keeper {
         }
         let (rules, covers) = c.rules_and_covers();
         let asks = Asks {
-            no_userns: super::tier::runs_refuse_userns(),
+            no_userns: c.no_userns,
             ptys: false,
+            mounts: false,
             covers: Some(covers),
             skipped: Some(c.skipped.clone()),
         };
@@ -900,7 +901,7 @@ impl Keeper {
         asks: Asks<'_>,
         held: bool,
     ) -> io::Result<(Started, Option<Arc<OwnedFd>>)> {
-        let Asks { no_userns, ptys, covers, skipped } = asks;
+        let Asks { no_userns, ptys, mounts, covers, skipped } = asks;
         // (only a keeper in a user namespace can give its run a mount namespace of its own)
         let covers = covers.filter(|c| !c.keys.is_empty() || !c.loose.is_empty() || !c.seals.is_empty());
         // (the break-once: the mounts skipped, the rules left whole — 7d's key tests fail where keys are mounted over)
@@ -943,6 +944,7 @@ impl Keeper {
             held: self.ns.pid,
             no_userns,
             ptys,
+            mounts,
             shut: covers
                 .filter(|c| !c.keys.is_empty() || !c.loose.is_empty())
                 .and_then(|c| c.shut.as_ref())
@@ -995,6 +997,7 @@ impl Keeper {
 struct Asks<'a> {
     no_userns: bool,
     ptys: bool,
+    mounts: bool,
     covers: Option<&'a super::linux::Covers>,
     skipped: Option<Arc<Mutex<Option<super::linux::Skipped>>>>,
 }
@@ -1037,11 +1040,11 @@ impl Keeper {
         policy_served.own_shm = self.ns.user && self.ns.shm;
         let policy = Arc::new(policy_served);
         let to = super::supervisor::serve(policy, net, refused, tree, c.ptys.clone())?;
-        let no_userns = super::tier::runs_refuse_userns();
         let (rules, covers) = c.rules_and_covers();
         let asks = Asks {
-            no_userns,
+            no_userns: c.no_userns,
             ptys: c.ptys.is_some(),
+            mounts: c.audit.is_err(),
             covers: Some(covers),
             skipped: Some(c.skipped.clone()),
         };
@@ -2466,7 +2469,7 @@ impl Exec {
             RunNet::Own => crate::seccomp::Mode::OwnNetwork,
             RunNet::Plain => crate::seccomp::Mode::Plain,
         };
-        let filter = crate::seccomp::Filter::new(mode, run.no_userns, run.ptys)?;
+        let filter = crate::seccomp::Filter::new(mode, run.no_userns, run.ptys, run.mounts)?;
         let c = |s: &[u8]| CString::new(s).unwrap_or_default();
         let argv: Vec<CString> = run.argv.iter().map(|a| c(a)).collect();
         let envp: Vec<CString> = run.envp.iter().map(|e| c(e)).collect();

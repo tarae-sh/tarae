@@ -99,6 +99,8 @@ pub struct Run {
     pub no_userns: bool,
     /// Its way to a pty's other end is tarae's (`tier::Ns::serves_ptys`, 3b): its filter hands those calls over.
     pub ptys: bool,
+    /// Where Landlock's audit isn't readable, the mount family goes to its supervisor to be refused and named.
+    pub mounts: bool,
     /// The empty file nobody may open its child mounts over each of `covers` (7d, `linux::Covers`), and the file tarae
     /// checked there — None with none.
     pub shut: Option<Covered>,
@@ -257,7 +259,7 @@ pub fn encode(msg: &Msg) -> Result<Vec<u8>, Refused> {
             bytes(&mut b, &r.cwd);
             bytes(&mut b, &r.comm);
             let net = NETS.iter().position(|n| *n == r.net).unwrap_or(0) as u8;
-            b.extend([net, r.held as u8, r.no_userns as u8, r.ptys as u8]);
+            b.extend([net, r.held as u8, r.no_userns as u8, r.ptys as u8, r.mounts as u8]);
             list(&mut b, &r.shut.iter().map(Covered::item).collect::<Vec<_>>())?;
             list(&mut b, &r.covers.iter().map(Covered::item).collect::<Vec<_>>())?;
             list(&mut b, &r.loose.iter().map(Covered::item).collect::<Vec<_>>())?;
@@ -450,6 +452,7 @@ pub fn decode(b: &[u8], fds: usize) -> Result<Msg, Refused> {
                 held: r.flag()?,
                 no_userns: r.flag()?,
                 ptys: r.flag()?,
+                mounts: r.flag()?,
                 shut: match r.list()?.as_slice() {
                     [] => None,
                     [one] => Some(Covered::of_item(one)?),
@@ -622,6 +625,7 @@ mod tests {
                 // (one way and the other, by the net mode: both values on the wire)
                 no_userns: net == RunNet::Routed,
                 ptys: net == RunNet::Served,
+                mounts: net == RunNet::Routed,
                 // (covered files on one only — both shapes on the wire)
                 shut: held.then(|| Covered { dev: 9, ino: 1 << 33, path: b"/tmp/i/shut".to_vec() }),
                 covers: match held {

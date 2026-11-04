@@ -460,7 +460,8 @@ impl Guard {
             // (step 8: another session's port, or one whose can't be told — no grant opens it, so nothing to
             // point at; nor beyond this machine past the proxy; nor what every run is refused by design — macdeny)
             let openable = |d: &&Denial| {
-                ![SESSION_OP, UNTOLD_OP, DIRECT_OP, MOUNT_OP].contains(&d.op.as_str()) && !d.by_design()
+                ![SESSION_OP, UNTOLD_OP, DIRECT_OP, MOUNT_OP, USERNS_OP].contains(&d.op.as_str())
+                    && !d.by_design()
             };
             let open: Vec<Denial> = all_seen.iter().filter(openable).filter(|_| !all).cloned().collect();
             let openable = all_seen.iter().any(|d| openable(&d));
@@ -505,7 +506,7 @@ impl Guard {
         let (mut beyond, mut temp_keys) = (Vec::new(), Vec::new());
         let refused_port = &crate::sandboxpack::get().refused_port;
         let (mut entries, mut signals, mut looks, mut attaches) = (false, false, false, false);
-        let (mut sealed, mut mounts) = (false, false);
+        let (mut sealed, mut mounts, mut userns) = (false, false, false);
         for d in seen {
             if d.op.starts_with("file-entry-") {
                 entries = true;
@@ -513,6 +514,10 @@ impl Guard {
             }
             if d.op == MOUNT_OP {
                 mounts = true;
+                continue;
+            }
+            if d.op == USERNS_OP {
+                userns = true;
                 continue;
             }
             let Some(path) = d.file() else {
@@ -662,6 +667,14 @@ impl Guard {
                  bwrap) can't work here. If the command needs one, ask to run it outside the sandbox \
                  (outside_sandbox, the tool's need as your reason) — the user answers y or n; don't work around \
                  it.\n",
+            );
+        }
+        if userns {
+            s.push_str(
+                "No command of yours makes or joins a user namespace here (unshare, clone with CLONE_NEWUSER, \
+                 clone3 and setns are refused, outside the sandbox too): tarae's AppArmor profile would let it, \
+                 which Ubuntu keeps from other programs — a tool that needs one (rootless podman, bwrap, a \
+                 browser's own sandbox) can't run from tarae; the user's own terminal is the place.\n",
             );
         }
         if git {
@@ -992,8 +1005,14 @@ pub const DIRECT_OP: &str = "network-direct";
 
 /// A refusal's op for a mount, an unmount or a pivot (Linux: Landlock refuses a confined process every change of the
 /// mount topology, in every namespace a run makes — its audit's `fs.change_topology`, `linux::audit_op`; or read from
-/// the run's output, `Policy::mount_said_in`). Never a write: no grant opens it, only a run outside.
+/// the run's output, `Policy::mount_said_in`; or handed to tarae where the audit isn't readable,
+/// `supervisor::refuse_call`). Never a write: no grant opens it, only a run outside.
 pub const MOUNT_OP: &str = "mount";
+
+/// A refusal's op for making or joining a user namespace (`unshare`/`clone` with `CLONE_NEWUSER`, `setns`), where
+/// tarae's AppArmor profile brings `no_userns` (`tier::runs_refuse_userns`, `supervisor::refuse_call`). No grant opens
+/// it, nor a run outside: only the user's own terminal.
+pub const USERNS_OP: &str = "user-namespace";
 
 /// What a Seatbelt policy's runs are kept apart from and share (9a, `guarantees.rs`): its shared memory and priority
 /// — and, where it opens this machine's ports, what listens on them. Pinned by
@@ -2589,6 +2608,7 @@ impl Denial {
             "file-make-in" => format!("making a new file in {t}"),
             MOUNT_OP if t.is_empty() => "mounting or unmounting — no command in the sandbox does".into(),
             MOUNT_OP => format!("mounting or unmounting at {t} — no command in the sandbox does"),
+            USERNS_OP => "making or joining a user namespace — refused on this system".into(),
             LIKELY_MADE => format!(
                 "likely making a new file in {t}, where it ran — its output names nothing refused, but a folder \
                  holding protected names takes no new files on Linux"
@@ -16424,5 +16444,31 @@ except OSError: print('no')" 2>/dev/null) || net="python3 failed"
         let mut names: Vec<String> = std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).collect();
         names.sort();
         std::fs::write(file, names.join("\n")).unwrap();
+    }
+
+    /// A user-namespace refusal (`USERNS_OP`) is said as one in `Denial::plain` and `Guard::kept`, points at the
+    /// user's own terminal (not `outside_sandbox`, which has no user namespace either), and offers no grant.
+    #[test]
+    fn a_refused_userns_is_said_as_one() {
+        let d = Denial { process: "unshare".into(), op: USERNS_OP.into(), target: String::new() };
+        assert_eq!(d.plain(), "making or joining a user namespace — refused on this system");
+        let w = Watch::quiet("userns.");
+        w.record(d);
+        let p = Policy {
+            watch: Some(w),
+            ..Policy::for_project(&Env { root: PathBuf::from("/tmp/p"), ..Default::default() })
+        };
+        let g = Guard::In(Box::new(p));
+        let r = g.report_with(&[], Told::default(), false);
+        assert!(r.open.is_empty(), "no openable denial: {:?}", r.open);
+        assert!(
+            r.text.contains(
+                "making or joining a user namespace — refused on this system (user-namespace, unshare)"
+            ) && r.text.contains("No command of yours makes or joins a user namespace here")
+                && r.text.contains("the user's own terminal is the place")
+                && !r.text.contains("outside_sandbox"),
+            "{}",
+            r.text
+        );
     }
 }
