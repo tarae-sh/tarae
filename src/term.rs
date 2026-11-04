@@ -898,8 +898,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         width: Some(lay.width),
         over_folded: editor.screen.over_folded,
         chat_w: lay.chat_w,
-        side_w: if editor.review_rail_up() { 0 } else { lay.rail_w },
-        rail_w: if editor.review_rail_up() && lay.zoom.is_none() { lay.rail_w } else { 0 },
+        side_w: if editor.review_rail_up() { 0 } else { lay.side().map_or(0, |r| r.w) },
+        rail_w: if editor.review_rail_up() && lay.zoom.is_none() { lay.side().map_or(0, |r| r.w) } else { 0 },
         bottom_h: lay.slot_h,
         body_h: lay.text_rows + lay.slot_h,
         text_top: lay.text_top as usize,
@@ -1056,7 +1056,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         crate::view::terminal_resized(editor);
     }
     let (side_keys, rail_keys) = (editor.workspace.is_at(At::Side), editor.workspace.is_at(At::Rail));
-    if lay.rail_w > 0
+    if lay.side().is_some()
         && !editor.review_rail_up()
         && let Some(sb) = editor.workspace.viewer.sidebar.as_mut()
     {
@@ -1064,7 +1064,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         let keys = side_keys;
         sb.fit(sidebar_list_rows(&lay, editor.workspace.code_review.is_some()), &depths, keys);
     }
-    if lay.rail_w > 0
+    if lay.side().is_some()
         && editor.review_rail_up()
         && let Some((marked, room, rows)) = editor
             .workspace
@@ -1209,8 +1209,8 @@ struct Layout {
     /// Editing area width (minus the chat panel on the right) · chat panel width (0 when closed).
     edit_w: usize,
     chat_w: usize,
-    /// Code review's file rail at the left of the editing area (0 when none) — panes start after it.
-    rail_w: usize,
+    /// Every leaf laid out with room (wider and taller than 0) that shows something: its kind and rect (`rect`).
+    shown: Vec<(crate::pane::Shows, crate::split::Rect)>,
     header: bool,
     /// Rightmost cell of the editing area = scrollbar (only when the doc is taller than the screen).
     scrollbar: bool,
@@ -1281,6 +1281,17 @@ type CodeLine = (usize, usize, usize, crate::split::PaneId, bool);
 type CodeEdges = (Vec<CodeLine>, Vec<(usize, std::ops::Range<usize>)>);
 
 impl Layout {
+    /// Where the pane showing `kind` is laid out this frame — None where none is or it has no room (one pane a kind:
+    /// the code's panes are `panes`').
+    fn rect(&self, kind: crate::pane::Shows) -> Option<crate::split::Rect> {
+        self.shown.iter().find(|s| s.0 == kind).map(|s| s.1)
+    }
+
+    /// The column beside the code on its left: the side panel's, or the review rail's while it's up (one at a time).
+    fn side(&self) -> Option<crate::split::Rect> {
+        self.rect(crate::pane::Shows::Side).or(self.rect(crate::pane::Shows::Rail))
+    }
+
     /// Where the chat is drawn: its column beside the code, from the screen's first row to the status line; or in its
     /// floating frame. None: not drawn.
     fn chat_at(&self) -> Option<ChatAt> {
@@ -1824,10 +1835,11 @@ impl Layout {
             }
             _ => (rail_w.min(w as usize), 0, (w as usize).saturating_sub(widths.chat + rail_w)),
         };
-        let rect = |s: Shows| {
-            let id = editor.workspace.leaf(s)?;
-            leaves.iter().find(|l| l.0 == id).map(|l| l.1).filter(|r| r.w > 0 && r.h > 0)
-        };
+        let shown: Vec<(Shows, crate::split::Rect)> = (leaves.iter())
+            .filter(|l| l.1.w > 0 && l.1.h > 0)
+            .filter_map(|l| Some((editor.workspace.shows(l.0)?, l.1)))
+            .collect();
+        let rect = |s: Shows| shown.iter().find(|l| l.0 == s).map(|l| l.1);
         let rail_w = rect(Shows::Side).or(rect(Shows::Rail)).map_or(0, |r| r.w);
         let chat_w = rect(Shows::Chat).map_or(0, |r| r.w);
         let edit_w = w as usize - chat_w;
@@ -1846,7 +1858,7 @@ impl Layout {
             x0: 0,
             edit_w,
             chat_w,
-            rail_w,
+            shown,
             header,
             scrollbar,
             text_top: code_top,
@@ -1981,12 +1993,8 @@ fn panes(
     editor: &Editor,
     lay: &Layout,
 ) -> Vec<(crate::split::PaneId, crate::split::Rect, Layout, usize, (usize, usize), usize, bool)> {
-    let area = crate::split::Rect {
-        x: lay.rail_w,
-        y: lay.text_top as usize,
-        w: lay.edit_w - lay.rail_w,
-        h: lay.text_rows,
-    };
+    let (x, _, w, _) = code_area(lay);
+    let area = crate::split::Rect { x, y: lay.text_top as usize, w, h: lay.text_rows };
     // (the code's panes where the tree laid them out — `C-w z`: the focused one alone, with no room when another
     // pane fills the screen)
     let mut tiles: Vec<_> =
@@ -5575,22 +5583,22 @@ fn draw(
         }
     };
     if let Some(r) = editor.workspace.code_review.as_ref().filter(|_| editor.review_rail_up())
-        && lay.rail_w > 0
+        && let Some(col) = lay.side()
         && lay.zoom.is_none()
         && !editor.workspace.claude.review.as_ref().is_some_and(|r| r.ready)
         && !editor.welcome()
     {
         let _fade = Fade::unless(keys == Keys::Review, ui);
-        draw_review_rail(r, editor, ui, lay, out)?;
-        editor.screen.regions.add(crate::regions::Kind::Side, (0, 0, lay.rail_w, lay.body_h));
+        draw_review_rail(r, editor, ui, lay, col, out)?;
+        editor.screen.regions.add(crate::regions::Kind::Side, (col.x, col.y, col.w, lay.body_h));
     } else if let Some(sb) = &editor.workspace.viewer.sidebar
-        && lay.rail_w > 0
+        && let Some(col) = lay.side()
         && !editor.review_rail_up()
         && !editor.workspace.claude.review.as_ref().is_some_and(|r| r.ready)
     {
         let _fade = Fade::unless(matches!(keys, Keys::Side(_)), ui);
-        draw_sidebar(sb, editor, ui, lay, out)?;
-        editor.screen.regions.add(crate::regions::Kind::Side, (0, 0, lay.rail_w, lay.body_h));
+        draw_sidebar(sb, editor, ui, lay, col, out)?;
+        editor.screen.regions.add(crate::regions::Kind::Side, (col.x, col.y, col.w, lay.body_h));
     }
     let mut terminal_cursor = None;
     if lay.slot_h > 0 && lay.slot_w > 0 {
@@ -6021,7 +6029,9 @@ pub(crate) fn drawn_style(st: Style) -> Style {
 
 /// The code's area as a whole — the edit review's or the start screen's, in the panes' place.
 fn code_area(lay: &Layout) -> crate::regions::Rect {
-    (lay.rail_w, 0, lay.edit_w.saturating_sub(lay.rail_w), lay.text_top as usize + lay.text_rows)
+    // (right of the column beside it, when one stands)
+    let x = lay.side().map_or(0, |r| r.x + r.w);
+    (x, 0, lay.edit_w.saturating_sub(x), lay.text_top as usize + lay.text_rows)
 }
 
 /// Whether the follow card drawn at `card` still shows its head — its top line, where it says the step (focus B1) — once
@@ -10797,7 +10807,7 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         return Ok(());
     }
     // (a review whose rail has no room — the chat beside it, a phone: the line says which of its files this is)
-    let railless = lay.rail_w == 0 || !editor.review_rail_up();
+    let railless = lay.side().is_none() || !editor.review_rail_up();
     let ps = panes(editor, lay);
     // (a line that drags, held or under the pointer, in the accent: the one over and under a pane of yours is its
     // pane's; a group docked over the code's edge is the line of the panes at the column's top)
@@ -11640,8 +11650,8 @@ fn draw_statusline(
     };
     // The session's reviewer in the background (bgreview): reading, waiting its turn, or what it found not read
     // yet — in its colour, the counts dim, then the key — while no review rail says it. A click reads its report
-    if let Some((head, counts, key)) =
-        crate::reviewer::status_said(editor).filter(|_| crate::reviewer::status_shows(editor, lay.rail_w))
+    if let Some((head, counts, key)) = crate::reviewer::status_said(editor)
+        .filter(|_| crate::reviewer::status_shows(editor, lay.side().map_or(0, |r| r.w)))
     {
         let mine = ui.status.patch(reviewer_style(editor, ui));
         left.push(Seg { cut: None, text: format!("  {head}"), style: mine, keep: REVIEWER });
@@ -11702,7 +11712,7 @@ fn draw_statusline(
         left.push(Seg { cut: None, text: format!("{gap}{quiet} {runs} quiet"), style: dim, keep: INBOX });
     }
     // Your drafts, while they wait: calm, apart from what asks for you (no `▲`, not `waiting`); a press sends them
-    if let Some(k) = crate::notes::drafts_said(editor, lay.rail_w) {
+    if let Some(k) = crate::notes::drafts_said(editor, lay.side().map_or(0, |r| r.w)) {
         let count = format!("  {}", crate::nav::count(k, "draft"));
         left.push(Seg { cut: None, text: count, style: dim, keep: DRAFTS });
         let key = " · space v s".to_string();
@@ -12781,7 +12791,7 @@ fn draw_welcome(
     let home = std::env::var("HOME").unwrap_or_default();
     // Right of the side panel when it's open; a title page — the header's rows are the page's too (`draw_header`
     // draws no path bar here)
-    let (ox, ew) = (lay.rail_w, lay.edit_w - lay.rail_w);
+    let (ox, _, ew, _) = code_area(lay);
     let page = lay.text_top as usize + lay.text_rows;
     // (the name, the stroke under it — its row drawn below — and the intro)
     let mut rows: Vec<Vec<(String, Style)>> = vec![
@@ -13140,7 +13150,7 @@ fn draw_toasts(
             let whole = newest.text.trim().lines().count() == 1 && newest.text.trim().width() <= SAID_WHOLE;
             // (as wide as its words would make it: broken between phrases its rows may be narrower, the code no wider)
             let wide = inner.max(natural) + 5;
-            let narrow = toasts.len() == 1 && whole && 2 * wide > lay.edit_w.saturating_sub(lay.rail_w);
+            let narrow = toasts.len() == 1 && whole && 2 * wide > code_area(lay).2;
             editor.screen.toast_narrow.set(Some(narrow));
             narrow
         }
@@ -15288,7 +15298,7 @@ fn draw_ask_stream(
         })
         .collect();
     // (the code's room: from the rail's edge — a cell of it kept — to the code's right edge)
-    let room = lay.edit_w.saturating_sub(lay.rail_w + 1);
+    let room = code_area(lay).2.saturating_sub(1);
     let inner = (lay.edit_w / 2).clamp(30, 72).min(room.saturating_sub(5));
     // (each line cut to the card first: a line wider than it shows its start, and its bleeding head is the end of
     // what shows)
@@ -15428,7 +15438,10 @@ fn draw_follow_card(
             let t = crate::chrome::pane_text(*rect, lay.text_top as usize);
             (t.x, t.y, t.w, t.h)
         }
-        None => (lay.rail_w, lay.text_top as usize, lay.edit_w - lay.rail_w, lay.text_rows),
+        None => {
+            let (x, _, w, _) = code_area(lay);
+            (x, lay.text_top as usize, w, lay.text_rows)
+        }
     };
     // (its width yours where you set it — #267: a drag of its left line, `C-w < >` — within the pane; else by the pane)
     let most = pw.saturating_sub(6);
@@ -16186,6 +16199,7 @@ fn draw_sidebar(
     editor: &Editor,
     ui: &Ui,
     lay: &Layout,
+    col: crate::split::Rect,
     out: &mut impl Write,
 ) -> io::Result<()> {
     use crate::chrome::{GAP, PAD, PAD_R};
@@ -16197,7 +16211,7 @@ fn draw_sidebar(
     let key = Style { bold: true, fg: ui.virt.fg, ..card };
     let dragged = grab(editor, |b| b == crate::sizes::Border::Side);
     let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
-    let w = lay.rail_w.saturating_sub(GAP + PAD + PAD_R).max(1);
+    let w = col.w.saturating_sub(GAP + PAD + PAD_R).max(1);
     let lines = sb.lines();
     // Unfocused, only the row the editor is on is marked (nothing, on a file outside the list)
     let mark = if editor.workspace.is_at(At::Side) { Some(sb.selected) } else { sb.here(editor) };
@@ -16338,7 +16352,7 @@ fn draw_sidebar(
         if y == 0 {
             let line = edge_style(ui, card, Region::Side);
             let top = TopLine { names: &fits(&head), details: &fits(&of), key, faint, ..TopLine::default() };
-            let cols = top_line(out, line, card, (0, 0, lay.rail_w - GAP), ("", "", "┬"), &[], true, &top)?;
+            let cols = top_line(out, line, card, (col.x, y, col.w - GAP), ("", "", "┬"), &[], true, &top)?;
             // (what the turn asked: whole under the mouse, on the card of what's cut)
             let asked = editor.turnmap.asked.as_ref().filter(|_| !turn.is_empty());
             if let Some(((a, b), asked)) = cols.get(head.len()).zip(asked) {
@@ -16407,7 +16421,7 @@ fn draw_sidebar(
                     given = id.as_deref().and_then(|id| ui_mark(ui, editor, id, card));
                     // (its name cut short: whole on a card over the code — the selected row's while the panel has
                     // the keys)
-                    let hand = crate::whole::Hand::Beside(lay.rail_w);
+                    let hand = crate::whole::Hand::Beside(col.x + col.w);
                     let at = Some((
                         crate::whole::On::Side,
                         0,
@@ -16486,7 +16500,7 @@ fn side_gutter<'a>(
 ) -> impl Fn(usize) -> (&'static str, Style) + 'a {
     let parts = beside_rows(editor, lay, crate::pane::Side::Left);
     let over = editor.picker.as_ref().is_some_and(|p| !p.compact);
-    let whole = lay.rail_w >= lay.width;
+    let whole = lay.side().is_some_and(|r| r.w >= lay.width);
     move |y| match whole {
         false => meeting_line(ui, &parts, Region::Side, "├", (dragged, over), y),
         true => (" ", card),
@@ -16534,7 +16548,7 @@ fn beside_rows(
     // (a code pane's top line under the screen's first row against this side — under a group docked over the code, a
     // pane under another)
     let edge = match toward {
-        Side::Left => lay.rail_w,
+        Side::Left => lay.side().map_or(0, |r| r.x + r.w),
         _ => lay.edit_w,
     };
     for l in code_lines(editor, lay).iter().filter(|l| l.0 > 0) {
@@ -16843,7 +16857,7 @@ fn review_rail_hints(
 /// The review rail's text width (inside its padding).
 fn rail_text_w(lay: &Layout) -> usize {
     use crate::chrome::{GAP, PAD, PAD_R};
-    lay.rail_w.saturating_sub(GAP + PAD + PAD_R).max(1)
+    lay.side().map_or(0, |r| r.w).saturating_sub(GAP + PAD + PAD_R).max(1)
 }
 
 /// Where the review rail's files are: the row of the first one (under its head — `rail_head` — and the `↑ N
@@ -17327,6 +17341,7 @@ fn draw_review_rail(
     editor: &Editor,
     ui: &Ui,
     lay: &Layout,
+    col: crate::split::Rect,
     out: &mut impl Write,
 ) -> io::Result<()> {
     use crate::markdown::Span;
@@ -17517,7 +17532,7 @@ fn draw_review_rail(
                 &fit,
                 name_st,
                 (0, usize::MAX),
-                (here && ui.lit == Some(Region::Side)).then_some(crate::whole::Hand::Beside(lay.rail_w)),
+                (here && ui.lit == Some(Region::Side)).then_some(crate::whole::Hand::Beside(col.x + col.w)),
             );
         }
         rows.push((row, bg, Some(i)));
@@ -17556,7 +17571,7 @@ fn draw_review_rail(
             };
             let (names, details) = (span(0), span(1));
             let head = TopLine { names: &names, details: &details, key, faint, ..TopLine::default() };
-            top_line(out, line, card, (0, 0, lay.rail_w - GAP), ("", "", "┬"), &[], true, &head)?;
+            top_line(out, line, card, (col.x, y, col.w - GAP), ("", "", "┬"), &[], true, &head)?;
             put_gutter(out, gutter(y))?;
             continue;
         }
@@ -19574,10 +19589,13 @@ fn draw_chat(
         false => {
             let reviewer = Style { fg: reviewer_style(editor, ui).fg, ..card };
             let tabs = |w: usize| {
-                session_tabs(editor, w, lay.rail_w, [dim, faint, accent, warn_fg, reviewer], &|c| Style {
-                    fg: ui.participant(c, true),
-                    ..card
-                })
+                session_tabs(
+                    editor,
+                    w,
+                    lay.side().map_or(0, |r| r.w),
+                    [dim, faint, accent, warn_fg, reviewer],
+                    &|c| Style { fg: ui.participant(c, true), ..card },
+                )
             };
             let room = names_room_kept(&details, names_room, (sandbox_at, follow_at), || {
                 // (the names' least: the front's name whole and `+N` with its signs — `session_tabs` at no room cuts
@@ -30483,7 +30501,7 @@ mod tests {
             ed
         };
         use crate::chrome::{GAP, PAD, PAD_R};
-        let rail = |ed: &Editor, w| Layout::new(ed, w, 40).rail_w;
+        let rail = |ed: &Editor, w| Layout::new(ed, w, 40).side().map_or(0, |r| r.w);
         let short = review(&["a.rs", "b.rs"]);
         let hints =
             review_rail_need(&short, short.workspace.code_review.as_ref().unwrap()) + PAD + PAD_R + GAP;
@@ -31186,7 +31204,7 @@ mod tests {
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, PathBuf::from("/x")));
         ed.workspace.viewer.at = At::Side;
-        let rail = |ed: &Editor, w| Layout::new(ed, w, 40).rail_w;
+        let rail = |ed: &Editor, w| Layout::new(ed, w, 40).side().map_or(0, |r| r.w);
         assert_eq!(rail(&ed, 112), 32);
         assert_eq!(rail(&ed, 140), 36);
         assert_eq!(rail(&ed, 200), 44);
