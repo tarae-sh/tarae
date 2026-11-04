@@ -929,6 +929,11 @@ fn launch(ed: &mut Editor, i: usize) {
         let cred = ed.credential(ed.reviewer_billing(), crate::billing::Role::Reviewer)?;
         Ok((llm::LlmConfig { args, ..cfg.clone() }, cred))
     });
+    // (no claude while the config doesn't read — `llm::held`: those waiting end with it, said)
+    let cred = match llm::held(ed) {
+        Some(why) => Err(why),
+        None => cred,
+    };
     let started = cred.and_then(|(cfg, cred)| {
         let child =
             member_command(&cfg, &extra, &root, ed.claude_env.as_ref(), &cred, role).and_then(|mut c| {

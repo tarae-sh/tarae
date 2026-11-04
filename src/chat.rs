@@ -615,6 +615,8 @@ pub struct Chat {
     pub follow: crate::follow::Follow,
     /// This claude doesn't know `--thinking-display` (older CLI) — spawn without it.
     no_thought_flag: bool,
+    /// Its claude would have started but the config doesn't read (`llm::held`): it starts once it does (`config_read`).
+    pub(crate) held: bool,
     /// A new conversation was asked for (`C-l`, `:chat-new`) — a session brought back doesn't continue its own when
     /// the project's are read.
     pub started_new: bool,
@@ -1131,6 +1133,7 @@ impl Chat {
             hop: 0,
             follow: Default::default(),
             no_thought_flag: false,
+            held: false,
             started_new: false,
             clear_asked: None,
             continued: None,
@@ -1214,6 +1217,12 @@ impl Chat {
     /// Its claude is running.
     pub(crate) fn running(&self) -> bool {
         self.proc.is_some()
+    }
+
+    /// Its claude starts later, so what's sent waits for it: the project's Claude settings being read (`claudetrust.rs`),
+    /// or none until the config reads (`held`, `llm::held`).
+    pub(crate) fn starts_later(&self) -> bool {
+        self.settings.waiting() || (self.held && !self.running())
     }
 
     /// A line to its claude — whether it went (not running: no).
@@ -1430,6 +1439,11 @@ pub fn restart_process(ed: &mut Editor) {
     if c.state != State::Idle {
         return ed.set_status("claude is answering — s stops it, or wait for the end of its turn");
     }
+    // (one running goes on while the config doesn't read: a new one wouldn't start — `llm::held`)
+    if let Some(why) = llm::held(ed) {
+        return ed.set_error(why);
+    }
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     // (the same conversation, as said — a claude started without `--resume` would begin another)
     if let Some(id) = c.conversation.clone() {
         c.resume = Some(id);
@@ -2164,6 +2178,22 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     ed.set_status(said);
 }
 
+/// The config reads again (`Editor::reload_config_ours`, friction #339): every chat a hold kept from its claude — in
+/// front or behind — starts it as it would have, and what waited goes.
+pub(crate) fn config_read(ed: &mut Editor) {
+    let held = |w: &crate::workspace::Workspace| w.claude.chat.as_ref().is_some_and(|c| c.held);
+    let ids: Vec<_> =
+        std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(|w| held(w)).map(|w| w.id).collect();
+    for id in ids {
+        ed.with_workspace(id, |ed| {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                c.held = false;
+            }
+            gate_opened(ed);
+        });
+    }
+}
+
 /// The project's Claude settings are read (`claudetrust.rs`): its claude starts — held back while their card
 /// waits — and a message that waited for the read goes, and a stopped rebase's ask (`rebase::chat_ready`).
 pub(crate) fn gate_opened(ed: &mut Editor) {
@@ -2309,6 +2339,12 @@ fn ensure_proc(ed: &mut Editor) {
     let parent = crate::orchestra::may_parent(ed);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
+        return;
+    }
+    // (none while the config doesn't read — `llm::held`: the chat says why where it would start, and it starts once it
+    // reads, `config_read`)
+    c.held = !ed.config_unread.is_empty();
+    if c.held {
         return;
     }
     // The project's Claude settings run commands as you under `-p` (no trust dialog there): read first, and
@@ -3195,9 +3231,12 @@ pub(crate) fn send_queued(ed: &mut Editor) {
     // of frictions36. A re-read while it runs — the settings' watch — holds nothing: its claude is there)
     // (nor while its checkout is moved onto its base: sent as the move lands — `keepclose::moved`)
     // (nor while a card asks about the replies that went first, raised at this very loop: nothing goes past them)
+    // (nor while no claude starts until the config reads, none running: it goes as it reads — `config_read`)
     let held = |ed: &Editor| {
         ed.workspace.moving.is_some()
             || crate::reads::replies_ask(ed)
+            || (!ed.config_unread.is_empty()
+                && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.running()))
             || ed
                 .workspace
                 .claude
@@ -3327,6 +3366,7 @@ pub fn send_typed(ed: &mut Editor) {
 fn send_from(ed: &mut Editor, slash: bool) {
     // (its checkout being moved onto its base: the message waits for that as for a turn — `keepclose.rs`)
     let moving = ed.workspace.moving.is_some();
+    let unread = !ed.config_unread.is_empty();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     let question = c.input.text().trim().to_string();
     // (a message going: what a `C-c` cleared before it is no longer what `↑` gives back)
@@ -3351,8 +3391,10 @@ fn send_from(ed: &mut Editor, slash: bool) {
     }
     // Claude is working: it waits its turn (#23) — said over the input, sent when this turn ends; a second
     // one joins it. So it does while the project's settings are read (`claudetrust.rs` — their card doesn't
-    // hold it: claude runs held back meanwhile): sent once it starts
-    if (c.busy() || c.settings.waiting() || moving) && !question.is_empty() {
+    // hold it: claude runs held back meanwhile): sent once it starts — and while no claude starts until the config
+    // reads (`llm::held`, said where it would start)
+    let held = unread && !c.running();
+    if (c.busy() || c.settings.waiting() || moving || held) && !question.is_empty() {
         // (`/compact` waits alone, as it goes — joined to a message it would be that message's text, never run;
         // what's over the input stays there for a message)
         let waits = c.queued.as_deref();

@@ -202,6 +202,9 @@ pub struct Config {
     pub theme: Theme,
     /// The project file's held-back part (`trust.rs`) — None when it has none.
     pub project: Option<crate::trust::Project>,
+    /// The files that didn't read — `file:line: why`, as their warnings say it: one there and tarae runs on what's
+    /// left, its defaults maybe, so no claude starts until they read (`llm::held`, friction #339).
+    pub unread: Vec<String>,
 }
 
 // ── Paths ────────────────────────────────────────────────────────────────────
@@ -358,11 +361,14 @@ pub(crate) fn load_layers(
     local: Option<(PathBuf, PathBuf)>,
     store: &crate::trust::Store,
 ) -> (Config, Vec<String>) {
-    let read = |path: &Path, warnings: &mut Vec<String>| match fs::read_to_string(path) {
+    // (a file there that can't be read is one that doesn't read: said, and kept in `Config.unread`)
+    let mut unread = Vec::new();
+    let mut read = |path: &Path, warnings: &mut Vec<String>| match fs::read_to_string(path) {
         Ok(src) => Some(src),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
             warnings.push(format!("{}: {e}", short(path)));
+            unread.push(format!("{}: {e}", short(path)));
             None
         }
     };
@@ -437,6 +443,7 @@ pub(crate) fn load_layers(
             Err(why) => warnings.push(format!("{}: not read — {why}", short(path))),
         }
     }
+    config.unread.extend(unread);
     config.theme = crate::theme::load(&config.editor.theme).unwrap_or_else(|e| {
         warnings.push(e);
         Theme::default()
@@ -477,7 +484,9 @@ fn apply_source(
         Err(e) => {
             let line = e.span().map(|s| src[..s.start.min(src.len())].lines().count().max(1));
             let at = line.map(|l| format!(":{l}")).unwrap_or_default();
-            warnings.push(format!("{file}{at}: {}", e.message()));
+            let said = format!("{file}{at}: {}", e.message().trim());
+            config.unread.push(said.clone());
+            warnings.push(said);
             return;
         }
     };

@@ -1492,6 +1492,7 @@ fn queued_said(ed: &mut Editor) {
         k => (format!("{k} replies queued"), "they go as one message"),
     };
     let when = match () {
+        _ if c.held && !c.running() => format!("no claude until your config reads; {go} once it does"),
         _ if c.settings.waiting() && !c.running() => format!("claude is starting; {go} once it's up"),
         _ if asked => format!("{go} once the card is answered"),
         _ => format!("{go} when Claude's turn ends"),
@@ -1626,7 +1627,7 @@ pub fn send(ed: &mut Editor, replies: Vec<Reply>, lines: Option<bool>) {
     }
     // (its claude starting — the project's settings read first: they wait for it, frictions29 #67 — or a turn begun
     // while a card held them: at its end, the card's answer kept, never "couldn't reach claude")
-    if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting() || c.busy()) {
+    if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.starts_later() || c.busy()) {
         return back_in_line(ed, replies, lines);
     }
     // Claude never saw them — take them back (the chat panel says why)

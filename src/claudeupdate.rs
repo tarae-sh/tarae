@@ -103,6 +103,10 @@ pub const UPDATES_OFF: &[&str] = &["DISABLE_UPDATES", "DISABLE_AUTOUPDATER"];
 /// `UPDATES_OFF`: it asks Anthropic's servers for a newer claude and installs it; the next chat process runs it.
 /// What the versions folder holds is looked at first, on a worker — its end says what came (`ran`).
 pub fn update(ed: &mut Editor) -> Result<(), String> {
+    // (the command is the config's: while it doesn't read, the default's — never run then, `llm::held`)
+    if let Some(why) = crate::llm::held(ed) {
+        return Err(why);
+    }
     let command = ed.config.llm.command.clone();
     let unset: String = UPDATES_OFF.iter().map(|v| format!("-u {v} ")).collect();
     let cmd = format!("env {unset}{} update", crate::packs::sh_quote(&command));

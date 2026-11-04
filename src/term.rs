@@ -18706,6 +18706,36 @@ fn continue_row(
     row
 }
 
+/// Where the chat's claude would start while the config doesn't read (`llm::held`, friction #339): why it doesn't — `▲ no
+/// claude until your config reads`, the file's own words with its line (wrapped as a toast is, `toast_wrap`, never cut: you
+/// fix it from them), the way out. Styles: (warning, strong, dim, key, faint).
+fn held_rows(
+    editor: &Editor,
+    w: usize,
+    (warn, strong, dim, key, faint): (Style, Style, Style, Style, Style),
+) -> Vec<Vec<crate::markdown::Span>> {
+    use crate::markdown::Span;
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
+    // (the head wrapped too, its rows after the first under its words)
+    let head = toast_wrap("no claude until your config reads", w.saturating_sub(2).max(1), false);
+    let mut rows: Vec<Vec<Span>> = (head.into_iter().enumerate())
+        .map(|(i, l)| vec![sp(if i == 0 { "▲ " } else { "  " }.into(), warn), sp(l, strong)])
+        .collect();
+    rows.push(vec![]);
+    for said in &editor.config_unread {
+        rows.extend(toast_wrap(said, w.max(1), true).into_iter().map(|l| vec![sp(l, dim)]));
+    }
+    let (way, then) = crate::llm::HELD_WAY.split_once(':').unwrap_or((crate::llm::HELD_WAY, ""));
+    rows.push(vec![]);
+    rows.push(vec![sp(way.into(), faint), sp(format!(":{then}"), key)]);
+    rows
+}
+
+/// Whether the chat's claude is held where it would start (`llm::held`): the config doesn't read, none running.
+fn held_here(editor: &Editor, c: &crate::chat::Chat) -> bool {
+    !editor.config_unread.is_empty() && !c.running()
+}
+
 /// A continued conversation as its top line says it (`Chat.continued`, a session brought back): `continued · 2h ago ·
 /// 120k` — one piece in its parts (`continued `, `· 2h ago `, `· 120k`), the size and then the age folding first
 /// (`fold_details`).
@@ -18726,7 +18756,7 @@ fn chat_frame_at(editor: &Editor, w: usize, rows: usize, text_top: usize) -> Opt
     let c = editor.workspace.claude.chat.as_ref()?;
     let (tw, _) = chat_widths(r.w.saturating_sub(1), false);
     let input_h = c.input.laid(tw).height().clamp(1, CHAT_INPUT_MAX);
-    let h = (input_h + 2 + usize::from(ask_past(c).is_some())).min(rows);
+    let h = (input_h + 2 + usize::from(ask_past(c).is_some() || held_here(editor, c))).min(rows);
     let ask = crate::split::Rect { y: crate::pane::Frame::placed_y(h, rows), h, ..r };
     Some(clear_of(ask, carried_rows(editor, true, text_top), rows, h))
 }
@@ -19006,7 +19036,8 @@ fn draw_ask_line(
     };
     let input = c.input.laid(w);
     let (cur_row, cur_col) = input.cursor();
-    let room = rows.saturating_sub(1 + usize::from(ask_past(c).is_some())).max(1);
+    let held = held_here(editor, c);
+    let room = rows.saturating_sub(1 + usize::from(ask_past(c).is_some() || held)).max(1);
     let input_h = input.height().clamp(1, CHAT_INPUT_MAX.min(room));
     let first_input = input.height().saturating_sub(input_h).min(cur_row);
     let text_x = x0 + GAP + PAD;
@@ -19051,8 +19082,30 @@ fn draw_ask_line(
         chat_row_end(out, card, cw, 2 + used)?;
         y += 1;
     }
+    // No claude until the config reads (`llm::held`): why, under the line in its place — one row, whole on its card
+    if let Some(why) = crate::llm::held(editor).filter(|_| held && y < top + rows) {
+        chat_row_start(out, x0, y, edge, card)?;
+        let warn = editor
+            .theme
+            .try_get("warning")
+            .and_then(|s| s.fg)
+            .map_or(accent, |fg| Style { fg: Some(fg), ..card });
+        let words = crate::whole::fit(&why, w.saturating_sub(2).max(1));
+        let row = [
+            crate::markdown::Span {
+                cut: None,
+                hint: false,
+                text: "▲ ".into(),
+                style: Style { bold: true, ..warn },
+            },
+            words.span(dim),
+        ];
+        let used = chat_spans_at(out, &row, card, w, (crate::whole::On::Chat, text_x, y, (x0, x0 + cw)))?;
+        chat_row_end(out, card, cw, used)?;
+        y += 1;
+    }
     // An empty chat: the project's latest conversation a key away, under the line — as the docked chat's first keys
-    if let Some(p) = ask_past(c).filter(|_| y < top + rows) {
+    else if let Some(p) = ask_past(c).filter(|_| y < top + rows) {
         chat_row_start(out, x0, y, edge, card)?;
         let row = continue_row(editor, ui, p, w, crate::chats::now(), (key, faint));
         let used = chat_spans_at(out, &row, card, w, (crate::whole::On::Chat, text_x, y, (x0, x0 + cw)))?;
@@ -19179,8 +19232,20 @@ fn draw_chat(
         lines.push(Vec::new());
         lines.push(vec![sp(sign(editor), accent), sp(" thinking…".into(), dim)]);
     }
+    // No claude until the config reads (`llm::held`): said where it would start — an empty chat's first rows in place of
+    // its guidance, else under the conversation's last
+    if held_here(editor, c) {
+        if !c.msgs.is_empty() {
+            lines.push(Vec::new());
+        }
+        lines.extend(held_rows(
+            editor,
+            w,
+            (Style { bold: true, ..warn_fg }, strong, dim, Style { bold: true, ..dim }, faint),
+        ));
+    }
     // Empty chat: guidance + example questions in the middle
-    if c.msgs.is_empty() && !c.busy() {
+    else if c.msgs.is_empty() && !c.busy() {
         let reads = match editor.front_file().map(|d| d.display_name_short()) {
             Some(name) => vec!["It reads the whole project,".to_string(), format!("starting from {name}.")],
             None => vec!["It reads the whole project.".to_string()],
@@ -19375,6 +19440,12 @@ fn draw_chat(
             let sign = wave_here(editor, true, ("chat top", 0)).unwrap_or_else(|| crate::shimmer::mark(""));
             vec![sp(rule_through(sign), accent), sp(format!(" starting {t}"), dim)]
         }
+        // (no claude until the config reads — `llm::held`: what needs you, in warning, never "ready")
+        State::Idle if held_here(editor, c) => match left {
+            11.. => vec![sp("▲ no claude".into(), warn_fg)],
+            1.. => vec![sp("▲".into(), warn_fg)],
+            _ => Vec::new(),
+        },
         State::Idle => match crate::models::label(editor) {
             Some(m) if left >= 4 => vec![crate::whole::fit(&m, left).span(faint)],
             None if left >= 5 => vec![sp("ready".into(), faint)],

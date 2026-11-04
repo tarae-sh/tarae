@@ -101,6 +101,9 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     if instruction.is_empty() {
         return Err("usage: :ask <instruction>".into());
     }
+    if let Some(why) = llm::held(ed) {
+        return Err(why);
+    }
     if ed.workspace.claude.review.is_some() || ed.workspace.claude.ask.is_some() {
         return Err("an ask is already in progress (:ask-cancel)".into());
     }

@@ -513,7 +513,7 @@ fn main() -> Result<()> {
         }
     }
     if !warnings.is_empty() {
-        editor.set_error(format!("config: {}", warnings.join("; ")));
+        editor.set_error(llm::config_said(&editor, &warnings));
     }
     if !packs.said.is_empty() {
         editor.set_warning(format!("packs: {}", packs.said.join("; ")));

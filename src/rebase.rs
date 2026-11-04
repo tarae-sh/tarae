@@ -1441,7 +1441,7 @@ impl Editor {
         // (frictions34 41: a chat whose claude isn't running — none started since tarae did — starts it once the
         // project's Claude settings are read, which the send began — only that first read sets `waiting`, and its
         // end opens the gate: the ask goes then, `chat_ready`)
-        let starting = !sent && self.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting());
+        let starting = !sent && self.workspace.claude.chat.as_ref().is_some_and(|c| c.starts_later());
         let Some(r) = self.workspace.rebase.as_mut() else { return };
         match (sent, starting) {
             (true, _) => {

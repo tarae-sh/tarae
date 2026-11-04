@@ -1418,6 +1418,8 @@ pub struct Editor {
     ticking: Option<std::time::Instant>,
     /// Values `:set` at runtime — they win even when the config file is reloaded (the top layer).
     pub overrides: Vec<(String, toml::Value)>,
+    /// The config files that didn't read as last loaded (`Config.unread`): while any, no claude starts (`llm::held`).
+    pub config_unread: Vec<String>,
     pub pending: Vec<Key>,
     pub(crate) count: Option<usize>,
     /// Starting snapshot of the open edit group. Stays open throughout insert mode.
@@ -1734,6 +1736,7 @@ impl Editor {
             mouse_in_terminal: false,
             view: Vec::new(),
             overrides: Vec::new(),
+            config_unread: config.unread,
             pending: Vec::new(),
             count: None,
             undo_group: None,
@@ -5554,6 +5557,7 @@ impl Editor {
                 (config.editor, config.keymaps) = (editor.clone(), keymaps.clone());
             }
         }
+        let held = std::mem::replace(&mut self.config_unread, config.unread);
         self.keymaps = config.keymaps;
         self.config = config.editor;
         self.theme = config.theme;
@@ -5566,8 +5570,12 @@ impl Editor {
         self.ensure_theme();
         self.pending.clear();
         self.count = None;
+        // (it reads again: the claudes it held start as they would have — friction #339)
+        if !held.is_empty() && self.config_unread.is_empty() {
+            crate::chat::config_read(self);
+        }
         if !warnings.is_empty() {
-            return self.set_error(format!("config: {}", warnings.join("; ")));
+            return self.set_error(crate::llm::config_said(self, &warnings));
         }
         let Some(set) = ours else { return self.set_status("config reloaded") };
         for (path, saved) in set {

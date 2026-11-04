@@ -63,6 +63,12 @@ One file holds everything — editor, keys, languages, language servers, and Cla
 - **Applied on save** — no restart (`:config-reload` forces a reread)
 - **Mistakes don't block startup** — a bad value or an unknown name is reported as `file:line: message`, and the rest
   of the file still applies
+- **A file that doesn't read starts no claude** — a config file that isn't TOML (a quote left open) or can't be read
+  leaves tarae on what's left, its defaults maybe, and the default `llm.command` is the real `claude`. So until it reads,
+  no claude starts from it: the chat (a new session's, a continue), `space i`, a commit draft, the reviewer and
+  `:claude-update` wait, said in an error toast and where the chat would start, with the file's own words and line. A
+  message sent meanwhile waits too. Fixed and saved (or `:config-reload`), they start as they would have; a claude
+  already running goes on
 - **Helix config files aren't read.** Only the key notation (`"A-x"`) and command names are shared, so a Helix
   `[keys.normal]` table carries over as it is
 

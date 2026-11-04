@@ -5682,13 +5682,15 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     if !sent {
         // (its claude starting — the project's settings read first, as after `:restart`: the review waits for it,
         // frictions29 #67; it went out as "couldn't reach claude" while the chat said nothing of it)
-        if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.settings.waiting()) {
+        // (or none until the config reads — `llm::held`)
+        if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.starts_later()) {
             if !c.sends.contains(&later()) {
                 c.sends.push(later());
             }
+            let why = if c.held { "no claude until your config reads" } else { "claude is starting" };
             let k = drafts.len();
             return ed.set_status(format!(
-                "review queued — claude is starting; its {} go{} once it's up",
+                "review queued — {why}; its {} go{} once it's up",
                 crate::nav::count(k, "comment"),
                 if k == 1 { "es" } else { "" }
             ));

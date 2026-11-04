@@ -261,6 +261,28 @@ pub fn spawn_failed(command: &str, e: &std::io::Error, whole: bool) -> String {
         .into()
 }
 
+/// The way out of a hold, said wherever it is (`held`).
+pub const HELD_WAY: &str = "fix it, then :config-reload";
+
+/// Why no claude starts now, or None: a config file that doesn't read (friction #339). tarae runs on what's left of
+/// the config then — its defaults maybe, and the default `llm.command` is the real claude on PATH: a typo would turn a
+/// stand-in, another command or an API-billed setup into a live claude. So every start from the config holds alike —
+/// the chat (a new session's, a continue), `space i`'s, a commit draft, the reviewer, `:claude-update` — until it reads
+/// (`:config-reload`, or the watch's next load); one already running goes on. The file's own words, with its line.
+pub fn held(ed: &Editor) -> Option<String> {
+    (!ed.config_unread.is_empty())
+        .then(|| format!("no claude until your config reads — {}: {HELD_WAY}", ed.config_unread.join("; ")))
+}
+
+/// A load's warnings as its error toast says them: and, while a file doesn't read, that no claude starts (`held`) — first,
+/// so a toast cut at its third row still says it (a path takes a narrow one's rows).
+pub fn config_said(ed: &Editor, warnings: &[String]) -> String {
+    match ed.config_unread.is_empty() {
+        true => format!("config: {}", warnings.join("; ")),
+        false => format!("config: no claude until it reads — {}: {HELD_WAY}", warnings.join("; ")),
+    }
+}
+
 /// Claude, started in `dir` (the project root — its relative paths, its tools and its kept conversations are there),
 /// with tarae's environment less what `claude_env` leaves out, on `cred` (`billing.rs`: an API session's key helper
 /// laid into its `--settings`). `given`: `Editor::claude_env` — a test's stand-in for tarae's environment, laid
@@ -1471,6 +1493,9 @@ pub fn stop_waiting(ed: &mut Editor, generation: Option<u64>, said: &str) {
 /// A draft's answer for `hunk` of `doc_id`: the process, the review waiting for it, the stream into it — a turn
 /// named `draft` in `:usage` and the call-order record.
 fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: Hunk) -> Result<(), String> {
+    if let Some(why) = held(ed) {
+        return Err(why);
+    }
     let what = "draft";
     let cfg = ed.config.llm.clone();
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
@@ -1947,6 +1972,9 @@ fn apply_accepted(ed: &mut Editor, rev: &Review) -> bool {
     ed.set_status(format!("claude: applied {n} change(s) — u to undo"));
     true
 }
+
+#[cfg(test)]
+mod held_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
