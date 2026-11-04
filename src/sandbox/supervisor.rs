@@ -4474,12 +4474,10 @@ mod tests {
         let got = &probe_in(&p, &[format!("own-ns {open_at} {closed_at}")])[0];
         super::super::end_leftovers(Some(&s.root));
         if got == "no-userns" {
-            let line = format!(
-                "{}sandbox::supervisor::tests::a_run_in_its_own_namespace_is_served — no user namespace for the \
-                 run here\n",
-                crate::test_results::SELF_SKIP
+            crate::test_results::said_skip(
+                "sandbox::supervisor::tests::a_run_in_its_own_namespace_is_served — no user namespace for the run \
+                 here",
             );
-            let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
             return;
         }
         let c = p.confine.as_ref().and_then(|c| c.as_ref().ok()).unwrap();
