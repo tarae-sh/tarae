@@ -10817,15 +10817,16 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         let y = (pl.text_top as usize).saturating_sub(1);
         let doc = &editor.docs[*idx];
         // (the sessions' strip at the screen's top row's right while no chat column stands there to name them — the
-        // flow plan's piece 2: the chat floats by default)
-        let strip = (y == 0 && r.x + r.w == lay.edit_w && lay.chat_w == 0)
-            .then(|| top_strip(editor, ui, r.w))
-            .flatten();
-        // (`─ ` before the names, ` ─` after them)
-        let strip_w =
-            strip.as_ref().map_or(0, |(spans, _)| spans.iter().map(|s| s.text.width()).sum::<usize>() + 4);
-        let w = r.w - strip_w;
-        code_line(editor, ui, doc, (*id, *focused, railless, lit(*id, *r)), (r.x, y, w), out)?;
+        // flow plan's piece 2: the chat floats by default — on the rule the path's own text leaves: `top_strip`)
+        let up = y == 0 && r.x + r.w == lay.edit_w && lay.chat_w == 0;
+        let mut strip = None;
+        let mut beside = |text_w: &dyn Fn(usize) -> usize| {
+            strip = top_strip(editor, ui, r.w, text_w);
+            strip.as_ref().map_or(0, |(spans, _)| strip_w(spans))
+        };
+        let beside = up.then_some(&mut beside as Beside);
+        let w =
+            code_line(editor, ui, doc, (*id, *focused, railless, lit(*id, *r)), (r.x, y, r.w), beside, out)?;
         if let Some((spans, spots)) = strip {
             editor.screen.top_strip.set(true);
             draw_top_strip(editor, ui, (r.x + w, y), &spans, spots, out)?;
@@ -10834,13 +10835,25 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
     Ok(())
 }
 
+/// What sits at a code pane's top line's right end (`code_line`): told the cells the line's text takes fitted into a width,
+/// the cells it takes.
+type Beside<'a> = &'a mut dyn FnMut(&dyn Fn(usize) -> usize) -> usize;
+
+/// The cells `top_strip`'s sessions take on the line: `─ ` before the names, ` ─` after them (`draw_top_strip`).
+fn strip_w(spans: &[crate::markdown::Span]) -> usize {
+    spans.iter().map(|s| s.text.width()).sum::<usize>() + 4
+}
+
 /// The sessions as the chat's top line names them (`session_tabs`), for the screen's top row while the chat floats or is
-/// hidden: a third of the line at most, never under the code's own path — none with one session.
+/// hidden: the rule the code's path leaves — its text as it's fitted beside a third of the line taken whole (`text_w`:
+/// the cells it takes in a width, the line's own ` ──` after it its air with the strip's `─ `) — and never less than that
+/// third, so the path keeps its place and its folding (the user, 2026-11-04) — none with one session.
 #[allow(clippy::type_complexity)]
 fn top_strip(
     editor: &Editor,
     ui: &Ui,
     line_w: usize,
+    text_w: &dyn Fn(usize) -> usize,
 ) -> Option<(Vec<crate::markdown::Span>, Vec<(usize, usize, crate::workspace::Spot)>)> {
     if editor.workspaces.is_empty() {
         return None;
@@ -10855,11 +10868,14 @@ fn top_strip(
         .and_then(|s| s.fg)
         .map_or(accent, |fg| Style { fg: Some(fg), ..card });
     let reviewer = Style { fg: reviewer_style(editor, ui).fg, ..card };
-    let room = (line_w / 3).max(12);
-    let (spans, spots) = session_tabs(editor, room, 0, [dim, faint, accent, warn, reviewer], &|c| Style {
-        fg: ui.participant(c, true),
-        ..card
-    });
+    let colour = |c| Style { fg: ui.participant(c, true), ..card };
+    // (the front's file is the path bar's, right beside it)
+    let tabs = |room| session_tabs_in(editor, room, 0, [dim, faint, accent, warn, reviewer], &colour, false);
+    // (the path as it's fitted beside the strip's whole third — never beside what the strip says: no name or count of its
+    // own moves its room; what that leaves past the air is the strip's too)
+    let third = (line_w / 3).max(12);
+    let left = line_w.saturating_sub(text_w(line_w.saturating_sub(third + 4)) + 4);
+    let (spans, spots) = tabs(third.max(left));
     (!spans.is_empty()).then_some((spans, spots))
 }
 
@@ -10910,15 +10926,17 @@ fn draw_top_strip(
 /// One code pane's top line: `─ project › folder › file ● › ƒ scope ─── other.rs  file ● ─` — the file's path (a preview's
 /// name in italic), what it's compared with, a woven view's sessions; the focused pane's also the scope under the cursor,
 /// a review's place and the buffers at the right end. Lit (`edge_style`) where the keys are; folded by each piece's
-/// `keep` (`fit_segments`).
+/// `keep` (`fit_segments`). `beside`: told the cells its text takes fitted into a width, it says the cells something at
+/// the line's right end takes (the sessions' strip, `top_strip`) — the line drawn in what's left, its width returned.
 fn code_line(
     editor: &Editor,
     ui: &Ui,
     doc: &crate::document::Document,
     (id, focused, railless, held): (crate::split::PaneId, bool, bool, Grab),
-    (x0, y0, width): (usize, usize, usize),
+    (x0, y0, line_w): (usize, usize, usize),
+    beside: Option<Beside>,
     out: &mut impl Write,
-) -> io::Result<()> {
+) -> io::Result<usize> {
     let t = &editor.theme;
     let dim = Style { fg: ui.virt.fg, ..ui.base };
     let faint = Style { fg: ui.linenr.fg, ..ui.base };
@@ -10934,14 +10952,13 @@ fn code_line(
     };
     let line = grab_style(ui, line, held);
     let key = Style { bold: true, ..dim };
-    let bare = |out: &mut _| {
-        let head = TopLine { key, faint, ..TopLine::default() };
-        top_line(out, line, ui.base, (x0, y0, width), ("", "", "┬"), &[], true, &head).map(|_| ())
-    };
     // (the start screen is a title page: its line bare over an empty buffer — the folder's name is in its colophon:
     // `draw_welcome`)
     if editor.welcome() {
-        return bare(out);
+        let width = line_w.saturating_sub(beside.map_or(0, |f| f(&|_| TOP_LINE_OWN)));
+        let head = TopLine { key, faint, ..TopLine::default() };
+        top_line(out, line, ui.base, (x0, y0, width), ("", "", "┬"), &[], true, &head)?;
+        return Ok(width);
     }
     let sep = |keep| Seg { cut: None, text: MEMBERS_SEP.into(), style: faint, keep };
     let mut left = Vec::new();
@@ -10975,15 +10992,12 @@ fn code_line(
     let name = doc.display_name_short();
     let style = named(if focused { strong } else { dim }, doc);
     // (a page's title cut to the room left with `…`, its `web · host` whole — a page's name runs long where a file's
-    // is short, and a segment that doesn't fit goes whole)
+    // is short, and a segment that doesn't fit goes whole: put in once the line's width is known, below)
+    let mut title = None;
     match name.split_once(" › ").filter(|_| page.is_some()) {
-        Some((place, title)) => {
-            let room = width.saturating_sub(TOP_LINE_OWN + 1 + place.width() + " › ".width());
-            let title = crate::whole::fit(title, room);
+        Some((place, t)) => {
             left.push(Seg { cut: None, text: place.to_string(), style, keep: 250 });
-            if title.width() > 1 {
-                left.push(Seg::of(title.lead(" › "), style, 249));
-            }
+            title = Some((left.len(), place.width(), t.to_string(), style));
         }
         None => left.push(Seg { cut: None, text: name, style, keep: 250 }),
     }
@@ -11172,30 +11186,54 @@ fn code_line(
             right.push(Seg { cut: None, text: "  ".into(), style: ui.base, keep });
         }
     }
-    // (the line's own cells: its lead `─ `, a blank and a `─` after the path — with the buffers, a blank and a `─` after
-    // them too; `fit_segments` keeps two cells between the two)
-    let unfitted = left.clone();
-    fit_segments(&mut left, &mut right, width.saturating_sub(TOP_LINE_OWN + 1));
-    // (the buffers folded to the one in front: its name said twice, the path's and the list's — #332, a woven view's
-    // `woven · src/main.rs` both ends of the line. A list of one says nothing: gone, the path fitted to the room it leaves)
-    if !right.is_empty() && right.iter().filter(|s| !s.text.trim().is_empty()).all(|s| s.keep == FRONT_BUFFER)
-    {
-        (left, right) = (unfitted, Vec::new());
-        fit_segments(&mut left, &mut right, width.saturating_sub(TOP_LINE_OWN + 1));
-    }
-    parts_whole(&mut left, &scope);
-    // (a blank spacer left at an end of either side: the line's own blanks take its place)
-    for side in [&mut left, &mut right] {
-        while side.first().is_some_and(|s| s.text.trim().is_empty()) {
-            side.remove(0);
+    // The line's pieces fitted into `w` cells
+    let fitted = |w: usize| {
+        let (mut left, mut right) = (left.clone(), right.clone());
+        if let Some((at, place_w, t, style)) = &title {
+            let room = w.saturating_sub(TOP_LINE_OWN + 1 + place_w + " › ".width());
+            let t = crate::whole::fit(t, room);
+            if t.width() > 1 {
+                left.insert(*at, Seg::of(t.lead(" › "), *style, 249));
+            }
         }
-        while side.last().is_some_and(|s| s.text.trim().is_empty()) {
-            side.pop();
+        // (the line's own cells: its lead `─ `, a blank and a `─` after the path — with the buffers, a blank and a `─`
+        // after them too; `fit_segments` keeps two cells between the two)
+        let unfitted = left.clone();
+        fit_segments(&mut left, &mut right, w.saturating_sub(TOP_LINE_OWN + 1));
+        // (the buffers folded to the one in front: its name said twice, the path's and the list's — #332, a woven view's
+        // `woven · src/main.rs` both ends of the line. A list of one says nothing: gone, the path fitted to the room it
+        // leaves)
+        if !right.is_empty()
+            && right.iter().filter(|s| !s.text.trim().is_empty()).all(|s| s.keep == FRONT_BUFFER)
+        {
+            (left, right) = (unfitted, Vec::new());
+            fit_segments(&mut left, &mut right, w.saturating_sub(TOP_LINE_OWN + 1));
         }
-    }
-    if let Some(first) = left.first_mut() {
-        first.text = first.text.trim_start().to_string();
-    }
+        parts_whole(&mut left, &scope);
+        // (a blank spacer left at an end of either side: the line's own blanks take its place)
+        for side in [&mut left, &mut right] {
+            while side.first().is_some_and(|s| s.text.trim().is_empty()) {
+                side.remove(0);
+            }
+            while side.last().is_some_and(|s| s.text.trim().is_empty()) {
+                side.pop();
+            }
+        }
+        if let Some(first) = left.first_mut() {
+            first.text = first.text.trim_start().to_string();
+        }
+        (left, right)
+    };
+    // (what something at the line's right end takes — the sessions' strip, `top_strip` — told the cells the line's text
+    // takes fitted into a width: its own, the two between the path and the buffers, the pieces)
+    let width = line_w.saturating_sub(beside.map_or(0, |f| {
+        f(&|w| {
+            let (l, r) = fitted(w);
+            let gap = if l.is_empty() || r.is_empty() { 0 } else { 2 };
+            TOP_LINE_OWN + 1 + gap + l.iter().chain(&r).map(seg_w).sum::<usize>()
+        })
+    }));
+    let (left, right) = fitted(width);
     // (what a press on each fitted piece does: a name in the path its row in the side panel's files, a buffer's name that
     // buffer — by `keep`, each piece's own: the project 20, a folder 30 + its depth, the file 250; a buffer `buffer_of`'s)
     let place =
@@ -11272,7 +11310,7 @@ fn code_line(
     let of = crate::uistate::point::Of::Pane(id);
     let at = (cols.last().map_or(x0 + 2, |c| c.1 + 1).min(x0 + width.saturating_sub(1)), y0);
     editor.screen.spots.borrow_mut().push(crate::uistate::point::Spot { of, x: x0, y: y0, w: width, at });
-    Ok(())
+    Ok(width)
 }
 
 impl Seg {
@@ -17623,13 +17661,28 @@ fn sessions_counted(editor: &Editor) -> [String; 2] {
 /// appears in its place); the front's own `working` never (its step says it where it stands); last, those too —
 /// `+N ▲k` — the front's name alone. While `+N` shows, the `+` goes (the list's `o` makes one). Styles: dim, faint,
 /// accent, warning, the reviewer's · where each click goes (from the row's start).
+#[allow(clippy::type_complexity)]
 fn session_tabs(
     editor: &Editor,
     w: usize,
     rail_w: usize,
-    [dim, faint, accent, warn, reviewer]: [Style; 5],
+    styles: [Style; 5],
     // (a session's own colour, collab C1: its name in it is who it is)
     colour: &dyn Fn(u8) -> Style,
+) -> (Vec<crate::markdown::Span>, Vec<(usize, usize, crate::workspace::Spot)>) {
+    session_tabs_in(editor, w, rail_w, styles, colour, true)
+}
+
+/// `session_tabs`, the front's file said or not (`front_file`): the top row's strip leaves it to the path bar beside it
+/// (the user, 2026-11-04 — said twice there); its name, state and `≈` stay, and the others' files.
+#[allow(clippy::type_complexity)]
+fn session_tabs_in(
+    editor: &Editor,
+    w: usize,
+    rail_w: usize,
+    [dim, faint, accent, warn, reviewer]: [Style; 5],
+    colour: &dyn Fn(u8) -> Style,
+    front_file: bool,
 ) -> (Vec<crate::markdown::Span>, Vec<(usize, usize, crate::workspace::Spot)>) {
     use crate::markdown::Span;
     use crate::workspace::{Doing, Spot};
@@ -17716,7 +17769,9 @@ fn session_tabs(
             });
             v.push(Span { cut: None, hint: false, text: name, style: c.map_or(faint, colour) });
         }
-        if let Some(file) = crate::presence::file_of(editor, l.id).filter(|_| files) {
+        let file = (files && (front_file || l.id != editor.workspace.id))
+            .then(|| crate::presence::file_of(editor, l.id));
+        if let Some(file) = file.flatten() {
             v.push(Span { cut: None, hint: false, text: format!(" {file}"), style: dim });
         }
         // (its reviewer reading — beside its chat's mark, in the reviewer's colour: #195; the front session's left to
@@ -25031,6 +25086,72 @@ mod tests {
         let (top, status) = rows(&mut ed);
         assert!(!top.contains("bringing"), "no strip: {top}");
         assert!(status.contains("fix bringing · rebased"), "the chip says it: {status}");
+    }
+
+    /// The user, 2026-11-04: the top row's strip takes the rule the code's path leaves — the path's text as it's fitted
+    /// beside a third, then ` ─── ` of air — and never less than that third, where the path folds as it did; the buffers
+    /// that fold away beside the third leave theirs to it too.
+    #[test]
+    fn the_strip_takes_the_rule_the_path_leaves_and_at_least_a_third() {
+        let dir = crate::scratch::Scratch::new("strip-room");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.name = "main".into();
+        let home = ed.workspace.id;
+        for n in ["docs-pass", "fix-login"] {
+            let p = dir.path().join(n);
+            std::fs::create_dir_all(&p).unwrap();
+            ed.workspace_open(&p).unwrap();
+            ed.workspace.name = n.into();
+        }
+        assert!(ed.workspace_switch(home).is_in());
+        for l in ed.workspaces.iter_mut() {
+            let mut c = crate::chat::Chat::new();
+            c.state = crate::chat::State::Thinking;
+            l.claude.chat = Some(c);
+        }
+        ed.doc_mut().text = ropey::Rope::from_str("fn main() {}\n");
+        // (the top row as drawn `w` wide, the code's file at `path`: the path's part and the strip's)
+        let top = |ed: &mut Editor, path: &str, w: u16| -> (String, String) {
+            let p = ed.workspace.root.join(path);
+            ed.doc_mut().path.set(Some(p));
+            let mut buf = Vec::new();
+            render(ed, &mut buf, w, 24).unwrap();
+            let row =
+                crate::screen::text(&buf, w, 24).unwrap().lines().next().unwrap_or_default().to_string();
+            let at = row.find(" main").unwrap_or_else(|| panic!("the strip drawn: {row}"));
+            let strip = row[at + 1..].trim_end_matches('─').trim_end().to_string();
+            (row[..at].to_string(), strip)
+        };
+        let whole = "main · docs-pass working · fix-login working · +";
+        assert!(whole.width() > 120 / 3, "past the third: {}", whole.width());
+        // A short path: the strip whole, past its third
+        let (path, strip) = top(&mut ed, "src/a.rs", 120);
+        assert!(path.contains("tarae › src › a.rs ─"), "{path}");
+        assert_eq!(strip, whole, "the rule the path leaves");
+        // A long one: its text whole, the air kept, the strip in what's left
+        let long = "tarae › crates › thread-web › src › convert › inner › deeper › table.rs";
+        let (path, strip) = top(&mut ed, "crates/thread-web/src/convert/inner/deeper/table.rs", 120);
+        assert!(path.contains(long), "never folded for the strip: {path}");
+        let rule = path.rsplit("table.rs ").next().unwrap_or_default().trim_end();
+        assert!(rule.chars().all(|c| c == '─') && rule.chars().count() >= 3, "air: {path}");
+        assert_ne!(strip, whole, "folded to what's left: {strip}");
+        // Narrow: the third, the path folding as beside it
+        let (path, strip) = top(&mut ed, "crates/thread-web/src/convert/inner/deeper/table.rs", 80);
+        assert!(strip.width() <= 80 / 3, "its third: {strip}");
+        assert!(path.contains("table.rs") && !path.contains(long), "{path}");
+        // Another buffer, named at length: its name and the front's fold away beside the third (#332), so their rule is
+        // the strip's
+        let root = ed.workspace.root.clone();
+        let at = "crates/thread-web/src/convert/table.rs";
+        ed.doc_mut().path.set(Some(root.join("crates/thread-web/src/convert/a-rather-long-buffer-name.rs")));
+        ed.open(&root.join(at)).unwrap();
+        assert_eq!(ed.buffers().len(), 2);
+        let (path, strip) = top(&mut ed, at, 120);
+        assert!(
+            path.contains("thread-web › src › convert › table.rs ─") && !path.contains("a-rather"),
+            "{path}"
+        );
+        assert_eq!(strip, whole, "their room the strip's");
     }
 
     /// orchestra N6: on the chat's line a child comes right after its parent, joined to it or a sibling by a faint `›`

@@ -72,6 +72,30 @@ fn gaze(ed: &mut Editor, path: PathBuf, lines: Range<usize>) {
         Some(crate::follow::Gaze::new(look, Some(path), Some(lines)));
 }
 
+/// The user, 2026-11-04: the top row's strip leaves the front session's file to the path bar beside it, where it's said
+/// already — its name stays, and a session behind keeps its file; the chat's line, no path bar beside it, names it as ever.
+#[test]
+fn the_strip_leaves_the_front_sessions_file_to_the_path_bar() {
+    let Scene { mut ed, main, _dir, .. } = scene("presence-front-file");
+    gaze(&mut ed, main.join("a.rs"), 1..3);
+    settle(&mut ed, |ed| !main_marks(ed).is_empty());
+    let top = |ed: &mut Editor| rows(&frame(ed, 160))[0].clone();
+    let row = top(&mut ed);
+    assert!(row.contains("main working a.rs"), "behind, its file: {row}");
+    // main in front, its Claude at work in the file you're in
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
+    ed.open(&main.join("a.rs")).unwrap();
+    sync(&mut ed);
+    assert_eq!(file_of(&ed, WorkspaceId::HOME).as_deref(), Some("a.rs"), "where it is");
+    let row = top(&mut ed);
+    assert!(row.contains("a.rs ─"), "the path bar's: {row}");
+    assert!(row.contains("main · fix") && !row.contains("main a.rs"), "said once: {row}");
+    // Its chat's column in sight: its line names it
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
+    let r = rows(&frame(&mut ed, 160));
+    assert!(r.iter().any(|r| r.contains("main a.rs")), "{r:#?}");
+}
+
 /// The main checkout's Claude wrote `path` a moment ago: its tag shows there for `TAG_STAY`.
 fn just_wrote(ed: &mut Editor, path: PathBuf) {
     ed.presence.wrote.insert((WorkspaceId::HOME, path), crate::clock::now());

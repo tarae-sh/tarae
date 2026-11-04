@@ -1,6 +1,6 @@
 # card_says_who_waits_behind · 100x30 · theme meok · cursor 1:4
 ## text
-00 ─ tarae › src › demo.rs ───────────────────────────────────────────────── main ▲ · fix-login ▲ · + ─
+00 ─ tarae › src › demo.rs ──────────────────────────────────── main ▲2 waits · fix-login ▲ waits · + ─
 01   1 use std::collections::HashMap;
 02   2
 03   3 ▎ Counts how often each word appears.
@@ -62,7 +62,7 @@
 28
 29
 ## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
-00 a ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf BBBB w f           w f d f
+00 a ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf BBBB ww wwwww f           w wwwww f d f
 01   A
 02   f
 03   f f

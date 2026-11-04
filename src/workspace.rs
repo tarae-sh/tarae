@@ -2718,7 +2718,8 @@ mod tests {
         // In minutes past one; no room for the words: the states fold to their marks, the names to their prefixes
         since(&mut ed, 200);
         assert_eq!(ed.doing(workspace_by(&ed, id)).said(), "symbols  3m");
-        workspace_by_mut(&mut ed, id).name = "back-and-forth-and-back-again".into();
+        // (past the rule the path leaves the top row's strip)
+        workspace_by_mut(&mut ed, id).name = format!("back-and-forth{}", "-and-back-again".repeat(5));
         let narrow =
             screen(&mut ed, 100, 24).into_iter().find(|r| r.contains(" · +")).expect("the sessions' line");
         assert!(narrow.contains(" · +1 ◦1 ─"), "the stuck one in `+1`, its sign with it: {narrow}");

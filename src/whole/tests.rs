@@ -2142,7 +2142,8 @@ fn a_cut_status_piece_is_whole_on_a_fresh_frame_and_a_cached_one() {
     let dir = crate::scratch::Scratch::new("whole-status");
     let mut ed = Editor::new(Config::default());
     ed.workspace_add(dir.to_path_buf());
-    ed.workspace.git_branch = Some(format!("{}and-farewell", "a-branch-named-at-length-".repeat(2)));
+    // (longer than the top row's strip has room for, the rule the path leaves too)
+    ed.workspace.git_branch = Some(format!("{}and-farewell", "a-branch-named-at-length-".repeat(6)));
     whole_fresh_and_cached(&mut ed, On::Status, "farewell", |_| {});
 }
 
