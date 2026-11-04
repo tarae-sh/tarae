@@ -67,6 +67,7 @@ mod cards;
 mod claudestub;
 mod compat;
 mod deb;
+mod dockerlock;
 mod failures;
 mod focus;
 mod glyphs;

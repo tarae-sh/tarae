@@ -53,6 +53,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::{Result, root};
 
@@ -455,6 +456,8 @@ pub fn run(args: &[String]) -> Result<()> {
     if let Err(why) = reachable(&mut Command::new("docker")) {
         return unreachable(&why, needed);
     }
+    // (one check at a time on this Docker, whoever started it — #352: five at once ran colima's VM out of memory)
+    let _turn = crate::dockerlock::take(&crate::dockerlock::endpoint(&Command::new("docker")), &root);
     let on = platform.map(|p| format!(", {p}")).unwrap_or_default();
     eprintln!("Linux checks on {} (Rust {pin}{on}) …", image(&pin));
     let machine = machine_id(&root);
@@ -556,19 +559,70 @@ pub(crate) fn pin(toolchain: &str) -> Result<String> {
         .ok_or_else(|| "rust-toolchain.toml: no [toolchain] channel".into())
 }
 
+/// How long `docker version` may take before its Docker is said not to answer (#352: a VM out of memory left every
+/// Docker command hanging, and a preflight said only `no output for 37m`).
+const ANSWER: Duration = Duration::from_secs(30);
+
+/// What a Docker that doesn't answer is said with — `way_for` reads it.
+const NOT_ANSWERING: &str = " isn't answering";
+
 /// Whether the Docker `docker` would talk to answers — Err: why not, in a line.
 pub(crate) fn reachable(docker: &mut Command) -> std::result::Result<(), String> {
-    let out = docker
-        .args(["version", "--format", "{{.Server.Version}}"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("no docker command ({e})"))?;
+    reachable_within(docker, ANSWER)
+}
+
+fn reachable_within(docker: &mut Command, within: Duration) -> std::result::Result<(), String> {
+    docker.args(["version", "--format", "{{.Server.Version}}"]).stdin(std::process::Stdio::null());
+    let out = match output_within(docker, within) {
+        Ok(Some(out)) => out,
+        Ok(None) => {
+            return Err(format!(
+                "Docker at {}{NOT_ANSWERING} — nothing from `docker version` in {}",
+                crate::dockerlock::endpoint(docker),
+                crate::buildprune::ago(within)
+            ));
+        }
+        Err(e) => return Err(format!("no docker command ({e})")),
+    };
     if out.status.success() {
         return Ok(());
     }
     let err = String::from_utf8_lossy(&out.stderr);
     let why = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("it didn't answer");
     Err(why.to_string())
+}
+
+/// `cmd`'s output, its stdout and stderr read as it runs — None: it didn't end `within`, and it's killed.
+pub(crate) fn output_within(
+    cmd: &mut Command,
+    within: Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    fn drain<R: std::io::Read + Send + 'static>(r: Option<R>) -> Option<std::thread::JoinHandle<Vec<u8>>> {
+        r.map(|mut r| {
+            std::thread::spawn(move || {
+                let mut b = Vec::new();
+                let _ = r.read_to_end(&mut b);
+                b
+            })
+        })
+    }
+    let mut child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+    let (out, err) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let by = std::time::Instant::now() + within;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if std::time::Instant::now() >= by {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let joined =
+        |t: Option<std::thread::JoinHandle<Vec<u8>>>| t.and_then(|t| t.join().ok()).unwrap_or_default();
+    Ok(Some(std::process::Output { status, stdout: joined(out), stderr: joined(err) }))
 }
 
 /// The Docker settings a run in tarae's sandbox (`TARAE_SANDBOXED`) can't find for itself (#139) — the user's
@@ -661,7 +715,7 @@ pub(crate) fn docker_in_sandbox() -> Option<DockerConfig> {
 
 /// The line said when there's no Docker to run in — what a preflight note matches.
 pub(crate) fn skipped(why: &str) -> String {
-    skipped_with(why, &way_here())
+    skipped_with(why, &way_for(why))
 }
 
 fn skipped_with(why: &str, way: &str) -> String {
@@ -669,6 +723,17 @@ fn skipped_with(why: &str, way: &str) -> String {
 }
 
 const START_IT: &str = "start it — colima start -p tarae-test — or set DOCKER_CONTEXT";
+
+/// The way for a Docker that's there but doesn't answer (#352: its VM out of memory, load 170).
+const LOOK_AT_IT: &str = "its VM may be out of memory or disk — colima ssh -p tarae-test -- free -m; colima restart -p tarae-test ends what runs there";
+
+/// The way said after `why`: a Docker that doesn't answer is looked at, else `way_here`'s.
+fn way_for(why: &str) -> String {
+    match why.contains(NOT_ANSWERING) {
+        true => LOOK_AT_IT.into(),
+        false => way_here(),
+    }
+}
 
 /// `way_in` for this process: its environment, the socket connected to.
 fn way_here() -> String {
@@ -704,7 +769,7 @@ fn no_skip(args: &[String]) -> (bool, &[String]) {
 /// No Docker to run in (`why`): a skip said, or with `--no-skip` (`needed`) a failure saying why — the Linux
 /// checks not run are never a pass where they're asked for.
 fn unreachable(why: &str, needed: bool) -> Result<()> {
-    unreachable_with(why, &way_here(), needed)
+    unreachable_with(why, &way_for(why), needed)
 }
 
 fn unreachable_with(why: &str, way: &str, needed: bool) -> Result<()> {
@@ -3588,6 +3653,33 @@ mod tests {
         assert!(line.starts_with("skipped — Docker isn't reachable: "), "{line}");
         let line = skipped_with(&reachable(&mut Command::new("tarae-no-such-docker")).unwrap_err(), START_IT);
         assert!(line.starts_with("skipped — Docker isn't reachable: no docker command"), "{line}");
+    }
+
+    /// #352: a Docker that's there but doesn't answer — its VM out of memory, every command hanging — is said so,
+    /// with its endpoint and the way to look at it, once `docker version` has had its time; never a hang with no
+    /// output. A stand-in `docker` whose `version` never ends.
+    #[test]
+    fn a_docker_that_doesnt_answer_is_said_plainly() {
+        let s = tarae_testkit::scratch::Scratch::new("xtask-docker-hung");
+        let fake = s.join("docker");
+        tarae_testkit::scratch::write_script(
+            &fake,
+            "#!/bin/sh\n[ \"$1\" = version ] && exec sleep 600\nexit 1\n",
+        );
+        let mut docker = Command::new(&fake);
+        docker.env("DOCKER_HOST", "tcp://stand-in:2375");
+        let start = std::time::Instant::now();
+        let why = reachable_within(&mut docker, Duration::from_millis(300)).unwrap_err();
+        assert!(start.elapsed() < crate::PATIENCE, "it waited past its time");
+        assert!(
+            why.starts_with(
+                "Docker at tcp://stand-in:2375 isn't answering — nothing from `docker version` in "
+            ),
+            "{why}"
+        );
+        let failed = unreachable(&why, true).unwrap_err();
+        assert!(failed.ends_with(&format!("({LOOK_AT_IT})")), "looked at, not started: {failed}");
+        assert!(skipped(&why).ends_with(&format!("({LOOK_AT_IT})")));
     }
 
     /// `--no-skip` (#257, the landing's Linux clippy): no Docker fails, saying why and how to start it — never a

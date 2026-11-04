@@ -403,4 +403,20 @@ mod tests {
             Some("Waited 21.0s queued behind cargo test. Ran 11.0s.".into())
         );
     }
+
+    /// #352: `cargo xtask linux` waiting its turn on a Docker (`xtask/src/dockerlock.rs`'s line) is a wait, by the
+    /// rust pack — the preflight's step says `waiting for another Linux check (fixes) · 4:12`, not `no output for`;
+    /// its line said again later, with the holder's new time, is the same wait.
+    #[test]
+    fn a_linux_check_waiting_its_turn_is_a_wait() {
+        let rules = Rules::load();
+        let line =
+            |t: &str| format!("waits for another Linux check (fixes, {t}) — one at a time on unix:///x.sock");
+        let hit = rules.hit(&line("4m")).expect("the rust pack's");
+        assert_eq!(hit.said, "another Linux check (fixes)");
+        assert_eq!(rules.hit(&line("9m")), Some(hit));
+        let hit = rules.hit("waits for another Linux check (a checkout not named yet) — one at a time on x");
+        assert_eq!(hit.unwrap().said, "another Linux check (a checkout not named yet)");
+        assert_eq!(rules.hit("waited 4m for another Linux check — its turn now"), None, "its end isn't one");
+    }
 }

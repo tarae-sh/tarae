@@ -335,13 +335,14 @@ fn mem(bytes: u64) -> String {
     }
 }
 
-/// A time by its largest unit, as tarae says an age: `3d`, `5h`, `12m`.
-fn ago(d: Duration) -> String {
+/// A time by its largest unit, as tarae says an age: `3d`, `5h`, `12m`, `40s`.
+pub(crate) fn ago(d: Duration) -> String {
     let s = d.as_secs();
     match s {
         s if s >= 24 * 3600 => format!("{}d", s / (24 * 3600)),
         s if s >= 3600 => format!("{}h", s / 3600),
-        s => format!("{}m", s / 60),
+        s if s >= 60 => format!("{}m", s / 60),
+        s => format!("{s}s"),
     }
 }
 

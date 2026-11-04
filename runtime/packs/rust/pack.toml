@@ -149,6 +149,13 @@ line = '^\s*Blocking waiting for file lock on (?<what>.+)$'
 for = "cargo's lock"
 report = "cargo's {what} lock"
 
+# A project's `cargo xtask linux` waiting its turn on a Docker (tarae's own xtask, `xtask/src/dockerlock.rs` — #352:
+# one at a time a Docker, machine-wide): `waits for another Linux check (fixes, 4m) — one at a time on …`
+[[waits]]
+line = '^waits for another Linux check \((?<who>[^,)]+)'
+for = "another Linux check ({who})"
+report = "another Linux check on its Docker ({who})"
+
 # Worktrees and checkouts inside the project aren't scanned (paths from its root; no defaults to keep)
 [server.rust-analyzer]
 # It runs the project's code as it starts (G13): `cargo metadata` runs the toolchain `rust-toolchain.toml` names and
