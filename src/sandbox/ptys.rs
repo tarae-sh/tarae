@@ -10,19 +10,22 @@
 //! its processes hold is looked at (`/proc/<pid>/fd`, the processes `below` its keeper) — one none of them holds is emptied,
 //! set as new and locked, and goes back to the pool (`settle` — judged only by a look begun after it was handed);
 //! one whose master the run closed while something of
-//! it still holds the other end is hung up as without tarae — tarae closes its master too — and is gone. So a run
-//! has `POOL` at a time; past them, every one held, it's refused, said.
+//! it still holds the other end is hung up as without tarae — tarae closes its master too — and is gone, once a
+//! look `WATCH_EVERY` after the first still sees it so (a pty let go is closed one end after the other: a look
+//! between the two isn't a hang-up). So a run has `POOL` at a time; past them, every one held, it's refused, said.
 
 use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The terminals one run holds at a time — each a pty tarae holds while the run goes (`kernel.pty.max`: 4096).
 pub const POOL: usize = 16;
 
-/// How often what a run holds is looked at while it has one of the pool (the latest a pty it closed is hung up).
+/// How often what a run holds is looked at while it has one of the pool — and how long after a look saw a pty's
+/// master closed and its other end held another must still see it so before it's hung up (about twice this, the
+/// latest a pty it closed is).
 pub const WATCH_EVERY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +52,16 @@ struct Entry {
     /// The looks at what the run holds begun when it was last handed (`Inner.looks`): only a look begun after
     /// that judges it (`settle`).
     handed: u64,
+    /// When a look last ended that saw its other end held and its master not — a hang-up only once a look begun
+    /// `WATCH_EVERY` after still sees it so: the run closing both, master first, is that between its two closes.
+    orphaned: Option<Instant>,
+}
+
+/// A look at what the run holds (`begin`): its number among the looks begun, and when it began.
+#[derive(Clone, Copy, Debug)]
+pub struct Look {
+    n: u64,
+    at: Instant,
 }
 
 /// What the run's processes hold of one pty.
@@ -119,7 +132,14 @@ impl Entry {
             (master, n)
         };
         let slave = peer(master.as_fd(), libc::O_PATH)?;
-        Ok(Entry { n, master: Some(master), slave: Some(slave), state: State::Free, handed: 0 })
+        Ok(Entry {
+            n,
+            master: Some(master),
+            slave: Some(slave),
+            state: State::Free,
+            handed: 0,
+            orphaned: None,
+        })
     }
 
     /// Back as a new one, for the next pty the run makes: what waits on either side emptied, its other end's
@@ -147,7 +167,7 @@ impl Entry {
             lock(m, true)
         })();
         match renewed {
-            Ok(()) => self.state = State::Free,
+            Ok(()) => (self.state, self.orphaned) = (State::Free, None),
             Err(e) => {
                 crate::log::line("sandbox", "warn", &format!("a run's pty {} not set as new: {e}", self.n));
                 self.gone();
@@ -259,18 +279,18 @@ impl Ptys {
         self.take_free()
     }
 
-    /// One look at what the processes below `tree` hold (`holders`, read with no lock held): the looks begun, this
-    /// one counted — what `settle` judges a pty by — and what it saw.
-    fn look(&self, tree: u32) -> (u64, Option<HashMap<u32, Held>>) {
+    /// One look at what the processes below `tree` hold (`holders`, read with no lock held): the look — what
+    /// `settle` judges a pty by — and what it saw.
+    fn look(&self, tree: u32) -> (Look, Option<HashMap<u32, Held>>) {
         let began = self.begin();
         (began, holders(tree))
     }
 
-    /// A look begins: the looks begun, this one counted.
-    fn begin(&self) -> u64 {
+    /// A look begins: the looks begun, this one counted, and now.
+    fn begin(&self) -> Look {
         let mut inner = self.inner();
         inner.looks += 1;
-        inner.looks
+        Look { n: inner.looks, at: crate::clock::now() }
     }
 
     fn take_free(&self) -> Option<u32> {
@@ -325,17 +345,23 @@ impl Ptys {
 
     /// Each pty handed before look `began` (`look`) by what the run held of it then (`held`, by number): its master
     /// — still the run's; neither end — back to the pool, new; only the other end — hung up (tarae's master closed:
-    /// what holds that end reads its end, as without tarae) and gone. One handed since that look began isn't in
+    /// what holds that end reads its end, as without tarae) and gone, once seen so by a look begun `WATCH_EVERY`
+    /// after one that saw it so ended (`Entry.orphaned`: a run closing both ends is that for a moment — taken for a
+    /// hang-up, the pool would be one short for the rest of the run). One handed since that look began isn't in
     /// what it saw — `/proc` was read before it was there — so it isn't judged: taken back, the run would hold it and
     /// be handed it again, past `POOL`. How many went back.
-    pub fn settle(&self, began: u64, held: &HashMap<u32, Held>) -> usize {
+    pub fn settle(&self, began: Look, held: &HashMap<u32, Held>) -> usize {
         let mut inner = self.inner();
         let defaults = inner.defaults;
         let mut back = 0;
-        for e in inner.entries.iter_mut().filter(|e| e.state == State::Handed && e.handed < began) {
+        for e in inner.entries.iter_mut().filter(|e| e.state == State::Handed && e.handed < began.n) {
             match held.get(&e.n).copied().unwrap_or_default() {
-                Held { master: true, .. } => {}
-                Held { slave: true, .. } => e.gone(),
+                Held { master: true, .. } => e.orphaned = None,
+                Held { slave: true, .. } => match e.orphaned {
+                    Some(seen) if began.at >= seen + WATCH_EVERY => e.gone(),
+                    Some(_) => {}
+                    None => e.orphaned = Some(crate::clock::now()),
+                },
                 Held { .. } => {
                     e.renew(defaults.as_ref());
                     back += usize::from(e.state == State::Free);
@@ -542,6 +568,9 @@ mod tests {
         let end = p.peer(a, libc::O_RDWR | libc::O_NONBLOCK).unwrap();
         let held = HashMap::from([(a, Held { master: false, slave: true })]);
         assert_eq!(p.settle(p.begin(), &held), 0);
+        assert!(hung_up_within(end.as_fd(), Duration::ZERO).is_err(), "one look: not hung up yet");
+        crate::clock::advance(WATCH_EVERY);
+        assert_eq!(p.settle(p.begin(), &held), 0);
         hung_up(end.as_fd()).expect("its other end hung up");
         assert!(!p.known(a), "gone");
         let b = p.take_free().unwrap();
@@ -577,16 +606,45 @@ mod tests {
         p.end();
     }
 
-    /// Waits until `end`, a pty's other end, reads its end — hung up —, at most `HUNG_WAIT` (then why not). The
+    /// friction 362: a run lets a pty go one end after the other — its master, then its other end (a tuple's drop,
+    /// a process's exit) — and a look between the two sees only the other end held. That isn't a hang-up: the next
+    /// look, seeing neither, puts it back in the pool. Taken for one, the pool was one short for the rest of the run
+    /// (K4: the 16th pty held at once refused, `EACCES`).
+    #[test]
+    fn a_look_between_a_ptys_two_closes_doesnt_hang_it_up() {
+        let p = Ptys::open(1);
+        let Some(a) = p.take_free() else {
+            return eprintln!("a_look_between_a_ptys_two_closes_doesnt_hang_it_up: skipped — no pty here");
+        };
+        p.handed_over(a);
+        let between = HashMap::from([(a, Held { master: false, slave: true })]);
+        assert_eq!(p.settle(p.begin(), &between), 0, "its master closed, its other end not yet");
+        crate::clock::advance(WATCH_EVERY);
+        assert_eq!(p.settle(p.begin(), &HashMap::new()), 1, "both closed: back");
+        assert_eq!(p.take_free(), Some(a), "the pool whole");
+        p.handed_over(a);
+        assert_eq!(p.settle(p.begin(), &between), 0);
+        let held = HashMap::from([(a, Held { master: true, slave: true })]);
+        assert_eq!(p.settle(p.begin(), &held), 0, "its master the run's again (passed back to it)");
+        crate::clock::advance(WATCH_EVERY);
+        assert_eq!(p.settle(p.begin(), &between), 0, "a sighting before the master came back counts no more");
+        assert!(p.known(a), "not hung up");
+        p.end();
+    }
+
+    /// Waits until `end`, a pty's other end, reads its end — hung up —, at most the patience (then why not). The
     /// hang-up comes when tarae's master's last copy closes: a process another thread is spawning holds a copy of
     /// every descriptor until it execs, so dropping the master may hang the pty up only a moment later.
     fn hung_up(end: BorrowedFd) -> Result<(), String> {
-        const HUNG_WAIT: Duration = crate::test_results::PATIENCE;
+        hung_up_within(end, crate::test_results::PATIENCE)
+    }
+
+    fn hung_up_within(end: BorrowedFd, wait: Duration) -> Result<(), String> {
         let mut fl = libc::pollfd { fd: end.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: a struct of ours, a descriptor we hold.
-        let ready = unsafe { libc::poll(&mut fl, 1, HUNG_WAIT.as_millis() as libc::c_int) };
+        let ready = unsafe { libc::poll(&mut fl, 1, wait.as_millis() as libc::c_int) };
         match ready {
-            0 => return Err(format!("not hung up within {HUNG_WAIT:?}")),
+            0 => return Err(format!("not hung up within {wait:?}")),
             ..0 => return Err(format!("poll: {}", io::Error::last_os_error())),
             _ => {}
         }
