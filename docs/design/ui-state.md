@@ -224,7 +224,7 @@ side git · 4 rows · in hand git:src/term.rs
 - **`frames_for`** (ci, 2026-10-24) — the last 16 frames written, each `{frame, for}`: its number (as
   `frames_written` counts) and what drew it — each event of the batch before it that changed something (`key`,
   `mouse`, `focus`, …; a job's result by the line that sent or spawned it, `job src/<file>.rs:<line>`, or the name it
-  gives itself: `a tick`, `a git watch round`, `a UI-state ask`), `owed: …` when none did, `the resting redraw`,
+  gives itself: `a tick`, `a git watch round`, `a UI-state ask` — in `events_for` only, it draws none), `owed: …` when none did, `the resting redraw`,
   `the first frame`. A late frame in an idle check says its cause the first time. Said only when there are any;
   not at Claude's level.
 - **`events`**, **`events_for`** (ci, #191, 2026-10-28) — the events the main loop has handled (this answer's ask
@@ -411,10 +411,13 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 
 ### When a snapshot is taken
 
-**A snapshot is the state as of a drawn frame.** A request goes to the main loop as an `Event::Job`. It
-doesn't set `unchanged`, so the loop draws. When nothing changed, `screen::Screen::present` writes nothing to
-the terminal. The answer is built in `render`'s after-frame hook. So a reply
-never describes a state the user hasn't seen, and `frame` lets a driver tell two snapshots apart.
+**A snapshot is the state as of a drawn frame.** A request goes to the main loop as an `Event::Job` that says it
+changed nothing: it owes no frame of its own (#340). The answer is built at its batch's end — after the frame drawn
+for what else the batch brought (`render`'s after-frame hook), else as of the last frame drawn (`uistate::undrawn`:
+nothing since changed what it shows). So a reply never describes a state the user hasn't seen, `frame` names the
+frame it's as of, and asking changes nothing: on a wire, where a frame is presented only once the interface acks
+it, a frame drawn for the ask would be one not presented yet as the answer was made — `interface.presented` one
+behind `frame`, every time.
 
 `after_input: N` holds the reply until `input_seq ≥ N` and a frame after that. That replaces sleeping after
 sending keys. For example: read `input` = 1033, send ` W`, then ask with `after_input: 1035`. The reply is about
@@ -518,7 +521,7 @@ A snapshot is one question. An event stream tells you about change without polli
 | `turn` | session, `started` / `ended` (`chat` Done), calls, edits | explicit |
 | `run` | id, `queued` · `started` · `waiting <what>` · `ended <how> <took>` | explicit, beside the `RunTrace` steps phase 0 already logs (and `Waiting::line`) |
 | `toast` | the toast | diff |
-| `toast-whole` | id (the card's newest toast), `written`: the frame that first drew the card whole (`strength` 100, as `frames_written` counts) | diff — kind `toasts`; what a check of the fade waits on without asking (ci round 5: an ask is a frame, drawing the fade forward itself) |
+| `toast-whole` | id (the card's newest toast), `written`: the frame that first drew the card whole (`strength` 100, as `frames_written` counts) | diff — kind `toasts`; what a check of the fade waits on without polling (ci round 5) |
 | `procs` | processes `started`, `ended`; checks `found`, `over` — only when a look found something changed | explicit, at each `:procs` look (`procs_said`) |
 | `limits` (kind `usage`) | `limits` (above) — only when a reading changed what's known | explicit, at `limits::seen` |
 | `regions` | `regions` (above), `typing` (your letters become text: insert mode, a prompt, a picker's query, the chat's input with something in it), `written`: the frame that drew them (as `frames_written` counts) — when either changes, and once to a watcher as it comes | diff — only to a watcher that names `regions` (`watch::ASKED_ONLY`), never one of all kinds: a frame's layout is a driver's measure, not news |

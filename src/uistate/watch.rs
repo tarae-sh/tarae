@@ -49,7 +49,7 @@ struct Summary {
     toasts: Vec<(String, &'static str, String)>,
     /// The notification card drawn whole (`strength` 100 — its fade-in over): its newest toast's id, and the frame
     /// that drew it (`frames_written`) — a `toast-whole` event when that id first comes, so a driver checking a
-    /// fade waits on it without asking (an ask is a frame: it would draw the fade forward itself).
+    /// fade waits on it without polling.
     card_whole: Option<(String, u64)>,
     /// Where each thing was drawn (`regions.rs`) and the frame that drew them (`frames_written`) — a `regions` event
     /// when they change, only to a watcher that asked for them (a frame's layout is a driver's measure, not news).
@@ -501,7 +501,7 @@ mod tests {
     }
 
     /// ci round 5: the card first drawn whole is one `toast-whole` event, with the frame that drew it — what an
-    /// idle check waits on instead of asking (an ask is a frame of its own, drawing the fade forward); the
+    /// idle check waits on instead of polling; the
     /// frames after it, still whole, say nothing; another toast's card whole again is a new one.
     #[test]
     fn a_card_drawn_whole_is_told_once() {

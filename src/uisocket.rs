@@ -139,7 +139,8 @@ pub fn remove() {
 }
 
 /// Serves snapshots: a thread blocked in `accept`, one more per connection. Each request goes to the main
-/// loop as a job; the answer is built after the next frame (`uistate::after_frame`).
+/// loop as a job; the answer is built after its batch — after the frame drawn for it (`uistate::after_frame`), else as
+/// of the last frame drawn (`uistate::undrawn`).
 pub fn serve(listener: UnixListener, tx: crate::event::Tx) {
     std::thread::Builder::new()
         .name("tarae-ui".into())
@@ -300,6 +301,10 @@ fn answer(req: &str, line: &[u32], tx: &crate::event::Tx) -> Value {
             return;
         }
         ed.ui_asks.push(crate::uistate::Ask { after_input, json: !text, reply, until, what });
+        // (an ask changes nothing on screen and owes no frame: answered after the batch's frame, else at its end as of
+        // the last frame drawn — `uistate::undrawn`; on a wire a frame of its own would be one the interface hasn't
+        // presented yet, #340)
+        ed.unchanged = true;
     };
     if tx.send(crate::event::Event::Job(Box::new(job))).is_err() {
         return json!({ "error": "tarae is ending" });

@@ -2753,11 +2753,14 @@ impl ReviewReport {
 /// A batch of events that drew no frame (`term::batch_done`): while someone watches, what changed is told now —
 /// a card parked in a session behind, one gone there, a turn begun there, a run's step (watchlate: a grant card
 /// was heard 20 minutes late, at the person's next key's frame). Nobody watching: a branch, and nothing woken.
-/// Snapshots asked wait for a frame (`frame_owed` draws one for them).
+/// Snapshots asked whose input has come are answered here as of the last frame drawn — nothing since changed what it
+/// shows — never with a frame of their own (#340: on a wire that frame wasn't presented yet as the answer was made, so
+/// its `interface.presented` read one behind its `frame`).
 pub fn undrawn(ed: &mut Editor) {
     if ed.ui_watch.watching() {
         watch::after_frame(ed);
     }
+    answer_asks(ed);
 }
 
 /// After each frame (`term::render`): the gone ring and the watchers (`watch.rs`), then the snapshots waiting
@@ -2768,6 +2771,11 @@ pub fn after_frame(ed: &mut Editor) {
     if ed.ui_flash.as_ref().is_some_and(|f| crate::clock::since(f.1) >= claude::FLASH) {
         ed.ui_flash = None;
     }
+    answer_asks(ed);
+}
+
+/// The snapshots asked whose input has come, answered as of the last frame drawn (`after_frame`, `undrawn`).
+fn answer_asks(ed: &mut Editor) {
     if ed.ui_asks.is_empty() {
         return;
     }
@@ -2804,7 +2812,7 @@ pub fn after_frame(ed: &mut Editor) {
                 ed.features_answer(a.json, a.reply);
                 continue;
             }
-            // (after a frame: there is one)
+            // (none before the first frame)
             (Asked::Frame, _) => {
                 ed.frame_json().map_or_else(|| error("nothing drawn yet".into()), |f| f.to_string())
             }

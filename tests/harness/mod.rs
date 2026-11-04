@@ -953,8 +953,8 @@ impl Term {
     /// owes one is waited out and asked again: the frame read may not be the one it owed (CI's macOS: a
     /// shuttle's end drew just after the answer, taken for the redraw — which then came in the idle check's
     /// window). And none of the start's jobs still out (`starting`: one that lands later is an event in the rest —
-    /// #191's restore, on a loaded machine). Nothing asked after it (an ask is a frame: a clock or a wave on screen
-    /// would write again), so from here a frame is something new — what an idle check measures from, never a quiet
+    /// #191's restore, on a loaded machine). An ask draws no frame of its own (#340: answered as of the last one drawn),
+    /// so from here a frame is something new — what an idle check measures from, never a quiet
     /// second.
     pub fn settle(&mut self, what: &str, done: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
         let deadline = Instant::now() + self.timeout;

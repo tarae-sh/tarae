@@ -1433,9 +1433,8 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
     // The picker gone, the card comes up — first drawn faint, its fade-in's own ticks must bring it to full
     // strength (left as first drawn, it would stay transparent). Judged by what drew the frame that drew it
     // whole, never by frames counted (CI's macOS, ci round 5: a slow runner's next frame came after the fade's
-    // whole 150 ms — one frame, already whole): nothing asked meanwhile — an ask is a frame, drawing the fade
-    // forward itself — a watcher hears when the card is first drawn whole (`toast-whole`, which frame); that
-    // frame was drawn for a tick (`frames_for`), not the resting redraw nor an ask.
+    // whole 150 ms — one frame, already whole): a watcher hears when the card is first drawn whole (`toast-whole`,
+    // which frame); that frame was drawn for a tick (`frames_for`), not the resting redraw.
     let watching = t.watch("toasts");
     watching.wait("its watching line", |_| true);
     t.esc("the card", |s| !s.contains("files in work") && s.contains("expected integer"));
@@ -1728,30 +1727,22 @@ fn an_idle_attached_host_draws_nothing_and_sleeps() {
     let mut h = sb.host(&["a.txt"]);
     let mut t = Term::attach(&sb, &h, COLS, ROWS);
     t.wait_text("one");
-    // Settled: every frame the host drew presented (acked) but the one the ask drew itself (an answer is made after its
-    // frame went to the writer), then that one and the client's own whole-screen redraw after it
-    // (`interface::RESTING_REDRAW`) gone out — its last frame twice that long ago
+    // Settled: every frame the host drew presented (acked — an ask draws none of its own, #340), then the client's own
+    // whole-screen redraw after the last (`interface::RESTING_REDRAW`) gone out — its last frame twice that long ago
     let s = t.wait_state("every frame presented", |s| {
-        s["interface"]["presented"].as_u64().is_some_and(|p| Some(p + 1) >= s["frame"].as_u64())
-            && s.get("starting").is_none()
+        s["interface"]["presented"].as_u64() == s["frame"].as_u64() && s.get("starting").is_none()
     });
     let deadline = std::time::Instant::now() + sb.timeout();
     while t.last_frame_at().is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(1000)) {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(POLL);
     }
-    // (each rest's baseline ask draws a frame of its own, acked after its answer: that ack is the one event it brings)
-    let one_ack = |mut rest: Rest| {
-        if let Some(i) = rest.was.iter().position(|e| e == "an interface's ack") {
-            rest.was.remove(i);
-            rest.events -= 1;
-        }
-        rest
-    };
-    let rest = one_ack(t.rest(&s));
+    // (an ask draws no frame, so no ack follows it: the rests count every event)
+    let rest = t.rest(&s);
     assert!(rest.woken().is_none(), "the client and the host's events: {rest}\n{}", h.output());
     let s = h.state_json();
-    let rest = one_ack(h.rest(&s));
+    assert_eq!(s["interface"]["presented"], s["frame"], "an ask is as of the last frame, presented\n{s:#}");
+    let rest = h.rest(&s);
     assert!(rest.woken().is_none(), "the host: {rest}\n{}", h.output());
 }
 

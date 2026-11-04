@@ -227,8 +227,7 @@ fn perf_e2e_a_slow_client() {
         t.send(if i % 2 == 0 { "\x04" } else { "\x15" }); // C-d, C-u
     }
     let busy = median(round(10));
-    // (the client's terminal quiet a second: it has what the host last drew — a `tarae state` draws a frame of its
-    // own, so it isn't polled meanwhile)
+    // (the client's terminal quiet a second: it has what the host last drew)
     let mut last = (t.written(), Instant::now());
     while last.1.elapsed() < Duration::from_secs(1) {
         std::thread::sleep(Duration::from_millis(50));
@@ -241,8 +240,8 @@ fn perf_e2e_a_slow_client() {
     let s = host.state_json();
     let (frame, presented) = (n(&s, "/frame"), n(&s, "/interface/presented"));
     assert!(n(&s, "/input") >= input0 + 40, "the 40 keys handled: {s:#}");
-    // (the frame drawn for that very `tarae state` the only one not presented yet)
-    assert!(presented + 1 >= frame, "the client at the newest frame: presented {presented} of {frame}");
+    // (an ask draws no frame of its own, #340)
+    assert_eq!(presented, frame, "the client at the newest frame: presented {presented} of {frame}");
     let shown = t.frames() - shown0;
     eprintln!(
         "a slow client: the host's state {quiet:.1} ms quiet, {busy:.1} ms busy; 40 half-pages typed, {shown} frames \

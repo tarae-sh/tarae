@@ -2065,6 +2065,47 @@ fn the_socket_answers_snapshots_and_refuses_claudes_processes() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #340: an ask over the socket owes no frame — its batch draws none, and it's answered at the batch's end as of the
+/// last frame drawn: on an interface that presents late (a wire), that frame acked, the answer says it presented
+/// (`interface.presented` = `frame`), never one behind a frame drawn for the ask itself.
+#[test]
+fn an_ask_owes_no_frame_and_is_as_of_the_last_one_drawn() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = sock_dir("noframe");
+    let listener = crate::uisocket::bind_in(&dir.join("ui"), 4243).unwrap();
+    let path = dir.join("ui/4243.sock");
+    let mut ed = editor();
+    ed.interface.presents_late = true;
+    crate::uisocket::serve(listener, ed.events.shared_sender());
+    frame(&mut ed);
+    // (its ack)
+    ed.frame_presented(ed.frames);
+    let frames = ed.frames;
+    let t = std::thread::spawn(move || {
+        let mut s = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        s.write_all(b"{\"get\":\"state\"}\n").unwrap();
+        BufReader::new(s).lines().next().unwrap().unwrap()
+    });
+    // (each batch as the main loop's: a frame only where `batch_done` says one is due)
+    let end = Instant::now() + crate::test_results::PATIENCE;
+    let mut drawn = 0;
+    while !t.is_finished() {
+        assert!(Instant::now() < end, "never answered");
+        if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(10)) {
+            let unchanged = crate::term::handle_noting(&mut ed, ev);
+            if crate::term::batch_done(&mut ed, unchanged) {
+                drawn += 1;
+                frame(&mut ed);
+            }
+        }
+    }
+    let v: Value = serde_json::from_str(&t.join().unwrap()).unwrap();
+    assert_eq!(drawn, 0, "no frame for the ask: {v}");
+    let said = (v["frame"].as_u64(), v["interface"]["presented"].as_u64());
+    assert_eq!(said, (Some(frames), Some(frames)), "as of the last frame, presented: {v}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The folder is this user's alone and the socket too (0700, 0600) — even under an open umask; a socket
 /// left at this pid's path (a dead tarae's) is replaced, anything else there isn't touched.
 #[test]

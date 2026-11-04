@@ -4508,8 +4508,8 @@ impl Editor {
     }
 
     /// What came that no frame has shown yet: input (a key, a click, a paste — whatever it changed, you look
-    /// for it), a card, a toast (since the last frame), a UI-state ask whose input has come (answered after
-    /// the next frame — `uistate::after_frame`).
+    /// for it), a card, a toast (since the last frame). Never a UI-state ask: it's answered as of the last frame
+    /// drawn when its batch draws none (`uistate::undrawn`, #340).
     pub(crate) fn frame_owed(&self) -> Option<String> {
         if self.input_seq > self.frame_input {
             return Some("input (a key, click or paste)".into());
@@ -4519,14 +4519,10 @@ impl Editor {
             return Some(format!("card \"{}\"", o.title));
         }
         // (one shown is drawn: its time may restart after the frame, as it's presented — `toasts_drawn`)
-        if let Some(t) = self.toasts.iter().find(|t| !t.shown && after(t.at)) {
-            return Some(format!("toast \"{}\"", t.text.chars().take(80).collect::<String>()));
-        }
-        let now = std::time::Instant::now();
-        self.ui_asks
+        self.toasts
             .iter()
-            .any(|a| self.input_seq >= a.after_input && a.until > now)
-            .then(|| "a UI-state ask".to_string())
+            .find(|t| !t.shown && after(t.at))
+            .map(|t| format!("toast \"{}\"", t.text.chars().take(80).collect::<String>()))
     }
 
     /// The job applied now names what it is (`DrawnFor::Named`: a tick, a watch round, a UI-state ask) — a frame
@@ -14657,8 +14653,8 @@ mod tests {
     }
 
     /// #200's guard: an event that wrongly says it changed nothing still gets its frame when something came
-    /// that no frame has shown — a card, a toast, a UI-state ask whose input has come — and the log says what
-    /// was owed. Once drawn, nothing more is owed.
+    /// that no frame has shown — a card, a toast, a key — and the log says what was owed. Once drawn, nothing more
+    /// is owed. A UI-state ask is never owed one (#340): answered at its batch's end as of the last frame drawn.
     #[test]
     fn a_wrong_nothing_changed_still_draws_what_came() {
         let mut ed = editor("one\n");
@@ -14679,7 +14675,9 @@ mod tests {
         let (due, said) = wrongly_unchanged(&mut ed, |ed| ed.set_status("an owed toast"));
         assert!(due && said.len() == 1 && said[0].contains("toast \"an owed toast\""), "{said:?}");
         crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
-        // A UI-state ask, its input come — answered by the frame that's drawn for it
+        // A UI-state ask, its input come — no frame for it (#340): the batch ends without one and answers it as of the
+        // last frame drawn
+        let frames = ed.frames;
         let (tx, rx) = std::sync::mpsc::channel();
         let until = std::time::Instant::now() + crate::test_results::PATIENCE;
         let ask = crate::uistate::Ask {
@@ -14690,10 +14688,11 @@ mod tests {
             what: crate::uistate::Asked::State,
         };
         let (due, said) = wrongly_unchanged(&mut ed, move |ed| ed.ui_asks.push(ask));
-        assert!(due && said.len() == 1 && said[0].contains("a UI-state ask"), "{said:?}");
-        crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
-        assert!(rx.try_recv().is_ok(), "answered by that frame");
-        assert!(!wrongly_unchanged(&mut ed, |_| {}).0);
+        assert!(!due && said.is_empty(), "an ask owes no frame: {said:?}");
+        assert!(!crate::term::batch_done(&mut ed, true), "no frame for it");
+        let v: serde_json::Value =
+            serde_json::from_str(&rx.try_recv().expect("answered at the batch's end")).unwrap();
+        assert_eq!((ed.frames, v["frame"].as_u64()), (frames, Some(frames)), "as of the last frame drawn");
         // A key (#200 as met: every key came back "unchanged") — whatever it changed, you look for it
         let (due, said) = wrongly_unchanged(&mut ed, |ed| ed.handle_key(Key::plain(Code::Char(':'))));
         assert!(due && said.len() == 1 && said[0].contains("input (a key, click or paste)"), "{said:?}");
