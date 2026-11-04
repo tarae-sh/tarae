@@ -126,6 +126,8 @@ pub fn to_host() -> Vec<ToHost> {
         ToHost::Answer { id: u32::MAX, answer: Answer::Failed("no xdg-open here".into()) },
         ToHost::Zone { zone: "Europe/London".into(), offset: 3600 },
         ToHost::Bye,
+        ToHost::Ping { n: 1 },
+        ToHost::Ping { n: u32::MAX },
     ]);
     m
 }
@@ -158,6 +160,8 @@ pub fn to_interface() -> Vec<ToInterface> {
         },
         ToInterface::Gone { why: Gone::Refused { said: "another version".into() }, said: String::new() },
         ToInterface::Gone { why: Gone::Protocol { said: "a bad bool".into() }, said: String::new() },
+        ToInterface::Pong { n: 1 },
+        ToInterface::Pong { n: u32::MAX },
     ]
 }
 

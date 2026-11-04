@@ -58,8 +58,7 @@ fn keep(path: &Path, rx: Receiver<Entry>, cap: usize) {
     let _ = std::fs::rename(path, path.with_extension("log.old"));
     let Ok(mut file) = std::fs::File::create(path) else { return };
     let (y, mo, d, h, m, sec) = now();
-    let started =
-        format!("tarae {} · started {y}-{mo:02}-{d:02} {h:02}:{m:02}:{sec:02}", env!("CARGO_PKG_VERSION"));
+    let started = format!("tarae {} · started {y}-{mo:02}-{d:02} {h:02}:{m:02}:{sec:02}", tarae_wire::BUILD);
     let _ = write!(file, "{started}\n\n");
     let mut kept = Kept::new(cap);
     while let Ok(first) = rx.recv() {

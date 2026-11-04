@@ -10,8 +10,11 @@
 //! `tarae attach ssh://…` (the remote plan's §8d, step 5): the host on another machine, through `ssh` to a relay there
 //! (`ssh.rs`, `relay.rs`) — the same client over ssh's two pipes. This terminal stays cooked until the relay's `ok` and
 //! the host's `Welcome` are in (ssh's prompts and warnings are on it as in any ssh); ssh's stderr is kept after that.
-//! A host restarted there is attached again by ssh with the relay waiting for it (`--wait`); `r` runs ssh again with no
-//! prompt (`BatchMode`: the terminal is raw).
+//! A host restarted there is attached again by ssh with the relay waiting for it (`--wait`). A link that drops — ssh
+//! ending with no `Gone`, or no `Pong` to a `Ping` sent on a wake or a focus back — comes back by itself, ssh run again
+//! asking nothing (`BatchMode`: the terminal is raw), the last frame up meanwhile and nothing said unless a try fails
+//! (`back.rs`, the rule); `r` on that line runs ssh as at the start, the terminal given back while it may ask. A `Gone`
+//! never comes back by itself.
 
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
@@ -23,6 +26,11 @@ use std::time::Duration;
 use tarae_wire::{self as wire, Decoder, Gone, Hello, ToHost, ToInterface};
 
 use crate::event::Event;
+
+mod back;
+#[cfg(test)]
+mod pin;
+use back::{Back, Do};
 
 const USAGE: &str = "usage: tarae attach [--pid PID | ssh://[USER@]HOST[:PORT][/PATH][?pid=N] [--remote-tarae PATH]]   \
                      show a host (tarae --host) in this terminal";
@@ -46,6 +54,24 @@ enum Heard {
         answer: wire::Answer,
         osc: Vec<u8>,
     },
+    /// A try at the way back (`Client.try_n`'s: an older one's is let go), on a thread of its own: the way as it left
+    /// it (the host's pid said), and the link with its `Welcome` in, or why not.
+    Tried(u32, Box<(Way, Result<Attached, Failed>)>),
+}
+
+/// A way opened, its `Welcome` in: the link, and its decoder holding what came after the `Welcome`.
+type Attached = (Link, Decoder<ToInterface>);
+
+/// Why an attach failed, said — `gone`: the host refused it (a `Gone`), so trying again as it is won't help.
+struct Failed {
+    said: String,
+    gone: bool,
+}
+
+impl Failed {
+    fn said(said: String) -> Failed {
+        Failed { said, gone: false }
+    }
 }
 
 /// `tarae attach [--pid PID | ssh://… [--remote-tarae PATH]]`; `--stdio …` the relay (`relay.rs`).
@@ -110,7 +136,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
     let (link, dec) = match attach_to(&mut way, ground, wait, false) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("tarae attach: {e}");
+            eprintln!("tarae attach: {}", e.said);
             std::process::exit(1)
         }
     };
@@ -140,8 +166,15 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
         });
     }
     let Link { to, from, ssh, .. } = link;
+    let back = match &way {
+        Way::Ssh { url, .. } => Some(Back::new(&url.host, crate::clock::now(), crate::clock::system())),
+        Way::Here { .. } => None,
+    };
     let mut c = Client {
         way,
+        back,
+        try_n: 0,
+        back_from: None,
         ground,
         to,
         ssh,
@@ -200,6 +233,7 @@ enum End {
 }
 
 /// Where the host is.
+#[derive(Clone)]
 enum Way {
     /// Host `pid`'s socket on this machine.
     Here { pid: u32, path: PathBuf },
@@ -293,27 +327,29 @@ fn attach_to(
     ground: wire::Ground,
     wait: Option<Duration>,
     batch: bool,
-) -> Result<(Link, Decoder<ToInterface>), String> {
-    let mut link = open_way(way, wait, batch)?;
+) -> Result<Attached, Failed> {
+    let mut link = open_way(way, wait, batch).map_err(Failed::said)?;
     match greet(&mut link, ground) {
         Ok(dec) => Ok((link, dec)),
-        Err(e) => {
+        Err(mut e) => {
             let ssh_said = link.ssh.as_ref().and_then(|s| s.last_line());
             link.end();
-            Err(match ssh_said {
-                Some(l) => format!("{e} (ssh: {l})"),
-                None => e,
-            })
+            if let Some(l) = ssh_said {
+                e.said = format!("{} (ssh: {l})", e.said);
+            }
+            Err(e)
         }
     }
 }
 
-/// `Hello` said on `link`, the host's `Welcome` read within `WELCOME_WITHIN`.
-fn greet(link: &mut Link, ground: wire::Ground) -> Result<Decoder<ToInterface>, String> {
+/// `Hello` said on `link`, the host's `Welcome` read within `WELCOME_WITHIN` — in the protocol this speaks (S-C: the
+/// version is the rule on both sides, the builds only told).
+fn greet(link: &mut Link, ground: wire::Ground) -> Result<Decoder<ToInterface>, Failed> {
     let (w, h) = crate::term::size().unwrap_or((80, 24));
+    let v = crate::attach::said_v();
     let hello = Hello {
-        v: wire::V,
-        build: env!("CARGO_PKG_VERSION").into(),
+        v,
+        build: wire::BUILD.into(),
         w,
         h,
         ground,
@@ -328,30 +364,46 @@ fn greet(link: &mut Link, ground: wire::Ground) -> Result<Decoder<ToInterface>, 
         zone: std::env::var("TZ").unwrap_or_default(),
         offset: offset_now(),
     };
-    send(&mut link.to, &ToHost::Hello(hello)).map_err(|e| format!("saying hello: {e}"))?;
+    let said = |s: String| Err(Failed::said(s));
+    let gone = |said: String| Err(Failed { said, gone: true });
+    if let Err(e) = send(&mut link.to, &ToHost::Hello(hello)) {
+        return said(format!("saying hello: {e}"));
+    }
     let until = crate::clock::now() + WELCOME_WITHIN;
     let mut dec = Decoder::<ToInterface>::new();
     loop {
         match dec.message() {
-            Ok(Some(ToInterface::Welcome { .. })) => break,
+            Ok(Some(ToInterface::Welcome { v: theirs, build, .. })) if theirs != v => {
+                return gone(format!(
+                    "refused — the host speaks protocol {theirs} (tarae {build}), this attach {v} (tarae {})",
+                    wire::BUILD
+                ));
+            }
+            Ok(Some(ToInterface::Welcome { build, .. })) => {
+                // (over ssh, this machine's log; a host here logs the client's Hello itself)
+                if link.ssh.is_some() {
+                    crate::log::line("attach", "info", &format!("attached to tarae {build}"));
+                }
+                break;
+            }
             Ok(Some(ToInterface::Gone { why, .. })) => {
-                return Err(match why {
+                return gone(match why {
                     Gone::Refused { said } => format!("refused — {said}"),
                     Gone::Protocol { said } => format!("the host didn't read it: {said}"),
                     other => format!("the host let go at once: {other:?}"),
                 });
             }
-            Ok(Some(other)) => return Err(format!("the host's first word wasn't Welcome: {other:?}")),
-            Err(e) => return Err(format!("the host's bytes were wrong: {e}")),
+            Ok(Some(other)) => return said(format!("the host's first word wasn't Welcome: {other:?}")),
+            Err(e) => return said(format!("the host's bytes were wrong: {e}")),
             Ok(None) => {
                 if !readable_within(link.fd, until) {
-                    return Err(format!("no Welcome within {} s", WELCOME_WITHIN.as_secs()));
+                    return said(format!("no Welcome within {} s", WELCOME_WITHIN.as_secs()));
                 }
                 match dec.read_from(&mut link.from) {
-                    Ok(0) => return Err("the host's end closed before its Welcome".into()),
+                    Ok(0) => return said("the host's end closed before its Welcome".into()),
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(format!("reading the host's Welcome: {e}")),
+                    Err(e) => return said(format!("reading the host's Welcome: {e}")),
                 }
             }
         }
@@ -394,6 +446,12 @@ fn offset_now() -> i32 {
 
 struct Client {
     way: Way,
+    /// The way back over ssh (`back.rs`); none to a host here (its end is a crash: said, `r` attaches again).
+    back: Option<Back>,
+    /// Tries at the way back started: a try's answer that isn't the last one's is let go.
+    try_n: u32,
+    /// Down since then, until the new link's first frame is presented (the wake-to-a-live-frame measure, logged).
+    back_from: Option<std::time::Instant>,
     ground: wire::Ground,
     /// The link's end toward the host (its other end is `listen`'s thread's).
     to: Box<dyn Write + Send>,
@@ -457,55 +515,84 @@ impl Client {
     }
 
     fn run(&mut self, rx: &mpsc::Receiver<Heard>) -> End {
+        // (the host here ended unsaid: its line up, `r` and `q` the client's — over ssh `back` says it)
         let mut ended = false;
         loop {
-            // (the resting redraw, else the zone's hourly look — idle, the next wake is an hour off)
-            let at = self.due.map_or(self.zone_at, |d| d.min(self.zone_at));
+            // (the resting redraw, the way back's next step, else the zone's hourly look — idle, an hour off)
+            let at = [self.due, self.back.as_ref().and_then(Back::due)]
+                .into_iter()
+                .flatten()
+                .fold(self.zone_at, std::time::Instant::min);
             let heard = match rx.recv_timeout(at.saturating_duration_since(crate::clock::now())) {
-                Ok(h) => h,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let now = crate::clock::now();
-                    if self.due.is_some_and(|d| d <= now) {
-                        self.due = None;
-                        let mut out = Vec::new();
-                        self.held.whole(&mut out);
-                        let _ = write_out(&out);
-                    }
-                    if self.zone_at <= now {
-                        self.zone_again(ended);
-                    }
-                    continue;
-                }
+                Ok(h) => Some(h),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return End::Said(String::new()),
             };
+            let now = crate::clock::now();
+            // (whatever woke this, the clocks say whether the machine slept: then is the link still there?)
+            if let Some(b) = &mut self.back
+                && b.woke(now, crate::clock::system())
+            {
+                crate::log::line("attach", "info", "a wake seen: the link asked whether it's there");
+                self.ping(now);
+            }
+            if self.due.is_some_and(|d| d <= now) {
+                self.due = None;
+                let mut out = Vec::new();
+                self.held.whole(&mut out);
+                let _ = write_out(&out);
+            }
+            if self.zone_at <= now {
+                self.zone_again(ended);
+            }
+            if let Some(d) = self.back.as_mut().and_then(|b| b.tick(now)) {
+                self.act(d);
+            }
+            let Some(heard) = heard else { continue };
+            let down = ended || self.back.as_ref().is_some_and(Back::is_down);
             match heard {
                 Heard::Host(n, _) | Heard::Ended(n, _) if n != self.link_n => {}
-                Heard::Host(_, m) if !ended => match self.heard(m) {
+                Heard::Host(_, m) if !down => match self.heard(m) {
                     // (over ssh the host's new binary is the other machine's: ssh again, the relay waiting for it)
-                    Some(End::Exec(_)) if self.ssh.is_some() => {
-                        if let Err(e) = self.again(Some(RESTART_WAIT)) {
-                            ended = true;
-                            self.due = None;
-                            let _ = crate::term::last_line(&format!(
-                                " the host restarted, but: {e} — r attach again · q quit"
-                            ));
+                    Some(End::Exec(_)) if self.back.is_some() => {
+                        self.link_down(false);
+                        if let Some(d) = self.back.as_mut().and_then(|b| b.restarting(now)) {
+                            self.act(d);
                         }
                     }
                     Some(end) => return end,
                     None => {}
                 },
                 Heard::Host(..) => {}
-                Heard::Ended(_, why) if !ended => {
-                    ended = true;
-                    self.due = None;
+                Heard::Ended(_, why) if self.back.is_some() && !down => {
                     let why = match self.ssh.as_ref().and_then(|s| s.last_line()) {
                         Some(l) => format!("{why}; ssh: {l}"),
                         None => why,
                     };
+                    crate::log::line("attach", "info", &format!("the link dropped ({why}): trying again"));
+                    self.link_down(false);
+                    if let Some(d) = self.back.as_mut().and_then(|b| b.dropped(now)) {
+                        self.act(d);
+                    }
+                }
+                Heard::Ended(_, why) if !down => {
+                    ended = true;
+                    self.due = None;
                     let _ =
                         crate::term::last_line(&format!(" the host ended ({why}) — r attach again · q quit"));
                 }
                 Heard::Ended(..) => {}
+                Heard::Tried(n, tried) => {
+                    let (way, got) = *tried;
+                    if n != self.try_n || !self.back.as_ref().is_some_and(Back::is_down) {
+                        if let Ok((link, _)) = got {
+                            crate::event::thread("tarae-ssh-end", move || link.end());
+                        }
+                        continue;
+                    }
+                    self.way = way;
+                    self.tried(now, got);
+                }
                 Heard::Signal => {
                     let _ = send(&mut self.to, &ToHost::Bye);
                     return End::Said(String::new());
@@ -515,27 +602,43 @@ impl Client {
                     if !osc.is_empty() {
                         let _ = write_out(&osc);
                     }
-                    if !ended {
+                    if !down {
                         let _ = send(&mut self.to, &ToHost::Answer { id, answer });
                     }
                 }
-                Heard::Input(ev) if ended => match ev {
-                    Event::Key(k) if k.code == crate::key::Code::Char('r') && !k.ctrl && !k.alt => {
-                        match self.again(None) {
+                // (down: a key goes nowhere — never queued to land on a frame nobody saw; once the line is said, `r`
+                // and `q` are the client's)
+                Heard::Input(Event::Key(k)) if down => {
+                    let (said, here) = match &self.back {
+                        Some(b) => (b.said(), false),
+                        None => (true, true),
+                    };
+                    if !said {
+                        continue;
+                    }
+                    match k.code {
+                        crate::key::Code::Char('r') if !k.ctrl && !k.alt && here => match self.again(None) {
                             Ok(()) => ended = false,
                             Err(e) => {
-                                let _ = crate::term::last_line(&format!(" no host: {e} — r again · q quit"));
+                                let _ = crate::term::last_line(&format!(
+                                    " no host: {} — r again · q quit",
+                                    e.said
+                                ));
+                            }
+                        },
+                        crate::key::Code::Char('r') if !k.ctrl && !k.alt => {
+                            if self.back.as_mut().is_some_and(|b| b.now(now)) {
+                                self.try_asking(now);
                             }
                         }
+                        crate::key::Code::Char('q') | crate::key::Code::Esc => {
+                            return End::Said(String::new());
+                        }
+                        crate::key::Code::Char('c') if k.ctrl => return End::Said(String::new()),
+                        _ => {}
                     }
-                    Event::Key(k)
-                        if matches!(k.code, crate::key::Code::Char('q') | crate::key::Code::Esc)
-                            || (k.ctrl && k.code == crate::key::Code::Char('c')) =>
-                    {
-                        return End::Said(String::new());
-                    }
-                    _ => {}
-                },
+                }
+                Heard::Input(_) if down => {}
                 Heard::Input(Event::Resize) => {
                     if let Ok((w, h)) = crate::term::size() {
                         let _ = send(&mut self.to, &ToHost::Resize { w, h });
@@ -544,6 +647,8 @@ impl Client {
                 Heard::Input(ev) => {
                     if let Event::Focus(true) = ev {
                         self.zone_again(ended);
+                        // (a focus back: the laptop opened, the phone's screen on — is the link still there?)
+                        self.ping(now);
                     }
                     if let Some(event) = crate::attach::input_of(ev) {
                         self.seq += 1;
@@ -552,6 +657,94 @@ impl Client {
                 }
             }
         }
+    }
+
+    /// A `Ping` sent, while up over ssh with none out.
+    fn ping(&mut self, now: std::time::Instant) {
+        if let Some(n) = self.back.as_mut().and_then(|b| b.ping(now)) {
+            let _ = send(&mut self.to, &ToHost::Ping { n });
+        }
+    }
+
+    /// What the way back's rule says to do now.
+    fn act(&mut self, d: Do) {
+        match d {
+            Do::Try { wait } => self.start_try(wait.then_some(RESTART_WAIT)),
+            Do::Cut => {
+                crate::log::line("attach", "info", "no Pong: the link taken for gone, trying again");
+                self.link_down(true);
+                self.start_try(None);
+            }
+            Do::Say(line) => {
+                let w = crate::term::size().map_or(80, |(w, _)| w as usize);
+                let _ = crate::term::last_line(&line.fit(w));
+            }
+        }
+    }
+
+    /// The link let go — down: its keys go nowhere, its words are passed over (a new generation), the resting redraw
+    /// off (it would draw over the line), ssh ended off the loop (`cut`: at once — a link that answers nothing).
+    fn link_down(&mut self, cut: bool) {
+        self.to = Box::new(io::sink());
+        self.link_n += 1;
+        self.due = None;
+        if let Some(s) = self.ssh.take() {
+            crate::event::thread("tarae-ssh-end", move || if cut { s.cut() } else { s.end() });
+        }
+    }
+
+    /// A try at the way back on a thread of its own, asking nothing (`wait`: the relay waits for the host's socket).
+    fn start_try(&mut self, wait: Option<Duration>) {
+        self.try_n += 1;
+        let (n, tx, mut way, ground) = (self.try_n, self.tx.clone(), self.way.clone(), self.ground);
+        crate::event::thread("tarae-wire-back", move || {
+            let got = attach_to(&mut way, ground, wait, true);
+            let _ = tx.send(Heard::Tried(n, Box::new((way, got))));
+        });
+    }
+
+    /// `r` on the way back's line: ssh run as at the start — the terminal given back while it runs, so a password or a
+    /// host key it asks for is asked — and the last frame back up after.
+    fn try_asking(&mut self, now: std::time::Instant) {
+        // (a try under way is let go: its answer comes to an older number)
+        self.try_n += 1;
+        let _ = crate::term::terminal_end();
+        let got = attach_to(&mut self.way, self.ground, None, false);
+        let _ = crate::term::terminal_begin();
+        let mut out = Vec::new();
+        self.held.whole(&mut out);
+        let _ = write_out(&out);
+        self.tried(now, got);
+    }
+
+    /// A try's answer: the link taken — its first frame whole, from the host's fresh writer — or the line saying why.
+    fn tried(&mut self, now: std::time::Instant, got: Result<Attached, Failed>) {
+        let Some(b) = &mut self.back else { return };
+        match got {
+            Ok((link, dec)) => {
+                self.back_from = b.up();
+                self.take(link, dec);
+            }
+            Err(f) => {
+                crate::log::line("attach", "info", &format!("the way back failed: {}", f.said));
+                if let Some(d) = b.failed(now, &f.said, f.gone) {
+                    self.act(d);
+                }
+            }
+        }
+    }
+
+    /// `link` the way from now on: what the last one's thread still says is passed over.
+    fn take(&mut self, link: Link, dec: Decoder<ToInterface>) {
+        self.let_go();
+        let Link { to, from, ssh, .. } = link;
+        if let Some(s) = &ssh {
+            s.quiet();
+        }
+        (self.to, self.ssh) = (to, ssh);
+        self.link_n += 1;
+        self.held = crate::screen::Held::new();
+        self.listen(from, dec);
     }
 
     /// One message of the host's — Some: the client's end.
@@ -565,6 +758,15 @@ impl Client {
                 self.held.apply(&bytes, w, h);
                 self.seen = n;
                 let _ = send(&mut self.to, &ToHost::Ack { frame: n });
+                if let Some(since) = self.back_from.take() {
+                    // (S-D's measure: from the wake seen, or the link's end, to the new link's first frame presented)
+                    let took = crate::term::run_duration(crate::clock::since(since));
+                    crate::log::line(
+                        "attach",
+                        "info",
+                        &format!("back in {took}: the link down to a frame presented"),
+                    );
+                }
                 if !bytes.is_empty() {
                     self.due = Some(crate::clock::now() + crate::interface::RESTING_REDRAW);
                 }
@@ -592,6 +794,12 @@ impl Client {
                 self.speaker.heard(s);
                 None
             }
+            ToInterface::Pong { n } => {
+                if let Some(b) = &mut self.back {
+                    b.pong(n);
+                }
+                None
+            }
             ToInterface::Welcome { .. } => None,
         }
     }
@@ -608,25 +816,16 @@ impl Client {
         let _ = send(&mut self.to, &ToHost::Zone { zone, offset });
     }
 
-    /// Attached again — `r` on the host-ended line, a restart over ssh (`wait`: the relay waits for its socket). Here:
-    /// the host looked for again (the one asked for, else the one `tarae state` picks); over ssh: ssh again, asking
-    /// nothing (the terminal is raw), to the host it had.
-    fn again(&mut self, wait: Option<Duration>) -> Result<(), String> {
+    /// Attached again to a host here — `r` on the host-ended line (`wait`: its socket retried that long): the host
+    /// looked for again, the one asked for, else the one `tarae state` picks.
+    fn again(&mut self, wait: Option<Duration>) -> Result<(), Failed> {
         if let Way::Here { pid, path } = &mut self.way
             && let Ok((p, at)) = crate::attach::find(None)
         {
             (*pid, *path) = (p, at);
         }
         let (link, dec) = attach_to(&mut self.way, self.ground, wait, true)?;
-        self.let_go();
-        let Link { to, from, ssh, .. } = link;
-        if let Some(s) = &ssh {
-            s.quiet();
-        }
-        (self.to, self.ssh) = (to, ssh);
-        self.link_n += 1;
-        self.held = crate::screen::Held::new();
-        self.listen(from, dec);
+        self.take(link, dec);
         Ok(())
     }
 }

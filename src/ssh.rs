@@ -485,6 +485,11 @@ impl Ssh {
             }
             crate::event::pause(Duration::from_millis(10));
         }
+        self.cut();
+    }
+
+    /// ssh cut at once — a link that answers nothing (no `Pong`): SIGTERM, reaped.
+    pub fn cut(mut self) {
         // SAFETY: kill only sends a signal to ssh, our child, not yet reaped.
         unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
         let _ = self.child.wait();

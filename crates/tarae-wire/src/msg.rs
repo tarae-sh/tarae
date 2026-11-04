@@ -4,9 +4,15 @@
 
 use crate::codec::{Error, Get, Message, Put, bad_tag};
 
-/// The protocol's version. Host and interface are the same build (`Hello.build` must match too), so it goes up with
-/// any change to a message's bytes.
-pub const V: u16 = 0;
+/// The protocol's version: host and interface speak the same one, or the host refuses (the remote plan's S-C — their
+/// builds may differ, across two machines they mostly do). It goes up with any change to what the other side reads:
+/// a message's bytes, `Code`'s and `MouseKind`'s order, the escapes a frame is written in — all of it pinned by
+/// tarae's `src/snapshots/wire.txt`.
+pub const V: u16 = 1;
+
+/// This build, as `Hello` and `Welcome` tell it: the version, the commit its sources are at and a `+` where they
+/// differ from it (`build.rs`). Said, never checked.
+pub const BUILD: &str = env!("TARAE_BUILD");
 
 /// What the interface says.
 #[derive(Clone, Debug, PartialEq)]
@@ -39,12 +45,17 @@ pub enum ToHost {
     },
     /// The client is going (its SIGHUP, `q` on its host-ended line).
     Bye,
+    /// Is the link still there? `Pong` with the same `n`, answered by the host's reader — never its loop. Sent only on
+    /// a wake or a focus back, never by a clock.
+    Ping {
+        n: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hello {
     pub v: u16,
-    /// `CARGO_PKG_VERSION` of the client's build.
+    /// The client's build (`BUILD`), said where it's refused and in the host's log.
     pub build: String,
     pub w: u16,
     pub h: u16,
@@ -191,6 +202,10 @@ pub enum ToInterface {
         why: Gone,
         said: String,
     },
+    /// `Ping`'s answer.
+    Pong {
+        n: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,6 +249,7 @@ impl Message for ToHost {
             ToHost::Answer { .. } => 0x05,
             ToHost::Zone { .. } => 0x06,
             ToHost::Bye => 0x07,
+            ToHost::Ping { .. } => 0x08,
         }
     }
 
@@ -294,6 +310,7 @@ impl Message for ToHost {
                 w.i32(*offset);
             }
             ToHost::Bye => {}
+            ToHost::Ping { n } => w.u32(*n),
         }
     }
 
@@ -345,6 +362,7 @@ impl Message for ToHost {
             }
             0x06 => ToHost::Zone { zone: r.str()?, offset: r.i32()? },
             0x07 => ToHost::Bye,
+            0x08 => ToHost::Ping { n: r.u32()? },
             k => return Err(Error::new(format!("a message of kind {k:#04x}, none such from an interface"))),
         })
     }
@@ -468,6 +486,7 @@ impl Message for ToInterface {
             ToInterface::Ask { .. } => 0x83,
             ToInterface::Sound(_) => 0x84,
             ToInterface::Gone { .. } => 0x85,
+            ToInterface::Pong { .. } => 0x86,
         }
     }
 
@@ -534,6 +553,7 @@ impl Message for ToInterface {
                 }
                 w.str(said);
             }
+            ToInterface::Pong { n } => w.u32(*n),
         }
     }
 
@@ -575,6 +595,7 @@ impl Message for ToInterface {
                 };
                 ToInterface::Gone { why, said: r.str()? }
             }
+            0x86 => ToInterface::Pong { n: r.u32()? },
             k => return Err(Error::new(format!("a message of kind {k:#04x}, none such from a host"))),
         })
     }

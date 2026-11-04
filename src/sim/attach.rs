@@ -2,12 +2,15 @@
 //! puts each frame whole in the writer's mailbox (`tarae_wire::Slot`, as `attach::Wire::hand` does), the writer
 //! (`attach::Writer::step`, driven here with no thread) sends what may go into a byte queue standing for the socket,
 //! and the interface reads it in pieces, presents each frame (`screen::Held`, as `tarae attach`), acks late and at
-//! random, types keys saying the last frame it presented, and resizes.
+//! random, types keys saying the last frame it presented, resizes, and pings (the host's reader queues each `Pong` as
+//! `attach::pong` says, the editor never told).
 //!
 //! Checked every step: every frame the interface presents is exactly a frame the host drew (its text, whole, from
 //! only what was sent), in increasing order; never more than `IN_FLIGHT` sent and unacked; the editor counts no frame
-//! presented that the interface didn't say it presented (its ack, or a key's `seen`). Once the host stops drawing the interface comes to its newest frame — no
-//! frame lost for good — and over the seeds a slow interface made the mailbox skip some.
+//! presented that the interface didn't say it presented (its ack, or a key's `seen`); no frame goes while a `Pong` waits
+//! (credit spent or not, a ping is answered first), and each `Pong` comes back in order. Once the host stops drawing the
+//! interface comes to its newest frame — no frame lost for good, every ping answered — and over the seeds a slow
+//! interface made the mailbox skip some.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -53,6 +56,11 @@ struct Link {
     /// The interface's size.
     size: (u16, u16),
     seq: u64,
+    /// Pings sent, and those whose `Pong` the interface hasn't read yet (oldest first) — and of those, the ones still
+    /// queued at the host.
+    pings: u32,
+    unanswered: std::collections::VecDeque<u32>,
+    pongs_queued: usize,
     wrong: Option<String>,
 }
 
@@ -69,6 +77,9 @@ impl Link {
             acked: 0,
             size: (60, 12),
             seq: 0,
+            pings: 0,
+            unanswered: std::collections::VecDeque::new(),
+            pongs_queued: 0,
             wrong: None,
         }
     }
@@ -91,7 +102,15 @@ impl Link {
     fn send(&mut self) -> Option<String> {
         let next = self.slot.take();
         let said = match &next {
+            Next::Frame(n, _) if self.pongs_queued > 0 => {
+                self.wrong = Some(format!("frame {n} sent ahead of {} Pong(s) queued", self.pongs_queued));
+                format!("frame {n} sent")
+            }
             Next::Frame(n, _) => format!("frame {n} sent"),
+            Next::Msg(ToInterface::Pong { n }) => {
+                self.pongs_queued -= 1;
+                format!("Pong {n} sent")
+            }
             Next::Msg(_) => "a message sent".into(),
             Next::Wait | Next::Closed => return None,
         };
@@ -108,6 +127,13 @@ impl Link {
         self.socket.drain(..k);
         let mut shown = Vec::new();
         while let Ok(Some(m)) = self.dec.message() {
+            if let ToInterface::Pong { n } = m {
+                match self.unanswered.pop_front() {
+                    Some(p) if p == n => {}
+                    p => self.wrong = Some(format!("Pong {n} read, the oldest ping unanswered {p:?}")),
+                }
+                continue;
+            }
             let ToInterface::Frame { n, w, h, bytes, .. } = m else { continue };
             self.held.apply(&bytes, w, h);
             if n <= self.presented {
@@ -138,6 +164,16 @@ impl Link {
         ed.frame_presented(self.acked);
         format!("the interface acks frame {}", self.acked)
     }
+
+    /// The interface pings; the host's reader queues its `Pong` (`attach::pong`), the editor never told.
+    fn ping(&mut self) -> String {
+        self.pings += 1;
+        let (m, order) = crate::attach::pong(self.pings);
+        self.slot.push(m, order, 16);
+        self.unanswered.push_back(self.pings);
+        self.pongs_queued += 1;
+        format!("the interface pings ({}), {} frame(s) in flight", self.pings, self.slot.in_flight())
+    }
 }
 
 fn run(choices: Choices) -> Vec<String> {
@@ -158,10 +194,10 @@ fn run(choices: Choices) -> Vec<String> {
     }
     let newest = l.drawn.keys().next_back().copied().unwrap_or(0);
     let mut trace = sim.trace().to_vec();
-    if l.presented != newest || l.wrong.is_some() {
+    if l.presented != newest || l.wrong.is_some() || !l.unanswered.is_empty() {
         trace.push(format!(
-            "FAILED: quiet, the interface presented frame {} of {newest} drawn ({:?})",
-            l.presented, l.wrong
+            "FAILED: quiet, the interface presented frame {} of {newest} drawn, pings unanswered {:?} ({:?})",
+            l.presented, l.unanswered, l.wrong
         ));
         panic!("{}", trace.join("\n"));
     }
@@ -174,8 +210,9 @@ fn run(choices: Choices) -> Vec<String> {
 fn step(sim: &mut Sim, ed: &mut Editor, link: &RefCell<Link>) -> String {
     let c = &mut sim.choices;
     let mut l = link.borrow_mut();
-    // (by arm: a key typed 3, a frame drawn 4, the writer 3, the interface reading 3, acking 2, a resize 1, time 1)
-    match c.weighted(&[3, 4, 3, 3, 2, 1, 1]) {
+    // (by arm: a key typed 3, a frame drawn 4, the writer 3, the interface reading 3, acking 2, a resize 1, time 1, a
+    // ping 1)
+    match c.weighted(&[3, 4, 3, 3, 2, 1, 1, 1]) {
         0 => {
             l.seq += 1;
             let k = *c.pick(&["a", "b", "ret", "backspace", "x"]);
@@ -194,6 +231,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, link: &RefCell<Link>) -> String {
             l.size = *c.pick(&[(60, 12), (40, 10), (72, 14)]);
             format!("the interface resized to {}×{}", l.size.0, l.size.1)
         }
+        7 => l.ping(),
         _ => {
             let ms = *c.pick(&[16, 300]);
             sim.wait(Duration::from_millis(ms));

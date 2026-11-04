@@ -45,8 +45,8 @@ fn every_message_reads_back_as_it_was_written() {
     }
     // (the samples cover every kind of each side: a new message is a sample too)
     let kinds = |k: Vec<u8>| k.into_iter().collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(kinds(check::to_host().iter().map(Message::kind).collect()), (1..=7).collect());
-    assert_eq!(kinds(check::to_interface().iter().map(Message::kind).collect()), (0x81..=0x85).collect());
+    assert_eq!(kinds(check::to_host().iter().map(Message::kind).collect()), (1..=8).collect());
+    assert_eq!(kinds(check::to_interface().iter().map(Message::kind).collect()), (0x81..=0x86).collect());
 }
 
 #[test]
@@ -79,8 +79,8 @@ fn the_decoder_reads_from_a_stream_and_says_a_message_cut_at_its_end() {
             got += 1;
         }
     }
-    assert_eq!(got, check::to_host().len() - 1, "the last message (Bye) cut");
-    assert_eq!(d.pending(), 4, "Bye's length, its kind missing");
+    assert_eq!(got, check::to_host().len() - 1, "the last message (a Ping) cut");
+    assert_eq!(d.pending(), 8, "the Ping's length, kind and 3 of its 4 bytes");
 }
 
 #[test]

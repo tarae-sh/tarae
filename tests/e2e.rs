@@ -329,7 +329,10 @@ fn signal_sender(pid: u32) -> String {
 fn version_and_help_print_without_a_terminal() {
     let out = Command::new(BIN).arg("--version").output().unwrap();
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("tarae {}", env!("CARGO_PKG_VERSION")));
+    // (the build stamped: the version, the commit, a `+` where the sources differ from it)
+    let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(said, format!("tarae {}", tarae_wire::BUILD));
+    assert!(said.starts_with(&format!("tarae {} ", env!("CARGO_PKG_VERSION"))), "{said}");
     let out = Command::new(BIN).arg("--help").output().unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("usage: tarae [FILE]"));
@@ -1676,7 +1679,8 @@ fn an_attach_is_refused_from_inside_the_hosts_own_terminal() {
     assert!(t.running());
 }
 
-/// An attach in another protocol's words is refused at its `Hello`, the refusal naming both builds.
+/// An attach in another protocol's words is refused at its `Hello`, the refusal naming both protocols and both builds;
+/// another build in the same protocol is let in (S-C: two machines' builds mostly differ), and its `Ping` answered.
 #[test]
 fn a_wrong_version_is_refused() {
     use std::io::{Read, Write};
@@ -1702,7 +1706,7 @@ fn a_wrong_version_is_refused() {
         offset: 0,
     };
     let mut out = Vec::new();
-    tarae_wire::encode(&tarae_wire::ToHost::Hello(hello), &mut out).unwrap();
+    tarae_wire::encode(&tarae_wire::ToHost::Hello(hello.clone()), &mut out).unwrap();
     s.write_all(&out).unwrap();
     s.set_read_timeout(Some(sb.timeout())).unwrap();
     let mut got = Vec::new();
@@ -1711,12 +1715,48 @@ fn a_wrong_version_is_refused() {
     dec.push(&got);
     match dec.message() {
         Ok(Some(tarae_wire::ToInterface::Gone { why: tarae_wire::Gone::Refused { said }, .. })) => {
-            assert!(said.contains("0.0.0-other") && said.contains(env!("CARGO_PKG_VERSION")), "{said}");
+            assert!(said.contains("0.0.0-other") && said.contains(tarae_wire::BUILD), "{said}");
+            let (v, other) = (tarae_wire::V, tarae_wire::V + 1);
+            assert!(
+                said.contains(&format!("protocol {v}")) && said.contains(&format!("protocol {other}")),
+                "{said}"
+            );
         }
         other => panic!("not refused: {other:?}"),
     }
-    let _ = fs::remove_file(&at);
     assert_eq!(h.state_json()["interface"], serde_json::Value::Null);
+    // (another build, the same protocol: let in)
+    let mut s = std::os::unix::net::UnixStream::connect(&at).expect("the host's attach socket");
+    out.clear();
+    tarae_wire::encode(&tarae_wire::ToHost::Hello(tarae_wire::Hello { v: tarae_wire::V, ..hello }), &mut out)
+        .unwrap();
+    s.write_all(&out).unwrap();
+    s.set_read_timeout(Some(sb.timeout())).unwrap();
+    let mut dec = tarae_wire::Decoder::<tarae_wire::ToInterface>::new();
+    loop {
+        match dec.message() {
+            Ok(Some(tarae_wire::ToInterface::Welcome { v, build, .. })) => {
+                assert_eq!((v, build.as_str()), (tarae_wire::V, tarae_wire::BUILD));
+                break;
+            }
+            Ok(None) => assert!(dec.read_from(&mut s).unwrap() > 0, "the host's end closed"),
+            other => panic!("not let in: {other:?}"),
+        }
+    }
+    // (a Ping: its Pong, past whatever frames come first)
+    out.clear();
+    tarae_wire::encode(&tarae_wire::ToHost::Ping { n: 7 }, &mut out).unwrap();
+    s.write_all(&out).unwrap();
+    loop {
+        match dec.message() {
+            Ok(Some(tarae_wire::ToInterface::Pong { n })) => break assert_eq!(n, 7),
+            Ok(Some(tarae_wire::ToInterface::Frame { .. })) => {}
+            Ok(None) => assert!(dec.read_from(&mut s).unwrap() > 0, "the host's end closed"),
+            other => panic!("no Pong: {other:?}"),
+        }
+    }
+    drop(s);
+    let _ = fs::remove_file(&at);
 }
 
 /// An idle host with a client attached sleeps, both of them: no frame, no event of the host's but its clocks, their
@@ -1782,7 +1822,7 @@ fn with_ssh(name: &str) -> Sandbox {
         &bin.join("ssh"),
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\n\
          while [ $# -gt 0 ]; do case \"$1\" in --) shift; break;; esac; shift; done\n\
-         exec \"$SHELL\" -c \"$1\"\n",
+         set -m\n\"$SHELL\" -c \"$1\" &\necho $! >> \"$0.pids\"\nwait $!\n",
     );
     let path = format!("{}:/usr/bin:/bin", bin.display());
     sb.with_env("PATH", &path)
@@ -1792,6 +1832,160 @@ fn with_ssh(name: &str) -> Sandbox {
 fn ssh_calls(sb: &Sandbox) -> Vec<String> {
     let calls = fs::read_to_string(sb.outside("bin/ssh.calls")).unwrap_or_default();
     calls.lines().map(String::from).collect()
+}
+
+/// The stand-in `ssh`'s remote commands, a process group each (its job, `set -m`: the login shell and the relay under
+/// it), as each run wrote it down.
+fn ssh_jobs(sb: &Sandbox) -> Vec<i32> {
+    let pids = fs::read_to_string(sb.outside("bin/ssh.pids")).unwrap_or_default();
+    pids.lines().filter_map(|p| p.trim().parse().ok()).collect()
+}
+
+/// A stand-in `ssh`'s remote command — its process group, this test's own — sent `sig`: the link cut, or held still,
+/// as a network gone or a laptop asleep would.
+fn signal_link(job: i32, sig: libc::c_int) {
+    assert!(job > 1);
+    // SAFETY: kill only sends a signal, to the group of this test's stand-in's job.
+    unsafe { libc::kill(-job, sig) };
+}
+
+/// Until the stand-in `ssh` has been run `n` times.
+fn wait_ssh_runs(sb: &Sandbox, n: usize, t: &Term) {
+    let deadline = std::time::Instant::now() + sb.timeout();
+    while ssh_calls(sb).len() < n {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "ssh run {:?}, not {n} times\n{}",
+            ssh_calls(sb),
+            t.screen()
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+/// A client over the stand-in `ssh` to a host of `a.txt` (`line one`), its first frame presented.
+fn over_ssh(name: &str, cols: u16) -> (Sandbox, Host, Term, String) {
+    let sb = with_ssh(name);
+    sb.write("a.txt", "line one\n");
+    let h = sb.host(&["a.txt"]);
+    let url = format!("ssh://mac{}", sb.work().display());
+    let mut t = Term::attach_by(&sb, &h, &["attach", &url, "--remote-tarae", BIN], cols, ROWS);
+    t.wait_text("line one");
+    t.wait_state("a frame presented", |s| s["interface"]["presented"].as_u64() > Some(0));
+    (sb, h, t, url)
+}
+
+/// The client's log's "back in" lines: each way back, its new link's first frame presented.
+fn backs(sb: &Sandbox) -> Vec<String> {
+    let log = fs::read_to_string(sb.state().join("tarae.log")).unwrap_or_default();
+    log.lines().filter(|l| l.contains(" back in ")).map(String::from).collect()
+}
+
+/// The way back worked unsaid: its first frame presented (keys before it go nowhere, by design), no line of the
+/// client's ever drawn, and the keys reach the host again.
+fn back_unsaid(sb: &Sandbox, t: &mut Term) {
+    let deadline = std::time::Instant::now() + sb.timeout();
+    while backs(sb).is_empty() {
+        assert!(std::time::Instant::now() < deadline, "not back\n{}", t.screen());
+        std::thread::sleep(POLL);
+    }
+    t.send("ix");
+    t.wait_text("xline one");
+    let raw = t.raw();
+    for word in ["dropped", "reconnecting", "the host ended", "q quit"] {
+        assert!(!contains(&raw, word.as_bytes()), "{word:?} said on a way back that worked:\n{}", t.screen());
+    }
+}
+
+/// A link cut mid-session (ssh gone, no `Gone`) comes back by itself: ssh run again asking nothing, to the host it had
+/// and with no wait (it isn't a restart); the last frame stays up and nothing is said; the keys reach the host again;
+/// how long it took, the link's end to the new link's first frame presented, is logged.
+#[test]
+fn a_cut_link_comes_back_by_itself_and_says_nothing() {
+    let (sb, h, mut t, _) = over_ssh("ssh-cut", COLS);
+    let first = ssh_jobs(&sb);
+    assert_eq!(first.len(), 1, "{first:?}");
+    signal_link(first[0], libc::SIGKILL);
+    wait_ssh_runs(&sb, 2, &t);
+    back_unsaid(&sb, &mut t);
+    let calls = ssh_calls(&sb);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let again = &calls[1];
+    assert!(again.contains("-o BatchMode=yes") && again.contains(&h.pid().to_string()), "{again}");
+    assert!(!again.contains("--wait"), "a drop isn't a restart: {again}");
+    eprintln!("the link's end to a live frame, over the stand-in ssh: {}", backs(&sb).join("\n"));
+}
+
+/// A link that answers nothing (the relay held still, as a network gone while the laptop slept): a focus back sends a
+/// `Ping`, no `Pong` comes within 3 s, so ssh is cut and run again — the host takes the new link over the stale one,
+/// nothing said.
+#[test]
+fn a_link_that_answers_no_ping_is_cut_and_comes_back() {
+    let (sb, _h, mut t, _) = over_ssh("ssh-ping", COLS);
+    let first = ssh_jobs(&sb)[0];
+    signal_link(first, libc::SIGSTOP);
+    // (focus back: the terminal's own report)
+    t.send("\x1b[I");
+    wait_ssh_runs(&sb, 2, &t);
+    back_unsaid(&sb, &mut t);
+    eprintln!("no Pong to a focus back's Ping, to a live frame: {}", backs(&sb).join("\n"));
+    signal_link(first, libc::SIGKILL);
+}
+
+/// A host gone over ssh (killed: no `Gone`): the try at the way back fails, so the line says so over the last frame —
+/// why, when it's tried again, `r` now, `q` quit —, every try asking nothing; `q` quits, the terminal restored.
+#[test]
+fn a_host_gone_over_ssh_says_why_and_q_quits() {
+    let (sb, mut h, mut t, _) = over_ssh("ssh-host-gone", 200);
+    h.signal(libc::SIGKILL);
+    h.wait_exit();
+    let s = t.wait_text("the link to mac dropped: ");
+    assert!(s.contains("— again in ") && s.contains(" · r now · q quit"), "{s}");
+    assert!(s.contains("line one"), "the last frame stays up:\n{s}");
+    t.send("q");
+    assert_eq!(t.wait_exit().code(), Some(0), "{}", t.screen());
+    assert!(restored(&t.raw()), "the client's terminal restored");
+    let calls = ssh_calls(&sb);
+    assert!(calls.len() >= 2 && calls[1..].iter().all(|c| c.contains("BatchMode=yes")), "{calls:?}");
+}
+
+/// A client in another protocol (`TARAE_WIRE_V`, a debug build's) over ssh: the relay passes its `Hello` unread and the
+/// host refuses it, both protocols and builds said; the client's terminal never taken, exit 1.
+#[test]
+fn a_client_over_ssh_in_another_protocol_is_refused() {
+    let sb = with_ssh("ssh-version");
+    let h = sb.host(&[]);
+    let url = format!("ssh://mac{}", sb.work().display());
+    let out = Command::new(BIN)
+        .args(["attach", &url, "--remote-tarae", BIN])
+        .current_dir(sb.work())
+        .env_clear()
+        .envs(sb.env())
+        .env("TARAE_WIRE_V", "9")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    let v = tarae_wire::V;
+    let said = format!(
+        "refused — this host speaks protocol {v} (tarae {}), the attach protocol 9 (tarae ",
+        tarae_wire::BUILD
+    );
+    assert!(err.contains(&said), "{err}");
+    assert_eq!(h.state_json()["interface"], serde_json::Value::Null);
+}
+
+/// A `Gone` is never come back from by itself: a client over ssh taken over by another attach ends, saying so, and
+/// ssh isn't run again (two clients would take the host from each other in a loop).
+#[test]
+fn a_client_over_ssh_taken_over_never_comes_back() {
+    let (sb, h, mut t, _) = over_ssh("ssh-taken", COLS);
+    let mut local = Term::attach(&sb, &h, COLS, ROWS);
+    local.wait_text("line one");
+    assert_eq!(t.wait_exit().code(), Some(0), "{}", t.screen());
+    t.wait_text("taken over by another tarae attach");
+    assert_eq!(ssh_calls(&sb).len(), 1, "{:?}", ssh_calls(&sb));
 }
 
 /// `tarae attach ssh://…` (the remote plan's step 5): ssh to a relay there (`attach --stdio`), found past an rc file's

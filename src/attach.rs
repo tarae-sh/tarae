@@ -213,6 +213,15 @@ fn say(mut s: &UnixStream, m: &ToInterface) {
     }
 }
 
+/// The protocol's version this side speaks: `wire::V`, or a debug build's `TARAE_WIRE_V` (the e2e's other version).
+pub fn said_v() -> u16 {
+    #[cfg(debug_assertions)]
+    if let Some(v) = std::env::var("TARAE_WIRE_V").ok().and_then(|v| v.parse().ok()) {
+        return v;
+    }
+    wire::V
+}
+
 fn refused(said: String) -> ToInterface {
     ToInterface::Gone { why: Gone::Refused { said }, said: String::new() }
 }
@@ -256,16 +265,19 @@ fn hello(stream: UnixStream, tx: Tx) {
         }
     };
     let _ = stream.set_read_timeout(None);
-    let build = env!("CARGO_PKG_VERSION");
-    if hello.v != wire::V || hello.build != build {
+    // (the protocol's version is the rule, the build only told — S-C: two machines' builds mostly differ)
+    let v = said_v();
+    if hello.v != v {
         let said = format!(
-            "this host is tarae {build} (protocol {}), the attach tarae {} (protocol {}) — attach with the host's own build",
-            wire::V,
+            "this host speaks protocol {v} (tarae {}), the attach protocol {} (tarae {}) — attach with a tarae that \
+             speaks {v}",
+            wire::BUILD,
+            hello.v,
             hello.build,
-            hello.v
         );
         return say(&stream, &refused(said));
     }
+    crate::log::line("attach", "info", &format!("pid {pid}: Hello from tarae {}", hello.build));
     // (the peer and its parents — judged on the main loop, which knows Claude's processes and the terminal panels')
     let line = crate::uisocket::ancestors(pid);
     let job = move |ed: &mut Editor| arrive(ed, stream, hello, line, dec);
@@ -303,8 +315,8 @@ fn arrive(ed: &mut Editor, stream: UnixStream, hello: Hello, line: Vec<u32>, dec
     ed.attach.given += 1;
     let id = ed.attach.given;
     let welcome = ToInterface::Welcome {
-        v: wire::V,
-        build: env!("CARGO_PKG_VERSION").into(),
+        v: said_v(),
+        build: wire::BUILD.into(),
         pid: std::process::id(),
         project: ed.workspace.root.display().to_string(),
     };
@@ -720,6 +732,11 @@ fn took(sh: &Shared, m: ToHost, tx: &Tx) -> Option<(String, Option<Gone>)> {
         ToHost::Zone { offset, .. } => {
             tx.send(Event::Job(Box::new(move |ed: &mut Editor| zone(ed, id, offset))))
         }
+        ToHost::Ping { n } => {
+            let (m, order) = pong(n);
+            sh.mail.with(|s| s.push(Out { m, at: None }, order, 16));
+            Ok(())
+        }
         ToHost::Bye => return Some(("it said goodbye".into(), None)),
         ToHost::Hello(_) => {
             let said = "a second Hello".to_string();
@@ -728,6 +745,12 @@ fn took(sh: &Shared, m: ToHost, tx: &Tx) -> Option<(String, Option<Gone>)> {
     };
     // (the editor is ending)
     sent.is_err().then(|| ("the host is ending".into(), None))
+}
+
+/// A `Ping`'s answer and when it goes: answered by the reader, never the loop, behind no frame nor credit — a link that
+/// answers is there, whatever the loop is doing (the simulation queues it the same way).
+pub fn pong(n: u32) -> (ToInterface, Order) {
+    (ToInterface::Pong { n }, Order::AtOnce)
 }
 
 /// The wire's input as tarae's event.

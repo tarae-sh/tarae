@@ -334,7 +334,8 @@ fn main() -> Result<()> {
                 return client::main(&rest);
             }
             "-V" | "--version" => {
-                println!("tarae {}", env!("CARGO_PKG_VERSION"));
+                // (the build: its version, commit, and a `+` where its sources differ from it — `tarae_wire::BUILD`)
+                println!("tarae {}", tarae_wire::BUILD);
                 return Ok(());
             }
             _ => files.push(PathBuf::from(arg)),
