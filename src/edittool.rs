@@ -123,6 +123,11 @@ fn items_of(args: &Value) -> Result<Vec<Item>, String> {
     list.iter().enumerate().map(|(i, e)| item(i, e)).collect()
 }
 
+/// Claude's text as the file holds it: a frame tag tarae made inert in what it read (`quote::inert`) is as written.
+fn written(text: &str) -> String {
+    crate::quote::as_written(text).into_owned()
+}
+
 fn item(i: usize, e: &Value) -> Result<Item, String> {
     let s = |k: &str| e[k].as_str();
     let file = s("file_path")
@@ -134,7 +139,7 @@ fn item(i: usize, e: &Value) -> Result<Item, String> {
     let to = s("move_to").map(str::trim).filter(|t| !t.is_empty());
     if e["whole"].as_bool() == Some(true) {
         return match (delete, to, s("old_string").is_none_or(str::is_empty), s("new_string")) {
-            (false, None, true, Some(new)) => Ok(Item::Whole { file, new: new.to_string() }),
+            (false, None, true, Some(new)) => Ok(Item::Whole { file, new: written(new) }),
             _ => Err(format!(
                 "edits[{i}] ({file}): whole: true takes new_string alone — the file's whole new text"
             )),
@@ -152,7 +157,7 @@ fn item(i: usize, e: &Value) -> Result<Item, String> {
                 return Err(format!("edits[{i}] ({file}): old_string and new_string are the same"));
             }
             let all = e["replace_all"].as_bool() == Some(true);
-            Ok(Item::Replace { file, old: old.to_string(), new: new.to_string(), all })
+            Ok(Item::Replace { file, old: written(old), new: written(new), all })
         }
         (false, None, false) => {
             Err(format!("edits[{i}] ({file}): give old_string and new_string, or move_to, or delete: true"))

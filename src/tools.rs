@@ -129,6 +129,7 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
             // (a key in tarae's own namespace is never Claude's to send — what a call was granted stays on tarae's
             // side, `Session.web_once`)
             let ours = args.as_object().and_then(|o| o.keys().find(|k| k.starts_with("tarae-")));
+            let mut news = String::new();
             let r = match params["name"].as_str() {
                 _ if ours.is_some() => {
                     Err(format!("`{}` isn't an argument of {tool}", ours.map_or("", |k| k.as_str())))
@@ -159,12 +160,11 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                         "session_act" => crate::orchestra::act(ed, args).map(Some),
                         _ => crate::orchestra::sessions(ed, args).map(Some),
                     };
-                    let mut news = || crate::orchestra::news_for_answer(ed, name);
-                    match asked {
-                        Ok(None) => return None,
-                        Ok(Some(text)) => Ok(text + &news()),
-                        Err(e) => Err(e + &news()),
+                    if matches!(asked, Ok(None)) {
+                        return None;
                     }
+                    news = crate::orchestra::news_for_answer(ed, name);
+                    asked.map(Option::unwrap_or_default)
                 }
                 Some(
                     name @ ("references" | "search" | "read" | "symbols" | "definition" | "diagnostics"
@@ -209,6 +209,10 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                 }
                 other => Err(format!("no tool {}", other.unwrap_or_default())),
             };
+            // (what the user typed to steer the turn rides this answer — `chat::steer`)
+            let note = noted(ed, generation, news);
+            let out = |t: String| crate::quote::inert(&t).into_owned() + note.as_deref().unwrap_or_default();
+            let r = r.map(out).map_err(out);
             let (Ok(text) | Err(text)) = &r;
             sized(ed, tool, text.len(), None, 0);
             Ok(content(r))
@@ -375,6 +379,12 @@ impl Call {
         }
     }
 
+    /// (tests: the call as `tool`'s)
+    #[cfg(test)]
+    pub fn named(self, tool: &str) -> Call {
+        Call { tool: tool.into(), ..self }
+    }
+
     /// Call `id` (`request_id` its control request's) of chat process `generation`.
     pub fn of(generation: u64, request_id: &str, id: Value) -> Call {
         let request_id = request_id.into();
@@ -441,17 +451,20 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             crate::ask::respond(ed, &call.request_id, json!({ "mcp_response": response }));
         }
         Some(session) if session == ed.workspace.id => {
-            // (a session tool's answer: the parent's news after it, told once — `orchestra::News`)
+            // (a session tool's answer: the parent's news after it, told once — `orchestra::News`; and what the user
+            // typed to steer the turn — `chat::steer`: the first answer to go carries it)
             let news = crate::orchestra::news_for_answer(ed, &call.tool);
-            let r = match news.is_empty() {
-                true => r,
-                false => match r {
-                    Ok(mut parts) => {
-                        parts.push(Part::Text(news));
-                        Ok(parts)
-                    }
-                    Err(e) => Err(e + &news),
-                },
+            let note = noted(ed, call.generation, news);
+            let inert = |t: String| crate::quote::inert(&t).into_owned();
+            let r = match r {
+                Ok(parts) => {
+                    let text = |p| match p {
+                        Part::Text(t) => Part::Text(inert(t)),
+                        p => p,
+                    };
+                    Ok(parts.into_iter().map(text).chain(note.map(Part::Text)).collect())
+                }
+                Err(e) => Err(inert(e) + note.as_deref().unwrap_or_default()),
             };
             ed.workspace.claude.tool_waits.retain(|w| !w.is(call.generation, &call.id));
             hits_shown(ed, &call, &r);
@@ -470,6 +483,15 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             let _ = ed.events.shared_sender().send(crate::event::Event::For(session, tag, Box::new(later)));
         }
     }
+}
+
+/// What tarae itself says after an answer to claude process `generation`, the answer's own text made inert first
+/// (`quote::inert` — a file, a page, a run's output can't pass for it): orchestra's `news` (empty: none) and the user's
+/// steer (`chat::steer_take`), in one `<editor-note>` of the process's id (`chat::note_framed`). None: neither.
+fn noted(ed: &mut Editor, generation: u64, news: String) -> Option<String> {
+    let steer = crate::chat::steer_take(ed, generation);
+    let body: Vec<String> = (!news.is_empty()).then_some(news).into_iter().chain(steer).collect();
+    (!body.is_empty()).then(|| format!("\n\n{}", crate::chat::note_framed(generation, &body.join("\n\n"))))
 }
 
 /// A search's or a lookup's answer going out: the lines it shows, from its whole text (`Mapped.shown`).

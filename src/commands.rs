@@ -192,6 +192,7 @@ commands! {
         chat_open => "Chat with Claude",
         chat_point => "Point Claude at something",
         chat_view => "View the chat",
+        chat_steer => "Steer Claude's turn",
         prompt_history_older => "Earlier line typed here",
         prompt_history_newer => "Later line typed here",
         view_leave => "Leave view mode",
@@ -2415,6 +2416,10 @@ fn chat_point(cx: &mut Context) {
 /// The chat's `esc`: from its input to its view mode.
 fn chat_view(cx: &mut Context) {
     crate::chatdoc::view(cx.editor);
+}
+/// The chat's `tab` while Claude works: what's typed reaches it at its next tool answer (`chat::steer`).
+fn chat_steer(cx: &mut Context) {
+    crate::chat::steer(cx.editor);
 }
 /// A prompt's `↑`: the line run before at this kind of prompt (`prompt::walk`).
 fn prompt_history_older(cx: &mut Context) {

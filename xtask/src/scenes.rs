@@ -571,6 +571,67 @@ const FLOW3_FOLLOW_WIDER: &[&str] = &[
 const FLOW3_FOLLOW_HEAD: &[&str] =
     &["@1", " ", "L", "@1", "keep the first strand on a repeat", "\r", "@10?unit tests", "@1"];
 const FLOW3_ALONE: &[&str] = &["@1", " ", "l", "@1", "why a hash map?", "\r", "@30=done", "@2"];
+/// The flow plan's piece 5, steering: asked in the column, Claude at work (its read done, the turn held), a second message
+/// queued (`steer-queued`: `tab steer` beside `↑ edit queued`), then `tab` (`steer-steering`: the steering line), then
+/// Claude's next tool answer carrying it (`steer-steered`: its row where Claude heard it). `steer-ask`: the ask line at
+/// work, `enter queue  tab steer` on its foot.
+const STEER_QUEUED: &[&str] = &[
+    "@1",
+    " ",
+    "L",
+    "@1",
+    "keep the first strand on a repeat",
+    "\r",
+    "@10?Let me look",
+    "@1",
+    "use thread.rs instead",
+    "\r",
+    "@1",
+];
+const STEER_STEERING: &[&str] = &[
+    "@1",
+    " ",
+    "L",
+    "@1",
+    "keep the first strand on a repeat",
+    "\r",
+    "@10?Let me look",
+    "@1",
+    "use thread.rs instead",
+    "\r",
+    "\t",
+    "@1",
+];
+const STEER_STEERED: &[&str] = &[
+    "@1",
+    " ",
+    "L",
+    "@1",
+    "keep the first strand on a repeat",
+    "\r",
+    "@10?Let me look",
+    "@1",
+    "use thread.rs instead",
+    "\r",
+    "\t",
+    "@30?Reading src",
+    "@1",
+];
+const STEER_ASK: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "keep the first strand on a repeat",
+    "\r",
+    "@10?Let me look",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "use thread.rs instead",
+    "@1",
+];
 const FLOW2_FOOT: &[&str] =
     &["@1", "21G", " ", "l", "@1", FLOW2_ASKED, "\r", "@30=done", "@2", " ", "L", "@1"];
 const FLOW2_CONTINUE: &[&str] = &[
@@ -4152,6 +4213,11 @@ const SCENES: &[Scene] = &[
     Scene { name: "flow3-docked", claude: "a1c", files: SPOOL, keys: FLOW2_FOOT },
     Scene { name: "flow3-pilcrow", claude: "a1c", files: SPOOL, keys: FLOW3_PILCROW },
     Scene { name: "flow3-none", claude: "flow3-none", files: MAIN, keys: FLOW3_ALONE },
+    // (the flow plan's piece 5: a message queued, steered, then heard at Claude's next tool answer; the ask line at work)
+    Scene { name: "steer-queued", claude: "steer", files: MAIN, keys: STEER_QUEUED },
+    Scene { name: "steer-steering", claude: "steer", files: MAIN, keys: STEER_STEERING },
+    Scene { name: "steer-steered", claude: "steer", files: MAIN, keys: STEER_STEERED },
+    Scene { name: "steer-ask", claude: "steer", files: MAIN, keys: STEER_ASK },
     Scene { name: "flow3-error", claude: "flow3-error", files: MAIN, keys: FLOW3_ALONE },
     Scene { name: "flow3-follow-keys", claude: "now", files: MAIN, keys: FLOW3_FOLLOW_KEYS },
     Scene { name: "flow3-follow-wider", claude: "now", files: MAIN, keys: FLOW3_FOLLOW_WIDER },
@@ -6758,6 +6824,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "a1-none",
     "flow3-none",
     "flow3-error",
+    "steer",
     "a1-flow",
     "a1b-two",
     "a1b-all",
@@ -6933,6 +7000,9 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // that fails, its error said only in the conversation)
             "flow3-none" => turn.flow3_none()?,
             "flow3-error" => turn.flow3_error()?,
+            // (the flow plan's piece 5: a read, the turn held while the user queues and steers, then a plan answered at
+            // once — what steers rides it)
+            "steer" => turn.steer()?,
             // (…and one with a paragraph placed elsewhere: its line on the place's card)
             "a1-flow" => turn.a1_flow()?,
             // (focus A1b's: two answers naming the loop's line, the first one the line above it too)
@@ -7889,6 +7959,22 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         let tool =
             json!({"type": "tool_use", "id": "t3", "name": format!("mcp__tarae__{name}"), "input": input});
         self.line(json!({"type": "assistant", "message": {"id": "m3", "content": [tool]}}))?;
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
+    }
+
+    /// `steer`'s turn: a read, held 15 s (the scene's keys queue a message and steer it meanwhile), a plan answered at once
+    /// — the steer rides its answer — a few words, and the turn held there.
+    fn steer(&mut self) -> io::Result<()> {
+        self.words("Let me look at how the map is filled first.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+        std::thread::sleep(Duration::from_secs(15));
+        let steps = json!([
+            {"text": "Read how the map is filled", "status": "done"},
+            {"text": "Read src/thread.rs", "status": "doing"}
+        ]);
+        self.call(2, "plan", json!({"title": "Keep the first strand", "steps": steps}))?;
+        self.words("Reading src/thread.rs instead, as you asked.")?;
         self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 

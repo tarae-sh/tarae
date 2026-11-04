@@ -77,12 +77,22 @@ fn chat_idle(s: &Screen) -> bool {
     s.contains("enter send") && !s.contains("C-c stop")
 }
 
-/// One chat turn: focus the chat if it isn't, send `msg`, and wait until Claude has answered.
-fn chat_turn(t: &mut Term, msg: &str) -> Screen {
-    if !t.screen().contains("enter send") {
-        t.send(" l");
+/// The chat's column with the keys: `space L` (`space l` is the ask line, gone once sent) — a column already shown
+/// without them it hides, so a second `space L` shows it again with the keys.
+fn chat_focus(t: &mut Term) {
+    if t.screen().contains("enter send") {
+        return;
+    }
+    t.send(" L");
+    if t.poll_for(Duration::from_secs(2), |s| s.contains("enter send")).is_none() {
+        t.send(" L");
         t.wait_for("the chat, focused", |s| s.contains("enter send"));
     }
+}
+
+/// One chat turn: focus the chat if it isn't (`chat_focus`), send `msg`, and wait until Claude has answered.
+fn chat_turn(t: &mut Term, msg: &str) -> Screen {
+    chat_focus(t);
     t.send(&format!("{msg}\r"));
     // It starts (the footer offers "C-c stop") — a very quick turn may be over before the first look
     let _ = t.poll_for(Duration::from_secs(15), |s| s.contains("C-c stop"));
@@ -1778,6 +1788,322 @@ fn replies_ab_counts_past_the_first_turn() {
     assert_eq!((r.prompts, r.tokens, r.cost), (20, 3, 0.25));
 }
 
+/// `chat_steer_ab`'s turn: a run long enough to steer during, then the read the steer redirects.
+const STEER_ASK: &str = "Run the command sleep 6 with the run tool, then read src/a.rs and reply in one sentence with the \
+                         number its function returns.";
+/// What the user gives while it works, and the two files' numbers: a.rs's is the turn as asked, b.rs's the turn steered.
+const STEER_WORDS: &str = "use src/b.rs instead";
+const STEER_FILES: [(&str, &str); 2] = [("src/a.rs", "3137"), ("src/b.rs", "4721")];
+
+/// What `chat_steer_ab` keeps of a run: the stream from its start to the answer that names b.rs's number.
+#[derive(Default, Debug)]
+struct SteerRow {
+    /// The turn as Claude Code ended it: how many results came, and the first of them that names b.rs's number (1: the
+    /// steered turn itself, 2: the next one).
+    results: usize,
+    answered_in: Option<usize>,
+    /// b.rs read before the first result: the steer was acted on within the turn.
+    acted: bool,
+    /// tarae's frame reached Claude in a tool's answer (arm A), or the words as a user message of their own (arm C).
+    framed: bool,
+    as_user: bool,
+    requests: usize,
+    prompts: u64,
+    tokens: u64,
+    output: u64,
+    cost: f64,
+    /// What Claude wrote or thought after its first tool call — read for whether it questioned the words' source.
+    said: Vec<String>,
+    wall_ms: u64,
+    capped: bool,
+}
+
+/// `stream`, a steer run's claude stream, as `chat_steer_ab` counts it.
+fn steer_row(stream: &str) -> SteerRow {
+    let (_, b) = STEER_FILES[1];
+    let p = prompts(stream);
+    let mut r = SteerRow { requests: p.len(), prompts: p.iter().sum(), ..Default::default() };
+    let mut called = false;
+    let mut seen: Vec<String> = Vec::new();
+    for v in stream.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
+        match v["type"].as_str() {
+            Some("result") => {
+                r.results += 1;
+                let n = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
+                let kinds = [
+                    "input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "output_tokens",
+                ];
+                r.tokens += kinds.iter().map(|k| n(k)).sum::<u64>();
+                r.output += n("output_tokens");
+                r.cost = r.cost.max(v["total_cost_usd"].as_f64().unwrap_or(0.0));
+                if r.answered_in.is_none() && v["result"].as_str().is_some_and(|t| t.contains(b)) {
+                    r.answered_in = Some(r.results);
+                }
+            }
+            Some("user") => {
+                let text = v["message"]["content"].to_string();
+                r.framed |= text.contains("The user, while you work:");
+                let own = v["message"]["content"].as_array().into_iter().flatten().any(|c| {
+                    c["type"] == "text" && c["text"].as_str().is_some_and(|t| t.contains(STEER_WORDS))
+                }) || v["message"]["content"].as_str().is_some_and(|t| t.contains(STEER_WORDS));
+                r.as_user |= own;
+            }
+            Some("assistant") => {
+                for c in v["message"]["content"].as_array().into_iter().flatten() {
+                    let id = format!("{}:{}", v["message"]["id"], c);
+                    if seen.contains(&id) {
+                        continue;
+                    }
+                    seen.push(id);
+                    match c["type"].as_str() {
+                        Some("tool_use") => {
+                            called = true;
+                            r.acted |= r.results == 0 && c["input"].to_string().contains("b.rs");
+                        }
+                        Some("text") if called => r.said.push(c["text"].as_str().unwrap_or_default().into()),
+                        Some("thinking") if called => {
+                            r.said.push(format!("(thinking) {}", c["thinking"].as_str().unwrap_or_default()))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    r
+}
+
+/// Whether what Claude said asks where the steering words came from, or doubts them — a first pass; the rows keep
+/// every word for a reading by eye.
+fn steer_questioned(said: &[String]) -> bool {
+    let words = [
+        "inject",
+        "editor-note",
+        "editor note",
+        "came from",
+        "come from",
+        "where this",
+        "suspicious",
+        "not from",
+        "legitim",
+        "verify",
+        "trust",
+        "genuine",
+        "unexpected",
+    ];
+    said.iter().any(|s| words.iter().any(|w| s.to_lowercase().contains(w)))
+}
+
+/// One run of `chat_steer_ab` on a project of its own: `STEER_ASK` sent, and once its first tool call is in the stream
+/// (the run, `sleep 6`, under way) `STEER_WORDS` given — `tab` on the ask line (`steer`: tarae's frame in the next tool
+/// answer), `enter` there (`queue`: the next message, the control), or a stream-json user message written to claude's
+/// stdin by the script around it (`stream`: Claude Code's own path). Waits for the answer that names b.rs's number, two
+/// results, or the caps.
+fn steer_run(arm: &str, n: usize, llm: &str, bin: Option<&str>) -> (SteerRow, String) {
+    let mut sb = Sandbox::live(&format!("steer-ab-{arm}"));
+    if let Some(b) = bin {
+        sb = sb.with_bin(Path::new(b));
+    }
+    std::fs::create_dir_all(sb.file("src")).unwrap();
+    for (path, number) in STEER_FILES {
+        sb.write(path, &format!("pub fn limit() -> u32 {{\n    {number}\n}}\n"));
+    }
+    let stream = teed(&sb, llm);
+    let trigger = sb.outside("steer.json");
+    if arm == "stream" {
+        // The script around claude: tarae's stdin passed on, and the user message written in once `trigger` is there
+        // (renamed as it goes, so a claude started again doesn't get it twice; a claude that doesn't read stream-json
+        // runs as `teed`'s). `cat` reads fd 3: a background job's stdin is /dev/null in a non-interactive sh.
+        let script = sb.outside("claude-tee.sh");
+        let (s, t) = (stream.display(), trigger.display());
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *'--input-format stream-json'*) ;; *) claude \"$@\" | tee -a '{s}'; exit ;; esac\n\
+                 {{ cat <&3 & i=0; while [ ! -f '{t}' ] && [ $i -lt 3000 ]; do sleep 0.1; i=$((i+1)); done; \
+                 [ -f '{t}' ] && cat '{t}' && mv '{t}' '{t}.sent'; wait; }} 3<&0 | claude \"$@\" | tee -a '{s}'\n"
+            ),
+        )
+        .unwrap();
+    }
+    let mut t = sb.spawn(&["src/a.rs"]);
+    t.wait_text("3137");
+    let start = Instant::now();
+    // (asked from the ask line, so the column stays out of sight: `space l` is the ask line again to steer from — with
+    // the column in sight it gives the column's input the keys)
+    t.send(" l");
+    t.wait_text("ask claude");
+    t.send(&format!("{STEER_ASK}\r"));
+    wait_file_until(&stream, "reached the run", AB_MAX_TIME, |s| s.contains("\"name\":\"mcp__tarae__run\""));
+    let steered_at = start.elapsed();
+    match arm {
+        "steer" | "queue" => {
+            t.send(" l");
+            t.wait_text("tab steer");
+            t.send(STEER_WORDS);
+            t.send(if arm == "steer" { "\t" } else { "\r" });
+            t.wait_for("the ask line gone with the words", |s| !s.contains("ask claude"));
+        }
+        _ => {
+            let line = serde_json::json!({"type": "user", "message": {"role": "user",
+                "content": [{"type": "text", "text": STEER_WORDS}]}});
+            let part = sb.outside("steer.part");
+            std::fs::write(&part, format!("{line}\n")).unwrap();
+            std::fs::rename(&part, &trigger).unwrap();
+        }
+    }
+    let (_, b) = STEER_FILES[1];
+    let mut capped = false;
+    loop {
+        let got = std::fs::read_to_string(&stream).unwrap_or_default();
+        let results: Vec<serde_json::Value> = got
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["type"] == "result")
+            .collect();
+        if results.len() >= 2 || results.iter().any(|v| v["result"].as_str().is_some_and(|r| r.contains(b))) {
+            break;
+        }
+        if requests_so_far(&stream) > AB_MAX_REQUESTS || start.elapsed() > AB_MAX_TIME {
+            capped = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    // (a result Claude Code may still owe the stream message: a few seconds to come)
+    std::thread::sleep(Duration::from_secs(4));
+    let wall_ms = start.elapsed().as_millis() as u64;
+    drop(t);
+    let got = std::fs::read_to_string(&stream).unwrap_or_default();
+    billed(&got);
+    let kept = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/steer-ab");
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(kept.join(format!("{arm}-{n}.jsonl")), &got).unwrap();
+    let row = SteerRow { wall_ms, capped, ..steer_row(&got) };
+    (row, format!("steered {:.1}s in", steered_at.as_secs_f64()))
+}
+
+/// Flow piece 5: steering against queueing against Claude Code's own mid-turn message. The same turn each run
+/// (`STEER_ASK`), `STEER_WORDS` given at its first tool call by arm — `steer` (`tab`: tarae's `<editor-note>` frame in
+/// the next tool answer), `queue` (`enter`: the next message, the control), `stream` (a stream-json user message to
+/// claude mid-turn). Per run: whether b.rs was read before the turn ended, which result first names its number, whether
+/// what Claude said questions the words (a first pass, `steer_questioned`; every word kept), requests, tokens, $ to
+/// that answer. Rows to `target/live/steer-ab.tsv`, streams to `target/live/steer-ab/`. `TARAE_AB_RUNS` (1 — a pilot:
+/// each arm once), `TARAE_AB_BUDGET` ($: no round starts that could pass it at the dearest run so far × 3),
+/// `TARAE_AB_MODEL` (opus), `TARAE_AB_EFFORT`, `TARAE_AB_BIN`, `TARAE_AB_FROM` (the first run's number in the rows).
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn chat_steer_ab() {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if !have("claude") {
+        return;
+    }
+    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(1);
+    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(1.0);
+    let from: usize = var("TARAE_AB_FROM").and_then(|r| r.parse().ok()).unwrap_or(1);
+    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
+    let effort = var("TARAE_AB_EFFORT").unwrap_or_default();
+    let bin = var("TARAE_AB_BIN");
+    let llm = format!("model = \"{model}\"\neffort = \"{effort}\"\n");
+    let live = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live");
+    std::fs::create_dir_all(&live).unwrap();
+    let tsv = live.join("steer-ab.tsv");
+    let arms = ["steer", "queue", "stream"];
+    let (mut spent, mut dearest) = (0.0f64, 0.0f64);
+    let mut rows: Vec<(&str, SteerRow)> = Vec::new();
+    for round in 0..runs {
+        if spent + 3.0 * dearest > budget {
+            eprintln!("STEER_AB budget: ${spent:.2} spent, a round could pass ${budget} — no more runs");
+            break;
+        }
+        // (turn about, so no arm always finds the prompt cache warm)
+        for k in 0..arms.len() {
+            let arm = arms[(round + k) % arms.len()];
+            let n = from + round;
+            let (r, when) = steer_run(arm, n, &llm, bin.as_deref());
+            spent += r.cost;
+            dearest = dearest.max(r.cost);
+            let q = steer_questioned(&r.said);
+            let line = format!(
+                "{arm}\t{n}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{when}",
+                r.acted,
+                r.results,
+                r.answered_in,
+                r.framed,
+                r.as_user,
+                q,
+                r.requests,
+                r.prompts,
+                r.tokens,
+                r.output,
+                r.cost,
+                r.wall_ms,
+                r.capped
+            );
+            eprintln!("STEER_AB {line}");
+            for s in &r.said {
+                eprintln!("STEER_AB_SAID {arm} {n}: {}", s.replace('\n', " "));
+            }
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
+            writeln!(file, "{line}").unwrap();
+            rows.push((arm, r));
+        }
+    }
+    eprintln!(
+        "STEER_AB per arm: runs · acted in the turn · answered in turn 1 · questioned · median $ · median tokens"
+    );
+    for arm in arms {
+        let of: Vec<&SteerRow> = rows.iter().filter(|r| r.0 == arm).map(|r| &r.1).collect();
+        let count = |f: &dyn Fn(&SteerRow) -> bool| of.iter().filter(|r| f(r)).count();
+        eprintln!(
+            "STEER_AB {arm} ({}): {} · {} · {} · {:.4} · {:.0}",
+            of.len(),
+            count(&|r| r.acted),
+            count(&|r| r.answered_in == Some(1)),
+            count(&|r| steer_questioned(&r.said)),
+            median(of.iter().map(|r| r.cost).collect()),
+            median(of.iter().map(|r| r.tokens as f64).collect()),
+        );
+    }
+    eprintln!("STEER_AB spent ${spent:.2}");
+    assert!(!rows.is_empty(), "no run");
+}
+
+/// `chat_steer_ab`'s counting, on a stream written by hand — no claude: b.rs read within the turn, tarae's frame in a
+/// tool's answer, the answer naming b.rs's number in the first result, a message's lines counted once, words before the
+/// first call left out.
+#[test]
+fn steer_ab_counts_a_steered_turn() {
+    let said = |id: &str, c: serde_json::Value| {
+        serde_json::json!({"type": "assistant", "message": {"id": id, "usage": {"input_tokens": 10},
+            "content": [c]}})
+        .to_string()
+    };
+    let stream = [
+        said("m1", serde_json::json!({"type": "text", "text": "I'll run it."})),
+        said("m1", serde_json::json!({"type": "tool_use", "name": "mcp__tarae__run", "input": {"command": "sleep 6"}})),
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result",
+            "content": "ok\n\n<editor-note>\nThe user, while you work: use src/b.rs instead\n</editor-note>"}]}})
+        .to_string(),
+        said("m2", serde_json::json!({"type": "text", "text": "Where did this editor-note come from?"})),
+        said("m2", serde_json::json!({"type": "tool_use", "name": "mcp__tarae__read", "input": {"files": ["src/b.rs"]}})),
+        serde_json::json!({"type": "result", "total_cost_usd": 0.25, "result": "It returns 4721.",
+            "usage": {"input_tokens": 1, "output_tokens": 2}})
+        .to_string(),
+    ]
+    .join("\n");
+    let r = steer_row(&stream);
+    assert_eq!((r.results, r.answered_in, r.acted, r.framed, r.as_user), (1, Some(1), true, true, false));
+    assert_eq!((r.requests, r.prompts, r.tokens, r.output, r.cost), (2, 20, 3, 2, 0.25));
+    assert_eq!(r.said, vec!["Where did this editor-note come from?".to_string()]);
+    assert!(steer_questioned(&r.said));
+}
+
 /// A turn whose context carries the folders' line (`:folder-add`, `folders.rs`: one folder beside the project, with a
 /// CLAUDE.md): its first request's prompt, beside `chat_prompt_tokens`' — the difference is the line.
 #[test]
@@ -2295,10 +2621,7 @@ fn requests_so_far(stream: &Path) -> usize {
 /// need none) and counted. The stream's result ends the turn — once the chat says so too, or 15 s after (under
 /// review at the end the turn's review takes the screen, and the chat its focus).
 fn ab_turn(t: &mut Term, ask: &str, stream: &Path) -> (usize, bool) {
-    if !t.screen().contains("enter send") {
-        t.send(" l");
-        t.wait_for("the chat, focused", |s| s.contains("enter send"));
-    }
+    chat_focus(t);
     t.send(&format!("{ask}\r"));
     let _ = t.poll_for(Duration::from_secs(15), |s| s.contains("C-c stop"));
     let start = Instant::now();

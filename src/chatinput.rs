@@ -141,12 +141,18 @@ fn typed(ed: &mut Editor, key: Key) {
 fn lookup<'a>(ed: &'a Editor, keys: &[Key]) -> Lookup<'a> {
     for table in [&ed.keymaps.chat, &ed.keymaps.insert] {
         match table.search(keys) {
+            // (the steer key is `chat::key`'s: where it has nothing to steer, the key is what `[insert]` makes it)
+            Some(KeyTrie::Leaf(cmds)) if is_steer(cmds) => {}
             Some(KeyTrie::Leaf(cmds)) => return Lookup::Matched(cmds),
             Some(KeyTrie::Node(_)) => return Lookup::Pending,
             None => {}
         }
     }
     Lookup::NotFound
+}
+
+fn is_steer(cmds: &[MappableCommand]) -> bool {
+    matches!(cmds, [MappableCommand::Static(s)] if s.name == "chat_steer")
 }
 
 /// A command a key of the input runs on the editor, the input put back first: its view mode, the window table's,

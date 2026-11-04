@@ -18114,6 +18114,28 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             Role::Note => 0,
         }
     };
+    // Your words, as your message draws them: each line rows of its own, blank ones kept, as written (#18: one span with
+    // its line breaks in it reached the terminal as raw LFs — rows overlapped, paragraphs lost their starts)
+    let yours = |text: &str, lines: &mut Vec<ChatRow>| {
+        for part in text.split('\n').map(|l| l.trim_end_matches('\r')) {
+            let para = [md::Line::Text { spans: vec![sp(part.to_string(), strong)], indent: 0 }];
+            let (rows, drawn) = match part.trim().is_empty() {
+                true => Default::default(),
+                false => md::wrap_drawn(&para, mw - 2, faint, faint),
+            };
+            if rows.is_empty() {
+                // (a blank line: its bar isn't the text's either)
+                lines.push(ChatRow { spans: vec![sp("▎".into(), accent)], skip: 1, ..ChatRow::default() });
+            }
+            for (l, d) in rows.into_iter().zip(drawn) {
+                let mut row = vec![sp("▎ ".into(), accent)];
+                row.extend(l);
+                // (its bar isn't the text's, nor a wrapped row's hanging indent)
+                let (skip, join) = (2 + d.join.map_or(0, |j| j.drop), d.join.map(|j| j.space));
+                lines.push(ChatRow { spans: row, skip, join, ..ChatRow::default() });
+            }
+        }
+    };
     // One message's rows — laid out only when its key changed (`Msg.cache`); what depends on where it is (the
     // air before it) or on the clock (a live command's wait) is the frame's own, below
     let laid_out = |i: usize, m: &crate::chat::Msg, read: &mut md::Read| -> Vec<ChatRow> {
@@ -18176,30 +18198,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     // (a screen went with it: the row opens the copy)
                     lines.push(ChatRow { spans: row, link: m.attached.clone(), ..ChatRow::default() });
                 }
-                // Each line of it rows of its own, blank ones kept, as written (#18: one span with its line
-                // breaks in it reached the terminal as raw LFs — rows overlapped, paragraphs lost their starts)
-                for part in m.text.split('\n').map(|l| l.trim_end_matches('\r')) {
-                    let para = [md::Line::Text { spans: vec![sp(part.to_string(), strong)], indent: 0 }];
-                    let (rows, drawn) = match part.trim().is_empty() {
-                        true => Default::default(),
-                        false => md::wrap_drawn(&para, mw - 2, faint, faint),
-                    };
-                    if rows.is_empty() {
-                        // (a blank line: its bar isn't the text's either)
-                        lines.push(ChatRow {
-                            spans: vec![sp("▎".into(), accent)],
-                            skip: 1,
-                            ..ChatRow::default()
-                        });
-                    }
-                    for (l, d) in rows.into_iter().zip(drawn) {
-                        let mut row = vec![sp("▎ ".into(), accent)];
-                        row.extend(l);
-                        // (its bar isn't the text's, nor a wrapped row's hanging indent)
-                        let (skip, join) = (2 + d.join.map_or(0, |j| j.drop), d.join.map(|j| j.space));
-                        lines.push(ChatRow { spans: row, skip, join, ..ChatRow::default() });
-                    }
-                }
+                yours(&m.text, &mut lines);
             }
             Role::Assistant => {
                 lines.push(ChatRow::default());
@@ -18360,6 +18359,11 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     lines.push(right(&m.text));
                 } else if crate::orchestra::is_told(&m.text) {
                     lines.push(told_row(&m.text, w, dim, t));
+                } else if let Some(words) = m.text.strip_prefix(crate::chat::STEERED) {
+                    // What steered the turn (`chat::steer`), where Claude heard it: your words as your message's,
+                    // under a faint `steered` where its context chip would be
+                    lines.push(plain(vec![sp("steered".into(), faint)]));
+                    yours(words, &mut lines);
                 } else {
                     // As many rows as it takes (how to install claude is a few lines — #163), each line of it
                     // wrapped, hanging under its text. A compaction is a beat of its own mid-answer, not the
@@ -18396,6 +18400,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
         // (air before a question, and before a run of tool rows — where it is, not what it is)
         let air = match m.role {
             Role::User => total > 0,
+            Role::Note if crate::chat::is_steered(&m.text) => total > 0,
             Role::Tool => m.look.is_some() && (i == 0 || c.msgs[i - 1].role != Role::Tool),
             _ => false,
         };
@@ -18511,6 +18516,21 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     }
     // A message waiting for this turn's end (#23): the transcript's last line, a row of air over it — what's queued in
     // the accent, the message's words faint, whole on its card (`whole.rs`); `draw_chat` puts its own rows before it
+    // (what steers the turn first, waiting for Claude's next tool answer — `chat::steer`: `steering` in the accent,
+    // the words faint, as the queued line's; it goes sooner)
+    let mut aired = false;
+    if let Some(s) = c.steer.as_deref().filter(|_| w > 14) {
+        let key = hash_of((s, w, look));
+        let kept = c.steer_laid.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, rows)| rows.clone());
+        let rows = kept.unwrap_or_else(|| {
+            let rows: std::sync::Arc<[ChatRow]> = queued_rows(STEERING, s, (w, 1), (accent, faint)).into();
+            *c.steer_laid.borrow_mut() = Some((key, rows.clone()));
+            rows
+        });
+        pieces.push((Of::Air, blank.clone()));
+        pieces.push((Of::Queued, rows));
+        aired = true;
+    }
     if let Some((said, last)) = c.queued_said().filter(|_| w > 14) {
         let key = hash_of((&said, &last, w, look));
         let kept = c.queued_laid.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, rows)| rows.clone());
@@ -18520,7 +18540,9 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             *c.queued_laid.borrow_mut() = Some((key, rows.clone()));
             rows
         });
-        pieces.push((Of::Air, blank.clone()));
+        if !aired {
+            pieces.push((Of::Air, blank.clone()));
+        }
         pieces.push((Of::Queued, rows));
     }
     pieces
@@ -18607,6 +18629,9 @@ fn told_row(text: &str, w: usize, dim: Style, theme: &Theme) -> crate::chat::Cha
     row
 }
 
+/// The steering line's word (`chat_laid`): what's typed to steer the turn waits for Claude's next tool answer.
+const STEERING: &str = "steering";
+
 /// The queued line's rows (`chat_laid`): what waits (`2 messages queued · `, accent — the drawer's, not the text), then
 /// the last message's words (`Chat::queued_said`) — folded, its start cut to the row, the transcript keeping it whole
 /// (`chatdoc::keep_whole`); `whole` (in hand), every row it takes, hanging under its words. Rows cut or whole for being
@@ -18622,6 +18647,7 @@ fn queued_rows(
     let first = last.lines().next().unwrap_or_default();
     let lead = match (said, last.is_empty()) {
         ("a message queued", _) => "queued ".to_string(),
+        (STEERING, _) => format!("{STEERING} "),
         (_, true) => format!("{said} "),
         // (narrow: how many, so the last one's start still shows — at 80 columns the words took the row)
         (_, false) if said.width() + 3 + first.width().min(QUEUED_LAST_MIN) > w.saturating_sub(4) => {
@@ -19178,6 +19204,11 @@ fn draw_ask_line(
     }
     // Its keys in its bottom line, a prompt's: send (or queue for the turn's end), the conversation, the lines off, close
     let mut hints: Vec<(&str, &str)> = vec![("enter", if c.busy() { "queue" } else { "send" })];
+    // (while Claude works the second way in: its next tool answer — `chat::steer`)
+    let steer = editor.keymaps.chat.keys_for("chat_steer").into_iter().next();
+    if let Some(k) = steer.as_deref().filter(|_| c.busy()) {
+        hints.push((k, "steer"));
+    }
     if !c.msgs.is_empty() {
         hints.push(("pageup", "conversation"));
     }
@@ -19913,6 +19944,7 @@ fn draw_chat(
     let c_q: String;
     let screen: (String, &str);
     let point: (String, &str);
+    let steer_key = editor.keymaps.chat.keys_for("chat_steer").into_iter().next();
     let mut hints: Vec<(&str, &str)> = Vec::new();
     // (each key as bound — a remap moves the hint)
     let bound = |name: &str, like: &str| crate::view::bound(editor, crate::view::Surface::Chat, name, like);
@@ -19965,6 +19997,10 @@ fn draw_chat(
             if !c.input.blank() {
                 hints.push(("enter", "queue"));
             } else if c.queued.is_some() {
+                // (what's queued reaches Claude at its next tool answer instead — `chat::steer`)
+                if let Some(k) = steer_key.as_deref().filter(|_| crate::chat::steerable(c, false).is_some()) {
+                    hints.push((k, "steer"));
+                }
                 hints.push(("↑", "edit queued"));
             } else if c.cleared.is_some() && c.input.is_empty() {
                 hints.push(("↑", "undo clear"));

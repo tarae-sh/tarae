@@ -77,6 +77,7 @@ mod shimmer;
 mod sound;
 mod stall;
 mod starts;
+mod steer;
 mod stuckstop;
 mod termview;
 mod toasts;

@@ -12748,7 +12748,7 @@ mod tests {
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let sent = std::fs::read_to_string(&log).unwrap();
         let asked = sent.lines().rfind(|l| l.contains("what now?")).unwrap();
-        assert!(asked.contains("<editor-note>") && asked.contains("brought back your changes"), "{asked}");
+        assert!(asked.contains("<editor-note id=") && asked.contains("brought back your changes"), "{asked}");
         assert!(ed.workspace.claude.checkpoints.tell.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }

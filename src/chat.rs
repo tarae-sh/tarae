@@ -706,6 +706,12 @@ pub struct Chat {
     pub queued_quotes: Vec<crate::quote::Quote>,
     pub queued_screen: Option<Shot>,
     pub queued_pointed: Vec<String>,
+    /// What steers the turn under way (the steer key, `chat_steer` — the flow plan's piece 5): the user's words for
+    /// Claude's next tool answer (`steer_take`), a second joined to the first a blank line apart; the turn over before an
+    /// answer came, they go as the queued message does, ahead of it (`Chat::steer_over`).
+    pub steer: Option<String>,
+    /// The steering line's rows as last laid out (`term::chat_laid`), as `queued_laid`.
+    pub steer_laid: RefCell<Option<(u64, std::sync::Arc<[ChatRow]>)>>,
     /// What `C-c` cleared from the input, and where its cursor was (#175): `↑` on the empty input puts it back —
     /// that clear's undo. Kept until a message is sent or another clear takes its place.
     pub cleared: Option<(String, usize)>,
@@ -1044,6 +1050,26 @@ impl Chat {
         false
     }
 
+    /// `text` steers the turn under way: it waits for Claude's next tool answer, joined to what waits already.
+    pub fn steer_add(&mut self, text: String) {
+        self.steer = Some(match self.steer.take() {
+            Some(was) => format!("{was}\n\n{text}"),
+            None => text,
+        });
+    }
+
+    /// The turn ended with no tool answer to carry what steers it: it waits as a queued message, ahead of one queued
+    /// since (`queue`'s `first`) — true when that dropped a `/compact` waiting (`COMPACT_DROPPED`).
+    pub fn steer_over(&mut self) -> bool {
+        match self.steer.take() {
+            Some(s) if !self.busy() => self.queue(s, true),
+            s => {
+                self.steer = s;
+                false
+            }
+        }
+    }
+
     /// What was queued went (sent, or taken back to edit).
     pub fn queued_gone(&mut self) {
         (self.queued_n, self.queued_last) = (0, String::new());
@@ -1165,6 +1191,8 @@ impl Chat {
             queued_quotes: Vec::new(),
             queued_screen: None,
             queued_pointed: Vec::new(),
+            steer: None,
+            steer_laid: RefCell::new(None),
             cleared: None,
             slash: None,
             view_wanted: false,
@@ -3219,6 +3247,7 @@ pub(crate) fn write_sent(path: &Path, text: &str) -> std::io::Result<()> {
 /// The turn ended: the message queued during it goes now (#23) — unless a restart waits for the turn (it
 /// stays queued, over the input, for after).
 pub(crate) fn send_queued(ed: &mut Editor) {
+    steer_over(ed);
     if ed.restart.is_some() {
         return;
     }
@@ -3337,8 +3366,110 @@ pub enum Later {
 /// The turn ended refused for money: the message queued during it stays queued, said — it goes once the
 /// session's billing changes (`billing_changed`); `↑` takes it back.
 fn hold_queued(ed: &mut Editor) {
+    steer_over(ed);
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.queued.is_some()) else { return };
     c.note("Your queued message waits — it goes once this session's billing changes (↑ takes it back)");
+}
+
+/// The turn over with words still steering it (no tool answer came to carry them): they wait as the queued message
+/// does, first — the steering line becoming the queued one.
+fn steer_over(ed: &mut Editor) {
+    if ed.workspace.claude.chat.as_mut().is_some_and(Chat::steer_over) {
+        ed.set_warning(COMPACT_DROPPED);
+    }
+}
+
+/// The start of a chat's note saying what steered its turn (`steer_take`) — drawn as your message is, under a faint
+/// `steered` (`term::chat_laid`).
+pub const STEERED: &str = "steered: ";
+
+/// Whether a chat's note is a `STEERED` one.
+pub fn is_steered(text: &str) -> bool {
+    text.starts_with(STEERED)
+}
+
+/// What the steer key would steer — only what you gave, never a draft: on the ask line the words typed (the card goes as
+/// its message does), else the message `enter` queued, the input empty. None: Claude isn't working, or nothing of
+/// yours waits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Steerable {
+    Typed,
+    Queued,
+}
+
+pub fn steerable(c: &Chat, asking: bool) -> Option<Steerable> {
+    match (c.busy(), asking && !c.input.blank(), c.input.blank() && c.queued.is_some()) {
+        (false, ..) => None,
+        (_, true, _) => Some(Steerable::Typed),
+        (_, _, true) => Some(Steerable::Queued),
+        _ => None,
+    }
+}
+
+/// The steer key (`chat_steer`, `tab` — the flow plan's piece 5, Q6 a): while Claude works, what you gave (`steerable`)
+/// reaches it at its next tool answer (`steer_take`) rather than at the turn's end — the steering line over the input
+/// until then, its row in the conversation once it went. Words only: what's over the input stays for the next message,
+/// said; a queued message carrying more (a quote, the screen, an element) goes whole at the turn's end, said, as
+/// `/compact` and a slash name do. Nothing to steer: said.
+pub fn steer(ed: &mut Editor) {
+    let asking = ed.chat_asking();
+    let key = ed.keymaps.chat.keys_for("chat_steer").into_iter().next().unwrap_or_else(|| "tab".into());
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let Some(what) = steerable(c, asking) else {
+        let busy = c.busy();
+        return ed.set_status(match busy {
+            true => format!("nothing to steer — enter queues your message, then {key} steers it"),
+            false => "nothing to steer — Claude isn't working; enter sends".into(),
+        });
+    };
+    let text = match what {
+        Steerable::Typed => c.input.text().trim().to_string(),
+        Steerable::Queued => c.queued.clone().unwrap_or_default(),
+    };
+    if slash_named(&text).is_some() || is_compact(&text) {
+        return ed.set_status("a slash name doesn't steer — it goes at the turn's end");
+    }
+    if what == Steerable::Queued
+        && (!c.queued_quotes.is_empty() || c.queued_screen.is_some() || !c.queued_pointed.is_empty())
+    {
+        return ed.set_status("the queued message carries more than words — it goes whole at the turn's end");
+    }
+    c.steer_add(text);
+    let with = match what {
+        Steerable::Typed => {
+            c.input.clear();
+            c.cleared = None;
+            c.has_with()
+        }
+        Steerable::Queued => {
+            c.queued = None;
+            c.queued_gone();
+            false
+        }
+    };
+    if asking {
+        c.sel_dropped = None;
+        ask_close(ed);
+    }
+    if with {
+        ed.set_status("steered with your words only — what's over the input stays for your next message");
+    }
+}
+
+/// What steers the turn, for an answer of the chat's process `generation` going now (`tools::mcp`, `tools::deliver`):
+/// the user's words in their frame (`steer_framed`), their row put in the conversation. None: nothing steers.
+pub(crate) fn steer_take(ed: &mut Editor, generation: u64) -> Option<String> {
+    let c = ed.workspace.claude.chat.as_mut().filter(|c| c.generation == generation)?;
+    let text = c.steer.take()?;
+    c.msgs.push(Msg::new(Role::Note, format!("{STEERED}{text}"), ""));
+    Some(format!("The user, while you work: {text}"))
+}
+
+/// tarae's own words to claude process `generation`, in the one frame they come in: a message's notes (`submit_as`),
+/// and after a tool's answer orchestra's news and the user's steer (`tools::noted`) — `<editor-note>` with the
+/// process's id (`quote::frame_id`, ~4 tokens), one no text from outside can know nor open (`quote::inert`).
+pub fn note_framed(generation: u64, body: &str) -> String {
+    format!("<editor-note id=\"{}\">\n{body}\n</editor-note>", crate::quote::frame_id(generation))
 }
 
 /// Enter in the chat: the input goes as the next turn — or waits its turn while Claude works, or for the
@@ -3651,7 +3782,8 @@ fn submit_as(
         .collect();
     let context = match noted.is_empty() {
         true => context,
-        false => format!("{context}\n<editor-note>\n{}\n</editor-note>", noted.join("\n")),
+        // (what's told may hold a run's output, another Claude's words: never a frame of its own — `quote::inert`)
+        false => format!("{context}\n{}", note_framed(c.generation, &crate::quote::inert(&noted.join("\n")))),
     };
     // The screen the user attached (`C-s`): as they saw it, characters only
     // (the input's message only, as its quotes and points: a note's reply or the review's notes leave it there)
@@ -3660,7 +3792,9 @@ fn submit_as(
         Some(s) => format!(
             "{context}\n<screen cols=\"{}\" rows=\"{}\" note=\"the user's editor as they saw it, characters only \
              (no colors)\">\n{}\n</screen>",
-            s.cols, s.rows, s.text
+            s.cols,
+            s.rows,
+            crate::quote::inert(&s.text)
         ),
         None => context,
     };
@@ -4066,6 +4200,7 @@ fn context(
         };
         let said =
             cut.map(|kept| selection_cut_said(&kept, to - from, doc.path.is_some())).unwrap_or_default();
+        let body = crate::quote::inert(&body);
         ctx.push_str(&format!("<selection lines=\"{}-{}\"{said}>\n{body}\n</selection>\n", l0 + 1, l1 + 1));
         chip.push_str(&format!(" · {}", at_lines(l0, l1)));
         if !said.is_empty() {
@@ -4075,7 +4210,9 @@ fn context(
     // File: if this version hasn't been sent yet, the full text (if small) or around the cursor
     if its_text && !was_sent(doc) {
         if text.len_bytes() <= WHOLE_FILE_MAX {
-            ctx.push_str(&format!("<file-content>\n{text}</file-content>\n"));
+            // (a file's text, as every text from outside, opens no frame of tarae's — `quote::inert`)
+            let text = text.to_string();
+            ctx.push_str(&format!("<file-content>\n{}</file-content>\n", crate::quote::inert(&text)));
             sent.push((doc.id, doc.version()));
         } else {
             // Around the cursor, and what's on screen with it (the user may be reading away from the cursor)
@@ -4089,7 +4226,7 @@ fn context(
                 "<excerpt lines=\"{}-{}\">\n{}</excerpt>\n",
                 a + 1,
                 b + 1,
-                text.byte_slice(fa..fb)
+                crate::quote::inert(&text.byte_slice(fa..fb).to_string())
             ));
         }
     }
@@ -4102,7 +4239,7 @@ fn context(
             ctx.push_str(&format!(
                 "line {}: {kind}: {}\n",
                 l + 1,
-                d.message.lines().next().unwrap_or_default()
+                crate::quote::inert(d.message.lines().next().unwrap_or_default())
             ));
         }
         ctx.push_str("</diagnostics>\n");
@@ -4138,7 +4275,7 @@ fn context(
             ctx.push_str(&format!(
                 "<unsaved-file path=\"{}\">\n{}</unsaved-file>\n",
                 d.display_name(&ed.workspace.root),
-                d.text
+                crate::quote::inert(&d.text.to_string())
             ));
             sent.push((d.id, d.version()));
         }
@@ -4657,14 +4794,28 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
             return true;
         }
     }
+    let steers = ed.keymaps.chat.bound_to("chat_steer").any(|k| k == key);
+    let asking = ed.chat_asking();
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
     // An empty input: `C-w` is the windows' (sizes — `C-w >` widens the chat), nothing to delete
     if key.ctrl && key.code == Code::Char('w') && c.input.is_empty() {
         return false;
     }
+    // The steer key (`[chat]`'s `chat_steer`, `tab`): what you gave steers the turn under way (`steer`) — where there's
+    // none to steer, `tab` is what it was (the slash list's completion, an empty chat's suggestions — never at work —,
+    // a tab typed: a draft is never sent by it); bound elsewhere, it says why
+    let tab = key.code == Code::Tab && !key.ctrl && !key.alt;
+    if steers {
+        if tab && slash_tab(c) {
+            return true;
+        }
+        if !(tab && steerable(c, asking).is_none()) {
+            steer(ed);
+            return true;
+        }
     // The input's rows of the keymap (`[chat]` — `esc` to its view mode, a line's ends) before the chat's own keys:
     // run on its document
-    if ed.keymaps.chat.search(&[key]).is_some() {
+    } else if ed.keymaps.chat.search(&[key]).is_some() {
         return crate::chatinput::key(ed, key);
     }
     // `tab` on the slash list (#232): the name the line begins, completed — else `tab` is what it was
@@ -4783,9 +4934,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
             c.scroll = c.scroll.saturating_sub(if key.code == Code::PageDown { page } else { 1 });
         }
         // Tab in an empty chat = cycles through example questions — never over words of yours
-        (Code::Tab, ..)
-            if c.msgs.is_empty() && (c.input.is_empty() || SUGGESTIONS.contains(&&*c.input.text())) =>
-        {
+        (Code::Tab, ..) if suggesting(c) => {
             let typed = c.input.text();
             let next =
                 SUGGESTIONS.iter().position(|s| *s == typed).map_or(0, |i| (i + 1) % SUGGESTIONS.len());
@@ -4796,6 +4945,14 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         _ => return crate::chatinput::key(ed, key),
     }
     true
+}
+
+#[cfg(test)]
+mod steer_tests;
+
+/// `tab` goes round the example questions: an empty chat, nothing of yours typed.
+fn suggesting(c: &Chat) -> bool {
+    c.msgs.is_empty() && (c.input.is_empty() || SUGGESTIONS.contains(&&*c.input.text()))
 }
 
 /// Last answer's code block → review that replaces the current selection (y/n — same path as ask).

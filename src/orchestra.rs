@@ -730,6 +730,8 @@ fn framed_as(name: &str, text: &str, head_only: bool) -> String {
     let hidden = text.split('\n').zip(kept.split('\n')).filter(|(a, b)| a != b).count();
     let kept = if head_only { head(&kept) } else { kept };
     let (text, cut) = crate::quote::cut(&kept, REPORT_MAX);
+    // (another Claude's words — a page it read may have put them there: no frame of tarae's opens in them)
+    let text = crate::quote::inert(&text).into_owned();
     let id = crate::quote::id_for(&text);
     let name = name.replace(['"', '<', '>'], "");
     let mut head = format!("<session-report session=\"{name}\" id=\"{id}\"");
@@ -1069,8 +1071,8 @@ pub fn news_for_message(ed: &mut Editor) -> Option<(Vec<String>, String, Vec<New
     take_news(ed).map(|(lines, row)| (lines, row, kept))
 }
 
-/// The news after the answer of `tool` to the chat in `ed.workspace` — one of the session tools — as a block of its
-/// own (`\n\n` first), its row in the chat; empty for another tool or no news.
+/// The news after the answer of `tool` to the chat in `ed.workspace` — one of the session tools — its lines, for the
+/// answer's `<editor-note>` (`tools::noted`), its row in the chat; empty for another tool or no news.
 pub fn news_for_answer(ed: &mut Editor, tool: &str) -> String {
     if !matches!(tool, "sessions_start" | "session_send" | "sessions" | "session_act") {
         return String::new();
@@ -1079,7 +1081,7 @@ pub fn news_for_answer(ed: &mut Editor, tool: &str) -> String {
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.note(&row);
     }
-    format!("\n\n{}", lines.join("\n"))
+    lines.join("\n")
 }
 
 /// What a parent's message is to its child's Claude: in `<from-session>`, and the first time in a conversation the
@@ -1088,7 +1090,8 @@ pub fn news_for_answer(ed: &mut Editor, tool: &str) -> String {
 /// `</from-session>` can't end the frame and have what follows read as the user's own words.
 pub fn framed(from: &str, text: &str, first: bool) -> String {
     let from = from.replace(['"', '<', '>'], "");
-    let id = crate::quote::id_for(text);
+    let text = crate::quote::inert(text);
+    let id = crate::quote::id_for(&text);
     let head = match first {
         true => format!(
             "This message is from Claude in session {from}, which started this session. The user sees this chat and \

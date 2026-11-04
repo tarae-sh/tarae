@@ -73,7 +73,7 @@ impl Quote {
         for (k, v) in self.attrs.iter().cloned().chain(said).chain(hidden) {
             head.push_str(&format!(" {k}=\"{}\"", v.replace('"', "'").replace('\n', " ")));
         }
-        format!("{head}>\n{}\n</quoted id=\"{}\">", self.text, self.id)
+        format!("{head}>\n{}\n</quoted id=\"{}\">", inert(&self.text), self.id)
     }
 
     /// The state's shape of it — where from and how much, never its text.
@@ -223,6 +223,74 @@ pub(crate) fn id_for(text: &str) -> String {
             return id;
         }
     }
+}
+
+/// The frames tarae writes into what Claude reads that speak for tarae or the user — a message's context and notes,
+/// what's quoted or pointed at, the screen, a note's or a review's words, a parent's message, and after a tool's
+/// answer the user's steer and orchestra's news (`<editor-note>`). Text from outside never opens or closes one
+/// (`inert`).
+pub const FRAMES: &[&str] =
+    &["editor-note", "editor-context", "quoted", "pointed", "screen", "note", "review", "from-session"];
+
+/// What `inert` puts right after a frame tag's `<`: a zero-width space — the text reads as it did, the tag no longer
+/// opens nor closes.
+pub const INERT: char = '\u{200B}';
+
+/// `text` from outside — a file, a page, a run's output, git's, a server's words, another Claude's — as Claude gets it:
+/// every opening or closing of a `FRAMES` tag in it (any case) made inert, `INERT` after its `<` (3 bytes each). As it
+/// is, no copy, where it holds none: a forged `<editor-note>` in a file can't pass for tarae's or the user's words.
+pub fn inert(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut out = String::new();
+    let mut last = 0;
+    for (i, _) in text.match_indices('<') {
+        let rest = &text[i + 1..];
+        if FRAMES.iter().any(|f| tag_of(rest.strip_prefix('/').unwrap_or(rest), f)) {
+            out.push_str(&text[last..=i]);
+            out.push(INERT);
+            last = i + 1;
+        }
+    }
+    match last {
+        0 => std::borrow::Cow::Borrowed(text),
+        _ => std::borrow::Cow::Owned(out + &text[last..]),
+    }
+}
+
+/// What `inert` did undone: Claude's words copied from an answer (an `edit`'s strings) as the file holds them.
+pub fn as_written(text: &str) -> std::borrow::Cow<'_, str> {
+    let mark = format!("<{INERT}");
+    if !text.contains(&mark) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::new();
+    let mut last = 0;
+    for (i, _) in text.match_indices(&mark) {
+        let rest = &text[i + mark.len()..];
+        if FRAMES.iter().any(|f| tag_of(rest.strip_prefix('/').unwrap_or(rest), f)) {
+            out.push_str(&text[last..=i]);
+            last = i + mark.len();
+        }
+    }
+    std::borrow::Cow::Owned(out + &text[last..])
+}
+
+/// Whether `rest` starts with the tag name `frame` (any case) and the name ends there.
+fn tag_of(rest: &str, frame: &str) -> bool {
+    let b = rest.as_bytes();
+    b.len() >= frame.len()
+        && b[..frame.len()].eq_ignore_ascii_case(frame.as_bytes())
+        && !b.get(frame.len()).is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':'))
+}
+
+/// The id of tarae's own `<editor-note>`s to claude process `generation` (`chat::note_framed`): the same for the
+/// whole process, from a key this tarae made at random — no file, page or output can know it, as none can know a
+/// quote's closing id (`id_for`). `n` and six hex digits.
+pub fn frame_id(generation: u64) -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+    let mut h = KEY.get_or_init(Default::default).build_hasher();
+    h.write_u64(generation);
+    format!("n{:06x}", h.finish() & 0xff_ffff)
 }
 
 /// How document line `l` is quoted: its first characters that aren't the text's (a bar, a code well's edge, a

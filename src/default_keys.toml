@@ -400,11 +400,14 @@ esc = "view_leave"
 q = "wclose"
 
 # The chat's input — a small document in insert mode: these over [insert] (yours too), what neither binds typed;
-# `enter` sends, its `C-` chords and the page keys are the chat's; `S-tab` the next pane as everywhere (#230: a message
-# never takes a back-tab), `tab` an empty chat's suggestions
+# `enter` sends (while Claude works: queues for the turn's end), its `C-` chords and the page keys are the chat's;
+# `S-tab` the next pane as everywhere (#230: a message never takes a back-tab); `tab` steers Claude's turn with what's
+# typed (at its next tool answer — every terminal sends it, zellij takes none), still an empty chat's suggestions and the
+# slash list's completion
 [chat]
 esc = "chat_view"
 S-tab = "rotate_view"
+tab = "chat_steer"
 C-a = "goto_line_start"
 C-e = "goto_line_end_newline"
 A-ret = "insert_newline"

@@ -11,6 +11,19 @@ fn project(name: &str, files: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
+/// Claude's strings copied from an answer that made a frame tag inert (`quote::inert` — this repository's own code holds
+/// `<editor-note>`) match the file as it holds them, and write it so.
+#[test]
+fn an_inert_frame_copied_from_a_read_is_edited_as_written() {
+    let dir = project("inert", &[("a.rs", "let s = \"<editor-note>\";\n")]);
+    let read = crate::quote::inert("let s = \"<editor-note>\";").into_owned();
+    assert!(read.contains(crate::quote::INERT));
+    let e = json!({ "file_path": "a.rs", "old_string": read, "new_string": read.replace("s =", "t =") });
+    let it = item(0, &e).unwrap();
+    let r = resolve(&known(&dir), &[it]).unwrap();
+    assert_eq!(r.files[0].after.to_string(), "let t = \"<editor-note>\";\n");
+}
+
 fn known(dir: &Path) -> Known {
     Known {
         root: dir.to_path_buf(),
