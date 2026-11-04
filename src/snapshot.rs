@@ -22,7 +22,7 @@ const INDEX: &str = "tarae-snapshot.index";
 /// A file larger than this (either side) is kept by its blob, not as text.
 pub(crate) const TEXT_MAX: u64 = 1 << 20;
 
-/// A temporary index's name is unique per process with this.
+/// A temporary file's name (an index, a start's stamp — `fs_now`) is unique per process with this.
 static INDEX_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One snapshot per index at a time (two at once: git refuses the second its lock).
@@ -614,7 +614,7 @@ pub struct Before {
     /// The commits every ref named (`tips`) — what a move of HEAD can have come from (`head_moved`). None:
     /// git couldn't say.
     pub refs: Option<Vec<String>>,
-    /// When it was taken: what changed since is the run's (`output_code`).
+    /// When it was taken, by the file system's clock (`fs_now`): what changed since is the run's (`output_code`).
     pub started: std::time::SystemTime,
     /// Whether the code changed below tools' output is looked for (`output_code`) — not after a build or a
     /// check, whose output it is.
@@ -1022,10 +1022,33 @@ pub fn ignored(root: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// How far a file system's clock can be behind the process's where `fs_now` can't read it: FAT's 2 s, the coarsest.
+const FS_TICK_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The file system's own clock as a snapshot starts (#356): a file of the snapshot's own made in the checkout's git
+/// folder, a byte written, its time read back through its own descriptor — like against like with the times of the
+/// files a run writes (`output_code`). The process's clock is the kernel's fine one, a file's time the file
+/// system's — up to a tick behind (Linux's coarse clock, a jiffy), or another machine's (an NFS server's) — so a
+/// file the run wrote within that tick looked older than the snapshot and went unnamed. None: it couldn't be made.
+fn fs_now(root: &Path) -> Option<std::time::SystemTime> {
+    use std::io::Write as _;
+    let seq = INDEX_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = git_dir(root).ok()?.join(format!("tarae-snapshot-{}-{seq}.started", std::process::id()));
+    // (made new: never a link followed, never another's stamp read)
+    let mut f = std::fs::File::options().write(true).create_new(true).open(&path).ok()?;
+    let t = f.write_all(b"\n").and_then(|_| f.metadata()).and_then(|m| m.modified());
+    std::fs::remove_file(&path).ok();
+    t.ok()
+}
+
 impl Before {
     /// Taken now (on a worker).
     pub fn take(root: &Path) -> Before {
-        let started = std::time::SystemTime::now();
+        // (none: the process's clock, held back the coarsest tick — a file a little older named too, never one of
+        // the run's left out)
+        let started = fs_now(root).unwrap_or_else(|| {
+            crate::clock::system().checked_sub(FS_TICK_MAX).unwrap_or(std::time::UNIX_EPOCH)
+        });
         let ignored = ignored(root).ok();
         let (head, refs) = (head(root), tips(root));
         let (tree, wrote) = (snap(root), Vec::new());

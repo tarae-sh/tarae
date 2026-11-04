@@ -394,10 +394,13 @@ fn ignored_files_a_run_deleted_are_named() {
 /// runner in `node_modules`, a virtualenv's bytecode, a library in `target/`). After a run that isn't a build or
 /// a check (`Before.outputs`), the programs, bytecode and libraries it changed there are named — by name and time
 /// alone, one line a folder, its first `CODE_SHOWN`; one there before, untouched, isn't, nor a text file. A
-/// build's run looks at none.
+/// build's run looks at none. #356: by the file system's clock — this thread's held a minute ahead of it (a coarse
+/// clock's tick, as K1's kernel had, or an NFS server's clock behind), the run's files are still the run's.
 #[test]
 fn code_a_run_changed_below_tools_output_is_named() {
     use std::os::unix::fs::PermissionsExt;
+    crate::clock::hold();
+    crate::clock::advance(Duration::from_secs(60));
     let dir = repo("output-code");
     std::fs::write(dir.join(".gitignore"), "build/\n.env.local\nnode_modules/\n.venv/\n").unwrap();
     let put = |rel: &str, exec: bool| {
@@ -452,6 +455,7 @@ fn code_a_run_changed_below_tools_output_is_named() {
     );
     before.outputs = false;
     assert!(before.since().unwrap().output_code.is_empty(), "a build's: not looked at");
+    crate::clock::release();
     std::fs::remove_dir_all(&dir).ok();
 }
 

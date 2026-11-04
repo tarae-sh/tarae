@@ -146,7 +146,6 @@ mod tests {
         ("sandbox/proxy.rs", 3),
         ("sandbox/proxy/relay.rs", 2),
         ("sandbox/supervisor.rs", 2),
-        ("snapshot.rs", 1),
         ("spawn.rs", 2),
         ("syntax.rs", 4),
         ("task.rs", 6),

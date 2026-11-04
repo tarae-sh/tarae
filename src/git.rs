@@ -115,12 +115,13 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
                     watch_round(ed, &dir, (branch, common), moved);
                     drop(start);
                 };
-                if tx.send(Event::Job(Box::new(apply))).is_err() {
-                    break;
-                }
-                if moved && !held && lock.exists() {
-                    held = true;
-                    continue; // (the lock armed before it's looked at again)
+                match round_sent(moved && !held, &lock, || tx.send(Event::Job(Box::new(apply))).is_ok()) {
+                    None => break,
+                    Some(true) => {
+                        held = true;
+                        continue; // (the lock armed before it's looked at again)
+                    }
+                    Some(false) => {}
                 }
             }
             if held && !lock.exists() {
@@ -134,6 +135,15 @@ pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
             watcher.wait();
         }
     });
+}
+
+/// A watch round sent (`send`; None: it couldn't be) — and, for a move (`moved`), whether git held the index then, so
+/// the watch waits on its lock (`index_settled` once it's gone). The lock is looked at before the round is sent
+/// (#358): once it's sent, its read may land and git rename the lock in before a look after it, and then the base
+/// is the old index with nothing watched to move again.
+fn round_sent(moved: bool, lock: &Path, send: impl FnOnce() -> bool) -> Option<bool> {
+    let held = moved && lock.exists();
+    send().then_some(held)
 }
 
 /// A watch round of `dir`'s, applied: the branch read then and the repository's common folder (`branch`), and
@@ -473,6 +483,23 @@ pub fn watched(l: &mut crate::workspace::Workspace, branch: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #358: the round's read lands and git renames `index.lock` in while the round is being sent (the main loop and
+    /// git run meanwhile) — the move still holds the lock, so the watch waits on it and reads the index once it's
+    /// gone. A look after the send found no lock: the base stayed the old index, nothing watched moved again (K1).
+    #[test]
+    fn the_lock_a_move_finds_is_looked_at_before_its_round_goes() {
+        let scratch = crate::scratch::Scratch::new("git-round-lock");
+        let (lock, index) = (scratch.join("index.lock"), scratch.join("index"));
+        std::fs::write(&lock, "new").unwrap();
+        let renamed_in = || std::fs::rename(&lock, &index).is_ok();
+        assert_eq!(round_sent(true, &lock, renamed_in), Some(true), "held as the move was seen");
+        assert!(!lock.exists(), "the lock renamed in during the send");
+        assert_eq!(round_sent(true, &lock, || true), Some(false), "no lock: nothing to wait on");
+        std::fs::write(&lock, "new").unwrap();
+        assert_eq!(round_sent(false, &lock, || true), Some(false), "no move: the lock isn't the watch's");
+        assert_eq!(round_sent(true, &lock, || false), None, "not sent: the watch ends");
+    }
 
     /// #201's fourth round: at the start a file's base read lands and its gutter's diff is spawned as the start's;
     /// its debounce is an `event::pause`, so it stays the start's until its hunks land — a settle
