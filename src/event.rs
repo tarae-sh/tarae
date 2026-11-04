@@ -380,7 +380,16 @@ impl Jobs {
         W: FnOnce() -> A + Send + 'static,
         A: FnOnce(&mut Editor) + Send + 'static,
     {
-        let (tx, asked, site) = (self.tx.clone(), self.asked, Location::caller());
+        self.spawn_boxed(Location::caller(), Box::new(move || Box::new(work()) as Apply));
+    }
+
+    /// `spawn`'s work, one copy for every job: a job's closures are generic, so what's in `spawn` is copied at each
+    /// of its call sites (~545) — there only its work and its result are boxed (#365: with the start's bookkeeping
+    /// and the result's wrapper in the generic closures, two copies a site, the release binary was 0.26 MB larger).
+    /// Never inlined into them, for the same reason; a call and two boxes more a job, beside the thread it starts.
+    #[inline(never)]
+    fn spawn_boxed(&self, site: &'static Location<'static>, work: Box<dyn FnOnce() -> Apply + Send>) {
+        let (tx, asked) = (self.tx.clone(), self.asked);
         // (counted until its result is applied — or dropped unapplied, or its work panics, or waits: `waits`)
         let out = self.start.as_ref().map(|(s, since)| s.out(site, *since));
         run(
