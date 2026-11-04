@@ -4989,22 +4989,26 @@ mod tests {
             .unwrap();
     }
 
-    /// The user's VM's records (verbatim but for the process, the thread's name and the path): a domain's
-    /// record, one of its access records, its end.
+    /// The user's VM's records (verbatim but for the process, the thread's name, the path and the domain): a
+    /// domain's record, one of its access records, its end. Each call a domain of its own, as the kernel never
+    /// gives two domains one id (`DOMAINS` keeps what a test before told of its id, under its thread's name).
     fn vm_records(pid: u32, comm: &str, path: &Path) -> [String; 3] {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(107163549);
+        let domain = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         [
             format!(
-                "type=UNKNOWN[1424] msg=audit(1791193258.514:942): domain=107163549 status=allocated \
+                "type=UNKNOWN[1424] msg=audit(1791193258.514:942): domain={domain} status=allocated \
                  mode=enforcing pid={pid} uid=1001 exe=\"/home/wq/tarae/target-ll/release/tarae\" \
                  comm=\"{comm}\"UID=\"wq\""
             ),
             format!(
-                "type=UNKNOWN[1423] msg=audit(1791193258.614:943): domain=107163549 blockers=fs.make_reg \
+                "type=UNKNOWN[1423] msg=audit(1791193258.614:943): domain={domain} blockers=fs.make_reg \
                  path=\"{}\" dev=\"sda1\" ino=266488",
                 path.display()
             ),
-            "type=UNKNOWN[1424] msg=audit(1791193259.032:947): domain=107163549 status=deallocated denials=5"
-                .to_string(),
+            format!(
+                "type=UNKNOWN[1424] msg=audit(1791193259.032:947): domain={domain} status=deallocated denials=5"
+            ),
         ]
     }
 

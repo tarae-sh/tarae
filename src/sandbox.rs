@@ -2960,6 +2960,55 @@ pub fn parse_denial(json: &str, tag: &str) -> Option<Denial> {
     Some(Denial { process: process.into(), op: op.into(), target: target.trim().into() })
 }
 
+/// The part of run tag `tag` its instance's every run shares (`run_tag`'s `tarae-<pid>-<k>-<since>-`): the tag
+/// up to its run's number. One with no `-` is its own.
+#[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
+fn instance_prefix(tag: &str) -> &str {
+    tag.rfind('-').map_or(tag, |i| &tag[..=i])
+}
+
+/// `log stream`'s predicate for run `tag`'s stream: Seatbelt's lines carrying any tag of its instance
+/// (`instance_prefix`) — its own, and what earlier runs left running, however long ago they ran.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn seatbelt_predicate(tag: &str) -> String {
+    format!("sender == \"Sandbox\" AND eventMessage CONTAINS \"{}\"", instance_prefix(tag))
+}
+
+/// The tag of its instance (`prefix`) a Seatbelt record's message carries, where `parse_denial` reads one: the
+/// first line's last word, else a line of its own.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn tag_in<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
+    let (first, rest) = msg.split_once('\n').unwrap_or((msg, ""));
+    let ours = |t: &&str| t.starts_with(prefix) && t.ends_with('.');
+    first.split_whitespace().last().filter(ours).or_else(|| rest.lines().map(str::trim).find(ours))
+}
+
+/// One line of run `tag`'s stream (`Watch::start_with`), its project's at `root`: its own denial, or what an
+/// earlier run of that project left running, once that run's report is made — said as that run's (`left_tagged`,
+/// by the record's own stamp: one record said once, however many runs' streams read it), never this run's.
+/// Another project's run's, or a run's still going, is dropped: their own streams read it.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn seatbelt_line(line: &str, tag: &str, root: &Path) -> Vec<Denial> {
+    if let Some(d) = parse_denial(line, tag) {
+        return vec![d];
+    }
+    let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+    let Some(t) = v["eventMessage"].as_str().and_then(|m| tag_in(m, instance_prefix(tag))) else {
+        return Vec::new();
+    };
+    if let Some(d) = parse_denial(line, t) {
+        left_tagged(t, root, d, seatbelt_key(line));
+    }
+    Vec::new()
+}
+
+/// A Seatbelt record's key: its stamp (`machTimestamp`, the record's own wherever it's read) and its message.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn seatbelt_key(json: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    format!("{} {}", v["machTimestamp"], v["eventMessage"].as_str().unwrap_or_default())
+}
+
 /// How long `log stream` takes to be up before a run starts (its first denials arrived from 50 ms on, and
 /// 10 ms after they happened — measured), and how long the end of a watched run waits for the last ones.
 pub const WATCH_READY: std::time::Duration = std::time::Duration::from_millis(150);
@@ -2992,7 +3041,8 @@ pub fn live_watches() -> Vec<std::sync::Arc<Watch>> {
     live.iter().filter_map(std::sync::Weak::upgrade).collect()
 }
 
-/// The kernel's denials for one run (macOS: `log stream`, only the lines with its tag; Linux: Landlock's
+/// The kernel's denials for one run (macOS: `log stream`, only the lines with its tag — and with the tags of
+/// its project's earlier runs, what they left running said as theirs: `start_with`; Linux: Landlock's
 /// audit records of its domain — `linux::Audit`), gathered on a thread of its own; stopped when the run is
 /// done (`finish`), when its process is gone (`run_started`), when it never starts (`WATCH_UNCLAIMED`), or
 /// when the last holder lets go.
@@ -3126,21 +3176,34 @@ impl Watch {
     }
 
     /// Starts `log stream` for `tag` (on a worker: it returns at once, but give it `WATCH_READY` before the
-    /// run starts). When it can't run or ends early, `blocked().failed` says why.
-    #[cfg(not(target_os = "linux"))]
+    /// run starts). When it can't run or ends early, `blocked().failed` says why. (Tests: a run's is `watch_for`'s.)
+    #[cfg(all(test, not(target_os = "linux")))]
     pub fn start(tag: &str) -> std::sync::Arc<Watch> {
+        Watch::start_with(tag, Path::new(""))
+    }
+
+    /// `start`, its one stream reading every tag of its instance (`seatbelt_predicate`): what the earlier runs
+    /// of its project at `root` left running is no part of this run's, said apart as those runs'
+    /// (`seatbelt_line`). Which runs left something can't be told on macOS — it hands no process's environment
+    /// (`MARK`) to another (`KERN_PROCARGS2`, `ps -E`: none on macOS 27, measured — nor its own), a leftover is
+    /// launchd's child (no subreaper), one that left its run's session (`setsid`, a build daemon) is no longer
+    /// known by it, and a daemon lives hours — so every earlier run's tag is read. The kernel logs a leftover's
+    /// denials under its run's tag; only a stream that reads it sees them, so while no run of the project is
+    /// going, none is read — as Linux's audit stream, read by a run's watch only.
+    #[cfg(not(target_os = "linux"))]
+    pub fn start_with(tag: &str, root: &Path) -> std::sync::Arc<Watch> {
         let w = Watch::quiet(tag);
-        let predicate = format!("sender == \"Sandbox\" AND eventMessage CONTAINS \"{tag}\"");
+        let predicate = seatbelt_predicate(tag);
         let mut c = Command::new("/usr/bin/log");
         c.args(["stream", "--style", "ndjson", "--predicate", &predicate]);
-        let tag = tag.to_string();
-        w.read(c, move |line| parse_denial(line, &tag).into_iter().collect());
+        let (tag, root) = (tag.to_string(), root.to_path_buf());
+        w.read(c, move |line| seatbelt_line(line, &tag, &root));
         w
     }
 
     /// Linux: Landlock's audit records, read from `source` (where `linux::audit_readable` found them), its
-    /// run's domain told by the thread that confined it (`owned_by`) — never an earlier run's, though what that
-    /// left still runs (as `log stream` reads only its own run's tag). As `start`.
+    /// run's domain told by the thread that confined it (`owned_by`) — an earlier run's, what that left still
+    /// running, said as that run's (`left_read`, as macOS's stream says an earlier tag's). As `start`.
     #[cfg(target_os = "linux")]
     pub fn start_audit(tag: &str, source: &linux::AuditSource) -> std::sync::Arc<Watch> {
         Watch::start_audit_from(tag, source.stream())
@@ -3294,8 +3357,9 @@ impl Drop for Watch {
 
 /// A run of Claude's, kept after it's gone for what it left running: whose it was (its project — a session's
 /// checkout), its policy's key (`policy_key`), its own process, and what a later run's report says of what it
-/// left (Linux's audit, `left_read`): the thread that confined it (its records name it), its id as the UI state
-/// shows it (`Policy::trace`), its watch (whether its report is made) and its late refusals logged.
+/// left (Linux's audit, `left_read`; macOS's stream, `left_tagged`): the thread that confined it (Linux: its
+/// records name it), its id as the UI state shows it (`Policy::trace`), its watch (whether its report is made)
+/// and its late refusals logged.
 struct Ran {
     tag: String,
     root: PathBuf,
@@ -3303,12 +3367,17 @@ struct Ran {
     pid: u32,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     comm: Option<String>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     trace: Option<u64>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     watch: Option<std::sync::Weak<Watch>>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     late: usize,
+}
+
+/// Whether run `r`'s report is made (its watch stopped or gone).
+fn reported(r: &Ran) -> bool {
+    r.watch
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
+        .is_none_or(|w| w.stopped.load(std::sync::atomic::Ordering::SeqCst))
 }
 
 /// The runs since tarae started, oldest first — `RAN_KEPT` at most.
@@ -3328,7 +3397,6 @@ fn ran(p: &Policy, pid: u32) {
 
 /// `ran`'s keeping: run `pid` in `p` kept by its tag (its key; None: no tag), one of its project's going while
 /// its watch lives (`going`).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ran_kept(p: &Policy, pid: u32) -> Option<String> {
     let tag = p.tag.clone()?;
     let key = policy_key(p);
@@ -3407,11 +3475,9 @@ fn said_late(p: &Policy, d: &Denial) {
     late_said(p.tag.as_deref().unwrap_or("untagged"), n, d);
 }
 
-/// Recent records of what earlier runs left, by their key (`linux::left_key`): one refusal said once, however
-/// many runs' watches — and the journal's two transports — read it. `LEFT_READ_KEPT` at most.
-#[cfg(target_os = "linux")]
+/// Recent records of what earlier runs left, by their key (`linux::left_key`, `seatbelt_key`): one refusal said
+/// once, however many runs' watches — and the journal's two transports — read it. `LEFT_READ_KEPT` at most.
 static LEFT_READ: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
-#[cfg(target_os = "linux")]
 const LEFT_READ_KEPT: usize = 256;
 
 /// The threads that confined this tarae's runs (`Ran.comm`) — a watch's `Audit::earlier`, by name alone (it
@@ -3429,16 +3495,21 @@ fn ran_owners() -> Vec<linux::Owner> {
 /// last). Never as a reading run's own (frictions29 #349).
 #[cfg(target_os = "linux")]
 pub(crate) fn left_read(comm: &str, d: Denial, key: String) {
+    left_of(|r| r.comm.as_deref() == Some(comm), d, key);
+}
+
+/// macOS: a Seatbelt denial under the tag of run `tag`, read by the stream of a run of the project at `root`
+/// (`seatbelt_line`): said as `left_read` says one — only when `tag` is a run of that project.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn left_tagged(tag: &str, root: &Path, d: Denial, key: String) {
+    left_of(|r| r.tag == tag && r.root == root, d, key);
+}
+
+/// `left_read`'s and `left_tagged`'s saying, of the newest run `which` picks.
+fn left_of(which: impl Fn(&Ran) -> bool, d: Denial, key: String) {
     let of = {
         let ran = RAN.lock().unwrap_or_else(|e| e.into_inner());
-        ran.iter().rev().find(|r| r.comm.as_deref() == Some(comm)).map(|r| {
-            let reported = r
-                .watch
-                .as_ref()
-                .and_then(std::sync::Weak::upgrade)
-                .is_none_or(|w| w.stopped.load(std::sync::atomic::Ordering::SeqCst));
-            (r.root.clone(), r.trace, r.tag.clone(), reported)
-        })
+        ran.iter().rev().find(|r| which(r)).map(|r| (r.root.clone(), r.trace, r.tag.clone(), reported(r)))
     };
     // (a run tarae no longer keeps — or no run's, the audit probe's: nothing to say it by)
     let Some((root, trace, tag, reported)) = of else { return };
@@ -6016,7 +6087,7 @@ pub fn watch_for(p: &Policy) -> Option<std::sync::Arc<Watch>> {
         _ => None,
     };
     #[cfg(not(target_os = "linux"))]
-    Some(Watch::start(tag))
+    Some(Watch::start_with(tag, &p.root))
 }
 
 /// Tests: what runs between a keeper's run's start and its watch hearing its pid (its pid, its name), for the
@@ -6107,6 +6178,11 @@ pub fn spawn_as(
             return Err(e);
         }
     };
+    // (macOS: kept by its tag, so a later run's stream reads what it leaves running — `seatbelt_line`)
+    #[cfg(not(target_os = "linux"))]
+    if let Some(p) = policy {
+        ran_kept(p, spawned.pid);
+    }
     // (macOS, the network open: the run's own port goes to tarae's proxy — its end comes with `after_run`)
     #[cfg(not(target_os = "linux"))]
     if let Some((p, r)) = policy.and_then(|p| Some((p, p.proxy.as_ref()?))) {
@@ -6540,6 +6616,162 @@ mod tests {
         assert!(left(&elsewhere).is_empty(), "another project's run");
         assert_eq!(late(&one), 1, "none going: run 1's late one");
         elsewhere.watch.as_ref().unwrap().finish();
+    }
+
+    /// #349 (macOS's half): a Seatbelt denial under an earlier run's tag, read by a later run's stream, is what
+    /// that run left running — never the reading run's own: while run 1's report isn't made, its own stream's;
+    /// after, said as run 1's (`run#N`) in each of its project's runs going, however many runs came after it,
+    /// once though two streams read it, never in another project's; another project's run's or one going is
+    /// dropped by a reader (theirs are their own streams'); none going, run 1's late one. The predicate is one
+    /// term, the instance's prefix.
+    #[test]
+    fn an_earlier_runs_seatbelt_denial_is_said_as_that_runs() {
+        let with = |tag: &str, root: &str, trace: u64| {
+            let env = Env { root: PathBuf::from(root), ..Default::default() };
+            let p =
+                Policy { watch: Some(Watch::quiet(tag)), trace: Some(trace), ..Policy::for_project(&env) };
+            Policy { tag: Some(tag.to_string()), ..p }
+        };
+        let at = "/w/f349m-read";
+        let (one, two, three) = (
+            with("f349m-1.", at, 9_349_101),
+            with("f349m-2.", at, 9_349_102),
+            with("f349m-3.", at, 9_349_103),
+        );
+        let (else_at, other_at) = ("/w/f349m-elsewhere", "/w/f349m-other");
+        let elsewhere = with("f349m-q.", else_at, 9_349_104);
+        let other = with("f349m-o.", other_at, 9_349_105);
+        // (twenty runs of the project after run 1, reported: a daemon outlives them all)
+        let after: Vec<Policy> = (0..20).map(|i| with(&format!("f349m-a{i}."), at, 9_349_110 + i)).collect();
+        for p in [&one, &other].into_iter().chain(&after).chain([&two, &three, &elsewhere]) {
+            ran_kept(p, 0);
+        }
+        for p in after.iter().chain([&other]) {
+            p.watch.as_ref().unwrap().finish();
+        }
+        let line = |stamp: u64, tag: &str, path: &str| {
+            let msg = format!("Sandbox: touch(80432) deny(1) file-write-create {path}\n{tag}");
+            serde_json::json!({ "machTimestamp": stamp, "eventMessage": msg, "processID": 0 }).to_string()
+        };
+        let read = |line: &str, reader: &Policy| {
+            seatbelt_line(line, reader.tag.as_deref().unwrap(), &reader.root.clone())
+        };
+        let b = |p: &Policy| p.watch.as_ref().unwrap().blocked();
+        let d = Denial {
+            process: "touch".into(),
+            op: "file-write-create".into(),
+            target: format!("{at}/Makefile"),
+        };
+        let daemon = line(1, "f349m-1.", &d.target);
+        assert_eq!(read(&daemon, &two), [], "never the reading run's own");
+        assert!(b(&two).left.is_empty(), "run 1's report isn't made: its own stream reads it");
+        one.watch.as_ref().unwrap().finish();
+        for reader in [&two, &three] {
+            assert_eq!(read(&daemon, reader), [], "{:?}", reader.tag);
+        }
+        let going = line(4, "f349m-3.", "/w/going");
+        assert_eq!(read(&going, &two), [], "run 3 goes: its own stream's");
+        let theirs = line(5, "f349m-o.", "/w/theirs");
+        assert_eq!(read(&theirs, &two), [], "another project's run's");
+        let late = |tag: &str| RAN.lock().unwrap().iter().rev().find(|r| r.tag == tag).map(|r| r.late);
+        assert_eq!(late("f349m-o."), Some(0), "dropped, not its late one");
+        assert_eq!(read(&line(6, "tarae-elsewhere-1.", "/w/x"), &two), [], "another instance's");
+        for p in [&two, &three] {
+            assert_eq!(
+                b(p).left,
+                [(Some(9_349_101), Relayed::from(d.clone()))],
+                "said as run 1's, in each going"
+            );
+            assert_eq!(b(p).left_total, 1, "once, though two streams read it");
+            assert!(b(p).seen.is_empty());
+        }
+        assert!(b(&elsewhere).left.is_empty(), "another project's run");
+        assert!(b(&three).seen.is_empty() && b(&two).seen.is_empty());
+        let said = Guard::In(Box::new(two.clone())).report(&[]);
+        assert!(
+            said.contains(&format!("refused for what run#9349101 left running: {}", d.reported())),
+            "{said}"
+        );
+        let own = line(2, "f349m-2.", "/w/own");
+        assert_eq!(read(&own, &two).len(), 1, "its own");
+        let at_end = line(7, "f349m-q.", "/w/end");
+        assert_eq!(read(&at_end, &elsewhere).len(), 1, "its own, at the same prefix");
+        assert_eq!(read(&theirs, &elsewhere), [], "run o is of a third project");
+        for p in [&two, &three] {
+            p.watch.as_ref().unwrap().finish();
+        }
+        assert_eq!(read(&line(3, "f349m-1.", "/w/x"), &two), []);
+        assert_eq!(late("f349m-1."), Some(1), "none going: run 1's late one");
+        elsewhere.watch.as_ref().unwrap().finish();
+        assert_eq!(
+            seatbelt_predicate("tarae-812-0-1762230000000000-20."),
+            "sender == \"Sandbox\" AND eventMessage CONTAINS \"tarae-812-0-1762230000000000-\"",
+            "one term: its instance's every run"
+        );
+        assert_eq!(
+            tag_in("Sandbox: x(1) deny(1) op /p tarae-8-0-1-3.", "tarae-8-0-1-"),
+            Some("tarae-8-0-1-3.")
+        );
+        assert_eq!(
+            tag_in("Sandbox: x(1) deny(1) op /tarae-8-0-1-a.", "tarae-8-0-1-"),
+            None,
+            "a path's not a tag"
+        );
+    }
+
+    /// #349 under Seatbelt: what run 1 left running (a subshell carrying its tag) is refused after run 1's report
+    /// was made, while run 2 goes: run 2's stream — made by `watch_for`, run 1 kept by `spawn_as` — reads run 1's
+    /// tag and says it as run 1's; neither run lists it as its own.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_leftovers_seatbelt_denial_reaches_a_later_runs_stream_as_its_runs() {
+        if skipped_inside(
+            "sandbox::tests::a_leftovers_seatbelt_denial_reaches_a_later_runs_stream_as_its_runs",
+        ) {
+            return;
+        }
+        let scratch = crate::scratch::Scratch::new("sb-f349m");
+        let root = profile_path(&scratch).join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        let pid = std::process::id();
+        let run = |n: u64, script: &str| {
+            let tag = format!("tarae-test-{pid}-349-{n}.");
+            let env = Env { root: root.clone(), ..Default::default() };
+            let mut p = Policy { tag: Some(tag), trace: Some(9_349_200 + n), ..Policy::for_project(&env) };
+            p.watch = watch_for(&p);
+            std::thread::sleep(WATCH_READY);
+            let mut c = command(Some(&p), "/bin/sh", &["-c".to_string(), script.to_string()]);
+            c.current_dir(&root).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            let s = spawn_as(Some(&p), &c, crate::spawn::Acts::Claude).unwrap();
+            p.watch.as_ref().unwrap().run_started(s.pid);
+            (p, s.pid)
+        };
+        // (run 1 ends at once; the subshell it leaves writes a protected name 3 s on)
+        let (one, one_pid) = run(1, "(sleep 3; touch Makefile) &");
+        crate::spawn::wait(one_pid).unwrap();
+        let by = std::time::Instant::now() + crate::test_results::PATIENCE;
+        let w1 = one.watch.as_ref().unwrap();
+        while !w1.stopped.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < by {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let (two, two_pid) = run(2, "sleep 8");
+        let w2 = two.watch.as_ref().unwrap();
+        while w2.blocked().left.is_empty() && std::time::Instant::now() < by {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let (b1, b2) = (w1.blocked(), w2.blocked());
+        // SAFETY: a signal to the test's own child.
+        unsafe { libc::kill(two_pid as libc::pid_t, libc::SIGKILL) };
+        let _ = crate::spawn::wait(two_pid);
+        w2.finish();
+        let left: Vec<(Option<u64>, String, String)> =
+            b2.left.iter().map(|(n, r)| (*n, r.denial.op.clone(), r.denial.target.clone())).collect();
+        assert!(
+            matches!(&left[..], [(Some(9_349_201), op, target)] if op == "file-write-create" && target.ends_with("/project/Makefile")),
+            "{left:?} (run 2's own: {:?})",
+            b2.seen
+        );
+        assert!(!b2.seen.iter().chain(&b1.seen).any(|d| d.target.ends_with("Makefile")), "{b1:?} {b2:?}");
     }
 
     /// A run waits for its watch's stream before it starts only on macOS: `log stream` reads from when it's
