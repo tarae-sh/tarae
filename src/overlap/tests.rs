@@ -717,6 +717,7 @@ fn two_taraes_keep_their_own_folders_and_a_gone_ones_is_pruned() {
     let c_dir = c.overlap.dir.clone().unwrap();
     assert!(c_dir.join(".lock").exists());
     drop(c);
+    let_go(&c_dir);
     let (mut d, _) = editor_on(&main, &fix, &base);
     settle(&mut d, 1);
     assert!(!c_dir.exists(), "the gone tarae's folder pruned");
@@ -724,6 +725,22 @@ fn two_taraes_keep_their_own_folders_and_a_gone_ones_is_pruned() {
         b.overlap.dir.as_ref().unwrap().exists() && b_folder.join("objects").is_dir(),
         "a live one's kept"
     );
+}
+
+/// Until nothing holds `dir`'s lock any more — a tarae gone, as the next one's prune finds it. An editor dropped in
+/// this process isn't yet: a child another test forked meanwhile holds its lock until it execs (#367).
+fn let_go(dir: &Path) {
+    use std::os::fd::AsRawFd as _;
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    loop {
+        let f = std::fs::File::open(dir.join(LOCK)).unwrap();
+        // SAFETY: flock on a descriptor of the test's own, let go as it closes.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return;
+        }
+        assert!(std::time::Instant::now() < end, "{}: its lock still held", dir.display());
+        crate::event::pause(Duration::from_millis(1));
+    }
 }
 
 /// No program of the user's or the repository's runs for an overlap: a file a clean filter takes (`*.dat`, as

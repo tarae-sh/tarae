@@ -516,6 +516,10 @@ pub struct Sim {
 impl Sim {
     /// A simulation of scenario `name`, this thread its driver; the run fails past `limit` of real time.
     pub fn new(name: &str, choices: Choices, limit: Duration) -> Sim {
+        // (a frame's bytes in colour whichever test ran first: tarae's test runner sets NO_COLOR, and a test that
+        // looks at colours turns crossterm's process-wide switch on for good — one doing it between a seed's two
+        // runs made their frames differ, #366)
+        crossterm::style::force_color_output(true);
         let state = Mutex::new(State { helpers_wait: HELPERS_WAIT, ..State::default() });
         let h = Handle(Arc::new(Shared { state, turn: Condvar::new(), base: Instant::now() }));
         CURRENT.with(|c| {
