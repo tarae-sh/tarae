@@ -566,6 +566,9 @@ pub struct Screen {
     /// The cards this frame draws, each whole or as its peek (the front's id first; any session's): what waits in
     /// sight — the status line's `▲N waiting` counts only the rest (polish landing 1).
     pub asks_drawn: Vec<u64>,
+    /// The sessions' strip drawn on the screen's top row this frame (`term::draw_header`): the home of a bring's
+    /// progress — the status line's chip says it only on a frame with none (#319).
+    pub top_strip: std::cell::Cell<bool>,
     /// How many of the front card's lines its drawing left out (`↓ 2 more lines`; 0: drawn whole) — None
     /// when no card is drawn, or it stepped aside to a bar while its text is read (the UI state's `cut`).
     pub offer_cut: Option<usize>,

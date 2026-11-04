@@ -844,10 +844,11 @@ announced once the tour is over, so its message doesn't compete with the stop's 
 chat stops the tour and moves the editor to the first reference the chat shows, so the code follows what you're
 reading. It's plain text in the answer: no extra requests, a few words per stop.
 
-![A walk-through's last stop with the cursor in its lines, the tour over: the lines Claude explains carry the turn map's `◦`, lit in the accent, and the stop's note card opens between them and the code below, saying what they do](screenshots/follow-ask.png)
+![A walk-through's last stop with the cursor in its lines, the tour over: the lines Claude explains carry the turn map's `◦`, and `enter` there shows the conversation at that stop's paragraph, the keys still in the code](screenshots/follow-ask.png)
 
 You can talk back at a stop. Each stop is one of the answer's [notes](#notes): at the turn's end the card of its first
-place opens, and `enter` in a stop's lines opens that stop's. The follow card is the turn's: it shows the stops while
+place opens, `]n` and `[n` open the next stop's and the one before, and `enter` in a stop's lines shows the conversation
+at that stop's paragraph. The follow card is the turn's: it shows the stops while
 the tour plays and goes once the tour is over, so what Claude said of those lines is in one place, the note's card.
 Once the answer is done, while the tour still plays, the stop's follow card says `space n ask about this` when your
 cursor is in its lines (`space n` acts at your cursor, not at the view follow holds). Press `space n` there and the
@@ -1159,7 +1160,7 @@ its chat row marked `▲` from then, and a line in Claude's report. `Cargo.toml`
 so in the sandbox those tools are refused that write, and the line says so. The words come from the language
 packs (`warn` entries with `start = true`), so a project's `[[cards.warn]]` can add its own.
 
-![Claude wants to run cargo test outside the sandbox: a card at the bottom right shows the command, Claude's reason and, in the warning color, that outside the sandbox it runs with all your permissions this once, with y Run and n No; the follow card at the top right says Claude is waiting for your answer](screenshots/chat-run.png)
+![Claude wants to run cargo test outside the sandbox: a card at the bottom right shows the command, Claude's reason and, in the warning color, that outside the sandbox it runs with all your permissions this once, with y Run and n No; the follow card on the right says Claude is waiting for your answer](screenshots/chat-run.png)
 
 ### The sandbox
 

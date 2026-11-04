@@ -122,9 +122,12 @@ const fn blame_age(row: u16, cols: (u16, u16)) -> Varies {
     Varies { row, cols, what: "the blame's age and summary (`5s ago · …`)", holds: blame_aged }
 }
 
-/// A blame's age as `run_duration`'s largest unit writes it (`5s ago`, `12s ago`, `1m ago`), then nothing or ` · ` and
-/// the summary — its cells as drawn, the age their first.
+/// A blame's age as `run_duration`'s largest unit writes it (`5s ago`, `12s ago`, `1m ago`; under a second `just now` — a
+/// quick take), then nothing or ` · ` and the summary — its cells as drawn, the age their first.
 fn blame_aged(t: &str) -> bool {
+    if let Some(rest) = t.strip_prefix("just now") {
+        return rest.trim_end().is_empty() || rest.starts_with(" · ");
+    }
     let Some((age, rest)) = t.split_once(" ago") else { return false };
     let n = age.strip_suffix('s').or_else(|| age.strip_suffix('m')).unwrap_or_default();
     let number = !n.is_empty()
@@ -142,7 +145,7 @@ const INBOX_WAITS: &[Varies] = &[
     Varies { row: 5, cols: (110, 117), what: "api's ask's age (`16.3s`)", holds: seconds_padded },
     Varies { row: 6, cols: (110, 117), what: "docs's change's age (`5.2s`)", holds: seconds_padded },
     // (`1m 02s` a cell wider than `27.4s`: the cell after it, a space, then holds its `s`)
-    Varies { row: 33, cols: (86, 92), what: "the status line's wait (`27.4s`)", holds: seconds_padded },
+    Varies { row: 33, cols: (88, 94), what: "the status line's wait (`27.4s`)", holds: seconds_padded },
 ];
 
 /// A time as `run_duration` writes it under an hour: `2.0s`, `12.3s` (seconds to a tenth), then `1m 02s` — what a
@@ -372,7 +375,8 @@ const DOC_SCENES: &[DocScene] = &[
         &["@?Trust this", "@1", " ", "g", "@?knot.rs", " ", "l", "@1", "\x0f", "@1"],
     ),
     // (`C-t` in the chat: the models the stand-in's `initialize` answer offers)
-    scene("model", Fixture::Calc, LIB, &["@1", " ", "l", "@1", "\x14", "@1"]).claude("models"),
+    // (the column, `space L` — `space l` is the ask line, flow plan piece 2)
+    scene("model", Fixture::Calc, LIB, &["@1", " ", "L", "@1", "\x14", "@1"]).claude("models"),
     // (`:chat-resume`: the project's earlier conversations, the newest previewed — waited on by its title, so a
     // seed `config::state_file` no longer finds fails the shot rather than show an empty list)
     scene(
@@ -501,9 +505,9 @@ const DOC_SCENES: &[DocScene] = &[
     )
     .claude("commitdraft"),
     // (a review whose changes are graded high: an `unsafe` line, a new build script)
-    // (a walk-through's last stop with your cursor in its lines, the tour over: no follow card stays for it (#273) — what
-    // Claude said of those lines is its note's card, opened by `enter` there; the answer's own card, opened at the turn's
-    // end at its first place (A1b), shut by `esc` in the code first)
+    // (a walk-through's last stop with your cursor in its lines, the tour over: no follow card stays for it (#273) —
+    // `enter` there shows the conversation at that stop's paragraph, the keys left in the code (flow plan piece 3); the
+    // answer's own card, opened at the turn's end at its first place (A1b), shut by `esc` in the code first)
     scene(
         "followask",
         Fixture::Demo,
@@ -522,7 +526,8 @@ const DOC_SCENES: &[DocScene] = &[
             "\x1b",
             "12G",
             "\r",
-            "@?3/3",
+            // (the column's last row: there only once `enter` has shown it)
+            "@?replay its 1 stop",
             "@1",
         ],
     )
@@ -550,7 +555,8 @@ const DOC_SCENES: &[DocScene] = &[
             "@1",
             "why not keep a Vec?",
             "\r",
-            "@30?answered at the note",
+            // (its answer in the thread: the reply was the note's, so the column stays hidden — `◂ new · space L`)
+            "@30?It's a map, not a Vec",
             "@2",
             "\x1b",
             "\x1b",
@@ -712,7 +718,7 @@ const DOCS: &[DocShot] = &[
     row("chat-conversations.png", Some("conversations"), S),
     row("inbox.png", Some("inbox"), (120, 34)).varies(INBOX_WAITS),
     row("inbox-hanji.png", Some("inbox"), (120, 34)).light().varies(INBOX_WAITS),
-    row("chat-point-hanji.png", Some("point"), (140, 34)).light().varies(&[blame_age(1, (75, 91))]),
+    row("chat-point-hanji.png", Some("point"), (140, 34)).light().varies(&[blame_age(1, (79, 106))]),
     row("chat-ids.png", None, (140, 34)),
     row("chat-explore.png", None, S),
     // (`chatmid` shows neither the wash nor the thinking these show: phase 3's `thinking` script)
@@ -725,7 +731,7 @@ const DOCS: &[DocShot] = &[
     // (the turn's time on the chat's last answer row, right-aligned: tarae's clock, a tenth either way)
     row("m4-chat-hanji.png", Some("chatanswer"), S)
         .light()
-        .varies(&[blame_age(1, (43, 67)), turn_time(23, (103, 111))]),
+        .varies(&[blame_age(1, (43, 67)), turn_time(24, (103, 111))]),
     row("chat-plan.png", None, S),
     // (its head quotes what was asked, as every review of Claude's change does — frictions34 43)
     // (the follow card's wait on its frame's top line, right-aligned: how long the scene took to get there — the
@@ -736,7 +742,7 @@ const DOCS: &[DocShot] = &[
     row("chat-review-at-end.png", Some("reviewatend"), S),
     row("chat-undo-turn.png", None, S),
     row("chat-tests.png", None, S),
-    row("chat-run.png", Some("runcard"), S).varies(&[blame_age(1, (43, 70)), wait_time(1, (102, 108))]),
+    row("chat-run.png", Some("runcard"), S).varies(&[blame_age(1, (43, 70)), wait_time(9, (102, 108))]),
     row("notes.png", Some("notethread"), S),
     row("commit-draft.png", Some("commitdraft"), S),
     row("review.png", Some("codereview"), S),
@@ -1643,6 +1649,8 @@ mod tests {
             "1m ago · A skein",
             "5s ago · Small arithmetic ",
             "0s ago ",
+            // (under a second: syntax-injections' quick take, 2026-11-04)
+            "just now · Small arithmeti",
         ] {
             assert!(blame_aged(ok), "{ok:?}");
         }
@@ -1653,6 +1661,7 @@ mod tests {
             "05s ago · A",
             "5s ago A",
             "5h ago · A",
+            "just nowhere",
             "      ",
         ] {
             assert!(!blame_aged(not), "{not:?}");

@@ -672,6 +672,22 @@ fn named_row(vt: &vt100::Parser, name: &str, asks: &str) -> (String, Vec<vt100::
     (rows[y].clone(), (0..name.len()).map(at).collect(), [at(name.len() + 1), at(name.len() + 3)])
 }
 
+/// Its ages are a column of times: a long row is cut in what it asks, never in how long it has waited (counters and
+/// timers keep their width — the docs' `inbox.png` at 120: api's `read · 16.3s` was cut to `read · …` by its read's
+/// `· the whole file`).
+#[test]
+fn the_lists_ages_are_never_cut() {
+    let (mut ed, dir, back, third) = three("ages");
+    park(&mut ed, back, claudes(1, 60));
+    park(&mut ed, third, tarae(400));
+    screen(&mut ed, 64, 30);
+    feed(&mut ed, "<space>I");
+    let rows = screen(&mut ed, 64, 30);
+    let row = rows.iter().find(|r| r.contains("third ·")).unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(row.contains("…") && row.contains("6m 40s"), "what it asks cut, its age whole: {row}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The list: `space I` (or a click on the status line's count, where it counts any) — a row each, its session named,
 /// what it asks, its kind and how long it has waited, the oldest in hand. `enter` goes to it — its session in front,
 /// its card up with the keys — and it's answered there. Nothing waiting: said, no list.

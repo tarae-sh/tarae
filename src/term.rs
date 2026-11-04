@@ -868,6 +868,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         offer_way: offer.as_ref().and_then(|c| c.way_at),
         offer_card: offer.as_ref().map(OfferCard::rect),
         asks_drawn: offer.as_ref().map(OfferCard::drawn_ids).unwrap_or_default(),
+        top_strip: Default::default(),
         offer_held: offer.is_none()
             && !editor.pending.is_empty()
             && editor.picker.is_none()
@@ -10826,6 +10827,7 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         let w = r.w - strip_w;
         code_line(editor, ui, doc, (*id, *focused, railless, lit(*id, *r)), (r.x, y, w), out)?;
         if let Some((spans, spots)) = strip {
+            editor.screen.top_strip.set(true);
             draw_top_strip(editor, ui, (r.x + w, y), &spans, spots, out)?;
         }
     }
@@ -11554,8 +11556,11 @@ fn draw_statusline(
             ..ui.status
         };
         left.push(Seg::of(crate::whole::fit(editor.workspace.label(), 24).lead("  "), own, CHIP));
-        // (its rebase or bring under way — in the warning color once it waits for you)
-        if let Some(said) = editor.bring_progress(&editor.workspace) {
+        // (its rebase or bring under way — in the warning color once it waits for you; its home is the sessions'
+        // strip, said here only on a frame with none drawn — a zoomed slot, the top row not the code's: #319)
+        if let Some(said) =
+            editor.bring_progress(&editor.workspace).filter(|_| !editor.screen.top_strip.get())
+        {
             let stopped = editor.workspace.rebase.as_ref().is_some_and(|r| r.stopped())
                 || editor.bring_waits_trust(&editor.workspace);
             let style = if stopped { ui.status.patch(warn) } else { Style { fg: ui.virt.fg, ..ui.status } };
@@ -24921,6 +24926,40 @@ mod tests {
             other_lines: Some(8..9),
         });
         assert_eq!(tabs(&ed, 80 / 3), "main ≈ · fix done ≈ · +1", "#333");
+    }
+
+    /// #319: a bring's progress has one home, the sessions' strip — with the bringing session in front the status line's
+    /// chip keeps its name (whom follow follows) and says the progress only on a frame that draws no strip (the side
+    /// panel filling the screen, the top row not the code's).
+    #[test]
+    fn a_bring_under_way_is_said_on_the_strip_and_the_chip_only_without_it() {
+        let dir = crate::scratch::Scratch::new("chip-319");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.name = "main".into();
+        let p = dir.path().join("fix");
+        std::fs::create_dir_all(&p).unwrap();
+        ed.workspace_open(&p).unwrap();
+        ed.workspace.name = "fix".into();
+        (ed.workspace.bring_go, ed.workspace.bring_rebased) = (true, true);
+        let rows = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            render(ed, &mut bytes, 120, 30).unwrap();
+            let text = crate::screen::text(&bytes, 120, 30).unwrap();
+            let lines: Vec<String> = text.lines().map(str::to_string).collect();
+            (lines[0].clone(), lines.last().unwrap().clone())
+        };
+        let (top, status) = rows(&mut ed);
+        assert!(top.contains("fix bringing · rebased"), "the strip says it: {top}");
+        assert!(status.contains("fix") && !status.contains("bringing"), "the chip its name alone: {status}");
+        // (the side panel fills the screen: no strip, the chip says it)
+        ed.workspace.viewer.sidebar =
+            Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.path().to_path_buf()));
+        ed.workspace.viewer.at = crate::workspace::At::Side;
+        rows(&mut ed);
+        ed.zoom_toggle();
+        let (top, status) = rows(&mut ed);
+        assert!(!top.contains("bringing"), "no strip: {top}");
+        assert!(status.contains("fix bringing · rebased"), "the chip says it: {status}");
     }
 
     /// orchestra N6: on the chat's line a child comes right after its parent, joined to it or a sibling by a faint `›`

@@ -507,6 +507,8 @@ impl Editor {
         }
         let mut p = crate::picker::Picker::of("inbox", INBOX, items, false).without_preview();
         p.paints = paints;
+        // (its ages a column of times: what a row asks is cut first, never how long it has waited)
+        p.times = true;
         self.open_picker(p, None);
     }
 
