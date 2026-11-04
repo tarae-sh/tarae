@@ -2397,7 +2397,7 @@ fn start_turn_at(ed: &mut Editor, at: usize, earlier: usize, start: Option<Strin
             start_turn_at(ed, at, earlier, start, say)
         });
     };
-    let base = Base::Turn { at, question: cp.question.clone() };
+    let question = cp.question.clone();
     let files: Vec<(PathBuf, crate::checkpoint::Was)> =
         here.iter().map(|t| (t.path.clone(), t.was())).collect();
     let root = ed
@@ -2443,18 +2443,23 @@ fn start_turn_at(ed: &mut Editor, at: usize, earlier: usize, start: Option<Strin
             if !said.is_empty() {
                 ed.set_warning(said.join(" · "));
             }
-            let opens = !files.is_empty();
-            open_at(ed, root, base, files, grades, start, say);
-            if opens
-                && beyond > 0
-                && let Some(r) = ed.workspace.code_review.as_mut()
-            {
-                let key = ed.keymaps.bindings().remove("review_start").unwrap_or_else(|| ":review".into());
-                r.beyond = Some((beyond, key));
-            }
-            if let Some(said) = earlier_said(earlier) {
-                ed.set_warning(said);
-            }
+            // (its texts read back first where they were let go meanwhile — a turn ended behind: its save sheds them
+            // there, no review open on it yet — else a file shown has no before and reads as new, washed whole: #335)
+            crate::checkpoint::with_texts(ed, at, move |ed, at| {
+                let opens = !files.is_empty();
+                open_at(ed, root, Base::Turn { at, question }, files, grades, start, say);
+                if opens
+                    && beyond > 0
+                    && let Some(r) = ed.workspace.code_review.as_mut()
+                {
+                    let key =
+                        ed.keymaps.bindings().remove("review_start").unwrap_or_else(|| ":review".into());
+                    r.beyond = Some((beyond, key));
+                }
+                if let Some(said) = earlier_said(earlier) {
+                    ed.set_warning(said);
+                }
+            });
         }
     });
 }

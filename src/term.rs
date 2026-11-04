@@ -946,6 +946,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         note_card: Default::default(),
         note_text: Default::default(),
         note_more: Default::default(),
+        drafts_drawn: Default::default(),
         thought_card: Default::default(),
         follow_at_foot: Default::default(),
         follow_foot: Default::default(),
@@ -17613,7 +17614,8 @@ fn sessions_counted(editor: &Editor) -> [String; 2] {
 /// was behind — `+` a new one. **Names whole, never letters** (the user, 2026-10-23: nine sessions read `m · k · d · pu`):
 /// where they don't fit, folded least important first — the files; the overlaps' names to `≈`; the states to what needs
 /// you (`▲`, `◦`, `done`, `¶`); then sessions into `+N` (a click opens the list), from the end of the order, the front
-/// and those that need you always in (the order kept: one that starts waiting appears in its place); last, those too —
+/// and those that need you always in, an overlap's partner before a calm one (the order kept: one that starts waiting
+/// appears in its place); the front's own `working` never (its step says it where it stands); last, those too —
 /// `+N ▲k` — the front's name alone. While `+N` shows, the `+` goes (the list's `o` makes one). Styles: dim, faint,
 /// accent, warning, the reviewer's · where each click goes (from the row's start).
 fn session_tabs(
@@ -17634,6 +17636,9 @@ fn session_tabs(
         false => l.parked.len(),
     };
     let mark = |l: &crate::workspace::Workspace| match editor.doing(l) {
+        // (the front's turn says itself where its step is — the chat's top line, the follow card's head, the status line's
+        // now —, its wave there: its `working` here would only take the room the others' need, #331)
+        Doing::Working if l.id == editor.workspace.id => None,
         // (the calm states faint: what needs you stands out — collab C1)
         Doing::Working => Some(Span { cut: None, hint: false, text: " working".into(), style: faint }),
         // (a card waits · a turn ended: said apart — #86, one `▲` meant both)
@@ -17959,7 +17964,10 @@ fn session_tabs(
                 break;
             }
         }
-        for i in (0..sessions.len()).filter(|&i| !kept(i)) {
+        // (an overlap's partner before a calm name — whom `≈` names, #333)
+        let calm = |i: &usize| !kept(*i);
+        let partners = (0..sessions.len()).filter(calm).filter(|&i| said[i].overlap);
+        for i in partners.chain((0..sessions.len()).filter(calm).filter(|&i| !said[i].overlap)) {
             if !shown[i] {
                 shown[i] = true;
                 shown[i] = width(&items, &shown) <= w;
@@ -23228,6 +23236,9 @@ fn note_frame(
     if !ends.1 {
         let at = (rect.0 + 3, rect.1 + rect.3 - 1);
         frame_keys_said(editor, Surface::NoteCard, &foot, at, |_| (!asks).then_some(At::Code));
+        if foot.iter().any(|s| s.0 == "space v s") {
+            editor.screen.drafts_drawn.set(true);
+        }
     }
     Ok(())
 }
@@ -24862,6 +24873,54 @@ mod tests {
         let (text, shown) = tabs(80 / 3);
         assert!(text.width() <= 80 / 3, "{text}");
         assert_eq!((text.as_str(), shown), ("main · fix bringing · +2", 2));
+    }
+
+    /// #331, #333 (V1's take): the top row's strip at 120 (its third) — the front's turn doesn't take the others' `working`
+    /// away (its own is said where its step is), and an overlap's partner is kept before a calm name.
+    #[test]
+    fn the_strip_keeps_the_others_at_work_and_an_overlaps_partner() {
+        let dir = crate::scratch::Scratch::new("strip-kept");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.name = "main".into();
+        let mut ids = vec![ed.workspace.id];
+        for n in ["docs", "fix"] {
+            let p = dir.path().join(n);
+            std::fs::create_dir_all(&p).unwrap();
+            ids.push(ed.workspace_open(&p).unwrap());
+            ed.workspace.name = n.into();
+        }
+        assert!(ed.workspace_switch(ids[0]).is_in());
+        let working = || {
+            let mut c = crate::chat::Chat::new();
+            c.state = crate::chat::State::Thinking;
+            Some(c)
+        };
+        for l in ed.workspaces.iter_mut() {
+            l.claude.chat = working();
+        }
+        let s = Style::default();
+        let tabs = |ed: &Editor, w: usize| {
+            let text: String =
+                session_tabs(ed, w, 0, [s; 5], &|_| s).0.iter().map(|s| s.text.clone()).collect();
+            assert!(text.width() <= w, "{text}");
+            text
+        };
+        assert_eq!(tabs(&ed, 120 / 3), "main · docs working · fix working · +");
+        // (main's turn starts: the others still at work)
+        ed.workspace.claude.chat = working();
+        assert_eq!(tabs(&ed, 120 / 3), "main · docs working · fix working · +", "#331");
+        // fix done, overlapping main: named before docs, uninvolved, at the last fold
+        ed.workspace.claude.chat = None;
+        let fix = ed.workspaces.iter_mut().find(|l| l.name == "fix").unwrap();
+        (fix.claude.chat, fix.claude.turn_end) = (None, Some((std::time::Instant::now(), Ok(()))));
+        ed.overlap.now.push(crate::overlap::Overlap {
+            a: ids[2],
+            b: crate::overlap::Other::Session(ids[0]),
+            path: "a.rs".into(),
+            lines: Some(8..9),
+            other_lines: Some(8..9),
+        });
+        assert_eq!(tabs(&ed, 80 / 3), "main ≈ · fix done ≈ · +1", "#333");
     }
 
     /// orchestra N6: on the chat's line a child comes right after its parent, joined to it or a sibling by a faint `›`

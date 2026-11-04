@@ -696,6 +696,9 @@ pub struct Screen {
     /// The open note whose card this frame ended on its `…` row, cut short of its words (focus A1c): `enter` and a press
     /// there read on in the chat (`notes::read_on`).
     pub note_more: std::cell::Cell<Option<u64>>,
+    /// A note's card this frame says `space v s send N` on its bottom line in sight: the status line's drafts count is
+    /// then left out (#329, one home: the status line counts only what no card draws).
+    pub drafts_drawn: std::cell::Cell<bool>,
     pub thought_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// The follow card stands at the foot of its gap this frame (its top line the edge that sizes its height, #267),
     /// else at its top (its bottom line that edge).

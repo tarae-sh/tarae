@@ -1361,10 +1361,11 @@ pub fn drafts(ed: &Editor) -> usize {
 }
 
 /// The status line's count of what `space v s` sends (`2 drafts · space v s`) this frame, `rail_w` its rail's width: none
-/// where a review's rail counts them, nor where the reviewer's own segment says the same, its findings alone waiting.
+/// where a review's rail counts them, nor where the reviewer's own segment says the same, its findings alone waiting, nor
+/// where a note's card says `space v s send N` this frame (#329).
 pub fn drafts_said(ed: &Editor, rail_w: usize) -> Option<usize> {
     let mine = |n: &Note| n.thread.iter().any(|e| e.draft && e.by == By::You);
-    let rail = ed.review_rail_up() && rail_w > 0;
+    let rail = ed.review_rail_up() && rail_w > 0 || ed.screen.drafts_drawn.get();
     let findings =
         !ed.workspace.claude.notes.list.iter().any(mine) && crate::reviewer::status_shows(ed, rail_w);
     Some(drafts(ed)).filter(|&k| k > 0 && !rail && !findings)

@@ -3821,6 +3821,46 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #335 (V1's take): a turn that ended behind opens its review there — and its save, landing while the review's
+    /// counts are worked out, lets the turn's texts go (a session behind keeps none). The file it shows is still against
+    /// its text before the turn, never against nothing — the whole file washed green under a rail saying `+1 −1`.
+    #[test]
+    fn a_turns_review_opened_behind_shows_its_file_against_its_text_before() {
+        let (_front, back, dir, mut ed) = two_sessions("turn-shed");
+        ed.turns_dir = Some(dir.join("turns"));
+        let id = ed.workspace_add(back.clone());
+        settle_until(&mut ed, |ed| session_at(ed, &back).claude.checkpoints.dir.is_some());
+        std::fs::write(back.join("a.txt"), "one\nTWO\nthree\n").unwrap();
+        let touched = crate::checkpoint::Touched {
+            path: back.join("a.txt"),
+            before: Some(ropey::Rope::from_str("one\ntwo\nthree\n")),
+            after: ropey::Rope::from_str("one\nTWO\nthree\n"),
+            ..Default::default()
+        };
+        let turn = crate::checkpoint::Checkpoint::new("shout".into(), vec![touched]);
+        ed.workspace_by_id(id).unwrap().claude.checkpoints.list = vec![turn];
+        let here = |ed: &Editor| session_at(ed, &back).claude.checkpoints.list[0].files.here().is_some();
+        // (saved behind: its texts let go)
+        ed.with_workspace(id, |ed| crate::checkpoint::keep(ed));
+        settle_until(&mut ed, |ed| !here(ed));
+        // Its review: the texts read back, its counts worked out — and meanwhile another save lets them go again
+        ed.with_workspace(id, |ed| crate::codereview::start_turn(ed, 0));
+        settle_until(&mut ed, here);
+        ed.with_workspace(id, |ed| crate::checkpoint::shed(&mut ed.workspace, true));
+        assert!(!here(&ed), "let go before the review opened");
+        let base = |ed: &Editor| {
+            let r = session_at(ed, &back).code_review.as_ref()?;
+            let d = ed.docs.iter().find(|d| r.docs.contains(&d.id))?;
+            d.review_base.as_ref().map(|b| b.to_string())
+        };
+        settle_until(&mut ed, |ed| base(ed).is_some());
+        let r = session_at(&ed, &back).code_review.as_ref().unwrap();
+        assert_eq!((r.files[0].added, r.files[0].removed), (1, 1), "the rail's");
+        assert_eq!(base(&ed).as_deref(), Some("one\ntwo\nthree\n"), "its text before, not none");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// #109: every session's turn is under way, not only the front's — named on the card, whose; `w` waits,
     /// and it goes on once the last one ends (it ended another session's turn, silently) — into what the card's `y`
     /// named, no card again (#305: the wait was one more card).

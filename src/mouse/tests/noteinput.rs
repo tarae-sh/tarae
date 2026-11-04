@@ -160,7 +160,12 @@ fn tab_keeps_a_reply_for_later_and_space_v_s_gets_out() {
     // A card with a draft says what `space v s` sends; a review's says it as ever
     feed(&mut ed, "<esc>10G<ret>");
     assert!(note_card_rows(&ed).last().unwrap().contains("space v s send 2"), "{:#?}", note_card_rows(&ed));
-    feed(&mut ed, "q vs");
+    // (#329: one home — the card says it, the status line doesn't too; closed, the status line does)
+    let status = |ed: &mut Editor| frame(ed).lines().last().unwrap_or_default().to_string();
+    assert!(!status(&mut ed).contains("drafts"), "said once: {}", status(&mut ed));
+    feed(&mut ed, "q");
+    assert!(status(&mut ed).contains("2 drafts · space v s"), "{}", status(&mut ed));
+    feed(&mut ed, " vs");
     let lines: Vec<String> = rx.try_iter().filter(|l| l.contains("\"user\"")).collect();
     assert_eq!(lines.len(), 1, "one message: {lines:#?}");
     assert!(lines[0].contains("later please") && lines[0].contains("a second"), "{lines:#?}");
