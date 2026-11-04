@@ -4433,6 +4433,10 @@ mod tests {
                         return "no-userns".into();
                     }
                     libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
+                    let label = std::fs::read_to_string("/proc/self/attr/apparmor/current")
+                        .or_else(|_| std::fs::read_to_string("/proc/self/attr/current"))
+                        .unwrap_or_default();
+                    let apparmor_userns = label.trim().starts_with("unprivileged_userns");
                     // Bring up `lo` in the new network namespace
                     let sock = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
                     if sock >= 0 {
@@ -4453,9 +4457,21 @@ mod tests {
                             .and_then(|l| TcpStream::connect(l.local_addr()?).map(|_| ())),
                     );
 
-                    // chroot into `sub` and test served chmod / fchmod
+                    // chroot into `sub` and test served chmod / fchmod.
+                    // Under Ubuntu's restriction (kernel.apparmor_restrict_unprivileged_userns = 1) without an
+                    // AppArmor profile, unshare succeeds but transitions to `unprivileged_userns` where
+                    // capabilities (CAP_SYS_CHROOT) are denied: chroot fails with EPERM. In that case, we report
+                    // the pre-chroot checks (connect, netns, ACLs) and mark chroot restricted so the test skips
+                    // only the chroot-dependent assertions. Any other EPERM fails as chroot-err.
                     if libc::chroot(c"sub".as_ptr()) != 0 || libc::chdir(c"/".as_ptr()) != 0 {
-                        return format!("chroot-err {}", io::Error::last_os_error());
+                        let e = io::Error::last_os_error();
+                        if apparmor_userns && e.raw_os_error() == Some(libc::EPERM) {
+                            return format!(
+                                "open={c_open} closed={c_closed} ext={c_ext} own={c_own} acl_me={acl_me_said} \
+                                 acl_other={acl_other_said} chroot=restricted"
+                            );
+                        }
+                        return format!("chroot-err {e}");
                     }
                     let mode_of = |p: &std::ffi::CStr| -> u32 {
                         let mut st: libc::stat = std::mem::zeroed();
@@ -4550,13 +4566,20 @@ mod tests {
         let routed = c.net == RunNet::Routed;
         let userns = c.keeper.as_ref().is_some_and(|k| k.ns.user);
         let closed_want = if routed { format!("err {}", libc::ECONNREFUSED) } else { refused() };
+        let own_want = if routed { "ok".to_string() } else { refused() };
         let other_want = if userns { format!("err {}", libc::EINVAL) } else { "ok".into() };
-        let want = format!(
-            "open=ok closed={closed_want} ext=err {} own=ok acl_me=ok acl_other={other_want} abs=ok rel=ok fd=ok \
-             prot=refused out=err {}",
-            libc::EPERM,
+        let front_want = format!(
+            "open=ok closed={closed_want} ext=err {} own={own_want} acl_me=ok acl_other={other_want}",
             libc::EPERM,
         );
+        if got == &format!("{front_want} chroot=restricted") {
+            crate::test_results::said_skip(
+                "sandbox::supervisor::tests::a_run_in_its_own_namespace_is_served — chroot in user namespace \
+                 restricted by AppArmor (unprivileged_userns)",
+            );
+            return;
+        }
+        let want = format!("{front_want} abs=ok rel=ok fd=ok prot=refused out=err {}", libc::EPERM,);
         assert_eq!(got, &want);
     }
 }
