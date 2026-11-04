@@ -24699,6 +24699,9 @@ fn prompt_head(p: &crate::editor::Prompt) -> String {
 mod snapshot_tests;
 
 #[cfg(test)]
+mod layout_tests;
+
+#[cfg(test)]
 mod tests {
     /// The flow plan's piece 2: a floating chat stands clear of the lines it's about — just below or above them, the side
     /// nearer its own place where both fit; neither, the larger side as tall as it lets, never under `min`; not over

@@ -726,8 +726,9 @@ const DOCS: &[DocShot] = &[
     row("follow-hanji.png", None, S).light(),
     row("follow-thinking.png", None, S),
     row("follow-show.png", None, (140, 40)),
-    // (the cursor line's blame: its age the scene's pace)
-    row("follow-ask.png", Some("followask"), S).varies(&[blame_age(14, (33, 62))]),
+    // (the cursor line's blame: its age the scene's pace; the turn's time on the answer's last row, right-aligned:
+    // tarae's clock, a tenth either way)
+    row("follow-ask.png", Some("followask"), S).varies(&[blame_age(14, (33, 62)), turn_time(7, (103, 111))]),
     // (the turn's time on the chat's last answer row, right-aligned: tarae's clock, a tenth either way)
     row("m4-chat-hanji.png", Some("chatanswer"), S)
         .light()

@@ -1,0 +1,2142 @@
+# The layout matrix (onetree S0): every scene at every size — leaves (kind#id x,y wxh), Screen's home scalars,
+# the lines drawn (a row's ─ runs and joins, a column's │ runs). TARAE_BLESS=1 cargo test layout_matrix
+
+## 54x20 · code
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · code
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · code
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · code
+leaves  code#1 0,1 80x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 80x34 · code
+leaves  code#1 0,1 80x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 80x50 · code
+leaves  code#1 0,1 80x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 100x20 · code
+leaves  code#1 0,1 100x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 100x34 · code
+leaves  code#1 0,1 100x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 100x50 · code
+leaves  code#1 0,1 100x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 120x20 · code
+leaves  code#1 0,1 120x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 120x34 · code
+leaves  code#1 0,1 120x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 120x50 · code
+leaves  code#1 0,1 120x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 160x20 · code
+leaves  code#1 0,1 160x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 160x34 · code
+leaves  code#1 0,1 160x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 160x50 · code
+leaves  code#1 0,1 160x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 200x20 · code
+leaves  code#1 0,1 200x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 200x34 · code
+leaves  code#1 0,1 200x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 200x50 · code
+leaves  code#1 0,1 200x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 54x20 · code beside code
+leaves  code#1 0,1 27x18 · code#9 28,1 26x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-26 ┬27 ─28-28 ─48-53
+  col  27  │0-18
+
+## 54x34 · code beside code
+leaves  code#1 0,1 27x32 · code#9 28,1 26x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-26 ┬27 ─28-28 ─48-53
+  col  27  │0-32
+
+## 54x50 · code beside code
+leaves  code#1 0,1 27x48 · code#9 28,1 26x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-26 ┬27 ─28-28 ─48-53
+  col  27  │0-48
+
+## 80x20 · code beside code
+leaves  code#1 0,1 40x18 · code#9 41,1 39x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-39 ┬40 ─41-41 ─61-79
+  col  40  │0-18
+
+## 80x34 · code beside code
+leaves  code#1 0,1 40x32 · code#9 41,1 39x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-39 ┬40 ─41-41 ─61-79
+  col  40  │0-32
+
+## 80x50 · code beside code
+leaves  code#1 0,1 40x48 · code#9 41,1 39x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-39 ┬40 ─41-41 ─61-79
+  col  40  │0-48
+
+## 100x20 · code beside code
+leaves  code#1 0,1 50x18 · code#9 51,1 49x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-49 ┬50 ─51-51 ─71-99
+  col  50  │0-18
+
+## 100x34 · code beside code
+leaves  code#1 0,1 50x32 · code#9 51,1 49x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-49 ┬50 ─51-51 ─71-99
+  col  50  │0-32
+
+## 100x50 · code beside code
+leaves  code#1 0,1 50x48 · code#9 51,1 49x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-49 ┬50 ─51-51 ─71-99
+  col  50  │0-48
+
+## 120x20 · code beside code
+leaves  code#1 0,1 60x18 · code#9 61,1 59x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─81-119
+  col  60  │0-18
+
+## 120x34 · code beside code
+leaves  code#1 0,1 60x32 · code#9 61,1 59x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─81-119
+  col  60  │0-32
+
+## 120x50 · code beside code
+leaves  code#1 0,1 60x48 · code#9 61,1 59x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─81-119
+  col  60  │0-48
+
+## 160x20 · code beside code
+leaves  code#1 0,1 80x18 · code#9 81,1 79x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79 ┬80 ─81-81 ─101-159
+  col  80  │0-18
+
+## 160x34 · code beside code
+leaves  code#1 0,1 80x32 · code#9 81,1 79x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79 ┬80 ─81-81 ─101-159
+  col  80  │0-32
+
+## 160x50 · code beside code
+leaves  code#1 0,1 80x48 · code#9 81,1 79x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79 ┬80 ─81-81 ─101-159
+  col  80  │0-48
+
+## 200x20 · code beside code
+leaves  code#1 0,1 100x18 · code#9 101,1 99x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99 ┬100 ─101-101 ─121-199
+  col 100  │0-18
+
+## 200x34 · code beside code
+leaves  code#1 0,1 100x32 · code#9 101,1 99x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99 ┬100 ─101-101 ─121-199
+  col 100  │0-32
+
+## 200x50 · code beside code
+leaves  code#1 0,1 100x48 · code#9 101,1 99x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99 ┬100 ─101-101 ─121-199
+  col 100  │0-48
+
+## 54x20 · code over code
+leaves  code#1 0,1 54x9 · code#9 0,10 54x9
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 10  ─0-0 ─20-53
+
+## 54x34 · code over code
+leaves  code#1 0,1 54x16 · code#9 0,17 54x16
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 17  ─0-0 ─20-53
+
+## 54x50 · code over code
+leaves  code#1 0,1 54x24 · code#9 0,25 54x24
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 25  ─0-0 ─20-53
+
+## 80x20 · code over code
+leaves  code#1 0,1 80x9 · code#9 0,10 80x9
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 10  ─0-0 ─20-79
+
+## 80x34 · code over code
+leaves  code#1 0,1 80x16 · code#9 0,17 80x16
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 17  ─0-0 ─20-79
+
+## 80x50 · code over code
+leaves  code#1 0,1 80x24 · code#9 0,25 80x24
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 25  ─0-0 ─20-79
+
+## 100x20 · code over code
+leaves  code#1 0,1 100x9 · code#9 0,10 100x9
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 10  ─0-0 ─20-99
+
+## 100x34 · code over code
+leaves  code#1 0,1 100x16 · code#9 0,17 100x16
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 17  ─0-0 ─20-99
+
+## 100x50 · code over code
+leaves  code#1 0,1 100x24 · code#9 0,25 100x24
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 25  ─0-0 ─20-99
+
+## 120x20 · code over code
+leaves  code#1 0,1 120x9 · code#9 0,10 120x9
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 10  ─0-0 ─20-119
+
+## 120x34 · code over code
+leaves  code#1 0,1 120x16 · code#9 0,17 120x16
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 17  ─0-0 ─20-119
+
+## 120x50 · code over code
+leaves  code#1 0,1 120x24 · code#9 0,25 120x24
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 25  ─0-0 ─20-119
+
+## 160x20 · code over code
+leaves  code#1 0,1 160x9 · code#9 0,10 160x9
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 10  ─0-0 ─20-159
+
+## 160x34 · code over code
+leaves  code#1 0,1 160x16 · code#9 0,17 160x16
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 17  ─0-0 ─20-159
+
+## 160x50 · code over code
+leaves  code#1 0,1 160x24 · code#9 0,25 160x24
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 25  ─0-0 ─20-159
+
+## 200x20 · code over code
+leaves  code#1 0,1 200x9 · code#9 0,10 200x9
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 10  ─0-0 ─20-199
+
+## 200x34 · code over code
+leaves  code#1 0,1 200x16 · code#9 0,17 200x16
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 17  ─0-0 ─20-199
+
+## 200x50 · code over code
+leaves  code#1 0,1 200x24 · code#9 0,25 200x24
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 25  ─0-0 ─20-199
+
+## 54x20 · chat
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · chat
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · chat
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · chat
+leaves  code#1 0,1 44x18 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 16  ─47-77
+  col  44  │0-18
+
+## 80x34 · chat
+leaves  code#1 0,1 44x32 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 30  ─47-77
+  col  44  │0-32
+
+## 80x50 · chat
+leaves  code#1 0,1 44x48 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 46  ─47-77
+  col  44  │0-48
+
+## 100x20 · chat
+leaves  code#1 0,1 60x18 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 16  ─63-97
+  col  60  │0-18
+
+## 100x34 · chat
+leaves  code#1 0,1 60x32 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 30  ─63-97
+  col  60  │0-32
+
+## 100x50 · chat
+leaves  code#1 0,1 60x48 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 46  ─63-97
+  col  60  │0-48
+
+## 120x20 · chat
+leaves  code#1 0,1 72x18 · chat#5 72,0 48x19
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 16  ─75-117
+  col  72  │0-18
+
+## 120x34 · chat
+leaves  code#1 0,1 72x32 · chat#5 72,0 48x33
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 30  ─75-117
+  col  72  │0-32
+
+## 120x50 · chat
+leaves  code#1 0,1 72x48 · chat#5 72,0 48x49
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 46  ─75-117
+  col  72  │0-48
+
+## 160x20 · chat
+leaves  code#1 0,1 96x18 · chat#5 96,0 64x19
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 16  ─99-157
+  col  96  │0-18
+
+## 160x34 · chat
+leaves  code#1 0,1 96x32 · chat#5 96,0 64x33
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 30  ─99-157
+  col  96  │0-32
+
+## 160x50 · chat
+leaves  code#1 0,1 96x48 · chat#5 96,0 64x49
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 46  ─99-157
+  col  96  │0-48
+
+## 200x20 · chat
+leaves  code#1 0,1 120x18 · chat#5 120,0 80x19
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 16  ─123-197
+  col 120  │0-18
+
+## 200x34 · chat
+leaves  code#1 0,1 120x32 · chat#5 120,0 80x33
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 30  ─123-197
+  col 120  │0-32
+
+## 200x50 · chat
+leaves  code#1 0,1 120x48 · chat#5 120,0 80x49
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 46  ─123-197
+  col 120  │0-48
+
+## 54x20 · chat with the keys
+leaves  chat#5 0,0 54x19
+screen  chat_x 0 · chat_w 54 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-45 ─53-53
+  row 16  ─3-51
+
+## 54x34 · chat with the keys
+leaves  chat#5 0,0 54x33
+screen  chat_x 0 · chat_w 54 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-45 ─53-53
+  row 30  ─3-51
+
+## 54x50 · chat with the keys
+leaves  chat#5 0,0 54x49
+screen  chat_x 0 · chat_w 54 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-45 ─53-53
+  row 46  ─3-51
+
+## 80x20 · chat with the keys
+leaves  code#1 0,1 44x18 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 16  ─47-77
+  col  44  │0-18
+
+## 80x34 · chat with the keys
+leaves  code#1 0,1 44x32 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 30  ─47-77
+  col  44  │0-32
+
+## 80x50 · chat with the keys
+leaves  code#1 0,1 44x48 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 46  ─47-77
+  col  44  │0-48
+
+## 100x20 · chat with the keys
+leaves  code#1 0,1 60x18 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 16  ─63-97
+  col  60  │0-18
+
+## 100x34 · chat with the keys
+leaves  code#1 0,1 60x32 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 30  ─63-97
+  col  60  │0-32
+
+## 100x50 · chat with the keys
+leaves  code#1 0,1 60x48 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 46  ─63-97
+  col  60  │0-48
+
+## 120x20 · chat with the keys
+leaves  code#1 0,1 72x18 · chat#5 72,0 48x19
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 16  ─75-117
+  col  72  │0-18
+
+## 120x34 · chat with the keys
+leaves  code#1 0,1 72x32 · chat#5 72,0 48x33
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 30  ─75-117
+  col  72  │0-32
+
+## 120x50 · chat with the keys
+leaves  code#1 0,1 72x48 · chat#5 72,0 48x49
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 46  ─75-117
+  col  72  │0-48
+
+## 160x20 · chat with the keys
+leaves  code#1 0,1 96x18 · chat#5 96,0 64x19
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 16  ─99-157
+  col  96  │0-18
+
+## 160x34 · chat with the keys
+leaves  code#1 0,1 96x32 · chat#5 96,0 64x33
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 30  ─99-157
+  col  96  │0-32
+
+## 160x50 · chat with the keys
+leaves  code#1 0,1 96x48 · chat#5 96,0 64x49
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 46  ─99-157
+  col  96  │0-48
+
+## 200x20 · chat with the keys
+leaves  code#1 0,1 120x18 · chat#5 120,0 80x19
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 16  ─123-197
+  col 120  │0-18
+
+## 200x34 · chat with the keys
+leaves  code#1 0,1 120x32 · chat#5 120,0 80x33
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 30  ─123-197
+  col 120  │0-32
+
+## 200x50 · chat with the keys
+leaves  code#1 0,1 120x48 · chat#5 120,0 80x49
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 46  ─123-197
+  col 120  │0-48
+
+## 54x20 · chat hidden
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · chat hidden
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · chat hidden
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · chat hidden
+leaves  code#1 0,1 80x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 80x34 · chat hidden
+leaves  code#1 0,1 80x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 80x50 · chat hidden
+leaves  code#1 0,1 80x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 100x20 · chat hidden
+leaves  code#1 0,1 100x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 100x34 · chat hidden
+leaves  code#1 0,1 100x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 100x50 · chat hidden
+leaves  code#1 0,1 100x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 120x20 · chat hidden
+leaves  code#1 0,1 120x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 120x34 · chat hidden
+leaves  code#1 0,1 120x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 120x50 · chat hidden
+leaves  code#1 0,1 120x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 160x20 · chat hidden
+leaves  code#1 0,1 160x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 160x34 · chat hidden
+leaves  code#1 0,1 160x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 160x50 · chat hidden
+leaves  code#1 0,1 160x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 200x20 · chat hidden
+leaves  code#1 0,1 200x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 200x34 · chat hidden
+leaves  code#1 0,1 200x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 200x50 · chat hidden
+leaves  code#1 0,1 200x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 54x20 · side panel
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · side panel
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · side panel
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · side panel
+leaves  side#2 0,0 32x19 · code#1 32,1 48x18
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-79
+  col  31  │0-18
+
+## 80x34 · side panel
+leaves  side#2 0,0 32x33 · code#1 32,1 48x32
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-79
+  col  31  │0-32
+
+## 80x50 · side panel
+leaves  side#2 0,0 32x49 · code#1 32,1 48x48
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-79
+  col  31  │0-48
+
+## 100x20 · side panel
+leaves  side#2 0,0 32x19 · code#1 32,1 68x18
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-99
+  col  31  │0-18
+
+## 100x34 · side panel
+leaves  side#2 0,0 32x33 · code#1 32,1 68x32
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-99
+  col  31  │0-32
+
+## 100x50 · side panel
+leaves  side#2 0,0 32x49 · code#1 32,1 68x48
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-99
+  col  31  │0-48
+
+## 120x20 · side panel
+leaves  side#2 0,0 32x19 · code#1 32,1 88x18
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119
+  col  31  │0-18
+
+## 120x34 · side panel
+leaves  side#2 0,0 32x33 · code#1 32,1 88x32
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119
+  col  31  │0-32
+
+## 120x50 · side panel
+leaves  side#2 0,0 32x49 · code#1 32,1 88x48
+screen  chat_x - · chat_w 0 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119
+  col  31  │0-48
+
+## 160x20 · side panel
+leaves  side#2 0,0 44x19 · code#1 44,1 116x18
+screen  chat_x - · chat_w 0 · side_w 44 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 44
+  row  0  ─0-0 ─24-25 ─37-42 ┬43 ─44-44 ─64-159
+  col  43  │0-18
+
+## 160x34 · side panel
+leaves  side#2 0,0 44x33 · code#1 44,1 116x32
+screen  chat_x - · chat_w 0 · side_w 44 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 44
+  row  0  ─0-0 ─24-25 ─37-42 ┬43 ─44-44 ─64-159
+  col  43  │0-32
+
+## 160x50 · side panel
+leaves  side#2 0,0 44x49 · code#1 44,1 116x48
+screen  chat_x - · chat_w 0 · side_w 44 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 44
+  row  0  ─0-0 ─24-25 ─37-42 ┬43 ─44-44 ─64-159
+  col  43  │0-48
+
+## 200x20 · side panel
+leaves  side#2 0,0 44x19 · code#1 44,1 156x18
+screen  chat_x - · chat_w 0 · side_w 44 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 44
+  row  0  ─0-0 ─24-25 ─37-42 ┬43 ─44-44 ─64-199
+  col  43  │0-18
+
+## 200x34 · side panel
+leaves  side#2 0,0 44x33 · code#1 44,1 156x32
+screen  chat_x - · chat_w 0 · side_w 44 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 44
+  row  0  ─0-0 ─24-25 ─37-42 ┬43 ─44-44 ─64-199
+  col  43  │0-32
+
+## 200x50 · side panel
+leaves  side#2 0,0 44x49 · code#1 44,1 156x48
+screen  chat_x - · chat_w 0 · side_w 44 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 44
+  row  0  ─0-0 ─24-25 ─37-42 ┬43 ─44-44 ─64-199
+  col  43  │0-48
+
+## 54x20 · side panel and chat
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · side panel and chat
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · side panel and chat
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · side panel and chat
+leaves  code#1 0,1 44x18 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 16  ─47-77
+  col  44  │0-18
+
+## 80x34 · side panel and chat
+leaves  code#1 0,1 44x32 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 30  ─47-77
+  col  44  │0-32
+
+## 80x50 · side panel and chat
+leaves  code#1 0,1 44x48 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 46  ─47-77
+  col  44  │0-48
+
+## 100x20 · side panel and chat
+leaves  code#1 0,1 60x18 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 16  ─63-97
+  col  60  │0-18
+
+## 100x34 · side panel and chat
+leaves  code#1 0,1 60x32 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 30  ─63-97
+  col  60  │0-32
+
+## 100x50 · side panel and chat
+leaves  code#1 0,1 60x48 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 46  ─63-97
+  col  60  │0-48
+
+## 120x20 · side panel and chat
+leaves  side#2 0,0 32x19 · code#1 32,1 52x18 · chat#5 84,0 36x19
+screen  chat_x 84 · chat_w 36 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 16  ─87-117
+  col  31  │0-18
+  col  84  │0-18
+
+## 120x34 · side panel and chat
+leaves  side#2 0,0 32x33 · code#1 32,1 52x32 · chat#5 84,0 36x33
+screen  chat_x 84 · chat_w 36 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 30  ─87-117
+  col  31  │0-32
+  col  84  │0-32
+
+## 120x50 · side panel and chat
+leaves  side#2 0,0 32x49 · code#1 32,1 52x48 · chat#5 84,0 36x49
+screen  chat_x 84 · chat_w 36 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 46  ─87-117
+  col  31  │0-48
+  col  84  │0-48
+
+## 160x20 · side panel and chat
+leaves  side#2 0,0 32x19 · code#1 32,1 64x18 · chat#5 96,0 64x19
+screen  chat_x 96 · chat_w 64 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 16  ─99-157
+  col  31  │0-18
+  col  96  │0-18
+
+## 160x34 · side panel and chat
+leaves  side#2 0,0 32x33 · code#1 32,1 64x32 · chat#5 96,0 64x33
+screen  chat_x 96 · chat_w 64 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 30  ─99-157
+  col  31  │0-32
+  col  96  │0-32
+
+## 160x50 · side panel and chat
+leaves  side#2 0,0 32x49 · code#1 32,1 64x48 · chat#5 96,0 64x49
+screen  chat_x 96 · chat_w 64 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 46  ─99-157
+  col  31  │0-48
+  col  96  │0-48
+
+## 200x20 · side panel and chat
+leaves  side#2 0,0 32x19 · code#1 32,1 88x18 · chat#5 120,0 80x19
+screen  chat_x 120 · chat_w 80 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 16  ─123-197
+  col  31  │0-18
+  col 120  │0-18
+
+## 200x34 · side panel and chat
+leaves  side#2 0,0 32x33 · code#1 32,1 88x32 · chat#5 120,0 80x33
+screen  chat_x 120 · chat_w 80 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 30  ─123-197
+  col  31  │0-32
+  col 120  │0-32
+
+## 200x50 · side panel and chat
+leaves  side#2 0,0 32x49 · code#1 32,1 88x48 · chat#5 120,0 80x49
+screen  chat_x 120 · chat_w 80 · side_w 32 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 46  ─123-197
+  col  31  │0-48
+  col 120  │0-48
+
+## 54x20 · review
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · review
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · review
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · review
+leaves  rail#3 0,0 30x19 · code#1 30,1 50x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-79
+  col   2  │5-5
+  col  29  │0-18
+
+## 80x34 · review
+leaves  rail#3 0,0 30x33 · code#1 30,1 50x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-79
+  col   2  │5-5
+  col  29  │0-32
+
+## 80x50 · review
+leaves  rail#3 0,0 30x49 · code#1 30,1 50x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-79
+  col   2  │5-5
+  col  29  │0-48
+
+## 100x20 · review
+leaves  rail#3 0,0 30x19 · code#1 30,1 70x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-99
+  col   2  │5-5
+  col  29  │0-18
+
+## 100x34 · review
+leaves  rail#3 0,0 30x33 · code#1 30,1 70x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-99
+  col   2  │5-5
+  col  29  │0-32
+
+## 100x50 · review
+leaves  rail#3 0,0 30x49 · code#1 30,1 70x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-99
+  col   2  │5-5
+  col  29  │0-48
+
+## 120x20 · review
+leaves  rail#3 0,0 30x19 · code#1 30,1 90x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-119
+  col   2  │5-5
+  col  29  │0-18
+
+## 120x34 · review
+leaves  rail#3 0,0 30x33 · code#1 30,1 90x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-119
+  col   2  │5-5
+  col  29  │0-32
+
+## 120x50 · review
+leaves  rail#3 0,0 30x49 · code#1 30,1 90x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-119
+  col   2  │5-5
+  col  29  │0-48
+
+## 160x20 · review
+leaves  rail#3 0,0 30x19 · code#1 30,1 130x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-159
+  col   2  │5-5
+  col  29  │0-18
+
+## 160x34 · review
+leaves  rail#3 0,0 30x33 · code#1 30,1 130x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-159
+  col   2  │5-5
+  col  29  │0-32
+
+## 160x50 · review
+leaves  rail#3 0,0 30x49 · code#1 30,1 130x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-159
+  col   2  │5-5
+  col  29  │0-48
+
+## 200x20 · review
+leaves  rail#3 0,0 30x19 · code#1 30,1 170x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-199
+  col   2  │5-5
+  col  29  │0-18
+
+## 200x34 · review
+leaves  rail#3 0,0 30x33 · code#1 30,1 170x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-199
+  col   2  │5-5
+  col  29  │0-32
+
+## 200x50 · review
+leaves  rail#3 0,0 30x49 · code#1 30,1 170x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-199
+  col   2  │5-5
+  col  29  │0-48
+
+## 54x20 · review and chat
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · review and chat
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · review and chat
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · review and chat
+leaves  code#1 0,1 44x18 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 16  ─47-77
+  col  44  │0-18
+
+## 80x34 · review and chat
+leaves  code#1 0,1 44x32 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 30  ─47-77
+  col  44  │0-32
+
+## 80x50 · review and chat
+leaves  code#1 0,1 44x48 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 46  ─47-77
+  col  44  │0-48
+
+## 100x20 · review and chat
+leaves  code#1 0,1 60x18 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 16  ─63-97
+  col  60  │0-18
+
+## 100x34 · review and chat
+leaves  code#1 0,1 60x32 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 30  ─63-97
+  col  60  │0-32
+
+## 100x50 · review and chat
+leaves  code#1 0,1 60x48 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 46  ─63-97
+  col  60  │0-48
+
+## 120x20 · review and chat
+leaves  rail#3 0,0 30x19 · code#1 30,1 54x18 · chat#5 84,0 36x19
+screen  chat_x 84 · chat_w 36 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 16  ─87-117
+  col   2  │5-5
+  col  29  │0-18
+  col  84  │0-18
+
+## 120x34 · review and chat
+leaves  rail#3 0,0 30x33 · code#1 30,1 54x32 · chat#5 84,0 36x33
+screen  chat_x 84 · chat_w 36 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 30  ─87-117
+  col   2  │5-5
+  col  29  │0-32
+  col  84  │0-32
+
+## 120x50 · review and chat
+leaves  rail#3 0,0 30x49 · code#1 30,1 54x48 · chat#5 84,0 36x49
+screen  chat_x 84 · chat_w 36 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 46  ─87-117
+  col   2  │5-5
+  col  29  │0-48
+  col  84  │0-48
+
+## 160x20 · review and chat
+leaves  rail#3 0,0 30x19 · code#1 30,1 94x18 · chat#5 124,0 36x19
+screen  chat_x 124 · chat_w 36 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-123 ┬124 ─125-125 ─134-151 ─159-159
+  row 16  ─127-157
+  col   2  │5-5
+  col  29  │0-18
+  col 124  │0-18
+
+## 160x34 · review and chat
+leaves  rail#3 0,0 30x33 · code#1 30,1 94x32 · chat#5 124,0 36x33
+screen  chat_x 124 · chat_w 36 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-123 ┬124 ─125-125 ─134-151 ─159-159
+  row 30  ─127-157
+  col   2  │5-5
+  col  29  │0-32
+  col 124  │0-32
+
+## 160x50 · review and chat
+leaves  rail#3 0,0 30x49 · code#1 30,1 94x48 · chat#5 124,0 36x49
+screen  chat_x 124 · chat_w 36 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-123 ┬124 ─125-125 ─134-151 ─159-159
+  row 46  ─127-157
+  col   2  │5-5
+  col  29  │0-48
+  col 124  │0-48
+
+## 200x20 · review and chat
+leaves  rail#3 0,0 30x19 · code#1 30,1 100x18 · chat#5 130,0 70x19
+screen  chat_x 130 · chat_w 70 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-129 ┬130 ─131-131 ─140-191 ─199-199
+  row 16  ─133-197
+  col   2  │5-5
+  col  29  │0-18
+  col 130  │0-18
+
+## 200x34 · review and chat
+leaves  rail#3 0,0 30x33 · code#1 30,1 100x32 · chat#5 130,0 70x33
+screen  chat_x 130 · chat_w 70 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-129 ┬130 ─131-131 ─140-191 ─199-199
+  row 30  ─133-197
+  col   2  │5-5
+  col  29  │0-32
+  col 130  │0-32
+
+## 200x50 · review and chat
+leaves  rail#3 0,0 30x49 · code#1 30,1 100x48 · chat#5 130,0 70x49
+screen  chat_x 130 · chat_w 70 · side_w 0 · rail_w 30 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 30
+  row  0  ─0-0 ─9-10 ─24-28 ┬29 ─30-30 ─50-129 ┬130 ─131-131 ─140-191 ─199-199
+  row 46  ─133-197
+  col   2  │5-5
+  col  29  │0-48
+  col 130  │0-48
+
+## 54x20 · slot: tests
+leaves  code#1 0,1 54x11 · list:tests#6 0,13 54x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 12  ─0-0 ─29-30 ─45-53
+
+## 54x34 · slot: tests
+leaves  code#1 0,1 54x23 · list:tests#6 0,25 54x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 24  ─0-0 ─29-30 ─45-53
+
+## 54x50 · slot: tests
+leaves  code#1 0,1 54x34 · list:tests#6 0,36 54x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 35  ─0-0 ─29-30 ─45-53
+
+## 80x20 · slot: tests
+leaves  code#1 0,1 80x11 · list:tests#6 0,13 36x6 · detail:tests#7 37,13 43x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 12  ─0-0 ─20-21 ─28-35 ┬36 ─37-37 ─46-64 ─79-79
+  col  36  │12-18
+
+## 80x34 · slot: tests
+leaves  code#1 0,1 80x23 · list:tests#6 0,25 36x8 · detail:tests#7 37,25 43x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 24  ─0-0 ─20-21 ─28-35 ┬36 ─37-37 ─46-64 ─79-79
+  col  36  │24-32
+
+## 80x50 · slot: tests
+leaves  code#1 0,1 80x34 · list:tests#6 0,36 36x13 · detail:tests#7 37,36 43x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 35  ─0-0 ─20-21 ─28-35 ┬36 ─37-37 ─46-64 ─79-79
+  col  36  │35-48
+
+## 100x20 · slot: tests
+leaves  code#1 0,1 100x11 · list:tests#6 0,13 45x6 · detail:tests#7 46,13 54x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 12  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-67 ─99-99
+  col  45  │12-18
+
+## 100x34 · slot: tests
+leaves  code#1 0,1 100x23 · list:tests#6 0,25 45x8 · detail:tests#7 46,25 54x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 24  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-67 ─99-99
+  col  45  │24-32
+
+## 100x50 · slot: tests
+leaves  code#1 0,1 100x34 · list:tests#6 0,36 45x13 · detail:tests#7 46,36 54x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 35  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-67 ─99-99
+  col  45  │35-48
+
+## 120x20 · slot: tests
+leaves  code#1 0,1 120x11 · list:tests#6 0,13 45x6 · detail:tests#7 46,13 74x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 12  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-69 ─119-119
+  col  45  │12-18
+
+## 120x34 · slot: tests
+leaves  code#1 0,1 120x23 · list:tests#6 0,25 45x8 · detail:tests#7 46,25 74x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 24  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-69 ─119-119
+  col  45  │24-32
+
+## 120x50 · slot: tests
+leaves  code#1 0,1 120x34 · list:tests#6 0,36 45x13 · detail:tests#7 46,36 74x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 35  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-69 ─119-119
+  col  45  │35-48
+
+## 160x20 · slot: tests
+leaves  code#1 0,1 160x11 · list:tests#6 0,13 45x6 · detail:tests#7 46,13 114x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 12  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-92 ─159-159
+  col  45  │12-18
+
+## 160x34 · slot: tests
+leaves  code#1 0,1 160x23 · list:tests#6 0,25 45x8 · detail:tests#7 46,25 114x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 24  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-92 ─159-159
+  col  45  │24-32
+
+## 160x50 · slot: tests
+leaves  code#1 0,1 160x34 · list:tests#6 0,36 45x13 · detail:tests#7 46,36 114x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 35  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-92 ─159-159
+  col  45  │35-48
+
+## 200x20 · slot: tests
+leaves  code#1 0,1 200x11 · list:tests#6 0,13 45x6 · detail:tests#7 46,13 154x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 12  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-132 ─199-199
+  col  45  │12-18
+
+## 200x34 · slot: tests
+leaves  code#1 0,1 200x23 · list:tests#6 0,25 45x8 · detail:tests#7 46,25 154x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 24  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-132 ─199-199
+  col  45  │24-32
+
+## 200x50 · slot: tests
+leaves  code#1 0,1 200x34 · list:tests#6 0,36 45x13 · detail:tests#7 46,36 154x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 35  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-132 ─199-199
+  col  45  │35-48
+
+## 54x20 · slot: task
+leaves  code#1 0,1 54x15 · slot#4 0,16 54x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 16  ─0-0 ─10-11 ─16-21 ─53-53
+
+## 54x34 · slot: task
+leaves  code#1 0,1 54x29 · slot#4 0,30 54x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 30  ─0-0 ─10-11 ─16-21 ─53-53
+
+## 54x50 · slot: task
+leaves  code#1 0,1 54x45 · slot#4 0,46 54x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 46  ─0-0 ─10-11 ─16-21 ─53-53
+
+## 80x20 · slot: task
+leaves  code#1 0,1 80x15 · slot#4 0,16 80x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 16  ─0-0 ─10-11 ─16-30 ─79-79
+
+## 80x34 · slot: task
+leaves  code#1 0,1 80x29 · slot#4 0,30 80x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 30  ─0-0 ─10-11 ─16-30 ─79-79
+
+## 80x50 · slot: task
+leaves  code#1 0,1 80x45 · slot#4 0,46 80x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+  row 46  ─0-0 ─10-11 ─16-30 ─79-79
+
+## 100x20 · slot: task
+leaves  code#1 0,1 100x15 · slot#4 0,16 100x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 16  ─0-0 ─10-11 ─16-50 ─99-99
+
+## 100x34 · slot: task
+leaves  code#1 0,1 100x29 · slot#4 0,30 100x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 30  ─0-0 ─10-11 ─16-50 ─99-99
+
+## 100x50 · slot: task
+leaves  code#1 0,1 100x45 · slot#4 0,46 100x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+  row 46  ─0-0 ─10-11 ─16-50 ─99-99
+
+## 120x20 · slot: task
+leaves  code#1 0,1 120x15 · slot#4 0,16 120x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 16  ─0-0 ─10-11 ─16-70 ─119-119
+
+## 120x34 · slot: task
+leaves  code#1 0,1 120x29 · slot#4 0,30 120x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 30  ─0-0 ─10-11 ─16-70 ─119-119
+
+## 120x50 · slot: task
+leaves  code#1 0,1 120x45 · slot#4 0,46 120x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+  row 46  ─0-0 ─10-11 ─16-70 ─119-119
+
+## 160x20 · slot: task
+leaves  code#1 0,1 160x15 · slot#4 0,16 160x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 16  ─0-0 ─10-11 ─16-110 ─159-159
+
+## 160x34 · slot: task
+leaves  code#1 0,1 160x29 · slot#4 0,30 160x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 30  ─0-0 ─10-11 ─16-110 ─159-159
+
+## 160x50 · slot: task
+leaves  code#1 0,1 160x45 · slot#4 0,46 160x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+  row 46  ─0-0 ─10-11 ─16-110 ─159-159
+
+## 200x20 · slot: task
+leaves  code#1 0,1 200x15 · slot#4 0,16 200x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 16  ─0-0 ─10-11 ─16-150 ─199-199
+
+## 200x34 · slot: task
+leaves  code#1 0,1 200x29 · slot#4 0,30 200x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 30  ─0-0 ─10-11 ─16-150 ─199-199
+
+## 200x50 · slot: task
+leaves  code#1 0,1 200x45 · slot#4 0,46 200x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+  row 46  ─0-0 ─10-11 ─16-150 ─199-199
+
+## 54x20 · slot: tests, side panel and chat
+leaves  code#1 0,1 54x11 · list:tests#6 0,13 54x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 12  ─0-0 ─29-30 ─45-53
+
+## 54x34 · slot: tests, side panel and chat
+leaves  code#1 0,1 54x23 · list:tests#6 0,25 54x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 24  ─0-0 ─29-30 ─45-53
+
+## 54x50 · slot: tests, side panel and chat
+leaves  code#1 0,1 54x34 · list:tests#6 0,36 54x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 35  ─0-0 ─29-30 ─45-53
+
+## 80x20 · slot: tests, side panel and chat
+leaves  code#1 0,1 44x11 · list:tests#6 0,13 44x6 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 12  ─0-0 ─29-30 ─37-43 ┤44
+  row 16  ─47-77
+  col  44  │0-18
+
+## 80x34 · slot: tests, side panel and chat
+leaves  code#1 0,1 44x23 · list:tests#6 0,25 44x8 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 24  ─0-0 ─29-30 ─37-43 ┤44
+  row 30  ─47-77
+  col  44  │0-32
+
+## 80x50 · slot: tests, side panel and chat
+leaves  code#1 0,1 44x34 · list:tests#6 0,36 44x13 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 35  ─0-0 ─29-30 ─37-43 ┤44
+  row 46  ─47-77
+  col  44  │0-48
+
+## 100x20 · slot: tests, side panel and chat
+leaves  code#1 0,1 60x11 · list:tests#6 0,13 60x6 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 12  ─0-0 ─29-30 ─45-59 ┤60
+  row 16  ─63-97
+  col  60  │0-18
+
+## 100x34 · slot: tests, side panel and chat
+leaves  code#1 0,1 60x23 · list:tests#6 0,25 60x8 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 24  ─0-0 ─29-30 ─45-59 ┤60
+  row 30  ─63-97
+  col  60  │0-32
+
+## 100x50 · slot: tests, side panel and chat
+leaves  code#1 0,1 60x34 · list:tests#6 0,36 60x13 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 35  ─0-0 ─29-30 ─45-59 ┤60
+  row 46  ─63-97
+  col  60  │0-48
+
+## 120x20 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x19 · code#1 32,1 52x11 · list:tests#6 32,13 52x6 · chat#5 84,0 36x19
+screen  chat_x 84 · chat_w 36 · side_w 32 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 12  ├31 ─32-32 ─61-62 ─77-83 ┤84
+  row 16  ─87-117
+  col  31  │0-18
+  col  84  │0-18
+
+## 120x34 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x33 · code#1 32,1 52x23 · list:tests#6 32,25 52x8 · chat#5 84,0 36x33
+screen  chat_x 84 · chat_w 36 · side_w 32 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 24  ├31 ─32-32 ─61-62 ─77-83 ┤84
+  row 30  ─87-117
+  col  31  │0-32
+  col  84  │0-32
+
+## 120x50 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x49 · code#1 32,1 52x34 · list:tests#6 32,36 52x13 · chat#5 84,0 36x49
+screen  chat_x 84 · chat_w 36 · side_w 32 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-83 ┬84 ─85-85 ─94-111 ─119-119
+  row 35  ├31 ─32-32 ─61-62 ─77-83 ┤84
+  row 46  ─87-117
+  col  31  │0-48
+  col  84  │0-48
+
+## 160x20 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x19 · code#1 32,1 64x11 · list:tests#6 32,13 64x6 · chat#5 96,0 64x19
+screen  chat_x 96 · chat_w 64 · side_w 32 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 12  ├31 ─32-32 ─61-62 ─77-80 ─95-95 ┤96
+  row 16  ─99-157
+  col  31  │0-18
+  col  96  │0-18
+
+## 160x34 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x33 · code#1 32,1 64x23 · list:tests#6 32,25 64x8 · chat#5 96,0 64x33
+screen  chat_x 96 · chat_w 64 · side_w 32 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 24  ├31 ─32-32 ─61-62 ─77-80 ─95-95 ┤96
+  row 30  ─99-157
+  col  31  │0-32
+  col  96  │0-32
+
+## 160x50 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x49 · code#1 32,1 64x34 · list:tests#6 32,36 64x13 · chat#5 96,0 64x49
+screen  chat_x 96 · chat_w 64 · side_w 32 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 35  ├31 ─32-32 ─61-62 ─77-80 ─95-95 ┤96
+  row 46  ─99-157
+  col  31  │0-48
+  col  96  │0-48
+
+## 200x20 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x19 · code#1 32,1 88x11 · list:tests#6 32,13 39x6 · detail:tests#7 72,13 48x6 · chat#5 120,0 80x19
+screen  chat_x 120 · chat_w 80 · side_w 32 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 12  ├31 ─32-32 ─52-53 ─68-70 ┬71 ─72-72 ─81-87 ─119-119 ┤120
+  row 16  ─123-197
+  col  31  │0-18
+  col  71  │12-18
+  col 120  │0-18
+
+## 200x34 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x33 · code#1 32,1 88x23 · list:tests#6 32,25 39x8 · detail:tests#7 72,25 48x8 · chat#5 120,0 80x33
+screen  chat_x 120 · chat_w 80 · side_w 32 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 24  ├31 ─32-32 ─52-53 ─68-70 ┬71 ─72-72 ─81-87 ─119-119 ┤120
+  row 30  ─123-197
+  col  31  │0-32
+  col  71  │24-32
+  col 120  │0-32
+
+## 200x50 · slot: tests, side panel and chat
+leaves  side#2 0,0 32x49 · code#1 32,1 88x34 · list:tests#6 32,36 39x13 · detail:tests#7 72,36 48x13 · chat#5 120,0 80x49
+screen  chat_x 120 · chat_w 80 · side_w 32 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 32
+  row  0  ─0-0 ─24-30 ┬31 ─32-32 ─52-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 35  ├31 ─32-32 ─52-53 ─68-70 ┬71 ─72-72 ─81-87 ─119-119 ┤120
+  row 46  ─123-197
+  col  31  │0-48
+  col  71  │35-48
+  col 120  │0-48
+
+## 54x20 · tests docked left, chat
+leaves  code#1 0,1 54x11 · list:tests#6 0,13 54x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 12  ─0-0 ─39-40 ─47-53
+
+## 54x34 · tests docked left, chat
+leaves  code#1 0,1 54x23 · list:tests#6 0,25 54x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 24  ─0-0 ─39-40 ─47-53
+
+## 54x50 · tests docked left, chat
+leaves  code#1 0,1 54x34 · list:tests#6 0,36 54x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 35  ─0-0 ─39-40 ─47-53
+
+## 80x20 · tests docked left, chat
+leaves  code#1 0,1 44x11 · list:tests#6 0,13 44x6 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 12  ─0-0 ─39-43 ┤44
+  row 16  ─47-77
+  col  44  │0-18
+
+## 80x34 · tests docked left, chat
+leaves  code#1 0,1 44x23 · list:tests#6 0,25 44x8 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 24  ─0-0 ─39-43 ┤44
+  row 30  ─47-77
+  col  44  │0-32
+
+## 80x50 · tests docked left, chat
+leaves  code#1 0,1 44x34 · list:tests#6 0,36 44x13 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 35  ─0-0 ─39-43 ┤44
+  row 46  ─47-77
+  col  44  │0-48
+
+## 100x20 · tests docked left, chat
+leaves  code#1 0,1 60x11 · list:tests#6 0,13 60x6 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 12  ─0-0 ─39-40 ─55-59 ┤60
+  row 16  ─63-97
+  col  60  │0-18
+
+## 100x34 · tests docked left, chat
+leaves  code#1 0,1 60x23 · list:tests#6 0,25 60x8 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 24  ─0-0 ─39-40 ─55-59 ┤60
+  row 30  ─63-97
+  col  60  │0-32
+
+## 100x50 · tests docked left, chat
+leaves  code#1 0,1 60x34 · list:tests#6 0,36 60x13 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 35  ─0-0 ─39-40 ─55-59 ┤60
+  row 46  ─63-97
+  col  60  │0-48
+
+## 120x20 · tests docked left, chat
+leaves  code#1 0,1 72x11 · list:tests#6 0,13 72x6 · chat#5 72,0 48x19
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 12  ─0-0 ─39-40 ─55-71 ┤72
+  row 16  ─75-117
+  col  72  │0-18
+
+## 120x34 · tests docked left, chat
+leaves  code#1 0,1 72x23 · list:tests#6 0,25 72x8 · chat#5 72,0 48x33
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 24  ─0-0 ─39-40 ─55-71 ┤72
+  row 30  ─75-117
+  col  72  │0-32
+
+## 120x50 · tests docked left, chat
+leaves  code#1 0,1 72x34 · list:tests#6 0,36 72x13 · chat#5 72,0 48x49
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 35  ─0-0 ─39-40 ─55-71 ┤72
+  row 46  ─75-117
+  col  72  │0-48
+
+## 160x20 · tests docked left, chat
+leaves  list:tests#6 0,1 35x18 · code#1 36,1 60x15 · slot#4 36,16 60x3 · chat#5 96,0 64x19
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 36
+  row  0  ─0-0 ─29-34 ┬35 ─36-36 ─56-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 16  ├35 ─36-36 ─46-47 ─52-60 ─95-95 ┤96 ─99-157
+  col  35  │0-18
+  col  96  │0-18
+
+## 160x34 · tests docked left, chat
+leaves  list:tests#6 0,1 35x32 · code#1 36,1 60x29 · slot#4 36,30 60x3 · chat#5 96,0 64x33
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 36
+  row  0  ─0-0 ─29-34 ┬35 ─36-36 ─56-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 30  ├35 ─36-36 ─46-47 ─52-60 ─95-95 ┤96 ─99-157
+  col  35  │0-32
+  col  96  │0-32
+
+## 160x50 · tests docked left, chat
+leaves  list:tests#6 0,1 35x48 · code#1 36,1 60x45 · slot#4 36,46 60x3 · chat#5 96,0 64x49
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 36
+  row  0  ─0-0 ─29-34 ┬35 ─36-36 ─56-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 46  ├35 ─36-36 ─46-47 ─52-60 ─95-95 ┤96 ─99-157
+  col  35  │0-48
+  col  96  │0-48
+
+## 200x20 · tests docked left, chat
+leaves  list:tests#6 0,1 59x2 · detail:tests#7 0,4 59x15 · code#1 60,1 60x15 · slot#4 60,16 60x3 · chat#5 120,0 80x19
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 60
+  row  0  ─0-0 ─20-21 ─36-41 ─58-58 ┬59 ─60-60 ─80-119 ┬120 ─121-121 ─130-191 ─199-199
+  row  3  ─0-0 ─9-58 ┤59
+  row 16  ├59 ─60-60 ─70-71 ─76-84 ─119-119 ┤120 ─123-197
+  col  59  │0-18
+  col 120  │0-18
+
+## 200x34 · tests docked left, chat
+leaves  list:tests#6 0,1 59x2 · detail:tests#7 0,4 59x29 · code#1 60,1 60x29 · slot#4 60,30 60x3 · chat#5 120,0 80x33
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 60
+  row  0  ─0-0 ─20-21 ─36-41 ─58-58 ┬59 ─60-60 ─80-119 ┬120 ─121-121 ─130-191 ─199-199
+  row  3  ─0-0 ─9-58 ┤59
+  row 30  ├59 ─60-60 ─70-71 ─76-84 ─119-119 ┤120 ─123-197
+  col  59  │0-32
+  col 120  │0-32
+
+## 200x50 · tests docked left, chat
+leaves  list:tests#6 0,1 59x2 · detail:tests#7 0,4 59x45 · code#1 60,1 60x45 · slot#4 60,46 60x3 · chat#5 120,0 80x49
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 60
+  row  0  ─0-0 ─20-21 ─36-41 ─58-58 ┬59 ─60-60 ─80-119 ┬120 ─121-121 ─130-191 ─199-199
+  row  3  ─0-0 ─9-58 ┤59
+  row 46  ├59 ─60-60 ─70-71 ─76-84 ─119-119 ┤120 ─123-197
+  col  59  │0-48
+  col 120  │0-48
+
+## 54x20 · tests docked right, chat
+leaves  code#1 0,1 54x11 · list:tests#6 0,13 54x6
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 12  ─0-0 ─39-40 ─47-53
+
+## 54x34 · tests docked right, chat
+leaves  code#1 0,1 54x23 · list:tests#6 0,25 54x8
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 24  ─0-0 ─39-40 ─47-53
+
+## 54x50 · tests docked right, chat
+leaves  code#1 0,1 54x34 · list:tests#6 0,36 54x13
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+  row 35  ─0-0 ─39-40 ─47-53
+
+## 80x20 · tests docked right, chat
+leaves  code#1 0,1 44x11 · list:tests#6 0,13 44x6 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 12  ─0-0 ─39-43 ┤44
+  row 16  ─47-77
+  col  44  │0-18
+
+## 80x34 · tests docked right, chat
+leaves  code#1 0,1 44x23 · list:tests#6 0,25 44x8 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 24  ─0-0 ─39-43 ┤44
+  row 30  ─47-77
+  col  44  │0-32
+
+## 80x50 · tests docked right, chat
+leaves  code#1 0,1 44x34 · list:tests#6 0,36 44x13 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 35  ─0-0 ─39-43 ┤44
+  row 46  ─47-77
+  col  44  │0-48
+
+## 100x20 · tests docked right, chat
+leaves  code#1 0,1 60x11 · list:tests#6 0,13 60x6 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 12  ─0-0 ─39-40 ─55-59 ┤60
+  row 16  ─63-97
+  col  60  │0-18
+
+## 100x34 · tests docked right, chat
+leaves  code#1 0,1 60x23 · list:tests#6 0,25 60x8 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 24  ─0-0 ─39-40 ─55-59 ┤60
+  row 30  ─63-97
+  col  60  │0-32
+
+## 100x50 · tests docked right, chat
+leaves  code#1 0,1 60x34 · list:tests#6 0,36 60x13 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 35  ─0-0 ─39-40 ─55-59 ┤60
+  row 46  ─63-97
+  col  60  │0-48
+
+## 120x20 · tests docked right, chat
+leaves  code#1 0,1 72x11 · list:tests#6 0,13 72x6 · chat#5 72,0 48x19
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 7 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 12  ─0-0 ─39-40 ─55-71 ┤72
+  row 16  ─75-117
+  col  72  │0-18
+
+## 120x34 · tests docked right, chat
+leaves  code#1 0,1 72x23 · list:tests#6 0,25 72x8 · chat#5 72,0 48x33
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 9 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 24  ─0-0 ─39-40 ─55-71 ┤72
+  row 30  ─75-117
+  col  72  │0-32
+
+## 120x50 · tests docked right, chat
+leaves  code#1 0,1 72x34 · list:tests#6 0,36 72x13 · chat#5 72,0 48x49
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 14 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 35  ─0-0 ─39-40 ─55-71 ┤72
+  row 46  ─75-117
+  col  72  │0-48
+
+## 160x20 · tests docked right, chat
+leaves  code#1 0,1 60x15 · slot#4 0,16 60x3 · list:tests#6 61,1 35x18 · chat#5 96,0 64x19
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─90-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 16  ─0-0 ─10-11 ─16-24 ─59-59 ┤60 ─99-157
+  col  60  │0-2 │4-18
+  col  96  │0-18
+
+## 160x34 · tests docked right, chat
+leaves  code#1 0,1 60x29 · slot#4 0,30 60x3 · list:tests#6 61,1 35x32 · chat#5 96,0 64x33
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─90-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 30  ─0-0 ─10-11 ─16-24 ─59-59 ┤60 ─99-157
+  col  60  │0-2 │4-32
+  col  96  │0-32
+
+## 160x50 · tests docked right, chat
+leaves  code#1 0,1 60x45 · slot#4 0,46 60x3 · list:tests#6 61,1 35x48 · chat#5 96,0 64x49
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─90-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 46  ─0-0 ─10-11 ─16-24 ─59-59 ┤60 ─99-157
+  col  60  │0-2 │4-48
+  col  96  │0-48
+
+## 200x20 · tests docked right, chat
+leaves  code#1 0,1 60x15 · slot#4 0,16 60x3 · list:tests#6 61,1 59x2 · detail:tests#7 61,4 59x15 · chat#5 120,0 80x19
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─81-82 ─97-102 ─119-119 ┬120 ─121-121 ─130-191 ─199-199
+  row  3  ├60 ─61-61 ─118-119
+  row 16  ─0-0 ─10-11 ─16-24 ─59-59 ┤60 ─123-197
+  col  60  │0-18
+  col 120  │0-18
+
+## 200x34 · tests docked right, chat
+leaves  code#1 0,1 60x29 · slot#4 0,30 60x3 · list:tests#6 61,1 59x2 · detail:tests#7 61,4 59x29 · chat#5 120,0 80x33
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─81-82 ─97-102 ─119-119 ┬120 ─121-121 ─130-191 ─199-199
+  row  3  ├60 ─61-61 ─70-70 ─119-119
+  row 30  ─0-0 ─10-11 ─16-24 ─59-59 ┤60 ─123-197
+  col  60  │0-32
+  col 120  │0-32
+
+## 200x50 · tests docked right, chat
+leaves  code#1 0,1 60x45 · slot#4 0,46 60x3 · list:tests#6 61,1 59x2 · detail:tests#7 61,4 59x45 · chat#5 120,0 80x49
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-59 ┬60 ─61-61 ─81-82 ─97-102 ─119-119 ┬120 ─121-121 ─130-191 ─199-199
+  row  3  ├60 ─61-61 ─70-70 ─119-119
+  row 46  ─0-0 ─10-11 ─16-24 ─59-59 ┤60 ─123-197
+  col  60  │0-48
+  col 120  │0-48
+
+## 54x20 · tests docked over the code, chat
+leaves  list:tests#6 0,1 54x5 · code#1 0,7 54x9 · slot#4 0,16 54x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 12 · text_top 7 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-53
+  row  6  ─0-0 ─20-53
+  row 16  ─0-0 ─10-11 ─16-35 ─53-53
+
+## 54x34 · tests docked over the code, chat
+leaves  list:tests#6 0,1 54x9 · code#1 0,11 54x19 · slot#4 0,30 54x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 22 · text_top 11 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-53
+  row 10  ─0-0 ─20-53
+  row 30  ─0-0 ─10-11 ─16-35 ─53-53
+
+## 54x50 · tests docked over the code, chat
+leaves  list:tests#6 0,1 54x13 · code#1 0,15 54x31 · slot#4 0,46 54x3
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 34 · text_top 15 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-53
+  row 14  ─0-0 ─20-53
+  row 46  ─0-0 ─10-11 ─16-35 ─53-53
+
+## 80x20 · tests docked over the code, chat
+leaves  list:tests#6 0,1 44x5 · code#1 0,7 44x9 · slot#4 0,16 44x3 · chat#5 44,0 36x19
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 12 · text_top 7 · slot_x 0
+  row  0  ─0-0 ─29-30 ─37-43 ┬44 ─45-45 ─54-71 ─79-79
+  row  6  ─0-0 ─20-43 ┤44
+  row 16  ─0-0 ─10-11 ─16-25 ─43-43 ─47-77
+  col  44  │0-18
+
+## 80x34 · tests docked over the code, chat
+leaves  list:tests#6 0,1 44x9 · code#1 0,11 44x19 · slot#4 0,30 44x3 · chat#5 44,0 36x33
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 22 · text_top 11 · slot_x 0
+  row  0  ─0-0 ─29-30 ─37-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 10  ─0-0 ─20-43 ┤44
+  row 30  ─0-0 ─10-11 ─16-25 ─43-43 ─47-77
+  col  44  │0-32
+
+## 80x50 · tests docked over the code, chat
+leaves  list:tests#6 0,1 44x13 · code#1 0,15 44x31 · slot#4 0,46 44x3 · chat#5 44,0 36x49
+screen  chat_x 44 · chat_w 36 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 34 · text_top 15 · slot_x 0
+  row  0  ─0-0 ─29-30 ─37-43 ┬44 ─45-45 ─54-71 ─79-79
+  row 14  ─0-0 ─20-43 ┤44
+  row 46  ─0-0 ─10-11 ─16-25 ─43-43 ─47-77
+  col  44  │0-48
+
+## 100x20 · tests docked over the code, chat
+leaves  list:tests#6 0,1 60x5 · code#1 0,7 60x9 · slot#4 0,16 60x3 · chat#5 60,0 40x19
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 12 · text_top 7 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-59 ┬60 ─61-61 ─70-91 ─99-99
+  row  6  ─0-0 ─20-59 ┤60
+  row 16  ─0-0 ─10-11 ─16-24 ─59-59 ─63-97
+  col  60  │0-18
+
+## 100x34 · tests docked over the code, chat
+leaves  list:tests#6 0,1 60x9 · code#1 0,11 60x19 · slot#4 0,30 60x3 · chat#5 60,0 40x33
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 22 · text_top 11 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 10  ─0-0 ─20-59 ┤60
+  row 30  ─0-0 ─10-11 ─16-24 ─59-59 ─63-97
+  col  60  │0-32
+
+## 100x50 · tests docked over the code, chat
+leaves  list:tests#6 0,1 60x13 · code#1 0,15 60x31 · slot#4 0,46 60x3 · chat#5 60,0 40x49
+screen  chat_x 60 · chat_w 40 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 34 · text_top 15 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-59 ┬60 ─61-61 ─70-91 ─99-99
+  row 14  ─0-0 ─20-59 ┤60
+  row 46  ─0-0 ─10-11 ─16-24 ─59-59 ─63-97
+  col  60  │0-48
+
+## 120x20 · tests docked over the code, chat
+leaves  list:tests#6 0,1 72x5 · code#1 0,7 72x9 · slot#4 0,16 72x3 · chat#5 72,0 48x19
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 12 · text_top 7 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-54 ─71-71 ┬72 ─73-73 ─82-111 ─119-119
+  row  6  ─0-0 ─20-71 ┤72
+  row 16  ─0-0 ─10-11 ─16-36 ─71-71 ─75-117
+  col  72  │0-18
+
+## 120x34 · tests docked over the code, chat
+leaves  list:tests#6 0,1 72x9 · code#1 0,11 72x19 · slot#4 0,30 72x3 · chat#5 72,0 48x33
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 22 · text_top 11 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-54 ─71-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 10  ─0-0 ─20-71 ┤72
+  row 30  ─0-0 ─10-11 ─16-36 ─71-71 ─75-117
+  col  72  │0-32
+
+## 120x50 · tests docked over the code, chat
+leaves  list:tests#6 0,1 72x13 · code#1 0,15 72x31 · slot#4 0,46 72x3 · chat#5 72,0 48x49
+screen  chat_x 72 · chat_w 48 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 34 · text_top 15 · slot_x 0
+  row  0  ─0-0 ─29-30 ─45-54 ─71-71 ┬72 ─73-73 ─82-111 ─119-119
+  row 14  ─0-0 ─20-71 ┤72
+  row 46  ─0-0 ─10-11 ─16-36 ─71-71 ─75-117
+  col  72  │0-48
+
+## 160x20 · tests docked over the code, chat
+leaves  list:tests#6 0,1 43x5 · detail:tests#7 44,1 52x5 · code#1 0,7 96x9 · slot#4 0,16 96x3 · chat#5 96,0 64x19
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 12 · text_top 7 · slot_x 0
+  row  0  ─0-0 ─20-21 ─36-42 ┬43 ─44-44 ─53-56 ─95-95 ┬96 ─97-97 ─106-151 ─159-159
+  row  6  ─0-0 ─20-95 ┤96
+  row 16  ─0-0 ─10-11 ─16-60 ─95-95 ─99-157
+  col  43  │0-5
+  col  96  │0-18
+
+## 160x34 · tests docked over the code, chat
+leaves  list:tests#6 0,1 43x9 · detail:tests#7 44,1 52x9 · code#1 0,11 96x19 · slot#4 0,30 96x3 · chat#5 96,0 64x33
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 22 · text_top 11 · slot_x 0
+  row  0  ─0-0 ─20-21 ─36-42 ┬43 ─44-44 ─53-56 ─95-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 10  ─0-0 ─20-95 ┤96
+  row 30  ─0-0 ─10-11 ─16-60 ─95-95 ─99-157
+  col  43  │0-9
+  col  96  │0-32
+
+## 160x50 · tests docked over the code, chat
+leaves  list:tests#6 0,1 43x13 · detail:tests#7 44,1 52x13 · code#1 0,15 96x31 · slot#4 0,46 96x3 · chat#5 96,0 64x49
+screen  chat_x 96 · chat_w 64 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 34 · text_top 15 · slot_x 0
+  row  0  ─0-0 ─20-21 ─36-42 ┬43 ─44-44 ─53-56 ─95-95 ┬96 ─97-97 ─106-151 ─159-159
+  row 14  ─0-0 ─20-95 ┤96
+  row 46  ─0-0 ─10-11 ─16-60 ─95-95 ─99-157
+  col  43  │0-13
+  col  96  │0-48
+
+## 200x20 · tests docked over the code, chat
+leaves  list:tests#6 0,1 45x5 · detail:tests#7 46,1 74x5 · code#1 0,7 120x9 · slot#4 0,16 120x3 · chat#5 120,0 80x19
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 12 · text_top 7 · slot_x 0
+  row  0  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-71 ─119-119 ┬120 ─121-121 ─130-191 ─199-199
+  row  6  ─0-0 ─20-119 ┤120
+  row 16  ─0-0 ─10-11 ─16-84 ─119-119 ─123-197
+  col  45  │0-5
+  col 120  │0-18
+
+## 200x34 · tests docked over the code, chat
+leaves  list:tests#6 0,1 45x9 · detail:tests#7 46,1 74x9 · code#1 0,11 120x19 · slot#4 0,30 120x3 · chat#5 120,0 80x33
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 22 · text_top 11 · slot_x 0
+  row  0  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-71 ─119-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 10  ─0-0 ─20-119 ┤120
+  row 30  ─0-0 ─10-11 ─16-84 ─119-119 ─123-197
+  col  45  │0-9
+  col 120  │0-32
+
+## 200x50 · tests docked over the code, chat
+leaves  list:tests#6 0,1 45x13 · detail:tests#7 46,1 74x13 · code#1 0,15 120x31 · slot#4 0,46 120x3 · chat#5 120,0 80x49
+screen  chat_x 120 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 3 · body_h 34 · text_top 15 · slot_x 0
+  row  0  ─0-0 ─20-21 ─36-44 ┬45 ─46-46 ─55-71 ─119-119 ┬120 ─121-121 ─130-191 ─199-199
+  row 14  ─0-0 ─20-119 ┤120
+  row 46  ─0-0 ─10-11 ─16-84 ─119-119 ─123-197
+  col  45  │0-13
+  col 120  │0-48
+
+## 54x20 · code zoomed, chat
+leaves  code#1 0,1 54x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x34 · code zoomed, chat
+leaves  code#1 0,1 54x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 54x50 · code zoomed, chat
+leaves  code#1 0,1 54x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-53
+
+## 80x20 · code zoomed, chat
+leaves  code#1 0,1 80x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 80x34 · code zoomed, chat
+leaves  code#1 0,1 80x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 80x50 · code zoomed, chat
+leaves  code#1 0,1 80x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-79
+
+## 100x20 · code zoomed, chat
+leaves  code#1 0,1 100x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 100x34 · code zoomed, chat
+leaves  code#1 0,1 100x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 100x50 · code zoomed, chat
+leaves  code#1 0,1 100x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-99
+
+## 120x20 · code zoomed, chat
+leaves  code#1 0,1 120x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 120x34 · code zoomed, chat
+leaves  code#1 0,1 120x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 120x50 · code zoomed, chat
+leaves  code#1 0,1 120x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-119
+
+## 160x20 · code zoomed, chat
+leaves  code#1 0,1 160x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 160x34 · code zoomed, chat
+leaves  code#1 0,1 160x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 160x50 · code zoomed, chat
+leaves  code#1 0,1 160x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-159
+
+## 200x20 · code zoomed, chat
+leaves  code#1 0,1 200x18
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 200x34 · code zoomed, chat
+leaves  code#1 0,1 200x32
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 200x50 · code zoomed, chat
+leaves  code#1 0,1 200x48
+screen  chat_x - · chat_w 0 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─20-199
+
+## 54x20 · chat zoomed
+leaves  chat#5 0,0 54x19
+screen  chat_x 0 · chat_w 54 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-45 ─53-53
+  row 16  ─3-51
+
+## 54x34 · chat zoomed
+leaves  chat#5 0,0 54x33
+screen  chat_x 0 · chat_w 54 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-45 ─53-53
+  row 30  ─3-51
+
+## 54x50 · chat zoomed
+leaves  chat#5 0,0 54x49
+screen  chat_x 0 · chat_w 54 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-45 ─53-53
+  row 46  ─3-51
+
+## 80x20 · chat zoomed
+leaves  chat#5 0,0 80x19
+screen  chat_x 0 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-71 ─79-79
+  row 16  ─3-77
+
+## 80x34 · chat zoomed
+leaves  chat#5 0,0 80x33
+screen  chat_x 0 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-71 ─79-79
+  row 30  ─3-77
+
+## 80x50 · chat zoomed
+leaves  chat#5 0,0 80x49
+screen  chat_x 0 · chat_w 80 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-71 ─79-79
+  row 46  ─3-77
+
+## 100x20 · chat zoomed
+leaves  chat#5 0,0 100x19
+screen  chat_x 0 · chat_w 100 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-91 ─99-99
+  row 16  ─3-97
+
+## 100x34 · chat zoomed
+leaves  chat#5 0,0 100x33
+screen  chat_x 0 · chat_w 100 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-91 ─99-99
+  row 30  ─3-97
+
+## 100x50 · chat zoomed
+leaves  chat#5 0,0 100x49
+screen  chat_x 0 · chat_w 100 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-91 ─99-99
+  row 46  ─3-97
+
+## 120x20 · chat zoomed
+leaves  chat#5 0,0 120x19
+screen  chat_x 0 · chat_w 120 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-111 ─119-119
+  row 16  ─3-117
+
+## 120x34 · chat zoomed
+leaves  chat#5 0,0 120x33
+screen  chat_x 0 · chat_w 120 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-111 ─119-119
+  row 30  ─3-117
+
+## 120x50 · chat zoomed
+leaves  chat#5 0,0 120x49
+screen  chat_x 0 · chat_w 120 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-111 ─119-119
+  row 46  ─3-117
+
+## 160x20 · chat zoomed
+leaves  chat#5 0,0 160x19
+screen  chat_x 0 · chat_w 160 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-151 ─159-159
+  row 16  ─3-157
+
+## 160x34 · chat zoomed
+leaves  chat#5 0,0 160x33
+screen  chat_x 0 · chat_w 160 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-151 ─159-159
+  row 30  ─3-157
+
+## 160x50 · chat zoomed
+leaves  chat#5 0,0 160x49
+screen  chat_x 0 · chat_w 160 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-151 ─159-159
+  row 46  ─3-157
+
+## 200x20 · chat zoomed
+leaves  chat#5 0,0 200x19
+screen  chat_x 0 · chat_w 200 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 18 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-191 ─199-199
+  row 16  ─3-197
+
+## 200x34 · chat zoomed
+leaves  chat#5 0,0 200x33
+screen  chat_x 0 · chat_w 200 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 32 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-191 ─199-199
+  row 30  ─3-197
+
+## 200x50 · chat zoomed
+leaves  chat#5 0,0 200x49
+screen  chat_x 0 · chat_w 200 · side_w 0 · rail_w 0 · bottom_h 0 · body_h 48 · text_top 1 · slot_x 0
+  row  0  ─0-0 ─9-191 ─199-199
+  row 46  ─3-197
+

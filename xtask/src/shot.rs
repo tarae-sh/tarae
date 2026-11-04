@@ -46,7 +46,8 @@
 //! Set by the shot for the tarae it runs, never yours to set: `TARAE_SHOT_NO_DISK=1` — the free space is the
 //! machine's the shot is taken on, not the picture's, so the status line's disk mark and the disk card stay off
 //! (`Editor::disk_looked`) — unless `TARAE_DISK_FREE` (and `TARAE_DISK_DRAIN`, bytes a second) stands in for
-//! it; also a color terminal, its own config and state (`as_a_terminal`).
+//! it; also a color terminal, its own config and state (`as_a_terminal`). Taken out, never yours to keep: a Claude
+//! Code session's variables (`claudes_own`, #353 — the take's claude is the stand-in).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -1236,6 +1237,15 @@ fn folder(var: &str, value: Option<std::ffi::OsString>, must_exist: bool) -> Res
 }
 
 fn as_a_terminal<'c>(cmd: &'c mut Command, config: &std::ffi::OsStr, state: &Path) -> &'c mut Command {
+    // (a Claude Code session's own, inherited or set on the way — `claudes_own`)
+    let theirs: Vec<std::ffi::OsString> = std::env::vars_os()
+        .map(|(k, _)| k)
+        .chain(cmd.get_envs().map(|(k, _)| k.to_os_string()))
+        .filter(|k| claudes_own(k))
+        .collect();
+    for k in theirs {
+        cmd.env_remove(k);
+    }
     cmd.env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
         .env("TARAE_UNDERCURL", "0")
@@ -1245,6 +1255,17 @@ fn as_a_terminal<'c>(cmd: &'c mut Command, config: &std::ffi::OsStr, state: &Pat
         // (tarae's cache — runs' folders, the reviewer's reading copies — the shot's own, never yours)
         .env("XDG_CACHE_HOME", state.join("cache"))
         .env_remove("NO_COLOR")
+}
+
+/// What a Claude Code session sets in what it starts, and its account's settings (#353): every `CLAUDE*` and
+/// `ANTHROPIC_*` name, and the others tarae's `llm::claude_env` judges — `AI_AGENT`, a span's `TRACEPARENT` and
+/// `TRACESTATE`. Taken out of every take's tarae as `ZELLIJ` is: a scene taken by the driving Claude inherited its
+/// own, and the chat said "tarae runs inside Claude Code" on two docs pictures. A take's claude is the stand-in.
+fn claudes_own(name: &std::ffi::OsStr) -> bool {
+    let n = name.to_string_lossy();
+    n.starts_with("CLAUDE")
+        || n.starts_with("ANTHROPIC_")
+        || matches!(&*n, "AI_AGENT" | "TRACEPARENT" | "TRACESTATE")
 }
 
 /// `:q!`, then a kill if tarae is still there a second later. Esc goes out alone — `ESC :` in one read is Alt-:.
@@ -1887,6 +1908,33 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "unset|xterm-256color|1", "(and no host disk mark)");
+    }
+
+    /// A Claude Code session's variables never reach a take's tarae (#353: its chat said "tarae runs inside Claude
+    /// Code" on two docs pictures) — every `CLAUDE*` and `ANTHROPIC_*` name and the rest tarae judges as one's, while
+    /// a name that only looks alike stays. (As above: set the way an inherited one would be.)
+    #[test]
+    fn a_claude_sessions_variables_dont_reach_tarae() {
+        let theirs = [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_PID",
+            "ANTHROPIC_BASE_URL",
+            "AI_AGENT",
+            "TRACEPARENT",
+        ];
+        let print = theirs.map(|k| format!("${{{k}-unset}}")).join("|");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &format!(r#"printf '%s|%s' "{print}" "${{MY_CLAUDE-unset}}""#)]);
+        for k in theirs {
+            cmd.env(k, "stand-in");
+        }
+        cmd.env("MY_CLAUDE", "kept");
+        let out = as_a_terminal(&mut cmd, "/nonexistent-config".as_ref(), Path::new("/nonexistent-state"))
+            .output()
+            .unwrap();
+        let unset = ["unset"; 6].join("|");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), format!("{unset}|kept"));
     }
 
     /// Folders from the environment: a relative one is refused (it'd be read from where tarae starts), and so
