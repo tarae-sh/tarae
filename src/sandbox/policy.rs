@@ -373,6 +373,10 @@ pub struct Policy {
     pub egress: proxy::egress::Egress,
     /// The run, as the proxy and the main loop name it (`next_run`; a copy of the policy is the same run's).
     pub run_id: u64,
+    /// The run as the UI state, the card log and the chat name it (`run#N`, its `RunTrace::id`) — what a report
+    /// says of it to Claude and the user (`left_said`). None: a run with no trace (tests, measures). Not part of
+    /// its key (`policy_key`).
+    pub trace: Option<u64>,
     /// Its session, as the proxy and the main loop name it (`proxy::workspace_of` its root).
     pub session: u64,
     /// What the sandbox denied this run, watched while it goes (`Watch`).
@@ -1488,6 +1492,7 @@ impl Policy {
             run_id: next_run(),
             session,
             watch: None,
+            trace: None,
             granted: Vec::new(),
             sockets: Vec::new(),
             terminals: false,

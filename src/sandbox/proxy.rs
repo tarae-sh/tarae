@@ -36,7 +36,7 @@ use egress::{Egress, NotReached, Reached, Refused, Resolve};
 use parse::{Auth, Host, Request};
 use upstream::{Failed, Proto};
 
-use super::{Denial, route};
+use super::{Denial, Relayed, route};
 
 /// The op a proxy's refusal is said with in a run's report.
 pub const OP: &str = "network-proxy";
@@ -59,7 +59,7 @@ pub struct Connection {
     /// What the report names as the one refused (the run's process).
     pub process: String,
     pub rules: Arc<Egress>,
-    pub told: Sender<Denial>,
+    pub told: Sender<Relayed>,
 }
 
 /// How far an answer of the user's reaches.
@@ -92,7 +92,7 @@ pub enum ToProxy {
         listener: OwnedFd,
         token: String,
         rules: Arc<Egress>,
-        told: Sender<Denial>,
+        told: Sender<Relayed>,
     },
     /// The run ended (reaped): macOS's listener closes, its token is gone (`sandbox::after_run`); on both
     /// systems (the main loop, `hosts::run_ended`) a question asked for it goes to whoever still waits.
@@ -284,7 +284,7 @@ struct Run {
     process: String,
     token: String,
     rules: Arc<Egress>,
-    told: Sender<Denial>,
+    told: Sender<Relayed>,
     _stop: io::PipeWriter,
 }
 
@@ -360,7 +360,7 @@ struct Conn {
     session: u64,
     process: String,
     rules: Arc<Egress>,
-    told: Sender<Denial>,
+    told: Sender<Relayed>,
     /// macOS: the password its requests must carry.
     token: Option<String>,
 }
@@ -435,7 +435,7 @@ impl State {
                     let Some(r) = self.runs.get(&run) else { continue };
                     let target = format!("its port to tarae's proxy stopped taking connections: {why}");
                     crate::log::line("sandbox", "warning", &format!("run {run}: {target}"));
-                    let _ = r.told.send(Denial { process: r.process.clone(), op: OP.into(), target });
+                    let _ = r.told.send(Denial { process: r.process.clone(), op: OP.into(), target }.into());
                 }
                 In::Accepted { run, stream } => {
                     let Some(r) = self.runs.get(&run) else { continue };
@@ -686,7 +686,7 @@ fn tell(c: &Conn, target: &str) {
 }
 
 fn tell_op(c: &Conn, op: &str, target: &str) {
-    let _ = c.told.send(Denial { process: c.process.clone(), op: op.into(), target: target.into() });
+    let _ = c.told.send(Denial { process: c.process.clone(), op: op.into(), target: target.into() }.into());
 }
 
 /// An HTTP answer (`extra`: header lines, each ending CR LF), its body the why; the connection closes after.
@@ -1172,7 +1172,7 @@ impl RunPort {
     /// Its run started (`sandbox::spawn`): the listener to the proxy, with what each of its connections gets —
     /// the session (its project's), the rules (its policy's hosts and answers; this machine's own addresses as
     /// read with the policy), where its refusals are said (`told`), and what they name (`process`).
-    pub fn started(&self, policy: &super::Policy, process: String, told: Sender<Denial>) {
+    pub fn started(&self, policy: &super::Policy, process: String, told: Sender<Relayed>) {
         let Some(listener) = self.take() else { return };
         #[cfg(all(test, not(target_os = "linux")))]
         let beyond = TEST_BEYOND.lock().unwrap_or_else(|e| e.into_inner());

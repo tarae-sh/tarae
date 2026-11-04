@@ -1029,7 +1029,7 @@ impl Keeper {
         comm: &str,
         c: &super::linux::Confine,
         policy: Arc<super::Policy>,
-        refused: std::sync::mpsc::Sender<super::Denial>,
+        refused: std::sync::mpsc::Sender<super::Relayed>,
     ) -> io::Result<Started> {
         let net = c.net;
         if !matches!(net, RunNet::Served | RunNet::Routed) {
@@ -7644,7 +7644,7 @@ mod tests {
             &self,
             what: &str,
             env: &[(&str, &str)],
-        ) -> (Started, std::sync::mpsc::Receiver<super::super::Denial>) {
+        ) -> (Started, std::sync::mpsc::Receiver<super::super::Relayed>) {
             let cmd = helper_cmd(what, env, Some(&self.root));
             let (c, name) = (&self.confine, crate::landlock::thread_name());
             let (told, refused) = std::sync::mpsc::channel();
@@ -7704,7 +7704,7 @@ mod tests {
         };
         let (tried, refused) = mine.helper_told("sockets", &[("TARAE_TO", &held)]);
         let said = helper_said(tried);
-        let refused: Vec<super::super::Denial> = refused.try_iter().collect();
+        let refused: Vec<super::super::Denial> = refused.try_iter().map(|r| r.denial).collect();
         std::fs::write(theirs.root.join("done"), "").unwrap();
         let mut rest = String::new();
         io::Read::read_to_string(&mut out, &mut rest).unwrap();
@@ -7952,7 +7952,7 @@ mod tests {
         let held = said(&mut out);
         let (tried, refused) = mine.helper_told("sockets", &[("TARAE_TO", &held)]);
         let tried = helper_said(tried);
-        let refused: Vec<super::super::Denial> = refused.try_iter().collect();
+        let refused: Vec<super::super::Denial> = refused.try_iter().map(|r| r.denial).collect();
         std::fs::write(theirs.root.join("done"), "").unwrap();
         io::Read::read_to_end(&mut out, &mut Vec::new()).unwrap();
         io::Read::read_to_end(&mut hold.spawned.stderr.take().unwrap(), &mut Vec::new()).unwrap();
@@ -8103,10 +8103,10 @@ mod tests {
         let by_mine = next_said(&mut late_out);
         io::Read::read_to_end(&mut late.spawned.stderr.take().unwrap(), &mut Vec::new()).unwrap();
         crate::spawn::wait(late.spawned.pid).unwrap();
-        let refused_mine: Vec<super::super::Denial> = refused.try_iter().collect();
+        let refused_mine: Vec<super::super::Denial> = refused.try_iter().map(|r| r.denial).collect();
         let (started, refused) = theirs.helper_told("binds", &[("TARAE_TO", &held)]);
         let by_theirs = helper_said(started);
-        let refused_theirs: Vec<super::super::Denial> = refused.try_iter().collect();
+        let refused_theirs: Vec<super::super::Denial> = refused.try_iter().map(|r| r.denial).collect();
         std::fs::write(theirs.root.join("done"), "").unwrap();
         io::Read::read_to_end(&mut out, &mut Vec::new()).unwrap();
         io::Read::read_to_end(&mut hold.spawned.stderr.take().unwrap(), &mut Vec::new()).unwrap();
@@ -8221,7 +8221,10 @@ mod tests {
         };
         let binds = |s: &Apart| {
             let (started, refused) = s.helper_told("bindsat", &[("TARAE_TO", &aimed)]);
-            (helper_said(started), refused.try_iter().collect::<Vec<super::super::Denial>>())
+            (
+                helper_said(started),
+                refused.try_iter().map(|r| r.denial).collect::<Vec<super::super::Denial>>(),
+            )
         };
         let ((by_mine, refused), (by_theirs, _)) = (binds(&mine), binds(&theirs));
         std::fs::write(theirs.root.join("done"), "").unwrap();
@@ -8365,7 +8368,7 @@ mod tests {
         let rows_dead = owners.of(session);
         let (tried, refused) = mine.helper_told("sockets", &[("TARAE_TO", &left)]);
         let tried = helper_said(tried);
-        let refused: Vec<super::super::Denial> = refused.try_iter().collect();
+        let refused: Vec<super::super::Denial> = refused.try_iter().map(|r| r.denial).collect();
         std::fs::write(theirs.root.join("done"), "").unwrap();
         // (its rows go as its sockets do: asked again from 100 ms, doubling)
         let by = Instant::now() + crate::test_results::PATIENCE;
@@ -9103,7 +9106,7 @@ mod tests {
         (p, c, root): (&Arc<super::super::Policy>, &super::super::linux::Confine, &Path),
         what: &str,
         env: &[(&str, &str)],
-    ) -> (impl Iterator<Item = String> + use<>, u32, std::sync::mpsc::Receiver<super::super::Denial>) {
+    ) -> (impl Iterator<Item = String> + use<>, u32, std::sync::mpsc::Receiver<super::super::Relayed>) {
         let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
         cmd.args([
             "--exact",
@@ -9145,7 +9148,7 @@ mod tests {
         let said = said_next(&mut lines);
         lines.for_each(drop);
         crate::spawn::wait(pid).unwrap();
-        (said, refused.try_iter().collect())
+        (said, refused.try_iter().map(|r| r.denial).collect())
     }
 
     /// This machine's address beyond its loopback — the "outside" a run reaches out to here, a listener of the
@@ -9976,7 +9979,7 @@ mod tests {
         let said = said_next(&mut lines);
         lines.for_each(drop);
         crate::spawn::wait(pid).unwrap();
-        (said, refused.try_iter().collect())
+        (said, refused.try_iter().map(|r| r.denial).collect())
     }
 
     /// A run on a kernel without `fchmodat2` (below Linux 6.6, unless backported) gets the kernel's `ENOSYS` for every

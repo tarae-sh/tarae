@@ -51,7 +51,7 @@ use super::wire::{
     Addr, MSG_LEN_AT, Mem, Msg, SEND_MAX, Unsent, address, mmsg_at, named, named_in, netlink_address,
     netlink_reads, parse, read_msg, unix_address,
 };
-use super::{Denial, Policy};
+use super::{Denial, Policy, Relayed};
 
 mod attrs;
 
@@ -281,7 +281,7 @@ fn result(r: isize) -> Answer {
 pub struct Served {
     policy: Arc<Policy>,
     net: RunNet,
-    refused: std::sync::mpsc::Sender<Denial>,
+    refused: std::sync::mpsc::Sender<Relayed>,
     swapped: std::sync::Mutex<std::collections::HashMap<u64, Route>>,
     /// The sockets the run bound to every address and a port the kernel picks (`0.0.0.0:0`, `[::]:0` — what
     /// Rust's `UdpSocket` and Java's `DatagramSocket` do before sending): by inode. Such a socket goes out as
@@ -490,7 +490,7 @@ pub fn totals() -> Totals {
 pub fn serve(
     policy: Arc<Policy>,
     net: RunNet,
-    refused: std::sync::mpsc::Sender<Denial>,
+    refused: std::sync::mpsc::Sender<Relayed>,
     tree: (u32, u64),
     ptys: Option<Arc<super::ptys::Ptys>>,
 ) -> io::Result<std::sync::mpsc::SyncSender<OwnedFd>> {
@@ -604,12 +604,14 @@ fn call(l: &Listener, n: &libc::seccomp_notif, p: &Served) -> Answer {
 fn refuse_call(l: &Listener, n: &libc::seccomp_notif, p: &Served, op: &str) -> Answer {
     let proc = Proc::of(n.pid as i32).ok();
     if l.valid(n.id).is_ok() {
-        let comm = proc.and_then(|pr| pr.read("comm").ok()).unwrap_or_default();
+        let comm = proc.as_ref().and_then(|pr| pr.read("comm").ok()).unwrap_or_default();
         let process = match String::from_utf8_lossy(&comm).trim() {
             "" => "the run".into(),
             c => c.into(),
         };
-        let _ = p.refused.send(Denial { process, op: op.into(), target: String::new() });
+        let denial = Denial { process, op: op.into(), target: String::new() };
+        let by = proc.as_ref().map(|pr| (n.pid, command_said(pr)));
+        let _ = p.refused.send(Relayed { denial, by });
     }
     Err(libc::EPERM)
 }
@@ -858,16 +860,39 @@ pub(super) fn read_mem(mem: &std::fs::File, at: u64, len: usize) -> Result<Vec<u
     Ok(buf)
 }
 
-/// A refusal: `Refused` out (tarae says it in the run's report — its watch, once the run is gone its session's
-/// current run's: `sandbox::tell`), `EPERM` to the caller — "Operation not permitted", as macOS says it.
+/// A refusal: `Refused` out, its process named (tarae says it in the run's report — its watch; once that's made,
+/// apart in its project's runs going then, else its log: `sandbox::tell`), `EPERM` to the caller — "Operation not permitted", as macOS says it.
 fn refuse(p: &Served, c: &Caller, op: &str, target: String) -> Answer {
     refuse_with(p, c, libc::EPERM, op, target)
 }
 
 /// `refuse`, the caller told `errno`.
 fn refuse_with(p: &Served, c: &Caller, errno: i32, op: &str, target: String) -> Answer {
-    let _ = p.refused.send(Denial { process: c.name(), op: op.into(), target });
+    let denial = Denial { process: c.name(), op: op.into(), target };
+    let by = Some((c.tgid as u32, command_said(&c.process)));
+    let _ = p.refused.send(Relayed { denial, by });
     Err(errno)
+}
+
+/// A refused process's command line at most, as a report names it (`Relayed.by`).
+const COMMAND_SAID: usize = 60;
+
+/// A refused process's command line as a report names it — what a later run's report says it by when that
+/// process outlived its own run's (`sandbox::tell`): its words (the run's own bytes, lossy), control characters
+/// as blanks, tokens taken out (`tokens::redacted`), cut past `COMMAND_SAID` characters. Read through the
+/// caller's `/proc` folder opened before its call was checked (`Caller::open`).
+fn command_said(p: &Proc) -> String {
+    let raw = p.read("cmdline").unwrap_or_default();
+    let words: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|w| !w.is_empty())
+        .map(|w| String::from_utf8_lossy(w).chars().map(|c| if c.is_control() { ' ' } else { c }).collect())
+        .collect();
+    let line = crate::tokens::redacted(&words.join(" "));
+    match line.chars().count() > COMMAND_SAID {
+        true => format!("{}…", line.chars().take(COMMAND_SAID).collect::<String>().trim_end()),
+        false => line,
+    }
 }
 
 /// An integer socket option of `fd`'s.
@@ -2938,11 +2963,13 @@ mod tests {
 
     /// What a run left running, after its run, in a process of its own (`TARAE_LEFTOVER_SCENE`; tarae a child
     /// subreaper, as it is): run 1 leaves a child that, each time a file says so, connects beyond this machine
-    /// with the network closed (a documentation address: refused in every tier). Told while run 2 of the project goes, the refusal is run 2's (its report); told
-    /// while none goes, it waits for run 3's. Then: what a run under one policy left is ended when a run of
-    /// the project starts under another (it holds the old one) — not by one under the same. Prints `scene:
-    /// w1=<n> w2=<n> w3=<n> stale=<ended: yes|no> same=<kept: yes|no>` (n: the refusals of port 9 each run's
-    /// watch has).
+    /// with the network closed (a documentation address: refused in every tier). Run 1's report made already,
+    /// the refusal is no later run's own (#349): told while run 2 of the project goes, it's in run 2's report
+    /// apart, as run 1's, naming the process that was refused; told while none goes, run 1's late one, logged —
+    /// never run 3's. Then: what a run under one policy left is ended when a run of the project starts under
+    /// another (it holds the old one) — not by one under the same. Prints `scene: w1=<n> w2=<n> w3=<n>
+    /// left2=<n> left3=<n> late1=<n> by=<its first words> stale=<ended: yes|no> same=<kept: yes|no>` (w: the
+    /// refusals of port 9 each run's watch has as its own; left: as run 1's; late1: run 1's no report took).
     #[test]
     #[ignore]
     fn leftover_scene() {
@@ -2955,25 +2982,37 @@ mod tests {
             let b = p.watch.as_ref().unwrap().blocked();
             b.seen.iter().filter(|d| d.op == "network-outbound" && d.target.ends_with(":9")).count()
         };
-        let ended = |p: &Policy| p.watch.as_ref().is_some_and(|w| w.ended());
+        let finished = |p: &Policy| p.watch.as_ref().is_some_and(|w| w.marks().finished.is_some());
+        let late =
+            |p: &Policy| p.watch.as_ref().map_or(0, |w| w.late.load(std::sync::atomic::Ordering::SeqCst));
+        let left = |p: &Policy, of: &Policy| {
+            let b = p.watch.as_ref().unwrap().blocked();
+            b.left.into_iter().filter(|(run, r)| *run == of.trace && r.denial.target.ends_with(":9")).count()
+        };
         let go = s.base.join("out/go");
         let script = r#"( bash -c 'for i in 1 2; do
             while [ ! -e "$GO$i" ]; do sleep 0.05; done
             ( : <>/dev/tcp/192.0.2.1/9 ) 2>/dev/null; done' & ); exit 0"#;
-        let p1 = s.policy(Vec::new(), false, Vec::new());
+        // (run 1 as the UI state names it, `run#N` — what run 2's report calls it)
+        let p1 = Policy { trace: Some(9_349_001), ..s.policy(Vec::new(), false, Vec::new()) };
         crate::spawn::wait(run_in(&p1, script, &[("GO", &go)])).unwrap();
-        assert!(until(|| ended(&p1)), "run 1's end seen");
+        assert!(until(|| finished(&p1)), "run 1's report made");
         let p2 = s.policy(Vec::new(), false, Vec::new());
         let r2 = run_in(&p2, "sleep 3", &[]);
         std::fs::write(go.with_file_name("go1"), "").unwrap();
-        until(|| refused(&p2) > 0);
+        until(|| left(&p2, &p1) > 0);
         crate::spawn::wait(r2).unwrap();
-        assert!(until(|| ended(&p2)), "run 2's end seen");
+        assert!(until(|| finished(&p2)), "run 2's report made");
         std::fs::write(go.with_file_name("go2"), "").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        until(|| late(&p1) > 0);
         let p3 = s.policy(Vec::new(), false, Vec::new());
         crate::spawn::wait(run_in(&p3, "true", &[])).unwrap();
-        let (w1, w2, w3) = (refused(&p1), refused(&p2), refused(&p3));
+        let (w1, w2, w3, late1) = (refused(&p1), refused(&p2), refused(&p3), late(&p1));
+        let (left2, left3) = (left(&p2, &p1), left(&p3, &p1));
+        // (the process that was refused, as the report names it: the leftover's own command line)
+        let by = p2.watch.as_ref().unwrap().blocked().left.first().and_then(|(_, r)| r.by.clone());
+        let by =
+            by.map_or("none".to_string(), |(_, cmd)| cmd.split(' ').take(2).collect::<Vec<_>>().join(" "));
         super::super::end_leftovers(Some(&s.root));
         // A policy since changed: what the old one left ends; under the same, it stays
         let long = |p: &Policy, name: &str| -> u32 {
@@ -2996,14 +3035,20 @@ mod tests {
         let same = there(new);
         super::super::end_leftovers(Some(&s.root));
         let yes = |b: bool| if b { "yes" } else { "no" };
-        println!("scene: w1={w1} w2={w2} w3={w3} stale={} same={}", yes(stale), yes(same));
+        println!(
+            "scene: w1={w1} w2={w2} w3={w3} left2={left2} left3={left3} late1={late1} by={by} stale={} same={}",
+            yes(stale),
+            yes(same)
+        );
     }
 
-    /// `leftover_scene`: a refusal of what a run left goes to its project's run going then (its report),
-    /// else to the next one's; what a run left under a policy since changed ends with the change.
+    /// `leftover_scene`: a refusal of what a run left, relayed after its report, is no later run's own (#349):
+    /// its project's run going then says it apart, as the earlier run's, naming the process; none going, it's
+    /// the earlier run's late one, never the next run's. What a run left under a policy since changed ends with
+    /// the change.
     #[test]
-    fn what_a_run_left_is_told_to_its_projects_current_run() {
-        if !served("what_a_run_left_is_told_to_its_projects_current_run") {
+    fn what_a_run_left_is_no_later_runs_refusal() {
+        if !served("what_a_run_left_is_no_later_runs_refusal") {
             return;
         }
         let exe = std::env::current_exe().unwrap();
@@ -3016,7 +3061,11 @@ mod tests {
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
         let said = text.lines().find_map(|l| l.split_once("scene: ").map(|(_, s)| s.to_string()));
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(said.as_deref(), Some("w1=0 w2=1 w3=1 stale=yes same=yes"), "{text}\n{err}");
+        assert_eq!(
+            said.as_deref(),
+            Some("w1=0 w2=0 w3=0 left2=1 left3=0 late1=1 by=bash -c stale=yes same=yes"),
+            "{text}\n{err}"
+        );
     }
 
     /// An op's result as the probe says it: `ok`, or `err` and the errno.

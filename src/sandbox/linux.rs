@@ -2397,16 +2397,23 @@ fn audit_value(line: &str, key: &str) -> Option<String> {
 
 /// What one run's Landlock audit records say, read line by line: its domain is the one whose record names
 /// the thread that confined it (`owner`: tarae's process and the thread's name); access records of a domain
-/// not told yet wait for it.
+/// not told yet wait for it. An earlier run's domain is never its — what that run left running is refused in
+/// its own (frictions29 #349: a run's report names only what that run was refused): those records are `left`,
+/// for `sandbox::left_read` to say as that run's.
 #[derive(Debug, Default)]
 pub struct Audit {
     pub owner: Option<Owner>,
-    /// The threads that confined the project's earlier runs (`also`): what those left running is this run's to
-    /// tell now (`sandbox::tell`).
-    also: Vec<Owner>,
+    /// The threads that confined this tarae's runs (`sandbox::ran_owners`): a domain whose record names one of
+    /// them, not this run's, is that run's — what it left running, once its report is made.
+    pub earlier: Vec<Owner>,
+    /// What the earlier runs' domains were refused, read since it was last taken: by the thread that confined
+    /// that run, and the record's key (`left_key`: one refusal however many watches and transports read it).
+    pub left: Vec<(Owner, Denial, String)>,
     ours: Vec<String>,
+    /// The earlier runs' domains this watch has met, by the thread that confined each.
+    theirs: Vec<(String, Owner)>,
     others: Vec<String>,
-    waiting: Vec<(String, Denial)>,
+    waiting: Vec<(String, Denial, String)>,
 }
 
 /// Access records kept waiting for their domain's record, at most.
@@ -2417,37 +2424,53 @@ const AUDIT_WAITING: usize = 64;
 static DOMAINS: std::sync::Mutex<Vec<(Owner, String)>> = std::sync::Mutex::new(Vec::new());
 const DOMAINS_KEPT: usize = 256;
 
+/// An access record's key: its stamp (`audit(<time>:<serial>)`, the same in the journal's two transports and
+/// auditd's log), its domain, what blocked and where.
+fn left_key(line: &str, domain: &str, blockers: &str, target: &str) -> String {
+    let stamp = line.split_once("audit(").and_then(|(_, s)| s.split_once(')')).map_or("", |(s, _)| s);
+    format!("{stamp} {domain} {blockers} {target}")
+}
+
 impl Audit {
-    /// The project's earlier runs are `owners` too: their domains known so far are this run's from now.
-    pub fn also(&mut self, owners: Vec<Owner>) {
-        if owners == self.also {
-            return;
+    /// The earlier run whose domain `domain` is, as this watch met it or `DOMAINS` knows it.
+    fn theirs_of(&mut self, domain: &str) -> Option<Owner> {
+        if let Some((_, o)) = self.theirs.iter().find(|(d, _)| d == domain) {
+            return Some(o.clone());
         }
         let known = DOMAINS.lock().unwrap_or_else(|e| e.into_inner());
-        for (o, d) in known.iter() {
-            if owners.contains(o) && !self.ours.contains(d) {
-                self.ours.push(d.clone());
-                self.others.retain(|x| x != d);
-            }
-        }
-        self.also = owners;
+        let o = known.iter().find(|(_, d)| d == domain).map(|(o, _)| o.clone())?;
+        drop(known);
+        self.theirs.push((domain.to_string(), o.clone()));
+        Some(o)
     }
 
     /// The denials `line` adds: an access record of the run's domain (`LANDLOCK_ACCESS`: `domain=… blockers=…
     /// path=…`), or those waiting for a domain record that turned out the run's (`LANDLOCK_DOMAIN`:
     /// `domain=… status=allocated … pid=… comm=…`). Said in the profile's words (`file-write*`,
-    /// `file-read-data`).
+    /// `file-read-data`). An earlier run's (`earlier`, `DOMAINS`) go to `left`, never here.
     pub fn line(&mut self, line: &str) -> Vec<Denial> {
         let Some(domain) = audit_value(line, "domain") else { return Vec::new() };
         if let Some(blockers) = audit_value(line, "blockers") {
             let target = audit_value(line, "path").unwrap_or_default();
+            let key = left_key(line, &domain, &blockers, &target);
             let d =
                 Denial { process: super::SEEN_IN_AUDIT_LOG.into(), op: audit_op(&blockers).into(), target };
             if self.ours.contains(&domain) {
                 return vec![d];
             }
+            // (a domain met as another's may be told since — a run that started after this one: `DOMAINS`; one
+            // told to another reader first by this run's own thread is this run's)
+            if let Some(o) = self.theirs_of(&domain) {
+                if self.owner.as_ref().is_some_and(|m| m.comm == o.comm && (m.pid == 0 || m.pid == o.pid)) {
+                    self.theirs.retain(|(t, _)| *t != domain);
+                    self.ours.push(domain);
+                    return vec![d];
+                }
+                self.left.push((o, d, key));
+                return Vec::new();
+            }
             if !self.others.contains(&domain) && self.waiting.len() < AUDIT_WAITING {
-                self.waiting.push((domain, d));
+                self.waiting.push((domain, d, key));
             }
             return Vec::new();
         }
@@ -2461,26 +2484,34 @@ impl Audit {
                 && (o.pid == 0 || pid == Some(o.pid))
                 && comm.as_deref() == Some(o.comm.as_str())
         };
-        let mine = self.owner.iter().chain(&self.also).find(named).cloned();
+        let mine = self.owner.iter().find(named).cloned();
+        let theirs = match mine {
+            Some(_) => None,
+            None => self.earlier.iter().find(named).cloned(),
+        };
         let (keep, rest): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.waiting).into_iter().partition(|(d, _)| *d == domain);
+            std::mem::take(&mut self.waiting).into_iter().partition(|(d, _, _)| *d == domain);
         self.waiting = rest;
-        if let Some(o) = &mine {
+        if let Some(o) = mine.as_ref().or(theirs.as_ref()) {
             let mut known = DOMAINS.lock().unwrap_or_else(|e| e.into_inner());
             if !known.iter().any(|(_, d)| *d == domain) {
                 // (by the record's pid: the owner a later run hears of has it, though this one was told first)
-                let o = Owner { pid: pid.unwrap_or(o.pid), comm: o.comm.clone() };
-                known.push((o, domain.clone()));
+                known.push((Owner { pid: pid.unwrap_or(o.pid), comm: o.comm.clone() }, domain.clone()));
                 let n = known.len();
                 known.drain(..n.saturating_sub(DOMAINS_KEPT));
             }
         }
-        match mine.is_some() {
-            true => {
+        match (mine, theirs) {
+            (Some(_), _) => {
                 self.ours.push(domain);
-                keep.into_iter().map(|(_, d)| d).collect()
+                keep.into_iter().map(|(_, d, _)| d).collect()
             }
-            false => {
+            (None, Some(o)) => {
+                self.left.extend(keep.into_iter().map(|(_, d, key)| (o.clone(), d, key)));
+                self.theirs.push((domain, o));
+                Vec::new()
+            }
+            (None, None) => {
                 self.others.push(domain);
                 Vec::new()
             }
@@ -4733,12 +4764,13 @@ mod tests {
         assert!(a.line("audit: type=1400 apparmor=\"DENIED\"").is_empty());
     }
 
-    /// What an earlier run of the project left running is denied in that run's domain: a later run's watch
-    /// told the earlier ones' threads (`also`) reads it — by the domain's record when it comes now, or, its
-    /// record told already (to the earlier run's watch), by the domain known from then. Another thread's
-    /// domain stays out.
+    /// #349: what an earlier run of the project left running is denied in that run's domain, and a later run's
+    /// watch, reading the same stream, never takes it as its own — its record told already (to the earlier
+    /// run's watch) or told only now: it's `left`, by that run's thread. Its own domain is its. Said
+    /// (`left_read`): as run 1's `run#N`, in each run of its project going then, once however many watches read
+    /// it, never another project's; while run 1's report isn't made, its own; none going, run 1's late one.
     #[test]
-    fn what_an_earlier_run_left_is_read_by_the_current_runs_watch() {
+    fn what_an_earlier_run_left_is_never_a_later_runs() {
         let access = |d: &str, path: &str| {
             format!(
                 "audit: type=1423 audit(1:3): domain={d} blockers=fs.write_file path=\"{path}\" dev=\"vda2\" ino=9"
@@ -4751,28 +4783,110 @@ mod tests {
             )
         };
         let o = |comm: &str| Owner { pid: 301, comm: comm.into() };
-        // Run 1 (thread tl-e1) sees its domain e1 told; run 2 hears of run 1 after its record went by
+        // Run 1 (thread tl-e1) sees its domain e1 told; run 2 (tl-e2) reads on after its record went by
         let mut first = Audit { owner: Some(o("tl-e1")), ..Default::default() };
         assert_eq!(first.line(&domain("e1", "tl-e1")).len(), 0);
-        let mut now = Audit { owner: Some(o("tl-e2")), ..Default::default() };
-        now.also(vec![o("tl-e1"), o("tl-e3")]);
-        let d = now.line(&access("e1", "/w/p/Cargo.toml"));
-        assert_eq!(
-            d.iter().map(|d| d.target.as_str()).collect::<Vec<_>>(),
-            ["/w/p/Cargo.toml"],
-            "known from then"
-        );
-        // Run 3's domain first told now: its record names its thread
+        let mut now =
+            Audit { owner: Some(o("tl-e2")), earlier: vec![o("tl-e1"), o("tl-e3")], ..Default::default() };
+        let left = |a: &mut Audit| -> Vec<(String, String)> {
+            std::mem::take(&mut a.left).into_iter().map(|(o, d, _)| (o.comm, d.target)).collect()
+        };
+        let pair = |comm: &str, path: &str| (comm.to_string(), path.to_string());
+        assert!(now.line(&access("e1", "/w/p/Cargo.toml")).is_empty(), "run 1's, told before");
+        assert_eq!(left(&mut now), [pair("tl-e1", "/w/p/Cargo.toml")], "what run 1 left");
+        // An earlier run's domain first told now: its record names that run's thread, not this one's
         assert!(now.line(&access("e3", "/w/p/build.rs")).is_empty(), "waits for its domain");
-        assert_eq!(now.line(&domain("e3", "tl-e3")).len(), 1);
+        assert!(left(&mut now).is_empty(), "whose isn't told yet");
+        assert!(now.line(&domain("e3", "tl-e3")).is_empty(), "run 3's, told now");
+        assert!(now.line(&access("e3", "/w/p/build.rs")).is_empty(), "and after");
+        assert_eq!(left(&mut now), [pair("tl-e3", "/w/p/build.rs"), pair("tl-e3", "/w/p/build.rs")]);
+        // Its own
+        assert!(now.line(&access("e2", "/w/p/.envrc")).is_empty(), "waits for its domain");
+        assert_eq!(now.line(&domain("e2", "tl-e2")).len(), 1);
+        assert_eq!(now.line(&access("e2", "/w/p/.envrc")).len(), 1);
+        assert!(left(&mut now).is_empty(), "its own is never left");
         // Another thread's
-        assert!(now.line(&access("e9", "/x")).is_empty());
-        assert!(now.line(&domain("e9", "tl-e9")).is_empty());
+        assert!(now.line(&domain("e9", "tl-e9")).is_empty() && now.line(&access("e9", "/x")).is_empty());
+        assert!(left(&mut now).is_empty(), "no run's of this tarae");
+
+        // Said: run 1 (its report made) left it; runs 2 and 3 of its project go, and one of another project
+        let with = |n: u64, root: &str, comm: &str| {
+            let env = Env { root: PathBuf::from(root), ..Default::default() };
+            let tag = format!("t349-{n}.");
+            let w = crate::sandbox::Watch::quiet(&tag);
+            w.owned_by(Owner { pid: 0, comm: comm.into() });
+            let p = Policy { watch: Some(w), trace: Some(n), tag: Some(tag), ..Policy::for_project(&env) };
+            // (pid 0: no process of a run's — nothing `leftovers` passes over)
+            crate::sandbox::ran_kept(&p, 0);
+            p
+        };
+        let at = "/w/f349-audit";
+        let one = with(9_349_101, at, "tl-t349-1");
+        let (two, three) = (with(9_349_102, at, "tl-t349-2"), with(9_349_103, at, "tl-t349-3"));
+        let elsewhere = with(9_349_104, "/w/f349-audit-q", "tl-t349-q");
+        let watch = |p: &Policy| p.watch.clone().unwrap();
+        let record = |path: &str, serial: u32| {
+            (
+                format!(
+                    "audit: type=1424 audit(9:{serial}): domain=g1 status=allocated mode=enforcing pid=7 comm=\"tl-t349-1\""
+                ),
+                format!(
+                    "audit: type=1423 audit(9:{serial}): domain=g1 blockers=fs.write_file path=\"{path}\" ino=9"
+                ),
+            )
+        };
+        let read_by = |p: &Policy, (dom, acc): &(String, String)| {
+            let mut a = Audit { owner: watch(p).owner.lock().unwrap().clone(), ..Default::default() };
+            a.earlier = crate::sandbox::ran_owners();
+            let own = [a.line(dom), a.line(acc)].concat();
+            for (o, d, key) in std::mem::take(&mut a.left) {
+                crate::sandbox::left_read(&o.comm, d, key);
+            }
+            own
+        };
+        let left_of = |p: &Policy| watch(p).blocked().left;
+        // While run 1's report isn't made, its own watch's to read: not said elsewhere
+        assert!(read_by(&two, &record("/w/f349-audit/early", 1)).is_empty());
+        assert!(left_of(&two).is_empty() && left_of(&three).is_empty(), "run 1's own while it goes");
+        watch(&one).finish();
+        // Its daemon writes during run 2's build: read by runs 2, 3 and the other project's, said once in each
+        let daemon = record("/w/f349-audit/Cargo.toml", 2);
+        for p in [&two, &three, &elsewhere] {
+            assert!(read_by(p, &daemon).is_empty(), "never a reading run's own");
+        }
+        let want = Denial {
+            process: crate::sandbox::SEEN_IN_AUDIT_LOG.into(),
+            op: "file-write*".into(),
+            target: "/w/f349-audit/Cargo.toml".into(),
+        };
+        for p in [&two, &three] {
+            let as_run_1 = (Some(9_349_101), crate::sandbox::Relayed::from(want.clone()));
+            assert_eq!(left_of(p), [as_run_1], "as run 1's, once, in each going");
+            assert!(watch(p).blocked().seen.is_empty(), "never its own");
+        }
+        assert!(left_of(&elsewhere).is_empty(), "another project's run");
+        let said = Guard::In(Box::new(two.clone())).report(&[]);
+        assert!(said.contains("refused for what run#9349101 left running: "), "{said}");
+        assert!(
+            said.contains("/w/f349-audit/Cargo.toml") && !said.contains("The sandbox blocked one"),
+            "{said}"
+        );
+        // None going: run 1's late one, logged
+        for p in [&two, &three] {
+            watch(p).finish();
+        }
+        assert!(read_by(&elsewhere, &record("/w/f349-audit/x", 3)).is_empty());
+        assert_eq!(left_of(&two).len(), 1, "its report made");
+        assert!(left_of(&elsewhere).is_empty(), "another project's run");
+        let late =
+            crate::sandbox::RAN.lock().unwrap().iter().find(|r| r.tag == "t349-9349101.").map(|r| r.late);
+        assert_eq!(late, Some(1), "none going: run 1's late one");
+        watch(&elsewhere).finish();
     }
 
     /// A run's first denial (its domain's record with it) can come before `Started` does: its watch knows it
     /// by its name alone till then (`sandbox::spawn`: pid 0), so the domain is the run's — still once its pid is
-    /// known, and to a later run of the project by the pid the record gave. Another name isn't the run's.
+    /// known; never a later run's of the project. Another name isn't the run's.
     #[test]
     fn a_runs_domain_told_before_its_pid_is_known_is_its_own() {
         let access = |d: &str, path: &str| {
@@ -4794,8 +4908,7 @@ mod tests {
         a.owner = Some(o(302, "tl-f1"));
         assert_eq!(a.line(&access("f1", "/w/p/build.rs")).len(), 1, "its own once its pid is known");
         let mut later = Audit { owner: Some(o(304, "tl-f3")), ..Default::default() };
-        later.also(vec![o(302, "tl-f1")]);
-        assert_eq!(later.line(&access("f1", "/w/p/x")).len(), 1, "a later run knows it by its pid");
+        assert!(later.line(&access("f1", "/w/p/x")).is_empty(), "never a later run's");
     }
 
     /// auditd's records, verbatim from its log on a kernel 7.0 (the user's VM): the domain is told by tarae's
@@ -4817,9 +4930,12 @@ mod tests {
         let mut a = owned(127026, "tarae-landlock");
         assert!(a.line(domain).is_empty());
         assert_eq!(a.line(access), std::slice::from_ref(&made));
+        // (access first, in a domain of its own: the first is known since — `DOMAINS`)
+        let (domain_2, access_2) =
+            (domain.replace("107163519", "107163529"), access.replace("107163519", "107163529"));
         let mut a = owned(127026, "tarae-landlock");
-        assert!(a.line(access).is_empty(), "waits for its domain");
-        assert_eq!(a.line(domain), std::slice::from_ref(&made));
+        assert!(a.line(&access_2).is_empty(), "waits for its domain");
+        assert_eq!(a.line(&domain_2), std::slice::from_ref(&made));
         for (pid, comm) in [(127026, "tl-3"), (1, "tarae-landlock")] {
             let mut a = owned(pid, comm);
             assert!(a.line(access).is_empty() && a.line(domain).is_empty(), "{pid} {comm}: not the run");

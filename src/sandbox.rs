@@ -325,10 +325,18 @@ impl Guard {
         passed: bool,
     ) -> (String, bool, Vec<Denial>) {
         let Guard::In(p) = self else { return (rules, false, Vec::new()) };
-        // (the guarantees: a paragraph of their own after the rules' — or where they'd be, left out)
-        let with_apart = |s: String| match apart.is_empty() {
-            true => s.trim_end().to_string(),
-            false => format!("{}\n{apart}", s.trim_end()),
+        // (what earlier runs left running was refused meanwhile, apart — never this run's: #349; then the
+        // guarantees, a paragraph of their own after the rules' — or where they'd be, left out)
+        let left = self.watch().map(|w| left_said(&w.blocked())).unwrap_or_default();
+        let with_apart = |s: String| {
+            let s = match left.is_empty() {
+                true => s.trim_end().to_string(),
+                false => format!("{}\n{}", s.trim_end(), left.trim_end()),
+            };
+            match apart.is_empty() {
+                true => s,
+                false => format!("{s}\n{apart}"),
+            }
         };
         let unwatched = match p.denials_from() {
             Some(from) => format!(
@@ -2464,6 +2472,29 @@ pub struct Denial {
     pub target: String,
 }
 
+/// A refusal as its run's supervisor or proxy relays it (`told`): the denial and, where the supervisor named it,
+/// the refused process — its pid (tarae's numbering) and its command line, cut (`supervisor::command_said`).
+/// What a later run's report says it by, when that process outlived its own run's report (`tell`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Relayed {
+    pub denial: Denial,
+    pub by: Option<(u32, String)>,
+}
+
+impl From<Denial> for Relayed {
+    fn from(denial: Denial) -> Self {
+        Relayed { denial, by: None }
+    }
+}
+
+/// (what's read of a refusal relayed is its denial's — `by` only names the process)
+impl std::ops::Deref for Relayed {
+    type Target = Denial;
+    fn deref(&self) -> &Denial {
+        &self.denial
+    }
+}
+
 /// A hard link refused because its source isn't writable or readable — Seatbelt's
 /// `forbidden-link-priv<file-write*>` / `<file-read*>` `<source> <link>` (measured).
 const LINK_PRIV: &str = "forbidden-link-priv";
@@ -2753,6 +2784,11 @@ pub struct Blocked {
     pub failed: Option<String>,
     /// Denials expected, kept apart (`quiet`) — not counted as blocked, no panel line; each kind once.
     pub quiet: Vec<Denial>,
+    /// What earlier runs of the project left running, refused while this run went: each with that run's id as
+    /// the UI state shows it (`Policy::trace`, `run#N`) — said apart, never as this run's (`left_said`), and
+    /// nothing a grant of this run's opens. `DENIALS_KEPT` at most, of `left_total`.
+    pub left: Vec<(Option<u64>, Relayed)>,
+    pub left_total: usize,
 }
 
 pub const DENIALS_KEPT: usize = 10;
@@ -2967,18 +3003,14 @@ pub struct Watch {
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Its run started (`run_started`).
     claimed: std::sync::atomic::AtomicBool,
-    /// Its run's own process is gone: what the run left running tells the project's next run since (`tell`).
-    ended: std::sync::atomic::AtomicBool,
+    /// The refusals relayed once its run's report was made (`relayed`) — logged, never another run's (`tell`).
+    late: std::sync::atomic::AtomicUsize,
     /// When it was made, and its run's times since (`Marks`) — said with what its stream gave as that ends.
     born: std::time::Instant,
     marks: std::sync::Arc<Mutex<Marks>>,
     /// Linux: the thread that confined its run (`owned_by`) — its audit records name it.
     #[cfg(target_os = "linux")]
     owner: std::sync::Arc<Mutex<Option<linux::Owner>>>,
-    /// Linux: the threads that confined its project's earlier runs — what those left running is told here
-    /// (`also_owned_by`).
-    #[cfg(target_os = "linux")]
-    also: std::sync::Arc<Mutex<Vec<linux::Owner>>>,
 }
 
 impl std::fmt::Debug for Watch {
@@ -3036,13 +3068,11 @@ impl Watch {
             blocked: Default::default(),
             stopped: Default::default(),
             claimed: Default::default(),
-            ended: Default::default(),
+            late: Default::default(),
             born: std::time::Instant::now(),
             marks: Default::default(),
             #[cfg(target_os = "linux")]
             owner: Default::default(),
-            #[cfg(target_os = "linux")]
-            also: Default::default(),
         });
         LIVE.lock().unwrap_or_else(|e| e.into_inner()).push(std::sync::Arc::downgrade(&w));
         w
@@ -3052,13 +3082,6 @@ impl Watch {
     #[cfg(target_os = "linux")]
     pub fn owned_by(&self, owner: linux::Owner) {
         *self.owner.lock().unwrap_or_else(|e| e.into_inner()) = Some(owner);
-    }
-
-    /// Linux: what the runs confined by `owners` (its project's earlier ones) left running is told here too —
-    /// Landlock's records name the thread that confined the run that started it.
-    #[cfg(target_os = "linux")]
-    pub fn also_owned_by(&self, owners: Vec<linux::Owner>) {
-        *self.also.lock().unwrap_or_else(|e| e.into_inner()) = owners;
     }
 
     /// It ends itself unless a run has started under it (`run_started`) `within` from now.
@@ -3093,7 +3116,6 @@ impl Watch {
                 }
             }
             if let Some(w) = w.upgrade() {
-                w.ended.store(true, std::sync::atomic::Ordering::SeqCst);
                 w.marks().gone = Some(w.born.elapsed());
             }
             crate::event::pause(WATCH_LAST);
@@ -3117,7 +3139,8 @@ impl Watch {
     }
 
     /// Linux: Landlock's audit records, read from `source` (where `linux::audit_readable` found them), its
-    /// run's domain told by the thread that confined it (`owned_by`). As `start`.
+    /// run's domain told by the thread that confined it (`owned_by`) — never an earlier run's, though what that
+    /// left still runs (as `log stream` reads only its own run's tag). As `start`.
     #[cfg(target_os = "linux")]
     pub fn start_audit(tag: &str, source: &linux::AuditSource) -> std::sync::Arc<Watch> {
         Watch::start_audit_from(tag, source.stream())
@@ -3127,11 +3150,18 @@ impl Watch {
     #[cfg(target_os = "linux")]
     pub fn start_audit_from(tag: &str, stream: Command) -> std::sync::Arc<Watch> {
         let w = Watch::quiet(tag);
-        let (owner, also, mut audit) = (w.owner.clone(), w.also.clone(), linux::Audit::default());
+        let (owner, mut audit) = (w.owner.clone(), linux::Audit::default());
         w.read(stream, move |line| {
             audit.owner = owner.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            audit.also(also.lock().unwrap_or_else(|e| e.into_inner()).clone());
-            audit.line(line)
+            // (a domain's record: whose — the runs since, as this one goes)
+            if line.contains("status=") {
+                audit.earlier = ran_owners();
+            }
+            let own = audit.line(line);
+            for (o, d, key) in std::mem::take(&mut audit.left) {
+                left_read(&o.comm, d, key);
+            }
+            own
         });
         w
     }
@@ -3191,8 +3221,8 @@ impl Watch {
         w
     }
 
-    /// A denial told by what refused it — Linux's supervisor (`supervisor::refuse`), tests.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// A denial as if its stream or its supervisor told it (tests; what's relayed goes through `relayed`).
+    #[cfg(test)]
     pub fn record(&self, d: Denial) {
         self.blocked.lock().unwrap_or_else(|e| e.into_inner()).add(d);
     }
@@ -3214,10 +3244,33 @@ impl Watch {
         self.child.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(std::process::Child::id)
     }
 
-    /// Whether its run's process is gone (or it was told to stop).
-    pub fn ended(&self) -> bool {
-        self.ended.load(std::sync::atomic::Ordering::SeqCst)
-            || self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    /// A refusal its run's supervisor or proxy relayed (`tell`): its run's report's while that isn't made —
+    /// until `finish`, its process gone or not (a refusal can come after the reap: relayed on a thread of its
+    /// own), as `log stream`'s lines are read until then. Decided under the lock the report reads through, so
+    /// none falls between the two. Err: too late, given back.
+    fn relayed(&self, d: Denial) -> Result<(), Denial> {
+        let mut blocked = self.blocked.lock().unwrap_or_else(|e| e.into_inner());
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(d);
+        }
+        blocked.add(d);
+        Ok(())
+    }
+
+    /// A refusal of what run `run` of its project left running (`Policy::trace`), relayed too late for that
+    /// run's report (`tell`): its report's while that isn't made, said apart as run `run`'s (`left_said`).
+    /// False: made.
+    fn left_relayed(&self, run: Option<u64>, r: &Relayed) -> bool {
+        let mut b = self.blocked.lock().unwrap_or_else(|e| e.into_inner());
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        b.left_total += 1;
+        let same = |(n, s): &(Option<u64>, Relayed)| *n == run && s.by == r.by && s.denial == r.denial;
+        if b.left.len() < DENIALS_KEPT && !b.left.iter().any(same) {
+            b.left.push((run, r.clone()));
+        }
+        true
     }
 
     /// The run is done: no more watching (its last denials have had `WATCH_LAST`).
@@ -3240,42 +3293,55 @@ impl Drop for Watch {
 // ── What runs leave running (Linux — `reaper`) ──────────────────────────
 
 /// A run of Claude's, kept after it's gone for what it left running: whose it was (its project — a session's
-/// checkout), its policy's key (`policy_key`), its own process, its watch, and (Linux) the thread that
-/// confined it — Landlock's records of what it left name that thread.
+/// checkout), its policy's key (`policy_key`), its own process, and what a later run's report says of what it
+/// left (Linux's audit, `left_read`): the thread that confined it (its records name it), its id as the UI state
+/// shows it (`Policy::trace`), its watch (whether its report is made) and its late refusals logged.
 struct Ran {
     tag: String,
     root: PathBuf,
     key: String,
     pid: u32,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    comm: Option<String>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    trace: Option<u64>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     watch: Option<std::sync::Weak<Watch>>,
-    #[cfg(target_os = "linux")]
-    owner: Option<linux::Owner>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    late: usize,
 }
 
 /// The runs since tarae started, oldest first — `RAN_KEPT` at most.
 static RAN: Mutex<Vec<Ran>> = Mutex::new(Vec::new());
 const RAN_KEPT: usize = 256;
 
-/// What the supervisor refused what a project's runs left, told while none of its runs was going: for the next
-/// one's watch — `PENDING_KEPT` a project.
-static PENDING: Mutex<Vec<(PathBuf, Denial)>> = Mutex::new(Vec::new());
-const PENDING_KEPT: usize = 32;
-
-/// Run `pid` in `p` started: kept by its tag. What its project's earlier runs left and was refused while none
-/// went is its watch's now; what they left under another policy (a grant since, a setting) is ended — it
-/// holds the old one (on a thread of its own).
+/// Run `pid` in `p` started: kept by its tag. What its project's earlier runs left under another policy (a
+/// grant since, a setting) is ended — it holds the old one (on a thread of its own).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ran(p: &Policy, pid: u32) {
-    let Some(tag) = p.tag.clone() else { return };
+    let Some(key) = ran_kept(p, pid) else { return };
+    let root = p.root.clone();
+    crate::event::thread("tarae-end", move || {
+        end_left(|r| r.root == root && r.key != key);
+    });
+}
+
+/// `ran`'s keeping: run `pid` in `p` kept by its tag (its key; None: no tag), one of its project's going while
+/// its watch lives (`going`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ran_kept(p: &Policy, pid: u32) -> Option<String> {
+    let tag = p.tag.clone()?;
     let key = policy_key(p);
+    #[cfg(target_os = "linux")]
+    let comm = p
+        .watch
+        .as_ref()
+        .and_then(|w| w.owner.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        .map(|o| o.comm);
+    #[cfg(not(target_os = "linux"))]
+    let comm = None;
     if let Some(w) = &p.watch {
-        PENDING.lock().unwrap_or_else(|e| e.into_inner()).retain(|(root, d)| match *root == p.root {
-            true => {
-                w.record(d.clone());
-                false
-            }
-            false => true,
-        });
+        going(&p.root, w);
     }
     let mut ran = RAN.lock().unwrap_or_else(|e| e.into_inner());
     ran.push(Ran {
@@ -3283,50 +3349,136 @@ fn ran(p: &Policy, pid: u32) {
         root: p.root.clone(),
         key: key.clone(),
         pid,
+        comm,
+        trace: p.trace,
         watch: p.watch.as_ref().map(std::sync::Arc::downgrade),
-        #[cfg(target_os = "linux")]
-        owner: p.watch.as_ref().and_then(|w| w.owner.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+        late: 0,
     });
     let n = ran.len();
     ran.drain(..n.saturating_sub(RAN_KEPT));
-    drop(ran);
-    let root = p.root.clone();
-    crate::event::thread("tarae-end", move || {
-        end_left(|r| r.root == root && r.key != key);
-    });
+    Some(key)
 }
 
-/// The threads that confined the earlier runs of `root`'s project (Linux) — what they left is a new run's
-/// watch's to tell too (`Watch::also_owned_by`).
-#[cfg(target_os = "linux")]
-fn earlier_owners(root: &Path) -> Vec<linux::Owner> {
-    let ran = RAN.lock().unwrap_or_else(|e| e.into_inner());
-    ran.iter().filter(|r| r.root == root).filter_map(|r| r.owner.clone()).collect()
-}
+/// The late refusals a run's log says one by one (`tell`); the next says the rest go unsaid.
+const LATE_LOGGED: usize = 8;
 
-/// A refusal of something run `p` started (Linux's supervisor, the proxy): its own run's watch while that run
-/// goes; after it, the newest run of its project still going — what a run left is the session's current run's
-/// to say now; none going: kept for the next (`PENDING`).
-pub(crate) fn tell(p: &Policy, d: Denial) {
-    if let Some(w) = p.watch.as_ref().filter(|w| !w.ended()) {
-        return w.record(d);
+/// The runs going, while their watch lives (`told`, `ran`): each one's project and watch — where what an
+/// earlier run of that project left running is said while they go (`tell`, `left_read`).
+static GOING: Mutex<Vec<(PathBuf, std::sync::Weak<Watch>)>> = Mutex::new(Vec::new());
+
+/// The run watched by `w` in the project at `root` is going (once, however many say so).
+fn going(root: &Path, w: &std::sync::Arc<Watch>) {
+    let mut going = GOING.lock().unwrap_or_else(|e| e.into_inner());
+    going.retain(|(_, w)| w.upgrade().is_some_and(|w| !w.stopped.load(std::sync::atomic::Ordering::SeqCst)));
+    if !going.iter().any(|(_, g)| std::ptr::eq(g.as_ptr(), std::sync::Arc::as_ptr(w))) {
+        going.push((root.to_path_buf(), std::sync::Arc::downgrade(w)));
     }
-    let current = RAN
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .rev()
-        .filter(|r| r.root == p.root)
-        .find_map(|r| r.watch.as_ref()?.upgrade().filter(|w| !w.ended()));
-    match current {
-        Some(w) => w.record(d),
-        None => {
-            let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-            if pending.iter().filter(|(r, _)| *r == p.root).count() < PENDING_KEPT {
-                pending.push((p.root.clone(), d));
-            }
+}
+
+/// The watches of the runs of the project at `root` going now.
+fn going_in(root: &Path) -> Vec<std::sync::Arc<Watch>> {
+    let going = GOING.lock().unwrap_or_else(|e| e.into_inner());
+    going.iter().filter(|(r, _)| r == root).filter_map(|(_, w)| w.upgrade()).collect()
+}
+
+/// A refusal of something run `p` started (Linux's supervisor, the proxy) — by the channel its own run's
+/// policy holds (`told`), which no other run shares: its own watch's until its report is made
+/// (`Watch::relayed`). After that it's what the run left running (or one relayed past the end): said, as run
+/// `p`'s, in the report of every run of its project going then (`left_said` — which of them that process works
+/// for, a Gradle daemon an earlier build left, can't be told, and none is picked by recency); none going, its
+/// log's, as a watch's stream says its late ones (`stream_said`). Never as another run's own refusal
+/// (frictions29 #349).
+pub(crate) fn tell(p: &Policy, r: Relayed) {
+    let Relayed { denial, by } = r;
+    let Some(own) = &p.watch else { return said_late(p, &denial) };
+    let r = match own.relayed(denial) {
+        Ok(()) => return,
+        Err(denial) => Relayed { denial, by },
+    };
+    let given = going_in(&p.root).iter().fold(false, |given, w| w.left_relayed(p.trace, &r) | given);
+    if !given {
+        said_late(p, &r.denial);
+    }
+}
+
+/// A refusal of run `p`'s that no report took (`tell`), in the log: the first `LATE_LOGGED` of its run.
+fn said_late(p: &Policy, d: &Denial) {
+    let n = p.watch.as_ref().map_or(0, |w| w.late.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    late_said(p.tag.as_deref().unwrap_or("untagged"), n, d);
+}
+
+/// Recent records of what earlier runs left, by their key (`linux::left_key`): one refusal said once, however
+/// many runs' watches — and the journal's two transports — read it. `LEFT_READ_KEPT` at most.
+#[cfg(target_os = "linux")]
+static LEFT_READ: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
+#[cfg(target_os = "linux")]
+const LEFT_READ_KEPT: usize = 256;
+
+/// The threads that confined this tarae's runs (`Ran.comm`) — a watch's `Audit::earlier`, by name alone (it
+/// holds tarae's pid: this tarae's only).
+#[cfg(target_os = "linux")]
+fn ran_owners() -> Vec<linux::Owner> {
+    let ran = RAN.lock().unwrap_or_else(|e| e.into_inner());
+    ran.iter().filter_map(|r| Some(linux::Owner { pid: 0, comm: r.comm.clone()? })).collect()
+}
+
+/// Linux: a Landlock audit record of the run confined by thread `comm`, read by another run's watch
+/// (`start_audit_from`, any project's): said as `tell` says one relayed after its run's report — as that run's
+/// (`run#N`), in the report of every run of its project going then; none going, its log's. While that run's
+/// report isn't made, its own watch reads it (a record read as it finishes can be missed, as its own stream's
+/// last). Never as a reading run's own (frictions29 #349).
+#[cfg(target_os = "linux")]
+pub(crate) fn left_read(comm: &str, d: Denial, key: String) {
+    let of = {
+        let ran = RAN.lock().unwrap_or_else(|e| e.into_inner());
+        ran.iter().rev().find(|r| r.comm.as_deref() == Some(comm)).map(|r| {
+            let reported = r
+                .watch
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .is_none_or(|w| w.stopped.load(std::sync::atomic::Ordering::SeqCst));
+            (r.root.clone(), r.trace, r.tag.clone(), reported)
+        })
+    };
+    // (a run tarae no longer keeps — or no run's, the audit probe's: nothing to say it by)
+    let Some((root, trace, tag, reported)) = of else { return };
+    if !reported {
+        return;
+    }
+    {
+        let mut seen = LEFT_READ.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.contains(&key) {
+            return;
+        }
+        seen.push_back(key);
+        if seen.len() > LEFT_READ_KEPT {
+            seen.pop_front();
         }
     }
+    let r = Relayed::from(d);
+    let given = going_in(&root).iter().fold(false, |given, w| w.left_relayed(trace, &r) | given);
+    if !given {
+        let n = {
+            let mut ran = RAN.lock().unwrap_or_else(|e| e.into_inner());
+            ran.iter_mut().rev().find(|r| r.tag == tag).map_or(LATE_LOGGED + 1, |r| {
+                r.late += 1;
+                r.late - 1
+            })
+        };
+        late_said(&tag, n, &r.denial);
+    }
+}
+
+/// The `n`th refusal of run `tag`'s that no report took, in the log (`said_late`, `left_read`).
+fn late_said(tag: &str, n: usize, d: &Denial) {
+    let said = match n.cmp(&LATE_LOGGED) {
+        std::cmp::Ordering::Less => {
+            format!("run {tag}: refused after its report was made — {} {} {}", d.process, d.op, d.target)
+        }
+        std::cmp::Ordering::Equal => format!("run {tag}: more refused after its report, not logged"),
+        std::cmp::Ordering::Greater => return,
+    };
+    crate::log::line("sandbox", "info", &said);
 }
 
 /// A process a run of this tarae's left running: tarae's child now (`reaper`), its tag (`MARK`) naming the
@@ -3397,16 +3549,40 @@ fn end_left(which: impl Fn(&Ran) -> bool) -> Vec<u32> {
     ended
 }
 
-/// Where a run's supervisor (Linux) or tarae's proxy (macOS) says its refusals — a thread saying each in the
-/// run's report (`tell`) until the sender is dropped.
-pub(crate) fn told(p: std::sync::Arc<Policy>) -> std::sync::mpsc::Sender<Denial> {
-    let (tx, rx) = std::sync::mpsc::channel::<Denial>();
+/// Where a run's supervisor (Linux, naming the process) or tarae's proxy says its refusals — a thread saying
+/// each in the run's report (`tell`) until the sender is dropped. The run is one of its project's going
+/// (`GOING`) while its watch lives.
+pub(crate) fn told(p: std::sync::Arc<Policy>) -> std::sync::mpsc::Sender<Relayed> {
+    if let Some(w) = &p.watch {
+        going(&p.root, w);
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Relayed>();
     crate::event::thread("tarae-refused", move || {
-        for d in rx {
-            tell(&p, d);
+        for r in rx {
+            tell(&p, r);
         }
     });
     tx
+}
+
+/// What earlier runs of the project left running and was refused while this run went (`Blocked.left`): a
+/// paragraph apart, each by its run's id as the UI state shows it (`run#N`) and, where the supervisor named it,
+/// the process — never as this run's own (frictions29 #349). Empty: none.
+fn left_said(b: &Blocked) -> String {
+    if b.left.is_empty() {
+        return String::new();
+    }
+    let mut s =
+        String::from("Not this run's own — refused while it went, of what earlier runs left running:\n");
+    for (run, r) in &b.left {
+        let by = r.by.as_ref().map(|(pid, cmd)| format!(" (pid {pid}, {cmd})")).unwrap_or_default();
+        let run = run.map_or_else(|| "an earlier run".to_string(), |n| format!("run#{n}"));
+        s.push_str(&format!("  refused for what {run} left running{by}: {}\n", r.denial.reported()));
+    }
+    if b.left_total > b.left.len() {
+        s.push_str(&format!("  … and {} more\n", b.left_total - b.left.len()));
+    }
+    s
 }
 
 /// Linux: what the runs of the project at `root` left that came to tarae (their keeper died — `keeper::gone`),
@@ -3458,7 +3634,7 @@ pub fn policy_key(p: &Policy) -> String {
     let mut q = p.clone();
     (q.run, q.tag, q.proxy, q.watch, q.env) = (None, None, None, None, Vec::new());
     // (`supervised` as the proxy URL it gives, below)
-    (q.egress, q.run_id, q.supervised) = (Default::default(), 0, false);
+    (q.egress, q.run_id, q.trace, q.supervised) = (Default::default(), 0, None, false);
     // (the kept homes are the project's and the key's — granted by them, not part of what's compared)
     q.write.retain(|w| !p.kept.iter().any(|k| k.home == *w));
     q.kept = Vec::new();
@@ -5749,7 +5925,7 @@ fn output_in(
         if let Some(rx) = rx {
             while let Ok(d) = rx.try_recv() {
                 crate::log::line("sandbox", "info", &format!("probe blocked {}: {}", d.op, d.target));
-                denied.push(d);
+                denied.push(d.denial);
             }
         }
         std::process::Output { status, stdout, stderr: Vec::new() }
@@ -5833,11 +6009,7 @@ pub fn watch_for(p: &Policy) -> Option<std::sync::Arc<Watch>> {
     #[cfg(target_os = "linux")]
     return match &p.confine {
         Some(Ok(c)) => match &c.audit {
-            Ok(source) => {
-                let w = Watch::start_audit(tag, source);
-                w.also_owned_by(earlier_owners(&p.root));
-                Some(w)
-            }
+            Ok(source) => Some(Watch::start_audit(tag, source)),
             Err(_) if c.serve.is_ok() => Some(Watch::quiet(tag)),
             Err(_) => None,
         },
@@ -6310,6 +6482,64 @@ mod tests {
         crate::spawn::wait(run.pid).unwrap();
         assert!(gone(watching), "the watch ({watching}) outlived its run");
         assert_eq!(held.pid(), None);
+    }
+
+    /// #349: a refusal its run's supervisor or proxy relays is that run's while its report isn't made, its
+    /// process gone or not. Once it is, it's what run 1 left running: in the report of every run of its project
+    /// going then, said as run 1's by its id as the UI state shows it (`run#N`, its trace's — never the
+    /// sandbox's `run_id`) with its pid and command where the supervisor named them — never as that run's own,
+    /// nor another project's; none going, run 1's late one, logged.
+    #[test]
+    fn a_refusal_relayed_after_its_runs_report_is_no_other_runs() {
+        // (a project of its own: `GOING` is every test's; trace ids no `run_id` this test binary makes reaches)
+        let with = |tag: &str, root: &str, trace: u64| {
+            let env = Env { root: PathBuf::from(root), ..Default::default() };
+            Policy { watch: Some(Watch::quiet(tag)), trace: Some(trace), ..Policy::for_project(&env) }
+        };
+        let at = "/w/f349-relayed";
+        let (one, two, three) =
+            (with("late-1.", at, 9_349_001), with("late-2.", at, 9_349_002), with("late-3.", at, 9_349_003));
+        let elsewhere = with("late-q.", "/w/f349-elsewhere", 9_349_004);
+        for p in [&one, &two, &three, &elsewhere] {
+            drop(told(std::sync::Arc::new(p.clone())));
+        }
+        let left = |p: &Policy| p.watch.as_ref().unwrap().blocked().left;
+        let d = |port: u16| Denial {
+            process: "sh".into(),
+            op: "network-outbound".into(),
+            target: format!("192.0.2.1:{port}"),
+        };
+        let seen = |p: &Policy| -> Vec<String> {
+            p.watch.as_ref().unwrap().blocked().seen.iter().map(|d| d.target.clone()).collect()
+        };
+        let late = |p: &Policy| p.watch.as_ref().unwrap().late.load(std::sync::atomic::Ordering::SeqCst);
+        tell(&one, d(1).into());
+        assert_eq!(seen(&one), ["192.0.2.1:1"], "its own, its report not made yet");
+        one.watch.as_ref().unwrap().finish();
+        let daemon = Relayed { denial: d(2), by: Some((4242, "java -Xmx512m GradleDaemon".into())) };
+        tell(&one, daemon.clone());
+        assert_eq!(seen(&one), ["192.0.2.1:1"], "its report was made without it");
+        for p in [&two, &three] {
+            assert_eq!(seen(p), Vec::<String>::new(), "never the run going then's own");
+            assert_eq!(left(p), [(Some(9_349_001), daemon.clone())], "said as run 1's, in each going");
+        }
+        assert!(left(&elsewhere).is_empty(), "another project's run");
+        assert_eq!(late(&one), 0, "a report took it");
+        let said = Guard::In(Box::new(two.clone())).report(&[]);
+        let line = "refused for what run#9349001 left running (pid 4242, java -Xmx512m GradleDaemon): \
+                    network-outbound 192.0.2.1:2 (sh)";
+        assert!(said.contains(line), "{said}");
+        assert!(said.contains("Not this run's own") && !said.contains("The sandbox blocked one"), "{said}");
+        tell(&two, d(3).into());
+        assert_eq!(seen(&two), ["192.0.2.1:3"], "its own");
+        for p in [&two, &three] {
+            p.watch.as_ref().unwrap().finish();
+        }
+        tell(&one, d(4).into());
+        assert_eq!(left(&two).len(), 1, "its report made");
+        assert!(left(&elsewhere).is_empty(), "another project's run");
+        assert_eq!(late(&one), 1, "none going: run 1's late one");
+        elsewhere.watch.as_ref().unwrap().finish();
     }
 
     /// A run waits for its watch's stream before it starts only on macOS: `log stream` reads from when it's
@@ -12338,6 +12568,7 @@ mod tests {
             run_id: 0,
             session: 0,
             watch: None,
+            trace: None,
             granted: Vec::new(),
             sockets: Vec::new(),
             terminals: false,
@@ -14270,6 +14501,7 @@ mod tests {
                 run_id: 0,
                 session: 0,
                 watch: None,
+                trace: None,
                 granted: Vec::new(),
                 sockets: Vec::new(),
                 terminals: false,
@@ -14361,6 +14593,7 @@ mod tests {
             run_id: 0,
             session: 0,
             watch: None,
+            trace: None,
             granted: Vec::new(),
             sockets: Vec::new(),
             terminals: false,
@@ -14439,6 +14672,7 @@ mod tests {
             run_id: 0,
             session: 0,
             watch: None,
+            trace: None,
             granted: Vec::new(),
             sockets: Vec::new(),
             terminals: false,
@@ -16002,6 +16236,7 @@ mod tests {
             run_id: 0,
             session: 0,
             watch: None,
+            trace: None,
             granted: Vec::new(),
             sockets: Vec::new(),
             terminals: false,

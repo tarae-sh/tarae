@@ -3966,6 +3966,11 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
     let spent = next_hosts.clone();
     let said = ed.tokens_said.clone();
     let here = run_here(ed);
+    // (the run as the UI state names it, `run#N` — what a later run's report calls it: `sandbox::left_said`)
+    let trace = match &who {
+        For::Claude(call) => call.run_id(),
+        For::User(_) => ride.trace.as_ref().map(crate::trace::RunTrace::id),
+    };
     let (job_run, base, workspace_root) =
         (job.clone(), ride.extra.base.as_ref().map(|b| b.tree.clone()), ed.workspace.root.clone());
     ed.events.jobs().spawn(move || {
@@ -3988,6 +3993,7 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
                 }
             }
             let mut p = crate::sandbox::policy_from(&root, w, &here)?;
+            p.trace = trace;
             p.cwd = run_folder(&job_run, base.as_deref(), &workspace_root, &p);
             // (settings holding a token that take no copy — cargo's: the user hears once — `tokens::tell_holders`)
             told = crate::tokens::to_tell(&p.reads.copies.told, said.as_deref());

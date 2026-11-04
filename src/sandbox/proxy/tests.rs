@@ -197,7 +197,7 @@ fn rules(hosts: &[&str]) -> Egress {
 
 /// What the supervisor does for a run's connection, stood in: a TCP pair, one end to the proxy in a message
 /// with these rules — the run's end back, and the sender its refusals come on.
-fn connection(p: &Proxy, session: u64, run: u64, rules: Egress) -> (TcpStream, Receiver<Denial>) {
+fn connection(p: &Proxy, session: u64, run: u64, rules: Egress) -> (TcpStream, Receiver<Relayed>) {
     let l = TcpListener::bind((LO, 0)).unwrap();
     let run_end = TcpStream::connect(l.local_addr().unwrap()).unwrap();
     let (ours, _) = l.accept().unwrap();
@@ -242,21 +242,21 @@ fn to_close(c: &mut TcpStream) -> Vec<u8> {
     got
 }
 
-fn said(d: &Receiver<Denial>) -> String {
+fn said(d: &Receiver<Relayed>) -> String {
     let d = d.recv_timeout(WAIT).expect("a refusal said");
     assert_eq!(d.op, OP);
-    d.target
+    d.denial.target
 }
 
 /// A refusal the user's answer would lift, as said: its own op (`:sandbox-blocked` offers the host by it).
-fn said_host(d: &Receiver<Denial>) -> String {
+fn said_host(d: &Receiver<Relayed>) -> String {
     let d = d.recv_timeout(WAIT).expect("a refusal said");
     assert_eq!(d.op, HOST_OP, "{}", d.target);
-    d.target
+    d.denial.target
 }
 
 /// A tunnel to `host` through `p`, the curl ClientHello sent and echoed back: an established one.
-fn tunnel(p: &Proxy, session: u64, run: u64, rules: Egress, host: &str) -> (TcpStream, Receiver<Denial>) {
+fn tunnel(p: &Proxy, session: u64, run: u64, rules: Egress, host: &str) -> (TcpStream, Receiver<Relayed>) {
     let (mut c, d) = connection(p, session, run, rules);
     assert_eq!(ask(&mut c, &connect_head(host)), 200);
     c.write_all(curl_hello()).unwrap();

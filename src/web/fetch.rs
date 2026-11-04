@@ -567,11 +567,12 @@ fn connect(t: &Target, way: &Way, run: u64, by: Instant) -> Result<Deadline, Str
         return Ok(s);
     }
     // (its refusal said where it's sent — else the answer's body, which is its why too)
-    let why = refusals.recv_timeout(Duration::from_millis(200)).map(|d| d.target).unwrap_or_else(|_| {
-        let mut rest = buf[r.len..].to_vec();
-        let _ = (&mut s).take(4096).read_to_end(&mut rest);
-        String::from_utf8_lossy(&rest).trim().to_string()
-    });
+    let why =
+        refusals.recv_timeout(Duration::from_millis(200)).map(|d| d.denial.target).unwrap_or_else(|_| {
+            let mut rest = buf[r.len..].to_vec();
+            let _ = (&mut s).take(4096).read_to_end(&mut rest);
+            String::from_utf8_lossy(&rest).trim().to_string()
+        });
     Err(format!("refused by tarae's proxy — {why}"))
 }
 
