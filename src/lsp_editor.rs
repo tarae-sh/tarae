@@ -20,6 +20,26 @@ fn exited_said(name: &str) -> String {
     format!("{name} exited · :log-open shows why")
 }
 
+/// Server `c` hears `path` was saved, with the check a shared one is asked with it (`share::check`: this file's
+/// folder, as its own check on save would) — unless it holds saves now (`Client::holds_saves`): then the save waits,
+/// the newest of each file, for that progress's end (`saves_held_go`). Whether it went.
+fn save_to(c: &mut Client, path: &Path) -> bool {
+    if c.holds_saves() {
+        let held = c.saves_held.iter().any(|p| p == path);
+        c.saves_held.retain(|p| p != path);
+        c.saves_held.push(path.to_path_buf());
+        if !held {
+            let title = c.traits.hold_saves.as_deref().unwrap_or_default();
+            let msg = format!("save of {} held until its first {title} ends", path.display());
+            c.log().line(&c.name, "save", &msg);
+        }
+        return false;
+    }
+    c.notify("textDocument/didSave", json!({ "textDocument": { "uri": lsp::uri(path) } }));
+    crate::share::check(c, path);
+    true
+}
+
 /// Where the re-save decisions read the time (`recent_saves`, `changed_at`, `saves_again`): `Instant::now`,
 /// called the same way on every path — a test gives its own clock instead, so a burst's changes are as far
 /// apart as it says, however loaded the machine (a runner's 130 ms between two keys made a burst of 20 ms
@@ -865,10 +885,7 @@ impl Editor {
             };
             let paths: Vec<std::path::PathBuf> = paths.into_iter().filter(open).collect();
             let Some(c) = self.client_mut(cid) else { continue };
-            for p in &paths {
-                c.notify("textDocument/didSave", json!({ "textDocument": { "uri": lsp::uri(p) } }));
-                crate::share::check(c, p);
-            }
+            let paths: Vec<std::path::PathBuf> = paths.into_iter().filter(|p| save_to(c, p)).collect();
             if !paths.is_empty() {
                 let names: Vec<String> = paths
                     .iter()
@@ -1027,15 +1044,40 @@ impl Editor {
         let clients: Vec<ClientId> = doc.lsp.clients().collect();
         let now = (self.lsp.clock.0)();
         for cid in clients {
-            if let Some(c) = self.client_mut(cid) {
-                c.notify("textDocument/didSave", json!({ "textDocument": { "uri": lsp::uri(&path) } }));
-                // (a shared server tarae asks its checks of: this file's folder, as its own check on save would)
-                crate::share::check(c, &path);
+            if let Some(c) = self.client_mut(cid)
+                && save_to(c, &path)
+            {
                 let saves = self.lsp.recent_saves.entry(cid).or_default();
                 saves.retain(|(p, t)| *p != path && now.duration_since(*t) < RESAVE_WITHIN);
                 saves.push((path.clone(), now));
             }
         }
+    }
+
+    /// Server `cid`'s first run of its pack's `hold-saves` progress ended: the saves it held go, the newest of each
+    /// file still open with it.
+    fn saves_held_go(&mut self, cid: ClientId) {
+        let Some(c) = self.client_mut(cid) else { return };
+        c.scanned = true;
+        let held = std::mem::take(&mut c.saves_held);
+        let open =
+            |p: &std::path::PathBuf| self.docs.first(p, |d| d.lsp.clients().any(|c| c == cid)).is_some();
+        let paths: Vec<std::path::PathBuf> = held.into_iter().filter(open).collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.lsp_flush();
+        let now = (self.lsp.clock.0)();
+        let Some(c) = self.client_mut(cid) else { return };
+        for p in &paths {
+            save_to(c, p);
+        }
+        let names: Vec<String> =
+            paths.iter().map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect();
+        let title = c.traits.hold_saves.as_deref().unwrap_or_default();
+        let msg = format!("save of {} sent — held while its first {title} ran", names.join(", "));
+        c.log().line(&c.name, "save", &msg);
+        self.lsp.recent_saves.entry(cid).or_default().extend(paths.into_iter().map(|p| (p, now)));
     }
 
     /// One message from a server (reader thread → event → here, on the main loop).
@@ -1293,11 +1335,17 @@ impl Editor {
                 match v["kind"].as_str() {
                     Some("end") => {
                         // (what it was busy with, and how long — a go-to may have waited on it)
-                        if let Some(p) = c.progress.remove(&token)
+                        let ended = c.progress.remove(&token);
+                        if let Some(p) = &ended
                             && let Some(began) = p.began
                         {
                             let took = crate::term::run_duration(began.elapsed());
                             c.log().line(&c.name, "progress", &format!("{} took {took}", p.title));
+                        }
+                        // (its first run of what its pack holds saves through: what it held goes)
+                        let hold = c.traits.hold_saves.as_deref().filter(|_| !c.scanned);
+                        if ended.is_some_and(|p| hold == Some(p.title.as_str())) {
+                            self.saves_held_go(cid);
                         }
                         self.lsp.work_ended.insert(cid, std::time::Instant::now());
                         self.ask_again(cid);
@@ -3634,22 +3682,27 @@ impl Editor {
         if self.lsp.share.incoming(cid) {
             return self.swap_exited(cid);
         }
+        let Some(name) = self.client(cid).map(|c| c.name.clone()) else { return };
         let root = self.client(cid).map(|c| c.root.clone()).unwrap_or_default();
         let tool = self
             .client(cid)
             .and_then(|c| Path::new(&c.spec.command).file_name().map(|n| n.to_string_lossy().into_owned()));
         let log = self.server_log(cid);
-        if let Some(name) = self.lsp_stopped(cid) {
-            // (reaped as it's dropped; the next file of its project starts it again — unless it keeps
-            // exiting: then `:procs` holds it)
-            log.line(&name, "exit", &format!("{name} for {} exited", root.display()));
+        log.line(&name, "exit", &format!("{name} for {} exited", root.display()));
+        // (the third time in a while `:procs` holds it: the next file of its project doesn't start it again)
+        self.procs_server_exited(&name, &root);
+        // (a shared server in use: started again at once for its folders, calmly — #374)
+        if !self.procs.is_held(&name, &root) && self.share_exited(cid) {
+            return;
+        }
+        if self.lsp_stopped(cid).is_some() {
+            // (reaped as it's dropped; the next file of its project starts it again — unless `:procs` holds it)
             self.lsp.failed.insert(name.clone(), "exited".into());
             // An install card for it says why already (a rustup proxy without its component — #166)
             let offered = |t: &str| t == name || tool.as_deref() == Some(t);
             if !self.offers.iter().any(|o| matches!(&o.what, What::Install { tool, .. } if offered(tool))) {
                 self.set_error(exited_said(&name));
             }
-            self.procs_server_exited(&name, &root);
         }
     }
 

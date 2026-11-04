@@ -172,6 +172,9 @@ share = { toolchain = ["rust-toolchain.toml", "rust-toolchain"], checks = "check
 quiescent = { method = "experimental/serverStatus", capability = "experimental.serverStatusNotification", field = "quiescent", health = "health", message = "message" }
 # Its extension: by default `workspace/symbol` lists types only
 symbol-params = { searchKind = "allSymbols", searchScope = "workspace" }
+# A didSave during its first `Roots Scanned` panics it (rust-lang/rust-analyzer#19406: the file has no source root
+# yet — #374, a shared one's scan of a dozen checkouts takes minutes): held to that scan's end, the newest a file
+hold-saves = "Roots Scanned"
 # rustc's "`#[warn(unused_variables)]` (part of …) on by default" says where a lint comes from, not what's wrong
 hide-lines = ['^`#\[.*on by default$']
 

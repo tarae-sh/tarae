@@ -1208,6 +1208,37 @@ impl Editor {
         self.share_unpark();
     }
 
+    /// Server `a`, shared and in use, exited on its own (`lsp_exited` — #374: rust-analyzer#19406's panic, a save
+    /// during its first scan): nothing would start it again before a file of one of its folders opened, and its
+    /// folders went without a server for up to an hour. Started again at once for the same folders, every open file
+    /// of theirs given to it (`share_restart`); a swap's new one, loading beside it, takes over instead. Said calmly,
+    /// once — the error is `lsp_exited`'s once `:procs` holds it. False: not such a server, or none could start.
+    pub(crate) fn share_exited(&mut self, a: ClientId) -> bool {
+        let Some(c) = self.client(a) else { return false };
+        if c.share.is_none() || !c.ready || !self.lsp.share.in_use(a) {
+            return false;
+        }
+        let (name, roots) = (c.name.clone(), c.roots.clone());
+        let checkouts = |roots: &[PathBuf]| match roots.len() {
+            1 => names(roots),
+            n => format!("{n} checkouts"),
+        };
+        if let Some(b) = self.lsp.share.swaps.iter().find(|s| s.a == a && s.switched.is_none()).map(|s| s.b) {
+            // (B takes over as it loads — `share_forget`)
+            let theirs = self.client(b).map_or_else(|| checkouts(&roots), |c| checkouts(&c.roots));
+            self.lsp_stopped(a);
+            self.set_status(format!("{name} exited — the new one, loading, takes over for {theirs}"));
+            return true;
+        }
+        let said = checkouts(&roots);
+        self.share_restart(a, roots, "it exited".into());
+        if self.client(a).is_some() {
+            return false;
+        }
+        self.set_status(format!("{name} exited — restarted for {said} · :log-open shows why"));
+        true
+    }
+
     /// While two servers run side by side: memory read every `WATCH_EVERY`; pressure above normal ends the
     /// swap — B takes over now if it's ready and agreed, else at once all the same, A gone (a restart into
     /// the B already loading — dropping it would only load it again).
@@ -1465,6 +1496,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::ToastKind;
     use std::sync::atomic::{AtomicU8, Ordering};
 
     fn plenty() -> Room {
@@ -1999,6 +2031,93 @@ mod tests {
         settle(&mut ed, "wt2's file has a server", |ed| main_of(ed, wt2).is_some());
         let c = main_of(&ed, wt2).unwrap();
         assert_eq!(the_swap(&ed), Some((b, c)), "with room: a swap");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// #374 (rust-analyzer#19406): a didSave during rust-analyzer's first `Roots Scanned` panics it — the save waits,
+    /// its check with it, the newest of a file once, and goes at that scan's end; one during a later scan goes at once.
+    #[test]
+    fn a_save_during_its_first_roots_scan_waits_for_its_end() {
+        let (t, mut ed) = fixture("scan", &[], plenty);
+        let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
+        let a = a.unwrap();
+        up(&mut ed, a);
+        let path = ed.docs.iter().find(|d| d.id == main).and_then(|d| d.path.clone()).unwrap();
+        let scan = |kind: &str| {
+            json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": "rustAnalyzer/Roots Scanned",
+                "value": { "kind": kind, "title": "Roots Scanned", "message": "0/9" } } })
+        };
+        // (what it was sent up to a mark of the test's own: the writer thread writes in order)
+        let upto = |ed: &mut Editor, mark: &str| {
+            ed.client_mut(a).unwrap().notify(mark, json!({}));
+            let out = sent(&t, ed, a, &[mark]);
+            (out.matches("textDocument/didSave").count(), checks_of(&out, &path))
+        };
+        ed.on_lsp_message(a, scan("begin"));
+        ed.lsp_did_save(main);
+        ed.lsp_did_save(main);
+        assert_eq!(upto(&mut ed, "tarae/first"), (0, 0), "held while it scans, its check too");
+        assert_eq!(
+            ed.client(a).unwrap().saves_held,
+            std::slice::from_ref(&path),
+            "the newest of a file, once"
+        );
+        ed.on_lsp_message(a, scan("end"));
+        assert_eq!(upto(&mut ed, "tarae/second"), (1, 1), "sent at the scan's end, once");
+        assert!(ed.client(a).unwrap().saves_held.is_empty());
+        ed.on_lsp_message(a, scan("begin"));
+        ed.lsp_did_save(main);
+        assert_eq!(upto(&mut ed, "tarae/third"), (2, 2), "a later scan holds nothing");
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    /// #374: a shared server in use that exits on its own (rust-analyzer's panic) is started again at once for the
+    /// same folders, every open file of theirs opened in it, said calmly — its folders went without a server for up
+    /// to an hour. The error comes only once `:procs` holds it (its third exit in a while): then none starts.
+    #[test]
+    fn a_shared_server_that_exits_is_restarted_for_its_folders() {
+        let (t, mut ed) = fixture("exits", &["wt1"], tight);
+        let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
+        let a = a.unwrap();
+        up(&mut ed, a);
+        quiescent(&mut ed, a);
+        ed.open(&t.join("wt1/src/main.rs")).unwrap();
+        let wt = ed.doc().id;
+        settle(&mut ed, "one server for both", |ed| ed.client(a).is_none() && main_of(ed, wt).is_some());
+        let mut b = main_of(&ed, main).unwrap();
+        let paths: Vec<PathBuf> = [main, wt]
+            .iter()
+            .map(|id| ed.docs.iter().find(|d| d.id == *id).unwrap().path.clone().unwrap())
+            .collect();
+        let said = |ed: &Editor, kind: ToastKind| {
+            ed.toasts.iter().filter(|x| x.kind == kind && x.text.contains("exited")).count()
+        };
+        for exit in 1..=2 {
+            up(&mut ed, b);
+            quiescent(&mut ed, b);
+            ed.lsp_exited(b);
+            let c = main_of(&ed, main).expect("main's file has a new one");
+            assert_ne!(c, b, "exit {exit}: a new one");
+            assert_eq!(main_of(&ed, wt), Some(c), "exit {exit}: the worktree's file too");
+            assert_eq!(ed.client(c).unwrap().roots, [t.join("main"), t.join("wt1")], "the same folders");
+            up(&mut ed, c);
+            let uris: Vec<String> = paths.iter().map(|p| lsp::uri(p)).collect();
+            let out = sent(&t, &ed, c, &[&uris[0], &uris[1]]);
+            assert_eq!(out.matches("textDocument/didOpen").count(), 2, "exit {exit}: every open file");
+            assert!(!ed.lsp.failed.contains_key("rust-analyzer"), "exit {exit}: no failure");
+            assert_eq!(said(&ed, ToastKind::Error), 0, "exit {exit}: no error");
+            let calm = ed.toasts.iter().find(|x| x.kind == ToastKind::Info && x.text.contains("exited"));
+            assert!(
+                calm.is_some_and(|x| x.text.starts_with("rust-analyzer exited — restarted for 2 checkouts")),
+                "exit {exit}: {:?}",
+                ed.toasts.iter().map(|x| &x.text).collect::<Vec<_>>()
+            );
+            b = c;
+        }
+        ed.lsp_exited(b);
+        assert!(main_of(&ed, main).is_none() && main_of(&ed, wt).is_none(), "held: none started");
+        assert!(ed.lsp.failed.contains_key("rust-analyzer"));
+        assert_eq!(said(&ed, ToastKind::Error), 1, "the third exit is the error");
         let _ = std::fs::remove_dir_all(&t);
     }
 

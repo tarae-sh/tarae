@@ -389,6 +389,7 @@
     quiescent: experimental/serverStatus (asked: experimental.serverStatusNotification) · quiescent health message
     symbol-params: {"searchKind":"allSymbols","searchScope":"workspace"}
     hide-lines: ^`#\[.*on by default$
+    hold-saves: during its first Roots Scanned
 
 [builds]
   rust: Cargo: when Cargo.toml · ask cargo metadata --no-deps --offline --format-version 1 · target_directory build_directory · home CARGO_HOME else ~/.cargo · setting build.build-dir in .cargo/config.toml .cargo/config / home config.toml config (CARGO_BUILD_BUILD_DIR) per checkout {workspace-path-hash} {workspace-root} · remove build depth 2 · cache tag "# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n" · macos xattr com.apple.metadata:com_apple_backup_excludeItem=62706c69737430305f1011636f6d2e6170706c652e6261636b75706408000000000000010100000000000000010000000000000000000000000000001c · macos xattr com.apple.fileprovider.ignore#P=31 · keep registry git

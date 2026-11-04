@@ -21,7 +21,7 @@
 //!   `share.rs`), `quiescent = { method, capability, field, health, message }`, `symbol-params`, `hide-lines`;
 //!   how it starts beyond `args` (`args-add`, `args-unless`, `init`); `progress = { method, kind, text, done,
 //!   done-text, error }`, `virtual = { scheme, fetch, language, title-join }` (`virtualdoc.rs`),
-//!   `client-commands`; `runs-project-code` (it waits for the repository's trust — `codetrust.rs`) and, only with
+//!   `client-commands`; `hold-saves` (a didSave waits out that progress's first run); `runs-project-code` (it waits for the repository's trust — `codetrust.rs`) and, only with
 //!   it, `[[…agents]]` = `{ name, files, uses, version, jars, at-least, arg, unless }`: what's loaded into it where the
 //!   project uses it (`lspagent.rs`).
 //! - `config-files = { toml = [...], json = [...] }`: files checked for parse errors before a save (`disk.rs`;
@@ -531,6 +531,7 @@ pub(crate) const SERVER_KEYS: &[&str] = &[
     "client-commands",
     "runs-project-code",
     "agents",
+    "hold-saves",
 ];
 
 fn server_of(e: &Entry) -> Result<(ServerSpec, ServerTraits), String> {
@@ -675,6 +676,7 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
         client_commands,
         runs_project_code,
         agents,
+        hold_saves: string(t, "hold-saves")?,
     })
 }
 
@@ -865,6 +867,9 @@ mod tests {
             }
             for (cmd, action) in &t.client_commands {
                 said.push(format!("client-command: {cmd} → {action:?}"));
+            }
+            if let Some(h) = &t.hold_saves {
+                said.push(format!("hold-saves: during its first {h}"));
             }
             for a in &t.agents {
                 let version: Vec<&str> = a.version.iter().map(regex::Regex::as_str).collect();

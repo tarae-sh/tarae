@@ -100,6 +100,9 @@ progress = { method = "x/status", kind = "type", text = "message", done = ["Read
 virtual = { scheme = "gleam://", fetch = "gleam/source", language = "gleam", title-join = "." }
 # Commands it hands back for the client to run: "apply-edit" (each argument a WorkspaceEdit, applied here)
 client-commands = { "gleam.applyEdit" = "apply-edit" }
+# The `$/progress` title during whose first run a save would crash it: each file's didSave waits for its end (the
+# newest of each file then; nothing held past an exit) — rust-analyzer's `Roots Scanned`
+hold-saves = "Indexing"
 # It runs the project's code as it starts or works — its build script, its build's plugins: it waits for the
 # repository's trust (one card, every checkout's and server root's answer — `:code-trust`, `:code-untrust`), these words on the card
 runs-project-code = "its gleam.toml's build scripts"

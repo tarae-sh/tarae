@@ -65,6 +65,9 @@ pub struct ServerTraits {
     /// `agents`: what's loaded into it where the project uses it (a jar its JVM runs — `lspagent.rs`), found once
     /// the repository's code is trusted.
     pub agents: Vec<crate::lspagent::Agent>,
+    /// `hold-saves`: the `$/progress` title during whose first run a didSave waits for its end (rust-analyzer's
+    /// `Roots Scanned`: a save then panics it — `Client::holds_saves`).
+    pub hold_saves: Option<String>,
 }
 
 /// A pack's `progress = { … }`: a server's own notification of what it's doing, shown as progress.
@@ -216,6 +219,7 @@ pub static NO_TRAITS: ServerTraits = ServerTraits {
     client_commands: Vec::new(),
     runs_project_code: None,
     agents: Vec::new(),
+    hold_saves: None,
 };
 
 /// The names `spec` goes by in the packs: its own, then the built-in servers whose command it runs (`[lsp.py]
@@ -780,6 +784,10 @@ pub struct Client {
     pub quiescent: Option<bool>,
     pub settled_once: bool,
     pub health: String,
+    /// The files whose didSave waits for its pack's `hold-saves` progress to end, the latest save last (one a
+    /// file) · whether its first run of it has ended (`holds_saves`). Kept with it: nothing held past an exit.
+    pub saves_held: Vec<PathBuf>,
+    pub scanned: bool,
     /// The `initializationOptions` it was started with (set on the writer thread) — a shared server's
     /// settings answer is these.
     pub init_sent: std::sync::Arc<std::sync::OnceLock<Value>>,
@@ -957,6 +965,8 @@ impl Client {
             quiescent: None,
             settled_once: false,
             health: String::new(),
+            saves_held: Vec::new(),
+            scanned: false,
             init_sent: Default::default(),
             tx,
             next_req: 1,
@@ -1088,6 +1098,8 @@ impl Client {
             quiescent: None,
             settled_once: false,
             health: String::new(),
+            saves_held: Vec::new(),
+            scanned: false,
             init_sent: Default::default(),
             tx,
             next_req: 1,
@@ -1184,6 +1196,14 @@ impl Client {
 
     pub fn progress_text(&self) -> Option<String> {
         self.progress.values().next().map(|p| format!("{}: {}", self.name, p.text()))
+    }
+
+    /// Its pack's `hold-saves` progress is under way for the first time: a didSave now waits for its end
+    /// (rust-analyzer#19406: one during its first `Roots Scanned` asks a file's source root before there is one,
+    /// and its main loop panics — #374).
+    pub fn holds_saves(&self) -> bool {
+        let Some(title) = self.traits.hold_saves.as_deref().filter(|_| !self.scanned) else { return false };
+        self.progress.values().any(|p| p.title == title)
     }
 }
 
