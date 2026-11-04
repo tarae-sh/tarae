@@ -63,11 +63,20 @@ fn run(choices: Choices) -> Vec<String> {
     crate::git::watched(&mut ed.workspace, "main");
     ed.open(&main.join("a.rs")).unwrap();
     let buffer = ed.doc().id;
+    // (its first merge lands as the stream picks, between frames drawn while it's under way: never a blank view)
     crate::weave::open(&mut ed, None, None).unwrap();
+    let first = |sim: &mut Sim, ed: &mut Editor| {
+        crate::term::render(ed, &mut Vec::new(), 80, 30).unwrap();
+        sim.wait(Duration::from_millis(100));
+        "a frame, 100 ms pass".to_string()
+    };
+    sim.walk(&mut ed, 6, first, never_blank, print);
+    assert_ne!(ed.doc().id, buffer, "the view in front once its merge landed");
     let view = ed.doc().id;
     let main = ed.workspace.id;
     let world = RefCell::new(World { fix, session: None, view, buffer, lines: [0, 0], main, enter: None });
     open(&mut ed, &mut world.borrow_mut());
+    ed.handle_event(crate::event::Event::Resize);
     let check = |ed: &Editor| held(ed, &world.borrow());
     sim.walk(&mut ed, INPUTS, |sim, ed| step(sim, ed, &mut world.borrow_mut()), check, print);
     let trace = sim.trace().to_vec();
@@ -184,10 +193,19 @@ fn went(ed: &Editor, w: &World, said: u64) -> Option<String> {
         .then(|| "enter past the file's end".into())
 }
 
+/// #355: a woven view in front has had its first merge — never a blank one drawn while it's under way.
+fn never_blank(ed: &Editor) -> Result<(), String> {
+    match crate::weave::of(ed.doc()) {
+        Some(m) if m.merges == 0 => Err("a woven view in front before its first merge".into()),
+        _ => Ok(()),
+    }
+}
+
 fn held(ed: &Editor, w: &World) -> Result<(), String> {
     if let Some(e) = &w.enter {
         return Err(e.clone());
     }
+    never_blank(ed)?;
     let Some(d) = ed.docs.iter().find(|d| d.id == w.view) else { return Err("the woven view went".into()) };
     let Some(m) = crate::weave::of(d) else { return Err("no longer a woven view".into()) };
     if d.is_modified() {

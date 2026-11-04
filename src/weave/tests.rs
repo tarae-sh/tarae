@@ -228,11 +228,11 @@ fn shown(ed: &Editor) -> &Shown {
     of(ed.doc()).expect("a woven view in front")
 }
 
-/// Events until the woven view in front has had `n` merges land and none is under way.
+/// Events until a woven view is in front (its first merge landed) with `n` merges and none under way.
 fn woven_to(ed: &mut Editor, n: u64) {
     sync(ed);
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-    while shown(ed).merges < n || shown(ed).asking {
+    while of(ed.doc()).is_none_or(|m| m.merges < n || m.asking) {
         let left = end.saturating_duration_since(std::time::Instant::now());
         let ev = ed.events.recv_timeout(left).unwrap_or_else(|| panic!("merge {n}: no event in time"));
         ed.handle_event(ev);
@@ -570,7 +570,11 @@ fn the_woven_view_is_read_only() {
 fn space_v_w_and_the_lists_v_open_it() {
     let Scene { mut ed, docs, ids, dir: _dir, .. } = scene("weave-open");
     press(&mut ed, " vw");
+    // (again while its first merge is under way: the same one coming, never a second)
+    press(&mut ed, " vw");
+    woven_to(&mut ed, 1);
     assert_eq!(shown(&ed).rel, "a.rs");
+    assert_eq!(ed.docs.iter().filter(|d| of(d).is_some()).count(), 1, "one view");
     let id = ed.doc().id;
     press(&mut ed, " vw");
     assert_eq!(ed.doc().id, id, "the one open already");
@@ -591,6 +595,52 @@ fn space_v_w_and_the_lists_v_open_it() {
     assert!(on(&ed), "docs's row in hand");
     press(&mut ed, "v");
     assert!(ed.messages.iter().any(|m| m.2.contains("nothing of it to weave yet")), "{:?}", ed.messages);
+}
+
+/// #355: the woven view never shows blank — the frame right after `space v w` is still the code as it was (no `woven ·`,
+/// its lines there), the view in front only once its first merge landed, its text the merge's in that same frame; a
+/// first merge that fails opens nothing, said (no repository: the scene's own outside git).
+#[test]
+fn the_view_comes_in_front_with_its_first_merge_never_blank() {
+    let Scene { mut ed, fix, dir, .. } = scene("weave-first");
+    type_line(&mut ed, 2, "two, fix");
+    let code = ed.doc().id;
+    press(&mut ed, " vw");
+    assert_eq!(ed.doc().id, code, "the code stays in front");
+    let r = rows(&frame(&mut ed, 100));
+    assert!(!r.iter().any(|l| l.contains("woven ·")), "no view yet: {r:#?}");
+    assert!(r.iter().any(|l| l.contains("two, fix")), "the code's lines: {r:#?}");
+    let shown_by = ed.buffers().iter().filter(|&&i| of(&ed.docs[i]).is_some()).count();
+    assert_eq!(shown_by, 0, "nor among the buffers");
+    woven_to(&mut ed, 1);
+    let tree = ed.doc().syntax.as_ref().is_some_and(|s| s.tree.is_some() && !s.dirty);
+    assert!(tree, "its tree came with its text: its first frame coloured");
+    let r = rows(&frame(&mut ed, 100));
+    assert!(r.iter().any(|l| l.contains("woven · a.rs")), "{r:#?}");
+    assert!(r.iter().any(|l| l.contains("two, fix")), "the merge's text: {r:#?}");
+    assert!(r.iter().any(|l| l.contains("line 12")), "whole: {r:#?}");
+    // (a first merge that fails: nothing opened, why said)
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let out = std::fs::canonicalize(out).unwrap();
+    std::fs::write(out.join("c.rs"), "c\n").unwrap();
+    let _ = fix;
+    ed.workspace.root = out.clone();
+    ed.open(&out.join("c.rs")).unwrap();
+    let code = ed.doc().id;
+    let views = ed.docs.iter().filter(|d| of(d).is_some()).count();
+    press(&mut ed, " vw");
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while ed.weaving.is_some() {
+        assert!(std::time::Instant::now() < end, "its merge");
+        if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+            ed.handle_event(ev);
+        }
+    }
+    assert_eq!(ed.doc().id, code, "nothing opened");
+    assert_eq!(ed.docs.iter().filter(|d| of(d).is_some()).count(), views);
+    let last = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+    assert!(last.contains("woven · c.rs: not in a git repository"), "{last}");
 }
 
 /// The woven view of `view` in front again, in fix's workspace (after an `enter` took you elsewhere).

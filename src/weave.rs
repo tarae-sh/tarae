@@ -41,6 +41,21 @@ pub const COLUMN_MIN: usize = 28;
 /// and its tree as C2 last took it (a run's changes, a HEAD moving) — one moving asks again.
 type Key = Vec<(WorkspaceId, Option<(DocId, u64)>, Option<std::time::Instant>, Option<String>)>;
 
+/// A woven view asked for and not made yet: its first merge under way (#355 — the code stays in front until it lands,
+/// never a blank view under the eye). `id`: its document to be; `from`: what was in front, in which workspace.
+pub struct Weaving {
+    id: DocId,
+    workspace: WorkspaceId,
+    from: DocId,
+    rel: String,
+}
+
+/// How long a first merge runs unsaid: most land well within it, and a step said for a frame would flash too.
+const SAY_AFTER: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// The first merge's step (`Editor::set_step`).
+const STEP: &str = "weave";
+
 /// Where the cursor goes once the first merge lands: the first conflict with that session (C2's `≈`), else none.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Land {
@@ -314,18 +329,95 @@ pub fn open(ed: &mut Editor, path: Option<PathBuf>, land: Option<Land>) -> Resul
         place(ed);
         return Ok(());
     }
+    // (its first merge under way already: it comes in front as that lands)
+    if ed.weaving.as_ref().is_some_and(|w| w.workspace == ed.workspace.id && w.rel == rel) {
+        return Ok(());
+    }
     let tip_name = match &branch {
         Some(b) => crate::overlap::named_branch(ed, b),
         None => (String::new(), None),
     };
-    let id = ed.open_virtual(&format!("woven · {rel}"), "");
-    let doc = ed.docs.iter_mut().find(|d| d.id == id).expect("just opened");
-    doc.woven = Some(Box::new(Shown::new(rel, branch, tip_name, doc.version(), land)));
-    if let Some(spec) = crate::syntax::detect(&path) {
+    // (no document until its first merge lands — `first`: the code stays in front meanwhile, never an empty view)
+    let id = ed.alloc_id();
+    let (from, workspace) = (ed.doc().id, ed.workspace.id);
+    ed.weaving = Some(Weaving { id, workspace, from, rel: rel.clone() });
+    let shown = Shown::new(rel.clone(), branch.clone(), tip_name, 0, land);
+    let key = key(ed, &rel);
+    let lang = crate::syntax::detect(&path);
+    spawn(ed, (rel, lang), branch, None, move |ed, r| first(ed, id, lang, shown, key, r));
+    // (said only past `SAY_AFTER`: a merge that lands sooner shows nothing but the view)
+    ed.events.shared_jobs().spawn(move || {
+        crate::event::sleep(SAY_AFTER);
+        move |ed: &mut Editor| match ed
+            .weaving
+            .as_ref()
+            .filter(|w| w.id == id && w.workspace == ed.workspace.id)
+        {
+            Some(w) => {
+                let msg = format!("weaving {}…", w.rel);
+                ed.set_step(STEP, msg);
+            }
+            None => ed.unchanged = true,
+        }
+    });
+    Ok(())
+}
+
+/// A view's first merge landed (`open`): its document made now with the merge's text and its tree — its first frame
+/// whole and coloured — and in front where you asked for it. Failed, it's never made: why, said. Asked again since
+/// (another file's view): dropped.
+fn first(
+    ed: &mut Editor,
+    id: DocId,
+    lang: Option<&'static crate::syntax::LangSpec>,
+    shown: Shown,
+    key: Key,
+    mut r: Result<Worked, String>,
+) {
+    if ed.weaving.as_ref().is_none_or(|w| w.id != id) {
+        ed.unchanged = true;
+        return;
+    }
+    let w = ed.weaving.take().expect("just looked");
+    ed.step_done(STEP);
+    let (text, syntax) = match r.as_mut() {
+        Ok(worked) => (worked.merge.text.clone(), worked.syntax.take()),
+        Err(e) => return ed.set_error(format!("woven · {}: {e}", w.rel)),
+    };
+    // (another workspace in front since: not made in it — the view is that workspace's)
+    if ed.workspace.id != w.workspace {
+        return ed.set_status(format!("woven · {} not opened — you're in another workspace now", w.rel));
+    }
+    let mut doc = crate::document::Document::from_str(id, &text);
+    doc.title = Some(format!("woven · {}", w.rel));
+    doc.throwaway = true;
+    let mut shown = shown;
+    shown.version = doc.version();
+    doc.woven = Some(Box::new(shown));
+    // (the grammar not loaded there — missing, say: as any file asks it, its card and all)
+    let unparsed = match syntax {
+        Some(Ok(syn)) => {
+            doc.syntax = Some(syn);
+            None
+        }
+        _ => lang,
+    };
+    // (another file in front since: among your buffers, never put in front of you)
+    let here = ed.doc().id == w.from;
+    let before = ed.current;
+    ed.add_doc(doc);
+    if !here {
+        ed.current = ed.docs.iter().position(|d| d.id == w.from).unwrap_or(before);
+    }
+    if let Some(spec) = unparsed {
         ed.load_language(id, spec);
     }
-    sync(ed);
-    Ok(())
+    landed(ed, id, key, r);
+    // (a merge that came to nothing to say — an empty file nobody changed — still brings the view in: drawn)
+    ed.unchanged = false;
+    if !here {
+        ed.set_status(format!("woven · {} is ready — space b", w.rel));
+    }
 }
 
 impl Shown {
@@ -462,6 +554,8 @@ struct Worked {
     /// Sessions whose file couldn't be merged (a link, a FIFO, too large, binary): left out of the merge, and why.
     left: Vec<(String, &'static str)>,
     merge: Merge,
+    /// The merged text parsed, for a view's first merge (`open`): its first frame coloured — else why not (no grammar).
+    syntax: Option<Result<crate::syntax::Syntax, String>>,
 }
 
 /// The merge worked out on a worker, landed on view `id` (`landed`).
@@ -469,6 +563,17 @@ fn ask(ed: &mut Editor, id: DocId, key: Key) {
     let Some(m) = ed.docs.iter_mut().find(|d| d.id == id).and_then(|d| d.woven.as_mut()) else { return };
     m.asking = true;
     let (rel, branch, tip) = (m.rel.clone(), m.branch.clone(), m.tip.clone());
+    spawn(ed, (rel, None), branch, tip, move |ed, r| landed(ed, id, key, r));
+}
+
+/// `rel`'s merge worked out on a worker (its text parsed in `lang` too, when given), `then` given what came of it.
+fn spawn(
+    ed: &mut Editor,
+    (rel, lang): (String, Option<&'static crate::syntax::LangSpec>),
+    branch: Option<String>,
+    tip: Option<(String, Arc<String>)>,
+    then: impl FnOnce(&mut Editor, Result<Worked, String>) + Send + 'static,
+) {
     let top = ed.workspace.root.clone();
     let home =
         sessions(ed).find(|l| l.id == WorkspaceId::HOME).map_or_else(|| top.clone(), |l| l.root.clone());
@@ -488,7 +593,13 @@ fn ask(ed: &mut Editor, id: DocId, key: Key) {
         .collect();
     ed.events.shared_jobs().spawn(move || {
         let started = crate::clock::now();
-        let r = work(&top, (&rel, &home), branch, tip, ins);
+        let mut r = work(&top, (&rel, &home), branch, tip, ins);
+        if let (Some(spec), Ok(w)) = (lang, r.as_mut()) {
+            let text = ropey::Rope::from_str(&w.merge.text);
+            let syntax =
+                crate::syntax::Loader::global().load(spec).map(|l| crate::syntax::Syntax::parsed(l, &text));
+            w.syntax = Some(syntax);
+        }
         let line = match &r {
             Ok(w) => format!(
                 "{rel}: {} sides, {} conflicts — {}",
@@ -499,7 +610,7 @@ fn ask(ed: &mut Editor, id: DocId, key: Key) {
             Err(e) => format!("{rel}: {e}"),
         };
         crate::log::line("weave", "info", &line);
-        move |ed: &mut Editor| landed(ed, id, key, r)
+        move |ed: &mut Editor| then(ed, r)
     });
 }
 
@@ -636,7 +747,7 @@ fn work(
         inputs.push(Input { text, merge_base });
     }
     let merge = lay(&tip.1, &inputs);
-    Ok(Worked { branch, tip: Some(tip), sides, unchanged, left, merge })
+    Ok(Worked { branch, tip: Some(tip), sides, unchanged, left, merge, syntax: None })
 }
 
 /// What reading a workspace's file found.

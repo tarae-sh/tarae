@@ -760,7 +760,9 @@ and cost its tokens plus a paragraph retelling what the toast had said.)
 **The woven view.** `:weave` (or `space v w`, or `v` on a session in the list — at its conflict) shows the file in
 front as every session's changes weave onto the base's tip — every session's thread woven into one file, a view,
 never a merge done: the open buffers, unsaved changes too, else what's on disk, woven in memory on a worker and
-again as any of them moves. It's a read-only document, `woven · src/a.rs` in the path bar and the buffer list (an
+again as any of them moves. The code stays in front until the first merge is in, and then the view comes in whole and
+coloured, never blank (a merge still going after 0.4 s says `weaving src/a.rs…` in a toast; one that fails opens
+nothing and says why). It's a read-only document, `woven · src/a.rs` in the path bar and the buffer list (an
 edit is put back and said): each change on its session's colour, its first line's sign column saying whose (`f`,
 `m` — the side panel's prefixes), the cursor's change named at its end (`‹fix›`); a change that only takes lines out
 is a head where they went (`m ─ main · 3 lines removed ──`); a conflict is the base's lines then each session's

@@ -941,6 +941,8 @@ pub struct Editor {
     pub prompt_history: crate::prompt::History,
     /// `space i`'s line as `esc`, a press off it or a refused send left it — back on the next `space i`.
     pub change_draft: String,
+    /// A woven view's first merge under way: the view comes in front as it lands (`weave::open`).
+    pub weaving: Option<crate::weave::Weaving>,
     pub status: Option<(String, Severity)>,
     pub should_quit: bool,
     /// Text area (rows, cols) — the terminal updates it every frame. Used by page motions.
@@ -1486,6 +1488,7 @@ impl Editor {
             search_origin: None,
             prompt_history: Default::default(),
             change_draft: String::new(),
+            weaving: None,
             status: None,
             should_quit: false,
             viewport: (24, 80),
@@ -1791,7 +1794,7 @@ impl Editor {
 
     /// Adds a document and makes it current — taking over the startup scratch's slot if that's all there
     /// is (panes showing the scratch then show the new document).
-    fn add_doc(&mut self, doc: Document) {
+    pub(crate) fn add_doc(&mut self, doc: Document) {
         let slot = self.replaceable_scratch();
         self.workspace.scratch = None;
         let id = doc.id;
