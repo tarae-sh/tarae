@@ -779,7 +779,7 @@ fn over_fold(editor: &mut Editor, w: u16, h: u16) {
     }
     let probe = Layout::new(editor, w, h);
     for kind in over {
-        editor.screen.over_folded[kind.dock_index()] = editor.dock_rows(kind, probe.rows, probe.panel.h) == 0;
+        editor.screen.over_folded[kind.dock_index()] = editor.dock_rows(kind, probe.rows, probe.slot.h) == 0;
     }
 }
 
@@ -900,24 +900,23 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         chat_w: lay.chat_w,
         side_w: if editor.review_rail_up() { 0 } else { lay.side().map_or(0, |r| r.w) },
         rail_w: if editor.review_rail_up() && lay.zoom.is_none() { lay.side().map_or(0, |r| r.w) } else { 0 },
-        bottom_h: lay.panel.h,
-        body_h: lay.text_rows + lay.panel.h,
+        bottom_h: lay.slot.h,
+        body_h: lay.text_rows + lay.slot.h,
         text_top: lay.text_top as usize,
-        terminal_rows: (lay.panel.h > 0 && terminal_shown)
-            .then(|| (lay.panel.y, lay.panel.y + lay.panel.h - 1)),
-        slot_x: lay.panel.x,
+        terminal_rows: (lay.slot.h > 0 && terminal_shown).then(|| (lay.slot.y, lay.slot.y + lay.slot.h - 1)),
+        slot_x: lay.slot.x,
         slot_tabs: Default::default(),
         member_names: Default::default(),
         // (the terminal's rows: its panel's — the size you set, or its own — under the header)
         terminal_size: std::cell::Cell::new(Some((
             crate::sizes::bottom(
-                lay.text_rows + lay.panel.h,
+                lay.text_rows + lay.slot.h,
                 editor.sizes.bottom,
-                terminal_panel_h(lay.text_rows + lay.panel.h, lay.slot_head),
+                terminal_panel_h(lay.text_rows + lay.slot.h, lay.slot_panel().head),
             )
-            .saturating_sub(lay.slot_head)
+            .saturating_sub(lay.slot_panel().head)
             .max(2) as u16,
-            terminal_cols(&lay) as u16,
+            terminal_cols(&lay.slot_panel()) as u16,
         ))),
         test_panel: Default::default(),
         lists: Default::default(),
@@ -927,7 +926,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         floating: Default::default(),
         frames: Default::default(),
         height: Some((h as usize).saturating_sub(1)),
-        slot_w: lay.panel.w,
+        slot_w: lay.slot.w,
         review_change: Default::default(),
         review_rows: Default::default(),
         review_text: Default::default(),
@@ -1047,11 +1046,12 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     }
     // The terminal is told its panel's size (it redraws for it)
     // (not while another tab has the slot — the program would draw for a size nobody sees)
-    if lay.panel.h > lay.slot_head
+    let slot = lay.slot_panel();
+    if slot.rect.h > slot.head
         && terminal_shown
         && let Some(t) = editor.workspace.terminal.as_mut()
     {
-        t.resize((lay.panel.h - lay.slot_head) as u16, terminal_cols(&lay) as u16);
+        t.resize((slot.rect.h - slot.head) as u16, terminal_cols(&slot) as u16);
         // (its view mode read again at the new size)
         crate::view::terminal_resized(editor);
     }
@@ -1219,12 +1219,9 @@ struct Layout {
     text_rows: usize,
     gutter: usize,
     text_cols: usize,
-    /// The panel's rect, its first row its top line: the bottom slot's (0 high when it's empty) — just below the code
-    /// (text_rows), under the code only, the side panel and the chat running on beside it; a docked or floating
-    /// group's own (`docked`, `floated`).
-    panel: crate::split::Rect,
-    /// The panel's header rows (`chrome::SLOT_HEAD`): its body starts this far under `panel.y`.
-    slot_head: usize,
+    /// The bottom slot's rect, its first row its top line (0 high when it's empty) — just below the code (text_rows),
+    /// under the code only, the side panel and the chat running on beside it (`slot_panel`).
+    slot: crate::split::Rect,
     /// The panel columns' height — the side panel's, the chat's: from the screen's first row to the status
     /// line (the card's bar row aside).
     body_h: usize,
@@ -1240,11 +1237,6 @@ struct Layout {
     leaves: Vec<(crate::split::PaneId, crate::split::Rect)>,
     /// The rows under the path bar's and over the status line's: the code's, the slot's, a group's docked over the code.
     rows: usize,
-    /// A docked or floating group's layout (`Layout::docked`, `Layout::floated`): its panel drawn in its own rect
-    /// (`panel`), not the slot's — its kind.
-    docked: Option<crate::pane::GroupKind>,
-    /// …floating: in a frame — its top line the frame's (`╭─ … ─╮`), its sides and bottom drawn round it.
-    framed: bool,
     /// The floating panes in sight this frame, bottom first (P3 step 7): each one's kind, its host pane (the session
     /// list's: its list) and its frame's rect on the screen — the whole screen its frame, never the code area.
     floats: Vec<(crate::pane::GroupKind, crate::split::PaneId, crate::split::Rect)>,
@@ -1317,33 +1309,45 @@ impl Layout {
         self.edit_w == 0 || self.zoom_shows.is_some_and(|s| s != crate::pane::Shows::Code)
     }
 
-    /// Kind `kind`'s panel docked in `r` (its leaf's rect, its edge cell in it) on `side`: the panel's rect its own
-    /// — the panel drawers lay it out as they lay out the slot.
-    fn docked(&self, kind: crate::pane::GroupKind, side: crate::pane::Side, r: crate::split::Rect) -> Layout {
+    /// The bottom slot's panel.
+    fn slot_panel(&self) -> Panel {
+        Panel { kind: None, rect: self.slot, head: crate::chrome::SLOT_HEAD, framed: false }
+    }
+}
+
+/// A run panel drawn in its own rect (onetree S1c): the bottom slot's (`Layout::slot_panel`), or a group's docked
+/// beside or over the code (`Panel::docked`) or floating (`Panel::floated`) — each drawer lays it out from here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Panel {
+    /// The group docked or floating it draws; None: the bottom slot (its tabs on its line, its border dragged).
+    kind: Option<crate::pane::GroupKind>,
+    /// Its rect, its first row its top line.
+    rect: crate::split::Rect,
+    /// Its header rows (`chrome::SLOT_HEAD`): its body starts this far under `rect.y`.
+    head: usize,
+    /// Floating: in a frame — its top line the frame's (`╭─ … ─╮`), its sides and bottom drawn round it.
+    framed: bool,
+}
+
+impl Panel {
+    /// Kind `kind`'s panel docked in `r` (its leaf's rect, its edge cell in it) on `side`.
+    fn docked(kind: crate::pane::GroupKind, side: crate::pane::Side, r: crate::split::Rect) -> Panel {
         use crate::pane::Side;
-        let panel = match side {
+        let rect = match side {
             Side::Right => crate::split::Rect { x: r.x + 1, w: r.w.saturating_sub(1), ..r },
             Side::Left => crate::split::Rect { w: r.w.saturating_sub(1), ..r },
             // (over the code: its bottom is the code's top line — no edge row of its own)
             Side::Top => r,
         };
-        Layout { panel, docked: Some(kind), ..self.clone() }
+        Panel { kind: Some(kind), rect, head: crate::chrome::SLOT_HEAD, framed: false }
     }
 
     /// Kind `kind`'s panel floating in the frame `r`: its top line the frame's, its body inside the frame's sides,
     /// over its bottom line.
-    fn floated(&self, kind: crate::pane::GroupKind, r: crate::split::Rect) -> Layout {
-        Layout {
-            panel: crate::split::Rect {
-                x: r.x + 1,
-                y: r.y,
-                w: r.w.saturating_sub(2),
-                h: r.h.saturating_sub(1),
-            },
-            docked: Some(kind),
-            framed: true,
-            ..self.clone()
-        }
+    fn floated(kind: crate::pane::GroupKind, r: crate::split::Rect) -> Panel {
+        let rect =
+            crate::split::Rect { x: r.x + 1, y: r.y, w: r.w.saturating_sub(2), h: r.h.saturating_sub(1) };
+        Panel { kind: Some(kind), rect, head: crate::chrome::SLOT_HEAD, framed: true }
     }
 }
 
@@ -1416,28 +1420,24 @@ fn slot_on(editor: &Editor, slot: crate::sizes::Slot) -> crate::whole::On {
     if floats { crate::whole::On::List } else { crate::whole::On::Slot }
 }
 
-/// The group slot panel `slot` lays out in `lay` — the slot's, or a docked group's own (`Layout::docked`) — while it
-/// lays out its members.
-fn lay_group(editor: &Editor, lay: &Layout, slot: crate::sizes::Slot) -> Option<crate::pane::Group> {
+/// The group slot panel `slot` lays out in panel `p` — the slot's, or a docked or floating group's own — while it lays
+/// out its members.
+fn lay_group(editor: &Editor, p: &Panel, slot: crate::sizes::Slot) -> Option<crate::pane::Group> {
     let g = editor.workspace.groups.iter().find(|g| g.kind.slot() == Some(slot) && editor.group_laid(g))?;
-    (editor.out_of_slot(g.kind) == lay.docked.is_some()).then_some(*g)
+    (editor.out_of_slot(g.kind) == p.kind.is_some()).then_some(*g)
 }
 
-/// Group `g`'s layout: a docked one's own (its leaf's rect in `lay`), else the slot's — None where `lay` is another
-/// docked group's.
-fn group_lay(editor: &Editor, lay: &Layout, g: &crate::pane::Group) -> Option<Layout> {
-    if let Some(kind) = lay.docked {
-        return (kind == g.kind).then(|| lay.clone());
-    }
+/// Group `g`'s panel in `lay`: a floating one's in its frame, a docked one's in its leaf's rect, else the slot's.
+fn group_panel(editor: &Editor, lay: &Layout, g: &crate::pane::Group) -> Option<Panel> {
     if !editor.out_of_slot(g.kind) {
-        return Some(lay.clone());
+        return Some(lay.slot_panel());
     }
     if let Some(f) = lay.floats.iter().find(|f| f.0 == g.kind) {
-        return Some(lay.floated(g.kind, f.2));
+        return Some(Panel::floated(g.kind, f.2));
     }
     let crate::pane::Place::Docked(side) = g.place else { return None };
     let r = lay.leaves.iter().find(|l| l.0 == g.host)?.1;
-    Some(lay.docked(g.kind, side, r))
+    Some(Panel::docked(g.kind, side, r))
 }
 
 /// The least a group's list and detail are wide side by side (§2.3): narrower, it's stacked.
@@ -1453,12 +1453,11 @@ fn group_members(
     lay: &Layout,
     g: &crate::pane::Group,
 ) -> Option<(crate::split::Rect, crate::split::Rect)> {
-    let lay = &group_lay(editor, lay, g)?;
-    let p = lay.panel;
-    if !editor.group_laid(g) || p.h <= lay.slot_head || p.w == 0 {
+    let Panel { rect: p, head, .. } = group_panel(editor, lay, g)?;
+    if !editor.group_laid(g) || p.h <= head || p.w == 0 {
         return None;
     }
-    let (y, h) = (p.y + lay.slot_head, p.h - lay.slot_head);
+    let (y, h) = (p.y + head, p.h - head);
     let all = crate::split::Rect { y, h, ..p };
     Some(match group_shape(editor, g, p.w, h)? {
         (Shape::Beside, list_w) => (
@@ -1519,9 +1518,9 @@ pub(crate) fn group_shape_now(editor: &Editor, g: &crate::pane::Group) -> Option
         .then(|| s.floating.borrow().iter().find(|f| f.0 == g.kind).map(|f| f.1));
     let (w, h) =
         match (floating.flatten(), editor.dock_rect(g.kind).filter(|_| editor.docked_in_sight(g.kind))) {
-            // (floating: inside its frame's sides, over its bottom line — as `Layout::floated` lays it)
+            // (floating: inside its frame's sides, over its bottom line — as `Panel::floated` lays it)
             (Some(r), _) => (r.w.saturating_sub(2), r.h.saturating_sub(1)),
-            // (over the code: the whole rect, its bottom the code's line — as `Layout::docked` lays it)
+            // (over the code: the whole rect, its bottom the code's line — as `Panel::docked` lays it)
             (None, Some((Side::Top, r))) => (r.w, r.h),
             (None, Some((_, r))) => (r.w.saturating_sub(1), r.h),
             (None, None) => (s.slot_w, s.bottom_h),
@@ -1534,11 +1533,11 @@ pub(crate) fn group_shape_now(editor: &Editor, g: &crate::pane::Group) -> Option
 fn group_shapes(editor: &Editor, lay: &Layout) -> Vec<(crate::pane::GroupKind, Shape)> {
     let mut shapes = Vec::new();
     for g in &editor.workspace.groups {
-        let Some(l) = group_lay(editor, lay, g) else { continue };
-        if !editor.group_laid(g) || l.panel.h <= l.slot_head || l.panel.w == 0 {
+        let Some(Panel { rect: p, head, .. }) = group_panel(editor, lay, g) else { continue };
+        if !editor.group_laid(g) || p.h <= head || p.w == 0 {
             continue;
         }
-        if let Some((s, _)) = group_shape(editor, g, l.panel.w, l.panel.h - l.slot_head) {
+        if let Some((s, _)) = group_shape(editor, g, p.w, p.h - head) {
             shapes.push((g.kind, s));
         }
     }
@@ -1666,9 +1665,9 @@ fn steps_list_w(p: &crate::preflight::Preflight, w: usize) -> usize {
     run_list_w(name_w + 14, w)
 }
 
-/// The columns a terminal in the slot gets: its width inside the padding.
-fn terminal_cols(lay: &Layout) -> usize {
-    lay.panel.w.saturating_sub(crate::chrome::PAD + crate::chrome::PAD_R).max(2)
+/// The columns a terminal in panel `p` gets: its width inside the padding.
+fn terminal_cols(p: &Panel) -> usize {
+    p.rect.w.saturating_sub(crate::chrome::PAD + crate::chrome::PAD_R).max(2)
 }
 
 impl Layout {
@@ -1861,21 +1860,18 @@ impl Layout {
             gutter,
             text_cols: edit_w.saturating_sub(rail_w + gutter + scrollbar as usize).max(1),
             // (its first row under the code's, whether the slot has a leaf or not)
-            panel: crate::split::Rect {
+            slot: crate::split::Rect {
                 x: slot.map_or(rail_w, |r| r.x),
                 y: code_top as usize + text_rows,
                 w: slot.map_or(edit_w - rail_w, |r| r.w),
                 h: slot_h,
             },
-            slot_head,
             body_h: text_top as usize + total,
             status_y: text_top + all as u16,
             offer_bar: (bar == 1).then_some(text_top + total as u16),
             zoom,
             zoom_shows,
             leaves,
-            docked: None,
-            framed: false,
             floats: floats(editor, w as usize, (h as usize).saturating_sub(1)),
             code: std::cell::OnceCell::new(),
             rail_head: std::cell::OnceCell::new(),
@@ -2032,11 +2028,11 @@ fn focused_pane(editor: &Editor, lay: &Layout) -> Layout {
 
 /// A test's or task's panel: what its keys do there when it has them, else how they come (`C-w j` — how you get
 /// in, uxaudit D6) — first in its header's hints, before the commands that work from anywhere.
-fn slot_hints(editor: &Editor, lay: &Layout) -> Vec<(String, &'static str)> {
+fn slot_hints(editor: &Editor, p: &Panel) -> Vec<(String, &'static str)> {
     let zoom = if editor.zoomed().is_some() { "back" } else { "full screen" };
     // (a docked group's line says its keys only while it has them; the slot's says none while a docked one has them)
     let in_hand = editor.slot_in_hand();
-    match lay.docked {
+    match p.kind {
         Some(kind) if in_hand != kind.slot() || in_hand.is_none() => return Vec::new(),
         None if in_hand.is_some() => return Vec::new(),
         _ => {}
@@ -2211,7 +2207,7 @@ fn slot_header(
     out: &mut impl Write,
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
+    (lay, p): (&Layout, &Panel),
     card: Style,
     details: &[(Fit, Style)],
     hints: &[(&str, &str)],
@@ -2220,13 +2216,13 @@ fn slot_header(
     fold: HeadFold,
 ) -> io::Result<usize> {
     use crate::pane::Member;
-    let crate::split::Rect { x: x0, y: y0, w, .. } = lay.panel;
+    let crate::split::Rect { x: x0, y: y0, w, .. } = p.rect;
     let dim = Style { fg: ui.virt.fg, ..card };
     let faint = Style { fg: ui.linenr.fg, ..card };
     let strong =
         card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     // (a docked group's line names its own panel alone; the slot's, its tabs — the docked ones not among them)
-    let (front, tabs) = match lay.docked {
+    let (front, tabs) = match p.kind {
         Some(kind) => {
             let mut tabs = editor.panel_tabs();
             tabs.retain(|t| Some(t.slot) == kind.slot());
@@ -2295,7 +2291,7 @@ fn slot_header(
     let mut beyond_names = Vec::new();
     let mut said = details.to_vec();
     // (the slot's line held or under the pointer, its whole width — as every line that drags: `grab_style`)
-    let g = match lay.docked {
+    let g = match p.kind {
         None => grab(editor, |b| b == crate::sizes::Border::Bottom),
         Some(_) => Grab::No,
     };
@@ -2344,7 +2340,7 @@ fn slot_header(
         line: detail_line,
         join: line,
     });
-    let ups = match lay.docked {
+    let ups = match p.kind {
         None => dividers_up(editor, lay, y0),
         Some(_) => Vec::new(),
     };
@@ -2388,7 +2384,7 @@ fn slot_header(
         ..TopLine::default()
     };
     // (floating: the frame's top line, its corners round the panel's width)
-    let (at, ends) = match lay.framed {
+    let (at, ends) = match p.framed {
         true => ((x0.saturating_sub(1), y0, w + 2), ("╭", "╮", "┬")),
         false => ((x0, y0, w), ("", "", "┬")),
     };
@@ -2432,7 +2428,7 @@ fn slot_header(
     for (_, a, b, word) in words.filter(|s| s.0 == y0) {
         word_lit(editor, word, y0, (a, b), spans_in(laid(), a, b));
     }
-    Ok(y0 + crate::chrome::SLOT_HEAD)
+    Ok(y0 + p.head)
 }
 
 /// What a slot's top line keeps as it folds (`slot_header`, polish landing 4): `TopLine.lead_keys`, `.shorter`.
@@ -3162,14 +3158,14 @@ fn draw_terminal_panel(
     t: &crate::terminal::Terminal,
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
+    (lay, here): (&Layout, &Panel),
     out: &mut impl Write,
 ) -> io::Result<Option<(u16, u16)>> {
     use crate::chrome::PAD;
     let card = panel_style(ui, editor);
     let dim = Style { fg: ui.virt.fg, ..card };
     let faint = Style { fg: ui.linenr.fg, ..card };
-    let (x0, w) = (lay.panel.x, lay.panel.w);
+    let (x0, w) = (here.rect.x, here.rect.w);
     let screen = t.parser.screen();
     // What runs there, whether it ended, how far it's scrolled back
     let mut head = vec![(t.title.clone(), dim)];
@@ -3231,9 +3227,20 @@ fn draw_terminal_panel(
     {
         hints.insert(0, ("alt+drag", "select"));
     }
-    let body = slot_header(out, editor, ui, lay, card, &fits(&head), &hints, &[], None, HeadFold::default())?;
-    let rows = lay.panel.h.saturating_sub(lay.slot_head);
-    let cols = terminal_cols(lay);
+    let body = slot_header(
+        out,
+        editor,
+        ui,
+        (lay, here),
+        card,
+        &fits(&head),
+        &hints,
+        &[],
+        None,
+        HeadFold::default(),
+    )?;
+    let rows = here.rect.h.saturating_sub(here.head);
+    let cols = terminal_cols(here);
     let sel = t.selected();
     // (the primary selection's color — the plain one barely shows on a card)
     let selection_bg = ["ui.selection.primary", "ui.selection"]
@@ -3317,7 +3324,7 @@ fn draw_task_panel(
     r: &crate::task::Run,
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
+    (lay, here): (&Layout, &Panel),
     out: &mut impl Write,
 ) -> io::Result<()> {
     use crate::chrome::PAD;
@@ -3328,7 +3335,7 @@ fn draw_task_panel(
     let faint = Style { fg: ui.linenr.fg, ..card };
     let color = |k: &str| t.try_get(k).and_then(|s| s.fg);
     let (good, bad, warn) = (color("diff.plus"), ui.error.fg, color("warning"));
-    let (x0, w) = (lay.panel.x, lay.panel.w);
+    let (x0, w) = (here.rect.x, here.rect.w);
     // (its end being read: no word yet, its time its exit's — `Run::going`, #321)
     let running = r.going();
     let mut summary: Vec<(String, Style)> = match r.state {
@@ -3391,7 +3398,7 @@ fn draw_task_panel(
     }
     // (its group laid out — the places or the steps beside the output, panes P3 §2.2: the line between them down
     // from the header's; a preflight's `o` on the output selects the step in view there)
-    let group = lay_group(editor, lay, crate::sizes::Slot::Task);
+    let group = lay_group(editor, here, crate::sizes::Slot::Task);
     let members = group.as_ref().and_then(|g| Some((*g, group_members(editor, lay, g)?)));
     // (the output's own keys — not while its group's list has them: the list's are said)
     let listing = group.is_some_and(|g| editor.workspace.is_at(At::List(g.list)));
@@ -3406,14 +3413,14 @@ fn draw_task_panel(
     }
     // (its view mode's pairs first, its own keys after their way out — before `q close` and the zoom, which fold
     // first)
-    let slot_keys = slot_hints(editor, lay);
+    let slot_keys = slot_hints(editor, here);
     let own = usize::from(o) + usize::from(k);
     let after_out = slot_keys.iter().position(|(_, d)| *d == "code").map_or(0, |i| i + 1);
     let (to_out, rest) = slot_keys.split_at(after_out);
     hints.splice(own..own, rest.iter().map(|(k, d)| (k.as_str(), *d)));
     hints.splice(0..0, to_out.iter().map(|(k, d)| (k.as_str(), *d)));
     let fold = stuck_leads(&mut hints, "space m c", at.map(|i| (i, &shorter[..])));
-    let y0 = lay.panel.y;
+    let y0 = here.rect.y;
     // (its members named in the line — step 3b: side by side the `┬` where they meet, stacked none)
     let splits: Vec<usize> = members.iter().filter_map(|(_, m)| side_by_side(m)).collect();
     let detail_keys = crate::rundoc::has_keys(editor) == Some(crate::sizes::Slot::Task);
@@ -3430,8 +3437,18 @@ fn draw_task_panel(
     if head.is_none() {
         summary.extend(output_head(editor, ui, card, crate::sizes::Slot::Task));
     }
-    let body =
-        slot_header(out, editor, ui, lay, card, &fits(&summary), &hints, &splits, head.as_ref(), fold)?;
+    let body = slot_header(
+        out,
+        editor,
+        ui,
+        (lay, here),
+        card,
+        &fits(&summary),
+        &hints,
+        &splits,
+        head.as_ref(),
+        fold,
+    )?;
     // A preflight's steps: the row under the header (beside the output, its list's rows instead)
     let top = body - y0 + usize::from(steps.is_some() && members.is_none());
     if let Some(p) = steps.filter(|_| members.is_none()) {
@@ -3466,8 +3483,8 @@ fn draw_task_panel(
     // waits for the panel, a row each (`queued.rs`)
     let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), task_ran(r), r.last_output);
     // (the output keeps a row)
-    let below = lay.panel.h.saturating_sub(top + 1).min(queued_h(editor, crate::queued::Slot::Task));
-    let rows = lay.panel.h.saturating_sub(top + below + usize::from(sandbox.is_some()));
+    let below = here.rect.h.saturating_sub(top + 1).min(queued_h(editor, crate::queued::Slot::Task));
+    let rows = here.rect.h.saturating_sub(top + below + usize::from(sandbox.is_some()));
     draw_queued(out, editor, ui, crate::queued::Slot::Task, (x0, y0 + top + rows), w, below, card)?;
     if let Some(said) = &sandbox {
         let at = (x0, (y0 + top + rows + below) as u16);
@@ -3476,7 +3493,7 @@ fn draw_task_panel(
     }
     if let Some((g, m)) = members {
         let at = (y0 + top, rows, y0 + top - 1 + rows + below);
-        draw_task_group(r, editor, ui, lay, out, g, m, at)?;
+        draw_task_group(r, editor, ui, (lay, here), out, g, m, at)?;
         // (over and under: the output's top line between them)
         if let Some(head) = &head {
             member_line(out, editor, ui, card, (x0, w), head)?;
@@ -3514,7 +3531,7 @@ fn draw_task_group(
     r: &crate::task::Run,
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
+    (lay, here): (&Layout, &Panel),
     out: &mut impl Write,
     g: crate::pane::Group,
     (list, detail): (crate::split::Rect, crate::split::Rect),
@@ -3532,7 +3549,7 @@ fn draw_task_group(
     let faint = Style { fg: ui.linenr.fg, ..card };
     let color = |k: &str| t.try_get(k).and_then(|s| s.fg);
     let (good, bad, warn) = (color("diff.plus"), ui.error.fg, color("warning"));
-    let (x0, w) = (lay.panel.x, lay.panel.w);
+    let (x0, w) = (here.rect.x, here.rect.w);
     let right_x = list_w + 1;
     let right_w = w.saturating_sub(right_x + 1);
     let list_rows = if over { list.h.min(rows) } else { rows };
@@ -3559,7 +3576,7 @@ fn draw_task_group(
         true => (x0 + right_x + 1, right_w.saturating_sub(1)),
         false => (x0 + PAD, w.saturating_sub(2 * PAD)),
     };
-    editor.screen.task_panel.set(Some((lay.panel.y, last, list_rows)));
+    editor.screen.task_panel.set(Some((here.rect.y, last, list_rows)));
     if detail.w > 0 {
         editor.screen.run_rows.set(Some((crate::sizes::Slot::Task, detail_y, text.0, detail_rows)));
     }
@@ -3835,7 +3852,7 @@ fn draw_plugin_panel<W: Write>(
     st: &crate::plugin::PluginPanelState,
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
+    (lay, here): (&Layout, &Panel),
     out: &mut W,
 ) -> io::Result<()> {
     let panel = &st.panel;
@@ -3846,7 +3863,7 @@ fn draw_plugin_panel<W: Write>(
     let strong = card.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let selected = selected_row(ui, editor, card);
     let clean = |s: &str| crate::plugin::shown(s).replace(['\n', '\t'], " ");
-    let crate::split::Rect { x: x0, y: y0, w, .. } = lay.panel;
+    let crate::split::Rect { x: x0, y: y0, w, .. } = here.rect;
     let title = crate::whole::fit(&clean(&panel.title), (w / 2).max(12));
     // (a plugin names its keys as its `key` event does, `ret`: shown by their one name)
     // (its own keys are plain faint words, whole — a pair with no key, never read as a hint (`top_line`): a plugin's
@@ -3858,11 +3875,12 @@ fn draw_plugin_panel<W: Write>(
     let mut hints: Vec<(&str, &str)> = keys.iter().map(|k| ("", k.as_str())).collect();
     let focus = editor.plugin_panel_focused();
     hints.push(if focus { ("esc", "code") } else { ("click", "keys") });
+    let at = (lay, here);
     let top =
-        slot_header(out, editor, ui, lay, card, &[(title, strong)], &hints, &[], None, HeadFold::default())?;
+        slot_header(out, editor, ui, at, card, &[(title, strong)], &hints, &[], None, HeadFold::default())?;
     // The table, and the status line under it
     let header = !panel.columns.is_empty();
-    let body = lay.panel.h.saturating_sub(lay.slot_head + 1 + header as usize);
+    let body = here.rect.h.saturating_sub(here.head + 1 + header as usize);
     // The selected row in sight, but where the wheel left it while the selection stays (`floatlist::hold`)
     let ids = crate::plugin::plugin_panel_ids(panel);
     let scroll = crate::floatlist::hold(&st.scroll, &st.shown, &ids, st.selected, body, false);
@@ -3957,7 +3975,12 @@ fn procs_panel_h(editor: &Editor, total: usize, head: usize) -> usize {
 ///    SELF-CHECKS
 ///    14:02  ▲ rust-analyzer busy for 6m (Indexing) · nothing yet — r restarts it
 /// ```
-fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut W) -> io::Result<()> {
+fn draw_procs_panel<W: Write>(
+    editor: &Editor,
+    ui: &Ui,
+    (lay, here): (&Layout, &Panel),
+    out: &mut W,
+) -> io::Result<()> {
     use crate::procs::{Kind, age, mem};
     let p = &editor.procs;
     let Some(panel) = p.panel.as_ref() else { return Ok(()) };
@@ -3970,11 +3993,11 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
     let selected = selected_row(ui, editor, card);
     // Its group (panes P3 step 4): the table and, beside it, what its selected row is — stacked when narrow, one of
     // them across the slot (the table none wide when the detail is the one open)
-    let group = lay_group(editor, lay, crate::sizes::Slot::Procs);
+    let group = lay_group(editor, here, crate::sizes::Slot::Procs);
     let members = group.and_then(|g| Some((g, group_members(editor, lay, &g)?)));
     let (x0, y0, w) = match members {
-        Some((_, (list, _))) => (list.x, lay.panel.y, list.w),
-        None => (lay.panel.x, lay.panel.y, lay.panel.w),
+        Some((_, (list, _))) => (list.x, here.rect.y, list.w),
+        None => (here.rect.x, here.rect.y, here.rect.w),
     };
     // The header: the tabs, the members' names, the totals over the table, the keys of what has them
     let live: Vec<&crate::procs::Row> = p.rows.iter().filter(|r| r.pid != 0 && r.gone.is_none()).collect();
@@ -3982,7 +4005,7 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
     // (none yet at the first look — its share needs one before it)
     let cpus: Vec<f32> = live.iter().filter_map(|r| r.cpu).collect();
     let total_cpu = (!cpus.is_empty()).then(|| cpus.iter().fold(0.0, |a, c| a + c.max(0.0)));
-    let keys = slot_hints(editor, lay);
+    let keys = slot_hints(editor, here);
     let hints: Vec<(&str, &str)> = keys.iter().map(|(k, d)| (k.as_str(), *d)).collect();
     let mut summary: Vec<(String, Style)> = Vec::new();
     if !live.is_empty() {
@@ -4011,7 +4034,7 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
         out,
         editor,
         ui,
-        lay,
+        (lay, here),
         card,
         &fits(&summary),
         &hints,
@@ -4021,19 +4044,19 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
     )?;
     // (over and under: the table to the detail's top line, the detail under it)
     let over = head.as_ref().and_then(|m| m.over);
-    let table_end = over.unwrap_or(y0 + lay.panel.h);
+    let table_end = over.unwrap_or(y0 + here.rect.h);
     let detail_rows = match members {
         Some((_, (list, detail))) => {
-            draw_procs_detail(editor, ui, lay, out, (list, detail), over.map_or(body, |row| row + 1))?
+            draw_procs_detail(editor, ui, (lay, here), out, (list, detail), over.map_or(body, |row| row + 1))?
         }
         None => 0,
     };
     if let Some(m) = &head {
-        member_line(out, editor, ui, card, (lay.panel.x, lay.panel.w), m)?;
+        member_line(out, editor, ui, card, (here.rect.x, here.rect.w), m)?;
     }
     // (stacked with the detail open: no table)
     if w == 0 {
-        let bottom = y0 + lay.panel.h - 1;
+        let bottom = y0 + here.rect.h - 1;
         let area =
             crate::procs::Area { top: y0, bottom, first: body, detail: detail_rows, ..Default::default() };
         editor.screen.procs_panel.set(Some(area));
@@ -4354,7 +4377,7 @@ fn procs_hints(editor: &Editor) -> Vec<(&'static str, &'static str)> {
 fn draw_procs_detail(
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
+    (lay, here): (&Layout, &Panel),
     out: &mut impl Write,
     (list, detail): (crate::split::Rect, crate::split::Rect),
     y: usize,
@@ -4364,11 +4387,11 @@ fn draw_procs_detail(
         return Ok(0);
     }
     let card = panel_style(ui, editor);
-    let rows = (lay.panel.y + lay.panel.h).saturating_sub(y);
+    let rows = (here.rect.y + here.rect.h).saturating_sub(y);
     let side = side_by_side(&(list, detail)).is_some();
     let (tx, tw) = match side {
         true => (detail.x + 1, detail.w.saturating_sub(2)),
-        false => (lay.panel.x + PAD, lay.panel.w.saturating_sub(2 * PAD)),
+        false => (here.rect.x + PAD, here.rect.w.saturating_sub(2 * PAD)),
     };
     let lit = ui.lit == Some(Region::Slot);
     for i in 0..rows {
@@ -4404,7 +4427,7 @@ fn draw_test_panel(
     r: &crate::testing::TestRun,
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
+    (lay, here): (&Layout, &Panel),
     out: &mut impl Write,
 ) -> io::Result<()> {
     use crate::test_results::Status;
@@ -4422,7 +4445,7 @@ fn draw_test_panel(
         Status::Skipped => ("◦", faint),
     };
     use crate::chrome::PAD;
-    let crate::split::Rect { x: x0, y: y0, w, .. } = lay.panel;
+    let crate::split::Rect { x: x0, y: y0, w, .. } = here.rect;
     let count = |st: Status| r.cases.iter().filter(|c| c.status == st).count();
     let (passed, failed, skipped) = (count(Status::Passed), count(Status::Failed), count(Status::Skipped));
     // ── Header: the tabs (this one's badge says how it went), what ran, the counts, the time, the keys
@@ -4462,7 +4485,7 @@ fn draw_test_panel(
         summary.push((format!("   {}", crate::stuck::shown(s)), Style { fg: warn, ..card }));
     }
     let (shorter, at) = stuck_forms(stuck, summary.len());
-    let slot_keys = slot_hints(editor, lay);
+    let slot_keys = slot_hints(editor, here);
     let mut hints: Vec<(&str, &str)> = slot_keys.iter().map(|(k, d)| (k.as_str(), *d)).collect();
     hints.extend_from_slice(match r.state {
         RunState::Running => &[("space x c", "stop")],
@@ -4472,7 +4495,7 @@ fn draw_test_panel(
     let fold = stuck_leads(&mut hints, "space x c", at.map(|i| (i, &shorter[..])));
     // (where the list and the detail meet, the line down from the header's; its members named in it — step 3b: the
     // detail's name and own details, the failure's place and which of how many, after the `┬`)
-    let group = lay_group(editor, lay, crate::sizes::Slot::Test);
+    let group = lay_group(editor, here, crate::sizes::Slot::Test);
     let members = group.and_then(|g| Some((g, group_members(editor, lay, &g)?)));
     let splits: Vec<usize> = members.iter().filter_map(|(_, m)| side_by_side(m)).collect();
     let list_keys = group.is_some_and(|g| editor.workspace.is_at(At::List(g.list)));
@@ -4515,8 +4538,18 @@ fn draw_test_panel(
     if head.is_none() {
         summary.extend(output_head(editor, ui, card, crate::sizes::Slot::Test));
     }
-    let body =
-        slot_header(out, editor, ui, lay, card, &fits(&summary), &hints, &splits, head.as_ref(), fold)?;
+    let body = slot_header(
+        out,
+        editor,
+        ui,
+        (lay, here),
+        card,
+        &fits(&summary),
+        &hints,
+        &splits,
+        head.as_ref(),
+        fold,
+    )?;
 
     // The sandbox's line, when it blocked something: the bottom row, under the rest — and over it, what waits
     // for the pane, a row each (`queued.rs`)
@@ -4527,7 +4560,7 @@ fn draw_test_panel(
         _ => crate::sandbox::RunIs::Passed,
     };
     let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), ran, r.last_output);
-    let inner = lay.panel.h.saturating_sub(body - lay.panel.y + usize::from(sandbox.is_some()));
+    let inner = here.rect.h.saturating_sub(body - here.rect.y + usize::from(sandbox.is_some()));
     let below = inner.saturating_sub(2).min(queued_h(editor, crate::queued::Slot::Tests));
     let rows = inner - below;
     // (for the mouse: the panel from its tabs to its last row)
@@ -5600,8 +5633,9 @@ fn draw(
         editor.screen.regions.add(crate::regions::Kind::Side, (col.x, col.y, col.w, lay.body_h));
     }
     let mut terminal_cursor = None;
-    if lay.panel.h > 0 && lay.panel.w > 0 {
+    if lay.slot.h > 0 && lay.slot.w > 0 {
         use crate::sizes::Slot;
+        let at = (lay, &lay.slot_panel());
         let session = &editor.workspace;
         // (its panels' view modes and documents have the keys too — the terminal's, the runs')
         let viewed = matches!(keys, Keys::View(crate::view::Surface::Terminal) | Keys::Output(_));
@@ -5611,18 +5645,18 @@ fn draw(
         let slot = editor.slot_shown();
         let plugin = editor.plugins.as_ref().and_then(|p| p.panel.as_ref());
         if slot == Some(Slot::Procs) {
-            draw_procs_panel(editor, ui, lay, out)?;
+            draw_procs_panel(editor, ui, at, out)?;
         } else if let (Some(Slot::Terminal), Some(t)) = (slot, &session.terminal) {
-            terminal_cursor = draw_terminal_panel(t, editor, ui, lay, out)?;
+            terminal_cursor = draw_terminal_panel(t, editor, ui, at, out)?;
         } else if let (Some(Slot::Plugin), Some(st)) = (slot, plugin) {
-            draw_plugin_panel(st, editor, ui, lay, out)?;
+            draw_plugin_panel(st, editor, ui, at, out)?;
         } else if let (Some(Slot::Test), Some(t)) = (slot, &session.test_run) {
-            draw_test_panel(t, editor, ui, lay, out)?;
+            draw_test_panel(t, editor, ui, at, out)?;
         } else if let (Some(Slot::Task), Some(k)) = (slot, &session.task_run) {
-            draw_task_panel(k, editor, ui, lay, out)?;
+            draw_task_panel(k, editor, ui, at, out)?;
         }
-        let at = (lay.panel.x, lay.panel.y, lay.panel.w, lay.panel.h);
-        editor.screen.regions.add(crate::regions::Kind::Slot, at);
+        let r = lay.slot;
+        editor.screen.regions.add(crate::regions::Kind::Slot, (r.x, r.y, r.w, r.h));
     }
     draw_docked(editor, ui, lay, out)?;
     for (_, f) in editor.screen.docked.borrow().iter() {
@@ -6052,7 +6086,7 @@ fn drew(editor: &Editor, kind: crate::regions::Kind, rect: Option<Rect4>) {
 }
 
 /// The groups docked beside the code and in sight (P3 step 6): each its panel drawn in its own leaf as the slot draws
-/// it (`Layout::docked` — its header in its top line, its members side by side or stacked), at full strength only
+/// it (`Panel::docked` — its header in its top line, its members side by side or stacked), at full strength only
 /// with the keys, its lines lit then (its panel's own `Region::Slot` lines, in a `Ui` of its own); its edge the one
 /// line between it and the code (`dock_edge`).
 fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
@@ -6066,7 +6100,8 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         else {
             continue;
         };
-        let docked = lay.docked(g.kind, side, r);
+        let docked = Panel::docked(g.kind, side, r);
+        let at = (lay, &docked);
         let has = ui.lit == Some(Region::Dock(g.kind));
         let over = ui.hover == Some(Region::Dock(g.kind));
         let own = Ui { lit: has.then_some(Region::Slot), hover: over.then_some(Region::Slot), ..ui.clone() };
@@ -6077,7 +6112,7 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
                 None if g.kind == crate::pane::GroupKind::Sessions => {
                     let card = panel_style(ui, editor);
                     let line = edge_style(&own, card, Region::Slot);
-                    let rr = docked.panel;
+                    let rr = docked.rect;
                     apply(out, card)?;
                     for y in rr.y..rr.y + rr.h {
                         queue!(out, MoveTo(rr.x as u16, y as u16), Spaces(rr.w))?;
@@ -6085,12 +6120,12 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
                     draw_sessions_pane(editor, &own, card, line, rr, false, out)?
                 }
                 Some(Slot::Test) if let Some(t) = &editor.workspace.test_run => {
-                    draw_test_panel(t, editor, &own, &docked, out)?
+                    draw_test_panel(t, editor, &own, at, out)?
                 }
                 Some(Slot::Task) if let Some(k) = &editor.workspace.task_run => {
-                    draw_task_panel(k, editor, &own, &docked, out)?
+                    draw_task_panel(k, editor, &own, at, out)?
                 }
-                Some(Slot::Procs) => draw_procs_panel(editor, &own, &docked, out)?,
+                Some(Slot::Procs) => draw_procs_panel(editor, &own, at, out)?,
                 _ => {}
             }
         }
@@ -6103,7 +6138,7 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
 }
 
 /// The floating panes (P3 step 7), bottom first, over everything docked and under the cards: each in a D3 frame —
-/// its top line the slot's header drawn as the frame's (`Layout::floated`: the names, the details, the keys while it
+/// its top line the slot's header drawn as the frame's (`Panel::floated`: the names, the details, the keys while it
 /// has them), its sides and its bottom line round it, lit in the accent while it has the keys, the faint wash else;
 /// inside, a group's panel as the slot draws it, the session list's rows (`draw_sessions_pane`). What's under a frame
 /// isn't seen through it: its cells cleared first.
@@ -6139,16 +6174,16 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
             let _fade = Fade::unless(has, &own);
             draw_folders_pane(editor, &own, card, line, r, out)?;
         } else {
-            let floated = lay.floated(kind, r);
+            let at = (lay, &Panel::floated(kind, r));
             let _fade = Fade::unless(has, &own);
             match kind.slot() {
                 Some(Slot::Test) if let Some(t) = &editor.workspace.test_run => {
-                    draw_test_panel(t, editor, &own, &floated, out)?
+                    draw_test_panel(t, editor, &own, at, out)?
                 }
                 Some(Slot::Task) if let Some(k) = &editor.workspace.task_run => {
-                    draw_task_panel(k, editor, &own, &floated, out)?
+                    draw_task_panel(k, editor, &own, at, out)?
                 }
-                Some(Slot::Procs) => draw_procs_panel(editor, &own, &floated, out)?,
+                Some(Slot::Procs) => draw_procs_panel(editor, &own, at, out)?,
                 _ => {}
             }
         }
@@ -6639,7 +6674,7 @@ fn dock_edge(
         return Ok(());
     }
     let x = if side == Side::Right { r.x } else { r.x + r.w - 1 };
-    let slot = lay.panel;
+    let slot = lay.slot;
     // (the slot beside it: its line meets this one)
     let slot_beside = slot.h > 0 && slot.w > 0 && (slot.x + slot.w == x || x + 1 == slot.x);
     let (start, own, meet) = if side == Side::Right { ("┌", "├", "┤") } else { ("┐", "┤", "├") };
@@ -16549,7 +16584,7 @@ fn beside_rows(
             parts.push((l.0..l.0 + 1, vec![l.0], Region::Code));
         }
     }
-    let slot = lay.panel;
+    let slot = lay.slot;
     let covered = parts.iter().any(|p| p.1.len() == 1);
     if slot.h > 0 && slot.w > 0 && !covered {
         parts.push((slot.y..slot.y + slot.h, vec![slot.y], Region::Slot));
@@ -18760,7 +18795,7 @@ fn asks_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize, usiz
         return None;
     }
     let r = lay.leaves.iter().find(|l| l.0 == g.host)?.1;
-    // (its edge line the leaf's first cell, as `Layout::docked` lays it; a card's text at least `CARD_MIN_INNER`)
+    // (its edge line the leaf's first cell, as `Panel::docked` lays it; a card's text at least `CARD_MIN_INNER`)
     let (x, w) = (r.x + 1, r.w.saturating_sub(1));
     (w >= CARD_MIN_INNER + 6).then_some((x, w, r.y + 1, r.h.saturating_sub(1)))
 }
@@ -30585,7 +30620,7 @@ mod tests {
         let mut ed = Editor::new(Config::default());
         let lay = |ed: &Editor| {
             let l = Layout::new(ed, 120, 40);
-            (l.panel.h, l.text_rows + l.panel.h)
+            (l.slot.h, l.text_rows + l.slot.h)
         };
         let mut r = Run::for_test(task("cargo fmt"));
         r.output = [(false, "formatted")].into_iter().collect();
