@@ -20,10 +20,13 @@ const WAIT: Duration = crate::test_results::PATIENCE;
 /// test waits out on purpose, so not the patience it waits for what it expects with.
 const HOLD: Duration = Duration::from_secs(5);
 
+/// The proxy's limits for the tests: a client's head and a tunnel's ClientHello waited for with the patience — a test
+/// that writes its hello after other work of its own (4 MiB made, a thread started) is never cut by a slow machine
+/// (#357: K1's 5.14 under the whole suite took past 0.3 s). The test of those limits sets its own.
 fn limits() -> Limits {
     Limits {
-        head_time: Duration::from_millis(300),
-        hello_time: Duration::from_millis(300),
+        head_time: WAIT,
+        hello_time: WAIT,
         hold: HOLD,
         connect: Duration::from_secs(2),
         per_session: 256,
@@ -1711,7 +1714,8 @@ fn the_proxy_knows_only_what_a_message_carries() {
 fn a_slow_client_is_cut_at_the_time_limit() {
     let out = outside(echo);
     let (resolve, _) = resolver(vec![("example.invalid", vec![vec![out.at]])]);
-    let f = start(resolve, limits());
+    let short = Duration::from_millis(300);
+    let f = start(resolve, Limits { head_time: short, hello_time: short, ..limits() });
     let (mut c, d) = connection(&f.proxy, 1, 1, rules(&["example.invalid"]));
     c.write_all(b"CONNECT exa").unwrap();
     assert_eq!(status(&mut c), 408);

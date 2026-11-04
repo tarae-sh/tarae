@@ -404,7 +404,7 @@ fn a_big_tunnel_goes_whole_through_the_bridge() {
     let (resolve, _) = resolver(vec![("localhost", vec![vec![upstream.at]])]);
     let f = start(resolve, limits());
     let rules = rules_via(&["example.invalid"], via_https("localhost", upstream.at.port(), ("u", "p")));
-    let (mut c, _) = connection(&f.proxy, 1, 1, rules);
+    let (mut c, said) = connection(&f.proxy, 1, 1, rules);
     assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
     // (a ClientHello first, as the proxy checks it; then 4 MiB of a pattern no shift can match)
     let mut sent = curl_hello().to_vec();
@@ -413,7 +413,9 @@ fn a_big_tunnel_goes_whole_through_the_bridge() {
     let all = sent.clone();
     let writer = crate::event::thread("tarae-writer", move || w.write_all(&all));
     let mut back = vec![0u8; sent.len()];
-    c.read_exact(&mut back).unwrap();
+    // (cut short: what tarae said of it, if it closed the tunnel itself)
+    c.read_exact(&mut back)
+        .unwrap_or_else(|e| panic!("{e}; tarae said {:?}", said.try_recv().map(|d| d.target.clone())));
     writer.join().unwrap().unwrap();
     assert!(
         back == sent,
