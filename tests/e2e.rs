@@ -14,6 +14,7 @@
 mod harness;
 
 use std::fs;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -1769,6 +1770,176 @@ fn restart_under_a_client_keeps_the_client() {
     assert_eq!(s["tarae"]["pid"], host, "{s:#}");
     t.send("ix");
     t.wait_text("xline one");
+}
+
+/// The stand-in `ssh` (S-J): a script on the sandbox's PATH that writes down what it was given, drops ssh's options and
+/// host, and runs the remote command with the login shell here, as sshd would there. No real ssh, no network.
+fn with_ssh(name: &str) -> Sandbox {
+    let sb = Sandbox::new(name);
+    let bin = sb.outside("bin");
+    fs::create_dir_all(&bin).unwrap();
+    tarae_testkit::scratch::write_script(
+        &bin.join("ssh"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\n\
+         while [ $# -gt 0 ]; do case \"$1\" in --) shift; break;; esac; shift; done\n\
+         exec \"$SHELL\" -c \"$1\"\n",
+    );
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    sb.with_env("PATH", &path)
+}
+
+/// What the stand-in `ssh` was given, a line a run.
+fn ssh_calls(sb: &Sandbox) -> Vec<String> {
+    let calls = fs::read_to_string(sb.outside("bin/ssh.calls")).unwrap_or_default();
+    calls.lines().map(String::from).collect()
+}
+
+/// `tarae attach ssh://…` (the remote plan's step 5): ssh to a relay there (`attach --stdio`), found past an rc file's
+/// noise, the host its project's (`/~/` the remote home's), its screen here and these keys its own; `:detach` says the
+/// address that comes back. ssh is run with no pty and no escape, asking as it may (no `BatchMode`).
+#[test]
+fn a_client_over_ssh_shows_the_host_and_its_keys_reach_it() {
+    let sb = with_ssh("ssh-attach");
+    // (a login shell's rc that talks: the noise before the relay's preamble)
+    fs::write(sb.home().join(".profile"), "echo 'Last login: today'\nprintf 'no newline'\n").unwrap();
+    sb.write("a.txt", "one\n");
+    let h = sb.host(&["a.txt"]);
+    let url = "ssh://w@mac:2222/~/../work";
+    let mut t = Term::attach_by(&sb, &h, &["attach", url, "--remote-tarae", BIN], COLS, ROWS);
+    t.wait_text("one");
+    let s = t.wait_state("a frame presented", |s| s["interface"]["presented"].as_u64() > Some(0));
+    assert_eq!(s["interface"]["kind"], "wire", "{s:#}");
+    let input = s["input"].as_u64().unwrap();
+    t.send("ihello");
+    t.wait_text("helloone");
+    assert_eq!(t.state_json(input + 6)["input"].as_u64(), Some(input + 6), "each key the host's input");
+    t.esc_state("normal mode", |s| s["mode"] == "normal");
+    t.command("detach");
+    assert_eq!(t.wait_exit().code(), Some(0), "{}", t.screen());
+    assert!(restored(&t.raw()), "the client's terminal restored");
+    t.wait_text(&format!("detached — tarae attach {url} comes back"));
+    let calls = ssh_calls(&sb);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(
+        calls[0].starts_with(
+            "-T -e none -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -p 2222 -l w mac -- "
+        ),
+        "{calls:?}"
+    );
+    assert!(!calls[0].contains("BatchMode"), "the first ssh may ask: {calls:?}");
+    h.wait_state("detached", |s| s["interface"].is_null());
+}
+
+/// `:restart` under a client over ssh: the host's new binary is the other machine's, so the client runs ssh again —
+/// asking nothing (its terminal is raw), the relay waiting for that host's socket — and is attached again, the same
+/// client.
+#[test]
+fn restart_over_ssh_attaches_again_with_the_relay_waiting() {
+    let sb = with_ssh("ssh-restart");
+    sb.write(
+        ".tarae.toml",
+        &format!("[editor]\nrestart-build = \"echo built\"\nrestart-binary = \"{BIN}\"\n"),
+    );
+    sb.write("a.txt", "line one\n");
+    let h = sb.host(&["a.txt"]);
+    let url = format!("ssh://mac{}", sb.work().display());
+    let mut t = Term::attach_by(&sb, &h, &["attach", &url, "--remote-tarae", BIN], COLS, ROWS);
+    t.wait_text("line one");
+    let client = t.pid();
+    t.command("restart");
+    yes_to_restart(&mut t);
+    t.wait_text("Restarted");
+    let s = t.wait_state("attached again", |s| s["interface"]["kind"] == "wire");
+    assert_eq!((t.pid(), &s["tarae"]["pid"]), (client, &serde_json::json!(h.pid())), "{s:#}");
+    t.send("ix");
+    t.wait_text("xline one");
+    let calls = ssh_calls(&sb);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let again = &calls[1];
+    assert!(again.contains("-o BatchMode=yes"), "{again}");
+    assert!(again.contains("--wait") && again.contains("--pid'\\''"), "{again}");
+    assert!(again.contains(&h.pid().to_string()), "the host it had: {again}");
+}
+
+/// Each way an attach over ssh fails is said in its own words, the client's terminal never taken: ssh's own failure
+/// (its last line), no tarae there (127), an older tarae (no `--stdio`), no host (the relay's why, where it looked, the
+/// hosts there), noise past 64 KB with no preamble, a bad address.
+#[test]
+fn each_failure_over_ssh_is_said_in_its_own_words() {
+    let sb = with_ssh("ssh-fails");
+    let bin = sb.outside("bin");
+    let fails = sb.outside("fails");
+    fs::create_dir_all(&fails).unwrap();
+    tarae_testkit::scratch::write_script(
+        &fails.join("ssh"),
+        "#!/bin/sh\necho 'w@mac: Permission denied (publickey).' >&2\nexit 255\n",
+    );
+    let older = sb.outside("older-tarae");
+    tarae_testkit::scratch::write_script(
+        &older,
+        "#!/bin/sh\necho 'Error: unknown: --stdio' >&2\necho 'usage: tarae attach [--pid PID]' >&2\nexit 1\n",
+    );
+    let noisy = sb.outside("noisy-tarae");
+    tarae_testkit::scratch::write_script(&noisy, "#!/bin/sh\nyes 'motd motd motd' | head -c 70000\n");
+    let attach = |path: &Path, args: &[&str]| {
+        let out = Command::new(BIN)
+            .arg("attach")
+            .args(args)
+            .current_dir(sb.work())
+            .env_clear()
+            .envs(sb.env())
+            .env("PATH", format!("{}:/usr/bin:/bin", path.display()))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        (out.status.code(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    let work = sb.work();
+    let url = format!("ssh://mac{}", work.display());
+    let cases: Vec<(&Path, Vec<&str>, String)> = vec![
+        (&fails, vec![&url], "tarae attach: ssh mac: w@mac: Permission denied (publickey).".into()),
+        (
+            &bin,
+            vec![&url, "--remote-tarae", "/no/such/tarae"],
+            "tarae attach: no tarae at /no/such/tarae on mac (".into(),
+        ),
+        (
+            &bin,
+            vec![&url, "--remote-tarae", older.to_str().unwrap()],
+            "tarae attach: the tarae on mac is older than this one".into(),
+        ),
+        (
+            &bin,
+            vec![&url, "--remote-tarae", noisy.to_str().unwrap()],
+            "tarae attach: mac said no TARAE-STDIO line in its first 64 KB — what came:\nmotd motd motd"
+                .into(),
+        ),
+        (
+            &bin,
+            vec![&url, "--remote-tarae", BIN],
+            format!("tarae attach: no tarae host for {} on ", work.display()),
+        ),
+        (&bin, vec!["ssh://-oProxyCommand=x/a"], "starts with - (ssh would read it as an option)".into()),
+        (&bin, vec!["ssh://mac", "--pid", "3"], "over ssh the pid is the address's".into()),
+    ];
+    for (path, args, says) in &cases {
+        let (code, err) = attach(path, args);
+        assert_eq!(code, Some(1), "{args:?}: {err}");
+        assert!(err.contains(says.as_str()), "{args:?} said:\n{err}\nnot:\n{says}");
+    }
+    // (no host: where it looked — and with one running for another folder, that one listed)
+    let (_, err) = attach(&bin, &[&url, "--remote-tarae", BIN]);
+    assert!(err.contains(&format!("(looked in {})", sb.state().join("ui").display())), "{err}");
+    assert!(err.contains("tarae --host in a zellij pane"), "{err}");
+    let elsewhere = sb.outside("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let h = sb.host(&[]);
+    let (code, err) = attach(&bin, &[&format!("ssh://mac{}", elsewhere.display()), "--remote-tarae", BIN]);
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains(&format!("\n  {:>7}  {}", h.pid(), work.display())),
+        "the host there listed:\n{err}"
+    );
 }
 
 /// A quit's unwritten lines (`Editor::unwritten`: here the trust store's `n` — what narrows is said when it fails —,

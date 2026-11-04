@@ -6,8 +6,15 @@
 //! terminal and say how to come back; a quit prints what it didn't write; a host that ended unsaid (a crash) leaves its
 //! last frame up with a line of the client's own — `r` attaches again, `q` quits. `:restart` execs this client into
 //! the host's new binary, the terminal left as it is.
+//!
+//! `tarae attach ssh://…` (the remote plan's §8d, step 5): the host on another machine, through `ssh` to a relay there
+//! (`ssh.rs`, `relay.rs`) — the same client over ssh's two pipes. This terminal stays cooked until the relay's `ok` and
+//! the host's `Welcome` are in (ssh's prompts and warnings are on it as in any ssh); ssh's stderr is kept after that.
+//! A host restarted there is attached again by ssh with the relay waiting for it (`--wait`); `r` runs ssh again with no
+//! prompt (`BatchMode`: the terminal is raw).
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -17,7 +24,8 @@ use tarae_wire::{self as wire, Decoder, Gone, Hello, ToHost, ToInterface};
 
 use crate::event::Event;
 
-const USAGE: &str = "usage: tarae attach [--pid PID]   show a host (tarae --host) in this terminal";
+const USAGE: &str = "usage: tarae attach [--pid PID | ssh://[USER@]HOST[:PORT][/PATH][?pid=N] [--remote-tarae PATH]]   \
+                     show a host (tarae --host) in this terminal";
 /// The host's `Welcome` within this, or it's said it didn't answer.
 const WELCOME_WITHIN: Duration = Duration::from_secs(10);
 /// How long a client a restart exec'd waits for the new host to bind its socket.
@@ -25,9 +33,10 @@ const RESTART_WAIT: Duration = Duration::from_secs(60);
 
 /// What the client's loop hears.
 enum Heard {
-    Host(ToInterface),
-    /// The host's socket ended without a `Gone` (a crash: release aborts), and how.
-    Ended(String),
+    /// A message of the host's, on the link of that generation (`Client.link_n`: one before an `again` is passed over).
+    Host(u32, ToInterface),
+    /// The host's link ended without a `Gone` (a crash: release aborts; ssh's link cut), and how.
+    Ended(u32, String),
     Input(Event),
     /// SIGTERM or SIGHUP: the client goes, its terminal restored (the host detaches).
     Signal,
@@ -39,9 +48,13 @@ enum Heard {
     },
 }
 
-/// `tarae attach [--pid PID]`.
+/// `tarae attach [--pid PID | ssh://… [--remote-tarae PATH]]`; `--stdio …` the relay (`relay.rs`).
 pub fn main(args: &[String]) -> anyhow::Result<()> {
+    if args.iter().any(|a| a == "--stdio") {
+        crate::relay::main(args);
+    }
     let (mut pid, mut restarted, mut ground) = (None, false, None);
+    let (mut url, mut tarae) = (None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -55,12 +68,22 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
             // (`:restart`'s exec: the terminal is as the last client left it, its ground known)
             "--restarted" => restarted = true,
             "--ground" => ground = it.next().and_then(|g| g.parse::<u8>().ok()),
+            "--remote-tarae" => tarae = Some(it.next().cloned().ok_or_else(|| anyhow::anyhow!("{USAGE}"))?),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
             }
+            a if a.starts_with("ssh://") && url.is_none() => {
+                url = Some(crate::ssh::parse(a).map_err(anyhow::Error::msg)?)
+            }
             other => anyhow::bail!("unknown: {other}\n{USAGE}"),
         }
+    }
+    if url.is_some() && pid.is_some() {
+        anyhow::bail!("over ssh the pid is the address's: ssh://HOST?pid=N");
+    }
+    if url.is_none() && tarae.is_some() {
+        anyhow::bail!("--remote-tarae names the tarae an ssh:// address runs");
     }
     // (before any thread: SIGTERM and SIGHUP said to the loop — the client goes, its terminal restored)
     crate::term::catch_signals(false);
@@ -76,10 +99,25 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
             Some(true) => wire::Ground::Light,
         },
     };
-    let (pid, path) = crate::attach::find(pid)?;
+    let mut way = match url {
+        Some(url) => Way::Ssh { url, tarae: tarae.unwrap_or_else(|| "tarae".into()), pid: None },
+        None => {
+            let (pid, path) = crate::attach::find(pid)?;
+            Way::Here { pid, path }
+        }
+    };
     let wait = restarted.then_some(RESTART_WAIT);
-    let (stream, dec) = attach_to(&path, ground, wait).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (link, dec) = match attach_to(&mut way, ground, wait, false) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("tarae attach: {e}");
+            std::process::exit(1)
+        }
+    };
     crate::term::terminal_begin()?;
+    if let Some(ssh) = &link.ssh {
+        ssh.quiet();
+    }
     let (tx, rx) = mpsc::channel();
     {
         let tx = tx.clone();
@@ -101,11 +139,13 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
             let _ = tx.send(Heard::Signal);
         });
     }
+    let Link { to, from, ssh, .. } = link;
     let mut c = Client {
-        pid,
-        path,
+        way,
         ground,
-        stream,
+        to,
+        ssh,
+        link_n: 0,
         held: crate::screen::Held::new(),
         seq: 0,
         seen: 0,
@@ -115,8 +155,9 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
         offset: offset_now(),
         zone_at: crate::clock::now() + ZONE_EVERY,
     };
-    c.listen(dec);
+    c.listen(from, dec);
     let end = c.run(&rx);
+    c.let_go();
     // (raw mode and the alternate screen survive an exec: the restarted client takes the terminal as it is)
     if !matches!(end, End::Exec(_)) {
         let _ = crate::term::terminal_end();
@@ -140,7 +181,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
                 wire::Ground::Light => "2",
             };
             let err = std::process::Command::new(&bin)
-                .args(["attach", "--pid", &c.pid.to_string(), "--restarted", "--ground", g])
+                .args(["attach", "--pid", &c.way.pid().to_string(), "--restarted", "--ground", g])
                 .exec();
             let _ = crate::term::terminal_end();
             eprintln!("tarae attach: the host restarted as {}, but it can't run: {err}", bin.display());
@@ -158,17 +199,80 @@ enum End {
     Exec(PathBuf),
 }
 
-/// The host's socket at `path`, its `Hello` said and its `Welcome` in (`wait`: retried that long while it isn't
-/// there yet — a restarted host binding it). What came after the `Welcome` stays in the decoder.
-fn attach_to(
-    path: &Path,
-    ground: wire::Ground,
-    wait: Option<Duration>,
-) -> Result<(UnixStream, Decoder<ToInterface>), String> {
+/// Where the host is.
+enum Way {
+    /// Host `pid`'s socket on this machine.
+    Here { pid: u32, path: PathBuf },
+    /// Through ssh to `url`'s relay (`tarae`: the tarae it runs there); `pid` the host the relay said, once it has.
+    Ssh { url: crate::ssh::Url, tarae: String, pid: Option<u32> },
+}
+
+impl Way {
+    fn pid(&self) -> u32 {
+        match self {
+            Way::Here { pid, .. } => *pid,
+            Way::Ssh { pid, url, .. } => pid.or(url.pid).unwrap_or_default(),
+        }
+    }
+
+    /// How to come back, said as the client goes.
+    fn again_said(&self) -> String {
+        match self {
+            Way::Here { .. } => "tarae attach".into(),
+            Way::Ssh { url, .. } => format!("tarae attach {}", url.written),
+        }
+    }
+}
+
+/// A way's two ends — the host's socket, or ssh's pipes — and ssh while it's the way.
+struct Link {
+    to: Box<dyn Write + Send>,
+    from: Box<dyn Read + Send>,
+    /// `from`'s descriptor (the `Welcome`'s wait).
+    fd: RawFd,
+    ssh: Option<crate::ssh::Ssh>,
+}
+
+impl Link {
+    /// Let go before a `Welcome`: ssh, if it's the way, closed and reaped.
+    fn end(self) {
+        let Link { to, from, ssh, .. } = self;
+        drop((to, from));
+        if let Some(s) = ssh {
+            s.end();
+        }
+    }
+}
+
+/// The way opened (`wait`: a socket that isn't there yet retried that long — a restarted host binding it; `batch`: ssh
+/// asks nothing, the terminal being raw).
+fn open_way(way: &mut Way, wait: Option<Duration>, batch: bool) -> Result<Link, String> {
+    match way {
+        Way::Here { path, .. } => {
+            let stream = connect_here(path, wait)?;
+            let to = stream.try_clone().map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(Link { fd: stream.as_raw_fd(), to: Box::new(to), from: Box::new(stream), ssh: None })
+        }
+        Way::Ssh { url, tarae, pid } => {
+            let relay = crate::ssh::relay_args(url, *pid, wait);
+            let o = crate::ssh::open(url, tarae, &relay, batch)?;
+            *pid = Some(o.pid);
+            crate::log::line(
+                "attach",
+                "info",
+                &format!("over ssh to {}: host {} ({})", url.host, o.pid, o.project),
+            );
+            Ok(Link { fd: o.from.as_raw_fd(), to: Box::new(o.to), from: Box::new(o.from), ssh: Some(o.ssh) })
+        }
+    }
+}
+
+/// Host `path`'s socket (`wait`: retried that long while it isn't there yet).
+fn connect_here(path: &Path, wait: Option<Duration>) -> Result<UnixStream, String> {
     let until = crate::clock::now() + wait.unwrap_or_default();
-    let stream = loop {
+    loop {
         match crate::attach::connect(path) {
-            Ok(s) => break s,
+            Ok(s) => return Ok(s),
             Err(e)
                 if crate::clock::now() < until
                     && matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) =>
@@ -180,7 +284,32 @@ fn attach_to(
             }
             Err(e) => return Err(format!("{}: {e}", path.display())),
         }
-    };
+    }
+}
+
+/// The way opened, the host's `Hello` said and its `Welcome` in. What came after the `Welcome` stays in the decoder.
+fn attach_to(
+    way: &mut Way,
+    ground: wire::Ground,
+    wait: Option<Duration>,
+    batch: bool,
+) -> Result<(Link, Decoder<ToInterface>), String> {
+    let mut link = open_way(way, wait, batch)?;
+    match greet(&mut link, ground) {
+        Ok(dec) => Ok((link, dec)),
+        Err(e) => {
+            let ssh_said = link.ssh.as_ref().and_then(|s| s.last_line());
+            link.end();
+            Err(match ssh_said {
+                Some(l) => format!("{e} (ssh: {l})"),
+                None => e,
+            })
+        }
+    }
+}
+
+/// `Hello` said on `link`, the host's `Welcome` read within `WELCOME_WITHIN`.
+fn greet(link: &mut Link, ground: wire::Ground) -> Result<Decoder<ToInterface>, String> {
     let (w, h) = crate::term::size().unwrap_or((80, 24));
     let hello = Hello {
         v: wire::V,
@@ -199,8 +328,8 @@ fn attach_to(
         zone: std::env::var("TZ").unwrap_or_default(),
         offset: offset_now(),
     };
-    send(&stream, &ToHost::Hello(hello)).map_err(|e| format!("saying hello: {e}"))?;
-    let _ = stream.set_read_timeout(Some(WELCOME_WITHIN));
+    send(&mut link.to, &ToHost::Hello(hello)).map_err(|e| format!("saying hello: {e}"))?;
+    let until = crate::clock::now() + WELCOME_WITHIN;
     let mut dec = Decoder::<ToInterface>::new();
     loop {
         match dec.message() {
@@ -214,24 +343,43 @@ fn attach_to(
             }
             Ok(Some(other)) => return Err(format!("the host's first word wasn't Welcome: {other:?}")),
             Err(e) => return Err(format!("the host's bytes were wrong: {e}")),
-            Ok(None) => match dec.read_from(&mut &stream) {
-                Ok(0) => return Err("the host closed the socket before its Welcome".into()),
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => {
-                    return Err(format!("no Welcome within {} s: {e}", WELCOME_WITHIN.as_secs()));
+            Ok(None) => {
+                if !readable_within(link.fd, until) {
+                    return Err(format!("no Welcome within {} s", WELCOME_WITHIN.as_secs()));
                 }
-            },
+                match dec.read_from(&mut link.from) {
+                    Ok(0) => return Err("the host's end closed before its Welcome".into()),
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(format!("reading the host's Welcome: {e}")),
+                }
+            }
         }
     }
-    let _ = stream.set_read_timeout(None);
-    Ok((stream, dec))
+    Ok(dec)
 }
 
-fn send(mut s: &UnixStream, m: &ToHost) -> io::Result<()> {
+/// Whether `fd` has something to read (or its end) before `until`.
+fn readable_within(fd: RawFd, until: std::time::Instant) -> bool {
+    loop {
+        let left = until.saturating_duration_since(crate::clock::now());
+        let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: poll reads and writes only the one pollfd it's given.
+        let n = unsafe { libc::poll(&mut p, 1, left.as_millis().min(i32::MAX as u128) as i32) };
+        match n {
+            1.. => return true,
+            0 => return false,
+            _ if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted => {}
+            _ => return true,
+        }
+    }
+}
+
+fn send(s: &mut (impl Write + ?Sized), m: &ToHost) -> io::Result<()> {
     let mut out = Vec::new();
     wire::encode(m, &mut out).map_err(|e| io::Error::other(e.said))?;
-    s.write_all(&out)
+    s.write_all(&out)?;
+    s.flush()
 }
 
 /// Seconds east of UTC now, as this machine's zone has it.
@@ -245,10 +393,14 @@ fn offset_now() -> i32 {
 }
 
 struct Client {
-    pid: u32,
-    path: PathBuf,
+    way: Way,
     ground: wire::Ground,
-    stream: UnixStream,
+    /// The link's end toward the host (its other end is `listen`'s thread's).
+    to: Box<dyn Write + Send>,
+    /// ssh while it's the way.
+    ssh: Option<crate::ssh::Ssh>,
+    /// The link's generation: what an older one's thread still says is passed over.
+    link_n: u32,
     /// What the terminal was sent of the host's frames (the resting redraw's).
     held: crate::screen::Held,
     /// Inputs sent.
@@ -271,19 +423,20 @@ const ZONE_EVERY: Duration = Duration::from_secs(3600);
 
 impl Client {
     /// The host's messages read on a thread of their own into the loop.
-    fn listen(&self, mut dec: Decoder<ToInterface>) {
-        let Ok(mut s) = self.stream.try_clone() else { return };
+    fn listen(&self, mut from: Box<dyn Read + Send>, mut dec: Decoder<ToInterface>) {
         let tx = self.tx.clone();
+        let n = self.link_n;
+        let closed = if self.ssh.is_some() { "the link closed" } else { "its socket closed" };
         crate::event::thread("tarae-wire-host", move || {
             let why = loop {
                 match dec.message() {
                     Ok(Some(m)) => {
-                        if tx.send(Heard::Host(m)).is_err() {
+                        if tx.send(Heard::Host(n, m)).is_err() {
                             return;
                         }
                     }
-                    Ok(None) => match dec.read_from(&mut s) {
-                        Ok(0) => break "its socket closed".to_string(),
+                    Ok(None) => match dec.read_from(&mut from) {
+                        Ok(0) => break closed.to_string(),
                         Ok(_) => {}
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) => break e.to_string(),
@@ -291,8 +444,16 @@ impl Client {
                     Err(e) => break format!("its bytes were wrong: {e}"),
                 }
             };
-            let _ = tx.send(Heard::Ended(why));
+            let _ = tx.send(Heard::Ended(n, why));
         });
+    }
+
+    /// The client goes: ssh, if it's the way, let go (its stdin closed first: the relay's EOF, the host's detach).
+    fn let_go(&mut self) {
+        self.to = Box::new(io::sink());
+        if let Some(s) = self.ssh.take() {
+            s.end();
+        }
     }
 
     fn run(&mut self, rx: &mpsc::Receiver<Heard>) -> End {
@@ -318,21 +479,35 @@ impl Client {
                 Err(mpsc::RecvTimeoutError::Disconnected) => return End::Said(String::new()),
             };
             match heard {
-                Heard::Host(m) if !ended => {
-                    if let Some(end) = self.heard(m) {
-                        return end;
+                Heard::Host(n, _) | Heard::Ended(n, _) if n != self.link_n => {}
+                Heard::Host(_, m) if !ended => match self.heard(m) {
+                    // (over ssh the host's new binary is the other machine's: ssh again, the relay waiting for it)
+                    Some(End::Exec(_)) if self.ssh.is_some() => {
+                        if let Err(e) = self.again(Some(RESTART_WAIT)) {
+                            ended = true;
+                            self.due = None;
+                            let _ = crate::term::last_line(&format!(
+                                " the host restarted, but: {e} — r attach again · q quit"
+                            ));
+                        }
                     }
-                }
-                Heard::Host(_) => {}
-                Heard::Ended(why) if !ended => {
+                    Some(end) => return end,
+                    None => {}
+                },
+                Heard::Host(..) => {}
+                Heard::Ended(_, why) if !ended => {
                     ended = true;
                     self.due = None;
+                    let why = match self.ssh.as_ref().and_then(|s| s.last_line()) {
+                        Some(l) => format!("{why}; ssh: {l}"),
+                        None => why,
+                    };
                     let _ =
                         crate::term::last_line(&format!(" the host ended ({why}) — r attach again · q quit"));
                 }
-                Heard::Ended(_) => {}
+                Heard::Ended(..) => {}
                 Heard::Signal => {
-                    let _ = send(&self.stream, &ToHost::Bye);
+                    let _ = send(&mut self.to, &ToHost::Bye);
                     return End::Said(String::new());
                 }
                 Heard::Done { id, answer, osc } => {
@@ -341,12 +516,12 @@ impl Client {
                         let _ = write_out(&osc);
                     }
                     if !ended {
-                        let _ = send(&self.stream, &ToHost::Answer { id, answer });
+                        let _ = send(&mut self.to, &ToHost::Answer { id, answer });
                     }
                 }
                 Heard::Input(ev) if ended => match ev {
                     Event::Key(k) if k.code == crate::key::Code::Char('r') && !k.ctrl && !k.alt => {
-                        match self.again() {
+                        match self.again(None) {
                             Ok(()) => ended = false,
                             Err(e) => {
                                 let _ = crate::term::last_line(&format!(" no host: {e} — r again · q quit"));
@@ -363,7 +538,7 @@ impl Client {
                 },
                 Heard::Input(Event::Resize) => {
                     if let Ok((w, h)) = crate::term::size() {
-                        let _ = send(&self.stream, &ToHost::Resize { w, h });
+                        let _ = send(&mut self.to, &ToHost::Resize { w, h });
                     }
                 }
                 Heard::Input(ev) => {
@@ -372,7 +547,7 @@ impl Client {
                     }
                     if let Some(event) = crate::attach::input_of(ev) {
                         self.seq += 1;
-                        let _ = send(&self.stream, &ToHost::Input { seq: self.seq, seen: self.seen, event });
+                        let _ = send(&mut self.to, &ToHost::Input { seq: self.seq, seen: self.seen, event });
                     }
                 }
             }
@@ -384,19 +559,19 @@ impl Client {
         match m {
             ToInterface::Frame { n, w, h, bytes, .. } => {
                 if !bytes.is_empty() && write_out(&bytes).is_err() {
-                    let _ = send(&self.stream, &ToHost::Bye);
+                    let _ = send(&mut self.to, &ToHost::Bye);
                     return Some(End::Failed("this terminal can't be written to".into()));
                 }
                 self.held.apply(&bytes, w, h);
                 self.seen = n;
-                let _ = send(&self.stream, &ToHost::Ack { frame: n });
+                let _ = send(&mut self.to, &ToHost::Ack { frame: n });
                 if !bytes.is_empty() {
                     self.due = Some(crate::clock::now() + crate::interface::RESTING_REDRAW);
                 }
                 None
             }
             ToInterface::Gone { why, said } => Some(match why {
-                Gone::Detached => End::Said("detached — tarae attach comes back".into()),
+                Gone::Detached => End::Said(format!("detached — {} comes back", self.way.again_said())),
                 Gone::TakenOver => End::Said("taken over by another tarae attach".into()),
                 Gone::Quit => End::Said(said),
                 Gone::Restarting { bin } => End::Exec(PathBuf::from(bin)),
@@ -430,19 +605,28 @@ impl Client {
         }
         self.offset = offset;
         let zone = std::env::var("TZ").unwrap_or_default();
-        let _ = send(&self.stream, &ToHost::Zone { zone, offset });
+        let _ = send(&mut self.to, &ToHost::Zone { zone, offset });
     }
 
-    /// `r` on the host-ended line: the host looked for again (the one asked for, else the one `tarae state` picks).
-    fn again(&mut self) -> Result<(), String> {
-        let (pid, path) = match crate::attach::find(None) {
-            Ok(found) => found,
-            Err(_) => (self.pid, self.path.clone()),
-        };
-        let (stream, dec) = attach_to(&path, self.ground, None)?;
-        (self.pid, self.path, self.stream) = (pid, path, stream);
+    /// Attached again — `r` on the host-ended line, a restart over ssh (`wait`: the relay waits for its socket). Here:
+    /// the host looked for again (the one asked for, else the one `tarae state` picks); over ssh: ssh again, asking
+    /// nothing (the terminal is raw), to the host it had.
+    fn again(&mut self, wait: Option<Duration>) -> Result<(), String> {
+        if let Way::Here { pid, path } = &mut self.way
+            && let Ok((p, at)) = crate::attach::find(None)
+        {
+            (*pid, *path) = (p, at);
+        }
+        let (link, dec) = attach_to(&mut self.way, self.ground, wait, true)?;
+        self.let_go();
+        let Link { to, from, ssh, .. } = link;
+        if let Some(s) = &ssh {
+            s.quiet();
+        }
+        (self.to, self.ssh) = (to, ssh);
+        self.link_n += 1;
         self.held = crate::screen::Held::new();
-        self.listen(dec);
+        self.listen(from, dec);
         Ok(())
     }
 }

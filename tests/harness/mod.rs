@@ -527,9 +527,25 @@ impl Term {
         Term::attach_with(sb, host, cols, rows, Some(pace))
     }
 
+    /// `tarae args…` attaching to `host` some other way (`attach ssh://…`), ready as `attach` is.
+    pub fn attach_by(sb: &Sandbox, host: &Host, args: &[&str], cols: u16, rows: u16) -> Term {
+        Term::attach_args(sb, host, args, cols, rows, None)
+    }
+
     fn attach_with(sb: &Sandbox, host: &Host, cols: u16, rows: u16, pace: Option<Pace>) -> Term {
         let pid = host.pid().to_string();
-        let mut t = Term::spawn_unready(sb, &sb.work(), &["attach", "--pid", &pid], cols, rows, pace);
+        Term::attach_args(sb, host, &["attach", "--pid", &pid], cols, rows, pace)
+    }
+
+    fn attach_args(
+        sb: &Sandbox,
+        host: &Host,
+        args: &[&str],
+        cols: u16,
+        rows: u16,
+        pace: Option<Pace>,
+    ) -> Term {
+        let mut t = Term::spawn_unready(sb, &sb.work(), args, cols, rows, pace);
         t.asks = Some(host.pid());
         let deadline = Instant::now() + t.timeout;
         while t.poll_for(POLL, |s| s.status().contains("● ")).is_none() {

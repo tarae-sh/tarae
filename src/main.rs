@@ -116,6 +116,8 @@ mod lsp_editor;
 mod lspagent;
 mod markdown;
 mod mcp;
+mod relay;
+mod ssh;
 use tarae_web::media;
 mod messages;
 mod models;

@@ -567,6 +567,21 @@ fn find_in(dir: &Path, here: Option<&Path>) -> anyhow::Result<PathBuf> {
     anyhow::bail!("{}", list.trim_end())
 }
 
+/// The workspaces' checkouts of the tarae whose socket is `sock`, the front one's first — None: it doesn't answer, or
+/// in words this build can't read (a dead or an older tarae). The relay's look for a host (`relay.rs`).
+pub(crate) fn roots_of(sock: &Path) -> Option<Vec<PathBuf>> {
+    let v = ask(sock, &json!({ "get": "state", "timeout_ms": 2000 })).ok()?;
+    let mut roots = roots_in(&v).ok()?;
+    let front = v["workspaces"].as_array().into_iter().flatten().find(|s| s["id"] == v["front"]);
+    if let Some(i) =
+        front.and_then(|s| s["root"].as_str()).and_then(|r| roots.iter().position(|p| p == Path::new(r)))
+    {
+        let r = roots.remove(i);
+        roots.insert(0, r);
+    }
+    Some(roots)
+}
+
 /// The workspaces' checkouts in a state's answer — Err: an error, or no `workspaces` (an older tarae's state, `v`
 /// below 16: its `sessions` aren't read — never taken for a tarae with nothing open).
 fn roots_in(v: &Value) -> Result<Vec<PathBuf>, String> {
