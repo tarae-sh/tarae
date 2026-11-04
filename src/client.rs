@@ -458,6 +458,8 @@ fn asked(ask: wire::Ask) -> (wire::Answer, Vec<u8>) {
     match ask {
         wire::Ask::Copy(text) => match crate::clipboard::write_here(&text) {
             Ok(Wrote::Program) => (wire::Answer::Copied(None), Vec::new()),
+            // (inside a multiplexer the program and this terminal: the host told the program's, as protocol v0 can say)
+            Ok(Wrote::Both(_, osc)) => (wire::Answer::Copied(None), osc),
             Ok(Wrote::Terminal(osc, w)) => (wire::Answer::Copied(Some(why(w))), osc),
             Err(e) => (wire::Answer::Failed(e), Vec::new()),
         },

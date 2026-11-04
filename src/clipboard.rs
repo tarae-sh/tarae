@@ -7,6 +7,10 @@
 //! where no clipboard program is there. The sequence goes out with tarae's own terminal output, after the
 //! next frame (`Editor::term_out`) — never written from a worker. Reading through OSC 52 is refused by most
 //! terminals, so a paste there says to use the terminal's own paste (it comes in as a bracketed paste).
+//!
+//! Inside a multiplexer (zellij, tmux, screen) a copy goes both ways, the program and OSC 52: a pane holds the
+//! multiplexer server's variables, not the client's, so a session started at this machine and attached over SSH says
+//! no SSH (#347) — and the multiplexer hands an OSC 52 on to the terminal it's shown in, wherever that is.
 
 use crate::editor::{Editor, ToastKind};
 
@@ -67,6 +71,20 @@ pub enum Wrote {
     Program,
     /// These bytes, for the terminal (OSC 52), and why that way.
     Terminal(Vec<u8>, Why),
+    /// The program took it, and these bytes for the terminal too: inside a multiplexer (`both`).
+    Both(&'static str, Vec<u8>),
+}
+
+/// A copy the program `cmd` took, inside a multiplexer: the OSC 52 too, for the terminal it's shown in (`tmux` as
+/// `osc52` takes it). Outside one, or where the terminal can't take it (too long, tmux keeping it), the program alone.
+fn both(cmd: &'static str, text: &str, env: &Env, tmux: Option<(&str, &str)>) -> Wrote {
+    if env.mux == Mux::None {
+        return Wrote::Program;
+    }
+    match osc52(text, env.mux, tmux) {
+        Ok(bytes) => Wrote::Both(cmd, bytes),
+        Err(_) => Wrote::Program,
+    }
 }
 
 /// Why the clipboard is the terminal's.
@@ -120,6 +138,13 @@ fn copied(ed: &mut Editor, what: &str, r: Result<Wrote, String>, flash: Option<c
                     format!("copied {what} — through the terminal (OSC 52: no wl-copy, xclip or xsel here)")
                 }
             });
+        }
+        Ok(Wrote::Both(cmd, bytes)) => {
+            if let Some(f) = flash {
+                ed.motion_start(f);
+            }
+            ed.term_out.extend_from_slice(&bytes);
+            ed.set_success(format!("copied {what} — {cmd} and the terminal (OSC 52)"));
         }
         Err(e) => ed.set_error(format!("not copied — {e}")),
     }
@@ -212,6 +237,8 @@ pub enum Mux {
     None,
     Tmux,
     Screen,
+    /// zellij takes an OSC 52 as it is and sets the terminal's clipboard with it.
+    Zellij,
 }
 
 impl Env {
@@ -230,6 +257,8 @@ impl Env {
                 Mux::Tmux
             } else if set("STY") {
                 Mux::Screen
+            } else if set("ZELLIJ") {
+                Mux::Zellij
             } else {
                 Mux::None
             },
@@ -329,7 +358,7 @@ pub fn osc52(text: &str, mux: Mux, tmux: Option<(&str, &str)>) -> Result<Vec<u8>
     // Inside a DCS passthrough the OSC ends on BEL: an ESC there would have to be doubled
     let tmux_wrapped = format!("\x1bPtmux;\x1b\x1b]52;c;{b64}\x07\x1b\\");
     let out = match (mux, tmux) {
-        (Mux::None, _) => raw,
+        (Mux::None | Mux::Zellij, _) => raw,
         (Mux::Screen, _) => {
             let pieces: Vec<&str> =
                 b64.as_bytes().chunks(SCREEN_CHUNK).map(|c| std::str::from_utf8(c).unwrap_or("")).collect();
@@ -431,10 +460,11 @@ mod system {
 
     pub fn write(text: &str, env: Env) -> Result<Wrote, String> {
         let env = with_programs(env);
+        let tmux = || if env.mux == Mux::Tmux { ask_tmux(&env) } else { None };
         let (cmd, args) = match super::pick(&env, true) {
             Way::Program(cmd, args) => (cmd, args),
             Way::Terminal(why) => {
-                let tmux = if env.mux == Mux::Tmux { ask_tmux(&env) } else { None };
+                let tmux = tmux();
                 let tmux = tmux.as_ref().map(|(c, p)| (c.as_str(), p.as_str()));
                 return Ok(Wrote::Terminal(super::osc52(text, env.mux, tmux)?, why));
             }
@@ -452,7 +482,8 @@ mod system {
         if !status.success() {
             return Err(format!("{cmd} failed ({status})"));
         }
-        Ok(Wrote::Program)
+        let tmux = tmux();
+        Ok(super::both(cmd, text, &env, tmux.as_ref().map(|(c, p)| (c.as_str(), p.as_str()))))
     }
 
     pub fn read(env: Env) -> Result<Read, String> {
@@ -581,6 +612,8 @@ mod tests {
         assert_eq!(env(&[("TMUX", "/tmp/tmux-1/default,1,0"), ("STY", "1.x")], &[]).mux, Mux::Tmux);
         assert_eq!(env(&[("STY", "1.pts-0.host")], &[]).mux, Mux::Screen);
         assert_eq!(env(&[], &[]).mux, Mux::None);
+        assert_eq!(env(&[("ZELLIJ", "0")], &[]).mux, Mux::Zellij);
+        assert_eq!(env(&[("ZELLIJ", "0"), ("TMUX", "/tmp/tmux-1/default,1,0")], &[]).mux, Mux::Tmux);
         assert_eq!(env(&[("TMUX_PANE", "%3")], &[]).tmux_pane.as_deref(), Some("%3"));
         let e = env(&[("DISPLAY", ":0"), ("WAYLAND_DISPLAY", "wayland-0")], &["xclip", "nope"]);
         assert!(e.x11 && e.wayland);
@@ -649,6 +682,7 @@ mod tests {
         let raw = "\x1b]52;c;aGk=\x1b\\";
         let wrapped = "\x1bPtmux;\x1b\x1b]52;c;aGk=\x07\x1b\\";
         assert_eq!(osc("hi", Mux::None, None), raw);
+        assert_eq!(osc("hi", Mux::Zellij, None), raw, "zellij takes it as it is");
         // tmux: `set-clipboard on` takes it as it is; else passthrough wraps it; neither → said how
         assert_eq!(osc("hi", Mux::Tmux, Some(("on", "off"))), raw);
         assert_eq!(osc("hi", Mux::Tmux, Some(("external", "on"))), wrapped);
@@ -667,6 +701,24 @@ mod tests {
         assert!(pieces.iter().all(|p| p.len() <= SCREEN_CHUNK + 16), "{pieces:?}");
         let joined: String = pieces.concat();
         assert!(joined.contains(&base64(text.as_bytes())), "the payload whole once the pieces are joined");
+    }
+
+    /// #347: a zellij or tmux session started at this machine, attached over SSH, says no SSH in its panes — so a copy
+    /// the program took goes to the terminal too, wherever it's shown; outside a multiplexer, or where the terminal
+    /// can't take it, the program alone.
+    #[test]
+    fn inside_a_multiplexer_a_copy_goes_to_the_program_and_the_terminal() {
+        let raw = b"\x1b]52;c;aGk=\x1b\\".to_vec();
+        let zellij = Env { macos: true, mux: Mux::Zellij, ..Env::default() };
+        assert_eq!(pick(&zellij, true), Way::Program("pbcopy", &[]), "the program still");
+        assert_eq!(both("pbcopy", "hi", &zellij, None), Wrote::Both("pbcopy", raw.clone()));
+        let tmux = Env { mux: Mux::Tmux, ..zellij.clone() };
+        assert_eq!(both("pbcopy", "hi", &tmux, Some(("on", "off"))), Wrote::Both("pbcopy", raw));
+        assert_eq!(both("pbcopy", "hi", &tmux, Some(("external", "off"))), Wrote::Program, "tmux keeps it");
+        let mac = Env { mux: Mux::None, ..zellij.clone() };
+        assert_eq!(both("pbcopy", "hi", &mac, None), Wrote::Program, "no multiplexer: once");
+        let long = "a".repeat(OSC52_MAX);
+        assert_eq!(both("pbcopy", &long, &zellij, None), Wrote::Program, "too long for the terminal");
     }
 
     #[test]
@@ -704,6 +756,15 @@ mod tests {
             [("copied 1 selection — through the terminal (OSC 52)".to_string(), Severity::Success)]
         );
         assert_eq!(ed.term_out, b"\x1b]52;c;YQ==\x1b\\", "for the terminal, with the next frame");
+
+        // Inside a multiplexer: the program and the terminal, both said
+        let mut ed = Editor::new(crate::config::Config::default());
+        copied(&mut ed, "1 selection", Ok(Wrote::Both("pbcopy", b"\x1b]52;c;YQ==\x1b\\".to_vec())), None);
+        assert_eq!(
+            said(&ed),
+            [("copied 1 selection — pbcopy and the terminal (OSC 52)".to_string(), Severity::Success)]
+        );
+        assert_eq!(ed.term_out, b"\x1b]52;c;YQ==\x1b\\");
 
         // A failure is only that: no success beside it
         let mut ed = Editor::new(crate::config::Config::default());

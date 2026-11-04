@@ -234,3 +234,9 @@ tmux tarae asks tmux what it lets through: with `set -g set-clipboard on` it goe
 `allow-passthrough`; with neither the toast says so. Inside GNU screen it's wrapped in pieces. Reading the clipboard
 that way is refused by most terminals, so there `space p` says to paste with the terminal's own paste key — that
 comes in as a paste. A copy over 768 KB is too long for the terminal and says so.
+
+Inside a multiplexer (zellij, tmux, screen) a copy goes both ways, the clipboard program and OSC 52, said as `copied 1
+selection — pbcopy and the terminal (OSC 52)`: a pane holds the variables of where its session was started, so a
+zellij session started at a Mac and attached over SSH says no SSH, and pbcopy alone would fill the Mac's clipboard.
+The multiplexer hands the OSC 52 to the terminal it's shown in, wherever that is. Sitting at that Mac, the terminal's
+clipboard is the same one, written twice.
