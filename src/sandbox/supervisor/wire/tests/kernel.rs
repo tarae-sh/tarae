@@ -332,9 +332,10 @@ fn a_control_length_with_a_null_pointer_faults_in_the_kernel_as_in_tarae() {
 /// (V2-6) A buffer reaching past where a process's memory ends — an empty one at the top of the address space, one
 /// that wraps — faults in the kernel before any buffer is read (`__import_iovec`'s `access_ok`), and `read_msg` says
 /// so too: `EFAULT`, where it sent the message (an empty one) or read the others first; a tagged pointer (arm64's top
-/// byte) faults in the kernel and in tarae's reads (`read_mem`), which `/proc/<pid>/mem` alone would read. A one-byte
-/// datagram over a socket pair of the test's own, the buffer past user space second. (Past 2^63 only: x86_64's 6.6–6.11
-/// take an empty buffer below it.)
+/// byte) faults in the kernel and in tarae's reads (`read_mem`) — tarae refuses one itself, whatever a kernel's
+/// `/proc/<pid>/mem` reads there (arm64's drops the tag: the kernel's, said in the output, never asserted). A
+/// one-byte datagram over a socket pair of the test's own, the buffer past user space second. (Past 2^63 only:
+/// x86_64's 6.6–6.11 take an empty buffer below it.)
 #[test]
 fn a_buffer_past_user_space_faults_in_the_kernel_as_in_tarae() {
     let o = Oracle::new();
@@ -362,30 +363,44 @@ fn a_buffer_past_user_space_faults_in_the_kernel_as_in_tarae() {
         );
         assert_eq!(m.reads.borrow().len(), 2, "no buffer read: {:?}", m.reads.borrow());
     }
-    // A lone buffer's reach is cut to `MAX_RW_COUNT` before it's judged (`import_ubuf`): a datagram far past the send
-    // buffer, the protocol's `EMSGSIZE` (tarae's past 1 MiB), not a fault.
-    let mut v = [libc::iovec { iov_base: byte.as_ptr() as *mut libc::c_void, iov_len: 1 << 60 }];
+    // A lone buffer's reach is cut to `MAX_RW_COUNT` before it's judged (`import_ubuf`, from 6.4's 3b2deb0e46da): a
+    // datagram far past the send buffer, the protocol's `EMSGSIZE` (tarae's past 1 MiB), not a fault. Before 6.4
+    // `__import_iovec` judged each buffer's whole reach first: the kernel's `EFAULT`, where tarae says its own limit
+    // first — both refuse. Its byte in the binary's own image, low in user space, where the cut reach ends inside it —
+    // a thread's stack lies where ASLR put it, near the top, and its cut reach may pass the end (`EFAULT` again).
+    static LOW: [u8; 1] = [7];
+    let low = LOW.as_ptr() as u64;
+    assert!(low + MAX_RW_COUNT <= USER_MAX, "a byte at {low:#x}: its cut reach past user space");
+    let mut v = [libc::iovec { iov_base: low as *mut libc::c_void, iov_len: 1 << 60 }];
     // SAFETY: as above; the long buffer is what's asked (nothing of it is read).
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     (msg.msg_iov, msg.msg_iovlen) = (v.as_mut_ptr(), 1);
-    // SAFETY: as above.
-    let kernel = unsafe { libc::sendmsg(o.kernels.0.as_raw_fd(), &msg, libc::MSG_DONTWAIT) };
+    // SAFETY: as above; the call only reads its buffer.
+    let kernel = match unsafe { libc::sendmsg(o.kernels.0.as_raw_fd(), &msg, libc::MSG_DONTWAIT) } {
+        -1 => Err(errno()),
+        sent => Ok(sent),
+    };
     let m = Fake::default().at(HEAD, msghdr((0, 0), (IOV, 1), (0, 0))).at(IOV, iovecs(&[(BUFS, 1 << 60)]));
     let tarae = read_msg(&m, passer(&mut Vec::new()), HEAD, true).map(|_| ()).map_err(|u| u.errno());
-    assert_eq!(((kernel, errno()), tarae), ((-1, libc::EMSGSIZE), Err(libc::EMSGSIZE)), "a lone long buffer");
+    let cut = if release() >= (6, 4) { libc::EMSGSIZE } else { libc::EFAULT };
+    assert_eq!((kernel, tarae), (Err(cut), Err(libc::EMSGSIZE)), "a lone long buffer at {low:#x}");
     // A pointer to that byte with a tag in its top byte: the kernel's `EFAULT` (no run here turned the tagged ABI
-    // on), where arm64's `/proc/<pid>/mem` reads the byte — tarae's reads of a run's memory say `EFAULT` too.
+    // on), and tarae's reads of a run's memory say `EFAULT` too — refused by tarae itself (`USER_MAX`), so what this
+    // kernel's `/proc/<pid>/mem` does there (arm64's reads the byte) is only said.
     let tagged = byte.as_ptr() as u64 | 0x2a << 56;
     let mut v = [libc::iovec { iov_base: tagged as *mut libc::c_void, iov_len: 1 }];
     // SAFETY: as above.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     (msg.msg_iov, msg.msg_iovlen) = (v.as_mut_ptr(), 1);
     // SAFETY: as above; the tagged buffer is what's asked.
-    let kernel = unsafe { libc::sendmsg(o.kernels.0.as_raw_fd(), &msg, libc::MSG_DONTWAIT) };
-    assert_eq!((kernel, errno()), (-1, libc::EFAULT), "the kernel, a tagged pointer");
+    let kernel = match unsafe { libc::sendmsg(o.kernels.0.as_raw_fd(), &msg, libc::MSG_DONTWAIT) } {
+        -1 => Err(errno()),
+        sent => Ok(sent),
+    };
+    assert_eq!(kernel, Err(libc::EFAULT), "the kernel, a tagged pointer");
     let mut raw = [0u8];
-    let proc_reads = o.mem.read_exact_at(&mut raw, tagged).is_ok();
-    assert_eq!(proc_reads, cfg!(target_arch = "aarch64"), "/proc/self/mem reads it on arm64 only");
+    let proc_reads = o.mem.read_exact_at(&mut raw, tagged);
+    eprintln!("/proc/self/mem at {tagged:#x}, tagged: {proc_reads:?} (the kernel's, not asserted)");
     assert_eq!(read_mem(&o.mem, tagged, 1), Err(libc::EFAULT), "tarae's read of it");
     assert_eq!(read_mem(&o.mem, byte.as_ptr() as u64, 1), Ok(byte.to_vec()), "and of the byte itself");
 }
@@ -483,7 +498,7 @@ struct Oracle {
     taraes: (OwnedFd, OwnedFd),
     /// The most a datagram on these sockets carries (`unix_dgram_sendmsg`: `sk_sndbuf` less 32).
     sndbuf: u64,
-    /// The most control the kernel copies (`sock_kmalloc`: `net.core.optmem_max`).
+    /// The most control the kernel copies (`sock_kmalloc`: `net.core.optmem_max` — `optmem_of`).
     optmem: u64,
     /// Where tarae's copies are numbered from: none of the run's (as in a supervisor, whose table isn't the run's).
     ours_from: i32,
@@ -504,8 +519,7 @@ impl Oracle {
         let kernels = pair();
         let sndbuf = sockopt_of(&kernels.0, libc::SO_SNDBUF) - 32;
         assert!(sndbuf < 1 << 18, "a send buffer of {sndbuf}: past what `received` reads");
-        let optmem =
-            std::fs::read_to_string("/proc/sys/net/core/optmem_max").unwrap().trim().parse().unwrap();
+        let optmem = optmem_of(&kernels.0);
         // SAFETY: a struct the call fills.
         let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
         // SAFETY: as above.
@@ -585,7 +599,7 @@ impl Oracle {
     /// sent apart: (1) the header names an address (mutated into one: where it goes is the supervisor's —
     /// `destination` — and an address's reading is checked on its own above); (2) control past `optmem_max` but within
     /// tarae's 64 KiB: the kernel's `ENOBUFS` before anything of it is read, tarae reads it — and past 64 KiB within
-    /// `optmem_max` (128 KiB from 6.9), tarae's `ENOBUFS` where the kernel reads it; (3) a buffer reaching past
+    /// `optmem_max` (128 KiB from 6.8), tarae's `ENOBUFS` where the kernel reads it; (3) a buffer reaching past
     /// `USER_MAX` that this kernel takes (x86_64's 6.6–6.11 check only the top bit: an empty one there), tarae's
     /// `EFAULT`; (4) a datagram past the socket's send buffer: the protocol's `EMSGSIZE` before it copies the data,
     /// tarae reads the data first (up to 1 MiB) and faults; (5) the control is wrong, or isn't there: the kernel copies
@@ -681,6 +695,54 @@ impl Mem for Reads<'_> {
         self.reads.borrow_mut().push((at, len, r.is_ok()));
         r
     }
+}
+
+/// The kernel's limit on a message's control on `s` (`net.core.optmem_max`), as it answers: the shortest control it
+/// refuses — `sock_kmalloc` takes a length below the limit (`sk_omem_alloc + size < optmem_max`, none held on a fresh
+/// socket), and a control at a null pointer it took faults (`EFAULT`), nothing sent. Where the sysctl is there it's
+/// that, checked: one value per network namespace from 6.8 (f5769faeec36, 128 KiB as its parent 4944566706b2 made
+/// it); before 6.8 one value for every namespace, shown only in the first — a container's has no file, and the limit
+/// is the first namespace's (20 KiB by default on a 64-bit kernel, `sizeof(long) * (2 * UIO_MAXIOV + 512)`).
+fn optmem_of(s: &OwnedFd) -> u64 {
+    let refused = |len: u64| {
+        // SAFETY: all zeros is an empty `struct msghdr`.
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_controllen = len as _;
+        // SAFETY: the header is ours; its control is a null pointer, which the kernel only tries to read.
+        let sent = unsafe { libc::sendmsg(s.as_raw_fd(), &msg, libc::MSG_DONTWAIT) };
+        match (sent, errno()) {
+            (-1, libc::EFAULT) => false,
+            (-1, libc::ENOBUFS) => true,
+            (sent, e) => panic!("a control of {len} bytes at a null pointer: sent {sent}, errno {e}"),
+        }
+    };
+    // (past the 36 bytes `____sys_sendmsg` holds on its stack, within `INT_MAX`)
+    let (mut taken, mut past) = (64, 1 << 24);
+    assert!(!refused(taken) && refused(past), "a control limit outside {taken}..{past}");
+    while past - taken > 1 {
+        let mid = (taken + past) / 2;
+        if refused(mid) {
+            past = mid;
+        } else {
+            taken = mid;
+        }
+    }
+    match std::fs::read_to_string("/proc/sys/net/core/optmem_max") {
+        Ok(t) => {
+            let said: u64 = t.trim().parse().unwrap();
+            assert_eq!(past, said, "the control the kernel refuses first, against optmem_max");
+            said
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => past,
+        Err(e) => panic!("/proc/sys/net/core/optmem_max: {e}"),
+    }
+}
+
+/// This kernel's version, major and minor (`/proc/sys/kernel/osrelease`).
+fn release() -> (u32, u32) {
+    let said = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap();
+    let mut n = said.trim().split(|c: char| !c.is_ascii_digit()).map(|n| n.parse().unwrap_or(0));
+    (n.next().unwrap_or(0), n.next().unwrap_or(0))
 }
 
 /// An integer socket option at `SOL_SOCKET`.

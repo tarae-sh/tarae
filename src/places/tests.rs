@@ -299,10 +299,13 @@ fn a_name_is_found_in_the_workspaces_folders_too() {
     assert!(labels.iter().any(|l| l.starts_with("x/Util.java:1")), "the project's: {labels:?}");
     assert!(labels.iter().any(|l| l.contains("places-folder-infra")), "the folder's: {labels:?}");
     ed.picker = None;
+    // Its own message among those since, not the last: main.tf's language loads on a worker, and its "no syntax
+    // colors" may land after (K2's whole suite, 1 of 3).
     let said = ed.said;
     open_named(&mut ed, "Gone.java".into(), 0);
-    until(&mut ed, w, "said", |ed| ed.said > said);
-    assert_eq!(ed.messages.last().unwrap().2, "no file Gone.java in the project or its folders");
+    let gone = "no file Gone.java in the project or its folders";
+    let new = |ed: &Editor| ed.messages.iter().rev().take((ed.said - said) as usize).any(|m| m.2 == gone);
+    until(&mut ed, w, "said", new);
 }
 
 /// Answers are kept while the checkout's list of files can't have changed (#196's review: every write threw them away

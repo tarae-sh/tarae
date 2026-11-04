@@ -661,10 +661,37 @@ pub(crate) fn docker_in_sandbox() -> Option<DockerConfig> {
 
 /// The line said when there's no Docker to run in — what a preflight note matches.
 pub(crate) fn skipped(why: &str) -> String {
-    format!("skipped — Docker isn't reachable: {why} ({START_IT})")
+    skipped_with(why, &way_here())
+}
+
+fn skipped_with(why: &str, way: &str) -> String {
+    format!("skipped — Docker isn't reachable: {why} ({way})")
 }
 
 const START_IT: &str = "start it — colima start -p tarae-test — or set DOCKER_CONTEXT";
+
+/// `way_in` for this process: its environment, the socket connected to.
+fn way_here() -> String {
+    way_in(|n| std::env::var(n).ok(), |p| std::os::unix::net::UnixStream::connect(p).map(drop))
+}
+
+/// The way to a Docker that didn't answer (#346): inside tarae's sandbox (`TARAE_SANDBOXED`) a connect to
+/// `DOCKER_HOST`'s socket refused with `EPERM` is the sandbox's no — the socket not granted on its card — so the way
+/// is that socket asked for, and colima's start never (it may well be running; the sandbox says no before anything
+/// is there to answer). Else — no socket there, no one listening, outside the sandbox — colima started.
+fn way_in(env: impl Fn(&str) -> Option<String>, connect: impl Fn(&Path) -> std::io::Result<()>) -> String {
+    let env = |n: &str| env(n).filter(|v| !v.is_empty());
+    let socket = env("TARAE_SANDBOXED")
+        .and(env("DOCKER_HOST"))
+        .and_then(|h| h.strip_prefix("unix://").map(PathBuf::from));
+    match socket {
+        Some(s) if connect(&s).is_err_and(|e| e.raw_os_error() == Some(libc::EPERM)) => format!(
+            "tarae's sandbox refused its socket {} — colima may well be running: ask for that socket (the run's unix_socket)",
+            s.display()
+        ),
+        _ => START_IT.into(),
+    }
+}
 
 /// `--no-skip` (leading): no Docker fails the checks rather than skipping them — the flag and the arguments after it.
 fn no_skip(args: &[String]) -> (bool, &[String]) {
@@ -677,12 +704,16 @@ fn no_skip(args: &[String]) -> (bool, &[String]) {
 /// No Docker to run in (`why`): a skip said, or with `--no-skip` (`needed`) a failure saying why — the Linux
 /// checks not run are never a pass where they're asked for.
 fn unreachable(why: &str, needed: bool) -> Result<()> {
+    unreachable_with(why, &way_here(), needed)
+}
+
+fn unreachable_with(why: &str, way: &str, needed: bool) -> Result<()> {
     match needed {
         false => {
-            println!("{}", skipped(why));
+            println!("{}", skipped_with(why, way));
             Ok(())
         }
-        true => Err(format!("the Linux checks didn't run — Docker isn't reachable: {why} ({START_IT})")),
+        true => Err(format!("the Linux checks didn't run — Docker isn't reachable: {why} ({way})")),
     }
 }
 
@@ -3552,10 +3583,10 @@ mod tests {
         docker.env("DOCKER_HOST", "unix:///nonexistent/tarae-test.sock").env_remove("DOCKER_CONTEXT");
         let line = match reachable(&mut docker) {
             Ok(()) => panic!("a Docker answered at a socket that isn't there"),
-            Err(why) => skipped(&why),
+            Err(why) => skipped_with(&why, START_IT),
         };
         assert!(line.starts_with("skipped — Docker isn't reachable: "), "{line}");
-        let line = skipped(&reachable(&mut Command::new("tarae-no-such-docker")).unwrap_err());
+        let line = skipped_with(&reachable(&mut Command::new("tarae-no-such-docker")).unwrap_err(), START_IT);
         assert!(line.starts_with("skipped — Docker isn't reachable: no docker command"), "{line}");
     }
 
@@ -3569,11 +3600,45 @@ mod tests {
         let off = args(&["clippy", "--no-skip"]);
         assert_eq!(no_skip(&off), (false, &off[..]));
         let why = reachable(&mut Command::new("tarae-no-such-docker")).unwrap_err();
-        let failed = unreachable(&why, true).unwrap_err();
+        let failed = unreachable_with(&why, START_IT, true).unwrap_err();
         assert!(
             failed.starts_with("the Linux checks didn't run — Docker isn't reachable: no docker command")
         );
         assert!(failed.ends_with(&format!("({START_IT})")), "{failed}");
-        assert_eq!(unreachable(&why, false), Ok(()), "without it, a skip");
+        assert_eq!(unreachable_with(&why, START_IT, false), Ok(()), "without it, a skip");
+    }
+
+    /// #346: inside tarae's sandbox, Docker's socket refused by the sandbox (`EPERM`) says so — the socket asked for,
+    /// never colima's start; there with nothing at it (`ENOENT`, `ECONNREFUSED`), outside the sandbox, or another
+    /// host, colima's start. (The connect a stand-in: no socket is reached.)
+    #[test]
+    fn a_socket_the_sandbox_refused_names_the_socket_not_colima() {
+        let sock = "/Users/someone/.colima/tarae-test/docker.sock";
+        let host = format!("unix://{sock}");
+        let env = |sandboxed: bool, host: &str| {
+            let host = host.to_string();
+            move |n: &str| match n {
+                "TARAE_SANDBOXED" if sandboxed => Some("1".to_string()),
+                "DOCKER_HOST" => Some(host.clone()),
+                _ => None,
+            }
+        };
+        let answers = |errno: i32| {
+            move |p: &Path| -> std::io::Result<()> {
+                assert_eq!(p, Path::new(sock));
+                Err(std::io::Error::from_raw_os_error(errno))
+            }
+        };
+        let refused = way_in(env(true, &host), answers(libc::EPERM));
+        assert!(refused.starts_with(&format!("tarae's sandbox refused its socket {sock}")), "{refused}");
+        assert!(!refused.contains("colima start"), "{refused}");
+        for errno in [libc::ENOENT, libc::ECONNREFUSED, libc::EACCES] {
+            assert_eq!(way_in(env(true, &host), answers(errno)), START_IT, "errno {errno}");
+        }
+        let never =
+            |_: &Path| -> std::io::Result<()> { panic!("connected outside the sandbox or to a TCP host") };
+        assert_eq!(way_in(env(false, &host), never), START_IT, "outside the sandbox");
+        assert_eq!(way_in(env(true, "tcp://127.0.0.1:2375"), never), START_IT, "a host not a socket");
+        assert_eq!(skipped_with("x", &refused), format!("skipped — Docker isn't reachable: x ({refused})"));
     }
 }

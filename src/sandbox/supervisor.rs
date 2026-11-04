@@ -2701,11 +2701,11 @@ mod tests {
             [(1, 1), (1, 2), (1, 99), (41, 77)].map(|(level, kind)| format!("pair-cmsg {level} {kind}"));
         let got = probe_in(&p, &ops);
         assert_eq!(got, ["ok 1".to_string(), refused(), refused(), refused()]);
-        let blocked = p.watch.as_ref().unwrap().blocked();
-        let said: Vec<&str> = blocked
-            .seen
+        let sending = |d: &&super::super::Denial| d.op == "network-bound" && d.target.starts_with("sending ");
+        let seen = heard(&p, |seen| seen.iter().filter(sending).count() >= 3);
+        let said: Vec<&str> = seen
             .iter()
-            .filter(|d| d.op == "network-bound")
+            .filter(sending)
             .filter_map(|d| d.target.strip_prefix("sending ")?.split_once(" — ").map(|t| t.0))
             .collect();
         assert_eq!(
@@ -2917,6 +2917,14 @@ mod tests {
             w.run_started(s.pid);
         }
         s.pid
+    }
+
+    /// What `p`'s run's watch has heard, once `done` with it (`PATIENCE` at most): the supervisor sends each refusal
+    /// before it answers the run, and `sandbox::told`'s thread passes it on to the watch — maybe after the run's end.
+    fn heard(p: &Policy, done: impl Fn(&[super::super::Denial]) -> bool) -> Vec<super::super::Denial> {
+        let seen = || p.watch.as_ref().unwrap().blocked().seen;
+        until(|| done(&seen()));
+        seen()
     }
 
     /// Waits (5 s at most) for `done`.
@@ -3643,14 +3651,22 @@ mod tests {
         let mut b = [0u8; 4];
         assert_eq!(udp.recv(&mut b).map(|n| b[..n].to_vec()).unwrap(), b"x");
         assert_eq!(udp.recv(&mut b).map(|n| b[..n].to_vec()).unwrap(), b"m");
-        let blocked = p.watch.as_ref().unwrap().blocked();
-        let plain: Vec<String> = blocked.seen.iter().map(super::super::Denial::plain).collect();
-        let closed_said = plain.contains(&format!("connecting to port {}", closed_at.port()));
+        let (to_closed, to_doc) =
+            (format!("connecting to port {}", closed_at.port()), "connecting to 192.0.2.1:9");
+        let plain = |seen: &[super::super::Denial]| -> Vec<String> {
+            seen.iter().map(super::super::Denial::plain).collect()
+        };
+        let seen = heard(&p, |seen| {
+            let said = plain(seen);
+            said.iter().any(|s| s == to_doc) && (routed || said.contains(&to_closed))
+        });
+        let plain = plain(&seen);
+        let closed_said = plain.contains(&to_closed);
         assert_eq!(
             closed_said, !routed,
             "a closed port refused by a rule only without the session's netns: {plain:?}"
         );
-        assert!(plain.contains(&"connecting to 192.0.2.1:9".to_string()), "{plain:?}");
+        assert!(plain.iter().any(|s| s == to_doc), "{plain:?}");
         // llm.sandbox-localhost: every port of this machine's
         let all = s.policy(Vec::new(), true, Vec::new());
         assert_eq!(probe_in(&all, &[format!("connect {closed_at}")]), ["ok"]);
@@ -3695,7 +3711,7 @@ mod tests {
         assert_eq!(got[1..], want, "{ops:?}");
         // (tarae's refusals, not the kernel's: each said, by the message's type — new address, delete route,
         // new link)
-        let said = netlink_said(&p);
+        let said = netlink_said(&p, 3);
         assert_eq!(said, ["message type 20", "message type 25", "message type 16"], "{said:?}");
     }
 
@@ -3740,7 +3756,7 @@ mod tests {
         ];
         let got = probe_in(&p, &ops);
         assert_eq!(got, vec![refused(); 5], "{ops:?}");
-        let said = netlink_said(&p);
+        let said = netlink_said(&p, 5);
         let port = format!("port {OTHER_PORT}, groups 0x0");
         let want = ["joining groups 0x20000000", "joining groups 0x40000000", "port 0, groups 0x1", &port];
         assert_eq!(said, [&want[..], &["protocol 4"]].concat(), "{said:?}");
@@ -3788,10 +3804,11 @@ mod tests {
         net == "Routed"
     }
 
-    /// What tarae said it refused of the run of `p`'s netlink, in order.
-    fn netlink_said(p: &Policy) -> Vec<String> {
-        let blocked = p.watch.as_ref().unwrap().blocked();
-        blocked.seen.iter().filter(|d| d.op == "network-netlink").map(|d| d.target.clone()).collect()
+    /// What tarae said it refused of the run of `p`'s netlink, in order, once `n` are heard.
+    fn netlink_said(p: &Policy, n: usize) -> Vec<String> {
+        let netlink = |d: &&super::super::Denial| d.op == "network-netlink";
+        let seen = heard(p, |seen| seen.iter().filter(netlink).count() >= n);
+        seen.iter().filter(netlink).map(|d| d.target.clone()).collect()
     }
 
     /// The address a connect names is read once and decided on tarae's copy: changed by another thread of
@@ -3877,11 +3894,11 @@ mod tests {
         assert_eq!(got, want, "{ops:?}");
         assert!(s.root.join("made.sock").exists() && !s.root.join("Cargo.toml").exists());
         assert!(!s.base.join("out/x.sock").exists());
-        let blocked = p.watch.as_ref().unwrap().blocked();
-        let plain: Vec<String> = blocked.seen.iter().map(super::super::Denial::plain).collect();
         // (as the words show it: home spelled `~` — a checkout in home, as on the user's VM)
-        let out = super::super::home_shown(&out.display().to_string());
-        assert!(plain.contains(&format!("connecting to socket {out}")), "{plain:?}");
+        let said = format!("connecting to socket {}", super::super::home_shown(&out.display().to_string()));
+        let seen = heard(&p, |seen| seen.iter().any(|d| d.plain() == said));
+        let plain: Vec<String> = seen.iter().map(super::super::Denial::plain).collect();
+        assert!(plain.contains(&said), "{plain:?}");
         drop(listeners);
     }
 
