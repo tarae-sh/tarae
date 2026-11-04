@@ -222,7 +222,7 @@ fn claude_chat_edit_accepted_then_focus_leaves() {
     sb.write_config(&format!("{LIVE_CONFIG}lsp = false\n"));
     let path = sb.write("notes.txt", "alpha\nbeta\n");
     let mut t = sb.spawn(&["notes.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_text("Ask about notes.txt");
 
     // 1) Leave right after accepting — tarae's auto-save may beat Claude's write
@@ -233,7 +233,7 @@ fn claude_chat_edit_accepted_then_focus_leaves() {
     t.send(&format!("a{FOCUS_OUT}"));
     wait_file_until(&path, "held gamma", LIVE_TIMEOUT, |s| s == "alpha\ngamma\n");
     t.send("\x1b[I"); // focus back
-    t.send(" l");
+    chat_focus(&mut t);
     t.wait_for("Claude's turn to end", chat_idle);
     // Auto-save left the file to Claude (its toast would say "Saved notes.txt"): saving first can make
     // Claude's Edit fail — "it failed because the file had changed since I read it" (measured)
@@ -255,7 +255,7 @@ fn claude_chat_edit_accepted_then_focus_leaves() {
     t.send("a");
     wait_file_until(&path, "held delta", LIVE_TIMEOUT, |s| s.contains("delta"));
     t.send(FOCUS_OUT);
-    t.send(" l"); // back to the chat (a review takes the keys from it) — its footer tells a turn's end
+    chat_focus(&mut t); // back to the chat (a review takes the keys from it) — its footer tells a turn's end
     t.wait_for("Claude's turn to end", chat_idle);
     std::thread::sleep(Duration::from_secs(1)); // the watch, a newline write-back, toasts
 
@@ -997,7 +997,7 @@ fn rust_analyzer_code_action_rename_and_format() {
     });
 }
 
-// ── The chat (space l) ───────────────────────────────────────────────────────
+// ── The chat (space L) ───────────────────────────────────────────────────────
 
 /// Claude checks with tarae's run_tests tool: the tests run in the test panel, and the answer names the failure.
 #[test]
@@ -1226,7 +1226,7 @@ fn chat_prompt_tokens_in_a_child() {
     sb.git(&["add", "-A"]);
     sb.git(&["commit", "-q", "-m", "one"]);
     let mut t = sb.spawn(&["notes.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_for("the chat, focused", |s| s.contains("enter send"));
     t.send(
         "Call sessions_start once: sessions {\"kid\": \"Reply with the single word ok. Use no tools.\"}, base \
@@ -1332,7 +1332,7 @@ fn orchestra_p3_end_to_end() {
     sb.git(&["add", "-A"]);
     sb.git(&["commit", "-q", "-m", "one"]);
     let mut t = sb.spawn(&["count.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_for("the chat, focused", |s| s.contains("enter send"));
     t.send(
         "Call sessions_start once: sessions {\"kid\": \"Reply with the single word ok. Use no tools.\"}, base \
@@ -1442,7 +1442,7 @@ fn chat_quote_framing_tokens() {
                 t.wait_for("the quote's chip", |s| s.contains("notes.rs L1–3 goes with it"));
             }
             false => {
-                t.send(" l");
+                t.send(" L");
                 t.wait_for("the chat, focused", |s| s.contains("enter send"));
             }
         }
@@ -1469,7 +1469,7 @@ fn chat_prompt_tokens_with_a_toast_up() {
     let mut t = sb.spawn(&["notes.txt"]);
     // (`:w` says it saved — a toast up for a few seconds, the message sent under it)
     t.command("w");
-    t.send(" l");
+    t.send(" L");
     t.wait_for("the chat, focused", |s| s.contains("enter send"));
     chat_turn(&mut t, "Reply with the single word ok. Use no tools.");
     let p = prompts(&std::fs::read_to_string(&out).unwrap_or_default());
@@ -3967,13 +3967,13 @@ fn chat_turn_undo_and_resume() {
     sb.write_config(&format!("{LIVE_CONFIG}lsp = false\n"));
     let path = sb.write("notes.txt", "alpha\nbeta\n");
     let mut t = sb.spawn(&["notes.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_text("Ask about notes.txt");
     t.send("In notes.txt replace the word beta with gamma, using your Edit tool. Do nothing else.\r");
     t.wait_for("the review of Claude's edit", |s| s.contains("accept") && s.contains("reject"));
     t.send("a");
     wait_file_until(&path, "held gamma", LIVE_TIMEOUT, |s| s == "alpha\ngamma\n");
-    t.send(" l");
+    chat_focus(&mut t);
     t.wait_for("the turn to end", chat_idle);
     t.send("\x1b");
     t.wait_for("back in the editor", |s| !s.contains("enter send"));
@@ -3984,7 +3984,7 @@ fn chat_turn_undo_and_resume() {
     t.wait_exit();
 
     let mut t = sb.spawn(&["notes.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_for("the earlier conversation back", |s| {
         s.contains("continued from") && s.contains("replace the word")
     });
@@ -4005,7 +4005,7 @@ fn chat_switches_the_model() {
     sb.write_config(&format!("{LIVE_CONFIG}lsp = false\n"));
     sb.write("notes.txt", "alpha\n");
     let mut t = sb.spawn(&["notes.txt"]);
-    t.send(" l");
+    t.send(" L");
     t.wait_text("Ask about notes.txt");
     t.send("\x14");
     let s = t.wait_for("claude's models listed", |s| s.contains("Haiku") || s.contains("Sonnet"));

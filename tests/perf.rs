@@ -337,7 +337,8 @@ fn perf_e2e_events_while_claude_streams() {
     sb.write_config(&format!("{BASE_CONFIG}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\n", script.display()));
     let mut t = Term::spawn(&sb, &["a.rs"], 160, 50);
     t.wait_text("fn f1(");
-    t.send(" l");
+    // (the column: `space l`'s ask line goes once sent, the words then on the follow card)
+    t.send(" L");
     t.send("go\r");
     t.wait_text("word word");
     let w = t.watch("");
@@ -773,8 +774,9 @@ fn perf_e2e_memory_over_long_editing() {
         if skip.contains("chat") {
             return;
         }
-        // A few turns of the chat
-        t.send(" l");
+        // A few turns of the chat, in its column (`space L` from hidden: shown, its input with the keys — `space l` is
+        // the ask line, gone once sent, the answer out of sight)
+        t.send(" L");
         t.wait_state("the chat's input", |s| s["keys"]["region"] == "chat");
         for _ in 0..3 {
             asked += 1;
@@ -786,6 +788,9 @@ fn perf_e2e_memory_over_long_editing() {
         // (from the input its view mode, then the code)
         t.esc_state("the chat's view mode", |s| s["keys"]["region"] == "view:chat");
         t.esc_state("the code has the keys", |s| s["keys"]["region"] == "code");
+        // (hidden again, so every round starts as the first: in sight, `space L` would hide it)
+        t.send(" L");
+        t.wait_state("the chat hidden", |s| s["panels"]["chat"]["hidden"] == true);
     };
     // Two rounds to warm up: the kept undo steps fill, and malloc's high-water mark settles (each parse
     // makes a fresh layer set and frees the last — RSS keeps the pages: +34 MB in the second round, with the
