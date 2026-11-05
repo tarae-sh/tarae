@@ -748,36 +748,24 @@ fn a_hooks_folder_outside_the_work_tree_is_trusted_as_it_was() {
 #[test]
 fn a_change_in_the_same_tick_as_the_resolve_is_seen() {
     let f = Fixture::new("racy");
-    crate::gitrepo::coarse_times_under(&f.dir);
     let script = f.repo.join("tools/mon.sh");
-    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    // (the change and both resolves within one second of the clock, from the start of one — tried again
-    // when a busy machine takes longer: else the test shows nothing; 20 ms past the second's start, as a file's
-    // time is the kernel's coarse clock, a tick behind the one `now` reads — at the start it's the second before)
-    for tries in 1.. {
-        let into = std::time::Duration::from_nanos(u64::from(now().subsec_nanos()));
-        std::thread::sleep(std::time::Duration::from_millis(1020) - into);
-        script_at(&f, &script, "fsmonitor", "fail");
-        f.set("core.fsmonitor", &format!("tools/mon.sh {tries}"));
-        let first = f.resolved();
-        std::fs::write(&script, format!("#!/bin/sh\nexit 1\n# changed {tries}\n")).unwrap();
-        let r = f.resolved();
-        if now().as_secs() != first_second(&first) {
-            assert!(tries < 5, "never within one second");
-            continue;
-        }
-        assert_ne!(r.local.covers, first.local.covers, "the change in the same tick is seen");
-        break;
-    }
+    // (the tick the test's own, a minute ahead of the clock: the change and both resolves are in it however
+    // long a busy machine takes — as a file's time a tick behind the clock is, at a tick's start)
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let tick = now.as_secs() as i64 + 60;
+    crate::gitrepo::coarse_times_under(&f.dir, Some(tick));
+    script_at(&f, &script, "fsmonitor", "fail");
+    f.set("core.fsmonitor", "tools/mon.sh");
+    let first = f.resolved();
+    std::fs::write(&script, "#!/bin/sh\nexit 1\n# changed\n").unwrap();
+    let r = f.resolved();
+    assert_eq!(r.stamps, first.stamps, "the change left every stamp as it was");
+    assert_ne!(r.local.covers, first.local.covers, "the change in the same tick is seen");
+    // (the clock moves on: the files' own times, coarse, past `RACY`)
+    crate::gitrepo::coarse_times_under(&f.dir, None);
     settled();
     let kept = f.resolved();
     assert!(Arc::ptr_eq(&kept, &f.resolved()), "settled: kept");
-}
-
-/// The second `r`'s config file was stamped in (whole: coarse).
-fn first_second(r: &Repo) -> u64 {
-    let (_, s) = r.stamps.iter().find(|(p, _)| *p == r.config_file()).unwrap();
-    s.unwrap()[0].0 as u64
 }
 
 // ── Each key, through what tarae runs ───────────────────────────────────────

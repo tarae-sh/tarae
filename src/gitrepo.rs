@@ -138,20 +138,26 @@ fn racy(s: &Stamp, at: std::time::SystemTime) -> bool {
 }
 
 /// Tests: stamps of files under these folders in whole seconds — a file system whose times move by the
-/// second (Linux's move by the tick): a change in the same second leaves a stamp as it was.
+/// second (Linux's move by the tick): a change in the same second leaves a stamp as it was. With a tick, the
+/// folder's clock stands still in that second, the test's own: every change made meanwhile is in it, however
+/// long the machine takes.
 #[cfg(test)]
-static COARSE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+static COARSE: Mutex<Vec<(PathBuf, Option<i64>)>> = Mutex::new(Vec::new());
 
+/// Tests: `under`'s stamps coarse (`COARSE`), in the second `tick` while one is given.
 #[cfg(test)]
-pub fn coarse_times_under(under: &Path) {
-    COARSE.lock().unwrap_or_else(|e| e.into_inner()).push(under.to_path_buf());
+pub fn coarse_times_under(under: &Path, tick: Option<i64>) {
+    let mut coarse = COARSE.lock().unwrap_or_else(|e| e.into_inner());
+    coarse.retain(|(u, _)| u != under);
+    coarse.push((under.to_path_buf(), tick));
 }
 
 #[cfg(test)]
 fn coarse(p: &Path, s: [(i64, i64); 2]) -> [(i64, i64); 2] {
-    match COARSE.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|u| p.starts_with(u)) {
-        true => s.map(|(sec, _)| (sec, 0)),
-        false => s,
+    match COARSE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(u, _)| p.starts_with(u)) {
+        Some((_, Some(tick))) => [(*tick, 0); 2],
+        Some((_, None)) => s.map(|(sec, _)| (sec, 0)),
+        None => s,
     }
 }
 
