@@ -208,9 +208,8 @@ fn drawn(ed: &Editor, w: &World) -> Result<(), String> {
         (None, Some(_)) => return Err("a card kept for a rest that came with none up".into()),
         (None, None) => return Err("a card drawn for a rest not answered".into()),
     };
-    let of = |s: &crate::hoverrest::Spot| {
-        ed.docs.iter().find(|d| d.id == s.doc).filter(|d| d.version() == s.version)
-    };
+    let of =
+        |s: &crate::hoverrest::Spot| crate::hoverrest::doc_of(ed, s).filter(|d| d.version() == s.version);
     let Some(doc) = of(spot) else { return Err("a card drawn for a version gone".into()) };
     let line = crate::movement::line_of(&doc.text, spot.word.start);
     let col = spot.word.start - crate::movement::line_start(&doc.text, line);

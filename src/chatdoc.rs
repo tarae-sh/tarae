@@ -966,6 +966,26 @@ pub fn drag(ed: &mut Editor, held: crate::selection::Held, row: usize, col: usiz
     d.set_selection(Selection::new(vec![range], 0));
 }
 
+/// The conversation's character drawn at row `row` (counted as `Screen.chat_view`'s), column `col` of its text — only
+/// where one is drawn there (never a bar, a hanging indent or past the row's text), and where that row starts in the
+/// document: the pointer's rest (`hoverrest.rs`). Nothing placed, nothing moved.
+pub fn char_at(ed: &Editor, row: usize, col: usize) -> Option<(usize, usize)> {
+    let row = doc_row(&ed.screen.chat_laid.borrow(), row)?;
+    let t = transcript(ed).filter(|t| row < t.rows())?;
+    let s = t.row(row)?;
+    let d = t.pane.doc_in()?;
+    let col = col.checked_sub(s.x0)?;
+    let text = d.text.byte_slice(s.start..s.start + s.len).to_string();
+    let mut w = 0;
+    for (b, g) in unicode_segmentation::UnicodeSegmentation::grapheme_indices(text.as_str(), true) {
+        w += g.width();
+        if w > col {
+            return Some((s.start + b, s.start));
+        }
+    }
+    None
+}
+
 /// The conversation's document.
 pub(crate) fn doc_mut(ed: &mut Editor) -> Option<&mut Document> {
     transcript_mut(ed).and_then(|t| t.pane.doc_in_mut())

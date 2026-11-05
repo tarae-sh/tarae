@@ -19,15 +19,30 @@ const ANSWER: &str = "`main` at src/main.rs:4 keeps `total` and `stray`.\n\nThe 
 /// A project of the test's own with `src/main.rs` (`SRC`), its server a stand-in when `server`, the chat up on
 /// `ANSWER` with the keys, its places found and its blocks mapped.
 fn setup(name: &str, server: bool, answer: &str) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    setup_with(name, server, answer, &[])
+}
+
+/// `setup` with more files in the project (path from its root, text), none of them open.
+fn setup_with(
+    name: &str,
+    server: bool,
+    answer: &str,
+    files: &[(&str, &str)],
+) -> (crate::scratch::Scratch, Editor, PathBuf) {
     let scratch = crate::scratch::Scratch::new(name);
     let root = std::fs::canonicalize(&*scratch).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let file = root.join("src/main.rs");
     std::fs::write(&file, SRC).unwrap();
+    for (path, text) in files {
+        std::fs::write(root.join(path), text).unwrap();
+    }
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    // (a toml file's own stand-in too, started only by a toml buffer: what a rest must never start)
     let cfg = match server {
         true => format!(
-            "[lsp.fake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > '{}'\"]\n[lang.rust]\nlsp = [\"fake\"]\n",
+            "[lsp.fake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > '{}'\"]\n[lang.rust]\nlsp = [\"fake\"]\n\
+             [lsp.tomlfake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > /dev/null\"]\n[lang.toml]\nlsp = [\"tomlfake\"]\n",
             root.join("sent.log").display()
         ),
         false => "[lang.rust]\nlsp = []\n".to_string(),
@@ -301,6 +316,253 @@ fn the_chat_says_why_a_name_isnt_asked() {
     // (the tree reads the buffer as it is, never as saved: its definition under the line added)
     let d = ed.doc();
     assert_eq!(d.text.byte_to_line(d.selection().primary().cursor(&d.text)), 1, "found by name instead");
+}
+
+// ── The pointer's rest (step 6) ───────────────────────────────────────────────────────────────────────────────────────
+
+/// The cell of `name`'s `k`th character (from 0) on the chat's side of the last row holding `row`.
+fn cell(ed: &mut Editor, row: &str, name: &str, k: usize) -> (u16, u16) {
+    let shown = frame(ed);
+    let left = chat_left(&shown);
+    let (y, line) = shown.lines().enumerate().filter(|(_, l)| l.contains(row)).last().expect(row);
+    let rest: String = line.chars().skip(left).collect();
+    let x = left + rest[..rest.rfind(name).expect(name)].chars().count() + k;
+    (x as u16, y as u16)
+}
+
+fn hover(ed: &mut Editor, (x, y): (u16, u16)) {
+    ed.handle_event(crate::event::Event::Hover(x, y));
+}
+
+/// The rest's hover asked of the server: its request's id.
+fn rest_asked(ed: &Editor) -> Option<(ClientId, u64)> {
+    let mut ids = ed.lsp.pending.iter().filter(|(_, p)| matches!(p.kind, Kind::PointerHover { .. }));
+    ids.next().map(|(&(cid, id), _)| (cid, id))
+}
+
+/// The rest's question by name asked of the server: its request's id (never a key's).
+fn rest_named(ed: &Editor) -> Option<(ClientId, u64)> {
+    let n = ed.workspace.claude.chat.as_ref()?.links.resting.as_ref()?.n;
+    ed.lsp.pending.iter().find_map(|(&(cid, id), p)| match p.kind {
+        Kind::ChatNamed { n: m } if m == n => Some((cid, id)),
+        _ => None,
+    })
+}
+
+/// The last hover the stand-in server was sent: its place in the file (line, character).
+fn hover_sent(sent: &str) -> Option<(u64, u64)> {
+    let bodies = sent.split("\r\n\r\n").filter_map(|b| {
+        let end = b.find("Content-Length").unwrap_or(b.len());
+        serde_json::from_str::<Value>(&b[..end]).ok()
+    });
+    let p = bodies.filter(|m| m["method"] == "textDocument/hover").last()?["params"]["position"].clone();
+    Some((p["line"].as_u64()?, p["character"].as_u64()?))
+}
+
+fn hover_answer(text: &str) -> Value {
+    json!({ "contents": { "kind": "markdown", "value": text } })
+}
+
+/// The pointer resting on a name in the chat (#389 step 6): nothing asked while it only crosses it; once rested, the
+/// server's hover asked where `space k` asks it — the quoted name's spot in the file — and its card shown in the chat
+/// at the name, the keys, the transcript's cursor and the status line untouched. It stays while the pointer is on the
+/// name or the card (the wheel scrolls it); onto another name with it up, that one's asked at once, the card standing
+/// on until its answer; off the names, gone at once; a key, gone.
+#[test]
+fn the_pointer_resting_on_a_name_in_the_chat_shows_its_hover_there() {
+    let (s, mut ed, file) = setup("chatlink-rest", true, ANSWER);
+    let sent = || std::fs::read_to_string(s.join("sent.log")).unwrap_or_default();
+    feed(&mut ed, "<esc>");
+    ed.toasts.clear();
+    let at = ed.workspace.viewer.at;
+    let cursor = head(&ed);
+    // Crossing it: nothing asked; resting: asked at the quoted name in the file
+    let helper = cell(&mut ed, "let total = helper();", "helper", 1);
+    hover(&mut ed, helper);
+    assert!(rest_asked(&ed).is_none(), "nothing asked before the rest");
+    crate::hoverrest::rested(&mut ed);
+    let (cid, id) = rest_asked(&ed).expect("asked once rested");
+    until(&mut ed, "the hover sent", |_| hover_sent(&sent()).is_some());
+    assert_eq!(hover_sent(&sent()), Some((4, 16)), "at the quoted name's spot in {}", file.display());
+    ed.on_lsp_message(
+        cid,
+        json!({ "id": id, "result": hover_answer("```rust\nfn helper() -> u32\n```\nhelps") }),
+    );
+    let shown = frame(&mut ed);
+    assert!(shown.contains("╭─ helper") && shown.contains("helps"), "its card:\n{shown}");
+    let card = ed.screen.rest_card.get().expect("drawn");
+    assert!(
+        card.0 > chat_left(&shown) && card.1 > helper.1 as usize,
+        "in the chat, under the name: {card:?}"
+    );
+    assert!(ed.popup.is_none(), "not `space k`'s card");
+    assert_eq!((ed.workspace.viewer.at, head(&ed)), (at, cursor), "never the keys nor the cursor");
+    assert!(ed.toasts.is_empty(), "nothing said: {:?}", ed.toasts);
+    // Within the name, onto the card: it stays
+    hover(&mut ed, (helper.0 + 2, helper.1));
+    hover(&mut ed, (card.0 as u16 + 2, card.1 as u16 + 1));
+    assert!(frame(&mut ed).contains("╭─ helper"), "it stays");
+    // Onto another name, the card up: asked at once, helper's card standing on until total's answer
+    let total = cell(&mut ed, "keeps", "total", 0);
+    hover(&mut ed, total);
+    let (_, id2) = rest_asked(&ed).expect("asked at once — the hand-off");
+    assert_ne!(id2, id);
+    assert!(frame(&mut ed).contains("╭─ helper"), "helper's card until total's answer");
+    let long: String = (1..=40).map(|i| format!("line {i}\n\n")).collect();
+    ed.on_lsp_message(cid, json!({ "id": id2, "result": hover_answer(&format!("total's\n\n{long}")) }));
+    let shown = frame(&mut ed);
+    assert!(shown.contains("╭─ total") && !shown.contains("╭─ helper"), "total's card:\n{shown}");
+    // The wheel over it scrolls it, never the conversation
+    let card = ed.screen.rest_card.get().expect("drawn");
+    let first = ed.screen.chat_view.get().map(|v| v.3);
+    let (wx, wy) = ((card.0 + 2) as u16, (card.1 + 2) as u16);
+    hover(&mut ed, (wx, wy));
+    let wheel = crate::event::Mouse {
+        kind: crate::event::MouseKind::ScrollDown,
+        x: wx,
+        y: wy,
+        alt: false,
+        ctrl: false,
+    };
+    ed.handle_event(crate::event::Event::Mouse(wheel));
+    let scrolled = ed.hover_rest.rest.as_ref().and_then(|r| r.card.as_ref()).map(|c| c.scroll);
+    assert_eq!(scrolled, Some(3), "three rows down");
+    frame(&mut ed);
+    assert_eq!(ed.screen.chat_view.get().map(|v| v.3), first, "the conversation stays");
+    // Off the names and the card: gone at once
+    let (bx, by) = cell(&mut ed, "A proposal:", "A proposal:", 0);
+    hover(&mut ed, (bx + 15, by));
+    assert!(ed.hover_rest.rest.is_none() && !ed.unchanged, "gone, its going drawn");
+    assert!(!frame(&mut ed).contains("╭─ total"));
+    // A key: gone
+    hover(&mut ed, helper);
+    crate::hoverrest::rested(&mut ed);
+    let (_, id) = rest_asked(&ed).expect("asked");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": hover_answer("helps") }));
+    assert!(frame(&mut ed).contains("╭─ helper"));
+    ed.handle_event(crate::event::Event::Key(Key::plain(Code::Char('j'))));
+    assert!(ed.hover_rest.rest.is_none() && !frame(&mut ed).contains("╭─ helper"), "your key: gone");
+    // `space k`'s card up: it's the one; off, none
+    feed(&mut ed, "k");
+    ed.popup = Some(Vec::new());
+    hover(&mut ed, helper);
+    assert!(ed.hover_rest.rest.is_none(), "`space k`'s up");
+    ed.popup = None;
+    ed.config.mouse_hover = false;
+    hover(&mut ed, helper);
+    assert!(ed.hover_rest.rest.is_none(), "turned off");
+}
+
+/// The rest asks where `space k` asks: a cited place's lines shown, no server asked; a name no cited place holds asked
+/// by name, its hover at the one definition found. Where nothing can be asked — a word that isn't code, several
+/// definitions, no server — nothing shows and nothing is said: the pointer asked nothing.
+#[test]
+fn the_pointer_resting_in_the_chat_shows_nothing_it_cant_ask() {
+    let (_s, mut ed, file) = setup("chatlink-rest-misses", true, ANSWER);
+    feed(&mut ed, "<esc>");
+    ed.toasts.clear();
+    let quiet = |ed: &mut Editor, what: &str| {
+        assert!(rest_asked(ed).is_none() && rest_named(ed).is_none(), "{what}: nothing asked");
+        frame(ed);
+        assert!(ed.screen.rest_card.get().is_none(), "{what}: no card");
+        assert!(ed.toasts.is_empty() && named(ed).is_none(), "{what}: nothing said: {:?}", ed.toasts);
+    };
+    let word = cell(&mut ed, "keeps", "keeps", 1);
+    // A cited place: its lines, no server asked
+    let place = cell(&mut ed, "The call,", "main.rs:5", 1);
+    hover(&mut ed, place);
+    crate::hoverrest::rested(&mut ed);
+    assert!(rest_asked(&ed).is_none(), "no server asked");
+    let shown = frame(&mut ed);
+    assert!(shown.contains("╭─ src/main.rs:5") && shown.contains("let total = helper();"), "{shown}");
+    // A word that isn't code
+    hover(&mut ed, word);
+    crate::hoverrest::rested(&mut ed);
+    quiet(&mut ed, "a word");
+    // By name: one definition, its hover there; several, nothing
+    let other = cell(&mut ed, "fn other()", "helper", 1);
+    hover(&mut ed, other);
+    crate::hoverrest::rested(&mut ed);
+    let (cid, id) = rest_named(&ed).expect("asked by name");
+    assert!(named(&ed).is_none(), "apart from a key's question");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, &[("helper", 0, 0, "")]) }));
+    let (_, id) = rest_asked(&ed).expect("its hover asked at the one found");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": hover_answer("helps") }));
+    assert!(frame(&mut ed).contains("╭─ helper"));
+    hover(&mut ed, word);
+    ed.hover_rest.rest = None;
+    frame(&mut ed);
+    hover(&mut ed, other);
+    crate::hoverrest::rested(&mut ed);
+    let (cid, id) = rest_named(&ed).expect("asked by name");
+    let two = symbols(&file, &[("helper", 0, 3, ""), ("helper", 4, 16, "")]);
+    ed.on_lsp_message(cid, json!({ "id": id, "result": two }));
+    quiet(&mut ed, "several");
+    // Nothing found
+    let stray = cell(&mut ed, "keeps", "stray", 1);
+    hover(&mut ed, stray);
+    crate::hoverrest::rested(&mut ed);
+    let (cid, id) = rest_named(&ed).expect("asked by name");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": [] }));
+    quiet(&mut ed, "none found");
+    // No server
+    let (_s, mut ed, _) = setup("chatlink-rest-none", false, ANSWER);
+    feed(&mut ed, "<esc>");
+    ed.toasts.clear();
+    let helper = cell(&mut ed, "let total = helper();", "helper", 1);
+    hover(&mut ed, helper);
+    crate::hoverrest::rested(&mut ed);
+    quiet(&mut ed, "no server");
+}
+
+/// An answer about files no buffer holds: a block quoting `src/knot.rs` after the paragraph citing it, and a name no
+/// cited place holds (`tie`, found by name in `conf.toml`).
+const ASIDE: &str =
+    "`Knot` is at src/knot.rs:1:\n\n```rust\npub struct Knot;\n```\n\nIts `tie` is set elsewhere.\n";
+
+/// A rest is a reveal (#389 step 6): on a name whose file no buffer holds — a block quoting it, the one definition found
+/// by name — it opens and lists no buffer, raises no card, starts no server, bumps no recent file, and shows and says
+/// nothing. Once you open the file, the same rest asks there.
+#[test]
+fn a_rest_on_a_name_whose_file_isnt_open_changes_nothing() {
+    let files = [("src/knot.rs", "pub struct Knot;\n"), ("conf.toml", "tie = 1\n")];
+    let (_s, mut ed, file) = setup_with("chatlink-rest-aside", true, ASIDE, &files);
+    let root = file.parent().and_then(Path::parent).unwrap().to_path_buf();
+    let (knot, conf) = (root.join("src/knot.rs"), root.join("conf.toml"));
+    feed(&mut ed, "<esc>");
+    ed.toasts.clear();
+    let state = |ed: &Editor| {
+        let paths: Vec<_> = ed.buffers().into_iter().map(|i| ed.docs[i].path.clone()).collect();
+        (paths, ed.docs.len(), ed.lsp.clients.len(), ed.recent.clone(), ed.offers.len())
+    };
+    let before = state(&ed);
+    let quiet = |ed: &mut Editor, what: &str| {
+        assert_eq!(state(ed), before, "{what}: no buffer, server, recent file or card");
+        assert!(rest_asked(ed).is_none(), "{what}: no hover asked");
+        frame(ed);
+        assert!(ed.screen.rest_card.get().is_none(), "{what}: no card");
+        assert!(ed.toasts.is_empty(), "{what}: nothing said: {:?}", ed.toasts);
+    };
+    // A block quoting a file no buffer holds
+    let quoted = cell(&mut ed, "pub struct Knot;", "Knot", 1);
+    hover(&mut ed, quoted);
+    crate::hoverrest::rested(&mut ed);
+    assert!(rest_named(&ed).is_none(), "at its place in src/knot.rs, never by name");
+    quiet(&mut ed, "quoted");
+    // By name, the one definition in a file no buffer holds (a toml file: its server would start with it)
+    let tie = cell(&mut ed, "is set elsewhere", "tie", 1);
+    hover(&mut ed, tie);
+    crate::hoverrest::rested(&mut ed);
+    let (cid, id) = rest_named(&ed).expect("asked by name of the server running");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&conf, &[("tie", 0, 0, "")]) }));
+    quiet(&mut ed, "by name");
+    // The file opened by you: the rest asks there
+    ed.open(&knot).unwrap();
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.hover_rest.rest = None;
+    hover(&mut ed, quoted);
+    crate::hoverrest::rested(&mut ed);
+    assert!(rest_asked(&ed).is_some(), "asked in the buffer now open");
 }
 
 /// #389 step 5: an answer naming code no cited place holds — a qualified name in prose, a bare one, one in a block

@@ -16,6 +16,11 @@
 //! the pointer are no such card: they stay immediate. The docs' hover too: with any of the mouse's cards up as the
 //! pointer comes onto a name (`State.warm`), its server is asked at once, the card up staying until the answer comes
 //! (`Rest.before`) — never a gap between two cards, never a card asked for a name the pointer only crossed cold.
+//!
+//! **A name in the chat alike** (#389 step 6, `.sb/chatlink-plan.md` §2.4): the pointer resting on a name in the
+//! conversation shows the server's hover there, by the same rest, hand-off and leaving — asked where `space k` asks it
+//! (`chatlink::rest`: a cited place's lines, a quoted block's spot in its file, else by name), the card in the chat at
+//! the name. What can't be asked there shows nothing and says nothing.
 
 use std::time::{Duration, Instant};
 
@@ -50,11 +55,21 @@ impl State {
     }
 }
 
-/// Where the pointer rests: a name (or a problem's underline) of a code pane, as it was drawn then.
+/// What a rest is on: a code pane's text, or the chat's conversation — a name there by its text (what streams in after
+/// it moves the conversation's version on, never the name).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum In {
+    Code(PaneId),
+    Chat(std::sync::Arc<str>),
+}
+
+/// Where the pointer rests: a name (or a problem's underline) of a code pane, or a name in the chat, as it was drawn
+/// then.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spot {
-    pub pane: PaneId,
+    pub pane: In,
     pub doc: DocId,
+    /// The document's version (the chat's: 0, `In::Chat` holds its name).
     pub version: u64,
     /// The name's bytes (a problem's spot off a name: its one character).
     pub word: std::ops::Range<usize>,
@@ -62,7 +77,8 @@ pub struct Spot {
     pub name: bool,
     /// The name's first cell on screen.
     pub cell: (usize, usize),
-    /// The pane's rect and scroll as drawn — another (a resize, follow moving the view) leaves the card unshown.
+    /// The pane's rect and scroll as drawn (the chat's: its conversation's rect and first row) — another (a resize,
+    /// follow moving the view, the wheel) leaves the card unshown.
     pub view: (crate::split::Rect, usize, usize),
 }
 
@@ -116,10 +132,21 @@ impl Rest {
     }
 }
 
-/// Whether `spot`'s document and pane are as they were.
+/// Whether `spot`'s document and pane are as they were — in the chat, its name where it was.
 fn still(ed: &Editor, spot: &Spot) -> bool {
-    let doc = ed.docs.iter().find(|d| d.id == spot.doc);
-    doc.is_some_and(|d| d.version() == spot.version) && view_of(ed, spot.pane) == Some(spot.view)
+    let same = doc_of(ed, spot).is_some_and(|d| match &spot.pane {
+        In::Code(_) => d.version() == spot.version,
+        In::Chat(name) => d.text.get_byte_slice(spot.word.clone()).is_some_and(|s| s == **name),
+    });
+    same && view_of(ed, &spot.pane) == Some(spot.view)
+}
+
+/// The document `spot` is in: a code pane's, or the chat's conversation.
+pub fn doc_of<'a>(ed: &'a Editor, spot: &Spot) -> Option<&'a crate::document::Document> {
+    match spot.pane {
+        In::Code(_) => ed.docs.iter().find(|d| d.id == spot.doc),
+        In::Chat(_) => crate::chatdoc::transcript(ed)?.pane.doc_in().filter(|d| d.id == spot.doc),
+    }
 }
 
 /// Whether one of the mouse's cards is up, as last drawn: a cut `…`'s, a flag's, the docs' hover.
@@ -128,8 +155,15 @@ pub fn card_up(ed: &Editor) -> bool {
     ed.cut_hover.is_some() || ed.flag_hover.is_some() || docs
 }
 
-/// The pane's rect and scroll in the last frame.
-fn view_of(ed: &Editor, pane: PaneId) -> Option<(crate::split::Rect, usize, usize)> {
+/// The pane's rect and scroll in the last frame — the chat's: its conversation's rect and first row.
+fn view_of(ed: &Editor, pane: &In) -> Option<(crate::split::Rect, usize, usize)> {
+    let pane = match pane {
+        In::Code(p) => *p,
+        In::Chat(_) => {
+            let (y, w, h, first) = ed.screen.chat_view.get()?;
+            return Some((crate::split::Rect { x: ed.screen.chat_x()?, y, w, h }, first, 0));
+        }
+    };
     let rect = ed.screen.panes.iter().find(|p| p.0 == pane)?.1;
     let (top, left) = match ed.workspace.views.iter().find(|v| v.id == pane) {
         Some(v) if pane != ed.workspace.viewer.focus => (v.top, v.left),
@@ -138,13 +172,17 @@ fn view_of(ed: &Editor, pane: PaneId) -> Option<(crate::split::Rect, usize, usiz
     Some((rect, top, left))
 }
 
-/// The name (or underlined problem) at (`x`, `y`) of a code pane (`u`: `mouse_under`'s answer there), if one rests there.
+/// The name (or underlined problem) at (`x`, `y`) of a code pane, or the name there in the chat (`u`: `mouse_under`'s
+/// answer there), if one rests there.
 fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
-    let (Surface::Code(pane), Part::Text { line, col }) = (u.surface, u.part) else { return None };
     // (one card at a time: `K`'s up, or a cut `…`'s card under the pointer, stays theirs)
     if !ed.config.mouse_hover || ed.popup.is_some() || ed.cut_hover.is_some() || ed.cut_wait.is_some() {
         return None;
     }
+    if u.surface == Surface::Transcript {
+        return chat_spot(ed, u.part, x, y);
+    }
+    let (Surface::Code(pane), Part::Text { line, col }) = (u.surface, u.part) else { return None };
     let id = match pane == ed.workspace.viewer.focus {
         true => ed.doc().id,
         false => ed.workspace.views.iter().find(|v| v.id == pane)?.doc,
@@ -164,14 +202,37 @@ fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
     let before = text.byte_slice(word.start..pos).to_string().width();
     let x0 = ed.screen.panes.iter().find(|p| p.0 == pane).map_or(0, |p| p.1.x + p.2);
     Some(Spot {
-        pane,
+        pane: In::Code(pane),
         doc: id,
         version: doc.version(),
         word,
         name,
         cell: (x.saturating_sub(before).max(x0), y),
-        view: view_of(ed, pane)?,
+        view: view_of(ed, &In::Code(pane))?,
     })
+}
+
+/// The name in the chat's conversation at (`x`, `y`) (`part`: what's there) — a cited place whole, or a word on its own
+/// letters — if one rests there. A run's row and an id are buttons of their own: none.
+fn chat_spot(ed: &Editor, part: Part, x: usize, y: usize) -> Option<Spot> {
+    use crate::mouse::Link;
+    if matches!(part, Part::Link(Link::Ran(_) | Link::Id(_))) {
+        return None;
+    }
+    let Part::Text { line: row, col } = ed.transcript_text(x, y) else { return None };
+    let (at, row_start) = crate::chatdoc::char_at(ed, row, col)?;
+    let word = crate::chatlink::rest_word(ed, at)?;
+    let d = crate::chatdoc::transcript(ed)?.pane.doc_in()?;
+    // (its first cell: back from the pointer by what's before it on this row — a place may wrap)
+    let before = d.text.byte_slice(word.start.max(row_start)..at).to_string().width();
+    let pane = In::Chat(d.text.byte_slice(word.clone()).to_string().into());
+    let view = view_of(ed, &pane)?;
+    Some(Spot { pane, doc: d.id, version: 0, word, name: true, cell: (x.saturating_sub(before), y), view })
+}
+
+/// The rest's number, while one is there.
+pub fn resting(ed: &Editor) -> Option<u64> {
+    ed.hover_rest.rest.as_ref().map(|r| r.n)
 }
 
 /// The pointer moved to (`x`, `y`) (`Event::Hover`): a new name rests from now, the card of the one left goes — over the
@@ -341,6 +402,12 @@ fn land(ed: &mut Editor) {
     let Some(r) = ed.hover_rest.rest.as_mut() else { return };
     r.landed = true;
     let (doc, pos, n, name) = (r.spot.doc, r.spot.word.start, r.n, r.spot.name);
+    // (a name in the chat: asked where its answer has it — its card now, once answered, or none)
+    if let In::Chat(_) = r.spot.pane {
+        crate::chatlink::rest(ed, pos, n);
+        ed.unchanged = false;
+        return;
+    }
     if !(name && ed.lsp_hover_at(doc, pos, n)) {
         failed(ed, n);
         ed.unchanged = false;
@@ -357,14 +424,22 @@ pub fn rested(ed: &mut Editor) {
     cards_due(ed, crate::clock::now() + REST);
 }
 
-/// The server's answer for rest `n` (empty: none) — at the version asked of, `on_response` saw to that.
-pub fn answered(ed: &mut Editor, n: u64, text: &str) {
-    let Some(r) = ed.hover_rest.rest.as_ref().filter(|r| r.n == n) else { return };
-    let doc = ed.docs.iter().find(|d| d.id == r.spot.doc);
+/// The server's answer for rest `n` (empty: none), asked of document `doc` — at the version asked of, `on_response`
+/// saw to that.
+pub fn answered(ed: &mut Editor, n: u64, doc: DocId, text: &str) {
+    let doc = ed.docs.iter().find(|d| d.id == doc);
     let lang = doc.and_then(|d| d.syntax.as_ref()).map(|s| s.lang.name.clone());
+    shows(ed, n, text, lang.as_deref());
+}
+
+/// Rest `n`'s card: markdown `text` (empty: none — the problems alone), its code in `lang`.
+pub fn shows(ed: &mut Editor, n: u64, text: &str, lang: Option<&str>) {
+    if ed.hover_rest.rest.as_ref().is_none_or(|r| r.n != n) {
+        return;
+    }
     let docs = match text.is_empty() {
         true => Vec::new(),
-        false => crate::markdown::render(text, &ed.theme, lang.as_deref()),
+        false => crate::markdown::render(text, &ed.theme, lang),
     };
     if let Some(r) = ed.hover_rest.rest.as_mut() {
         (r.card, r.before) = (Some(Card { docs, scroll: 0 }), None);

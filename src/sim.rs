@@ -33,6 +33,7 @@ mod board;
 mod brings;
 mod cardwait;
 mod chatlink;
+mod chatrest;
 mod chatstream;
 mod claudestart;
 mod codetrust;

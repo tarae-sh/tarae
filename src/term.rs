@@ -23114,10 +23114,7 @@ fn draw_chat_popup(
         let head = d.selection().primary().cursor(&d.text);
         d.text.byte_slice(crate::completion::word_start(&d.text, head)..head).to_string().width()
     });
-    let mut pane = lay.clone();
-    // (clear of the line between the chat and the code)
-    (pane.x0, pane.x1, pane.gutter) = (at.x + 1, at.x + at.w, 0);
-    (pane.text_top, pane.text_rows) = (y as u16, rows);
+    let Some(pane) = chat_pane(editor, lay) else { return Ok(()) };
     let (container, body) = docs_container(lines);
     let by = (cx.saturating_sub(before), cy);
     if let Some((rect, end)) =
@@ -23127,6 +23124,16 @@ fn draw_chat_popup(
         editor.screen.popup_end.set(Some(end));
     }
     Ok(())
+}
+
+/// The chat's conversation as a pane for a card by a name in it (`docs_popup`): clear of the line between it and the
+/// code, its rows as last drawn.
+fn chat_pane(editor: &Editor, lay: &Layout) -> Option<Layout> {
+    let (at, (y, _, rows, _)) = (lay.chat_at()?, editor.screen.chat_view.get()?);
+    let mut pane = lay.clone();
+    (pane.x0, pane.x1, pane.gutter) = (at.x + 1, at.x + at.w, 0);
+    (pane.text_top, pane.text_rows) = (y as u16, rows);
+    Some(pane)
 }
 
 /// The pointer's hover card (`hoverrest.rs`, #233): `K`'s, at the name the pointer rests on — the problems underlined
@@ -23140,10 +23147,13 @@ fn draw_rest_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
     };
     // (the card it took over from, until this one's answered — #391's hand-off)
     let Some((spot, card)) = rest.shown(editor) else { return Ok(()) };
-    let Some(pane) = panes(editor, lay).into_iter().find(|p| p.0 == spot.pane).map(|p| p.2) else {
-        return Ok(());
+    // (a name in the chat's: in the chat, as `space k`'s there — #389)
+    let pane = match &spot.pane {
+        crate::hoverrest::In::Code(id) => panes(editor, lay).into_iter().find(|p| p.0 == *id).map(|p| p.2),
+        crate::hoverrest::In::Chat(_) => chat_pane(editor, lay),
     };
-    let Some(doc) = editor.docs.iter().find(|d| d.id == spot.doc) else { return Ok(()) };
+    let Some(pane) = pane else { return Ok(()) };
+    let Some(doc) = crate::hoverrest::doc_of(editor, spot) else { return Ok(()) };
     let w = &spot.word;
     let mut here: Vec<_> = doc
         .lsp

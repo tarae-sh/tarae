@@ -619,6 +619,12 @@ there. Code blocks are never underlined, as code isn't in the editor, yet every 
 **A keyword is never asked.** `gd` on `let`, `fn` or `for` says at once that it's a keyword of the language it's
 written in — the code block's, else the files the answer cites — as the language's own grammar marks its keywords.
 
+**The pointer resting on a name** shows what `space k` would, as a name in the code does: still on it for half a
+second, its hover comes on a card in the chat under the name — asked where the keys ask (a cited place shows its
+lines). Moved to another name while the card is up, that one's comes at once; off the names it goes at once, and a
+key of yours closes it. The wheel over it scrolls it; it never takes the keys. Where nothing can be asked — a word
+that isn't code, a name with several definitions, no server — nothing shows and nothing is said.
+
 **The keys stay in the conversation.** `gd` moves the code beside it to the definition, its cursor in the
 conversation where it was, so you can follow one name after another as you read; `esc` (or `C-w h`) takes you to
 the code. A hover is a card in the chat by the name. Anything that can't be asked is said where you look: not a name

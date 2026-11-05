@@ -1618,7 +1618,7 @@ impl Editor {
                 }
             }
             // (its version checked above — the name's rest, its own: `hoverrest.rs`)
-            Kind::PointerHover { n } => crate::hoverrest::answered(self, n, &lsp::hover_text(result)),
+            Kind::PointerHover { n } => crate::hoverrest::answered(self, n, p.doc, &lsp::hover_text(result)),
             Kind::DocumentSymbols => self.on_document_symbols(p.doc, result),
             Kind::WorkspaceSymbols => self.on_workspace_symbols(cid, result),
             Kind::Highlights => {

@@ -30,7 +30,7 @@ const INPUTS: usize = 60;
 
 const LIMIT: Duration = crate::test_results::PATIENCE;
 
-const TEXT: &str = "fn helper(a: u32) -> u32 {\n    a + 1\n}\n\nfn main() {\n    let total = helper(2);\n    println!(\"{total}\");\n}\n";
+pub(super) const TEXT: &str = "fn helper(a: u32) -> u32 {\n    a + 1\n}\n\nfn main() {\n    let total = helper(2);\n    println!(\"{total}\");\n}\n";
 
 const ANSWER: &str = "It sums at src/main.rs:6, `total` kept:\n\n```rust\n    let total = helper(2);\n```\n\nNothing else but `helper` alone.";
 
@@ -59,7 +59,24 @@ struct World {
 fn run(choices: Choices) -> Vec<String> {
     let mut sim = Sim::new(NAME, choices, LIMIT);
     sim.frames = Some((120, 30));
-    let dir = crate::scratch::Scratch::new("sim-chatlink");
+    let (_dir, mut ed, id, defined) = setup("sim-chatlink");
+    let world = RefCell::new(World { defined, ..World::default() });
+    let check = |ed: &Editor| held(ed, id, &mut world.borrow_mut());
+    sim.walk(&mut ed, INPUTS, |sim, ed| step(sim, ed, id, &mut world.borrow_mut()), check, print);
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    drop(ed);
+    trace
+}
+
+/// A project of its own (`name`) with `src/main.rs` open, a stand-in server attached that answers each question with
+/// the place it was asked of, the chat up on `ANSWER` in its view mode — the folder, the editor, the file's buffer, and
+/// whether the project defines `total` now (the stand-in finds it by name then).
+pub(super) fn setup(
+    name: &str,
+) -> (crate::scratch::Scratch, Editor, crate::document::DocId, std::sync::Arc<std::sync::atomic::AtomicBool>)
+{
+    let dir = crate::scratch::Scratch::new(name);
     let root = std::fs::canonicalize(dir.as_ref()).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     let file = root.join("src/main.rs");
@@ -71,8 +88,8 @@ fn run(choices: Choices) -> Vec<String> {
     static TRAITS: std::sync::LazyLock<crate::lsp::ServerTraits> =
         std::sync::LazyLock::new(crate::lsp::ServerTraits::default);
     let file_uri = file.clone();
-    let world = RefCell::new(World::default());
-    let defined = world.borrow().defined.clone();
+    let defined = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let found = defined.clone();
     let serve: crate::lsp::Serve = Box::new(move |method, params| match method {
         "initialize" => Some(json!({ "capabilities": { "positionEncoding": "utf-8", "hoverProvider": true,
             "definitionProvider": true, "workspaceSymbolProvider": true } })),
@@ -82,7 +99,7 @@ fn run(choices: Choices) -> Vec<String> {
                 json!({ "name": name, "kind": 12, "location": { "uri": crate::lsp::uri(&file_uri),
                     "range": { "start": { "line": line, "character": 0 }, "end": { "line": line, "character": 0 } } } })
             };
-            let total = defined.load(std::sync::atomic::Ordering::Relaxed) && params["query"] == "total";
+            let total = found.load(std::sync::atomic::Ordering::Relaxed) && params["query"] == "total";
             Some(match total {
                 true => json!([at("total", 5)]),
                 false => json!([at("helper", 0), at("helpers", 4)]),
@@ -112,12 +129,7 @@ fn run(choices: Choices) -> Vec<String> {
     crate::term::render(&mut ed, &mut Vec::new(), 120, 30).unwrap();
     // (its view mode: `gd` and `space k` act on its cursor)
     ed.handle_key(Key::plain(Code::Esc));
-    let check = |ed: &Editor| held(ed, id, &mut world.borrow_mut());
-    sim.walk(&mut ed, INPUTS, |sim, ed| step(sim, ed, id, &mut world.borrow_mut()), check, print);
-    let trace = sim.trace().to_vec();
-    drop(sim);
-    drop(ed);
-    trace
+    (dir, ed, id, defined)
 }
 
 fn keys(ed: &mut Editor, keys: &str) {

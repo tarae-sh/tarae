@@ -225,6 +225,8 @@ struct Named {
     errors: Vec<String>,
     tries: u8,
     again: bool,
+    /// The pointer's rest it's asked for (`hoverrest.rs`'s number): its answer the rest's card, a miss nothing said.
+    rest: Option<u64>,
 }
 
 /// The chat's links (`Chat.links`): each message's map, the files' listing they were made for, the search under way,
@@ -237,6 +239,8 @@ pub struct Links {
     asking: bool,
     asked: Option<Asked>,
     named: Option<Named>,
+    /// The pointer's rest's question by name, apart from a key's (neither takes the other's place).
+    resting: Option<Named>,
     /// The underlines (§2.3, Q6): what each name written as code came to by name (true: a definition or several), for
     /// the conversation and the checkout's files as they are — asked once each.
     words: HashMap<Arc<str>, bool>,
@@ -719,13 +723,21 @@ fn transcript(ed: &Editor) -> Option<(&Chat, &crate::document::Document)> {
 }
 
 const NOT_CODE: &str = "not a name in the code";
+/// The files an answer cites not read yet (`after_frame`): there's nothing to look up in yet.
+const WAIT: &str = "still reading the files this answer cites — ask again in a moment";
 
 /// What the transcript's cursor is on, from what's held (no disk, no request) — Err: why there's nothing to ask,
 /// in words to say.
 pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
+    let Some(head) = head(ed) else { return Err(NOT_CODE.into()) };
+    target_at(ed, head)
+}
+
+/// What the transcript's byte `head` is on (`target`'s rule — the cursor's, or the pointer's rest).
+fn target_at(ed: &Editor, head: usize) -> Result<Target, String> {
     let Some((c, d)) = transcript(ed) else { return Err(NOT_CODE.into()) };
     let t = c.transcript.as_ref().expect("a transcript, above");
-    let head = d.selection().primary().cursor(&d.text);
+    let head = head.min(d.text.len_bytes());
     let line = d.text.byte_to_line(head);
     let Some((i, lines)) = t.msg_lines(line) else { return Err(NOT_CODE.into()) };
     let Some(m) = c.msgs.get(i).filter(|m| matches!(m.role, Role::User | Role::Assistant)) else {
@@ -735,7 +747,6 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
     let here = text_of(line);
     let at = head - d.text.line_to_byte(line);
     let map = c.links.maps.get(&i).filter(|mp| mp.key == key_of(m));
-    const WAIT: &str = "still reading the files this answer cites — ask again in a moment";
     // A cited place: the file at its line
     let cites = cited(&here);
     let names = crate::places::names_in(&here);
@@ -911,8 +922,7 @@ fn act(ed: &mut Editor, t: Result<Target, String>, goto: Option<Goto>) {
         Ok(Target::Place { link, .. }) if goto.is_some() => crate::chat::jump(ed, link),
         Ok(Target::Place { name, link, peek }) => match peek {
             Some(lines) if !lines.is_empty() => {
-                let lang = crate::syntax::detect(&link.path).map(|l| l.name.clone());
-                let md = format!("```{}\n{}\n```", lang.as_deref().unwrap_or(""), lines.join("\n"));
+                let (md, lang) = peek_md(&link, &lines);
                 show(ed, &md, lang.as_deref(), name);
             }
             _ => ed.set_status(format!("{name} — still reading its lines: ask again in a moment")),
@@ -920,6 +930,12 @@ fn act(ed: &mut Editor, t: Result<Target, String>, goto: Option<Goto>) {
         Ok(Target::At(spot)) => ask(ed, spot, goto),
         Ok(Target::Named { word, container, why }) => by_name(ed, Named::new(word, container, goto, why)),
     }
+}
+
+/// A cited place's lines as a card's markdown, in its file's language.
+fn peek_md(link: &crate::chat::Link, lines: &[String]) -> (String, Option<String>) {
+    let lang = crate::syntax::detect(&link.path).map(|l| l.name.clone());
+    (format!("```{}\n{}\n```", lang.as_deref().unwrap_or(""), lines.join("\n")), lang)
 }
 
 /// The transcript's cursor now.
@@ -1098,6 +1114,7 @@ impl Named {
             errors: Vec::new(),
             tries: 0,
             again: false,
+            rest: None,
         }
     }
 
@@ -1205,13 +1222,50 @@ pub fn named_answered(ed: &mut Editor, cid: ClientId, n: u64, result: Result<&Va
     };
     let roots = ed.client(cid).map(|c| c.roots.clone()).unwrap_or_default();
     let mine = ed.workspace.root.clone();
+    let rest = crate::hoverrest::resting(ed);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    // (the pointer's rest's: while it rests there still)
+    if c.links.resting.as_ref().is_some_and(|q| q.n == n) {
+        let Some(q) = c.links.resting.as_mut().filter(|q| q.rest.is_some() && q.rest == rest) else {
+            c.links.resting = None;
+            return;
+        };
+        if !keep(q, cid, result, &server, loading, &roots, &mine) {
+            return;
+        }
+        if let Some(q) = c.links.resting.take_if(|q| q.waiting.is_empty()) {
+            rest_found(ed, q);
+        }
+        return;
+    }
     let Some(q) = c.links.named.as_mut().filter(|q| q.n == n) else { return };
     if Some(q.head) != head {
         c.links.named = None;
         return;
     }
-    let Some(i) = q.waiting.iter().position(|&w| w == cid) else { return };
+    if !keep(q, cid, result, &server, loading, &roots, &mine) {
+        return;
+    }
+    if q.waiting.is_empty()
+        && let Some(q) = c.links.named.take()
+    {
+        finish(ed, q);
+    }
+}
+
+/// Server `cid`'s answer to `q` kept (Err: its error): the exact name's symbols — a shared server's (`roots`) for this
+/// checkout (`mine`) only —, a busy or loading one that found none noted, an error kept. False: `q` didn't wait on it.
+#[allow(clippy::too_many_arguments)]
+fn keep(
+    q: &mut Named,
+    cid: ClientId,
+    result: Result<&Value, &Value>,
+    server: &str,
+    loading: bool,
+    roots: &[PathBuf],
+    mine: &Path,
+) -> bool {
+    let Some(i) = q.waiting.iter().position(|&w| w == cid) else { return false };
     q.waiting.remove(i);
     let before = q.found.len();
     match result {
@@ -1225,7 +1279,7 @@ pub fn named_answered(ed: &mut Editor, cid: ClientId, n: u64, result: Result<&Va
                 let Some(path) = s["location"]["uri"].as_str().and_then(crate::lsp::path_from_uri) else {
                     continue;
                 };
-                if crate::share::foreign(&roots, &mine, &path) {
+                if crate::share::foreign(roots, mine, &path) {
                     continue;
                 }
                 let pos = match &s["location"]["range"]["start"] {
@@ -1244,25 +1298,13 @@ pub fn named_answered(ed: &mut Editor, cid: ClientId, n: u64, result: Result<&Va
     if q.found.len() == before && loading && !q.busy.contains(&cid) {
         q.busy.push(cid);
     }
-    if q.waiting.is_empty()
-        && let Some(q) = c.links.named.take()
-    {
-        finish(ed, q);
-    }
+    true
 }
 
 /// Every server asked has answered `q`: one definition gone to (or asked about, for the other keys), several listed,
 /// none said — put off while a server that found none is loading, asked again as its work ends.
 fn finish(ed: &mut Editor, mut q: Named) {
-    let mut found = std::mem::take(&mut q.found);
-    // (a qualified name: those in its container, where there are any)
-    if let Some(c) = &q.container
-        && found.iter().any(|f| !whole_in(&f.3, c).is_empty())
-    {
-        found.retain(|f| !whole_in(&f.3, c).is_empty());
-    }
-    let line = |pos: &Value| pos["line"].as_u64().unwrap_or(0) as usize;
-    found.dedup_by(|a, b| a.1 == b.1 && line(&a.2) == line(&b.2));
+    let mut found = defs(&mut q);
     let word = q.word.clone();
     match found.len() {
         0 if !q.busy.is_empty() => {
@@ -1322,6 +1364,30 @@ fn finish(ed: &mut Editor, mut q: Named) {
     }
 }
 
+/// The definitions `q` found, taken: a qualified name's those in its container where there are any, one a line.
+fn defs(q: &mut Named) -> Vec<(ClientId, PathBuf, Value, String)> {
+    let mut found = std::mem::take(&mut q.found);
+    if let Some(c) = &q.container
+        && found.iter().any(|f| !whole_in(&f.3, c).is_empty())
+    {
+        found.retain(|f| !whole_in(&f.3, c).is_empty());
+    }
+    let line = |pos: &Value| pos["line"].as_u64().unwrap_or(0) as usize;
+    found.dedup_by(|a, b| a.1 == b.1 && line(&a.2) == line(&b.2));
+    found
+}
+
+/// Where `word` stands whole on the line of byte `b` of `text`, the nearest at or after `b` first (a symbol's place may
+/// be where its item starts, `pub fn`): its byte — None, never a guess.
+fn on_line(text: &ropey::Rope, b: usize, word: &str) -> Option<usize> {
+    let l = text.byte_to_line(b);
+    let start = text.line_to_byte(l);
+    let col = b - start;
+    let at =
+        whole_in(&text.line(l).to_string(), word).into_iter().min_by_key(|&c| (c < col, c.abs_diff(col)))?;
+    Some(start + at)
+}
+
 /// `goto` (or the hover) asked at the definition `q`'s name came to: its file opened aside, the name on that line.
 fn ask_there(
     ed: &mut Editor,
@@ -1341,21 +1407,16 @@ fn ask_there(
         return ed.set_status(q.said(format!("{shown} is still loading — ask again in a moment")));
     }
     let Some(b) = crate::lsp::from_position(&doc.text, pos, enc) else { return };
-    // (a symbol's place may be where its item starts, `pub fn`: on to the name on that line, the nearest after it)
-    let l = doc.text.byte_to_line(b);
-    let start = doc.text.line_to_byte(l);
-    let text = doc.text.line(l).to_string();
-    let col = b - start;
-    let Some(at) = whole_in(&text, &q.word).into_iter().min_by_key(|&c| (c < col, c.abs_diff(col))) else {
+    let Some(byte) = on_line(&doc.text, b, &q.word) else {
         // (never asked at a guess)
-        let line = l + 1;
+        let line = doc.text.byte_to_line(b) + 1;
         return ed.set_status(q.said(format!("`{}` isn't on {shown}:{line}, where it was found", q.word)));
     };
     let a = Asked {
         n: next(ed),
         cid: 0,
         doc: id,
-        byte: start + at,
+        byte,
         goto,
         word: q.word,
         head: q.head,
@@ -1363,6 +1424,96 @@ fn ask_there(
         tries: 0,
     };
     send(ed, a);
+}
+
+// ── The pointer's rest (step 6, §2.4) ───────────────────────────────────────────────────────────────────────────────
+
+/// What the pointer at the transcript's byte `at` rests on: a cited place whole, else a word — on its own letters only,
+/// never a number — its bytes (`hoverrest::chat_spot`). Whether it's a name to ask about waits for the rest (`rest`).
+pub(crate) fn rest_word(ed: &Editor, at: usize) -> Option<Range<usize>> {
+    let (_, d) = transcript(ed)?;
+    if at >= d.text.len_bytes() {
+        return None;
+    }
+    let l = d.text.byte_to_line(at);
+    let start = d.text.line_to_byte(l);
+    let here = d.text.line(l).to_string();
+    let k = at - start;
+    let place = crate::places::names_in(&here).into_iter().find(|(whole, ..)| whole.contains(&k));
+    if let Some((whole, ..)) = place {
+        return Some(start + whole.start..start + whole.end);
+    }
+    let on = here[k..].chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let w = word_at(&here, k).filter(|_| on)?;
+    let number = here[w.clone()].chars().all(|c| c.is_ascii_digit());
+    (!number).then(|| start + w.start..start + w.end)
+}
+
+/// The pointer's rest `n` came at the transcript's byte `at` (`hoverrest::land`): asked as `space k` asks it there — a
+/// cited place's lines shown, a name asked at its spot in its file or by name — its answer the rest's card. What can't
+/// be asked shows nothing and says nothing (the pointer asked nothing); what's still being read is tried once more.
+pub fn rest(ed: &mut Editor, at: usize, n: u64) {
+    use crate::hoverrest::{busy, failed};
+    match target_at(ed, at) {
+        Err(why) if why == WAIT => busy(ed, n),
+        Err(_) => failed(ed, n),
+        Ok(Target::Place { link, peek, .. }) => match peek {
+            Some(lines) if !lines.is_empty() => {
+                let (md, lang) = peek_md(&link, &lines);
+                crate::hoverrest::shows(ed, n, &md, lang.as_deref());
+            }
+            _ => busy(ed, n),
+        },
+        Ok(Target::At(spot)) => rest_in(ed, n, &spot.path, |text| {
+            let now = text.get_line(spot.line).map(|l| l.to_string());
+            let same = now.as_deref().map(|l| l.trim_end_matches(['\n', '\r'])) == Some(spot.text.as_str());
+            same.then(|| text.line_to_byte(spot.line) + spot.col)
+        }),
+        Ok(Target::Named { word, container, .. }) => {
+            let q = Named { n: next(ed), rest: Some(n), ..Named::new(word, container, None, None) };
+            let root = ed.workspace.root.clone();
+            match ed.ask_named(&q.word, Kind::ChatNamed { n: q.n }, &root) {
+                Err(_) => failed(ed, n),
+                Ok(asked) => {
+                    let (waiting, servers) = asked.into_iter().unzip();
+                    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                        c.links.resting = Some(Named { waiting, servers, ..q });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every server asked has answered the rest's question by name `q`: one definition, its hover asked there; still
+/// loading, tried once more; none or several (`gd` lists them), nothing.
+fn rest_found(ed: &mut Editor, mut q: Named) {
+    let Some(n) = q.rest else { return };
+    let found = defs(&mut q);
+    match found.as_slice() {
+        [] if !q.busy.is_empty() => crate::hoverrest::busy(ed, n),
+        [(cid, path, pos, _)] => {
+            let (enc, pos, word) = (ed.encoding_of(*cid), pos.clone(), q.word);
+            rest_in(ed, n, path, |text| on_line(text, crate::lsp::from_position(text, &pos, enc)?, &word));
+        }
+        _ => crate::hoverrest::failed(ed, n),
+    }
+}
+
+/// Rest `n`'s hover asked in `path`'s buffer at the byte `at` finds in its text: the file still loading, tried once
+/// more; nothing there to ask at, or no server ready, nothing shown. Only a buffer open already, any session's — a rest
+/// is a reveal: it never opens or lists one, reads the disk, raises a card or starts a server (`nav::buffer_for` does,
+/// for a key); a file no buffer holds shows nothing.
+fn rest_in(ed: &mut Editor, n: u64, path: &Path, at: impl FnOnce(&ropey::Rope) -> Option<usize>) {
+    let Some(doc) = ed.docs.by_path(path) else { return crate::hoverrest::failed(ed, n) };
+    let id = doc.id;
+    if doc.loading {
+        return crate::hoverrest::busy(ed, n);
+    }
+    match at(&doc.text) {
+        Some(byte) if ed.lsp_hover_at(id, byte, n) => {}
+        _ => crate::hoverrest::failed(ed, n),
+    }
 }
 
 /// The front chat's underlines as kept: the files' listing they're for, and each name asked with whether it came to a

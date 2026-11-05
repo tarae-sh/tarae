@@ -759,6 +759,20 @@ const FLAG_HOVER: &[&str] = a1b_two_keys!("@hover+13?&threads {", "@1");
 /// (its card under line 11's covers the lines below) — handed off at once (0.4 s kept).
 const FLAG_REST: &[&str] =
     a1b_two_keys!("@~900", "@hover+13?&threads {", "@1", "@~400", "@hover+10?first);", "@1");
+const CHATLINK_REST: &[&str] = chatlink_keys!(
+    "@~200",
+    "@hover+6?many knots",
+    "@0.2",
+    "@~200",
+    "@hover+1?Thread::length",
+    "@0.2",
+    "@~900",
+    "@hover+9?Thread::length",
+    "@1",
+    "@~400",
+    "@hover+2?Thread::length",
+    "@1"
+);
 const FLAG_PRESS: &[&str] = a1b_two_keys!("\x17", "h", " ", "L", "@1", "@press+13?&threads {", "@1");
 const FLAG_NOTE: &[&str] =
     a1b_two_keys!("\x17", "h", " ", "L", "11G", " ", "n", "@1", "keep the first one?", "\t", "@2");
@@ -4253,6 +4267,9 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: chatlink_keys!("/", "defines gro", "\r", "@0.5", "g", "d"),
     },
+    // (#389 step 6: the pointer crossing `knots` and `Thread` — nothing; resting on `length`, its card after the rest (every
+    // frame of 0.9 s kept); onto `Thread` with it up — at once (0.4 s kept))
+    Scene { name: "chatlink-rest", claude: "chatlink", files: MAIN, keys: CHATLINK_REST },
     // (the flow plan's piece 5: a message queued, steered, then heard at Claude's next tool answer; the ask line at work)
     Scene { name: "steer-queued", claude: "steer", files: MAIN, keys: STEER_QUEUED },
     Scene { name: "steer-steering", claude: "steer", files: MAIN, keys: STEER_STEERING },
