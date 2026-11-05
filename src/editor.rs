@@ -557,6 +557,8 @@ pub struct Screen {
     /// Every pane of the tree that had room, where it was laid out (panes P2b) — what `C-w h/j/k/l` hop between
     /// and the dividers are found from. Filling the screen, the one pane.
     pub leaves: Vec<(crate::split::PaneId, crate::split::Rect)>,
+    /// The lines between the leaves, worked out once a frame (`edges.rs`, onetree S3) — the borders the mouse finds.
+    pub edges: crate::edges::Edges,
     /// How each group laid out was laid (side by side, over and under, stacked) — what `C-w t` turns.
     pub shapes: Vec<(crate::pane::GroupKind, crate::pane::Shape)>,
     /// The document each of `panes` drew (in their order) — its rows are that one's lines, whatever the pane
@@ -4243,7 +4245,7 @@ impl Editor {
     }
 
     /// A press on a name on a line (a tab, a member's): the line held as the line beside it is — the bottom slot's its
-    /// border (`Border::Bottom`: a drag sizes the slot), a floating frame's top line its move; let go where it was
+    /// border (the slot's own `Border::Divider`: a drag sizes the slot), a floating frame's top line its move; let go where it was
     /// pressed, nothing more (the name did its act). A line that drags nothing — a floating frame's inside its top line,
     /// a docked group's, the slot's while it fills the screen — says why on the drag (`NAME_FLOAT`, `NAME_DOCKED`,
     /// `NAME_ZOOMED`). The topmost first, as `mouse_under` finds the name: a float over the slot's line is the float's —
@@ -4268,8 +4270,9 @@ impl Editor {
         let s = &self.screen;
         let slot = s.slot();
         let bottom = slot.h > 0 && y == slot.y && x >= slot.x && x < s.slot_end();
-        if bottom && self.dragging.is_none() {
-            self.dragging = Some(crate::sizes::Border::Bottom);
+        let line = self.line_of(crate::pane::Shows::Slot);
+        if bottom && self.dragging.is_none() && line.is_some() {
+            self.dragging = line;
             self.border_moved = false;
             self.border_name = true;
             return;
@@ -16343,7 +16346,7 @@ mod tests {
         draw(&mut ed);
         // The chat's edge: at column 140 - 56; dragged 10 to the left, 10 wider
         let edge = (140 - ed.screen.drawn_w(crate::pane::Shows::Chat)) as u16;
-        assert_eq!(ed.border_at(edge as usize, 10), Some(crate::sizes::Border::Chat));
+        assert_eq!(ed.border_at(edge as usize, 10), Some(ed.line_of(crate::pane::Shows::Chat).unwrap()));
         assert_eq!(ed.border_at(edge as usize - 1, 10), None, "beside it: not the border");
         mouse(&mut ed, K::Down, edge, 10);
         mouse(&mut ed, K::Drag, edge - 10, 12);

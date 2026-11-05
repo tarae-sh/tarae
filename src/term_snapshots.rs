@@ -7553,7 +7553,7 @@ fn the_slots_header_is_the_line_where_it_meets_the_code() {
     let tab = s.ed.screen.slot_tabs.borrow()[0];
     let spot: String = rows[y].chars().skip(tab.1).take(tab.2 - tab.1).collect();
     assert_eq!((tab.0, spot.as_str()), (y, "check ●"), "its label and badge");
-    assert_eq!(s.ed.border_at(w as usize / 2, y), Some(crate::sizes::Border::Bottom));
+    assert_eq!(s.ed.border_at(w as usize / 2, y), Some(s.ed.line_of(crate::pane::Shows::Slot).unwrap()));
     assert_eq!(s.ed.border_at(tab.1, y), None, "a tab is clicked, not dragged");
     // Filling the screen (`C-w z`): its line the first row, no path bar and rule over it
     s.keys("<C-w>j<C-w>z");
@@ -8805,7 +8805,7 @@ fn a_line_that_drags_lights_under_the_pointer() {
     let slot = s.ed.screen.slot().y;
     let cols = s.ed.screen.slot().x..s.ed.screen.slot_end();
     let x = rule(&mut s, cols, slot);
-    assert_eq!(s.ed.border_at(x, slot), Some(crate::sizes::Border::Bottom));
+    assert_eq!(s.ed.border_at(x, slot), Some(s.ed.line_of(crate::pane::Shows::Slot).unwrap()));
     let wash = cell(&mut s, x, slot).1;
     assert_ne!(wash, accent, "not lit: the keys are the code's");
     hover(&mut s, x, slot);
@@ -8959,7 +8959,6 @@ fn a_docked_or_floating_group_under_the_pointer_lights_its_lines_half() {
 /// screen's edge. (Which line is lit with the keys: `the_edges_light_with_the_keys`.)
 #[test]
 fn the_gutters_hold_at_their_edges() {
-    use crate::sizes::Border;
     let (w, h) = (120u16, 30u16);
     let mut s = Shot::new(w, h);
     let cwd = s.in_project();
@@ -8992,9 +8991,9 @@ fn the_gutters_hold_at_their_edges() {
     // The sign column right after the gutter: the error's bar there, nothing between
     assert_eq!(cell(&mut s, top, side).0, "▎", "the sign column, first after the gutter");
     // A border held: its line in the accent
-    s.ed.dragging = Some(Border::Side);
+    s.ed.dragging = s.ed.line_of(crate::pane::Shows::Side);
     assert_eq!(cell(&mut s, 5, side - 1), ("│".into(), accent), "the side panel's border, held");
-    s.ed.dragging = Some(Border::Chat);
+    s.ed.dragging = s.ed.line_of(crate::pane::Shows::Chat);
     assert_eq!(cell(&mut s, 5, chat), ("│".into(), accent), "the chat's border, held");
     s.ed.dragging = None;
     // The chat filling the screen: its gutter's cell whole, no line at the screen's edge (its top line from it)

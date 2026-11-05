@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use crate::editor::{Drag, Editor};
 use crate::event::{Event, Mouse, MouseKind as K};
 use crate::mouse::{ACTS, Act, Expect, Lights, Lit, Part, STATES, Surface, TOOK, Under, doc, expect, rows};
+use crate::pane::Shows;
 use crate::sizes::Border;
 use crate::uistate::tests::{SCENES, Scene, chat, editor, frame};
 
@@ -743,16 +744,19 @@ fn holds(ed: &Editor, u: Under) -> bool {
         }
         // (a line: what it heads — `Editor::border_heads`)
         Surface::Edge => match u.part {
-            Part::Border(Border::Chat) => matches!(r, R::Chat | R::View(_)),
-            Part::Border(Border::Side) => {
-                matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::At::Side)
-            }
-            Part::Border(Border::Rail) => r == R::Rail,
-            Part::Border(Border::Bottom) => ed.bottom_has_keys(),
-            Part::Border(Border::Leaf(_)) => matches!(r, R::Output(_) | R::Slot(_) | R::List(_)),
-            Part::Border(Border::Divider { heads, .. }) => {
-                matches!(r, R::Code | R::Weave | R::Page) && ed.workspace.viewer.focus == heads
-            }
+            Part::Border(Border::Divider { heads, .. }) => match ed.workspace.shows(heads) {
+                Some(Shows::Chat) => matches!(r, R::Chat | R::View(_)),
+                Some(Shows::Side) => {
+                    matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::At::Side)
+                }
+                Some(Shows::Rail) => r == R::Rail,
+                Some(Shows::Slot) => ed.bottom_has_keys(),
+                Some(Shows::Group(_)) => matches!(r, R::Output(_) | R::Slot(_) | R::List(_)),
+                Some(Shows::Code) => {
+                    matches!(r, R::Code | R::Weave | R::Page) && ed.workspace.viewer.focus == heads
+                }
+                _ => false,
+            },
             Part::Border(Border::Follow { .. }) => matches!(r, R::Chat | R::View(_)),
             _ => false,
         },
@@ -782,13 +786,15 @@ fn keyed_lights(ed: &Editor) -> Option<Lights> {
 }
 
 /// The surface line `b` heads, as `keyed_lights` names it.
-fn heads(b: Border) -> Lights {
+fn heads(ed: &Editor, b: Border) -> Lights {
     match b {
-        Border::Chat => Lights::Chat,
-        Border::Side | Border::Rail => Lights::Side,
-        Border::Bottom => Lights::Slot,
-        Border::Leaf(k) => Lights::Dock(k),
-        Border::Divider { heads, .. } => Lights::Code(heads),
+        Border::Divider { heads, .. } => match ed.workspace.shows(heads) {
+            Some(Shows::Chat) => Lights::Chat,
+            Some(Shows::Side | Shows::Rail) => Lights::Side,
+            Some(Shows::Slot) => Lights::Slot,
+            Some(Shows::Group(k)) => Lights::Dock(k),
+            _ => Lights::Code(heads),
+        },
         // (the follow card's edges: its own frame's, which the keys never light — the faint wash, half under the pointer)
         Border::Follow { .. } => Lights::Follow,
     }
@@ -1883,7 +1889,7 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor)) -> (Vec<(String, String)>, V
             |(x, y): (usize, usize)| x < W && y < H && keys.is_some() && lights_of(&ed, x, y) == keys;
         let keyed = match u.part {
             Part::Border(b) if u.surface == Surface::Edge => {
-                keys == Some(heads(b)) || sides.into_iter().any(borders)
+                keys == Some(heads(&ed, b)) || sides.into_iter().any(borders)
             }
             _ => holds(&ed, u),
         } || frames

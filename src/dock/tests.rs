@@ -497,16 +497,47 @@ fn a_docked_groups_size_is_its_kinds_own() {
     assert!(ed.toasts.iter().any(|t| t.text.contains("C-w < > size it")), "said");
     // (dragged: its edge to column 100)
     let r = ed.dock_rect(GroupKind::Tests).unwrap().1;
-    assert_eq!(ed.border_at(r.x, 5), Some(crate::sizes::Border::Leaf(GroupKind::Tests)), "its edge");
-    ed.border_drag(crate::sizes::Border::Leaf(GroupKind::Tests), 100, 5);
+    assert_eq!(
+        ed.border_at(r.x, 5),
+        Some(ed.line_of(crate::pane::Shows::Group(GroupKind::Tests)).unwrap()),
+        "its edge"
+    );
+    ed.border_drag(ed.line_of(crate::pane::Shows::Group(GroupKind::Tests)).unwrap(), 100, 5);
     frame(&mut ed, W);
     assert_eq!(ed.dock_rect(GroupKind::Tests).unwrap().1.x, 100, "its edge where it was let go");
-    ed.border_drag(crate::sizes::Border::Leaf(GroupKind::Tests), 2, 5);
+    ed.border_drag(ed.line_of(crate::pane::Shows::Group(GroupKind::Tests)).unwrap(), 2, 5);
     frame(&mut ed, W);
     let code = rect(&ed, ed.workspace.viewer.focus).w;
     assert!(code >= crate::sizes::CODE_MIN, "the code keeps its least: {code}");
     feed(&mut ed, "<C-w>=");
     assert_eq!((width(&ed), ed.sizes.docked[0]), (auto, None));
+}
+
+/// A press on a docked group's edge without a drag gives the group the keys — the line is its host's own (onetree S3:
+/// a press heads what the line's leaf shows), beside the code and over it alike.
+#[test]
+fn a_press_on_a_docked_groups_edge_gives_it_the_keys() {
+    for side in ["L", "K"] {
+        let (_dir, mut ed) = tests_and_a_task();
+        feed(&mut ed, &format!("<C-w>{side}<esc>"));
+        assert_eq!(ed.workspace.viewer.at, At::Code, "{side}: the code's keys first");
+        let Some(crate::sizes::Border::Divider { heads, .. }) =
+            ed.line_of(crate::pane::Shows::Group(GroupKind::Tests))
+        else {
+            panic!("{side}: its line")
+        };
+        let edge = ed.screen.edges.lines.iter().find(|l| l.heads == heads).expect("its edge in the pass");
+        let (x, y) = match edge.dir {
+            crate::split::Dir::Vertical => (edge.at, edge.span.start + 2),
+            crate::split::Dir::Horizontal => (edge.span.start + 2, edge.at),
+        };
+        for kind in [crate::event::MouseKind::Down, crate::event::MouseKind::Up] {
+            ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+            frame(&mut ed, W);
+        }
+        assert_eq!(ed.slot_in_hand(), Some(crate::sizes::Slot::Test), "{side}: the group's keys");
+        assert!(ed.docked_in_sight(GroupKind::Tests), "{side}: still docked");
+    }
 }
 
 /// Docked over the code (`C-w K`) at 40 rows, a task in the slot: `C-w +`/`-` size it from its automatic rows, a drag
@@ -530,7 +561,11 @@ fn a_group_docked_over_the_code_is_sized_by_its_rows() {
     // (its edge is the code's top line under its last row — that row is its panel's, a click there a click on it)
     let r = ed.dock_rect(GroupKind::Tests).unwrap().1;
     let edge = r.y + r.h;
-    assert_eq!(ed.border_at(10, edge), Some(crate::sizes::Border::Leaf(GroupKind::Tests)), "its edge");
+    assert_eq!(
+        ed.border_at(10, edge),
+        Some(ed.line_of(crate::pane::Shows::Group(GroupKind::Tests)).unwrap()),
+        "its edge"
+    );
     assert_eq!(ed.border_at(10, edge - 1), None, "its last row isn't an edge");
     feed(&mut ed, "<esc>");
     assert_eq!(ed.workspace.viewer.at, At::Code);
@@ -549,13 +584,17 @@ fn a_group_docked_over_the_code_is_sized_by_its_rows() {
     click(&mut ed, list.x + 1, edge - 1, crate::event::MouseKind::Up);
     // (dragged from the code's line: let go three rows lower, the line there)
     click(&mut ed, 10, edge, crate::event::MouseKind::Down);
-    assert_eq!(ed.dragging, Some(crate::sizes::Border::Leaf(GroupKind::Tests)), "the code's line drags it");
+    assert_eq!(
+        ed.dragging,
+        Some(ed.line_of(crate::pane::Shows::Group(GroupKind::Tests)).unwrap()),
+        "the code's line drags it"
+    );
     click(&mut ed, 10, edge + 3, crate::event::MouseKind::Drag);
     click(&mut ed, 10, edge + 3, crate::event::MouseKind::Up);
     let r = ed.dock_rect(GroupKind::Tests).unwrap().1;
     assert_eq!(r.y + r.h, edge + 3, "its bottom line where it was let go");
     // (dragged: its bottom edge down to the status line — the code keeps its least)
-    ed.border_drag(crate::sizes::Border::Leaf(GroupKind::Tests), 10, H as usize - 2);
+    ed.border_drag(ed.line_of(crate::pane::Shows::Group(GroupKind::Tests)).unwrap(), 10, H as usize - 2);
     frame(&mut ed, W);
     let n = ed.sizes.docked[0].unwrap() as usize;
     assert_eq!(rows(&ed), n, "drawn as it was set");
@@ -587,7 +626,7 @@ fn two_groups_docked_on_one_side_stack_in_one_column() {
     let w = t.w + 4;
     assert_eq!(ed.dock_rect(GroupKind::Task).unwrap().1.w, w);
     assert_eq!((ed.sizes.docked[0], ed.sizes.docked[1]), (Some(w as u16), Some(w as u16)));
-    ed.border_drag(crate::sizes::Border::Leaf(GroupKind::Tests), 2, 5);
+    ed.border_drag(ed.line_of(crate::pane::Shows::Group(GroupKind::Tests)).unwrap(), 2, 5);
     frame_in(&mut ed, W, H);
     let n = W as usize - crate::sizes::CODE_MIN;
     assert_eq!(ed.sizes.docked[0], Some(n as u16), "as far as leaves the code its least");

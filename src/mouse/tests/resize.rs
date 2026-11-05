@@ -86,6 +86,28 @@ fn a_press_on_a_divider_side_by_side_gives_the_pane_right_of_it_the_keys() {
     );
 }
 
+/// A drag draws one frame a motion (onetree S3's measure: the borders read from the frame's lines, nothing more drawn):
+/// the chat's line held and moved over five columns asks five frames, each motion one.
+#[test]
+fn a_drag_draws_one_frame_a_motion() {
+    let mut ed = editor();
+    crate::uistate::tests::chat(&mut ed, "");
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
+    mouse(&mut ed, K::Down, chat, 10);
+    let mut drawn = 0;
+    for i in 1..=5 {
+        ed.handle_mouse(Mouse { kind: K::Drag, x: (chat - i) as u16, y: 10, alt: false, ctrl: false });
+        drawn += usize::from(!ed.unchanged);
+        frame(&mut ed);
+    }
+    mouse(&mut ed, K::Up, chat - 5, 10);
+    let line = format!("DRAG frames {drawn} of 5 motions\n");
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    assert_eq!(drawn, 5, "one frame a motion");
+}
+
 /// The review's rail: its edge drags its width (kept: `sizes.json`'s `rail`), a press there gives it the keys, `C-w > <`
 /// with its keys size it as the side panel's do, `C-w =` gives it back its rows' need.
 #[test]
@@ -93,7 +115,11 @@ fn the_review_rails_edge_drags_and_its_keys_size_it() {
     let mut ed = editor();
     code_review(&mut ed);
     let w0 = ed.screen.drawn_w(crate::pane::Shows::Rail);
-    assert_eq!(ed.border_at(w0 - 1, 5), Some(Border::Rail), "its last column");
+    assert_eq!(
+        ed.border_at(w0 - 1, 5),
+        Some(ed.line_of(crate::pane::Shows::Rail).unwrap()),
+        "its last column"
+    );
     assert_eq!(ed.keys_to().region, Region::Code);
     press(&mut ed, w0 - 1, 5);
     assert_eq!(ed.keys_to().region, Region::Rail, "a press there: the rail's keys");
@@ -135,7 +161,7 @@ fn a_press_on_a_panels_line_gives_it_the_keys_and_a_name_there_drags_the_line() 
     ed.workspace.viewer.at = At::Code;
     frame(&mut ed);
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
-    assert_eq!(ed.border_at(chat, 10), Some(Border::Chat));
+    assert_eq!(ed.border_at(chat, 10), Some(ed.line_of(crate::pane::Shows::Chat).unwrap()));
     press(&mut ed, chat, 10);
     assert_eq!(ed.keys_to().region, Region::Chat, "the chat's edge: the chat's keys");
     ed.workspace.viewer.at = At::Code;
@@ -151,7 +177,7 @@ fn a_press_on_a_panels_line_gives_it_the_keys_and_a_name_there_drags_the_line() 
     let s = &ed.screen;
     let line = s.slot().y;
     let x = (s.slot().x..s.slot_end())
-        .find(|&x| ed.border_at(x, line) == Some(Border::Bottom))
+        .find(|&x| ed.border_at(x, line) == Some(ed.line_of(crate::pane::Shows::Slot).unwrap()))
         .expect("its line");
     press(&mut ed, x, line);
     assert!(ed.bottom_has_keys(), "the slot's line: the slot's keys");
@@ -229,7 +255,7 @@ fn a_press_after_a_lost_release_is_its_own() {
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
     let (w, said0) = (ed.screen.drawn_w(crate::pane::Shows::Chat), said(&ed));
     mouse(&mut ed, K::Down, chat, 10);
-    assert_eq!(ed.dragging, Some(Border::Chat), "held");
+    assert_eq!(ed.dragging, Some(ed.line_of(crate::pane::Shows::Chat).unwrap()), "held");
     let (x, y) = super::code_cell(&ed, 4);
     press(&mut ed, x, y);
     assert_eq!((ed.keys_to().region, ed.cursor_line()), (Region::Code, 4), "the press is the code's");
@@ -416,7 +442,11 @@ fn a_line_under_the_pointer_is_lit_as_one_held() {
     frame(&mut ed);
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
     ed.handle_event(Event::Hover(chat as u16, 10));
-    assert_eq!((ed.border_lit(), ed.unchanged), (Some(Border::Chat), false), "lit, drawn");
+    assert_eq!(
+        (ed.border_lit(), ed.unchanged),
+        (Some(ed.line_of(crate::pane::Shows::Chat).unwrap()), false),
+        "lit, drawn"
+    );
     ed.handle_event(Event::Hover(chat as u16, 11));
     assert!(ed.unchanged, "along it: nothing new to draw");
     ed.handle_event(Event::Hover(chat as u16 - 4, 11));

@@ -984,7 +984,9 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         list_rows: Default::default(),
         owned: Default::default(),
         regions: Default::default(),
+        edges: Default::default(),
     };
+    editor.screen.edges = frame_edges(editor, &lay);
     // (the conversation laid out for this frame, the transcript's document following it — keys act on what's drawn)
     if let Some(at) = lay.chat_at()
         && let Some(c) = editor.workspace.claude.chat.as_ref()
@@ -1426,6 +1428,36 @@ fn floats(
             .map(|(k, id, _)| (k, id, crate::split::Rect { x: 0, y: 0, w, h: rows }))
             .collect(),
     }
+}
+
+/// The lines between this frame's leaves (onetree S3, `edges.rs`), worked out once from what it laid out: the surfaces
+/// by kind as `Screen.rects` has them, the groups docked in sight as `draw_docked` draws them, the code panes in the
+/// tree's order.
+fn frame_edges(editor: &Editor, lay: &Layout) -> crate::edges::Edges {
+    use crate::pane::{Place, Shows};
+    let (s, ws) = (&editor.screen, &editor.workspace);
+    let of = |kind: Shows| Some((ws.leaf(kind)?, s.rect(kind)?));
+    let docked = (ws.groups.iter())
+        .filter_map(|g| {
+            let Place::Docked(side) = g.place else { return None };
+            editor.docked_in_sight(g.kind).then_some(())?;
+            let r = lay.leaves.iter().find(|l| l.0 == g.host).map(|l| l.1).filter(|r| r.w > 1 && r.h > 1)?;
+            Some((g.host, side, r))
+        })
+        .collect();
+    let code = (s.leaves.iter()).filter(|l| ws.views.iter().any(|v| v.id == l.0)).copied().collect();
+    crate::edges::Edges::of(&crate::edges::Leaves {
+        width: lay.width,
+        text_top: s.text_top,
+        body_end: s.body_end(),
+        chat: of(Shows::Chat),
+        side: of(Shows::Side),
+        rail: of(Shows::Rail),
+        docked,
+        slot: ws.leaf(Shows::Slot).map(|id| (id, s.slot())),
+        slot_end: s.slot_end(),
+        code,
+    })
 }
 
 /// Every pane laid out with room this frame, as `C-w h/j/k/l` hop between them: the tree's leaves — a group's host
@@ -2344,7 +2376,7 @@ fn slot_header(
     let mut said = details.to_vec();
     // (the slot's line held or under the pointer, its whole width — as every line that drags: `grab_style`)
     let g = match p.kind {
-        None => grab(editor, |b| b == crate::sizes::Border::Bottom),
+        None => grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Slot)),
         Some(_) => Grab::No,
     };
     let line = edge_style(ui, card, Region::Slot);
@@ -6775,7 +6807,7 @@ fn dock_edge(
     r: crate::split::Rect,
 ) -> io::Result<()> {
     use crate::pane::Side;
-    let g = grab(editor, |b| b == crate::sizes::Border::Leaf(kind));
+    let g = grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Group(kind)));
     let mine = Region::Dock(kind);
     let style = |beside: Region| grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), g);
     // (over the code: its bottom is the code's top line, no edge of its own)
@@ -11014,11 +11046,14 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
     let ps = panes(editor, lay);
     // (a line that drags, held or under the pointer, in the accent: the one over and under a pane of yours is its
     // pane's; a group docked over the code's edge is the line of the panes at the column's top)
+    use crate::pane::Shows;
     use crate::sizes::Border;
     let lit = |id: crate::split::PaneId, r: crate::split::Rect| {
-        grab(editor, |b| match b {
-            Border::Divider { heads, dir: crate::split::Dir::Horizontal, .. } => heads == id,
-            Border::Leaf(kind) => {
+        grab(editor, |b| match (b, editor.border_sizes(b)) {
+            (Border::Divider { heads, dir: crate::split::Dir::Horizontal, .. }, Some(Shows::Code)) => {
+                heads == id
+            }
+            (_, Some(Shows::Group(kind))) => {
                 let top = crate::pane::Place::Docked(crate::pane::Side::Top);
                 editor.workspace.group(kind).is_some_and(|g| g.place == top)
                     && !crate::chrome::line_in_pane(r, lay.text_top as usize)
@@ -16425,7 +16460,7 @@ fn draw_sidebar(
     let faint = Style { fg: ui.linenr.fg, ..card };
     let selected = selected_row(ui, editor, card);
     let key = Style { bold: true, fg: ui.virt.fg, ..card };
-    let dragged = grab(editor, |b| b == crate::sizes::Border::Side);
+    let dragged = grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Side));
     let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
     let w = col.w.saturating_sub(GAP + PAD + PAD_R).max(1);
     let lines = sb.lines();
@@ -16818,7 +16853,7 @@ fn chat_gutter<'a>(
     card: Style,
 ) -> impl Fn(usize) -> (&'static str, Style) + 'a {
     let parts = beside_rows(editor, lay, crate::pane::Side::Right);
-    let dragged = grab(editor, |b| b == crate::sizes::Border::Chat);
+    let dragged = grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Chat));
     let over = editor.picker.as_ref().is_some_and(|p| !p.compact);
     let whole = lay.chat().is_some_and(|r| r.x == 0);
     move |y| match whole {
@@ -17747,7 +17782,11 @@ fn draw_review_rail(
         rows.push((row, card, None));
     }
     let mut links = editor.screen.review_rail.borrow_mut();
-    let gutter = side_gutter((ui, editor, lay), card, grab(editor, |b| b == crate::sizes::Border::Rail));
+    let gutter = side_gutter(
+        (ui, editor, lay),
+        card,
+        grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Rail)),
+    );
     for (y, (row, bg, file)) in rows.iter().take(col.h).enumerate() {
         if y == 0 {
             let line = edge_style(ui, card, Region::Side);

@@ -60,6 +60,7 @@ mod docpane;
 mod docpaths;
 mod document;
 mod dsyms;
+mod edges;
 mod editdiff;
 mod editor;
 mod edits;

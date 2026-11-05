@@ -1,0 +1,1003 @@
+# The borders' matrix (onetree S3): every scene of the layout matrix at every size — each border the mouse finds
+# (`border_at` at every cell): its way, the leaf it sizes and heads, its cells (a column's `x:rows`, a row's
+# `y:columns`). TARAE_BLESS=1 cargo test border_matrix
+
+## 54x20 · code
+
+## 54x34 · code
+
+## 54x50 · code
+
+## 80x20 · code
+
+## 80x34 · code
+
+## 80x50 · code
+
+## 100x20 · code
+
+## 100x34 · code
+
+## 100x50 · code
+
+## 120x20 · code
+
+## 120x34 · code
+
+## 120x50 · code
+
+## 160x20 · code
+
+## 160x34 · code
+
+## 160x50 · code
+
+## 200x20 · code
+
+## 200x34 · code
+
+## 200x50 · code
+
+## 54x20 · code beside code
+  │ sizes code#1 heads code#9  27:1-18
+
+## 54x34 · code beside code
+  │ sizes code#1 heads code#9  27:1-32
+
+## 54x50 · code beside code
+  │ sizes code#1 heads code#9  27:1-48
+
+## 80x20 · code beside code
+  │ sizes code#1 heads code#9  40:1-18
+
+## 80x34 · code beside code
+  │ sizes code#1 heads code#9  40:1-32
+
+## 80x50 · code beside code
+  │ sizes code#1 heads code#9  40:1-48
+
+## 100x20 · code beside code
+  │ sizes code#1 heads code#9  50:1-18
+
+## 100x34 · code beside code
+  │ sizes code#1 heads code#9  50:1-32
+
+## 100x50 · code beside code
+  │ sizes code#1 heads code#9  50:1-48
+
+## 120x20 · code beside code
+  │ sizes code#1 heads code#9  60:1-18
+
+## 120x34 · code beside code
+  │ sizes code#1 heads code#9  60:1-32
+
+## 120x50 · code beside code
+  │ sizes code#1 heads code#9  60:1-48
+
+## 160x20 · code beside code
+  │ sizes code#1 heads code#9  80:1-18
+
+## 160x34 · code beside code
+  │ sizes code#1 heads code#9  80:1-32
+
+## 160x50 · code beside code
+  │ sizes code#1 heads code#9  80:1-48
+
+## 200x20 · code beside code
+  │ sizes code#1 heads code#9  100:1-18
+
+## 200x34 · code beside code
+  │ sizes code#1 heads code#9  100:1-32
+
+## 200x50 · code beside code
+  │ sizes code#1 heads code#9  100:1-48
+
+## 54x20 · code over code
+  ─ sizes code#1 heads code#9  10:0-53
+
+## 54x34 · code over code
+  ─ sizes code#1 heads code#9  17:0-53
+
+## 54x50 · code over code
+  ─ sizes code#1 heads code#9  25:0-53
+
+## 80x20 · code over code
+  ─ sizes code#1 heads code#9  10:0-79
+
+## 80x34 · code over code
+  ─ sizes code#1 heads code#9  17:0-79
+
+## 80x50 · code over code
+  ─ sizes code#1 heads code#9  25:0-79
+
+## 100x20 · code over code
+  ─ sizes code#1 heads code#9  10:0-99
+
+## 100x34 · code over code
+  ─ sizes code#1 heads code#9  17:0-99
+
+## 100x50 · code over code
+  ─ sizes code#1 heads code#9  25:0-99
+
+## 120x20 · code over code
+  ─ sizes code#1 heads code#9  10:0-119
+
+## 120x34 · code over code
+  ─ sizes code#1 heads code#9  17:0-119
+
+## 120x50 · code over code
+  ─ sizes code#1 heads code#9  25:0-119
+
+## 160x20 · code over code
+  ─ sizes code#1 heads code#9  10:0-159
+
+## 160x34 · code over code
+  ─ sizes code#1 heads code#9  17:0-159
+
+## 160x50 · code over code
+  ─ sizes code#1 heads code#9  25:0-159
+
+## 200x20 · code over code
+  ─ sizes code#1 heads code#9  10:0-199
+
+## 200x34 · code over code
+  ─ sizes code#1 heads code#9  17:0-199
+
+## 200x50 · code over code
+  ─ sizes code#1 heads code#9  25:0-199
+
+## 54x20 · chat
+
+## 54x34 · chat
+
+## 54x50 · chat
+
+## 80x20 · chat
+  │ sizes chat#5 heads chat#5  44:0-18
+
+## 80x34 · chat
+  │ sizes chat#5 heads chat#5  44:0-32
+
+## 80x50 · chat
+  │ sizes chat#5 heads chat#5  44:0-48
+
+## 100x20 · chat
+  │ sizes chat#5 heads chat#5  60:0-18
+
+## 100x34 · chat
+  │ sizes chat#5 heads chat#5  60:0-32
+
+## 100x50 · chat
+  │ sizes chat#5 heads chat#5  60:0-48
+
+## 120x20 · chat
+  │ sizes chat#5 heads chat#5  72:0-18
+
+## 120x34 · chat
+  │ sizes chat#5 heads chat#5  72:0-32
+
+## 120x50 · chat
+  │ sizes chat#5 heads chat#5  72:0-48
+
+## 160x20 · chat
+  │ sizes chat#5 heads chat#5  96:0-18
+
+## 160x34 · chat
+  │ sizes chat#5 heads chat#5  96:0-32
+
+## 160x50 · chat
+  │ sizes chat#5 heads chat#5  96:0-48
+
+## 200x20 · chat
+  │ sizes chat#5 heads chat#5  120:0-18
+
+## 200x34 · chat
+  │ sizes chat#5 heads chat#5  120:0-32
+
+## 200x50 · chat
+  │ sizes chat#5 heads chat#5  120:0-48
+
+## 54x20 · chat with the keys
+
+## 54x34 · chat with the keys
+
+## 54x50 · chat with the keys
+
+## 80x20 · chat with the keys
+  │ sizes chat#5 heads chat#5  44:0-18
+
+## 80x34 · chat with the keys
+  │ sizes chat#5 heads chat#5  44:0-32
+
+## 80x50 · chat with the keys
+  │ sizes chat#5 heads chat#5  44:0-48
+
+## 100x20 · chat with the keys
+  │ sizes chat#5 heads chat#5  60:0-18
+
+## 100x34 · chat with the keys
+  │ sizes chat#5 heads chat#5  60:0-32
+
+## 100x50 · chat with the keys
+  │ sizes chat#5 heads chat#5  60:0-48
+
+## 120x20 · chat with the keys
+  │ sizes chat#5 heads chat#5  72:0-18
+
+## 120x34 · chat with the keys
+  │ sizes chat#5 heads chat#5  72:0-32
+
+## 120x50 · chat with the keys
+  │ sizes chat#5 heads chat#5  72:0-48
+
+## 160x20 · chat with the keys
+  │ sizes chat#5 heads chat#5  96:0-18
+
+## 160x34 · chat with the keys
+  │ sizes chat#5 heads chat#5  96:0-32
+
+## 160x50 · chat with the keys
+  │ sizes chat#5 heads chat#5  96:0-48
+
+## 200x20 · chat with the keys
+  │ sizes chat#5 heads chat#5  120:0-18
+
+## 200x34 · chat with the keys
+  │ sizes chat#5 heads chat#5  120:0-32
+
+## 200x50 · chat with the keys
+  │ sizes chat#5 heads chat#5  120:0-48
+
+## 54x20 · chat hidden
+
+## 54x34 · chat hidden
+
+## 54x50 · chat hidden
+
+## 80x20 · chat hidden
+
+## 80x34 · chat hidden
+
+## 80x50 · chat hidden
+
+## 100x20 · chat hidden
+
+## 100x34 · chat hidden
+
+## 100x50 · chat hidden
+
+## 120x20 · chat hidden
+
+## 120x34 · chat hidden
+
+## 120x50 · chat hidden
+
+## 160x20 · chat hidden
+
+## 160x34 · chat hidden
+
+## 160x50 · chat hidden
+
+## 200x20 · chat hidden
+
+## 200x34 · chat hidden
+
+## 200x50 · chat hidden
+
+## 54x20 · side panel
+
+## 54x34 · side panel
+
+## 54x50 · side panel
+
+## 80x20 · side panel
+  │ sizes side#2 heads side#2  31:0-18
+
+## 80x34 · side panel
+  │ sizes side#2 heads side#2  31:0-32
+
+## 80x50 · side panel
+  │ sizes side#2 heads side#2  31:0-48
+
+## 100x20 · side panel
+  │ sizes side#2 heads side#2  31:0-18
+
+## 100x34 · side panel
+  │ sizes side#2 heads side#2  31:0-32
+
+## 100x50 · side panel
+  │ sizes side#2 heads side#2  31:0-48
+
+## 120x20 · side panel
+  │ sizes side#2 heads side#2  31:0-18
+
+## 120x34 · side panel
+  │ sizes side#2 heads side#2  31:0-32
+
+## 120x50 · side panel
+  │ sizes side#2 heads side#2  31:0-48
+
+## 160x20 · side panel
+  │ sizes side#2 heads side#2  43:0-18
+
+## 160x34 · side panel
+  │ sizes side#2 heads side#2  43:0-32
+
+## 160x50 · side panel
+  │ sizes side#2 heads side#2  43:0-48
+
+## 200x20 · side panel
+  │ sizes side#2 heads side#2  43:0-18
+
+## 200x34 · side panel
+  │ sizes side#2 heads side#2  43:0-32
+
+## 200x50 · side panel
+  │ sizes side#2 heads side#2  43:0-48
+
+## 54x20 · side panel and chat
+
+## 54x34 · side panel and chat
+
+## 54x50 · side panel and chat
+
+## 80x20 · side panel and chat
+  │ sizes chat#5 heads chat#5  44:0-18
+
+## 80x34 · side panel and chat
+  │ sizes chat#5 heads chat#5  44:0-32
+
+## 80x50 · side panel and chat
+  │ sizes chat#5 heads chat#5  44:0-48
+
+## 100x20 · side panel and chat
+  │ sizes chat#5 heads chat#5  60:0-18
+
+## 100x34 · side panel and chat
+  │ sizes chat#5 heads chat#5  60:0-32
+
+## 100x50 · side panel and chat
+  │ sizes chat#5 heads chat#5  60:0-48
+
+## 120x20 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  84:0-18
+
+## 120x34 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  84:0-32
+
+## 120x50 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  84:0-48
+
+## 160x20 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  96:0-18
+
+## 160x34 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  96:0-32
+
+## 160x50 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  96:0-48
+
+## 200x20 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  120:0-18
+
+## 200x34 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  120:0-32
+
+## 200x50 · side panel and chat
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  120:0-48
+
+## 54x20 · review
+
+## 54x34 · review
+
+## 54x50 · review
+
+## 80x20 · review
+  │ sizes rail#3 heads rail#3  29:0-18
+
+## 80x34 · review
+  │ sizes rail#3 heads rail#3  29:0-32
+
+## 80x50 · review
+  │ sizes rail#3 heads rail#3  29:0-48
+
+## 100x20 · review
+  │ sizes rail#3 heads rail#3  29:0-18
+
+## 100x34 · review
+  │ sizes rail#3 heads rail#3  29:0-32
+
+## 100x50 · review
+  │ sizes rail#3 heads rail#3  29:0-48
+
+## 120x20 · review
+  │ sizes rail#3 heads rail#3  29:0-18
+
+## 120x34 · review
+  │ sizes rail#3 heads rail#3  29:0-32
+
+## 120x50 · review
+  │ sizes rail#3 heads rail#3  29:0-48
+
+## 160x20 · review
+  │ sizes rail#3 heads rail#3  29:0-18
+
+## 160x34 · review
+  │ sizes rail#3 heads rail#3  29:0-32
+
+## 160x50 · review
+  │ sizes rail#3 heads rail#3  29:0-48
+
+## 200x20 · review
+  │ sizes rail#3 heads rail#3  29:0-18
+
+## 200x34 · review
+  │ sizes rail#3 heads rail#3  29:0-32
+
+## 200x50 · review
+  │ sizes rail#3 heads rail#3  29:0-48
+
+## 54x20 · review and chat
+
+## 54x34 · review and chat
+
+## 54x50 · review and chat
+
+## 80x20 · review and chat
+  │ sizes chat#5 heads chat#5  44:0-18
+
+## 80x34 · review and chat
+  │ sizes chat#5 heads chat#5  44:0-32
+
+## 80x50 · review and chat
+  │ sizes chat#5 heads chat#5  44:0-48
+
+## 100x20 · review and chat
+  │ sizes chat#5 heads chat#5  60:0-18
+
+## 100x34 · review and chat
+  │ sizes chat#5 heads chat#5  60:0-32
+
+## 100x50 · review and chat
+  │ sizes chat#5 heads chat#5  60:0-48
+
+## 120x20 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-18
+  │ sizes chat#5 heads chat#5  84:0-18
+
+## 120x34 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-32
+  │ sizes chat#5 heads chat#5  84:0-32
+
+## 120x50 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-48
+  │ sizes chat#5 heads chat#5  84:0-48
+
+## 160x20 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-18
+  │ sizes chat#5 heads chat#5  124:0-18
+
+## 160x34 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-32
+  │ sizes chat#5 heads chat#5  124:0-32
+
+## 160x50 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-48
+  │ sizes chat#5 heads chat#5  124:0-48
+
+## 200x20 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-18
+  │ sizes chat#5 heads chat#5  130:0-18
+
+## 200x34 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-32
+  │ sizes chat#5 heads chat#5  130:0-32
+
+## 200x50 · review and chat
+  │ sizes rail#3 heads rail#3  29:0-48
+  │ sizes chat#5 heads chat#5  130:0-48
+
+## 54x20 · slot: tests
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,28-53
+
+## 54x34 · slot: tests
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,28-53
+
+## 54x50 · slot: tests
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,28-53
+
+## 80x20 · slot: tests
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-38,45-79
+
+## 80x34 · slot: tests
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-38,45-79
+
+## 80x50 · slot: tests
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-38,45-79
+
+## 100x20 · slot: tests
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-47,54-99
+
+## 100x34 · slot: tests
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-47,54-99
+
+## 100x50 · slot: tests
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-47,54-99
+
+## 120x20 · slot: tests
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-47,54-119
+
+## 120x34 · slot: tests
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-47,54-119
+
+## 120x50 · slot: tests
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-47,54-119
+
+## 160x20 · slot: tests
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-47,54-159
+
+## 160x34 · slot: tests
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-47,54-159
+
+## 160x50 · slot: tests
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-47,54-159
+
+## 200x20 · slot: tests
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-47,54-199
+
+## 200x34 · slot: tests
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-47,54-199
+
+## 200x50 · slot: tests
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-47,54-199
+
+## 54x20 · slot: task
+  ─ sizes slot#4 heads slot#4  16:0-1,9-53
+
+## 54x34 · slot: task
+  ─ sizes slot#4 heads slot#4  30:0-1,9-53
+
+## 54x50 · slot: task
+  ─ sizes slot#4 heads slot#4  46:0-1,9-53
+
+## 80x20 · slot: task
+  ─ sizes slot#4 heads slot#4  16:0-1,9-79
+
+## 80x34 · slot: task
+  ─ sizes slot#4 heads slot#4  30:0-1,9-79
+
+## 80x50 · slot: task
+  ─ sizes slot#4 heads slot#4  46:0-1,9-79
+
+## 100x20 · slot: task
+  ─ sizes slot#4 heads slot#4  16:0-1,9-99
+
+## 100x34 · slot: task
+  ─ sizes slot#4 heads slot#4  30:0-1,9-99
+
+## 100x50 · slot: task
+  ─ sizes slot#4 heads slot#4  46:0-1,9-99
+
+## 120x20 · slot: task
+  ─ sizes slot#4 heads slot#4  16:0-1,9-119
+
+## 120x34 · slot: task
+  ─ sizes slot#4 heads slot#4  30:0-1,9-119
+
+## 120x50 · slot: task
+  ─ sizes slot#4 heads slot#4  46:0-1,9-119
+
+## 160x20 · slot: task
+  ─ sizes slot#4 heads slot#4  16:0-1,9-159
+
+## 160x34 · slot: task
+  ─ sizes slot#4 heads slot#4  30:0-1,9-159
+
+## 160x50 · slot: task
+  ─ sizes slot#4 heads slot#4  46:0-1,9-159
+
+## 200x20 · slot: task
+  ─ sizes slot#4 heads slot#4  16:0-1,9-199
+
+## 200x34 · slot: task
+  ─ sizes slot#4 heads slot#4  30:0-1,9-199
+
+## 200x50 · slot: task
+  ─ sizes slot#4 heads slot#4  46:0-1,9-199
+
+## 54x20 · slot: tests, side panel and chat
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,28-53
+
+## 54x34 · slot: tests, side panel and chat
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,28-53
+
+## 54x50 · slot: tests, side panel and chat
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,28-53
+
+## 80x20 · slot: tests, side panel and chat
+  │ sizes chat#5 heads chat#5  44:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,28-43
+
+## 80x34 · slot: tests, side panel and chat
+  │ sizes chat#5 heads chat#5  44:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,28-43
+
+## 80x50 · slot: tests, side panel and chat
+  │ sizes chat#5 heads chat#5  44:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,28-43
+
+## 100x20 · slot: tests, side panel and chat
+  │ sizes chat#5 heads chat#5  60:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,28-59
+
+## 100x34 · slot: tests, side panel and chat
+  │ sizes chat#5 heads chat#5  60:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,28-59
+
+## 100x50 · slot: tests, side panel and chat
+  │ sizes chat#5 heads chat#5  60:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,28-59
+
+## 120x20 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  84:0-18
+  ─ sizes slot#4 heads slot#4  12:32-33,41-43,51-53,60-83
+
+## 120x34 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  84:0-32
+  ─ sizes slot#4 heads slot#4  24:32-33,41-43,51-53,60-83
+
+## 120x50 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  84:0-48
+  ─ sizes slot#4 heads slot#4  35:32-33,41-43,51-53,60-83
+
+## 160x20 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  96:0-18
+  ─ sizes slot#4 heads slot#4  12:32-33,41-43,51-53,60-95
+
+## 160x34 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  96:0-32
+  ─ sizes slot#4 heads slot#4  24:32-33,41-43,51-53,60-95
+
+## 160x50 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  96:0-48
+  ─ sizes slot#4 heads slot#4  35:32-33,41-43,51-53,60-95
+
+## 200x20 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  120:0-18
+  ─ sizes slot#4 heads slot#4  12:32-33,41-43,51-73,80-119
+
+## 200x34 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  120:0-32
+  ─ sizes slot#4 heads slot#4  24:32-33,41-43,51-73,80-119
+
+## 200x50 · slot: tests, side panel and chat
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  120:0-48
+  ─ sizes slot#4 heads slot#4  35:32-33,41-43,51-73,80-119
+
+## 54x20 · tests docked left, chat
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-53
+
+## 54x34 · tests docked left, chat
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-53
+
+## 54x50 · tests docked left, chat
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-53
+
+## 80x20 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  44:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-43
+
+## 80x34 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  44:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-43
+
+## 80x50 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  44:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-43
+
+## 100x20 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  60:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-59
+
+## 100x34 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  60:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-59
+
+## 100x50 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  60:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-59
+
+## 120x20 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  72:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-71
+
+## 120x34 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  72:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-71
+
+## 120x50 · tests docked left, chat
+  │ sizes chat#5 heads chat#5  72:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-71
+
+## 160x20 · tests docked left, chat
+  │ sizes group:tests#11 heads group:tests#11  35:0-18
+  │ sizes chat#5 heads chat#5  96:0-18
+  ─ sizes slot#4 heads slot#4  16:36-37,45-95
+
+## 160x34 · tests docked left, chat
+  │ sizes group:tests#11 heads group:tests#11  35:0-32
+  │ sizes chat#5 heads chat#5  96:0-32
+  ─ sizes slot#4 heads slot#4  30:36-37,45-95
+
+## 160x50 · tests docked left, chat
+  │ sizes group:tests#11 heads group:tests#11  35:0-48
+  │ sizes chat#5 heads chat#5  96:0-48
+  ─ sizes slot#4 heads slot#4  46:36-37,45-95
+
+## 200x20 · tests docked left, chat
+  │ sizes group:tests#11 heads group:tests#11  59:0-18
+  │ sizes chat#5 heads chat#5  120:0-18
+  ─ sizes slot#4 heads slot#4  16:60-61,69-119
+
+## 200x34 · tests docked left, chat
+  │ sizes group:tests#11 heads group:tests#11  59:0-32
+  │ sizes chat#5 heads chat#5  120:0-32
+  ─ sizes slot#4 heads slot#4  30:60-61,69-119
+
+## 200x50 · tests docked left, chat
+  │ sizes group:tests#11 heads group:tests#11  59:0-48
+  │ sizes chat#5 heads chat#5  120:0-48
+  ─ sizes slot#4 heads slot#4  46:60-61,69-119
+
+## 54x20 · tests docked right, chat
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-53
+
+## 54x34 · tests docked right, chat
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-53
+
+## 54x50 · tests docked right, chat
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-53
+
+## 80x20 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  44:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-43
+
+## 80x34 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  44:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-43
+
+## 80x50 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  44:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-43
+
+## 100x20 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  60:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-59
+
+## 100x34 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  60:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-59
+
+## 100x50 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  60:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-59
+
+## 120x20 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  72:0-18
+  ─ sizes slot#4 heads slot#4  12:0-1,9-11,19-21,29-31,38-71
+
+## 120x34 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  72:0-32
+  ─ sizes slot#4 heads slot#4  24:0-1,9-11,19-21,29-31,38-71
+
+## 120x50 · tests docked right, chat
+  │ sizes chat#5 heads chat#5  72:0-48
+  ─ sizes slot#4 heads slot#4  35:0-1,9-11,19-21,29-31,38-71
+
+## 160x20 · tests docked right, chat
+  │ sizes group:tests#11 heads group:tests#11  60:0-18
+  │ sizes chat#5 heads chat#5  96:0-18
+  ─ sizes slot#4 heads slot#4  16:0-1,9-59
+
+## 160x34 · tests docked right, chat
+  │ sizes group:tests#11 heads group:tests#11  60:0-32
+  │ sizes chat#5 heads chat#5  96:0-32
+  ─ sizes slot#4 heads slot#4  30:0-1,9-59
+
+## 160x50 · tests docked right, chat
+  │ sizes group:tests#11 heads group:tests#11  60:0-48
+  │ sizes chat#5 heads chat#5  96:0-48
+  ─ sizes slot#4 heads slot#4  46:0-1,9-59
+
+## 200x20 · tests docked right, chat
+  │ sizes group:tests#11 heads group:tests#11  60:0-18
+  │ sizes chat#5 heads chat#5  120:0-18
+  ─ sizes slot#4 heads slot#4  16:0-1,9-59
+
+## 200x34 · tests docked right, chat
+  │ sizes group:tests#11 heads group:tests#11  60:0-32
+  │ sizes chat#5 heads chat#5  120:0-32
+  ─ sizes slot#4 heads slot#4  30:0-1,9-59
+
+## 200x50 · tests docked right, chat
+  │ sizes group:tests#11 heads group:tests#11  60:0-48
+  │ sizes chat#5 heads chat#5  120:0-48
+  ─ sizes slot#4 heads slot#4  46:0-1,9-59
+
+## 54x20 · tests docked over the code, chat
+  ─ sizes group:tests#11 heads group:tests#11  6:0-53
+  ─ sizes slot#4 heads slot#4  16:0-1,9-53
+
+## 54x34 · tests docked over the code, chat
+  ─ sizes group:tests#11 heads group:tests#11  10:0-53
+  ─ sizes slot#4 heads slot#4  30:0-1,9-53
+
+## 54x50 · tests docked over the code, chat
+  ─ sizes group:tests#11 heads group:tests#11  14:0-53
+  ─ sizes slot#4 heads slot#4  46:0-1,9-53
+
+## 80x20 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  44:0-18
+  ─ sizes group:tests#11 heads group:tests#11  6:0-43
+  ─ sizes slot#4 heads slot#4  16:0-1,9-43
+
+## 80x34 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  44:0-32
+  ─ sizes group:tests#11 heads group:tests#11  10:0-43
+  ─ sizes slot#4 heads slot#4  30:0-1,9-43
+
+## 80x50 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  44:0-48
+  ─ sizes group:tests#11 heads group:tests#11  14:0-43
+  ─ sizes slot#4 heads slot#4  46:0-1,9-43
+
+## 100x20 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  60:0-18
+  ─ sizes group:tests#11 heads group:tests#11  6:0-59
+  ─ sizes slot#4 heads slot#4  16:0-1,9-59
+
+## 100x34 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  60:0-32
+  ─ sizes group:tests#11 heads group:tests#11  10:0-59
+  ─ sizes slot#4 heads slot#4  30:0-1,9-59
+
+## 100x50 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  60:0-48
+  ─ sizes group:tests#11 heads group:tests#11  14:0-59
+  ─ sizes slot#4 heads slot#4  46:0-1,9-59
+
+## 120x20 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  72:0-18
+  ─ sizes group:tests#11 heads group:tests#11  6:0-71
+  ─ sizes slot#4 heads slot#4  16:0-1,9-71
+
+## 120x34 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  72:0-32
+  ─ sizes group:tests#11 heads group:tests#11  10:0-71
+  ─ sizes slot#4 heads slot#4  30:0-1,9-71
+
+## 120x50 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  72:0-48
+  ─ sizes group:tests#11 heads group:tests#11  14:0-71
+  ─ sizes slot#4 heads slot#4  46:0-1,9-71
+
+## 160x20 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  96:0-18
+  ─ sizes group:tests#11 heads group:tests#11  6:0-95
+  ─ sizes slot#4 heads slot#4  16:0-1,9-95
+
+## 160x34 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  96:0-32
+  ─ sizes group:tests#11 heads group:tests#11  10:0-95
+  ─ sizes slot#4 heads slot#4  30:0-1,9-95
+
+## 160x50 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  96:0-48
+  ─ sizes group:tests#11 heads group:tests#11  14:0-95
+  ─ sizes slot#4 heads slot#4  46:0-1,9-95
+
+## 200x20 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  120:0-18
+  ─ sizes group:tests#11 heads group:tests#11  6:0-119
+  ─ sizes slot#4 heads slot#4  16:0-1,9-119
+
+## 200x34 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  120:0-32
+  ─ sizes group:tests#11 heads group:tests#11  10:0-119
+  ─ sizes slot#4 heads slot#4  30:0-1,9-119
+
+## 200x50 · tests docked over the code, chat
+  │ sizes chat#5 heads chat#5  120:0-48
+  ─ sizes group:tests#11 heads group:tests#11  14:0-119
+  ─ sizes slot#4 heads slot#4  46:0-1,9-119
+
+## 54x20 · code zoomed, chat
+
+## 54x34 · code zoomed, chat
+
+## 54x50 · code zoomed, chat
+
+## 80x20 · code zoomed, chat
+
+## 80x34 · code zoomed, chat
+
+## 80x50 · code zoomed, chat
+
+## 100x20 · code zoomed, chat
+
+## 100x34 · code zoomed, chat
+
+## 100x50 · code zoomed, chat
+
+## 120x20 · code zoomed, chat
+
+## 120x34 · code zoomed, chat
+
+## 120x50 · code zoomed, chat
+
+## 160x20 · code zoomed, chat
+
+## 160x34 · code zoomed, chat
+
+## 160x50 · code zoomed, chat
+
+## 200x20 · code zoomed, chat
+
+## 200x34 · code zoomed, chat
+
+## 200x50 · code zoomed, chat
+
+## 54x20 · chat zoomed
+
+## 54x34 · chat zoomed
+
+## 54x50 · chat zoomed
+
+## 80x20 · chat zoomed
+
+## 80x34 · chat zoomed
+
+## 80x50 · chat zoomed
+
+## 100x20 · chat zoomed
+
+## 100x34 · chat zoomed
+
+## 100x50 · chat zoomed
+
+## 120x20 · chat zoomed
+
+## 120x34 · chat zoomed
+
+## 120x50 · chat zoomed
+
+## 160x20 · chat zoomed
+
+## 160x34 · chat zoomed
+
+## 160x50 · chat zoomed
+
+## 200x20 · chat zoomed
+
+## 200x34 · chat zoomed
+
+## 200x50 · chat zoomed
+

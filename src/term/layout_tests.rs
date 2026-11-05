@@ -9,7 +9,7 @@
 //!
 //! `perf_layout_frame` times what the layout costs a frame over the same matrix: `Layout::new` and the code's edges.
 
-use super::{Layout, code_edges, render};
+use super::{Layout, code_edges, frame_edges, render};
 use crate::config::Config;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
@@ -302,6 +302,112 @@ fn layout_matrix() {
     }
 }
 
+/// A border as the borders' matrix prints it: its way (`│` a column's, `─` a row's), the leaf it sizes and the one it
+/// heads, each by kind and id.
+fn border_named(ed: &Editor, b: crate::sizes::Border) -> (crate::split::Dir, String) {
+    use crate::sizes::Border as B;
+    use crate::split::Dir;
+    let (sized, heads, dir) = match b {
+        B::Divider { sized, heads, dir } => (sized, heads, dir),
+        B::Follow { cols, rows } => return (Dir::Vertical, format!("follow cols {cols} rows {rows}")),
+    };
+    let glyph = if dir == Dir::Vertical { '│' } else { '─' };
+    (dir, format!("{glyph} sizes {}#{sized} heads {}#{heads}", kind(ed, sized), kind(ed, heads)))
+}
+
+/// The borders the mouse finds on the frame (`Editor::border_at` at every cell): each one, then its cells — a column's
+/// line by its column and its rows' runs, a row's by its row and its columns' runs.
+fn borders(ed: &Editor, w: u16, h: u16) -> Vec<String> {
+    let mut found: Vec<(crate::sizes::Border, Vec<(usize, usize)>)> = Vec::new();
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let Some(b) = ed.border_at(x, y) else { continue };
+            match found.iter_mut().find(|f| f.0 == b) {
+                Some(f) => f.1.push((x, y)),
+                None => found.push((b, vec![(x, y)])),
+            }
+        }
+    }
+    let runs = |mut v: Vec<usize>| {
+        v.sort();
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for n in v {
+            match out.last_mut() {
+                Some(r) if r.1 + 1 == n => r.1 = n,
+                _ => out.push((n, n)),
+            }
+        }
+        out.iter().map(|r| format!("{}-{}", r.0, r.1)).collect::<Vec<_>>().join(",")
+    };
+    let mut out = Vec::new();
+    for (b, cells) in found {
+        let (dir, name) = border_named(ed, b);
+        // (along its way: a column's cells by column, a row's by row)
+        let along = |c: &(usize, usize)| if dir == crate::split::Dir::Vertical { c.0 } else { c.1 };
+        let mut ats: Vec<usize> = cells.iter().map(along).collect();
+        ats.sort();
+        ats.dedup();
+        let parts: Vec<String> = ats
+            .iter()
+            .map(|&a| {
+                let across = cells.iter().filter(|c| along(c) == a).map(|c| c.0 + c.1 - along(c)).collect();
+                format!("{a}:{}", runs(across))
+            })
+            .collect();
+        out.push(format!("{name}  {}", parts.join(" ")));
+    }
+    out
+}
+
+/// Every scene at every size, its borders as the mouse finds them.
+fn border_matrix_text() -> String {
+    let mut out = String::from(
+        "# The borders' matrix (onetree S3): every scene of the layout matrix at every size — each border the mouse finds\n\
+         # (`border_at` at every cell): its way, the leaf it sizes and heads, its cells (a column's `x:rows`, a row's\n\
+         # `y:columns`). TARAE_BLESS=1 cargo test border_matrix\n\n",
+    );
+    for sc in SCENES {
+        for &w in &WIDTHS {
+            for &h in &HEIGHTS {
+                let ed = scene(sc, w, h);
+                out.push_str(&format!("## {w}x{h} · {}\n", sc.0));
+                for l in borders(&ed, w, h) {
+                    out.push_str(&format!("  {l}\n"));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// The borders the mouse finds, pinned before S3 moved them onto one pass (`edges.rs`): every scene at every size finds
+/// the same lines, sizing and heading the same leaves, as `src/snapshots/border_matrix.txt` says.
+#[test]
+fn border_matrix() {
+    crossterm::style::force_color_output(true);
+    let actual = border_matrix_text();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/snapshots/border_matrix.txt");
+    if std::env::var_os("TARAE_BLESS").is_some_and(|v| v == "1") {
+        std::fs::write(&path, &actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|_| panic!("no {} yet — TARAE_BLESS=1 cargo test border_matrix", path.display()));
+    if expected != actual {
+        let (e, a): (Vec<&str>, Vec<&str>) =
+            (expected.split("\n\n").collect(), actual.split("\n\n").collect());
+        let at = e.iter().zip(&a).position(|(e, a)| e != a).unwrap_or(e.len().min(a.len()));
+        let differ = e.iter().zip(&a).filter(|(e, a)| e != a).count() + e.len().abs_diff(a.len());
+        panic!(
+            "the borders' matrix differs in {differ} scene(s) — the first, expected:\n{}\n\nactual:\n{}\n\n\
+             If the change is meant: TARAE_BLESS=1 cargo test border_matrix",
+            e.get(at).unwrap_or(&"(none)"),
+            a.get(at).unwrap_or(&"(none)"),
+        );
+    }
+}
+
 /// Each kind is sized along the split it sits in (onetree S2b): the conversation stacked under the code takes a third
 /// of the column's rows, the slot beside the code 2/5 of the columns — trees today's layout never makes (S5's moves).
 #[test]
@@ -348,8 +454,8 @@ fn each_kind_is_sized_along_the_split_it_sits_in() {
     assert_eq!(rect(&ed, Shows::Chat).w, 48, "its home's way: the width the table gives it");
 }
 
-/// The layout costs a frame little (onetree S0's measure, S1 and S3 judged by it): `Layout::new` and the code's edges,
-/// over every scene at 80, 120 and 200 × 34 — each scene's median of its runs, the median of those said for
+/// The layout costs a frame little (onetree S0's measure, S1 and S3 judged by it): `Layout::new`, the code's edges and
+/// the lines between the leaves (`frame_edges`, S3), over every scene at 80, 120 and 200 × 34 — each scene's median of its runs, the median of those said for
 /// `cargo perf`.
 #[test]
 fn perf_layout_frame() {
@@ -367,6 +473,7 @@ fn perf_layout_frame() {
                     let t = std::time::Instant::now();
                     let lay = Layout::new(&ed, w, h);
                     std::hint::black_box(code_edges(&ed, &lay));
+                    std::hint::black_box(frame_edges(&ed, &lay));
                     t.elapsed()
                 })
                 .collect();

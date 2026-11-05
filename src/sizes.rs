@@ -339,33 +339,21 @@ pub fn across(kind: Across, avail: usize) -> usize {
     }
 }
 
-/// A border the mouse drags: the chat's left edge, the side panel's right edge, the review rail's, the bottom slot's top
-/// row, a divider between two code panes of yours. A press on one without a drag gives the keys to what it heads
-/// (`border_heads`; mouse R, Q9); under the pointer it's lit as it is while dragged (`border_lit`, Q7).
+/// A border the mouse drags: a line between two leaves (`edges.rs`), or the follow card's free edges. A press on one
+/// without a drag gives the keys to what it heads (`border_heads`; mouse R, Q9); under the pointer it's lit as it is
+/// while dragged (`border_lit`, Q7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Border {
-    Chat,
-    Side,
-    /// The code review's rail's right edge.
-    Rail,
-    Bottom,
-    /// Between two code panes along `dir` — side by side the `│` left of `heads`, over and under `heads`' top line: the
-    /// pane before it (`sized`, left or above) is the one whose child in that split ends there; `heads` the pane after
-    /// it, whose line it is.
-    Divider {
-        sized: crate::split::PaneId,
-        heads: crate::split::PaneId,
-        dir: crate::split::Dir,
-    },
-    /// A docked group's edge (P3 step 6), by its kind: its width, or its rows over the code.
-    Leaf(crate::pane::GroupKind),
+    /// A line along `dir` between two leaves (onetree S3, `edges::Line`): `sized` the leaf a drag of it sizes, each kind
+    /// by its own rule (`border_drag`), `heads` the one a press gives the keys. A surface's own line — the chat's left
+    /// gutter, the side panel's and the rail's right one, the slot's top line, a docked group's edge — sizes and heads
+    /// that surface; between two code panes — side by side the `│` left of `heads`, over and under `heads`' top line —
+    /// `sized` is the pane before it (left or above), whose child in that split ends there, `heads` the pane after it.
+    Divider { sized: crate::split::PaneId, heads: crate::split::PaneId, dir: crate::split::Dir },
     /// The follow card's free edges (#267): its left line sizes its width (`cols`), the line toward the gap it stands in
     /// — its top line at the gap's foot, its bottom line at its top — its height (`rows`); the corner both. Its right
     /// and its other line stay where the rule put them.
-    Follow {
-        cols: bool,
-        rows: bool,
-    },
+    Follow { cols: bool, rows: bool },
 }
 
 /// A code pane keeps at least this many columns and rows when its split is sized.
@@ -527,16 +515,39 @@ impl crate::editor::Editor {
         s.body_end().saturating_sub(s.text_top + BOTTOM_CODE).max(BOTTOM_MIN)
     }
 
-    /// The border at screen cell (`x`, `y`) — as last drawn: the gutter left of the chat, the one right of
-    /// the side panel (both the whole height — `chrome.rs`), the bottom panel's top row between them (not
-    /// its tabs — a click there brings that tab in front).
+    /// A surface's own line (the chat's, the side panel's, the rail's, the slot's, a docked group's host's): the border
+    /// that sizes and heads it, along its way — None where it has no leaf.
+    pub fn line_of(&self, shows: crate::pane::Shows) -> Option<Border> {
+        use crate::pane::{Place, Shows, Side};
+        use crate::split::Dir;
+        let id = self.workspace.leaf(shows)?;
+        let dir = match shows {
+            Shows::Slot => Dir::Horizontal,
+            Shows::Group(k) if self.workspace.group(k)?.place == Place::Docked(Side::Top) => Dir::Horizontal,
+            _ => Dir::Vertical,
+        };
+        Some(Border::Divider { sized: id, heads: id, dir })
+    }
+
+    /// What a drag of border `b` sizes: the kind of the leaf it sizes (the follow card's edges: None).
+    pub fn border_sizes(&self, b: Border) -> Option<crate::pane::Shows> {
+        match b {
+            Border::Divider { sized, .. } => self.workspace.shows(sized),
+            Border::Follow { .. } => None,
+        }
+    }
+
+    /// The border at screen cell (`x`, `y`) — as last drawn: the follow card's free edges, else the frame's line
+    /// there (`Screen.edges`) — but under a word on it that isn't the line: the bottom slot's tabs and its group's
+    /// names (a click there brings that tab in front), a session's name on a code pane's line.
     pub fn border_at(&self, x: usize, y: usize) -> Option<Border> {
         // (one thing fills the screen: no borders)
         if self.zoomed().is_some() {
             return None;
         }
         let s = &self.screen;
-        let total = s.width?;
+        // (none before the first frame)
+        s.width?;
         // (the follow card floats over what's under it: its edges first)
         if let Some((cx, cy, cw, ch)) = s.thought_card.get().filter(|_| self.workspace.claude.chat.is_some())
             && (cx..cx + cw).contains(&x)
@@ -550,85 +561,38 @@ impl crate::editor::Editor {
                 return Some(Border::Follow { cols, rows });
             }
         }
-        let (end, slot) = (s.body_end(), s.slot());
-        // (the chat's left line, where it doesn't fill the screen; the left column's right one)
-        if let Some(c) = s.rect(Shows::Chat).filter(|c| c.w < total)
-            && x == c.x
-            && y < end
-        {
-            return Some(Border::Chat);
-        }
-        if let Some(r) = s.rect(Shows::Side)
-            && x + 1 == r.x + r.w
-            && y < end
-        {
-            return Some(Border::Side);
-        }
-        if let Some(r) = s.rect(Shows::Rail)
-            && x + 1 == r.x + r.w
-            && y < end
-        {
-            return Some(Border::Rail);
-        }
         let tab = || {
             s.slot_tabs.borrow().iter().any(|t| t.0 == y && (t.1..t.2).contains(&x))
                 || s.member_names.borrow().iter().any(|t| t.0 == y && (t.1..t.2).contains(&x))
         };
-        // (a docked group's edge: its line toward the code)
-        if let Some(kind) = self.dock_edge_at(x, y) {
-            return Some(Border::Leaf(kind));
-        }
-        if slot.h > 0
-            && y == slot.y
-            && x >= slot.x
-            && x < s.slot_end().min(s.rect(Shows::Chat).map_or(total, |c| c.x))
-            && !tab()
-        {
-            return Some(Border::Bottom);
-        }
-        use crate::split::Dir;
-        let code = |id: &crate::split::PaneId| self.workspace.views.iter().any(|v| v.id == *id);
-        let leaf = |f: &dyn Fn(&crate::split::Rect) -> bool| {
-            s.leaves.iter().filter(|l| code(&l.0)).find(|l| f(&l.1)).map(|l| l.0)
+        let word = || s.session_spots.borrow().iter().any(|l| l.0 == y && (l.1..l.2).contains(&x));
+        let passed = |l: &crate::edges::Line| match self.workspace.shows(l.heads) {
+            Some(Shows::Slot) => tab(),
+            Some(Shows::Code) => l.dir == crate::split::Dir::Horizontal && word(),
+            _ => false,
         };
-        // (between two code panes side by side: the cell after the left one's last, the right one starting past it)
-        let left = leaf(&|r| r.x + r.w == x && (r.y..r.y + r.h).contains(&y));
-        let right = leaf(&|b| b.x == x + 1 && (b.y..b.y + b.h).contains(&y));
-        if let (Some(sized), Some(heads)) = (left, right) {
-            return Some(Border::Divider { sized, heads, dir: Dir::Vertical });
-        }
-        // (over and under: the lower one's top line — its own first row — off the words on it, the upper one ending
-        // over it)
-        let word = s.session_spots.borrow().iter().any(|l| l.0 == y && (l.1..l.2).contains(&x));
-        let lower = leaf(&|b| {
-            crate::chrome::line_in_pane(*b, s.text_top) && b.y == y && (b.x..b.x + b.w).contains(&x)
-        });
-        let upper = leaf(&|a| a.y + a.h == y && (a.x..a.x + a.w).contains(&x));
-        match (upper, lower) {
-            (Some(sized), Some(heads)) if !word => {
-                Some(Border::Divider { sized, heads, dir: Dir::Horizontal })
-            }
-            _ => None,
-        }
+        let l = s.edges.at(x, y, passed)?;
+        Some(Border::Divider { sized: l.sized, heads: l.heads, dir: l.dir })
     }
 
     /// A press on border `b` without a drag: the keys to what it heads (zellij's frame press — mouse R, Q9) — the chat,
     /// the side panel, the rail, the bottom slot, a docked group, the code pane whose line it is.
     pub fn border_heads(&mut self, b: Border) {
+        use crate::pane::Shows;
         match b {
-            Border::Chat => self.workspace.viewer.at = At::Chat,
-            Border::Side if !self.workspace.is_at(At::Side) => {
-                self.plugin_panel_unfocus();
-                self.procs_unfocus();
-                self.side_focus();
-            }
-            Border::Side => {}
-            Border::Rail if !self.workspace.is_at(At::Rail) => crate::codereview::rail_focus(self),
-            Border::Rail => {}
-            Border::Bottom if !self.bottom_has_keys() => self.bottom_take_keys(),
-            Border::Bottom => {}
-            Border::Leaf(kind) => self.float_focus(kind),
-            Border::Divider { heads, .. } => self.pane_takes_keys(heads),
+            Border::Divider { heads, .. } => match self.workspace.shows(heads) {
+                Some(Shows::Chat) => self.workspace.viewer.at = At::Chat,
+                Some(Shows::Side) if !self.workspace.is_at(At::Side) => {
+                    self.plugin_panel_unfocus();
+                    self.procs_unfocus();
+                    self.side_focus();
+                }
+                Some(Shows::Rail) if !self.workspace.is_at(At::Rail) => crate::codereview::rail_focus(self),
+                Some(Shows::Slot) if !self.bottom_has_keys() => self.bottom_take_keys(),
+                Some(Shows::Group(kind)) => self.float_focus(kind),
+                Some(Shows::Code) => self.pane_takes_keys(heads),
+                _ => {}
+            },
             // (as a press on the card: the chat it's Claude's turn of, brought back with the keys)
             Border::Follow { .. } => {
                 if let Some(c) = self.workspace.claude.chat.as_mut() {
@@ -726,26 +690,28 @@ impl crate::editor::Editor {
     pub fn border_drag(&mut self, b: Border, x: usize, y: usize) {
         let Some(total) = self.screen.width else { return };
         let s = &self.screen;
-        // (nothing said while it moves — the edge, in the accent, is there to see; letting go says it)
-        match b {
-            Border::Chat => {
+        // (nothing said while it moves — the edge, in the accent, is there to see; letting go says it — each kind of leaf
+        // sized by its own rule)
+        use crate::pane::Shows;
+        match (b, self.border_sizes(b)) {
+            (_, Some(Shows::Chat)) => {
                 let cols = total.saturating_sub(x).clamp(CHAT_MIN, self.chat_max(total).max(CHAT_MIN));
                 self.sizes.chat = Some(cols as u16);
             }
-            Border::Side => {
+            (_, Some(Shows::Side)) => {
                 let cols = (x + 1).clamp(SIDE_MIN, self.side_max(total).max(SIDE_MIN));
                 self.sizes.side = Some(cols as u16);
             }
-            Border::Rail => {
+            (_, Some(Shows::Rail)) => {
                 let cols = (x + 1).clamp(RAIL_MIN, self.rail_max(total).max(RAIL_MIN));
                 self.sizes.rail = Some(cols as u16);
             }
-            Border::Bottom => {
+            (_, Some(Shows::Slot)) => {
                 let rows = s.body_end().saturating_sub(y).clamp(BOTTOM_MIN, self.bottom_max());
                 self.sizes.bottom = Some(rows as u16);
             }
             // (a docked group's edge: the far side of it stays)
-            Border::Leaf(kind) => {
+            (_, Some(Shows::Group(kind))) => {
                 if let Some((side, r)) = self.dock_rect(kind) {
                     let n = match side {
                         crate::pane::Side::Right => (r.x + r.w).saturating_sub(x),
@@ -757,7 +723,7 @@ impl crate::editor::Editor {
                 }
             }
             // (the divider at column `x` — over and under, row `y`: the pane before it's child ends there)
-            Border::Divider { sized, dir, .. } => {
+            (Border::Divider { sized, dir, .. }, Some(Shows::Code)) => {
                 let Some((_, now, room)) = self.own_split(sized, dir) else { return };
                 let Some(r) = s.leaves.iter().find(|l| l.0 == sized).map(|l| l.1) else { return };
                 let (end, at) = match dir {
@@ -769,7 +735,7 @@ impl crate::editor::Editor {
                 self.pane_size(sized, dir, at.saturating_sub(start), room);
             }
             // (its right edge and its other line stay: the width from its right, the height from its far line)
-            Border::Follow { cols, rows } => {
+            (Border::Follow { cols, rows }, _) => {
                 let Some((cx, cy, cw, ch)) = s.thought_card.get() else { return };
                 let (foot, (max_w, max_h)) = (s.follow_at_foot.get(), s.follow_room.get());
                 if cols {
@@ -785,6 +751,8 @@ impl crate::editor::Editor {
                     self.sizes.follow_h = Some(h.clamp(FOLLOW_MIN_H, max_h.max(FOLLOW_MIN_H)) as u16);
                 }
             }
+            // (a leaf no rule sizes: the line stays)
+            (Border::Divider { .. }, _) => {}
         }
         self.sizes_feed();
     }
@@ -792,19 +760,20 @@ impl crate::editor::Editor {
     /// The press let go: what it set is kept, and said.
     pub fn border_done(&mut self, b: Border) {
         self.sizes_keep();
-        let (what, n, unit) = match b {
-            Border::Chat => ("chat", self.sizes.chat, "columns"),
-            Border::Side => ("side panel", self.sizes.side, "columns"),
-            Border::Rail => ("review rail", self.sizes.rail, "columns"),
-            Border::Bottom => ("bottom panel", self.sizes.bottom, "rows"),
-            Border::Leaf(kind) => {
+        use crate::pane::Shows;
+        let (what, n, unit) = match (b, self.border_sizes(b)) {
+            (_, Some(Shows::Chat)) => ("chat", self.sizes.chat, "columns"),
+            (_, Some(Shows::Side)) => ("side panel", self.sizes.side, "columns"),
+            (_, Some(Shows::Rail)) => ("review rail", self.sizes.rail, "columns"),
+            (_, Some(Shows::Slot)) => ("bottom panel", self.sizes.bottom, "rows"),
+            (_, Some(Shows::Group(kind))) => {
                 let unit = match self.workspace.group(kind).map(|g| g.place) {
                     Some(crate::pane::Place::Docked(crate::pane::Side::Top)) => "rows",
                     _ => "columns",
                 };
                 (kind.name(), self.sizes.docked[kind.dock_index()], unit)
             }
-            Border::Divider { sized, dir, .. } => {
+            (Border::Divider { sized, dir, .. }, Some(Shows::Code)) => {
                 let mut tree = self.workspace.split.clone();
                 let n = match tree.parent_along(sized, dir) {
                     Some((kids, i)) => match kids[i].0 {
@@ -816,7 +785,8 @@ impl crate::editor::Editor {
                 let unit = if dir == crate::split::Dir::Vertical { "columns" } else { "rows" };
                 ("pane", n, unit)
             }
-            Border::Follow { .. } => return self.follow_size_said(),
+            (Border::Follow { .. }, _) => return self.follow_size_said(),
+            (Border::Divider { .. }, _) => return,
         };
         if let Some(n) = n {
             self.say_size(format!("{what} {n} {unit}"));

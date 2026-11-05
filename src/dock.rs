@@ -7,7 +7,7 @@
 //!
 //! Its place is kept per kind (`Group.place`) while its runs come and go: closed, its leaf takes no room (the code
 //! has it) and the next run of its kind lands there. Its size is its kind's own (`Sizes.docked`, `C-w < > - +` from
-//! a member, a drag of its line — `Border::Leaf`), automatic until set. Too narrow — the code would keep less than
+//! a member, a drag of its line — its host's own `Border::Divider`), automatic until set. Too narrow — the code would keep less than
 //! `CODE_MIN` beside it — a group docked beside the code folds back into the slot's tabs for as long (§3.7: it isn't
 //! moved; wider, it's back).
 
@@ -398,21 +398,6 @@ impl Editor {
         let Place::Docked(side) = self.workspace.group(kind)?.place else { return None };
         let r = self.screen.docked.borrow().iter().find(|d| d.0 == kind)?.1;
         Some((side, r))
-    }
-
-    /// The docked group whose edge is at screen cell (`x`, `y`), as last drawn (`term::dock_edge`) — docked over the
-    /// code, the code's top line under it (its bottom: `Panel::docked` gives its last row to its panel).
-    pub fn dock_edge_at(&self, x: usize, y: usize) -> Option<GroupKind> {
-        let docked = self.screen.docked.borrow().iter().map(|d| d.0).collect::<Vec<_>>();
-        docked.into_iter().find(|&kind| {
-            let Some((side, r)) = self.dock_rect(kind) else { return false };
-            let rows = (r.y..r.y + r.h).contains(&y);
-            match side {
-                Side::Right => x == r.x && rows,
-                Side::Left => x + 1 == r.x + r.w && rows,
-                Side::Top => y == r.y + r.h && (r.x..r.x + r.w).contains(&x),
-            }
-        })
     }
 
     /// Kind `kind`'s docked size set to `n` — its width beside the code (`DOCK_MIN` at least, the code keeping

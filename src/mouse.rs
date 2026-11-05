@@ -1645,7 +1645,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
             "A line between panels, between your panes",
             "the chat's, the side panel's, the rail's, the slot's, a dock's, a divider, the follow card's free edges",
             Su::Edge,
-            Part::Border(Border::Side),
+            Part::Border(Border::Divider { sized: 0, heads: 0, dir: crate::split::Dir::Vertical }),
         ),
         ("Claude's edit review", "a change", Su::EditReview, Part::Row(0)),
         ("Claude's edit review", "off it", Su::EditReview, Part::Outside),

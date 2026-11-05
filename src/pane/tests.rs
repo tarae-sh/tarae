@@ -768,7 +768,7 @@ fn a_border_dragged_is_its_surfaces_share_in_the_tree() {
     assert_eq!([share(&ed, Shows::Chat), share(&ed, Shows::Side), share(&ed, Shows::Slot)], [auto; 3]);
     // The chat's line, 6 to the left
     let c = ed.screen.rect(Shows::Chat).unwrap();
-    assert_eq!(ed.border_at(c.x, 3), Some(crate::sizes::Border::Chat));
+    assert_eq!(ed.border_at(c.x, 3), Some(ed.line_of(crate::pane::Shows::Chat).unwrap()));
     drag(&mut ed, (c.x, 3), (c.x - 6, 3));
     let n = (c.w + 6) as u16;
     assert_eq!(
@@ -780,7 +780,7 @@ fn a_border_dragged_is_its_surfaces_share_in_the_tree() {
     // The side panel's right line, 4 to the right
     let s = ed.screen.rect(Shows::Side).unwrap();
     let edge = s.x + s.w - 1;
-    assert_eq!(ed.border_at(edge, 3), Some(crate::sizes::Border::Side));
+    assert_eq!(ed.border_at(edge, 3), Some(ed.line_of(crate::pane::Shows::Side).unwrap()));
     drag(&mut ed, (edge, 3), (edge + 4, 3));
     let n = (s.w + 4) as u16;
     assert_eq!((ed.sizes.side, share(&ed, Shows::Side)), (Some(n), Some(Share::Cells(n))));
@@ -800,7 +800,7 @@ fn a_border_dragged_is_its_surfaces_share_in_the_tree() {
     let word =
         |x: usize| ed.screen.word_spots.borrow().iter().any(|w| w.y == b.y && (w.from..w.to).contains(&x));
     let x = (b.x..b.x + b.w)
-        .find(|&x| ed.border_at(x, b.y) == Some(crate::sizes::Border::Bottom) && !word(x))
+        .find(|&x| ed.border_at(x, b.y) == Some(ed.line_of(crate::pane::Shows::Slot).unwrap()) && !word(x))
         .expect("a cell of the slot's line");
     drag(&mut ed, (x, b.y), (x, b.y - 3));
     let n = (b.h + 3) as u16;
