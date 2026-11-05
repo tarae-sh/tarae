@@ -46,8 +46,9 @@
 //! Set by the shot for the tarae it runs, never yours to set: `TARAE_SHOT_NO_DISK=1` — the free space is the
 //! machine's the shot is taken on, not the picture's, so the status line's disk mark and the disk card stay off
 //! (`Editor::disk_looked`) — unless `TARAE_DISK_FREE` (and `TARAE_DISK_DRAIN`, bytes a second) stands in for
-//! it; also a color terminal, its own config and state (`as_a_terminal`). Taken out, never yours to keep: a Claude
-//! Code session's variables (`claudes_own`, #353 — the take's claude is the stand-in).
+//! it; also a color terminal, its own config and state (`as_a_terminal`). For a video's take (`scenes --video`) also
+//! `TARAE_SHOT_FRAME_MS` — the video's frame, which tarae draws its fades and drying at (`editor::tick`). Taken out,
+//! never yours to keep: a Claude Code session's variables (`claudes_own`, #353 — the take's claude is the stand-in).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -354,13 +355,15 @@ pub(crate) fn record_at(
 /// A scene recorded (`scenes --record`): every frame from `@rec` on, each beat's time and caption (`@beat:<caption>`;
 /// a bare `@beat` none), each wait's end while recording (`?text`, `!text` — what it waited for), and each wait that
 /// timed out, said — the take kept all the same, to be seen. A Short's (`video::shorts`) too: each `@zoom:<target>`'s
-/// time and target, each key sent (its time and what it was, a `@type:` character one by one), each
-/// `@sound:<kind>` mark and the `@punch` it opens on.
+/// time and target (and whether it's `@zoom-deep:`), each key sent (its time and what it was, a `@type:` character one by one), each
+/// `@sound:<kind>` mark, each `@note:<words> → <target>` (a callout: its time and what follows the colon) and the
+/// `@punch` it opens on. A `@cut?<text>` ends the take on the last frame before `<text>` shows (`cut_at`).
 pub(crate) struct Recorded {
     pub(crate) frames: Frames,
     pub(crate) beats: Vec<(u64, String)>,
     pub(crate) waits: Vec<(u64, String)>,
-    pub(crate) zooms: Vec<(u64, String)>,
+    pub(crate) zooms: Vec<(u64, String, bool)>,
+    pub(crate) notes: Vec<(u64, String)>,
     pub(crate) keys: Vec<(u64, String)>,
     pub(crate) sounds: Vec<(u64, String)>,
     /// A Short's `@punch`: the take's ms its video opens on.
@@ -368,6 +371,31 @@ pub(crate) struct Recorded {
     pub(crate) missed: Vec<String>,
     /// Each frame's bytes as tarae wrote them, with its time and whether it changed nothing in sight (`Vt.wire`).
     pub(crate) wire: Vec<(u64, Vec<u8>, bool)>,
+    /// Where the take ends (ms): at its `@cut?`'s frame, else `TAIL_S` past its scene's last step — the screen as it
+    /// stood up to then, its last frame's time where neither (a take whose `@rec` never came).
+    pub(crate) end: u64,
+}
+
+/// A take runs on this long past its scene's last step, at the scene's own pace, then ends: a scene's last step waits
+/// for its last beat, so the beat is on the screen `captions::TAIL_MIN_MS` before the end card (the margin the frame
+/// that drew it) — the take cut later, nothing held. A `@cut?` ends it at its cut.
+pub(crate) const TAIL_S: f64 = 2.4;
+const _: () = assert!(TAIL_S * 1000.0 >= crate::captions::TAIL_MIN_MS as f64 + 200.0);
+
+/// The longest a scene's `@cut?<text>` waits for `<text>`.
+const CUT_MAX_S: f64 = 20.0;
+
+/// Where a `@cut?<text>` looks from: the first frame drawn since the key before it (`key`, its time) — a key's own pump
+/// may have drawn `<text>` before the mark is read; the take's first with no key.
+fn cut_from(frames: &[(Duration, vt100::Screen)], key: Option<Duration>) -> usize {
+    let after = key.unwrap_or_default();
+    frames.iter().position(|f| f.0 >= after).unwrap_or(frames.len())
+}
+
+/// Where a take cut before `text` ends (`@cut?<text>`): the first of `frames` from `from` on that shows `text` — the
+/// frames kept are those before it; all of them where none does.
+fn cut_at(frames: &[(Duration, vt100::Screen)], from: usize, text: &str) -> usize {
+    (from..frames.len()).find(|&i| frames[i].1.contents().contains(text)).unwrap_or(frames.len())
 }
 
 /// `record_at` for a scene: what it returns is `Recorded`, a missed wait among it rather than an error.
@@ -382,15 +410,18 @@ pub(crate) fn record(
     let mut vt = Vt::new(rows, cols);
     let missed = drive(&mut vt, setup, keys, state, homes, cols, rows)?;
     let ms = |d: Duration| d.as_millis() as u64;
+    let end = vt.ended.or(vt.captured.last().map(|f| f.0)).map_or(0, ms);
     Ok(Recorded {
         frames: vt.captured.into_iter().map(|(d, s)| (ms(d), s)).collect(),
         beats: vt.beats.iter().zip(vt.captions).map(|((d, _), c)| (ms(*d), c)).collect(),
         waits: vt.waited.into_iter().map(|(d, w)| (ms(d), w)).collect(),
-        zooms: vt.zooms.into_iter().map(|(d, z)| (ms(d), z)).collect(),
+        zooms: vt.zooms.into_iter().map(|(d, z, deep)| (ms(d), z, deep)).collect(),
+        notes: vt.notes.into_iter().map(|(d, n)| (ms(d), n)).collect(),
         keys: vt.keys.into_iter().map(|(d, k)| (ms(d), k)).collect(),
         sounds: vt.sounds.into_iter().map(|(d, s)| (ms(d), s)).collect(),
         punch: vt.punch.map(ms),
         missed,
+        end,
         wire: vt.wire.into_iter().map(|(d, b, same)| (ms(d), b, same)).collect(),
     })
 }
@@ -591,12 +622,16 @@ struct Vt {
     captions: Vec<String>,
     /// Each wait's end during `@rec`: when, and what it waited for (`?text`, `!text`).
     waited: Vec<(Duration, String)>,
-    /// During `@rec`: each `@zoom:<target>`, each key sent, each `@sound:<kind>` — when, and what.
-    zooms: Vec<(Duration, String)>,
+    /// During `@rec`: each `@zoom:<target>` (deep or not), each key sent, each `@sound:<kind>` — when, and what.
+    zooms: Vec<(Duration, String, bool)>,
+    /// During `@rec`: each `@note:` (a Short's callout) — when, and what it says and points at.
+    notes: Vec<(Duration, String)>,
     keys: Vec<(Duration, String)>,
     sounds: Vec<(Duration, String)>,
     /// During `@rec`: when `@punch` came (a Short opens on the take from there).
     punch: Option<Duration>,
+    /// When the take ended: its `@cut?`'s frame, or its run on past the scene's last step (`TAIL_S`).
+    ended: Option<Duration>,
     /// Frames read so far, every one (a synchronized update's end each — tarae's `frames_written`), and each
     /// `captured` frame's count as it was kept.
     ends: u64,
@@ -617,13 +652,28 @@ impl Vt {
             captions: Vec::new(),
             waited: Vec::new(),
             zooms: Vec::new(),
+            notes: Vec::new(),
             keys: Vec::new(),
             sounds: Vec::new(),
             punch: None,
+            ended: None,
             ends: 0,
             captured_ends: Vec::new(),
             wire: Vec::new(),
         }
+    }
+
+    /// The take ended on the last frame before `text` shows, from `captured[from]` on (`cut_at`): that frame and every
+    /// one after it left out, its bytes too, the take's end its time (`ended`: the screen before it stood till then).
+    /// Its last frame's time; None (nothing cut) where `text` never shows.
+    fn cut_before(&mut self, from: usize, text: &str) -> Option<Duration> {
+        let at = cut_at(&self.captured, from, text);
+        let &(end, _) = self.captured.get(at)?;
+        self.ended = Some(end);
+        self.wire.retain(|w| w.0 < end);
+        self.captured.truncate(at);
+        self.captured_ends.truncate(at);
+        Some(self.captured.last().map_or(Duration::ZERO, |f| f.0))
     }
 
     /// The screen as it is now kept, at `at`.
@@ -640,16 +690,18 @@ impl Vt {
             self.ends += frames.windows(FRAME_END.len()).filter(|w| *w == FRAME_END).count() as u64;
             return self.process(&frames);
         };
-        // (one frame at a time, each kept as drawn)
+        // (one frame at a time, each kept as drawn — its bytes and its screen at one time: `cut_before` tells the
+        // bytes to leave out by their screen's)
         let mut rest = &frames[..];
         while let Some(end) = rest.windows(FRAME_END.len()).position(|w| w == FRAME_END) {
             let looked = (self.parser.screen().contents_formatted(), self.parser.screen().cursor_position());
             self.process(&rest[..end + FRAME_END.len()]);
             let same =
                 looked == (self.parser.screen().contents_formatted(), self.parser.screen().cursor_position());
-            self.wire.push((since.elapsed(), rest[..end + FRAME_END.len()].to_vec(), same));
+            let at = since.elapsed();
+            self.wire.push((at, rest[..end + FRAME_END.len()].to_vec(), same));
             self.ends += 1;
-            self.keep(since.elapsed());
+            self.keep(at);
             rest = &rest[end + FRAME_END.len()..];
         }
     }
@@ -893,6 +945,7 @@ fn drive_with(
             vt.waited.clear();
             vt.wire.clear();
             vt.zooms.clear();
+            vt.notes.clear();
             vt.keys.clear();
             vt.sounds.clear();
             vt.punch = None;
@@ -915,10 +968,19 @@ fn drive_with(
             pump(vt, ms as f64 / 1000.0);
             continue;
         }
-        // (a Short's camera and sound marks: kept with their time while recording, never sent — `video::shorts`)
-        if let Some(target) = k.strip_prefix("@zoom:") {
+        // (a Short's camera and sound marks: kept with their time while recording, never sent — `video::shorts`; a
+        // beat's read, deep where the scene says so)
+        let read = (k.strip_prefix("@zoom:").map(|t| (t, false)))
+            .or(k.strip_prefix("@zoom-deep:").map(|t| (t, true)));
+        if let Some((target, deep)) = read {
             if let Some(since) = vt.capturing {
-                vt.zooms.push((since.elapsed(), target.to_string()));
+                vt.zooms.push((since.elapsed(), target.to_string(), deep));
+            }
+            continue;
+        }
+        if let Some(note) = k.strip_prefix("@note:") {
+            if let Some(since) = vt.capturing {
+                vt.notes.push((since.elapsed(), note.to_string()));
             }
             continue;
         }
@@ -930,6 +992,26 @@ fn drive_with(
         }
         if k == "@punch" {
             vt.punch = vt.capturing.map(|since| since.elapsed());
+            continue;
+        }
+        // (`@cut?<text>`: the take ends on the last frame before `<text>` shows — where it ends, chosen; nothing held)
+        if let Some(text) = k.strip_prefix("@cut?") {
+            let from = cut_from(&vt.captured, vt.keys.last().map(|k| k.0));
+            if pump_until(vt, text, CUT_MAX_S, false) {
+                match vt.cut_before(from, text) {
+                    Some(last) => eprintln!(
+                        "shot: the take cut before {text:?}: its last frame at {:.2}s",
+                        last.as_secs_f64()
+                    ),
+                    None => {
+                        missed.push(format!("@cut?{text}: on screen before its key — the take as it went"))
+                    }
+                }
+            } else {
+                missed
+                    .push(format!("@cut?{text}: never on screen within {CUT_MAX_S} s — the take as it went"));
+            }
+            vt.capturing = None;
             continue;
         }
         if let Some(name) = touch_key(k) {
@@ -1047,7 +1129,14 @@ fn drive_with(
         let _ = master.write_all(&unescape(k));
         pump(vt, 0.35);
     }
-    pump(vt, 0.6);
+    // (a take runs on past its last step, its last beat read before the end card; a cut one ended at its cut)
+    match vt.capturing {
+        Some(since) => {
+            pump(vt, TAIL_S);
+            vt.ended = Some(since.elapsed());
+        }
+        None => pump(vt, 0.6),
+    }
     quit(&mut master, &mut child, &rx);
     Ok(missed)
 }
@@ -1651,6 +1740,61 @@ mod tests {
         assert_eq!(capture_key("@~0"), None);
         assert_eq!(capture_key("@3"), None);
         assert_eq!(capture_key("@?ready"), None);
+    }
+
+    /// `@cut?<text>` ends the take on the last frame before `<text>` shows, from the mark on (an earlier showing isn't
+    /// it); where it never shows, every frame stays.
+    #[test]
+    fn a_take_cut_before_its_text_keeps_the_frames_before_it() {
+        let screen = |s: &str| {
+            let mut p = vt100::Parser::new(2, 20, 0);
+            p.process(s.as_bytes());
+            (Duration::ZERO, p.screen().clone())
+        };
+        let frames =
+            [screen("space L hide"), screen("card"), screen("▐y▌ stamp"), screen("x\r\nspace L hide")];
+        assert_eq!(cut_at(&frames, 1, "space L hide"), 3, "the stamp's frame the last kept");
+        assert_eq!(cut_at(&frames, 0, "space L hide"), 0);
+        assert_eq!(cut_at(&frames, 1, "nowhere"), 4, "never shown: all kept");
+    }
+
+    /// A cut leaves out the bytes of the frame that shows its text, not only its screen — each frame's bytes and screen
+    /// are kept at one time (V2's take drew the run's slot for a frame before its end card).
+    #[test]
+    fn a_take_cut_before_its_text_leaves_out_that_frames_bytes() {
+        let mut vt = Vt::new(2, 20);
+        vt.capturing = Some(Instant::now());
+        for s in ["\x1b[Hcard", "\x1b[H\x1b[2K─ cargo", "\x1b[H\x1b[2Kdone"] {
+            vt.feed(format!("\x1b[?2026h{s}\x1b[?2026l").as_bytes());
+        }
+        assert!(vt.wire.iter().zip(&vt.captured).all(|(w, c)| w.0 == c.0), "one time a frame");
+        assert!(vt.cut_before(0, "─ cargo").is_some());
+        let mut drawn = vt100::Parser::new(2, 20, 0);
+        for w in &vt.wire {
+            drawn.process(&w.1);
+        }
+        assert_eq!(drawn.screen().contents().trim(), "card");
+        assert_eq!((vt.wire.len(), vt.captured.len()), (1, 1));
+        let cut = vt.ended.expect("the take ends at its cut");
+        assert!(cut >= vt.captured[0].0, "the screen before it stood till then");
+        assert_eq!(vt.cut_before(0, "nowhere"), None);
+    }
+
+    /// A cut looks from the key before it: what that key drew in its own pump (a run that ended at once) is cut too,
+    /// what came before the key isn't it.
+    #[test]
+    fn a_cut_looks_from_the_key_before_it() {
+        let at = |ms: u64, s: &str| {
+            let mut p = vt100::Parser::new(2, 20, 0);
+            p.process(s.as_bytes());
+            (Duration::from_millis(ms), p.screen().clone())
+        };
+        let frames = [at(0, "slot"), at(100, "card"), at(400, "slot"), at(600, "done")];
+        let from = cut_from(&frames, Some(Duration::from_millis(300)));
+        assert_eq!(from, 2);
+        assert_eq!(cut_at(&frames, from, "slot"), 2, "the key's own frame cut, the card the last kept");
+        assert_eq!(cut_from(&frames, Some(Duration::from_millis(700))), 4, "nothing since the key");
+        assert_eq!(cut_from(&frames, None), 0);
     }
 
     /// `@hover?text`'s cell: where the text starts, a wide character before it two cells.

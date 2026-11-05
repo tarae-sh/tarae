@@ -1,4 +1,5 @@
 use super::*;
+use crate::editor::TICK;
 use crate::key::{Code, Key};
 
 /// Keys as written (`<esc>`, `<ret>` named), each an event as the loop hands it in.

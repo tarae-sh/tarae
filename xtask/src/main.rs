@@ -65,6 +65,7 @@ use std::process::Command;
 
 mod buildprune;
 mod camera;
+mod captions;
 mod cards;
 mod claudestub;
 mod compat;

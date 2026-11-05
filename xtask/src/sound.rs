@@ -424,16 +424,52 @@ pub(crate) enum Heard {
     Shown(String, Duration),
 }
 
-/// A Short's peak: −3 dBFS — room for AAC's overshoot, and a phone's speaker never clips (YouTube turns a loud track
-/// down, never a quiet one up).
-const SHORT_PEAK_DB: f32 = -3.0;
+/// A Short's loudness: −20 LUFS integrated (BS.1770, `lufs`) at most — a keys-only track's (CLAUDE.md's Shorts bullet:
+/// sparse short clicks reach −16 only by limiting every one flat); YouTube turns a loud track down, never a quiet one up.
+const SHORT_LUFS: f32 = -20.0;
+/// The most the limiter takes from the keys (dB): their gain no higher than leaves their loudest click this much over
+/// the ceiling — the track quieter than `SHORT_LUFS` where that's what it costs, so a click keeps its own shape.
+const LIMIT_MOST_DB: f32 = 2.0;
+/// A Short's true peaks at most this (`limit`, dBTP) at first: room under −1 for AAC's overshoot — lowered where the
+/// encoded track still passes it (`video::make`).
+pub(crate) const SHORT_CEILING_DB: f32 = -2.0;
+
+/// A Short's sound track as `track` made it: its samples, peak and RMS (dBFS, while sounding), true peak (dBTP), its
+/// loudness (LUFS) and the gain it took (dB), the intro brush's loudness over the rest's (LU) before the gain and limiter
+/// and after, and what the limiter took (`Limited`).
+pub(crate) struct Track {
+    pub(crate) samples: Vec<f32>,
+    pub(crate) peak: f32,
+    pub(crate) rms: f32,
+    pub(crate) true_peak: f32,
+    pub(crate) lufs: f32,
+    pub(crate) gain: f32,
+    pub(crate) brush: Option<(f32, f32)>,
+    pub(crate) limited: Limited,
+}
+
+/// The limiter's largest gain reduction (dB, positive): on the keys and when (s into the track), and on the brush where
+/// there is one — its own, then the two's together where they meet.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Limited {
+    pub(crate) keys: f32,
+    pub(crate) keys_at: f32,
+    pub(crate) brush: Option<(f32, f32)>,
+}
 
 /// A Short's sound track, `length` long: tarae's own strokes (`recorded::BANK`, the synth's settle) for each of
-/// `heard`, as the audio thread plays them at the full volume, then scaled so its peak is `SHORT_PEAK_DB`. A key is the
-/// kind its character is (`Kind::Return`, `Space`, else `Key`); a stamp is the big key with the settle under it, a
-/// firm press; a settle is tarae's, `typist::GAP_MIN` after the writing's last key (`Typist::once`); Claude's writing
-/// is tarae's typist striking for each step, as the reveal plays it. Its peak and RMS (dBFS) beside it.
-pub(crate) fn track(heard: &[(Duration, Heard)], length: Duration) -> (Vec<f32>, f32, f32) {
+/// `heard`, as the audio thread plays them at the full volume. A key is the kind its character is (`Kind::Return`,
+/// `Space`, else `Key`); a stamp is the big key with the settle under it, a firm press; a settle is tarae's,
+/// `typist::GAP_MIN` after the writing's last key (`Typist::once`); Claude's writing is tarae's typist striking for each
+/// step, as the reveal plays it. The intro's brush (`brush`) from `brush_at`, at its level against the keys. Then the
+/// whole brought to `SHORT_LUFS` by one gain — or as near as `LIMIT_MOST_DB` of limiting lets it —, its true peaks held
+/// under `ceiling_db` (dBTP; `master`) — the keys and the brush in balance (`master`).
+pub(crate) fn track(
+    heard: &[(Duration, Heard)],
+    length: Duration,
+    brush_at: Option<Duration>,
+    ceiling_db: f32,
+) -> Track {
     let mut seed: u32 = 0x5107_7a2a;
     let mut next = || {
         seed ^= seed << 13;
@@ -464,14 +500,276 @@ pub(crate) fn track(heard: &[(Duration, Heard)], length: Duration) -> (Vec<f32>,
         }
     }
     said.sort_by_key(|s| s.0);
-    let mut samples = render(&said, length, 100, Some(&recorded::BANK));
-    let peak = samples.iter().fold(0.0f32, |m, x| m.max(x.abs()));
-    if peak > 0.0 {
-        let to = 10f32.powf(SHORT_PEAK_DB / 20.0) / peak;
-        samples.iter_mut().for_each(|x| *x *= to);
+    let keys = render(&said, length, 100, Some(&recorded::BANK));
+    let brush = brush_at.map(|at| {
+        let from = ((at.as_secs_f64() * f64::from(RATE)) as usize).min(keys.len());
+        let mut b = brush();
+        b.truncate(keys.len() - from);
+        (from, b)
+    });
+    // (the brush's loudness over the rest's)
+    let over = |x: &[f32]| (brush.as_ref()).map(|(a, b)| lufs(&x[*a..a + b.len()]) - lufs(&x[a + b.len()..]));
+    let mut mixed = keys.clone();
+    if let Some((from, b)) = &brush {
+        mixed[*from..from + b.len()].iter_mut().zip(b).for_each(|(x, b)| *x += b);
     }
+    let before = over(&mixed);
+    let laid = brush.as_ref().map(|(from, b)| (*from, b.as_slice()));
+    let ceiling = 10f32.powf(ceiling_db / 20.0);
+    let (samples, gain, limited) = master(&keys, laid, SHORT_LUFS, ceiling, LIMIT_MOST_DB);
     let (peak, rms) = levels(&samples);
-    (samples, peak, rms)
+    let brush = before.zip(over(&samples));
+    let true_peak = 20.0 * true_peaks(&samples).into_iter().fold(0.0f32, f32::max).log10();
+    Track { lufs: lufs(&samples), samples, peak, rms, true_peak, gain, brush, limited }
+}
+
+/// `keys` with the brush laid over them (from its sample) brought to `target` LUFS, their peaks held under `ceiling`
+/// (`limit`): the keys by one gain — never past where the limiter would take more than `most_db` from them; the track
+/// quieter than `target` there —, the brush at the loudness over them it was made at (`brush`'s level against a key) — a
+/// limiter takes more from a key's click than from the brush's swish, and more from the tap than from a click, so one
+/// gain for both would move it —, the two limited again together. Each gain found again after the limiter took its
+/// share (`reach`). The mix, the keys' gain in dB, and what the limiter took.
+fn master(
+    keys: &[f32],
+    brush: Option<(usize, &[f32])>,
+    target: f32,
+    ceiling: f32,
+    most_db: f32,
+) -> (Vec<f32>, f32, Limited) {
+    // (a gain's true peaks are the gain's times x's: found once)
+    let scaled = |x: &[f32], peaks: &[f32], db: f32| {
+        let g = 10f32.powf(db / 20.0);
+        let mut y: Vec<f32> = x.iter().map(|v| v * g).collect();
+        let took = limit(&mut y, peaks, ceiling / g);
+        let l = lufs(&y);
+        ((y, took), l)
+    };
+    let tp = (true_peaks(keys), brush.map(|b| true_peaks(b.1)));
+    let (at, brush_at) = (lufs(keys), brush.map_or(f32::NEG_INFINITY, |b| lufs(b.1)));
+    let made = |db: f32| {
+        let ((mut y, took), laid) = scaled(keys, &tp.0, db);
+        let mut limited = Limited { keys: took.0, keys_at: took.1 as f32 / RATE as f32, brush: None };
+        if let (Some((from, b)), Some(peaks)) = (brush, &tp.1) {
+            // (the brush its loudness over the keys, or the keys' gain where they're silent)
+            let ((b, own), _) = match laid.is_finite() {
+                true => reach(laid + brush_at - at, brush_at, |db| scaled(b, peaks, db)),
+                false => scaled(b, peaks, db),
+            };
+            y[from..from + b.len()].iter_mut().zip(&b).for_each(|(y, b)| *y += b);
+            // (the two together, where they meet: a tenth of a second round the brush)
+            let pad = RATE as usize / 10;
+            let both = &mut y[from.saturating_sub(pad)..(from + b.len() + pad).min(keys.len())];
+            let peaks = true_peaks(both);
+            let together = limit(both, &peaks, ceiling);
+            limited.brush = Some((own.0, together.0));
+        }
+        let l = lufs(&y);
+        ((y, limited), l)
+    };
+    // (the keys' loudest true peak: past `most_db` over the ceiling, the limiter takes more than `most_db`)
+    let loudest = tp.0.iter().fold(0.0f32, |m, p| m.max(*p));
+    let cap = 20.0 * (ceiling / loudest).log10() + most_db;
+    let ((mut y, mut limited), mut db) = reach(target, made(0.0).1, made);
+    if db > cap {
+        ((y, limited), _) = made(cap);
+        db = cap;
+    }
+    (y, db, limited)
+}
+
+/// The gain (dB) at which `made` comes to `target` LUFS, its loudness at 0 dB `at`: a limiter gives back less than each
+/// dB put in, so the secant's, until within 0.05 LU. What `made` made at it, and the gain.
+fn reach<T>(target: f32, at: f32, made: impl Fn(f32) -> (T, f32)) -> (T, f32) {
+    if !at.is_finite() {
+        return (made(0.0).0, 0.0);
+    }
+    let (mut was, mut db) = ((0.0, at), target - at);
+    let (mut y, mut l) = made(db);
+    for _ in 0..12 {
+        if (target - l).abs() < 0.05 {
+            break;
+        }
+        let slope = ((l - was.1) / (db - was.0)).clamp(0.05, 1.0);
+        was = (db, l);
+        db += (target - l) / slope;
+        (y, l) = made(db);
+    }
+    (y, db)
+}
+
+/// A limiter on true peaks (`peaks`, `x`'s own — `true_peaks`): each sample's gain the least that keeps its peak under
+/// `ceiling`, let back up over `RELEASE_S` after a peak and brought down over `ATTACK_S` before it (a backward pass: it
+/// sees the peak coming) — never a peak past the ceiling, never a step in the gain. Its largest reduction (dB, positive)
+/// and the sample it's at.
+fn limit(x: &mut [f32], peaks: &[f32], ceiling: f32) -> (f32, usize) {
+    const ATTACK_S: f32 = 0.002;
+    const RELEASE_S: f32 = 0.060;
+    let per = |s: f32| 1.0 - (-1.0 / (s * RATE as f32)).exp();
+    let (attack, release) = (per(ATTACK_S), per(RELEASE_S));
+    let mut gains: Vec<f32> = peaks.iter().map(|p| (ceiling / p).min(1.0)).collect();
+    let mut g = 1.0f32;
+    for n in &mut gains {
+        g = n.min(g + (1.0 - g) * release);
+        *n = g;
+    }
+    g = 1.0;
+    for n in gains.iter_mut().rev() {
+        g = n.min(g + (1.0 - g) * attack);
+        *n = g;
+    }
+    let (mut least, mut at) = (1.0f32, 0);
+    for (i, (v, g)) in x.iter_mut().zip(gains).enumerate() {
+        *v *= g;
+        if g < least {
+            (least, at) = (g, i);
+        }
+    }
+    (-20.0 * least.log10(), at)
+}
+
+/// The true peak at each sample of `x`: the largest of it, its neighbours and the three points a quarter apart on
+/// either side, 4× oversampled by a Hann-windowed sinc over 16 samples (BS.1770's way to the peaks between samples —
+/// what a player's converter, and AAC after it, reaches).
+fn true_peaks(x: &[f32]) -> Vec<f32> {
+    const TAPS: i32 = 8;
+    let phase = |f: f32| -> Vec<f32> {
+        (-TAPS + 1..=TAPS)
+            .map(|k| {
+                let t = k as f32 - f;
+                let sinc = if t == 0.0 {
+                    1.0
+                } else {
+                    (std::f32::consts::PI * t).sin() / (std::f32::consts::PI * t)
+                };
+                let hann = 0.5 + 0.5 * (std::f32::consts::PI * t / TAPS as f32).cos();
+                sinc * hann
+            })
+            .collect()
+    };
+    let phases = [phase(0.25), phase(0.5), phase(0.75)];
+    let at = |i: i64| x.get(usize::try_from(i).ok().unwrap_or(usize::MAX)).copied().unwrap_or(0.0);
+    // (the peak between sample n and n + 1)
+    let between: Vec<f32> = (0..x.len() as i64)
+        .map(|n| {
+            let mut p = x[n as usize].abs();
+            for w in &phases {
+                let v: f32 =
+                    (w.iter().enumerate()).map(|(j, w)| w * at(n - i64::from(TAPS) + 1 + j as i64)).sum();
+                p = p.max(v.abs());
+            }
+            p
+        })
+        .collect();
+    (0..x.len()).map(|n| between[n].max(if n > 0 { between[n - 1] } else { 0.0 })).collect()
+}
+
+/// The integrated loudness of `x` (mono at `RATE`), LUFS, as ITU-R BS.1770-4 measures it: K-weighted, in 400 ms blocks
+/// a 100 ms step apart, gated at −70 LUFS and then 10 LU under the blocks kept. −∞ where no block is kept.
+pub(crate) fn lufs(x: &[f32]) -> f32 {
+    // (the K-weighting's two stages at 48 kHz: the head's shelf, then the high-pass)
+    let biquad = |x: &[f64], b: [f64; 3], a: [f64; 2]| -> Vec<f64> {
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0, 0.0, 0.0, 0.0);
+        x.iter()
+            .map(|&v| {
+                let y = b[0] * v + b[1] * x1 + b[2] * x2 - a[0] * y1 - a[1] * y2;
+                (x2, x1, y2, y1) = (x1, v, y1, y);
+                y
+            })
+            .collect()
+    };
+    let x: Vec<f64> = x.iter().map(|&v| f64::from(v)).collect();
+    let shelf = biquad(
+        &x,
+        [1.535_124_859_586_97, -2.691_696_189_406_38, 1.198_392_810_852_85],
+        [-1.690_659_293_182_41, 0.732_480_774_215_85],
+    );
+    let k = biquad(&shelf, [1.0, -2.0, 1.0], [-1.990_047_454_833_98, 0.990_072_250_366_21]);
+    let mut sums = vec![0.0f64; k.len() + 1];
+    for (i, v) in k.iter().enumerate() {
+        sums[i + 1] = sums[i] + v * v;
+    }
+    let (block, step) = (RATE as usize * 4 / 10, RATE as usize / 10);
+    let blocks: Vec<f64> = (0..)
+        .map(|i| i * step)
+        .take_while(|s| s + block <= k.len())
+        .map(|s| (sums[s + block] - sums[s]) / block as f64)
+        .collect();
+    let loud = |ms: f64| -0.691 + 10.0 * ms.log10();
+    let mean = |b: &[f64]| b.iter().sum::<f64>() / b.len() as f64;
+    let kept: Vec<f64> = blocks.into_iter().filter(|&ms| loud(ms) > -70.0).collect();
+    if kept.is_empty() {
+        return f32::NEG_INFINITY;
+    }
+    let gate = loud(mean(&kept)) - 10.0;
+    let kept: Vec<f64> = kept.into_iter().filter(|&ms| loud(ms) > gate).collect();
+    loud(mean(&kept)) as f32
+}
+
+/// The intro's brush, as 10-27's `mix.pl` made it (main's `.sb/youtube/2026-10-27-first-clip/`), at `RATE` from the
+/// intro's start: a swish as it swings down (band-passed noise rising 500 → 2,200 Hz, 0.30–0.80 s), its point's tap on
+/// the cursor at 0.80 s (trollarch2's third letter, pitched down, its release after) and a dry drag as it draws the
+/// cursor (to 1.16 s). Made at mix.pl's 32 kHz (the bank's rate) and its level against a key — its keys at 0.55 of a
+/// stroke (0.925 on average), `track`'s at 0.9 —, in `track`'s units before its scale.
+pub(crate) fn brush() -> Vec<f32> {
+    const R: f32 = 32_000.0;
+    let bank = &recorded::BANK;
+    // (mix.pl's units — a 16-bit sample — to `track`'s, by a key's gain in each)
+    let units = 0.9 / (0.55 * 0.925) / 32_768.0;
+    let sample = |i: u32| {
+        let at = i as usize * 2;
+        bank.pcm.get(at..at + 2).map_or(0.0, |b| f32::from(i16::from_le_bytes([b[0], b[1]])))
+    };
+    let mut mix = vec![0.0f32; (1.3 * R) as usize];
+    // (mix.pl's `put`: a slice of the bank from `at` s, read every `pitch`, at `gain` and the bank's level)
+    let put = |mix: &mut Vec<f32>, at: f32, (from, len): (u32, u32), gain: f32, pitch: f32| {
+        let o = (at * R) as usize;
+        for i in 0.. {
+            let s = i as f32 * pitch;
+            if s >= len as f32 - 1.0 || o + i >= mix.len() {
+                break;
+            }
+            let (j, f) = (s as u32, s.fract());
+            let v = sample(from + j) * (1.0 - f) + sample(from + j + 1) * f;
+            mix[o + i] += v * gain * bank.level;
+        }
+    };
+    let mut seed: u64 = 7;
+    let mut rnd = || {
+        seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+        seed as f32 / 2_147_483_648.0
+    };
+    let (mut lp, mut bp, mut hp, mut before) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for (i, m) in mix.iter_mut().enumerate().take((1.16 * R) as usize).skip((0.30 * R) as usize) {
+        let t = i as f32 / R;
+        let n = rnd() * 2.0 - 1.0;
+        if t < 0.80 {
+            // (a state-variable band-pass, its centre rising with the swing)
+            let e = ((t - 0.30) / 0.50).powf(2.2);
+            let w = 2.0 * (std::f32::consts::PI * (500.0 + 1_700.0 * e) / R).sin();
+            lp += w * bp;
+            bp += w * (n - lp - 0.35 * bp);
+            *m += bp * 7_650.0 * e;
+        } else {
+            let e = (-(t - 0.80) / 0.10).exp() * (0.6 + 0.4 * rnd());
+            hp = 0.7 * (hp + n - before);
+            before = n;
+            *m += hp * 1_800.0 * e;
+        }
+    }
+    if let Some(touch) = bank.letters.get(2) {
+        put(&mut mix, 0.80, touch.press, 1.6, 0.62);
+        put(&mut mix, 0.89, touch.release, 0.7, 0.55);
+    }
+    // (to `RATE`, linear between)
+    let n = (mix.len() as f32 * RATE as f32 / R) as usize;
+    (0..n)
+        .map(|k| {
+            let s = k as f32 * R / RATE as f32;
+            let (j, f) = (s as usize, s.fract());
+            let (a, b) = (mix[j], mix.get(j + 1).copied().unwrap_or(0.0));
+            (a + (b - a) * f) * units
+        })
+        .collect()
 }
 
 /// 16-bit PCM, mono.
@@ -499,6 +797,118 @@ pub(crate) fn wav(path: &Path, samples: &[f32]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The intro's brush is 10-27's: silent until the swing, the swish rising to the tap at 0.80 s — its loudest —,
+    /// the tap at mix.pl's level against a key (1.6 of a stroke to a key's 0.55 × 0.925, pitched down), then gone.
+    #[test]
+    fn the_brush_swishes_then_taps_at_its_level_against_a_key() {
+        let b = brush();
+        let at = |s: f32| (s * RATE as f32) as usize;
+        let peak = |r: std::ops::Range<usize>| b[r].iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert_eq!(peak(0..at(0.30)), 0.0, "silent before the swing");
+        assert!(peak(at(0.40)..at(0.50)) < peak(at(0.65)..at(0.80)), "the swish rises");
+        let loudest = b.iter().enumerate().max_by(|x, y| x.1.abs().total_cmp(&y.1.abs())).map(|x| x.0);
+        assert!(
+            loudest.is_some_and(|i| (at(0.80)..at(0.86)).contains(&i)),
+            "the tap the loudest: {loudest:?}"
+        );
+        // (a key as `track` plays it: the same stroke's press, at a key's 0.9 and the bank's level)
+        let st = recorded::BANK.letters[2].press;
+        let pcm = recorded::BANK.pcm;
+        let key = (st.0..st.0 + st.1)
+            .map(|i| {
+                f32::from(i16::from_le_bytes([pcm[i as usize * 2], pcm[i as usize * 2 + 1]])).abs() / 32_768.0
+            })
+            .fold(0.0f32, f32::max)
+            * recorded::BANK.level
+            * 0.9;
+        let ratio = peak(at(0.80)..at(0.86)) / key;
+        let mix_pl = 1.6 / (0.55 * 0.925);
+        assert!(
+            (0.85 * mix_pl..1.1 * mix_pl).contains(&ratio),
+            "the tap {ratio:.2}× a key, mix.pl's {mix_pl:.2}×"
+        );
+        assert_eq!(peak(at(1.25)..b.len()), 0.0, "gone after");
+    }
+
+    /// `lufs` and `true_peaks` are BS.1770's: a 997 Hz sine at full scale reads −3.01 LUFS, 20 dB down −23.01, silence
+    /// nothing; a peak between samples is found.
+    #[test]
+    fn the_loudness_is_bs1770s() {
+        let sine = |a: f32| -> Vec<f32> {
+            (0..RATE * 3)
+                .map(|n| a * (2.0 * std::f32::consts::PI * 997.0 * n as f32 / RATE as f32).sin())
+                .collect()
+        };
+        assert!((lufs(&sine(1.0)) + 3.01).abs() < 0.05, "{}", lufs(&sine(1.0)));
+        assert!((lufs(&sine(0.1)) + 23.01).abs() < 0.05, "{}", lufs(&sine(0.1)));
+        assert_eq!(lufs(&vec![0.0; RATE as usize]), f32::NEG_INFINITY);
+        // (a quarter of the rate, 45° off: every sample at 0.707, its true peak 1)
+        let quarter: Vec<f32> = (0..4_800)
+            .map(|n| (std::f32::consts::FRAC_PI_2 * n as f32 + std::f32::consts::FRAC_PI_4).sin())
+            .collect();
+        let tp = true_peaks(&quarter)[100..4_700].iter().fold(0.0f32, |m, p| m.max(*p));
+        assert!((tp - 1.0).abs() < 0.02, "true peak {tp}");
+    }
+
+    /// A Short's track stands at `SHORT_LUFS` or as near as `LIMIT_MOST_DB` of limiting lets it, with every sample under
+    /// `SHORT_CEILING_DB`, and the intro's brush keeps its balance against the keys: it follows their loudness, the
+    /// limiter moving it under 0.5 LU.
+    #[test]
+    fn a_shorts_track_is_at_its_loudness_under_its_ceiling_the_brush_in_balance() {
+        let keys: Vec<(Duration, Heard)> = (0..60)
+            .map(|i| (Duration::from_millis(3_000 + i * 130), Heard::Key(if i % 6 == 5 { ' ' } else { 'a' })))
+            .collect();
+        assert!((SHORT_LUFS + 20.0).abs() < 0.5 && LIMIT_MOST_DB <= 2.0, "near −20 LUFS, barely limited");
+        let t = track(&keys, Duration::from_secs(12), Some(Duration::ZERO), SHORT_CEILING_DB);
+        assert!(t.lufs < SHORT_LUFS + 0.1, "{:.2} LUFS", t.lufs);
+        assert!(t.limited.keys <= LIMIT_MOST_DB + 0.01, "the limiter took {:.2} dB", t.limited.keys);
+        assert!(
+            (t.lufs - SHORT_LUFS).abs() < 0.1 || (t.limited.keys - LIMIT_MOST_DB).abs() < 0.01,
+            "as loud as either lets: {:.2} LUFS, {:.2} dB taken",
+            t.lufs,
+            t.limited.keys
+        );
+        let tp = true_peaks(&t.samples).into_iter().fold(0.0f32, f32::max);
+        assert!(20.0 * tp.log10() <= SHORT_CEILING_DB + 0.1, "true peak {:.2} dBTP", 20.0 * tp.log10());
+        assert!((t.true_peak - 20.0 * tp.log10()).abs() < 1e-3, "its true peak said");
+        let (before, after) = t.brush.expect("the brush");
+        assert!(
+            (after - before).abs() < 0.5,
+            "the brush {before:+.1} LU over the keys before, {after:+.1} after"
+        );
+    }
+
+    /// The keys come to their loudness only as far as the limiter barely touches them: a steady tone (its peaks 3 dB
+    /// over its loudness) reaches the target untouched; sparse clicks (their peaks far over it) stop where the limiter
+    /// would take more than its most, the track quieter than the target, that most taken at a click.
+    #[test]
+    fn the_keys_are_as_loud_as_the_limiter_barely_touching_them_lets() {
+        let ceiling = 10f32.powf(-2.0 / 20.0);
+        let tone: Vec<f32> = (0..RATE * 4)
+            .map(|n| 0.01 * (std::f32::consts::TAU * 997.0 * n as f32 / RATE as f32).sin())
+            .collect();
+        let (y, db, limited) = master(&tone, None, -20.0, ceiling, 2.0);
+        assert!((lufs(&y) + 20.0).abs() < 0.05, "{:.2} LUFS", lufs(&y));
+        assert!((db - 23.0).abs() < 0.1 && limited.keys == 0.0, "{db:+.2} dB, {:.2} dB taken", limited.keys);
+        // (a click every half second: a few samples of a decaying tone, each louder than the last)
+        let mut clicks = vec![0.0f32; RATE as usize * 4];
+        for k in 0..8 {
+            for i in 0..240 {
+                let t = i as f32 / RATE as f32;
+                clicks[k * RATE as usize / 2 + i] = 0.05
+                    * (1.0 + k as f32 / 8.0)
+                    * (-t * 400.0).exp()
+                    * (std::f32::consts::TAU * 3_000.0 * t).sin();
+            }
+        }
+        let (y, _, limited) = master(&clicks, None, -20.0, ceiling, 2.0);
+        assert!(lufs(&y) < -21.0, "quieter than the target: {:.2} LUFS", lufs(&y));
+        assert!((limited.keys - 2.0).abs() < 0.01, "{:.2} dB taken", limited.keys);
+        assert!((3.5..3.505).contains(&limited.keys_at), "at the loudest click: {:.3} s", limited.keys_at);
+        let tp = true_peaks(&y).into_iter().fold(0.0f32, f32::max);
+        assert!(tp <= ceiling * 1.001, "under the ceiling: {tp}");
+    }
 
     /// The limiter changes nothing at the default volume: the code paragraph (`code-final.wav`'s — Claude's edit as
     /// tarae reveals it, the installed strokes) at volume 30 is the same samples as before it, when the volume was

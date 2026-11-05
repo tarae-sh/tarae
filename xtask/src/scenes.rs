@@ -16,17 +16,18 @@
 //! unless `--theme dark|light` — into `<DIR>/<scene>-<theme>-<cols>/` (default `target/rec`): `rec.json` in the
 //! homepage player's format (`recording.rs`, the hero's encoder), `sheet.png` (a frame every ~2 s and at each wait's
 //! end and beat, the time under each; past six frames also `sheet-01.png` …, six a page) and `play.html` (one file
-//! that plays it, nothing fetched — on a phone too). A scene that needs a size of its own to show what it shows is
-//! recorded at it (`record_size`).
+//! that plays it, nothing fetched — on a phone too).
 //!
 //! `--video` makes the take a short video (`video.rs`): 1920×1080 at 30 fps, its `@beat:` captions in a band under the
 //! screen, a title card and an end card with the seal — `<DIR>/<scene>-<theme>-video/<scene>.mp4` through ffmpeg, and
 //! `sheet.png` of the video's own frames. `--video --shorts` makes it a YouTube Short instead: 1080×1920 upright, the
 //! scene at 80 columns and the rows that fill the window (`video::short_size`), a camera over it from the scene's
-//! `@zoom:<target>` lines (`camera.rs`), the captions above it inside YouTube's overlays, and tarae's own keyboard
-//! sound for the keys typed (`@type:<text>` types a character at a time), `@sound:stamp`, `@sound:settle` and Claude's
-//! writing as the reveal plays it (between `@sound:writing` or `@sound:landing` and `@sound:still`); a `@punch` opens it
-//! on the take from there — into `<DIR>/<scene>-<theme>-shorts/`. The wide video ignores `@zoom`, `@sound` and `@punch`.
+//! `@zoom:<target>` lines (`camera.rs`), its captions a phrase at a time in a band under the screen, `@note:<words> →
+//! <target>` (`captions.rs`), and tarae's own keyboard sound for the keys typed (`@type:<text>` types a character at
+//! a time), `@sound:stamp`, `@sound:settle` and Claude's writing as the reveal plays it (between `@sound:writing` or
+//! `@sound:landing` and `@sound:still`); a `@punch` opens it on the take from there — into
+//! `<DIR>/<scene>-<theme>-shorts/`. The wide video keeps its captions and ignores `@zoom`, `@note`, `@sound` and
+//! `@punch`.
 
 use std::io::{self, BufRead, Write};
 use std::os::unix::fs::DirBuilderExt;
@@ -46,18 +47,8 @@ pub(crate) mod docshots;
 
 const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --record|--video [--shorts]|--wire scene … [--size COLSxROWS] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --tint scene … [--size COLSxROWS …] [--theme dark|light] [--out DIR] [--bin TARAE] | scenes --list | scenes --compare A B";
 
-/// A recording's size unless `--size` says (the polish week's: its flows judged at 120×34) or the scene has its own
-/// (`record_size`).
+/// A recording's size unless `--size` says (the polish week's: its flows judged at 120×34).
 const RECORD_SIZE: (u16, u16) = (120, 34);
-
-/// The size `scene` is recorded at when `--size` doesn't say: its own where what it shows needs one (`waits-60s`: the
-/// floating session list and main's card meet at 80×20), else `RECORD_SIZE`.
-fn record_size(scene: &Scene) -> (u16, u16) {
-    match scene.name {
-        "waits-60s" => (80, 20),
-        _ => RECORD_SIZE,
-    }
-}
 
 /// One surface: the stand-in claude's script, the files tarae opens, the keys sent (as `cargo xtask shot`
 /// takes them: `@1` waits a second, `@?text` until `text` is on screen, `@20?text` at most 20 s).
@@ -1364,73 +1355,88 @@ macro_rules! waits_keys {
         ]
     };
 }
-/// The polish week's landing 1 in motion (`--record waits-60s`, ~60 s at 80×20 — `record_size`: where main's card
-/// and the floating session list meet): fix's Claude at work the whole take (`idle`); you ask main's own Claude to run
-/// the tests and open the list; its card comes ~10 s into the turn (`cardlater`) and, the list in its way, folds to
-/// its peek; `C-q` stands it whole with the keys, `esc` folds it again, the list closed it stands; `C-q y` answers it.
-/// (A card of another session's is a peek wherever it is — its press takes you into that session —, so the fold is
-/// shown on main's own; fix asks nothing, or `C-q` — the oldest card's — would go to fix's.)
+/// The polish week's landing 1 in motion, the second Short V2 "A card never covers what you opened" (`--video
+/// --shorts waits-60s`, 80×34): you ask main's Claude to run the whole suite, then run this file's tests yourself and
+/// float them (`C-w e`: half the screen, as every floating pane first stands); main's card comes ~10 s into the turn
+/// (`cardlater`) and, the tests in its way, folds to its peek — the one emphasis, the punchline; `C-q` stands it whole
+/// with the keys, `esc` folds it again, the tests closed it stands; `C-q y` answers it and its run goes. Off camera
+/// the tests are built once, so yours on camera take a moment. No beat waits to be read: the scene goes at the
+/// stand-in Claude's pace, the tests' and a hand's, but for the fold, which it stands on while the camera eases in,
+/// holds and eases back out (CLAUDE.md's Shorts bullet).
 const WAITS_60S: &[&str] = &[
     "@1",
-    ":",
-    "sh git worktree add -q ../fix && echo checkout made",
-    "\r",
-    "@20?checkout made",
-    ":",
-    "workspace-open ../fix",
-    "\r",
-    "@3",
+    // (the tests built off camera: on camera they run at once)
     " ",
-    "l",
+    "x",
+    "f",
+    "@90?right: 8",
     "@1",
-    "tidy the docs",
-    "\r",
+    "\x17",
+    "j",
+    "@0.5",
+    "q",
     "@1",
-    ":",
-    "workspace-switch 0",
-    "\r",
-    "@10?tarae-demo › src › main.rs",
     "@rec",
-    "@1",
-    "@beat:You ask main's Claude to run the tests",
+    "@beat:You ask main's Claude to run the whole suite",
     " ",
     "l",
-    "@1",
-    "run the tests",
-    "@1",
+    // (the question in the caption as it's typed, from its first letter)
+    "@type:r",
+    "@note:you ask: {} → card:ask claude",
+    "@type:un the whole test suite",
     "\r",
-    "@2",
-    // (a beat that says what a key does goes just before it: the caption comes in as the key goes, not after the
-    // driver's pause behind it)
-    "@beat:The session list, floating: both Claudes at work",
+    "@beat:Your own tests of this file, floating over the code",
     " ",
-    "W",
-    "@10?sessions",
-    "@30?main asks",
-    "@beat:main's card arrives — folded to a peek, off the list",
-    "@6",
-    "@beat:C-q stands it whole, the keys on it",
+    "x",
+    "f",
+    "@20?right: 8",
+    "\x17",
+    "j",
+    "\x17",
+    "e",
+    "@10?floating",
+    // (its toast, top right: the float itself reaches down under the caption's place)
+    "@note:your tests, floating → card:tests floating",
+    // (one session: the card's frame is its ask, no session's name)
+    "@30?Claude wants to run",
+    "@beat:Claude's card arrives — folded to a peek, off your tests",
+    // (the peek with its air is 48 columns, under 2.5 mm a glyph on a phone: read at the legible 46, its first 44 the
+    // target — its air, its `▎ ` and its words whole — so the window, centred on them, ends on `sandbox`, your tests and
+    // the follow card over it)
+    "@zoom:card:Claude wants to run|44",
+    // (the fold's phrases on the status line's `C-q answer`: there only while the card is folded — whole, it's the
+    // card's own bottom line's, and the card stands under the caption's place)
+    "@note:Claude asks to run → C-q answer",
+    "@punch",
+    // (the one wait for a look: the emphasis's — the camera's 1.2 s move in, 2 s held, 1.2 s back out —, its second
+    // phrase as the camera holds)
+    "@2",
+    "@note:folded, off your tests → C-q answer",
+    "@2.4",
+    // (no caption from here: the card stands whole under the caption's place, its own bottom line saying its keys, and
+    // a hand's keys come too close for a phrase each)
+    "@beat:C-q stands it whole, the keys on it; esc folds it again",
     "\x11",
     "@10?Its reason",
-    "@6",
-    "@beat:esc folds it to its peek again",
+    "@0.6",
     "\x1b",
     "@10!Its reason",
-    "@5",
-    // (the list given the keys and closed)
-    "@beat:The list closed: the card stands",
-    " ",
-    "W",
-    "@1",
+    "@0.6",
+    // (the tests given the keys back and closed)
+    "@beat:Your tests closed: the card stands",
     "q",
     "@10?Its reason",
-    "@5",
+    "@0.6",
     "\x11",
-    "@1",
+    "@0.6",
     "@beat:y — the run goes",
     "y",
-    "@20!Its reason",
-    "@4",
+    // (the take ends on the last frame before the run's output shows — the card answered, the follow card's `▸
+    // running`: its output slot, and the chat's column the turn's place-less answer opens by itself as it ends, are
+    // nothing the Short is about. Its first frame is told by the slot's top line, the command after its `─` — its
+    // lines open at the failure at 43 rows, past cargo's `running 2 tests`, and its keys fold where the chat's column
+    // stands beside it; the card's row and the follow card's have no `─` before it)
+    "@cut?─ cargo test --quiet",
 ];
 // (in fix, main's card waiting as a peek: a file saved, its cursor off the top — the toast at the top right)
 const TOAST_PEEK: &[&str] = waits_keys!(":e src/main.rs\r", "@1", "G", ":w\r", "@1");
@@ -2518,24 +2524,20 @@ const BASE_MOVED: &[&str] = &[
     "@20?main moved",
     "@2",
 ];
-/// The second short video, V2 "main moved" (`--video main-moved`, ~30 s at 120×34 — the session list's frame at a quarter
-/// down, main's card at the bottom right, the two one over the other — so the card covers nothing and stands whole beside
-/// the list, never folded to its peek; collab's `.sb/videos-plan.md`): on `MAIN_MOVED_RS`, off camera, docs with a saved
-/// change of its own far from `m.insert` (line 31) and fix's own way of that line committed; on camera, the floating list
-/// in main, main's way of the line written (C2's `main ≈ fix` said as it's saved) and committed with the list up, its
-/// card beside the list, `C-q` giving it the keys (fix would conflict, docs clean), `y` moving docs only. It ends before
-/// docs, moved, meets fix (C2's next round, ~4 s on: `fix ≈ docs`). Its Short (`--video --shorts main-moved`, 80×43):
-/// opening on the card with fix's conflict said (`@punch`), then the camera on the list as it opens, on `wind` as main's
-/// way is written, on C2's toast as it's saved (auto-save's, no prompt), then on the line it names, on the prompt as the commit is typed, on the card as it arrives and
-/// through `C-q` and `y`, on the list as the card goes, on what the move says, and on the list to the end; the typing a
-/// key at a time (`@type:` — the wide video's too), `y` a stamp, the move's landing the settle.
+/// The third Short, V3 "When main moves, every workspace hears" (`--video --shorts main-moved`, 80×34; collab's
+/// `.sb/videos-plan.md`): on `MAIN_MOVED_RS`, off camera, docs with a saved change of its own far from `m.insert`
+/// (line 31), fix's own way of that line committed, and main's own way of it saved (C2's `main ≈ fix` said and gone); on
+/// camera, the floating list in main (three workspaces, `main ≈ fix`), main's commit typed with the list up, its card
+/// bottom-right under the list (fix would conflict, docs clean) — the one emphasis, the punchline (`@punch`), read at
+/// its two workspaces' rows (the card's 52 columns past the 46 a phone reads at 2.5 mm) —, `C-q`
+/// giving it the keys, `y` moving docs only. Then fix, the one that didn't move: C2's next round says its conflict with
+/// docs, now on main's way of the line (`fix ≈ docs`), and its own way back is its bring card — `G` `b` on its row,
+/// rebase first —, the take ending on that card (nothing comes after it by itself). No beat waits to be read: the
+/// scene goes at the keys' pace, tarae's and a hand's, but for the card, which it stands on while the camera eases in,
+/// holds and eases back out (CLAUDE.md's Shorts bullet), its three phrases over it; the typing a key at a time
+/// (`@type:` — the wide video's too), `y` a stamp, the move's landing the settle.
 const MAIN_MOVED: &[&str] = &[
     "@1",
-    // (main's line saved by itself once the typing stops: `:w`'s card would stand over the code the camera is on, and a
-    // card the window cuts is left out — half the frame ground)
-    ":",
-    "set editor.auto-save idle",
-    "\r",
     ":",
     "sh git config user.name demo && git config user.email demo@example.com && git config commit.gpgsign false \
      && git worktree add -q ../fix && git worktree add -q ../docs && echo checkouts made",
@@ -2581,193 +2583,201 @@ const MAIN_MOVED: &[&str] = &[
     "sh git commit -qm fix src/main.rs && echo fix committed",
     "\r",
     "@20?fix committed",
-    // (back in main, the list opened again: the opening shot)
+    // (back in main, its own way of the line saved — C2's `main ≈ fix` said, then gone —, the list opened again: the
+    // opening shot. The edit is V1's story; this one's is the commit)
     " ",
     "W",
     "@1",
     "1",
     "@3",
+    "/",
+    "m.insert",
+    "\r",
+    "A",
+    " // main",
+    "\x1b",
+    ":",
+    "w",
+    "\r",
+    "@20?would conflict",
+    "@30!would conflict",
     " ",
     "W",
     "@10?sessions",
     "@1",
     "@rec",
     "@beat:Three workspaces on one branch.",
-    "@zoom:card:sessions",
-    "@4",
+    "@note:three workspaces, one branch → card:sessions",
     "@beat:Commit on main, and main moves on.",
-    "q",
-    "@zoom:code:28-32",
-    "@1",
-    "/",
-    "@type:m.insert",
-    "\r",
-    "@1",
-    "A",
-    "@type: // main",
-    "\x1b",
-    "@8?would",
-    "@zoom:src/main.rs L31",
-    "@1.5",
-    // (then the line it names: the toast stands top-right, the code all left of the window round it)
-    "@zoom:code:28-32",
-    "@1.5",
-    " ",
-    "W",
-    "@10?sessions",
-    "@zoom:card:sessions",
-    "@1",
     ":",
-    // (on the prompt once its first words narrowed it: `:` alone lists every command, 66 columns)
-    "@type:sh git ",
-    "@zoom:card:command",
-    "@type:commit -qm main src/main.rs",
+    // (the commit's phrase once the first one has stood, ~1.3 s; by the list, so it stands through the wait for the
+    // card — 0.6 s or 3.7 s: keepclose's round starts at once, or after C2's quiet where main's HEAD move is seen first)
+    "@type:sh git commit ",
+    "@note:main commits → card:sessions",
+    "@type:-qm main src/main.rs",
     "\r",
     "@20?main moved",
     "@beat:Everyone behind it hears at once, and where they'd clash.",
-    "@zoom:card:main moved",
-    "@3",
+    // (the one emphasis, the punchline: the card as it comes, every workspace behind main named with what a move does
+    // to it. The one wait for a look — the camera's 1.2 s move in, 2 s held, 1.2 s back out —, a phrase each ~1.5 s.
+    // Read at the two workspaces' rows, 46 columns: the card's whole 52 would be under 2.5 mm; at 38 px the window
+    // shows its text whole, its left line and pad cut)
+    "@zoom:rows:fix — … docs —",
+    "@note:every workspace hears → card:main moved",
+    "@punch",
+    "@1.5",
+    "@note:fix would conflict → would conflict",
+    "@1.5",
+    "@note:docs would move clean → goes with it",
+    "@1.4",
+    "@beat:y moves the clean ones. Nobody's work is lost.",
     "\x11",
     "@10?esc back",
-    // (a Short opens here: the card whole, fix's conflict said)
-    "@punch",
-    "@6",
-    "@beat:y moves the clean ones. Nobody's work is lost.",
-    "@zoom:card:main moved",
+    // (the last phrase from `C-q`, by the list: after the move, `fix ≈ docs` is said 0.5 s or ~4 s on, too soon for a
+    // phrase that starts there)
+    "@note:y moves docs only → card:sessions",
+    "@0.6",
     "@sound:stamp",
     "y",
-    "@zoom:card:sessions",
     "@20?moved onto main",
     "@sound:settle",
-    "@zoom:moved onto main",
-    "@1.5",
-    // (the result held to the end: the list's rows once docs moved, before C2's next round says fix ≈ docs)
-    "@zoom:card:sessions",
-    "@2",
+    // (fix's beat — the title's every workspace, the one that stays: C2's next round says its conflict with docs, on
+    // main's way of the line now (`fix ≈ docs`, top right), 0.5 s or ~4 s after the move — waited for, so the beat
+    // goes in its order whichever —; then its own way back, its bring card, `b` on its row (the list's last, `G`):
+    // rebase first. That card is what reads on the whole — a card coming to the asks' corner —, where fix's `↓1` is two
+    // cells the move doesn't change and main's card, with fix's row, went with its `y`)
+    "@beat:fix stays where it was; its own bring card rebases it first.",
+    "@20?fix ≈ docs",
+    // (a hand's: the toast seen before you act on it)
+    "@0.6",
+    "G",
+    "@note:fix: rebase, then bring → card:Bring fix into main",
+    "b",
+    "@20?Bring fix into main",
 ];
-/// The third short video, V3 "Claude's edit, in your buffer" (`--video edit-in-buffer`, ~45 s at 120×34; collab's
-/// `.sb/videos-plan.md`): a question on the ask line; the `v3` turn reads `thread.rs` (the view follows it there) and
-/// `main.rs`, then writes its edit of three changes in the buffer at the stream's pace — the follow card saying each
-/// step, no chat column; the review over the buffer, `y` `n` `y` and their stamps; `space u` taking the turn back.
+/// The fourth short video, V4 "Claude's edit, in your buffer" (`--video --shorts edit-in-buffer`, 80×34; collab's
+/// `.sb/videos-plan.md`): your cursor on `m.insert` (line 12), a question on the ask line; the `v3` turn reads the
+/// lines in front of you and writes its edit of three changes into your buffer at the stream's pace — the view never
+/// leaving it, the follow card saying each step, no chat column; the review over the buffer, `y` `n` `y` and their
+/// stamps. Claude's writing reads on the whole (green rows landing in your buffer); the one emphasis is the review and
+/// its three answers (the camera easing in as the review comes, the stamps inside its hold) — the Short's point,
+/// what must be read; then, on the whole once the turn has ended at its own pace, `space u` takes the whole turn back — Claude's edit is yours to take
+/// back, the lines as they were and its toast saying so —, the take ending there. No beat waits to be read: the scene
+/// goes at the stand-in Claude's pace and a hand's, but for the ease in it lets the review be reached before `y`
+/// (CLAUDE.md's Shorts bullet).
 const EDIT_IN_BUFFER: &[&str] = &[
+    // (your cursor on the line the question is about: the ask line carries it)
+    "12G",
     "@1",
     "@rec",
     "@beat:Ask Claude about the code in front of you.",
-    // (a Short: the code it's about, so the whole opens it ~1.5 s only)
-    "@zoom:code:9-16",
-    "@2",
-    " ",
-    "l",
-    // (a Short: the ask line's words, not its width — the screen's, tarae's)
-    "@zoom:card:ask claude|40",
-    "@1",
-    "@type:why does insert clone the name?",
-    "@2",
+    // (one key, as `]r`'s: `space` sent apart stands long enough for which-key, a pop over the whole)
+    " l",
+    // (the question in the caption as it's typed, from its first letter)
+    "@type:w",
+    "@note:you ask: {} → card:ask claude",
+    "@type:hy does insert clone the name?",
     "\r",
-    "@10?thread.rs",
-    "@beat:Its edit is written where you are, as it thinks.",
-    // (a Short: each read's lines as the view follows there — `thread.rs`'s doc comments past 40 columns cut, fading;
-    // `main.rs` once its own text is in sight: both files number lines 1 to 16)
-    "@10?One strand",
-    "@zoom:code:1-10|40",
-    "@10?Map::new",
-    "@zoom:code:8-16",
-    // (a Short: the edit's lines as it's written, its writing heard as tarae's reveal plays it)
+    "@beat:It reads your lines, then writes its edit right there.",
+    "@10?main.rs:8-16",
+    "@note:Claude reads your lines → code:8-16",
+    // (Claude's writing reads on the whole as it lands: green rows in your buffer)
     "@20?editing",
     "@sound:writing",
-    "@zoom:code:8-13",
+    "@note:written in your buffer → code:8-13",
+    // (the one emphasis, the review and its stamps — what must be read: the camera eases in as it comes, the keys
+    // waiting out the ease in (the review seen whole meanwhile), so the three answers, a hand's 0.6 s apart, land
+    // inside the hold. From line 7, the row above the first change's head: the head inside the target, not its air,
+    // as the view settles a row. The follow card stands from column 41, so the window narrows to it, the card wholly
+    // out (`camera::framed_among`) — 41 columns, ~2.8 mm. No head's keys fit 46 (change 1's run to its `n no` at 53):
+    // each head shows its change and its first pair, the answers' words whole once stamped (change 2's `▐n▌ rejected`
+    // ends at column 40) — change 1's `a` of `a all 3` at the edge for the ease in, before its `y`)
     "@20?Change 1 of 3",
     "@sound:still",
-    "@beat:Take what you want, change by change.",
-    "@zoom:Change 1 of 3",
-    "@2",
+    "@zoom:code:7-13",
+    "@note:you answer each change → of 3",
+    "@1.2",
     "@sound:stamp",
     "y",
-    "@2",
+    // (the answers a hand's 0.6 s apart: a key's own 0.35 s and this, the three inside the hold but the last's end)
+    "@0.25",
     "@sound:stamp",
     "n",
-    "@2",
+    // (the Short opens on the review held: two stamps in, the third change in hand)
+    "@punch",
+    "@0.25",
     "@sound:stamp",
     "y",
-    "@20?Nothing else",
-    "@zoom:code:8-14",
-    "@2",
-    "@beat:And undo the whole turn in one key.",
-    "@zoom:code:8-14",
-    "@2",
-    " ",
-    "u",
-    "@4",
+    "@10!of 3",
+    "@note:two taken, one refused → code:8-13",
+    // (the hold's rest and the ease out at the turn's own pace, its last words and its end; then on the whole, a hand's
+    // after it, the whole turn taken back — one key, as `space l`: which-key never pops over the whole. The turn's end
+    // as drawn: follow over, its `● follow` gone from the status line — `@=done` can't reach the state socket in a
+    // recording, its path past `sun_path` in a temp folder)
+    "@20!● follow",
+    "@beat:And the whole turn is yours to take back, in one key.",
+    "@0.6",
+    "@note:yours to take back → undid",
+    " u",
+    "@10?undid",
 ];
-/// The fourth short video, V4 "follow and replay" (`--video follow-replay`, ~45 s at 120×34; collab's
+/// The fifth short video, V5 "Watch it work: follow and replay" (`--video --shorts follow-replay`, 80×43; collab's
 /// `.sb/videos-plan.md`): a question on the ask line; the `v4` turn reads `spool.rs` far apart, the view following
-/// while your cursor stays on line 1; `j` takes the view back, `space F` follows again; two edits land unseen (review
-/// at the end); after the turn `]r`/`[r` step its stops.
+/// while your cursor stays on line 1; `j` takes the view back as Claude's words come, `space F` follows again at its
+/// next; two edits land unseen (review at the end), the view on each as it's written; once the turn's review opens,
+/// `[r` steps back through its stops — the last edit, then the first. The one emphasis is that first edit's stop (line
+/// 46: the change, the answer's sentence under it, the follow card's `edit` row) — the punchline, the one thing on
+/// the screen that must be read; the replay's two steps are a hand's on the whole, so the view jumps twice, not
+/// four times. No beat waits to be read: the scene goes at the stand-in Claude's pace and a hand's, but for the
+/// emphasis's ease in, look and ease out (CLAUDE.md's Shorts bullet).
 const FOLLOW_REPLAY: &[&str] = &[
     "@1",
     "@rec",
-    "@beat:Follow Claude as it reads and writes.",
-    // (a Short: your cursor's lines, so the whole opens it ~1.5 s only)
-    "@zoom:code:1-10|40",
-    "@1.5",
-    " ",
-    "l",
-    // (a Short: the ask line's words, not its width)
-    "@zoom:card:ask claude|40",
-    "@1",
-    "@type:why is the spool out of order?",
-    "@1.5",
+    "@beat:Ask, and the view follows Claude as it reads.",
+    // (one key, as V4's: `space` sent apart stands long enough for which-key)
+    " l",
+    "@type:w",
+    "@note:you ask: {} → card:ask claude",
+    "@type:hy is the spool out of order?",
     "\r",
-    // (a Short: each read's lines as the view follows there — the doc comment, the pane's width, its first 40 columns)
     "@10?spool.rs:3-7",
-    "@zoom:code:3-7|40",
-    // (the read's row on the follow card: its words wrap there)
+    "@note:Claude reads the doc → code:3-7",
     "@10?spool.rs:42-56",
-    "@zoom:code:42-56",
-    "@1.5",
-    "@beat:Your first key takes the view back.",
+    "@note:the view follows it → code:42-56",
+    "@beat:Your first key takes the view back; space F follows again.",
+    // (at the turn's pace: `j` as its words come, `space F` at its next — each phrase ~1.5 s)
+    "@10?It pops",
     "j",
-    // (the follow card paused, its bottom line's key following again — landing 6: no toast says it)
-    "@zoom:card:space F follow",
-    "@1.5",
-    // (one key, as `]r`'s: sent apart, `space` stood long enough for which-key, over the card the camera is on)
+    "@note:you take it back → code:1-2",
+    "@10?And at the end",
     " F",
-    "@10?spool.rs:75-83",
-    "@zoom:code:75-83",
-    // (the two edits written as they come, each landing unseen: their writing heard, each settling as it lands)
+    "@note:space F follows again → code:42-56",
+    "@beat:It writes where the view is.",
     "@20?editing",
     "@sound:landing",
-    "@zoom:code:44-48",
+    "@note:it writes, you watch → code:44-48",
     "@20?Popped from",
-    "@zoom:code:75-80",
-    // (the turn's end: its answer's card at line 32 — at 80 columns the review rail has no room for its `last turn`)
-    "@30?winds from the front",
+    "@note:then drops the sort → code:76-78",
+    // (the turn's end: its review opens at the first change, the answer's card under it — the replay waits for it, else
+    // the review's move takes the view off the stop `[r` went to)
+    "@20?Claude changed",
     "@sound:still",
-    // (its first words: the card is the code's width)
-    "@zoom:card:winds from the front|48",
-    "@2",
-    "@beat:Replay the turn, stop by stop.",
-    // (each pair typed as one key: sent apart, `]` stood long enough for which-key; a Short's camera on each stop's
-    // lines)
-    "]r",
-    "@zoom:code:3-7",
-    "@1.5",
-    "]r",
-    "@zoom:code:42-56",
-    "@1.5",
-    "]r",
-    // (the third read's lines are 75-79 now: the edit took four lines out above 80)
-    "@zoom:code:75-79",
-    "@1.5",
-    "]r",
-    "@zoom:code:44-48",
-    "@1.5",
-    "]r",
-    "@zoom:code:75-80",
-    "@2",
+    "@beat:Step back through what it did.",
+    // (each pair typed as one key: sent apart, `[` stood long enough for which-key)
     "[r",
+    "@0.6",
+    "[r",
+    // (the one emphasis, the punchline: the first change's stop, the answer's sentence under it. The one wait for a
+    // look — the camera's 1.2 s move in, 2 s held, 1.2 s back out —, a phrase for the ease in and one for the rest; the
+    // take ends with it. The replay's phrase is the stop's, not the first `[r`'s: 0.6 s apart, it would stand under
+    // 1.2 s, over the follow card at the screen's foot)
     "@zoom:code:44-48",
-    "@3",
+    "@note:[r replays the turn → code:44-48",
+    "@punch",
+    "@1.2",
+    "@note:its change, and why → code:44-48",
+    "@2",
+    "@1.2",
 ];
 /// The first short video, V1 "Three Claudes, one file" (`--video three-claudes`, ~60 s at 120×34; collab's
 /// `.sb/videos-plan.md`): each session its own Claude, by its checkout (`script_for`: `v1-main`, `v1-fix`, `v1-docs`).
@@ -2779,8 +2789,13 @@ const FOLLOW_REPLAY: &[&str] = &[
 /// the same line two ways, and C2's `would conflict` once the trees are still; `:weave`, the conflict (side by side,
 /// stacked at 80); a press on fix's part and `enter`: fix's workspace at that line, main's `‹main ●›` on it. The
 /// Claudes go on talking after their edits (`v1_talk`): no turn ends on camera — a turn's end opens its review, its
-/// answer's card and its toasts over the beats. Its Short opens on the woven conflict (`@punch`); the tags are its
-/// zooms' targets (a line and its tag are wider than a phone reads).
+/// answer's card and its toasts over the beats. Its Short opens on the woven conflict (`@punch`); every beat stands on
+/// the whole and one is read, the woven conflict — the punchline (`camera::course`) —, its captions in step with what
+/// they name (`@note:`, `captions.rs`), each written for the time the scene gives it (`captions::STAND_MIN_MS`): the
+/// ask and its question as it's typed, main writing beside fix by main's tag, the warning, the woven conflict and the
+/// move into fix. No beat waits to be read: the
+/// scene goes at the stand-in Claudes' pace, the keys' and a hand's, but for the look at the conflict its read stands
+/// on (CLAUDE.md's Shorts bullet: the camera still on the whole, the emphasis the one wait).
 const THREE_CLAUDES: &[&str] = &[
     "@1",
     ":",
@@ -2827,42 +2842,32 @@ const THREE_CLAUDES: &[&str] = &[
     "@10?sessions",
     "@1",
     "@rec",
-    "@beat:Three Claudes, each in a workspace of its own.",
-    // (a Short: the rows' names and states, their reports cut)
-    "@zoom:card:sessions|42",
-    "@4",
-    "@beat:You see where each one reads and writes, in its colour.",
+    // (a Short: every beat on the whole, its captions in step with it — `@note:`; one read, the woven conflict)
+    // (no caption on the list: it closes on the first key, too soon for a phrase to stand)
+    "@beat:Three Claudes at work, each in a workspace of its own.",
+    "@beat:You ask.",
     "q",
-    // (a Short: `wind`, fix's tag on its key)
-    "@zoom:code:29-32",
-    "@2.5",
     " ",
     "l",
-    "@zoom:card:ask claude|40",
-    "@1",
-    "@type:keep the first strand of a name",
-    "@1",
+    // (the question in the caption as it's typed: no zoom — from its first letter, the input's faint hint never said)
+    "@type:k",
+    "@note:you ask: {} → card:ask claude",
+    "@type:eep the first strand of a name",
     "\r",
-    // (a Short: `wind` as main writes in it, both tags there)
+    // (as it's sent: main's writing held mid-line — `v1_main` —, fix's beside it)
+    "@beat:Main's Claude writes beside fix's, in its colour.",
     "@10?‹main ●›",
+    // (one phrase for both tags: fix's comes 0.2 s after main's, too close for a phrase of its own)
+    "@note:main writes beside fix → ‹main",
     "@sound:writing",
-    "@zoom:code:29-32",
     "@20?or_insert",
     "@sound:still",
     "@20?would conflict",
     "@beat:The moment two would conflict, tarae says so.",
-    // (a Short: the lines both changed, the toast that says so laid over them — a news beat)
-    "@zoom:news:would conflict over code:30-31",
-    "@2",
-    "@zoom:code:29-32",
-    "@2",
-    "@beat:Every workspace's changes woven into one file.",
-    // (a Short: the camera stays on `wind` as `:weave` is typed — the prompt's card is wider than a phone reads, and a
-    // card the window cuts is left out — and the woven view comes in its place)
-    "@zoom:code:29-32",
+    "@note:they'd conflict → card:would conflict",
+    "@beat:Every workspace's changes, woven into one file.",
     ":",
     "@type:weave",
-    "@1",
     "\r",
     "@10?conflict 1 of 1",
     // (the conflict to the middle: opened at line 1 it stands at the foot, where a press scrolls it under the follow
@@ -2870,29 +2875,32 @@ const THREE_CLAUDES: &[&str] = &[
     "30G",
     "zz",
     "@zoom:code:29-32",
+    "@note:both, woven → code:29-32",
     "@punch",
-    "@5",
+    // (the one wait for a look: the emphasis's — the camera's 1.2 s move in and 2.1 s held —, then the hand to fix's
+    // part, the camera easing back out as it goes)
+    "@3.3",
     "@beat:Enter takes you to whoever wrote it.",
-    "@zoom:code:29-32",
     "@press?let _ = m.insert",
     "@release?let _ = m.insert",
-    "@1.5",
+    "@0.6",
     "\r",
+    "@note:enter → fix's workspace → fix › src › main.rs",
     "@10?fix › src › main.rs",
-    // (a Short: fix's `wind`, main's tag on the line they share)
-    "@zoom:code:29-32",
-    "@5",
 ];
-/// The sixth short video, V6 "The manager's view" (`--video managers-view`, ~40 s at 120×34; collab's
+/// The sixth short video, V6 "The manager's view" (`--video --shorts managers-view`, 80×43; collab's
 /// `.sb/videos-plan.md` V6): three sessions, each its own Claude by its checkout (`v6-main`, `v6-fix`, `v6-docs`), on
 /// V2's file. Off camera, main's commit (a line of `thread.rs`) leaves fix and docs a commit behind (`↓ 1`), and each
 /// session is asked twice — the first turn a short answer whose result names its context window (the list says a
 /// context only once a result has: `ctx 34%`, `62%`, `87%` in warning), the second the work, which never ends on camera:
 /// fix's edit of `m.insert` (line 31) lands at once and main's own way of it after, so C2 says they'd conflict; docs asks
 /// to run its tests outside the sandbox, its card left waiting. The columns each Claude's opened by itself at its first
-/// answer hidden again (`space L`). On camera, the floating list (`▲ waits`, `≈`, `↓ 1`, `ctx`), `j` `f`: into fix's
-/// workspace following it — the moment it's followed (`@touch:`) fix writes `wind`'s key (line 30) —; docs' card a peek
-/// there, `C-q` and `y` from fix's workspace; the list again, docs at work. Its Short opens on the list (`@punch`).
+/// answer hidden again (`space L`). On camera, the floating list (`▲ waits`, `≈`, `↓ 1`, `ctx`) — the one emphasis, the
+/// punchline (`@punch`): every Claude's state in one place is what the Short is for —, then on the whole `j` `f`: into
+/// fix's workspace following it — the moment it's followed (`@touch:`) fix writes `wind`'s key (line 30) —; docs' card
+/// a peek there, `C-q` taking you to it, `y`; the list again, docs at work. The take ends before docs' next words
+/// (`@cut?`). No beat waits to be read: the scene goes at the stand-in Claudes' pace and a hand's, but for the list it
+/// stands on while the camera eases in, holds and eases back out (CLAUDE.md's Shorts bullet), its four phrases over it.
 const MANAGERS_VIEW: &[&str] = &[
     "@1",
     ":",
@@ -2978,48 +2986,50 @@ const MANAGERS_VIEW: &[&str] = &[
     "@1",
     "@rec",
     "@beat:Every Claude at work, in one list.",
-    // (a Short: the list's frame, no code beside it)
-    "@zoom:card:sessions|44",
-    // (a Short opens here: the list whole)
+    // (the one emphasis, the punchline: the list whole — what waits for you, a clash ahead, how far behind, how full.
+    // The one wait for a look — the camera's 1.2 s move in, 2 s held, 1.2 s back out —, a phrase for each of what it
+    // says, each its `captions::STAND_MIN_MS` at least)
+    "@zoom:card:sessions",
+    "@note:three Claudes, one list → card:sessions",
+    "@1.3",
+    "@note:docs waits on you → ▲ waits",
     "@punch",
-    "@5",
-    "@beat:What waits for you, a clash ahead, how far behind.",
-    // (a Short: the columns that say it, the names before them)
-    "@zoom:card:sessions|40",
-    "@6",
+    "@1.2",
+    "@note:main, fix would clash → ≈ fix",
+    "@1.2",
+    "@note:behind, context 87% full → ctx 87%",
+    "@0.7",
     "@beat:f follows one, in its own workspace.",
-    "@zoom:card:sessions|40",
     "j",
-    "@1",
+    "@0.6",
     "f",
     "@touch:.v6-follow",
     "@10?fix › src › main.rs",
+    "@note:f follows fix → fix › src › main.rs",
     "@sound:writing",
-    "@zoom:code:29-32",
+    // (docs' peek said once fix's line is half written: the two phrases ~2.5 s and ~1.5 s at the writing's pace)
+    "@20?name.trim",
+    "@beat:Another Claude's card waits here, never in your way.",
+    "@note:docs' card waits below → docs asks",
     "@20?trim().to_string()",
     "@sound:still",
-    "@2",
-    "@beat:Another Claude's card waits here, never in your way.",
-    // (a Short: a news beat — fix's lines framed, docs' peek laid over them: framed where it stands it took fix's follow
-    // card in whole, 63 columns)
-    "@zoom:news:docs asks over code:29-32",
-    "@3",
+    "@0.6",
     "@beat:C-q takes you to it, and one key answers.",
     "\x11",
     "@10?Its reason",
-    "@zoom:card:Its reason",
-    "@2",
+    // (by docs' follow card, which stays through `y` and the run: the card goes at `y`, too soon for a phrase)
+    "@note:C-q takes you there → run its tests",
+    "@0.6",
     "@sound:stamp",
     "y",
-    // (a Short: docs' follow card, its run under way)
-    "@zoom:card:run its tests",
-    "@2",
+    "@0.6",
     "@beat:And the list says it as it happens.",
-    " ",
-    "W",
+    // (one key, as V4's `space l`: `space` sent apart stands long enough for which-key)
+    " W",
     "@10?sessions",
-    "@zoom:card:sessions|44",
-    "@5",
+    "@note:the list keeps up → card:sessions",
+    // (the take ends before docs' next words, its run done: nothing this Short is about)
+    "@cut?It builds",
 ];
 /// Polish landing 4's one bring card in motion (`--record bring`): fix's own commit (the readme), main moved since (a
 /// line of `thread.rs`, apart from it), the project's quick preflight two passing steps (`run_files`) — then
@@ -4888,7 +4898,7 @@ const SCENES: &[Scene] = &[
     // (…top right, beside main's ask waiting bottom right as a peek: the two one-row looks one family)
     Scene { name: "toast-peek", claude: "card", files: MAIN, keys: TOAST_PEEK },
     // (the polish week's landing 1, to be recorded: another session's card arriving while the session list floats)
-    Scene { name: "waits-60s", claude: "main=cardlater,fix=idle", files: MAIN, keys: WAITS_60S },
+    Scene { name: "waits-60s", claude: "cardlater", files: MAIN, keys: WAITS_60S },
     // (`:messages`, a floating list at the newest — the session list's frame)
     Scene { name: "messages", claude: "idle", files: MAIN, keys: MESSAGES },
     // (the same run asked again after a yes, the program it runs rebuilt since — git ignores it: the card's "Same as")
@@ -5613,10 +5623,10 @@ pub fn run(args: &[String]) -> Result<()> {
         })
     });
     let short = if shorts { video::short_size()? } else { RECORD_SIZE };
-    let sizes_of = |scene: &Scene| match &sizes {
+    let sizes_of = |_: &Scene| match &sizes {
         Some(s) => s.clone(),
         None if shorts => vec![short],
-        None if recording => vec![record_size(scene)],
+        None if recording => vec![RECORD_SIZE],
         None => SIZES.to_vec(),
     };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -5639,7 +5649,7 @@ pub fn run(args: &[String]) -> Result<()> {
                     if bg != backgrounds[0] {
                         continue;
                     }
-                    match take(scene, theme, size, &bin, &me, None) {
+                    match take(scene, theme, size, &bin, &me, None, false) {
                         Ok(rec) => {
                             println!("{}", crate::wire::report(&rec.wire).line(scene.name, size));
                             if !rec.missed.is_empty() {
@@ -5865,7 +5875,7 @@ fn lsp_send(out: &mut impl Write, v: &Value) -> io::Result<()> {
 /// `rec.json` (the homepage player's), `sheet.png` and its pages, `play.html`. A wait that timed out fails it, the take
 /// written all the same.
 fn record(scene: &Scene, bg: Bg, size: (u16, u16), bin: &Path, me: &Path, at: &Path) -> Result<()> {
-    let rec = take(scene, bg, size, bin, me, Some(at))?;
+    let rec = take(scene, bg, size, bin, me, Some(at), false)?;
     let beat_times: Vec<u64> = rec.beats.iter().map(|b| b.0).collect();
     let sampled = recording::sample(&rec.frames, &beat_times);
     let beats: Vec<(u64, &str)> = rec.beats.iter().map(|(t, c)| (*t, c.as_str())).collect();
@@ -5910,7 +5920,8 @@ fn waited(keys: &[(u64, String)], waits: &[(u64, String)]) -> Vec<(String, u64, 
 
 /// `scene` driven as `record` and `video_of` take it, its frames from `@rec`: each one passed `none_of_yours`. Into
 /// `at` (made) the take's tarae log lines of what moves a base and says it (`TOLD_LOG`) as `tarae.log`; each wait's
-/// time from the key before it said (#324: a card late is seen in every take, not only one that times out).
+/// time from the key before it said (#324: a card late is seen in every take, not only one that times out). A video's
+/// take (`video`) has tarae draw its fades and drying at the video's rate (`TARAE_SHOT_FRAME_MS`, `editor::tick`).
 fn take(
     scene: &Scene,
     bg: Bg,
@@ -5918,13 +5929,17 @@ fn take(
     bin: &Path,
     me: &Path,
     at: Option<&Path>,
+    video: bool,
 ) -> Result<shot::Recorded> {
     let dir = Named::new(&format!("rec-{}-{}-{}", scene.name, bg.theme(), std::process::id()))?;
     let real = std::fs::canonicalize(&dir.0).map_err(|e| format!("{}: {e}", dir.0.display()))?;
     let mut env_homes = homes(&real, &|k| std::env::var_os(k))?;
     env_homes.push(("TZ", fixed_clock(now()).into()));
     let demo = real.join("home/tarae-demo");
-    let setup = prepare(scene, bg.word(), false, bin, me, &real, &demo)?;
+    let mut setup = prepare(scene, bg.word(), false, bin, me, &real, &demo)?;
+    if video {
+        setup.env.push(("TARAE_SHOT_FRAME_MS", Some(video::FRAME_MS)));
+    }
     own_build_dir(&demo)?;
     let mut keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
     if !keys.iter().any(|k| k == "@rec") {
@@ -5967,7 +5982,7 @@ fn video_of(
     at: &Path,
 ) -> Result<()> {
     let started = std::time::Instant::now();
-    let rec = take(scene, bg, size, bin, me, Some(at))?;
+    let rec = take(scene, bg, size, bin, me, Some(at), true)?;
     let driven = started.elapsed();
     let title = video_title(scene.name);
     let mp4 = at.join(format!("{}.mp4", scene.name));
@@ -5975,8 +5990,42 @@ fn video_of(
     if form == video::Form::Short {
         println!("{}×{} cells; the camera:", size.0, size.1);
         made.zooms.iter().for_each(|z| println!("  {z}"));
-        if let Some((peak, rms)) = made.sound {
-            println!("sound: peak {peak:.1} dBFS, RMS {rms:.1} dBFS (while sounding), AAC 160 kb/s");
+        if let Some(s) = &made.sound {
+            let brush = s.brush.map_or(String::new(), |(b, a)| {
+                format!(", the brush {b:+.1} LU over the rest before, {a:+.1} after")
+            });
+            let aac = match s.encoded {
+                Ok((i, tp)) => {
+                    format!("the AAC (160 kb/s) {i:.1} LUFS, true peak {tp:.1} dBTP, PLR {:.1} dB", tp - i)
+                }
+                Err(ref e) => format!("the AAC not measured: {e}"),
+            };
+            let l = s.limited;
+            let limited = format!(
+                "the limiter took at most {:.1} dB from the keys (at {:.1} s){}",
+                l.keys,
+                l.keys_at,
+                l.brush.map_or(String::new(), |(own, both)| format!(
+                    ", {own:.1} dB from the brush, {both:.1} dB more where the two meet"
+                )),
+            );
+            let tried: Vec<String> = (s.ceilings.iter())
+                .map(|(c, tp)| match tp {
+                    Ok(tp) => format!("{c:.1} → {tp:.1}"),
+                    Err(e) => format!("{c:.1} → not measured ({e})"),
+                })
+                .collect();
+            println!(
+                "sound: {:.1} LUFS ({:+.1} dB), true peak {:.1} dBTP, PLR {:.1} dB, peak {:.1} dBFS, RMS {:.1} dBFS while \
+                 sounding{brush}; {limited}; the limiter's ceiling → the AAC's true peak (dBTP): {}; {aac}",
+                s.lufs,
+                s.gain,
+                s.true_peak,
+                s.true_peak - s.lufs,
+                s.peak,
+                s.rms,
+                tried.join(", ")
+            );
         }
         if let Some((keys, shown, stamps, settles)) = made.heard {
             println!(
@@ -5987,12 +6036,13 @@ fn video_of(
     }
     let kb = std::fs::metadata(&mp4).map_or(0.0, |m| m.len() as f64 / 1024.0);
     println!(
-        "saved {} ({:.1} s of video at {} px a glyph, {} frames; {kb:.0} KB; driven {:.1} s, drawn and encoded {:.1} s; \
-         sheet.png {} frames)",
+        "saved {} ({:.1} s of video at {} px a glyph, {} frames, {} of them differing from the one before; {kb:.0} KB; \
+         driven {:.1} s, drawn and encoded {:.1} s; sheet.png {} frames)",
         mp4.display(),
         made.seconds,
         made.px,
         made.frames,
+        made.differ,
         driven.as_secs_f64(),
         (started.elapsed() - driven).as_secs_f64(),
         made.sheet,
@@ -6014,7 +6064,7 @@ fn video_title(scene: &str) -> &'static str {
         "main-moved" => "When main moves, every workspace hears",
         "edit-in-buffer" => "Claude's edit, in your buffer",
         "follow-replay" => "Watch it work: follow and replay",
-        "three-claudes" => "Three Claudes, one file",
+        "three-claudes" => "Three Claudes. One file.",
         "managers-view" => "The manager's view",
         _ => "",
     }
@@ -6708,7 +6758,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
             ),
         ],
         "output-tests" | "panes-tests-code" | "panes-float" | "group-tests-list" | "group-tests-detail"
-        | "group-tests-stacked" | "float-tests" | "float-tests-moved" => vec![
+        | "group-tests-stacked" | "float-tests" | "float-tests-moved" | "waits-60s" => vec![
             ("src/main.rs", format!("{MAIN_RS}{MAIN_TESTS}")),
             (".cargo/config.toml", "[build]\nbuild-dir = \"target/build\"\n".into()),
         ],
@@ -6914,7 +6964,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "three" => turn.explain(true, true)?,
             // (V3's video: two reads the view follows, then three changes written at a stream's pace)
             "v3" => turn.edit_in_buffer()?,
-            // (V4's video: three reads far apart, a pause to take the view back, two edits under review at the end)
+            // (V5's video: three reads far apart, the view taken back and followed again, two edits under review at the end)
             "v4" => turn.follow_replay()?,
             // (V1's: three sessions' Claudes, fix's edit waiting on main's, docs talking all through)
             "v1-main" => turn.v1_main()?,
@@ -7480,19 +7530,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
-    /// V3's turn on `MAIN_V3_RS`: a read of `thread.rs` (the view follows it there), one of `main.rs`'s `main`, a few
-    /// words each, then an edit of three changes a line apart (touching ones would be one change) — the doc comment's,
-    /// the map's type dropped (the one to refuse) and the insert's — its input coming
+    /// V4's turn on `MAIN_V3_RS`: a read of `main.rs`'s `main` — the lines in front of you, so the view never leaves
+    /// them —, a few words, then an edit of three changes a line apart (touching ones would be one change) — the doc
+    /// comment's, the map's type dropped (the one to refuse) and the insert's — its input coming
     /// 8 characters every 50 ms (a measured stream's, `shimmer`: about 13 a 50 ms; slower, so a video reads it), and a
     /// pause once it's answered.
     fn edit_in_buffer(&mut self) -> io::Result<()> {
-        self.words("First what a thread is, then how the map is filled.")?;
-        self.text("\n\n")?;
-        self.call(1, "read", json!({"files": ["src/thread.rs:1-10"]}))?;
-        std::thread::sleep(Duration::from_millis(1500));
         self.words("A thread owns its name, so the map needs a key of its own.")?;
         self.text("\n\n")?;
-        self.call(2, "read", json!({"files": ["src/main.rs:8-16"]}))?;
+        self.call(1, "read", json!({"files": ["src/main.rs:8-16"]}))?;
         std::thread::sleep(Duration::from_millis(1500));
         self.words("**insert** takes the key by value, and a repeated name replaces the first strand.")?;
         self.words("I will keep the first with the entry API, and say so in the doc comment.")?;
@@ -7507,7 +7553,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "    m.insert(t.name.clone(), t);\n",
             "    m.entry(t.name.clone())\n        .or_insert(t);\n",
         );
-        self.edit_streamed(3, &format!(r#"{{"edits": [{doc}, {typed}, {insert}]}}"#))?;
+        self.edit_streamed(2, &format!(r#"{{"edits": [{doc}, {typed}, {insert}]}}"#))?;
         // (the review closes on its last answer: the three stamps stay in sight on the follow card's edit row)
         std::thread::sleep(Duration::from_millis(2500));
         self.words("Done — **main.rs** keeps the first strand when a name repeats.")?;
@@ -7530,10 +7576,10 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(n, "edit", serde_json::from_str(input).map_err(io::Error::other)?)
     }
 
-    /// V4's turn, on `SPOOL_V4_RS` (review at the end on: its edits land unseen and the turn goes on): three reads far
-    /// apart, the view following each — the second held 7 s, room for a key of yours to take the view back and `space
-    /// F` to follow again before the third — then two edits streamed in at lines 46 and 77, and an answer naming line
-    /// 46 (its card at the turn's end).
+    /// V5's turn, on `SPOOL_V4_RS` (review at the end on: its edits land unseen and the turn goes on): three reads far
+    /// apart, the view following each — after the second its words come 1.5 s on and its next 1.5 s after them, the
+    /// pace a key of yours takes the view back at and `space F` follows again at, the third read 2 s later — then two
+    /// edits streamed in at lines 46 and 77, and an answer naming line 46 (its card at the turn's end).
     fn follow_replay(&mut self) -> io::Result<()> {
         let item = |old: &str, new: &str| {
             let s = |t: &str| Value::from(t).to_string();
@@ -7550,8 +7596,11 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("The queue's order. Now the loop that winds.")?;
         self.text("\n\n")?;
         self.call(2, "read", json!({"files": ["src/spool.rs:42-56"]}))?;
-        std::thread::sleep(Duration::from_millis(7000));
-        self.words("It pops from the back: the newest strand goes first. And at the end:")?;
+        std::thread::sleep(Duration::from_millis(1500));
+        self.words("It pops from the back: the newest strand goes first.")?;
+        std::thread::sleep(Duration::from_millis(1500));
+        self.words("And at the end:")?;
+        std::thread::sleep(Duration::from_millis(2000));
         self.text("\n\n")?;
         self.call(3, "read", json!({"files": ["src/spool.rs:75-83"]}))?;
         std::thread::sleep(Duration::from_millis(2500));
@@ -7913,10 +7962,11 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             std::thread::sleep(Duration::from_millis(290));
         }
         self.text("\n\n")?;
-        // (a reason of three rows: the card tall enough to meet the floating list at 80×20)
+        // (a reason of four rows: at 80×43 the card, whole, stands on rows 29–40 and meets the tests floating on 11–30, so
+        // it folds to its peek — at 80×50 three rows only touched them and folded nothing)
         self.ask_outside_for(
             "cargo needs to fetch the registry index, and the tests bind a port on this machine that the \
-             sandbox keeps closed",
+             sandbox keeps closed, so neither works inside it",
         )
     }
 
@@ -8558,8 +8608,8 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
 }
 
 impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
-    /// V1's main: a read, then its edit of `wind`'s `m.insert` (line 31) written, held mid-line a while so fix's mark
-    /// and main's writing stand together, landing unseen (review at the end).
+    /// V1's main: a read, then its edit of `wind`'s `m.insert` (line 31) written at the stream's pace — no hold: its Short
+    /// reads only the woven conflict —, landing unseen (review at the end).
     fn v1_main(&mut self) -> io::Result<()> {
         self.words("Keying by the name alone lets a repeat replace the first strand.")?;
         self.text("\n\n")?;
@@ -8570,10 +8620,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             r#"{{"edits": [{}]}}"#,
             v1_item("    m.insert(k, t);\n", "    m.entry(k).or_insert(t);\n")
         );
-        self.input_pause(1, 2, "edit", &input, ".or_insert", || {
-            std::thread::sleep(Duration::from_millis(2500));
-            Ok(())
-        })?;
+        self.input_pause(1, 2, "edit", &input, ".or_insert", || Ok(()))?;
         self.call(2, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
         self.v1_talk(&[
             "Now a repeat keeps the first strand.",
@@ -8598,14 +8645,16 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     }
 
     /// V1's fix: its edit of `wind`'s key (line 30) and of its `m.insert` its own way, held mid-line on the key until
-    /// main's edit is on main's disk (`../tarae-demo`), then written and landing: the same line changed two ways.
+    /// main's edit is on main's disk (`../tarae-demo`), then written and landing: the same line changed two ways. Its
+    /// lines short (`.into()`, not `.to_string()`), so its part of the woven conflict reads whole in the Short's read,
+    /// its gutter's `f` kept.
     fn v1_fix(&mut self) -> io::Result<()> {
         self.words("Trimming a name before it keys the map.")?;
         self.text("\n")?;
-        let key = v1_item("    let k = t.name.clone();\n", "    let k = t.name.trim().to_string();\n");
+        let key = v1_item("    let k = t.name.clone();\n", V1_FIX_KEY);
         let insert = v1_item("    m.insert(k, t);\n", "    let _ = m.insert(k, t);\n");
         let input = format!(r#"{{"edits": [{key}, {insert}]}}"#);
-        self.input_pause(1, 1, "edit", &input, ".to_string()", || {
+        self.input_pause(1, 1, "edit", &input, ".into()", || {
             wait_file_contains(Path::new("../tarae-demo/src/main.rs"), "or_insert", Duration::from_secs(90))
         })?;
         self.call(1, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
@@ -8645,6 +8694,9 @@ const V6_CONTEXT: [(&str, u64, u64); 3] =
 const V6_WINDOW: u64 = 200_000;
 /// Where fix's writing waits for the moment you follow it: made beside the checkouts by the scene's `@touch:`.
 const V6_FOLLOWED: &str = "../.v6-follow";
+/// Docs' first words after its run, and when (a turn's pace after the run's answer): the Short's take ends before them.
+const V6_DOCS_SAYS: &str = "It builds; `tie` is never used, in either file.";
+const V6_DOCS_SAYS_MS: u64 = 2000;
 
 impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// A V6 turn of session `who` (`main`, `fix`, `docs`): its request as a conversation's (`context` tokens carried),
@@ -8759,7 +8811,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     }
 
     /// V6's docs: a read of `thread.rs`, then a run of its tests asked outside the sandbox — its card waits for you —,
-    /// then talk all through the take.
+    /// then its first words on the run at a turn's pace (2 s: the Short ends before them), then talk all through the take.
     fn v6_docs(&mut self) -> io::Result<()> {
         self.words("Let me read what the tests measure.")?;
         self.text("\n\n")?;
@@ -8769,8 +8821,11 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         let run = json!({"command": "cargo test --quiet", "outside_sandbox": true,
             "reason": "cargo needs to fetch the registry index"});
         self.call(2, "run", run)?;
+        if !self.pause.is_zero() {
+            std::thread::sleep(Duration::from_millis(V6_DOCS_SAYS_MS));
+        }
+        self.words(V6_DOCS_SAYS)?;
         self.v1_talk(&[
-            "It builds; `tie` is never used, in either file.",
             "No test measures a thread yet.",
             "The doc comment on `length` could say what one would check.",
             "Nothing else needs a change.",
@@ -8790,6 +8845,9 @@ fn wait_file(path: &Path, timeout: Duration) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// V1's fix: `wind`'s key, trimmed.
+const V1_FIX_KEY: &str = "    let k = t.name.trim().into();\n";
 
 /// One item of an `edit` call on `src/main.rs`, its keys in the order the model writes them: what it replaces, then
 /// what it writes.
@@ -8959,8 +9017,8 @@ mod tests {
 
     /// V1's three Claudes (`three-claudes`): each checkout its own script, edits landing unseen (so fix's, waiting on
     /// main's, lands too); main's and fix's edit inputs streamed as the model writes them — what an item replaces
-    /// before what it writes, whole once streamed —, each item found in the file the scene runs on, the same line
-    /// changed two ways; every turn ends.
+    /// before what it writes, whole once streamed —, each item found in the file the scene runs on, each line it
+    /// writes short enough to read whole in the Short's read, the same line changed two ways; every turn ends.
     #[test]
     fn v1s_three_claudes_each_play_their_own_turn_on_one_line() {
         let spec = SCENES.iter().find(|s| s.name == "three-claudes").unwrap().claude;
@@ -8997,11 +9055,270 @@ mod tests {
             for item in edits["edits"].as_array().unwrap() {
                 let old = item["old_string"].as_str().unwrap();
                 assert!(MAIN_MOVED_RS.contains(old), "{who}'s {old:?} is in the file");
+                // (each part of the woven conflict whole in the Short's read: 38 columns, less the woven gutter's 4 and a
+                // cell of air)
+                let new = item["new_string"].as_str().unwrap();
+                assert!(new.lines().all(|l| l.chars().count() <= 33), "{who}'s {new:?} reads whole");
                 replaced.push(old.to_string());
             }
             assert!(input.find("old_string") < input.find("new_string"), "{who}: {input}");
         }
         assert_eq!(replaced.iter().filter(|o| *o == "    m.insert(k, t);\n").count(), 2, "{replaced:?}");
+    }
+
+    /// Each Short waits for a look only at its emphasis (CLAUDE.md's Shorts bullet: unless something is stressed, it runs
+    /// on): on camera (past `@rec`) every timed wait is a hand's (0.6 s at most) but those in the beat of its one read,
+    /// after its `@zoom` — V1's the ease in and its look (the hand's move in the ease out), V2's and V3's the ease in,
+    /// its look and the ease out (`camera::DRIFT_MS`, `READ_MS`: its next keys on the whole), split for their phrases;
+    /// V4's the ease in alone (Claude writing all through it; its look a hand's three answers, its ease out the turn's
+    /// own pace up to the cut); V5's the ease in, its look and the ease out, the take ending with it; V6's the same, the
+    /// take opening with it.
+    #[test]
+    fn each_short_waits_for_a_look_only_at_its_emphasis() {
+        let looks = |keys: &[&str]| {
+            let (mut read, mut looks) = (false, Vec::new());
+            for k in keys.iter().skip_while(|k| **k != "@rec") {
+                read = (read && !k.starts_with("@beat:")) || k.starts_with("@zoom");
+                match k.strip_prefix('@').and_then(|s| s.parse::<f32>().ok()) {
+                    Some(s) if s > 0.6 => looks.push((read, s)),
+                    _ => {}
+                }
+            }
+            looks
+        };
+        let (drift, read) = (crate::camera::DRIFT_MS, crate::camera::READ_MS);
+        assert_eq!(looks(THREE_CLAUDES), [(true, 3.3)]);
+        assert_eq!(
+            ((3.3f64 * 1000.0).round() as u64).checked_sub(drift + read),
+            Some(100),
+            "V1's: in and held, a beat after"
+        );
+        assert_eq!(looks(WAITS_60S), [(true, 2.0), (true, 2.4)]);
+        assert_eq!(looks(MAIN_MOVED), [(true, 1.5), (true, 1.5), (true, 1.4)]);
+        assert_eq!(looks(EDIT_IN_BUFFER), [(true, drift as f32 / 1000.0)]);
+        assert_eq!(looks(FOLLOW_REPLAY), [(true, 1.2), (true, 2.0), (true, 1.2)]);
+        assert_eq!(looks(MANAGERS_VIEW), [(true, 1.3), (true, 1.2), (true, 1.2), (true, 0.7)]);
+        let emphasis = 2 * drift + read;
+        let all = [("V2", WAITS_60S), ("V3", MAIN_MOVED), ("V5", FOLLOW_REPLAY), ("V6", MANAGERS_VIEW)];
+        for (v, keys) in all {
+            let look: f32 = looks(keys).iter().map(|l| l.1).sum();
+            assert_eq!((look * 1000.0).round() as u64, emphasis, "{v}'s look: in, held, out");
+        }
+    }
+
+    /// Each Short that runs on to its end (no `@cut?`) has its last beat landed by its last step: a key after its last
+    /// caption's mark (the one bringing its target) and the take ends on the wait for that target; only waits after it
+    /// (V5's look held), its target there as it was marked. The take runs on `shot::TAIL_S` from the last step —
+    /// `captions::TAIL_MIN_MS` before the end card (a cut one's tail is its take's: `video::make` says it short).
+    #[test]
+    fn each_short_that_runs_on_ends_on_its_last_beat_landing() {
+        let all = [THREE_CLAUDES, WAITS_60S, MAIN_MOVED, EDIT_IN_BUFFER, FOLLOW_REPLAY, MANAGERS_VIEW];
+        let mut brought = 0;
+        for keys in all.into_iter().filter(|keys| !keys.iter().any(|k| k.starts_with("@cut?"))) {
+            let mark = keys.iter().rposition(|k| k.starts_with("@note:")).unwrap();
+            if keys[mark + 1..].iter().all(|k| k.starts_with('@')) {
+                continue;
+            }
+            brought += 1;
+            let note = &keys[mark]["@note:".len()..];
+            let target = crate::captions::parse(note).unwrap().1;
+            let waited = (keys.last().and_then(|k| k.strip_prefix('@')))
+                .and_then(|k| k.split_once('?'))
+                .filter(|(s, _)| s.parse::<f64>().is_ok());
+            assert_eq!(waited.map(|w| w.1), Some(target.strip_prefix("card:").unwrap_or(target)), "{note}");
+        }
+        assert_eq!(brought, 2, "V3's and V4's");
+    }
+
+    /// V3 (`main-moved`): main's edit is made off camera (V1's story), its commit typed on camera before its card comes;
+    /// the one read is that card at its two workspaces' rows (the card wider than the 46 columns that read at 2.5 mm
+    /// at 80×34, its rows not), the Short opening on it; after `y`, fix's beat on the whole: C2's `fix ≈ docs` waited
+    /// for, then `G` `b` its bring card, its phrase on it, the take ending there.
+    #[test]
+    fn v3_commits_on_camera_reads_its_card_and_ends_on_fixs_way_back() {
+        let at = |keys: &[&str], k: &str| keys.iter().position(|x| *x == k).unwrap();
+        let rec = at(MAIN_MOVED, "@rec");
+        let (off, on) = MAIN_MOVED.split_at(rec);
+        assert!(off.contains(&" // main") && !on.contains(&"A"), "main's edit off camera");
+        assert!(at(on, "@type:-qm main src/main.rs") < at(on, "@20?main moved"));
+        let zooms: Vec<&str> = on.iter().copied().filter(|k| k.starts_with("@zoom")).collect();
+        assert_eq!(zooms, ["@zoom:rows:fix — … docs —"]);
+        // (the rows as keepclose's card says them; the longest is the window's width)
+        let rows = [
+            "fix — 1 behind, would conflict in src/main.rs",
+            "docs — 1 behind, its changed file goes with it",
+        ];
+        let widest = rows.iter().map(|r| r.chars().count()).max().unwrap();
+        assert!(widest <= 46, "{widest} columns");
+        assert!(at(on, zooms[0]) < at(on, "@punch") && at(on, "@punch") < at(on, "\x11"));
+        // (fix's beat: after docs moved, its conflict said, then its bring card — the take's last)
+        let beat =
+            ["@20?moved onto main", "@20?fix ≈ docs", "G", "b", "@20?Bring fix into main"].map(|k| at(on, k));
+        assert!(at(on, "y") < beat[0] && beat.windows(2).all(|w| w[0] < w[1]), "{beat:?}");
+        assert_eq!(on.last(), Some(&"@20?Bring fix into main"));
+        assert!(!on.iter().any(|k| k.starts_with("@cut?")), "nothing comes after the card by itself");
+        let note = on.iter().position(|k| k.ends_with("→ card:Bring fix into main")).expect("its phrase");
+        assert!(beat[2] < note && note < beat[3], "its phrase from the card's first frame");
+    }
+
+    /// V4 (`edit-in-buffer`): `space l` one key (no which-key over the whole); the turn reads only the lines in front of
+    /// you (the view never leaves your buffer) and edits them — each item found in the scene's file —, then ends; the one
+    /// read is the review, from its arrival through its three answers, the Short opening on two answers in; once the
+    /// turn is over, `space u` (one key) on the whole, its phrase on its toast, the take ending there.
+    #[test]
+    fn v4_writes_in_your_buffer_reads_its_lines_through_the_review_and_takes_the_turn_back() {
+        let at = |keys: &[&str], k: &str| keys.iter().position(|x| *x == k).unwrap();
+        let on: Vec<&str> = EDIT_IN_BUFFER.iter().copied().skip_while(|k| *k != "@rec").collect();
+        assert!(on.contains(&" l") && on.contains(&" u") && !on.contains(&" "), "space l, space u one key");
+        let zooms: Vec<&str> = on.iter().copied().filter(|k| k.starts_with("@zoom")).collect();
+        assert_eq!(zooms, ["@zoom:code:7-13"], "from the row above the first head");
+        let (zoom, review) = (at(&on, "@zoom:code:7-13"), at(&on, "@20?Change 1 of 3"));
+        let answers: Vec<usize> = (0..on.len()).filter(|&i| ["y", "n"].contains(&on[i])).collect();
+        assert_eq!(answers.iter().map(|&i| on[i]).collect::<Vec<_>>(), ["y", "n", "y"]);
+        // (the writing on the whole; the read the review's, its ease in waited out before the first answer)
+        assert!(review < zoom && zoom < answers[0], "the review read, its answers in the hold");
+        assert_eq!(on[answers[0] - 2], "@1.2", "the ease in waited out");
+        assert!(review < answers[0] && answers[1] < at(&on, "@punch") && at(&on, "@punch") < answers[2]);
+        // (the undo once the turn is over — `space u` refuses mid-turn —, on the whole: the one read was the edit's)
+        let (done, undo) = (at(&on, "@20!● follow"), at(&on, " u"));
+        assert!(answers[2] < done && done < undo, "{done} {undo}");
+        let note = at(&on, "@note:yours to take back → undid");
+        assert!(done < note && note < undo, "its phrase from the toast's first frame");
+        assert_eq!(on.last(), Some(&"@10?undid"));
+        assert!(!on.iter().any(|k| k.starts_with("@cut?")), "nothing comes after the undo by itself");
+        let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+        let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
+        turn.edit_in_buffer().unwrap();
+        let said: Vec<Value> =
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(said.last().unwrap()["type"], "result", "the turn ends");
+        let calls: Vec<&Value> = said.iter().filter_map(|v| v.pointer("/request/message/params")).collect();
+        for c in &calls {
+            let files = c["arguments"]["files"].as_array().into_iter().flatten();
+            let edited = c["arguments"]["edits"].as_array().into_iter().flatten().map(|e| &e["file_path"]);
+            for f in files.chain(edited) {
+                assert!(
+                    f.as_str().unwrap().starts_with("src/main.rs"),
+                    "{f}: only the buffer in front of you"
+                );
+            }
+        }
+        let edit = calls.iter().find(|c| c["name"] == "edit").unwrap();
+        for item in edit["arguments"]["edits"].as_array().unwrap() {
+            assert!(MAIN_V3_RS.contains(item["old_string"].as_str().unwrap()), "{item}");
+        }
+    }
+
+    /// V5 (`follow-replay`): `space l`, `[r` each one key (no which-key over the whole); `j` and `space F` come at the
+    /// turn's own pace (its words after the second read, then its next), the replay once the turn's review has opened;
+    /// the one read is the first change's stop, reached by `[r` twice (the last change, then it), the Short opening on
+    /// it. The turn reads and edits only the scene's file, each edit's text found there, its words between the second
+    /// and third reads, and ends; the read's lines hold the first change.
+    #[test]
+    fn v5_takes_the_view_back_at_the_turns_pace_and_replays_to_its_first_change() {
+        let on: Vec<&str> = FOLLOW_REPLAY.iter().copied().skip_while(|k| *k != "@rec").collect();
+        let at = |k: &str| on.iter().position(|x| *x == k).unwrap();
+        assert!(on.contains(&" l") && on.contains(&" F") && !on.contains(&" "), "space chords one key");
+        assert!(!on.contains(&"[") && !on.contains(&"]"), "[r one key");
+        assert_eq!(on[at("j") - 1], "@10?It pops", "j as Claude's words come");
+        assert_eq!(on[at(" F") - 1], "@10?And at the end", "space F at its next");
+        let replay: Vec<usize> = (0..on.len()).filter(|&i| on[i] == "[r").collect();
+        assert_eq!(replay.len(), 2, "the last change, then the first");
+        assert!(at("@20?Claude changed") < replay[0], "the replay once the review has opened");
+        let zooms: Vec<&str> = on.iter().copied().filter(|k| k.starts_with("@zoom")).collect();
+        assert_eq!(zooms, ["@zoom:code:44-48"]);
+        assert!(replay[1] < at("@zoom:code:44-48") && at("@zoom:code:44-48") < at("@punch"));
+        assert!(SPOOL_V4_RS.lines().nth(45).unwrap().contains("q.pop_back()"), "line 46 the first change's");
+        let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+        let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
+        turn.follow_replay().unwrap();
+        let said: Vec<Value> =
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(said.last().unwrap()["type"], "result", "the turn ends");
+        let calls: Vec<&Value> = said.iter().filter_map(|v| v.pointer("/request/message/params")).collect();
+        let reads: Vec<&str> = (calls.iter().filter(|c| c["name"] == "read"))
+            .map(|c| c["arguments"]["files"][0].as_str().unwrap())
+            .collect();
+        assert_eq!(reads, ["src/spool.rs:3-7", "src/spool.rs:42-56", "src/spool.rs:75-83"]);
+        let edits: Vec<&Value> = calls.iter().filter(|c| c["name"] == "edit").copied().collect();
+        assert_eq!(edits.len(), 2);
+        for item in edits.iter().flat_map(|e| e["arguments"]["edits"].as_array().unwrap()) {
+            assert_eq!(item["file_path"], "src/spool.rs");
+            assert!(SPOOL_V4_RS.contains(item["old_string"].as_str().unwrap()), "{item}");
+        }
+        // (in the order said: the second read's request, its words, the third's)
+        let place = |what: &dyn Fn(&Value) -> bool| said.iter().position(what).unwrap();
+        let text = |t: &'static str| {
+            move |v: &Value| {
+                v.pointer("/event/delta/text").and_then(Value::as_str).is_some_and(|s| s.contains(t))
+            }
+        };
+        let read = |r: &'static str| {
+            move |v: &Value| v.pointer("/request/message/params/arguments/files/0").is_some_and(|f| f == r)
+        };
+        let (second, pops) = (place(&read("src/spool.rs:42-56")), place(&text("pops")));
+        let (end, third) = (place(&text("end:")), place(&read("src/spool.rs:75-83")));
+        assert!(second < pops && pops < end && end < third, "{second} {pops} {end} {third}");
+    }
+
+    /// V6 (`managers-view`): the one read is the list as the take opens, the Short opening on it held; then on the whole
+    /// `j` `f` follow fix, `C-q` once fix's line is written, `y`, the list again (`space W` one key: no which-key over the
+    /// whole); the take ends before docs' first words after its run, which come at a turn's pace once the run answers.
+    #[test]
+    fn v6_reads_its_list_once_answers_docs_from_fix_and_ends_before_docs_says_more() {
+        let on: Vec<&str> = MANAGERS_VIEW.iter().copied().skip_while(|k| *k != "@rec").collect();
+        let at = |k: &str| on.iter().position(|x| *x == k).unwrap();
+        assert!(on.contains(&" W") && !on.contains(&" "), "space W one key");
+        let zooms: Vec<&str> = on.iter().copied().filter(|k| k.starts_with("@zoom")).collect();
+        assert_eq!(zooms, ["@zoom:card:sessions"]);
+        assert!(at("@zoom:card:sessions") < at("@punch") && at("@punch") < at("j"), "opens on the list");
+        let keys = ["j", "f", "\x11", "y", " W"].map(at);
+        assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
+        assert!(at("@20?trim().to_string()") < at("\x11"), "C-q once fix's line is written");
+        assert_eq!(on.last(), Some(&format!("@cut?{}", &V6_DOCS_SAYS[..9]).as_str()));
+        let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+        let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
+        turn.v6_docs().unwrap();
+        let said: Vec<Value> =
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let run = said.iter().position(|v| v.pointer("/request/message/params/name") == Some(&json!("run")));
+        let after: String = (said[run.expect("docs runs") + 1..].iter())
+            .filter_map(|v| v.pointer("/event/delta/text").and_then(Value::as_str))
+            .collect();
+        assert!(after.trim_start().starts_with(V6_DOCS_SAYS), "its first words after the run: {after}");
+        assert!((1000..=3000).contains(&V6_DOCS_SAYS_MS), "a turn's pace");
+    }
+
+    /// V2 (`waits-60s`): what you opened is your own tests, floated — the scene's file has them and its keys run them
+    /// (`space x f`) and float them (`C-w e`) on camera before main's card comes; one session, no list.
+    #[test]
+    fn v2_floats_your_tests_before_its_card_comes() {
+        let scene = SCENES.iter().find(|s| s.name == "waits-60s").unwrap();
+        assert_eq!(scene.claude, "cardlater");
+        assert!(
+            run_files("waits-60s").iter().any(|(f, text)| *f == "src/main.rs" && text.contains(MAIN_TESTS))
+        );
+        let on: Vec<&str> = WAITS_60S.iter().copied().skip_while(|k| *k != "@rec").collect();
+        let at = |seq: &[&str]| on.windows(seq.len()).position(|w| w == seq);
+        let (run, float) = (at(&[" ", "x", "f"]).unwrap(), at(&["\x17", "e"]).unwrap());
+        let card = at(&["@30?Claude wants to run"]).unwrap();
+        assert!(run < float && float < card, "{run} {float} {card}");
+        assert!(!on.contains(&"W"), "no session list");
+        // (the peek read at its words whole — its air, `▎ ` and the card's title —, inside the 46 columns that read at
+        // 2.5 mm at 80×34, not its own 48)
+        let zooms: Vec<&str> = on.iter().copied().filter(|k| k.starts_with("@zoom")).collect();
+        let words = 3 + "Claude wants to run — outside the sandbox".chars().count();
+        assert!(words <= 46, "{words} columns");
+        assert_eq!(zooms, [format!("@zoom:card:Claude wants to run|{words}")]);
+        // (the take ends as the run's slot first shows: its top line's `─` and the command the card asked for)
+        let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+        let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
+        turn.ask_outside_for("a reason").unwrap();
+        let asked = (String::from_utf8(out).unwrap().lines())
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find_map(|v| v.pointer("/request/message/params/arguments/command")?.as_str().map(String::from))
+            .expect("a run asked");
+        assert_eq!(on.last(), Some(&format!("@cut?─ {asked}").as_str()));
     }
 
     /// V6's three Claudes (`managers-view`): each checkout its own script; edits landing unseen and no card for main's

@@ -158,7 +158,7 @@ impl Shown {
     /// moves on a clock: one as it goes).
     fn wake(&self, now: Instant, moving: bool) -> Duration {
         let age = now.saturating_duration_since(self.at);
-        let tick = crate::editor::TICK;
+        let tick = crate::editor::tick();
         if !moving {
             return self.hold.saturating_sub(age) + Duration::from_millis(2);
         }

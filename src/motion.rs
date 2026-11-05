@@ -34,7 +34,7 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use crate::document::DocId;
-use crate::editor::{Editor, TICK, ToastKind};
+use crate::editor::{Editor, ToastKind, tick};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
@@ -322,7 +322,7 @@ impl Editor {
                     return Duration::ZERO;
                 }
                 let at = if full {
-                    (age.as_nanos() / TICK.as_nanos() + 1) * TICK.as_nanos()
+                    (age.as_nanos() / tick().as_nanos() + 1) * tick().as_nanos()
                 } else {
                     over.as_nanos()
                 };
@@ -510,7 +510,7 @@ impl Moving {
 /// step, the frames come on them): full on the act's own frame, a quick fall, a long last step, as ink dries.
 /// Over 1 s: 1 · .81 · .64 · .49 · .36 · .25 · .16 · .09 · gone; over 0.2 s: 1 · .25 · gone. 0 under `GONE`.
 pub fn strength(age: Duration, life: Duration) -> f32 {
-    let step = age.as_nanos() / TICK.as_nanos() * TICK.as_nanos();
+    let step = age.as_nanos() / tick().as_nanos() * tick().as_nanos();
     let t = step as f64 / life.as_nanos().max(1) as f64;
     let k = (1.0 - t).max(0.0).powi(2) as f32;
     if k < GONE { 0.0 } else { k }
@@ -520,7 +520,7 @@ pub fn strength(age: Duration, life: Duration) -> f32 {
 pub fn shown_for(life: Duration) -> Duration {
     let mut at = Duration::ZERO;
     while at < life && strength(at, life) > 0.0 {
-        at += TICK;
+        at += tick();
     }
     at.min(life)
 }

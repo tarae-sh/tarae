@@ -1,20 +1,15 @@
-//! A Short's camera (`scenes --video --shorts`, `video.rs`): the scene's `@zoom:<target>` lines, each found on the
-//! screen in force at its time (`target`) and eased to (`at`: `EASE_MS`, an ease-out — the motion rule's), held until
-//! the next `@zoom` or beat (a beat with none of its own goes back to the whole screen). The whole screen shows where
-//! each part lives (`wholes`): before the take's first move, pulled out to between two beats whose targets are apart
-//! (a pan where they sit side by side — `side_by_side`) and wherever the screen comes to name another file or
-//! workspace (`place`: the lines may stay put, the "where" changed), and once more after the take. Where the camera is is a
-//! region of the screen in cells; a frame draws the screen with glyphs at the largest whole size the region fits the
-//! window at (`fit`) and crops it there (`crop`) — never past the picture's edge, the region always whole in it. A
-//! target's region is shaped to the window as it's found (`framed`), the target's centre at the eye's height: the rows
-//! or columns it adds put where they cut no card (a frame, or a borderless one by its ground — `cards`), else the cut
-//! card taken in whole, else the window as the target has it — and on every frame a card the window cuts, one that
-//! came while a zoom holds too, is left out on the window's ground (`cut`), a row of text the window's edge cuts drawn
-//! cut there as a zoomed video crops (`Window`), a sliver of one the left edge leaves erased. A news beat
-//! (`news:<text> over <target>`) frames what its toast is about and lays the toast over the window's top (`callout`).
-//! A target that floats over the code (a list, a card, a prompt — `spotlit`) is a spotlight's: what's round it dimmed
-//! toward the ground, eased in and out with the camera (`lit`); the code's targets and a news beat's toast stay bright.
-//! Pure: the frames' drawing is `video.rs`'s.
+//! A Short's camera (`scenes --video --shorts`, `video.rs`). **It flows, nothing pops** (CLAUDE.md's Shorts bullet):
+//! the camera stands still on the whole at 1.0×, no drift, no push, and moves only for an emphasis — the one read a beat
+//! may have (the scene's `@zoom:<target>`, `@zoom-deep:` where its text is too small otherwise; `READS_MAX` a Short at
+//! most): eased in, held its look (`course`), eased back out. Where it aims (`aims`: the whole, a read's window while it
+//! holds) is followed by a move of `DRIFT_MS` each way (`way`, `Path`: 쫀득 — a quick start that lands soft, 2 % past
+//! going in), never a snap; exactly the whole everywhere else.
+//! Where most of the screen changes at once (a view opening, a workspace switch) the two screens cross over `CROSS_MS`
+//! (`crossfades`), never a cut. Where the camera is is a region of the screen in cells, fractions and all; the frame
+//! draws it at any scale (`video.rs` resamples), so a push is continuous — never a whole glyph size's step. A read's
+//! window is at a depth that reads (at least the columns a phone shows at its legible glyph — ~38 of 80 —, from the
+//! target's pane's left: `pane_left`), a deep one's the target's own (`framed`). A news beat (`news:<text> over <target>`) frames what its
+//! toast is about and lays the toast over the window's top (`callout`). Pure: the frames' drawing is `video.rs`'s.
 
 /// A screen as the camera reads it: each cell's text and its ground (its background, as a number), row by row.
 pub(crate) struct Cells {
@@ -55,8 +50,6 @@ pub(crate) struct Region {
     pub(crate) h: f32,
 }
 
-/// A move's length: the motion rule's ≤ 0.4 s.
-pub(crate) const EASE_MS: u64 = 400;
 /// The air kept round a target, in cells.
 const AIR: f32 = 1.0;
 
@@ -71,11 +64,6 @@ impl Region {
         let (cw, rh) = (f32::from(cols), f32::from(rows));
         let (w, h) = (self.w.clamp(1.0, cw), self.h.clamp(1.0, rh));
         Region { x: self.x.clamp(0.0, cw - w), y: self.y.clamp(0.0, rh - h), w, h }
-    }
-
-    fn toward(self, to: Region, t: f32) -> Region {
-        let l = |a: f32, b: f32| a + (b - a) * t;
-        Region { x: l(self.x, to.x), y: l(self.y, to.y), w: l(self.w, to.w), h: l(self.h, to.h) }
     }
 
     /// Cells `c0..c1`, rows `r0..r1` with `AIR` round them, inside the screen.
@@ -103,129 +91,257 @@ pub(crate) fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Where the camera is `ms` into the take, given its moves (each: when, where to — in order): the whole screen before
-/// the first; each move eased over `EASE_MS` from wherever the camera was as it began (a move begun mid-way through
-/// another starts from there, never a jump); every region inside the screen.
-pub(crate) fn at(moves: &[(u64, Region)], screen: (u16, u16), ms: u64) -> Region {
-    let all = Region::all(screen);
-    let (mut from, mut to, mut since) = (all, all, 0u64);
-    let eased = |from: Region, to: Region, since: u64, now: u64| {
-        from.toward(to, ease_out(now.saturating_sub(since) as f32 / EASE_MS as f32))
-    };
-    for &(t, region) in moves.iter().take_while(|m| m.0 <= ms) {
-        from = eased(from, to, since, t);
-        (to, since) = (region.inside(screen), t);
-    }
-    eased(from, to, since, ms)
+/// An ease in and out, a half cosine: still at both ends, quickest in the middle.
+pub(crate) fn ease_in_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    (1.0 - (std::f32::consts::PI * t).cos()) / 2.0
 }
 
-/// The whole screen held before the take's first move (after the title card) and after its last screen (before the end
-/// card): too small to read, its shape seen.
-pub(crate) const WHOLE_MS: u64 = 1_500;
-/// The whole held between two beats' targets, from the ease out's end to the ease in's start.
-pub(crate) const BETWEEN_MS: u64 = 300;
-/// The least a target stands once the camera is there, before a pull-out may take the camera from it.
-pub(crate) const HELD_MIN_MS: u64 = 1_000;
+/// The camera's move into a read and back out to the whole: there this long after it starts, each way (CLAUDE.md's
+/// Shorts bullet — ~1.2 s, 쫀득: a quick start that lands soft; never the motion rule's 0.4 s). How it goes is `way`.
+pub(crate) const DRIFT_MS: u64 = 1_200;
+/// The camera's path is worked out at this step, and read between its steps.
+const STEP_MS: u64 = 10;
+/// A read held once the camera is there, where its target stays: the one thing it's about, read — as at 1.5 s moves,
+/// the look the user kept.
+pub(crate) const READ_MS: u64 = 2_000;
 
-/// A move as `wholes` lays it: when the camera goes (its target found on the screen), its window and its target's
-/// region, and when the beat it's the first move of came (none: a move within a beat).
+/// Going back out to the whole, a critically damped spring's rate (1/s): its residue `(1 + ωt)e^(−ωt)` at 1 % at
+/// `DRIFT_MS` (ωt = 6.638) — never past the whole, which is past the screen's edge.
+const SPRING_W: f32 = 6.638 / (DRIFT_MS as f32 / 1000.0);
+/// Going into a read, an underdamped spring's: how far past its mark it goes, once (its damping ζ from it:
+/// `e^(−ζπ/√(1−ζ²))` = 2 %, ζ = 0.78), and its rate's (its envelope at 0.2 % at `DRIFT_MS`: ζωt = 6.683).
+const OVERSHOOT: f32 = 0.02;
+const OVER_ZETA_W_T: f32 = 6.683;
+
+/// How much of the way a move of the camera has come `u` of `DRIFT_MS` on (CLAUDE.md's Shorts bullet: 쫀득 — a quick
+/// start that lands soft, never a bounce that rocks; the user's (c) of three takes): `toward` a read past its mark by
+/// `OVERSHOOT` once and back, else back out to the whole as the critically damped spring. 0 at its start, exactly 1
+/// from its end on: a spring's own curve is scaled to end there exactly, its residue (< 1 %) taken up along the way.
+pub(crate) fn way(u: f32, toward: bool) -> f32 {
+    if u <= 0.0 {
+        return 0.0;
+    }
+    if u >= 1.0 {
+        return 1.0;
+    }
+    let secs = |u: f32| u * DRIFT_MS as f32 / 1000.0;
+    let spring = |u: f32| {
+        let wt = SPRING_W * secs(u);
+        1.0 - (1.0 + wt) * (-wt).exp()
+    };
+    let under = |u: f32| {
+        let ln = OVERSHOOT.ln();
+        let zeta = -ln / (std::f32::consts::PI.powi(2) + ln * ln).sqrt();
+        let (w, root) = (OVER_ZETA_W_T / zeta / secs(1.0), (1.0 - zeta * zeta).sqrt());
+        let (t, wd) = (secs(u), w * root * secs(u));
+        1.0 - (-zeta * w * t).exp() * (wd.cos() + zeta / root * wd.sin())
+    };
+    match toward {
+        true => under(u) / under(1.0),
+        false => spring(u) / spring(1.0),
+    }
+}
+
+/// The move as numbers (`toward` a read or back): when it has come 90 % of the way (ms), and how far past its mark it
+/// goes (a share of the way; 0: never).
+pub(crate) fn way_numbers(toward: bool) -> (u64, f32) {
+    let steps = DRIFT_MS as usize;
+    let at = |ms: usize| way(ms as f32 / steps as f32, toward);
+    let ninety = (0..=steps).find(|&ms| at(ms) >= 0.9).unwrap_or(steps) as u64;
+    let past = (0..=steps).map(at).fold(1.0f32, f32::max) - 1.0;
+    (ninety, past)
+}
+/// The least a read stands once the camera is there; under it, no read.
+pub(crate) const READ_MIN_MS: u64 = 1_000;
+/// Two screens cross where more than this share of the cells changed between them (a view opening, a workspace switch)
+/// — over `CROSS_MS`, never a cut.
+pub(crate) const CROSS: f32 = 0.5;
+pub(crate) const CROSS_MS: u64 = 200;
+/// The most reads a Short has (CLAUDE.md's Shorts bullet: a zoom is for emphasis only — the moments it's for, two or
+/// three); one past them is said and its beat stays on the whole.
+pub(crate) const READS_MAX: usize = 3;
+
+/// A beat's one read as `course` lays it: when its beat came and the next one comes (none: the take's last), when its
+/// target is first on the screen at or after its mark, when it leaves the screen before the next beat (none: it stays),
+/// and its window.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Planned {
-    pub(crate) at: u64,
+    pub(crate) beat: u64,
+    pub(crate) next: Option<u64>,
+    pub(crate) found: u64,
+    pub(crate) gone: Option<u64>,
     pub(crate) window: Region,
-    pub(crate) target: Region,
-    pub(crate) beat: Option<u64>,
 }
 
-/// How a beat's move, or one to another place, went from the last target to its own.
+/// A read laid on the take: when the camera starts toward its window (`into`, the drift beginning) and when it starts
+/// away again (`out`) — there `DRIFT_MS` after `into` —, and how much longer its beat would have to be for the whole
+/// read (0: it fits).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Way {
-    /// Out to the whole and in again, its target reached this many ms past its own time.
-    Pulled(u64),
-    /// Out to the whole as the screen came to name another place (`place`), in again this many ms past its own time.
-    Elsewhere(u64),
-    /// Panned: the two targets side by side.
-    Pan,
-    /// Panned: its target would stand only this many ms after the pull-out (under `HELD_MIN_MS`), or the last one would.
-    NoRoom(u64),
-}
-
-/// The camera's path with the whole in it: each step when, and which of `moves` it goes to (none: the whole screen).
-pub(crate) struct Course {
-    pub(crate) steps: Vec<(u64, Option<usize>)>,
-    /// Each beat's move that left a target for another: how it went.
-    pub(crate) ways: Vec<(usize, Way)>,
-    /// When the camera leaves the last target for the whole, `end` or later (the last target held its least).
+pub(crate) struct Read {
+    pub(crate) into: u64,
     pub(crate) out: u64,
+    pub(crate) short: u64,
 }
 
-/// Two targets side by side: both fit in one window the larger of their two windows' size — a pan from one to the
-/// other keeps the way between them in sight (the same target, too).
-pub(crate) fn side_by_side(a: (Region, Region), b: (Region, Region)) -> bool {
-    let ((at, aw), (bt, bw)) = (a, b);
-    let w = (at.x + at.w).max(bt.x + bt.w) - at.x.min(bt.x);
-    let h = (at.y + at.h).max(bt.y + bt.h) - at.y.min(bt.y);
-    w <= aw.w.max(bw.w) && h <= aw.h.max(bw.h)
-}
-
-/// The camera's path over `moves` (in order), the whole screen laid in: the take starts on it (the first move eased
-/// to from there); a beat's first move from a target to another not `side_by_side` goes out to the whole as its beat
-/// comes (`EASE_MS`), and any move to a target on a screen that names another place than the last target's (`places`:
-/// each time the screen's `place` changed, and to what) goes out as the first screen naming another comes, side by
-/// side or not, within a beat too (the earlier of the two where both hold); it stands `BETWEEN_MS` there and eases in
-/// to its target — at its own time where the whole has stood by then, else that much later —, the last target held
-/// `HELD_MIN_MS` at least before it leaves and its own as long before the next move, else (no room) panned; a move
-/// within a beat in the same place never pulls out; at `end` (or once the last target has stood its least) the camera
-/// goes out to the whole.
-pub(crate) fn wholes(moves: &[Planned], places: &[(u64, String)], end: u64, screen: (u16, u16)) -> Course {
-    let all = Region::all(screen);
-    let (mut steps, mut ways) = (Vec::new(), Vec::new());
-    let place_at = |t: u64| places[..places.partition_point(|p| p.0 <= t)].last().map(|p| p.1.as_str());
-    // (where the camera last went: when, and the move — none: the whole)
-    let mut last: Option<(u64, Planned)> = None;
-    for (i, m) in moves.iter().enumerate() {
-        let from = last.filter(|(_, l)| l.window != all && m.window != all);
-        // (another place since the last target: when the first screen naming another came)
-        let moved = from.and_then(|(_, l)| {
-            let was = place_at(l.at);
-            (place_at(m.at) != was)
-                .then(|| places.iter().find(|p| l.at < p.0 && p.0 <= m.at && Some(p.1.as_str()) != was))
-                .flatten()
-                .map(|p| p.0)
-        });
-        let cue = match (moved, m.beat) {
-            (Some(t), Some(beat)) => Some(t.min(beat)),
-            (t, beat) => t.or(beat),
-        };
-        if let (Some(cue), Some((since, l))) = (cue, from) {
-            if moved.is_none() && side_by_side((l.target, l.window), (m.target, m.window)) {
-                ways.push((i, Way::Pan));
-            } else {
-                let out = cue.max(since + EASE_MS + HELD_MIN_MS);
-                let into = m.at.max(out + EASE_MS + BETWEEN_MS);
-                let next = moves.get(i + 1).map_or(end, |n| n.at);
-                if into + EASE_MS + HELD_MIN_MS <= next {
-                    steps.extend([(out, None), (into, Some(i))]);
-                    let late = into - m.at;
-                    ways.push((i, if moved.is_some() { Way::Elsewhere(late) } else { Way::Pulled(late) }));
-                    last = Some((into, *m));
-                    continue;
-                }
-                ways.push((i, Way::NoRoom(next.saturating_sub(into + EASE_MS))));
-            }
-        }
-        steps.push((m.at, Some(i)));
-        last = Some((m.at, *m));
+impl Read {
+    /// When the camera is there: the drift's end.
+    pub(crate) fn there(&self) -> u64 {
+        self.into + DRIFT_MS
     }
-    let out = match last.filter(|(_, l)| l.window != all) {
-        Some((since, _)) => {
-            let out = end.max(since + EASE_MS + HELD_MIN_MS);
-            steps.push((out, None));
-            out
+}
+
+/// The camera's reads: each beat's (none where it had no room for `READ_MIN_MS`, its target went too soon, or the Short
+/// has had its `READS_MAX`).
+pub(crate) struct Course {
+    pub(crate) reads: Vec<Option<Read>>,
+    /// How much longer each beat would have to be for its read, where the next beat cuts it short (cut, or none).
+    pub(crate) short: Vec<(usize, u64)>,
+    /// The reads whose target left the screen before one could stand (`READ_MIN_MS`).
+    pub(crate) early: Vec<usize>,
+    /// The reads past `READS_MAX`.
+    pub(crate) over: Vec<usize>,
+}
+
+/// The camera's rule over a take's reads (each beat's one, in order): most beats have none — the camera stands on the
+/// whole (`aims`). A read's drift begins as its target is found and arrives `DRIFT_MS` later; it holds there until
+/// its target leaves the screen (an ask line sent, a view gone — past `READ_MS` too) or, where it stays, `READ_MS` —
+/// never past the next beat (cut there, said with how much longer the beat would have to be: `short`). One that can't
+/// stand `READ_MIN_MS` once there is none — `early` where its target went, `short` where the next beat came. Past
+/// `READS_MAX` reads, the rest are none (`over`).
+pub(crate) fn course(reads: &[Planned]) -> Course {
+    let (mut laid, mut short, mut early, mut over) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (i, p) in reads.iter().enumerate() {
+        if laid.iter().flatten().count() == READS_MAX {
+            over.push(i);
+            laid.push(None);
+            continue;
         }
-        None => end,
-    };
-    Course { steps, ways, out }
+        let into = p.found;
+        let (least, want) = (into + DRIFT_MS + READ_MIN_MS, p.gone.unwrap_or(into + DRIFT_MS + READ_MS));
+        if p.gone.is_some_and(|g| g < least && p.next.is_none_or(|n| g <= n)) {
+            early.push(i);
+            laid.push(None);
+            continue;
+        }
+        let out = want.min(p.next.unwrap_or(u64::MAX));
+        let by = want - out;
+        if by > 0 {
+            short.push((i, by));
+        }
+        laid.push((out >= least).then_some(Read { into, out, short: by }));
+    }
+    Course { reads: laid, short, early, over }
+}
+
+impl Course {
+    /// Each read's window from when to when the camera aims at it (`aims`' `reads`).
+    pub(crate) fn windows(&self, reads: &[Planned]) -> Vec<(u64, u64, Region)> {
+        (self.reads.iter().zip(reads)).filter_map(|(r, p)| r.map(|r| (r.into, r.out, p.window))).collect()
+    }
+
+    /// Where a punchline marked at `mark` opens: the first read still held then — once the camera is there, if that's
+    /// later —, else the mark.
+    pub(crate) fn punch(&self, mark: u64) -> u64 {
+        (self.reads.iter().flatten()).find(|r| r.out > mark).map_or(mark, |r| mark.max(r.there()))
+    }
+}
+
+/// How near a region brings the screen (1: the whole).
+pub(crate) fn nearer(r: Region, screen: (u16, u16)) -> f32 {
+    (f32::from(screen.0) / r.w).min(f32::from(screen.1) / r.h)
+}
+
+/// Where the camera aims over a take, from when, in order (`Path`'s): the whole (CLAUDE.md's Shorts bullet: the camera
+/// stands still on the whole), but a read's window from when the camera starts toward it to when it starts away
+/// (`reads`: from, to, window — in order, apart) — a Short's emphasis, the one place it moves.
+pub(crate) fn aims(reads: &[(u64, u64, Region)], screen: (u16, u16)) -> Vec<(u64, Region)> {
+    let all = Region::all(screen);
+    let mut aimed = vec![(0, all)];
+    for &(from, to, window) in reads {
+        aimed.extend([(from, window.inside(screen)), (to, all)]);
+    }
+    aimed
+}
+
+/// The camera's path over a take: its `aims` (from when, where — in order; the whole before the first), each change of
+/// aim a move from the step after it, its share of the way at each moment `way`'s — there exactly
+/// `DRIFT_MS` on; moves that meet add up (a new aim mid-move joins it, no stop). The whole stays exactly the whole, and
+/// every region is inside the screen. Worked out every `STEP_MS` to `until`, read between.
+pub(crate) struct Path {
+    at: Vec<Region>,
+}
+
+impl Path {
+    pub(crate) fn of(aims: &[(u64, Region)], screen: (u16, u16), until: u64) -> Path {
+        let all = Region::all(screen);
+        let n = (until / STEP_MS + 2) as usize;
+        let taps = (DRIFT_MS / STEP_MS) as usize;
+        // (each change of aim: the first step it's in force at, how far it moves — by its offsets from the whole — and
+        // whether toward a read)
+        let (mut moves, mut was) = (Vec::new(), [0.0f32; 4]);
+        for &(ms, r) in aims {
+            let r = r.inside(screen);
+            let now = [r.x - all.x, r.y - all.y, r.w - all.w, r.h - all.h];
+            if now != was {
+                let by = [now[0] - was[0], now[1] - was[1], now[2] - was[2], now[3] - was[3]];
+                moves.push((ms.div_ceil(STEP_MS) as usize, by, now != [0.0; 4]));
+            }
+            was = now;
+        }
+        let at = (0..n)
+            .map(|i| {
+                // (a move starts from the step after its aim's, there exactly `DRIFT_MS` on)
+                let mut d = [0.0f32; 4];
+                for &(from, by, toward) in moves.iter().take_while(|m| m.0 < i) {
+                    let way = way((i - from) as f32 / taps as f32, toward);
+                    for (d, b) in d.iter_mut().zip(by) {
+                        *d += way * b;
+                    }
+                }
+                let r = Region { x: all.x + d[0], y: all.y + d[1], w: all.w + d[2], h: all.h + d[3] };
+                if d.iter().all(|v| v.abs() < 1e-4) { all } else { r.inside(screen) }
+            })
+            .collect();
+        Path { at }
+    }
+
+    /// Where the camera is `ms` into the take: between the two steps round it.
+    pub(crate) fn at(&self, ms: u64) -> Region {
+        let i = ((ms / STEP_MS) as usize).min(self.at.len() - 1);
+        let (a, b) = (self.at[i], self.at[(i + 1).min(self.at.len() - 1)]);
+        if a == b {
+            return a;
+        }
+        let t = (ms % STEP_MS) as f32 / STEP_MS as f32;
+        let l = |p: f32, q: f32| p + (q - p) * t;
+        Region { x: l(a.x, b.x), y: l(a.y, b.y), w: l(a.w, b.w), h: l(a.h, b.h) }
+    }
+}
+
+/// The share of the cells (0..=1) whose text or ground differ between two screens of one size.
+pub(crate) fn changed(a: &Cells, b: &Cells) -> f32 {
+    let cells = (a.text.iter().zip(&b.text)).map(|(x, y)| x.len().min(y.len())).sum::<usize>().max(1);
+    let ground = (a.ground.iter().flatten().zip(b.ground.iter().flatten())).map(|(x, y)| x != y);
+    let differ = (a.text.iter().flatten().zip(b.text.iter().flatten()))
+        .zip(ground)
+        .filter(|((x, y), g)| x != y || *g)
+        .count();
+    differ as f32 / cells as f32
+}
+
+/// The screens that come by a crossing (each one's index): more than `CROSS` of the cells changed from the one before
+/// (`changed[i]`: between screen `i - 1` and `i`).
+pub(crate) fn crossfades(changed: &[f32]) -> Vec<usize> {
+    (changed.iter().enumerate()).skip(1).filter(|(_, c)| **c > CROSS).map(|(i, _)| i).collect()
+}
+
+/// What crosses `ms` into the take (the screens drawn at `times`, those that come by a crossing `fades`): the screen it
+/// comes from — the one before the latest crossing begun within `CROSS_MS` — and how far the screen now is drawn over
+/// it (eased in and out). None where nothing crosses.
+pub(crate) fn crossing(times: &[u64], fades: &[usize], ms: u64) -> Option<(usize, f32)> {
+    let &i = fades.iter().rev().find(|&&i| times[i] <= ms)?;
+    (ms < times[i] + CROSS_MS).then(|| (i - 1, ease_in_out((ms - times[i]) as f32 / CROSS_MS as f32)))
 }
 
 /// The largest whole glyph size (8 ..= `max`) whose cells, `cell(px)` each, show `region` whole in a `view` window.
@@ -245,26 +361,6 @@ pub(crate) fn fit(
         .unwrap_or(8.0)
 }
 
-/// The window's top-left in a picture of the screen (`pic` px, its cells `cell` px from a `pad` margin) that shows
-/// `region`: centred on it, moved back inside the picture where it would pass an edge; where the picture is smaller
-/// than the window, centred on the picture (negative: the window's ground round it).
-pub(crate) fn crop(
-    region: Region,
-    cell: (usize, usize),
-    pad: usize,
-    pic: (usize, usize),
-    view: (usize, usize),
-) -> (i64, i64) {
-    let axis = |start: f32, len: f32, cell: usize, pic: usize, view: usize| -> i64 {
-        if pic < view {
-            return (pic as i64 - view as i64) / 2;
-        }
-        let centre = pad as f32 + (start + len / 2.0) * cell as f32;
-        ((centre - view as f32 / 2.0).round() as i64).clamp(0, (pic - view) as i64)
-    };
-    (axis(region.x, region.w, cell.0, pic.0, view.0), axis(region.y, region.h, cell.1, pic.1, view.1))
-}
-
 /// A target's region on a screen (its cells' text, row by row — `recording::screen_cells`):
 /// - `all` the whole screen;
 /// - `status` the status line (the last row's text);
@@ -276,10 +372,14 @@ pub(crate) fn crop(
 /// - any of them `|N`: at most `N` columns of it, air included, from its left — where tarae draws what the caption is
 ///   about across the screen's width (the ask line, a doc comment, an answer's card), the part it's about at a glyph a
 ///   phone reads; the rest cut at the window's edge, fading (`Window`), its card drawn cut;
+/// - `rows:<a> … <b>` the rows from the one showing `<a>` through the one showing `<b>`, from where the first of their
+///   texts starts to where the longest ends (each row's stretch, as a text's not in a card), air above and below
+///   only: a card's lines that matter, where the card is wider than a read's legible columns — the card drawn cut
+///   round them, its own pad their air across;
 /// - `news:<text> over <target>` the target's, while the card holding `<text>` (a toast) is on the screen too: a news
 ///   beat, the code its toast names framed, the toast laid over the window's top (`news_framed`, `callout`).
 ///
-/// Each with a cell of air round it. None where it isn't on that screen.
+/// Each with a cell of air round it (but `rows:` across). None where it isn't on that screen.
 pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
     if let Some((text, inner)) = news(spec) {
         holding(on, find(&on.text, text)?)?;
@@ -293,13 +393,21 @@ pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
     let rows = cells.len();
     let cols = cells.first().map_or(0, Vec::len);
     let screen = (cols as u16, rows as u16);
+    let of = Region::of;
     let blank = |s: &str| s.trim().is_empty();
+    if let Some((a, b)) = spec.strip_prefix("rows:").and_then(|s| s.split_once(" … ")) {
+        let ((ra, a0, a1), (rb, b0, b1)) = (find(cells, a)?, find(cells, b)?);
+        let ((r0, c0), (r1, c1)) = ((ra, stretch(&cells[ra], a0, a1)), (rb, stretch(&cells[rb], b0, b1)));
+        // (their air across is the card's own pad: the window may cut the card round them, never their words)
+        let r = (r0 <= r1).then(|| of(c0.0.min(c1.0), r0, c0.1.max(c1.1), r1 + 1, screen))?;
+        return Some(Region { x: r.x + AIR, w: r.w - 2.0 * AIR, ..r });
+    }
     match spec {
         "all" => Some(Region::all(screen)),
         "status" => {
             let r = rows.checked_sub(1)?;
             let (c0, c1) = text_span(&cells[r], 0, cols)?;
-            Some(Region::of(c0, r, c1, r + 1, screen))
+            Some(of(c0, r, c1, r + 1, screen))
         }
         "strip" => {
             let row = cells.first()?;
@@ -310,7 +418,7 @@ pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
             while start > 0 && !(line(&row[start - 1]) && (start < 2 || line(&row[start - 2]))) {
                 start -= 1;
             }
-            Some(Region::of(start, 0, end, 1, screen))
+            Some(of(start, 0, end, 1, screen))
         }
         _ => match spec.strip_prefix("code:") {
             Some(range) => {
@@ -335,24 +443,16 @@ pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
                 let r1 = lines.iter().map(|l| l.0).max()? + 1;
                 let c0 = lines.iter().map(|l| l.1).min()?;
                 let c1 = lines.iter().map(|l| l.2).max()?;
-                Some(Region::of(c0, r0, c1, r1, screen))
+                Some(of(c0, r0, c1, r1, screen))
             }
             None => {
                 let text = spec.strip_prefix("card:").unwrap_or(spec);
                 let (r, c0, c1) = find(cells, text)?;
                 Some(match holding(on, (r, c0, c1)) {
-                    Some((r0, c0, r1, c1)) => Region::of(c0, r0, c1 + 1, r1 + 1, screen),
+                    Some((r0, c0, r1, c1)) => of(c0, r0, c1 + 1, r1 + 1, screen),
                     None => {
-                        // (the row's stretch round it: to two blanks, a line or the edge)
-                        let row = &cells[r];
-                        let stop = |c: usize| matches!(row[c].as_str(), "│" | "─");
-                        let gap = |c: usize| blank(&row[c]) && (c == 0 || blank(&row[c - 1]));
-                        let first = (0..c0).rev().find(|&c| stop(c) || gap(c)).map_or(0, |c| c + 1);
-                        let gap_after =
-                            |c: usize| blank(&row[c]) && (c + 1 >= row.len() || blank(&row[c + 1]));
-                        let end = (c1..row.len()).find(|&c| stop(c) || gap_after(c)).unwrap_or(row.len());
-                        let (first, end) = text_span(row, first, end).unwrap_or((c0, c1));
-                        Region::of(first, r, end, r + 1, screen)
+                        let (first, end) = stretch(&cells[r], c0, c1);
+                        of(first, r, end, r + 1, screen)
                     }
                 })
             }
@@ -360,51 +460,33 @@ pub(crate) fn target(on: &Cells, spec: &str) -> Option<Region> {
     }
 }
 
+/// The stretch of `row`'s text round its columns `c0..c1`: to two blanks, a line or the edge.
+fn stretch(row: &[String], c0: usize, c1: usize) -> (usize, usize) {
+    let blank = |c: usize| row[c].trim().is_empty();
+    let stop = |c: usize| matches!(row[c].as_str(), "│" | "─");
+    let gap = |c: usize| blank(c) && (c == 0 || blank(c - 1));
+    let first = (0..c0).rev().find(|&c| stop(c) || gap(c)).map_or(0, |c| c + 1);
+    let gap_after = |c: usize| blank(c) && (c + 1 >= row.len() || blank(c + 1));
+    let end = (c1..row.len()).find(|&c| stop(c) || gap_after(c)).unwrap_or(row.len());
+    text_span(row, first, end).unwrap_or((c0, c1))
+}
+
 /// A news target's toast text and the target it's about (`news:<text> over <target>`).
 pub(crate) fn news(spec: &str) -> Option<(&str, &str)> {
     spec.strip_prefix("news:")?.split_once(" over ")
 }
 
-/// What the spotlight lights on `on` for `spec`'s target: the card it floats in (a list, a card, a prompt, a toast or a
-/// peek — `cards`) — a prompt's with the status line under it, where its keys are said (a card standing on it at the
-/// screen's left, a cell in: its foot the row above or the line itself; the asks stand at the right). Nothing for the code's targets (`all`, `status`, `strip`, `code:`, a row's stretch of
-/// text), a card standing between the code's lines (an answer's or a note's: rows of the document — `between`), a news
-/// beat (its toast is laid over the window, bright, and what it's about is code), nor a card this screen doesn't draw.
-pub(crate) fn spotlit(on: &Cells, spec: &str) -> Vec<Card> {
-    let card = || {
-        if news(spec).is_some() {
-            return None;
-        }
-        let spec = spec.rsplit_once('|').filter(|(_, n)| n.parse::<u16>().is_ok()).map_or(spec, |(s, _)| s);
-        if matches!(spec, "all" | "status" | "strip") || spec.starts_with("code:") {
-            return None;
-        }
-        let text = spec.strip_prefix("card:").unwrap_or(spec);
-        holding(on, find(&on.text, text)?).filter(|&b| !between(on, b))
-    };
-    let Some(b) = card() else { return Vec::new() };
-    let rows = on.text.len();
-    let standing = b.2 + 2 == rows && b.1 <= 1;
-    match standing {
-        true => vec![b, (rows - 1, 0, rows - 1, on.text[rows - 1].len().saturating_sub(1))],
-        false => vec![b],
-    }
-}
-
-/// How lit the spotlight is `ms` into the take (0 none, 1 full), given when it turns on and off (each: when, whether its
-/// target is `spotlit` — a camera move, or its card gone from the screen while the camera holds there; in order): eased
-/// as the camera is (`EASE_MS`, `ease_out`), from wherever it was as a change began — in with a move to a floating
-/// target, out with the next move to the code or as its card goes.
-pub(crate) fn lit(spots: impl IntoIterator<Item = (u64, bool)>, ms: u64) -> f32 {
-    let (mut from, mut to, mut since) = (0.0f32, 0.0f32, 0u64);
-    let eased = |from: f32, to: f32, since: u64, now: u64| {
-        from + (to - from) * ease_out(now.saturating_sub(since) as f32 / EASE_MS as f32)
-    };
-    for (t, on) in spots.into_iter().take_while(|m| m.0 <= ms) {
-        from = eased(from, to, since, t);
-        (to, since) = (if on { 1.0 } else { 0.0 }, t);
-    }
-    eased(from, to, since, ms)
+/// What `spec`'s card says on its first row inside its frame — an input's line: the ask line's question as it's typed —,
+/// trimmed (a caption's `{}`, `captions::timed`). None where no framed card holds the target's text on this screen, or
+/// that row is blank.
+pub(crate) fn said_in(on: &Cells, spec: &str) -> Option<String> {
+    let bare = spec.rsplit_once('|').filter(|(_, n)| n.parse::<u16>().is_ok()).map_or(spec, |(s, _)| s);
+    let (r0, c0, r1, c1) = holding(on, find(&on.text, bare.strip_prefix("card:").unwrap_or(bare))?)?;
+    let row = on.text.get(r0 + 1).filter(|_| r1 > r0 + 1 && on.text[r0][c0] == "╭")?;
+    let said = row[c0 + 1..c1].concat();
+    // (past the input's prompt mark)
+    let said = said.trim().trim_start_matches('›').trim();
+    (!said.is_empty()).then(|| said.to_string())
 }
 
 /// The smallest card holding the text found at (row, first cell, past its last).
@@ -525,36 +607,14 @@ pub(crate) fn news_framed(
     screen: &Cells,
     text: &str,
     target: Region,
-    aspect: f32,
-    eye: f32,
-    legible: f32,
+    (aspect, eye, legible, deep): (f32, f32, f32, bool),
 ) -> Region {
     let toast = find(&screen.text, text).and_then(|at| holding(screen, at));
-    let r = shaped(screen, target, aspect, eye, legible, toast);
+    let r = shaped(screen, target, (aspect, eye, legible, deep), toast, (&[], aspect));
     let Some(c) = callout(screen, text, (r.w as usize).saturating_sub(2)) else { return r };
     let size = (screen.text.first().map_or(0, Vec::len) as u16, screen.text.len() as u16);
     let need = 1.0 + c.lines.len() as f32;
     Region { y: r.y.min((target.y - need).floor()).max(0.0), ..r }.inside(size)
-}
-
-/// Where the screen is: the top line's first stretch of names, to a line or two blanks — the code's path bar there
-/// (`tarae-demo › src › main.rs`; another workspace's `fix › src › main.rs`; `woven · src/main.rs`), so another file or
-/// workspace in front reads as another place; the sessions' strip after it (its states change) is no part of it, nor
-/// the definitions the bar names after the file (`› ƒ wind`: the cursor's, a move within the file).
-pub(crate) fn place(on: &Cells) -> String {
-    let Some(row) = on.text.first() else { return String::new() };
-    let line = |c: usize| matches!(row[c].as_str(), "─" | "┬" | "┴" | "│" | "├" | "┤" | "┼");
-    let blank = |c: usize| row[c].trim().is_empty();
-    let Some(first) = (0..row.len()).find(|&c| !line(c) && !row[c].trim().is_empty()) else {
-        return String::new();
-    };
-    let end = (first..row.len())
-        .find(|&c| line(c) || blank(c) && (c + 1 >= row.len() || blank(c + 1) || line(c + 1)))
-        .unwrap_or(row.len());
-    // (a definition's part starts with its kind's glyph — `lsp_editor::symbol_glyph`'s)
-    let names = row[first..end].concat();
-    let file = names.split(" › ").take_while(|p| !p.starts_with(['ƒ', 'τ', '§', '◦', 'π', 'ν', '·']));
-    file.collect::<Vec<_>>().join(" › ")
 }
 
 /// A row's text between `from` and `to`: its first and past-its-last non-blank cell.
@@ -649,50 +709,105 @@ const TAKEN_IN_MAX: f32 = 1.25;
 /// placement cuts one, that card is taken in with the target and shaped again while the window grows no more than
 /// `TAKEN_IN_MAX` nor past `legible` columns (what it shows at a phone's legible glyph — a target wider than that
 /// takes nothing in; at most four times); else the target's own shape placed so — the cards it cuts left out as each
-/// frame is drawn (`cut`), the zoom kept. Inside the screen.
-pub(crate) fn framed(screen: &Cells, target: Region, aspect: f32, eye: f32, legible: f32) -> Region {
-    shaped(screen, target, aspect, eye, legible, None)
+/// frame is drawn (`cut`), the zoom kept. A `deep` read's window is so; a shallow one's (every other read's) is at
+/// least `legible` columns wide — the emphasis at a depth that reads (CLAUDE.md's Shorts bullet), wider only for a
+/// target wider than that —, taking in what it cuts while that costs it no more than `TAKEN_IN_MAX`, else narrower —
+/// deeper, never narrower than its target — until it cuts none (a card wholly in or wholly out), its left edge at
+/// the target's pane's left (`pane_left`: its gutter kept) wherever the target fits that way, centred only where it
+/// doesn't. Inside the screen.
+#[cfg(test)]
+pub(crate) fn framed(
+    screen: &Cells,
+    target: Region,
+    aspect: f32,
+    eye: f32,
+    legible: f32,
+    deep: bool,
+) -> Region {
+    shaped(screen, target, (aspect, eye, legible, deep), None, (&[], aspect))
 }
 
-/// `framed`, `skip` (a news beat's toast) no card of the screen's.
-fn shaped(screen: &Cells, target: Region, aspect: f32, eye: f32, legible: f32, skip: Option<Card>) -> Region {
+/// `framed`, its window clear of `later` too — the cards the screens after this one draw while the read stands (a card
+/// growing beside the target as the camera holds: V4's follow card, a column wider by the hold), each wholly in or out
+/// as this screen's are; one over the target's own cells isn't one to clear. `drawn` is the shape (columns a row) the
+/// frame shows a window at (`video::view`: the whole's cells), where a window narrows to clear a card.
+pub(crate) fn framed_among(
+    screen: &Cells,
+    target: Region,
+    (aspect, eye, legible, deep): (f32, f32, f32, bool),
+    (later, drawn): (&[Card], f32),
+) -> Region {
+    shaped(screen, target, (aspect, eye, legible, deep), None, (later, drawn))
+}
+
+/// `framed`, `skip` (a news beat's toast) no card of the screen's, `later` cards to clear as its own and `drawn` the
+/// frame's shape (`framed_among`).
+fn shaped(
+    screen: &Cells,
+    target: Region,
+    (aspect, eye, legible, deep): (f32, f32, f32, bool),
+    skip: Option<Card>,
+    (later, drawn): (&[Card], f32),
+) -> Region {
     let rows = screen.text.len();
     let cols = screen.text.first().map_or(0, Vec::len);
     let size = (cols as u16, rows as u16);
+    let (least, legible) = match deep {
+        true => (0.0, legible),
+        false => (legible.min(cols as f32), cols as f32),
+    };
+    // (a shallow window from its pane's left first, where that holds the target)
+    let left = (!deep).then(|| pane_left(&screen.text, target) as f32);
     // (the card the target is in is drawn even cut — a target narrower than its card, `|N`: no placement avoids it)
-    let cards: Vec<Card> =
+    let mut cards: Vec<Card> =
         cards(screen).into_iter().filter(|&b| !holds(b, target) && Some(b) != skip).collect();
-    let shape = |r: Region| match r.w / r.h > aspect {
-        true => (r.w.min(cols as f32), (r.w / aspect).min(rows as f32)),
+    let over = |(r0, c0, r1, c1): Card| {
+        (c0 as f32) < target.x + target.w
+            && target.x < c1 as f32 + 1.0
+            && (r0 as f32) < target.y + target.h
+            && target.y < r1 as f32 + 1.0
+    };
+    for &b in later.iter().filter(|&&b| !over(b)) {
+        if !cards.contains(&b) {
+            cards.push(b);
+        }
+    }
+    let shape = |r: Region| match r.w.max(least) / r.h > aspect {
+        true => (r.w.max(least).min(cols as f32), (r.w.max(least) / aspect).min(rows as f32)),
         false => ((r.h * aspect).min(cols as f32), r.h.min(rows as f32)),
     };
     // (each whole-cell placement holding a stretch `from..from + len` in `extent`, the ones putting its centre nearest
     // `at` of the extent first)
-    let starts = |from: f32, len: f32, extent: f32, n: usize, at: f32| -> Vec<f32> {
+    let starts = |from: f32, len: f32, extent: f32, n: usize, at: f32, first: Option<f32>| -> Vec<f32> {
         let lo = (from + len - extent).max(0.0).ceil() as i64;
         let hi = from.min(n as f32 - extent).floor() as i64;
         let centre = from + len / 2.0 - extent * at;
         let mut all: Vec<f32> = (lo..=hi.max(lo)).map(|s| s as f32).collect();
         all.sort_by(|a, b| (a - centre).abs().total_cmp(&(b - centre).abs()));
+        if let Some(i) = first.and_then(|f| all.iter().position(|&s| s == f)) {
+            let f = all.remove(i);
+            all.insert(0, f);
+        }
         all
+    };
+    let cuts = |x: f32, y: f32, (w, h): (f32, f32)| -> Option<Card> {
+        let (x1, y1) = (x + w, y + h);
+        cards.iter().copied().find(|&(r0, c0, r1, c1)| {
+            let (cr0, cc0, cr1, cc1) = (r0 as f32, c0 as f32, r1 as f32 + 1.0, c1 as f32 + 1.0);
+            let meets = cc0 < x1 && x < cc1 && cr0 < y1 && y < cr1;
+            let whole = x <= cc0 && cc1 <= x1 && y <= cr0 && cr1 <= y1;
+            meets && !whole
+        })
     };
     let mut want = target;
     for _ in 0..4 {
         let (w, h) = shape(want);
-        let cuts = |x: f32, y: f32| -> Option<Card> {
-            let (x1, y1) = (x + w, y + h);
-            cards.iter().copied().find(|&(r0, c0, r1, c1)| {
-                let (cr0, cc0, cr1, cc1) = (r0 as f32, c0 as f32, r1 as f32 + 1.0, c1 as f32 + 1.0);
-                let meets = cc0 < x1 && x < cc1 && cr0 < y1 && y < cr1;
-                let whole = x <= cc0 && cc1 <= x1 && y <= cr0 && cr1 <= y1;
-                meets && !whole
-            })
-        };
-        let (xs, ys) = (starts(want.x, want.w, w, cols, 0.5), starts(want.y, want.h, h, rows, eye));
+        let (xs, ys) =
+            (starts(want.x, want.w, w, cols, 0.5, left), starts(want.y, want.h, h, rows, eye, None));
         let mut cut = None;
         for &y in &ys {
             for &x in &xs {
-                match cuts(x, y) {
+                match cuts(x, y, (w, h)) {
                     None => return Region { x, y, w, h }.inside(size),
                     Some(c) => cut = cut.or(Some(c)),
                 }
@@ -708,36 +823,54 @@ fn shaped(screen: &Cells, target: Region, aspect: f32, eye: f32, legible: f32, s
         }
         want = more;
     }
+    // (a shallow window that cuts a card wherever it stands, and can't take it in: narrower a column at a time — a
+    // deeper read, never narrower than its target — until what the frame shows of it leaves every card wholly out; V4's
+    // review beside the follow card. The frame shows a window as `drawn`'s shape about its middle — `k` times its
+    // width where its height binds —, so the columns shown are what's placed, whole cells, and the window centred in them)
+    let k = (drawn / aspect).max(1.0);
+    let own = target.w.min(cols as f32);
+    let mut sw = ((least * k).floor() - 1.0).min(cols as f32);
+    while sw >= own {
+        let (sh, w) = ((sw / drawn).min(rows as f32), sw / k);
+        let h = w / aspect;
+        if sh >= target.h.min(rows as f32) {
+            let (xs, ys) = (
+                starts(target.x, target.w, sw, cols, 0.5, left),
+                starts(target.y, target.h, sh, rows, eye, None),
+            );
+            for &y in &ys {
+                if let Some(&x) = xs.iter().find(|&&x| cuts(x, y, (sw, sh)).is_none()) {
+                    return Region { x: x + (sw - w) / 2.0, y: y + (sh - h) / 2.0, w, h }.inside(size);
+                }
+            }
+        }
+        sw -= 1.0;
+    }
     let (w, h) = shape(target);
-    let x = starts(target.x, target.w, w, cols, 0.5).first().copied().unwrap_or(target.x);
-    let y = starts(target.y, target.h, h, rows, eye).first().copied().unwrap_or(target.y);
+    let x = starts(target.x, target.w, w, cols, 0.5, left).first().copied().unwrap_or(target.x);
+    let y = starts(target.y, target.h, h, rows, eye, None).first().copied().unwrap_or(target.y);
     Region { x, y, w, h }.inside(size)
 }
 
-/// The cards a window of whole cells (columns `c0..c1`, rows `r0..r1`) cuts: each meeting it but not whole inside it,
-/// but the one holding `target` (inside its air) — the card the target is is shown even cut: `framed` kept it whole where
-/// it could — and one standing between the code's lines (`between`), drawn cut as they are. A Short's frame leaves them out on the window's ground, so nothing is ever cut at its edge — a card that
-/// came while a zoom holds (a toast) too.
-fn cut(screen: &Cells, view: (usize, usize, usize, usize), target: Region) -> Vec<Card> {
-    cards(screen).into_iter().filter(|&b| cuts(view, b) && !holds(b, target) && !between(screen, b)).collect()
+/// The left column of the pane `target` starts in: past the nearest of the screen's `dividers` at or left of it (its
+/// air may stand on the divider), else the screen's edge.
+fn pane_left(cells: &[Vec<String>], target: Region) -> usize {
+    let at = target.x.max(0.0) as usize;
+    dividers(cells).into_iter().filter(|&d| d <= at).max().map_or(0, |d| (d + 1).min(at))
 }
 
-/// Whether `card` stands between the code's lines (an answer's or a note's card, the code under it moved down): no row
-/// of it numbered, the rows just above and below it numbered left of where it starts (a floating card over the gutter
-/// covers the numbers instead). A row of the document as its lines are: cut at the window's edge it's drawn cut as they
-/// are — left out, it would leave a hole in the code.
-fn between(screen: &Cells, (r0, c0, r1, _): Card) -> bool {
-    let divs = dividers(&screen.text);
-    let number = |r: usize| screen.text.get(r).and_then(|row| numbered(row, &divs)).map(|n| n.1);
-    let left_of = |r: usize| number(r).is_some_and(|c| c < c0);
-    r0 > 0 && left_of(r0 - 1) && left_of(r1 + 1) && !(r0..=r1).any(|r| number(r).is_some())
+/// What a frame shows of `window` where it draws a window at `drawn`'s shape (columns a row; `video::view`): the window
+/// widened, or made taller, about its middle to that shape.
+pub(crate) fn shown(window: Region, drawn: f32) -> Region {
+    let (w, h) = (window.w.max(window.h * drawn), window.h.max(window.w / drawn));
+    Region { x: window.x + (window.w - w) / 2.0, y: window.y + (window.h - h) / 2.0, w, h }
 }
 
-/// Whether a window of whole cells (columns `c0..c1`, rows `r0..r1`) cuts `card`: meets it, not whole inside it.
-fn cuts((c0, r0, c1, r1): (usize, usize, usize, usize), (cr0, cc0, cr1, cc1): Card) -> bool {
-    let meets = cc0 < c1 && c0 <= cc1 && cr0 < r1 && r0 <= cr1;
-    let whole = c0 <= cc0 && cc1 < c1 && r0 <= cr0 && cr1 < r1;
-    meets && !whole
+/// Whether a shallow read's `window` keeps its target's pane's left (its gutter's numbers): not where the target can't
+/// fit a window from there (a card at the screen's edge) — the window then holds the target whole (`framed`), and the
+/// read says so.
+pub(crate) fn keeps_panes_left(screen: &Cells, target: Region, window: Region) -> bool {
+    window.x <= pane_left(&screen.text, target) as f32
 }
 
 /// Whether `card` holds `target` (inside its air).
@@ -746,134 +879,6 @@ fn holds((cr0, cc0, cr1, cc1): Card, target: Region) -> bool {
     let (tx1, ty1) = (target.x + target.w - AIR, target.y + target.h - AIR);
     let (x0, y0, x1, y1) = (cc0 as f32, cr0 as f32, cc1 as f32 + 1.0, cr1 as f32 + 1.0);
     x0 <= tx0 && tx1 <= x1 && y0 <= ty0 && ty1 <= y1
-}
-
-/// The window's left or right edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Edge {
-    Left,
-    Right,
-}
-
-/// What a Short's frame draws of the screen in a window of whole cells (columns `c0..c1`, rows `r0..r1`): every cell
-/// but a card the window cuts (`left_out`, `cut`'s) and a news beat's toast, laid over the window instead (`news`,
-/// `callout`), laid with the window's ground; a row whose text runs past the window's left or right edge drawn cut
-/// there as a zoomed video crops (`fade`: its last cells easing into their ground); a sliver of one the left edge
-/// leaves erased to its ground (`slivers`). A row is drawn whole or not at all — what's drawn belongs to a row that's
-/// drawn: never its ground or its blame without its code.
-pub(crate) struct Window {
-    pub(crate) left_out: Vec<Card>,
-    pub(crate) fade: Vec<(usize, Edge)>,
-    pub(crate) slivers: Vec<(usize, usize, usize)>,
-}
-
-impl Window {
-    pub(crate) fn of(
-        screen: &Cells,
-        view: (usize, usize, usize, usize),
-        target: Region,
-        news: Option<Card>,
-    ) -> Window {
-        // (the card the target is in, where the window cuts it — a target narrower than its card, `|N` —, and a card
-        // between the code's lines are drawn cut as a code row is: their rows fading at the edge)
-        let others: Vec<Card> = (cards(screen).into_iter())
-            .filter(|&b| !(cuts(view, b) && (holds(b, target) || between(screen, b))))
-            .collect();
-        let mut left_out = cut(screen, view, target);
-        left_out.extend(news.filter(|n| !left_out.contains(n)));
-        let slivers = slivers(screen, view, &others, target);
-        Window { left_out, fade: runs_past(screen, view, &others), slivers }
-    }
-
-    /// Whether the frame draws the screen's cell at row `r`, column `c` (inside the window).
-    pub(crate) fn drawn(&self, r: usize, c: usize) -> bool {
-        !self.left_out.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3)
-    }
-}
-
-/// The rows whose text the window's left or right edge cuts (row, edge): an inked cell on each side of it (a wide
-/// character's second cell counts as inked), neither in one of `cards` — a card the window cuts is left out whole, and
-/// one beside the window is no text of the row's (the target's own card, cut, isn't among them). A line (`─`, `│`,
-/// `▎`…) runs on cut as it is.
-fn runs_past(
-    screen: &Cells,
-    (c0, r0, c1, r1): (usize, usize, usize, usize),
-    cards: &[Card],
-) -> Vec<(usize, Edge)> {
-    let mut out = Vec::new();
-    for (r, row) in screen.text.iter().enumerate().take(r1).skip(r0) {
-        let inked = |c: usize| inked(row, c);
-        let carded = |c: usize| cards.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3);
-        let across = |inside: usize, outside: usize| {
-            inked(inside) && inked(outside) && !carded(inside) && !carded(outside)
-        };
-        if c0 > 0 && c0 < c1 && across(c0, c0 - 1) {
-            out.push((r, Edge::Left));
-        }
-        if c1 < row.len() && c1 > c0 && across(c1 - 1, c1) {
-            out.push((r, Edge::Right));
-        }
-    }
-    out
-}
-
-/// Whether a row's cell `c` is inked: text, not a blank nor a line (`─`, `│`, `▎`…) — a wide character's second cell
-/// counts.
-fn inked(row: &[String], c: usize) -> bool {
-    match row.get(c).and_then(|s| s.chars().next()) {
-        None => c > 0 && row.get(c - 1).and_then(|s| s.chars().next()).is_some_and(wide),
-        Some(ch) => !ch.is_whitespace() && !('\u{2500}'..='\u{259f}').contains(&ch),
-    }
-}
-
-/// A sliver: what the window's left edge leaves of a row's text, at most this many cells — a `{`, a `;`, a word's last
-/// letters say nothing.
-const SLIVER: usize = 3;
-
-/// The slivers a window of whole cells (columns `c0..c1`, rows `r0..r1`) leaves at its left edge (row, first cell,
-/// past its last): a row's text running in from past the edge (text just outside it, or one blank between) that ends
-/// within `SLIVER` cells — at two blanks or a line —, none of it in one of `cards` nor the target's own cells. Drawn,
-/// it's noise: the frame erases it to its ground (left out, never faded — a faded `{` is still a `{`).
-fn slivers(
-    screen: &Cells,
-    (c0, r0, c1, r1): (usize, usize, usize, usize),
-    cards: &[Card],
-    target: Region,
-) -> Vec<(usize, usize, usize)> {
-    let mut out = Vec::new();
-    if c0 == 0 {
-        return out;
-    }
-    let own = |r: usize, c: usize| {
-        let (r, c) = (r as f32, c as f32);
-        target.y + AIR <= r
-            && r < target.y + target.h - AIR
-            && target.x + AIR <= c
-            && c < target.x + target.w - AIR
-    };
-    for (r, row) in screen.text.iter().enumerate().take(r1).skip(r0) {
-        let ink = |c: usize| inked(row, c);
-        let space = |c: usize| row.get(c).is_some_and(|s| s.chars().all(char::is_whitespace));
-        let from = match ink(c0) {
-            true => c0,
-            false if c0 + 1 < c1 && space(c0) && ink(c0 + 1) => c0 + 1,
-            false => continue,
-        };
-        // (text just outside: the cell before `from`, or the one before a blank)
-        let mut before = (from - 1..from).chain(from.checked_sub(2).filter(|_| space(from - 1)));
-        if !before.any(|c| c < c0 && ink(c)) {
-            continue;
-        }
-        let mut to = from;
-        while to < c1 && (ink(to) || space(to) && to + 1 < c1 && ink(to + 1)) {
-            to += 1;
-        }
-        let carded = |c: usize| cards.iter().any(|b| b.0 <= r && r <= b.2 && b.1 <= c && c <= b.3);
-        if to < c1 && to - from <= SLIVER && !(from..to).any(|c| carded(c) || own(r, c)) {
-            out.push((r, from, to));
-        }
-    }
-    out
 }
 
 /// A character drawn two cells wide (Hangul, CJK, full-width forms, emoji): the cell after it is empty.
@@ -1000,210 +1005,285 @@ mod tests {
         Region { x, y, w, h }
     }
 
-    /// The camera's path, a frame at a time: the whole screen before any move; a move eased out over `EASE_MS` (more
-    /// than half the way in its first quarter, there at its end, never past it); held; a move begun mid-way through
-    /// another starting from where the camera was — no frame jumps more than a move's first step; a target past the
-    /// screen's edge moved back inside; and each frame's crop of the picture inside it.
-    #[test]
-    fn the_camera_eases_to_each_target_and_never_passes_the_frame() {
-        let card = region(40.0, 30.0, 40.0, 10.0);
-        let list = region(10.0, 8.0, 50.0, 12.0);
-        // (a target past the right and bottom edges: moved back inside)
-        let over = region(70.0, 40.0, 30.0, 8.0);
-        let moves = [(1_000, card), (3_000, list), (3_200, over)];
-        let frames: Vec<Region> = (0..5_000u64).step_by(33).map(|ms| at(&moves, SCREEN, ms)).collect();
-        assert_eq!(at(&moves, SCREEN, 0), Region::all(SCREEN));
-        assert_eq!(at(&moves, SCREEN, 999), Region::all(SCREEN));
-        assert_eq!(at(&moves, SCREEN, 1_000 + EASE_MS), card);
-        assert_eq!(at(&moves, SCREEN, 2_999), card, "held until the next move");
-        let quarter = at(&moves, SCREEN, 1_000 + EASE_MS / 4);
-        assert!((80.0 - quarter.w) / (80.0 - card.w) > 0.5, "not an ease-out: {quarter:?}");
-        // (interrupted at 3.2 s: the third move starts where the second had got to)
-        let mid = at(&moves, SCREEN, 3_200);
-        assert!(mid != card && mid != list, "{mid:?}");
-        let last = at(&moves, SCREEN, 3_200 + EASE_MS);
-        assert_eq!(last, region(50.0, 35.0, 30.0, 8.0), "the target moved back inside the screen");
-        for pair in frames.windows(2) {
-            let step = (pair[1].x - pair[0].x).abs().max((pair[1].w - pair[0].w).abs());
-            assert!(step < 12.0, "a jump: {pair:?}");
-        }
-        let cell = |px: f32| ((px * 0.6) as usize, (px * 1.45) as usize);
-        let view = (882, 1186);
-        for r in &frames {
-            assert!(
-                r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= 80.0 && r.y + r.h <= 43.0,
-                "past the screen: {r:?}"
-            );
-            let px = fit(*r, view, 64, cell);
-            let (cw, ch) = cell(px);
-            let pic = (80 * cw + 28, 43 * ch + 28);
-            let (x, y) = crop(*r, (cw, ch), 14, pic, view);
-            for (o, pic, view) in [(x, pic.0, view.0), (y, pic.1, view.1)] {
-                match pic >= view {
-                    true => assert!(o >= 0 && o as usize + view <= pic, "the crop passes the picture: {r:?}"),
-                    false => assert_eq!(o, (pic as i64 - view as i64) / 2),
-                }
-            }
-            // (the region whole in the window)
-            let shown = |start: f32, len: f32, cell: usize, o: i64, view: usize| {
-                let (a, b) = (14.0 + start * cell as f32, 14.0 + (start + len) * cell as f32);
-                a >= o as f32 - 0.5 && b <= (o + view as i64) as f32 + 0.5
-            };
-            assert!(shown(r.x, r.w, cw, x, view.0) && shown(r.y, r.h, ch, y, view.1), "cut: {r:?} at {px}");
-        }
-        // (whole screen at 80×43: 19 px glyphs fit 882 px across)
-        assert_eq!(fit(Region::all(SCREEN), view, 64, cell), 19.0);
+    fn close(a: Region, b: Region) -> bool {
+        [(a.x, b.x), (a.y, b.y), (a.w, b.w), (a.h, b.h)].iter().all(|(p, q)| (p - q).abs() < 1e-3)
     }
 
-    /// The whole screen in a Short's course: the take starts on it (the first move eased to from there); a beat's move
-    /// from one target to another apart goes out to the whole as its beat comes, stands there `BETWEEN_MS` and eases in
-    /// — its target reached late where the whole needed the time; never a pull-out within a beat, none between targets
-    /// side by side (a pan), none where the target would then stand under `HELD_MIN_MS` (a pan, said); the whole again
-    /// at the end; every ease `EASE_MS`.
+    /// How far `r` has come from `from` toward `to` (0..=1), by its width.
+    fn along(from: Region, to: Region, r: Region) -> f32 {
+        (r.w - from.w) / (to.w - from.w)
+    }
+
+    /// The move (CLAUDE.md's Shorts bullet: 쫀득 — a quick start that lands soft, never a bounce that rocks; the user's
+    /// (c)): from 0 to exactly 1 over `DRIFT_MS`, from rest (its first hundredth under 1 % of the way), 90 % of the way
+    /// in 30–60 % of its time. Into a read past its mark by `OVERSHOOT` once, then back to it with no second swing, 90 %
+    /// within 0.4 s; back out to the whole never back nor past it (past the whole is past the screen's edge), over a
+    /// third of the way in its first fifth and within 1 % of it its last tenth.
     #[test]
-    fn the_whole_shows_first_between_beats_apart_and_last() {
+    fn the_move_starts_quick_and_lands_soft() {
+        for toward in [true, false] {
+            assert_eq!((way(0.0, toward), way(1.0, toward)), (0.0, 1.0));
+            let (ninety, _) = way_numbers(toward);
+            assert!((DRIFT_MS * 3 / 10..=DRIFT_MS * 3 / 5).contains(&ninety), "90 % at {ninety} ms");
+            assert!(way(0.01, toward) < 0.01, "from rest");
+        }
+        let curve = |toward| -> Vec<f32> { (0..=1000).map(|k| way(k as f32 / 1000.0, toward)).collect() };
+        let over = curve(true);
+        let peak = (0..over.len()).max_by(|&a, &b| over[a].total_cmp(&over[b])).unwrap();
+        assert!((over[peak] - 1.0 - OVERSHOOT).abs() < 0.002, "past by {}", over[peak] - 1.0);
+        assert!(over[..=peak].windows(2).all(|w| w[0] <= w[1]), "one way up");
+        assert!(over[peak..].windows(2).all(|w| w[1] <= w[0] && w[1] >= 1.0 - 1e-4), "settled once");
+        assert!(way_numbers(true).0 <= 410, "in: 90 % at {} ms", way_numbers(true).0);
+        let back = curve(false);
+        assert!(back.windows(2).all(|w| w[0] <= w[1] && w[1] <= 1.0), "never back nor past");
+        assert!(way(0.2, false) > 0.33 && way(0.9, false) > 0.99);
+        assert_eq!(way_numbers(false).1, 0.0);
+    }
+
+    /// A change of aim is a camera's move of `DRIFT_MS` (CLAUDE.md's Shorts bullet: ~1.2 s each way): none before it,
+    /// its way in time `way`'s, there exactly `DRIFT_MS` on and held, back on the whole exactly after it; no frame's step
+    /// past four times the mean speed (its quickest ~3.7, going in); a new aim mid-move joins it and gets there; every
+    /// region inside the screen.
+    #[test]
+    fn the_camera_moves_in_and_out_never_a_snap() {
         let all = Region::all(SCREEN);
-        let planned =
-            |at: u64, beat: Option<u64>, target: Region, window: Region| Planned { at, window, target, beat };
-        // (the session list up top, a row of it, the code's lines low, the lines a toast is about among them, an ask at
-        // the right's foot)
-        let list = (region(16.0, 8.0, 42.0, 12.0), region(15.0, 2.0, 44.0, 24.0));
-        let row = (region(16.0, 10.0, 30.0, 3.0), region(9.0, 3.0, 44.0, 24.0));
-        let code = (region(0.0, 27.0, 40.0, 7.0), region(0.0, 18.0, 44.0, 24.0));
-        let news = (region(0.0, 29.0, 40.0, 4.0), region(0.0, 19.0, 44.0, 24.0));
-        let ask = (region(40.0, 34.0, 38.0, 6.0), region(36.0, 19.0, 44.0, 24.0));
-        let moves = [
-            planned(100, Some(0), list.0, list.1),
-            planned(2_000, None, row.0, row.1),
-            planned(5_200, Some(5_000), code.0, code.1),
-            planned(9_000, Some(9_000), news.0, news.1),
-            planned(10_000, Some(10_000), ask.0, ask.1),
-            planned(12_000, Some(12_000), all, all),
-            planned(13_000, Some(13_000), list.0, list.1),
-        ];
-        let course = wholes(&moves, &[], 16_000, SCREEN);
-        assert_eq!(
-            course.steps,
-            [
-                (100, Some(0)),
-                (2_000, Some(1)),
-                (5_000, None),
-                (5_700, Some(2)),
-                (9_000, Some(3)),
-                (10_000, Some(4)),
-                (12_000, Some(5)),
-                (13_000, Some(6)),
-                (16_000, None),
-            ],
-            "the first from the whole as the take starts; out at the beat, in once the whole has stood"
-        );
-        assert_eq!(
-            course.ways,
-            [(2, Way::Pulled(500)), (3, Way::Pan), (4, Way::NoRoom(500))],
-            "code apart from the list's row: pulled, 0.5 s late; the toast's lines beside the code's: a pan; the ask's \
-             beat, 2 s before the next: no room (it would stand 0.5 s)"
-        );
-        assert_eq!(course.out, 16_000);
-        // (the camera's path: the whole, eased out and in, never past `EASE_MS`)
-        let regions: Vec<(u64, Region)> =
-            (course.steps.iter()).map(|&(t, m)| (t, m.map_or(all, |i| moves[i].window))).collect();
-        assert_eq!(at(&regions, SCREEN, 99), all, "the take starts on the whole");
-        assert_eq!(at(&regions, SCREEN, 100 + EASE_MS), list.1);
-        assert_eq!(at(&regions, SCREEN, 4_999), row.1, "held to the beat");
-        assert_eq!(at(&regions, SCREEN, 5_000 + EASE_MS), all);
-        assert_eq!(at(&regions, SCREEN, 5_700), all, "the whole stands between");
-        assert_eq!(at(&regions, SCREEN, 5_700 + EASE_MS), code.1);
-        assert_eq!(at(&regions, SCREEN, 10_000 + EASE_MS), ask.1, "no room: a pan at its own time");
-        assert_eq!(at(&regions, SCREEN, 12_000 + EASE_MS), all, "a beat of the whole's own");
-        assert_eq!(at(&regions, SCREEN, 13_000 + EASE_MS), list.1, "from the whole: no pull-out");
-        assert_eq!(at(&regions, SCREEN, 16_000 + EASE_MS), all, "the whole before the end card");
-        // (a last target that came late holds its least before the whole; a take ending on the whole adds nothing)
-        let late = wholes(&moves[..1], &[], 600, SCREEN);
-        assert_eq!((late.out, late.steps.last()), (100 + EASE_MS + HELD_MIN_MS, Some(&(1_500, None))));
-        let whole = wholes(&moves[5..6], &[], 15_000, SCREEN);
-        assert_eq!((whole.out, whole.steps.as_slice()), (15_000, &[(12_000, Some(0))][..]));
+        let card = region(4.5, 4.5, 75.5, 38.5);
+        assert!((1_100..=1_300).contains(&DRIFT_MS), "about 1.2 s each way");
+        let path = Path::of(&[(1_000, card), (8_000, all)], SCREEN, 12_000);
+        assert_eq!((path.at(0), path.at(1_000)), (all, all));
+        for k in 1..10 {
+            let (u, ms) = (k as f32 / 10.0, 1_000 + DRIFT_MS * k / 10);
+            let came = along(all, card, path.at(ms));
+            assert!((came - way(u, true)).abs() < 0.005, "at {u}: {came}");
+        }
+        assert!(close(path.at(1_000 + DRIFT_MS), card), "there: {:?}", path.at(1_000 + DRIFT_MS));
+        assert!(close(path.at(7_999), card), "held");
+        let back = along(card, all, path.at(8_000 + DRIFT_MS / 2));
+        assert!((back - way(0.5, false)).abs() < 0.005, "out: {back}");
+        assert_eq!(path.at(8_000 + DRIFT_MS), all, "back on the whole exactly");
+        let frames: Vec<Region> = (0..12_000u64).step_by(33).map(|ms| path.at(ms)).collect();
+        let most = (all.w - card.w) * 4.0 * 33.0 / DRIFT_MS as f32;
+        for p in frames.windows(2) {
+            assert!((p[1].w - p[0].w).abs() <= most, "a jump: {p:?}");
+        }
+        // (a new aim mid-move)
+        let list = region(10.0, 4.0, 60.0, 30.0);
+        let path = Path::of(&[(1_000, card), (1_600, list)], SCREEN, 8_000);
+        for ms in (0..8_000u64).step_by(10) {
+            let r = path.at(ms);
+            assert!(r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= 80.001 && r.y + r.h <= 43.001, "{r:?}");
+        }
+        assert!(close(path.at(1_600 + DRIFT_MS), list));
     }
 
-    /// Two targets are side by side when both fit one window the larger of theirs: the same target, the lines a toast
-    /// is about among the code's; never the list up top and the code's lines low, nor the code at the left and an ask
-    /// at the right.
+    /// The camera stands still on the whole at 1.0× (CLAUDE.md's Shorts bullet) — exactly the whole at every moment but
+    /// a read's: from when it starts toward the read's window to `DRIFT_MS` after it starts away; there it eases in, holds
+    /// the window, and eases back out. Two reads, the whole between them.
     #[test]
-    fn targets_side_by_side_fit_one_window() {
-        let code = (region(0.0, 27.0, 40.0, 7.0), region(0.0, 18.0, 44.0, 24.0));
-        let news = (region(0.0, 29.0, 40.0, 4.0), region(0.0, 19.0, 44.0, 24.0));
-        let list = (region(16.0, 8.0, 42.0, 12.0), region(15.0, 2.0, 44.0, 24.0));
-        let ask = (region(40.0, 34.0, 38.0, 6.0), region(36.0, 19.0, 44.0, 24.0));
-        assert!(side_by_side(code, code));
-        assert!(side_by_side(code, news) && side_by_side(news, code));
-        assert!(!side_by_side(list, code), "rows 8 to 34: past a window's 24");
-        assert!(!side_by_side(code, ask), "columns 0 to 78: past a window's 44");
+    fn the_camera_stands_on_the_whole_but_for_a_read() {
+        let all = Region::all(SCREEN);
+        let (window, other) = (region(0.0, 10.0, 56.0, 30.0), region(20.0, 2.0, 40.0, 21.5));
+        let reads = [(5_000, 9_500, window), (20_000, 24_000, other)];
+        let aimed = aims(&reads, SCREEN);
+        assert_eq!(aimed, [(0, all), (5_000, window), (9_500, all), (20_000, other), (24_000, all)]);
+        let path = Path::of(&aimed, SCREEN, 30_000);
+        for ms in (0..30_000u64).step_by(5) {
+            // (the step before a move's first is read toward it)
+            if !reads.iter().any(|r| r.0 < ms + STEP_MS && ms < r.1 + DRIFT_MS) {
+                assert_eq!(path.at(ms), all, "on the whole at {ms} ms");
+            } else if reads.iter().any(|r| r.0 < ms && ms + STEP_MS < r.1 + DRIFT_MS) {
+                assert_ne!(path.at(ms), all, "moving at {ms} ms");
+            }
+        }
+        assert!(close(path.at(5_000 + DRIFT_MS), window) && close(path.at(9_500), window), "held");
+        let back = along(window, all, path.at(9_500 + DRIFT_MS / 2));
+        assert!((back - way(0.5, false)).abs() < 0.001, "eased out");
+        assert!(close(path.at(20_000 + DRIFT_MS), other));
     }
 
-    /// Another file or workspace in front pulls out, the lines staying put or side by side, within a beat too: out as
-    /// the first screen naming another place comes (a beat's own time where that's earlier), in once the whole has
-    /// stood; the same place within a beat never pulls out (a pan), nor does a place that came and went before the move.
+    /// A read: the drift begins as its target is found, the camera there `DRIFT_MS` on; it holds `READ_MS` there, or
+    /// until its target goes (past `READ_MS` too); the next beat cuts it short, said by how much the beat is short —
+    /// none where it can't stand `READ_MIN_MS` once there; one whose target goes before is none, `early`.
     #[test]
-    fn another_file_or_workspace_pulls_out_as_it_comes() {
-        let planned =
-            |at: u64, beat: Option<u64>, target: Region, window: Region| Planned { at, window, target, beat };
-        // (`wind`'s lines, a line of them, the ask line's card at the screen's foot)
-        let code = (region(4.0, 14.0, 40.0, 4.0), region(0.0, 4.0, 44.0, 24.0));
-        let line = (region(4.0, 15.0, 40.0, 1.0), region(0.0, 4.0, 44.0, 24.0));
-        let ask = (region(0.0, 38.0, 60.0, 3.0), region(0.0, 17.0, 44.0, 24.0));
-        let places = |p: &[(u64, &str)]| -> Vec<(u64, String)> {
-            p.iter().map(|(t, s)| (*t, s.to_string())).collect()
+    fn a_read_is_reached_by_the_drift_and_holds_its_look() {
+        let w = region(0.0, 0.0, 56.0, 30.0);
+        let plan = |found: u64, next: Option<u64>, gone: Option<u64>| Planned {
+            beat: found,
+            next,
+            found,
+            gone,
+            window: w,
         };
-        let woven = places(&[(0, "tarae-demo › src › main.rs"), (3_000, "woven · src/main.rs")]);
-        // (the lines stay put, the woven view comes in their place mid-beat)
-        let moves = [planned(100, Some(0), code.0, code.1), planned(3_200, None, code.0, code.1)];
-        let course = wholes(&moves, &woven, 10_000, SCREEN);
+        // (the two that stand nowhere first: they don't count against `READS_MAX`)
+        let reads = [
+            plan(1_000, Some(1_000 + DRIFT_MS + 500), None),
+            plan(5_000, None, Some(5_000 + DRIFT_MS + 500)),
+            plan(10_000, None, None),
+            plan(20_000, None, Some(20_000 + DRIFT_MS + READ_MS + 1_500)),
+            plan(30_000, Some(30_000 + DRIFT_MS + 1_200), None),
+        ];
+        let course = course(&reads);
+        assert_eq!(course.reads[0], None, "no room for its least");
+        assert_eq!((course.reads[1], course.early.as_slice()), (None, &[1][..]), "gone too soon");
+        assert_eq!(course.reads[2], Some(Read { into: 10_000, out: 10_000 + DRIFT_MS + READ_MS, short: 0 }));
+        assert_eq!(course.reads[2].map(|r| r.there()), Some(10_000 + DRIFT_MS));
         assert_eq!(
-            course.steps,
-            [(100, Some(0)), (3_000, None), (3_700, Some(1)), (10_000, None)],
-            "out as it comes"
+            course.reads[3].map(|r| r.out),
+            Some(20_000 + DRIFT_MS + READ_MS + 1_500),
+            "until it goes"
         );
-        assert_eq!(course.ways, [(1, Way::Elsewhere(500))]);
-        // (a beat after the place came: out at the place; one before it: out at the beat)
-        let beat_late = [moves[0], Planned { beat: Some(3_100), ..moves[1] }];
-        assert_eq!(wholes(&beat_late, &woven, 10_000, SCREEN).steps[1], (3_000, None));
-        let beat_first = [moves[0], Planned { beat: Some(2_500), ..moves[1] }];
-        assert_eq!(wholes(&beat_first, &woven, 10_000, SCREEN).steps[1], (2_500, None));
-        // (side by side, another workspace in front: still out; held its least first)
-        let fix = places(&[(0, "woven · src/main.rs"), (1_000, "fix › src › main.rs")]);
-        let jump = [planned(100, Some(0), code.0, code.1), planned(1_200, None, line.0, line.1)];
-        let course = wholes(&jump, &fix, 10_000, SCREEN);
-        assert_eq!(course.steps[1..3], [(100 + EASE_MS + HELD_MIN_MS, None), (2_200, Some(1))]);
-        assert_eq!(course.ways, [(1, Way::Elsewhere(1_000))]);
-        // (the same place within a beat: no pull-out, whatever lies between; a place come and gone before the move: none)
-        let same = places(&[(0, "tarae-demo › src › main.rs")]);
-        let to_ask = [planned(100, Some(0), code.0, code.1), planned(3_000, None, ask.0, ask.1)];
-        assert_eq!(wholes(&to_ask, &same, 10_000, SCREEN).steps[..2], [(100, Some(0)), (3_000, Some(1))]);
-        let gone = places(&[(0, "a.rs"), (1_500, "b.rs"), (2_000, "a.rs")]);
-        assert_eq!(wholes(&to_ask, &gone, 10_000, SCREEN).steps[..2], [(100, Some(0)), (3_000, Some(1))]);
-        // (no room: a pan, said — in at 3.7 s, it would stand 0.4 s before the take's end)
-        let tight = wholes(&moves, &woven, 4_500, SCREEN);
-        assert_eq!(tight.ways, [(1, Way::NoRoom(400))]);
+        assert_eq!(
+            course.reads[4],
+            Some(Read { into: 30_000, out: 30_000 + DRIFT_MS + 1_200, short: READ_MS - 1_200 }),
+            "cut by the next beat"
+        );
+        assert_eq!(course.short, [(0, READ_MS - 500), (4, READ_MS - 1_200)]);
+        assert_eq!(course.windows(&reads).first(), Some(&(10_000, 10_000 + DRIFT_MS + READ_MS, w)));
+        // (a punchline marked in a read opens there; before the camera is there, as it arrives; after, its mark)
+        assert_eq!(course.punch(10_000 + DRIFT_MS + 100), 10_000 + DRIFT_MS + 100);
+        assert_eq!(course.punch(9_500), 10_000 + DRIFT_MS);
+        assert_eq!(course.punch(60_000), 60_000);
     }
 
-    /// A screen's place is its top line's first names: the path bar's, a workspace's, the woven view's; never the strip
-    /// after them.
+    /// A zoom is for emphasis only: a Short reads `READS_MAX` times at most — the rest stay with the captions, said; a
+    /// read that stood nowhere (no room) isn't counted.
     #[test]
-    fn the_place_is_the_top_lines_first_names() {
-        let top = |line: &str| place(&grid(&[line, "  1 fn main() {"]));
+    fn a_short_reads_three_times_at_most() {
+        let w = region(0.0, 0.0, 56.0, 30.0);
+        let beat = |i: u64, next: u64| Planned {
+            beat: i * 10_000,
+            next: Some(i * 10_000 + next),
+            found: i * 10_000,
+            gone: None,
+            window: w,
+        };
+        let reads = [
+            beat(0, 10_000),
+            beat(1, 1_000),
+            beat(2, 10_000),
+            beat(3, 10_000),
+            beat(4, 10_000),
+            beat(5, 10_000),
+        ];
+        let course = course(&reads);
+        let stood: Vec<usize> =
+            (course.reads.iter().enumerate()).filter(|r| r.1.is_some()).map(|r| r.0).collect();
+        assert_eq!(stood, [0, 2, 3]);
+        assert_eq!(course.over, [4, 5]);
+    }
+
+    /// Two screens cross where more than `CROSS` of their cells changed (text or ground): from the one before, the new
+    /// one eased in and out over `CROSS_MS`; a smaller change (a key typed, a line written) cuts as it is.
+    #[test]
+    fn a_screen_mostly_changed_crosses_the_one_before() {
+        let a = grid(&["aaaa", "aaaa"]);
+        let mut b = grid(&["bbbb", "bbba"]);
+        assert_eq!(changed(&a, &a), 0.0);
+        assert_eq!(changed(&a, &b), 7.0 / 8.0);
+        b.ground[1][3] = 4;
+        assert_eq!(changed(&a, &b), 1.0, "a ground too");
+        let typed = grid(&["aaab", "aaaa"]);
+        assert_eq!(changed(&a, &typed), 1.0 / 8.0);
+        let fades = crossfades(&[0.0, 0.1, 0.9, 0.5, 0.6]);
+        assert_eq!(fades, [2, 4], "over half, not half");
+        let times = [0, 1_000, 2_000, 2_050, 5_000];
+        assert_eq!(crossing(&times, &fades, 1_999), None);
+        assert_eq!(crossing(&times, &fades, 2_000), Some((1, 0.0)), "from the one before");
+        let mid = crossing(&times, &fades, 2_000 + CROSS_MS / 2).unwrap();
+        assert!(mid.0 == 1 && (mid.1 - 0.5).abs() < 0.01, "{mid:?}");
+        assert!(crossing(&times, &fades, 2_000 + CROSS_MS / 10).unwrap().1 < 0.05, "eased in");
+        assert_eq!(crossing(&times, &fades, 2_000 + CROSS_MS), None, "crossed");
+        assert_eq!(crossing(&times, &fades, 5_100).map(|c| c.0), Some(3));
+    }
+
+    /// A shallow read (every one but a deep one) stands at a depth that reads (CLAUDE.md's Shorts bullet): `legible`
+    /// columns wide — never the screen's half —, from the pane's left where the target fits so (here the screen's),
+    /// else as near its middle as holds it whole, its middle row where the deep one's is; wider only for a wider target.
+    /// A deep one the target's own shape.
+    #[test]
+    fn a_read_stands_at_a_depth_that_reads_and_a_deep_one_its_target() {
+        let on = boxed(80, 43, &[]);
+        let target = region(30.0, 20.0, 20.0, 4.0);
+        let deep = framed(&on, target, 2.0, 0.5, 40.0, true);
+        assert_eq!(deep, region(30.0, 17.0, 20.0, 10.0));
+        let read = framed(&on, target, 2.0, 0.5, 40.0, false);
+        assert_eq!(read, region(20.0, 12.0, 40.0, 20.0));
+        let near = region(2.0, 20.0, 30.0, 4.0);
         assert_eq!(
-            top("─ tarae-demo › src › main.rs ─────────────── main working · fix ▲ waits ─"),
-            "tarae-demo › src › main.rs"
+            framed(&on, near, 2.0, 0.5, 40.0, false),
+            region(0.0, 12.0, 40.0, 20.0),
+            "from the pane's left"
         );
-        assert_eq!(top("─ fix › src › main.rs ───────"), "fix › src › main.rs");
-        assert_eq!(
-            top("─ fix › src › main.rs › ƒ wind ───"),
-            "fix › src › main.rs",
-            "the cursor's definition"
+        // (a target wider than what reads: its own width)
+        let wide = region(0.0, 20.0, 70.0, 4.0);
+        assert_eq!(framed(&on, wide, 2.0, 0.5, 40.0, false).w, 70.0);
+    }
+
+    /// A shallow window keeps its pane's gutter: its left edge at the target's pane's left (past a side panel's divider)
+    /// where the target fits that way, centred where it doesn't; a deep one centred on its target as ever.
+    #[test]
+    fn a_shallow_window_starts_at_its_panes_left() {
+        let mut on = boxed(80, 43, &[]);
+        on.text[0].fill("─".into());
+        on.text[0][7] = "┬".into();
+        for row in &mut on.text[1..] {
+            row[7] = "│".into();
+        }
+        // (the code's lines at the pane's left: from the pane's left, not centred at 0; their air on the divider, from it)
+        let near = region(8.0, 20.0, 31.0, 4.0);
+        assert_eq!(pane_left(&on.text, near), 8);
+        assert_eq!(framed(&on, near, 2.0, 0.5, 40.0, false).x, 8.0);
+        assert!(keeps_panes_left(&on, near, framed(&on, near, 2.0, 0.5, 40.0, false)));
+        assert_eq!(pane_left(&on.text, region(7.0, 20.0, 31.0, 4.0)), 7);
+        let deep = framed(&on, near, 2.0, 0.5, 40.0, true);
+        assert_eq!(deep.x, near.x, "a deep read its own");
+        // (a target that wouldn't fit a window from the pane's left: centred, as near it as the screen lets)
+        let far = region(50.0, 20.0, 28.0, 4.0);
+        let window = framed(&on, far, 2.0, 0.5, 40.0, false);
+        assert_eq!(window.x, 40.0);
+        // (…the target whole, the pane's left not kept: said)
+        assert!(window.x <= far.x && far.x + far.w <= window.x + window.w, "{window:?}");
+        assert!(!keeps_panes_left(&on, far, window));
+        // (no divider: the screen's edge)
+        assert_eq!(pane_left(&boxed(80, 43, &[]).text, far), 0);
+    }
+
+    /// A card is wholly in a window or wholly out of it: V4's review (its lines to column 37) beside the follow card (its
+    /// frame from column 40, rows 23–31, 38 wide) — a shallow window of 46 columns cuts the card wherever it stands and
+    /// can't take it in, so it narrows a column at a time until the card is out (40, from the pane's left), its rows
+    /// the window's shape; never narrower than its target — one that can't clear the card that way is cut as before.
+    #[test]
+    fn a_shallow_window_narrows_till_a_card_beside_it_is_wholly_out() {
+        let follow: Card = (23, 40, 31, 77);
+        let on = boxed(80, 34, &[follow]);
+        let review = region(0.0, 11.0, 37.0, 13.0);
+        let aspect = 46.0 / 20.5;
+        let window = framed(&on, review, aspect, 0.5, 46.0, false);
+        assert_eq!((window.x, window.w), (0.0, 40.0), "{window:?}");
+        assert!(window.x + window.w <= follow.1 as f32, "the card wholly out");
+        assert!(
+            window.y <= review.y && review.y + review.h <= window.y + window.h,
+            "the target whole: {window:?}"
         );
-        assert_eq!(top("─ a › b.rs › τ Spool › ƒ pop ───"), "a › b.rs");
-        assert_eq!(top("─ woven · src/main.rs  conflict 1 of 1 ─"), "woven · src/main.rs");
-        assert_eq!(top("─ thread.rs ─┬─ main.rs ─"), "thread.rs");
-        assert_eq!(top("────────────"), "");
+        assert!((window.w / window.h - aspect).abs() < 0.01, "the window's shape");
+        // (a target reaching past the card's left: no narrower window clears it — 46 wide, the card cut as before)
+        let wide = region(0.0, 11.0, 42.0, 13.0);
+        assert_eq!(framed(&on, wide, aspect, 0.5, 46.0, false).w, 46.0);
+        // (the card a column narrower on this screen, wider by the hold: clear of it as the hold draws it; a later card
+        // over the target's own cells — a review's line lit — none to clear)
+        let first = boxed(80, 34, &[(23, 41, 31, 77)]);
+        let params = (aspect, 0.5, 46.0, false);
+        assert_eq!(framed_among(&first, review, params, (&[], aspect)).w, 41.0, "this screen's alone");
+        assert_eq!(framed_among(&first, review, params, (&[follow, (12, 0, 12, 44)], aspect)).w, 40.0);
+        // (the frame drawing it 1.076× as wide as its shape — the whole's cells, its height binding: the columns it
+        // shows are what clear the card, 0–41 exactly, the window centred in them)
+        let drawn = aspect * 1.076;
+        let w = framed_among(&first, review, params, (&[], drawn));
+        let shown = (w.x + w.w / 2.0 - w.h * drawn / 2.0, w.x + w.w / 2.0 + w.h * drawn / 2.0);
+        assert!(shown.0.abs() < 1e-3 && (shown.1 - 41.0).abs() < 1e-3, "{shown:?} {w:?}");
+        let seen = super::shown(w, drawn);
+        assert!(seen.x.abs() < 1e-3 && (seen.w - 41.0).abs() < 1e-3, "{seen:?}");
+        assert!(keeps_panes_left(&first, review, seen), "the gutter shown from column 0");
     }
 
     /// A screen of `rows`, every cell on one ground.
@@ -1233,56 +1313,88 @@ mod tests {
         Cells { text, ground: vec![vec![0; cols]; rows] }
     }
 
+    /// At the screen's top row the camera's region keeps its air by moving in.
+    #[test]
+    fn a_target_at_the_top_keeps_its_air_by_moving_in() {
+        let on = grid(&["─ fix › src › main.rs ──", "", "  mod thread;"]);
+        let framed = target(&on, "fix › src").expect("on screen");
+        assert_eq!((framed.y, framed.h), (0.0, 3.0), "the camera's: its air moved in from the edge");
+    }
+
+    /// A callout's `{}` is what a framed card says on its first row inside its frame — the ask line's question as it's
+    /// typed —; none where that row is blank or no card holds the target.
+    #[test]
+    fn a_cards_first_row_inside_its_frame_is_what_it_says() {
+        let mut on = boxed(30, 6, &[(1, 2, 4, 25)]);
+        let put = |on: &mut Cells, r: usize, c: usize, s: &str| {
+            s.chars().enumerate().for_each(|(k, ch)| on.text[r][c + k] = ch.to_string())
+        };
+        put(&mut on, 1, 4, " ask claude ");
+        put(&mut on, 2, 4, "› keep the first");
+        assert_eq!(said_in(&on, "card:ask claude|44").as_deref(), Some("keep the first"));
+        assert_eq!(said_in(&on, "card:nowhere"), None);
+        put(&mut on, 2, 4, "›               ");
+        assert_eq!(said_in(&on, "card:ask claude"), None, "nothing typed yet");
+    }
+
+    /// A card's lines that matter (`rows:<a> … <b>`, V3's card wider than a read): from the first of their texts to
+    /// the longest's end, the rows between taken in, air above and below only — the card's own pad their air across, so
+    /// a window as wide as the rows reads them whole; none where `<b>`'s row is above `<a>`'s or either isn't there.
+    #[test]
+    fn a_cards_lines_that_matter_are_read_without_its_frame() {
+        let mut on = boxed(60, 13, &[(1, 4, 8, 57)]);
+        let put = |on: &mut Cells, r: usize, c: usize, s: &str| {
+            s.chars().enumerate().for_each(|(k, ch)| on.text[r][c + k] = ch.to_string())
+        };
+        put(&mut on, 1, 6, " main moved ");
+        put(&mut on, 2, 6, "1 new commit — 2 workspaces behind it:");
+        put(&mut on, 4, 8, "fix — 1 behind, would conflict in src/main.rs");
+        put(&mut on, 5, 12, "L31");
+        put(&mut on, 6, 8, "docs — 1 behind, its changed file goes with it");
+        put(&mut on, 7, 6, "C-q answer · y move");
+        let docs = "docs — 1 behind, its changed file goes with it".chars().count() as f32;
+        assert_eq!(target(&on, "rows:fix — … docs —"), Some(region(8.0, 3.0, docs, 5.0)));
+        assert_eq!(
+            target(&on, "card:main moved"),
+            Some(region(3.0, 0.0, 56.0, 10.0)),
+            "the card whole, with air"
+        );
+        assert_eq!(target(&on, "rows:docs — … fix —"), None, "upward");
+        assert_eq!(target(&on, "rows:fix — … nowhere"), None);
+        // (rows in no card: each from past two blanks)
+        put(&mut on, 10, 0, "} let k;  a b");
+        put(&mut on, 11, 0, "y  c d e");
+        assert_eq!(target(&on, "rows:a b … c d"), Some(region(3.0, 9.0, 10.0, 4.0)));
+    }
+
     /// A target shaped to the window: the rows it adds slid off a list above it, so the list isn't cut — the placement
     /// nearest the eye's that cuts nothing; where every placement cuts a list close by, the list taken in whole; where
-    /// taking it in would cost the zoom past `TAKEN_IN_MAX`, the window the target's own, the list it cuts left out
-    /// (`cut`) — never the card the target is; and with room all round, the target's centre at the eye's height.
+    /// taking it in would cost the zoom past `TAKEN_IN_MAX`, the window the target's own; and with room all round, the
+    /// target's centre at the eye's height.
     #[test]
     fn a_framed_target_never_cuts_a_card() {
         let card: Card = (12, 20, 15, 39);
         let target = Region { x: 18.0, y: 11.0, w: 22.0, h: 6.0 };
         // (a window of 22 columns is 11 rows at 2 columns a row: rows 8–18 would cut the list's last row)
         let on = boxed(40, 20, &[(5, 10, 8, 30), card]);
-        assert_eq!(framed(&on, target, 2.0, 0.5, 80.0), region(18.0, 9.0, 22.0, 11.0));
+        assert_eq!(framed(&on, target, 2.0, 0.5, 80.0, true), region(18.0, 9.0, 22.0, 11.0));
         // (every placement cuts a list just left of the card's columns: 2 more columns take it in)
         let on = boxed(40, 20, &[(7, 16, 10, 30), card]);
-        assert_eq!(framed(&on, target, 2.0, 0.5, 80.0), region(16.0, 6.0, 24.0, 12.0));
+        assert_eq!(framed(&on, target, 2.0, 0.5, 80.0, true), region(16.0, 6.0, 24.0, 12.0));
         // (…unless those 2 columns are past what the window shows legibly: the target's own window)
-        assert_eq!(framed(&on, target, 2.0, 0.5, 23.0), region(18.0, 8.0, 22.0, 11.0));
-        // (…a list reaching far left: 30 columns, past 1.25 × 22 — the target's own window, the list it cuts left out
-        // as the frame is drawn, the card itself never)
+        assert_eq!(framed(&on, target, 2.0, 0.5, 23.0, true), region(18.0, 8.0, 22.0, 11.0));
+        // (…a list reaching far left: 30 columns, past 1.25 × 22 — the target's own window)
         let on = boxed(40, 20, &[(7, 10, 10, 30), card]);
-        let window = framed(&on, target, 2.0, 0.5, 80.0);
+        let window = framed(&on, target, 2.0, 0.5, 80.0, true);
         assert_eq!(window, region(18.0, 8.0, 22.0, 11.0));
-        let cells = (18, 8, 40, 19);
-        assert_eq!(cut(&on, cells, target), vec![(7, 10, 10, 30)]);
         // (nothing to cut: the target's centre at the eye's height — half way, then a fifth of the way down)
         let on = boxed(40, 30, &[card]);
-        assert_eq!(framed(&on, target, 2.0, 0.5, 80.0), region(18.0, 8.0, 22.0, 11.0));
+        assert_eq!(framed(&on, target, 2.0, 0.5, 80.0, true), region(18.0, 8.0, 22.0, 11.0));
         // (a fifth of the way down is above where the target fits whole: as near as it can, its top the window's)
-        assert_eq!(framed(&on, target, 2.0, 0.2, 80.0), region(18.0, 11.0, 22.0, 11.0));
+        assert_eq!(framed(&on, target, 2.0, 0.2, 80.0, true), region(18.0, 11.0, 22.0, 11.0));
         // (a target of one row and its air: its centre (row 12) 2.2 rows down a window of 11)
         let row = Region { h: 2.0, ..target };
-        assert_eq!(framed(&on, row, 2.0, 0.2, 80.0), region(18.0, 10.0, 22.0, 11.0));
-    }
-
-    /// What a window cuts, on every frame: a card meeting it and not whole inside (one that came while a zoom holds,
-    /// a toast at its edge); never a card whole inside it, one apart from it, nor the one the target is in.
-    #[test]
-    fn a_card_the_window_cuts_is_left_out() {
-        let toast: Card = (2, 30, 4, 45);
-        let list: Card = (10, 5, 14, 25);
-        let far: Card = (20, 30, 24, 39);
-        let on = boxed(50, 30, &[toast, list, far]);
-        // (the window: columns 0..40, rows 0..18 — the toast past its right edge, the list inside, the far one apart)
-        let target = region(4.0, 9.0, 23.0, 7.0);
-        assert_eq!(cut(&on, (0, 0, 40, 18), target), vec![toast]);
-        // (the target in the toast: shown, even cut)
-        assert_eq!(cut(&on, (0, 0, 40, 18), region(31.0, 2.0, 10.0, 3.0)), Vec::<Card>::new());
-        // (…a target the toast only meets, as an answer's card opened under the lines in sight: left out)
-        assert_eq!(cut(&on, (0, 0, 40, 18), region(20.0, 1.0, 20.0, 3.0)), vec![toast]);
-        // (the list cut by the window's foot)
-        assert_eq!(cut(&on, (0, 0, 50, 12), region(30.0, 1.0, 17.0, 5.0)), vec![list]);
+        assert_eq!(framed(&on, row, 2.0, 0.2, 80.0, true), region(18.0, 10.0, 22.0, 11.0));
     }
 
     /// A target held is as wide as it grows on its rows (a line written past where it was found), its rows as they
@@ -1324,41 +1436,8 @@ mod tests {
         assert_eq!(cards(&cells), vec![(5, 0, 7, 13), (0, 0, 0, 11), (4, 0, 4, 11)]);
     }
 
-    /// A row whose text the window's edge cuts is drawn cut there, fading at that edge: text on both sides of it, either
-    /// edge; a line running on, a blank on either side or a card there fades nothing. A wide character's second cell is
-    /// inked.
-    #[test]
-    fn a_row_cut_at_the_edge_fades_there() {
-        let mut cells = grid(&[
-            "29 fn wind(m: &mut Map, t: Thread) {",
-            "── demo › main.rs ─────────────────",
-            "30     let k = t.name.clone();",
-            "ab  cd           x  y",
-            "abcdef                        ",
-            "실실",
-            "letters",
-        ]);
-        // (a wide character's second cell is empty, as vt100 leaves it)
-        cells.text[5][..4].clone_from_slice(&["실", "", "실", ""].map(String::from));
-        let card: Card = (4, 0, 4, 2);
-        let fade = runs_past(&cells, (3, 0, 20, 7), &[card]);
-        let at = |r: usize| fade.iter().filter(|f| f.0 == r).map(|f| f.1).collect::<Vec<_>>();
-        assert_eq!(
-            at(0),
-            [Edge::Right],
-            "`fn` starts at the left edge, a blank past it; `Map` crosses the right"
-        );
-        assert_eq!(at(1), [], "a line runs on cut as it is");
-        assert_eq!(at(2), [Edge::Right], "the indent's blanks at the left edge: nothing there");
-        assert_eq!(at(3), [], "a blank on the inner side of either edge");
-        assert_eq!(at(4), [], "a card past the left edge: none of the row's text");
-        assert_eq!(at(5), [Edge::Left], "Hangul: the edge between a wide character's two cells");
-        assert_eq!(at(6), [Edge::Left], "`letters` crosses the left edge");
-    }
-
-    /// A target cut to `|N` columns of the card it's in (the ask line across the screen, its words at its left): the
-    /// card drawn cut, its row fading where the edge cuts its words; no placement avoids it, so the window still slides
-    /// past another card it would cut (a list under it), never leaving that one out where it needn't.
+    /// A target cut to `|N` columns of the card it's in (the ask line across the screen, its words at its left): no
+    /// placement avoids that card, so the window still slides past another card it would cut (a list under it).
     #[test]
     fn a_target_cut_short_shows_its_card_cut() {
         let list: Card = (9, 0, 10, 10);
@@ -1372,83 +1451,14 @@ mod tests {
         let t = target(&on, "card:ask|16").unwrap();
         assert_eq!(t, region(0.0, 4.0, 16.0, 5.0), "the card's first 16 columns, air included");
         assert_eq!(target(&on, "card:ask"), Some(region(0.0, 4.0, 40.0, 5.0)));
-        let window = framed(&on, t, 2.0, 0.5, 80.0);
+        let window = framed(&on, t, 2.0, 0.5, 80.0, true);
         assert_eq!(window, region(0.0, 3.0, 16.0, 8.0), "rows 2–9 would cut the list: slid to take it whole");
-        let shown = Window::of(&on, (0, 3, 16, 11), t, None);
-        assert_eq!(shown.left_out, vec![], "the card the target is in, drawn cut");
-        assert_eq!(shown.fade, vec![(6, Edge::Right)], "its words fade where the edge cuts them");
-    }
-
-    /// A card between the code's lines (an answer's, the code under it moved down: no number on its rows) the window cuts
-    /// is drawn cut as the lines are, its words fading at the edge — left out, it was a hole in the code (V4's replay). The same card floating over the code (numbers beside it) is left out.
-    #[test]
-    fn a_card_between_the_lines_is_drawn_cut() {
-        let rows = |beside: &str| {
-            grid(&[
-                "44 let a = 0;",
-                "45 let b = 1;",
-                &format!("{beside:<3}╭──────────────────────────────╮"),
-                &format!("{beside:<3}│ Done — winds from the front  │"),
-                &format!("{beside:<3}╰──────────────────────────────╯"),
-                "46 let c = 2;",
-                "47 let d = 3;",
-            ])
-        };
-        let target = region(0.0, 0.0, 14.0, 3.0);
-        let on = rows("");
-        assert_eq!(cards(&on), vec![(2, 3, 4, 34)]);
-        let shown = Window::of(&on, (0, 0, 20, 7), target, None);
-        assert_eq!(shown.left_out, vec![], "between the lines: drawn");
-        assert_eq!(shown.fade, vec![(3, Edge::Right)], "its words cut at the edge, fading");
-        // (floating over the code: a number beside each of its rows)
-        let over = |n: usize| format!("{n} ");
-        let mut on = rows("");
-        for (r, n) in [(2, 50), (3, 51), (4, 52)] {
-            on.text[r][..3].clone_from_slice(&over(n).chars().map(String::from).collect::<Vec<_>>());
-        }
-        let shown = Window::of(&on, (0, 0, 20, 7), target, None);
-        assert_eq!(shown.left_out, vec![(2, 3, 4, 34)], "floating: left out");
-        assert_eq!(shown.fade, vec![]);
-        // (floating over the gutter, the numbers under it: left out)
-        let mut on = rows("");
-        for r in 2..=4 {
-            let row: String = on.text[r].concat();
-            on.text[r] = row
-                .replacen("   ", "", 1)
-                .chars()
-                .map(String::from)
-                .chain([" ", " ", " "].map(String::from))
-                .collect();
-        }
-        assert_eq!(cards(&on), vec![(2, 0, 4, 31)]);
-        assert_eq!(
-            Window::of(&on, (0, 0, 20, 7), target, None).left_out,
-            vec![(2, 0, 4, 31)],
-            "over the gutter: left out"
-        );
-    }
-
-    /// A row is drawn whole or not at all: V2's line under the cursor, its code cut at the window's left edge and
-    /// blame at its end on the cursor line's ground, is every cell drawn (round 2 hid its code and left the ground and
-    /// blame standing alone); a toast the right edge cuts is left out, the rest of its row drawn.
-    #[test]
-    fn a_row_is_drawn_whole_or_not_at_all() {
-        let toast = format!("{:<40}▎ saved     ", "32 }");
-        let mut cells = grid(&["31     m.insert(k, t); // main     not committed yet  ", &toast, "● normal"]);
-        cells.ground[0][3..50].fill(9);
-        cells.ground[1][40..52].fill(5);
-        let view = (10, 0, 46, 2);
-        let window = Window::of(&cells, view, region(10.0, 0.0, 20.0, 1.0), None);
-        assert!((10..46).all(|c| window.drawn(0, c)), "the line under the cursor drawn whole");
-        assert_eq!(window.left_out, vec![(1, 40, 1, 51)], "the toast past the right edge");
-        assert!((10..40).all(|c| window.drawn(1, c)) && !(40..46).any(|c| window.drawn(1, c)));
-        assert_eq!(window.fade, vec![(0, Edge::Left), (0, Edge::Right)]);
     }
 
     /// A news beat (`news:<text> over <target>`): its target the code's while the toast is up (none without it); the
     /// toast as it stands where the window has room for it, else laid again between its phrases (`src/main.rs L30 —`
     /// moves down whole, never `L30 —` left from its file); the window moved up so the callout and a row of air stand
-    /// above the code; and the toast never drawn where it stands on the screen — whole in the window too.
+    /// above the code.
     #[test]
     fn a_news_beat_frames_its_code_and_lays_its_toast_over_the_top() {
         // (as tarae draws it: a cell of air before its mark)
@@ -1479,35 +1489,10 @@ mod tests {
         assert_eq!(said(&laid), [" ▎ main ≈ fix ·", "   src/main.rs L30 —", "   would conflict"]);
         assert!(laid.lines.iter().all(|l| l.len() == 21), "each line the callout's width");
         assert_eq!(on.text[laid.ground.0][laid.ground.1], " ", "its ground a blank of its own");
-        let r = news_framed(&on, "would conflict", code, 1.8, 0.3, 40.0);
+        let r = news_framed(&on, "would conflict", code, (1.8, 0.3, 40.0, true));
         let n = callout(&on, "would conflict", r.w as usize - 2).expect("the toast").lines.len() as f32;
         assert!(r.y + 1.0 + n <= code.y, "the callout above the code: {r:?}, {n} lines, {code:?}");
         assert!(code.y + code.h <= r.y + r.h, "the code in the window: {r:?}");
-        let view = (0, 0, 60, 24);
-        assert!(Window::of(&on, view, code, Some(whole.card)).left_out.contains(&whole.card));
-        assert!(Window::of(&on, view, code, None).left_out.is_empty(), "a toast whole in a window is drawn");
-    }
-
-    /// A sliver — what the left edge leaves of a row's text, a `{`, a `;`, a word's last letters — is erased: text
-    /// just past the edge (or one blank between), ending within `SLIVER` cells; a row's own text starting at the edge,
-    /// a longer run, one in a card or the target's own cells is drawn.
-    #[test]
-    fn a_sliver_at_the_left_edge_is_left_out() {
-        let on = grid(&[
-            "abcdefgh) {",
-            "abcdefghij;",
-            "abcdefghwind ────",
-            "abcdefghijklmnopqrstuvwxyz",
-            "          let",
-            "ab        {",
-            "abcdefghij {",
-            "abcdefghij;",
-            "abcdefghij;",
-        ]);
-        let own = region(9.0, 7.0, 4.0, 3.0);
-        let found = slivers(&on, (10, 0, 40, 9), &[(7, 0, 7, 12)], own);
-        assert_eq!(found, [(0, 10, 11), (1, 10, 11), (2, 10, 12), (6, 11, 12)]);
-        assert_eq!(slivers(&on, (0, 0, 40, 9), &[], own), [], "no edge past the screen's");
     }
 
     /// The code's rows as the writing is read from them: from the text's column past the numbers, a row with no number
@@ -1584,67 +1569,5 @@ mod tests {
         assert_eq!(target(&cells, "card:command"), Some(region(6.0, 8.0, 16.0, 4.0)));
         assert_eq!(target(&cells, "card:nowhere"), None);
         assert_eq!(target(&cells, "code:40-50"), None);
-    }
-
-    /// The spotlight lights a target floating over the code — a card, a prompt, a toast, cut to `|N` or not — by its
-    /// whole card; never the code's targets, a row's text, a news beat, nor a card standing between the code's lines.
-    #[test]
-    fn a_floating_target_is_lit_and_the_codes_are_not() {
-        let mut cells = grid(&[
-            "─ demo ┬ main.rs ────────────────────────────────────",
-            "src/a  │ 1 fn main() {",
-            "  b.rs │ 2     let x = 1;",
-            "       │ 3 ╭─ sessions ───────╮",
-            "       │   │ main working     │",
-            "       │   ╰─ enter switch ───╯",
-            "       │ 4 }",
-            "       │     ╭─ note ─────╮",
-            "       │     │ a thread   │",
-            "       │     ╰────────────╯",
-            "       │ 5 fn more() {}",
-            "▎yanked 2 lines                         ╭─ main asks ─╮",
-            " ╭─ command ──╮                         │ y run       │",
-            " │ :sh git    │                         ╰─ y · n ─────╯",
-            "● normal  enter run  esc close",
-        ]);
-        cells.ground[11][0..16].fill(5);
-        let list = vec![(3, 11, 5, 30)];
-        assert_eq!(spotlit(&cells, "card:sessions"), list);
-        assert_eq!(spotlit(&cells, "card:sessions|20"), list, "cut to its left: lit whole");
-        assert_eq!(spotlit(&cells, "main working"), list);
-        // (a prompt standing on the status line: the line its keys are said on lit with it; an ask beside it, its keys
-        // on its own foot, alone)
-        let cols = cells.text[0].len();
-        assert_eq!(spotlit(&cells, "card:command"), vec![(12, 1, 13, 14), (14, 0, 14, cols - 1)]);
-        assert_eq!(spotlit(&cells, "card:y run"), vec![(11, 40, 13, 54)]);
-        assert_eq!(spotlit(&cells, "card:yanked"), vec![(11, 0, 11, 15)]);
-        // (the code's targets, a row's text and a news beat stay bright)
-        for spec in
-            ["all", "status", "strip", "code:1-2", "code:1-2|20", "let x", "news:yanked over code:1-2"]
-        {
-            assert_eq!(spotlit(&cells, spec), [], "{spec}");
-        }
-        // (a note's card between lines 4 and 5: rows of the document, no spotlight)
-        assert_eq!(spotlit(&cells, "card:a thread"), []);
-        assert_eq!(spotlit(&cells, "card:nowhere"), []);
-    }
-
-    /// The spotlight eases in with a move to a floating target and out with the next to the code, as the camera does
-    /// (`EASE_MS`, an ease-out), a move begun mid-way starting from where it had got to; dark before any.
-    #[test]
-    fn the_spotlight_eases_in_and_out_with_the_camera() {
-        let moves = [(1_000, true), (3_000, false), (3_100, true), (6_000, false)];
-        assert_eq!(lit(moves, 0), 0.0);
-        assert_eq!(lit(moves, 999), 0.0);
-        assert!(lit(moves, 1_000 + EASE_MS / 4) > 0.5, "not an ease-out");
-        assert_eq!(lit(moves, 1_000 + EASE_MS), 1.0);
-        assert_eq!(lit(moves, 2_999), 1.0, "held until the next move");
-        // (out from 3 s, back in at 3.1 s from where it had got to: never a jump)
-        let (out, back) = (lit(moves, 3_100), lit(moves, 3_133));
-        assert!(0.0 < out && out < 1.0 && back > out, "{out} {back}");
-        assert!((lit(moves, 3_100 + EASE_MS) - 1.0).abs() < 1e-6);
-        assert_eq!(lit(moves, 6_000 + EASE_MS), 0.0);
-        let frames: Vec<f32> = (0..7_000u64).step_by(33).map(|ms| lit(moves, ms)).collect();
-        assert!(frames.windows(2).all(|p| (p[1] - p[0]).abs() < 0.3), "a jump");
     }
 }

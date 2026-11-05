@@ -267,6 +267,27 @@ const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150)
 /// ~107 ms), a third fewer frames than the 70 ms it was (N6).
 pub const TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// The step fades and drying are drawn at (toasts, motions, a plugin's overlay): `TICK`, but in a video's take the
+/// video's own frame (`TARAE_SHOT_FRAME_MS`, 10–100: set only by `cargo xtask scenes --video` for the tarae it
+/// records, never yours) — its animations drawn at the video's rate, nothing a user sees changed. The waiting wave
+/// steps on `TICK` whatever this is (`anim_step`: its 0.2 s is the user's).
+pub fn tick() -> std::time::Duration {
+    #[cfg(test)]
+    {
+        TICK
+    }
+    #[cfg(not(test))]
+    {
+        static STEP: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
+        *STEP.get_or_init(|| {
+            (std::env::var("TARAE_SHOT_FRAME_MS").ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|ms| (10..=100).contains(ms))
+                .map_or(TICK, std::time::Duration::from_millis)
+        })
+    }
+}
+
 /// The clock the waiting animation steps on: every wave on screen takes the same step, and a waiting tick
 /// is set for the next step (`step_in`) — ticks timed from when the last one was handled drifted, and now
 /// and then a wave skipped a step.
@@ -4413,7 +4434,7 @@ impl Editor {
         }
         let steady = left.unwrap_or_default().saturating_sub(TOAST_FADE);
         let fading_in = oldest < TOAST_FADE_IN;
-        Some(if fading_in || steady.is_zero() { TICK } else { steady })
+        Some(if fading_in || steady.is_zero() { tick() } else { steady })
     }
 
     /// When a frame is next wanted with nothing else happening: the waiting animation's next step while

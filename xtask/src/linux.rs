@@ -800,7 +800,7 @@ pub(crate) fn common_git_dir(root: &Path) -> Option<PathBuf> {
 }
 
 /// The repository's common git folder, wherever it is — the one every checkout of it shares.
-fn git_folder(root: &Path) -> Option<PathBuf> {
+pub(crate) fn git_folder(root: &Path) -> Option<PathBuf> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
