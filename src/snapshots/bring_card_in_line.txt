@@ -1,0 +1,97 @@
+# bring_card_in_line · 112x30 · theme meok · cursor 1:4
+## text
+00 ─ tarae › [scratch] ──────────────────────────────── main · fix-login bringing · preflight · docs · parser · + ─
+01   1
+02
+03                                                                  ▎ docs lines up to be brought — 2nd in line,
+04                                                                    after fix-login
+05
+06
+07
+08
+09
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21                                                    ╭─ parser asks · Bring parser into main ───────────────────╮
+22                                                    │ Run the preflight, then bring them into main?            │
+23                                                    │ 2 commits on main's tip. A failed preflight stops here.  │
+24                                                    │                                                          │
+25                                                    │ Another bring is under way (fix-login, then docs) — y    │
+26                                                    │ lines it up behind them: 3rd in line.                    │
+27                                                    ╰─ C-q answer · y Bring · n Not now ───────────────────────╯
+28
+29  ● normal   main                                                                                           1:1
+## bg · surface per cell, blank = ui.background
+00
+01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+02
+03
+04
+05
+06
+07
+08
+09
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
+00 a ddddd f TTTTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf BBBB f           dddddddd d ddddddddd f      f        f d f
+01   A
+02
+03
+04
+05
+06
+07
+08
+09
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21                                                    ff BBBBBB TTTT T TTTTT TTTTTT TTTT TTTT ffffffffffffffffffff
+22                                                    f                                                          f
+23                                                    f d ddddddd dd dddddd dddd d dddddd ddddddddd ddddd ddddd  f
+24                                                    f                                                          f
+25                                                    f ddddddd ddddd dd ddddd ddd ddddddddddd dddd ddddd d d    f
+26                                                    f ddddd dd dd dddddd ddddd ddd dd ddddd                    f
+27                                                    ff FFF ffffff f F fffff f F fff fff ffffffffffffffffffffffff
+28
+29  a TTTTTT   BBBB                                                                                           TTT
+## legend
+bg: c=ui.cursorline.primary
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold

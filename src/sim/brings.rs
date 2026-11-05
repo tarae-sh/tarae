@@ -11,6 +11,13 @@
 //! `y` or `n` later (#323: a new checkout asks again). After every step: one bring card a session, the queue holds each
 //! session once, one under way at most, a bring going by itself has no card of its own up and says where it is in its
 //! session's words, and one whose preflight the trust card holds back says it waits on it, that card up.
+//!
+//! Every bring waits its turn (#371): a plain bring card answered `y` (as a key), the one card's `y` while another bring
+//! is under way, a file left in no commit in a session or taken away again, a commit on `main` from outside the queue.
+//! After every step besides: one bring under way at a time, whoever asked it; a session in line has no bring card of
+//! its own, each card up says the place its `y` would take (and none while nothing is under way), each row waiting says
+//! its place; those in line go in the order asked; no preflight starts on a tree with changes in no commit, nor for
+//! `risky`, whose high-risk change no one looked at (#379: its card waits, its `h`).
 
 use std::time::Duration;
 
@@ -34,7 +41,8 @@ fn brought_one_after_another() {
 }
 
 fn run(choices: Choices) -> Vec<String> {
-    let world = World::new();
+    // (a third, clashing with neither: two can wait in line behind a third)
+    let world = World::new().and("third", "t.rs", "fn t() {}\n");
     let mut sim = Sim::new("brought_one_after_another", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
     (ed.workspace.root, ed.workspace.name) = (world.repo.clone(), "proj".into());
@@ -51,32 +59,55 @@ fn run(choices: Choices) -> Vec<String> {
     ed.workspace_switch(crate::event::WorkspaceId::HOME);
     ed.bring_queue.stand_in = true;
     let dir = world.dir.display().to_string();
+    // (each `y` that asked a bring, in order: those in line go as asked)
+    let asked = std::cell::RefCell::new(Vec::new());
     let check = |ed: &Editor| {
         one_bring_card(ed)
             .and_then(|()| queue_held(ed))
             .and_then(|()| failed_said(ed))
             .and_then(|()| going_alone(ed))
             .and_then(|()| trust_said(ed))
+            .and_then(|()| one_at_a_time(ed))
+            .and_then(|()| line_said(ed))
+            .and_then(|()| first_asked_first(ed, &asked.borrow()))
+            .and_then(|()| preflights_checked(ed, &names))
     };
     let said = |ed: &Editor| format!("{} · {}{}", print(ed, &dir), queue_said(ed), trust_waits(ed));
-    sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &names), check, said);
+    let step = |sim: &mut Sim, ed: &mut Editor| {
+        let s = input(sim, ed, &names, &mut asked.borrow_mut(), &world.repo);
+        // (an input is an event: what every event runs after it, the line's part — `handle_event`)
+        ed.bring_queue_sync();
+        s
+    };
+    sim.walk(&mut ed, INPUTS, step, check, said);
     let trace = sim.trace().to_vec();
     drop(sim);
     drop(ed);
     trace
 }
 
-fn input(sim: &mut Sim, ed: &mut Editor, names: &[(String, std::path::PathBuf)]) -> String {
+type Asked = Vec<crate::event::WorkspaceId>;
+
+fn input(
+    sim: &mut Sim,
+    ed: &mut Editor,
+    names: &[(String, std::path::PathBuf)],
+    asked: &mut Asked,
+    repo: &std::path::Path,
+) -> String {
     let c = &mut sim.choices;
     let (name, root) = c.pick(names).clone();
     // (by arm: a bring asked 4, one brought 2, a commit 2, a frame 1, time passing 1, the queue asked 1, the
     // queue's task or a single bring's preflight stood in for 3, a bring card's failed preflight 1, the one bring
-    // card's `y` 2, the project's trust asked or answered 1)
-    match c.weighted(&[4, 2, 2, 1, 1, 1, 3, 1, 2, 1]) {
+    // card's `y` 2, the project's trust asked or answered 1, a plain bring card's `y` 2, a file in no commit 1, a
+    // commit on main 1)
+    match c.weighted(&[4, 2, 2, 1, 1, 1, 3, 1, 2, 1, 2, 1, 1]) {
         0 => match ed.workspace_bring(&name) {
             Ok(()) => format!(":workspace-bring {name}"),
             Err(e) => format!(":workspace-bring {name}: {e}"),
         },
+        // (its card answered: gone as its `y` takes it — none while its own bring goes; a held one has no `y`)
+        1 if !take_card(ed, &root) => format!("({name}: no bring card to answer)"),
         1 => match ed.workspace_bring_now(&name) {
             Ok(()) => format!("{name} brought (its card's y)"),
             Err(e) => format!("{name} brought: {e}"),
@@ -97,18 +128,209 @@ fn input(sim: &mut Sim, ed: &mut Editor, names: &[(String, std::path::PathBuf)])
             sim.wait(Duration::from_millis(ms));
             format!("{ms} ms pass")
         }
-        5 => queue_asked(sim, ed, names),
+        5 => queue_asked(sim, ed, names, asked),
         6 => {
             let passes = *c.pick(&[true, false]);
             stand_in(ed, names, passes)
         }
         7 => preflight_failed(ed, &name, &root),
-        8 => bring_go(ed, &name, &root),
-        _ => {
+        8 => bring_go(ed, &name, &root, asked),
+        9 => {
             let yes = *c.pick(&[true, false]);
             trust(ed, sim.steps, yes)
         }
+        10 => card_y(ed, asked),
+        11 if name == "risky" && c.weighted(&[1, 1]) == 0 => looked(ed, &root),
+        11 => unclean(ed, &name, &root),
+        _ => {
+            let file = format!("m{}.txt", sim.steps);
+            std::fs::write(repo.join(&file), "m\n").unwrap();
+            git(repo, &["add", &file]);
+            git(repo, &["commit", "-q", "-m", &file]);
+            "main: a commit (from outside the queue)".into()
+        }
     }
+}
+
+/// The bring card of the checkout at `root` taken away, as its `y` takes it — false when none is up (a held one has
+/// no `y`).
+fn take_card(ed: &mut Editor, root: &std::path::Path) -> bool {
+    let up = |o: &crate::offer::Offer| o.bring_root() == Some(root) && o.held.is_none();
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+    if !ed.offers.iter().chain(parked).any(up) {
+        return false;
+    }
+    ed.offers.retain(|o| !up(o));
+    for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
+        l.parked.retain(|o| !up(o));
+    }
+    true
+}
+
+/// `risky`'s high-risk change looked at (`space v h`): its bring goes on as any other's from here.
+fn looked(ed: &mut Editor, root: &std::path::Path) -> String {
+    let rules = crate::risk::Rules::of(&ed.config);
+    let highs = crate::codereview::highs_between(root, "main", "HEAD", &rules).unwrap_or_default();
+    let keys: Vec<crate::risk::Key> = highs.iter().flat_map(|h| h.keys.iter().copied()).collect();
+    let n = keys.len();
+    let all = std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces);
+    if let Some(l) = all.into_iter().find(|l| l.root == root) {
+        l.looked.extend(keys);
+    }
+    format!("risky: its high-risk change looked at ({n} keys)")
+}
+
+/// The file a session's checkout has in no commit, while it's there (`unclean`).
+const UNCLEAN: &str = "unclean.txt";
+
+/// A file left in no commit in session `name`'s checkout — or, there, taken away — while no bring of it is under way
+/// (one under way checked its tree as it began; the bring checks again as it lands).
+fn unclean(ed: &mut Editor, name: &str, root: &std::path::Path) -> String {
+    let Ok((id, _)) = ed.session_named(name) else { return format!("({name}: no session)") };
+    if ed.bring_queued(id) || session(ed, id).is_some_and(|l| ed.bring_going(l) || l.rebase.is_some()) {
+        return format!("({name}: its bring under way)");
+    }
+    let file = root.join(UNCLEAN);
+    match file.exists() {
+        true => {
+            std::fs::remove_file(&file).unwrap();
+            format!("{name}: its file in no commit taken away")
+        }
+        false => {
+            std::fs::write(&file, "x\n").unwrap();
+            format!("{name}: a file left in no commit")
+        }
+    }
+}
+
+/// The plain bring card in front (no high-risk hold, no failed preflight) answered `y` as a key, once drawn and
+/// focused: the preflight then the bring — or, another bring under way, in line behind it.
+fn card_y(ed: &mut Editor, asked: &mut Asked) -> String {
+    let plain = |o: &crate::offer::Offer| {
+        matches!(o.what, crate::offer::What::Rebased(_)) && o.held.is_none() && o.warnings.is_empty()
+    };
+    let Some(root) =
+        ed.offers.first().filter(|o| plain(o)).and_then(|o| o.bring_root()).map(|r| r.to_path_buf())
+    else {
+        return "(no plain bring card in front)".into();
+    };
+    let Some(id) = ed.session_at(&root) else { return "(its session is gone)".into() };
+    crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
+    ed.card_focus_front();
+    ed.handle_key(Key::plain(Code::Char('y')));
+    asked.push(id);
+    let name = session(ed, id).map(|l| l.label().to_string()).unwrap_or_default();
+    match ed.bring_queued(id) {
+        true => format!("{name}'s bring card: y — in line, {}", ed.bring_said(id).unwrap_or_default()),
+        false => format!("{name}'s bring card: y"),
+    }
+}
+
+/// Whether session `l`'s bring, going by itself, holds the line — not one stopped at its rebase's conflict or
+/// resolved there (that waits on a person).
+fn holds(ed: &Editor, l: &crate::workspace::Workspace) -> bool {
+    use crate::rebase::Stage as R;
+    let waits_on_you = l.rebase.as_ref().is_some_and(|r| match r.stage {
+        R::Running { .. } => false,
+        R::Resolved => true,
+        R::Stopped => r.stop != Default::default(),
+    });
+    ed.bring_going(l) && !waits_on_you && !ed.bring_queued(l.id)
+}
+
+/// The one bring under way at a time (#371): the queue's, or a bring going by itself — never two at once, whoever
+/// asked them.
+fn one_at_a_time(ed: &Editor) -> Result<(), String> {
+    let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    let mut going: Vec<String> =
+        all().filter(|l| holds(ed, l)).map(|l| format!("{} (by itself)", l.label())).collect();
+    if let Some((id, stage)) = ed.bring_queue.run.as_ref().and_then(|r| r.now) {
+        going.extend(session(ed, id).map(|l| format!("{} (the queue's, {stage:?})", l.label())));
+    }
+    match going.len() {
+        0 | 1 => Ok(()),
+        _ => Err(format!("two brings under way at once: {}", going.join(", "))),
+    }
+}
+
+/// A session in line has no bring card of its own; each plain or rebase card up says the place its `y` would take —
+/// after the one under way and those waiting — and none says one while its `y` would bring at once; each row waiting
+/// says its place, the one under way first.
+fn line_said(ed: &Editor) -> Result<(), String> {
+    let run = ed.bring_queue.run.as_ref();
+    let in_line: Vec<crate::event::WorkspaceId> =
+        run.iter().flat_map(|r| r.left.iter().copied().chain(r.now.map(|(id, _)| id))).collect();
+    let going = run.is_some_and(|r| r.now.is_some())
+        || std::iter::once(&ed.workspace).chain(&ed.workspaces).any(|l| holds(ed, l));
+    let ahead = usize::from(going) + run.map_or(0, |r| r.left.len());
+    for o in all_cards(ed) {
+        let Some(root) = o.bring_root() else { continue };
+        let Some(id) = ed.session_at(root) else { continue };
+        if in_line.contains(&id) {
+            return Err(format!("in line, and card#{} {:?} asks", o.id, o.title));
+        }
+        let plain = matches!(o.what, crate::offer::What::Rebase(_) | crate::offer::What::Rebased(_));
+        if !plain || !o.warnings.is_empty() {
+            continue;
+        }
+        let place = o.question.rsplit_once(": ").and_then(|(_, p)| p.strip_suffix(" in line."));
+        let says = o.question.contains("\n\nAnother bring is under way (");
+        let want = nth(ahead + 1);
+        if says != ed.bring_waits(id) || (says && place != Some(want.as_str())) {
+            return Err(format!(
+                "card#{} {:?} says {place:?} ({says}), {ahead} ahead: {:?}",
+                o.id, o.title, o.question
+            ));
+        }
+    }
+    for (i, id) in run.iter().flat_map(|r| r.left.iter().copied()).enumerate() {
+        let want = format!("bring {}", nth(i + 1 + usize::from(going)));
+        if ed.bring_said(id).as_deref() != Some(want.as_str()) {
+            return Err(format!("session {id} waits {}: its row {:?}", nth(i + 1), ed.bring_said(id)));
+        }
+    }
+    Ok(())
+}
+
+/// `1st` … as the cards and rows say it (the scenario's own).
+fn nth(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// Those waiting in line go in the order their `y`s asked (`asked`, each one's last).
+fn first_asked_first(ed: &Editor, asked: &[crate::event::WorkspaceId]) -> Result<(), String> {
+    let Some(run) = ed.bring_queue.run.as_ref() else { return Ok(()) };
+    let when = |id: &crate::event::WorkspaceId| asked.iter().rposition(|a| a == id);
+    let order: Vec<Option<usize>> = run.left.iter().map(when).collect();
+    match order.windows(2).all(|w| w[0] < w[1]) {
+        true => Ok(()),
+        false => Err(format!("in line {:?}, asked {asked:?}", run.left)),
+    }
+}
+
+/// No preflight starts on a tree with a file in no commit, nor for `risky`, its high-risk change not looked at (#379).
+fn preflights_checked(ed: &Editor, names: &[(String, std::path::PathBuf)]) -> Result<(), String> {
+    for l in std::iter::once(&ed.workspace).chain(&ed.workspaces) {
+        let queued = ed.bring_queue_at(l.id) == Some(Stage::Preflight);
+        if !queued && !(l.bring_after_preflight && !l.bring_trust) {
+            continue;
+        }
+        let Some((name, root)) = names.iter().find(|(_, r)| *r == l.root) else { continue };
+        if root.join(UNCLEAN).exists() {
+            return Err(format!("{name}'s preflight runs with a file in no commit"));
+        }
+        if name == "risky" && l.looked.is_empty() {
+            return Err("risky's preflight runs, its high-risk change not looked at".into());
+        }
+    }
+    Ok(())
 }
 
 /// The project's `.tarae.toml` read again, asking trust for its preflight steps (#323) — while no preflight of a
@@ -189,7 +411,8 @@ fn trust_said(ed: &Editor) -> Result<(), String> {
 /// The one bring card's `y` on session `name` (`rebase_start`'s `bring_go`), its rebase stood in for — run here,
 /// aborted at a conflict, as the queue's — and its end as `rebase_ended`'s goes on: graded on a worker, its quick
 /// preflight (stood in for by arm 6), brought.
-fn bring_go(ed: &mut Editor, name: &str, root: &std::path::Path) -> String {
+/// Another bring under way: its `y` lines it up instead (`rebase_start`, as the card's `y` — no rebase runs then).
+fn bring_go(ed: &mut Editor, name: &str, root: &std::path::Path, asked: &mut Asked) -> String {
     let Ok((id, _)) = ed.session_named(name) else { return format!("({name}: no session)") };
     let free =
         |l: &crate::workspace::Workspace| l.rebase.is_none() && !l.bring_go && !l.bring_after_preflight;
@@ -199,8 +422,28 @@ fn bring_go(ed: &mut Editor, name: &str, root: &std::path::Path) -> String {
     // (its card, answered: gone as its `y` takes it — a held one has no `y`)
     let up = |o: &crate::offer::Offer| o.bring_root() == Some(root) && o.held.is_none();
     let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
-    if !ed.offers.iter().chain(parked).any(up) {
+    let Some(card) = ed.offers.iter().chain(parked).find(|o| up(o)).map(|o| o.id) else {
         return format!("({name}: no bring card to answer)");
+    };
+    asked.push(id);
+    if ed.bring_waits(id) {
+        let m = crate::rebase::Moved {
+            root: root.to_path_buf(),
+            name: name.into(),
+            branch: name.into(),
+            base: "main".into(),
+            moved: 1,
+            ahead: 1,
+        };
+        ed.rebase_start(card, m);
+        ed.offers.retain(|o| o.id != card);
+        for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
+            l.parked.retain(|o| o.id != card);
+        }
+        return format!(
+            "{name}: y — another bring under way, in line: {}",
+            ed.bring_said(id).unwrap_or_default()
+        );
     }
     ed.offers.retain(|o| !up(o));
     for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
@@ -270,17 +513,21 @@ fn preflight_failed(ed: &mut Editor, name: &str, root: &std::path::Path) -> Stri
     format!("{name}'s bring card: p, its preflight failed")
 }
 
-/// `space W`'s `m` on each session, `B`, and the card's `y` once it's drawn and focused.
-fn queue_asked(_sim: &mut Sim, ed: &mut Editor, names: &[(String, std::path::PathBuf)]) -> String {
-    if ed.bring_queue.run.is_some() {
-        return "(a queue is under way)".into();
-    }
+/// `space W`'s `m` on each session, `B`, and the card's `y` once it's drawn and focused — behind a queue going, they
+/// line up after it.
+fn queue_asked(
+    _sim: &mut Sim,
+    ed: &mut Editor,
+    names: &[(String, std::path::PathBuf)],
+    asked: &mut Asked,
+) -> String {
     ed.bring_queue.marks.clear();
     for (name, _) in names {
         if let Ok((id, _)) = ed.session_named(name) {
             ed.bring_mark(id);
         }
     }
+    let marks = ed.bring_queue.marks.clone();
     if let Err(e) = ed.bring_queue_ask() {
         return format!("B: {e}");
     }
@@ -292,6 +539,7 @@ fn queue_asked(_sim: &mut Sim, ed: &mut Editor, names: &[(String, std::path::Pat
     // (focused — a press on it — then its `y`)
     ed.card_focus_front();
     ed.handle_key(Key::plain(Code::Char('y')));
+    asked.extend(marks.into_iter().filter(|id| ed.bring_queued(*id)));
     "B, and y on its card".into()
 }
 

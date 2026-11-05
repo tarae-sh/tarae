@@ -69,6 +69,17 @@ impl World {
         }
         World { dir, repo, sessions }
     }
+
+    /// One more session, `name`, with a commit of its own: `file` written as `body`.
+    pub(super) fn and(mut self, name: &str, file: &str, body: &str) -> World {
+        let wt = self.dir.join("wt").join(name);
+        git(&self.repo, &["worktree", "add", "-q", "-b", name, &wt.display().to_string(), "main"]);
+        std::fs::write(wt.join(file), body).unwrap();
+        git(&wt, &["add", file]);
+        git(&wt, &["commit", "-q", "-m", name]);
+        self.sessions.push((name.to_string(), wt));
+        self
+    }
 }
 
 /// The scenario's own git (the world's changes, not tarae's): the user's global and system settings left out, and

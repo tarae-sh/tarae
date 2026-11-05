@@ -1,0 +1,97 @@
+# sessions_bring_in_line · 112x30 · theme meok · cursor hidden
+## text
+00 ─ tarae › [scratch] ──────────────────────────────── main · fix-login bringing · preflight · docs · parser · + ─
+01   1
+02
+03                                                    ▎ parser lines up to be brought — 3rd in line, after docs
+04                                                    ▎ docs lines up to be brought — 2nd in line, after fix-lo…
+05
+06
+07                       ╭─ sessions ── 4 sessions ──────── enter switch  / search  o new ─╮
+08                       │▎ main                                                           │
+09                       │  fix-login  bringing · preflight                                │
+10                       │  docs       bring 2nd                                           │
+11                       │  parser     bring 3rd                                           │
+12                       ╰─────────────────────────────────────────────────────────────────╯
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29  ● sessions   main                                                                                         1:1
+## bg · surface per cell, blank = ui.background
+00
+01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+02
+03
+04
+05
+06
+07
+08                        PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+09
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
+00 f ddddd f TTTTTTTTT ffffffffffffffffffffffffffffffff BBBB f           dddddddd d ddddddddd f      f        f d f
+01   A
+02
+03
+04
+05
+06
+07                       aa TTTTTTTT aa d dddddddd aaaaaaaa DDDDD ffffff  D ffffff  D fff aa
+08                       aa BBBB                                                           a
+09                       a             dddddddd d ddddddddd                                a
+10                       a             ddddd ddd                                           a
+11                       a             ddddd ddd                                           a
+12                       aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29  a TTTTTTTT   BBBB                                                                                         TTT
+## legend
+bg: c=ui.cursorline.primary  P=ui.menu.selected
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold

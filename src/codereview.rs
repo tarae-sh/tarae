@@ -3375,7 +3375,7 @@ fn bring_graded(
             // (graded for a card while a bring of its own went on meanwhile: that bring says what becomes of it — one
             // at a time, no card beside it)
             let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
-            if !go && all().any(|l| l.id == sid && ed.bring_going(l)) {
+            if !go && (all().any(|l| l.id == sid && ed.bring_going(l)) || ed.bring_queued(sid)) {
                 return;
             }
             let mut said = None;

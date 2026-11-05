@@ -1019,7 +1019,7 @@ fn every_act_that_takes_a_workspace_to_the_front_puts_itself_off_whole() {
         }
     }
     fn held(dir: &Path) -> crate::rebase::Held {
-        crate::rebase::Held { moved: moved(dir), changed: Vec::new(), unsaved: Vec::new() }
+        crate::rebase::Held { moved: moved(dir), changed: Vec::new(), unsaved: Vec::new(), bring: false }
     }
     fn ending(dir: &Path) -> crate::worktree::Ending {
         crate::worktree::Ending {

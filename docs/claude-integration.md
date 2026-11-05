@@ -2735,10 +2735,24 @@ unmarks; the row says `bring 1st`, `bring 2nd` … — the order marked is the o
 time on its base's tip: rebased onto it if it moved, its quick preflight run there, then brought — the next
 starts once it lands, so no preflight runs on a tip already gone. One that meets a conflict (its Claude is asked
 as above), changes in no commit (its card stays), a preflight that fails or doesn't run, or nothing to bring is
-left out, said, and the rest go on; a fast-forward refused because the base moved under it is looked at once
-more. Meanwhile its row says where it is (`bring queue 2/3 · preflight`, `bring queue · next`), a bring of one
-in the queue asked another way waits for its turn, and the end says who was brought and who wasn't, and why.
-One marked alone is a single bring.
+left out, said, and the rest go on; a base moved under it from outside the queue (a commit of yours on it) gets
+one more try — rebased and preflighted again by itself — and moved again, it's out with its card. Meanwhile its
+row says where it is (`bring queue 2/3 · preflight`, `bring 2nd`), a bring of one in the queue asked another way
+waits for its turn, and the end says who was brought and who wasn't, and why. One marked alone is a single bring.
+
+**Every bring waits its turn** in that one queue: a bring card's `y` while another bring is under way — the
+queue's, or one going by itself — lines it up behind, first asked first brought. The card says so before you
+answer (`Another bring is under way (collab) — y lines it up behind it: 2nd in line.`), its row after
+(`bring 2nd`); `B` on marked sessions lines them up the same way. A bring going by itself goes first (but one
+stopped at its rebase's conflict: that waits on you, the line goes on). Each is looked at in its turn on its
+base's tip as it is then, so a tip that moved while it waited is rebased onto and preflighted there; what lands
+is the commit its preflight tested.
+
+Before its preflight a bring looks at its checkout. Changes in no commit (untracked files too) stop it as they
+stop a rebase — the preflight would test them and the bring land its commits without them: its card names them
+(`g` shows them; commit or stash, then bring again), and the bring looks again just before it lands. High-risk
+changes no one looked at stop it too: the queue's `y` names those sessions first, and at its turn each waits on
+its bring card (`h` goes to them) — no preflight run only to be refused after it passes.
 
 A session with no commits of its own, behind its base (it was made, nothing was committed, and the base moved
 on), has nothing to bring. `:workspace-bring` then offers to move it up to its base's tip instead: the card says

@@ -2768,6 +2768,56 @@ fn snapshot_sessions_marked_to_bring() {
     s.frames_both("f33_bring_queue_card");
 }
 
+/// #371: every bring waits its turn — `fix-login` going by itself (its preflight), `docs` in line behind it: `parser`'s
+/// bring card says the place its `y` takes, and once it took it, `space W`'s rows say each one's (`bring 2nd`, `bring
+/// 3rd`). With `TARAE_FRAMES_DIR`, each in both themes.
+#[test]
+fn snapshot_a_bring_waits_its_turn() {
+    // (the toasts that say each place drawn as they come, whatever this machine's pace)
+    crate::clock::hold();
+    let mut s = Shot::new(112, 30);
+    let root = s.in_project();
+    (s.ed.workspace.name, s.ed.workspace.git_branch) = ("main".into(), Some("main".into()));
+    let mut ids = Vec::new();
+    for name in ["fix-login", "docs", "parser"] {
+        let dir = root.with_file_name(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = s.ed.workspace_add(dir);
+        let l = s.ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
+        (l.name, l.base) = (name.into(), Some("main".into()));
+        ids.push(id);
+    }
+    // (fix-login's card answered `y`: its preflight under way — docs's `y` after it, in line)
+    s.ed.with_workspace(ids[0], |ed| ed.workspace.bring_after_preflight = true);
+    s.ed.bring_join(ids[1]);
+    s.ed.offer_popups = true;
+    let m = crate::rebase::Moved {
+        root: root.with_file_name("parser"),
+        name: "parser".into(),
+        branch: "parser".into(),
+        base: "main".into(),
+        moved: 0,
+        ahead: 2,
+    };
+    s.ed.push_offer(m.bring_card(None, false));
+    s.ed.bring_queue_sync();
+    let q = &s.ed.offers.first().unwrap().question;
+    assert!(
+        q.ends_with(
+            "Another bring is under way (fix-login, then docs) — y lines it up behind them: 3rd in line."
+        ),
+        "{q}"
+    );
+    s.check("bring_card_in_line");
+    s.frames_both("f371_card");
+    s.ed.offers.clear();
+    s.ed.bring_join(ids[2]);
+    s.ed.session_list();
+    s.frame();
+    s.check("sessions_bring_in_line");
+    s.frames_both("f371_list");
+}
+
 /// frictions26 S1: a session's end card when what `workspace.keep` names is kept — the kept line decided, its own
 /// CLAUDE.md copied beside it — and when nothing can be (over the size): said in the warning colour, with what
 /// goes with the checkout.

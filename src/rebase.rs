@@ -243,24 +243,52 @@ impl Moved {
 /// What a rebase would be held back by in a session's checkout (#188: git refused it over changes in no
 /// commit, and the card only offered `y` retry): files changed there, buffers unsaved there. Its card says
 /// which, and offers what fits — `s` stashes the changes for the rebase (none unsaved), `g` shows them.
+/// A bring's (`bring`, #371): changes in no commit on its base's tip, untracked too — its preflight would test them
+/// and the bring land its commits without them: `g` only (set aside for a preflight, they'd vanish from under its
+/// Claude for its whole run).
 #[derive(Clone, Debug)]
 pub struct Held {
     pub moved: Moved,
     /// Changed in no commit · unsaved in a buffer (relative to the checkout).
     pub changed: Vec<String>,
     pub unsaved: Vec<String>,
+    pub bring: bool,
 }
 
 impl Held {
-    /// Whether `s` answers it: nothing unsaved (a buffer's text isn't on disk for git to stash).
+    /// Whether `s` answers it: a rebase's, nothing unsaved (a buffer's text isn't on disk for git to stash).
     pub fn stashes(&self) -> bool {
-        self.unsaved.is_empty()
+        !self.bring && self.unsaved.is_empty()
     }
 
     pub fn card(&self) -> Offer {
         let m = &self.moved;
         let it = |files: &[String]| files.len() == 1;
         let them = |files: &[String]| if it(files) { "it" } else { "them" };
+        if self.bring {
+            let c = &self.changed;
+            let q = format!(
+                "{} changed and {} in a commit — its preflight would test {}, and the bring lands {}'s commits \
+                 without {}.\n\nCommit or stash {} (g shows {}), then :workspace-bring {} again.",
+                named(c),
+                if it(c) { "isn't" } else { "aren't" },
+                them(c),
+                m.branch,
+                them(c),
+                them(c),
+                them(c),
+                m.name,
+            );
+            let mut card = Offer::new(
+                format!("Bring {}: changes in no commit", m.name),
+                &q,
+                "Showing them…",
+                format!("Couldn't bring {}", m.branch),
+                What::RebaseHeld(Box::new(self.clone())),
+            );
+            card.decided = Some(0..1);
+            return card;
+        }
         let q = match self.stashes() {
             true => {
                 let c = &self.changed;
@@ -307,6 +335,22 @@ impl Held {
 /// refuses only one in the way, and says so. None: git can't say.
 pub(crate) fn changed(root: &Path) -> Option<Vec<String>> {
     let status = git(root, &["status", "--porcelain", "-z", "--untracked-files=no"], None).ok()?;
+    let mut v = Vec::new();
+    let mut entries = status.split('\0').filter(|e| !e.is_empty());
+    while let Some(e) = entries.next() {
+        // (a rename in the index: its old path comes next)
+        if e.starts_with(['R', 'C']) {
+            entries.next();
+        }
+        v.extend(e.get(3..).filter(|p| !p.is_empty()).map(str::to_string));
+    }
+    Some(v)
+}
+
+/// The files changed in no commit in the checkout at `root`, relative — new ones untracked too: a preflight sees
+/// them, a bring doesn't take them (#371). None: git can't say.
+pub(crate) fn unclean(root: &Path) -> Option<Vec<String>> {
+    let status = git(root, &["status", "--porcelain", "-z", "--untracked-files=all"], None).ok()?;
     let mut v = Vec::new();
     let mut entries = status.split('\0').filter(|e| !e.is_empty());
     while let Some(e) = entries.next() {
@@ -1156,6 +1200,11 @@ impl Editor {
         let Some(id) = self.session_at(&m.root) else {
             return self.offer_finished(card, Err(format!("{} isn't open any more", m.name)));
         };
+        // (another bring under way: in line behind it, rebased in its turn onto the tip as it is then — #371)
+        if self.bring_waits(id) {
+            self.offer_finished(card, Ok(()));
+            return self.bring_join(id);
+        }
         self.workspace_switch(id);
         self.offer_finished(card, Ok(()));
         // (the one bring card's `y`: on to the preflight and the bring once it's rebased — `bring_go_on`)
@@ -1213,7 +1262,7 @@ impl Editor {
                     ed.bring_queue_rebased(Err("changes an earlier rebase set aside are still there".into()));
                 }
                 (Err(changed), None) if !unsaved.is_empty() || (!stash && !changed.is_empty()) => {
-                    ed.push_offer(Held { moved: m, changed, unsaved }.card());
+                    ed.push_offer(Held { moved: m, changed, unsaved, bring: false }.card());
                     // (the queue never stashes for you: its card asks, a single bring after)
                     ed.bring_queue_rebased(Err(
                         "changes not in a commit in its checkout — its card asks".into()
@@ -2307,6 +2356,15 @@ impl Editor {
         self.workspace.parked.retain(|o| !mine(o));
     }
 
+    /// `y` (or `p`) on the plain bring card: the preflight, then the bring — in line behind another bring under way
+    /// (#371).
+    pub fn bring_asked(&mut self, m: Moved) {
+        match self.session_at(&m.root) {
+            Some(id) if self.bring_waits(id) => self.bring_join(id),
+            _ => self.rebase_preflight_then_bring(m, false),
+        }
+    }
+
     /// `y` on the bring card.
     pub fn rebase_bring(&mut self, m: Moved) {
         let Some(id) = self.session_at(&m.root) else { return };
@@ -2373,6 +2431,11 @@ impl Editor {
     /// rebased again, or graded — the held card up while high-risk changes wait for a look, else the quick preflight
     /// (`quick`: its steps) and the bring, a failure its card back (`rebase_bring_failed`).
     pub(crate) fn bring_go_on(&mut self, m: Moved, quick: Option<Vec<String>>) {
+        // (another bring went on meanwhile — it stopped at a conflict, the line didn't wait: first in line, looked at
+        // again in its turn — #371)
+        if self.bring_goes_first_in_line(self.workspace.id) {
+            return;
+        }
         if m.moved > 0 {
             self.workspace.bring_go = true;
             return self.rebase_check(m, false);
@@ -2424,11 +2487,24 @@ impl Editor {
     /// `rebased`: the one bring card's `y` rebased it first (its state words say so).
     pub fn rebase_preflight_then_bring(&mut self, m: Moved, rebased: bool) {
         let Some(id) = self.session_at(&m.root) else { return };
+        // (going from here: no card asked meanwhile stands beside it — its state words say `bringing`)
+        self.with_workspace(id, |ed| ed.workspace.bring_go = true);
         let stands_in = self.bring_queue_stands_in();
         let root = m.root.clone();
         self.events.shared_jobs().spawn(move || {
             let head = git(&root, &["rev-parse", "HEAD"], None).ok().map(|h| h.trim().to_string());
+            let unclean = unclean(&root).unwrap_or_default();
             move |ed: &mut Editor| {
+                // (changes in no commit: the preflight would test them, the bring land its commits without them —
+                // stopped as a rebase is, its held card up, #371)
+                if !unclean.is_empty() {
+                    ed.with_workspace(id, |ed| {
+                        (ed.workspace.bring_go, ed.workspace.bring_rebased) = (false, false)
+                    });
+                    return ed.push_offer(
+                        Held { moved: m, changed: unclean, unsaved: Vec::new(), bring: true }.card(),
+                    );
+                }
                 ed.with_workspace(id, |ed| {
                     (ed.workspace.bring_after_preflight, ed.workspace.bring_rebased) = (true, rebased);
                     // (the bring its card's `y` asked for goes on as the preflight's)
@@ -2502,6 +2578,10 @@ impl Editor {
         let (id, name) = (self.workspace.id, self.workspace.label().to_string());
         // (the bring queue's one under way: said there, the next going on if it failed)
         if self.bring_queue_at(id) == Some(crate::bringqueue::Stage::Preflight) {
+            // (its card back saying what failed, as a single bring's — then out, the next going on)
+            if let Some(m) = card.filter(|_| !passed) {
+                self.rebase_bring_failed(*m, title);
+            }
             self.bring_queue_preflight(passed, title);
             if !passed {
                 return;

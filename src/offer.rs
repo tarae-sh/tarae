@@ -2119,7 +2119,7 @@ impl crate::editor::Editor {
             }
             What::Rebased(m) => {
                 self.offer_finished(id, Ok(()));
-                self.rebase_preflight_then_bring(*m, false);
+                self.bring_asked(*m);
             }
             What::RebaseResolved { root, .. } => {
                 self.offer_finished(id, Ok(()));
@@ -2282,7 +2282,7 @@ impl crate::editor::Editor {
         let o = self.offers.remove(0);
         self.offer_answered(&o, 'p');
         if let What::Rebased(m) = o.what {
-            self.rebase_preflight_then_bring(*m, false);
+            self.bring_asked(*m);
         }
     }
 

@@ -363,14 +363,13 @@ fn guards() -> Vec<(&'static str, Guard)> {
             s.ed.workspace_by_id(id).unwrap().task_run = Some(r);
         }),
         ("the bring queue is past it", |s, on| {
+            // (in line behind one under way — the home checkout's stand-in at its fast-forward: a line with none under
+            // way goes on at the next event, #371)
             s.ed.bring_queue.run = on.then(|| crate::bringqueue::Run {
                 left: [s.id("fix")].into(),
-                now: None,
-                brought: Vec::new(),
-                out: Vec::new(),
-                again: false,
-                total: 1,
-                names: Vec::new(),
+                now: Some((crate::event::WorkspaceId::HOME, crate::bringqueue::Stage::Bringing)),
+                total: 2,
+                ..Default::default()
             });
         }),
         // (a real one: stopped at a `break` in fix's checkout, taken up as tarae takes one up; `:rebase-abort` ends it)

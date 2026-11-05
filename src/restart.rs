@@ -3514,7 +3514,8 @@ mod tests {
             moved: 1,
             ahead: 1,
         };
-        let held = crate::rebase::Held { moved, changed: vec!["a.txt".into()], unsaved: Vec::new() };
+        let held =
+            crate::rebase::Held { moved, changed: vec!["a.txt".into()], unsaved: Vec::new(), bring: false };
         ed.workspace_by_id(id).unwrap().parked.push(held.card());
         ed.restart = Some(Restart {
             id: 7,
