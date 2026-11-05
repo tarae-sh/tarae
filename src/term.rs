@@ -1070,21 +1070,21 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         crate::view::terminal_resized(editor);
     }
     let (side_keys, rail_keys) = (editor.workspace.is_at(At::Side), editor.workspace.is_at(At::Rail));
-    if lay.side().is_some()
+    if let Some(col) = lay.side()
         && !editor.review_rail_up()
         && let Some(sb) = editor.workspace.viewer.sidebar.as_mut()
     {
         let depths: Vec<usize> = sb.lines().iter().map(|l| l.depth).collect();
         let keys = side_keys;
-        sb.fit(sidebar_list_rows(&lay, editor.workspace.code_review.is_some()), &depths, keys);
+        sb.fit(sidebar_list_rows(col, editor.workspace.code_review.is_some()), &depths, keys);
     }
-    if lay.side().is_some()
+    if let Some(col) = lay.side()
         && editor.review_rail_up()
         && let Some((marked, room, rows)) = editor
             .workspace
             .code_review
             .as_ref()
-            .map(|r| (r.marked(editor), review_rail_list(&lay, editor, r), rail_rows_laid(r, &lay)))
+            .map(|r| (r.marked(editor), review_rail_list(&lay, col, editor, r), rail_rows_laid(r, &lay)))
         && let Some(r) = editor.workspace.code_review.as_mut()
     {
         r.fit(rows, marked, room.1, room.0, rail_keys);
@@ -1236,9 +1236,6 @@ struct Layout {
     /// The bottom slot's rect, its first row its top line (0 high when it's empty) — just below the code (text_rows),
     /// under the code only, the side panel and the chat running on beside it (`slot_panel`).
     slot: crate::split::Rect,
-    /// The panel columns' height — the side panel's, the chat's: from the screen's first row to the status
-    /// line (the card's bar row aside).
-    body_h: usize,
     /// The status line — the screen's last row.
     status_y: u16,
     /// The row a card stepped aside to while its text is read (U8) — over the status line.
@@ -1325,7 +1322,14 @@ impl Layout {
     /// The columns what floats over the code takes — pickers, toasts, which-key, the asks, the ask stream, the prompt,
     /// a cut row's card outside its frame: from the screen's left (over the side panel) to the code's right edge.
     fn float_area(&self) -> (usize, usize) {
-        (0, self.code_right())
+        let r = self.float_rect();
+        (r.x, r.x + r.w)
+    }
+
+    /// …and its rows (onetree S1f): from the screen's first row to the status line, the card's bar row aside.
+    fn float_rect(&self) -> crate::split::Rect {
+        let h = self.offer_bar.unwrap_or(self.status_y) as usize;
+        crate::split::Rect { x: 0, y: 0, w: self.code_right(), h }
     }
 
     /// No code drawn: something else fills the screen (the chat on a narrow screen too).
@@ -1889,7 +1893,6 @@ impl Layout {
                 w: slot.map_or(code_r - rail_w, |r| r.w),
                 h: slot_h,
             },
-            body_h: text_top as usize + total,
             status_y: text_top + all as u16,
             offer_bar: (bar == 1).then_some(text_top + total as u16),
             zoom,
@@ -5692,7 +5695,7 @@ fn draw(
     {
         let _fade = Fade::unless(keys == Keys::Review, ui);
         draw_review_rail(r, editor, ui, lay, col, out)?;
-        editor.screen.regions.add(crate::regions::Kind::Side, (col.x, col.y, col.w, lay.body_h));
+        editor.screen.regions.add(crate::regions::Kind::Side, (col.x, col.y, col.w, col.h));
     } else if let Some(sb) = &editor.workspace.viewer.sidebar
         && let Some(col) = lay.side()
         && !editor.review_rail_up()
@@ -5700,7 +5703,7 @@ fn draw(
     {
         let _fade = Fade::unless(matches!(keys, Keys::Side(_)), ui);
         draw_sidebar(sb, editor, ui, lay, col, out)?;
-        editor.screen.regions.add(crate::regions::Kind::Side, (col.x, col.y, col.w, lay.body_h));
+        editor.screen.regions.add(crate::regions::Kind::Side, (col.x, col.y, col.w, col.h));
     }
     let mut terminal_cursor = None;
     if lay.slot.h > 0 && lay.slot.w > 0 {
@@ -9645,8 +9648,8 @@ impl PickerBox {
             0 => 0,
             n => n + 1,
         };
-        let (fx, fr) = lay.float_area();
-        let room = fr - fx;
+        let area = lay.float_rect();
+        let (fx, room) = (area.x, area.w);
         if p.compact {
             // Small card at top center: up to 60 cells wide, list as tall as its items (up to 12 rows)
             let w = room.saturating_sub(4).clamp(24, 60);
@@ -9665,9 +9668,9 @@ impl PickerBox {
         }
         let preview = p.preview && !p.preview_hidden;
         // (a narrow screen keeps its rows and columns for the list: no margins)
-        let (mx, my) = if room >= 60 && lay.body_h >= 16 { (PICKER_MX, PICKER_MY) } else { (0, 0) };
+        let (mx, my) = if room >= 60 && area.h >= 16 { (PICKER_MX, PICKER_MY) } else { (0, 0) };
         let w = room.saturating_sub(2 * mx).max(24);
-        let h = lay.body_h.saturating_sub(2 * my).max(6);
+        let h = area.h.saturating_sub(2 * my).max(6);
         let (left, right) = if preview && w >= 80 {
             let l = (w * 2 / 5).max(40);
             (l, w - GAP - l)
@@ -10260,14 +10263,14 @@ fn draw_picker(
     // on one line in the gap between them (outside the cards, in its margins: the selected row's bar keeps its
     // edge; with no margins, over the cards' outer cells)
     let end = b.x + left_w + if right_w > 0 { 1 + right_w } else { 0 };
-    let area = lay.float_area();
-    let (fx, fr) = if b.x > area.0 && end < area.1 { (b.x - 1, end) } else { (b.x, end - 1) };
+    let area = lay.float_rect();
+    let (fx, fr) = if b.x > area.x && end < area.x + area.w { (b.x - 1, end) } else { (b.x, end - 1) };
     let frame = (fx, b.y, fr + 1 - fx, rows);
     // The ground under it, left of the chat: its margins, and what's behind kept from leaking through
     if !b.compact {
         apply(out, ui.base)?;
-        for y in 0..lay.body_h {
-            queue!(out, MoveTo(area.0 as u16, y as u16), Spaces(area.1 - area.0))?;
+        for y in area.y..area.y + area.h {
+            queue!(out, MoveTo(area.x as u16, y as u16), Spaces(area.w))?;
         }
     }
     // (plain rows' labels, for each cut one to keep what sets it apart — `draw_list_row`: the whole list's, so
@@ -10386,7 +10389,7 @@ fn draw_picker(
             match p.view.get(row - 3 - b.head) {
                 Some(r) => {
                     // (the row in hand's card outside the frame, on its ground left of the chat)
-                    let hand = Some(crate::whole::Hand::Outside(frame, area));
+                    let hand = Some(crate::whole::Hand::Outside(frame, lay.float_area()));
                     let at = Some((crate::whole::On::Picker, b.x, y as usize, hand));
                     used = draw_list_row(out, r, lw, editor, ui, card, selected, true, &others, at)?
                 }
@@ -16346,8 +16349,8 @@ fn side_hint(
 
 /// List rows of the side panel: all but the header (its title and rule), a row saying a review is behind
 /// it, and the gap and two key rows at the bottom.
-fn sidebar_list_rows(lay: &Layout, behind: bool) -> usize {
-    lay.body_h.saturating_sub(1 + usize::from(behind) + 3).max(1)
+fn sidebar_list_rows(col: crate::split::Rect, behind: bool) -> usize {
+    col.h.saturating_sub(1 + usize::from(behind) + 3).max(1)
 }
 
 /// The side panel, left of the code, the whole height — a panel like the chat (`chrome.rs`): tabs `files
@@ -16461,7 +16464,7 @@ fn draw_sidebar(
         true => behind_row(ui, w, Style { fg: ui.accent.fg, ..card }, key, faint, card),
         false => Vec::new(),
     };
-    let list_rows = sidebar_list_rows(lay, !behind.is_empty());
+    let list_rows = sidebar_list_rows(col, !behind.is_empty());
     let shown = sb.shown_rows(list_rows, lines.len());
     let first = 1 + usize::from(!behind.is_empty());
     let empty = if lines.is_empty() {
@@ -16517,7 +16520,7 @@ fn draw_sidebar(
     let lit = editor.ui_lit();
     let tab = crate::uistate::side_tab(sb.mode);
     let gutter = side_gutter((ui, editor, lay), card, dragged);
-    for y in 0..lay.body_h {
+    for y in 0..col.h {
         let mut given = None;
         queue!(out, MoveTo(0, y as u16))?;
         apply(out, card)?;
@@ -16639,7 +16642,7 @@ fn draw_sidebar(
             },
             // (the row in hand's sessions in words, on the gap over the keys: `main.rs — main would conflict L10 ·
             // fix writing`)
-            _ if y + 3 == lay.body_h && !foot.is_empty() => {
+            _ if y + 3 == col.h && !foot.is_empty() => {
                 apply(out, Style { fg: ui.virt.fg, ..card })?;
                 let said = crate::whole::fit(&foot, w);
                 queue!(out, Print(said.shown()))?;
@@ -16647,8 +16650,8 @@ fn draw_sidebar(
                 crate::whole::at(crate::whole::On::Side, &said, (PAD, y), st, (0, usize::MAX));
                 said.width()
             }
-            _ if y + 2 == lay.body_h => hinted_spans(out, &hints[0], card, w, (PAD, y))?,
-            _ if y + 1 == lay.body_h => hinted_spans(out, &hints[1], card, w, (PAD, y))?,
+            _ if y + 2 == col.h => hinted_spans(out, &hints[0], card, w, (PAD, y))?,
+            _ if y + 1 == col.h => hinted_spans(out, &hints[1], card, w, (PAD, y))?,
             _ => 0,
         };
         apply(out, card)?;
@@ -17034,9 +17037,14 @@ fn rail_text_w(lay: &Layout) -> usize {
 
 /// Where the review rail's files are: the row of the first one (under its head — `rail_head` — and the `↑ N
 /// more` row) and how many rows they have (above `↓ N more` and the keys).
-fn review_rail_list(lay: &Layout, editor: &Editor, r: &crate::codereview::CodeReview) -> (usize, usize) {
+fn review_rail_list(
+    lay: &Layout,
+    col: crate::split::Rect,
+    editor: &Editor,
+    r: &crate::codereview::CodeReview,
+) -> (usize, usize) {
     let top = rail_head_laid(editor, r, lay).len() + 1;
-    (top, lay.body_h.saturating_sub(top + 1 + RAIL_HINTS).max(1))
+    (top, col.h.saturating_sub(top + 1 + RAIL_HINTS).max(1))
 }
 
 /// The review rail's head as this frame lays it out (`Layout.rail_head`).
@@ -17562,7 +17570,7 @@ fn draw_review_rail(
     let turn = matches!(r.base, crate::codereview::Base::Turn { .. });
     // Files under their folders (filetree.rs, in the review's order) — from its scroll (`CodeReview::fit`),
     // the files out of sight counted in the blank rows around them
-    let (_, room) = review_rail_list(lay, editor, r);
+    let (_, room) = review_rail_list(lay, col, editor, r);
     let tree = rail_rows_laid(r, lay);
     let files_in = |rows: &[crate::filetree::Row]| rows.iter().filter(|t| t.item.is_some()).count();
     let more = |k: usize, arrow: &str| {
@@ -17695,7 +17703,7 @@ fn draw_review_rail(
         }
         marks.push((rows.len(), i, 2 + indent));
         // (a name cut from the left: whole under the mouse, `whole::cut_at` — its row is its screen row)
-        if rows.len() < lay.body_h {
+        if rows.len() < col.h {
             let on = crate::whole::On::Rail;
             crate::whole::cut_at(
                 editor,
@@ -17726,7 +17734,7 @@ fn draw_review_rail(
     });
     let rail_keys = editor.workspace.is_at(At::Rail);
     let hints = review_rail_hints(ui, (rail_keys, turn, drafts, high_here), key, faint);
-    let fill = lay.body_h.saturating_sub(rows.len() + 1 + hints.len());
+    let fill = col.h.saturating_sub(rows.len() + 1 + hints.len());
     rows.extend(std::iter::repeat_n((Vec::new(), card, None), fill));
     rows.push((Vec::new(), card, None));
     for row in hints {
@@ -17734,7 +17742,7 @@ fn draw_review_rail(
     }
     let mut links = editor.screen.review_rail.borrow_mut();
     let gutter = side_gutter((ui, editor, lay), card, grab(editor, |b| b == crate::sizes::Border::Rail));
-    for (y, (row, bg, file)) in rows.iter().take(lay.body_h).enumerate() {
+    for (y, (row, bg, file)) in rows.iter().take(col.h).enumerate() {
         if y == 0 {
             let line = edge_style(ui, card, Region::Side);
             let span = |i: usize| {
@@ -17798,7 +17806,7 @@ fn draw_review_rail(
             links.push((y, *i));
         }
     }
-    let shown = |y: usize| y < lay.body_h;
+    let shown = |y: usize| y < col.h;
     editor.screen.review_rail_marks.borrow_mut().extend(marks.into_iter().filter(|m| shown(m.0)));
     editor.screen.review_rail_more.borrow_mut().extend(scrolls.into_iter().filter(|s| shown(s.0)));
     Ok(())
