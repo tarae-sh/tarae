@@ -235,7 +235,7 @@ fn c_w_l_docks_the_tests_group_and_c_w_j_brings_it_back() {
     let text = shown(&mut ed, W);
     let top = text.lines().next().unwrap();
     assert!(top.contains("tests") && top.contains("results"), "its line at the top names it: {top}");
-    let slot_line = text.lines().nth(ed.screen.text_top + ed.screen.body_h - ed.screen.bottom_h).unwrap();
+    let slot_line = text.lines().nth(ed.screen.slot().y).unwrap();
     assert!(slot_line.contains("check") && !slot_line.contains("tests"), "the slot's line: {slot_line}");
     // (back: in the slot, in front — the task put in front of it meanwhile —, the detail with the keys)
     ed.slot_show(Slot::Task);
@@ -267,8 +267,11 @@ fn c_w_h_and_k_dock_left_and_over_the_code() {
     feed(&mut ed, "<C-w>H");
     let g = tests(&ed);
     assert_eq!(g.place, Place::Docked(Side::Left));
-    let (host, code, side) =
-        (ed.dock_rect(GroupKind::Tests).unwrap().1, rect(&ed, ed.workspace.viewer.focus), ed.screen.side_w);
+    let (host, code, side) = (
+        ed.dock_rect(GroupKind::Tests).unwrap().1,
+        rect(&ed, ed.workspace.viewer.focus),
+        ed.screen.drawn_w(crate::pane::Shows::Side),
+    );
     assert!(
         host.x >= side && host.x + host.w <= code.x,
         "between the side panel and the code: {host:?} {code:?}"
@@ -449,7 +452,7 @@ fn a_group_docked_over_the_code_folds_on_a_short_screen() {
     assert!(ed.docked_in_sight(GroupKind::Tests));
     frame_in(&mut ed, W, 12);
     let s = &ed.screen;
-    let said = format!("{} {} {:?}", s.body_h, s.bottom_h, ed.dock_rect(GroupKind::Tests));
+    let said = format!("{} {} {:?}", s.body_end() - s.text_top, s.slot().h, ed.dock_rect(GroupKind::Tests));
     assert!(!ed.docked_in_sight(GroupKind::Tests), "12 rows: folded — {said}");
     assert_eq!(tests(&ed).place, Place::Docked(Side::Top), "not moved");
     assert!(ed.slot_tabs().iter().any(|t| t.slot == Slot::Test), "a tab of the slot");
@@ -556,7 +559,7 @@ fn a_group_docked_over_the_code_is_sized_by_its_rows() {
     frame(&mut ed, W);
     let n = ed.sizes.docked[0].unwrap() as usize;
     assert_eq!(rows(&ed), n, "drawn as it was set");
-    assert_eq!(ed.screen.body_h - ed.screen.bottom_h, crate::sizes::BOTTOM_CODE, "the code its least");
+    assert_eq!(ed.screen.slot().y - ed.screen.text_top, crate::sizes::BOTTOM_CODE, "the code its least");
 }
 
 /// Two groups docked on one side are stacked in one column, as wide as the wider, its width taken off the code once:

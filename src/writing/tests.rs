@@ -85,7 +85,7 @@ fn write(ed: &mut Editor, g: u64, call: &str, json: &str, cuts: &[usize]) {
 fn frame(ed: &mut Editor, w: u16, h: u16) -> Vec<String> {
     let mut buf = Vec::new();
     crate::term::render(ed, &mut buf, w, h).unwrap();
-    let code = ed.screen.chat_x.filter(|_| ed.screen.chat_frame.is_none()).unwrap_or(w as usize);
+    let code = ed.screen.rect(crate::pane::Shows::Chat).map(|r| r.x).unwrap_or(w as usize);
     let text = crate::screen::text(&buf, w, h).unwrap();
     // (Claude's caret right after a row's text is left out — the rows read as their text; a scrollbar's `▎`
     // after spaces stays)

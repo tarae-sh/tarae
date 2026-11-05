@@ -340,7 +340,7 @@ fn the_wheel_over_another_surface_leaves_the_view_with_the_keys() {
     frame(&mut ed);
     let chat_wheel = |ed: &mut Editor, kind| {
         let (y0, ..) = ed.screen.chat_view.get().unwrap();
-        let x = ed.screen.chat_x.unwrap() + 4;
+        let x = ed.screen.chat_x().unwrap() + 4;
         ed.handle_mouse(Mouse { kind, x: x as u16, y: (y0 + 5) as u16, alt: false, ctrl: false });
         frame(ed);
     };
@@ -675,7 +675,7 @@ fn the_wheel_with_shift_over_the_terminal_is_the_wheel_or_the_programs() {
     let (mut ed, sent) = term(Config::default(), 60);
     let back = |ed: &Editor| ed.workspace.terminal.as_ref().unwrap().parser.screen().scrollback();
     let (y0, _) = ed.screen.terminal_rows.expect("the terminal drawn");
-    let (x, y) = (ed.screen.slot_x + crate::chrome::PAD + 1, y0 + crate::chrome::SLOT_HEAD + 1);
+    let (x, y) = (ed.screen.slot().x + crate::chrome::PAD + 1, y0 + crate::chrome::SLOT_HEAD + 1);
     let wheel = |ed: &mut Editor, kind| {
         ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
         frame(ed);
@@ -930,7 +930,7 @@ fn a_new_size_reads_it_again_and_the_cursor_is_drawn_on_its_cell() {
     feed(&mut ed, "<C-\\>kfe");
     assert_eq!(at(&ed), ("가나 end".into(), "가나 e".into()));
     let cursors = ed.screen.cursors.borrow().clone();
-    let x0 = ed.screen.slot_x + crate::chrome::PAD;
+    let x0 = ed.screen.slot().x + crate::chrome::PAD;
     assert_eq!(
         cursors.iter().map(|c| c.0 - x0).collect::<Vec<_>>(),
         vec![5],

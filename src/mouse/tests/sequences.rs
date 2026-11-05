@@ -55,7 +55,7 @@ fn a_press_on_the_conversation_ends_the_chats_view_mode_sequence() {
     feed(&mut ed, "g");
     assert_eq!(ed.pending_display(), "g");
     let y = (0..40).find(|&y| ed.screen.chat_row(y).is_some()).expect("a row of the conversation drawn");
-    let x = ed.screen.chat_x.expect("the chat drawn") + crate::chrome::GAP + crate::chrome::PAD + 1;
+    let x = ed.screen.chat_x().expect("the chat drawn") + crate::chrome::GAP + crate::chrome::PAD + 1;
     press(&mut ed, x, y);
     let keys = crate::chatdoc::transcript(&ed).map(|t| t.pane.keys.pending_display());
     assert_eq!(keys.as_deref(), Some(""), "the view mode's `g` ended, the view mode kept");
@@ -75,7 +75,7 @@ fn a_press_on_the_code_ends_the_terminals_view_mode_sequence() {
     assert_eq!(keys(&ed).as_deref(), Some("g"), "its view mode's `g` under way");
     // (a press on its own text: the view mode stays — the code's would leave it, `g` and all)
     let (y0, _) = ed.screen.terminal_rows.expect("the terminal drawn");
-    let (x, y) = (ed.screen.slot_x + crate::chrome::PAD + 1, y0 + crate::chrome::SLOT_HEAD + 1);
+    let (x, y) = (ed.screen.slot().x + crate::chrome::PAD + 1, y0 + crate::chrome::SLOT_HEAD + 1);
     press(&mut ed, x, y);
     assert_eq!(keys(&ed).as_deref(), Some(""), "ended, the view mode kept");
 }

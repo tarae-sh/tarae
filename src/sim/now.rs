@@ -149,7 +149,7 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     // after the step's word)
     let Some((frame, w, h)) = ed.last_frame.as_ref().filter(|_| world.framed.get()) else { return Ok(()) };
     let screen = crate::screen::text(frame, *w, *h).unwrap_or_default();
-    let (line, words, which) = match ed.screen.chat_x.is_some() {
+    let (line, words, which) = match ed.screen.chat_x().is_some() {
         true => (screen.lines().next().unwrap_or_default(), step.word(), "the column's top line"),
         false => (screen.lines().last().unwrap_or_default(), step.verb, "the status line"),
     };

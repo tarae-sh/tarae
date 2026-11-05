@@ -141,7 +141,7 @@ fn a_press_off_the_side_panels_rows_gives_it_the_keys() {
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::Code);
     let last = ed.screen.sidebar.borrow().iter().map(|r| r.0).max().expect("its rows");
-    assert!(ed.screen.side_w > 4);
+    assert!(ed.screen.drawn_w(crate::pane::Shows::Side) > 4);
     press(&mut ed, 3, last + 3);
     assert!(matches!(ed.keys_to().region, Region::Side(_)), "{:?}", ed.keys_to().region);
     // And the code's press takes them back
@@ -165,7 +165,10 @@ fn code_review(ed: &mut Editor) {
     };
     ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, root, vec![file]));
     frame(ed);
-    assert!(ed.screen.rail_w > 0 && !ed.screen.review_rail.borrow().is_empty(), "the rail drawn");
+    assert!(
+        ed.screen.drawn_w(crate::pane::Shows::Rail) > 0 && !ed.screen.review_rail.borrow().is_empty(),
+        "the rail drawn"
+    );
 }
 
 /// A press in the code during a code review takes the keys from its rail — a drag and `y` after it are the code's,
@@ -674,7 +677,7 @@ fn a_drag_over_the_code_never_selects_from_its_press_before_another() {
         ed.workspace.terminal.as_mut().unwrap().visible = true;
         frame(ed);
         let (_, y1) = ed.screen.terminal_rows.expect("the terminal drawn");
-        (ed.screen.slot_x + 4, y1 - 1)
+        (ed.screen.slot().x + 4, y1 - 1)
     };
     let pty = !crate::sandbox::no_pty_here(
         "mouse::tests::a_drag_over_the_code_never_selects_from_its_press_before_another",

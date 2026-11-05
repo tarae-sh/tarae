@@ -214,7 +214,7 @@ fn an_event_of_nothing_shared_is_the_same_work_at_17_sessions_and_34() {
         let at_few = per_kind(&mut few);
         let at_more = per_kind(&mut more);
         let line = if docked { "the chat's line" } else { "the strip" };
-        assert_eq!(few.screen.chat_x.is_some(), docked, "{line}: the chat's column there or not");
+        assert_eq!(few.screen.chat_x().is_some(), docked, "{line}: the chat's column there or not");
         for ((kind, ev, frame), (_, ev2, frame2)) in at_few.iter().zip(&at_more) {
             eprintln!("STILL {line} {kind:?}: event {ev:?} → {ev2:?}; frame {frame:?} → {frame2:?}");
             for (what, a, b) in [("event", ev, ev2), ("frame", frame, frame2)] {

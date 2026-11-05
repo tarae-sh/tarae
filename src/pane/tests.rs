@@ -444,10 +444,10 @@ fn the_tests_panel_is_a_linked_group_of_two_panes() {
     assert_eq!((list.y, list.h), (detail.y, detail.h), "side by side, one header over both");
     assert_eq!(detail.x, list.x + list.w + 1, "a line between them");
     let sc = &ed.screen;
-    let slot_y = sc.text_top + sc.body_h - sc.bottom_h;
+    let slot_y = sc.slot().y;
     assert_eq!(
         (list.y, list.y + list.h),
-        (slot_y + 1, slot_y + sc.bottom_h),
+        (slot_y + 1, slot_y + sc.slot().h),
         "from right under the header — the line over them, panes P3 §1 — to the slot's end"
     );
     // (the list, by a hop from the detail)
@@ -614,15 +614,18 @@ fn the_default_layout_is_drawn_from_the_trees_rects() {
     let ed = every_surface();
     let (side, slot, chat) = (rect(&ed, Shows::Side), rect(&ed, Shows::Slot), rect(&ed, Shows::Chat));
     let s = &ed.screen;
-    assert_eq!((side.x, side.w), (0, s.side_w));
-    assert_eq!((chat.x, chat.w), (W as usize - s.chat_w, s.chat_w));
-    assert_eq!(s.chat_x, Some(chat.x));
-    assert_eq!((slot.x, slot.h), (s.slot_x, s.bottom_h));
+    assert_eq!((side.x, side.w), (0, s.drawn_w(crate::pane::Shows::Side)));
+    assert_eq!(
+        (chat.x, chat.w),
+        (W as usize - s.drawn_w(crate::pane::Shows::Chat), s.drawn_w(crate::pane::Shows::Chat))
+    );
+    assert_eq!(s.chat_x(), Some(chat.x));
+    assert_eq!((slot.x, slot.h), (s.slot().x, s.slot().h));
     let code = s.panes.iter().find(|p| p.0 == ed.workspace.viewer.focus).unwrap().1;
     assert_eq!(rect(&ed, Shows::Code), code, "the code pane where the tree put it");
     assert_eq!((code.x, code.x + code.w), (side.w, chat.x), "between them");
     assert_eq!(slot.y, code.y + code.h, "the slot right under the code");
-    let body = s.text_top + s.body_h;
+    let body = s.body_end();
     assert_eq!((side.h, chat.h), (body, body), "the side columns from the top to the status line");
 }
 
@@ -691,7 +694,7 @@ fn the_zoom_is_a_pane() {
 #[test]
 fn your_split_is_sized_by_keys_and_by_its_divider() {
     let mut ed = every_surface();
-    let chat = ed.screen.chat_w;
+    let chat = ed.screen.drawn_w(crate::pane::Shows::Chat);
     feed(&mut ed, "<C-w>v");
     let (left, right) = (ed.code_leaves()[0], ed.code_leaves()[1]);
     let width = |ed: &Editor, id| ed.screen.leaves.iter().find(|l| l.0 == id).unwrap().1.w;
@@ -700,7 +703,7 @@ fn your_split_is_sized_by_keys_and_by_its_divider() {
     feed(&mut ed, "<C-w>>");
     assert_eq!(width(&ed, right), r0 + crate::sizes::STEP_COLS, "the pane in hand wider");
     assert_eq!(width(&ed, left) + width(&ed, right), l0 + r0, "its neighbour gives the room");
-    assert_eq!(ed.screen.chat_w, chat, "the chat's width untouched");
+    assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), chat, "the chat's width untouched");
     let said = ed.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
     assert_eq!(said, format!("pane {} columns · C-w = automatic", r0 + crate::sizes::STEP_COLS));
     assert!(ed.workspace.split.sized());
@@ -724,7 +727,11 @@ fn your_split_is_sized_by_keys_and_by_its_divider() {
     assert!(width(&ed, left).abs_diff(width(&ed, right)) <= 1);
     // One code pane: the chat's
     feed(&mut ed, "<C-w>o<C-w>>");
-    assert_eq!(ed.screen.chat_w, chat + crate::sizes::STEP_COLS, "no split of yours: the chat wider");
+    assert_eq!(
+        ed.screen.drawn_w(crate::pane::Shows::Chat),
+        chat + crate::sizes::STEP_COLS,
+        "no split of yours: the chat wider"
+    );
 }
 
 /// The user's decision (2026-10-21, plan §2.6): `C-w` is tarae's inside the terminal's program too — its next key

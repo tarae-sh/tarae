@@ -709,7 +709,7 @@ pub fn key_panes(ed: &Editor) -> Vec<crate::screen::Hidden> {
         .viewer
         .sidebar
         .as_ref()
-        .filter(|_| s.side_w > 0 && s.picker_list.is_none())
+        .filter(|_| s.drawn_w(crate::pane::Shows::Side) > 0 && s.picker_list.is_none())
         .map(|sb| sb.lines());
     let side: Vec<_> = match &lines {
         Some(lines) => s
@@ -718,7 +718,7 @@ pub fn key_panes(ed: &Editor) -> Vec<crate::screen::Hidden> {
             .iter()
             .filter_map(|&(y, i)| {
                 let (path, _) = row_file(ed, Row::Side(&lines.get(i)?.target))?;
-                hidden(path, (0, y, s.side_w, 1))
+                hidden(path, (0, y, s.drawn_w(crate::pane::Shows::Side), 1))
             })
             .collect(),
         None => Vec::new(),

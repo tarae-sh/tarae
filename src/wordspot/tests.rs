@@ -509,7 +509,7 @@ fn beside_the_column_its_line_says_the_step_and_no_follow_card_stands() {
         crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap()
     };
     let all = text(&mut ed);
-    assert!(ed.screen.chat_x.is_some(), "the column in sight");
+    assert!(ed.screen.chat_x().is_some(), "the column in sight");
     assert_eq!(ed.screen.thought_card.get(), None, "no follow card:\n{all}");
     let step = crate::now::step(&ed, &ed.workspace).expect("the step");
     let took = crate::term::timer(crate::now::took(&ed.workspace, &step), !ed.moving());

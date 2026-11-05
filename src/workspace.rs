@@ -2898,7 +2898,7 @@ mod tests {
         // In sight
         feed(&mut ed, "<space>lone<ret><esc><esc>");
         screen(&mut ed, 160, 30);
-        assert!(ed.screen.chat_x.is_some());
+        assert!(ed.screen.chat_x().is_some());
         turn_ends(&mut ed, WorkspaceId::HOME);
         assert!(!new(&mut ed) && said(&ed) == 0, "{:?}", ed.toasts);
         // The code zoomed: new, no toast
@@ -2906,7 +2906,7 @@ mod tests {
         screen(&mut ed, 160, 30);
         feed(&mut ed, "<C-w>z");
         screen(&mut ed, 160, 30);
-        assert!(ed.zoomed().is_some() && ed.screen.chat_x.is_none());
+        assert!(ed.zoomed().is_some() && ed.screen.chat_x().is_none());
         turn_ends(&mut ed, WorkspaceId::HOME);
         assert!(new(&mut ed), "◂ new on the status line");
         assert_eq!(said(&ed), 0, "{:?}", ed.toasts);

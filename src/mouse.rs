@@ -639,7 +639,10 @@ impl Editor {
             return at(S::Popup, Part::Blank);
         }
         // The review's file rail: its columns, left of where the code and the slot under it start (#73)
-        if self.review_rail_up() && x < s.slot_x && (x < s.rail_w || !s.review_rail.borrow().is_empty()) {
+        if self.review_rail_up()
+            && x < s.slot().x
+            && (x < s.drawn_w(crate::pane::Shows::Rail) || !s.review_rail.borrow().is_empty())
+        {
             if wheel {
                 return at(S::Rail, Part::Blank);
             }
@@ -656,7 +659,7 @@ impl Editor {
                     (by, ..) if by != 0 => return at(S::Rail, Part::More(by)),
                     (_, Some(i), _) => return at(S::Rail, Part::Mark(i)),
                     (.., Some(i)) => return at(S::Rail, Part::Row(i)),
-                    _ if x < s.rail_w => return at(S::Rail, Part::Blank),
+                    _ if x < s.drawn_w(crate::pane::Shows::Rail) => return at(S::Rail, Part::Blank),
                     _ => {}
                 }
             }
@@ -668,7 +671,7 @@ impl Editor {
                 .find(|d| (d.1.x..d.1.x + d.1.w).contains(&x) && (d.1.y..d.1.y + d.1.h).contains(&y))
                 .map(|d| d.0)
         });
-        let in_slot = docked.is_some() || (x >= s.slot_x && x < s.slot_end());
+        let in_slot = docked.is_some() || (x >= s.slot().x && x < s.slot_end());
         let slot = match docked {
             Some(k) => k.slot(),
             None => self.slot_shown(),
@@ -777,7 +780,7 @@ impl Editor {
         if self.workspace.claude.chat.is_some() && follow_card.is_some_and(|r| inside(r, x, y)) {
             return at(S::FollowCard, links(y).map_or(Part::Blank, |i| Part::Link(Link::Chat(i))));
         }
-        if let Some(cx) = s.chat_x
+        if let Some(cx) = s.chat_x()
             && self.workspace.claude.chat.is_some()
             && s.chat_frame.is_none()
             && x >= cx
@@ -925,7 +928,7 @@ impl Editor {
 
     /// The conversation's row and column under (`x`, `y`), if a row of it was drawn there.
     fn transcript_text(&self, x: usize, y: usize) -> Part {
-        let text_x = self.screen.chat_x.unwrap_or(0) + crate::chrome::GAP + crate::chrome::PAD;
+        let text_x = self.screen.chat_x().unwrap_or(0) + crate::chrome::GAP + crate::chrome::PAD;
         self.screen.chat_row(y).map_or(Part::Blank, |line| Part::Text { line, col: x.saturating_sub(text_x) })
     }
 
@@ -943,7 +946,7 @@ impl Editor {
     /// from the slot's edge — clamped to it while a press there holds the mouse (`held`).
     fn terminal_cell(&self, x: usize, y: usize, held: bool) -> Part {
         let s = &self.screen;
-        let (head, x0) = (crate::chrome::SLOT_HEAD, s.slot_x + crate::chrome::PAD);
+        let (head, x0) = (crate::chrome::SLOT_HEAD, s.slot().x + crate::chrome::PAD);
         let Some((y0, y1)) = s.terminal_rows else { return Part::Blank };
         if !held && (y < y0 + head || x < x0) {
             return Part::Blank;

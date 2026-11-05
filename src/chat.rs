@@ -2065,7 +2065,7 @@ fn typing(ed: &Editor) -> bool {
 /// Whether the conversation's column is in sight: shown, not the ask line, and drawn by the last frame (a screen too
 /// narrow for it draws none).
 pub fn column_in_sight(ed: &Editor) -> bool {
-    ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden && !c.asking) && ed.screen.chat_x.is_some()
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden && !c.asking) && ed.screen.chat_x().is_some()
 }
 
 /// Something said only in the conversation (`Role::Note`, message `i`): news (`◂ new`), and the reader opening by
@@ -3060,7 +3060,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
 /// fills the screen (`C-w z`), or a review is read wide (`space v z`).
 pub(crate) fn out_of_sight(ed: &Editor) -> bool {
     let zoomed = ed.zoomed_shows().is_some_and(|z| z != crate::pane::Shows::Chat);
-    ed.last_frame.is_some() && ed.screen.chat_x.is_none() && (zoomed || ed.review_wide())
+    ed.last_frame.is_some() && ed.screen.chat_x().is_none() && (zoomed || ed.review_wide())
 }
 
 // ── Send ───────────────────────────────────────────────────────────────────
@@ -3106,7 +3106,7 @@ fn screen_hidden(ed: &Editor, cols: usize) -> Vec<crate::screen::Hidden> {
     let mut hidden = crate::reads::key_panes(ed);
     hidden.extend(ed.screen.terminal_rows.filter(|_| !ed.config.llm.screen_terminal).map(|rows| {
         // (the chat beside them: up to it; floating over them, the whole width)
-        let docked = ed.screen.chat_x.filter(|_| ed.screen.chat_frame.is_none());
+        let docked = ed.screen.rect(crate::pane::Shows::Chat).map(|r| r.x);
         crate::screen::Hidden { rows, cols: (0, docked.unwrap_or(cols)), note: LEFT_OUT.into() }
     }));
     hidden
@@ -4962,10 +4962,16 @@ mod tests {
         };
         let region = |ed: &Editor| ed.keys_to().region.name();
         crate::uistate::tests::frame(&mut ed);
-        assert!(ed.screen.chat_w > 0 && ed.screen.chat_frame.is_none(), "the column");
+        assert!(
+            ed.screen.drawn_w(crate::pane::Shows::Chat) > 0 && ed.screen.chat_frame.is_none(),
+            "the column"
+        );
         // `C-w e`: said, nothing moves, the keys still in it
         keys(&mut ed, "C-w e");
-        assert!(ed.screen.chat_w > 0 && ed.screen.chat_frame.is_none(), "still the column");
+        assert!(
+            ed.screen.drawn_w(crate::pane::Shows::Chat) > 0 && ed.screen.chat_frame.is_none(),
+            "still the column"
+        );
         assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("space l asks")), "{:?}", ed.status);
         assert_eq!(region(&ed), "chat");
         // `esc` twice: the keys the code's, the column standing
@@ -4973,20 +4979,29 @@ mod tests {
         keys(&mut ed, "esc");
         keys(&mut ed, "esc");
         assert_eq!(region(&ed), "code");
-        assert!(ed.screen.chat_w > 0, "it stays");
+        assert!(ed.screen.drawn_w(crate::pane::Shows::Chat) > 0, "it stays");
         // `space L`: hidden, then back docked with the keys — nothing said either way
         keys(&mut ed, "space L");
-        assert!(ed.screen.chat_w == 0 && ed.workspace.claude.chat.as_ref().unwrap().hidden, "hidden");
+        assert!(
+            ed.screen.drawn_w(crate::pane::Shows::Chat) == 0
+                && ed.workspace.claude.chat.as_ref().unwrap().hidden,
+            "hidden"
+        );
         keys(&mut ed, "space L");
         assert!(
-            ed.screen.chat_w > 0 && ed.screen.chat_frame.is_none() && region(&ed) == "chat",
+            ed.screen.drawn_w(crate::pane::Shows::Chat) > 0
+                && ed.screen.chat_frame.is_none()
+                && region(&ed) == "chat",
             "back docked"
         );
         assert!(ed.status.is_none(), "no toast: {:?}", ed.status);
         // The ask line is the one form that floats (from the code: in its input `space` is typed)
         keys(&mut ed, "esc esc space L space l");
         assert!(ed.chat_asking(), "the ask line: {}", region(&ed));
-        assert!(ed.screen.chat_frame.is_some() && ed.screen.chat_w == 0, "floating, no column");
+        assert!(
+            ed.screen.chat_frame.is_some() && ed.screen.drawn_w(crate::pane::Shows::Chat) == 0,
+            "floating, no column"
+        );
     }
 
     /// The ask line on a short screen (the review of piece 1): the frame is never refused — at the screen's height at
@@ -5131,13 +5146,18 @@ mod tests {
         keys(&mut ed, "space l");
         assert!(row(&ed, frame(&ed).1 + 2).contains("pageup conversation"), "{}", text(&ed));
         keys(&mut ed, "pageup");
-        assert!(!ed.chat_asking() && ed.screen.chat_frame.is_none() && ed.screen.chat_w > 0, "the column");
+        assert!(
+            !ed.chat_asking()
+                && ed.screen.chat_frame.is_none()
+                && ed.screen.drawn_w(crate::pane::Shows::Chat) > 0,
+            "the column"
+        );
         assert_eq!(region(&ed), "chat", "the keys in its input");
         assert!(text(&ed).contains("Because the map is filled twice"), "{}", text(&ed));
         // With a conversation there `esc` closes the ask line too — never its view mode, the transcript out of sight
         ask_close(&mut ed);
         crate::uistate::tests::frame(&mut ed);
-        assert!(ed.screen.chat_w == 0 && ed.screen.chat_frame.is_none(), "hidden");
+        assert!(ed.screen.drawn_w(crate::pane::Shows::Chat) == 0 && ed.screen.chat_frame.is_none(), "hidden");
         keys(&mut ed, "space l");
         assert!(ed.chat_asking(), "the ask line again");
         keys(&mut ed, "esc");
@@ -5295,7 +5315,11 @@ mod tests {
             let c =
                 ed.workspace.claude.chat.as_ref().unwrap_or_else(|| panic!("{k}: a chat — {:?}", ed.status));
             // (`space L` the column, `space l` the ask line)
-            let drawn = if k == "space L" { ed.screen.chat_w > 0 } else { ed.screen.chat_frame.is_some() };
+            let drawn = if k == "space L" {
+                ed.screen.drawn_w(crate::pane::Shows::Chat) > 0
+            } else {
+                ed.screen.chat_frame.is_some()
+            };
             assert!(c.msgs.is_empty() && !c.hidden && drawn, "{k}: the empty chat, shown");
             assert_eq!(ed.keys_to().region.name(), "chat", "{k}: the keys in it");
             crate::test_results::settle_until(&mut ed, |ed| {
@@ -5316,11 +5340,14 @@ mod tests {
             crate::uistate::tests::frame(ed);
         };
         let region = |ed: &Editor| ed.keys_to().region.name();
-        let shown = |ed: &Editor| ed.screen.chat_w > 0 && !ed.workspace.claude.chat.as_ref().unwrap().hidden;
+        let shown = |ed: &Editor| {
+            ed.screen.drawn_w(crate::pane::Shows::Chat) > 0
+                && !ed.workspace.claude.chat.as_ref().unwrap().hidden
+        };
         // Out of sight, the keys in the code: `space L` shows it, the keys in it
         ed.workspace.viewer.at = At::Code;
         crate::uistate::tests::frame(&mut ed);
-        assert_eq!(ed.screen.chat_w, 0, "out of sight: no panel");
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 0, "out of sight: no panel");
         keys(&mut ed, "space L");
         assert!(shown(&ed), "shown");
         assert_eq!(region(&ed), "chat", "the keys in its input");
@@ -5342,7 +5369,7 @@ mod tests {
         let state = (c.hidden, c.proc.is_some(), c.busy(), c.follow.on);
         assert_eq!(state, (true, true, true, true), "hidden; its process, its turn, follow going on");
         assert_eq!(
-            (ed.screen.chat_w, ed.workspace.viewer.at),
+            (ed.screen.drawn_w(crate::pane::Shows::Chat), ed.workspace.viewer.at),
             (0, At::Code),
             "no panel, the keys the code's"
         );

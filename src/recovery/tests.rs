@@ -671,7 +671,7 @@ fn the_restored_chat_is_said_only_where_it_isnt_drawn() {
     ed.offer_accept();
     settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
     crate::term::render(&mut ed, &mut buf, 140, 40).unwrap();
-    assert!(ed.screen.chat_x.is_some(), "drawn");
+    assert!(ed.screen.chat_x().is_some(), "drawn");
     assert!(!ed.toasts.iter().any(said), "nothing said: it's there");
     quit(ed, &dir, || {});
     chat_gone(&dir, "narrow", &root, "left");
@@ -682,7 +682,7 @@ fn the_restored_chat_is_said_only_where_it_isnt_drawn() {
     settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
     buf.clear();
     crate::term::render(&mut ed, &mut buf, 64, 24).unwrap();
-    assert!(ed.screen.chat_x.is_none(), "too narrow to draw it");
+    assert!(ed.screen.chat_x().is_none(), "too narrow to draw it");
     assert_eq!(ed.toasts.iter().filter(|t| said(t)).count(), 1);
     buf.clear();
     ed.toasts.clear();

@@ -257,7 +257,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         }
         4 => {
             let up = c.below(2) == 0;
-            let (Some(x), Some((y, _, area, _))) = (ed.screen.chat_x, ed.screen.chat_view.get()) else {
+            let (Some(x), Some((y, _, area, _))) = (ed.screen.chat_x(), ed.screen.chat_view.get()) else {
                 return "(no chat drawn: no wheel over it)".into();
             };
             let row = c.below(area.max(1));
@@ -492,7 +492,7 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
         return Err(format!("the cursor's row {at} out of the rows from {top} ({area})"));
     }
     // (after a frame: the rows drawn are the document's, from its top)
-    let (Some((frame, w, h)), Some(x)) = (ed.last_frame.as_ref(), ed.screen.chat_x) else { return Ok(()) };
+    let (Some((frame, w, h)), Some(x)) = (ed.last_frame.as_ref(), ed.screen.chat_x()) else { return Ok(()) };
     if !world.framed.get() || (*w, *h) != world.size.get() {
         return Ok(());
     }

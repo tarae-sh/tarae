@@ -2058,7 +2058,7 @@ fn snapshot_chat_measure() {
     s.ed.workspace.claude.chat.as_mut().unwrap().msgs =
         vec![msg(Role::User, question), msg(Role::Assistant, answer), msg(Role::Note, "2.0s")];
     let shown = screen_text(&mut s);
-    let x = s.ed.screen.chat_x.unwrap() + GAP + PAD;
+    let x = s.ed.screen.chat_x().unwrap() + GAP + PAD;
     let rows: Vec<String> = shown.lines().map(|r| r.chars().skip(x).collect::<String>()).collect();
     let width = |needle: &str| {
         let r = rows.iter().find(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}: {shown}"));
@@ -2093,13 +2093,13 @@ fn the_chats_prose_fills_a_width_you_set() {
     // (the prose's widest row and the chat's text width, as drawn)
     let prose = |s: &mut Shot| -> (usize, usize) {
         let shown = screen_text(s);
-        let x = s.ed.screen.chat_x.unwrap() + GAP + PAD;
+        let x = s.ed.screen.chat_x().unwrap() + GAP + PAD;
         let rows: Vec<String> = shown.lines().map(|r| r.chars().skip(x).collect::<String>()).collect();
         let first =
             rows.iter().position(|r| r.contains("The name is cloned")).unwrap_or_else(|| panic!("{shown}"));
         let widest =
             rows[first..].iter().take_while(|r| !r.trim().is_empty()).map(|r| r.trim_end().width()).max();
-        let text_w = s.ed.screen.chat_w.saturating_sub(GAP + PAD + PAD);
+        let text_w = s.ed.screen.drawn_w(crate::pane::Shows::Chat).saturating_sub(GAP + PAD + PAD);
         (widest.unwrap_or(0), text_w)
     };
     let (auto, text_w) = prose(&mut s);
@@ -5435,7 +5435,7 @@ fn a_turns_file_is_stamped_once_kept_or_taken_back() {
         let y = rows.iter().position(|r| r.contains("demo.rs") && r.contains("+30")).unwrap();
         let end = unicode_width::UnicodeWidthStr::width(&rows[y][..rows[y].find("+30").unwrap() + 3]);
         let stamp = stamp_in(&p, y, s.w).map(|(_, c)| (c.contents().to_string(), c.bgcolor()));
-        (stamp, s.ed.screen.rail_w - end)
+        (stamp, s.ed.screen.drawn_w(crate::pane::Shows::Rail) - end)
     };
     let mut s = review_of(160, 30, &base, &now);
     s.keys(" vm");
@@ -5989,15 +5989,16 @@ fn the_chat_narrows_for_the_review_rail_only_where_the_rail_is_drawn() {
         s.ed.workspace.leave(crate::workspace::At::Chat);
         s.ed.open(&files[0].path).unwrap();
         s.frame();
-        let alone = s.ed.screen.chat_w;
+        let alone = s.ed.screen.drawn_w(crate::pane::Shows::Chat);
         assert_eq!(alone, crate::sizes::widths(w as usize, true, false, Default::default()).chat);
         s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files.clone()));
         s.frame();
         assert_eq!(
-            s.ed.screen.chat_w, review_chat,
+            s.ed.screen.drawn_w(crate::pane::Shows::Chat),
+            review_chat,
             "{w} columns: the chat beside the review (alone: {alone})"
         );
-        assert_eq!(s.ed.screen.rail_w > 0, rail, "{w} columns: the rail drawn");
+        assert_eq!(s.ed.screen.drawn_w(crate::pane::Shows::Rail) > 0, rail, "{w} columns: the rail drawn");
     }
 }
 
@@ -6468,13 +6469,14 @@ fn the_draft_card_stays_in_the_codes_room() {
         let sc = &s.ed.screen;
         let all = rows.join("\n");
         // (the card's left edge: two cells of margin and the working sign's cell and a space before the words)
-        let (left, edge) = (sc.rail_w.max(sc.side_w), x - 4);
-        assert!(left > 0 && sc.bottom_h > 0, "{w}×{h}: the panel and the slot are up\n{all}");
+        let (left, edge) =
+            (sc.drawn_w(crate::pane::Shows::Rail).max(sc.drawn_w(crate::pane::Shows::Side)), x - 4);
+        assert!(left > 0 && sc.slot().h > 0, "{w}×{h}: the panel and the slot are up\n{all}");
         assert!(edge > left, "{w}×{h}: right of the panel ({left}) — at {edge}\n{all}");
-        assert!(y + 2 <= (h as usize) - 1 - sc.bottom_h, "{w}×{h}: above the slot — at row {y}\n{all}");
+        assert!(y + 2 <= (h as usize) - 1 - sc.slot().h, "{w}×{h}: above the slot — at row {y}\n{all}");
         // (the task's toast keeps off it: its instruction and its time are whole)
         // (the code's side of the row: the chat's past its line)
-        let code: String = row.chars().take(sc.chat_x.unwrap_or(w as usize)).collect();
+        let code: String = row.chars().take(sc.chat_x().unwrap_or(w as usize)).collect();
         assert!(
             code.contains("“a commit message”") && code.trim_end().ends_with('s'),
             "{w}×{h}: {row}\n{all}"
@@ -7373,10 +7375,10 @@ fn the_panels_follow_one_set_of_rules() {
     let at = |y: usize, x: usize| p.screen().cell(y as u16, x as u16).unwrap().clone();
     let blank = |y: usize, x: usize| at(y, x).contents().trim().is_empty();
     let sc = &s.ed.screen;
-    let (side, chat, slot_x) = (sc.side_w, sc.chat_x.unwrap(), sc.slot_x);
-    let end = sc.text_top + sc.body_h;
-    let slot_y = end - sc.bottom_h;
-    assert!(side > 0 && sc.bottom_h > 0 && slot_x == side, "the slot under the code only");
+    let (side, chat, slot_x) = (sc.drawn_w(crate::pane::Shows::Side), sc.chat_x().unwrap(), sc.slot().x);
+    let end = sc.body_end();
+    let slot_y = end - sc.slot().h;
+    assert!(side > 0 && sc.slot().h > 0 && slot_x == side, "the slot under the code only");
     // Every pane's top a line on the first row, its names at the padding after its lead `─ `; the slot's tabs in its line
     let first = |y: usize, a: usize, b: usize| (a..b).find(|&x| !blank(y, x) && at(y, x).contents() != "─");
     assert_eq!(first(0, 0, side), Some(PAD), "the side panel's names");
@@ -7457,8 +7459,9 @@ fn the_edges_light_with_the_keys() {
     let ui = Ui::new(&s.ed);
     let (accent, window) = (vt_color(ui.accent.fg).unwrap(), vt_color(ui.window).unwrap());
     let sc = &s.ed.screen;
-    let (gx, cx, end) = (sc.side_w - crate::chrome::GAP, sc.chat_x.unwrap(), sc.text_top + sc.body_h);
-    let (slot_y, slot_x) = (end - sc.bottom_h, sc.slot_x);
+    let (gx, cx, end) =
+        (sc.drawn_w(crate::pane::Shows::Side) - crate::chrome::GAP, sc.chat_x().unwrap(), sc.body_end());
+    let (slot_y, slot_x) = (end - sc.slot().h, sc.slot().x);
     // Each line's cells: (row, column) → (glyph, lit)
     let lines = |s: &mut Shot| {
         let p = cells(&s.frame(), w, h);
@@ -7530,7 +7533,7 @@ fn the_slots_header_is_the_line_where_it_meets_the_code() {
     let at = |s: &mut Shot| {
         let rows: Vec<String> = cells(&s.frame(), w, h).screen().rows(0, w).collect();
         let sc = &s.ed.screen;
-        (rows, sc.text_top + sc.body_h - sc.bottom_h)
+        (rows, sc.slot().y)
     };
     let (rows, y) = at(&mut s);
     let line = rows[y].trim_end();
@@ -7789,7 +7792,7 @@ fn an_ask_over_the_chat_is_as_wide_as_with_the_chat_closed() {
             // (its corner a cell of air in from the screen's right)
             assert_eq!(x + w, 111, "{name} {chat}");
             if chat {
-                let chat_x = s.ed.screen.chat_x.expect("the chat");
+                let chat_x = s.ed.screen.chat_x().expect("the chat");
                 assert!(x < chat_x, "{name}: wider than the chat, over the code ({x} < {chat_x})");
                 s.frames_both(&format!("cardkeys-chat112-{name}"));
             }
@@ -7946,7 +7949,7 @@ fn an_ask_over_the_chat_stands_on_its_inputs_rule() {
     assert_eq!(bottom + 1, rule, "its bottom line right above the input's rule");
     assert!(with[bottom].chars().skip(x).take(w).collect::<String>().starts_with("╰─ "), "{}", with[bottom]);
     // (the input's rule, its rows, the hint row and what's under them: as without the card)
-    let chat_x = s.ed.screen.chat_x.expect("the chat");
+    let chat_x = s.ed.screen.chat_x().expect("the chat");
     let chat = |r: &String| r.chars().skip(chat_x).collect::<String>();
     for i in rule..30 {
         assert_eq!(chat(&with[i]), chat(&without[i]), "row {i} of the chat's foot as without it");
@@ -8187,7 +8190,7 @@ fn a_group_names_its_members_one_lit() {
     assert_eq!(named(&mut s, 0, &["files", "outline", "git"]), [false, true, false], "tab: the next lit");
     // The slot's panels: its header names them all, the one in front lit (bold — without the keys it fades, as
     // all the slot's text does)
-    let slot = s.ed.screen.text_top + s.ed.screen.body_h - s.ed.screen.bottom_h;
+    let slot = s.ed.screen.slot().y;
     let p = cells(&s.frame(), w, h);
     let header: String = p.screen().rows(0, w).nth(slot).unwrap();
     let tabs: Vec<String> = s.ed.slot_tabs().iter().map(|t| t.label.clone()).collect();
@@ -8218,7 +8221,7 @@ fn the_chats_edge_is_one_line_on_every_row() {
         s.ed.goto_line(line);
         let p = cells(&s.frame(), w, h);
         let sc = &s.ed.screen;
-        let (cx, end) = (sc.chat_x.unwrap(), sc.text_top + sc.body_h);
+        let (cx, end) = (sc.chat_x().unwrap(), sc.body_end());
         for y in 0..end {
             let at = |x: usize| p.screen().cell(y as u16, x as u16).unwrap().contents().to_string();
             let want = if y == 0 { "┬" } else { "│" };
@@ -8274,7 +8277,7 @@ fn floating_cards_leave_nothing_against_their_edges() {
         s.keys(keys);
         s.frame();
         let (_, y, _, h) = s.ed.screen.offer_card.expect("the card");
-        let below = s.ed.screen.text_top + s.ed.screen.body_h;
+        let below = s.ed.screen.body_end();
         assert_eq!(
             y + h + 1,
             below,
@@ -8287,7 +8290,7 @@ fn floating_cards_leave_nothing_against_their_edges() {
     let mut s = hovering(64, 24);
     s.frame();
     let (_, y, _, h) = s.ed.screen.popup.get().expect("the docs");
-    let below = s.ed.screen.text_top + s.ed.screen.body_h;
+    let below = s.ed.screen.body_end();
     assert_eq!(y + h + 1, below, "its bottom line, a row of air, then the status line");
     let rows = drawn_rows(&s);
     assert!(rows[y + h - 1].contains("↓ 3 more lines"), "{:?}", rows[y + h - 1]);
@@ -8308,7 +8311,7 @@ fn floating_cards_leave_nothing_against_their_edges() {
         });
         s.frame();
         let at = drawn_rows(&s).iter().position(|r| r.contains("fn get(k"));
-        let below = s.ed.screen.text_top + s.ed.screen.body_h;
+        let below = s.ed.screen.body_end();
         match (h, at) {
             (7, at) => assert_eq!(at, None, "no row of air under it: not drawn"),
             (_, Some(y)) => {
@@ -8332,7 +8335,7 @@ fn floating_cards_leave_nothing_against_their_edges() {
     s.ed.completion = Some(c);
     s.frame();
     let (_, y, _, h) = s.ed.screen.completion_card.get().expect("the list");
-    let below = s.ed.screen.text_top + s.ed.screen.body_h;
+    let below = s.ed.screen.body_end();
     assert!(y > s.ed.screen.text_top, "under the cursor's row: {y}");
     assert_eq!(y + h + 1, below, "its bottom line, a row of air, then the status line");
 }
@@ -8436,7 +8439,7 @@ fn every_panel_starts_its_text_the_same_distance_in() {
     let p = cells(&s.frame(), w, h);
     let sc = &s.ed.screen;
     let (side, chat, slot_y, last) =
-        (sc.side_w, sc.chat_x.unwrap(), sc.text_top + sc.body_h - sc.bottom_h, sc.text_top + sc.body_h - 1);
+        (sc.drawn_w(crate::pane::Shows::Side), sc.chat_x().unwrap(), sc.slot().y, sc.body_end() - 1);
     assert!(slot_y < last, "the chat's last row is beside the slot");
     // From the cell after the line at `gx` (none: the screen's edge) to the first text → the inset
     let inset = |y: usize, gx: Option<usize>| {
@@ -8502,7 +8505,7 @@ fn chat_of(w: u16, h: u16, n: usize) -> Shot {
 fn chat_rows_within(s: &mut Shot, w: u16, h: u16, what: &str) -> Vec<(String, Option<usize>)> {
     use crate::chrome::PAD;
     let p = cells(&s.frame(), w, h);
-    let x0 = s.ed.screen.chat_x.expect("the chat");
+    let x0 = s.ed.screen.chat_x().expect("the chat");
     let at = |y: usize, x: usize| match p.screen().cell(y as u16, x as u16).unwrap().contents() {
         "" => " ".to_string(),
         c => c.to_string(),
@@ -8681,7 +8684,7 @@ fn a_slot_headers_lines_down_start_at_a_join() {
     let header = |s: &mut Shot, w: u16, what: &str| -> String {
         let p = cells(&s.frame(), w, h);
         let sc = &s.ed.screen;
-        let y = (sc.text_top + sc.body_h - sc.bottom_h) as u16;
+        let y = sc.slot().y as u16;
         let at = |y: u16, x: u16| p.screen().cell(y, x).unwrap().contents().to_string();
         let row = |y: u16| (0..w).map(|x| at(y, x)).collect::<String>();
         let downs: Vec<u16> = (1..w - 1).filter(|&x| at(y + 1, x) == "│" && at(y + 2, x) == "│").collect();
@@ -8791,8 +8794,8 @@ fn a_line_that_drags_lights_under_the_pointer() {
     // The keys back in the code: the slot's line, off its names — then off every line: none lit
     s.ed.workspace.viewer.at = crate::workspace::At::Code;
     hover(&mut s, 30, low.y + 2);
-    let slot = s.ed.screen.text_top + s.ed.screen.body_h - s.ed.screen.bottom_h;
-    let cols = s.ed.screen.slot_x..s.ed.screen.slot_end();
+    let slot = s.ed.screen.slot().y;
+    let cols = s.ed.screen.slot().x..s.ed.screen.slot_end();
     let x = rule(&mut s, cols, slot);
     assert_eq!(s.ed.border_at(x, slot), Some(crate::sizes::Border::Bottom));
     let wash = cell(&mut s, x, slot).1;
@@ -8835,7 +8838,7 @@ fn the_surface_under_the_pointer_lights_its_lines_half() {
     };
     let hover = |s: &mut Shot, x: usize, y: usize| s.ed.handle_event(Event::Hover(x as u16, y as u16));
     s.frame();
-    let chat_x = s.ed.screen.chat_x.unwrap();
+    let chat_x = s.ed.screen.chat_x().unwrap();
     // (a cell of the chat's top line's rule, and of the code's)
     let chat_rule = (chat_x + 2..w as usize).rev().find(|&x| fg(&mut s, x, 0).is_some()).expect("its rule");
     let code_rule = (2..chat_x).rev().find(|&x| fg(&mut s, x, 0).is_some()).expect("the code's rule");
@@ -8859,8 +8862,8 @@ fn the_surface_under_the_pointer_lights_its_lines_half() {
     assert_eq!(fg(&mut s, code_rule, 0), Some(half(code_wash)), "the code pane under the pointer: half");
     s.ed.workspace.viewer.at = crate::workspace::At::Code;
     // The bottom slot's line, the pointer over its output
-    let slot = s.ed.screen.text_top + s.ed.screen.body_h - s.ed.screen.bottom_h;
-    let cols = s.ed.screen.slot_x..s.ed.screen.slot_end();
+    let slot = s.ed.screen.slot().y;
+    let cols = s.ed.screen.slot().x..s.ed.screen.slot_end();
     let rule = cols.clone().rev().find(|&x| fg(&mut s, x, slot).is_some()).expect("the slot's rule");
     let slot_wash = fg(&mut s, rule, slot).unwrap();
     assert_ne!(slot_wash, accent);
@@ -8968,8 +8971,12 @@ fn the_gutters_hold_at_their_edges() {
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" L<esc>");
     let (_, _, accent) = chrome_colors(&s.ed);
-    let (side, chat, top, end) =
-        (s.ed.screen.side_w, s.ed.screen.chat_x.unwrap(), s.ed.screen.text_top, s.ed.screen.body_h);
+    let (side, chat, top, end) = (
+        s.ed.screen.drawn_w(crate::pane::Shows::Side),
+        s.ed.screen.chat_x().unwrap(),
+        s.ed.screen.text_top,
+        s.ed.screen.body_end() - s.ed.screen.text_top,
+    );
     let cell = |s: &mut Shot, y: usize, x: usize| {
         let c = cells(&s.frame(), w, h).screen().cell(y as u16, x as u16).unwrap().clone();
         (c.contents().to_string(), c.fgcolor())
@@ -9001,7 +9008,7 @@ fn the_chat_input_says_where_the_keys_are() {
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" Lhalf a thought");
     let (_, _, accent) = chrome_colors(&s.ed);
-    let chat = s.ed.screen.chat_x.unwrap();
+    let chat = s.ed.screen.chat_x().unwrap();
     let look = |s: &mut Shot| {
         let p = cells(&s.frame(), w, h);
         let rows: Vec<String> = p.screen().rows(0, w).collect();
@@ -9042,8 +9049,8 @@ fn the_picker_floats_with_equal_margins() {
     let (ground, surface, _) = chrome_colors(&s.ed);
     let p = cells(&s.frame(), w, h);
     let at = |y: usize, x: usize| p.screen().cell(y as u16, x as u16).unwrap().clone();
-    let chat = s.ed.screen.chat_x.unwrap();
-    let end = s.ed.screen.text_top + s.ed.screen.body_h;
+    let chat = s.ed.screen.chat_x().unwrap();
+    let end = s.ed.screen.body_end();
     // The card: its surface and its frame, a cell out from the cards (the selected row's bar keeps its edge)
     let card = |y, x| {
         let c = at(y, x);
@@ -9088,7 +9095,7 @@ fn a_list_card_is_its_own_height_and_keeps_it() {
     let (_, surface, _) = chrome_colors(&s.ed);
     let card_rows = |s: &mut Shot| {
         let p = cells(&s.frame(), w, h);
-        let end = s.ed.screen.text_top + s.ed.screen.body_h;
+        let end = s.ed.screen.body_end();
         // (from its top edge to its bottom one — the selected row is another colour all across)
         let on: Vec<usize> = (0..end)
             .filter(|&y| {
@@ -9756,7 +9763,7 @@ fn every_panes_top_is_one_line() {
         let mut s = three_columns(w, h);
         let (rows, at) = frame_text(&mut s, w, h);
         let sc = &s.ed.screen;
-        let (side, chat) = (sc.side_w, sc.chat_x.unwrap());
+        let (side, chat) = (sc.drawn_w(crate::pane::Shows::Side), sc.chat_x().unwrap());
         assert_eq!(sc.text_top, 1, "{w}: the code right under its line");
         let from = |x: usize| -> String { (x..w as usize).map(|c| at(0, c)).collect() };
         let mut tops = vec![(side, "─ tarae › src › demo.rs"), (chat + 1, "─ claude")];
@@ -9788,7 +9795,7 @@ fn a_split_starts_at_a_join() {
     let mut s = three_columns(w, h);
     s.keys(" l<C-w>v");
     let (rows, at) = frame_text(&mut s, w, h);
-    let side = s.ed.screen.side_w;
+    let side = s.ed.screen.drawn_w(crate::pane::Shows::Side);
     let divider = (side + 1..w as usize).find(|&x| at(5, x) == "│").expect("a divider");
     assert_eq!(at(0, divider), "┬", "the divider starts at the lines: {:?}", rows[0]);
     assert!(named_line(&at, 0, side) && named_line(&at, 0, divider + 1), "both panes' lines: {:?}", rows[0]);
@@ -9808,7 +9815,7 @@ fn a_split_starts_at_a_join() {
     s.ed.toasts.clear();
     let (rows, at) = frame_text(&mut s, w, h);
     let sc = &s.ed.screen;
-    let slot_y = sc.text_top + sc.body_h - sc.bottom_h;
+    let slot_y = sc.slot().y;
     assert_eq!(at(slot_y, divider), "┴", "the divider ends on the slot's line: {:?}", rows[slot_y]);
     assert_eq!(at(slot_y - 1, divider), "│", "{:?}", rows[slot_y - 1]);
     s.keys("<C-w>k");
@@ -9816,7 +9823,7 @@ fn a_split_starts_at_a_join() {
     s.keys("<C-w>q<C-w>s");
     let (rows, at) = frame_text(&mut s, w, h);
     let sc = &s.ed.screen;
-    let slot_y = sc.text_top + sc.body_h - sc.bottom_h;
+    let slot_y = sc.slot().y;
     let lines: Vec<usize> = (0..slot_y).filter(|&y| named_line(&at, y, side)).collect();
     assert_eq!(lines.len(), 2, "two panes, two lines: {lines:?}\n{}", rows.join("\n"));
     let low = lines[1];
@@ -9835,7 +9842,7 @@ fn the_chats_line_names_the_sessions() {
     let (w, h) = (160u16, 40u16);
     let mut s = three_columns(w, h);
     let (_, at) = frame_text(&mut s, w, h);
-    let chat = s.ed.screen.chat_x.unwrap();
+    let chat = s.ed.screen.chat_x().unwrap();
     let line = |at: &dyn Fn(usize, usize) -> String| -> String {
         (chat + 1..w as usize).map(|x| at(0, x)).collect()
     };

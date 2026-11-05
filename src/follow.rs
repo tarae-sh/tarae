@@ -1373,7 +1373,7 @@ pub fn reading(ed: &mut Editor) -> bool {
     // (read_at is set when a turn ends — before that there's no answer to read along)
     if c.busy()
         || !c.follow.active()
-        || ed.screen.chat_x.is_none()
+        || ed.screen.chat_x().is_none()
         || c.follow.read_at.is_none_or(|r| r == c.scroll)
         // (its places still being found: read once they're links — `places.rs`)
         || c.places.waiting()

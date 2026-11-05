@@ -194,7 +194,9 @@ impl Editor {
             });
         }
         // The side panel: the rows `term.rs` drew (screen row, list row)
-        if let Some(sb) = self.workspace.viewer.sidebar.as_ref().filter(|_| s.side_w > 0) {
+        if let Some(sb) =
+            self.workspace.viewer.sidebar.as_ref().filter(|_| s.drawn_w(crate::pane::Shows::Side) > 0)
+        {
             let tab = super::side_tab(sb.mode);
             let lines = sb.lines();
             let rows = s
@@ -329,7 +331,7 @@ impl Editor {
         if !rows.is_empty() {
             p.lists.push(("map".into(), rows));
         }
-        if s.bottom_h > 0 {
+        if s.slot().h > 0 {
             let tabs = self
                 .slot_tabs()
                 .into_iter()

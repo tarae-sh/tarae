@@ -852,7 +852,6 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         pane_sizes: Vec::new(),
         writing_rows: Vec::new(),
         writing_head: None,
-        chat_x: lay.chat_at().map(|a| a.x),
         chat_frame: lay.chat_frame.map(|r| (r.x, r.y, r.w, r.h)),
         chat_laid: Default::default(),
         chat_view: Default::default(),
@@ -908,14 +907,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         rects: screen_rects(editor, &lay),
         width: Some(lay.width),
         over_folded: editor.screen.over_folded,
-        chat_w: lay.chat().map_or(0, |r| r.w),
-        side_w: if editor.review_rail_up() { 0 } else { lay.side().map_or(0, |r| r.w) },
-        rail_w: if editor.review_rail_up() && lay.zoom.is_none() { lay.side().map_or(0, |r| r.w) } else { 0 },
-        bottom_h: lay.slot.h,
-        body_h: lay.text_rows + lay.slot.h,
         text_top: lay.text_top as usize,
         terminal_rows: (lay.slot.h > 0 && terminal_shown).then(|| (lay.slot.y, lay.slot.y + lay.slot.h - 1)),
-        slot_x: lay.slot.x,
         slot_tabs: Default::default(),
         member_names: Default::default(),
         // (the terminal's rows: its panel's — the size you set, or its own — under the header)
@@ -937,7 +930,6 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         floating: Default::default(),
         frames: Default::default(),
         height: Some((h as usize).saturating_sub(1)),
-        slot_w: lay.slot.w,
         review_change: Default::default(),
         review_rows: Default::default(),
         review_text: Default::default(),
@@ -1569,7 +1561,7 @@ pub(crate) fn group_shape_now(editor: &Editor, g: &crate::pane::Group) -> Option
             // (over the code: the whole rect, its bottom the code's line — as `Panel::docked` lays it)
             (None, Some((Side::Top, r))) => (r.w, r.h),
             (None, Some((_, r))) => (r.w.saturating_sub(1), r.h),
-            (None, None) => (s.slot_w, s.bottom_h),
+            (None, None) => (s.slot().w, s.slot().h),
         };
     let h = h.checked_sub(crate::chrome::SLOT_HEAD).filter(|&h| h > 0 && w > 0)?;
     group_shape(editor, g, w, h).map(|s| s.0)
@@ -25217,7 +25209,7 @@ mod tests {
     /// The chat's top line at screen width `w` (as `draw_chat` lays it out): its names, and what's after them.
     fn chats_line(ed: &mut Editor, w: u16) -> (String, String) {
         let vt = screen_at(ed, w);
-        let x = ed.screen.chat_x.expect("the chat is open");
+        let x = ed.screen.chat_x().expect("the chat is open");
         let row = vt.screen().rows(0, w).next().unwrap_or_default();
         let line: String = row.chars().skip(x).collect();
         let line = line.trim_start_matches(['│', '┌', '┬', '─', ' ']);
@@ -25544,7 +25536,7 @@ mod tests {
         p.process(&bytes);
         let s = p.screen().contents();
         let (cx, cy, ..) = ed.screen.offer_card.expect("the card");
-        let code = ed.screen.chat_x.expect("the chat");
+        let code = ed.screen.chat_x().expect("the chat");
         assert!(cx + 2 < code, "the card reaches over the code's last columns\n{s}");
         let (tx, ty, tw, th) = ed.screen.toast_card.get().unwrap_or_else(|| panic!("the toast drawn\n{s}"));
         assert!(ty + th < cy, "above the card, a row of air between\n{s}");
@@ -25578,7 +25570,7 @@ mod tests {
                 widths.push(cw);
                 match chat {
                     true => {
-                        let cx = ed.screen.chat_x.expect("the chat") + crate::chrome::GAP;
+                        let cx = ed.screen.chat_x().expect("the chat") + crate::chrome::GAP;
                         assert_eq!(x + cw, w - 1, "{w}: a cell in from the screen's right\n{s}");
                         match w {
                             80 => assert!(x < cx, "{w}: wider than the chat, over the code\n{s}"),
@@ -25654,7 +25646,7 @@ mod tests {
                 assert!(crate::chatdoc::transcript(&ed).is_some_and(|t| t.keyed), "in the chat's view mode");
             }
             let rows = frame(&mut ed);
-            let text_x = ed.screen.chat_x.expect("the chat") + GAP + PAD;
+            let text_x = ed.screen.chat_x().expect("the chat") + GAP + PAD;
             let card = ed.screen.offer_card.expect("drawn");
             let recorded = (card.1..card.1 + card.3).filter(|&y| ed.screen.chat_row(y).is_some()).count();
             Drawn { rows, card, text_x, keys: ed.card_has_keys(), recorded }
@@ -26247,7 +26239,7 @@ mod tests {
         ed.workspace.viewer.sidebar = Some(side);
         ed.handle_key(":".parse().unwrap());
         let (rows, _) = draw(&mut ed);
-        assert!(ed.screen.side_w > 2, "the side panel is up");
+        assert!(ed.screen.drawn_w(crate::pane::Shows::Side) > 2, "the side panel is up");
         assert_eq!(ed.screen.prompt_card.get().map(|r| r.0), Some(1), "a cell in from the screen's left");
         let col = |row: &str, s: &str| row.find(s).map(|b| row[..b].chars().count());
         assert_eq!(col(&rows[27], ":"), col(&rows[29], "normal"), "{}\n{}", rows[27], rows[29]);
@@ -28228,10 +28220,10 @@ mod tests {
                     render(ed, &mut sink, 140, 34).unwrap();
                 }
             };
-            let chat_x = |ed: &Editor| ed.screen.chat_x.unwrap() as u16;
+            let chat_x = |ed: &Editor| ed.screen.chat_x().unwrap() as u16;
             type Place = fn(&Editor, (u16, u16)) -> bool;
-            let in_code: Place = |ed, (x, _)| x < ed.screen.chat_x.unwrap() as u16;
-            let in_chat: Place = |ed, (x, _)| x >= ed.screen.chat_x.unwrap() as u16;
+            let in_code: Place = |ed, (x, _)| x < ed.screen.chat_x().unwrap() as u16;
+            let in_chat: Place = |ed, (x, _)| x >= ed.screen.chat_x().unwrap() as u16;
             let at_bottom: Place = |_, (_, y)| y >= 30;
             let scenes: Vec<(&str, Vec<&str>, Place)> = vec![
                 ("the code", vec![], in_code),
@@ -28729,7 +28721,7 @@ mod tests {
     fn knots_bold(ed: &mut Editor, w: u16) -> Vec<bool> {
         let vt = screen_at(ed, w);
         let x =
-            (ed.screen.chat_x.expect("the chat is open") + crate::chrome::GAP + crate::chrome::PAD) as u16;
+            (ed.screen.chat_x().expect("the chat is open") + crate::chrome::GAP + crate::chrome::PAD) as u16;
         (0..40)
             .filter_map(|y| {
                 let mark = |c: &&vt100::Cell| !c.contents().is_empty() && "◦•●▸▲".contains(c.contents());
@@ -28986,7 +28978,7 @@ mod tests {
                 match chat {
                     false => assert_eq!(bottom(card), floor, "{at}: the ask\n{s}"),
                     true => {
-                        let cx = ed.screen.chat_x.expect("the chat") + crate::chrome::GAP;
+                        let cx = ed.screen.chat_x().expect("the chat") + crate::chrome::GAP;
                         let line: String = rows[bottom(card) + 1].chars().skip(cx).collect();
                         assert!(line.trim_start().starts_with('─'), "{at}: the ask on the input's line\n{s}");
                     }
@@ -29081,7 +29073,7 @@ mod tests {
     /// row with `end`.
     fn chat_rows(ed: &mut Editor, w: u16, end: &str) -> Vec<String> {
         let vt = screen_at(ed, w);
-        let x = (ed.screen.chat_x.expect("the chat is open") + crate::chrome::GAP) as u16;
+        let x = (ed.screen.chat_x().expect("the chat is open") + crate::chrome::GAP) as u16;
         let rows: Vec<String> = vt.screen().rows(x, w - x).map(|r| r.trim_end().to_string()).collect();
         let first = rows.iter().position(|r| r.contains("why does insert")).expect("the question");
         let last = rows.iter().position(|r| r.contains(end)).expect("the end");

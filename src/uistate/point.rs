@@ -64,20 +64,37 @@ impl Editor {
         }
         // (a picker covers the side panel and the rail — their rows aren't in sight)
         let covered = s.picker_list.is_some();
-        if let Some(sb) = self.workspace.viewer.sidebar.as_ref().filter(|_| s.side_w > 0 && !covered) {
+        if let Some(sb) = self
+            .workspace
+            .viewer
+            .sidebar
+            .as_ref()
+            .filter(|_| s.drawn_w(crate::pane::Shows::Side) > 0 && !covered)
+        {
             let tab = super::side_tab(sb.mode);
             let lines = sb.lines();
             for &(y, i) in s.sidebar.borrow().iter() {
                 if let Some(l) = lines.get(i).filter(|l| l.target != crate::sidebar::Target::None) {
                     let id = super::panels::side_id(self, tab, l);
-                    out.push(Target { id, x: 0, y, w: s.side_w, at: (0, y) });
+                    out.push(Target { id, x: 0, y, w: s.drawn_w(crate::pane::Shows::Side), at: (0, y) });
                 }
             }
         }
-        if let Some(r) = self.workspace.code_review.as_ref().filter(|_| s.rail_w > 0 && !covered) {
+        if let Some(r) = self
+            .workspace
+            .code_review
+            .as_ref()
+            .filter(|_| s.drawn_w(crate::pane::Shows::Rail) > 0 && !covered)
+        {
             for &(y, i) in s.review_rail.borrow().iter() {
                 if let Some(f) = r.files.get(i) {
-                    out.push(Target { id: format!("review:{}", f.rel), x: 0, y, w: s.rail_w, at: (0, y) });
+                    out.push(Target {
+                        id: format!("review:{}", f.rel),
+                        x: 0,
+                        y,
+                        w: s.drawn_w(crate::pane::Shows::Rail),
+                        at: (0, y),
+                    });
                 }
             }
         }

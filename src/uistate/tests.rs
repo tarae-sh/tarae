@@ -1610,7 +1610,11 @@ fn keys_out_of_a_chat_filling_a_narrow_screen_go_to_code_in_sight() {
     chat(&mut ed, "");
     narrow(&mut ed);
     assert_eq!(ed.keys_to().region, Region::Chat);
-    assert_eq!(ed.screen.chat_w, 60, "the chat fills the narrow screen while it has the keys");
+    assert_eq!(
+        ed.screen.drawn_w(crate::pane::Shows::Chat),
+        60,
+        "the chat fills the narrow screen while it has the keys"
+    );
     // (an empty conversation: nothing to view — `esc` is the code's)
     feed(&mut ed, &["<esc>"]);
     narrow(&mut ed);
@@ -1621,11 +1625,11 @@ fn keys_out_of_a_chat_filling_a_narrow_screen_go_to_code_in_sight() {
         ed.screen.panes.iter().any(|p| p.0 == ed.workspace.viewer.focus && p.1.w > 0),
         "its focused pane drawn"
     );
-    assert_eq!(ed.screen.chat_w, 0);
+    assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 0);
     // `space l`: the chat again, filling it
     feed(&mut ed, &[" ", "l"]);
     narrow(&mut ed);
-    assert_eq!((ed.keys_to().region, ed.screen.chat_w), (Region::Chat, 60));
+    assert_eq!((ed.keys_to().region, ed.screen.drawn_w(crate::pane::Shows::Chat)), (Region::Chat, 60));
 }
 
 /// The Claude settings card is weighty, but it doesn't take the keys from the chat's empty input as others do:

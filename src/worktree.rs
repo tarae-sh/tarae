@@ -4342,7 +4342,7 @@ mod tests {
             parser.process(&bytes);
             let screen = parser.screen().contents();
             let top = screen.lines().find(|l| l.contains("bring › ")).map(|l| l.trim().to_string());
-            (ed.screen.bottom_h, top.unwrap_or_else(|| panic!("{screen}")))
+            (ed.screen.slot().h, top.unwrap_or_else(|| panic!("{screen}")))
         };
         let (rebasing_h, top) = panel(&mut ed);
         assert!(top.contains("bring › rebase onto main"), "{top}");

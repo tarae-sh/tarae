@@ -435,11 +435,18 @@ impl Screen {
         s.y + s.h
     }
 
+    /// The chat's first column as last drawn: its docked column's, else the ask line's frame's — None where neither
+    /// was drawn.
+    pub fn chat_x(&self) -> Option<usize> {
+        let frame = self.chat_frame.map(|f| f.0);
+        frame.or(self.rect(crate::pane::Shows::Chat).map(|r| r.x))
+    }
+
     /// The column past the bottom slot's last — the chat's first (or a group docked right's), as last drawn.
     pub fn slot_end(&self) -> usize {
-        match self.slot_w {
-            0 => self.chat_x.unwrap_or(usize::MAX),
-            w => self.slot_x + w,
+        match self.slot() {
+            s if s.w == 0 => self.chat_x().unwrap_or(usize::MAX),
+            s => s.x + s.w,
         }
     }
 
@@ -561,8 +568,6 @@ pub struct Screen {
     /// written (screen rows) — the follow card keeps off them as off a review's changes.
     pub writing_rows: Vec<usize>,
     pub writing_head: Option<usize>,
-    /// Column where the chat pane starts.
-    pub chat_x: Option<usize>,
     /// The chat's frame while it floats over the code (the flow plan's reader): left, top, width, height — its lines
     /// in it. None: docked or not drawn.
     pub chat_frame: Option<(usize, usize, usize, usize)>,
@@ -592,8 +597,6 @@ pub struct Screen {
     /// The groups docked over the code folded into the slot this frame, by `dock_index` — the code and the slot under
     /// them leave them too few rows (`term::over_fold`).
     pub over_folded: [bool; crate::pane::DOCKABLE],
-    /// The bottom slot's width (from `slot_x`) — a group docked right of the code is past it.
-    pub slot_w: usize,
     /// First row and row count of the picker list.
     pub picker_list: Option<(usize, usize)>,
     /// Grammar download offer buttons: (row, start col, end col, key to feed when clicked).
@@ -676,25 +679,17 @@ pub struct Screen {
     pub sidebar: std::cell::RefCell<Vec<(usize, usize)>>,
     /// Every surface laid out with room last frame, by kind (onetree S1g, `term::Layout`'s `shown`): the side panel's
     /// only while the review's rail isn't up, the rail's only while it is and nothing fills the screen, the bottom
-    /// slot's always — as laid, 0 high when it's empty, its first row under the code's (`slot`, `body_end`). `sizes.rs`
-    /// and `dock.rs` start a change from these (`rect`, `drawn_w`).
+    /// slot's always — as laid, 0 high when it's empty, its first row under the code's (`slot`, `body_end`). Every
+    /// reader of where a surface was drawn asks these (`rect`, `drawn_w`, `chat_x`; S1h: no home scalars beside them).
     pub rects: Vec<(crate::pane::Shows, crate::split::Rect)>,
-    /// The whole screen's width (None before the first frame — tests) · the chat's, the side panel's (0: not shown — folded away if it's open) and
-    /// the bottom slot's (rows) as drawn last frame (`rects` says them too: these go with onetree S1h).
+    /// The whole screen's width (None before the first frame — tests).
     pub width: Option<usize>,
-    pub chat_w: usize,
-    pub side_w: usize,
-    /// The code review's rail, as wide as drawn (0: not shown).
-    pub rail_w: usize,
-    pub bottom_h: usize,
-    /// The rows of code and bottom slot together, from row `text_top`.
-    pub body_h: usize,
+    /// The first row of the code and the bottom slot together (`body_end` past their last).
     pub text_top: usize,
     /// The terminal panel: its rows on screen (first — its tabs —, last) when it shows · the size a
     /// terminal gets.
     pub terminal_rows: Option<(usize, usize)>,
-    /// The bottom slot's first column · its tabs as drawn: (row, start col, end col, the panel).
-    pub slot_x: usize,
+    /// The bottom slot's tabs as drawn: (row, start col, end col, the panel).
     pub slot_tabs: std::cell::RefCell<Vec<(usize, usize, usize, crate::sizes::Slot)>>,
     /// The names of the group's members in the slot's line as drawn (panes P3 step 3b): (row, start col, end col, the
     /// member's pane) — a click gives it the keys.
@@ -4249,8 +4244,8 @@ impl Editor {
             return;
         }
         let s = &self.screen;
-        let bottom =
-            s.bottom_h > 0 && y + s.bottom_h == s.text_top + s.body_h && x >= s.slot_x && x < s.slot_end();
+        let slot = s.slot();
+        let bottom = slot.h > 0 && y == slot.y && x >= slot.x && x < s.slot_end();
         if bottom && self.dragging.is_none() {
             self.dragging = Some(crate::sizes::Border::Bottom);
             self.border_moved = false;
@@ -4469,7 +4464,7 @@ impl Editor {
         }
         // (a task's or tests' wave and wait counter are in the bottom slot — its panel and tabs — only: no
         // frames for them while the last frame didn't draw it; one that does asks again, `frame_drawn`)
-        let slot_drawn = self.screen.bottom_h > 0 || self.screen.width.is_none();
+        let slot_drawn = self.screen.slot().h > 0 || self.screen.width.is_none();
         let run =
             self.workspace.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running)
                 || self.workspace.task_run.as_ref().is_some_and(|r| r.going());
@@ -4500,7 +4495,9 @@ impl Editor {
             .reviewer
             .as_ref()
             .filter(|rv| {
-                rv.reading() && !crate::reviewer::waits(self, &self.workspace) && self.screen.rail_w > 0
+                rv.reading()
+                    && !crate::reviewer::waits(self, &self.workspace)
+                    && self.screen.drawn_w(crate::pane::Shows::Rail) > 0
             })
             // (its time is drawn on the rail only — the status line's segment has none: an idle tarae draws nothing)
             .filter(|_| self.workspace.code_review.is_some())
@@ -8746,7 +8743,7 @@ mod tests {
         feed(&mut ed, "<space>lwhere?<ret><esc>");
         settle_until(&mut ed, |ed| ed.doc().path.as_deref() == Some(util.as_path()));
         // The chat from column 40, the code left of it
-        ed.screen.chat_x = Some(40);
+        ed.screen.rects = vec![(crate::pane::Shows::Chat, crate::split::Rect { x: 40, y: 0, w: 40, h: 10 })];
         ed.screen.panes =
             vec![(ed.workspace.viewer.focus, crate::split::Rect { x: 0, y: 0, w: 40, h: 10 }, 3, vec![])];
         ed.handle_mouse(mouse(K::ScrollUp, 50));
@@ -9228,12 +9225,13 @@ mod tests {
         r.state = crate::task::State::Running;
         ed.workspace.task_run = Some(r);
         ed.screen.width = Some(120);
-        ed.screen.bottom_h = 12;
+        let slot = |h| vec![(crate::pane::Shows::Slot, crate::split::Rect { x: 0, y: 0, w: 120, h })];
+        ed.screen.rects = slot(12);
         assert!(ed.tick_wanted().is_some(), "in sight: its wave moves");
-        ed.screen.bottom_h = 0;
+        ed.screen.rects = slot(0);
         assert_eq!(ed.tick_wanted(), None, "not drawn: no frames for it");
         ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Passed;
-        ed.screen.bottom_h = 12;
+        ed.screen.rects = slot(12);
         assert_eq!(ed.tick_wanted(), None, "ended: none either");
     }
 
@@ -10992,7 +10990,12 @@ mod tests {
             let mut parser = vt100::Parser::new(40, 200, 0);
             parser.process(&bytes);
             let head = parser.screen().contents().lines().next().unwrap_or_default().to_string();
-            (ed.screen.panes[0].1.x, ed.screen.panes[0].1.w, ed.screen.chat_w, head)
+            (
+                ed.screen.panes[0].1.x,
+                ed.screen.panes[0].1.w,
+                ed.screen.drawn_w(crate::pane::Shows::Chat),
+                head,
+            )
         };
         let (x, w, chat, head) = frame(&mut ed);
         assert!(x > 0 && chat > 0 && x + w + chat == 200, "rail {x}, code {w}, chat {chat}");
@@ -14502,7 +14505,10 @@ mod tests {
             ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Outline)
                 && ed.workspace.is_at(At::Side)
         );
-        assert!(!ed.review_rail_up() && ed.screen.side_w > 0, "the outline is drawn: {s}");
+        assert!(
+            !ed.review_rail_up() && ed.screen.drawn_w(crate::pane::Shows::Side) > 0,
+            "the outline is drawn: {s}"
+        );
         assert!(s.contains("review behind") && !s.contains("undo the whole turn"), "{s}");
         feed(&mut ed, "<space>o");
         assert!(ed.review_rail_up() && ed.workspace.viewer.sidebar.is_none(), "closed: the rail back");
@@ -14529,7 +14535,11 @@ mod tests {
             parser.screen().contents()
         };
         screen(&mut ed);
-        assert_eq!(ed.screen.rail_w, 0, "unfocused, the rail gives way at this width");
+        assert_eq!(
+            ed.screen.drawn_w(crate::pane::Shows::Rail),
+            0,
+            "unfocused, the rail gives way at this width"
+        );
         feed(&mut ed, "<space>g");
         let s = screen(&mut ed);
         assert!(s.contains("review behind") && s.contains("space g back"), "{s}");
@@ -14539,12 +14549,15 @@ mod tests {
             ed.review_rail_up() && ed.workspace.is_at(crate::workspace::At::Rail),
             "the rail has the keys"
         );
-        assert!(ed.screen.rail_w > 0 && !ed.screen.review_rail.borrow().is_empty(), "and it's drawn: {s}");
+        assert!(
+            ed.screen.drawn_w(crate::pane::Shows::Rail) > 0 && !ed.screen.review_rail.borrow().is_empty(),
+            "and it's drawn: {s}"
+        );
         assert!(!s.contains("review behind"), "{s}");
         // A file opened from it: the keys go to the code, and so do the columns
         feed(&mut ed, "<ret>");
         screen(&mut ed);
-        assert_eq!(ed.screen.rail_w, 0);
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Rail), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -16213,11 +16226,11 @@ mod tests {
         // The chat: automatic 56 at 140; C-w > from its empty input widens it
         crate::chat::open(&mut ed);
         draw(&mut ed, 140);
-        assert_eq!(ed.screen.chat_w, 56);
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 56);
         assert!(ed.workspace.is_at(crate::workspace::At::Chat));
         feed(&mut ed, "<C-w>>");
         draw(&mut ed, 140);
-        assert_eq!((ed.sizes.chat, ed.screen.chat_w), (Some(60), 60));
+        assert_eq!((ed.sizes.chat, ed.screen.drawn_w(crate::pane::Shows::Chat)), (Some(60), 60));
         assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
         // With text in the input, C-w deletes a word as before
         feed(&mut ed, "two words<C-w>");
@@ -16226,7 +16239,7 @@ mod tests {
         // From the code: the chat
         feed(&mut ed, "<C-w><lt><C-w><lt>");
         draw(&mut ed, 140);
-        assert_eq!(ed.screen.chat_w, 52);
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 52);
         // Said in one toast that changes, not a stack of them
         let said: Vec<&str> =
             ed.toasts.iter().filter(|t| t.text.starts_with("chat ")).map(|t| t.text.as_str()).collect();
@@ -16243,9 +16256,13 @@ mod tests {
         // A smaller screen shows less of it; the kept size stays, a bigger screen has it again
         ed.sizes.chat = Some(90);
         draw(&mut ed, 120);
-        assert_eq!((ed.screen.chat_w, ed.sizes.chat), (80, Some(90)), "clamped, not overwritten");
+        assert_eq!(
+            (ed.screen.drawn_w(crate::pane::Shows::Chat), ed.sizes.chat),
+            (80, Some(90)),
+            "clamped, not overwritten"
+        );
         draw(&mut ed, 200);
-        assert_eq!(ed.screen.chat_w, 90);
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 90);
         // The side panel, with the keys: its own width
         crate::chat::close(&mut ed);
         ed.workspace.viewer.sidebar =
@@ -16253,10 +16270,10 @@ mod tests {
         ed.workspace.viewer.at = crate::workspace::At::Side;
         ed.workspace.viewer.at = crate::workspace::At::Side;
         draw(&mut ed, 140);
-        let side = ed.screen.side_w;
+        let side = ed.screen.drawn_w(crate::pane::Shows::Side);
         feed(&mut ed, "<C-w>>");
         draw(&mut ed, 140);
-        assert_eq!(ed.screen.side_w, side + crate::sizes::STEP_COLS);
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Side), side + crate::sizes::STEP_COLS);
         // The bottom slot: yours wins over the task panel's own height
         let mut run = crate::task::Run::for_test(crate::task::Task {
             name: "t".into(),
@@ -16267,15 +16284,15 @@ mod tests {
         ed.workspace.task_run = Some(run);
         ed.workspace.leave(crate::workspace::At::Side);
         draw(&mut ed, 140);
-        assert_eq!(ed.screen.bottom_h, 3, "its own: a small one (its header in the line over it, two rows)");
+        assert_eq!(ed.screen.slot().h, 3, "its own: a small one (its header in the line over it, two rows)");
         feed(&mut ed, "<C-w>+<C-w>+");
         draw(&mut ed, 140);
-        assert_eq!((ed.sizes.bottom, ed.screen.bottom_h), (Some(7), 7));
+        assert_eq!((ed.sizes.bottom, ed.screen.slot().h), (Some(7), 7));
         // C-w =: all automatic again
         feed(&mut ed, "<C-w>=");
         draw(&mut ed, 140);
         assert_eq!(ed.sizes, crate::sizes::Sizes::default());
-        assert_eq!((ed.screen.bottom_h, ed.screen.side_w), (3, side));
+        assert_eq!((ed.screen.slot().h, ed.screen.drawn_w(crate::pane::Shows::Side)), (3, side));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -16302,17 +16319,17 @@ mod tests {
         ed.workspace.leave(crate::workspace::At::Chat);
         draw(&mut ed);
         // The chat's edge: at column 140 - 56; dragged 10 to the left, 10 wider
-        let edge = (140 - ed.screen.chat_w) as u16;
+        let edge = (140 - ed.screen.drawn_w(crate::pane::Shows::Chat)) as u16;
         assert_eq!(ed.border_at(edge as usize, 10), Some(crate::sizes::Border::Chat));
         assert_eq!(ed.border_at(edge as usize - 1, 10), None, "beside it: not the border");
         mouse(&mut ed, K::Down, edge, 10);
         mouse(&mut ed, K::Drag, edge - 10, 12);
         draw(&mut ed);
-        assert_eq!(ed.screen.chat_w, 66, "follows the mouse");
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 66, "follows the mouse");
         // Past what leaves the code its room: held there
         mouse(&mut ed, K::Drag, 2, 12);
         draw(&mut ed);
-        assert_eq!(ed.screen.chat_w, 140 - crate::sizes::CHAT_FULL_CODE);
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 140 - crate::sizes::CHAT_FULL_CODE);
         mouse(&mut ed, K::Drag, edge - 10, 12);
         assert!(ed.toasts.is_empty(), "nothing said while it moves");
         mouse(&mut ed, K::Up, edge - 10, 12);
@@ -16332,12 +16349,12 @@ mod tests {
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.clone()));
         ed.workspace.viewer.at = crate::workspace::At::Side;
         draw(&mut ed);
-        let side = ed.screen.side_w as u16;
+        let side = ed.screen.drawn_w(crate::pane::Shows::Side) as u16;
         mouse(&mut ed, K::Down, side - 1, 5);
         mouse(&mut ed, K::Drag, side + 7, 5);
         mouse(&mut ed, K::Up, side + 7, 5);
         draw(&mut ed);
-        assert_eq!(ed.screen.side_w, side as usize + 8);
+        assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Side), side as usize + 8);
         // The bottom panel's top row, dragged up 5 rows: 5 taller
         let mut run = crate::task::Run::for_test(crate::task::Task {
             name: "t".into(),
@@ -16347,12 +16364,12 @@ mod tests {
         run.output = [(false, "one")].into_iter().collect();
         ed.workspace.task_run = Some(run);
         draw(&mut ed);
-        let (h, top) = (ed.screen.bottom_h, ed.screen.text_top + ed.screen.body_h - ed.screen.bottom_h);
+        let (h, top) = (ed.screen.slot().h, ed.screen.slot().y);
         mouse(&mut ed, K::Down, 60, top as u16);
         mouse(&mut ed, K::Drag, 60, top as u16 - 5);
         mouse(&mut ed, K::Up, 60, top as u16 - 5);
         draw(&mut ed);
-        assert_eq!(ed.screen.bottom_h, h + 5);
+        assert_eq!(ed.screen.slot().h, h + 5);
         // A press in the code isn't a drag
         mouse(&mut ed, K::Down, 60, 3);
         assert!(ed.dragging.is_none());
@@ -16449,8 +16466,14 @@ mod tests {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, 140, 40).unwrap();
         };
-        let shown =
-            |ed: &Editor| (ed.screen.chat_w, ed.screen.side_w, ed.screen.bottom_h, ed.screen.panes.len());
+        let shown = |ed: &Editor| {
+            (
+                ed.screen.drawn_w(crate::pane::Shows::Chat),
+                ed.screen.drawn_w(crate::pane::Shows::Side),
+                ed.screen.slot().h,
+                ed.screen.panes.len(),
+            )
+        };
         // Alone: nothing to hide
         draw(&mut ed);
         feed(&mut ed, "<C-w>z");
@@ -16481,7 +16504,14 @@ mod tests {
         // The bottom slot: all the rows; its keys still scroll it; Esc back to the code ends it
         feed(&mut ed, "<C-w>j<C-w>z");
         draw(&mut ed);
-        assert_eq!((ed.screen.bottom_h, ed.screen.chat_w, ed.screen.side_w), (ed.screen.body_h, 0, 0));
+        assert_eq!(
+            (
+                ed.screen.slot().h,
+                ed.screen.drawn_w(crate::pane::Shows::Chat),
+                ed.screen.drawn_w(crate::pane::Shows::Side)
+            ),
+            (ed.screen.body_end() - ed.screen.text_top, 0, 0)
+        );
         feed(&mut ed, "<C-y>");
         assert_eq!(
             ed.workspace.task_run.as_ref().unwrap().scroll,
@@ -16498,7 +16528,7 @@ mod tests {
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         feed(&mut ed, "<C-w>z");
         draw(&mut ed);
-        assert_eq!((ed.screen.chat_w, ed.screen.bottom_h), (140, 0));
+        assert_eq!((ed.screen.drawn_w(crate::pane::Shows::Chat), ed.screen.slot().h), (140, 0));
         // (`esc` its view mode, still the chat's — `esc` again the code's)
         feed(&mut ed, "<esc><esc>");
         draw(&mut ed);
@@ -16507,7 +16537,14 @@ mod tests {
         ed.workspace.viewer.at = crate::workspace::At::Side;
         feed(&mut ed, "<C-w>z");
         draw(&mut ed);
-        assert_eq!((ed.screen.side_w, ed.screen.chat_w, ed.screen.bottom_h), (140, 0, 0));
+        assert_eq!(
+            (
+                ed.screen.drawn_w(crate::pane::Shows::Side),
+                ed.screen.drawn_w(crate::pane::Shows::Chat),
+                ed.screen.slot().h
+            ),
+            (140, 0, 0)
+        );
         feed(&mut ed, "<C-w>z");
         draw(&mut ed);
         assert_eq!(shown(&ed), all);

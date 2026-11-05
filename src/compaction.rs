@@ -497,7 +497,7 @@ mod tests {
         // In sight
         feed(&mut ed, "<space>lone<ret>");
         rows(&mut ed, 160);
-        assert!(ed.screen.chat_x.is_some());
+        assert!(ed.screen.chat_x().is_some());
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         assert_eq!(told(&ed), [], "{:?}", ed.toasts);
         // Hidden while Claude works (code in sight, so the follow card is drawn): no zoom, nothing filling the screen
@@ -508,7 +508,7 @@ mod tests {
         feed(&mut ed, "<space>lthree<ret>");
         crate::chat::hide(&mut ed);
         rows(&mut ed, 160);
-        assert!(ed.screen.chat_x.is_none(), "hidden while it works");
+        assert!(ed.screen.chat_x().is_none(), "hidden while it works");
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         assert_eq!(told(&ed), [], "{:?}", ed.toasts);
         ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
@@ -520,7 +520,7 @@ mod tests {
         feed(&mut ed, "<C-w>z");
         rows(&mut ed, 160);
         assert!(ed.zoomed().is_some(), "zoomed: {}", ed.keys_to().region.name());
-        assert!(ed.screen.chat_x.is_none(), "the chat out of sight");
+        assert!(ed.screen.chat_x().is_none(), "the chat out of sight");
         turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         let msg = "Claude compacted its conversation (automatic, 812k tokens before) — space L shows it";
         assert_eq!(told(&ed), [(msg.to_string(), ToastKind::Warning)], "{:?}", ed.toasts);

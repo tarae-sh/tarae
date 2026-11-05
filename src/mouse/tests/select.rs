@@ -390,7 +390,7 @@ fn the_terminals_view_holds_still_under_a_press_and_the_wheel() {
     let rows = ed.screen.terminal_rows.expect("drawn");
     let first = rows.0 + crate::chrome::SLOT_HEAD;
     // (its first row: inside the margin — on its number, `out 051 here`)
-    let x = ed.screen.slot_x + crate::chrome::PAD + "out 0".len();
+    let x = ed.screen.slot().x + crate::chrome::PAD + "out 0".len();
     presses(&mut ed, (x, first), 2);
     let d = crate::mouse::text_doc(&mut ed, on).unwrap();
     assert_eq!(d.top, top, "the rows under the pointer didn't move");

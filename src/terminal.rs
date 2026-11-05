@@ -1876,7 +1876,7 @@ mod tests {
         let ctrl = |c: char| Key { code: Code::Char(c), ctrl: true, alt: false, shift: false };
         let focus = |ed: &Editor| ed.workspace.is_at(crate::workspace::At::Program);
         draw(&mut ed);
-        let small = ed.screen.bottom_h;
+        let small = ed.screen.slot().h;
         // `C-\\` and Esc: back to the code
         ed.handle_key(ctrl('\\'));
         ed.handle_key(Key::plain(Code::Esc));
@@ -1888,7 +1888,7 @@ mod tests {
         assert!(crate::view::terminal_viewed(&ed), "its view mode");
         draw(&mut ed);
         assert_eq!(ed.zoomed_shows(), Some(Shows::Slot));
-        assert_eq!(ed.screen.bottom_h, ed.screen.body_h, "all the rows");
+        assert_eq!(ed.screen.slot().h, ed.screen.body_end() - ed.screen.text_top, "all the rows");
         ed.handle_key(key('i'));
         assert!(focus(&ed) && !ed.workspace.is_at(crate::workspace::At::Slot), "the program's keys");
         for c in "echo zoomed-in".chars() {
@@ -1907,6 +1907,6 @@ mod tests {
         assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
         assert_eq!(ed.workspace.viewer.zoom, None, "back to the code: it ended");
         draw(&mut ed);
-        assert_eq!(ed.screen.bottom_h, small);
+        assert_eq!(ed.screen.slot().h, small);
     }
 }

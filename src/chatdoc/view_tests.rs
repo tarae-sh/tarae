@@ -219,7 +219,7 @@ fn c_w_h_from_the_chats_input_goes_to_the_code_on_its_left() {
     ed.workspace.code_review = Some(r);
     ed.open(&dir.path().join("c.rs")).unwrap();
     frame(&mut ed);
-    assert!(ed.screen.rail_w > 0, "the rail drawn");
+    assert!(ed.screen.drawn_w(crate::pane::Shows::Rail) > 0, "the rail drawn");
     assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 0, "the rail's row: the first file");
     feed(&mut ed, "<C-w>h");
     assert_eq!(region(&ed), "review", "the rail (its region's name)");
@@ -505,7 +505,7 @@ fn the_wheel_scrolls_the_conversation_and_never_takes_the_keys() {
     ed.workspace.leave(crate::workspace::At::Chat);
     frame(&mut ed);
     let (y0, _, rows, first) = ed.screen.chat_view.get().unwrap();
-    let x = ed.screen.chat_x.unwrap() + 4;
+    let x = ed.screen.chat_x().unwrap() + 4;
     let wheel = |ed: &mut Editor, kind| {
         ed.handle_mouse(crate::event::Mouse {
             kind,
@@ -600,7 +600,7 @@ fn the_wheel_leaves_the_cursor_behind_until_a_key() {
     let mut ed = chat_with(Config::default(), long());
     feed(&mut ed, "<esc>G");
     let (y0, _, rows, _) = ed.screen.chat_view.get().unwrap();
-    let x = ed.screen.chat_x.unwrap() + 4;
+    let x = ed.screen.chat_x().unwrap() + 4;
     let (top, row) = (view(&ed).top_row(), cursor_row(&ed));
     assert!(top >= 12, "room to scroll: {top}");
     for _ in 0..4 {
@@ -638,7 +638,7 @@ fn a_key_that_moves_only_the_anchor_brings_the_view_back() {
     let mut ed = chat_with(Config::default(), long());
     feed(&mut ed, "<esc>ggjjx");
     let (y0, _, rows, _) = ed.screen.chat_view.get().unwrap();
-    let x = ed.screen.chat_x.unwrap() + 4;
+    let x = ed.screen.chat_x().unwrap() + 4;
     let row = cursor_row(&ed);
     for _ in 0..4 {
         let kind = crate::event::MouseKind::ScrollDown;
@@ -673,7 +673,7 @@ fn the_wheels_hold_goes_down_with_a_cursor_past_what_arrives() {
     feed(&mut ed, "<esc>G");
     assert!(at(&ed).0.contains("the next question"), "on the queued line: {:?}", at(&ed).0);
     let (y0, _, rows, _) = ed.screen.chat_view.get().unwrap();
-    let x = ed.screen.chat_x.unwrap() + 4;
+    let x = ed.screen.chat_x().unwrap() + 4;
     for _ in 0..4 {
         let kind = crate::event::MouseKind::ScrollUp;
         ed.handle_mouse(crate::event::Mouse {
@@ -1184,7 +1184,7 @@ fn an_empty_conversation_has_nothing_to_view() {
     feed(&mut ed, "<esc>");
     assert_eq!(region(&ed), "code");
     let (y0, ..) = ed.screen.chat_view.get().unwrap();
-    let x = ed.screen.chat_x.unwrap() + 4;
+    let x = ed.screen.chat_x().unwrap() + 4;
     ed.handle_mouse(crate::event::Mouse {
         kind: crate::event::MouseKind::ScrollUp,
         x: x as u16,
@@ -1442,7 +1442,7 @@ fn a_click_on_the_conversation_puts_the_cursor_on_that_character() {
     let mut ed = editor();
     let screen = frame(&mut ed);
     let first = ed.screen.chat_view.get().unwrap().3;
-    let chat_x = ed.screen.chat_x.unwrap();
+    let chat_x = ed.screen.chat_x().unwrap();
     // (where a word is drawn in the chat's column)
     let cell = |screen: &str, word: &str| {
         screen.lines().enumerate().find_map(|(y, l)| {
@@ -1490,7 +1490,7 @@ fn a_drag_on_the_conversation_selects_and_y_copies_it() {
     use crate::event::MouseKind as K;
     let mut ed = editor();
     let screen = frame(&mut ed);
-    let chat_x = ed.screen.chat_x.unwrap();
+    let chat_x = ed.screen.chat_x().unwrap();
     let cell = |word: &str| {
         screen.lines().enumerate().find_map(|(y, l)| {
             let l: String = l.chars().skip(chat_x).collect();

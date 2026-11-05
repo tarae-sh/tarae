@@ -659,9 +659,9 @@ impl Editor {
             Region::Prompt => s.width.is_some(),
             Region::Picker => s.picker_list.is_some(),
             // (docked, its column; floating — the ask line — its frame)
-            Region::Chat => s.chat_w > 0 || s.chat_frame.is_some(),
-            Region::Side(_) => s.side_w > 0,
-            Region::Rail => s.rail_w > 0,
+            Region::Chat => s.drawn_w(crate::pane::Shows::Chat) > 0 || s.chat_frame.is_some(),
+            Region::Side(_) => s.drawn_w(crate::pane::Shows::Side) > 0,
+            Region::Rail => s.drawn_w(crate::pane::Shows::Rail) > 0,
             Region::EditReview => s.review_change.get().is_some(),
             Region::Slot(Slot::Terminal) | Region::Program => s.terminal_rows.is_some(),
             Region::Slot(Slot::Test) => s.test_panel.get().is_some(),

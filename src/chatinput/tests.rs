@@ -155,7 +155,7 @@ fn a_drag_in_the_input_selects_as_in_the_codes_insert_mode() {
     let long = (0..14).map(|i| format!("word{i:02}")).collect::<Vec<_>>().join(" ");
     feed(&mut ed, &format!("one two three {long}"));
     let screen = frame(&mut ed).contents();
-    let chat_x = ed.screen.chat_x.unwrap();
+    let chat_x = ed.screen.chat_x().unwrap();
     let cell = |word: &str| {
         screen.lines().enumerate().find_map(|(y, l)| {
             let l: String = l.chars().skip(chat_x).collect();
