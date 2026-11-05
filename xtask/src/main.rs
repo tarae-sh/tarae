@@ -19,6 +19,8 @@
 //!   [`linux`]).
 //! - `kernels [--dry-run] [kernel …]` — the sandbox's tests on several kernels (`xtask/kernels.toml`): one build in
 //!   colima, run on colima's VMs and on a Lima VM a kernel, results in `.sb/kernels/` (see [`kernels`]).
+//! - `remote [--dry-run] [--keep-vm] [--keys N] [--cuts N]` — step 5 measured over a real ssh: this Mac's
+//!   `tarae attach --stats` to a host in a Lima VM, a key's round trip and each way back (see [`remote`]).
 //! - `deb [--binary PATH]` — tarae as a `.deb`, its AppArmor profile beside it (see [`deb`]).
 //! - `stream [--model M] [--edit] [prompt]`, `stream --file F` — one real streamed answer from the chat's model
 //!   (`llm.model`), timed line by line: its bursts, and what tarae's batching adds to them — `--edit` an edit's
@@ -76,6 +78,7 @@ mod kernels;
 mod linux;
 mod perf;
 mod recording;
+mod remote;
 // (tarae's own: a pty close-on-exec from the start)
 #[path = "../../src/pty.rs"]
 mod pty;
@@ -140,6 +143,7 @@ fn main() {
         Some("linux") if args.get(1).is_some_and(|a| a == "prune") => linux::prune_cmd(&args[2..]),
         Some("linux") => linux::run(&args[1..]),
         Some("kernels") => kernels::run(&args[1..]),
+        Some("remote") => remote::run(&args[1..]),
         Some("deb") => deb::run(&args[1..]),
         Some("stream") => stream::run(&args[1..]),
         Some("trace") => trace::run(&args[1..]),
@@ -155,7 +159,7 @@ fn main() {
         Some("sound") => sound::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };

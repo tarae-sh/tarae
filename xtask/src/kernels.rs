@@ -443,7 +443,7 @@ fn vm_name(k: &Kernel) -> String {
 }
 
 /// Lima's folder (`LIMA_HOME`, else `~/.lima`).
-fn lima_home() -> PathBuf {
+pub(crate) fn lima_home() -> PathBuf {
     match std::env::var_os("LIMA_HOME") {
         Some(h) => PathBuf::from(h),
         None => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".lima"),
@@ -854,7 +854,7 @@ impl Facts {
 
 /// A command's output to its end, passed on as it comes and kept (stdout and stderr one stream) — with whether it
 /// succeeded.
-fn teed(mut c: Command) -> (bool, String) {
+pub(crate) fn teed(mut c: Command) -> (bool, String) {
     let Ok((reader, writer)) = std::io::pipe() else {
         return (false, "no pipe".into());
     };
@@ -878,7 +878,7 @@ fn teed(mut c: Command) -> (bool, String) {
     (child.wait().is_ok_and(|s| s.success()), kept)
 }
 
-fn quiet(mut c: Command) -> Option<String> {
+pub(crate) fn quiet(mut c: Command) -> Option<String> {
     let out = c.stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -899,12 +899,12 @@ fn piped(a: &Cmd, b: &Cmd, x: &Path) -> bool {
     to.is_ok_and(|s| s.success()) && from.is_ok_and(|s| s.success())
 }
 
-fn minutes(d: Duration) -> String {
+pub(crate) fn minutes(d: Duration) -> String {
     format!("{:.1}", d.as_secs_f64() / 60.0)
 }
 
 /// When an invocation began, its rows' `date`: `YYYY-MM-DD HH:MM` (UTC) — two on one day told apart.
-fn when(t: std::time::SystemTime) -> String {
+pub(crate) fn when(t: std::time::SystemTime) -> String {
     let secs = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let (y, m, d) = crate::perf::civil(secs.div_euclid(86_400));
     let s = secs.rem_euclid(86_400);

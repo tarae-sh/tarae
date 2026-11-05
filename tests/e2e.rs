@@ -2025,6 +2025,42 @@ fn a_cut_link_comes_back_by_itself_and_says_nothing() {
     eprintln!("the link's end to a live frame, over the stand-in ssh: {}", backs(&sb).join("\n"));
 }
 
+/// `tarae attach --stats` (step 5, piece 4): at its end the client says what it measured, on its terminal once it's
+/// restored — the first frame, each key to the frame that handled it, each way back.
+#[test]
+fn stats_say_the_keys_and_the_way_back_at_the_end() {
+    let sb = with_ssh("ssh-stats");
+    sb.write("a.txt", "line one\n");
+    let h = sb.host(&["a.txt"]);
+    let url = format!("ssh://mac{}", sb.work().display());
+    let mut t = Term::attach_by(&sb, &h, &["attach", &url, "--remote-tarae", BIN, "--stats"], COLS, ROWS);
+    t.wait_text("line one");
+    t.send("i");
+    t.send("a");
+    t.wait_text("aline one");
+    t.send("b");
+    t.wait_text("abline one");
+    signal_link(ssh_jobs(&sb)[0], libc::SIGKILL);
+    wait_ssh_runs(&sb, 2, &t);
+    back_unsaid(&sb, &mut t);
+    t.esc_state("normal mode", |s| s["mode"] == "normal");
+    t.command("detach");
+    assert_eq!(t.wait_exit().code(), Some(0), "{}", t.screen());
+    let said = String::from_utf8_lossy(&t.raw()).into_owned();
+    let line = |head: &str| {
+        said.lines()
+            .find_map(|l| Some(l[l.find(head)? + head.len()..].trim_end().to_string()))
+            .unwrap_or_else(|| panic!("no {head:?} in:\n{said}"))
+    };
+    assert!(line("--stats: the first frame ").ends_with(" ms from the start (ssh's handshake in it)"));
+    let keys = said.lines().find(|l| l.contains(" keys, each to its frame: median "));
+    let keys = keys.unwrap_or_else(|| panic!("no keys in:\n{said}")).trim_end();
+    let n: u32 = keys.split("--stats: ").nth(1).and_then(|k| k.split(' ').next()?.parse().ok()).unwrap_or(0);
+    // (i a b before the cut, i x after it; the enter of `:detach` has the `Gone`, no frame of its own)
+    assert!(n >= 5 && keys.ends_with(" B a key"), "{keys}");
+    assert!(line("--stats: back 1 times, ").starts_with("the link down to a frame presented: "));
+}
+
 /// A link that answers nothing (the relay held still, as a network gone while the laptop slept): a focus back sends a
 /// `Ping`, no `Pong` comes within 3 s, so ssh is cut and run again — the host takes the new link over the stale one,
 /// nothing said.

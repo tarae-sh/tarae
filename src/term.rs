@@ -31440,6 +31440,7 @@ mod tests {
         ("attach.rs", 2),                 // limits as given: an interface's answer waited for
         ("chat.rs", 1),                   // a tool call's own `wait` argument, as Claude gave it
         ("client.rs", 2),                 // limits as given: the host's `Welcome` waited for, S-F's window
+        ("client/stats.rs", 1),           // a measurement under a millisecond: a key over a local link
         ("commands.rs", 1),               // a plural
         ("limits.rs", 1),                 // the plan's next try, a time to come
         ("nav.rs", 4),                    // plurals

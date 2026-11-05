@@ -30,10 +30,12 @@ use crate::event::Event;
 mod back;
 #[cfg(test)]
 mod pin;
+mod stats;
 use back::{Back, Do};
 
-const USAGE: &str = "usage: tarae attach [--pid PID | ssh://[USER@]HOST[:PORT][/PATH][?pid=N] [--remote-tarae PATH]]   \
-                     show a host (tarae --host) in this terminal";
+const USAGE: &str = "usage: tarae attach [--pid PID | ssh://[USER@]HOST[:PORT][/PATH][?pid=N] [--remote-tarae PATH]] \
+                     [--stats]   show a host (tarae --host) in this terminal; --stats: what it measured, said at \
+                     its end";
 /// The host's `Welcome` within this, or it's said it didn't answer.
 const WELCOME_WITHIN: Duration = Duration::from_secs(10);
 /// How long a client a restart exec'd waits for the new host to bind its socket.
@@ -78,6 +80,7 @@ impl Failed {
 pub fn main(args: &[String]) -> anyhow::Result<()> {
     // (a client's log is its own: on the host's machine it never starts the host's afresh — #376)
     crate::log::own("attach.log");
+    let start = crate::clock::now();
     // (never under a run of Claude's, sandboxed or not, nor its relay: an interface's keys are the person's — S-E)
     if std::env::var_os(crate::attach::RUN).is_some() {
         anyhow::bail!(
@@ -90,7 +93,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
         crate::relay::main(args);
     }
     let (mut pid, mut restarted, mut ground) = (None, false, None);
-    let (mut url, mut tarae) = (None, None);
+    let (mut url, mut tarae, mut stats) = (None, None, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -103,6 +106,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
             }
             // (`:restart`'s exec: the terminal is as the last client left it, its ground known)
             "--restarted" => restarted = true,
+            "--stats" => stats = true,
             "--ground" => ground = it.next().and_then(|g| g.parse::<u8>().ok()),
             "--remote-tarae" => tarae = Some(it.next().cloned().ok_or_else(|| anyhow::anyhow!("{USAGE}"))?),
             "-h" | "--help" => {
@@ -205,6 +209,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
         speaker: crate::sound::Played::default(),
         offset: offset_now(),
         zone_at: crate::clock::now() + ZONE_EVERY,
+        stats: stats.then(|| stats::Stats::new(start)),
     };
     c.listen(from, dec);
     let end = c.run(&rx);
@@ -212,6 +217,10 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
     // (raw mode and the alternate screen survive an exec: the restarted client takes the terminal as it is)
     if !matches!(end, End::Exec(_)) {
         let _ = crate::term::terminal_end();
+        // (on the terminal, not the log: its thread isn't waited for as the client ends)
+        for l in c.stats.iter().flat_map(stats::Stats::said) {
+            eprintln!("{l}");
+        }
     }
     match end {
         End::Said(text) => {
@@ -500,6 +509,8 @@ struct Client {
     /// The offset from UTC the host was last told, and when it's looked at again (`ZONE_EVERY`; focus back too).
     offset: i32,
     zone_at: std::time::Instant,
+    /// `--stats`: what's measured, said at the end.
+    stats: Option<stats::Stats>,
 }
 
 /// How often the client looks whether its zone's offset moved (summer time, the laptop moved) — and as focus comes
@@ -683,6 +694,9 @@ impl Client {
                         }
                         self.seq += 1;
                         let _ = send(&mut self.to, &ToHost::Input { seq: self.seq, seen: self.seen, event });
+                        if let Some(s) = &mut self.stats {
+                            s.sent(self.seq, now);
+                        }
                     }
                 }
             }
@@ -716,6 +730,9 @@ impl Client {
     /// off (it would draw over the line), ssh ended off the loop (`cut`: at once — a link that answers nothing).
     fn link_down(&mut self, cut: bool) {
         self.to = Box::new(io::sink());
+        if let Some(s) = &mut self.stats {
+            s.down();
+        }
         self.link_n += 1;
         self.due = None;
         if let Some(s) = self.ssh.take() {
@@ -773,6 +790,9 @@ impl Client {
         }
         (self.to, self.ssh) = (to, ssh);
         self.link_n += 1;
+        if let Some(s) = &mut self.stats {
+            s.down();
+        }
         self.held = crate::screen::Held::new();
         self.listen(from, dec);
     }
@@ -780,22 +800,32 @@ impl Client {
     /// One message of the host's — Some: the client's end.
     fn heard(&mut self, m: ToInterface) -> Option<End> {
         match m {
-            ToInterface::Frame { n, w, h, bytes, .. } => {
+            ToInterface::Frame { n, input, w, h, bytes } => {
                 if !bytes.is_empty() && write_out(&bytes).is_err() {
                     let _ = send(&mut self.to, &ToHost::Bye);
                     return Some(End::Failed("this terminal can't be written to".into()));
                 }
+                let presented = crate::clock::now();
                 self.held.apply(&bytes, w, h);
                 self.seen = n;
                 let _ = send(&mut self.to, &ToHost::Ack { frame: n });
+                if let Some(s) = &mut self.stats {
+                    s.presented(input, bytes.len(), presented);
+                }
                 if let Some(since) = self.back_from.take() {
                     // (S-D's measure: from the wake seen, or the link's end, to the new link's first frame presented)
-                    let took = crate::term::run_duration(crate::clock::since(since));
+                    let took = presented.saturating_duration_since(since);
                     crate::log::line(
                         "attach",
                         "info",
-                        &format!("back in {took}: the link down to a frame presented"),
+                        &format!(
+                            "back in {}: the link down to a frame presented",
+                            crate::term::run_duration(took)
+                        ),
                     );
+                    if let Some(s) = &mut self.stats {
+                        s.back(took);
+                    }
                 }
                 if !bytes.is_empty() {
                     self.due = Some(crate::clock::now() + crate::interface::RESTING_REDRAW);
