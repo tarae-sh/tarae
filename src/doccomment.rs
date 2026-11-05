@@ -187,6 +187,8 @@ pub struct Folded {
     pub end: usize,
     pub indent: usize,
     pub rows: Vec<(crate::codeview::Spans, bool)>,
+    /// Each row's source bytes (`row_spans`).
+    pub at: Vec<(usize, usize)>,
 }
 
 pub type FoldsKey = (crate::document::DocId, u64, (usize, usize), String, Option<String>);
@@ -254,10 +256,10 @@ pub fn blank_line(text: &ropey::Rope, l: usize) -> bool {
     text.line(l).to_string().trim().trim_start_matches(['/', '*', '!', '#']).trim().is_empty()
 }
 
-/// The lines of block `a..=b` each of its folded `rows`' words come from: its paragraph's — a run of blank lines after words parts two, in the comment as in its rows —, the first from the
-/// block's first line, the last to its last; a blank row between two paragraphs the blank lines between them. What a
-/// selection over a folded block lights and a drag over it takes, a paragraph at a time (#269).
-pub fn row_lines(
+/// The lines of block `a..=b` each of its folded `rows`' words come from: its paragraph's — a run of blank lines after
+/// words parts two, in the comment as in its rows —, the first from the block's first line, the last to its last; a
+/// blank row between two paragraphs the blank lines between them (`row_spans` parts a paragraph's among its rows).
+fn row_lines(
     text: &ropey::Rope,
     (a, b): (usize, usize),
     rows: &[(crate::codeview::Spans, bool)],
@@ -301,6 +303,106 @@ pub fn row_lines(
             (true, false) => p.checked_sub(1).map_or_else(|| para(0), gap),
         })
         .collect()
+}
+
+/// The source bytes each of block `a..=b`'s folded `rows` shows: a paragraph's (`row_lines`) parted among its rows where
+/// each row's first word is found (`places`) — its first row from its first line's start, its last to its last line's
+/// end; a blank row between two paragraphs the blank lines between them. What a selection over a folded block lights
+/// (#269) and the row its cursor is kept in sight on (`codeview::Measure::row_at`, #386).
+pub fn row_spans(
+    text: &ropey::Rope,
+    (a, b): (usize, usize),
+    rows: &[(crate::codeview::Spans, bool)],
+) -> Vec<(usize, usize)> {
+    let lines = row_lines(text, (a, b), rows);
+    let mut out = Vec::with_capacity(rows.len());
+    let mut k = 0;
+    while k < rows.len() {
+        // (the run of rows its paragraph takes)
+        let e = k + lines[k..].iter().take_while(|l| **l == lines[k]).count();
+        let from = crate::movement::line_start(text, lines[k].0);
+        let to = crate::movement::line_full_end(text, lines[k].1);
+        let mut starts = vec![from];
+        let mut p = from;
+        for (r, (spans, _)) in rows.iter().enumerate().take(e).skip(k) {
+            let found = places(text, (p, to), spans);
+            if r > k {
+                starts.push(found.first().map_or(p, |w| w.at).max(p));
+            }
+            p = found.last().map_or(p, |w| w.at + w.word.len());
+        }
+        starts.push(to);
+        out.extend(starts.windows(2).map(|w| (w[0], w[1].max(w[0]))));
+        k = e;
+    }
+    out
+}
+
+/// A word of a folded row found in its source: the cell it starts at among the row's words, its byte there, its text.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Place {
+    pub col: usize,
+    pub at: usize,
+    pub word: String,
+}
+
+/// How far past the last word found the next is looked for: a link's address, a tag's markup between two words.
+const NEAR: usize = 400;
+
+/// The words of a folded row (`spans`) found in its source `from..to`, in order — each where it starts a word there (no
+/// letter or digit just before it: `wind` in `` `wind` ``), the first within `NEAR` bytes of the last one found, else
+/// its letters and digits alone (`IOException` of `IOException.`); a word drawn but not written (a section's label, a
+/// bullet, an entity's character) left out. What a press on the row lands on (`place_at`) and where `row_spans` parts a
+/// paragraph.
+pub fn places(text: &ropey::Rope, (from, to): (usize, usize), spans: &[crate::markdown::Span]) -> Vec<Place> {
+    use unicode_width::UnicodeWidthStr;
+    let (from, to) = (from.min(text.len_bytes()), to.min(text.len_bytes()));
+    let src = text.byte_slice(from.min(to)..to).to_string();
+    let shown: String = spans.iter().map(|s| s.text.as_str()).collect();
+    let mut out = Vec::new();
+    let mut p = 0;
+    let mut col = 0;
+    for part in shown.split_inclusive(char::is_whitespace) {
+        let word = part.trim_end();
+        let at_col = col;
+        col += part.width();
+        // (the word whole, else its letters and digits — the cells before them counted)
+        let bare = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        let tries = [(word, 0), (bare, word.find(bare).map_or(0, |i| word[..i].width()))];
+        let end = (p..=src.len().min(p + NEAR)).rev().find(|&i| src.is_char_boundary(i)).unwrap_or(p);
+        let window = &src[p..end];
+        let found = tries.iter().filter(|(w, _)| !w.is_empty()).find_map(|&(w, skip)| {
+            let starts = |i: &usize| !src[..p + i].chars().next_back().is_some_and(|c| c.is_alphanumeric());
+            window.match_indices(w).map(|(i, _)| i).find(starts).map(|i| (p + i, w, skip))
+        });
+        if let Some((i, w, skip)) = found {
+            out.push(Place { col: at_col + skip, at: from + i, word: w.to_string() });
+            p = i + w.len();
+        }
+    }
+    out
+}
+
+/// The byte a press `cell` cells into a folded row's words lands on, its source `from..to`: the character under it in
+/// the word there, the end of the word before it past one (as a press past a line's end on code), the first word's
+/// start before them all; no word found, `from`.
+pub fn place_at(
+    text: &ropey::Rope,
+    (from, to): (usize, usize),
+    spans: &[crate::markdown::Span],
+    cell: usize,
+) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    let found = places(text, (from, to), spans);
+    let Some(w) = found.iter().rev().find(|w| w.col <= cell).or(found.first()) else { return from };
+    let mut c = w.col;
+    for (i, ch) in w.word.char_indices() {
+        c += ch.width().unwrap_or(0);
+        if c > cell {
+            return w.at + i;
+        }
+    }
+    w.at + w.word.len()
 }
 
 /// Line range [start, end] of the doc comment block containing `line` (within 200 lines up/down — joins
@@ -445,6 +547,46 @@ mod tests {
         let rows = [row("One."), row(""), row("Two, a"), row("paragraph.")];
         assert_eq!(row_lines(&text, (0, 6), &rows), [(0, 1), (2, 3), (4, 6), (4, 6)]);
         assert_eq!(row_lines(&text, (1, 1), &rows[..1]), [(1, 1)], "one line, one row");
+    }
+
+    /// #385, #386: each folded row's source — a paragraph parted where its next row's first word is written (through
+    /// its markup: `` `wind` ``, `**two**`), the first row from its first line, the last to its last — and a press on a
+    /// row lands on the character under it there, past a word's end at that end, before the first word on it; a word
+    /// drawn but not written (a section's label) is passed over.
+    #[test]
+    fn a_folded_rows_words_are_found_in_its_source() {
+        let src = "/**\n * Calls `wind` on\n * **two** spools.\n *\n * Then stops.\n */\n";
+        let text = ropey::Rope::from_str(src);
+        let row = |words: &str| {
+            let span = crate::markdown::Span {
+                cut: None,
+                hint: false,
+                text: words.into(),
+                style: crate::theme::Style::default(),
+            };
+            (crate::codeview::Spans::from(vec![span]), false)
+        };
+        let rows = [row("Calls wind on two"), row("spools."), row(""), row("Then stops.")];
+        let at = |s: &str| src.find(s).expect(s);
+        let line = |l: usize| text.line_to_byte(l);
+        assert_eq!(
+            row_spans(&text, (0, 5), &rows),
+            [(0, at("spools")), (at("spools"), line(3)), (line(3), line(4)), (line(4), src.len())]
+        );
+        let place = |r: usize, cell: usize| {
+            let spans = row_spans(&text, (0, 5), &rows);
+            place_at(&text, spans[r], &rows[r].0, cell)
+        };
+        assert_eq!(place(0, 7), at("ind` on"), "the `i` of `wind`, in its backticks");
+        assert_eq!(place(0, 14), at("two"), "`two`, inside its stars");
+        assert_eq!(place(0, 17), at("two") + 3, "past the row's last word: its end");
+        assert_eq!(place(1, 0), at("spools"), "a row's first word");
+        assert_eq!(place(3, 5), at("stops"), "the paragraph after a gap");
+        let label = [row("Params  key the key")];
+        let text = ropey::Rope::from_str("/// @param key the key\n");
+        let found: Vec<_> =
+            places(&text, (0, text.len_bytes()), &label[0].0).into_iter().map(|p| p.word).collect();
+        assert_eq!(found, ["key", "the", "key"], "the label not written: passed over");
     }
 
     #[test]

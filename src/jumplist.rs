@@ -118,6 +118,14 @@ impl Editor {
         self.record(v, self.doc().id);
     }
 
+    /// The cursor just jumped (#387: `gd` and the go-tos, a place opened — `open_at`, a picker's, `]q`, `gf`, the chat's
+    /// `path:line` —, `]d`, `]g`, `C-o`/`C-i`, `n`/`N`): the next frame centres it when it's out of sight, as VS Code
+    /// does, and leaves the view as it is when it's in sight, so nothing moves under the eye (`term::scroll_to`). The
+    /// plain motions and follow keep their own rule.
+    pub fn jumped(&mut self) {
+        self.doc_mut().jumped = true;
+    }
+
     /// `push_jump` for a spot just left: document `doc`'s selection onto the focused pane's list — for a move whose
     /// open may be refused, made first (follow's, #370).
     pub(crate) fn push_jump_from(&mut self, doc: DocId) {
@@ -288,6 +296,7 @@ impl Editor {
         };
         self.current = di;
         self.doc_mut().set_selection(sel);
+        self.jumped();
         // Switching documents here is travel, not a new jump
         let focus = self.workspace.viewer.focus;
         if let Some(v) = self.workspace.views.iter_mut().find(|v| v.id == focus)

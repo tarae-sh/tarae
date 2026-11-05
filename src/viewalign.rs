@@ -48,7 +48,7 @@ impl Editor {
     /// The top line and its rows above the screen that put `line` (its first row) `above` rows down the screen:
     /// a line above that doesn't fit whole shows its last rows (a wrapped line's, a folded doc comment's — never
     /// some of the removed rows above a line); never a top inside a folded block past its first line.
-    fn top_for(m: &Measure, line: usize, above: usize) -> (usize, usize) {
+    pub(crate) fn top_for(m: &Measure, line: usize, above: usize) -> (usize, usize) {
         let mut top = line;
         let mut rows = 0;
         while top > 0 && rows < above {

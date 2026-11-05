@@ -3461,6 +3461,7 @@ impl Editor {
             let d = self.doc_mut();
             if let Some(b) = lsp::from_position(&d.text, pos, enc) {
                 d.set_selection(Selection::point(b));
+                self.jumped();
             }
             return;
         }
@@ -3569,6 +3570,7 @@ impl Editor {
         let Some((_, pos, enc)) = self.lsp.jump_after_load.take_if(|(d, ..)| *d == id) else { return };
         if let Some(b) = lsp::from_position(&doc.text, &pos, enc) {
             doc.set_selection(Selection::point(b));
+            doc.jumped = true;
         }
     }
 
@@ -3588,6 +3590,7 @@ impl Editor {
         let d = d.expect("non-empty").clone();
         let end = d.to.max(crate::graphemes::next_boundary(&doc.text, d.from));
         doc.set_selection(Selection::single(crate::selection::Range::new(d.from, end)));
+        self.jumped();
         self.note(d.message);
     }
 

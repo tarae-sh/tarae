@@ -230,14 +230,12 @@ configs carry over as they are.
 
   A rendered block is flowed to the width, so scrolling sideways moves only the code lines. In NORMAL and SELECT
   `j`/`k` step over a rendered block as one line (they land on its first line); through a raw one they go line by
-  line. The view counts a rendered block's rows as drawn — keeping the cursor in sight, `zz`/`zt`/`zb`, the scroll
-  margin — and `zj`/`zk` step over it whole; a picker's preview never starts partway into one. Its rows are text to
-  the mouse: a click lands where that row's paragraph starts, a double takes the paragraph, a drag selects whole
-  paragraphs (from the code into it, or back out) and the block stays still under the pointer; let go, what the drag
-  took is copied as it's shown — the words without `///`, a paragraph a line (where the pane wraps it isn't a line break: pasted, the words
-  reflow), a blank line between paragraphs, the code around them as written — and
-  said (`copied 3 lines as shown — y yanks the source`); `y` still yanks the source. A drag over code alone only
-  selects, as ever
+  line. The view counts a rendered block's rows as drawn — keeping the cursor in sight on the row its words come
+  from, `zz`/`zt`/`zb`, the scroll margin — and `zj`/`zk` step over it whole; a picker's preview never starts partway
+  into one. Its rows are text to the mouse, as code is: a click lands on the character under it in the comment's
+  source, a double takes the word, a drag selects from the press to the pointer (from the code into it, or back out)
+  and the view moves only as it would on code — past an edge, or to keep the scroll margin; the block stays folded
+  and its selected rows light. Nothing is copied as you let go: `y` yanks the source
 - **Indent guides** (the block around the cursor one tone brighter), a **scrollbar** with error and warning ticks for
   the whole file, current-line highlight, per-mode colors and cursor shapes ([screenshot](screenshots/ux-guides.png))
 
@@ -558,6 +556,10 @@ cursor or document moved on are dropped.
 - **Jump list** per pane — `C-o` back · `C-i`/Tab forward · `C-s` saves a spot · `space j` lists them (with a preview;
   picking one keeps where you were, so `tab` comes back). Go-tos, searches, `gg`/`ge` and
   switching files record where you were, and a saved spot follows later edits · `ga` = the file shown before this one
+- **A jump keeps your eye** — `gd` `gD` `gy` `gi`, a place opened from a picker, the list (`]q`), `gf` or the chat's
+  `path:line`, `]d`, `]g`, `C-o`/`C-i` and `n`/`N`: a target out of sight comes to the middle of the screen; one
+  already in sight stays where it is, so nothing moves under your eye. The plain motions (`j`, `w`, `C-d` …) keep the
+  scroll margin's rule, and follow keeps its own
 - `space h` selects every use of the symbol under the cursor in this file (the server's, not text matches) — then `c`
   edits them all · `space D` lists diagnostics in every file the server reported, open or not, errors first ·
   `:lsp-restart`, `:lsp-stop`

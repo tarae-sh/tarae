@@ -95,6 +95,7 @@ fn search_n(cx: &mut Context, pattern: &str, reverse: bool, count: usize) {
         doc.set_selection(sel);
         wrapped |= w;
     }
+    cx.editor.jumped();
     if wrapped {
         cx.editor.set_status("search wrapped around");
     }

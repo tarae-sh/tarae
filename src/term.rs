@@ -1046,6 +1046,11 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     if editor.search_origin.is_none() && !held {
         scroll_to(editor, &focus_lay, led);
     }
+    // (a frame spends every jump: one into a file left before it was drawn, or the wheel turned since, is over — never
+    // kept for a later frame's view)
+    for d in editor.docs.iter_mut() {
+        d.jumped = false;
+    }
     // The terminal is told its panel's size (it redraws for it)
     // (not while another tab has the slot — the program would draw for a size nobody sees)
     let slot = lay.slot_panel();
@@ -4920,6 +4925,10 @@ fn asked_line(editor: &Editor, lay: &Layout) -> Option<usize> {
 }
 
 fn scroll_to(editor: &mut Editor, lay: &Layout, at: Option<usize>) {
+    // (a jump's target out of sight is centred, one in sight leaves the view as it is — #387, `Editor::jumped`; never
+    // follow's place, which keeps its own rule)
+    let jumped = std::mem::take(&mut editor.doc_mut().jumped) && at.is_none();
+    let half = lay.text_rows.saturating_sub(1) / 2;
     let so = editor.config.scrolloff.min(lay.text_rows.saturating_sub(1) / 2);
     let tab = editor.config.tab_width;
     let mode = editor.mode;
@@ -4946,10 +4955,10 @@ fn scroll_to(editor: &mut Editor, lay: &Layout, at: Option<usize>) {
         let wraps_here = here.len() > 1
             || mv::line_end(&doc.text, line) - mv::line_start(&doc.text, line) <= crate::wrap::MAX_LINE;
         // Screen rows between the top and the cursor's row: its row in the line, below the removed ones (a cursor
-        // in a folded doc comment is on its first row; on an edit being written, on the row it's writing — kept
-        // in sight as it comes)
+        // in a folded doc comment is on the row its words come from — #386; on an edit being written, on the row it's
+        // writing — kept in sight as it comes)
         let (line, k) = match m.folded(line) {
-            Some((a, ..)) => (a, m.removed(a) + m.head(a)),
+            Some((a, ..)) => (a, m.removed(a) + m.head(a) + m.row_at(line, pos)),
             None if wrap_w.is_some() => (line, crate::wrap::row_of(&here, pos) + m.removed(line)),
             None => (line, m.removed(line)),
         };
@@ -4969,6 +4978,14 @@ fn scroll_to(editor: &mut Editor, lay: &Layout, at: Option<usize>) {
             true => m.top(doc.top, doc.top_skip()),
             false => (doc.top, 0),
         };
+        // (a jump's row off the screen: the view from where it's centred — a row deep in a tall line or folded block
+        // the line's own rows above it skipped)
+        if jumped && !on_screen(&m, (new_top, skip), (line, k), lay.text_rows) {
+            (new_top, skip) = match k.checked_sub(half) {
+                Some(s) if s <= skippable(line) => (line, s),
+                _ => Editor::top_for(&m, line, half - k.min(half)),
+            };
+        }
         if (new_top, skip) > up {
             (new_top, skip) = up;
         } else {
@@ -5018,7 +5035,9 @@ fn scroll_to(editor: &mut Editor, lay: &Layout, at: Option<usize>) {
     } else {
         drop(m);
         let doc = editor.doc_mut();
-        if line < doc.top + so {
+        if jumped && (line < doc.top || line >= doc.top + lay.text_rows) {
+            doc.set_top(line.saturating_sub(half));
+        } else if line < doc.top + so {
             doc.set_top(line.saturating_sub(so));
         } else if line + so >= doc.top + lay.text_rows {
             doc.set_top(line + so + 1 - lay.text_rows);
@@ -5034,6 +5053,27 @@ fn scroll_to(editor: &mut Editor, lay: &Layout, at: Option<usize>) {
     } else if end > doc.left + lay.text_cols {
         doc.left = end.saturating_sub(lay.text_cols).min(col);
     }
+}
+
+/// Whether the row `k` of line `line` is on a screen `rows` tall whose view starts at `top`, `skip` of its rows above it
+/// (`codeview::Measure` counting the lines between, no further than a screen).
+fn on_screen(
+    m: &crate::codeview::Measure,
+    (top, skip): (usize, usize),
+    (line, k): (usize, usize),
+    rows: usize,
+) -> bool {
+    if (line, k) < (top, skip) {
+        return false;
+    }
+    let mut used = 0;
+    for l in top..line {
+        used += m.rows(l);
+        if used >= rows + skip {
+            return false;
+        }
+    }
+    used + k < rows + skip
 }
 
 // ── Theme → this frame's UI styles ─────────────────────────────────────────
@@ -7248,10 +7288,10 @@ fn draw_text(
             }
             // Folded doc comment: on the block's first row its line number, and its lines' signs and git mark
             // folded together
-            Some(crate::codeview::Row::Doc { start, end, indent, index, lines, spans, code }) => {
-                // (a selection over the lines its words come from lights them, the block still folded — #269; one no
+            Some(crate::codeview::Row::Doc { start, end, indent, index, at: (from, to), spans, code }) => {
+                // (a selection over the source its words come from lights them, the block still folded — #269; one no
                 // wider than a character is the cursor, the bar's accent says it)
-                let (from, to) = (mv::line_start(text, lines.0), mv::line_full_end(text, lines.1));
+                let (from, to) = (*from, *to);
                 let lit = ranges
                     .iter()
                     .enumerate()
@@ -8492,16 +8532,16 @@ fn rows_pane(
             Some(block @ &crate::doccomment::Block { start: a, end: b, indent, .. }) => {
                 let width = lay.text_cols.saturating_sub(indent + 3).max(8);
                 let folded = fold_rows(editor, block, width, lang.as_deref());
-                let of = crate::doccomment::row_lines(text, (a, b), &folded);
+                let of = crate::doccomment::row_spans(text, (a, b), &folded);
                 // The top of the screen mid-block: its rows above it skipped — the rows scrolling put above
                 // (`top_rows`), or as many as lines when a top line inside it was set (`codeview::Measure::top`)
                 let skip = if line == a && line == top { top_skip } else { line - a };
                 let skip = skip.min(folded.len().saturating_sub(1));
-                for ((k, (spans, code)), lines) in folded.into_iter().enumerate().zip(of).skip(skip) {
+                for ((k, (spans, code)), at) in folded.into_iter().enumerate().zip(of).skip(skip) {
                     if view.len() == rows {
                         break;
                     }
-                    view.push(Row::Doc { start: a, end: b, indent, index: k, lines, spans, code });
+                    view.push(Row::Doc { start: a, end: b, indent, index: k, at, spans, code });
                 }
                 push_note(&mut view, a, b);
                 line = b + 1;
@@ -8835,7 +8875,8 @@ fn review_folds(
         .map(|b| {
             let width = code_w.saturating_sub(b.indent + 3).max(8);
             let rows = fold_rows(editor, &b, width, lang.as_deref());
-            crate::doccomment::Folded { start: b.start, end: b.end, indent: b.indent, rows }
+            let at = crate::doccomment::row_spans(&doc.text, (b.start, b.end), &rows);
+            crate::doccomment::Folded { start: b.start, end: b.end, indent: b.indent, rows, at }
         })
         .collect();
     Some(crate::doccomment::Folds { key, blocks })
@@ -10627,13 +10668,13 @@ fn rows_preview(
             if let Some(b) = blocks.iter().find(|b| b.start <= line && line <= b.end) {
                 let w = width.saturating_sub(b.indent + 3).max(8);
                 let folded = fold_rows(editor, b, w, lang);
-                let of = crate::doccomment::row_lines(text, (b.start, b.end), &folded);
-                for ((index, (spans, code)), lines) in folded.into_iter().enumerate().zip(of) {
+                let of = crate::doccomment::row_spans(text, (b.start, b.end), &folded);
+                for ((index, (spans, code)), at) in folded.into_iter().enumerate().zip(of) {
                     if vis.len() == rows {
                         break;
                     }
                     let (start, end, indent) = (b.start, b.end, b.indent);
-                    vis.push(Row::Doc { start, end, indent, index, lines, spans, code });
+                    vis.push(Row::Doc { start, end, indent, index, at, spans, code });
                 }
                 line = b.end + 1;
                 continue;

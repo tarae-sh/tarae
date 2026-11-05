@@ -4177,7 +4177,7 @@ fn snapshot_review_doc_comments() {
     );
     s.check("review_doc_comments");
     s.frames_both("review_doc_comments");
-    // A click on the rendered block's last row: the first line of the paragraph it shows (#269)
+    // A click on the rendered block's last row: the line its word under the pointer is written on (#385)
     let (_, rect, gutter, rows) = s.ed.screen.panes[0].clone();
     let row = rows.iter().rposition(|r| r.0 == 0).expect("the block's rows");
     assert_eq!(rows[row + 1].0, 3, "the line after the block right below it: {rows:?}");
@@ -4194,7 +4194,7 @@ fn snapshot_review_doc_comments() {
     };
     click(&mut s, crate::event::MouseKind::Down, rect.y + row);
     click(&mut s, crate::event::MouseKind::Up, rect.y + row);
-    assert_eq!(s.ed.cursor_line(), 2, "on the block, its paragraph's line");
+    assert_eq!(s.ed.cursor_line(), 2, "on the block, its word's line");
     assert_eq!(folded(&s), 3, "still folded");
     // `j` past it, `k` back onto it
     s.keys("j");
@@ -4378,8 +4378,8 @@ fn jump_labels_only_on_the_rows_drawn() {
     assert!(!labels.targets.is_empty() && off.is_empty(), "labelled off screen: {off:?}");
 }
 
-/// A click on a row whose text isn't the line's lands on one place of it, wherever it's clicked: a removed line
-/// the start of the line it went above, a folded doc comment where its row's paragraph starts (#269).
+/// A click on a row whose text isn't the line's: a removed line lands on the start of the line it went above,
+/// wherever it's clicked; a folded doc comment's row on the character under it in its source, as code (#385).
 #[test]
 fn a_click_on_a_removed_or_folded_row() {
     use crate::codeview::Row;
@@ -4400,14 +4400,15 @@ fn a_click_on_a_removed_or_folded_row() {
     let start = |s: &Shot, l: usize| s.ed.doc().text.line_to_byte(l);
     let removed = click(&mut s, &|r| matches!(r, Row::Other { at: 7, .. }));
     assert_eq!(removed, start(&s, 7), "the start of the line it went above");
+    // (six cells in: the bar's two, then the word's fifth character)
     let folded = click(&mut s, &|r| matches!(r, Row::Doc { start: 0, index: 2, .. }));
-    assert_eq!(folded, start(&s, 2), "where its paragraph starts");
+    assert_eq!(folded, DOCS_BASE.find("Splits").unwrap() + 4, "the `t` of `Splits`, on its line");
     let folded = click(&mut s, &|r| matches!(r, Row::Doc { start: 0, index: 0, .. }));
-    assert_eq!(folded, start(&s, 0), "the first's: where the comment starts");
+    assert_eq!(folded, DOCS_BASE.find("Counts").unwrap() + 4, "the `t` of `Counts`");
 }
 
 /// A folded doc comment indented with tabs is drawn at its code's column (it was drawn a cell a tab, left of
-/// it), and a click on it lands where the comment starts, past the tabs (it landed inside them).
+/// it), and a click on its first word lands on that word, past the tabs (it landed inside them).
 #[test]
 fn a_tab_indented_folded_block_at_its_column() {
     use crate::codeview::Row;
@@ -4428,7 +4429,8 @@ fn a_tab_indented_folded_block_at_its_column() {
         s.ed.handle_event(Event::Mouse(crate::event::Mouse { kind, x, y, alt: false, ctrl: false }));
     }
     let doc = s.ed.doc();
-    assert_eq!(doc.selection().primary().cursor(&doc.text), doc.text.line_to_byte(1) + 1, "past the tab");
+    let does = doc.text.line_to_byte(1) + "\t/// ".len();
+    assert_eq!(doc.selection().primary().cursor(&doc.text), does, "on `Does`, past the tab and the `///`");
 }
 
 /// A click in Claude's edit review on a change's row (its head, a line it proposes) takes that change in hand;
@@ -4704,6 +4706,81 @@ fn a_folded_doc_comment_stays_folded_while_selected() {
     s.keys("p");
     assert_eq!(s.ed.doc().text.line(3).to_string(), "/// Two, a\n", "pasted under it");
     assert_eq!(folded(&s), [] as [usize; 0], "a paste there: open");
+}
+
+/// #387: a jump centres its target when it was out of sight and leaves the view as it is when it's in sight — `n`,
+/// `C-o`/`C-i`, a place opened (`open_at`: a picker's, `]q`, `gf`, the chat's `path:line`) —; a plain motion keeps the
+/// scroll margin's rule.
+#[test]
+fn a_jump_centres_its_target_only_when_out_of_sight() {
+    let mut s = Shot::new(100, 24);
+    let marked = |i: usize| if i == 12 || i == 200 { " needle" } else { "" };
+    let text: String = (0..300).map(|i| format!("line {i}{}\n", marked(i))).collect();
+    s.file("src/v.txt", &text);
+    let half = s.ed.viewport.0.saturating_sub(1) / 2;
+    let top = |s: &Shot| s.ed.doc().top;
+    s.keys("/needle<ret>");
+    assert_eq!((s.ed.cursor_line(), top(&s)), (12, 0), "in sight: the view stays");
+    s.keys("n");
+    assert_eq!((s.ed.cursor_line(), top(&s)), (200, 200 - half), "out of sight: centred");
+    s.keys("<C-o>");
+    assert_eq!((s.ed.cursor_line(), top(&s)), (12, 12 - half), "C-o: back, centred");
+    s.keys("<C-i>");
+    assert_eq!((s.ed.cursor_line(), top(&s)), (200, 200 - half), "C-i: forward, centred");
+    s.keys(&format!("{}j", half - 1));
+    let (at, view) = (s.ed.cursor_line(), top(&s));
+    let path = s.root.join("src/v.txt");
+    s.ed.open_at(&path, 200, 0).unwrap();
+    s.frame();
+    assert_eq!((s.ed.cursor_line(), top(&s)), (200, view), "opened at a line in sight: the view stays");
+    s.ed.open_at(&path, 279, 0).unwrap();
+    s.frame();
+    assert_eq!((s.ed.cursor_line(), top(&s)), (279, 279 - half), "opened at a line out of sight: centred");
+    // (a plain motion out of sight: the margin's rule, never centred)
+    s.keys(&format!("{}k", 279 - at));
+    let so = s.ed.config.scrolloff;
+    assert_eq!((s.ed.cursor_line(), top(&s)), (at, at - so), "k: to the margin");
+    // (rows that aren't lines — a folded doc comment above it: the target's row in the middle all the same)
+    let mut s = Shot::new(100, 24);
+    let doc: String = (0..30).map(|i| format!("/// Paragraph {i}.\n///\n")).collect();
+    let code: String =
+        (0..200).map(|i| format!("fn f{i}() {{}}{}\n", if i == 3 { " // needle" } else { "" })).collect();
+    s.file("src/v.rs", &format!("{doc}pub struct S;\n{code}"));
+    let row_of = |s: &Shot, line: usize| s.ed.screen.panes[0].3.iter().position(|r| r.0 == line);
+    assert!(s.ed.view.iter().any(|r| matches!(r, crate::codeview::Row::Doc { .. })), "folded");
+    s.keys("?needle<ret>G");
+    s.keys("n");
+    let line = s.ed.cursor_line();
+    let shown = screen_text(&mut s);
+    assert_eq!(
+        (line, row_of(&s, line)),
+        (61 + 3, Some(half)),
+        "out of sight: its row in the middle:\n{shown}"
+    );
+    assert!(
+        s.ed.view.iter().take(half).any(|r| matches!(r, crate::codeview::Row::Doc { .. })),
+        "the comment's last rows above it"
+    );
+}
+
+/// A doc comment taller than what the view's measure looks at near a line is counted whole — cut at its window's end, it
+/// was counted short (and kept so for the whole block: a jump below it landed off the middle).
+#[test]
+fn a_tall_folded_doc_comment_is_counted_whole_from_near_its_top() {
+    let mut s = Shot::new(100, 24);
+    let doc: String = (0..30).map(|i| format!("/// Paragraph {i}.\n///\n")).collect();
+    s.file("src/v.rs", &format!("fn a() {{}}\n{doc}pub struct S;\n"));
+    let (rows, cols) = s.ed.viewport;
+    let syn = crate::doccomment::syntax(Some("rust")).expect("rust's doc comments");
+    let block = crate::doccomment::blocks(&s.ed.doc().text, 0..=61, 4, syn).remove(0);
+    let whole =
+        crate::term::fold_rows(&s.ed, &block, cols.saturating_sub(block.indent + 3).max(8), None).len();
+    let m = crate::codeview::Measure::new(&s.ed, s.ed.doc(), false, (None, cols), 0, rows);
+    assert_eq!(
+        (block.start, block.end, m.rows(1)),
+        (1, 60, whole),
+        "from line 0: the block's rows, all of them"
+    );
 }
 
 /// Two panes on one file: the one being edited (focused, INSERT) shows the block raw; the other keeps

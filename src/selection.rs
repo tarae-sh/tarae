@@ -146,8 +146,8 @@ impl Held {
         self.dragged_over(text, span(text, graphemes::snap(text, pos.min(len)), self.unit))
     }
 
-    /// A drag from it onto text whose place is `from..to` whole — a folded doc comment's row, which takes the lines
-    /// its words come from (#269) — as `dragged` onto a unit there.
+    /// A drag from it onto text whose place is `from..to` whole — a unit there, or the chat's folded stub (#271) — as
+    /// `dragged` onto a unit there.
     pub fn dragged_over(self, text: &Rope, (from, to): (usize, usize)) -> Range {
         let len = text.len_bytes();
         let (a, b) = (graphemes::snap(text, self.from.min(len)), graphemes::snap(text, self.to.min(len)));

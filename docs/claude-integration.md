@@ -512,8 +512,8 @@ how many, and that it lists the first 50 when there are more); when none does, t
 found again only once the project's files may have changed — a file made, removed or moved, a run ended, a commit or
 checkout, your next message — never for a file's text written. A path the chat's width wraps is underlined on each of
 its rows, and a click on any of them opens it. `gf` and a run's places find a name the same way. `C-]` (or `C-g` —
-zellij takes that one) walks every place the conversation points at, newest first, centering each one while the chat
-keeps the keys — an answer's places are the ones it underlines, so a name no file has is no stop; and at a turn's
+zellij takes that one) walks every place the conversation points at, newest first, each one centred when it was out
+of sight (left where it is when it's in sight already, as every jump) while the chat keeps the keys — an answer's places are the ones it underlines, so a name no file has is no stop; and at a turn's
 end, follow goes to the answer's first underlined place once its names are found.
 
 ![After the answer: the lookups Claude made as quiet rows, its folded thinking, and the answer's path:line links, with the editor on the first one](screenshots/chat-explore.png)

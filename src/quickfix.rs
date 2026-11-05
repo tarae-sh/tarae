@@ -155,7 +155,10 @@ impl Editor {
         let result = match marked {
             Some(pos) => {
                 self.push_jump();
-                self.open(&it.path).map(|_| self.doc_mut().set_selection(Selection::point(pos)))
+                self.open(&it.path).map(|_| {
+                    self.doc_mut().set_selection(Selection::point(pos));
+                    self.jumped();
+                })
             }
             None => self.open_at(&it.path, it.line, it.col),
         };

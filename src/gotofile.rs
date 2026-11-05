@@ -156,7 +156,7 @@ fn opened(ed: &mut Editor, found: Vec<Found>) {
             Found::File(p, Some((line, col))) => ed.open_at(&p, line, col).map_err(|e| format!("{e:#}")),
             Found::File(p, None) => {
                 ed.push_jump();
-                ed.open(&p).map_err(|e| format!("{e:#}"))
+                ed.open(&p).map(|_| ed.jumped()).map_err(|e| format!("{e:#}"))
             }
             Found::Several(said, n, lines) => {
                 crate::places::several(ed, &said, n, lines);

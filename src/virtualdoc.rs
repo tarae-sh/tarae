@@ -32,6 +32,7 @@ impl Editor {
         let doc = self.doc_mut();
         if let Some(b) = crate::lsp::from_position(&doc.text, pos, enc) {
             doc.set_selection(crate::selection::Selection::point(b));
+            doc.jumped = true;
         }
     }
 

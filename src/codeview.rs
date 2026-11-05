@@ -31,9 +31,9 @@ pub enum Row {
         indent: usize,
         /// Which row within the block.
         index: usize,
-        /// The lines its words come from, first and last — its paragraph's (`doccomment::row_lines`; the whole block
-        /// in the edit review, which has no selection): what a selection on them lights here, what a press here takes.
-        lines: (usize, usize),
+        /// The source bytes its words come from (`doccomment::row_spans`): what a selection on them lights here, where
+        /// a press here lands (`doccomment::place_at`).
+        at: (usize, usize),
         spans: Spans,
         /// Example code row (background one shade deeper).
         code: bool,
@@ -334,7 +334,10 @@ pub struct Measure<'a> {
 #[derive(Default)]
 pub struct FoldCounts {
     key: (u64, usize, usize),
-    rows: std::collections::HashMap<usize, usize>,
+    /// By the block's first and last lines (one scanned short of its end is another block).
+    rows: std::collections::HashMap<(usize, usize), usize>,
+    /// Each row's source bytes (`doccomment::row_spans`), for the block a cursor is in (`Measure::row_at`).
+    spans: std::collections::HashMap<(usize, usize), Vec<(usize, usize)>>,
 }
 
 impl<'a> Measure<'a> {
@@ -353,11 +356,12 @@ impl<'a> Measure<'a> {
         let near = line.saturating_sub(rows + 2)..=(line + rows + 2).min(last);
         let folding =
             crate::doccomment::syntax(doc.lang_name()).filter(|_| editor.config.render_doc_comments);
-        // (from far enough above to join a `/** */` that starts there, as `rows_pane` looks)
+        // (from far enough above to join a `/** */` that starts there and on below to its end, as `rows_pane` looks —
+        // a block cut at `near`'s end was counted short)
         let blocks = match folding {
             Some(syn) => crate::doccomment::blocks(
                 &doc.text,
-                near.start().saturating_sub(200)..=*near.end(),
+                near.start().saturating_sub(200)..=(near.end() + 200).min(last),
                 editor.config.tab_width,
                 syn,
             ),
@@ -423,15 +427,21 @@ impl<'a> Measure<'a> {
     /// A folded block's rows: laid out once for a version of the document and a width (`Document.fold_counts`),
     /// not on every key — counted without colouring its example code (a row each either way).
     fn laid(&self, b: &crate::doccomment::Block) -> usize {
-        let mut counts = self.doc.fold_counts.borrow_mut();
-        let key = (self.doc.version(), self.cols, self.tab);
-        if counts.key != key {
-            *counts = FoldCounts { key, rows: Default::default() };
-        }
-        *counts.rows.entry(b.start).or_insert_with(|| {
+        let mut counts = self.counts();
+        *counts.rows.entry((b.start, b.end)).or_insert_with(|| {
             let width = self.cols.saturating_sub(b.indent + 3).max(8);
             crate::term::fold_rows(self.editor, b, width, None).len()
         })
+    }
+
+    /// The document's kept counts, for this version and width.
+    fn counts(&self) -> std::cell::RefMut<'_, FoldCounts> {
+        let mut counts = self.doc.fold_counts.borrow_mut();
+        let key = (self.doc.version(), self.cols, self.tab);
+        if counts.key != key {
+            *counts = FoldCounts { key, ..Default::default() };
+        }
+        counts
     }
 
     /// The doc comment block holding `l` when it shows folded: (first line, last line, its rows).
@@ -448,23 +458,49 @@ impl<'a> Measure<'a> {
             let r = c.lines();
             return Some((r.start, r.end - 1, crate::weave::column_rows(c)));
         }
+        self.doc_block(l, |b| (b.start, b.end, self.laid(b)))
+    }
+
+    /// `f` of the doc comment block holding `l` when it shows folded.
+    fn doc_block<R>(&self, l: usize, f: impl FnOnce(&crate::doccomment::Block) -> R) -> Option<R> {
         let syn = self.folding?;
         if self.near.contains(&l) {
             let i = self.blocks.partition_point(|(b, _)| b.end < l);
             let (b, closed) = self.blocks.get(i).filter(|(b, _)| b.start <= l)?;
-            return closed.get_or_init(|| self.closed(b)).then(|| (b.start, b.end, self.laid(b)));
+            return closed.get_or_init(|| self.closed(b)).then(|| f(b));
         }
         if let Some((b, closed)) = &*self.far.borrow()
             && (b.start..=b.end).contains(&l)
         {
-            return closed.then(|| (b.start, b.end, self.laid(b)));
+            return closed.then(|| f(b));
         }
         let (a, e) = crate::doccomment::block_at(&self.doc.text, l, syn)?;
         let b = crate::doccomment::blocks(&self.doc.text, a..=e, self.tab, syn).into_iter().next()?;
         let closed = self.closed(&b);
-        let shown = closed.then(|| (a, e, self.laid(&b)));
+        let shown = closed.then(|| f(&b));
         *self.far.borrow_mut() = Some((b, closed));
         shown
+    }
+
+    /// The row of a folded doc comment's rows that `pos` (on its line `l`) is shown on — the one whose words come from
+    /// there (`doccomment::row_spans`), so a cursor in it is kept in sight where it is, never at the block's first row
+    /// (#386); 0 where `l` is no folded doc comment's (what's being written, a woven conflict: their own rules).
+    pub fn row_at(&self, l: usize, pos: usize) -> usize {
+        if self.writing(l).is_some()
+            || crate::weave::of(self.doc).is_some_and(|m| m.merge.conflict_at(l).is_some())
+        {
+            return 0;
+        }
+        self.doc_block(l, |b| {
+            let width = self.cols.saturating_sub(b.indent + 3).max(8);
+            let mut counts = self.counts();
+            let spans = counts.spans.entry((b.start, b.end)).or_insert_with(|| {
+                let rows = crate::term::fold_rows(self.editor, b, width, None);
+                crate::doccomment::row_spans(&self.doc.text, (b.start, b.end), &rows)
+            });
+            spans.iter().rposition(|&(from, _)| from <= pos).unwrap_or(0)
+        })
+        .unwrap_or(0)
     }
 
     /// The line `l` is drawn as: a folded block's first line, else itself.
@@ -768,7 +804,8 @@ pub fn fold(
             while next.next_if(|b| b.start < a).is_some() {}
             next.peek().copied().filter(|b| b.start == a)
         });
-        let Some(&crate::doccomment::Folded { start: a, end: b, indent, rows: ref laid }) = block else {
+        let Some(&crate::doccomment::Folded { start: a, end: b, indent, rows: ref laid, ref at }) = block
+        else {
             out.push(rows[i].clone());
             i += 1;
             continue;
@@ -788,12 +825,12 @@ pub fn fold(
             i = j;
             continue;
         }
-        out.extend(laid.iter().enumerate().map(|(index, (spans, code))| Row::Doc {
+        out.extend(laid.iter().zip(at).enumerate().map(|(index, ((spans, code), at))| Row::Doc {
             start: a,
             end: b,
             indent,
             index,
-            lines: (a, b),
+            at: *at,
             spans: spans.clone(),
             code: *code,
         }));

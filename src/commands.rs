@@ -1859,9 +1859,13 @@ fn goto_change(cx: &mut Context, forward: bool, parts: bool) {
         Some(h) if new.is_some() => {
             let said = crate::codereview::since_here(cx.editor);
             cx.editor.select_hunk(&h);
+            cx.editor.jumped();
             cx.editor.set_status(format!("{} · space v m marks it again", said.unwrap_or_default()));
         }
-        Some(h) => cx.editor.select_hunk(&h),
+        Some(h) => {
+            cx.editor.select_hunk(&h);
+            cx.editor.jumped();
+        }
         None if crate::codereview::next_file(cx.editor, forward) => {}
         None => cx.editor.set_status(if none { "no git changes" } else { "no more changes" }),
     }

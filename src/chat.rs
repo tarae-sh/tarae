@@ -4708,12 +4708,10 @@ pub fn jump(ed: &mut Editor, link: Link) {
     open_place(ed, link);
 }
 
-/// A file opened at a link's line, centred.
+/// A file opened at a link's line — a jump: centred when it was out of sight (`Editor::jumped`).
 pub fn open_place(ed: &mut Editor, link: Link) {
-    match ed.open_at(&link.path, link.line, 0) {
-        // Centered — the code around it is what the conversation is about
-        Ok(()) => ed.align_view(crate::viewalign::Place::Center),
-        Err(e) => ed.set_error(format!("{e:#}")),
+    if let Err(e) = ed.open_at(&link.path, link.line, 0) {
+        ed.set_error(format!("{e:#}"));
     }
 }
 

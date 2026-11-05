@@ -2069,9 +2069,7 @@ impl Editor {
                 // A jump that was waiting for the text (go-to while it loaded) wins over the saved spot
                 if let Some((_, line, col)) = self.goto_after_load.take_if(|g| g.0 == id) {
                     place_cursor(&mut self.docs[i], line, col);
-                    if i == self.current {
-                        self.align_view(crate::viewalign::Place::Center);
-                    }
+                    self.docs[i].jumped = true;
                 }
                 self.attach_lsp(id);
                 self.undo_restore(id);
@@ -2602,6 +2600,7 @@ impl Editor {
             self.goto_after_load = Some((self.docs[i].id, line, col));
         } else {
             place_cursor(&mut self.docs[i], line, col);
+            self.jumped();
         }
         Ok(())
     }
@@ -4277,12 +4276,15 @@ impl Editor {
             }
             _ => None,
         };
-        // (a folded doc comment's row: the lines its words come from, its paragraph's — a press puts the cursor where they
-        // start, a drag takes them whole, the block staying folded: #269; a drag past the text's edge, its edge row's)
+        // (a folded doc comment's row: the word under the pointer in the source its words come from — a press and a drag
+        // as on code, the block staying folded: #385, #386; a drag past the text's edge, its edge row's)
         let held_row = if m.kind == K::Drag { row.min(text.h.saturating_sub(1)) } else { row };
         let folded = match self.view.get(held_row) {
-            Some(&crate::codeview::Row::Doc { indent, lines, .. }) if picked.is_none() => {
-                Some((indent, lines))
+            Some(crate::codeview::Row::Doc { indent, at, spans, code, .. }) if picked.is_none() => {
+                // (its words start past its indent, its bar and an example's two cells — `term::draw_folded_row`)
+                let cols = text.w.saturating_sub(gutter);
+                let words = (*indent).min(cols.saturating_sub(4)) + 2 + if *code { 2 } else { 0 };
+                Some((*at, spans.clone(), x.saturating_sub(rect.x + gutter + words)))
             }
             _ => None,
         };
@@ -4302,10 +4304,11 @@ impl Editor {
                 let line = line.min(last);
                 let pos = match (picked, folded) {
                     (Some(l), _) => doc.text.line_to_byte(l),
-                    (None, Some((indent, (l0, _)))) => mv::pos_at_col(&doc.text, l0, indent, tab),
+                    (None, Some((at, spans, cell))) => {
+                        crate::doccomment::place_at(&doc.text, at, &spans, cell)
+                    }
                     (None, None) => mv::pos_at_col(&doc.text, line, col, tab),
                 };
-                let span = folded.map(|(_, (_, l1))| (pos, mv::line_full_end(&doc.text, l1)));
                 // A plain press on a page's link that `gd` follows says so once (ctrl+click doesn't arrive from every
                 // terminal: nothing tells the two apart then) — never a `mailto:`'s, whose `gd` says it goes nowhere
                 let link = crate::web::page::of(doc).is_some_and(|p| {
@@ -4322,9 +4325,7 @@ impl Editor {
                 let mut pressed = false;
                 match (m.kind, anchor) {
                     (K::Drag, Some((Drag::Code, held))) => {
-                        let r =
-                            span.map_or_else(|| held.dragged(&text, pos), |s| held.dragged_over(&text, s));
-                        doc.set_selection(Selection::new(vec![r], 0));
+                        doc.set_selection(Selection::new(vec![held.dragged(&text, pos)], 0));
                     }
                     // A drag whose press wasn't in the text (the terminal's, a panel's) isn't the code's
                     (K::Drag, _) => {}
@@ -4346,14 +4347,6 @@ impl Editor {
                 // one of a double)
                 if pressed && !m.ctrl {
                     crate::mouse::text_press(self, Drag::Code, pos);
-                    // (on a folded row a double or triple takes its paragraph, as a drag over it does)
-                    if let (Some((from, to)), Some((Drag::Code, held))) = (span, self.mouse_anchor) {
-                        let held = crate::selection::Held { from, to, unit: held.unit };
-                        if held.unit != crate::selection::Unit::Char {
-                            self.doc_mut().set_selection(Selection::single(held.range()));
-                        }
-                        self.mouse_anchor = Some((Drag::Code, held));
-                    }
                 } else if pressed {
                     let held =
                         crate::selection::Held::at(&self.doc().text, pos, crate::selection::Unit::Char);
@@ -4376,10 +4369,8 @@ impl Editor {
                 }
             }
             K::Up => {
-                // (a drag over a folded doc comment: its words copied as shown — #269)
-                if let Some((Drag::Code, held)) = self.mouse_anchor.take() {
-                    crate::mouse::folded_copy(self, held);
-                }
+                // (let go, a drag only selects — over a folded doc comment too: `y` yanks, #385)
+                self.mouse_anchor = None;
                 // (an http(s) address written there — a comment's, a string's — opens as a page, `gf`'s act: inside
                 // tarae, the system browser is `:web-open`'s; on a page a followed link there comes first — its words
                 // may be an address of their own, `[https://a.example](https://b.example/x)`)
@@ -5288,6 +5279,7 @@ impl Editor {
                     crate::movement::line_start(&d.text, line.min(crate::movement::last_line(&d.text)));
                 let at = crate::graphemes::prev_boundary(&d.text, (start + col + 1).min(d.text.len_bytes()));
                 d.set_selection(crate::selection::Selection::point(at.max(start)));
+                self.jumped();
                 Ok(())
             }
         }

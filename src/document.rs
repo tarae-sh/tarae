@@ -337,6 +337,9 @@ pub struct Document {
     /// `(line, n)`: while `top` is that line, its first `n` wrapped rows are above the screen — a wrapped
     /// line scrolls by rows, so one taller than half the screen isn't jumped past (#233). Another `top`: none.
     pub top_rows: Option<(usize, usize)>,
+    /// Its cursor just jumped there (`Editor::jumped`): the next frame centres it if it's out of sight, else leaves the
+    /// view where it is (`term::scroll_to`, #387) — and spends it, this document in front or not.
+    pub jumped: bool,
     /// Loading a big file in the background — text still empty. No saving (would overwrite with nothing).
     pub loading: bool,
     /// Syntax tree and language (None if the language is unknown).
@@ -527,6 +530,7 @@ impl Document {
             top: 0,
             left: 0,
             top_rows: None,
+            jumped: false,
             loading: false,
             syntax: None,
             lsp: DocLsp::default(),
