@@ -6550,13 +6550,9 @@ fn demo_files(dir: &Path, changed: bool, trusted: bool) -> Result<()> {
     write(&dir.join("src/knot.rs"), "pub fn untie() {}\n")
 }
 
-/// The demo crate at `dir`: committed in a repository of its own, then changed. git runs with none of your
-/// settings (no hooks, no signing) and finds no repository above `dir`.
-fn demo_crate(dir: &Path, trusted: bool) -> Result<()> {
-    demo_crate_with(dir, trusted, &[])
-}
-
-/// `demo_crate` with `extra` files committed beside its own (over them where named alike).
+/// The demo crate at `dir`: committed in a repository of its own, then changed, `extra` files committed beside its own
+/// (over them where named alike). git runs with none of your settings (no hooks, no signing) and finds no repository
+/// above `dir`.
 pub(crate) fn demo_crate_with(dir: &Path, trusted: bool, extra: &[(&str, String)]) -> Result<()> {
     demo_crate_at(dir, trusted, extra, None)
 }

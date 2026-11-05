@@ -114,29 +114,6 @@ const fn wait_time(row: u16, cols: (u16, u16)) -> Varies {
     Varies { row, cols, what: "the follow card's wait (`4.7s`), right-aligned", holds: seconds_right }
 }
 
-/// The cursor line's blame, from its age to where its text ends (`5s ago · A skein of threads`): the fixture's commit is
-/// made as the scene starts, so its age is the scene's own pace — a second either way, and past nine seconds a cell wider,
-/// the summary after it moved by one (its cut too). `cols` start at the age's first digit and reach a cell past the
-/// summary's end as a one-digit age draws it (or to the cut, `…`, where it's cut).
-const fn blame_age(row: u16, cols: (u16, u16)) -> Varies {
-    Varies { row, cols, what: "the blame's age and summary (`5s ago · …`)", holds: blame_aged }
-}
-
-/// A blame's age as `run_duration`'s largest unit writes it (`5s ago`, `12s ago`, `1m ago`; under a second `just now` — a
-/// quick take), then nothing or ` · ` and the summary — its cells as drawn, the age their first.
-fn blame_aged(t: &str) -> bool {
-    if let Some(rest) = t.strip_prefix("just now") {
-        return rest.trim_end().is_empty() || rest.starts_with(" · ");
-    }
-    let Some((age, rest)) = t.split_once(" ago") else { return false };
-    let n = age.strip_suffix('s').or_else(|| age.strip_suffix('m')).unwrap_or_default();
-    let number = !n.is_empty()
-        && n.len() <= 2
-        && n.bytes().all(|c| c.is_ascii_digit())
-        && (n == "0" || !n.starts_with('0'));
-    number && (rest.trim_end().is_empty() || rest.starts_with(" · "))
-}
-
 /// The inbox's three ages, right-aligned at its rows' end, and the status line's wait for main's run after `cargo test
 /// --quiet` (said whole there: the picker covers the follow card's head — #253): how long each ask has waited when the
 /// shot is taken (`inbox`).
@@ -718,7 +695,7 @@ const DOCS: &[DocShot] = &[
     row("chat-conversations.png", Some("conversations"), S),
     row("inbox.png", Some("inbox"), (120, 34)).varies(INBOX_WAITS),
     row("inbox-hanji.png", Some("inbox"), (120, 34)).light().varies(INBOX_WAITS),
-    row("chat-point-hanji.png", Some("point"), (140, 34)).light().varies(&[blame_age(1, (79, 106))]),
+    row("chat-point-hanji.png", Some("point"), (140, 34)).light(),
     row("chat-ids.png", None, (140, 34)),
     row("chat-explore.png", None, S),
     // (`chatmid` shows neither the wash nor the thinking these show: phase 3's `thinking` script)
@@ -726,13 +703,10 @@ const DOCS: &[DocShot] = &[
     row("follow-hanji.png", None, S).light(),
     row("follow-thinking.png", None, S),
     row("follow-show.png", None, (140, 40)),
-    // (the cursor line's blame: its age the scene's pace; the turn's time on the answer's last row, right-aligned:
-    // tarae's clock, a tenth either way)
-    row("follow-ask.png", Some("followask"), S).varies(&[blame_age(14, (33, 62)), turn_time(7, (103, 111))]),
+    // (the turn's time on the answer's last row, right-aligned: tarae's clock, a tenth either way)
+    row("follow-ask.png", Some("followask"), S).varies(&[turn_time(7, (103, 111))]),
     // (the turn's time on the chat's last answer row, right-aligned: tarae's clock, a tenth either way)
-    row("m4-chat-hanji.png", Some("chatanswer"), S)
-        .light()
-        .varies(&[blame_age(1, (43, 67)), turn_time(24, (103, 111))]),
+    row("m4-chat-hanji.png", Some("chatanswer"), S).light().varies(&[turn_time(24, (103, 111))]),
     row("chat-plan.png", None, S),
     // (its head quotes what was asked, as every review of Claude's change does — frictions34 43)
     // (the follow card's wait on its frame's top line, right-aligned: how long the scene took to get there — the
@@ -743,7 +717,7 @@ const DOCS: &[DocShot] = &[
     row("chat-review-at-end.png", Some("reviewatend"), S),
     row("chat-undo-turn.png", None, S),
     row("chat-tests.png", None, S),
-    row("chat-run.png", Some("runcard"), S).varies(&[blame_age(1, (43, 70)), wait_time(9, (102, 108))]),
+    row("chat-run.png", Some("runcard"), S).varies(&[wait_time(9, (102, 108))]),
     row("notes.png", Some("notethread"), S),
     row("commit-draft.png", Some("commitdraft"), S),
     row("review.png", Some("codereview"), S),
@@ -761,21 +735,19 @@ const DOCS: &[DocShot] = &[
     row("ux-doc-comments.png", Some("doccomments"), S),
     row("ux-doc-comments-open.png", Some("doccommentsopen"), S),
     row("ux-guides.png", None, S),
-    row("ux-side-panel.png", Some("code"), S).varies(&[blame_age(1, (75, 103))]),
+    row("ux-side-panel.png", Some("code"), S),
     row("ux-outline.png", Some("outline"), S),
     row("m2-file-picker.png", Some("filepicker"), S),
-    // (the cursor line's blame: its age the scene's pace)
-    row("ux-search.png", Some("search"), S).varies(&[blame_age(12, (48, 74))]),
+    row("ux-search.png", Some("search"), S),
     row("ux-splits.png", Some("splits"), S),
     row("ux-cmdline-complete.png", Some("cmdline"), S),
     row("ux-git.png", Some("gutter"), S),
     row("syntax-helm.png", None, S),
     row("grammar-offer.png", None, S),
     row("offer-stack.png", None, S),
-    row("syntax-injections.png", Some("injections"), S).varies(&[blame_age(1, (25, 51))]),
-    // (an error and a warning from the stand-in language server, `scenes --lsp`; the cursor line's blame its age the
-    // scene's pace)
-    row("ux-error-lens.png", Some("diag"), S).varies(&[blame_age(1, (43, 70))]),
+    row("syntax-injections.png", Some("injections"), S),
+    // (an error and a warning from the stand-in language server, `scenes --lsp`)
+    row("ux-error-lens.png", Some("diag"), S),
     row("m3-completion.png", None, S),
     row("m3-signature.png", None, S),
     row("m3-inlay-hints.png", None, S),
@@ -1058,12 +1030,14 @@ fn prepared(scene: &DocScene, bg: Bg, bin: &Path, me: &Path) -> Result<Prepared>
     let dir = Named::new(scene.name)?;
     let real = std::fs::canonicalize(&dir.0).map_err(|e| format!("{}: {e}", dir.0.display()))?;
     let mut homes = homes(&real, &|k| std::env::var_os(k))?;
-    homes.push(("TZ", fixed_clock(now()).into()));
+    // (one clock for the zone, the project's commit and the seed: the blame's age a day at every retake)
+    let now = now();
+    homes.push(("TZ", fixed_clock(now).into()));
     let home = real.join("home");
     let cwd = home.join(scene.fixture.folder());
-    scene.fixture.make(&cwd)?;
+    scene.fixture.make(&cwd, now)?;
     let state = real.join("state");
-    fixtures::seed(scene.seed, &state.join("tarae"), &home, &cwd, now())?;
+    fixtures::seed(scene.seed, &state.join("tarae"), &home, &cwd, now)?;
     let config = real.join("xdg");
     write(&config.join("tarae/config.toml"), &docs_config(scene, me))?;
     let setup = Setup {
@@ -1637,36 +1611,6 @@ mod tests {
         let blanks: Vec<String> = ["", "", "5", ".", "2", "s"].map(String::from).to_vec();
         const RIGHT: &[Varies] = &[Varies { row: 0, cols: (0, 6), what: "", holds: seconds_right }];
         assert_eq!(row("x.png", None, (6, 1)).varies(RIGHT).varies_hold(&[blanks]), Ok(()));
-    }
-
-    /// A blame's age passes with what follows it — its summary whole, moved a cell by a two-digit age, or cut — and
-    /// anything else in its cells fails: a layout that moved them, another word, an age of another form.
-    #[test]
-    fn a_blames_age_is_checked_with_what_follows_it() {
-        for ok in [
-            "5s ago · A skein of threads",
-            "12s ago · A skein of thread",
-            "6s ago · A skei…",
-            "1m ago · A skein",
-            "5s ago · Small arithmetic ",
-            "0s ago ",
-            // (under a second: syntax-injections' quick take, 2026-11-04)
-            "just now · Small arithmeti",
-        ] {
-            assert!(blame_aged(ok), "{ok:?}");
-        }
-        for not in [
-            "demo, 5s ago · A",
-            " 5s ago · A",
-            "5 ago · A",
-            "05s ago · A",
-            "5s ago A",
-            "5h ago · A",
-            "just nowhere",
-            "      ",
-        ] {
-            assert!(!blame_aged(not), "{not:?}");
-        }
     }
 
     /// Every row's `wait_time` holds the follow card's top line as `timer` and `top_line` lay it — the line's `─`, three

@@ -3,7 +3,7 @@
 //! Beside the scenes' demo crate: `calc` — small arithmetic with a bug for Claude to find (`add` subtracts) and
 //! its failing test, doc comments worth rendering, a README of code blocks in three languages — and `words` — a
 //! change a review grades high (an `unsafe` line, a new build script). Each is committed in a repository of its
-//! own, then changed, as `demo_crate` is. A seed writes the files tarae reads at its start, naming the projects by
+//! own, then changed, as `demo_crate_at` is — a day before the shot's clock (`COMMITTED_AGO`). A seed writes the files tarae reads at its start, naming the projects by
 //! their real paths, as tarae will.
 
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
-use super::super::{demo_crate, write};
+use super::super::{demo_crate_at, write};
 use crate::Result;
 
 /// A docs scene's project, a folder of the shot's home.
@@ -34,29 +34,48 @@ impl Fixture {
         }
     }
 
-    /// The project made at `dir`: committed, then changed.
-    pub(super) fn make(self, dir: &Path) -> Result<()> {
+    /// The project made at `dir`: committed `COMMITTED_AGO` before `now` (the shot's clock, Unix seconds), then
+    /// changed.
+    pub(super) fn make(self, dir: &Path, now: u64) -> Result<()> {
+        let date = committed_at(now);
         match self {
-            Fixture::Demo => demo_crate(dir, false),
-            Fixture::Trusted => demo_crate(dir, true),
-            Fixture::Calc => repo(dir, &calc(), &calc_since(), "Small arithmetic"),
-            Fixture::Words => repo(dir, &words(), &words_since(), "Count words"),
+            Fixture::Demo => demo_crate_at(dir, false, &[], Some(&date)),
+            Fixture::Trusted => demo_crate_at(dir, true, &[], Some(&date)),
+            Fixture::Calc => repo(dir, &calc(), &calc_since(), "Small arithmetic", &date),
+            Fixture::Words => repo(dir, &words(), &words_since(), "Count words", &date),
         }
     }
 }
 
-/// `committed` written and committed at `dir` in a repository of its own, then `since` written over it.
-fn repo(dir: &Path, committed: &[(&str, String)], since: &[(&str, String)], message: &str) -> Result<()> {
+/// How long before a docs shot's clock its project was committed: the blame says `1d ago` at every retake, as the
+/// scenes' demo crate (`scenes::dates`) — never the seconds between the commit and the frame, `just now` one take
+/// and `1s ago` the next (#378).
+const COMMITTED_AGO: u64 = 86_400;
+
+/// The fixture's commit date at `now` (Unix seconds), in git's form (`@<seconds> +0000`).
+fn committed_at(now: u64) -> String {
+    format!("@{} +0000", now.saturating_sub(COMMITTED_AGO))
+}
+
+/// `committed` written and committed at `dir` in a repository of its own, dated `date` (git's form), then `since`
+/// written over it.
+fn repo(
+    dir: &Path,
+    committed: &[(&str, String)],
+    since: &[(&str, String)],
+    message: &str,
+    date: &str,
+) -> Result<()> {
     committed.iter().try_for_each(|(p, text)| write(&dir.join(p), text))?;
-    git(dir, &["init", "-q"])?;
-    git(dir, &["add", "-A"])?;
-    git(dir, &["commit", "-q", "-m", message])?;
+    git(dir, &["init", "-q"], date)?;
+    git(dir, &["add", "-A"], date)?;
+    git(dir, &["commit", "-q", "-m", message], date)?;
     since.iter().try_for_each(|(p, text)| write(&dir.join(p), text))
 }
 
-/// git at `dir` with none of your settings (no hooks, no signing), finding no repository above it — as
-/// `demo_crate` runs it.
-fn git(dir: &Path, args: &[&str]) -> Result<()> {
+/// git at `dir` with none of your settings (no hooks, no signing), finding no repository above it, what it commits
+/// dated `date` — as `demo_crate_at` runs it.
+fn git(dir: &Path, args: &[&str], date: &str) -> Result<()> {
     let st = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -66,6 +85,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<()> {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap_or(dir))
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
         .stdout(Stdio::null())
         .status()
         .map_err(|e| format!("git: {e}"))?;
@@ -261,7 +282,7 @@ pub(super) fn seed(seed: Seed, state: &Path, home: &Path, cwd: &Path, now: u64) 
             let (demo, calc) = (home.join(Fixture::Demo.folder()), home.join(Fixture::Calc.folder()));
             for (f, dir) in [(Fixture::Demo, &demo), (Fixture::Calc, &calc)] {
                 if !dir.exists() {
-                    f.make(dir)?;
+                    f.make(dir, now)?;
                 }
             }
             let recent = [
@@ -372,8 +393,8 @@ mod tests {
     fn the_docs_projects_are_committed_then_changed() {
         let dir = super::super::super::Fresh::new("tarae-docs-fixtures").unwrap();
         let (calc, words) = (dir.0.join("calc"), dir.0.join("words"));
-        Fixture::Calc.make(&calc).unwrap();
-        Fixture::Words.make(&words).unwrap();
+        Fixture::Calc.make(&calc, 1_000_000).unwrap();
+        Fixture::Words.make(&words, 1_000_000).unwrap();
         assert_eq!(status(&calc), " M src/lib.rs\n M src/stats.rs\n");
         assert_eq!(status(&words), " M README.md\n M src/main.rs\n?? build.rs\n");
         let lib = std::fs::read_to_string(calc.join("src/lib.rs")).unwrap();
@@ -390,6 +411,32 @@ mod tests {
         assert!(main.contains("unsafe { libc::getpid() }"), "{main}");
     }
 
+    /// #378: every docs project is committed a day before the shot's clock, author and committer alike, however
+    /// long it takes to make — the blame's age the same at every retake. Read back by git, as the blame reads it.
+    #[test]
+    fn the_docs_projects_commit_a_day_before_the_shots_clock() {
+        let dir = super::super::super::Fresh::new("tarae-docs-dated").unwrap();
+        let now = 1_760_031_337;
+        for f in [Fixture::Demo, Fixture::Trusted, Fixture::Calc, Fixture::Words] {
+            let at = dir.0.join(format!("{f:?}"));
+            f.make(&at, now).unwrap();
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&at)
+                .args(["log", "-1", "--format=%at %ct"])
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            let day_before = now - 86_400;
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                format!("{day_before} {day_before}"),
+                "{f:?}"
+            );
+        }
+    }
+
     /// A seed names files as tarae reads them: recent files that exist (in both projects), the last open files
     /// under the shot's folder as its key, a conversations file by `config::state_file`'s name (FNV-1a's own test
     /// vectors) whose titles are their first questions, older than the chat continues.
@@ -398,7 +445,7 @@ mod tests {
         let dir = super::super::super::Fresh::new("tarae-docs-seed").unwrap();
         let (home, state) = (dir.0.join("home"), dir.0.join("state"));
         let cwd = home.join(Fixture::Calc.folder());
-        Fixture::Calc.make(&cwd).unwrap();
+        Fixture::Calc.make(&cwd, 1_000_000).unwrap();
         seed(Seed::Recent, &state, &home, &cwd, 1_000_000).unwrap();
         let recent = std::fs::read_to_string(state.join("recent")).unwrap();
         assert_eq!(recent.lines().count(), 4);
