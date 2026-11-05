@@ -357,7 +357,7 @@ pub(crate) fn record_at(
 /// timed out, said — the take kept all the same, to be seen. A Short's (`video::shorts`) too: each `@zoom:<target>`'s
 /// time and target (and whether it's `@zoom-deep:`), each key sent (its time and what it was, a `@type:` character one by one), each
 /// `@sound:<kind>` mark, each `@note:<words> → <target>` (a callout: its time and what follows the colon) and the
-/// `@punch` it opens on. A `@cut?<text>` ends the take on the last frame before `<text>` shows (`cut_at`).
+/// `@hook` it opens on. A `@cut?<text>` ends the take on the last frame before `<text>` shows (`cut_at`).
 pub(crate) struct Recorded {
     pub(crate) frames: Frames,
     pub(crate) beats: Vec<(u64, String)>,
@@ -366,14 +366,40 @@ pub(crate) struct Recorded {
     pub(crate) notes: Vec<(u64, String)>,
     pub(crate) keys: Vec<(u64, String)>,
     pub(crate) sounds: Vec<(u64, String)>,
-    /// A Short's `@punch`: the take's ms its video opens on.
-    pub(crate) punch: Option<u64>,
+    /// A Short's `@hook`: the take's ms its video opens on.
+    pub(crate) hook: Option<u64>,
     pub(crate) missed: Vec<String>,
     /// Each frame's bytes as tarae wrote them, with its time and whether it changed nothing in sight (`Vt.wire`).
     pub(crate) wire: Vec<(u64, Vec<u8>, bool)>,
     /// Where the take ends (ms): at its `@cut?`'s frame, else `TAIL_S` past its scene's last step — the screen as it
     /// stood up to then, its last frame's time where neither (a take whose `@rec` never came).
     pub(crate) end: u64,
+    /// Where a take cut together from two (`joined`) goes on to the next: its ms — a crossing there whatever changed.
+    pub(crate) joins: Vec<u64>,
+}
+
+impl Recorded {
+    /// Two takes cut together as one (a Short's two features as one story — CLAUDE.md's Shorts bullet): `then` from
+    /// where `self` ends, every time in it moved by that; the hook the one of `hook_of` (0 this, 1 `then`), the other
+    /// left out — a Short opens on one.
+    pub(crate) fn joined(mut self, then: Recorded, hook_of: usize) -> Recorded {
+        let at = self.end;
+        let moved = |v: Vec<(u64, String)>| v.into_iter().map(move |(t, s)| (at + t, s));
+        self.frames.extend(then.frames.into_iter().map(|(t, s)| (at + t, s)));
+        self.beats.extend(moved(then.beats));
+        self.waits.extend(moved(then.waits));
+        self.zooms.extend(then.zooms.into_iter().map(|(t, z, deep)| (at + t, z, deep)));
+        self.notes.extend(moved(then.notes));
+        self.keys.extend(moved(then.keys));
+        self.sounds.extend(moved(then.sounds));
+        self.hook = if hook_of == 0 { self.hook } else { then.hook.map(|t| at + t) };
+        self.missed.extend(then.missed);
+        self.wire.extend(then.wire.into_iter().map(|(t, b, same)| (at + t, b, same)));
+        self.joins.push(at);
+        self.joins.extend(then.joins.into_iter().map(|t| at + t));
+        self.end = at + then.end;
+        self
+    }
 }
 
 /// A take runs on this long past its scene's last step, at the scene's own pace, then ends: a scene's last step waits
@@ -419,10 +445,11 @@ pub(crate) fn record(
         notes: vt.notes.into_iter().map(|(d, n)| (ms(d), n)).collect(),
         keys: vt.keys.into_iter().map(|(d, k)| (ms(d), k)).collect(),
         sounds: vt.sounds.into_iter().map(|(d, s)| (ms(d), s)).collect(),
-        punch: vt.punch.map(ms),
+        hook: vt.hook.map(ms),
         missed,
         end,
         wire: vt.wire.into_iter().map(|(d, b, same)| (ms(d), b, same)).collect(),
+        joins: Vec::new(),
     })
 }
 
@@ -628,8 +655,8 @@ struct Vt {
     notes: Vec<(Duration, String)>,
     keys: Vec<(Duration, String)>,
     sounds: Vec<(Duration, String)>,
-    /// During `@rec`: when `@punch` came (a Short opens on the take from there).
-    punch: Option<Duration>,
+    /// During `@rec`: when `@hook` came (a Short opens on the take from there).
+    hook: Option<Duration>,
     /// When the take ended: its `@cut?`'s frame, or its run on past the scene's last step (`TAIL_S`).
     ended: Option<Duration>,
     /// Frames read so far, every one (a synchronized update's end each — tarae's `frames_written`), and each
@@ -655,7 +682,7 @@ impl Vt {
             notes: Vec::new(),
             keys: Vec::new(),
             sounds: Vec::new(),
-            punch: None,
+            hook: None,
             ended: None,
             ends: 0,
             captured_ends: Vec::new(),
@@ -948,7 +975,7 @@ fn drive_with(
             vt.notes.clear();
             vt.keys.clear();
             vt.sounds.clear();
-            vt.punch = None;
+            vt.hook = None;
             if let Some((screen, ends)) = seen.take() {
                 vt.captured.push((Duration::ZERO, screen));
                 vt.captured_ends.push(ends);
@@ -990,8 +1017,8 @@ fn drive_with(
             }
             continue;
         }
-        if k == "@punch" {
-            vt.punch = vt.capturing.map(|since| since.elapsed());
+        if k == "@hook" {
+            vt.hook = vt.capturing.map(|since| since.elapsed());
             continue;
         }
         // (`@cut?<text>`: the take ends on the last frame before `<text>` shows — where it ends, chosen; nothing held)
@@ -1749,6 +1776,42 @@ mod tests {
         assert_eq!(capture_key("@~0"), None);
         assert_eq!(capture_key("@3"), None);
         assert_eq!(capture_key("@?ready"), None);
+    }
+
+    /// Two takes cut together are one: the second's every time from where the first ends (its frames, beats, waits,
+    /// reads, phrases, keys, sounds, bytes, its end), the join said at that ms; the hook the one asked for, the other's
+    /// left out — none where that take has none.
+    #[test]
+    fn two_takes_joined_are_one_the_second_from_the_firsts_end() {
+        let screen = || vt100::Parser::new(1, 4, 0).screen().clone();
+        let one = |t: u64, hook: Option<u64>, end: u64| Recorded {
+            frames: vec![(0, screen()), (t, screen())],
+            beats: vec![(t, "beat".into())],
+            waits: vec![(t, "?w".into())],
+            zooms: vec![(t, "code:1-2".into(), false)],
+            notes: vec![(t, "a → b".into())],
+            keys: vec![(t, "x".into())],
+            sounds: vec![(t, "stamp".into())],
+            hook,
+            missed: vec![format!("missed {t}")],
+            wire: vec![(t, vec![1], false)],
+            end,
+            joins: Vec::new(),
+        };
+        let rec = one(100, Some(50), 1_000).joined(one(200, Some(150), 3_000), 0);
+        assert_eq!(rec.frames.iter().map(|f| f.0).collect::<Vec<_>>(), [0, 100, 1_000, 1_200]);
+        assert_eq!(rec.beats.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
+        assert_eq!(rec.waits.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
+        assert_eq!(rec.zooms.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
+        assert_eq!(rec.notes.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
+        assert_eq!(rec.keys.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
+        assert_eq!(rec.sounds.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
+        assert_eq!(rec.wire.iter().map(|b| b.0).collect::<Vec<_>>(), [100, 1_200]);
+        assert_eq!(rec.missed, ["missed 100", "missed 200"]);
+        assert_eq!((rec.hook, rec.joins, rec.end), (Some(50), vec![1_000], 4_000));
+        let second = one(100, Some(50), 1_000).joined(one(200, Some(150), 3_000), 1);
+        assert_eq!(second.hook, Some(1_150), "the second's, moved");
+        assert_eq!(one(100, Some(50), 1_000).joined(one(200, None, 3_000), 1).hook, None);
     }
 
     /// `@cut?<text>` ends the take on the last frame before `<text>` shows, from the mark on (an earlier showing isn't

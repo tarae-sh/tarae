@@ -446,6 +446,35 @@ pub(crate) struct Track {
     pub(crate) gain: f32,
     pub(crate) brush: Option<(f32, f32)>,
     pub(crate) limited: Limited,
+    pub(crate) bed: Option<Bedded>,
+}
+
+/// A Short's music bed (CLAUDE.md's Shorts bullet: a music bed the user picks from YouTube Studio's Audio Library, about
+/// 5 dB under the keys, faded in 0.5 s and out with the end card): the level the user chose on the hand mix of
+/// 2026-11-05 — Short 1's keys −22.6 LUFS, the track at −7 dB −27.6, each measured alone (BS.1770, `lufs`) —, kept
+/// as the one under the other, whatever the keys' loudness or the file's.
+pub(crate) const BED_UNDER_LU: f32 = 5.0;
+/// The bed eased in from the take's first frame this long, and out this long to the end card's last (linear, as the
+/// hand mix's `afade`).
+pub(crate) const BED_IN_S: f32 = 0.5;
+pub(crate) const BED_OUT_S: f32 = 2.5;
+/// A music file's sound starts where its 10 ms RMS first passes this (dBFS): its leading silence left out.
+const BED_SOUNDS_DB: f32 = -50.0;
+/// A sample the limiter turned down by more than this (dB) counts as touched.
+pub(crate) const TOUCHED_DB: f32 = 0.5;
+
+/// The bed as laid: where its sound starts in its file (s), its gain (dB, against its file), the keys' loudness and the
+/// bed's alone (LUFS, before the limiter), and what the limiter took from the two together — its largest reduction
+/// (dB) and when (s), and how long it took more than `TOUCHED_DB` (s).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Bedded {
+    pub(crate) from: f32,
+    pub(crate) gain: f32,
+    pub(crate) keys: f32,
+    pub(crate) bed: f32,
+    pub(crate) limited: f32,
+    pub(crate) limited_at: f32,
+    pub(crate) touched: f32,
 }
 
 /// The limiter's largest gain reduction (dB, positive): on the keys and when (s into the track), and on the brush where
@@ -463,12 +492,14 @@ pub(crate) struct Limited {
 /// `typist::GAP_MIN` after the writing's last key (`Typist::once`); Claude's writing is tarae's typist striking for each
 /// step, as the reveal plays it. The intro's brush (`brush`) from `brush_at`, at its level against the keys. Then the
 /// whole brought to `SHORT_LUFS` by one gain — or as near as `LIMIT_MOST_DB` of limiting lets it —, its true peaks held
-/// under `ceiling_db` (dBTP; `master`) — the keys and the brush in balance (`master`).
+/// under `ceiling_db` (dBTP; `master`) — the keys and the brush in balance (`master`). A `music` file's samples (mono
+/// at `RATE`) laid under it all as its bed (`bedded`).
 pub(crate) fn track(
     heard: &[(Duration, Heard)],
     length: Duration,
     brush_at: Option<Duration>,
     ceiling_db: f32,
+    music: Option<&[f32]>,
 ) -> Track {
     let mut seed: u32 = 0x5107_7a2a;
     let mut next = || {
@@ -507,8 +538,13 @@ pub(crate) fn track(
         b.truncate(keys.len() - from);
         (from, b)
     });
-    // (the brush's loudness over the rest's)
-    let over = |x: &[f32]| (brush.as_ref()).map(|(a, b)| lufs(&x[*a..a + b.len()]) - lufs(&x[a + b.len()..]));
+    // (the brush's loudness over the rest's: what comes before it and after — the end card's brush has little after it)
+    let over = |x: &[f32]| {
+        (brush.as_ref()).map(|(a, b)| {
+            let rest: Vec<f32> = x[..*a].iter().chain(&x[a + b.len()..]).copied().collect();
+            lufs(&x[*a..a + b.len()]) - lufs(&rest)
+        })
+    };
     let mut mixed = keys.clone();
     if let Some((from, b)) = &brush {
         mixed[*from..from + b.len()].iter_mut().zip(b).for_each(|(x, b)| *x += b);
@@ -517,10 +553,67 @@ pub(crate) fn track(
     let laid = brush.as_ref().map(|(from, b)| (*from, b.as_slice()));
     let ceiling = 10f32.powf(ceiling_db / 20.0);
     let (samples, gain, limited) = master(&keys, laid, SHORT_LUFS, ceiling, LIMIT_MOST_DB);
-    let (peak, rms) = levels(&samples);
     let brush = before.zip(over(&samples));
+    let (samples, bed) = match music {
+        Some(m) => {
+            let (y, b) = bedded(samples, m, ceiling);
+            (y, Some(b))
+        }
+        None => (samples, None),
+    };
+    let (peak, rms) = levels(&samples);
     let true_peak = 20.0 * true_peaks(&samples).into_iter().fold(0.0f32, f32::max).log10();
-    Track { lufs: lufs(&samples), samples, peak, rms, true_peak, gain, brush, limited }
+    Track { lufs: lufs(&samples), samples, peak, rms, true_peak, gain, brush, limited, bed }
+}
+
+/// `keys` (the track as mastered) with `music` laid under them as their bed: from where its sound starts
+/// (`sounds_from`), eased in over `BED_IN_S` from the first sample and out over the last `BED_OUT_S`, `BED_UNDER_LU`
+/// under the keys (each alone), the two limited together under `ceiling` (`limit`, true peaks) — one gain for the bed,
+/// none for the keys, so a click keeps its shape but where the two meet over the ceiling, said (`Bedded`).
+fn bedded(keys: Vec<f32>, music: &[f32], ceiling: f32) -> (Vec<f32>, Bedded) {
+    let from = sounds_from(music);
+    let laid = bed_laid(&music[from..], keys.len());
+    let (loud, under) = (lufs(&keys), lufs(&laid));
+    // (silent keys or a silent file: the bed as it is)
+    let gain = Some(loud - BED_UNDER_LU - under).filter(|g| g.is_finite()).unwrap_or(0.0);
+    let g = 10f32.powf(gain / 20.0);
+    let mixed: Vec<f32> = keys.iter().zip(&laid).map(|(k, b)| k + b * g).collect();
+    let mut y = mixed.clone();
+    let (most, at) = limit(&mut y, &true_peaks(&mixed), ceiling);
+    let floor = 10f32.powf(-TOUCHED_DB / 20.0);
+    let touched = (mixed.iter().zip(&y)).filter(|(m, y)| m.abs() > 1e-6 && y.abs() < m.abs() * floor).count();
+    let s = |n: usize| n as f32 / RATE as f32;
+    let bed = Bedded {
+        from: s(from),
+        gain,
+        keys: loud,
+        bed: under + gain,
+        limited: most,
+        limited_at: s(at),
+        touched: s(touched),
+    };
+    (y, bed)
+}
+
+/// Where `music`'s sound starts (a sample): the first 10 ms whose RMS passes `BED_SOUNDS_DB` — its leading silence left
+/// out, never its own swell; 0 where none does.
+pub(crate) fn sounds_from(music: &[f32]) -> usize {
+    let w = RATE as usize / 100;
+    let floor = 10f32.powf(BED_SOUNDS_DB / 20.0);
+    music.chunks(w).position(|c| rms(c) > floor).map_or(0, |k| k * w)
+}
+
+/// `music` laid for a track `len` samples long: eased in over `BED_IN_S` from its first sample, out over the last
+/// `BED_OUT_S` to its end (linear), silent past the music's end.
+fn bed_laid(music: &[f32], len: usize) -> Vec<f32> {
+    let ramp = |s: f32| (s * RATE as f32).max(1.0);
+    let (into, out) = (ramp(BED_IN_S), ramp(BED_OUT_S));
+    (0..len)
+        .map(|n| {
+            let x = music.get(n).copied().unwrap_or(0.0);
+            x * (n as f32 / into).min(1.0) * ((len - n) as f32 / out).min(1.0)
+        })
+        .collect()
 }
 
 /// `keys` with the brush laid over them (from its sample) brought to `target` LUFS, their peaks held under `ceiling`
@@ -860,7 +953,7 @@ mod tests {
             .map(|i| (Duration::from_millis(3_000 + i * 130), Heard::Key(if i % 6 == 5 { ' ' } else { 'a' })))
             .collect();
         assert!((SHORT_LUFS + 20.0).abs() < 0.5 && LIMIT_MOST_DB <= 2.0, "near −20 LUFS, barely limited");
-        let t = track(&keys, Duration::from_secs(12), Some(Duration::ZERO), SHORT_CEILING_DB);
+        let t = track(&keys, Duration::from_secs(12), Some(Duration::ZERO), SHORT_CEILING_DB, None);
         assert!(t.lufs < SHORT_LUFS + 0.1, "{:.2} LUFS", t.lufs);
         assert!(t.limited.keys <= LIMIT_MOST_DB + 0.01, "the limiter took {:.2} dB", t.limited.keys);
         assert!(
@@ -876,6 +969,62 @@ mod tests {
         assert!(
             (after - before).abs() < 0.5,
             "the brush {before:+.1} LU over the keys before, {after:+.1} after"
+        );
+        // (the end card's brush: the keys all before it, the track ending ~0.3 s after it — over the rest still said, in
+        // balance)
+        let end = track(
+            &keys,
+            Duration::from_millis(13_000),
+            Some(Duration::from_millis(11_000)),
+            SHORT_CEILING_DB,
+            None,
+        );
+        let (before, after) = end.brush.expect("the end card's brush");
+        assert!(
+            before.is_finite() && (after - before).abs() < 0.5,
+            "the end card's brush {before:+.1} LU over the keys before, {after:+.1} after"
+        );
+    }
+
+    /// A Short's music bed (CLAUDE.md's Shorts bullet, the user's hand mix of 2026-11-05): from where its sound starts,
+    /// its leading silence left out; `BED_UNDER_LU` under the keys, each alone, the keys as mastered without it; eased in
+    /// over `BED_IN_S` from the first sample and out over the last `BED_OUT_S`; the two under the ceiling, what the
+    /// limiter took from them said and small.
+    #[test]
+    fn a_shorts_bed_lies_its_level_under_the_keys_from_its_sound_faded_in_and_out() {
+        let keys: Vec<(Duration, Heard)> =
+            (0..60).map(|i| (Duration::from_millis(3_000 + i * 130), Heard::Key('a'))).collect();
+        // (a quarter second of silence, then a tone)
+        let quiet = RATE as usize / 4;
+        let music: Vec<f32> = (0..RATE as usize * 20)
+            .map(|n| match n < quiet {
+                true => 0.0,
+                false => 0.2 * (std::f32::consts::TAU * 220.0 * n as f32 / RATE as f32).sin(),
+            })
+            .collect();
+        assert_eq!(sounds_from(&music), quiet, "its silence left out");
+        let length = Duration::from_secs(14);
+        let t = track(&keys, length, None, SHORT_CEILING_DB, Some(&music));
+        let alone = track(&keys, length, None, SHORT_CEILING_DB, None);
+        let b = t.bed.expect("the bed");
+        assert!(alone.bed.is_none());
+        assert_eq!(b.from, 0.25);
+        assert!((b.keys - alone.lufs).abs() < 1e-3, "the keys as mastered alone: {:.2}", b.keys);
+        assert!((b.keys - b.bed - BED_UNDER_LU).abs() < 0.05, "{:.2} LU under", b.keys - b.bed);
+        // (the bed alone where no key sounds: the first 3 s, the last 2.5)
+        let bed: Vec<f32> = t.samples.iter().zip(&alone.samples).map(|(m, k)| m - k).collect();
+        let at = |s: f32| rms(&bed[(s * RATE as f32) as usize..][..RATE as usize / 50]);
+        let full = at(2.0);
+        assert!(at(0.0) < full * 0.03, "eased in from nothing");
+        assert!((at(0.24) / full - 0.5).abs() < 0.05, "half way in at 0.25 s: {:.2}", at(0.24) / full);
+        assert!((at(14.0 - 1.26) / full - 0.5).abs() < 0.05, "half way out 1.25 s before the end");
+        assert!(bed.last().unwrap().abs() < full * 0.01, "out by the end");
+        assert!(t.true_peak <= SHORT_CEILING_DB + 0.01, "true peak {:.2} dBTP", t.true_peak);
+        assert!(
+            b.limited < 1.0 && b.touched < 1.0,
+            "the limiter took {:.2} dB, {:.2} s",
+            b.limited,
+            b.touched
         );
     }
 

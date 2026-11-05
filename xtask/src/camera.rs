@@ -239,12 +239,6 @@ impl Course {
     pub(crate) fn windows(&self, reads: &[Planned]) -> Vec<(u64, u64, Region)> {
         (self.reads.iter().zip(reads)).filter_map(|(r, p)| r.map(|r| (r.into, r.out, p.window))).collect()
     }
-
-    /// Where a punchline marked at `mark` opens: the first read still held then — once the camera is there, if that's
-    /// later —, else the mark.
-    pub(crate) fn punch(&self, mark: u64) -> u64 {
-        (self.reads.iter().flatten()).find(|r| r.out > mark).map_or(mark, |r| mark.max(r.there()))
-    }
 }
 
 /// How near a region brings the screen (1: the whole).
@@ -1139,10 +1133,6 @@ mod tests {
         );
         assert_eq!(course.short, [(0, READ_MS - 500), (4, READ_MS - 1_200)]);
         assert_eq!(course.windows(&reads).first(), Some(&(10_000, 10_000 + DRIFT_MS + READ_MS, w)));
-        // (a punchline marked in a read opens there; before the camera is there, as it arrives; after, its mark)
-        assert_eq!(course.punch(10_000 + DRIFT_MS + 100), 10_000 + DRIFT_MS + 100);
-        assert_eq!(course.punch(9_500), 10_000 + DRIFT_MS);
-        assert_eq!(course.punch(60_000), 60_000);
     }
 
     /// A zoom is for emphasis only: a Short reads `READS_MAX` times at most — the rest stay with the captions, said; a

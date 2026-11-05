@@ -17,14 +17,17 @@
 //! right edge taken), everything else inside `SAFE`, the margins YouTube's own buttons and title cover: the window from
 //! the safe area's top down to its captions' band (`SHORT_BAND`, under the screen's last row — in a zoom too, under the
 //! window's) — its captions (`@note:<words> → <target>`, `captions.rs`) a phrase at a time centred in
-//! the band, never over the picture, fading in and out; a `@punch` opening it on
-//! `PUNCH_MS` of the take from there, then its intro in the title card's place (10-27's brush swing, its frames made
-//! once — `intro_dir` —, `t a r a e` under it, the Short's own title its hook, said as the caption; `INTRO_MS`) and the
-//! take from its start. Its take has tarae draw its fades and drying at the video's rate (`FRAME_MS`); and a sound track (the intro's brush — its swish and tap, `sound::brush` — then
-//! `sound::track`: tarae's own strokes for the keys typed, a stamp for a card's answer, the settle where an edit
-//! lands, Claude's writing as tarae's reveal plays it — the scene's `@sound:stamp`, `@sound:settle`, and its
-//! `@sound:writing`/`@sound:landing` … `@sound:still` spans, `writing`) as AAC. The wide video ignores `@zoom`,
-//! `@sound` and `@punch`, and stays silent.
+//! the band, never over the picture, fading in and out. **The hook first, the brand last** (CLAUDE.md's Shorts
+//! bullet): a `@hook` opens it on `HOOK_MS` of the take from there, on the whole (`hooked`), with its hook line (the
+//! Short's title) as its one caption, then the take from its start — nothing before the hook, no title card; its end card the brush swing (10-27's,
+//! its frames made once — `intro_dir` —, `t a r a e` under it, the title said as the caption; `BRAND_MS`). Where a
+//! part begins — the hook into the take, the take into the end card, one take into the next (`Recorded::joined`) — the
+//! whole screen changes at once, so the two cross over `camera::CROSS_MS`, never a cut. Its take has tarae draw its
+//! fades and drying at the video's rate (`FRAME_MS`); and a sound track (`sound::track`: tarae's own strokes for the
+//! keys typed, a stamp for a card's answer, the settle where an edit lands, Claude's writing as tarae's reveal plays
+//! it — the scene's `@sound:stamp`, `@sound:settle`, and its `@sound:writing`/`@sound:landing` … `@sound:still` spans,
+//! `writing` —, then the end card's brush, its swish and tap, `sound::brush`) as AAC. The wide video ignores `@zoom`,
+//! `@sound` and `@hook`, and stays silent.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -90,28 +93,27 @@ const CAPTION_PAD: (usize, usize) = (26, 12);
 const CAPTION_R: f32 = 18.0;
 const CAPTION_GROUND: Rgb = [0x0b, 0x0d, 0x11];
 const CAPTION_INK: Rgb = [0xe6, 0xe1, 0xcf];
-/// A Short's hook, its title said as a caption over the intro: its first word with the brush's tap.
-const HOOK_FROM: u64 = 800;
-/// The air between the intro's name and the caption's box (px).
+/// A Short's title said as a caption on its end card: its first word with the brush's tap.
+const TITLE_FROM: u64 = 800;
+/// The air between the end card's name and the caption's box (px).
 const INTRO_ABOVE: usize = 48;
 /// A Short's screen: a laptop's narrow terminal's columns; its rows what the window holds at their width.
 pub(crate) const SHORT_COLS: u16 = 80;
 /// The largest glyph a Short's camera draws (a narrow card's: ~36 columns across).
 const SHORT_PX_MAX: u32 = 40;
-/// A Short's title card and end card: it's swiped past in a second, so its title stands shorter.
-const SHORT_TITLE_MS: u64 = 1_200;
-/// A Short's intro in its title card's place (CLAUDE.md's Shorts bullet: 10-27's brush swing): its length — the swing,
-/// the brush's tap on the cursor at 0.8 s, the name and the title risen under it —, then straight onto the whole. Its
+/// A Short's end card, the brand (CLAUDE.md's Shorts bullet: the hook first, the brand last — 10-27's brush swing): its
+/// length — the swing, the brush's tap on the cursor at 0.8 s, the name and the title risen under it, then held. Its
 /// frames are made once (`INTRO_FPS`, main's `.sb/youtube/shorts-intro/`, `intro_dir`), the last held.
-const INTRO_MS: u64 = 2_200;
-// (the hook is a phrase too: it stands long enough to read)
-const _: () = assert!(INTRO_MS - HOOK_FROM >= captions::STAND_MIN_MS);
+const BRAND_MS: u64 = 3_000;
+// (the title is the Short's last caption: it stands as long as a last beat's)
+const _: () = assert!(BRAND_MS - TITLE_FROM >= captions::TAIL_MIN_MS);
 const INTRO_FPS: u64 = 30;
 /// The name rising under the mascot (from, to — the intro's ms) by `INTRO_RISE_PX`, as 10-27's did.
 const NAME_RISE: (u64, u64) = (1_100, 1_500);
 const INTRO_RISE_PX: f32 = 20.0;
-/// The intro's name, larger than a card's: the mascot is.
+/// The end card's name, larger than a card's: the mascot is.
 const INTRO_NAME_PX: f32 = 96.0;
+/// A Short's end card where it has no swing (its frames not made): the title card's, still.
 const SHORT_END_MS: u64 = 2_500;
 /// A `@zoom`'s target may be drawn a frame after its key: looked for this long after it.
 const FIND_MS: u64 = 2_000;
@@ -131,8 +133,10 @@ fn read_glyph(whole: f32, window: Region, screen: (u16, u16)) -> (f32, f32) {
     let px = whole * camera::nearer(window, screen) / camera::nearer(Region::all(screen), screen);
     (px, px / SHORT.0 as f32 * PHONE_MM)
 }
-/// A Short's opening on its punchline (the scene's `@punch`): this long of the take from there, before the title card.
-const PUNCH_MS: u64 = 1_500;
+/// A Short's hook (the scene's `@hook`): this long of the take from there, its hook line standing over it from the first
+/// frame — never two seconds of anything else before it (CLAUDE.md's Shorts bullet) —, then the take from its start.
+const HOOK_MS: u64 = 2_000;
+const _: () = assert!(HOOK_MS >= captions::STAND_MIN_MS + camera::CROSS_MS);
 /// A writing step this much past the last ends its burst; a burst of an edit that lands unseen (`@sound:landing`)
 /// settles `LANDS_MS` after its last step.
 const BURST_GAP_MS: u64 = 400;
@@ -153,14 +157,6 @@ impl Form {
             Form::Wide => (W, H),
             Form::Short => SHORT,
         }
-    }
-
-    fn title_ms(self) -> u64 {
-        if self == Form::Short { SHORT_TITLE_MS } else { TITLE_MS }
-    }
-
-    fn end_ms(self) -> u64 {
-        if self == Form::Short { SHORT_END_MS } else { END_MS }
     }
 
     /// The take's last screen held before the end card: the wide video's `LAST_MS`; a Short's only its crossing's time
@@ -260,8 +256,8 @@ pub(crate) struct Made {
 }
 
 /// `rec` as a video at `mp4` on `bg`'s theme in `form`, `title` on its title card, `sheet.png` of its frames beside it
-/// (a Short's sound track too, `<scene>.wav`). Every text it draws passes `none_of_yours` with `yours` (the screens
-/// did, as they were taken).
+/// (a Short's sound track too, `<scene>.wav`, `music` its bed where it has one — `sound::bedded`). Every text it draws
+/// passes `none_of_yours` with `yours` (the screens did, as they were taken).
 pub(crate) fn make(
     rec: &Recorded,
     bg: Bg,
@@ -269,6 +265,7 @@ pub(crate) fn make(
     mp4: &Path,
     yours: Option<&OsStr>,
     form: Form,
+    music: Option<&Path>,
 ) -> Result<Made> {
     let Some(first) = rec.frames.first() else { return Err("the take kept no frame".into()) };
     for text in rec.beats.iter().map(|b| b.1.as_str()).chain([title]) {
@@ -324,19 +321,19 @@ pub(crate) fn make(
         Form::Wide => (Vec::new(), Vec::new()),
     };
     missed.extend(noted_missed);
-    // (a Short's intro in its title card's place: the mascot's swing and the name above the caption's place, its own
-    // title said there as the hook — the mascot made smaller where the two don't fit above it)
-    let intro = match (form, intro_frames(bg)) {
+    // (a Short's end card, the brand: the mascot's swing and the name above the caption's place, its own title said
+    // there — the mascot made smaller where the two don't fit above it)
+    let brand = match (form, intro_frames(bg)) {
         (Form::Wide, _) => None,
         (Form::Short, Ok(frames)) => {
-            let name = text("t a r a e", INTRO_NAME_PX, look.accent, look.ground, true, &fonts);
-            let room = intro_room(caption_h(&fonts));
+            let name = brand_name(&look, &fonts);
+            let room = brand_room(title, &fonts);
             let k = frames.first().map_or(1.0, |f| intro_fit(f.1, name.1, room));
             let frames = if k < 1.0 { frames.iter().map(|f| shrunk(f, k)).collect() } else { frames };
-            Some(Intro { frames, name, hook: captions::phrase(title, HOOK_FROM, &[]), room })
+            Some(Brand { frames, name, title: captions::phrase(title, TITLE_FROM, &[]), room })
         }
         (Form::Short, Err(e)) => {
-            missed.push(format!("no intro ({e}): the title card in its place"));
+            missed.push(format!("no brush swing ({e}): the title card for the end card"));
             None
         }
     };
@@ -390,7 +387,8 @@ pub(crate) fn make(
     let changed: Vec<f32> = (0..cells.len())
         .map(|i| if i == 0 { 0.0 } else { camera::changed(&cells[i - 1], &cells[i]) })
         .collect();
-    let fades = camera::crossfades(&changed);
+    // (…and where one take goes on to the next, whatever changed)
+    let fades = with_joins(camera::crossfades(&changed), &times, &rec.joins);
     // (a news read's toast laid over the window's top while the camera is there)
     let news: Vec<(u64, u64, String)> = (course.reads.iter().zip(&aims))
         .filter_map(|(r, a)| {
@@ -450,10 +448,12 @@ pub(crate) fn make(
                 ));
             }
             for &i in &fades {
+                let join = with_joins(Vec::new(), &times, &rec.joins).contains(&i);
                 said.push(format!(
-                    "crossed at {:.1} s: {:.0} % of the cells changed",
+                    "crossed at {:.1} s: {:.0} % of the cells changed{}",
                     s(times[i]),
-                    changed[i] * 100.0
+                    changed[i] * 100.0,
+                    if join { ", where the two takes join" } else { "" }
                 ));
             }
             // (every 10 ms: the camera exactly on the whole, or zoomed — held at a read's window, or easing in or out —;
@@ -501,9 +501,13 @@ pub(crate) fn make(
             said
         }
     };
-    // (a Short opens on its punchline where the scene marks one: the read held there)
-    let punch = rec.punch.filter(|_| form == Form::Short).map(|m| course.punch(m));
-    let lead = punch.map_or(0, |_| PUNCH_MS) + intro.as_ref().map_or(form.title_ms(), |_| INTRO_MS);
+    // (a Short opens on its hook where the scene marks one, on the whole, else on its take; the wide video on its title
+    // card)
+    let hook = rec.hook.filter(|_| form == Form::Short);
+    let lead = match form {
+        Form::Short => hook.map_or(0, |_| HOOK_MS),
+        Form::Wide => TITLE_MS,
+    };
     let video = Video {
         rec,
         times,
@@ -521,9 +525,10 @@ pub(crate) fn make(
         news,
         screen,
         whole,
-        punch,
+        hook,
         lead,
-        intro,
+        hook_line: title.to_string(),
+        brand,
         notes,
     };
     missed.extend(video.checked());
@@ -559,21 +564,24 @@ pub(crate) fn make(
                 count(|h| matches!(h, Heard::Settle)),
             );
             let length = Duration::from_millis(frames * 1000 / FPS);
-            // (the intro's brush: its swish and tap, from the intro's start)
-            let brush =
-                video.intro.as_ref().map(|_| Duration::from_millis(video.punch.map_or(0, |_| PUNCH_MS)));
+            // (the end card's brush: its swish and tap, from the end card's start)
+            let brush = video.brand.as_ref().map(|_| Duration::from_millis(video.lead + video.shown_ms));
             // (the AAC's true peak at `AAC_MARGIN_DB` under `AAC_PEAK_DB` as encoded: the limiter's ceiling moved by what
             // the encoder put on top of it or left under, measured, until it is — within `AAC_NEAR_DB`, never over, the
             // ceiling itself never past that aim, `AAC_TRIES` at most; a lower ceiling also lowers the keys' gain, the
             // limiter taking no more from them)
             let wav = mp4.with_extension("wav");
+            let music = match music {
+                Some(m) => Some(decoded(&ffmpeg, m, length + Duration::from_secs(BED_SPARE_S))?),
+                None => None,
+            };
             let (mut ceilings, mut tracks) = (Vec::new(), Vec::new());
             let mut ceiling = sound::SHORT_CEILING_DB;
             let measured = |ceilings: &[(f32, std::result::Result<f32, String>)]| -> Vec<(f32, f32)> {
                 ceilings.iter().filter_map(|(c, p)| Some((*c, *p.as_ref().ok()?))).collect()
             };
             loop {
-                let track = sound::track(&heard, length, brush, ceiling);
+                let track = sound::track(&heard, length, brush, ceiling, music.as_deref());
                 sound::wav(&wav, &track.samples)?;
                 let peak = aac_peak(&ffmpeg, &wav);
                 let failed = peak.is_err();
@@ -604,6 +612,7 @@ pub(crate) fn make(
         lufs: t.lufs,
         gain: t.gain,
         brush: t.brush,
+        bed: t.bed,
         ceilings,
         encoded: loudness(&ffmpeg, mp4),
     });
@@ -654,10 +663,10 @@ fn next_ceiling(tried: &[(f32, f32)]) -> Option<f32> {
 /// Two ceilings this near (dB) are one.
 const SAME_DB: f32 = 0.05;
 
-/// Of the ceilings tried (with the AAC's true peak each came out at), the one to keep: the highest whose AAC is at most
-/// `AAC_PEAK_DB`, else the one whose AAC came out lowest.
+/// Of the ceilings tried (with the AAC's true peak each came out at), the one to keep: the highest whose AAC is under
+/// `AAC_PEAK_DB` (ebur128 says a tenth of a dB: −1.0 may be −0.96), else the one whose AAC came out lowest.
 fn best_ceiling(tried: &[(f32, f32)]) -> Option<f32> {
-    let under = tried.iter().filter(|t| t.1 <= AAC_PEAK_DB).max_by(|a, b| a.0.total_cmp(&b.0));
+    let under = tried.iter().filter(|t| t.1 < AAC_PEAK_DB).max_by(|a, b| a.0.total_cmp(&b.0));
     under.or_else(|| tried.iter().min_by(|a, b| a.1.total_cmp(&b.1))).map(|t| t.0)
 }
 
@@ -693,7 +702,32 @@ pub(crate) struct Sound {
     pub(crate) gain: f32,
     pub(crate) ceilings: Vec<(f32, std::result::Result<f32, String>)>,
     pub(crate) brush: Option<(f32, f32)>,
+    pub(crate) bed: Option<sound::Bedded>,
     pub(crate) encoded: std::result::Result<(f32, f32), String>,
+}
+
+/// A music bed decoded past what a take needs, for where its sound starts (s).
+const BED_SPARE_S: u64 = 10;
+
+/// `music`'s first `upto` as `sound::track` takes it: mono at `sound::RATE`, decoded by ffmpeg (any file it reads — an
+/// MP3 from YouTube Studio's Audio Library), its channels mixed down as the hand mix's `amix` did.
+fn decoded(ffmpeg: &Path, music: &Path, upto: Duration) -> Result<Vec<f32>> {
+    let out = Command::new(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(music)
+        .args(["-t", &format!("{:.3}", upto.as_secs_f64()), "-ac", "1", "-ar"])
+        .arg(sound::RATE.to_string())
+        .args(["-f", "f32le", "-"])
+        .output()
+        .map_err(|e| format!("{}: {e}", ffmpeg.display()))?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return Err(format!(
+            "{}: no sound decoded — {}",
+            music.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(out.stdout.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
 }
 
 /// The MP4's sound as a player hears it: ffmpeg's `ebur128` over its AAC — its summary's integrated loudness and true
@@ -924,8 +958,7 @@ fn tail_short(notes: &[Noted], tail: Option<(usize, u64)>) -> Option<String> {
     ))
 }
 
-/// What a Short hears, at its time in the video (the take's after `lead` ms: the punchline and the title card, both
-/// silent): each key sent (a `@type:` character one by one; a key sent whole — a paste, an escape — one stroke), each
+/// What a Short hears, at its time in the video (the take's after `lead` ms: the hook silent): each key sent (a `@type:` character one by one; a key sent whole — a paste, an escape — one stroke), each
 /// `@sound:stamp` (the key after it within `STAMP_KEY_MS` its own) and `@sound:settle`, and Claude's writing inside
 /// the scene's `@sound:writing` and `@sound:landing` spans (`writing`); another `@sound:` said.
 fn heard(rec: &Recorded, lead: u64) -> (Vec<(Duration, Heard)>, Vec<String>) {
@@ -1203,6 +1236,39 @@ fn text(text: &str, px: f32, fg: Rgb, ground: Rgb, bold: bool, fonts: &Fonts) ->
     shot::render_px(p.screen(), fonts, px)
 }
 
+/// The end card's name: `t a r a e` in the accent, the address `tarae.sh` under it in ink (the user, 2026-11-05: where to
+/// find it, said where the brand is), one picture that rises as one — the address close under the name, nearer it than
+/// the title's box under them both (`ADDRESS_UP`).
+fn brand_name(look: &Look, fonts: &Fonts) -> Picture {
+    let name = text("t a r a e", INTRO_NAME_PX, look.accent, look.ground, true, fonts);
+    let address = text("tarae.sh", LINE_PX, look.ink, look.ground, false, fonts);
+    stacked(&[name, address], ADDRESS_UP, look.ground)
+}
+
+/// How far the address is drawn up into the name's picture (px): the two renderer margins between them and some of the
+/// air under the name's letters (they have no descenders).
+const ADDRESS_UP: usize = 48;
+
+/// `pics` one under another, each centred across the widest and `up` px into the one above, on `ground` — each one's
+/// ground left out where it lies over the one above, so its letters are never covered.
+fn stacked(pics: &[Picture], up: usize, ground: Rgb) -> Picture {
+    let w = pics.iter().map(|p| p.0).max().unwrap_or(0);
+    let h = pics.iter().map(|p| p.1).sum::<usize>() - up * pics.len().saturating_sub(1);
+    let mut px = ground.repeat(w * h);
+    let mut y0 = 0;
+    for (pw, ph, src) in pics {
+        let x0 = (w - pw) / 2;
+        for (y, row) in src.chunks(pw * 3).take(*ph).enumerate() {
+            for (x, c) in row.as_chunks::<3>().0.iter().enumerate().filter(|(_, c)| **c != ground) {
+                let at = ((y0 + y) * w + x0 + x) * 3;
+                px[at..at + 3].copy_from_slice(c);
+            }
+        }
+        y0 += ph - up;
+    }
+    (w, h, px)
+}
+
 /// A caption's lines, a row of cells each at `CAPTION_SHORT_PX`, bold, in its ink on its ground, by the shots' renderer.
 fn caption_text(lines: &[String], fonts: &Fonts) -> Picture {
     let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(1).max(1) as u16;
@@ -1298,33 +1364,74 @@ fn ffmpeg() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Which part of the video its `t` ms is in: a Short's punchline (the take's ms from `punch`, `PUNCH_MS` long), the
-/// title card or a Short's intro in its place (to `lead`), the take (its ms, `shown` long — a Short's first beat opens on the whole), then the end card.
+/// Which part of the video its `t` ms is in: a Short's hook (the take's ms from `hook`, to `lead`) or the wide video's
+/// title card, the take (its ms, `shown` long — a Short's first beat opens on the whole), then the end card (its ms).
 #[derive(Debug, PartialEq)]
 enum Part {
-    Punch(u64),
+    Hook(u64),
     Title,
     Take(u64),
-    End,
+    End(u64),
 }
 
-fn part(t: u64, punch: Option<u64>, lead: u64, shown: u64) -> Part {
-    match punch {
-        Some(from) if t < PUNCH_MS => Part::Punch(from + t),
+fn part(t: u64, hook: Option<u64>, lead: u64, shown: u64) -> Part {
+    match hook {
+        Some(from) if t < lead => Part::Hook(from + t),
         _ if t < lead => Part::Title,
         _ if t < lead + shown => Part::Take(t - lead),
-        _ => Part::End,
+        _ => Part::End(t - lead - shown),
     }
+}
+
+/// The take as a Short's hook shows it (CLAUDE.md's Shorts bullet: "one a stranger reads in a second — the whole
+/// screen's activity"): on the whole whatever the camera does there — no zoom, no news read's toast —, the beat's own
+/// caption and the take's phrases left out for the hook line.
+fn hooked(take: Take, screen: (u16, u16)) -> Take {
+    Take { region: Region::all(screen), news: None, came: 255, captions: [None; 2], ..take }
+}
+
+/// Where a Short's parts begin past its first (ms in the video): the take after its hook, the end card after the take —
+/// each a crossing from the part before.
+fn part_starts(lead: u64, shown: u64) -> Vec<u64> {
+    [lead, lead + shown].into_iter().filter(|&b| b > 0).collect()
+}
+
+/// A crossing at `t` ms from the part before: where it began and how far the new part is drawn over the old (of 255),
+/// while `CROSS_MS` hasn't passed since `starts`' last at or before `t`.
+fn part_crossing(starts: &[u64], t: u64) -> Option<(u64, u8)> {
+    let &b = starts.iter().rev().find(|&&b| b <= t)?;
+    let a = camera::ease_in_out((t - b) as f32 / camera::CROSS_MS as f32);
+    (t < b + camera::CROSS_MS).then(|| (b, (a * 255.0).round() as u8))
+}
+
+/// `fades` (frames a crossing comes by) with the first frame at or after each of `joins` (ms) among `times` — the next
+/// take's first, where two are cut together —, in order, once.
+fn with_joins(mut fades: Vec<usize>, times: &[u64], joins: &[u64]) -> Vec<usize> {
+    fades.extend(
+        joins.iter().map(|&j| times.partition_point(|&t| t < j)).filter(|&i| 0 < i && i < times.len()),
+    );
+    fades.sort_unstable();
+    fades.dedup();
+    fades
 }
 
 /// What one frame of the video shows.
 #[derive(Clone, Copy, PartialEq)]
 enum Shows {
     Title,
-    /// A Short's intro, its ms.
-    Intro(u64),
+    /// A Short's hook: the take there, its hook line its one caption.
+    Hook(Take),
     Screen(Take),
+    /// A Short's end card with its brush swing, its ms.
+    Brand(u64),
     End,
+}
+
+/// A frame: what it shows, and — where a Short's part has just begun — what it crosses from, drawn over that by (of 255).
+#[derive(Clone, Copy, PartialEq)]
+struct Framed {
+    shows: Shows,
+    from: Option<(Shows, u8)>,
 }
 
 /// The take as one frame shows it: the screen in force, and the one it crosses from with how far the screen in force is
@@ -1462,13 +1569,26 @@ fn resample(out: &mut [u8], w: usize, at: (usize, usize), size: (usize, usize), 
     }
 }
 
-/// A caption's box, its height: a row of its glyphs and its air above and below.
-fn caption_h(fonts: &Fonts) -> usize {
-    shot::cell(fonts, CAPTION_SHORT_PX).1 + 2 * CAPTION_PAD.1
+/// The end card's room above its `title` said as the caption (`intro_room`): `INTRO_ABOVE` over that box as drawn, its
+/// lines however many (a title of two stands half a line higher than one).
+fn brand_room(title: &str, fonts: &Fonts) -> (usize, usize) {
+    intro_room(caption_size(title, fonts).1 as usize)
+}
+
+/// A phrase at its fullest as a caption's lines: wrapped to the safe zone's width less its box's air.
+fn caption_lines(fullest: &str, fonts: &Fonts) -> Vec<String> {
+    let cols = (safe_w() - 2 * CAPTION_PAD.0 - 2 * PAD) / shot::cell(fonts, CAPTION_SHORT_PX).0;
+    wrap(fullest, cols.max(8))
+}
+
+/// A phrase's caption box at its fullest (px): its lines' picture and its air.
+fn caption_size(fullest: &str, fonts: &Fonts) -> (f32, f32) {
+    let pic = caption_text(&caption_laid(fullest, &caption_lines(fullest, fonts), 0), fonts);
+    ((pic.0 + 2 * CAPTION_PAD.0) as f32, (pic.1 + 2 * CAPTION_PAD.1) as f32)
 }
 
 /// Where the intro's mascot and name stand above the caption's place: the safe zone's top to `INTRO_ABOVE` over the
-/// caption's box (`caption_h` tall), px.
+/// caption's box (`caption_h` tall — the end card's title's own, its lines as drawn), px.
 fn intro_room(caption_h: usize) -> (usize, usize) {
     let top = SAFE.0;
     let caption = captions::at(band_px(), (0.0, caption_h as f32));
@@ -1542,27 +1662,29 @@ struct Video<'a> {
     news: Vec<(u64, u64, String)>,
     screen: (u16, u16),
     whole: f32,
-    /// A Short's punchline: the take's ms it opens on (`PUNCH_MS` of it, before the title card).
-    punch: Option<u64>,
-    /// The video's ms before the take starts: the punchline's and the title card's (or the intro's).
+    /// A Short's hook: the take's ms it opens on (to `lead`, before the take from its start).
+    hook: Option<u64>,
+    /// The video's ms before the take starts: a Short's hook (none without one), the wide video's title card.
     lead: u64,
-    intro: Option<Intro>,
+    /// A Short's hook line, its title: the hook's one caption.
+    hook_line: String,
+    brand: Option<Brand>,
     notes: Vec<Noted>,
 }
 
-/// A Short's intro: the swing's frames (RGBA, the mascot alone, made smaller where it must be — `intro_fit`), its name
-/// drawn by the recorder, its hook (the Short's title, said as its caption) and the room above the caption's place
+/// A Short's end card, the brand: the swing's frames (RGBA, the mascot alone, made smaller where it must be —
+/// `intro_fit`), its name and address drawn by the recorder (`brand_name`), its title said as its caption and the room above the caption's place
 /// (`intro_room`).
-struct Intro {
+struct Brand {
     frames: Vec<Rgba>,
     name: Picture,
-    hook: captions::Phrase,
+    title: captions::Phrase,
     room: (usize, usize),
 }
 
-/// Where the intro's parts stand on a Short (x, y — px): the swing's box, then the name under it, centred across the
+/// Where the end card's parts stand on a Short (x, y — px): the swing's box, then the name under it, centred across the
 /// safe area and down its room above the caption's place.
-fn intro_laid(intro: &Intro) -> Vec<(usize, usize)> {
+fn intro_laid(intro: &Brand) -> Vec<(usize, usize)> {
     let (_, right, _, left) = SAFE;
     let safe_w = SHORT.0 - left - right;
     let (top, bottom) = intro.room;
@@ -1592,7 +1714,16 @@ fn caption_laid(fullest: &str, lines: &[String], shown: usize) -> Vec<String> {
 
 impl Video<'_> {
     fn frames(&self) -> u64 {
-        ((self.lead + self.shown_ms + self.form.end_ms()) * FPS).div_ceil(1000)
+        ((self.lead + self.shown_ms + self.end_ms()) * FPS).div_ceil(1000)
+    }
+
+    /// The end card's length: a Short's brush swing (its title card where it has none), the wide video's card.
+    fn end_ms(&self) -> u64 {
+        match (self.form, &self.brand) {
+            (Form::Wide, _) => END_MS,
+            (Form::Short, Some(_)) => BRAND_MS,
+            (Form::Short, None) => SHORT_END_MS,
+        }
     }
 
     /// The take as it stands at its `ms`, screen `i` in force: the beat (and how far its caption has come in), and a
@@ -1656,23 +1787,20 @@ impl Video<'_> {
         &drawn[k].1
     }
 
-    /// A phrase at its fullest as a caption's lines: wrapped to the safe zone's width less its box's air.
     fn caption_lines(&self, fullest: &str) -> Vec<String> {
-        let cols = (safe_w() - 2 * CAPTION_PAD.0 - 2 * PAD) / shot::cell(&self.fonts, CAPTION_SHORT_PX).0;
-        wrap(fullest, cols.max(8))
+        caption_lines(fullest, &self.fonts)
     }
 
-    /// A phrase's caption box at its fullest (px): its lines' picture and its air.
     fn caption_size(&self, fullest: &str) -> (f32, f32) {
-        let pic = caption_text(&caption_laid(fullest, &self.caption_lines(fullest), 0), &self.fonts);
-        ((pic.0 + 2 * CAPTION_PAD.0) as f32, (pic.1 + 2 * CAPTION_PAD.1) as f32)
+        caption_size(fullest, &self.fonts)
     }
 
-    /// What the captions' places say before the take is drawn: each caption — the hook too — whose box the band doesn't
-    /// hold (it would run down into what YouTube's own title covers), with its lines and px against the band's.
+    /// What the captions' places say before the take is drawn: each caption — the hook line too, the end card's title —
+    /// whose box the band doesn't hold (it would run down into what YouTube's own title covers), with its lines and px
+    /// against the band's.
     fn checked(&self) -> Vec<String> {
         let band = band_px();
-        let hook = self.intro.as_ref().map(|i| ("the hook".to_string(), i.hook.fullest()));
+        let hook = (self.form == Form::Short).then(|| ("the hook line".to_string(), self.hook_line.as_str()));
         let notes =
             (self.notes.iter()).map(|n| (format!("@note:{} → {}", n.written, n.target), n.phrase.fullest()));
         let mut said = Vec::new();
@@ -1733,19 +1861,43 @@ impl Video<'_> {
     }
 
     fn shows(&self, k: u64) -> Shows {
-        match part(Self::ms(k), self.punch, self.lead, self.shown_ms) {
-            // (the punchline: the take from its mark, its caption standing as it was there)
-            Part::Punch(at) => {
+        match part(Self::ms(k), self.hook, self.lead, self.shown_ms) {
+            // (the hook: the take from its mark on the whole, its hook line in its captions' place)
+            Part::Hook(at) => {
                 let i = self.times.partition_point(|&s| s <= at).saturating_sub(1);
-                Shows::Screen(Take { came: 255, ..self.take_at(at, i) })
-            }
-            Part::Title if self.intro.is_some() => {
-                Shows::Intro(Self::ms(k) - self.punch.map_or(0, |_| PUNCH_MS))
+                Shows::Hook(hooked(self.take_at(at, i), self.screen))
             }
             Part::Title => Shows::Title,
             Part::Take(at) => self.take_at(at, screen_at(&self.times, k - self.lead * FPS / 1000)).into(),
-            Part::End => Shows::End,
+            Part::End(ms) if self.form == Form::Short => match self.brand {
+                Some(_) => Shows::Brand(ms),
+                None => Shows::Title,
+            },
+            Part::End(_) => Shows::End,
         }
+    }
+
+    /// The `k`th frame: what it shows, and where a Short's part has just begun the last frame of the one before, which
+    /// it crosses from (`part_crossing`).
+    fn framed(&self, k: u64) -> Framed {
+        let shows = self.shows(k);
+        let starts =
+            if self.form == Form::Short { part_starts(self.lead, self.shown_ms) } else { Vec::new() };
+        let from = part_crossing(&starts, Self::ms(k))
+            .filter(|c| c.1 < 255)
+            .map(|(b, a)| (self.shows((b * FPS).div_ceil(1000) - 1), a));
+        Framed { shows, from }
+    }
+
+    /// `framed` drawn: what it shows over what it crosses from, by its part.
+    fn crossed(&self, f: Framed, drawn: &mut Drawn, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
+        let to = self.frame(f.shows, drawn, pics);
+        let Some((from, a)) = f.from else { return to };
+        let mut under = self.frame(from, drawn, pics);
+        for (u, n) in under.as_chunks_mut::<3>().0.iter_mut().zip(to.as_chunks::<3>().0) {
+            mix(u, *n, a);
+        }
+        under
     }
 
     /// The frame `shows` says, its screens drawn into `drawn` when they aren't there and its words' pictures (a
@@ -1753,8 +1905,13 @@ impl Video<'_> {
     fn frame(&self, shows: Shows, drawn: &mut Drawn, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
         let take = match shows {
             Shows::Title => return self.cards.0.clone(),
-            Shows::Intro(ms) => return self.intro_frame(ms, pics),
+            Shows::Brand(ms) => return self.brand_frame(ms, pics),
             Shows::End => return self.cards.1.clone(),
+            Shows::Hook(take) => {
+                let mut out = self.short_frame(take, drawn, pics);
+                self.caption_drawn(&mut out, &self.hook_line, self.hook_line.chars().count(), 1.0, pics);
+                return out;
+            }
             Shows::Screen(take) => take,
         };
         if self.form == Form::Short {
@@ -1786,11 +1943,11 @@ impl Video<'_> {
         px
     }
 
-    /// A Short's intro `ms` in: the swing's frame then (the last held) over the ground, the name rising in under it
-    /// (`NAME_RISE`: eased, `INTRO_RISE_PX` up), and the hook said as the caption, from the brush's tap (`HOOK_FROM`),
+    /// A Short's end card `ms` in: the swing's frame then (the last held) over the ground, the name rising in under it
+    /// (`NAME_RISE`: eased, `INTRO_RISE_PX` up), and the title said as the caption, from the brush's tap (`TITLE_FROM`),
     /// eased in.
-    fn intro_frame(&self, ms: u64, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
-        let Some(intro) = &self.intro else { return self.cards.0.clone() };
+    fn brand_frame(&self, ms: u64, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
+        let Some(intro) = &self.brand else { return self.cards.0.clone() };
         let mut out = self.look.ground.repeat(SHORT.0 * SHORT.1);
         let laid = intro_laid(intro);
         let k = ((ms * INTRO_FPS / 1000) as usize).min(intro.frames.len() - 1);
@@ -1820,10 +1977,10 @@ impl Video<'_> {
                 (up * 255.0) as u8,
             );
         }
-        let shown = captions::shown(&intro.hook, ms);
+        let shown = captions::shown(&intro.title, ms);
         if shown > 0 {
-            let a = camera::ease_in_out(ms.saturating_sub(HOOK_FROM) as f32 / captions::FADE_MS as f32);
-            self.caption_drawn(&mut out, intro.hook.fullest(), shown, a, pics);
+            let a = camera::ease_in_out(ms.saturating_sub(TITLE_FROM) as f32 / captions::FADE_MS as f32);
+            self.caption_drawn(&mut out, intro.title.fullest(), shown, a, pics);
         }
         out
     }
@@ -1926,12 +2083,12 @@ impl Video<'_> {
             .map_err(|e| format!("{}: {e}", ffmpeg.display()))?;
         let mut stdin = child.stdin.take().ok_or("ffmpeg's stdin")?;
         let (mut drawn, mut captions) = (Vec::new(), HashMap::new());
-        let mut last: Option<(Shows, Vec<u8>)> = None;
+        let mut last: Option<(Framed, Vec<u8>)> = None;
         let (mut wrote, mut differ) = (Ok(()), 0);
         for k in 0..self.frames() {
-            let shows = self.shows(k);
+            let shows = self.framed(k);
             if last.as_ref().is_none_or(|l| l.0 != shows) {
-                let px = self.frame(shows, &mut drawn, &mut captions);
+                let px = self.crossed(shows, &mut drawn, &mut captions);
                 differ += u64::from(last.as_ref().is_none_or(|l| l.1 != px));
                 last = Some((shows, px));
             }
@@ -1967,22 +2124,25 @@ impl Video<'_> {
         for &i in &self.fades {
             marks.push((lead + self.times[i] + camera::CROSS_MS / 2, "crossing".into()));
         }
-        if self.punch.is_some() {
-            marks.push((PUNCH_MS / 2, "punchline".into()));
+        if self.hook.is_some() {
+            marks.push((0, "the hook".into()));
         }
-        if self.intro.is_some() {
-            let from = self.punch.map_or(0, |_| PUNCH_MS);
-            marks.extend([(from + 800, "intro: the tap".into()), (lead - 100, "intro: the name".into())]);
+        // (the end card's first frame: the first whose ms is past the take's; the brush's tap, the name and title risen)
+        let end = Self::ms(((lead + self.shown_ms) * FPS).div_ceil(1000));
+        marks.push((end, "end card".into()));
+        if self.brand.is_some() {
+            marks.extend([
+                (end + TITLE_FROM, "end card: the tap".into()),
+                (end + BRAND_MS - 100, "end card: held".into()),
+            ]);
         }
         marks.sort_by_key(|m| m.0);
-        // (the end card's first frame: the first whose ms is past the take's)
-        marks.push((Self::ms(((lead + self.shown_ms) * FPS).div_ceil(1000)), "end card".into()));
         let picks = recording::sheet_picks(&times, &marks, recording::SHEET_EVERY_MS);
         let (mut drawn, mut captions) = (Vec::new(), HashMap::new());
         let pictures: Vec<Picture> = picks
             .iter()
             .map(|(k, said)| {
-                let frame = self.frame(self.shows(*k as u64), &mut drawn, &mut captions);
+                let frame = self.crossed(self.framed(*k as u64), &mut drawn, &mut captions);
                 recording::labelled(
                     half(&frame, dims),
                     said,
@@ -2020,7 +2180,8 @@ mod tests {
         assert!(near(next_ceiling(&[(-1.4, -0.7), (-1.7, -1.0)]), -2.0), "under the lowest over");
         assert_eq!(next_ceiling(&[(-1.7, -1.0), (-1.75, -1.9)]), None, "no room left between");
         // (kept: the highest under the AAC's limit, else the lowest AAC)
-        assert_eq!(best_ceiling(&[(-2.0, -1.9), (-1.4, -0.7), (-1.7, -1.0)]), Some(-1.7));
+        assert_eq!(best_ceiling(&[(-2.0, -1.9), (-1.4, -0.7), (-1.7, -1.1)]), Some(-1.7));
+        assert_eq!(best_ceiling(&[(-2.0, -1.9), (-1.7, -1.0)]), Some(-2.0), "under −1, not at it");
         assert_eq!(best_ceiling(&[(-1.7, -0.9), (-1.4, -0.7)]), Some(-1.7), "none under: the lowest");
         assert_eq!(best_ceiling(&[(-1.4, -1.2), (-1.7, -0.9)]), Some(-1.4), "not the last");
         assert_eq!(best_ceiling(&[]), None);
@@ -2043,22 +2204,67 @@ mod tests {
         assert_eq!(screen_at(&[50], 0), 0);
     }
 
-    /// A Short with a punchline opens on the take from its mark for `PUNCH_MS`, then the title card, then the take from
-    /// its start (its first beat on the whole), then the end card — a Short's take holding its last screen only for its
-    /// crossing, the wide one's `LAST_MS`; without one, the title card first.
+    /// The hook first, the brand last (CLAUDE.md's Shorts bullet): a Short with a hook opens on the take from its
+    /// mark for `HOOK_MS` — from its first frame, nothing before it —, then the take from its start (its first beat on
+    /// the whole), then the end card; without one, on the take. The wide video keeps its title card first. A Short's take
+    /// holds its last screen only for its crossing, the wide one's `LAST_MS`.
     #[test]
-    fn a_punchline_opens_the_video_then_the_title_then_the_take_from_its_start() {
+    fn a_short_opens_on_its_hook_then_its_take_from_its_start_then_its_brand() {
         assert_eq!((Form::Short.last_ms(), Form::Wide.last_ms()), (camera::CROSS_MS, LAST_MS));
-        let (title, shown) = (1_200, 10_000);
-        let lead = PUNCH_MS + title;
-        assert_eq!(part(0, Some(7_000), lead, shown), Part::Punch(7_000));
-        assert_eq!(part(PUNCH_MS - 1, Some(7_000), lead, shown), Part::Punch(7_000 + PUNCH_MS - 1));
-        assert_eq!(part(PUNCH_MS, Some(7_000), lead, shown), Part::Title);
-        assert_eq!(part(lead - 1, Some(7_000), lead, shown), Part::Title);
+        let shown = 10_000;
+        let lead = HOOK_MS;
+        assert_eq!(part(0, Some(7_000), lead, shown), Part::Hook(7_000));
+        assert_eq!(part(HOOK_MS - 1, Some(7_000), lead, shown), Part::Hook(7_000 + HOOK_MS - 1));
         assert_eq!(part(lead, Some(7_000), lead, shown), Part::Take(0));
-        assert_eq!(part(lead + shown, Some(7_000), lead, shown), Part::End);
-        assert_eq!(part(0, None, title, shown), Part::Title);
-        assert_eq!(part(title + 5, None, title, shown), Part::Take(5));
+        assert_eq!(part(lead + shown - 1, Some(7_000), lead, shown), Part::Take(shown - 1));
+        assert_eq!(part(lead + shown + 5, Some(7_000), lead, shown), Part::End(5));
+        assert_eq!(part(0, None, 0, shown), Part::Take(0), "no hook: the take at once");
+        assert_eq!(part(0, None, TITLE_MS, shown), Part::Title, "the wide video's title card");
+        assert_eq!(part(TITLE_MS + 5, None, TITLE_MS, shown), Part::Take(5));
+        // (the hook on the whole, whatever the camera does there: no zoom, no news toast, the hook line its one caption)
+        let screen = (80, 43);
+        let zoomed = Take {
+            i: 4,
+            cross: Some((3, 100)),
+            beat: Some(1),
+            came: 40,
+            region: Region { x: 10.0, y: 20.0, w: 40.0, h: 20.0 },
+            news: Some(0),
+            captions: [Some((2, 255, 7)), None],
+        };
+        let hook = hooked(zoomed, screen);
+        assert_eq!((hook.region, hook.news, hook.captions), (Region::all(screen), None, [None; 2]));
+        assert_eq!((hook.i, hook.cross, hook.came), (4, Some((3, 100)), 255), "the take's screen there");
+    }
+
+    /// Where a Short's part begins (the take after its hook, the end card after the take) the whole screen changes at
+    /// once: the new part crosses over the old's last frame for `CROSS_MS`, eased, never a cut — none at the video's
+    /// start; and where two takes are cut together (`Recorded::joined`) the next take's first frame crosses too, whatever
+    /// changed.
+    #[test]
+    fn a_shorts_parts_and_joined_takes_cross_never_cut() {
+        let starts = part_starts(HOOK_MS, 10_000);
+        assert_eq!(starts, [HOOK_MS, HOOK_MS + 10_000]);
+        assert_eq!(part_starts(0, 10_000), [10_000], "no hook: the end card's alone");
+        assert_eq!(part_crossing(&starts, HOOK_MS - 1), None, "the hook before its end");
+        assert_eq!(part_crossing(&starts, HOOK_MS), Some((HOOK_MS, 0)));
+        let half = part_crossing(&starts, HOOK_MS + camera::CROSS_MS / 2).unwrap();
+        assert!(half.0 == HOOK_MS && (100..156).contains(&half.1), "{half:?}");
+        assert_eq!(part_crossing(&starts, HOOK_MS + camera::CROSS_MS), None, "crossed");
+        assert_eq!(
+            part_crossing(&starts, HOOK_MS + 10_050).map(|c| c.0),
+            Some(HOOK_MS + 10_000),
+            "the end card"
+        );
+        // (the join: the first frame at or after it, among the crossings already there, once)
+        let times = [0, 100, 900, 1_000, 1_040, 2_000];
+        assert_eq!(with_joins(vec![4], &times, &[1_000]), [3, 4]);
+        assert_eq!(with_joins(vec![3], &times, &[950]), [3], "once");
+        assert_eq!(
+            with_joins(Vec::new(), &times, &[0, 9_000]),
+            [] as [usize; 0],
+            "no frame before, or none after"
+        );
     }
 
     fn rows(text: &[&str]) -> Vec<Option<String>> {
@@ -2116,10 +2322,11 @@ mod tests {
             notes: Vec::new(),
             keys: Vec::new(),
             sounds,
-            punch: None,
+            hook: None,
             missed: Vec::new(),
             wire: Vec::new(),
             end: 0,
+            joins: Vec::new(),
         };
         let ms = Duration::from_millis;
         assert_eq!(
@@ -2150,9 +2357,9 @@ mod tests {
         assert_eq!(small, (2, 1, vec![255, 0, 0, 127, 255, 0, 0, 127]), "by alpha: no fringe");
         let pic = |w: usize, h: usize| (w, h, vec![0; w * h * 3]);
         let w = (880.0 * k).round() as usize;
-        let hook = || captions::Phrase { said: Vec::new() };
+        let title = || captions::Phrase { said: Vec::new() };
         let intro =
-            Intro { frames: vec![(w, h, vec![0; w * h * 4])], name: pic(520, 140), hook: hook(), room };
+            Brand { frames: vec![(w, h, vec![0; w * h * 4])], name: pic(520, 140), title: title(), room };
         let laid = intro_laid(&intro);
         let (_, right, _, left) = SAFE;
         let sizes = [(w, h), (520, 140)];
@@ -2161,10 +2368,10 @@ mod tests {
             assert!(room.0 <= y && y + h <= room.1 + 1, "down, above the caption: {y} {h}");
         }
         // (a mascot smaller than its room: in the middle of it)
-        let fits = Intro {
+        let fits = Brand {
             frames: vec![(400, 400, vec![0; 400 * 400 * 4])],
             name: pic(520, 140),
-            hook: hook(),
+            title: title(),
             room,
         };
         let at = intro_laid(&fits);
@@ -2177,6 +2384,45 @@ mod tests {
         assert!(
             laid.windows(2).zip(&sizes).all(|(p, s)| p[0].1 + s.1 <= p[1].1),
             "one under another: {laid:?}"
+        );
+    }
+
+    /// The end card says where tarae is: `tarae.sh` under the name, in ink, the name in the accent — one picture, each
+    /// line centred across it, the address drawn up into the name's air but never over its letters, closer to them than
+    /// to the title's box (`INTRO_ABOVE` under the picture at least).
+    #[test]
+    fn the_end_card_says_tarae_sh_under_its_name() {
+        let fonts = Fonts::load(1).unwrap();
+        let look = look(Bg::Dark);
+        let (w, h, px) = brand_name(&look, &fonts);
+        let name = text("t a r a e", INTRO_NAME_PX, look.accent, look.ground, true, &fonts);
+        let address = text("tarae.sh", LINE_PX, look.ink, look.ground, false, &fonts);
+        assert_eq!((w, h), (name.0.max(address.0), name.1 + address.1 - ADDRESS_UP));
+        let rows = |c: Rgb| -> Vec<usize> {
+            (0..h).filter(|y| px[y * w * 3..(y + 1) * w * 3].as_chunks::<3>().0.contains(&c)).collect()
+        };
+        let (named, said) = (rows(look.accent), rows(look.ink));
+        let (name_foot, said_top, said_foot) = (named[named.len() - 1], said[0], said[said.len() - 1]);
+        assert!(name_foot < said_top, "the name above, its letters whole: {name_foot} {said_top}");
+        let (above, below) = (said_top - name_foot, h - said_foot + INTRO_ABOVE);
+        assert!(above < below, "nearer the name than the title: {above} {below}");
+        // (all of it `INTRO_ABOVE` over the title's box as drawn, its lines however many)
+        for title in ["Several Claudes. One repository.", "Watch Claude work. Take it back.", "tarae"] {
+            let drawn = captions::at(band_px(), caption_size(title, &fonts));
+            assert_eq!(brand_room(title, &fonts).1, drawn.y as usize - INTRO_ABOVE, "{title}");
+        }
+        assert_eq!(caption_lines("Watch Claude work. Take it back.", &fonts).len(), 2, "one that takes two");
+        // (each centred across the widest, `up` into the one above, its ground left out there)
+        let (a, b) = ((3, 2, vec![1; 18]), (1, 2, vec![0, 0, 0, 2, 2, 2]));
+        let (sw, sh, s) = stacked(&[a.clone(), b.clone()], 0, [0; 3]);
+        assert_eq!((sw, sh), (3, 4));
+        assert_eq!(s, [[1; 18].as_slice(), &[0; 9], &[0, 0, 0, 2, 2, 2, 0, 0, 0]].concat());
+        let (_, sh, s) = stacked(&[a, b], 1, [0; 3]);
+        assert_eq!(sh, 3);
+        assert_eq!(
+            s,
+            [[1; 18].as_slice(), &[0, 0, 0, 2, 2, 2, 0, 0, 0]].concat(),
+            "its ground over the name left out"
         );
     }
 
@@ -2205,10 +2451,11 @@ mod tests {
             notes: notes.iter().map(|(t, n)| (*t, n.to_string())).collect(),
             keys: Vec::new(),
             sounds: Vec::new(),
-            punch: None,
+            hook: None,
             missed: Vec::new(),
             wire: Vec::new(),
             end: 0,
+            joins: Vec::new(),
         };
         let (noted, missed) = noted(&rec);
         let spans: Vec<_> =
@@ -2415,10 +2662,11 @@ mod tests {
             notes: Vec::new(),
             keys: Vec::new(),
             sounds: Vec::new(),
-            punch: None,
+            hook: None,
             missed: Vec::new(),
             wire: Vec::new(),
             end: 0,
+            joins: Vec::new(),
         };
         let zooms = [(0, "card:asks", false), (100, "code:1-1", false), (310, "code:1-1", true)];
         let gone = rec(vec![(0, asks()), (100, asks()), (200, plain()), (400, plain())], &zooms);
