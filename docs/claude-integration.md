@@ -574,6 +574,7 @@ as from every panel.
 | `G` | The latest: the conversation caught up, the cursor on its last line (`5G`: line 5) |
 | `i` `a` | Back to the input, your text as it was |
 | `esc` `q` | A selection collapses first; with none, back to the code |
+| `gd` `gD` `gy` `gi` `gr` `space k` | On a name in the conversation: the code's language keys, asked of its language server ([below](#a-name-in-the-conversation)) |
 
 It holds still while you read: Claude's answer streaming in doesn't move it — not the rows in sight, not your
 selection: words arriving where your cursor is go under and after it, the cursor keeping its cell — and the title
@@ -589,6 +590,31 @@ input; `C-d` `C-u` `C-f` `C-b` page, as in the code. Your `[keys.normal]` reach 
 `space ?` the palette); the run panels' output — a task's, a preflight's, the tests' failure — is a read-only
 document as the conversation is ([features](features.md)): one set of keys to read any of them, `enter` quoting a
 selection from each.
+
+### A name in the conversation
+
+A name in Claude's answer answers the code's language keys as the code does: on the conversation's view mode `gd`
+`gD` `gy` `gi` `gr` and `space k` (the hover) ask at the name under the cursor, and ctrl+press on a name is `gd`
+there. Where the name stands decides what's asked, exact first:
+
+- **A place it cites** (`src/chat.rs:120`): `gd` goes to that line; `space k` shows its lines on a card in the chat,
+  no server asked.
+- **A name in a code block that quotes a file** (after a paragraph citing it, or near a place the answer cites —
+  found line by line by its text, `…` skipping ahead): asked at that very spot in the file, as if your cursor were
+  there.
+- **A name written as code in a paragraph that cites places**: found on the lines it cites, and asked there.
+- **Any other name written as code** — backticked in prose, or in a block that quotes no file (Claude's own
+  proposal): asked by name of the project's language servers (`workspace/symbol`, the exact name, never a close
+  one; a qualified `Thread::length` the ones in `Thread` first). One definition: `gd` goes there, and the other keys
+  ask there — `space k` shows its hover, `gr` lists its uses. Several: `gd` lists them, grouped by file as every list
+  of places is; the other keys say how many and that `gd` lists them. With no server running, `gd` is the syntax
+  tree's guess among the name's text matches, said as such.
+
+**The keys stay in the conversation.** `gd` moves the code beside it to the definition, its cursor in the
+conversation where it was, so you can follow one name after another as you read; `esc` (or `C-w h`) takes you to
+the code. A hover is a card in the chat by the name. Anything that can't be asked is said where you look: not a name
+in the code, the file changed since the answer quoted it, no language server for the file, the server still loading
+(asked again as it finishes), nothing of that name found. Nothing of this reaches Claude — no tokens.
 
 ### Quoting what you read
 

@@ -21383,6 +21383,7 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
     let text = Style { bg: ground.bg, fg: w.style.fg.or(ground.fg), ..w.style };
     let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
     let cursors = editor.screen.cursors.borrow();
+    let on_cut = |(cx, cy): (usize, usize)| cy == y && (a..b).contains(&cx);
     let shown = n.min(bottom.saturating_sub(top));
     // (each row's first cell and width: the first's over its cut text, the rest's from `from`)
     let place = |k: usize| if k == 0 { (x, width) } else { (from - hang, rest_w + hang) };
@@ -21437,13 +21438,30 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
         apply(out, ground)?;
         queue!(out, Spaces((width - ind(k)).saturating_sub(used)))?;
         reach(out, k)?;
-        // (a view mode's cursor on the row it covers: kept — the one cursor stays in sight, over the letter the card shows
-        // there, measured from where the row's text starts — the edit review's rows after the first past their hang)
-        for &(cx, _) in cursors.iter().filter(|c| c.1 == ry && c.0 >= x && c.0 < x + width) {
+        // (a view mode's cursor on another row it covers: kept — the one cursor stays in sight, over the letter the card
+        // shows there, measured from where the row's text starts — the edit review's rows after the first past their hang)
+        for &(cx, cy) in cursors.iter().filter(|c| c.1 == ry && !on_cut(**c) && c.0 >= x && c.0 < x + width) {
             queue!(out, MoveTo(cx as u16, ry as u16))?;
             apply(out, text.patch(ui.cursor_primary))?;
-            queue!(out, Print(covered(row, x + ind(k), cx)))?;
+            // (beside the cut text on its own row: on a blank there)
+            queue!(out, Print(if cy == y { " " } else { covered(row, x + ind(k), cx) }))?;
         }
+    }
+    // (#396: a cursor on the cut row itself is on a letter of its text — the card's text starts where the row's cut does,
+    // `a`: at that letter wherever the card has it, moved left to fit or wrapped, never on the letter the card happens to
+    // show over the cursor's cell)
+    for &(cx, _) in cursors.iter().filter(|c| on_cut(**c)) {
+        let Some((k, col, letter)) = letter_in(&w.text, &rows[..shown.min(rows.len())], cx - a) else {
+            continue;
+        };
+        let (rx, rw) = place(k);
+        let cell = rx + ind(k) + col;
+        if cell >= rx + rw {
+            continue;
+        }
+        queue!(out, MoveTo(cell as u16, (top + k) as u16))?;
+        apply(out, text.patch(ui.cursor_primary))?;
+        queue!(out, Print(letter))?;
     }
     if let Some(m) = more.as_ref().filter(|_| shown >= said && !inline) {
         let (x, width) = place(said - 1);
@@ -21473,6 +21491,21 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
     *editor.screen.cut_card.borrow_mut() =
         Some(crate::whole::Card { rect: (x, top, span, shown), ends, from, under, outside, more, cut });
     Ok(())
+}
+
+/// The letter at display column `col` of `text` where a cut card lays it (`rows`: each with where its bytes start in
+/// `text`): its row, its column in that row's text, and itself — None: past what the card shows (its last rows folded
+/// away), or in a blank a wrap dropped.
+fn letter_in<'a>(text: &'a str, rows: &[(usize, String)], col: usize) -> Option<(usize, usize, &'a str)> {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let mut at = 0;
+    let (byte, g) = text.grapheme_indices(true).find(|(_, g)| {
+        let w = g.width().max(1);
+        at += w;
+        col < at
+    })?;
+    let k = rows.iter().rposition(|(from, row)| *from <= byte && byte < from + row.len())?;
+    Some((k, text[rows[k].0..byte].width(), g))
 }
 
 /// What a cut card's row shows at column `cx`, its text from column `start`: the letter there (a wide one's either cell),

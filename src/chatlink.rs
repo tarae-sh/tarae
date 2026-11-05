@@ -1,9 +1,12 @@
-//! A name in the chat answers the code's language keys (#389, `.sb/chatlink-plan.md` §2 — step 4, by place): on a
-//! `path:line` an answer cites, in a code block that quotes a file, or backticked in a paragraph that cites places, a
-//! key on the transcript (`gd` `gD` `gy` `gi` `gr`, ctrl+press, `K`) asks the language server at that spot in the file,
-//! exact as in the code itself; `K` on a cited place shows its lines. What each message's blocks quote is found on a
-//! worker after the frame that drew it (`after_frame`, one search at a time, as `places.rs` finds its names): a key only
-//! looks up what's held (`target`) and asks. Every miss is said where you look; nothing reaches Claude (0 tokens).
+//! A name in the chat answers the code's language keys (#389, `.sb/chatlink-plan.md` §2): on a `path:line` an answer
+//! cites, in a code block that quotes a file, or backticked in a paragraph that cites places (step 4, by place), a key on
+//! the transcript (`gd` `gD` `gy` `gi` `gr`, ctrl+press, `K`) asks the language server at that spot in the file, exact
+//! as in the code itself; `K` on a cited place shows its lines. Any other name written as code — backticked in prose, or
+//! in a block that quotes no file (step 5, by name) — is asked of the workspace (`workspace/symbol`, the exact name, a
+//! qualified one's container first): one definition goes there, several are a list of places; the other keys ask at the
+//! one found. What each message's blocks quote is found on a worker after the frame that drew it (`after_frame`, one
+//! search at a time, as `places.rs` finds its names): a key only looks up what's held (`target`) and asks. Every miss is
+//! said where you look; nothing reaches Claude (0 tokens).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -203,8 +206,29 @@ struct Asked {
     tries: u8,
 }
 
+/// A name asked of the workspace (§2.1-4): its number, the name and the container a qualified one names, what the key
+/// asks, what's said first (why no cited place held it), the transcript's cursor as it was asked, the servers yet to
+/// answer and the names of all asked, what they found (the server, the file, the position, its container), those that
+/// answered while loading (asked again as their work ends, `again`) and their errors.
+#[derive(Clone, Debug)]
+struct Named {
+    n: u64,
+    word: String,
+    container: Option<String>,
+    goto: Option<Goto>,
+    why: Option<String>,
+    head: usize,
+    waiting: Vec<ClientId>,
+    servers: Vec<String>,
+    found: Vec<(ClientId, PathBuf, Value, String)>,
+    busy: Vec<ClientId>,
+    errors: Vec<String>,
+    tries: u8,
+    again: bool,
+}
+
 /// The chat's links (`Chat.links`): each message's map, the files' listing they were made for, the search under way,
-/// and the last question asked.
+/// and the last question asked — at a spot, or by name.
 #[derive(Debug, Default)]
 pub struct Links {
     maps: HashMap<usize, Map>,
@@ -212,6 +236,7 @@ pub struct Links {
     generation: u64,
     asking: bool,
     asked: Option<Asked>,
+    named: Option<Named>,
 }
 
 /// A message's key: its version and its text's length (an append the version didn't see).
@@ -461,12 +486,14 @@ pub(crate) struct Spot {
     pub text: String,
 }
 
-/// What the transcript's cursor is on (§2.1): a cited place (its file and line, and the lines read there for `K`'s peek)
-/// or a name at a spot in a file.
+/// What the transcript's cursor is on (§2.1): a cited place (its file and line, and the lines read there for `K`'s peek),
+/// a name at a spot in a file, or a name no cited place holds — to ask by name, the container a qualified one names
+/// (`Thread` of `Thread::length`), and why no place held it where the answer has places (said with the answer).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Place { name: String, link: crate::chat::Link, peek: Option<Vec<String>> },
     At(Spot),
+    Named { word: String, container: Option<String>, why: Option<String> },
 }
 
 /// A language key on the chat's transcript at its cursor — `goto`, or the hover (None). Inside a key's command (its
@@ -537,6 +564,9 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
     if word.chars().all(|c| c.is_ascii_digit()) {
         return Err(NOT_CODE.into());
     }
+    let named = |why: Option<String>| {
+        Ok(Target::Named { word: word.clone(), container: qualifier(&here, w.start), why })
+    };
     let parts = parts(&crate::chat::displayed(&m.text));
     // In a code block: its run of lines in the message's, found in order
     let drawn: Vec<String> = lines.clone().map(text_of).collect();
@@ -556,14 +586,14 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
                     let file = before
                         .iter()
                         .find_map(|(n, l, _)| map.near.iter().find(|x| x.name == *n && x.line == *l));
-                    return Err(match file {
-                        Some(n) => format!("these lines aren't in {} as quoted", shown(ed, &n.path)),
-                        None => "this code block quotes no file the answer cites".into(),
-                    });
+                    // (by name, then — a block that quotes nothing is Claude's own code, a proposal)
+                    return named(
+                        file.map(|n| format!("these lines aren't in {} as quoted", shown(ed, &n.path))),
+                    );
                 };
                 let shown = shown(ed, &q.path);
                 let Some((fl, raw)) = q.at.get(k - s).cloned().flatten() else {
-                    return Err(format!("this line isn't in {shown} as quoted"));
+                    return named(Some(format!("this line isn't in {shown} as quoted")));
                 };
                 // (the name's place in the line by characters from its text's start: the quote's indent may differ)
                 let lead = here.len() - here.trim_start().len();
@@ -572,7 +602,9 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
                 let guess =
                     raw[raw_lead..].char_indices().nth(chars).map_or(raw.len(), |(i, _)| raw_lead + i);
                 let col = whole_in(&raw, &word).into_iter().min_by_key(|c| c.abs_diff(guess));
-                let Some(col) = col else { return Err(format!("this line isn't in {shown} as quoted")) };
+                let Some(col) = col else {
+                    return named(Some(format!("this line isn't in {shown} as quoted")));
+                };
                 return Ok(Target::At(Spot { path: q.path.clone(), line: fl, col, word, text: raw }));
             }
             from = s + code.len();
@@ -584,7 +616,7 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
         return Err(NOT_CODE.into());
     }
     if cites.is_empty() {
-        return Err(format!("this paragraph cites no file to find `{word}` in"));
+        return named(None);
     }
     let Some(map) = map else { return Err(WAIT.into()) };
     let mut best: Option<(usize, Spot)> = None;
@@ -606,9 +638,18 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
         Some((_, spot)) => Ok(Target::At(spot)),
         None => {
             let places: Vec<&str> = cites.iter().map(|c| &*c.0).collect();
-            Err(format!("`{word}` isn't on the lines this paragraph cites ({})", places.join(", ")))
+            named(Some(format!("`{word}` isn't on the lines this paragraph cites ({})", places.join(", "))))
         }
     }
+}
+
+/// The container a qualified name at byte `at` of `line` names: `Thread` of `Thread::length`, `ui` of `ui.accent` — the
+/// name right before a `::` or `.` just before it.
+fn qualifier(line: &str, at: usize) -> Option<String> {
+    let before = &line[..at];
+    let before = before.strip_suffix("::").or_else(|| before.strip_suffix('.'))?;
+    let w = word_at(before, before.len())?;
+    (w.end == before.len()).then(|| before[w].to_string())
 }
 
 /// Where code block `code` is drawn among a message's `drawn` lines, from line `from` on: the line it starts at.
@@ -626,6 +667,10 @@ fn shown(ed: &Editor, path: &Path) -> String {
 
 /// What a key on the transcript comes to: a place gone to or peeked at, a question asked, or why not — said.
 fn act(ed: &mut Editor, t: Result<Target, String>, goto: Option<Goto>) {
+    // (a key's question takes the place of any before it)
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        (c.links.asked, c.links.named) = (None, None);
+    }
     match t {
         Err(why) => ed.set_status(why),
         Ok(Target::Place { link, .. }) if goto.is_some() => crate::chat::jump(ed, link),
@@ -638,7 +683,13 @@ fn act(ed: &mut Editor, t: Result<Target, String>, goto: Option<Goto>) {
             _ => ed.set_status(format!("{name} — still reading its lines: ask again in a moment")),
         },
         Ok(Target::At(spot)) => ask(ed, spot, goto),
+        Ok(Target::Named { word, container, why }) => by_name(ed, Named::new(word, container, goto, why)),
     }
+}
+
+/// The transcript's cursor now.
+fn head(ed: &Editor) -> Option<usize> {
+    transcript(ed).map(|(_, d)| d.selection().primary().cursor(&d.text))
 }
 
 /// `md` as `K`'s card, drawn in the chat at its cursor's name (`Editor.popup_chat`).
@@ -701,9 +752,18 @@ fn send(ed: &mut Editor, mut a: Asked) {
     }
 }
 
-/// A server's work ended: the chat's question it was busy with asked again.
+/// A server's work ended: the chat's question it was busy with asked again — at its spot, or by name (while the
+/// transcript's cursor is where it was asked).
 pub fn work_ended(ed: &mut Editor, cid: ClientId) {
+    let head = head(ed);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    if let Some(q) = c.links.named.take_if(|q| q.again && q.busy.contains(&cid)) {
+        if Some(q.head) == head {
+            let tries = q.tries;
+            by_name(ed, Named { tries, ..Named::new(q.word, q.container, q.goto, q.why) });
+        }
+        return;
+    }
     let Some(a) = c.links.asked.take_if(|a| a.again && a.cid == cid) else { return };
     send(ed, a);
 }
@@ -775,6 +835,292 @@ fn wait(ed: &mut Editor, mut a: Asked, server: &str) {
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.links.asked = Some(a);
     }
+}
+
+// ── By name (§2.1-4) ────────────────────────────────────────────────────────────────────────────────────────────
+
+impl Named {
+    fn new(word: String, container: Option<String>, goto: Option<Goto>, why: Option<String>) -> Named {
+        Named {
+            n: 0,
+            word,
+            container,
+            goto,
+            why,
+            head: 0,
+            waiting: Vec::new(),
+            servers: Vec::new(),
+            found: Vec::new(),
+            busy: Vec::new(),
+            errors: Vec::new(),
+            tries: 0,
+            again: false,
+        }
+    }
+
+    /// `text` said of this question: after why no cited place held its name, where one didn't.
+    fn said(&self, text: String) -> String {
+        match &self.why {
+            Some(why) => format!("{why} — {text}"),
+            None => text,
+        }
+    }
+}
+
+/// `q`'s name asked of the project's servers (`workspace/symbol`) — none that can be, and a go-to is the syntax tree's
+/// stand-in, said; another key, why.
+fn by_name(ed: &mut Editor, mut q: Named) {
+    (q.n, q.head) = (next(ed), head(ed).unwrap_or(0));
+    let root = ed.workspace.root.clone();
+    match ed.ask_named(&q.word, Kind::ChatNamed { n: q.n }, &root) {
+        Err((why, later)) => {
+            // (the reason in the chat's words: Claude's asks it for a file's path to start a server)
+            let why =
+                if later { why } else { "no language server that searches by name is running here".into() };
+            match q.goto {
+                Some(Goto::Definition | Goto::Declaration) => stand_in(ed, q, why),
+                _ => {
+                    let text = q.said(format!("{why}, so nothing is known of `{}`", q.word));
+                    ed.set_status(text)
+                }
+            }
+        }
+        Ok(asked) => {
+            (q.waiting, q.servers) = asked.into_iter().unzip();
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                c.links.named = Some(q);
+            }
+        }
+    }
+}
+
+/// No server to ask: the definitions the syntax tree finds among the name's text matches, on a worker (`nav::tree_found`,
+/// Claude's `definition`'s stand-in) — said as the tree's, `why` with it.
+fn stand_in(ed: &mut Editor, q: Named, why: String) {
+    let (root, keys, word, n) = (ed.workspace.root.clone(), crate::reads::Keys::of(ed), q.word.clone(), q.n);
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.links.named = Some(q);
+    }
+    ed.events.jobs().spawn(move || {
+        let found = crate::nav::tree_found(&root, &word, Goto::Definition, &keys);
+        move |ed: &mut Editor| {
+            let head = head(ed);
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+            let Some(q) = c.links.named.take_if(|q| q.n == n) else { return };
+            if Some(q.head) != head {
+                return;
+            }
+            let places = match found {
+                Err(e) => return ed.set_status(q.said(format!("{why}, and the text search failed: {e}"))),
+                Ok((places, _)) => places,
+            };
+            let by = format!("found by the syntax tree ({why})");
+            match places.as_slice() {
+                [] => ed.set_status(
+                    q.said(format!("{why}, and the syntax tree finds no definition of `{word}`")),
+                ),
+                [(p, _)] => {
+                    go_to_name(ed, &p.path, p.line, &word);
+                    ed.set_status(q.said(by));
+                }
+                _ => {
+                    let found = places.iter().map(|(p, _)| (p.path.clone(), p.line, 0)).collect();
+                    ed.refs_anew(word);
+                    ed.list_places(Goto::Definition, found);
+                    ed.set_status(q.said(format!("{} {by}", places.len())));
+                }
+            }
+        }
+    });
+}
+
+/// `path` opened at `line`, the cursor on `word` there (its line's start where it isn't).
+fn go_to_name(ed: &mut Editor, path: &Path, line: usize, word: &str) {
+    let col = crate::nav::buffer_for(ed, path).ok().and_then(|id| {
+        let d = ed.docs.iter().find(|d| d.id == id && !d.loading)?;
+        whole_in(&d.text.get_line(line)?.to_string(), word).first().copied()
+    });
+    if let Err(e) = ed.open_at(path, line, col.unwrap_or(0)) {
+        ed.set_error(format!("{e:#}"));
+    }
+}
+
+/// A server's answer to the chat's question `n` by name (Err: its error): the exact name's symbols kept — a shared
+/// server's for this checkout only — and once every server asked has answered, what they came to (`finish`). Another
+/// asked since, or the transcript's cursor moved: dropped.
+pub fn named_answered(ed: &mut Editor, cid: ClientId, n: u64, result: Result<&Value, &Value>) {
+    let head = head(ed);
+    let (server, loading) = match ed.client(cid) {
+        Some(c) => (c.name.clone(), !c.progress.is_empty()),
+        None => (String::new(), false),
+    };
+    let roots = ed.client(cid).map(|c| c.roots.clone()).unwrap_or_default();
+    let mine = ed.workspace.root.clone();
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let Some(q) = c.links.named.as_mut().filter(|q| q.n == n) else { return };
+    if Some(q.head) != head {
+        c.links.named = None;
+        return;
+    }
+    let Some(i) = q.waiting.iter().position(|&w| w == cid) else { return };
+    q.waiting.remove(i);
+    let before = q.found.len();
+    match result {
+        Ok(v) => {
+            for s in v.as_array().into_iter().flatten() {
+                // (the exact name, case and all — a server's `length()` too — never a close one)
+                let name = s["name"].as_str().unwrap_or_default();
+                if name.split('(').next() != Some(q.word.as_str()) {
+                    continue;
+                }
+                let Some(path) = s["location"]["uri"].as_str().and_then(crate::lsp::path_from_uri) else {
+                    continue;
+                };
+                if crate::share::foreign(&roots, &mine, &path) {
+                    continue;
+                }
+                let pos = match &s["location"]["range"]["start"] {
+                    Value::Null => serde_json::json!({ "line": 0, "character": 0 }),
+                    p => p.clone(),
+                };
+                let container = s["containerName"].as_str().unwrap_or_default().to_string();
+                q.found.push((cid, path, pos, container));
+            }
+        }
+        Err(e) if matches!(e["code"].as_i64(), Some(-32801 | -32802)) => q.busy.push(cid),
+        Err(e) => {
+            q.errors.push(format!("{server}: {}", e["message"].as_str().unwrap_or("the request failed")))
+        }
+    }
+    if q.found.len() == before && loading && !q.busy.contains(&cid) {
+        q.busy.push(cid);
+    }
+    if q.waiting.is_empty()
+        && let Some(q) = c.links.named.take()
+    {
+        finish(ed, q);
+    }
+}
+
+/// Every server asked has answered `q`: one definition gone to (or asked about, for the other keys), several listed,
+/// none said — put off while a server that found none is loading, asked again as its work ends.
+fn finish(ed: &mut Editor, mut q: Named) {
+    let mut found = std::mem::take(&mut q.found);
+    // (a qualified name: those in its container, where there are any)
+    if let Some(c) = &q.container
+        && found.iter().any(|f| !whole_in(&f.3, c).is_empty())
+    {
+        found.retain(|f| !whole_in(&f.3, c).is_empty());
+    }
+    let line = |pos: &Value| pos["line"].as_u64().unwrap_or(0) as usize;
+    found.dedup_by(|a, b| a.1 == b.1 && line(&a.2) == line(&b.2));
+    let word = q.word.clone();
+    match found.len() {
+        0 if !q.busy.is_empty() => {
+            let server = ed.client(q.busy[0]).map(|c| c.name.clone()).unwrap_or_default();
+            q.tries += 1;
+            if q.tries > TRIES_MAX {
+                return ed.set_status(
+                    q.said(format!("{server} is still loading the project — try again in a moment")),
+                );
+            }
+            let then = match q.goto {
+                None => "showing it",
+                Some(Goto::References) => "listing them",
+                Some(_) => "going there",
+            };
+            ed.set_status(q.said(format!("{server} is loading — {then} when ready")));
+            q.again = true;
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                c.links.named = Some(q);
+            }
+        }
+        0 => {
+            let servers = q.servers.join(" and ");
+            let text = match q.errors.is_empty() {
+                true => format!("{servers} found nothing named `{word}`"),
+                false => q.errors.join("; "),
+            };
+            ed.set_status(q.said(text));
+        }
+        1 => {
+            let (cid, path, pos, _) = found.pop().expect("one");
+            let enc = ed.encoding_of(cid);
+            match q.goto {
+                Some(Goto::Definition | Goto::Declaration) => {
+                    ed.lsp_jump(&path, &pos, enc);
+                    if q.why.is_some() {
+                        ed.set_status(q.said("found by name".into()));
+                    }
+                }
+                // (the hover, the type, the implementations and the uses: asked at the one definition)
+                goto => ask_there(ed, q, &path, &pos, enc, goto),
+            }
+        }
+        k => match q.goto {
+            Some(Goto::Definition | Goto::Declaration) => {
+                let at = |pos: &Value, key: &str| pos[key].as_u64().unwrap_or(0) as usize;
+                let found =
+                    found.into_iter().map(|(_, p, pos, _)| (p, at(&pos, "line"), at(&pos, "character")));
+                ed.refs_anew(word);
+                ed.list_places(Goto::Definition, found.collect());
+                if q.why.is_some() {
+                    ed.set_status(q.said(format!("{k} found by name")));
+                }
+            }
+            _ => ed.set_status(q.said(format!("{k} definitions of `{word}` — gd lists them"))),
+        },
+    }
+}
+
+/// `goto` (or the hover) asked at the definition `q`'s name came to: its file opened aside, the name on that line.
+fn ask_there(
+    ed: &mut Editor,
+    q: Named,
+    path: &Path,
+    pos: &Value,
+    enc: crate::lsp::Encoding,
+    goto: Option<Goto>,
+) {
+    let shown = shown(ed, path);
+    let id = match crate::nav::buffer_for(ed, path) {
+        Ok(id) => id,
+        Err(e) => return ed.set_status(q.said(format!("{shown}: {e}"))),
+    };
+    let Some(doc) = ed.docs.iter().find(|d| d.id == id) else { return };
+    if doc.loading {
+        return ed.set_status(q.said(format!("{shown} is still loading — ask again in a moment")));
+    }
+    let Some(b) = crate::lsp::from_position(&doc.text, pos, enc) else { return };
+    // (a symbol's place may be where its item starts, `pub fn`: on to the name on that line, the nearest after it)
+    let l = doc.text.byte_to_line(b);
+    let start = doc.text.line_to_byte(l);
+    let text = doc.text.line(l).to_string();
+    let col = b - start;
+    let Some(at) = whole_in(&text, &q.word).into_iter().min_by_key(|&c| (c < col, c.abs_diff(col))) else {
+        // (never asked at a guess)
+        let line = l + 1;
+        return ed.set_status(q.said(format!("`{}` isn't on {shown}:{line}, where it was found", q.word)));
+    };
+    let a = Asked {
+        n: next(ed),
+        cid: 0,
+        doc: id,
+        byte: start + at,
+        goto,
+        word: q.word,
+        head: q.head,
+        again: false,
+        tries: 0,
+    };
+    send(ed, a);
+}
+
+/// The front chat's question by name in flight or waiting: its number, the name, its container, and what it asks.
+#[cfg(test)]
+pub(crate) fn named(ed: &Editor) -> Option<(u64, String, Option<String>, Option<Goto>)> {
+    let q = ed.workspace.claude.chat.as_ref()?.links.named.as_ref()?;
+    Some((q.n, q.word.clone(), q.container.clone(), q.goto))
 }
 
 /// The front chat's question in flight or waiting: its number, document and byte there, the name, the transcript's

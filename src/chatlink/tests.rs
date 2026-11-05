@@ -40,7 +40,8 @@ fn setup(name: &str, server: bool, answer: &str) -> (crate::scratch::Scratch, Ed
     if server {
         let cid = ed.doc().lsp.client.expect("attached");
         let init = json!({ "id": 0, "result": { "capabilities": { "positionEncoding": "utf-8",
-            "hoverProvider": true, "definitionProvider": true, "referencesProvider": true } } });
+            "hoverProvider": true, "definitionProvider": true, "referencesProvider": true,
+            "workspaceSymbolProvider": true } } });
         ed.on_lsp_message(cid, init);
     }
     let mut c = Chat::new();
@@ -95,6 +96,23 @@ fn asked(ed: &Editor) -> Option<(ClientId, u64, Option<Goto>)> {
         Kind::ChatAt { goto, .. } => Some((cid, id, goto)),
         _ => None,
     })
+}
+
+/// The chat's question by name asked of the server: its request's id.
+fn asked_by_name(ed: &Editor) -> Option<(ClientId, u64)> {
+    ed.lsp.pending.iter().find_map(|(&(cid, id), p)| match p.kind {
+        Kind::ChatNamed { .. } => Some((cid, id)),
+        _ => None,
+    })
+}
+
+/// A `workspace/symbol` answer: each symbol's name, line and character in `file`, and container.
+fn symbols(file: &Path, found: &[(&str, u32, u32, &str)]) -> Value {
+    let one = |&(name, line, ch, container): &(&str, u32, u32, &str)| {
+        json!({ "name": name, "kind": 12, "containerName": container, "location": { "uri": crate::lsp::uri(file),
+            "range": { "start": { "line": line, "character": ch }, "end": { "line": line, "character": ch } } } })
+    };
+    Value::Array(found.iter().map(one).collect())
 }
 
 /// The column the chat's line starts at: where its divider meets the top line.
@@ -217,9 +235,28 @@ fn the_chat_says_why_a_name_isnt_asked() {
         "ctrl+press: gd there"
     );
     said(&mut ed, "gg/keeps<ret>gd", "not a name in the code");
-    said(&mut ed, "gg/other<ret>gd", "this code block quotes no file the answer cites");
-    said(&mut ed, "gg/stray<ret>gd", "`stray` isn't on the lines this paragraph cites (src/main.rs)");
     said(&mut ed, "gg/proposal<ret>gd", "not a name in the code");
+    // (step 5: a name no cited place holds is asked by name — no server here, so the syntax tree's stand-in, said)
+    const NONE: &str = "no language server that searches by name is running here";
+    let later = |ed: &mut Editor, keys: &str, what: &str| {
+        ed.toasts.clear();
+        feed(ed, keys);
+        until(ed, what, |ed| ed.toasts.iter().any(|t| t.text == what));
+    };
+    later(&mut ed, "gg/other<ret>gd", &format!("{NONE}, and the syntax tree finds no definition of `other`"));
+    let stray = "`stray` isn't on the lines this paragraph cites (src/main.rs)";
+    later(
+        &mut ed,
+        "gg/stray<ret>gd",
+        &format!("{stray} — {NONE}, and the syntax tree finds no definition of `stray`"),
+    );
+    // (a name the tree finds defined: there)
+    later(&mut ed, "gg/other\\(\\) \\{ helpe<ret>gd", &format!("found by the syntax tree ({NONE})"));
+    let d = ed.doc();
+    assert_eq!(d.selection().primary().cursor(&d.text), 3, "on `helper` where it's defined");
+    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys still the chat's");
+    // (the other keys need a server: said)
+    said(&mut ed, " k", &format!("{NONE}, so nothing is known of `helper`"));
     said(&mut ed, "gg/helper<ret> k", "src/main.rs: there's no language server for rust files here");
     // A line added above in its buffer, asked before a frame mapped it again: never asked at a guess
     let edit = |ed: &mut Editor, at: usize, text: &str| {
@@ -242,7 +279,101 @@ fn the_chat_says_why_a_name_isnt_asked() {
     until(&mut ed, "mapped again", |ed| {
         ed.workspace.claude.chat.as_ref().unwrap().links.maps.contains_key(&1)
     });
-    said(&mut ed, "gd", "these lines aren't in src/main.rs as quoted");
+    later(
+        &mut ed,
+        "gd",
+        &format!("these lines aren't in src/main.rs as quoted — found by the syntax tree ({NONE})"),
+    );
+    // (the tree reads the file as saved: its definition's line there)
+    let d = ed.doc();
+    assert_eq!(d.text.byte_to_line(d.selection().primary().cursor(&d.text)), 0, "found by name instead");
+}
+
+/// #389 step 5: an answer naming code no cited place holds — a qualified name in prose, a bare one, one in a block
+/// that quotes nothing.
+const NAMED: &str = "The sum is in `Total::helper`; `helper` is called from `main`.\n\n```rust\nfn other() { helper() }\n```\n";
+
+/// A name no cited place holds is asked of the workspace (`workspace/symbol`): the exact name's one definition gone to —
+/// a qualified name's container picks it among several, a close name never counts —, several a list of places;
+/// `space k` asks the hover at the one found, on the name in its line; a busy server's empty answer said and asked
+/// again as its work ends; the cursor moved before the answer: dropped.
+#[test]
+fn a_name_no_cited_place_holds_is_asked_by_name() {
+    let (s, mut ed, file) = setup("chatlink-named", true, NAMED);
+    let sent = || std::fs::read_to_string(s.join("sent.log")).unwrap_or_default();
+    // A qualified name: its container's of the two
+    feed(&mut ed, "<esc>/Total::helpe<ret>");
+    assert!(
+        matches!(target(&ed), Ok(Target::Named { ref word, container: Some(ref c), why: None }) if word == "helper" && c == "Total"),
+        "{:?}",
+        target(&ed)
+    );
+    feed(&mut ed, "gd");
+    let (cid, id) = asked_by_name(&ed).expect("asked by name");
+    until(&mut ed, "sent", |_| sent().contains(r#""query":"helper""#));
+    let found = [("helper", 4, 16, "main"), ("helper", 0, 3, "Total"), ("helpers", 1, 0, "Total")];
+    ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, &found) }));
+    frame(&mut ed);
+    let d = ed.doc();
+    assert_eq!((d.path.as_deref(), d.selection().primary().cursor(&d.text)), (Some(file.as_path()), 3));
+    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys stay in the chat");
+    assert!(ed.picker.is_none(), "one: no list");
+    // A bare name with two definitions: a list of places, grouped by file
+    // (the transcript draws a code span without its backticks)
+    feed(&mut ed, "gg/; helpe<ret>gd");
+    let (cid, id) = asked_by_name(&ed).expect("asked by name");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, &found) }));
+    until(&mut ed, "its list", |ed| ed.picker.is_some());
+    let p = ed.picker.as_ref().unwrap();
+    assert_eq!((p.kind, p.title.as_str()), ("places", "definitions"));
+    let rows: Vec<&str> =
+        p.items().iter().filter(|i| i.label.contains("src/main.rs:")).map(|i| &*i.label).collect();
+    assert_eq!(rows.len(), 2, "the two exact ones, never `helpers`: {rows:?}");
+    feed(&mut ed, "<esc>");
+    assert!(ed.picker.is_none());
+    // `space k` on a name in a block that quotes nothing: the hover asked at the one found, on its name
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    feed(&mut ed, "<esc>gg/\\{ helpe<ret> k");
+    let (cid, id) = asked_by_name(&ed).expect("asked by name");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, &[("helper", 0, 0, "")]) }));
+    let (_, _, goto) = asked(&ed).expect("the hover asked");
+    assert_eq!(goto, None);
+    let a = ed.workspace.claude.chat.as_ref().unwrap().links.asked.clone().expect("kept");
+    assert_eq!(a.byte, 3, "on the name in its line, not where its item starts");
+    // The server busy: said, asked again as its work ends
+    feed(&mut ed, "<esc>gd");
+    let (cid, id) = asked_by_name(&ed).expect("asked by name");
+    let progress = |kind: &str| json!({ "method": "$/progress", "params": { "token": "t", "value": { "kind": kind, "title": "Indexing" } } });
+    ed.on_lsp_message(cid, progress("begin"));
+    ed.on_lsp_message(cid, json!({ "id": id, "result": [] }));
+    assert!(frame(&mut ed).contains("fake is loading — going there when ready"));
+    assert!(asked_by_name(&ed).is_none());
+    ed.on_lsp_message(cid, progress("end"));
+    let (_, again) = asked_by_name(&ed).expect("asked again");
+    assert_ne!(again, id);
+    // Its answer after the transcript's cursor moved: dropped
+    feed(&mut ed, "h");
+    ed.toasts.clear();
+    let before = ed.doc().selection().primary().cursor(&ed.doc().text);
+    ed.on_lsp_message(cid, json!({ "id": again, "result": symbols(&file, &[("helper", 4, 16, "")]) }));
+    frame(&mut ed);
+    assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), before, "not gone to");
+    assert!(named(&ed).is_none() && ed.toasts.is_empty(), "dropped, unsaid: {:?}", ed.toasts);
+    // Nothing of that name: said
+    feed(&mut ed, "gd");
+    let (cid, id) = asked_by_name(&ed).expect("asked by name");
+    ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, &[("helpers", 1, 0, "")]) }));
+    let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(toasts, ["fake found nothing named `helper`"]);
+}
+
+/// A qualified name's container: the name right before its `::` or `.`.
+#[test]
+fn a_qualified_name_gives_its_container() {
+    assert_eq!(qualifier("`Thread::length`", 9).as_deref(), Some("Thread"));
+    assert_eq!(qualifier("ui.accent", 3).as_deref(), Some("ui"));
+    assert_eq!(qualifier("`length`", 1), None);
+    assert_eq!(qualifier("a :: b", 5), None);
 }
 
 /// Its parts: prose and fenced code in order, a list item a part of its own, an open fence code to its end.

@@ -4221,6 +4221,19 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: chatlink_keys!("/", "printed", "\r", "@0.5", "g", "d"),
     },
+    // (#389 step 5: a name the answer cites no place for, asked by name — `say` defined once, `tie` twice)
+    Scene {
+        name: "chatlink-named-one",
+        claude: "chatlink-named",
+        files: MAIN,
+        keys: chatlink_keys!("/", "by say", "\r", "@0.5", "g", "d"),
+    },
+    Scene {
+        name: "chatlink-named-list",
+        claude: "chatlink-named",
+        files: MAIN,
+        keys: chatlink_keys!("/", "by tie", "\r", "@0.5", "g", "d"),
+    },
     // (the flow plan's piece 5: a message queued, steered, then heard at Claude's next tool answer; the ask line at work)
     Scene { name: "steer-queued", claude: "steer", files: MAIN, keys: STEER_QUEUED },
     Scene { name: "steer-steering", claude: "steer", files: MAIN, keys: STEER_STEERING },
@@ -5822,7 +5835,7 @@ fn lsp(input: &mut impl BufRead, out: &mut impl Write, knows: bool) -> io::Resul
                 let uri = msg["params"]["rootUri"].as_str().unwrap_or_default();
                 root = std::path::PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri));
                 let caps = json!({"textDocumentSync": 1, "hoverProvider": true, "definitionProvider": true,
-                    "positionEncoding": "utf-8"});
+                    "workspaceSymbolProvider": true, "positionEncoding": "utf-8"});
                 lsp_send(out, &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": caps}}))?
             }
             Some("initialize") => lsp_send(
@@ -5859,6 +5872,18 @@ fn lsp(input: &mut impl BufRead, out: &mut impl Write, knows: bool) -> io::Resul
                     }
                 };
                 lsp_send(out, &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}))?
+            }
+            // (#389 step 5: every definition of the name asked, its `impl`'s type its container)
+            Some("workspace/symbol") if knows => {
+                let query = msg["params"]["query"].as_str().unwrap_or_default();
+                let found: Vec<Value> = lsp_defs(&root, query)
+                    .into_iter()
+                    .map(|(path, l, c, container)| {
+                        json!({"name": query, "kind": 12, "containerName": container,
+                            "location": {"uri": format!("file://{}", path.display()), "range": range(l as u32, c as u32, c as u32)}})
+                    })
+                    .collect();
+                lsp_send(out, &json!({"jsonrpc": "2.0", "id": msg["id"], "result": found}))?
             }
             Some("textDocument/didOpen") => lsp_send(
                 out,
@@ -5931,6 +5956,39 @@ fn lsp_defined(root: &Path, word: &str) -> Option<(std::path::PathBuf, usize, us
         }
     }
     None
+}
+
+/// Every place `word` is defined in the project's `.rs` files: the file, the line and column of the name, and the type
+/// of the `impl` it's in (empty outside one).
+fn lsp_defs(root: &Path, word: &str) -> Vec<(std::path::PathBuf, usize, usize, String)> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("src"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let mut container = String::new();
+        for (i, l) in text.lines().enumerate() {
+            if let Some(rest) = l.strip_prefix("impl ") {
+                container = rest.split_whitespace().next().unwrap_or_default().to_string();
+            } else if l == "}" {
+                container.clear();
+            }
+            let at = ["fn ", "struct ", "enum ", "trait ", "type ", "const "].iter().find_map(|k| {
+                let at = l.find(&format!("{k}{word}"))? + k.len();
+                (!l[at + word.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')).then_some(at)
+            });
+            if let Some(c) = at {
+                out.push((path.clone(), i, c, container.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// One message out, as the protocol frames it.
@@ -6845,7 +6903,9 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-replay" => vec![("src/spool.rs", SPOOL_V4_RS.into())],
         "main-moved" | "three-claudes" | "managers-view" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
-        "edit-in-buffer" => vec![("src/main.rs", MAIN_V3_RS.into())],
+        "edit-in-buffer" | "chatlink-named-one" | "chatlink-named-list" => {
+            vec![("src/main.rs", MAIN_V3_RS.into())]
+        }
         // (its lines ended CRLF, committed so: the gutter calm, the status line's form the one thing said)
         "status-crlf" => vec![("src/main.rs", MAIN_RS.replace('\n', "\r\n"))],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
@@ -6886,6 +6946,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "idle",
     "full",
     "chatlink",
+    "chatlink-named",
     "three",
     "v3",
     "v4",
@@ -7130,6 +7191,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "a1-none" => turn.a1_none()?,
             // (#389's: an answer citing a place, quoting its lines, naming code in prose)
             "chatlink" => turn.chatlink()?,
+            "chatlink-named" => turn.chatlink_named()?,
             // (the flow plan's piece 3: an answer with no place and no stop — the reader opens by itself — and a turn
             // that fails, its error said only in the conversation)
             "flow3-none" => turn.flow3_none()?,
@@ -8173,6 +8235,17 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
 
     /// #389's answer: a read, then a paragraph citing `src/thread.rs:9` with names written as code, the lines there quoted,
     /// a last paragraph citing `src/main.rs:12`.
+    /// #389 step 5's answer: names written as code with no place cited, one in a block of Claude's own.
+    fn chatlink_named(&mut self) -> io::Result<()> {
+        self.call(1, "read", json!({"files": ["src/main.rs:17-20"]}))?;
+        self.words(
+            "Each thread is said by `say`, and a knot goes on by `tie`. To grow every thread by one:",
+        )?;
+        self.text("\n\n```rust\nfn grow(m: &mut Map) {\n    for t in m.values_mut() {\n        tie(t, 4);\n    }\n}\n```\n\n")?;
+        self.words("Nothing else changes.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
     fn chatlink(&mut self) -> io::Result<()> {
         self.call(1, "read", json!({"files": ["src/thread.rs:7-11"]}))?;
         self.words("The length is summed in `Thread::length`, at src/thread.rs:9:")?;

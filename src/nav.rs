@@ -953,7 +953,7 @@ fn goto_of(args: &Value) -> Result<Goto, String> {
 }
 
 /// The container a qualified name gives (`Editor` of `Editor::root`, `a::Editor::root`).
-fn container_of(symbol: &str) -> Option<String> {
+pub(crate) fn container_of(symbol: &str) -> Option<String> {
     let s = symbol.trim().trim_end_matches("()");
     let (before, _) = s.rsplit_once("::").or_else(|| s.rsplit_once('.'))?;
     before.rsplit([':', '.']).find(|p| !p.is_empty()).map(str::to_string)
@@ -1042,7 +1042,7 @@ fn def_at(ed: &mut Editor, call: Call, spot: Spot, goto: Goto) {
 fn by_name(ed: &mut Editor, call: Call, word: String, container: Option<String>) {
     let n = next_ask(ed);
     let root = project_root(ed);
-    match ed.ask_named(&word, n, &root) {
+    match ed.ask_named(&word, Kind::ToolNamed { ask: n }, &root) {
         Err((why, later)) => tree_defs(ed, call, word, Goto::Definition, why, later),
         Ok(asked) => {
             let servers = asked.iter().map(|a| a.1.clone()).collect();
@@ -1424,8 +1424,13 @@ fn tree_defs(ed: &mut Editor, call: Call, word: String, goto: Goto, why: String,
 /// The places the tree says define `word` (or implement it), each with its signature and what defines it
 /// (`function`, `struct`, `impl`) — and the languages of files with hits that have no grammar here. On a
 /// worker: a search, then each file with hits parsed (at most `TREE_FILES`).
-type TreeFound = (Vec<(Place, String)>, std::collections::BTreeSet<String>);
-fn tree_found(root: &Path, word: &str, goto: Goto, keys: &crate::reads::Keys) -> Result<TreeFound, String> {
+pub(crate) type TreeFound = (Vec<(Place, String)>, std::collections::BTreeSet<String>);
+pub(crate) fn tree_found(
+    root: &Path,
+    word: &str,
+    goto: Goto,
+    keys: &crate::reads::Keys,
+) -> Result<TreeFound, String> {
     let q = crate::grep::Query {
         pattern: word,
         literal: true,

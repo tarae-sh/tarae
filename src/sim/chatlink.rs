@@ -1,11 +1,13 @@
-//! A name in the chat asked where it stands (#389 step 4, `chatlink.rs`), simulated: an answer citing a file's line,
-//! quoting its lines in a block and naming one in prose; frames drawn, its blocks mapped on a worker; the file's buffer
-//! edited (a line added or taken at its top — its lines move); the transcript's cursor put on a name — the quoted one,
-//! the prose one, the place, a word that isn't code — as a key would; `gd` and `space k` there; time passing — a
-//! stand-in server (`Client::own`, its answers jobs among the steps) answering each question with where it was asked.
-//! After every step: a question asked only at its name in the file as the buffer is then — never at a guess (a line
-//! moved since its map is said, not asked); a hover card in the chat only for the newest question, while the
-//! transcript's cursor is where it was asked, saying the place it was asked of.
+//! A name in the chat asked where it stands (#389 steps 4 and 5, `chatlink.rs`), simulated: an answer citing a file's
+//! line, quoting its lines in a block, naming one in prose on the cited lines and one no cited place holds; frames drawn,
+//! its blocks mapped on a worker; the file's buffer edited (a line added or taken at its top — its lines move); the
+//! transcript's cursor put on a name — the quoted one, the prose ones, the place, a word that isn't code — as a key
+//! would; `gd` and `space k` there; time passing — a stand-in server (`Client::own`, its answers jobs among the steps)
+//! answering each question with where it was asked, and a name by name with where the file had it at first (its item's
+//! start, a line that may have moved since). After every step: a question asked only at its name in the file as the
+//! buffer is then — never at a guess (a line moved since its map, or since the server's place, is said, not asked); a
+//! question by name only about the name under the transcript's cursor; a hover card in the chat only for the newest
+//! question, while the transcript's cursor is where it was asked, saying the place it was asked of.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -28,11 +30,10 @@ const LIMIT: Duration = crate::test_results::PATIENCE;
 
 const TEXT: &str = "fn helper(a: u32) -> u32 {\n    a + 1\n}\n\nfn main() {\n    let total = helper(2);\n    println!(\"{total}\");\n}\n";
 
-const ANSWER: &str =
-    "It sums at src/main.rs:6, `total` kept:\n\n```rust\n    let total = helper(2);\n```\n\nNothing else.";
+const ANSWER: &str = "It sums at src/main.rs:6, `total` kept:\n\n```rust\n    let total = helper(2);\n```\n\nNothing else but `helper` alone.";
 
-/// Where the transcript's cursor is put: what it finds there.
-const AT: &[&str] = &["helper(2)", "`total`", "main.rs:6", "Nothing"];
+/// Where the transcript's cursor is put: what it finds there (a code span drawn without its backticks).
+const AT: &[&str] = &["helper(2)", "total", "main.rs:6", "Nothing", "helper alone"];
 
 #[test]
 fn a_name_in_the_chat_is_asked_only_where_it_stands() {
@@ -47,6 +48,8 @@ struct World {
     seen: Vec<u64>,
     /// The newest: whether it asks the hover, the place asked of (`line:character`), the transcript's cursor then.
     last: Option<(bool, String, usize)>,
+    /// The questions by name seen asked: their numbers.
+    named: Vec<u64>,
 }
 
 fn run(choices: Choices) -> Vec<String> {
@@ -63,9 +66,18 @@ fn run(choices: Choices) -> Vec<String> {
     // (a stand-in that answers each question with the place it was asked of)
     static TRAITS: std::sync::LazyLock<crate::lsp::ServerTraits> =
         std::sync::LazyLock::new(crate::lsp::ServerTraits::default);
+    let file_uri = file.clone();
     let serve: crate::lsp::Serve = Box::new(move |method, params| match method {
         "initialize" => Some(json!({ "capabilities": { "positionEncoding": "utf-8", "hoverProvider": true,
-            "definitionProvider": true } })),
+            "definitionProvider": true, "workspaceSymbolProvider": true } })),
+        // (where the file had it at first, its item's start — and a close name, never gone to)
+        "workspace/symbol" => {
+            let at = |name: &str, line: u32| {
+                json!({ "name": name, "kind": 12, "location": { "uri": crate::lsp::uri(&file_uri),
+                    "range": { "start": { "line": line, "character": 0 }, "end": { "line": line, "character": 0 } } } })
+            };
+            Some(json!([at("helper", 0), at("helpers", 4)]))
+        }
         "textDocument/hover" => {
             let p = &params["position"];
             Some(
@@ -168,6 +180,24 @@ fn held(ed: &Editor, file: crate::document::DocId, w: &mut World) -> Result<(), 
         w.last =
             Some((goto.is_none(), format!("asked at {line}:{}", byte - d.text.line_to_byte(line)), head));
     }
+    // A question by name newly asked: about the name under the transcript's cursor, no cited place holding it
+    if let Some((n, word, _, _)) = crate::chatlink::named(ed)
+        && !w.named.contains(&n)
+    {
+        w.named.push(n);
+        // (the word at the cursor, read here from the transcript's text)
+        let t = crate::chatdoc::transcript(ed).and_then(|t| t.pane.doc_in());
+        let there = t.map(|d| {
+            let (text, at) = (d.text.to_string(), d.selection().primary().cursor(&d.text));
+            let w = |c: char| c.is_alphanumeric() || c == '_';
+            let start = text[..at].rfind(|c| !w(c)).map_or(0, |i| i + 1);
+            let end = text[at..].find(|c| !w(c)).map_or(text.len(), |i| at + i);
+            text[start..end].to_string()
+        });
+        if there.as_deref() != Some(word.as_str()) {
+            return Err(format!("question {n} by name about `{word}`, the cursor on {there:?}"));
+        }
+    }
     // A hover card in the chat: the newest question's, a hover, the cursor where it was asked, saying where that was
     if ed.popup_chat && ed.popup.is_some() {
         let head = ed
@@ -196,6 +226,7 @@ fn held(ed: &Editor, file: crate::document::DocId, w: &mut World) -> Result<(), 
 /// What a trace line ends with: the question in flight, the card in the chat.
 fn print(ed: &Editor) -> String {
     let asked = crate::chatlink::asked(ed).map(|a| format!("asked {} `{}`@{}", a.0, a.3, a.2));
+    let named = crate::chatlink::named(ed).map(|q| format!("by name {} `{}`", q.0, q.1));
     let card = (ed.popup_chat && ed.popup.is_some()).then(|| format!("{:?}", ed.popup).contains("asked at"));
-    format!("{asked:?} · card {card:?}")
+    format!("{asked:?} · {named:?} · card {card:?}")
 }

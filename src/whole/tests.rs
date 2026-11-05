@@ -1832,6 +1832,47 @@ fn a_cut_code_row_in_the_chat_is_whole_under_the_mouse() {
     assert_eq!(doc.lines().nth(line).map(str::trim), Some(CODE.trim()), "on the code's line:\n{doc}");
 }
 
+/// #396: a cut code row deep in its indent has too little room right of its start, so its card in hand moves left (and
+/// wraps in all its columns) — the view mode's cursor on it is drawn on the letter it's on in the card's text, never on
+/// whatever letter the card shows over the cursor's own cell.
+#[test]
+fn a_cursor_on_a_cut_code_row_is_on_its_letter_in_the_card() {
+    crossterm::style::force_color_output(true);
+    let deep = format!(
+        "{}let total = strands.iter().map(|s| s.knots_tied).sum::<u32>(); // farewell",
+        " ".repeat(20)
+    );
+    let answer = format!("Summed:\n\n```rust\n{deep}\n```\n\nThat's all.");
+    let mut ed = chat(vec![Msg::new(Role::User, "sum", ""), Msg::new(Role::Assistant, answer, "")]);
+    feed(&mut ed, "<esc>gg/strands<ret>");
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, W, H).unwrap();
+    let mut vt = vt100::Parser::new(H, W, 0);
+    vt.process(&bytes);
+    let (y, ..) = cut_text(&ed, "farewell").expect("the row cut");
+    let (x, top, w, h) = card(&ed).expect("its card, in hand");
+    let cursors = ed.screen.cursors.borrow().clone();
+    let Some(&(cx, _)) = cursors.iter().find(|c| c.1 == y) else {
+        panic!("the cursor on the row {y}: {cursors:?}\n{}", vt.screen().contents())
+    };
+    let screen = vt.screen();
+    let at = |x: usize, y: usize| screen.cell(y as u16, x as u16).unwrap();
+    // (the card moved left of the row's text: the letter over the cursor's own cell isn't the one it's on)
+    assert_ne!(at(cx, y).contents(), "s", "the card moved left over the row");
+    // (the cursor's ground: on one cell of the card only, the last `s` of `strands` there)
+    let ground = at(x + w - 1, top).bgcolor();
+    let lit: Vec<(usize, usize)> = (top..top + h)
+        .flat_map(|ry| (x..x + w).map(move |rx| (rx, ry)))
+        .filter(|&(rx, ry)| at(rx, ry).bgcolor() != ground && !at(rx, ry).contents().trim().is_empty())
+        .filter(|&(rx, ry)| at(rx, ry).bgcolor() != at(x + 1, ry).bgcolor())
+        .collect();
+    let [(lx, ly)] = lit[..] else { panic!("one cursor on the card: {lit:?}\n{}", screen.contents()) };
+    let row: String = (x..x + w).map(|rx| at(rx, ly).contents()).collect();
+    let before: String = (x..lx).map(|rx| at(rx, ly).contents()).collect();
+    assert!(before.trim_start().ends_with("strand"), "on the last `s` of `strands`: {row:?}");
+    assert_eq!(at(lx, ly).contents(), "s");
+}
+
 /// frictions #229: a signature too long for its card, folded at its front to `…` to keep the active parameter in sight,
 /// is whole under the mouse — its start there too.
 #[test]

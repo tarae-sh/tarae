@@ -458,6 +458,11 @@ pub enum Kind {
         n: u64,
         goto: Option<Goto>,
     },
+    /// A language key on a name in the chat no cited place holds (`chatlink.rs`, #389 step 5), question `n`: the name asked
+    /// of the workspace (`workspace/symbol`).
+    ChatNamed {
+        n: u64,
+    },
     /// A swap's definition in folder `root`, asked of both servers to see they agree (`share.rs`).
     SwapCheck {
         root: std::path::PathBuf,
@@ -477,7 +482,7 @@ impl Kind {
             Kind::Goto(g) | Kind::ToolGoto { goto: g, .. } | Kind::ChatAt { goto: Some(g), .. } => {
                 ("goto", g.provider().unwrap_or("definitionProvider"))
             }
-            Kind::ToolNamed { .. } => ("symbols", "workspaceSymbolProvider"),
+            Kind::ToolNamed { .. } | Kind::ChatNamed { .. } => ("symbols", "workspaceSymbolProvider"),
             Kind::Declared { .. } | Kind::ToolDeclared { .. } => ("goto", "definitionProvider"),
             Kind::ToolRefs { .. } => ("goto", "referencesProvider"),
             Kind::Highlights => ("highlights", "documentHighlightProvider"),
@@ -1162,6 +1167,8 @@ impl Editor {
                     }
                     &Kind::ChatAt { n, goto } => self
                         .for_workspace(session, |ed| crate::chatlink::answered(ed, cid, n, goto, answered)),
+                    &Kind::ChatNamed { n } => self
+                        .for_workspace(session, |ed| crate::chatlink::named_answered(ed, cid, n, answered)),
                     &Kind::ToolRename { ask } => {
                         self.for_workspace(session, |ed| crate::refactor::renamed(ed, ask, answered))
                     }
@@ -1567,7 +1574,8 @@ impl Editor {
             | Kind::ToolNamed { .. }
             | Kind::ToolPrepareRename { .. }
             | Kind::ToolRename { .. }
-            | Kind::ChatAt { .. } => {}
+            | Kind::ChatAt { .. }
+            | Kind::ChatNamed { .. } => {}
             Kind::Rename => match self.apply_workspace_edit(cid, result) {
                 Ok(n) => self.set_status(format!("renamed in {n} file(s)")),
                 Err(e) => self.set_error(format!("rename: {e}")),
@@ -3382,17 +3390,16 @@ impl Editor {
         }
     }
 
-    /// Claude's `definition` by name (N6): `workspace/symbol` asked of every ready server rooted in or
-    /// around the project (`root`) that searches its workspace — those asked, with their names. Err: why
-    /// none could be, and whether one can be soon (one starting).
+    /// Claude's `definition` by name (N6), and the chat's (`Kind::ChatNamed`): `workspace/symbol` asked of every ready
+    /// server rooted in or around the project (`root`) that searches its workspace — those asked, with their names.
+    /// Err: why none could be, and whether one can be soon (one starting).
     pub(crate) fn ask_named(
         &mut self,
         query: &str,
-        ask: u64,
+        kind: Kind,
         root: &std::path::Path,
     ) -> Result<Vec<(ClientId, String)>, (String, bool)> {
         self.lsp_flush();
-        let kind = Kind::ToolNamed { ask };
         let (feature, cap) = kind.route().expect("routed");
         let near = |c: &Client| c.root.starts_with(root) || root.starts_with(&c.root);
         let ids: Vec<ClientId> = self.lsp.clients.iter().filter(|c| near(c)).map(|c| c.id).collect();
