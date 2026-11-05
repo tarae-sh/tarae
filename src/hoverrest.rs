@@ -9,6 +9,13 @@
 //! (`Editor::lsp_hover_at`, `server_for_doc`), its answer kept only for the rest it was asked for (`n`), at the
 //! version it was asked of (`on_response`'s rule) — a newer rest's replaces it. One card at a time, the mouse's first:
 //! `K`'s up, or a cut `…` under the pointer, no rest; while it's shown the cursor's diagnostic card steps aside.
+//!
+//! **Every card the mouse brings waits the same rest** (#391, the user, 2026-11-05: "give it a moment, as show docs
+//! does"): a cut `…`'s and a flag's `¶`'s too, by one rule (`bring`, `due`) on this one timer — while one is up, the
+//! next target's shows at once; off them all, it goes at once. The row in hand's card (keys) and the lit grounds under
+//! the pointer are no such card: they stay immediate. The docs' hover too: with any of the mouse's cards up as the
+//! pointer comes onto a name (`State.warm`), its server is asked at once, the card up staying until the answer comes
+//! (`Rest.before`) — never a gap between two cards, never a card asked for a name the pointer only crossed cold.
 
 use std::time::{Duration, Instant};
 
@@ -30,6 +37,9 @@ pub struct State {
     n: u64,
     /// A timer sleeping (one at a time).
     armed: bool,
+    /// One of the mouse's cards was up as this hover came (`card_up`, taken before any of them moves): the next
+    /// target's comes at once — the warm hand-off, one rule for every card.
+    pub warm: bool,
 }
 
 #[cfg(test)]
@@ -66,6 +76,8 @@ pub struct Rest {
     again: bool,
     /// What it shows once answered (docs empty: the problems alone, else nothing).
     pub card: Option<Card>,
+    /// The card up as the pointer came here from it (the hand-off): shown, where it was, until this one's answer.
+    pub before: Option<Box<(Spot, Card)>>,
 }
 
 #[derive(Default)]
@@ -81,21 +93,39 @@ impl Rest {
     pub fn n(&self) -> u64 {
         self.n
     }
-
-    /// When the pointer came to rest there (asked again, the server busy: when that was put off).
-    pub fn since(&self) -> Instant {
-        self.due - REST
-    }
 }
 
 impl Rest {
-    /// The card to draw, if one: answered, and its document and pane as they were.
-    pub fn shown<'a>(&'a self, ed: &Editor) -> Option<&'a Card> {
-        let card = self.card.as_ref()?;
-        let doc = ed.docs.iter().find(|d| d.id == self.spot.doc)?;
-        (doc.version() == self.spot.version && view_of(ed, self.spot.pane) == Some(self.spot.view))
-            .then_some(card)
+    /// The card to draw and the spot it's of, if one: answered — else the one it took over from, until it is — and its
+    /// document and pane as they were.
+    pub fn shown<'a>(&'a self, ed: &Editor) -> Option<(&'a Spot, &'a Card)> {
+        let (spot, card) = match (&self.card, &self.before) {
+            (Some(c), _) => (&self.spot, c),
+            (None, Some(b)) => (&b.0, &b.1),
+            (None, None) => return None,
+        };
+        still(ed, spot).then_some((spot, card))
     }
+
+    /// What it showed, to stand on as the next rest's `before`.
+    fn into_shown(self, ed: &Editor) -> Option<Box<(Spot, Card)>> {
+        match self.card {
+            Some(card) => still(ed, &self.spot).then(|| Box::new((self.spot, card))),
+            None => self.before.filter(|b| still(ed, &b.0)),
+        }
+    }
+}
+
+/// Whether `spot`'s document and pane are as they were.
+fn still(ed: &Editor, spot: &Spot) -> bool {
+    let doc = ed.docs.iter().find(|d| d.id == spot.doc);
+    doc.is_some_and(|d| d.version() == spot.version) && view_of(ed, spot.pane) == Some(spot.view)
+}
+
+/// Whether one of the mouse's cards is up, as last drawn: a cut `…`'s, a flag's, the docs' hover.
+pub fn card_up(ed: &Editor) -> bool {
+    let docs = ed.screen.rest_card.get().is_some() && ed.hover_rest.rest.is_some();
+    ed.cut_hover.is_some() || ed.flag_hover.is_some() || docs
 }
 
 /// The pane's rect and scroll in the last frame.
@@ -112,7 +142,7 @@ fn view_of(ed: &Editor, pane: PaneId) -> Option<(crate::split::Rect, usize, usiz
 fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
     let (Surface::Code(pane), Part::Text { line, col }) = (u.surface, u.part) else { return None };
     // (one card at a time: `K`'s up, or a cut `…`'s card under the pointer, stays theirs)
-    if !ed.config.mouse_hover || ed.popup.is_some() || ed.cut_hover.is_some() {
+    if !ed.config.mouse_hover || ed.popup.is_some() || ed.cut_hover.is_some() || ed.cut_wait.is_some() {
         return None;
     }
     let id = match pane == ed.workspace.viewer.focus {
@@ -145,7 +175,8 @@ fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
 }
 
 /// The pointer moved to (`x`, `y`) (`Event::Hover`): a new name rests from now, the card of the one left goes — over the
-/// card itself it stays. Whether what's drawn changed.
+/// card itself it stays. With a mouse's card up as it came (`State.warm`), the name is asked at once and the docs' card
+/// up stays until its answer. Whether what's drawn changed.
 pub fn hovered(ed: &mut Editor, u: Under, x: usize, y: usize) -> bool {
     if over_card(ed, x, y) {
         return false;
@@ -154,20 +185,29 @@ pub fn hovered(ed: &mut Editor, u: Under, x: usize, y: usize) -> bool {
     if ed.hover_rest.rest.as_ref().is_some_and(|r| Some(&r.spot) == spot.as_ref()) {
         return false;
     }
-    let drawn = ed.hover_rest.rest.take().is_some() && ed.screen.rest_card.get().is_some();
-    if let Some(spot) = spot {
-        let st = &mut ed.hover_rest;
-        st.n += 1;
-        let due = crate::clock::now() + REST;
-        st.rest = Some(Rest { spot, n: st.n, due, landed: false, again: false, card: None });
-        arm(ed, REST);
+    let old = ed.hover_rest.rest.take();
+    let drawn = old.is_some() && ed.screen.rest_card.get().is_some();
+    let Some(spot) = spot else { return drawn };
+    let warm = ed.hover_rest.warm;
+    let before = old.filter(|_| warm).and_then(|o| o.into_shown(ed));
+    let st = &mut ed.hover_rest;
+    st.n += 1;
+    let now = crate::clock::now();
+    let due = if warm { now } else { now + REST };
+    st.rest = Some(Rest { spot, n: st.n, due, landed: false, again: false, card: None, before });
+    match warm {
+        true => land(ed),
+        false => arm(ed, REST),
     }
-    drawn
+    // (the card drawn goes unless it stands on; one that came at once — no server, the problems alone — is drawn)
+    let r = ed.hover_rest.rest.as_ref();
+    (drawn && r.is_some_and(|r| r.before.is_none())) || r.is_some_and(|r| r.card.is_some())
 }
 
-/// Input came (a key, a press, a paste — your hands elsewhere): the rest and its card go, but the wheel over the card,
-/// which scrolls it.
+/// Input came (a key, a press, the wheel, a paste — your hands elsewhere): the rest and its card go, but the wheel over
+/// the card, which scrolls it; a mouse's card still waiting never comes (one up stays while the pointer's on it).
 pub fn input(ed: &mut Editor, ev: &Event) {
+    (ed.cut_wait, ed.flag_wait) = (None, None);
     if ed.hover_rest.rest.is_none() {
         return;
     }
@@ -195,7 +235,11 @@ pub fn away(ed: &mut Editor) {
 /// The wheel over the card: scrolled `by` rows, never past its last page as drawn.
 pub fn scroll(ed: &mut Editor, by: isize) {
     let end = ed.screen.rest_end.get().unwrap_or(0);
-    if let Some(c) = ed.hover_rest.rest.as_mut().and_then(|r| r.card.as_mut()) {
+    let shown = ed.hover_rest.rest.as_mut().and_then(|r| match r.card.as_mut() {
+        Some(c) => Some(c),
+        None => r.before.as_mut().map(|b| &mut b.1),
+    });
+    if let Some(c) = shown {
         c.scroll = c.scroll.min(end).saturating_add_signed(by).min(end);
     }
 }
@@ -216,17 +260,80 @@ fn arm(ed: &mut Editor, after: Duration) {
     });
 }
 
-/// The timer woke: the rest asked of its server once it's been there `REST` — or slept on for what's left. Nothing drawn
-/// unless there's no server to ask and a problem shows alone.
+/// The timer woke: the rest asked of its server once it's been there `REST`, a mouse's card waiting up once due — or
+/// slept on for what's left of the soonest. Nothing drawn unless a card came, or there's no server to ask and a
+/// problem shows alone.
 fn tick(ed: &mut Editor) {
     ed.hover_rest.armed = false;
     ed.unchanged = true;
-    let Some(r) = ed.hover_rest.rest.as_ref().filter(|r| !r.landed) else { return };
-    let left = r.due.saturating_duration_since(crate::clock::now());
-    if !left.is_zero() {
-        return arm(ed, left);
+    let now = crate::clock::now();
+    let mut left = cards_due(ed, now);
+    if let Some(r) = ed.hover_rest.rest.as_ref().filter(|r| !r.landed) {
+        match r.due.saturating_duration_since(now) {
+            l if l.is_zero() => land(ed),
+            l => left = Some(left.map_or(l, |m| m.min(l))),
+        }
     }
-    land(ed);
+    if let Some(l) = left {
+        arm(ed, l);
+    }
+}
+
+/// The mouse's cards waiting (`bring`), at `now`: those due up — the pointer still over them —, else what's left of the
+/// soonest's wait.
+fn cards_due(ed: &mut Editor, now: Instant) -> Option<Duration> {
+    let cut = crate::whole::rest_due(ed, now);
+    let flag = crate::flags::rest_due(ed, now);
+    cut.into_iter().chain(flag).min()
+}
+
+/// A mouse's card's two places: the card up, and the one waiting with when it's due.
+pub type Fields<T> = fn(&mut Editor) -> (&mut Option<T>, &mut Option<(T, Instant)>);
+
+/// A card the mouse brings (a cut `…`'s, a flag's `¶`'s), the pointer over `over` now (#391): onto one with no card up,
+/// it waits `REST` still — the docs' hover's —, moving within it never putting it off; with one up, another's shows at
+/// once — any of the mouse's cards, `State.warm` (a tooltip's warm hand-off); off them all, the card goes at once and
+/// nothing waits. Whether what's drawn changed.
+pub fn bring<T: PartialEq>(ed: &mut Editor, fields: Fields<T>, over: Option<T>) -> bool {
+    let rests = ed.card_rest && !ed.hover_rest.warm;
+    let (up, wait) = fields(ed);
+    if over == *up {
+        *wait = None;
+        return false;
+    }
+    match over {
+        Some(t) if rests => {
+            if wait.as_ref().is_none_or(|w| w.0 != t) {
+                *wait = Some((t, crate::clock::now() + REST));
+                arm(ed, REST);
+            }
+            false
+        }
+        over => {
+            (*up, *wait) = (over, None);
+            true
+        }
+    }
+}
+
+/// A mouse's card waiting (`bring`), the timer awake at `now`: due, its card up if the pointer's still over it (`over`:
+/// what's under it now, as the last frame drew) — else what's left of its wait.
+pub fn due<T: PartialEq>(
+    ed: &mut Editor,
+    fields: Fields<T>,
+    over: fn(&Editor) -> Option<T>,
+    now: Instant,
+) -> Option<Duration> {
+    let left = fields(ed).1.as_ref()?.1.saturating_duration_since(now);
+    if !left.is_zero() {
+        return Some(left);
+    }
+    let (t, _) = fields(ed).1.take()?;
+    if over(ed).as_ref() == Some(&t) {
+        *fields(ed).0 = Some(t);
+        ed.unchanged = false;
+    }
+    None
 }
 
 /// The rest come: its hover asked — with no server ready that does it (or off a name), the problems there alone.
@@ -240,12 +347,14 @@ fn land(ed: &mut Editor) {
     }
 }
 
-/// The rest landed now, its time not waited (tests outside a simulation).
+/// The rest landed now, its time not waited (tests outside a simulation) — the docs' hover asked, a mouse's card
+/// waiting up.
 #[cfg(test)]
 pub fn rested(ed: &mut Editor) {
     if ed.hover_rest.rest.as_ref().is_some_and(|r| !r.landed) {
         land(ed);
     }
+    cards_due(ed, crate::clock::now() + REST);
 }
 
 /// The server's answer for rest `n` (empty: none) — at the version asked of, `on_response` saw to that.
@@ -258,7 +367,7 @@ pub fn answered(ed: &mut Editor, n: u64, text: &str) {
         false => crate::markdown::render(text, &ed.theme, lang.as_deref()),
     };
     if let Some(r) = ed.hover_rest.rest.as_mut() {
-        r.card = Some(Card { docs, scroll: 0 });
+        (r.card, r.before) = (Some(Card { docs, scroll: 0 }), None);
     }
 }
 
@@ -276,6 +385,6 @@ pub fn busy(ed: &mut Editor, n: u64) {
 /// status line (the pointer asked nothing).
 pub fn failed(ed: &mut Editor, n: u64) {
     if let Some(r) = ed.hover_rest.rest.as_mut().filter(|r| r.n == n) {
-        r.card = Some(Card::default());
+        (r.card, r.before) = (Some(Card::default()), None);
     }
 }

@@ -1,12 +1,13 @@
 //! The pointer's rest (#233, `hoverrest.rs`), simulated: the pointer wandering over a file's names, blanks, its gutter
 //! and the card, time passing by the rest's own scale, your keys, an edit, frames at two widths — a stand-in server
 //! (`Client::own`: its answers jobs, landing among the steps) answering each hover with where it was asked. After every
-//! step: a hover asked only of the rest under the pointer, `REST` after it came there, and once; a card drawn only for
-//! the rest under the pointer — the pointer on its name or on the card — and saying the place it was asked of (an
-//! answer for a rest left never shown); no timer left armed once all's quiet.
+//! step: a hover asked only of the rest under the pointer, `REST` after it came there — or at once where it came with a
+//! card on the frame (#391's hand-off) —, and once; a card drawn only for the rest under the pointer — the pointer on
+//! its name or on the card — and saying the place it was asked of, or, not answered yet, the card it took over from
+//! (an answer for a rest left never shown); no timer left armed once all's quiet.
 
 use std::cell::RefCell;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use unicode_width::UnicodeWidthStr;
@@ -40,6 +41,19 @@ struct World {
     asked: Vec<u64>,
     /// What a frame drew against the rules (`drawn`), said by the check after it.
     fault: Option<String>,
+    /// Each rest as the pointer made it: its number, when, and whether a card was on the frame then.
+    came: Vec<(u64, Instant, bool)>,
+}
+
+/// The pointer to (`x`, `y`): a new rest there noted with whether a card was up as it came.
+fn hover(ed: &mut Editor, w: &mut World, x: usize, y: usize) {
+    let up = ed.screen.rest_card.get().is_some() && ed.hover_rest.rest.is_some();
+    let was = ed.hover_rest.rest.as_ref().map(|r| r.n());
+    w.at = Some((x, y));
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    if let Some(n) = ed.hover_rest.rest.as_ref().map(|r| r.n()).filter(|n| Some(*n) != was) {
+        w.came.push((n, crate::clock::now(), up));
+    }
 }
 
 fn run(choices: Choices) -> Vec<String> {
@@ -86,8 +100,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
     match c.weighted(&[2, 4, 2, 4, 1, 1, 3, 1]) {
         0 => {
             let (x, y) = (c.below(40), c.below(10));
-            w.at = Some((x, y));
-            ed.handle_event(Event::Hover(x as u16, y as u16));
+            hover(ed, w, x, y);
             format!("the pointer at {x},{y}")
         }
         1 => {
@@ -111,15 +124,13 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             }
             let col = *c.pick(&names) + c.below(2);
             let (x, y) = (rect.x + gutter + col, text.y + line - doc.top);
-            w.at = Some((x, y));
-            ed.handle_event(Event::Hover(x as u16, y as u16));
+            hover(ed, w, x, y);
             format!("onto a name at {x},{y}")
         }
         2 => {
             let Some(r) = ed.screen.rest_card.get() else { return "(no card to go onto)".into() };
             let (x, y) = (r.0 + c.below(r.2), r.1 + c.below(r.3));
-            w.at = Some((x, y));
-            ed.handle_event(Event::Hover(x as u16, y as u16));
+            hover(ed, w, x, y);
             format!("onto the card at {x},{y}")
         }
         3 => {
@@ -161,18 +172,21 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
 fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
     let now = crate::clock::now();
     let rest = ed.hover_rest.rest.as_ref();
-    // A hover asked: for the rest there now, `REST` after it came, once
+    // A hover asked: for the rest there now, `REST` after it came — at once where a card was up as it came —, once
     for (&(_, id), p) in &ed.lsp.pending {
         let Kind::PointerHover { n } = p.kind else { continue };
         if w.seen.contains(&id) {
             continue;
         }
         w.seen.push(id);
-        let Some(r) = rest.filter(|r| r.n() == n) else {
+        if !rest.is_some_and(|r| r.n() == n) {
             return Err(format!("rest {n} asked, not the one there"));
+        }
+        let Some(&(_, since, warm)) = w.came.iter().find(|c| c.0 == n) else {
+            return Err(format!("rest {n} asked, the pointer never made it"));
         };
-        if now < r.since() + REST {
-            return Err(format!("rest {n} asked {:?} after it came", now - r.since()));
+        if now < since + REST && !warm {
+            return Err(format!("rest {n} asked {:?} after it came, no card up then", now - since));
         }
         if w.asked.contains(&n) {
             return Err(format!("rest {n} asked twice"));
@@ -187,24 +201,32 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
 fn drawn(ed: &Editor, w: &World) -> Result<(), String> {
     let Some(rect) = ed.screen.rest_card.get() else { return Ok(()) };
     let Some(r) = ed.hover_rest.rest.as_ref() else { return Err("a card drawn with nothing resting".into()) };
-    let Some(card) = r.card.as_ref() else { return Err("a card drawn for a rest not answered".into()) };
-    let doc = ed.docs.iter().find(|d| d.id == r.spot.doc).ok_or("its document gone")?;
-    if doc.version() != r.spot.version {
-        return Err("a card drawn for a version gone".into());
-    }
-    let line = crate::movement::line_of(&doc.text, r.spot.word.start);
-    let col = r.spot.word.start - crate::movement::line_start(&doc.text, line);
+    // (not answered yet: the card it took over from, as the pointer came from it)
+    let (spot, card) = match (&r.card, &r.before) {
+        (Some(c), _) => (&r.spot, c),
+        (None, Some(b)) if w.came.iter().any(|c| c.0 == r.n() && c.2) => (&b.0, &b.1),
+        (None, Some(_)) => return Err("a card kept for a rest that came with none up".into()),
+        (None, None) => return Err("a card drawn for a rest not answered".into()),
+    };
+    let of = |s: &crate::hoverrest::Spot| {
+        ed.docs.iter().find(|d| d.id == s.doc).filter(|d| d.version() == s.version)
+    };
+    let Some(doc) = of(spot) else { return Err("a card drawn for a version gone".into()) };
+    let line = crate::movement::line_of(&doc.text, spot.word.start);
+    let col = spot.word.start - crate::movement::line_start(&doc.text, line);
     let says = format!("asked at {line}:{col}");
     let text: String = crate::markdown::wrap(&card.docs, 80, Default::default())
         .iter()
         .flat_map(|l| l.iter().map(|s| s.text.clone()))
         .collect();
-    if r.spot.name && !text.contains(&says) {
+    if spot.name && !text.contains(&says) {
         return Err(format!("the card says {text:?}, not {says}"));
     }
     let inside = |(x, y): (usize, usize)| {
         (rect.0..rect.0 + rect.2).contains(&x) && (rect.1..rect.1 + rect.3).contains(&y)
     };
+    // (the pointer on the name resting now, or on the card)
+    let Some(doc) = of(&r.spot) else { return Err("a rest's version gone".into()) };
     let (x0, y0) = r.spot.cell;
     let wide = doc.text.byte_slice(r.spot.word.clone()).to_string().width().max(1);
     let on_name = |(x, y): (usize, usize)| y == y0 && (x0..x0 + wide).contains(&x);

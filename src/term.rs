@@ -23045,8 +23045,8 @@ fn draw_rest_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
     let Some(rest) = editor.hover_rest.rest.as_ref().filter(|_| editor.popup.is_none()) else {
         return Ok(());
     };
-    let Some(card) = rest.shown(editor) else { return Ok(()) };
-    let spot = &rest.spot;
+    // (the card it took over from, until this one's answered — #391's hand-off)
+    let Some((spot, card)) = rest.shown(editor) else { return Ok(()) };
     let Some(pane) = panes(editor, lay).into_iter().find(|p| p.0 == spot.pane).map(|p| p.2) else {
         return Ok(());
     };

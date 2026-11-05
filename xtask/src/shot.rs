@@ -10,7 +10,7 @@
 //! gone from it. `@press?text`, `@drag?text`, `@release?text` press, drag and let go of the mouse's left button on
 //! the first cell of `text` on screen (`@drag+3?text` three cells after it); `@hover?text` (`@hover+3?text`) moves
 //! the mouse there with no button down; `@wheel-down?text` (`-up`, `-left`, `-right`; `@wheel-down*5?text` five notches;
-//! `@S-wheel-down?text` with shift, `A-` alt, `C-` ctrl — any of the mouse's acts) turns the wheel there. `@~300` sends the key after it and keeps every frame drawn in the 300 ms after it: `out-01.png` (the
+//! `@S-wheel-down?text` with shift, `A-` alt, `C-` ctrl — any of the mouse's acts) turns the wheel there. `@~300` sends the key after it (a mouse's act too) and keeps every frame drawn in the 300 ms after it: `out-01.png` (the
 //! screen before the key), `out-02.png` … and `out-sheet.png`, all side by side — a motion's contact sheet
 //! (`TARAE_MOTION_AT=<ms>` instead pins every motion at that age, for one picture of a step; `TARAE_SHOT_SHEET_ROWS=0,5-6`
 //! makes the sheet those rows of each frame, one frame's strip under the one before). A wait that times out
@@ -1066,8 +1066,17 @@ fn drive_with(
             };
             match cell {
                 Some((row, col)) => {
+                    // (`@~ms` before it: every frame in those ms after it kept, as after a key)
+                    let secs = capture.take();
+                    if secs.is_some() {
+                        vt.keep(Duration::ZERO);
+                        vt.capturing = Some(Instant::now());
+                    }
                     let _ = master.write_all(report.at(col + cells + 1, row + 1).as_bytes());
-                    pump(vt, 0.35);
+                    pump(vt, secs.unwrap_or(0.35));
+                    if secs.is_some() {
+                        vt.capturing = None;
+                    }
                 }
                 None => missed.push(format!("{k}: not on screen")),
             }

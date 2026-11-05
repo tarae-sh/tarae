@@ -936,6 +936,87 @@ fn a_lists_selected_row_is_whole_on_its_card_while_the_list_has_the_keys() {
     assert!(row_of(&screen, y).contains(long), "back to the hand's:\n{screen}");
 }
 
+/// #391 (the user, 2026-11-05: "give it a moment, as show docs does"): the pointer coming onto a cut name shows its card
+/// only once it's rested there `hoverrest::REST` — moving within the name never putting it off —; with one up, the
+/// next name's shows at once; off them, it goes at once and the next waits again; off before it came, none comes.
+#[test]
+fn a_cut_rows_card_waits_for_the_pointer_to_rest_then_hands_off_at_once() {
+    let mut ed = side_panel(crate::workspace::At::Code);
+    ed.card_rest = true;
+    let before = frame(&mut ed);
+    let (y0, a0, ..) = cut_text(&ed, "hello").expect("recorded as cut");
+    let (y1, a1, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
+    let hover = |ed: &mut Editor, x: usize, y: usize| ed.handle_event(Event::Hover(x as u16, y as u16));
+    // (crossing: no card, nothing in hand — the row's ground lit at once, feedback)
+    hover(&mut ed, a0 + 2, y0);
+    assert_eq!((ed.cut_hover.is_some(), frame(&mut ed)), (false, before.clone()), "no card yet");
+    let due = ed.cut_wait.as_ref().map(|w| w.1).expect("its card waits");
+    hover(&mut ed, a0 + 5, y0);
+    assert_eq!(ed.cut_wait.as_ref().map(|w| w.1), Some(due), "moving within it never puts it off");
+    // (rested: its card)
+    crate::hoverrest::rested(&mut ed);
+    assert!(!ed.unchanged, "a frame for the card come");
+    let screen = frame(&mut ed);
+    assert!(
+        screen.lines().nth(y0).unwrap().contains("hello_and_never_fits_in_the_panel.rs"),
+        "whole:\n{screen}"
+    );
+    // (onto the next while it's up: at once)
+    hover(&mut ed, a1 + 2, y1);
+    assert!(!ed.unchanged && ed.cut_wait.is_none(), "handed on at once");
+    let screen = frame(&mut ed);
+    assert!(
+        screen.lines().nth(y1).unwrap().contains("farewell_the_panel_never_has_room_for_at_all.rs"),
+        "{screen}"
+    );
+    // (off them: gone at once; back on, it waits again)
+    hover(&mut ed, 0, H as usize - 1);
+    assert!(!ed.unchanged && ed.cut_hover.is_none(), "gone at once");
+    assert_eq!(frame(&mut ed), before);
+    hover(&mut ed, a1 + 2, y1);
+    assert!(ed.cut_hover.is_none() && ed.cut_wait.is_some(), "waits again");
+    // (off before it came: none comes)
+    hover(&mut ed, 0, H as usize - 1);
+    crate::hoverrest::rested(&mut ed);
+    assert_eq!((ed.cut_hover.is_none(), frame(&mut ed)), (true, before), "left before it was due");
+}
+
+/// #391: a key, a press or the wheel while a card waits — your hands elsewhere — lets it go, as the docs' hover's rest;
+/// the row in hand's card (the list with the keys) never waits.
+#[test]
+fn a_key_or_the_wheel_lets_a_waiting_card_go_and_the_row_in_hand_never_waits() {
+    let mut ed = side_panel(crate::workspace::At::Code);
+    ed.card_rest = true;
+    frame(&mut ed);
+    let (y, a, ..) = cut_text(&ed, "hello").expect("recorded as cut");
+    for (what, between) in [
+        ("a key", Event::Key("esc".parse().unwrap())),
+        (
+            "the wheel",
+            Event::Mouse(crate::event::Mouse {
+                kind: crate::event::MouseKind::ScrollDown,
+                x: (a + 2) as u16,
+                y: y as u16,
+                alt: false,
+                ctrl: false,
+            }),
+        ),
+    ] {
+        ed.handle_event(Event::Hover((a + 2) as u16, y as u16));
+        assert!(ed.cut_wait.is_some(), "waits");
+        ed.handle_event(between);
+        frame(&mut ed);
+        crate::hoverrest::rested(&mut ed);
+        assert!(ed.cut_hover.is_none(), "{what} let it go");
+        // (the pointer moving off and on again starts its rest anew)
+        ed.handle_event(Event::Hover(0, H - 1));
+    }
+    let mut ed = side_panel(crate::workspace::At::Side);
+    ed.card_rest = true;
+    frame(&mut ed);
+    assert!(card(&ed).is_some(), "the row in hand's card at once");
+}
+
 /// The side panel with the keys, `long` selected on its first row and two short names under it.
 fn side_long(long: &str) -> Editor {
     let mut ed = Editor::new(Config::default());

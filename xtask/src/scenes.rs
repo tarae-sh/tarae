@@ -821,6 +821,10 @@ const WHOLE_LIST: &[&str] = a1b_two_keys!("\x17", "h", " ", "N", "@1");
 const FLAG_LIT: &[&str] = a1b_two_keys!();
 const FLAG_DIM: &[&str] = a1b_two_keys!("\x17", "h", " ", "L");
 const FLAG_HOVER: &[&str] = a1b_two_keys!("@hover+13?&threads {", "@1");
+/// #391: the pointer onto line 11's `¶`, its card only after the rest (every frame of 0.9 s kept), then up onto line 10's
+/// (its card under line 11's covers the lines below) — handed off at once (0.4 s kept).
+const FLAG_REST: &[&str] =
+    a1b_two_keys!("@~900", "@hover+13?&threads {", "@1", "@~400", "@hover+10?first);", "@1");
 const FLAG_PRESS: &[&str] = a1b_two_keys!("\x17", "h", " ", "L", "@1", "@press+13?&threads {", "@1");
 const FLAG_NOTE: &[&str] =
     a1b_two_keys!("\x17", "h", " ", "L", "11G", " ", "n", "@1", "keep the first one?", "\t", "@2");
@@ -4289,6 +4293,7 @@ const SCENES: &[Scene] = &[
     Scene { name: "flag-lit", claude: "a1b-two", files: MAIN, keys: FLAG_LIT },
     Scene { name: "flag-dim", claude: "a1b-two", files: MAIN, keys: FLAG_DIM },
     Scene { name: "flag-hover", claude: "a1b-two", files: MAIN, keys: FLAG_HOVER },
+    Scene { name: "flag-rest", claude: "a1b-two", files: MAIN, keys: FLAG_REST },
     Scene { name: "flag-press", claude: "a1b-two", files: MAIN, keys: FLAG_PRESS },
     Scene { name: "flag-note", claude: "a1b-two", files: MAIN, keys: FLAG_NOTE },
     // (#271: a selection on an answer's line · #272: every row of a cut text its hover zone)

@@ -1234,7 +1234,16 @@ fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut
             walk.chips.push(scene.to_string());
             let pressed = ed.mouse_at(x, y).part == Part::Word(crate::mouse::Word::With(which));
             let before = snap(&mut ed);
+            ed.card_rest = true;
             ed.handle_event(Event::Hover(x as u16, y as u16));
+            let waits = ed.cut_wait.as_ref().map(|w| &w.0) == Some(&Cut::With(which));
+            if ed.cut_hover.is_some() || (pressed && !waits) {
+                walk.cuts.push(format!(
+                    "{scene} · at {x},{y} (a chip, {which:?}): its card not waiting for the rest"
+                ));
+                continue;
+            }
+            crate::hoverrest::rested(&mut ed);
             let after = snap(&mut ed);
             let what = match (pressed, ed.cut_hover == Some(Cut::With(which)), before.frame != after.frame) {
                 (true, true, true) => continue,
@@ -1258,7 +1267,15 @@ fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut
             of.iter().filter_map(|s| Some((rows.get(s.0)?.as_slice(), (s.1, s.2)))).collect();
         let shows = shows_its_own_over(&cells, &w.text);
         let before = snap(&mut ed);
+        // (#391: its card only once the pointer has rested there — none as it crosses)
+        ed.card_rest = true;
         ed.handle_event(Event::Hover(x as u16, y as u16));
+        let waits = matches!(&ed.cut_wait, Some((Cut::Text(h), _)) if h.text == w.text);
+        if ed.cut_hover.is_some() || (shows && !waits) {
+            walk.cuts.push(format!("{scene} · at {x},{y} ({:?}): its card not waiting for the rest", w.on));
+            continue;
+        }
+        crate::hoverrest::rested(&mut ed);
         let after = snap(&mut ed);
         let held = matches!(&ed.cut_hover, Some(Cut::Text(h)) if h.text == w.text);
         // (#272: one cut over several rows has its card from its first row, whichever row the mouse is on)
@@ -1443,7 +1460,8 @@ fn no_press_is_lost_in_silence() {
 
 /// Every `…` tarae draws shows its whole text under the mouse (frictions #178, #179): on every scene's frame, each `…` is
 /// under a cut recorded where it's drawn, and the mouse over a cut text shows it whole (its card drawn) where what it's
-/// drawn on is under the pointer — but a `…` that isn't a cut (`NOT_CUTS`). What no walk meets is held by
+/// drawn on is under the pointer, once the pointer has rested there and not before (#391) — but a `…` that isn't a cut
+/// (`NOT_CUTS`). What no walk meets is held by
 /// `whole::tests::every_cut_tarae_draws_is_recorded`.
 #[test]
 fn every_cut_text_is_whole_under_the_mouse() {

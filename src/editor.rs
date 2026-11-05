@@ -901,6 +901,14 @@ pub struct Editor {
     pub row_hover: std::cell::RefCell<Vec<(usize, usize, usize)>>,
     /// What a press lands on in the lit row (`row_hover`) — a move within it, on the same thing, lights nothing new.
     pub row_under: std::cell::Cell<Option<crate::mouse::Under>>,
+    /// The cut row the pointer came onto with no card up (`cut_hover`), and when its card is due — `hoverrest::REST`
+    /// still (#391, `hoverrest::bring`).
+    pub cut_wait: Option<(crate::whole::Cut, std::time::Instant)>,
+    /// The `¶` the pointer came onto with no card up (`flag_hover`), and when its card is due (#391).
+    pub flag_wait: Option<(crate::flags::Hover, std::time::Instant)>,
+    /// The mouse's cards wait for the pointer to rest (#391) — off in tests but their own (`hoverrest::rested` lands one),
+    /// whose frames and cards are about what's drawn, not when.
+    pub card_rest: bool,
     /// The frame being drawn as read so far, for its lit row (`term::light_rows`) — `Screen::present` reads on from it.
     pub drawn: std::cell::RefCell<Option<crate::screen::Drawn>>,
     /// Where two workspaces' changes would conflict, and what each was last taken as (`overlap.rs`).
@@ -1487,6 +1495,9 @@ impl Editor {
             word_hover: Default::default(),
             row_hover: Default::default(),
             row_under: Default::default(),
+            cut_wait: None,
+            flag_wait: None,
+            card_rest: !cfg!(test),
             drawn: Default::default(),
             overlap: Default::default(),
             keep_close: Default::default(),
@@ -3043,6 +3054,8 @@ impl Editor {
         // changed), none of the work every other event does below (a sweep sends dozens a second)
         if let Event::Hover(x, y) = ev {
             let (x, y) = (x as usize, y as usize);
+            // (one of the mouse's cards up as the pointer comes: the next target's at once — #391's hand-off)
+            self.hover_rest.warm = crate::hoverrest::card_up(self);
             let tag = crate::presence::hovered(self, x, y);
             let mark = crate::follow::strip_hovered(self, x, y);
             let cut = crate::whole::hovered(self, x, y);
@@ -3098,7 +3111,8 @@ impl Editor {
                     crate::presence::away(self);
                     crate::hoverrest::away(self);
                     // (the mouse gone with the focus: a row it held whole folds — `whole.rs`)
-                    self.cut_hover = None;
+                    (self.cut_hover, self.cut_wait) = (None, None);
+                    (self.flag_hover, self.flag_wait) = (None, None);
                     self.word_hover.set(None);
                     self.row_hover.take();
                     self.row_under.set(None);

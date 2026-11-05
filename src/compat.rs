@@ -1200,6 +1200,11 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ),
     (
         "src/editor.rs",
+        "in fn with_root: card_rest",
+        "the mouse only: a card the pointer brings waits its rest or not (#391) — nothing a run does or reads",
+    ),
+    (
+        "src/editor.rs",
         "in fn with_root: motion_drawn",
         "drawing only: a flash drawn or not — its record and wakes are made either way, nothing a run reads",
     ),

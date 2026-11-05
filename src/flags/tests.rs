@@ -169,6 +169,47 @@ fn a_flags_hover_lists_its_lines_answers_each_a_button() {
     assert!(ed.flag_hover.is_none() && ed.screen.flag_card.get().is_none());
 }
 
+/// A `¶`'s card comes once the pointer rests on it (#391, the docs' hover's rest) — crossing it, none; a key lets the
+/// wait go —; with it up, the next line's `¶` shows its own at once (the hand-off); off both, it goes at once.
+#[test]
+fn a_flags_card_waits_for_the_rest_then_hands_off_at_once() {
+    use crate::event::Event;
+    let (_s, _root, mut ed) = two_answers("flags-rest");
+    ed.card_rest = true;
+    screen(&mut ed);
+    let (three, seven) = (flag_at(&ed, 2), flag_at(&ed, 6));
+    let (a, b) = (pilcrow(&ed, three), pilcrow(&ed, seven));
+    let up = |ed: &Editor| ed.flag_hover.map(|h| h.id);
+    // (crossing it: its ground lights — a button's, at once — its card not yet)
+    ed.handle_event(Event::Hover(a.0, a.1));
+    assert!(up(&ed).is_none() && ed.flag_wait.is_some(), "its card waits for the rest");
+    screen(&mut ed);
+    assert!(ed.screen.flag_card.get().is_none(), "no card yet");
+    ed.handle_event(Event::Key("esc".parse().unwrap()));
+    assert!(ed.flag_wait.is_none(), "a key lets the wait go");
+    crate::hoverrest::rested(&mut ed);
+    assert!(up(&ed).is_none(), "nothing came after the key");
+    // (the pointer moved again: rested, its card)
+    ed.handle_event(Event::Hover(0, 0));
+    ed.handle_event(Event::Hover(a.0, a.1));
+    crate::hoverrest::rested(&mut ed);
+    assert_eq!(up(&ed), Some(three), "rested: its card");
+    screen(&mut ed);
+    assert!(ed.screen.flag_card.get().is_some(), "drawn");
+    // Onto the next line's `¶`: its card at once, nothing waiting
+    ed.handle_event(Event::Hover(b.0, b.1));
+    assert!(!ed.unchanged, "drawn");
+    assert_eq!((up(&ed), ed.flag_wait.is_none()), (Some(seven), true), "handed off at once");
+    screen(&mut ed);
+    assert!(ed.screen.flag_card.get().is_some());
+    // Off both: gone at once, and the next waits again
+    ed.handle_event(Event::Hover(0, 0));
+    assert!(up(&ed).is_none() && ed.flag_wait.is_none(), "gone at once");
+    screen(&mut ed);
+    ed.handle_event(Event::Hover(a.0, a.1));
+    assert!(up(&ed).is_none(), "cold again: it waits");
+}
+
 /// A flag on a folded doc comment's line stands at the end of the row its line's paragraph is on, as a note's does (focus
 /// A1c, #261) — the block's other rows none — and is pressed there as at a code line's end.
 #[test]

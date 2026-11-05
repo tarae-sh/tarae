@@ -267,7 +267,8 @@ configs carry over as they are.
   opens (the code gets the keys back), Tab steps files → outline → list → git, Esc leaves it showing, `q` or the same key again closes it; `space` and `:` still
   work. `C-w h`/`j`/`k`/`l` go to the pane that way, the side panel among them. Folders you scroll past stay pinned at its top. A name too long for it loses its middle, not its end
   (`user_prof…model.ts`); the selected one shows whole on a card over the code while the panel has the keys, any
-  other under the mouse. A wide terminal makes it wider (up to
+  other once the pointer rests on it half a second, as the docs' hover does — with a card up, the next row's comes at
+  once, and it goes as the pointer leaves. Every `…` whole under the mouse waits so. A wide terminal makes it wider (up to
   12 columns, the code keeping 100). A click opens a row, the wheel scrolls. It folds away
   when the terminal leaves the code fewer than 80 columns ([files](screenshots/ux-side-panel.png) ·
   [outline](screenshots/ux-outline.png))
@@ -547,7 +548,8 @@ cursor or document moved on are dropped.
   — docs render as Markdown with code in its own colors ([screenshot](screenshots/m3-hover.png)). The pointer resting
   on a name about half a second shows the same card at that name, the problems underlined there first; it never takes
   the keys, the wheel over it scrolls it, and it goes as the pointer leaves the name and the card
-  (`editor.mouse-hover`). A list of
+  (`editor.mouse-hover`). With a card up — this one, a `…`'s, an answer's `¶`'s — the next name is asked at once, the
+  card up staying until the answer comes: every card the mouse brings waits so, and hands off so. A list of
   places (`gr`, or several `gi`) shows each one's code: the line trimmed, the name standing out, line numbers
   right-aligned, by file then line. For `gr` the declaration (the server's own definition) comes first, marked `decl`.
   While the server is still starting or loading the project, `gr` doesn't wait: the name's text matches (whole

@@ -10,7 +10,8 @@
 //!   closed).
 //! - **Its hover** (`hovered`, `term::flag_card`): a borderless card under the `¶`, a row per answer that named the line,
 //!   newest first — F0's doubt, the question, the sentence that named the place —, each row a button to that answer's
-//!   paragraph. The card stays while the pointer is on the `¶` or on it.
+//!   paragraph. It comes once the pointer rests on the `¶` (`hoverrest::REST`; at once in another card's place, #391)
+//!   and stays while the pointer is on the `¶` or on it.
 //! - **`]n`/`[n`** walk flags with the notes (`notes::step`): on a flag the cursor moves there, no card, and with the
 //!   column in sight its paragraph comes into view.
 //! - Kept with the conversation (`chatnotes::places_json`, `restore`), a new conversation clearing them (`forget`).
@@ -118,7 +119,7 @@ pub fn forget(ed: &mut Editor) {
     let flags = &mut ed.workspace.claude.flags;
     (flags.list, flags.answer, flags.left, flags.focus) = (Vec::new(), None, None, None);
     (flags.answers, flags.kept) = (0, 0);
-    ed.flag_hover = None;
+    (ed.flag_hover, ed.flag_wait) = (None, None);
 }
 
 /// Every event: open documents get marks for their flags, and every flag's lines follow its mark (a note's rule,
@@ -172,7 +173,7 @@ pub fn line_lit(flags: &Flags, f: &Flag) -> bool {
 pub fn to_paragraph(ed: &mut Editor, id: u64) {
     let Some(at) = find(ed, id).map(Flag::reading) else { return };
     ed.workspace.claude.flags.focus = Some(id);
-    ed.flag_hover = None;
+    (ed.flag_hover, ed.flag_wait) = (None, None);
     if !crate::chat::reopen_left(ed) {
         return ed.set_status("this answer's conversation isn't kept — C-p lists the ones that are");
     }
@@ -223,9 +224,27 @@ pub fn lit_sync(ed: &mut Editor) -> bool {
     changed
 }
 
-/// The mouse at (`x`, `y`) (`Event::Hover`): on a flag's `¶` its card opens; on the card it stays; elsewhere it goes.
-/// Whether that changed — a move that changes nothing draws nothing.
+/// The mouse at (`x`, `y`) (`Event::Hover`): on a flag's `¶` its card opens once the pointer rests there — at once while
+/// one of the mouse's cards is up (`hoverrest::bring`, #391); on the card it stays; elsewhere it goes. Whether what's
+/// drawn changed — a move that changes nothing draws nothing.
 pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
+    let over = over_at(ed, x, y);
+    crate::hoverrest::bring(ed, |ed| (&mut ed.flag_hover, &mut ed.flag_wait), over)
+}
+
+/// The rest's timer (`hoverrest::tick`) at `now`: the `¶` waited on due — its card up if the pointer's still on it — or
+/// what's left of its wait.
+pub fn rest_due(ed: &mut Editor, now: std::time::Instant) -> Option<std::time::Duration> {
+    let over = |ed: &Editor| ed.pointer.and_then(|(x, y)| over_at(ed, x, y));
+    crate::hoverrest::due(ed, |ed| (&mut ed.flag_hover, &mut ed.flag_wait), over, now)
+}
+
+/// What a flag's card is for with the pointer at (`x`, `y`): the `¶` there, or the card up while it's on it.
+pub(crate) fn over_at(ed: &Editor, x: usize, y: usize) -> Option<Hover> {
+    // (a cut `…`'s there, or its card run along its row over the `¶`: that one's — one card at a time)
+    if crate::whole::under(ed, x, y).is_some() {
+        return None;
+    }
     let s = &ed.screen;
     let on_card = s
         .flag_card
@@ -245,21 +264,21 @@ pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
         }
         _ => None,
     };
-    let now = end.or(ed.flag_hover.filter(|_| on_card));
-    let changed = now != ed.flag_hover;
-    ed.flag_hover = now;
-    changed
+    end.or(ed.flag_hover.filter(|_| on_card))
 }
 
-/// A frame drawn while a flag's card is up: its `¶` still where it was? A scroll, an edit, the flag gone take it from
-/// under a mouse that didn't move — then it goes. Whether it changed (drawn again).
+/// A frame drawn while a flag's card is up: the pointer still on its `¶` or its card, as this frame drew them? A scroll,
+/// an edit, the flag gone take it from under a mouse that didn't move — then it goes, or another `¶` brought under it
+/// takes its place at once (a card was up: #391's hand-off, as `whole::drawn`); and a hand-off drawn the card elsewhere
+/// than the one the pointer went onto (no frame between) lets it go. Whether it changed (drawn again).
 pub fn hover_drawn(ed: &mut Editor) -> bool {
-    let Some(h) = ed.flag_hover else { return false };
-    let here = ed.screen.flag_ends.borrow().iter().any(|e| (e.0, e.1, e.2) == (h.y, h.x, h.id));
-    if !here {
-        ed.flag_hover = None;
+    if ed.flag_hover.is_none() {
+        return false;
     }
-    !here
+    let over = ed.pointer.and_then(|(x, y)| over_at(ed, x, y));
+    let changed = over != ed.flag_hover;
+    ed.flag_hover = over;
+    changed
 }
 
 /// What flag `f`'s hover row says: what tarae saw of the place, every verdict (`doc` its file's buffer — focus F0; the

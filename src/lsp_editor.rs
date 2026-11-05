@@ -7283,12 +7283,32 @@ mod tests {
             alt: false,
         }));
         assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_some()), "the wheel over it keeps it");
-        // Off the name and the card: gone — a name further on rests anew, its card not yet asked
+        // Onto another name, the card up: asked at once (#391's hand-off), the card standing on until its answer
         let (mx, my) = cell_of(&rows, "fn main", "main", 1);
+        let asked = |ed: &Editor| {
+            ed.lsp.pending.values().filter(|p| matches!(p.kind, Kind::PointerHover { .. })).count()
+        };
         ed.handle_event(Event::Hover(mx, my));
-        assert!(!ed.unchanged, "its going drawn");
-        assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_none()));
-        assert!(!rest_frame(&mut ed).iter().any(|r| r.contains("╭─ helper")));
+        assert!(ed.unchanged, "nothing drawn changes yet");
+        assert_eq!(asked(&ed), 1, "main asked at once, no rest");
+        assert!(
+            rest_frame(&mut ed).iter().any(|r| r.contains("╭─ helper")),
+            "helper's card until main's answer"
+        );
+        let id = ed.lsp.pending.keys().map(|k| k.1).max().unwrap();
+        let main = json!({ "contents": { "kind": "markdown", "value": "```rust\nfn main()\n```" } });
+        ed.on_lsp_message(cid, json!({ "id": id, "result": main }));
+        let shown = rest_frame(&mut ed);
+        assert!(shown.iter().any(|r| r.contains("╭─ main")), "main's card:\n{}", shown.join("\n"));
+        assert!(!shown.iter().any(|r| r.contains("╭─ helper")), "helper's gone");
+        // Off the names and the card: gone at once — back onto one, it rests anew, its card not yet asked
+        ed.handle_event(Event::Hover(x + 30, y));
+        assert!(!ed.unchanged && ed.hover_rest.rest.is_none(), "its going drawn");
+        assert!(!rest_frame(&mut ed).iter().any(|r| r.contains("╭─ main")));
+        ed.handle_event(Event::Hover(mx, my));
+        assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_none() && r.before.is_none()), "cold");
+        assert_eq!(asked(&ed), 0, "nothing asked before the rest");
+        ed.handle_event(Event::Hover(x + 30, y));
         // An answer for the rest left is dropped: the newer one's replaces it
         ed.handle_event(Event::Hover(x, y));
         crate::hoverrest::rested(&mut ed);

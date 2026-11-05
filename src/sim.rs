@@ -37,6 +37,7 @@ mod claudestart;
 mod codetrust;
 mod commit;
 mod confighold;
+mod cutrest;
 mod diskracy;
 mod diskroom;
 mod diskwatch;

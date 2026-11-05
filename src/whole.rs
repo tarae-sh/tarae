@@ -839,13 +839,19 @@ pub(crate) fn under(ed: &Editor, x: usize, y: usize) -> Option<Cut> {
     .map(|s| s.3.clone())
 }
 
-/// The mouse at (`x`, `y`) (`Event::Hover`): over a cut row, it's in hand. Whether that changed — a move that changes
-/// nothing draws nothing.
+/// The mouse at (`x`, `y`) (`Event::Hover`): over a cut row, it's in hand once the pointer rests there — at once while
+/// another's card is up (`hoverrest::bring`, #391). Whether what's drawn changed — a move that changes nothing draws
+/// nothing.
 pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
     let over = under(ed, x, y);
-    let changed = over != ed.cut_hover;
-    ed.cut_hover = over;
-    changed
+    crate::hoverrest::bring(ed, |ed| (&mut ed.cut_hover, &mut ed.cut_wait), over)
+}
+
+/// The rest's timer (`hoverrest::tick`) at `now`: the cut waited on due — its card up if the pointer's still over it —
+/// or what's left of its wait.
+pub fn rest_due(ed: &mut Editor, now: std::time::Instant) -> Option<std::time::Duration> {
+    let over = |ed: &Editor| ed.pointer.and_then(|(x, y)| under(ed, x, y));
+    crate::hoverrest::due(ed, |ed| (&mut ed.cut_hover, &mut ed.cut_wait), over, now)
 }
 
 /// A frame drawn while the mouse holds a row in hand (`term::render_drawn`): still under it? What came, a scroll, a
