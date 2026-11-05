@@ -1931,8 +1931,10 @@ struct Surfaces<'a> {
 }
 
 impl crate::split::Room for Surfaces<'_> {
-    fn auto(&self, kid: &crate::split::Split, dir: crate::split::Dir, _: usize) -> usize {
+    fn auto(&self, kid: &crate::split::Split, dir: crate::split::Dir, avail: usize) -> usize {
         use crate::pane::Shows;
+        use crate::sizes::Across;
+        use crate::split::Dir::{Horizontal, Vertical};
         let id = match kid {
             crate::split::Split::Leaf(id) => *id,
             // (two groups docked on one side, stacked in a node of their own: the wider one's)
@@ -1940,16 +1942,29 @@ impl crate::split::Room for Surfaces<'_> {
                 return node
                     .leaves()
                     .into_iter()
-                    .map(|id| self.auto(&crate::split::Split::Leaf(id), dir, 0))
+                    .map(|id| self.auto(&crate::split::Split::Leaf(id), dir, avail))
                     .max()
                     .unwrap_or(0);
             }
         };
+        // Each kind's size along the split it sits in (onetree §2.3): its home's way the sizes above; the other way
+        // `sizes::across` — hidden (0) either way
+        let along = |n: usize, home: crate::split::Dir, other: &dyn Fn() -> Across| match n {
+            0 => 0,
+            _ if dir == home => n,
+            _ => crate::sizes::across(other(), avail),
+        };
+        let v = &self.session.viewer;
         match self.session.shows(id) {
-            Some(Shows::Side) if !self.rail => self.left,
-            Some(Shows::Rail) if self.rail => self.left,
-            Some(Shows::Chat) => self.chat,
-            Some(Shows::Slot) => self.slot,
+            Some(Shows::Side) if !self.rail => along(self.left, Vertical, &|| Across::Nav {
+                rows: v.sidebar.as_ref().map_or(0, |s| s.lines().len()),
+            }),
+            Some(Shows::Rail) if self.rail => along(self.left, Vertical, &|| Across::Nav {
+                rows: self.session.code_review.as_ref().map_or(0, |r| r.files.len()),
+            }),
+            Some(Shows::Chat) => along(self.chat, Vertical, &|| Across::Chat),
+            Some(Shows::Slot) => along(self.slot, Horizontal, &|| Across::Slot),
+            // (by direction already: `Editor::dock_auto`)
             Some(Shows::Group(k)) => self.editor.dock_auto(k, dir, self.width, self.rows, self.slot),
             _ => 0,
         }

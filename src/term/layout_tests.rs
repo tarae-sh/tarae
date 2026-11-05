@@ -302,6 +302,52 @@ fn layout_matrix() {
     }
 }
 
+/// Each kind is sized along the split it sits in (onetree S2b): the conversation stacked under the code takes a third
+/// of the column's rows, the slot beside the code 2/5 of the columns — trees today's layout never makes (S5's moves).
+#[test]
+fn each_kind_is_sized_along_the_split_it_sits_in() {
+    use crate::pane::Shows;
+    use crate::split::{Dir, Share, Split};
+    let mut ed = editor();
+    frame(&mut ed, 120, 50);
+    chat(&mut ed, At::Code);
+    let leaf = |ed: &Editor, s: Shows| Split::Leaf(ed.workspace.leaf(s).unwrap());
+    let code = Split::Leaf(ed.workspace.views[0].id);
+    let (side, rail, slot, conv) =
+        (leaf(&ed, Shows::Side), leaf(&ed, Shows::Rail), leaf(&ed, Shows::Slot), leaf(&ed, Shows::Chat));
+    // (the conversation under the code in its column: 48 rows under the path bar, no panel in the slot)
+    let column = Split::Node(
+        Dir::Horizontal,
+        vec![(Share::Even, code.clone()), (Share::Auto, slot.clone()), (Share::Auto, conv.clone())],
+    );
+    ed.workspace.split = Split::Node(
+        Dir::Vertical,
+        vec![(Share::Auto, side.clone()), (Share::Auto, rail.clone()), (Share::Even, column)],
+    );
+    let rect = |ed: &Editor, s: Shows| {
+        let id = ed.workspace.leaf(s).unwrap();
+        Layout::new(ed, 120, 50).leaves.into_iter().find(|l| l.0 == id).unwrap().1
+    };
+    let c = rect(&ed, Shows::Chat);
+    assert_eq!((c.w, c.h), (120, crate::sizes::across(crate::sizes::Across::Chat, 48)));
+    assert_eq!(c.h, 16);
+    // (the slot beside the code, the conversation as its column)
+    tests(&mut ed);
+    let column = Split::Node(Dir::Horizontal, vec![(Share::Even, code)]);
+    ed.workspace.split = Split::Node(
+        Dir::Vertical,
+        vec![
+            (Share::Auto, side),
+            (Share::Auto, rail),
+            (Share::Even, column),
+            (Share::Auto, slot),
+            (Share::Auto, conv),
+        ],
+    );
+    assert_eq!(rect(&ed, Shows::Slot).w, 120 * 2 / 5);
+    assert_eq!(rect(&ed, Shows::Chat).w, 48, "its home's way: the width the table gives it");
+}
+
 /// The layout costs a frame little (onetree S0's measure, S1 and S3 judged by it): `Layout::new` and the code's edges,
 /// over every scene at 80, 120 and 200 × 34 — each scene's median of its runs, the median of those said for
 /// `cargo perf`.

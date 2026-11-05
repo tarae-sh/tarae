@@ -53,6 +53,10 @@ pub const RAIL_CODE: usize = 60;
 /// The bottom slot: at least this many rows, and the code keeps `BOTTOM_CODE` above it.
 pub const BOTTOM_MIN: usize = 3;
 pub const BOTTOM_CODE: usize = 4;
+/// The conversation stacked over or under the code is at least this tall (`across`).
+pub const CHAT_ROWS_MIN: usize = 12;
+/// The navigator stacked: the rows besides its list's (its top line, its foot's keys).
+const NAV_ROWS_MORE: usize = 2;
 /// How a size's toast ends (the next one replaces it — `say_size`).
 const SIZE_TAIL: &str = " · C-w = automatic";
 /// One `C-w <`/`>` · `C-w -`/`+`.
@@ -308,6 +312,28 @@ pub fn bottom(total: usize, kept: Option<u16>, natural: usize) -> usize {
         Some(k) if max >= BOTTOM_MIN => (k as usize).clamp(BOTTOM_MIN, max),
         Some(_) => 0,
         None => natural,
+    }
+}
+
+/// A kind sitting in a split of the other way than its home's (onetree §2.3) — today's layout never does: reached once
+/// panes move (S5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Across {
+    /// The conversation over or under the code.
+    Chat,
+    /// The navigator over or under it, `rows` its list's.
+    Nav { rows: usize },
+    /// The slot beside it.
+    Slot,
+}
+
+/// Its natural size along that split, of `avail` cells: the conversation a third of the rows, at least
+/// `CHAT_ROWS_MIN`; the navigator its rows, up to a third; the slot 2/5 of the columns.
+pub fn across(kind: Across, avail: usize) -> usize {
+    match kind {
+        Across::Chat => (avail / 3).max(CHAT_ROWS_MIN).min(avail),
+        Across::Nav { rows } => (rows + NAV_ROWS_MORE).min(avail / 3),
+        Across::Slot => avail * 2 / 5,
     }
 }
 
@@ -1352,6 +1378,16 @@ mod tests {
         assert_eq!(bottom(20, Some(30), 9), 16, "clamped: the code keeps 4");
         assert_eq!(bottom(36, Some(1), 9), BOTTOM_MIN);
         assert_eq!(bottom(5, Some(10), 9), 0, "no room at all");
+    }
+
+    #[test]
+    fn across_its_homes_direction() {
+        assert_eq!(across(Across::Chat, 48), 16, "a third of the rows");
+        assert_eq!(across(Across::Chat, 30), CHAT_ROWS_MIN, "at least 12");
+        assert_eq!(across(Across::Chat, 8), 8, "never past the room");
+        assert_eq!(across(Across::Nav { rows: 3 }, 48), 5, "its rows, its top line and foot");
+        assert_eq!(across(Across::Nav { rows: 40 }, 48), 16, "up to a third");
+        assert_eq!(across(Across::Slot, 200), 80, "2/5 of the columns");
     }
 
     /// Kept across runs: read back as written; missing or odd files are automatic.
