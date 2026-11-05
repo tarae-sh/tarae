@@ -1884,7 +1884,7 @@ fn an_idle_attached_host_draws_nothing_and_sleeps() {
     });
     let deadline = std::time::Instant::now() + sb.timeout();
     while t.last_frame_at().is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(1000)) {
-        assert!(std::time::Instant::now() < deadline);
+        assert!(std::time::Instant::now() < deadline, "still a frame within every second\n{}", h.output());
         std::thread::sleep(POLL);
     }
     // (an ask draws no frame, so no ack follows it: the rests count every event)
@@ -2119,6 +2119,27 @@ fn a_client_over_ssh_in_another_protocol_is_refused() {
     );
     assert!(err.contains(&said), "{err}");
     assert_eq!(h.state_json()["interface"], serde_json::Value::Null);
+}
+
+/// A client over ssh killed (no `Bye`, ssh's end just gone; #392): the relay's stdin ends, the host sees its end and
+/// is detached within the patience, and the relay ends as the host lets its socket go. No ghost interface stays, and
+/// no relay is left running. (macOS can sleep through an end the kernel should have woken a read for: the host's
+/// reader and the relay's read again every `readagain::EVERY` — `attach`'s test stands in for that loss.)
+#[test]
+fn a_killed_client_over_ssh_leaves_the_host_detached_and_its_relay_ended() {
+    let (sb, mut h, mut t, _) = over_ssh("ssh-killed", COLS);
+    let job = ssh_jobs(&sb)[0];
+    assert!(job > 1);
+    t.child.kill().unwrap();
+    t.wait_exit();
+    h.wait_state("detached", |s| s["interface"].is_null());
+    assert!(h.running(), "{}", h.output());
+    let deadline = std::time::Instant::now() + sb.timeout();
+    // SAFETY: kill with no signal only asks whether this test's stand-in's job is still there.
+    while unsafe { libc::kill(-job, 0) } == 0 {
+        assert!(std::time::Instant::now() < deadline, "the relay still runs (job {job})");
+        std::thread::sleep(POLL);
+    }
 }
 
 /// A `Gone` is never come back from by itself: a client over ssh taken over by another attach ends, saying so, and

@@ -154,6 +154,7 @@ mod pty;
 mod queued;
 mod quickfix;
 mod quote;
+mod readagain;
 mod readonly;
 mod reads;
 mod readtool;

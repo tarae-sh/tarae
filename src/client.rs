@@ -321,6 +321,8 @@ fn open_way(way: &mut Way, wait: Option<Duration>, batch: bool) -> Result<Link, 
     match way {
         Way::Here { path, .. } => {
             let stream = connect_here(path, wait)?;
+            // (timed at once: a host's end macOS didn't wake its reader for is read again for — `readagain`, #392)
+            let _ = crate::readagain::timed(&stream);
             let to = stream.try_clone().map_err(|e| format!("{}: {e}", path.display()))?;
             Ok(Link { fd: stream.as_raw_fd(), to: Box::new(to), from: Box::new(stream), ssh: None })
         }
@@ -531,7 +533,7 @@ impl Client {
                             return;
                         }
                     }
-                    Ok(None) => match dec.read_from(&mut from) {
+                    Ok(None) => match dec.read_from(&mut crate::readagain::ReadAgain::new(&mut from)) {
                         Ok(0) => break closed.to_string(),
                         Ok(_) => {}
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}

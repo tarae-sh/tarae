@@ -21,6 +21,9 @@ const USAGE: &str = "usage: tarae attach --stdio [--wait S] [--pid PID | PLACE] 
 
 /// The relay: its preamble, then bytes both ways until either side ends. Never returns.
 pub fn main(args: &[String]) -> ! {
+    let stdin = stdio(0);
+    // (timed first: ssh's end is read again for — `readagain`; a pipe stays as it is)
+    let _ = crate::readagain::timed(&stdin);
     let mut out = stdio(1);
     // (first, whatever comes after: every refusal reaches the client in the relay's words)
     let _ = out.write_all(MAGIC).and_then(|_| out.flush());
@@ -38,7 +41,7 @@ pub fn main(args: &[String]) -> ! {
     if out.write_all(format!("ok {pid} {project}\n").as_bytes()).and_then(|_| out.flush()).is_err() {
         std::process::exit(1)
     }
-    relay(stdio(0), out, stream);
+    relay(stdin, out, stream);
     std::process::exit(0)
 }
 
@@ -49,14 +52,16 @@ fn stdio(fd: i32) -> File {
 }
 
 /// Bytes both ways until either side ends: the client's (stdin's end — ssh gone) is the host's EOF (its detach); the
-/// host's (its socket closed) ends the relay, and ssh's channel with it.
-fn relay(mut from: impl Read + Send + 'static, mut to: impl Write, stream: std::os::unix::net::UnixStream) {
+/// host's (its socket closed) ends the relay, and ssh's channel with it. Each side read again at its timeout
+/// (`readagain`, #392): an end macOS didn't wake a read for would leave the host a ghost interface, or this relay
+/// running with nothing to relay.
+fn relay(from: impl Read + Send + 'static, mut to: impl Write, stream: std::os::unix::net::UnixStream) {
     let Ok(mut up) = stream.try_clone() else { return };
     crate::event::thread("tarae-relay-up", move || {
-        let _ = copy(&mut from, &mut up);
+        let _ = copy(&mut crate::readagain::ReadAgain::new(from), &mut up);
         let _ = up.shutdown(Shutdown::Write);
     });
-    let _ = copy(&mut &stream, &mut to);
+    let _ = copy(&mut crate::readagain::ReadAgain::new(&stream), &mut to);
 }
 
 /// `from` into `to` until `from` ends, each read written and flushed as it comes.
@@ -139,7 +144,11 @@ fn found(args: &[String]) -> Result<(std::os::unix::net::UnixStream, u32, String
     let until = crate::clock::now() + wait.unwrap_or_default();
     let stream = loop {
         match crate::attach::connect(&path) {
-            Ok(s) => break s,
+            Ok(s) => {
+                // (timed at once: the host's end is read again for — `readagain`)
+                let _ = crate::readagain::timed(&s);
+                break s;
+            }
             Err(e)
                 if crate::clock::now() < until
                     && matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused) =>
@@ -294,6 +303,10 @@ mod tests {
         // (set while both ends are there: macOS refuses it on a socket whose peer has gone)
         for s in [&host, &stdout_r] {
             s.set_read_timeout(Some(crate::test_results::LOOK_EVERY)).unwrap();
+        }
+        // (the relay's own two, timed as `main` and `found` time them)
+        for s in [&relay_side, &stdin_r] {
+            crate::readagain::timed(s).unwrap();
         }
         let (ended, end) = std::sync::mpsc::channel();
         std::thread::spawn(move || {

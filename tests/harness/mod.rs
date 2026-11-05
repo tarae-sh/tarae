@@ -1443,7 +1443,9 @@ const ROUND_WORK: u64 = if cfg!(target_os = "macos") { 6 } else { 10 };
 const LOOK_WORK: u64 = 3;
 
 /// What an idle tarae's threads may do (`Rest.work`) in a `Term::rest` beside its wakes on a clock (`ON_CLOCKS`): a
-/// settled tarae does none (measured: 0 on both systems, quiet and loaded) — room for a stray wake or so.
+/// settled tarae does none (measured: 0 on both systems, quiet and loaded) — room for a stray wake or so. An attached
+/// interface's reader looks once a second on each side (`readagain::EVERY`, #392): 2 of it, measured on the client.
+/// The host does 4 beside a disk round.
 pub const WORK_MAX: u64 = 5;
 
 /// What a settled tarae did in `REST` (`Term::rest`) — counted in work, never time, so a loaded machine changes none

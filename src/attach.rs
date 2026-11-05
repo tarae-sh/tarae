@@ -236,35 +236,7 @@ fn hello(stream: UnixStream, tx: Tx) {
     if uid != unsafe { libc::geteuid() } {
         return say(&stream, &refused("another user".into()));
     }
-    let _ = stream.set_read_timeout(Some(HELLO_WITHIN));
-    let mut dec = Decoder::<ToHost>::new();
-    let hello = loop {
-        match dec.message() {
-            Ok(Some(ToHost::Hello(h))) => break h,
-            Ok(Some(_)) => {
-                let said = "its first message wasn't Hello".to_string();
-                return say(
-                    &stream,
-                    &ToInterface::Gone { why: Gone::Protocol { said }, said: String::new() },
-                );
-            }
-            Err(e) => {
-                return say(
-                    &stream,
-                    &ToInterface::Gone { why: Gone::Protocol { said: e.said }, said: String::new() },
-                );
-            }
-            Ok(None) => match dec.read_from(&mut &stream) {
-                Ok(0) => return,
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => {
-                    return crate::log::line("attach", "info", &format!("pid {pid}: no Hello ({e})"));
-                }
-            },
-        }
-    };
-    let _ = stream.set_read_timeout(None);
+    let Some((hello, dec)) = greet(&stream, pid) else { return };
     // (the protocol's version is the rule, the build only told — S-C: two machines' builds mostly differ)
     let v = said_v();
     if hello.v != v {
@@ -282,6 +254,34 @@ fn hello(stream: UnixStream, tx: Tx) {
     let line = crate::uisocket::ancestors(pid);
     let job = move |ed: &mut Editor| arrive(ed, stream, hello, line, dec);
     let _ = tx.send(Event::Job(Box::new(job)));
+}
+
+/// The connection's `Hello` within `HELLO_WITHIN`, with what came after it in its decoder. None: refused (it was
+/// told why) or gone. Its reads are timed first, and stay timed for its reader (`read_loop`, #392).
+fn greet(stream: &UnixStream, pid: u32) -> Option<(Hello, Decoder<ToHost>)> {
+    let _ = crate::readagain::timed(stream);
+    let mut from = crate::readagain::ReadAgain::until(stream, crate::clock::now() + HELLO_WITHIN);
+    let mut dec = Decoder::<ToHost>::new();
+    let gone = |said: String| {
+        say(stream, &ToInterface::Gone { why: Gone::Protocol { said }, said: String::new() });
+        None
+    };
+    loop {
+        match dec.message() {
+            Ok(Some(ToHost::Hello(h))) => return Some((h, dec)),
+            Ok(Some(_)) => return gone("its first message wasn't Hello".to_string()),
+            Err(e) => return gone(e.said),
+            Ok(None) => match dec.read_from(&mut from) {
+                Ok(0) => return None,
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    crate::log::line("attach", "info", &format!("pid {pid}: no Hello ({e})"));
+                    return None;
+                }
+            },
+        }
+    }
 }
 
 /// An attach with its `Hello` in, on the main loop: refused under one of Claude's processes or the host's own terminal
@@ -725,8 +725,11 @@ impl Writer {
 }
 
 /// The reader: the interface's messages until it goes. Input is the editor's while it's live; an ack is credit at
-/// once (never waiting on a busy loop) and presented on the loop; a resize the next frame's size.
-fn read_loop(sh: &Shared, mut s: UnixStream, mut dec: Decoder<ToHost>, tx: &Tx) {
+/// once (never waiting on a busy loop) and presented on the loop; a resize the next frame's size. Its socket's reads
+/// are timed (`greet`), and a timeout is read again, never sent anywhere: an end macOS didn't wake it for is seen within
+/// `readagain::EVERY`, so a relayed client gone leaves no ghost interface (#392).
+fn read_loop(sh: &Shared, s: impl io::Read, mut dec: Decoder<ToHost>, tx: &Tx) {
+    let mut s = crate::readagain::ReadAgain::new(s);
     let (why, tell) = loop {
         match dec.message() {
             Ok(Some(m)) => {
@@ -938,5 +941,73 @@ mod tests {
         assert!(!own_panel(&said(&dir.path().join("43.sock")), "mac", Some(&ours)), "another host's");
         assert!(!own_panel("", "mac", Some(&ours)), "no panel");
         assert!(!own_panel(&said(&ours), "mac", None), "no socket of its own");
+    }
+
+    /// A relayed client's end is seen even where the kernel doesn't wake the read it came during (#392, #390's
+    /// finding): the reader's socket is timed from its `Hello` on, and a quiet second wakes nothing past the reader.
+    /// The kernel's loss can't be made on demand, so `Asleep` stands in for it over the real socket: an end that comes
+    /// while a read is under way doesn't end that read, only its socket's timeout does. A read begun after the end
+    /// sees it.
+    #[test]
+    fn a_relayed_clients_end_is_seen_and_a_quiet_one_wakes_nothing() {
+        use std::io::{Read, Write};
+        struct Asleep {
+            s: UnixStream,
+            ended: Arc<AtomicBool>,
+        }
+        impl Read for Asleep {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let (before, began) = (self.ended.load(Ordering::SeqCst), crate::clock::now());
+                let got = self.s.read(buf);
+                if before || !matches!(got, Ok(0)) {
+                    return got;
+                }
+                // (the end came while this read slept: only its timeout wakes it, untimed it sleeps past the patience)
+                let woken = self.s.read_timeout().unwrap().unwrap_or(crate::test_results::PATIENCE * 2);
+                crate::event::sleep(woken.saturating_sub(began.elapsed()));
+                Err(io::ErrorKind::WouldBlock.into())
+            }
+        }
+        let (host_side, mut client) = UnixStream::pair().unwrap();
+        let hello = Hello {
+            v: said_v(),
+            build: wire::BUILD.into(),
+            w: 80,
+            h: 24,
+            ground: wire::Ground::Unsaid,
+            undercurl: false,
+            taken: String::new(),
+            clipboard: wire::Clip::CopyAndPaste,
+            sound: false,
+            open: false,
+            zone: String::new(),
+            offset: 0,
+            inside: String::new(),
+        };
+        let mut bytes = Vec::new();
+        wire::encode(&ToHost::Hello(hello), &mut bytes).unwrap();
+        client.write_all(&bytes).unwrap();
+        let (hello, dec) = greet(&host_side, 0).expect("its Hello");
+        let q = crate::event::Queue::default();
+        let welcome = ToInterface::Pong { n: 0 };
+        let mut link =
+            Wire::start(host_side, 1, dec, (hello.w, hello.h), welcome, q.shared_sender()).unwrap();
+        let (s, dec) = link.reader.take().unwrap();
+        let ended = Arc::new(AtomicBool::new(false));
+        let (sh, tx, asleep) =
+            (Arc::clone(&link.shared), q.shared_sender(), Asleep { s, ended: ended.clone() });
+        std::thread::spawn(move || read_loop(&sh, asleep, dec, &tx));
+        // (past a timeout or two: read again, nothing sent)
+        let quiet = crate::readagain::EVERY + crate::readagain::EVERY / 2;
+        assert!(q.recv_timeout(quiet).is_none(), "a quiet interface sends nothing to the loop");
+        ended.store(true, Ordering::SeqCst);
+        drop(client);
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.attach.current = 1;
+        match q.recv_timeout(crate::test_results::PATIENCE) {
+            Some(Event::Job(apply) | Event::For(_, _, apply)) => apply(&mut ed),
+            _ => panic!("the client's end not seen within the patience"),
+        }
+        assert_eq!(ed.attach.going.as_ref().map(|g| g.0), Some(1), "the interface let go");
     }
 }
