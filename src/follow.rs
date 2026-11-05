@@ -1422,7 +1422,7 @@ fn in_project(ed: &Editor, path: &Path) -> bool {
 /// read, which `read` sends to the model as a picture. Taken quietly where follow or the replay asked for it: tarae draws
 /// no pictures, so the view stays where it is and the card says the step, as for any read (#370: the refusal was an
 /// error toast at each one). Known by the read the open makes anyway, or by a big one's name (`open_as`) — no read of
-/// its own.
+/// its own. A path that isn't a regular file (a FIFO) is refused the same way, before a byte is read.
 fn not_text(e: &anyhow::Error) -> bool {
     e.downcast_ref::<crate::document::NotText>().is_some()
 }

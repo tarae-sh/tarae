@@ -249,24 +249,46 @@ pub fn binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(TEXT_HEAD)].contains(&0) || std::str::from_utf8(bytes).is_err()
 }
 
-/// A file that isn't text (`binary`), refused as a buffer: its path and size — said as a row says it
-/// (`binary · 412 B`), never an error (`Editor::open_failed`).
+/// A file that isn't text (`binary`), or a path that isn't a regular file (a FIFO, a socket, a device), refused as a
+/// buffer: its path and size — said as a row says it (`binary · 412 B`, `a FIFO, not a regular file`), never an error
+/// (`Editor::open_failed`).
 #[derive(Debug)]
 pub struct NotText {
     pub path: std::path::PathBuf,
     pub size: u64,
+    /// What it is where it isn't a regular file (`a FIFO`) — None: a file whose bytes aren't text.
+    pub what: Option<&'static str>,
 }
 
 impl NotText {
-    /// `binary · 412 B`.
+    /// `binary · 412 B` · `a FIFO, not a regular file`.
     pub fn said(&self) -> String {
-        format!("binary · {}", crate::apply::size(self.size))
+        match self.what {
+            Some(what) => format!("{what}, not a regular file"),
+            None => format!("binary · {}", crate::apply::size(self.size)),
+        }
+    }
+
+    /// `path` refused for what `meta` says it is — neither a regular file nor a folder (a folder's read fails as it
+    /// always did). A FIFO opened for its text waits for a writer, and the loop with it.
+    fn special(path: &Path, meta: &std::fs::Metadata) -> std::result::Result<(), Self> {
+        use std::os::unix::fs::FileTypeExt as _;
+        let t = meta.file_type();
+        let what = match () {
+            _ if t.is_file() || t.is_dir() => return Ok(()),
+            _ if t.is_fifo() => "a FIFO",
+            _ if t.is_socket() => "a socket",
+            _ if t.is_block_device() || t.is_char_device() => "a device",
+            _ => "not a file",
+        };
+        Err(Self { path: path.to_path_buf(), size: 0, what: Some(what) })
     }
 }
 
 impl std::fmt::Display for NotText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}, not text", self.path.display(), self.said())
+        let tail = if self.what.is_some() { "" } else { ", not text" };
+        write!(f, "{}: {}{tail}", self.path.display(), self.said())
     }
 }
 
@@ -280,15 +302,25 @@ pub fn media_named(path: &Path) -> bool {
     matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "pdf")
 }
 
-/// File → rope. A missing file gives an empty rope (created on save); one that isn't text is `NotText`.
+/// File → rope. A missing file gives an empty rope (created on save); one that isn't text, or isn't a regular file,
+/// is `NotText` — the second known before a byte is read.
 pub fn read_file(path: &Path) -> Result<Rope> {
     use std::io::Read as _;
-    let f = match File::open(path) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    // (what isn't a regular file is refused before it's opened — a device never opened — and again by the descriptor,
+    // one swapped in between: opened non-blocking, so a FIFO there doesn't wait for a writer)
+    if let Ok(meta) = std::fs::metadata(path) {
+        NotText::special(path, &meta)?;
+    }
+    let opened = File::options().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY).open(path);
+    let f = match opened {
         Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Rope::new()),
         Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
     };
-    let not_text = || NotText { path: path.to_path_buf(), size: f.metadata().map_or(0, |m| m.len()) };
+    let meta = f.metadata().with_context(|| format!("reading {}", path.display()))?;
+    NotText::special(path, &meta)?;
+    let not_text = || NotText { path: path.to_path_buf(), size: meta.len(), what: None };
     let mut head = Vec::with_capacity(TEXT_HEAD);
     (&f).take(TEXT_HEAD as u64)
         .read_to_end(&mut head)

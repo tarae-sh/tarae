@@ -1951,11 +1951,13 @@ impl Editor {
     }
 
     /// What `open` couldn't open, said: a file that isn't text (`NotText`) as its row would say it —
-    /// `name: binary · 412 B` —, nothing failed (#326); anything else the error it is.
+    /// `name: binary · 412 B`, `name: a FIFO, not a regular file` —, nothing failed (#326); anything else the error
+    /// it is.
     pub fn open_failed(&mut self, e: anyhow::Error) {
         match e.downcast_ref::<crate::document::NotText>() {
             Some(n) => {
-                let said = format!("{}: {}, not opened as text", self.shown(&n.path).display(), n.said());
+                let tail = if n.what.is_some() { "" } else { ", not opened as text" };
+                let said = format!("{}: {}{tail}", self.shown(&n.path).display(), n.said());
                 self.set_status(said)
             }
             None => self.set_error(format!("{e:#}")),
@@ -2067,7 +2069,7 @@ impl Editor {
         // (Claude's big picture, by its name: its bytes would be read on a worker, refused there after a placeholder
         // had gone in front — #370; a small one's refusal is the read below, made anyway)
         if by == Opener::Claude && size >= ASYNC_LOAD_BYTES && crate::document::media_named(&path) {
-            return Err(crate::document::NotText { path, size }.into());
+            return Err(crate::document::NotText { path, size, what: None }.into());
         }
         let id = self.alloc_id();
         let mut doc = if size < ASYNC_LOAD_BYTES {
@@ -17763,6 +17765,62 @@ mod tests {
         assert!(!ed.docs.iter().any(|d| d.path.as_deref() == Some(seed.as_path())), "no buffer of its text");
         assert_eq!(errors(&ed), 0, "the picker's `C-v` says nothing failed");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #397 step 1: a FIFO opened for its text waited for a writer, and the loop with it, for good. `:open`, `gf`, a
+    /// place in the chat and follow's open each say what it is at once and open nothing; a folder's `:open` fails as it
+    /// always did. Nothing opens the FIFO's write end: a hang is this test's patience running out, in the step it hung.
+    #[test]
+    fn a_fifo_is_said_at_once_and_never_opened() {
+        let s = crate::scratch::Scratch::new("open-fifo");
+        let fifo = s.join("fifo");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", std::io::Error::last_os_error());
+        std::fs::create_dir(s.join("folder")).unwrap();
+        let root = s.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel::<(&str, Option<(ToastKind, String)>, bool)>();
+        std::thread::spawn(move || {
+            let mut ed = editor("fifo");
+            ed.workspace.root = root.clone();
+            let fifo = root.join("fifo");
+            let said = |ed: &Editor| ed.toasts.last().map(|t| (t.kind, t.text.clone()));
+            let opened =
+                |ed: &Editor| ed.docs.iter().any(|d| d.path.as_deref().is_some_and(|p| p.ends_with("fifo")));
+            feed(&mut ed, &format!(":o {}<ret>", fifo.display()));
+            tx.send((":open", said(&ed), opened(&ed))).unwrap();
+            ed.toasts.clear();
+            feed(&mut ed, "gf");
+            settle_until(&mut ed, |ed| !ed.toasts.is_empty());
+            tx.send(("gf", said(&ed), opened(&ed))).unwrap();
+            ed.toasts.clear();
+            crate::chat::open_place(&mut ed, crate::chat::Link { path: fifo.clone(), line: 0 });
+            tx.send(("the chat's place", said(&ed), opened(&ed))).unwrap();
+            ed.toasts.clear();
+            let e = ed.open_for_claude(&fifo).unwrap_err();
+            let refused =
+                e.downcast_ref::<crate::document::NotText>().map(|n| (ToastKind::Info, n.to_string()));
+            tx.send(("follow", refused, opened(&ed))).unwrap();
+            ed.toasts.clear();
+            feed(&mut ed, &format!(":o {}<ret>", root.join("folder").display()));
+            let folder = ed.docs.iter().any(|d| d.path.as_deref().is_some_and(|p| p.ends_with("folder")));
+            tx.send(("a folder", said(&ed), folder)).unwrap();
+        });
+        for step in [":open", "gf", "the chat's place", "follow"] {
+            let got = rx.recv_timeout(crate::test_results::PATIENCE);
+            let (name, said, opened) = got.unwrap_or_else(|e| panic!("{step} on a FIFO came back: {e}"));
+            assert_eq!(name, step);
+            let (kind, text) = said.unwrap_or_else(|| panic!("{step}: said"));
+            assert!(
+                kind == ToastKind::Info && text.ends_with("fifo: a FIFO, not a regular file"),
+                "{step}: {text}"
+            );
+            assert!(!opened, "{step}: no buffer of it");
+        }
+        let (_, said, opened) =
+            rx.recv_timeout(crate::test_results::PATIENCE).expect("a folder's :open came back");
+        let (kind, text) = said.expect("said");
+        assert!(kind == ToastKind::Error && text.contains("Is a directory"), "as it always did: {text}");
+        assert!(!opened, "no buffer of a folder");
     }
 
     /// The user (2026-10-22): `space j` lists a replaced preview's jumps too, by its path, as `C-o` reaches them —
