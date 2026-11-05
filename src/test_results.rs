@@ -159,7 +159,7 @@ pub fn settle_saying(
 
 /// How often `settle_until` looks at its condition with no event come.
 #[cfg(test)]
-const LOOK_EVERY: std::time::Duration = std::time::Duration::from_millis(20);
+pub(crate) const LOOK_EVERY: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Every test waits with one patience: a deadline written in a test (`Instant::now() + Duration…`, a
 /// `recv_timeout` of whole seconds) outside these helpers fails here — a hang guard is `PATIENCE`, a look that

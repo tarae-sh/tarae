@@ -291,23 +291,54 @@ mod tests {
         let (relay_side, mut host) = UnixStream::pair().unwrap();
         let (stdin_r, mut stdin_w) = UnixStream::pair().unwrap();
         let (mut stdout_r, stdout_w) = UnixStream::pair().unwrap();
-        let t = std::thread::spawn(move || relay(stdin_r, stdout_w, relay_side));
+        // (set while both ends are there: macOS refuses it on a socket whose peer has gone)
+        for s in [&host, &stdout_r] {
+            s.set_read_timeout(Some(crate::test_results::LOOK_EVERY)).unwrap();
+        }
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            relay(stdin_r, stdout_w, relay_side);
+            let _ = ended.send(());
+        });
         stdin_w.write_all(b"hello").unwrap();
-        let mut b = [0u8; 5];
-        host.read_exact(&mut b).unwrap();
-        assert_eq!(&b, b"hello");
+        assert_eq!(taken(&mut host, 5, "the client's bytes reach the host"), b"hello");
         host.write_all(b"frame").unwrap();
-        stdout_r.read_exact(&mut b).unwrap();
-        assert_eq!(&b, b"frame");
+        assert_eq!(taken(&mut stdout_r, 5, "the host's bytes reach the client"), b"frame");
         // (the client's end: the host reads EOF — its detach — and the relay still carries what the host says)
         drop(stdin_w);
-        assert_eq!(host.read(&mut b).unwrap(), 0, "the client's end is the host's EOF");
+        assert_eq!(
+            taken(&mut host, 1, "the client's end reaches the host"),
+            b"",
+            "the client's end is the host's EOF"
+        );
         host.write_all(b"bye").unwrap();
         // (the host's end: the relay ends, its stdout closed)
         drop(host);
-        t.join().unwrap();
-        let mut rest = Vec::new();
-        stdout_r.read_to_end(&mut rest).unwrap();
-        assert_eq!(rest, b"bye");
+        end.recv_timeout(crate::test_results::PATIENCE).expect("the host's end ends the relay");
+        assert_eq!(taken(&mut stdout_r, usize::MAX, "the relay's stdout ends with it"), b"bye");
+    }
+
+    /// Up to `n` bytes from `s` (its reads timed at `LOOK_EVERY`), fewer only at its end — read again, never one read
+    /// left to wait: macOS can leave a `recv` asleep through its peer's shutdown, the end there and never woken (#390:
+    /// 7 h 51 m at the client's end; at the patience's end `poll` said `POLLIN | POLLHUP` and a look without waiting
+    /// read 0). Past the patience it fails, saying `what` and what came.
+    fn taken(s: &mut std::os::unix::net::UnixStream, n: usize, what: &str) -> Vec<u8> {
+        use crate::test_results::PATIENCE;
+        let end = std::time::Instant::now() + PATIENCE;
+        let (mut got, mut buf) = (Vec::new(), [0u8; 64]);
+        while got.len() < n {
+            let want = (n - got.len()).min(buf.len());
+            match s.read(&mut buf[..want]) {
+                Ok(0) => break,
+                Ok(k) => got.extend_from_slice(&buf[..k]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                    panic!("{what}: {e} — came {got:?}")
+                }
+                Err(_) if std::time::Instant::now() < end => {}
+                Err(_) => panic!("{what}: not within the patience ({PATIENCE:?}) — came {got:?}"),
+            }
+        }
+        got
     }
 }
