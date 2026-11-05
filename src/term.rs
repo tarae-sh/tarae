@@ -1297,8 +1297,8 @@ struct ChatAt {
 /// A code pane's top line: its row, first column, width, pane and whether it's the focused one (`code_lines`).
 type CodeLine = (usize, usize, usize, crate::split::PaneId, bool);
 
-/// The code panes' top lines and the dividers between them, each its column and rows (`code_edges`).
-type CodeEdges = (Vec<CodeLine>, Vec<(usize, std::ops::Range<usize>)>);
+/// The code panes' top lines and, beside each, its pane's rect (`code_edges`).
+type CodeEdges = (Vec<CodeLine>, Vec<crate::split::Rect>);
 
 impl Layout {
     /// Where the pane showing `kind` is laid out this frame — None where none is or it has no room (one pane a kind:
@@ -1431,21 +1431,27 @@ fn floats(
 }
 
 /// The lines between this frame's leaves (onetree S3, `edges.rs`), worked out once from what it laid out: the surfaces
-/// by kind as `Screen.rects` has them, the groups docked in sight as `draw_docked` draws them, the code panes in the
-/// tree's order.
+/// by kind as `Screen.rects` has them, the groups docked in sight as `draw_docked` draws them (a detail laid under its
+/// list, the row of its top line), the code panes in the tree's order and their top lines as drawn (`code_lines`).
 fn frame_edges(editor: &Editor, lay: &Layout) -> crate::edges::Edges {
     use crate::pane::{Place, Shows};
     let (s, ws) = (&editor.screen, &editor.workspace);
     let of = |kind: Shows| Some((ws.leaf(kind)?, s.rect(kind)?));
+    let mut middles = Vec::new();
     let docked = (ws.groups.iter())
         .filter_map(|g| {
             let Place::Docked(side) = g.place else { return None };
             editor.docked_in_sight(g.kind).then_some(())?;
             let r = lay.leaves.iter().find(|l| l.0 == g.host).map(|l| l.1).filter(|r| r.w > 1 && r.h > 1)?;
+            if let Some(row) = group_members(editor, lay, g).and_then(|m| over_under(&m)) {
+                middles.push((g.host, row));
+            }
             Some((g.host, side, r))
         })
         .collect();
     let code = (s.leaves.iter()).filter(|l| ws.views.iter().any(|v| v.id == l.0)).copied().collect();
+    let (lines, rects) = code_edges(editor, lay);
+    let tops = lines.iter().zip(rects).map(|(l, r)| (l.3, l.0, *r)).collect();
     crate::edges::Edges::of(&crate::edges::Leaves {
         width: lay.width,
         text_top: s.text_top,
@@ -1457,6 +1463,9 @@ fn frame_edges(editor: &Editor, lay: &Layout) -> crate::edges::Edges {
         slot: ws.leaf(Shows::Slot).map(|id| (id, s.slot())),
         slot_end: s.slot_end(),
         code,
+        tops,
+        middles,
+        covered: editor.picker.as_ref().is_some_and(|p| !p.compact),
     })
 }
 
@@ -2291,7 +2300,7 @@ fn slot_header(
     out: &mut impl Write,
     editor: &Editor,
     ui: &Ui,
-    (lay, p): (&Layout, &Panel),
+    (_, p): (&Layout, &Panel),
     card: Style,
     details: &[(Fit, Style)],
     hints: &[(&str, &str)],
@@ -2425,7 +2434,7 @@ fn slot_header(
         join: line,
     });
     let ups = match p.kind {
-        None => dividers_up(editor, lay, y0),
+        None => editor.screen.edges.ups(y0),
         Some(_) => Vec::new(),
     };
     // (its keys pressed do their keys where they were drawn for: the slot's while it has them — its panel or its list —,
@@ -4892,7 +4901,7 @@ fn draw_panes(
         })
     };
     let keys_here = ui.lit == Some(Region::Code);
-    let (lines, dividers) = code_edges(editor, lay);
+    let lines = code_lines(editor, lay);
     let edged = |l: &CodeLine| {
         let r = ps.iter().find(|p| p.0 == l.3).map_or(crate::split::Rect::default(), |p| p.1);
         (r.x, r.w, l.0..r.y + r.h)
@@ -4903,17 +4912,17 @@ fn draw_panes(
     let on = |pane: &Option<(usize, usize, std::ops::Range<usize>)>, x: usize, y: usize| {
         pane.as_ref().is_some_and(|(fx, fw, rows)| (*fx == x + 1 || fx + fw == x) && rows.contains(&y))
     };
-    for (x, rows) in dividers {
-        let g = grabbed(*x);
-        for y in rows.clone() {
+    for d in &editor.screen.edges.dividers {
+        let (x, g) = (d.at, grabbed(d.at));
+        for y in d.span.clone() {
             let style = match () {
-                _ if on(&focused, *x, y) => Style { fg: ui.accent.fg, ..ui.base },
-                _ if on(&hovered, *x, y) => half_lit(ui, wash),
+                _ if on(&focused, x, y) => Style { fg: ui.accent.fg, ..ui.base },
+                _ if on(&hovered, x, y) => half_lit(ui, wash),
                 _ => wash,
             };
             let style = grab_style(ui, style, g);
-            let glyph = divider_glyph(lines, dividers, *x, y);
-            queue!(out, MoveTo(*x as u16, y as u16))?;
+            let glyph = d.glyph(y);
+            queue!(out, MoveTo(x as u16, y as u16))?;
             put_line(out, style, glyph)?;
         }
     }
@@ -4927,63 +4936,21 @@ fn code_lines<'a>(editor: &Editor, lay: &'a Layout) -> &'a [CodeLine] {
     &code_edges(editor, lay).0
 }
 
-/// The code panes' top lines (`code_lines`) and the dividers between side-by-side ones: each divider's column (the
-/// cell left of a pane with a code pane left of it) and its rows — from the pane's top line down. Worked out once a
-/// frame (`Layout.code`).
+/// The code panes' top lines (`code_lines`), each beside its pane's rect — what the frame's edges read the code's
+/// dividers and joins from (`frame_edges`). Worked out once a frame (`Layout.code`).
 fn code_edges<'a>(editor: &Editor, lay: &'a Layout) -> &'a CodeEdges {
     lay.code.get_or_init(|| {
         if lay.code_hidden() || !lay.header {
             return (Vec::new(), Vec::new());
         }
         let ps = panes(editor, lay);
-        let lines: Vec<CodeLine> = ps
-            .iter()
+        ps.iter()
             .filter(|p| p.1.w > 0)
             .map(|(id, r, pl, .., focused)| {
-                ((pl.text_top as usize).saturating_sub(1), r.x, r.w, *id, *focused)
+                (((pl.text_top as usize).saturating_sub(1), r.x, r.w, *id, *focused), *r)
             })
-            .collect();
-        let mut dividers = Vec::new();
-        for (id, r, ..) in &ps {
-            let Some(x) = r.x.checked_sub(1) else { continue };
-            let Some(top) = lines.iter().find(|l| l.3 == *id).map(|l| l.0) else { continue };
-            let rows = top..r.y + r.h;
-            let beside = ps.iter().any(|q| {
-                q.1.x < r.x && q.1.x + q.1.w + 1 >= r.x && q.1.y < rows.end && rows.start < q.1.y + q.1.h
-            });
-            if beside {
-                dividers.push((x, rows));
-            }
-        }
-        (lines, dividers)
+            .unzip()
     })
-}
-
-/// A divider's cell at `(x, y)`: `│`, or where it starts at a line `┬` (`┌` `┐` with a line on one side only), where a
-/// pane's line meets it from a side `├` `┤`, from both `┼`.
-fn divider_glyph(
-    lines: &[CodeLine],
-    dividers: &[(usize, std::ops::Range<usize>)],
-    x: usize,
-    y: usize,
-) -> &'static str {
-    let up = y > 0 && dividers.iter().any(|d| d.0 == x && d.1.contains(&(y - 1)));
-    let left = lines.iter().any(|l| l.0 == y && l.1 + l.2 == x);
-    let right = lines.iter().any(|l| l.0 == y && l.1 == x + 1);
-    match (up, left, right) {
-        (false, true, true) => "┬",
-        (false, false, true) => "┌",
-        (false, true, false) => "┐",
-        (true, true, true) => "┼",
-        (true, false, true) => "├",
-        (true, true, false) => "┤",
-        _ => "│",
-    }
-}
-
-/// The columns of the code's dividers that end on the row over `y` — a line there takes them in (`┴`).
-fn dividers_up(editor: &Editor, lay: &Layout, y: usize) -> Vec<usize> {
-    code_edges(editor, lay).1.iter().filter(|d| y > 0 && d.1.end == y).map(|d| d.0).collect()
 }
 
 /// Line-number column width (the sign column before it aside) — two digits at least, so a file growing
@@ -6271,7 +6238,7 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
             }
         }
         if lay.zoom.is_none() {
-            dock_edge(out, editor, ui, lay, (g.kind, side), r)?;
+            dock_edge(out, editor, ui, (g.kind, g.host))?;
         }
         editor.screen.docked.borrow_mut().push((g.kind, r));
     }
@@ -6794,54 +6761,37 @@ fn print_lit_painted(
     queue!(out, Print(&t[kept..]))
 }
 
-/// A docked group's edge, in its leaf's cell on the code's side: a `│` from its own top line down beside the code —
-/// starting at that line (`┌`/`┐`, never above it), `├`/`┤` where its detail's top line meets it (over and under),
-/// `┤`/`├` where the code's rule or the slot's line does —, a `─` under it over the code. Lit as `meeting_line`
-/// lights a column's: while it or what's beside it on that row has the keys; the accent while it's dragged.
+/// A docked group's edge, its line in the frame's edges (`edges::dock_meet`): in its leaf's cell on the code's side, a
+/// `│` from its own top line down beside the code, joined where the lines beside it meet it — a `─` under it over the
+/// code. Lit as `meeting_line` lights a column's: while it or what's beside it on that row has the keys; the accent
+/// while it's dragged.
 fn dock_edge(
     out: &mut impl Write,
     editor: &Editor,
     ui: &Ui,
-    lay: &Layout,
-    (kind, side): (crate::pane::GroupKind, crate::pane::Side),
-    r: crate::split::Rect,
+    (kind, host): (crate::pane::GroupKind, crate::split::PaneId),
 ) -> io::Result<()> {
-    use crate::pane::Side;
     let g = grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Group(kind)));
     let mine = Region::Dock(kind);
-    let style = |beside: Region| grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), g);
-    // (over the code: its bottom is the code's top line, no edge of its own)
-    if side == Side::Top {
-        return Ok(());
-    }
-    let x = if side == Side::Right { r.x } else { r.x + r.w - 1 };
-    let slot = lay.slot;
-    // (the slot beside it: its line meets this one)
-    let slot_beside = slot.h > 0 && slot.w > 0 && (slot.x + slot.w == x || x + 1 == slot.x);
-    let (start, own, meet) = if side == Side::Right { ("┌", "├", "┤") } else { ("┐", "┤", "├") };
-    // (its detail's top line, laid over and under; a code pane's top line meeting it — at its own top, the two lines
-    // one: `┬`)
-    let middle = editor
-        .workspace
-        .group(kind)
-        .and_then(|g| group_members(editor, lay, &g))
-        .and_then(|m| over_under(&m));
-    let code = code_lines(editor, lay);
-    let code_at = |y: usize| code.iter().any(|l| l.0 == y && (l.1 + l.2 == x || l.1 == x + 1));
-    for y in r.y..r.y + r.h {
-        let in_slot = slot_beside && (slot.y..slot.y + slot.h).contains(&y);
-        let glyph = match y {
-            _ if y == r.y && code_at(y) => "┬",
-            _ if y == r.y => start,
-            _ if Some(y) == middle => own,
-            _ if in_slot && y == slot.y => meet,
-            _ if code_at(y) => meet,
-            _ => "│",
-        };
-        queue!(out, MoveTo(x as u16, y as u16))?;
-        put_line(out, style(if in_slot { Region::Slot } else { Region::Code }), glyph)?;
+    // (over the code its bottom is the code's top line: no column line of its own)
+    let Some(line) = editor.screen.edges.column(host) else { return Ok(()) };
+    for y in line.span.clone() {
+        let beside = region_of(editor, line.beside_at(y));
+        let style = grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), g);
+        queue!(out, MoveTo(line.at as u16, y as u16))?;
+        put_line(out, style, line.glyph(y))?;
     }
     Ok(())
+}
+
+/// What lights a line beside a leaf with its own (`line_side`): the slot, a docked group, else the code.
+fn region_of(editor: &Editor, leaf: Option<crate::split::PaneId>) -> Region {
+    use crate::pane::Shows;
+    match leaf.and_then(|id| editor.workspace.shows(id)) {
+        Some(Shows::Slot) => Region::Slot,
+        Some(Shows::Group(kind)) => Region::Dock(kind),
+        _ => Region::Code,
+    }
 }
 
 /// A card's rect as another card keeps out of it: a row and two cells wider all round — two cards never touch (D3:
@@ -16741,19 +16691,20 @@ fn draw_sidebar(
     Ok(())
 }
 
-/// The gutter right of a left column panel (the side panel, the review's rail) (`chrome::GAP`), row by row: the line
-/// there (`meeting_line`) — with something beside it; filling the screen, the panel takes the cell whole. What's beside
-/// it is worked out once a frame (every row asks).
+/// The gutter right of a left column panel (the side panel, the review's rail) (`chrome::GAP`), row by row: its line in
+/// the frame's edges (`meeting_line`) — with something beside it; filling the screen, the panel takes the cell whole.
 fn side_gutter<'a>(
-    (ui, editor, lay): (&'a Ui, &Editor, &Layout),
+    (ui, editor, lay): (&'a Ui, &'a Editor, &Layout),
     card: Style,
     dragged: Grab,
 ) -> impl Fn(usize) -> (&'static str, Style) + 'a {
-    let parts = beside_rows(editor, lay, crate::pane::Side::Left);
-    let over = editor.picker.as_ref().is_some_and(|p| !p.compact);
+    use crate::pane::Shows;
+    // (the column as drawn: the side panel, else the rail)
+    let kind = [Shows::Side, Shows::Rail].into_iter().find(|&k| lay.rect(k).is_some());
+    let line = kind.and_then(|k| editor.workspace.leaf(k)).and_then(|id| editor.screen.edges.column(id));
     let whole = lay.side().is_some_and(|r| r.w >= lay.width);
     move |y| match whole {
-        false => meeting_line(ui, &parts, Region::Side, "├", (dragged, over), y),
+        false => meeting_line(ui, editor, line, Region::Side, dragged, y),
         true => (" ", card),
     }
 }
@@ -16770,94 +16721,37 @@ fn leaf_line(out: &mut impl Write, ui: &Ui, card: Style, lit: bool) -> io::Resul
     }
 }
 
-/// What a column panel's line meets on its side `toward` (the side panel's: the groups docked left; the chat's: right)
-/// besides the code — each part's rows, the rows where its own lines meet the gutter, and its region: the bottom slot
-/// (its top edge's row — the line its header is in, panes P3 §1) where nothing docked there covers the height, the
-/// groups docked against it (their top lines), and the ones docked over the code (their top lines and their bottom
-/// edges). None while a picker over the editing area covers them.
-fn beside_rows(
-    editor: &Editor,
-    lay: &Layout,
-    toward: crate::pane::Side,
-) -> Vec<(std::ops::Range<usize>, Vec<usize>, Region)> {
-    use crate::pane::{Place, Side};
-    if editor.picker.as_ref().is_some_and(|p| !p.compact) {
-        return Vec::new();
-    }
-    let mut parts = Vec::new();
-    for g in editor.workspace.groups.iter().filter(|g| editor.docked_in_sight(g.kind)) {
-        let Some(r) = lay.leaves.iter().find(|l| l.0 == g.host).map(|l| l.1).filter(|r| r.w > 0 && r.h > 0)
-        else {
-            continue;
-        };
-        match g.place {
-            Place::Docked(s) if s == toward => parts.push((r.y..r.y + r.h, vec![r.y], Region::Dock(g.kind))),
-            Place::Docked(Side::Top) => parts.push((r.y..r.y + r.h, vec![r.y], Region::Dock(g.kind))),
-            _ => {}
-        }
-    }
-    // (a code pane's top line under the screen's first row against this side — under a group docked over the code, a
-    // pane under another)
-    let edge = match toward {
-        Side::Left => lay.side().map_or(0, |r| r.x + r.w),
-        _ => lay.code_right(),
-    };
-    for l in code_lines(editor, lay).iter().filter(|l| l.0 > 0) {
-        if (toward == Side::Left && l.1 == edge) || (toward != Side::Left && l.1 + l.2 == edge) {
-            parts.push((l.0..l.0 + 1, vec![l.0], Region::Code));
-        }
-    }
-    let slot = lay.slot;
-    let covered = parts.iter().any(|p| p.1.len() == 1);
-    if slot.h > 0 && slot.w > 0 && !covered {
-        parts.push((slot.y..slot.y + slot.h, vec![slot.y], Region::Slot));
-    }
-    parts
-}
-
-/// Where a column panel (`mine`: the side panel, the chat) meets what's beside it on row `y` — the code, or a part of
-/// `beside_rows` on its rows (the slot, a docked group): one `│` in the gutter's whole cell, `join` (`├`, `┤`) where
-/// that part's own line meets it. The line of both sides: lit when either has the keys (`edge_style`) — the join
-/// with its edge too; the accent while it's dragged, half under the pointer (`grab_style`).
+/// Where a column panel (`mine`: the side panel, the chat) meets what's beside it on row `y`: its line's cell as the
+/// frame's edges have it (`edges::meet`) — one `│` in the gutter's whole cell, joined where the line of what's beside
+/// it meets it, `┬` on the first row (under a picker over the editing area, turning down). The line of both sides: lit
+/// when either has the keys (`edge_style`) — the join with its edge too; the accent while it's dragged, half under the
+/// pointer (`grab_style`).
 fn meeting_line(
     ui: &Ui,
-    parts: &[(std::ops::Range<usize>, Vec<usize>, Region)],
+    editor: &Editor,
+    line: Option<&crate::edges::Line>,
     mine: Region,
-    join: &'static str,
-    (dragged, picker_over): (Grab, bool),
+    dragged: Grab,
     y: usize,
 ) -> (&'static str, Style) {
-    let at = parts.iter().find(|p| p.0.contains(&y));
-    let beside = at.map_or(Region::Code, |p| p.2);
-    let rule = at.is_some_and(|p| p.1.contains(&y));
+    let beside = region_of(editor, line.and_then(|l| l.beside_at(y)));
     let style = grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), dragged);
-    // (on the screen's first row both sides' top lines meet it: it starts there, never above a line — under a picker
-    // over the editing area, only its own: it turns down)
-    let covered = picker_over;
-    let glyph = match y {
-        0 if covered && mine == Region::Chat => "┌",
-        0 if covered => "┐",
-        0 => "┬",
-        _ if rule => join,
-        _ => "│",
-    };
-    (glyph, style)
+    (line.map_or("│", |l| l.glyph(y)), style)
 }
 
-/// The chat's gutter, row by row (`side_gutter`'s rule from the other side): the line where it meets what's left of
-/// it (`meeting_line`). The chat filling the screen takes the cell whole.
+/// The chat's gutter, row by row (`side_gutter`'s rule from the other side): its line in the frame's edges
+/// (`meeting_line`). The chat filling the screen takes the cell whole.
 fn chat_gutter<'a>(
     ui: &'a Ui,
-    editor: &Editor,
+    editor: &'a Editor,
     lay: &Layout,
     card: Style,
 ) -> impl Fn(usize) -> (&'static str, Style) + 'a {
-    let parts = beside_rows(editor, lay, crate::pane::Side::Right);
+    let line = editor.workspace.leaf(crate::pane::Shows::Chat).and_then(|id| editor.screen.edges.column(id));
     let dragged = grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Chat));
-    let over = editor.picker.as_ref().is_some_and(|p| !p.compact);
     let whole = lay.chat().is_some_and(|r| r.x == 0);
     move |y| match whole {
-        false => meeting_line(ui, &parts, Region::Chat, "┤", (dragged, over), y),
+        false => meeting_line(ui, editor, line, Region::Chat, dragged, y),
         true => (" ", card),
     }
 }
