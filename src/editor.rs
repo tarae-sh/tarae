@@ -5226,7 +5226,8 @@ impl Editor {
             if made.is_some() {
                 self.close_view();
             }
-            self.set_error(format!("{e:#}"));
+            // (a file that isn't text is its row's words, nothing failed — #326)
+            self.open_failed(e);
         }
     }
 
@@ -17753,6 +17754,14 @@ mod tests {
         );
         // the file picker's preview
         assert!(matches!(crate::picker::load_preview(&seed), crate::picker::Preview::Binary(8)));
+        // …and its open beside (`C-v`): said as `:open` says it, no buffer, no error
+        feed_events(&mut ed, " f");
+        let listed =
+            |ed: &Editor| ed.picker.as_ref().is_some_and(|p| p.items().iter().any(|i| i.label == "seed"));
+        settle_until(&mut ed, listed);
+        feed_events(&mut ed, "seed<C-v>");
+        assert!(!ed.docs.iter().any(|d| d.path.as_deref() == Some(seed.as_path())), "no buffer of its text");
+        assert_eq!(errors(&ed), 0, "the picker's `C-v` says nothing failed");
         std::fs::remove_dir_all(&dir).ok();
     }
 

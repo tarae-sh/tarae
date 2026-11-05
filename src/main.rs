@@ -438,7 +438,7 @@ fn main() -> Result<()> {
     editor.restore = restore::State::load();
     for f in &files {
         if let Err(e) = editor.open(f) {
-            editor.set_error(format!("{e:#}"));
+            editor.open_failed(e);
         }
     }
     if let Some(state) = &restarted {

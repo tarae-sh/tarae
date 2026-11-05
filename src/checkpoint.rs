@@ -1375,7 +1375,7 @@ pub(crate) fn keep(ed: &Editor) {
 /// `keep` for session `l` — one that's ending (out of the editor already) too.
 pub(crate) fn keep_of(ed: &Editor, l: &crate::workspace::Workspace) {
     if let Some(save) = saving(ed, l) {
-        ed.events.jobs().spawn(move || {
+        ed.events.jobs().spawn_kept(move || {
             let s = save();
             move |ed: &mut Editor| {
                 if saved(ed, s) {
@@ -1406,7 +1406,7 @@ pub(crate) fn forget(ed: &Editor, root: PathBuf) {
 /// before `restore` has them back). Drawn after, whatever the save said: `then` goes on with what was asked.
 fn keep_then(ed: &mut Editor, then: impl FnOnce(&mut Editor) + Send + 'static) {
     let Some(save) = saving(ed, &ed.workspace) else { return then(ed) };
-    ed.events.jobs().spawn(move || {
+    ed.events.jobs().spawn_kept(move || {
         let s = save();
         move |ed: &mut Editor| {
             _ = saved(ed, s);
@@ -1942,9 +1942,17 @@ mod tests {
         names
     }
 
-    /// A temp folder of the test's own (real path), empty — the caller's to remove.
-    fn temp(name: &str) -> PathBuf {
-        crate::scratch::Scratch::new(name).into_path()
+    /// A temp folder of the test's own (real path), empty — removed as it's dropped, so a test whose editor keeps
+    /// its turns lets their saves land first (`landed`).
+    fn temp(name: &str) -> crate::scratch::Scratch {
+        crate::scratch::Scratch::new(name)
+    }
+
+    /// The turns' saves under way on workers (`keep`'s) landed — before the test's folder goes, or one lands after
+    /// it and makes its `turns/` again (#399: 541 left in `$TMPDIR`).
+    #[track_caller]
+    fn landed(ed: &Editor) {
+        assert!(ed.events.writes().wait(crate::test_results::PATIENCE), "the turns' saves landed");
     }
 
     /// A turn that made `root`'s `a.txt` "two\n" from "one\n".
@@ -1978,7 +1986,6 @@ mod tests {
         assert_eq!(kept, [(root.join("a.txt"), "two\n".to_string())]);
         assert_eq!(back.turn.iter().map(|t| &t.path).collect::<Vec<_>>(), [&root.join("b.txt")]);
         assert!(put(&store, &bad, Stored { seq: 1, ..Default::default() }));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// #218: kept turns come back as their paths only, in every session — the one in front and those behind
@@ -2037,7 +2044,7 @@ mod tests {
         ed.with_workspace(ids[0], |ed| step(ed, true).unwrap());
         let a = dir.join("front/a.txt");
         settle(&mut ed, "front: undone again", |_| std::fs::read_to_string(&a).unwrap() == "one\n");
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// #214: turns made since tarae started hold no texts their files have once their session is behind, and none
@@ -2117,6 +2124,8 @@ mod tests {
             assert_eq!(texts_in(&folder(&store, root)).len(), 14, "each text once: {}", root.display());
         }
         settle(&mut ed, "its undo kept", |_| load(&store, &back).list.last().is_some_and(|c| c.undone));
+        // (as a quit flushes them)
+        landed(&ed);
         drop(ed);
         // A restart: `space u` behind reaches its oldest turn, each read back from its files as asked
         let mut ed = Editor::new(crate::config::Config::default());
@@ -2136,7 +2145,7 @@ mod tests {
         for f in 0..3 {
             assert!(!back.join(format!("f{f}.rs")).exists(), "f{f}.rs, made by the oldest turns, gone");
         }
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// A project keeps its turns as an editor keeps its history, by time (user, 2026-10-29): a turn goes as its
@@ -2227,7 +2236,7 @@ mod tests {
         let f = root.join("f.txt");
         settle(&mut ed, "f undone", |_| std::fs::read_to_string(&f).is_ok_and(|s| s == big_e));
         crate::clock::release();
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// An editor keeping its turns in `dir`'s `turns/` for the project `dir/p`, read back, its chat's claude started
@@ -2316,7 +2325,7 @@ mod tests {
         settle(&mut ed, "saved", |_| load(&store, &root).list.first().is_some_and(|c| c.undone));
         assert_eq!((questions(&ed), on_disk()), (vec!["b".to_string()], vec!["b".to_string()]));
         crate::clock::release();
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// Review round 1: a save with nothing to say leaves the frame to what runs after it — `keep_then`'s `then`
@@ -2351,7 +2360,7 @@ mod tests {
         keep(&ed);
         settle(&mut ed, "a save with nothing to say draws nothing", |_| QUIET.get());
         crate::editor::AFTER_EVENT.set(None);
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// Review round 1: the turn a review is open on stays when a save lets it go — its texts in memory, the review
@@ -2393,7 +2402,7 @@ mod tests {
         keep(&ed);
         settle(&mut ed, "a let go", |ed| questions(ed) == ["b"]);
         assert_eq!(on_disk(), ["b"]);
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// Review round 2: a drop refused for its open review leaves the turn unfiled — the save took its texts off the
@@ -2426,7 +2435,7 @@ mod tests {
         step(&mut ed, true).unwrap();
         settle(&mut ed, "a undone", |_| !root.join("a.txt").exists());
         assert_eq!(questions(&ed), ["a", "b"]);
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// Review round 2: a save reads each conversation's last activity, never its rows (it read the whole chats file
@@ -2458,7 +2467,6 @@ mod tests {
         assert_eq!(few.0, 20, "every conversation's time");
         assert_eq!(few, many, "the same bytes whatever the rows");
         assert!(many.1 < 1024, "{} bytes", many.1);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Review round 1: an earlier tarae's turns (`<id>.json` beside the index — no reader of them) go at the next
@@ -2492,7 +2500,6 @@ mod tests {
             [".json", "123.json.tmp", "12a.json", "456.json", "789.json", "index.json", "notes.txt", "texts"];
         assert_eq!(left, stay);
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "mine");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// HEAD's moves are kept with their turn (#225, review finding): a checkpoint's come back as they were, and
@@ -2531,12 +2538,16 @@ mod tests {
         // A start: the turn cut short is a checkpoint, its HEAD move with it
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
+        let hold = hold_saves();
         ed.workspace_kept_back(ed.workspace.id);
         settle(&mut ed, "its turns back", |ed| !ed.restoring());
         let list = &ed.workspace.claude.checkpoints.list;
         let got: Vec<_> = list.iter().map(|c| (c.question.as_str(), c.head.clone())).collect();
         assert_eq!(got, [("q", vec![done]), ("mid-turn", vec![flying])]);
-        std::fs::remove_dir_all(&dir).ok();
+        // #399: the save their coming back asks is a write a quit (and this test's end) waits for
+        assert!(!ed.events.writes().wait(std::time::Duration::ZERO), "its save counted as under way");
+        drop(hold);
+        landed(&ed);
     }
 
     /// `space v t` on a turn kept from before the start: its texts read first, then its review opens on them —
@@ -2565,7 +2576,7 @@ mod tests {
             ed.workspace.claude.checkpoints.list[0].files.here().is_some(),
             "held while its review is open"
         );
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// A turn's texts that can't be read just now (here a folder where its file is — a stand-in for too many
@@ -2614,7 +2625,7 @@ mod tests {
         step(&mut ed, true).unwrap();
         let a = root.join("a.txt");
         settle(&mut ed, "the turn before undone", |_| std::fs::read_to_string(&a).unwrap() == "one\n");
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// A save reads only the index's `seq` (it starts the file — an index whose rest isn't JSON still says it):
@@ -2673,7 +2684,7 @@ mod tests {
         forget(&ed, root.clone());
         settle(&mut ed, "forgotten", |_| !two.exists());
         assert!(load(&store, &root).list.is_empty() && texts_in(&at).is_empty());
-        std::fs::remove_dir_all(&dir).ok();
+        landed(&ed);
     }
 
     /// Wave 3, gap 2: a session behind (back at a start, or opened again) kept its turns nowhere it read —
@@ -2722,5 +2733,6 @@ mod tests {
                 ed.handle_event(ev);
             }
         }
+        landed(&ed);
     }
 }
