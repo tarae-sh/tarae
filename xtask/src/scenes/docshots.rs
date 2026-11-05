@@ -703,8 +703,9 @@ const DOCS: &[DocShot] = &[
     row("follow-hanji.png", None, S).light(),
     row("follow-thinking.png", None, S),
     row("follow-show.png", None, (140, 40)),
-    // (the turn's time on the answer's last row, right-aligned: tarae's clock, a tenth either way)
-    row("follow-ask.png", Some("followask"), S).varies(&[turn_time(7, (103, 111))]),
+    // (the turn's time on the answer's last row, right-aligned: tarae's clock, a tenth either way — the answer drawn
+    // whole, #388 step 2)
+    row("follow-ask.png", Some("followask"), S).varies(&[turn_time(23, (103, 111))]),
     // (the turn's time on the chat's last answer row, right-aligned: tarae's clock, a tenth either way)
     row("m4-chat-hanji.png", Some("chatanswer"), S).light().varies(&[turn_time(24, (103, 111))]),
     row("chat-plan.png", None, S),
