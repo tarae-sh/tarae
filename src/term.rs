@@ -858,7 +858,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         picker_preview: editor.picker.as_ref().and_then(|p| {
             let b = PickerBox::new(&lay, p);
             let x = b.preview_x()?;
-            Some((x, b.y, lay.edit_w.saturating_sub(x), b.list_rows + 4 + b.head))
+            Some((x, b.y, lay.float_area().1.saturating_sub(x), b.list_rows + 4 + b.head))
         }),
         picker_list_cols: editor.picker.as_ref().map(|p| {
             let b = PickerBox::new(&lay, p);
@@ -875,7 +875,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
             && !editor.pending.is_empty()
             && editor.picker.is_none()
             && lay.text_rows >= 8
-            && lay.edit_w > 0
+            && lay.code_right() > 0
             && editor.offers.first().is_some_and(|o| !o.installing()),
         offer_cut: offer.as_ref().filter(|c| !c.bar).map(|c| c.cut),
         chat_links: Default::default(),
@@ -1213,8 +1213,9 @@ struct Layout {
     width: usize,
     /// Leftmost column of this pane (differs per pane when split).
     x0: usize,
-    /// Editing area width (minus the chat panel on the right).
-    edit_w: usize,
+    /// One past this pane's rightmost column: a code pane's (`pane`), a run's output (`draw_output`), a picker's
+    /// preview; the frame's own, the code's right edge (`code_right`).
+    x1: usize,
     /// Every leaf laid out with room (wider and taller than 0) that shows something: its kind and rect (`rect`).
     shown: Vec<(crate::pane::Shows, crate::split::Rect)>,
     header: bool,
@@ -1308,9 +1309,21 @@ impl Layout {
         }
     }
 
+    /// The code's right edge (onetree S1e): the docked chat's left, else the screen's right — a group docked beside
+    /// the code is inside it.
+    fn code_right(&self) -> usize {
+        self.chat().map_or(self.width, |r| r.x)
+    }
+
+    /// The columns what floats over the code takes — pickers, toasts, which-key, the asks, the ask stream, the prompt,
+    /// a cut row's card outside its frame: from the screen's left (over the side panel) to the code's right edge.
+    fn float_area(&self) -> (usize, usize) {
+        (0, self.code_right())
+    }
+
     /// No code drawn: something else fills the screen (the chat on a narrow screen too).
     fn code_hidden(&self) -> bool {
-        self.edit_w == 0 || self.zoom_shows.is_some_and(|s| s != crate::pane::Shows::Code)
+        self.code_right() == 0 || self.zoom_shows.is_some_and(|s| s != crate::pane::Shows::Code)
     }
 
     /// The bottom slot's panel.
@@ -1729,9 +1742,9 @@ impl Layout {
         };
         let rail_w = match editor.workspace.code_review.as_ref() {
             Some(r) if review && zoom.is_none() => {
-                let edit_w = w as usize - widths.chat;
-                match review_rail_code_min(edit_w, editor.workspace.is_at(At::Rail)) {
-                    Some(code_min) => review_rail_w(editor, r, edit_w, code_min),
+                let area_w = w as usize - widths.chat;
+                match review_rail_code_min(area_w, editor.workspace.is_at(At::Rail)) {
+                    Some(code_min) => review_rail_w(editor, r, area_w, code_min),
                     None => widths.side,
                 }
             }
@@ -1839,7 +1852,8 @@ impl Layout {
             .collect();
         let rect = |s: Shows| shown.iter().find(|l| l.0 == s).map(|l| l.1);
         let rail_w = rect(Shows::Side).or(rect(Shows::Rail)).map_or(0, |r| r.w);
-        let edit_w = w as usize - rect(Shows::Chat).map_or(0, |r| r.w);
+        // (the code's right edge: the chat's left — `code_right`)
+        let code_r = rect(Shows::Chat).map_or(w as usize, |r| r.x);
         let slot = rect(Shows::Slot);
         let slot_h = slot.map_or(0, |r| r.h);
         // (a group docked over the code: the code's rows start under it)
@@ -1853,19 +1867,19 @@ impl Layout {
             width: w as usize,
             rows: total,
             x0: 0,
-            edit_w,
+            x1: code_r,
             shown,
             header,
             scrollbar,
             text_top: code_top,
             text_rows,
             gutter,
-            text_cols: edit_w.saturating_sub(rail_w + gutter + scrollbar as usize).max(1),
+            text_cols: code_r.saturating_sub(rail_w + gutter + scrollbar as usize).max(1),
             // (its first row under the code's, whether the slot has a leaf or not)
             slot: crate::split::Rect {
                 x: slot.map_or(rail_w, |r| r.x),
                 y: code_top as usize + text_rows,
-                w: slot.map_or(edit_w - rail_w, |r| r.w),
+                w: slot.map_or(code_r - rail_w, |r| r.w),
                 h: slot_h,
             },
             body_h: text_top as usize + total,
@@ -1967,7 +1981,7 @@ impl Layout {
         let scrollbar = editor.config.scrollbar && doc.text.len_lines() > rows;
         Layout {
             x0: r.x,
-            edit_w: r.x + r.w,
+            x1: r.x + r.w,
             text_top: (r.y + title as usize) as u16,
             text_rows: rows,
             gutter,
@@ -2148,7 +2162,7 @@ fn draw_output(
         .collect();
     let pl = Layout {
         x0: x,
-        edit_w: x + w,
+        x1: x + w,
         scrollbar: false,
         text_top: y as u16,
         text_rows: rows,
@@ -5589,7 +5603,7 @@ fn undercurl_in(var: impl Fn(&str) -> Option<String>) -> bool {
 fn ground(out: &mut impl Write, lay: &Layout, y: u16, st: Style) -> io::Result<()> {
     apply(out, Style { bg: st.bg, ..Style::default() })?;
     let x = lay.x0 as u16;
-    queue!(out, MoveTo(x, y), Spaces(lay.edit_w.saturating_sub(lay.x0)), MoveTo(x, y))
+    queue!(out, MoveTo(x, y), Spaces(lay.x1.saturating_sub(lay.x0)), MoveTo(x, y))
 }
 
 /// Clear the rest of the line with the default style (background).
@@ -5830,7 +5844,8 @@ fn draw(
     }
     // The notification card keeps out of every other card's way, off the cursor's row and the review's change
     // in hand (U9) — or folds into the status line
-    let line = |y0: usize, y1: usize| (0, y0, lay.edit_w, y1 + 1 - y0);
+    let (fx, fr) = lay.float_area();
+    let line = |y0: usize, y1: usize| (fx, y0, fr - fx, y1 + 1 - y0);
     let cursor_row = text_cursor.map(|(_, y)| line(y as usize, y as usize));
     let change = editor.screen.review_change.get().map(|(a, b)| line(a, b));
     let cards = [note_rect, follow_rect, offer_rect, ask_rect].into_iter().flatten().map(kept_apart);
@@ -6113,7 +6128,7 @@ pub(crate) fn drawn_style(st: Style) -> Style {
 fn code_area(lay: &Layout) -> crate::regions::Rect {
     // (right of the column beside it, when one stands)
     let x = lay.side().map_or(0, |r| r.x + r.w);
-    (x, 0, lay.edit_w.saturating_sub(x), lay.text_top as usize + lay.text_rows)
+    (x, 0, lay.code_right().saturating_sub(x), lay.text_top as usize + lay.text_rows)
 }
 
 /// Whether the follow card drawn at `card` still shows its head — its top line, where it says the step (focus B1) — once
@@ -8847,7 +8862,7 @@ fn draw_folded_row(
 /// The edit review's code column: its width less the gutter — a pane's (the sign column, the numbers, the
 /// change marks).
 fn review_code_w(doc: &crate::document::Document, lay: &Layout) -> usize {
-    lay.edit_w.saturating_sub(crate::chrome::SIGNS + num_w(doc))
+    lay.code_right().saturating_sub(crate::chrome::SIGNS + num_w(doc))
 }
 
 /// Every doc comment block of the edit review's document laid out folded for its code column — `cache` while it's
@@ -8944,7 +8959,7 @@ fn draw_scrollbar(
 ) -> io::Result<()> {
     use crate::codeview::{OtherKind, Row};
     let card = |y: usize| matches!(view.get(y), Some(Row::Other { kind: OtherKind::Note { .. }, .. }));
-    let x = lay.edit_w.saturating_sub(1) as u16;
+    let x = lay.x1.saturating_sub(1) as u16;
     let bar: Vec<usize> = (0..lay.text_rows).filter(|&y| !card(y)).collect();
     for y in (0..lay.text_rows).filter(|&y| card(y)) {
         apply(out, ui.base)?;
@@ -9213,7 +9228,7 @@ fn review_lead(editor: &Editor, ui: &Ui, lay: &Layout) -> usize {
     let Some(c) = editor.workspace.claude.chat.as_ref() else { return 0 };
     let protected = crate::writing::shown(editor.doc()).is_some_and(|w| w.blocks.iter().any(|b| b.protected));
     let warnings = if protected { crate::edits::warned(editor) } else { Vec::new() };
-    let (warned, reason) = review_heads(editor, ui, &crate::edits::reason(c), &warnings, lay.edit_w);
+    let (warned, reason) = review_heads(editor, ui, &crate::edits::reason(c), &warnings, lay.x1);
     1 + warned.len() + reason.len() + lay.text_rows.saturating_sub(1) / 4 + 1
 }
 
@@ -9235,7 +9250,7 @@ fn draw_review(
     let strong =
         ui.base.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let accent = Style { fg: ui.accent.fg, ..ui.base };
-    let width = lay.edit_w;
+    let width = lay.code_right();
     editor.screen.review_area.set(Some((0, lay.text_top as usize, width, lay.text_rows)));
     let code_w = review_code_w(doc, lay);
     let (warned, reason) = review_heads(editor, ui, &rev.reason, &rev.warnings, width);
@@ -9563,14 +9578,16 @@ impl PickerBox {
             0 => 0,
             n => n + 1,
         };
+        let (fx, fr) = lay.float_area();
+        let room = fr - fx;
         if p.compact {
             // Small card at top center: up to 60 cells wide, list as tall as its items (up to 12 rows)
-            let w = lay.edit_w.saturating_sub(4).clamp(24, 60);
+            let w = room.saturating_sub(4).clamp(24, 60);
             // (a list row kept, however short the screen: the head gives way)
             let head = head_rows(w - 2).min(lay.text_rows.saturating_sub(5));
             let list_rows = p.counts().0.clamp(3, 12).min(lay.text_rows.saturating_sub(4 + head).max(1));
             return PickerBox {
-                x: lay.edit_w.saturating_sub(w) / 2,
+                x: fx + room.saturating_sub(w) / 2,
                 y: lay.text_top as usize,
                 compact: true,
                 head,
@@ -9581,8 +9598,8 @@ impl PickerBox {
         }
         let preview = p.preview && !p.preview_hidden;
         // (a narrow screen keeps its rows and columns for the list: no margins)
-        let (mx, my) = if lay.edit_w >= 60 && lay.body_h >= 16 { (PICKER_MX, PICKER_MY) } else { (0, 0) };
-        let w = lay.edit_w.saturating_sub(2 * mx).max(24);
+        let (mx, my) = if room >= 60 && lay.body_h >= 16 { (PICKER_MX, PICKER_MY) } else { (0, 0) };
+        let w = room.saturating_sub(2 * mx).max(24);
         let h = lay.body_h.saturating_sub(2 * my).max(6);
         let (left, right) = if preview && w >= 80 {
             let l = (w * 2 / 5).max(40);
@@ -9606,7 +9623,7 @@ impl PickerBox {
             (most + 1).max(crate::chrome::LIST_MIN).min(full)
         };
         PickerBox {
-            x: mx,
+            x: fx + mx,
             y: my,
             compact: false,
             head,
@@ -10175,13 +10192,14 @@ fn draw_picker(
     // on one line in the gap between them (outside the cards, in its margins: the selected row's bar keeps its
     // edge; with no margins, over the cards' outer cells)
     let end = b.x + left_w + if right_w > 0 { 1 + right_w } else { 0 };
-    let (fx, fr) = if b.x > 0 && end < lay.edit_w { (b.x - 1, end) } else { (b.x, end - 1) };
+    let area = lay.float_area();
+    let (fx, fr) = if b.x > area.0 && end < area.1 { (b.x - 1, end) } else { (b.x, end - 1) };
     let frame = (fx, b.y, fr + 1 - fx, rows);
     // The ground under it, left of the chat: its margins, and what's behind kept from leaking through
     if !b.compact {
         apply(out, ui.base)?;
         for y in 0..lay.body_h {
-            queue!(out, MoveTo(0, y as u16), Spaces(lay.edit_w))?;
+            queue!(out, MoveTo(area.0 as u16, y as u16), Spaces(area.1 - area.0))?;
         }
     }
     // (plain rows' labels, for each cut one to keep what sets it apart — `draw_list_row`: the whole list's, so
@@ -10300,7 +10318,7 @@ fn draw_picker(
             match p.view.get(row - 3 - b.head) {
                 Some(r) => {
                     // (the row in hand's card outside the frame, on its ground left of the chat)
-                    let hand = Some(crate::whole::Hand::Outside(frame, (0, lay.edit_w)));
+                    let hand = Some(crate::whole::Hand::Outside(frame, area));
                     let at = Some((crate::whole::On::Picker, b.x, y as usize, hand));
                     used = draw_list_row(out, r, lw, editor, ui, card, selected, true, &others, at)?
                 }
@@ -10381,7 +10399,7 @@ fn draw_picker(
         let (x0, gutter) = (b.x + left_w + 2, crate::chrome::SIGNS + num_w(doc));
         let pl = Layout {
             x0,
-            edit_w: x0 + b.preview_w,
+            x1: x0 + b.preview_w,
             scrollbar: false,
             text_top: (b.y + 3) as u16,
             text_rows: b.list_rows,
@@ -10909,7 +10927,7 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         let doc = &editor.docs[*idx];
         // (the sessions' strip at the screen's top row's right while no chat column stands there to name them — the
         // flow plan's piece 2: the chat floats by default — on the rule the path's own text leaves: `top_strip`)
-        let up = y == 0 && r.x + r.w == lay.edit_w && lay.chat().is_none();
+        let up = y == 0 && r.x + r.w == lay.code_right() && lay.chat().is_none();
         let mut strip = None;
         let mut beside = |text_w: &dyn Fn(usize) -> usize| {
             strip = top_strip(editor, ui, r.w, text_w);
@@ -12376,7 +12394,7 @@ fn draw_completion(
     const DETAIL_MAX: usize = 30;
     let t = &editor.theme;
     let pane = focused_pane(editor, lay);
-    let (left, right) = (pane.x0, pane.edit_w);
+    let (left, right) = (pane.x0, pane.x1);
     let card = on_ground(ui, card_style(ui, editor, "ui.menu"));
     let selected = selected_row(ui, editor, card);
     let dim = Style { fg: ui.virt.fg, ..card };
@@ -12456,7 +12474,7 @@ fn draw_completion(
         // (cut: whole on a card over it — the selected item's name in hand, outside the frame)
         let on = crate::whole::On::Completion;
         let screen = (0, lay.width);
-        let hand = is_sel.then_some(crate::whole::Hand::Outside(rect, (0, lay.edit_w)));
+        let hand = is_sel.then_some(crate::whole::Hand::Outside(rect, lay.float_area()));
         crate::whole::cut_at(editor, on, (x0 + 4, y), &fit, name, screen, hand);
         print_matched(out, label, hits, name, matched, label_w)?;
         apply(out, base)?;
@@ -12691,7 +12709,7 @@ fn draw_signature(
         return Ok(None);
     }
     let pane = focused_pane(editor, lay);
-    let (left, right) = (pane.x0, pane.edit_w);
+    let (left, right) = (pane.x0, pane.x1);
     let raised = card_style(ui, editor, "ui.popup");
     let card = on_ground(ui, raised);
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
@@ -12822,7 +12840,7 @@ fn draw_signature(
     if let Some(of) = cut {
         let of = crate::whole::Of { to: shown.len(), ..of };
         let fit = Fit::from_parts(shown, Some(of));
-        let cols = (x0, lay.edit_w);
+        let cols = (x0, lay.float_area().1);
         crate::whole::cut_at(editor, crate::whole::On::Code, (x0 + 2, y), &fit, card, cols, None);
     }
     apply(out, card)?;
@@ -13155,7 +13173,8 @@ fn draw_toasts(
     // slight ground, the two one-row looks one family, `OfferCard::draw`)
     let card = card_style(ui, editor, "ui.popup");
     let card = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
-    let max_inner = (lay.edit_w / 2).clamp(24, 56).min(lay.edit_w.saturating_sub(8));
+    let (fx, fr) = lay.float_area();
+    let max_inner = ((fr - fx) / 2).clamp(24, 56).min((fr - fx).saturating_sub(8));
     let a = editor.toast_alpha();
     let bg = blend(card.bg, ui.tint, a).or(card.bg);
     let fade = |c: Option<crossterm::style::Color>| blend(c, bg, a).or(c);
@@ -13216,7 +13235,7 @@ fn draw_toasts(
     // Its rect is its rows; placed with a row of air kept free of the other cards, the cursor's row and the change in
     // hand (`toast_place`) — never touching, as two cards never do
     let h = rows.len();
-    let x0 = lay.edit_w.saturating_sub(width + 1 + usize::from(lay.scrollbar));
+    let x0 = fr.saturating_sub(width + 1 + usize::from(lay.scrollbar));
     let rows_at = (lay.text_top as usize, card_floor(lay));
     // Code too narrow to keep off (the card over half its width — beside the chat at 80 columns): a routine
     // message is said on the status line instead (`SAID`, what joins it counted there); an error or a warning
@@ -13279,7 +13298,7 @@ fn draw_toasts(
         }
         apply(out, lit(*style))?;
         queue!(out, Spaces(inner - text.width() + 2))?;
-        crate::whole::at(crate::whole::On::Toast, text, (x0 + 3, y), *style, (0, lay.edit_w));
+        crate::whole::at(crate::whole::On::Toast, text, (x0 + 3, y), *style, (fx, fr));
     }
     Ok(true)
 }
@@ -13609,14 +13628,15 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     // (as `OfferCard::new` lays it out: its text at least `CARD_MIN_INNER` wide — 8 cells less than the code —
     // and its answers' keys on its bottom line at the widest it can be — 6 cells less, and the scrollbar's)
     // (its line, the frame's own cells and a cell of air: `OfferCard::new`'s `room_w`)
-    let edit_w = (CARD_MIN_INNER + 8).max(answer.unwrap_or(0) + 7 + usize::from(lay.scrollbar));
-    if edit_w <= lay.edit_w {
+    let need_w = (CARD_MIN_INNER + 8).max(answer.unwrap_or(0) + 7 + usize::from(lay.scrollbar));
+    let (fx, fr) = lay.float_area();
+    if need_w <= fr - fx {
         // (too few rows for its text and answers — how many depends on the card)
         return Some("card needs more rows".into());
     }
     // The window width that leaves the code that much beside the chat as it's laid out (`sizes::widths`)
     let code = |w: usize| w - chat(w);
-    let cols = (lay.width..lay.width + 400).find(|&w| code(w) >= edit_w)?;
+    let cols = (lay.width..lay.width + 400).find(|&w| code(w) >= need_w)?;
     Some(format!("card needs {cols} cols"))
 }
 
@@ -13828,9 +13848,10 @@ fn opened_floats(editor: &Editor, lay: &Layout) -> Vec<Rect4> {
 
 fn asks_area(editor: &Editor, lay: &Layout) -> AsksArea {
     let foot = asks_foot(editor, lay);
+    let (fx, fr) = lay.float_area();
     let area = foot.unwrap_or((
-        0,
-        lay.edit_w.saturating_sub(usize::from(lay.scrollbar)),
+        fx,
+        (fr - fx).saturating_sub(usize::from(lay.scrollbar)),
         lay.text_top as usize,
         lay.text_rows,
     ));
@@ -14987,7 +15008,7 @@ impl OfferCard {
 /// which-key card: after a prefix key (`space`·`g`·`m`), shows the next possible keys and meanings at the
 /// bottom right of the editing area — usable without memorizing keys. Many → multiple columns. Submodes: `…`.
 /// Which-key's columns and its descriptions' width for `n` keys (`kw` wide, descriptions up to `dw`) in at most
-/// `max_rows` rows on code `edit_w` wide: as many columns as the rows need; where they don't fit at full width
+/// `max_rows` rows on code `area_w` wide: as many columns as the rows need; where they don't fit at full width
 /// (a narrow screen — 50 columns: `space`'s keys took one column too tall to draw, and nothing was drawn), the
 /// descriptions cut to share it, down to `WHICH_KEY_CUT_MIN` — narrower than that, None: not drawn. Short
 /// descriptions that fit are never refused (the cut's floor is the cut's).
@@ -14996,15 +15017,15 @@ fn which_key_columns(
     kw: usize,
     dw: usize,
     max_rows: usize,
-    edit_w: usize,
+    area_w: usize,
 ) -> Option<(usize, usize)> {
-    let fit = (edit_w.saturating_sub(4) / (kw + 2 + dw + 3)).max(1);
+    let fit = (area_w.saturating_sub(4) / (kw + 2 + dw + 3)).max(1);
     let needed = n.div_ceil(max_rows).max(1);
     if needed <= fit {
         return Some((needed, dw));
     }
     // (its padding inside, a cell of air outside each edge)
-    let cut = dw.min((edit_w.saturating_sub(7 + (needed - 1) * 3) / needed).saturating_sub(kw + 2));
+    let cut = dw.min((area_w.saturating_sub(7 + (needed - 1) * 3) / needed).saturating_sub(kw + 2));
     (cut >= WHICH_KEY_CUT_MIN).then_some((needed, cut))
 }
 
@@ -15066,7 +15087,8 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
         entries.iter().zip(&twins).map(|((_, d, _), t)| d.width().min(DESC) + twin_w(t)).max().unwrap_or(0);
     // (framed, the title is the frame's name: no title row)
     let max_rows = lay.text_rows.saturating_sub(2 * pad + 1).max(1);
-    let Some((cols, dw)) = which_key_columns(entries.len(), kw, dw, max_rows, lay.edit_w) else {
+    let (fx, fr) = lay.float_area();
+    let Some((cols, dw)) = which_key_columns(entries.len(), kw, dw, max_rows, fr - fx) else {
         return Ok(());
     };
     // (a twin goes where its description, cut, would keep fewer than `WHICH_KEY_CUT_MIN` cells — a narrow screen)
@@ -15077,10 +15099,10 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
     let inner = cols * cell + (cols - 1) * 3;
     let width = inner + 4;
     let h = rows + 2 * pad;
-    if h + 1 > lay.text_rows || width >= lay.edit_w {
+    if h + 1 > lay.text_rows || width >= fr - fx {
         return Ok(());
     }
-    let x0 = lay.edit_w - width - 1;
+    let x0 = fr - width - 1;
     let y0 = card_floor(lay) - h;
     let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
     let (key_style, dim) = (Style { bg: card.bg, ..key_style }, Style { bg: card.bg, ..dim });
@@ -15380,7 +15402,8 @@ fn draw_ask_stream(
         .collect();
     // (the code's room: from the rail's edge — a cell of it kept — to the code's right edge)
     let room = code_area(lay).2.saturating_sub(1);
-    let inner = (lay.edit_w / 2).clamp(30, 72).min(room.saturating_sub(5));
+    let (fx, fr) = lay.float_area();
+    let inner = ((fr - fx) / 2).clamp(30, 72).min(room.saturating_sub(5));
     // (each line cut to the card first: a line wider than it shows its start, and its bleeding head is the end of
     // what shows)
     for row in &mut code {
@@ -15407,7 +15430,7 @@ fn draw_ask_stream(
     if lay.text_rows < h + 2 || inner < 24 {
         return Ok(None);
     }
-    let (x0, y0) = (lay.edit_w.saturating_sub(inner + 5), card_floor(lay) - h);
+    let (x0, y0) = (fr.saturating_sub(inner + 5), card_floor(lay) - h);
     let width = inner + 4;
     card_edge(out, card, x0, y0, width)?;
     // Title: working sign · status · instruction ……… elapsed
@@ -16630,7 +16653,7 @@ fn beside_rows(
     // pane under another)
     let edge = match toward {
         Side::Left => lay.side().map_or(0, |r| r.x + r.w),
-        _ => lay.edit_w,
+        _ => lay.code_right(),
     };
     for l in code_lines(editor, lay).iter().filter(|l| l.0 > 0) {
         if (toward == Side::Left && l.1 == edge) || (toward != Side::Left && l.1 + l.2 == edge) {
@@ -16741,18 +16764,18 @@ const REVIEW_CODE_MIN: usize = crate::sizes::RAIL_CODE;
 fn review_rail_w(
     editor: &Editor,
     r: &crate::codereview::CodeReview,
-    edit_w: usize,
+    area_w: usize,
     code_min: usize,
 ) -> usize {
-    review_rail_natural(editor, r).min(edit_w.saturating_sub(code_min))
+    review_rail_natural(editor, r).min(area_w.saturating_sub(code_min))
 }
 
-/// Whether the review's rail is drawn in an editing area `edit_w` columns wide (the screen less the chat), and
+/// Whether the review's rail is drawn in an editing area `area_w` columns wide (the screen less the chat), and
 /// what it leaves the code — from 90 on, `REVIEW_CODE_MIN`; narrower, while it has the keys
 /// (`space g` back from the git tab, `space e`), in the room the side panel would have — they went to a rail
 /// that wasn't drawn (#146). None: not drawn.
-fn review_rail_code_min(edit_w: usize, focus: bool) -> Option<usize> {
-    match edit_w {
+fn review_rail_code_min(area_w: usize, focus: bool) -> Option<usize> {
+    match area_w {
         w if w >= 90 => Some(REVIEW_CODE_MIN),
         w if focus && w >= REVIEW_RAIL_MIN + crate::sizes::CODE_MIN => Some(crate::sizes::CODE_MIN),
         _ => None,
@@ -22911,7 +22934,7 @@ fn docs_popup(
     out: &mut impl Write,
 ) -> io::Result<Option<(Rect4, usize)>> {
     const CAP: usize = 20;
-    let (left, right) = (pane.x0, pane.edit_w);
+    let (left, right) = (pane.x0, pane.x1);
     let raised = card_style(ui, editor, "ui.popup");
     let card = on_ground(ui, raised);
     let faint = Style { fg: ui.linenr.fg, ..card };
@@ -23152,7 +23175,7 @@ fn float_geom_around(
 ) -> Option<FloatGeom> {
     // Inside the pane it's about — never over the review's rail, the side panel, the chat or another pane
     let pane = focused_pane(editor, lay);
-    let (left, right) = (pane.x0, pane.edit_w);
+    let (left, right) = (pane.x0, pane.x1);
     let natural = lines.iter().map(crate::markdown::Line::width).max().unwrap_or(0).max(min);
     let inner = natural.clamp(10, 76).min((right - left).saturating_sub(4));
     let rows = crate::markdown::wrap(lines, inner, dim_style(ui, editor));
@@ -24573,8 +24596,11 @@ fn draw_prompt(
     let head = prompt_head(p);
     // (at the screen's left — over the side panel's foot when it's up, a floating card — a cell in, so its
     // text starts where the mode pill's label does; as wide as the editing area lets it, the chat kept clear)
-    let aw =
-        if lay.code_hidden() { lay.width } else { lay.edit_w.saturating_sub(usize::from(lay.scrollbar)) };
+    let aw = if lay.code_hidden() {
+        lay.width
+    } else {
+        lay.float_area().1.saturating_sub(usize::from(lay.scrollbar))
+    };
     let x0 = 1;
     let pad = CARD_PAD;
     let cands = completion.map_or(&[][..], |c| &c.cands[..]);
