@@ -116,7 +116,7 @@ const TOOLS: &str = "";
 /// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `sessions_start` asks on its
 /// own card, `session_send` and `sessions` reach only the chat's own children, and only a parent's chat lists them —
 /// `orchestra.rs`)
-const ALLOWED: &str = "mcp__tarae__note,mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
+const ALLOWED: &str = "mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
 mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
 mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act";
@@ -392,10 +392,10 @@ impl Look {
         }
     }
 
-    /// Its stop is a place to go back to, a mark on the follow card's strip — not a note or the plan (words left,
-    /// not places gone to).
+    /// Its stop is a place to go back to, a mark on the follow card's strip — not the plan (words left, not places gone
+    /// to).
     pub fn marked(&self) -> bool {
-        !matches!(self.verb, "note" | "reply" | "plan")
+        self.verb != "plan"
     }
 
     /// In words, as the strip's hover says it: `read src/term.rs · L120–180`, `run cargo test -q · exit 101`.
@@ -425,6 +425,9 @@ pub struct Msg {
     /// (`quote::put_back`).
     pub quotes: Vec<crate::quote::Quote>,
     pub screen: Option<Shot>,
+    /// A user message's lines asked about — `space n`'s quote (`Quote.asked`), a review's sent comments and findings
+    /// (`codereview::send`, Q9): places of its answer, flagged whether or not the answer cites them (#388 step 3).
+    pub asked: Vec<(PathBuf, std::ops::Range<usize>)>,
     /// The elements it pointed at, and the `y`s given for the files named like keys they carry — put back with it
     /// when it must go again.
     pub pointed: Vec<String>,
@@ -540,6 +543,7 @@ impl Msg {
             linked: 0,
             quotes: Vec::new(),
             screen: None,
+            asked: Vec::new(),
             pointed: Vec::new(),
             key_pass: Vec::new(),
             ran: None,
@@ -1579,22 +1583,39 @@ fn drop_selection(ed: &mut Editor) {
 pub fn ask_goes(ed: &Editor) -> Vec<String> {
     let Some(c) = ed.workspace.claude.chat.as_ref() else { return Vec::new() };
     let mut goes = Vec::new();
-    if let Some(doc) = ed.front_file() {
+    let front = ed.front_file();
+    // (the lines `space n` asked about — its quote, `Quote.asked` — take the file's place: the lines said once)
+    let asked = front.and_then(|d| {
+        c.quotes.iter().find(|q| q.asked.is_some() && q.code.is_some_and(|(id, ..)| id == d.id))
+    });
+    let lines = |l0: usize, l1: usize| match l0 < l1 {
+        true => format!("{}–{} · {} lines", l0 + 1, l1 + 1, l1 - l0 + 1),
+        false => format!("{} · 1 line", l0 + 1),
+    };
+    if let Some(doc) = front {
         let name = doc.display_name_short();
         let pass = crate::reads::input_pass(ed);
         let text_goes = text_goes(ed, doc, &pass);
         let sel = selection_sent(doc, &c.quotes, c.sel_dropped).filter(|_| text_goes);
         let line =
             doc.text.byte_to_line(doc.selection().primary().cursor(&doc.text).min(doc.text.len_bytes()));
-        goes.push(match sel {
+        let asked_lines =
+            asked.and_then(|q| q.asked.as_ref()).map(|(_, r)| (r.start, r.end.saturating_sub(1)));
+        goes.push(match (asked.zip(asked_lines), sel) {
             _ if doc.woven.is_some() => crate::weave::NOT_SENT.to_string(),
             _ if !text_goes => format!("{name} · not sent"),
-            Some((.., l0, l1)) if l0 < l1 => format!("{name}:{}–{} · {} lines", l0 + 1, l1 + 1, l1 - l0 + 1),
-            Some((.., l0, _)) => format!("{name}:{} · 1 line", l0 + 1),
-            None => format!("{name}:{}", line + 1),
+            (Some((q, (l0, l1))), _) => format!("{name}:{}{}", lines(l0, l1), q.said()),
+            (None, Some((.., l0, l1))) => format!("{name}:{}", lines(l0, l1)),
+            (None, None) => format!("{name}:{}", line + 1),
         });
     }
-    goes.extend(c.with_chips());
+    let front = front.map(|d| d.id);
+    goes.extend(c.with_items().into_iter().filter_map(|w| match w {
+        WithItem::Quote(q) if asked.is_some_and(|a| std::ptr::eq(a, q)) => None,
+        WithItem::Quote(q) => Some(q.chip_beside(front)),
+        WithItem::Pointed(id) => Some(id.clone()),
+        WithItem::Screen(s) => Some(format!("screen {}×{}", s.cols, s.rows)),
+    }));
     goes
 }
 
@@ -2860,14 +2881,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             // (its result came just before — `Spent`: the cache's TTL runs from its last request)
             crate::usage::watch(ed);
             keep(ed);
-            let answer = ok.then(|| {
-                ed.workspace.claude.chat.as_ref().and_then(|c| {
-                    let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
-                    c.msgs[turn..].iter().rev().find(|m| m.role == Role::Assistant).map(|m| m.text.clone())
-                })
-            });
-            crate::notes::turn_done(ed, answer.flatten());
-            // (what its answer says of a place, at it — #239: a whole answer's only, as the note's above)
+            crate::notes::stale_check(ed);
+            // (what its answer names of the code, flagged there — #388: a whole answer's only)
             crate::chatnotes::turn_over(ed, ok);
             crate::restart::turn_over(ed);
             crate::rebase::turn_over(ed);
@@ -2993,11 +3008,6 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             let mut cut_off = None;
             if c.state != State::Idle {
                 c.state = State::Idle;
-                for id in std::mem::take(&mut ed.workspace.claude.notes.turn) {
-                    if let Some(n) = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id) {
-                        n.waiting = false;
-                    }
-                }
                 let e = if err.is_empty() {
                     "claude exited".to_string()
                 } else {
@@ -3253,11 +3263,9 @@ pub(crate) fn send_queued(ed: &mut Editor) {
     // `gate_opened`; a send now would only queue itself again, and this loop take it again, for good — the review
     // of frictions36. A re-read while it runs — the settings' watch — holds nothing: its claude is there)
     // (nor while its checkout is moved onto its base: sent as the move lands — `keepclose::moved`)
-    // (nor while a card asks about the replies that went first, raised at this very loop: nothing goes past them)
     // (nor while no claude starts until the config reads, none running: it goes as it reads — `config_read`)
     let held = |ed: &Editor| {
         ed.workspace.moving.is_some()
-            || crate::reads::replies_ask(ed)
             || (!ed.config_unread.is_empty()
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.running()))
             || ed
@@ -3276,25 +3284,10 @@ pub(crate) fn send_queued(ed: &mut Editor) {
     let first =
         |c: &Chat| c.sends.iter().position(|l| c.queued.is_none() || !matches!(l, Later::Parent { .. }));
     let next = |c: &mut Chat| Some(c.sends.remove(first(c)?));
-    // (the replies next in line go with the first, one message — never past what stands between: its place is kept)
-    let joins = |c: &mut Chat, lines: Option<bool>| {
-        let i = first(c).filter(|&i| matches!(&c.sends[i], Later::Reply { lines: l, .. } if *l == lines))?;
-        match c.sends.remove(i) {
-            Later::Reply { reply, .. } => Some(reply),
-            _ => None,
-        }
-    };
     while let Some(later) = ed.workspace.claude.chat.as_mut().and_then(next) {
         match later {
             Later::Review(lines) => crate::codereview::send_as(ed, lines),
             Later::Findings(by) => crate::codereview::send_only(ed, Some(false), Some(&by)),
-            Later::Reply { reply, lines } => {
-                let mut replies = vec![reply];
-                while let Some(r) = ed.workspace.claude.chat.as_mut().and_then(|c| joins(c, lines)) {
-                    replies.push(r);
-                }
-                crate::notes::send(ed, replies, lines);
-            }
             Later::Parent { from, conversation, wake, text } => {
                 if !submit_from(ed, &from, conversation.as_deref(), wake, &text)
                     && let Some(c) = ed.workspace.claude.chat.as_mut()
@@ -3348,9 +3341,6 @@ pub enum Later {
     Review(Option<bool>),
     /// Its reviewer's findings, sent by its parent's Claude (`codereview::send_only`, `session_act send`).
     Findings(Box<crate::orchestra::SentBy>),
-    /// A reply on a note (`notes::send`'s), the replies next to it going with it — `lines` the answer of a card that asked
-    /// about it, as `Review`'s: it came back in line, a turn begun meanwhile (None: not asked yet).
-    Reply { reply: crate::notes::Reply, lines: Option<bool> },
     /// A message from its parent session's Claude (`orchestra.rs`, `session_send`): `from` its name, `conversation` the
     /// one of its chat it came from (`Msg.from_conversation`). It goes after a message of the user's queued before it —
     /// the person first. `wake`: its Claude asked to be woken as its turn ends (`Msg.wake`).
@@ -3747,6 +3737,8 @@ fn submit_as(
     let quotes: Vec<crate::quote::Quote> =
         ed.workspace.claude.chat.as_ref().filter(|_| input).map(|c| c.quotes.clone()).unwrap_or_default();
     let (context, ctx_chip, sent, withheld) = context(ed, ui.as_ref().map(|u| u.0.as_str()), &pass, &quotes);
+    // (the row names the file in front first, as its chip: a quote of that file says its lines only)
+    let front = ed.front_file().map(|d| d.id).filter(|_| chip.is_none());
     let context = match pointed.is_empty() {
         true => context,
         false => {
@@ -3873,7 +3865,7 @@ fn submit_as(
             copy.push(s.text.clone());
         }
         for (q, block) in quotes.iter().zip(blocks) {
-            chip.push_str(&format!(" · {}", q.chip()));
+            chip.push_str(&format!(" · {}", q.chip_beside(front)));
             copy.push(block);
         }
         // (none where there's no folder for it — a test's)
@@ -3892,6 +3884,7 @@ fn submit_as(
         }
     }
     msg.chip = chip;
+    msg.asked = quotes.iter().filter_map(|q| q.asked.clone()).collect();
     (msg.quotes, msg.screen, msg.pointed, msg.key_pass) = (quotes, shot, pointed, passed);
     msg.from = from.map(str::to_string);
     let c = ed.workspace.claude.chat.as_mut().expect("sent above");
@@ -4051,12 +4044,18 @@ fn selection_sent(
     let (text, sel) = (&doc.text, doc.selection().primary());
     let here = Some((doc.id, doc.version(), sel.from(), sel.to()));
     // (or the one `C-x` took off the ask line's message)
-    let quoted = quotes.iter().any(|q| q.code == here) || dropped == here;
+    let (l0, l1) =
+        (text.byte_to_line(sel.from()), text.byte_to_line(sel.to().saturating_sub(1).max(sel.from())));
+    // (`space n`'s quote is whole lines: a selection within them goes with it — said and sent once)
+    let asked = |q: &crate::quote::Quote| {
+        q.asked.as_ref().is_some_and(|(_, lines)| lines.start <= l0 && l1 < lines.end)
+            && q.code.is_some_and(|(id, v, ..)| (id, v) == (doc.id, doc.version()))
+    };
+    let quoted = quotes.iter().any(|q| q.code == here || asked(q)) || dropped == here;
     if quoted || sel.to() <= crate::graphemes::next_boundary(text, sel.from()) {
         return None;
     }
-    let l1 = text.byte_to_line(sel.to().saturating_sub(1).max(sel.from()));
-    Some((sel.from(), sel.to(), text.byte_to_line(sel.from()), l1))
+    Some((sel.from(), sel.to(), l0, l1))
 }
 
 /// `L12` · `L12–18`.
@@ -4333,24 +4332,6 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
         "Glob" => {
             Look { verb: "glob", what: s("pattern"), pattern: true, range: within(s("path")), link: None }
         }
-        "mcp__tarae__note" => {
-            // (all of it, a line each — its row cuts it, a line break a space there, and its card shows it whole, a row
-            // each line: `whole.rs`)
-            let text = s("text");
-            let lines = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty());
-            let gist = lines.collect::<Vec<_>>().join("\n");
-            match n("reply_to") {
-                Some(id) => {
-                    Look { verb: "reply", what: format!("#{id}"), pattern: false, range: gist, link: None }
-                }
-                None => {
-                    let path = resolve(&s("path"));
-                    let line = n("line").unwrap_or(1).max(1) - 1;
-                    let what = format!("{}:{}", shown(&path), line + 1);
-                    Look { verb: "note", what, pattern: false, range: gist, link: Some(Link { path, line }) }
-                }
-            }
-        }
         "mcp__tarae__plan" => {
             let (n, done) = input["steps"].as_array().map_or((0, 0), |a| {
                 (
@@ -4613,8 +4594,6 @@ const WORDS: &[(&str, &str, &str)] = &[
     ("edit", "edit", "editing"),
     ("rename", "rename", "renaming"),
     ("replace", "replace", "replacing"),
-    ("note", "note", "noting"),
-    ("reply", "reply", "replying"),
     ("plan", "plan", "planning"),
     ("start", "start", "starting"),
     ("send", "send", "sending"),
@@ -6756,15 +6735,12 @@ mod tests {
         };
         point_at(&mut ed, &pane);
         ed.open(&plain).unwrap();
-        went(&mut ed, "a note", &|ed| {
-            crate::notes::submit(ed, None, "about this line");
-        });
-        assert_eq!(ed.workspace.claude.notes.list.len(), 1, "the note is kept");
-        for n in &mut ed.workspace.claude.notes.list {
-            n.thread.iter_mut().for_each(|e| e.draft = true);
-        }
+        let draft = |ed: &mut Editor| {
+            crate::notes::add(ed, &plain, 0..1, crate::notes::By::You, "about this line");
+        };
+        draft(&mut ed);
         went(&mut ed, "the code review", &crate::codereview::send);
-        assert!(ed.workspace.claude.notes.list[0].thread.iter().all(|e| !e.draft), "the review went");
+        assert!(ed.workspace.claude.notes.list.is_empty(), "the review went, its drafts with it");
         went(&mut ed, "the rebase's ask", &|ed| crate::rebase::ask_for_test(ed, "resolve them"));
         assert!(ed.workspace.rebase.as_ref().unwrap().asked, "asked, and Claude was reached");
         assert!(pointing_up(&ed) && chips(&ed) == [pane.clone()], "the pointing and its chip stay");
@@ -6772,7 +6748,7 @@ mod tests {
         ed.open(&env).unwrap();
         answer_card(&mut ed, "y");
         went(&mut ed, "the review after a y", &|ed| {
-            ed.workspace.claude.notes.list[0].thread.iter_mut().for_each(|e| e.draft = true);
+            draft(ed);
             crate::codereview::send(ed);
         });
         ed.workspace.claude.chat.as_mut().unwrap().input = "now".into();
@@ -6783,37 +6759,26 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 7c′: a note or the review that opens the chat itself decides once the project's kept keys are read (a
-    /// worker's): a file the user opened for the project (`A`) isn't asked about again — no card, its lines go.
-    /// The token is a fake, the claude a logging stand-in.
+    /// 7c′: the review that opens the chat itself decides once the project's kept keys are read (a worker's): a file the
+    /// user opened for the project (`A`) isn't asked about again — no card, its lines go. The token is a fake, the claude a
+    /// logging stand-in.
     #[test]
-    fn a_note_or_review_opening_the_chat_waits_for_the_kept_keys() {
-        for review in [false, true] {
-            let (dir, env, _, log, mut ed) = key_editor(if review { "kept-review" } else { "kept-note" });
-            let store = ed.allow_path.clone().unwrap();
-            let opened = crate::allow::Grant::Key(env.clone());
-            crate::allow::keep(&store, &ed.workspace.root, |a| a.add(&opened)).unwrap();
-            assert!(ed.workspace.claude.chat.is_none(), "the chat isn't open yet");
-            match review {
-                false => {
-                    crate::notes::submit(&mut ed, None, "what is this");
-                }
-                true => {
-                    let id = crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::You, "this line");
-                    let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
-                    n.thread.iter_mut().for_each(|e| e.draft = true);
-                    crate::codereview::send(&mut ed);
-                }
-            }
-            let asked = |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE);
-            assert!(!asked(&ed), "not asked before the kept keys are read");
-            settle_until(&mut ed, |ed| asked(ed) || messages(&log).len() == 1);
-            assert!(!asked(&ed), "kept open for the project: not asked again (review {review})");
-            let m = messages(&log).pop().unwrap();
-            assert!(m.contains("API_KEY=tarae-fake-token"), "its lines went (review {review}): {m}");
-            turn_done(&mut ed);
-            std::fs::remove_dir_all(&dir).ok();
-        }
+    fn a_review_opening_the_chat_waits_for_the_kept_keys() {
+        let (dir, env, _, log, mut ed) = key_editor("kept-review");
+        let store = ed.allow_path.clone().unwrap();
+        let opened = crate::allow::Grant::Key(env.clone());
+        crate::allow::keep(&store, &ed.workspace.root, |a| a.add(&opened)).unwrap();
+        assert!(ed.workspace.claude.chat.is_none(), "the chat isn't open yet");
+        crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::You, "this line");
+        crate::codereview::send(&mut ed);
+        let asked = |ed: &Editor| ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE);
+        assert!(!asked(&ed), "not asked before the kept keys are read");
+        settle_until(&mut ed, |ed| asked(ed) || messages(&log).len() == 1);
+        assert!(!asked(&ed), "kept open for the project: not asked again");
+        let m = messages(&log).pop().unwrap();
+        assert!(m.contains("API_KEY=tarae-fake-token"), "its lines went: {m}");
+        turn_done(&mut ed);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `C-s` sends the frame the interface presented (the remote plan's §8b): one that presents late, drawn newer and
@@ -6994,91 +6959,32 @@ mod tests {
             assert_eq!(messages(&log).len(), n + 1, "{k}: it went");
             last()
         };
-        // A note on its first line: asked, nothing sent yet, the note kept
-        crate::notes::submit(&mut ed, None, "what is this");
-        assert!(up(&ed) && messages(&log).is_empty(), "asked first");
-        assert_eq!(ed.workspace.claude.notes.list.len(), 1, "the note waits with the card");
-        let m = answered(&mut ed, "n");
-        assert!(!m.contains("tarae-fake-token") && m.contains("what is this"), "{m}");
-        assert!(m.contains("<code>\\n(named like a key — not sent)\\n</code>"), "n: its name only: {m}");
-        // A reply: `y` sends its lines, that note only
-        let id = ed.workspace.claude.notes.list[0].id;
-        crate::notes::submit(&mut ed, Some(id), "and this?");
-        assert!(up(&ed));
-        let m = answered(&mut ed, "y");
-        assert!(m.contains("<code>\\nAPI_KEY=tarae-fake-token\\n</code>") && m.contains("and this?"), "{m}");
-        ed.workspace.claude.chat.as_mut().unwrap().input = "after".into();
-        send(&mut ed);
-        turn_done(&mut ed);
-        assert!(!last().contains("tarae-fake-token"), "y was for that note only");
-        // The review's comment on it: `n` names it, `y` sends its lines — a key is opened once at a time
-        // (`Caps::storable`): nothing opened for the conversation
+        // `space n` outside a review on it: the ask line takes no quote of it, said
+        ed.open(&env).unwrap();
+        crate::notes::start(&mut ed);
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().quotes.is_empty(), "nothing quoted");
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert!(said.contains("named like a key"), "{said}");
+        // The review's comment on it: asked, nothing sent yet; `n` names it, `y` sends its lines — a key is opened once
+        // at a time (`Caps::storable`): nothing opened for the conversation
         let draft = |ed: &mut Editor| {
-            ed.workspace.claude.notes.list[0].thread.iter_mut().for_each(|e| e.draft = true)
+            crate::notes::add(ed, &env, 0..1, crate::notes::By::You, "what is this");
         };
         draft(&mut ed);
         crate::codereview::send(&mut ed);
-        assert!(up(&ed), "the review asks");
+        assert!(up(&ed) && messages(&log).is_empty(), "the review asks first");
         let m = answered(&mut ed, "n");
-        assert!(!m.contains("tarae-fake-token") && m.contains("(named like a key — not sent)"), "{m}");
+        assert!(!m.contains("tarae-fake-token") && m.contains("what is this"), "{m}");
+        assert!(m.contains("(named like a key — not sent)"), "n: its name only: {m}");
         draft(&mut ed);
         crate::codereview::send(&mut ed);
         let m = answered(&mut ed, "y");
         assert!(m.contains("API_KEY=tarae-fake-token"), "y: its lines go: {m}");
-        assert!(!ed.workspace.claude.chat.as_ref().unwrap().allowed.keys.contains(&env), "nothing opened");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// C1b: queued replies on a key-named file and a plain one ask once, the whole batch held on the card: nothing goes past
-    /// it (a review, a message, a reply written while it waits — said so), `n` sends the key file's name and the plain
-    /// file's lines, one message. What was behind goes on after it, the reply written meanwhile as its own.
-    #[test]
-    fn queued_replies_on_a_key_file_ask_once_and_hold_the_line() {
-        let (dir, env, plain, log, mut ed) = key_chat_lasting("key-batch");
-        let card = |ed: &Editor| ed.offers.iter().filter(|o| o.title == crate::reads::POINTED_TITLE).count();
-        let (k, p) = (
-            crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::Author, "on the key"),
-            crate::notes::add(&mut ed, &plain, 0..1, crate::notes::By::Author, "on the plain one"),
-        );
-        ed.open(&plain).unwrap();
-        ed.open(&env).unwrap();
-        // A turn under way, the replies queued as it works
-        ed.workspace.claude.chat.as_mut().unwrap().input = "go".into();
+        ed.workspace.claude.chat.as_mut().unwrap().input = "after".into();
         send(&mut ed);
-        crate::notes::submit(&mut ed, Some(k), "key reply");
-        crate::notes::submit(&mut ed, Some(p), "plain reply");
-        ed.workspace.claude.chat.as_mut().unwrap().queued = Some("behind them".into());
-        turn_done_holding(&mut ed);
-        assert_eq!(card(&ed), 1, "one card for the two");
-        assert_eq!(messages(&log).len(), 1, "nothing went: {:?}", messages(&log));
-        let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert_eq!(c.queued.as_deref(), Some("behind them"), "the message waits behind them");
-        assert!(c.sends.is_empty(), "the batch is the card's");
-        // Written while the card waits: behind them, in line, said
-        crate::notes::submit(&mut ed, Some(p), "written meanwhile");
-        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-        assert_eq!(said, "reply queued — it goes once the card is answered");
-        crate::notes::submit(&mut ed, Some(p), "and after it");
-        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-        assert_eq!(said, "2 replies queued — they go as one message once the card is answered");
-        answer_card(&mut ed, "n");
-        settle_until(&mut ed, |_| messages(&log).len() == 2);
-        let m = messages(&log).last().cloned().unwrap_or_default();
-        assert!(m.contains("(named like a key — not sent)"), "n: its name only: {m}");
-        assert!(
-            m.contains("key reply") && m.contains("plain reply") && !m.contains("written meanwhile"),
-            "{m}"
-        );
-        assert!(!m.contains("tarae-fake-token"), "{m}");
-        assert!(m.contains("<code>\\nplain words\\n</code>"), "the plain file's lines go: {m}");
-        settle_until(&mut ed, |_| messages(&log).len() == 3);
-        let m = messages(&log).last().cloned().unwrap_or_default();
-        assert!(
-            m.contains(&format!("#{p}: written meanwhile\\n#{p}: and after it")),
-            "in the order written: {m}"
-        );
-        settle_until(&mut ed, |_| messages(&log).len() == 4);
-        assert!(messages(&log).last().unwrap().contains("behind them"), "{:?}", messages(&log));
+        turn_done(&mut ed);
+        assert!(!last().contains("tarae-fake-token"), "y was for that review only");
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().allowed.keys.contains(&env), "nothing opened");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7095,178 +7001,6 @@ mod tests {
         open(&mut ed);
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.kept_keys.is_some()));
         (dir, env, plain, log, ed)
-    }
-
-    /// A turn's end with replies on a key-named file in line: its card up.
-    fn turn_done_holding(ed: &mut Editor) {
-        settle_until(ed, |ed| {
-            ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE)
-                && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy())
-        });
-    }
-
-    /// C1b: the chat just opened, its kept keys still being read: a reply on a key file waits for them and one written behind
-    /// it waits too; the first's note closed meanwhile, the read's end sends the second — no turn's end to do it.
-    #[test]
-    fn what_waited_behind_the_kept_keys_read_goes_at_its_end() {
-        let (dir, env, plain, log, mut ed) = key_editor("key-batch-read");
-        let result = serde_json::json!({"type": "result", "result": "ok"}).to_string();
-        let script = format!(
-            "while read -r line; do case \"$line\" in *'\"role\":\"user\"'*) printf '%s\\n' \"$line\" >> '{}'; \
-             printf '%s\\n' '{result}';; esac; done",
-            log.display()
-        );
-        ed.config.llm.args = vec!["-c".into(), script];
-        open(&mut ed);
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().kept_keys.is_none(), "its read under way");
-        let k = crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::Author, "on the key");
-        let p = crate::notes::add(&mut ed, &plain, 0..1, crate::notes::By::Author, "on the plain one");
-        crate::notes::submit(&mut ed, Some(k), "key reply");
-        crate::notes::submit(&mut ed, Some(p), "behind it");
-        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().sends.len(), 1, "behind the read");
-        crate::notes::close(&mut ed, k);
-        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.kept_keys.is_some()));
-        let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(c.busy() && c.sends.is_empty(), "it went as the read ended: {:?}", c.sends);
-        settle_until(&mut ed, |_| !messages(&log).is_empty());
-        assert!(messages(&log)[0].contains("behind it"), "{:?}", messages(&log));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// C1b, the review: a note closed while the card asks about its reply. The card goes at once, so its `a` opens no key for
-    /// nothing and it holds nothing: the plain reply beside it goes, then the message behind it. With another key still
-    /// named a card of its own asks about what's left; with nothing left the line goes on.
-    #[test]
-    fn a_note_closed_takes_its_reply_off_the_card() {
-        let (dir, env, plain, log, mut ed) = key_chat_lasting("key-batch-closed");
-        let other = dir.join(".env.local");
-        std::fs::write(&other, "OTHER_KEY=tarae-fake-token\n").unwrap();
-        ed.open(&other).unwrap();
-        let card =
-            |ed: &Editor| ed.offers.iter().find(|o| o.title == crate::reads::POINTED_TITLE).map(|o| o.id);
-        let asked = |ed: &Editor| {
-            ed.offers.iter().find_map(|o| match &o.what {
-                crate::offer::What::Read { pending, .. } => Some(pending.look.keys.clone()),
-                _ => None,
-            })
-        };
-        let carded = |ed: &Editor| {
-            crate::reads::replies_carded(ed).map(|r| r.iter().map(|r| r.text.clone()).collect())
-        };
-        let tick = |ed: &mut Editor| ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
-        let (k, o, p) = (
-            crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::Author, "on the key"),
-            crate::notes::add(&mut ed, &other, 0..1, crate::notes::By::Author, "on the other key"),
-            crate::notes::add(&mut ed, &plain, 0..1, crate::notes::By::Author, "on the plain one"),
-        );
-        ed.open(&plain).unwrap();
-        ed.open(&env).unwrap();
-        ed.workspace.claude.chat.as_mut().unwrap().input = "go".into();
-        send(&mut ed);
-        crate::notes::submit(&mut ed, Some(k), "key reply");
-        crate::notes::submit(&mut ed, Some(o), "other reply");
-        crate::notes::submit(&mut ed, Some(p), "plain reply");
-        ed.workspace.claude.chat.as_mut().unwrap().queued = Some("behind them".into());
-        turn_done_holding(&mut ed);
-        assert_eq!(asked(&ed), Some(vec![env.clone(), other.clone()]), "one card for the three");
-        let first = card(&ed);
-        // One key's note closed: asked again, about what's left
-        crate::notes::close(&mut ed, k);
-        tick(&mut ed);
-        assert!(card(&ed).is_some() && card(&ed) != first, "a card of its own: {:?}", card(&ed));
-        assert_eq!(asked(&ed), Some(vec![other.clone()]), "the key still named, alone");
-        assert_eq!(carded(&ed), Some(vec!["other reply".to_string(), "plain reply".to_string()]));
-        assert_eq!(messages(&log).len(), 1, "nothing went past it");
-        // The last key's closed: no card, the plain reply goes, then the message behind it
-        crate::notes::close(&mut ed, o);
-        tick(&mut ed);
-        assert_eq!(card(&ed), None, "nothing left to ask");
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "the line went on");
-        settle_until(&mut ed, |_| messages(&log).len() == 2);
-        let m = messages(&log).last().cloned().unwrap_or_default();
-        assert!(m.contains("plain reply") && !m.contains("key reply") && !m.contains("other reply"), "{m}");
-        settle_until(&mut ed, |_| messages(&log).len() == 3);
-        assert!(messages(&log).last().unwrap().contains("behind them"), "{:?}", messages(&log));
-        let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(!c.allowed.keys.contains(&env) && !c.allowed.keys.contains(&other), "nothing opened");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// C1b, the review: a lone reply's note closed while its card asks: the card goes, nothing goes in its place, and what it
-    /// held goes on.
-    #[test]
-    fn a_lone_replys_note_closed_lets_the_line_go_on() {
-        let (dir, env, _, log, mut ed) = key_chat_lasting("key-lone-closed");
-        let k = crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::Author, "on the key");
-        crate::notes::submit(&mut ed, Some(k), "key reply");
-        assert!(crate::reads::replies_ask(&ed), "asked");
-        ed.workspace.claude.chat.as_mut().unwrap().queued = Some("behind it".into());
-        crate::notes::close(&mut ed, k);
-        ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
-        assert!(!crate::reads::replies_ask(&ed), "the card went");
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "what it held went on");
-        settle_until(&mut ed, |_| !messages(&log).is_empty());
-        let m = messages(&log);
-        assert!(m.len() == 1 && m[0].contains("behind it") && !m[0].contains("key reply"), "{m:?}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// C1b, the review: the same with a turn under way (a message of yours went past the card): what's left waits for its end,
-    /// and the words count what will go, never the reply just closed.
-    #[test]
-    fn a_note_closed_during_a_turn_counts_what_will_go() {
-        let (dir, env, plain, _, mut ed) = key_chat_lasting("key-closed-busy");
-        let k = crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::Author, "on the key");
-        let p = crate::notes::add(&mut ed, &plain, 0..1, crate::notes::By::Author, "on the plain one");
-        ed.open(&env).unwrap();
-        ed.workspace.claude.chat.as_mut().unwrap().input = "go".into();
-        send(&mut ed);
-        crate::notes::submit(&mut ed, Some(k), "key reply");
-        crate::notes::submit(&mut ed, Some(p), "plain reply");
-        turn_done_holding(&mut ed);
-        ed.workspace.claude.chat.as_mut().unwrap().input = "a message of yours".into();
-        send(&mut ed);
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "a turn under way");
-        crate::notes::close(&mut ed, k);
-        ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
-        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().sends.len(), 1, "the plain reply, in line");
-        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-        assert_eq!(said, "reply queued — it goes when Claude's turn ends");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// C1b: a read of Claude's waiting behind the card (one read card at a time) has its turn once a closed note takes the
-    /// card down: nothing is left unanswered behind it.
-    #[test]
-    fn the_next_read_comes_up_when_a_closed_note_takes_the_card() {
-        let (dir, env, plain, _, mut ed) = key_chat_lasting("key-read-behind");
-        let k = crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::Author, "on the key");
-        crate::notes::submit(&mut ed, Some(k), "key reply");
-        assert!(crate::reads::replies_ask(&ed), "asked");
-        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
-        let root = ed.workspace.root.clone();
-        let input = serde_json::json!({"file_path": plain});
-        let p = crate::reads::Pending {
-            request_id: "read".into(),
-            generation,
-            input: input.clone(),
-            look: crate::reads::look("Read", &input, &root),
-            class: crate::cards::Class::Elsewhere,
-            since: std::time::Instant::now(),
-            found: Default::default(),
-            repository: None,
-            not_whole: None,
-            own: None,
-            then: None,
-            log: false,
-        };
-        ed.workspace.claude.chat.as_mut().unwrap().reads.push_back(p);
-        crate::notes::close(&mut ed, k);
-        ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().reads.is_empty(), "its turn came");
-        let read = |o: &crate::offer::Offer| matches!(&o.what, crate::offer::What::Read { pending, .. } if pending.own.is_none());
-        assert!(ed.offers.iter().any(read), "on a card: {:?}", ed.offers.len());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `tab` in a chat with no messages cycles the example questions, never over words of yours (it replaced them).
@@ -7296,36 +7030,6 @@ mod tests {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!(c.queued.as_deref(), Some("held for its billing"));
         assert!(!c.busy() && messages(&log).is_empty(), "{:?}", messages(&log));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// C1b: a turn begun while the batch's card waited (a message of yours): `y` puts the replies back in line with the
-    /// answer, first, never "couldn't reach claude" nor taken back; at its end they go with the lines, not asked again. One
-    /// written meanwhile on that file wasn't answered for: it goes by a message and a card of its own, never on that `y`.
-    #[test]
-    fn an_answer_with_a_turn_under_way_goes_at_its_end() {
-        let (dir, env, _, log, mut ed) = key_chat_lasting("key-batch-busy");
-        let k = crate::notes::add(&mut ed, &env, 0..1, crate::notes::By::Author, "on the key");
-        crate::notes::submit(&mut ed, Some(k), "key reply");
-        assert_eq!(messages(&log).len(), 0, "asked first");
-        ed.workspace.claude.chat.as_mut().unwrap().input = "a message of yours".into();
-        send(&mut ed);
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy());
-        crate::notes::submit(&mut ed, Some(k), "written after");
-        answer_card(&mut ed, "y");
-        let c = ed.workspace.claude.chat.as_ref().unwrap();
-        let in_line =
-            matches!(c.sends[..], [Later::Reply { lines: Some(true), .. }, Later::Reply { lines: None, .. }]);
-        assert!(in_line, "{:?}", c.sends);
-        assert!(!ed.toasts.iter().any(|t| t.text.contains("couldn't reach claude")), "{:?}", ed.toasts);
-        let n = ed.workspace.claude.notes.list.iter().find(|n| n.id == k);
-        assert!(n.is_some_and(|n| n.thread.len() == 3), "its words stay");
-        settle_until(&mut ed, |_| messages(&log).len() == 2);
-        let m = messages(&log).last().cloned().unwrap_or_default();
-        assert!(m.contains("API_KEY=tarae-fake-token") && m.contains("key reply"), "y: its lines: {m}");
-        assert!(!m.contains("written after"), "that `y` isn't this one's: {m}");
-        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| o.title == crate::reads::POINTED_TITLE));
-        assert_eq!(messages(&log).len(), 2, "it asks for itself");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7763,11 +7467,6 @@ mod tests {
         );
         let long = look(root, "mcp__tarae__run", &serde_json::json!({"command": "x".repeat(60)}));
         assert_eq!(long.what.chars().count(), 60, "whole");
-        // (a note's words whole too, a line each — blank lines and trailing blanks out)
-        let note = serde_json::json!({"path": "a.rs", "line": 3, "text": "first line  \n\n second line\n"});
-        assert_eq!(look(root, "mcp__tarae__note", &note).range, "first line\n second line");
-        let reply = serde_json::json!({"reply_to": 4, "text": "yes\nand more"});
-        assert_eq!(look(root, "mcp__tarae__note", &reply).range, "yes\nand more");
         let mut ed = editor("");
         let mut c = Chat::new();
         c.msgs.push(Msg::tool(r, "t1"));

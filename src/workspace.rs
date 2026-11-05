@@ -1371,7 +1371,7 @@ impl Editor {
         id
     }
 
-    /// What session `id`'s checkout kept from last time, back in it: Claude's notes, and its turns (read on a
+    /// What session `id`'s checkout kept from last time, back in it: its notes, and its turns (read on a
     /// worker — nothing of them is written until they're back, or its first turn would write over them).
     /// Each session's once: session 0's at start (`main.rs` — in front or, after a restart, maybe behind),
     /// the others' as they're made.

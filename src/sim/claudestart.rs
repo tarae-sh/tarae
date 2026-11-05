@@ -1,9 +1,9 @@
 //! A send while the chat's claude starts, simulated (frictions29 #67): a chat whose claude waits for the project's
-//! Claude settings to be read (`claudetrust` — the read a job), and at random the chat opened, a reply written on
-//! a line (`notes::submit`), a frame, the user taking their time — the read's job among them; its claude a stand-in
-//! whose lines are kept (`Editor.claude_lines`). After every step: no reply refused ("couldn't reach claude"), each
-//! reply written either in the claude's lines or waiting its turn (`Chat.sends`) — never lost — and a chat waiting
-//! for its claude says so in its header (`starting`), or out of sight on the reply's note card (#381).
+//! Claude settings to be read (`claudetrust` — the read a job), and at random the chat opened, a question asked at a
+//! line (`space n`'s ask line, its lines quoted — #388), a frame, the user taking their time — the read's job among
+//! them; its claude a stand-in whose lines are kept (`Editor.claude_lines`). After every step: no question refused
+//! ("couldn't reach claude"), each one either in the claude's lines or waiting its turn — never lost — and a chat
+//! waiting for its claude says so in its header (`starting`) while its column is in sight.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -13,7 +13,6 @@ use std::time::Duration;
 use super::{Choices, Sim};
 use crate::editor::Editor;
 
-// (2: a reply before the chat's column was ever shown — its note card the one place that says `starting`, #381)
 const SEEDS: &[u64] = &[0, 1, 2];
 
 const INPUTS: usize = 24;
@@ -25,7 +24,7 @@ fn a_send_while_claude_starts() {
     super::seeds("a_send_while_claude_starts", SEEDS, run);
 }
 
-/// What the checks keep: the replies written, and the lines the stand-in got.
+/// What the checks keep: the questions asked, and the lines the stand-in got.
 #[derive(Default)]
 struct Seen {
     replies: Vec<String>,
@@ -60,7 +59,7 @@ fn run(choices: Choices) -> Vec<String> {
 
 fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> String {
     let c = &mut sim.choices;
-    // (by arm: the chat opened 2, a reply 4, a frame 1, time passing 1)
+    // (by arm: the chat opened 2, a question 4, a frame 1, time passing 1)
     match c.weighted(&[2, 4, 1, 1]) {
         0 => match ed.workspace.claude.chat.is_some() {
             true => "(the chat is open)".into(),
@@ -75,9 +74,13 @@ fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> 
             let text = format!("why line {n}?");
             let line = *c.pick(&[0, 1]);
             ed.goto_line(line);
-            crate::notes::submit(ed, None, &text);
+            crate::notes::start(ed);
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                c.input.set(&text);
+            }
+            crate::chat::send(ed);
             seen.borrow_mut().replies.push(text.clone());
-            format!("a reply: {text}")
+            format!("a question: {text}")
         }
         2 => {
             let mut bytes = Vec::new();
@@ -85,10 +88,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> 
             let mut vt = vt100::Parser::new(30, 112, 0);
             vt.process(&bytes);
             let starting = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting());
-            // (the chat's header, or a reply's note card where its column is out of sight — never the toast alone,
-            // which fades)
-            let said = |s: &str| s.contains(" starting ") || s.contains("claude is starting…");
-            if starting && !said(&vt.screen().contents()) {
+            // (the chat's header while its column is in sight — never the toast alone, which fades)
+            let said = |s: &str| s.contains(" starting ");
+            if starting && crate::chat::column_in_sight(ed) && !said(&vt.screen().contents()) {
                 seen.borrow_mut().unsaid = Some(vt.screen().contents());
             }
             "a frame".into()
@@ -102,7 +104,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> 
     }
 }
 
-/// No reply refused; each one the stand-in's or waiting its turn; a chat waiting for its claude says `starting`.
+/// No question refused; each one the stand-in's or waiting its turn; a chat waiting for its claude says `starting`.
 fn held(ed: &Editor, rx: &Receiver<String>, seen: &mut Seen) -> Result<(), String> {
     seen.lines.extend(rx.try_iter());
     if let Some(frame) = &seen.unsaid {
@@ -113,7 +115,8 @@ fn held(ed: &Editor, rx: &Receiver<String>, seen: &mut Seen) -> Result<(), Strin
     }
     let waits = |text: &str| {
         ed.workspace.claude.chat.as_ref().is_some_and(|c| {
-            c.sends.iter().any(|l| matches!(l, crate::chat::Later::Reply { reply, .. } if reply.text == text))
+            c.queued.as_deref().is_some_and(|q| q.contains(text))
+                || c.sends.iter().any(|l| format!("{l:?}").contains(text))
         })
     };
     for r in &seen.replies {

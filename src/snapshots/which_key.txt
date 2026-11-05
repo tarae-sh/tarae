@@ -8,8 +8,8 @@
 05     ▎ Words are split on whi╭─ space ─────────────────────────────────────────────────────────────╮
 06   6 pub fn word_counts(text:│ '  Reopen the last picker          L  Show or hide chat             │
 07   7     let mut counts = Has│ /  Search in project               m  Tasks …                       │
-08   8     for word in text.spl│ >  Quote or view chat              n  Ask Claude here, or reply     │
-09   9     │   *counts.entry(wo│ ?  Find a command                  N  Claude's notes                │
+08   8     for word in text.spl│ >  Quote or view chat              n  Ask Claude here, or comment   │
+09   9     │   *counts.entry(wo│ ?  Find a command                  N  Notes and flags               │
 10  10     }                   │ @  Point Claude at something       o  Outline panel: show / hide    │
 11  11     counts              │ a  Code actions                    p  Paste clipboard after         │
 12  12 }                       │ b  Switch to an open buffer        P  Paste clipboard before        │

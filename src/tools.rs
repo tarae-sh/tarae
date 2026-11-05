@@ -134,7 +134,6 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                 _ if ours.is_some() => {
                     Err(format!("`{}` isn't an argument of {tool}", ours.map_or("", |k| k.as_str())))
                 }
-                Some("note") => crate::notes::tool_call(ed, args),
                 Some("plan") => crate::plan::tool_call(ed, args),
                 Some("ui") => crate::uistate::claude::tool_call(ed),
                 Some("run_tests") => match run_tests(ed, call(), args) {
@@ -229,7 +228,6 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
 /// that may start sessions (`orchestra::may_parent`) has the session tools after the rest, a second fixed list.
 pub fn list(parent: bool) -> Value {
     let mut tools = vec![
-        crate::notes::tool_schema(),
         run_tests_schema(),
         run_schema(),
         crate::plan::tool_schema(),
@@ -260,7 +258,6 @@ pub fn list(parent: bool) -> Value {
 /// user has (hints for the client — tarae's own cards and reviews still decide).
 pub(crate) fn annotated(mut schema: Value) -> Value {
     let (title, hint) = match schema["name"].as_str().unwrap_or_default() {
-        "note" => ("Pin a note", None),
         "run_tests" => ("Run tests", None),
         "run" => ("Run a command", Some("destructiveHint")),
         "plan" => ("Show the plan", None),
@@ -5861,7 +5858,7 @@ mod tests {
         send(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
         let list = send(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
         let old_names = names(&list);
-        assert_eq!(old_names.first().map(String::as_str), Some("note"), "{old_names:?}");
+        assert_eq!(old_names.first().map(String::as_str), Some("run_tests"), "{old_names:?}");
         assert!(list["result"].get("ttlMs").is_none() && list["result"].get("resultType").is_none());
         // Annotations: a title for each, read-only and destructive hints
         for t in list["result"]["tools"].as_array().unwrap() {

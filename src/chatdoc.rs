@@ -210,6 +210,11 @@ pub fn in_view(c: &Chat, laid: &Laid, from: usize, area: usize) -> Vec<Reading> 
             users.saturating_sub(1)
         })
         .collect();
+    // (each turn's last answer: its first paragraph is the one a place asked about leads to — `reading_rows`)
+    let last = |i: usize| {
+        let next = (i + 1..c.msgs.len()).find(|&j| matches!(c.msgs[j].role, Role::User | Role::Assistant));
+        next.is_none_or(|j| c.msgs[j].role == Role::User)
+    };
     let mut row = 0;
     for (o, rows) in laid {
         let at = match o {
@@ -220,11 +225,19 @@ pub fn in_view(c: &Chat, laid: &Laid, from: usize, area: usize) -> Vec<Reading> 
             row += rows.len();
             continue;
         };
+        let first =
+            matches!(o, Of::Msg(i) if last(*i)).then(|| rows.iter().position(|r| !r.spans.is_empty()));
         // (each paragraph: its first row, then the rows it wrapped to)
         let mut k = 0;
         while k < rows.len() {
             let end = k + 1 + rows[k + 1..].iter().take_while(|r| r.join.is_some()).count();
             if row + k < from + area && row + end > from {
+                if first.flatten().is_some_and(|f| (k..end).contains(&f)) {
+                    let r = Reading { turn, name: Arc::from(""), said: 0 };
+                    if !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
                 for p in rows[k..end].iter().flat_map(|r| r.places.iter()) {
                     let r = Reading { turn, name: Arc::from(&*p.name), said: p.line };
                     if !out.contains(&r) {

@@ -70,7 +70,6 @@ mod quotes;
 mod readself;
 mod rebasemsg;
 mod rebaserecheck;
-mod replyline;
 mod reveal;
 mod reviews;
 mod rundoc;

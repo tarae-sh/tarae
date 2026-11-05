@@ -311,8 +311,9 @@ fn the_message_carries_the_quote_once() {
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.quotes.is_empty() && c.with.is_empty(), "they went");
     let m = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
-    assert!(m.chip.ends_with(" · [scratch] L2"), "{}", m.chip);
-    assert_eq!(&m.chip[m.linked..], "[scratch] L2");
+    // (the row names the buffer once, its chip first: the quote of it says its lines)
+    assert_eq!(m.chip, "[scratch] · L2");
+    assert_eq!(&m.chip[m.linked..], "L2");
     let copy = m.attached.clone().expect("its copy").path;
     // (the copy is a job's, made then filled: waited for by what it holds, never by the file being there —
     // frictions #155's kind)

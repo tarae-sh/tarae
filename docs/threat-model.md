@@ -772,11 +772,11 @@ Kept:
   crate, on a worker), never by an outside program, and a picture past the decoding limits (256 MB decoded,
   20,000 pixels a side) is refused before it's decoded — a decompression bomb, said; a PDF isn't parsed at all
   (its pages aren't read yet).
-  Claude's `note` pins on the project's files only (a note's lines reach Claude on your reply): a path outside
-  gets one answer whether or not it's there.
+  The reviewer's `note` pins in its checkout only (a finding's lines reach the author once you send it — the chat has
+  no `note` since #388): a path outside gets one answer whether or not it's there.
   test: `editor::tests::claudes_reads_outside_the_project_ask_first` · `reads::tests::inside_or_allowed_goes_without_asking` ·
   `chat::tests::a_key_named_file_reaches_claude_only_when_the_user_lets_it` · `reads::tests::a_link_to_a_key_file_is_the_key_file` ·
-  `notes::tests::a_note_outside_the_project_is_refused_alike` · `readtool::tests::what_read_would_ask_about_asks` ·
+  `reviewer::tests::the_reviewer_reads_the_checkout_only` · `readtool::tests::what_read_would_ask_about_asks` ·
   `media::tests::a_decompression_bomb_is_refused_said` ·
   `readtool::tests::a_key_named_image_asks_first`
 - **`references` and `definition` read a place's line by the opened file's real path**: inside the project, or

@@ -2164,7 +2164,7 @@ fn a_note_card_opens_under_its_lines() {
             &mut s.ed,
             &path,
             first..first + 6,
-            crate::notes::By::Author,
+            crate::notes::By::Reviewer,
             "Six lines, one remark.",
         );
         crate::notes::open(&mut s.ed, id);
@@ -2178,7 +2178,10 @@ fn a_note_card_opens_under_its_lines() {
             assert!(r < y, "note at {first}: line {k} (row {r}) above the card at {y}");
         }
         assert_eq!(row(first + 6), Some(y - 1), "note at {first}: the card right under its last line");
-        assert!(rows.iter().any(|r| r.contains("╰─ q close")), "note at {first}: the card whole in sight");
+        assert!(
+            rows.iter().any(|r| r.contains("╰─ ") && r.contains("q close")),
+            "note at {first}: the card whole in sight"
+        );
         if let Some(r) = row(first + 7) {
             assert_eq!(r, y + h, "note at {first}: the next line right under the card");
         }
@@ -2202,16 +2205,17 @@ fn a_note_card_opens_by_an_act_and_stays_until_closed() {
     s.file("src/demo.rs", &text);
     let path = s.ed.doc().path.clone().unwrap();
     let remark = format!("A remark on ten. {}", "It goes on and on, past any reading measure. ".repeat(6));
-    let id = crate::notes::add(&mut s.ed, &path, 9..10, crate::notes::By::Author, &remark);
+    let id = crate::notes::add(&mut s.ed, &path, 9..10, crate::notes::By::Reviewer, &remark);
     let open = |s: &Shot| s.ed.workspace.claude.notes.open;
     let line_end = |s: &mut Shot| shown_rows(s).into_iter().find(|r| r.contains("let line_10 = ")).unwrap();
     s.ed.goto_line(9);
-    assert!(line_end(&mut s).contains("¶ A remark on ten."), "its line end");
+    let end = line_end(&mut s);
+    assert!(end.contains('¶') && end.contains("A remark on ten."), "its line end: {end}");
     assert!(s.ed.screen.note_card.get().is_none(), "the cursor on its line opens nothing");
     s.keys("<ret>");
     assert_eq!(open(&s), Some(id), "`enter` on its line opens it");
     let end = line_end(&mut s);
-    assert!(end.contains('¶') && !end.contains("¶ A remark"), "open: the `¶` alone — {end}");
+    assert!(end.contains('¶') && !end.contains("A remark"), "open: the `¶` alone — {end}");
     let (x, y, w, h) = s.ed.screen.note_card.get().expect("its card drawn");
     // (its words fill the frame — the code's width, not a reading measure)
     let inside = |r: &String| r.chars().skip(x + 1).take(w - 2).collect::<String>().trim().chars().count();
@@ -2252,7 +2256,7 @@ fn a_note_card_scrolls_a_row_at_a_time_and_shows_in_every_pane() {
     let text: String = (1..=40).map(|i| format!("let line_{i} = {i};\n")).collect();
     s.file("src/demo.rs", &text);
     let path = s.ed.doc().path.clone().unwrap();
-    let id = crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Author, "One.\nTwo.\nThree.");
+    let id = crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Reviewer, "One.\nTwo.\nThree.");
     crate::notes::open(&mut s.ed, id);
     let rows = shown_rows(&mut s);
     let (x, y, w, h) = s.ed.screen.note_card.get().expect("its card");
@@ -2266,7 +2270,8 @@ fn a_note_card_scrolls_a_row_at_a_time_and_shows_in_every_pane() {
         s.ed.view.first()
     );
     assert_eq!(s.ed.screen.note_card.get(), Some((x, first, w, h - 1)), "its rows in sight");
-    assert!(!rows.iter().any(|r| r.contains("╭─ note")), "its top line above the screen");
+    // (a finding's card: named `review`)
+    assert!(!rows.iter().any(|r| r.contains("╭─ review")), "its top line above the screen");
     assert!(rows.iter().any(|r| r.contains("╰─ ") && r.contains("close")), "its bottom line in sight");
     s.keys(&"zj".repeat(h - 1));
     let rows = shown_rows(&mut s);
@@ -2276,11 +2281,11 @@ fn a_note_card_scrolls_a_row_at_a_time_and_shows_in_every_pane() {
     s.keys("gg<C-w>v");
     let rows = shown_rows(&mut s);
     assert_eq!(s.ed.screen.panes.len(), 2, "two panes");
-    let tops = rows.iter().map(|r| r.matches("╭─ note").count()).sum::<usize>();
+    let tops = rows.iter().map(|r| r.matches("╭─ review").count()).sum::<usize>();
     assert_eq!(tops, 2, "its card in both: {rows:#?}");
     // A long thread: at most half the pane's rows, its frame with it
     let long: String = (1..=40).map(|i| format!("Line {i} of a long remark.\n")).collect();
-    let id = crate::notes::add(&mut s.ed, &path, 5..6, crate::notes::By::Author, &long);
+    let id = crate::notes::add(&mut s.ed, &path, 5..6, crate::notes::By::Reviewer, &long);
     crate::notes::open(&mut s.ed, id);
     s.frame();
     let (_, _, _, h) = s.ed.screen.note_card.get().expect("its card");
@@ -2298,7 +2303,7 @@ fn an_open_cards_height_is_laid_out_once_a_frame() {
     s.file("src/demo.rs", &text);
     let path = s.ed.doc().path.clone().unwrap();
     let long: String = (1..=8).map(|i| format!("Sentence {i} of a remark that wraps.\n")).collect();
-    let id = crate::notes::add(&mut s.ed, &path, 9..10, crate::notes::By::Author, &long);
+    let id = crate::notes::add(&mut s.ed, &path, 9..10, crate::notes::By::Reviewer, &long);
     s.ed.goto_line(9);
     crate::notes::open(&mut s.ed, id);
     s.frame();
@@ -2312,40 +2317,14 @@ fn an_open_cards_height_is_laid_out_once_a_frame() {
     assert_eq!(laid, 0, "{laid} layouts for {} keys and frames, nothing it says changed", keys.len());
     // (what it says changed: once again)
     let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
-    n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "And?".into(), draft: false });
+    n.text.push_str("And one more.\n");
     s.keys("j");
     s.frame();
-    assert_eq!(crate::term::NOTE_LAYOUTS.with(|c| c.get()), 1, "a reply lays it out once");
-}
-
-/// A thread too long for the room keeps its newest words — under the name of whoever says them (`¶ claude`),
-/// the cut words going on with `…`.
-#[test]
-fn a_cut_note_keeps_who_is_talking() {
-    let mut s = Shot::new(90, 16);
-    let text: String = (1..=40).map(|i| format!("let line_{i} = {i};\n")).collect();
-    s.file("src/demo.rs", &text);
-    let path = s.ed.doc().path.clone().unwrap();
-    let long: String = (1..=12).map(|i| format!("Sentence number {i} of a long answer.\n")).collect();
-    let id = crate::notes::add(&mut s.ed, &path, 5..6, crate::notes::By::You, "why?");
-    crate::notes::tool_call(&mut s.ed, &serde_json::json!({"reply_to": id, "text": long})).unwrap();
-    s.ed.goto_line(5);
-    crate::notes::open(&mut s.ed, id);
-    let bytes = s.frame();
-    let (_, y, _, h) = s.ed.screen.note_card.get().expect("a card");
-    let mut parser = vt100::Parser::new(s.h, s.w, 0);
-    parser.process(&bytes);
-    let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-    let card: Vec<&str> = rows[y..y + h].iter().map(|r| r.trim().trim_matches(['│', ' '])).collect();
-    assert!(card[0].starts_with("╭─ note "), "{card:#?}");
-    assert!(card[1].starts_with("¶ claude"), "{card:#?}");
-    assert!(card[2].starts_with("… Sentence number"), "{card:#?}");
-    assert!(card.iter().any(|r| r.contains("Sentence number 12")), "the newest stays: {card:#?}");
-    assert!(card.last().unwrap().starts_with("╰─ q close · "), "and the keys, its bottom line: {card:#?}");
+    assert_eq!(crate::term::NOTE_LAYOUTS.with(|c| c.get()), 1, "its words changed: laid out once");
 }
 
 /// Who wrote each note, where it's seen: the reviewer's finding (`¶ reviewer · not sent yet` on its card, its
-/// line end `reviewer · …`, `r1` in the rail beside your `¶1`), your draft, the author's answer.
+/// line end `reviewer · …`, `r1` in the rail beside your `¶1`), your draft.
 #[test]
 fn snapshot_review_notes_by_their_author() {
     use crate::notes::By;
@@ -2355,12 +2334,7 @@ fn snapshot_review_notes_by_their_author() {
     let id =
         crate::notes::add(&mut s.ed, &path, 11..12, By::Reviewer, "This value is never checked before use.");
     crate::notes::add(&mut s.ed, &path, 22..23, By::You, "Name this better.");
-    for n in &mut s.ed.workspace.claude.notes.list {
-        (n.thread[0].draft, n.waiting) = (true, false);
-    }
-    let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
-    n.thread
-        .push(crate::notes::Entry { by: By::Author, text: "It is — two lines up.".into(), draft: false });
+    let _ = id;
     s.ed.goto_line(11);
     let rows = |s: &mut Shot| {
         let mut parser = vt100::Parser::new(s.h, s.w, 0);
@@ -2378,7 +2352,7 @@ fn snapshot_review_notes_by_their_author() {
     crate::notes::open(&mut s.ed, id);
     let shown = rows(&mut s);
     assert!(has(&shown, "╭─ review"), "the card: {shown:#?}");
-    assert!(has(&shown, "¶ reviewer · not sent yet") && has(&shown, "¶ claude"), "the card: {shown:#?}");
+    assert!(has(&shown, "¶ reviewer · not sent yet"), "the card: {shown:#?}");
     s.check("review_notes_by_author");
 }
 
@@ -2468,9 +2442,6 @@ fn the_reviewers_verdict_and_findings_go_to_a_driver_whole() {
     // (on a line the review didn't change: no grade)
     let low =
         crate::notes::add(&mut s.ed, &path, 1..2, By::Reviewer, "A name that says nothing.\nRename it.");
-    let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == low).unwrap();
-    n.thread.push(crate::notes::Entry { by: By::You, text: "Kept on purpose.".into(), draft: false });
-    n.thread.push(crate::notes::Entry { by: By::Author, text: "Fine by me.".into(), draft: false });
     let verdict = "One risk: the unsafe call has no SAFETY comment.\nThe rest reads fine.";
     let mut rv =
         crate::reviewer::Reviewer::for_test(root, crate::reviewer::State::Done, vec![high, low], verdict);
@@ -2497,20 +2468,15 @@ fn the_reviewers_verdict_and_findings_go_to_a_driver_whole() {
         (Some("src/demo.rs"), &json!(6), &json!(true))
     );
     assert_eq!(f[0]["end"], json!(6), "one line");
-    assert_eq!((&f[0]["answered"], &f[0]["thread"][0]["by"]), (&json!(false), &json!("reviewer")));
-    assert_eq!((&f[1]["high"], &f[1]["answered"]), (&json!(false), &json!(true)));
-    assert_eq!(f[1]["thread"][1], json!({ "by": "you", "text": "Kept on purpose." }));
-    // (the session's own Claude by the word its card heads it with — #254, `uistate::V` 26)
-    assert_eq!(f[1]["thread"][2], json!({ "by": "claude", "text": "Fine by me." }));
+    assert_eq!(f[0]["text"], "unsafe without a SAFETY comment.");
+    assert_eq!(
+        (&f[1]["high"], &f[1]["text"]),
+        (&json!(false), &json!("A name that says nothing.\nRename it."))
+    );
     let text = rx.try_recv().expect("the text form too");
     assert!(text.contains("The rest reads fine."), "{text}");
-    assert!(text.contains("- src/demo.rs:6 ▲ high\n  reviewer: unsafe without"), "{text}");
-    assert!(
-        text.contains(
-            "- src/demo.rs:2 · answered\n  reviewer: A name that says nothing.\n    Rename it.\n  you: Kept"
-        ),
-        "{text}"
-    );
+    assert!(text.contains("- src/demo.rs:6 ▲ high\n  unsafe without"), "{text}");
+    assert!(text.contains("- src/demo.rs:2\n  A name that says nothing.\n    Rename it.\n"), "{text}");
     // #214, the read half: the high-risk changes no one has looked at, with their lines — read, never marked
     let u = r["high_unseen"].as_array().expect("its review is open");
     assert_eq!(u.len(), 1, "{u:?}");
@@ -3587,7 +3553,7 @@ fn a_card_comes_moves_and_goes_through_diffs() {
             &mut s.ed,
             &path,
             line..line + 1,
-            crate::notes::By::Author,
+            crate::notes::By::Reviewer,
             "A remark about this.",
         );
         ids.push((line, id));
@@ -3631,7 +3597,7 @@ fn a_note_card_stays_in_its_pane() {
                 cards get and has to be kept inside the pane rather than wherever it would fit.";
     let inside = |s: &mut Shot, what: &str| {
         let path = s.ed.doc().path.clone().unwrap();
-        let id = crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Author, long);
+        let id = crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Reviewer, long);
         s.ed.goto_line(11);
         crate::notes::open(&mut s.ed, id);
         s.frame();
@@ -3859,7 +3825,7 @@ fn floating_cards_never_overlap() {
         let long = "A longer note that wraps over a few rows so the card is tall — the kind Claude writes when \
                     something needs explaining; it goes on for a while to fill the card.";
         for _ in 0..3 {
-            crate::notes::add(&mut s.ed, &path, 39..40, crate::notes::By::Author, long);
+            crate::notes::add(&mut s.ed, &path, 39..40, crate::notes::By::Reviewer, long);
         }
         s.ed.goto_line(39);
         let first = s.ed.workspace.claude.notes.list[0].id;
@@ -3956,15 +3922,13 @@ fn snapshot_review() {
     let path = doc.path.clone().unwrap();
     s.keys(":9<ret> vm");
     crate::notes::add(&mut s.ed, &path, 8..9, crate::notes::By::You, "Why split this into two lines?");
-    s.ed.workspace.claude.notes.list[0].thread[0].draft = true;
-    s.ed.workspace.claude.notes.list[0].waiting = false;
     s.keys("gg");
     s.check("review");
 }
 
 /// #134: `space n` in a review file — from the code, from the rail, read wide — opens the comment's input,
-/// said as one (`comment on line N:`, where outside a review it's `ask claude:`), and enter keeps it as a
-/// draft on that line.
+/// said as one (`comment on line N:`), and enter keeps it as a draft on that line. Outside a review it's the chat's
+/// ask line, the line quoted (#388).
 #[test]
 fn space_n_in_a_review_opens_a_comment() {
     use crate::codereview::{Base, CodeReview, File};
@@ -3993,13 +3957,18 @@ fn space_n_in_a_review_opens_a_comment() {
         assert!(text.contains("comment on line 6: "), "{keys}\n{text}");
         s.keys("why?<ret>");
         let n = s.ed.workspace.claude.notes.list.last().expect("a note");
-        assert!(n.thread[0].draft && n.lines == (5..6), "{keys}: a draft on its line");
+        assert!(n.by == crate::notes::By::You && n.lines == (5..6), "{keys}: a draft on its line");
     }
-    // Outside a review: a question to Claude, as before
+    // Outside a review: the ask line, the line quoted
     let mut s = Shot::new(112, 30);
+    s.ed.config.llm.command = "sh".into();
+    s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.file("src/demo.rs", DEMO_RS);
     s.keys("<space>n");
-    assert!(screen(&mut s).contains("ask claude: "));
+    assert!(s.ed.chat_asking(), "the ask line");
+    let quotes = &s.ed.workspace.claude.chat.as_ref().unwrap().quotes;
+    assert!(matches!(&quotes[..], [q] if q.asked.as_ref().is_some_and(|a| a.1 == (0..1))), "its line quoted");
+    assert!(!screen(&mut s).contains("comment on line"));
 }
 
 /// #135: the rail's `m` marks the file on its row — a deleted binary file too, whose buffer shows no lines of
@@ -8275,7 +8244,7 @@ fn floating_cards_leave_nothing_against_their_edges() {
     for w in (84..132).step_by(8) {
         let mut s = review_of(w, 30, &base, &now);
         let path = s.ed.doc().path.clone().unwrap();
-        let id = crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Author, long);
+        let id = crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Reviewer, long);
         s.ed.goto_line(11);
         crate::notes::open(&mut s.ed, id);
         let bytes = s.frame();
@@ -10140,7 +10109,7 @@ fn frames_of_f235() {
                 .map(String::from)
                 .chain((1..=14).map(|i| format!("Then line {i} of what it means for the loop.")))
                 .collect();
-        let id = crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+        let id = crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Reviewer, &lines.join("\n"));
         crate::notes::open(&mut s.ed, id);
     });
     // (the prompt's input past its start: the pointer on its `…`, no card — what you type, the cursor brings it in)
@@ -10172,7 +10141,7 @@ fn frames_of_f235() {
 /// Only with `TARAE_FRAMES_DIR` set (`.sb/f240-shots.sh`).
 #[test]
 fn frames_of_note_cards() {
-    use crate::notes::{By, Entry};
+    use crate::notes::By;
     let Some(dir) = std::env::var_os("TARAE_FRAMES_DIR") else { return };
     std::fs::create_dir_all(&dir).unwrap();
     let scene = |w: u16, h: u16, which: &str| {
@@ -10181,12 +10150,12 @@ fn frames_of_note_cards() {
         s.file("src/main.rs", DEMO_RS);
         let path = s.ed.doc().path.clone().unwrap();
         match which {
-            "one" | "reply" => {
+            "one" | "comment" => {
                 crate::notes::add(
                     &mut s.ed,
                     &path,
                     8..9,
-                    By::Author,
+                    By::Reviewer,
                     "Each word is hashed once here — `entry` keeps the slot it found.",
                 );
             }
@@ -10198,23 +10167,13 @@ fn frames_of_note_cards() {
                     By::Reviewer,
                     "`split_whitespace` keeps punctuation: `end.` and `end` count apart.",
                 );
-                let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
-                n.thread.push(Entry {
-                    by: By::Author,
-                    text: "Kept as is — the doc comment says words are split on whitespace only.".into(),
-                    draft: false,
-                });
-                n.thread.push(Entry { by: By::You, text: "Say so in a test too.".into(), draft: false });
                 crate::notes::add(
                     &mut s.ed,
                     &path,
                     8..9,
-                    By::Author,
+                    By::Reviewer,
                     "`or_insert(0)` then `+= 1`: one lookup.",
                 );
-                for n in &mut s.ed.workspace.claude.notes.list {
-                    n.waiting = false;
-                }
                 s.ed.workspace.claude.notes.focus = Some(id);
             }
             "chat" => {
@@ -10238,8 +10197,6 @@ fn frames_of_note_cards() {
                     By::You,
                     "Start it with the text's word count?",
                 );
-                let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
-                (n.thread[0].draft, n.waiting) = (true, false);
                 crate::notes::stale_mark(&mut s.ed, vec![id]);
                 assert!(!crate::notes::stale_shown(&s.ed).is_empty(), "stale");
             }
@@ -10254,18 +10211,19 @@ fn frames_of_note_cards() {
         if let Some(id) = crate::notes::here(&s.ed).map(|n| n.id) {
             crate::notes::open(&mut s.ed, id);
         }
-        if which == "reply" {
+        // (a draft waiting: `space n` is a comment, typed in the card at its line)
+        if which == "comment" {
             crate::notes::start(&mut s.ed);
             for c in "Kept — a test says so.".chars() {
                 s.ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
             }
-            assert!(s.ed.prompt.is_some(), "the reply's line open");
+            assert!(s.ed.prompt.is_some(), "the comment's line open");
         }
         s
     };
     for (w, h, size) in [(112, 30, "wide"), (64, 24, "narrow")] {
-        let reply = (size == "wide").then_some("reply");
-        for which in ["one", "thread", "chat", "stale"].into_iter().chain(reply) {
+        let comment = (size == "wide").then_some("comment");
+        for which in ["one", "thread", "chat", "stale"].into_iter().chain(comment) {
             let mut s = scene(w, h, which);
             for theme in ["meok", "hanji"] {
                 s.ed.theme = crate::theme::load(theme).unwrap();

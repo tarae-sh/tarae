@@ -551,7 +551,6 @@ fn a_code_review_writes_edited_commented_looked_and_its_findings() {
         crate::notes::By::Reviewer,
         "a numbat-shaped bug",
     );
-    ed.workspace.claude.notes.list.iter_mut().filter(|n| n.id == id).for_each(|n| n.thread[0].draft = true);
     let done = crate::reviewer::State::Done;
     let mut rv = crate::reviewer::Reviewer::for_test(dir.clone(), done, vec![id], "ok");
     // (it read for this review: its findings go to this one's record)
@@ -580,7 +579,7 @@ fn a_code_review_writes_edited_commented_looked_and_its_findings() {
         (Some("d.txt"), &d["change"]),
         "on d's change"
     );
-    assert_eq!(found[0]["finding"], json!({ "by": "reviewer", "sent": false, "answered": false }));
+    assert_eq!(found[0]["finding"], json!({ "by": "reviewer" }));
     for words in ["wombat", "numbat", "ONE"] {
         assert!(!raw.contains(words), "{words:?} — a note's or the code's words — in the record:\n{raw}");
     }
@@ -684,16 +683,16 @@ fn a_finding_is_a_line_with_its_own_object() {
     w.add("a.rs", ("c1".into(), 0), (1, 0), 3..4);
     let mut finding = serde_json::Map::new();
     finding.insert("by".into(), json!("reviewer"));
-    finding.insert("sent".into(), json!(false));
+    finding.insert("high".into(), json!(false));
     w.findings.push(Finding { file: "a.rs".into(), change: Some("c1".into()), finding });
     w.findings.push(Finding { file: "b.rs".into(), change: None, finding: Default::default() });
-    let e = entries(&w, "main", std::time::SystemTime::now(), Some((2, 1)));
+    let e = entries(&w, "main", std::time::SystemTime::now(), Some(2));
     let kinds: Vec<&str> = e.iter().map(|e| e["entry"].as_str().unwrap()).collect();
     assert_eq!(kinds, ["change", "finding", "finding", "review"]);
     assert_eq!((e[1]["file"].as_str(), e[1]["change"].as_str()), (Some("a.rs"), Some("c1")));
-    assert_eq!(e[1]["finding"], json!({ "by": "reviewer", "sent": false }), "whole, false kept");
+    assert_eq!(e[1]["finding"], json!({ "by": "reviewer", "high": false }), "whole, false kept");
     assert!(e[2].get("change").is_none() && e[2]["finding"] == json!({}), "on no change: {}", e[2]);
-    assert_eq!((e[3]["findings"].as_u64(), e[3]["unsent"].as_u64()), (Some(2), Some(1)));
+    assert_eq!(e[3]["findings"].as_u64(), Some(2));
 }
 
 /// `review.record` off: nothing is written.

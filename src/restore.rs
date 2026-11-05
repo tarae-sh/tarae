@@ -2,7 +2,7 @@
 //! scroll); opening a file by name goes to where you last were in it.
 //! `$XDG_STATE_HOME/tarae/restore.json` (default `~/.local/state/tarae/restore.json`):
 //! `{ "positions": { path: [cursor, top line] }, "folders": { dir: { "files": [...], "current": n } },
-//!   "notes": { dir: [note…] } }` (Claude's notes per project — `notes::to_json`).
+//!   "notes": { dir: [note…] } }` (the drafts per project — `notes::to_json`).
 //! Read once at startup, written once on quit (a small file). Keyed by the project (`project.rs`).
 
 use std::io::Write as _;
@@ -456,13 +456,12 @@ mod tests {
         let (front, back) = (dir.join("front"), dir.join("back"));
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = front.clone();
-        crate::notes::add(&mut ed, &front.join("a.txt"), 0..1, By::Author, "in front");
+        crate::notes::add(&mut ed, &front.join("a.txt"), 0..1, By::Reviewer, "in front");
         let id = ed.workspace_add(back.clone());
         ed.with_workspace(id, |ed| {
-            crate::notes::add(ed, &back.join("a.txt"), 1..2, By::Author, "behind");
-            // (a review's draft, not sent yet)
-            let n = ed.workspace.claude.notes.list.last_mut().unwrap();
-            n.thread.push(crate::notes::Entry { by: By::You, text: "my draft".into(), draft: true });
+            crate::notes::add(ed, &back.join("a.txt"), 1..2, By::Reviewer, "behind");
+            // (a review's comment, not sent yet)
+            crate::notes::add(ed, &back.join("a.txt"), 0..1, By::You, "my draft");
         });
         ed.restore_record();
         let kept = State::from_json(Value::Object(ed.restore.root.clone()));
@@ -476,9 +475,9 @@ mod tests {
         let gists = |l: &[Note]| l.iter().map(|n| n.gist().to_string()).collect::<Vec<_>>();
         assert_eq!(gists(&ed.workspace.claude.notes.list), ["in front"]);
         let behind = &ed.workspaces.iter().find(|l| l.id == id).unwrap().claude.notes.list;
-        assert_eq!(gists(behind), ["behind"], "its own, in its own session");
+        assert_eq!(gists(behind), ["behind", "my draft"], "its own, in its own session — your draft too");
         assert_eq!((behind[0].lines.clone(), behind[0].path.clone()), (1..2, back.join("a.txt")));
-        assert!(behind[0].thread.get(1).is_some_and(|e| e.draft && e.text == "my draft"), "the draft too");
+        assert_eq!(behind[1].by, By::You);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

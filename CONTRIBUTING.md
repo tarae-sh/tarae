@@ -230,8 +230,8 @@ with `run_tests`, at a test file or a single test, in the test pane where you ca
 waits for the turn to end.
 
 **Review before committing.** `space v c` has Claude review the uncommitted changes (`:review-claude main` for
-everything since `main`): its findings are notes on the lines, its verdict is in the chat. Answer a note with
-`space n`, and `space v s` sends your answers back together; `space v q` ends the review
+everything since `main`): its findings are notes on the lines, its verdict is in the chat. Add your own comments with
+`space n`, and `space v s` sends them with the findings together; `space v q` ends the review
 ([code review](docs/claude-integration.md#code-review)).
 
 **Commit.** `space g` opens the git tab. Stage with `s`, then `C` commits with a message Claude drafts from the

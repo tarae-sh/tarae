@@ -299,14 +299,6 @@ pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value,
             Some(l) => (Some(l.path.clone()), input["line"].is_u64().then(|| l.line..l.line + 1), l.line),
             None => (None, None, 0),
         },
-        // A note (or a reply on one): to its lines — the card shows there
-        "mcp__tarae__note" => match &look.link {
-            Some(l) => {
-                let end = input["end_line"].as_u64().map_or(l.line + 1, |e| (e as usize).max(l.line + 1));
-                (Some(l.path.clone()), Some(l.line..end), l.line)
-            }
-            None => (None, None, 0),
-        },
         _ => (None, None, 0),
     };
     if !matches!(name, "mcp__tarae__plan" | "mcp__tarae__ui" | "mcp__tarae__git") {
@@ -519,17 +511,6 @@ pub fn your_view(ed: &mut Editor) {
     }
     let line = ed.cursor_line();
     ed.show_range(line..line + 1);
-}
-
-/// A press that opens a line on the note's card at the view follow holds: follow pauses, the view staying — the card
-/// you pressed is what's in sight, wherever your cursor is.
-pub fn pause_at_card(ed: &mut Editor) {
-    if view_line(ed).is_none() {
-        return;
-    }
-    if let Some(f) = follow(ed) {
-        f.paused = true;
-    }
 }
 
 /// The wheel over the pane follow leads: the focused one's view back at your cursor first (`your_view`), one aside

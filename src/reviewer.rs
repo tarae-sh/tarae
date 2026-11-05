@@ -1524,18 +1524,23 @@ fn search_schema() -> Value {
     s
 }
 
-/// Its `note`, as its server lists it: a finding on lines of the checkout — no `reply_to` (it sees no thread).
+/// Its `note`, as its server lists it: a finding on lines of the checkout (the chat has no `note` since #388).
 fn note_schema() -> Value {
-    let mut s = crate::notes::tool_schema();
-    s["description"] = json!(
-        "Pin a finding to lines of the code under review — it shows beside those lines for the user, who decides \
-         whether it goes to the author. One or two sentences: what's wrong and why it matters."
-    );
-    if let Some(p) = s["inputSchema"]["properties"].as_object_mut() {
-        p.remove("reply_to");
-    }
-    s["inputSchema"]["required"] = json!(["path", "line", "text"]);
-    s
+    json!({
+        "name": "note",
+        "description": "Pin a finding to lines of the code under review — it shows beside those lines for the user, \
+    who decides whether it goes to the author. One or two sentences: what's wrong and why it matters.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "File path, absolute or relative to the project root" },
+                "line": { "type": "integer", "description": "First line, 1-based" },
+                "end_line": { "type": "integer", "description": "Last line, 1-based (optional)" },
+                "text": { "type": "string", "description": "The note — Markdown, one or two sentences" }
+            },
+            "required": ["path", "line", "text"]
+        }
+    })
 }
 
 /// A board's `note`: a reader's — a skeptic judges instead.
@@ -1725,15 +1730,12 @@ fn judge(ed: &mut Editor, g: usize, args: &Value) -> Result<String, String> {
     b.judge(g, args)
 }
 
-/// What the reviewer found, counted: its findings, those on a high-risk change, those answered (by you or
-/// the author, after it).
+/// What the reviewer found, counted: its findings still pinned (a draft each — sent, one leaves the code), those on a
+/// high-risk change.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
     pub findings: usize,
     pub high: usize,
-    pub answered: usize,
-    /// Not sent to the author yet (`space v s`): still a draft.
-    pub unsent: usize,
 }
 
 /// The tally of the reviewer's findings still here; `high` says whether a finding touches a high-risk change.
@@ -1747,8 +1749,6 @@ fn tally_in(l: &crate::workspace::Workspace, high: impl Fn(&crate::notes::Note) 
     for n in findings_in(l)? {
         t.findings += 1;
         t.high += usize::from(high(n));
-        t.answered += usize::from(answered(n));
-        t.unsent += usize::from(crate::notes::unsent(n));
     }
     Some(t)
 }
@@ -1757,11 +1757,6 @@ fn tally_in(l: &crate::workspace::Workspace, high: impl Fn(&crate::notes::Note) 
 pub fn findings_in(l: &crate::workspace::Workspace) -> Option<Vec<&crate::notes::Note>> {
     let r = l.reviewer.as_ref()?;
     Some(r.findings.iter().filter_map(|id| l.claude.notes.list.iter().find(|n| n.id == *id)).collect())
-}
-
-/// Whether a finding was answered — by you or the author, after it.
-pub fn answered(n: &crate::notes::Note) -> bool {
-    n.thread.iter().skip(1).any(|e| e.by != crate::notes::By::Reviewer)
 }
 
 /// Whether session `l`'s reviewer's finding `id` is on a high-risk change — by the grades of the snapshot it
@@ -1861,11 +1856,11 @@ pub fn status_said(ed: &Editor) -> Option<(String, String, Option<&'static str>)
         return Some((head.into(), counts, None));
     }
     let t = review_tally(ed)?;
-    if t.unsent == 0 || r.report_seen {
+    if t.findings == 0 || r.report_seen {
         return None;
     }
     let high = if t.high > 0 { format!(" ▲{}", t.high) } else { String::new() };
-    Some((format!("¶ {}", crate::nav::count(t.unsent, "finding")), high, Some("space v r")))
+    Some((format!("¶ {}", crate::nav::count(t.findings, "finding")), high, Some("space v r")))
 }
 
 /// Whether the status line shows the reviewer's segment (`status_said`) this frame: something to say, and no
@@ -2415,7 +2410,7 @@ mod tests {
         settle_until(&mut ed, |ed| !ed.workspace.reviewer.as_ref().unwrap().reading());
         let r = run_of(&ed, 0);
         assert_eq!(r["state"], "done", "{r}");
-        assert_eq!((&r["findings"], &r["high"], &r["answered"]), (&json!(1), &json!(0), &json!(0)), "{r}");
+        assert_eq!((&r["findings"], &r["high"]), (&json!(1), &json!(0)), "{r}");
         assert_eq!(r["verdict"], "One finding: the new line in a.txt.", "its first line: {r}");
         assert_eq!(r["of"], json!(ed.workspace.reviewer.as_ref().unwrap().label), "{r}");
         // No review was ever open (it read in the background): still there, its high-risk count its snapshot's
@@ -2425,8 +2420,7 @@ mod tests {
         assert_eq!((&r["files"], &r["changed_since"]), (&json!(2), &json!(0)), "{r}");
         let text = ed.ui_state().text();
         assert!(
-            text.contains("reviewer s0: done in ")
-                && text.contains(" · 1 finding · 1 not sent — One finding"),
+            text.contains("reviewer s0: done in ") && text.contains(" · 1 finding — One finding"),
             "{text}"
         );
         // Behind: the same
@@ -2515,7 +2509,7 @@ mod tests {
     /// you hadn't sent, and out with it). Sent, it's listed by its id, where it is, and whether it waits for an
     /// answer: Claude can answer it after the review's message has left its context.
     #[test]
-    fn claudes_level_says_a_finding_isnt_sent_and_lists_the_sent_ones_by_id() {
+    fn claudes_level_says_a_finding_isnt_sent() {
         let (dir, repo) = place("sent");
         let mut ed = Editor::new(crate::config::Config::default());
         one_finding(&mut ed, &dir);
@@ -2524,23 +2518,8 @@ mod tests {
         let id = ed.workspace.claude.notes.list.first().expect("the finding").id;
         let note = format!("note#{id}");
         let text = crate::uistate::claude::tool_call(&mut ed).unwrap();
-        assert!(text.contains(" · 1 finding · 1 not sent — ") && text.contains("space v s"), "{text}");
+        assert!(text.contains(" · 1 finding — ") && text.contains("space v s"), "{text}");
         assert!(!text.contains(&note), "not sent: no id — {text}");
-        let reply = json!({ "reply_to": id, "text": "Tested in a_test." });
-        let refused = crate::notes::tool_call(&mut ed, &reply).expect_err("a finding not sent");
-        assert!(refused.contains("isn't sent to you") && refused.contains("space v s"), "{refused}");
-        assert_eq!(ed.workspace.claude.notes.list[0].thread.len(), 1, "nothing added to it");
-        // Sent (as `codereview::send_as` leaves it: its drafts sent, waiting for the author)
-        for n in &mut ed.workspace.claude.notes.list {
-            n.thread.iter_mut().for_each(|e| e.draft = false);
-            n.waiting = true;
-        }
-        let text = crate::uistate::claude::tool_call(&mut ed).unwrap();
-        assert!(text.contains(&format!("notes sent to you: {note} a.txt:2 · finding · waiting")), "{text}");
-        assert!(!text.contains("not sent") && !text.contains("is this tested"), "{text}");
-        assert_eq!(crate::notes::tool_call(&mut ed, &reply), Ok(format!("replied on note #{id}")));
-        let text = crate::uistate::claude::tool_call(&mut ed).unwrap();
-        assert!(text.contains(&format!("{note} a.txt:2 · finding · answered")), "{text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2647,7 +2626,7 @@ mod tests {
         let r = run_of(&ed, 0);
         assert_eq!((&r["findings"], &r["high"]), (&json!(1), &json!(1)), "{r}");
         let text = ed.ui_state().text();
-        assert!(text.contains(" · 1 finding ▲1 · 1 not sent — One finding"), "{text}");
+        assert!(text.contains(" · 1 finding ▲1 — One finding"), "{text}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2968,7 +2947,7 @@ mod tests {
         assert_eq!((r.state.clone(), r.verdict.as_str(), r.findings.len()), (State::Done, "One finding.", 1));
         let n = ed.workspace.claude.notes.list.iter().find(|n| n.id == r.findings[0]).unwrap();
         assert_eq!((n.path.as_path(), n.lines.clone()), (a.as_path(), 1..2));
-        assert_eq!((n.thread[0].by, n.thread[0].draft), (crate::notes::By::Reviewer, true));
+        assert_eq!(n.by, crate::notes::By::Reviewer);
         assert!(ed.workspace.claude.chat.is_none(), "the author's chat wasn't opened");
         // Sent: one message to the author's chat, the finding marked as the reviewer's
         let chat_log = dir.join("chat.log");
@@ -2984,7 +2963,13 @@ mod tests {
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy()));
         let sent = std::fs::read_to_string(&chat_log).unwrap();
         let msg = sent.lines().find(|l| l.contains("My review")).expect("sent");
-        assert!(msg.contains(r#"<finding note=\"1\" by=\"reviewer\" path="#), "{msg}");
+        // (no note id: a sent finding leaves the code, its lines a flag of the answer — #388)
+        assert!(msg.contains(r#"<finding by=\"reviewer\" path="#), "{msg}");
+        assert!(ed.workspace.claude.notes.list.is_empty(), "sent: no note stays");
+        // (its lines the message's, flagged with the answer — `chatnotes::turn_over`)
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let q = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
+        assert_eq!(q.asked, [(a.clone(), 1..2)], "the finding's lines asked about");
         assert!(!msg.contains("<comment"), "a finding, not a comment of yours: {msg}");
         assert!(msg.contains("reviewer: This line is new; is it tested?"), "{msg}");
         assert!(msg.contains("the reviewer's 1 finding") && msg.contains("not something to do"), "{msg}");
@@ -3177,10 +3162,7 @@ mod tests {
         let notes = board_notes(&ed);
         assert_eq!(notes.len(), 1);
         let n = notes[0];
-        assert_eq!(
-            (n.lines.clone(), n.thread[0].by, n.thread[0].draft),
-            (1..2, crate::notes::By::Reviewer, true)
-        );
+        assert_eq!((n.lines.clone(), n.by), (1..2, crate::notes::By::Reviewer));
         let m = n.board.as_ref().unwrap();
         assert_eq!(
             (m.angles.as_slice(), m.verdict, m.trace.as_str()),
@@ -4864,14 +4846,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
-        let mine = crate::notes::add(&mut ed, &repo.join("b.txt"), 0..1, crate::notes::By::You, "why new?");
-        ed.workspace
-            .claude
-            .notes
-            .list
-            .iter_mut()
-            .filter(|n| n.id == mine)
-            .for_each(|n| n.thread[0].draft = true);
+        crate::notes::add(&mut ed, &repo.join("b.txt"), 0..1, crate::notes::By::You, "why new?");
         ask_in(&mut ed, repo.clone(), None, false);
         settle_until(&mut ed, |ed| {
             ed.workspace.reviewer.as_ref().is_some_and(|r| !r.queued() && r.reading())
@@ -4896,7 +4871,7 @@ mod tests {
             said.starts_with("review sent — 1 comment") && said.contains("1 finding still being placed"),
             "{said}"
         );
-        assert!(crate::notes::unsent(findings_in(&ed.workspace).unwrap()[0]), "held back, still a draft");
+        assert_eq!(findings_in(&ed.workspace).unwrap().len(), 1, "held back, still a draft");
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy()));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5015,7 +4990,7 @@ mod tests {
         assert!(findings_in(&ed.workspace).unwrap()[0].placing, "still being placed");
         crate::codereview::send(&mut ed);
         assert!(ed.messages.last().unwrap().2.contains("still being placed"), "{:?}", ed.messages.last());
-        assert!(crate::notes::unsent(findings_in(&ed.workspace).unwrap()[0]), "kept, a draft");
+        assert_eq!(findings_in(&ed.workspace).unwrap().len(), 1, "kept, a draft");
         settle_until(&mut ed, |ed| ed.workspace.reviewer.as_ref().is_some_and(|r| r.placing == 0));
         assert!(!findings_in(&ed.workspace).unwrap()[0].placing);
         std::fs::remove_dir_all(&dir).ok();

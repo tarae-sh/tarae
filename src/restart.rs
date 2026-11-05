@@ -3306,7 +3306,6 @@ mod tests {
         });
         // A draft in front
         crate::notes::add(&mut ed, &front.join("f.txt"), 0..1, crate::notes::By::You, "why?");
-        ed.workspace.claude.notes.list[0].thread[0].draft = true;
         let blocked = |ed: &Editor| blocker(ed, true);
         assert_eq!(blocked(&ed), None, "a review and its drafts come along");
         let state = snapshot(&mut ed);

@@ -33,7 +33,7 @@ fn note_card(ed: &mut Editor) {
     long_text(ed);
     let path = std::env::temp_dir().join("tarae-mouse-walk-note.rs");
     ed.docs[0].path.set(Some(path.clone()));
-    let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Reviewer, "A word about this line.");
     crate::notes::open(ed, id);
 }
 
@@ -266,8 +266,6 @@ const MOUSE_SCENES: &[Scene] = &[
     ("a draft waiting", |ed| {
         chat(ed, "");
         note_card(ed);
-        let id = ed.workspace.claude.notes.list[0].id;
-        crate::notes::keep(ed, Some(id), "for later");
         ed.workspace.claude.notes.open = None;
     }),
     ("a card cut to fit, long", |ed| {
@@ -731,8 +729,7 @@ fn holds(ed: &Editor, u: Under) -> bool {
         Surface::FollowCard if u.part == Part::Blank => r == R::Follow,
         Surface::EditReview => r == R::EditReview,
         Surface::Picker | Surface::PickerPreview => r == R::Picker,
-        // (the note card's body gives them to its reply's line as it opens it)
-        Surface::Prompt | Surface::NoteCard => r == R::Prompt,
+        Surface::Prompt => r == R::Prompt,
         Surface::Output(_) | Surface::List(_) | Surface::Plugin => {
             matches!(r, R::Output(_) | R::Slot(_) | R::List(_))
         }
@@ -1187,7 +1184,6 @@ fn gives_keys(u: Under) -> bool {
     match u.surface {
         Surface::Rail => matches!(u.part, Part::Row(_) | Part::Mark(_) | Part::Blank),
         Surface::Code(_) => matches!(u.part, Part::Text { .. }),
-        Surface::NoteCard => u.part == Part::Blank,
         // (a word on its card does its key — `space i`'s `esc close` closes it, `enter send` sends it)
         Surface::Prompt => !matches!(u.part, Part::Outside | Part::Word(_)),
         _ => false,
@@ -1402,8 +1398,8 @@ fn mouse_at_is_where_handle_mouse_sends_every_press() {
 }
 
 /// A press gives the keys to the surface it lands on (the mouse rule), wherever `gives_keys` says it does, in every scene
-/// — #207: a press on the review rail's file row or mark, the code reading a file, left the keys in the code; #256: a
-/// press on the note card's body, the chat holding them, left its reply's line without them.
+/// — #207: a press on the review rail's file row or mark, the code reading a file, left the keys in the code. (The note
+/// card's body gave them to its reply's line — #256 — until #388 took the replies: a card never has the keys.)
 #[test]
 fn a_press_gives_its_surface_the_keys() {
     if !pty("a_press_gives_its_surface_the_keys") {
@@ -1415,7 +1411,6 @@ fn a_press_gives_its_surface_the_keys() {
         "Rail/Row",
         "Rail/Mark",
         "Rail/Blank",
-        "NoteCard/Blank",
         "Prompt/Text",
         "Prompt/Row",
         "Prompt/Blank",
@@ -1440,7 +1435,7 @@ fn every_drawn_cell_is_under_something() {
 
 /// The walk: every act on everything under the pointer does what the table says — a press, a drag or a wheel that
 /// does nothing says why where the user looks; nothing at all only for a hover, a release, a wheel with nothing to
-/// scroll, a double whose press did it all, a press held for its release (the note card's body) and the gaps a landing
+/// scroll, a double whose press did it all, a press on the note card's words (text: a drag selects) and the gaps a landing
 /// fills (`Expect::Gap`, silent until it does).
 #[test]
 fn no_press_is_lost_in_silence() {

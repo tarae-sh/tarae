@@ -509,40 +509,29 @@ const DOC_SCENES: &[DocScene] = &[
         ],
     )
     .claude("tour"),
-    // (a note Claude pinned, your reply in its thread and Claude's answer there — its card opened by `]n`, between the
-    // lines under the note's line)
+    // (#388 step 3: `space n` on a line — the ask line, the line quoted —, the answer in the chat, the line a flag of it;
+    // `]n` to the flag, the column at the answer's paragraph)
     scene(
         "notethread",
         Fixture::Demo,
         MAIN,
         &[
             "@1",
-            " ",
-            "l",
-            "@1",
-            "anything off in the loop?",
-            "\r",
-            "@30?One thing to watch",
-            "@1",
-            "\x1b",
-            "\x1b",
             "10G",
             " ",
             "n",
             "@1",
             "why not keep a Vec?",
             "\r",
-            // (its answer in the thread: the reply was the note's, so the column stays hidden — `◂ new · space L`)
             "@30?It's a map, not a Vec",
             "@2",
-            "\x1b",
             "\x1b",
             "gg",
             "]n",
             "@1",
         ],
     )
-    .claude("notethread"),
+    .claude("focus-line"),
     scene("risk", Fixture::Words, MAIN, &["@1", " ", "v", "v", "@?high", "@1"]),
     // (…and its end held while they're not looked at — asked once the review's toast has gone: caught fading, the
     // picture came out different at each take)

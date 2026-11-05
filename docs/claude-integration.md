@@ -100,9 +100,8 @@ sight. `space L` opens it at the paragraph about your cursor's line — the answ
 faint `▎` down its rows while you read it (near the conversation's end, air under the last row), and closes that
 line's card, its words being the column's now (the line end keeps its sentence); with no answer's note on your line,
 at the first answer you haven't had in sight, from its question; else at the end. A press on an answer's `¶`, or
-`enter` on its line, does the same with the keys staying in the code — no card between the lines; a thread and a reply
-are `space n`'s, and a note of yours or the reviewer's keeps its card. Off an answer's line, `enter` is the open card's
-own: it unfolds the line's earlier answers, or reads on in the column where the card is cut. While the column is in
+`enter` on its line, does the same with the keys staying in the code — no card between the lines; a note of yours or
+the reviewer's keeps its card. While the column is in
 sight no follow card stands (the turn's words are the column's, and its top line says the step), and an answer's card
 doesn't open by itself at the turn's end.
 
@@ -855,8 +854,8 @@ at that stop's paragraph. The follow card is the turn's: it shows the stops whil
 the tour plays and goes once the tour is over, so what Claude said of those lines is in one place, the note's card.
 Once the answer is done, while the tour still plays, the stop's follow card says `space n ask about this` when your
 cursor is in its lines (`space n` acts at your cursor, not at the view follow holds). Press `space n` there and the
-tour holds still while you type. Your question goes to the stop's note, and Claude gets those lines along with what it said about them there. It
-answers in the note, next to the code.
+tour holds still while you type. The stop's lines go quoted with your question, and Claude answers in the chat, the
+lines a flag of its answer.
 
 Files opened along the way are previews: unedited ones close when follow moves on, in the pane you're in. Follow
 stays in the project: what Claude reads elsewhere (its own memory files, say) shows on the card but isn't opened.
@@ -1940,61 +1939,46 @@ counts the runs that only read text, by program.
 
 ### Notes
 
-![A note thread opened between the lines under its line: Claude's remark, your reply, and Claude's answer, the code below moved down](screenshots/notes.png)
+![A question asked at a line with space n: its answer in the chat, the line flagged at the code](screenshots/notes.png)
 
-Claude can pin **notes** to lines of code: a bug, a risk, or a question tied to specific lines. A note shows as
-`¶ first words` at the end of its line — on a folded doc comment, at the end of its paragraph's rows, and only the `¶`
+**Ask at the lines.** `space n` asks Claude about your line, or the selected lines: the chat's ask line opens (the
+chat's input, where its column is in sight) with those lines quoted whole, and what you type is the question. On a
+walk-through's stop, your cursor in its lines, it quotes the stop's lines and the tour holds still while you type. The
+answer is the chat's, as any answer is, and the lines you asked about are a flag of it at the code whether or not it
+names them (below). A buffer with no file has no lines to ask about, and says so; a file named like a key Claude may not
+read is refused, as `space >` refuses it.
+
+**Notes are drafts.** A note is words waiting at lines until you send them: a comment of yours in a code review, or the
+reviewer's finding. In a review, or while drafts wait, `space n` writes a comment instead of asking: a card of its own
+between the code's lines, under the last line selected, holding only `comment on line 12:` until you keep it, `1 draft`
+on its top line and `enter later · esc close` on its bottom line. `esc` leaves everything as it was, the view too. It
+edits as any prompt does (`C-w` a word, a press puts the cursor, a drag selects). Where no card can stand — a code too
+narrow, a buffer with no file, the code hidden — the line stands on the status line, as `:` and `/` always do. The
+status line says how many wait for as long as they do (`2 drafts · space v s`, a press on it sends them). `space v s`
+sends them all in one message; sent, they leave the code — their words are the message's, their lines flags of its
+answer. `:note-close` drops a note with its draft.
+
+A note shows as `¶ first words` at the end of its line — on a folded doc comment, at the end of its paragraph's rows, and only the `¶`
 where a line has no room for words. Its card opens **between the lines**, under the note's last line, as wide as
 the code: the code below moves down, nothing is covered. Lines too many to show with the card (a walk-through's stop
 over a whole function) have it under their first line instead, so `]n` and `enter` always bring it into sight. It opens only when you ask: `enter` on the note's line, a
 press on its `¶`, or `]n`/`[n` stepping to it. The cursor passing by opens nothing. It stays open as you move or
 leave the file, until `q`, `esc` or `enter` again closes it (a card cut short reads on instead, below) or another card
 opens. While it's open the line end is
-the `¶` alone, since the card says the rest right below. The card is named for what it is: `chat` for an answer said
-at its place, `review` for the reviewer's finding, `note` for a thread you or Claude wrote in, and after the name which
-of its own it is, as `]n` walks them: `chat · 2/4` among its answer's places, a finding among the review's (a note
-alone says nothing). Its words read as the chat's: `**bold**`, `code`, a list's bullets, and code in its colours. It
-shows in every pane that has its file, scrolls with the code a row at a time, and takes at most half the pane. A drag
-over its words selects
-them and copies them as you let go; a plain press replies. Notes ride edits (lines added above push them down), and the
-next start in this project brings them back.
+the `¶` alone, since the card says the rest right below. The card is named for what it is: `review` for the reviewer's
+finding, `note` for your comment, and after the name which of its own it is, as `]n` walks them: `review · 2/4` among
+the review's findings (a note alone says nothing). Its bottom line has its keys: `space v s send 2 · ]n next · q close`.
+Its words read as the chat's: `**bold**`, `code`, a list's bullets, and code in its colours. It shows in every pane
+that has its file, scrolls with the code a row at a time, and takes at most half the pane. A drag over its words
+selects them and copies them as you let go; a press alone does nothing there. Notes ride edits (lines added above push
+them down), and the next start in this project brings back the ones not sent.
 
-Talk back right there: `space n` on a note line replies. Your reply goes to Claude together with those lines and
-the thread so far, and Claude answers on the thread. `space n` on a line without a note asks Claude about that
-line (or the selected lines), which starts a new note with your question.
-
-You type at the lines it's about. A question gets a card of its own between the code's lines, under the last line
-selected, holding only `ask claude:` until it's sent; a reply is the last row of the note's card, under the newest
-entry, the card shown if it was closed. Its keys are on the card's bottom line (`enter send · tab later · esc close`),
-and `esc` leaves everything as it was, the view too. Sent, what you wrote stays there, on the note's card, and the view with it
-until a key moves the cursor. A card you pressed to reply stays in sight the same way, wherever your cursor is. A card
-open on another line stays open: `space n` still asks at your line, the question's card standing in for it until it's
-sent or dropped, and to reply there you go to its line or press its words. The view keeps the line in sight:
-it moves only as far as the card needs, on a selection taller than the screen too, and the wheel scrolls the code
-around it without ever losing it. It edits as any prompt does (`C-w` a word, a press puts the cursor, a drag selects).
-Where no card can stand — a code too narrow, a buffer with no file, the code hidden — the line stands on the status
-line, as `:` and `/` always do. A comment in a code review is typed the same way, with no card left after it.
-
-**Several replies at once.** What you write while Claude works goes together: at its turn's end the replies waiting are
-one message, each note once with its lines and thread, then your words in the order you wrote them, each by its note's
-id, and Claude answers each on its note. The words count them (`3 replies queued — they go as one message when Claude's
-turn ends`), as the chat's queued row does. A reply alone goes as it always did. Closing a note takes its reply out of
-line. Something else in line keeps its place: a review or a message from a parent session between two replies goes
-between them, so they're two messages. On a file named like a key one card asks about all of them before they go, and
-nothing behind them goes until you answer it; what you write meanwhile goes after them. Closing a note the card asks
-about takes the card down: what's left of its replies goes on, with a card of its own if a key is still named.
-
-**Kept for later.** `tab` on the line keeps what you typed as a draft instead of sending it, a question or a reply: nothing
-goes to Claude, and the status line says how many wait for as long as they do (`2 drafts · space v s`, a press on it sends
-them). While one waits every `space n` writes a draft, as in a code review: `enter` keeps it too, and the card says so
-(`enter later · esc close`, `1 draft` on its top line; a new note's line reads `comment on line 12:`). A note with a draft
-says `draft ·` at its line end and `space v s send 2` on its card. `space v s` sends them all in one message, as a review's
-comments, and `enter` sends again. `:note-close` drops a note with its draft.
-
-**The answer is the chat's; its places are flags at the code.** Claude's answers name places as `path:line` far more
-often than it pins a note, so when a turn ends every `src/x.rs:120` (or `x.rs:120-140`, or a walk-through's stop) in
-its prose that comes to one file of the project or its folders gets a flag at that line: a faint `¶` at the line's end,
-no words. The words stay in the chat, whole, every answer as it was written — the chat is where an answer is read, the
+**The answer is the chat's; its places are flags at the code.** Claude's answers name places as `path:line`, so when a
+turn ends every `src/x.rs:120` (or `x.rs:120-140`, or a walk-through's stop) in its prose that comes to one file of the
+project or its folders gets a flag at that line: a faint `¶` at the line's end, no words. The lines its question asked
+about — `space n`'s quote, a review's sent comments and findings — get one too, whether or not the answer names them,
+leading to the answer's first paragraph; where the answer names such a line itself, its own flag is the one. An answer
+with no words of its own after its last call has no paragraph to lead to, and gets none. The words stay in the chat, whole, every answer as it was written — the chat is where an answer is read, the
 code keeps only where it points. A name that comes to no file, or to several, is no place, and fenced code has none.
 
 The `¶` lights in the accent while the paragraph that named the line is in the chat's view, so the paragraph you're
@@ -2003,8 +1987,7 @@ the chat to that paragraph — shown if you'd hidden it, opened again on its con
 down its rows, the keys staying where they were. A line several answers name has one `¶`, and it goes to the newest
 one's paragraph. Under the mouse it shows a card with a row for each answer that named the line, newest first: what
 tarae saw of the place, the question, and the sentence that named the line; a press on a row goes to that answer's
-paragraph. A line where the same answer pinned its own `note` gets no flag. Claude isn't told of them: they're its own
-words, and they stay in its conversation.
+paragraph. Claude isn't told of them: they're its own words, and they stay in its conversation.
 
 An answer with words after its last call shows the chat by itself at its turn's end, without taking the keys, and never
 while you type (insert mode, a prompt, a message in the chat's input: it waits, then shows). If you hid the chat during
@@ -2034,33 +2017,33 @@ went over. An older answer keeps what its own turn saw. A place the answer didn'
 stop) says nothing, and neither does a conversation you continued, whose stops aren't kept.
 
 **They're kept for the conversation.** Every answer's flags stay while its conversation does. A new conversation (`C-l`,
-`/clear`) clears them; a thread you started stays, it's yours. Ending the chat (`:chat-close`) leaves them at the code
+`/clear`) clears them; your drafts stay, they're yours. Ending the chat (`:chat-close`) leaves them at the code
 (hiding it, `space L`, ends nothing), and the chat's next opening is a new conversation, which clears them. Continuing
 a conversation (`C-p`, or `:restart`'s `--resume`) brings its flags back: the conversation keeps their places only (the
 name as written, the file, the lines and the line's text), and their words are read again from the conversation's own
-rows. A line that moved is found again by its text; a place whose file is gone, or that the answer no longer gives, is
-dropped, said once in `:messages`.
+rows (a place asked about, the answer's opening sentence). A line that moved is found again by its text; a place whose
+file is gone, or that the answer no longer gives, is dropped, said once in `:messages`.
 
 | Key | Notes and flags |
 |---|---|
-| `space n` | Reply to the note on your line, or with none there ask Claude about this line |
+| `space n` | Ask Claude about this line or the selected lines, quoted on the ask line; in a review, or while drafts wait, a comment |
 | `enter` | On a note's line: open its card between the lines, or close it. On a flag's line (no note): the chat at its paragraph |
 | `q` / `esc` | Close the open card (`q` is Helix's macro replay again once it's closed) |
 | `]n` / `[n` | Next / previous note or flag, across files: after a turn the newest answer's flags in the order it wrote them, then the rest by file and line (notes sharing a line one by one, a line's flags one stop). A note opens its card; on a flag the cursor moves, no card, and with the chat in sight its paragraph comes into view |
-| `space N` | Every note and flag, with a preview: the newest answer's flags first, then the notes, then the older answers' flags. A flag's row is its place and the sentence that named it; `enter` goes to its line with the chat at its paragraph. `C-x` closes the note on the row, `A-x` all its author began; a flag goes with its conversation |
-| `:note-close` / `:notes-clear [you\|claude\|reviewer\|chat]` | Close the note on your cursor's line, for good (with none there, the open card's) / all of them, or one author's (asks first when your unsent drafts are among them) |
+| `space N` | Every note and flag, with a preview: the newest answer's flags first, then the notes, then the older answers' flags. A flag's row is its place and the question asked, the sentence that named it on the row's card; `enter` goes to its line with the chat at its paragraph. `C-x` closes the note on the row, `A-x` all its author began; a flag goes with its conversation |
+| `:note-close` / `:notes-clear [you\|reviewer]` | Close the note on your cursor's line, for good (with none there, the open card's) / all of them, or one author's (asks first when your unsent drafts are among them) |
 
 While follow holds the view at Claude's place, these keys still act at your cursor: `space n`, `enter`, `]n`/`[n` and
 `:note-close` take the note on your line, follow pauses and the view comes back to your cursor. A card open at Claude's
-place isn't these keys' to reply to or close for good, and it doesn't offer them; `q` and `esc` still shut it, and a
-press on its words acts on it, as the mouse acts where it points.
+place isn't these keys' to close for good, and it doesn't offer them; `q` and `esc` still shut it, and a press on its
+keys acts on it, as the mouse acts where it points.
 
 When several notes share a line, the line end says how many (`¶ 3 notes · …`). The card shows one at a time
 (`note 2 of 3 here`), and `]n` reads them in order. A code narrower than a card has room for says so, and the line
 end stays.
 
-Under the hood the chat process gets tarae's own `note` tool: an MCP server that lives inside tarae and speaks
-over the same stream as the conversation, so no server or port is involved.
+The chat's Claude has no `note` tool: what it says about the code is its answer, in the chat, and the code keeps where it
+points. The reviewer's `note` is its own, a finding on lines of the checkout it reads.
 
 ### What it costs
 
@@ -2396,10 +2379,10 @@ continued from it, and nothing of the chat goes into what it's sent
   waits only while the line holds it — one ahead of it, or no room to read; the moment before its next member
   starts (a board's skeptics after its angles) it reads on.
   How its last run went stays in `tarae state` after it ends, the review open or not: `reviewer_run` (reading,
-  done or stopped, how long, its reads, findings, those answered, those not sent yet and those on a high-risk
-  change, and its verdict's first line). The author's Claude sees the counts only, told that a finding
-  reaches it when you send it; once sent, its `ui` tool lists it by id (`notes sent to you: note#4 a.txt:2 ·
-  finding · waiting`), and `reply_to` on one not sent is refused. `tarae state --watch reviewer` says when it starts and ends.
+  done or stopped, how long, its reads, its findings still there (none sent yet) and those on a high-risk change,
+  and its verdict's first line). The author's Claude sees the counts only, told that a finding
+  reaches it when you send it; sent, the finding's words are the message's and its lines a flag of the answer. `tarae
+  state --watch reviewer` says when it starts and ends.
 - When it ends in a session behind, that session gets a `•` on its tab (the status line's `•1` with the chat
   closed) and an item in the inbox (`space I`, `C-q`). It's news, not a question, so `▲ waiting` doesn't count it. The item says how many findings and that `space v r` reads them, or why it stopped. When you come to
   the session, the toast says it again, and the item and the `•` go.
@@ -2590,7 +2573,7 @@ of repeating itself, and the log says where.
 | `space v v` / `:review [branch]` | Start (against HEAD / since a branch) |
 | `]g` / `[g` | Next / previous change, across files |
 | `]u` / `[u` | Next / previous file not viewed yet (changed since viewed too) — the rail's head counts them |
-| `space n` | Draft a comment (or a reply) on this line |
+| `space n` | Draft a comment on this line |
 | `space v m` | Mark this file viewed |
 | `space v M` | Unmark it |
 | `space e` | The rail: `j`/`k` files, Enter open, `m` viewed and next, `u` the next not viewed, `q` end the review, Esc back |

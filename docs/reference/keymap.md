@@ -284,8 +284,8 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `space l` | `chat_open` | Chat with Claude |
 | `space L` | `chat_toggle` | Show or hide chat |
 | `space m` | … | More keys — see `space m` below |
-| `space n` | `note_here` | Ask Claude here, or reply |
-| `space N` | `note_picker` | Claude's notes |
+| `space n` | `note_here` | Ask Claude here, or comment |
+| `space N` | `note_picker` | Notes and flags |
 | `space o` | `outline` | Outline panel: show / hide |
 | `space p` | `paste_clipboard_after` | Paste clipboard after |
 | `space P` | `paste_clipboard_before` | Paste clipboard before |
@@ -663,8 +663,8 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:review-at-end` |  | Claude's edits go in as it works, reviewed when its turn ends (on/off) |
 | `:review-turn` |  | Review what Claude changed in its last turn |
 | `:soft-wrap` |  | Wrap this buffer's long lines, or scroll sideways (on/off) |
-| `:note-close` |  | Close Claude's note on this line |
-| `:notes-clear` |  | Close all notes (or one author's: you, claude, reviewer, chat) |
+| `:note-close` |  | Close the note on this line |
+| `:notes-clear` |  | Close all notes (or one author's: you, reviewer) |
 | `:notes-close-stale` |  | Close every draft whose lines changed since it was pinned |
 | `:commit` |  | Commit every change from a review all viewed (message file) |
 | `:commit-draft` |  | Let Claude draft the commit message |

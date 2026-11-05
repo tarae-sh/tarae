@@ -349,8 +349,6 @@ fn reply(ed: &mut Editor, p: Pending, allowed: bool, no: &str) {
 pub enum Own {
     /// An element pointed at (`C-o`), by its chip's id: the chat input's message with that chip (`point`).
     Chip(String),
-    /// Replies on notes, one message (`notes::send`): the lines they're on.
-    Replies(Vec<crate::notes::Reply>),
     /// The code review's comments (`codereview::send_as`): the lines they're on.
     Review,
 }
@@ -832,18 +830,11 @@ pub fn kept_keys_load(ed: &mut Editor) {
             c.kept_keys = Some(kept.keys.into_iter().filter(|k| !shut(k)).collect());
             // What waited for them goes now, decided on them (`wait_for_kept`)
             let waited = std::mem::take(&mut c.after_kept);
-            let replies = waited.iter().any(|o| matches!(o, Own::Replies(_)));
             for own in waited {
                 match own {
-                    Own::Replies(replies) => crate::notes::send(ed, replies, None),
                     Own::Review => crate::codereview::send_as(ed, None),
                     Own::Chip(_) => {}
                 }
-            }
-            // (what they held back, should they send nothing: their notes gone meanwhile — only then: a read with none
-            // holds nothing, and a message waiting for its billing isn't this read's to send)
-            if replies {
-                crate::chat::send_queued(ed);
             }
         }
     });
@@ -934,7 +925,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     // (one card for the same thing — a chip, a note, the review)
     let same = |o: &Own| match (o, &own) {
         (Own::Chip(a), Own::Chip(b)) => a == b,
-        (Own::Replies(_), Own::Replies(_)) | (Own::Review, Own::Review) => true,
+        (Own::Review, Own::Review) => true,
         _ => false,
     };
     if ed.session_cards().any(|o| own_card(&o.what, same)) {
@@ -949,13 +940,6 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
         Own::Chip(_) => (
             format!("you pointed at {it}"),
             "y: your message carries its text, as it would any file's — n: its name only",
-        ),
-        Own::Replies(r) if r.len() == 1 => {
-            ("your note is on its lines".into(), "y: the note goes with them — n: with its name only")
-        }
-        Own::Replies(_) => (
-            format!("your replies are on lines of {it}"),
-            "y: the replies go with them — n: with the names only",
         ),
         Own::Review => (
             format!("your review comments are on lines of {it}"),
@@ -1016,7 +1000,7 @@ pub fn unpointed(ed: &mut Editor) {
 }
 
 /// A new conversation: a `y` given for the last one's message goes, and so does a card pointing raised (a
-/// note's or the review's waits — they go into the new one).
+/// review's waits — it goes into the new one).
 pub fn conversation_new(ed: &mut Editor) {
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         (c.key_pass, c.keys_said) = (Vec::new(), Vec::new());
@@ -1028,42 +1012,6 @@ pub fn conversation_new(ed: &mut Editor) {
 /// for it.
 pub fn pointing_asks(ed: &Editor) -> bool {
     ed.session_cards().any(|o| own_card(&o.what, |o| matches!(o, Own::Chip(_))))
-}
-
-/// Whether replies wait to be asked about a file named like a key, on the card or for the kept keys' read before it —
-/// they're first in line, and what's behind waits for them (`chat::send_queued`, `notes::write`).
-pub fn replies_ask(ed: &Editor) -> bool {
-    let replies = |o: &Own| matches!(o, Own::Replies(_));
-    let reading = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.after_kept.iter().any(replies));
-    reading || ed.session_cards().any(|o| own_card(&o.what, replies))
-}
-
-/// The replies a card asks about, if one does (one at most: `notes::send` holds what comes after it).
-pub fn replies_carded(ed: &Editor) -> Option<&Vec<crate::notes::Reply>> {
-    ed.session_cards().find_map(|o| match &o.what {
-        crate::offer::What::Read { pending, .. } => match pending.own.as_ref() {
-            Some(Own::Replies(r)) => Some(r),
-            _ => None,
-        },
-        _ => None,
-    })
-}
-
-/// The card asking about replies goes, unanswered: a note of its closed (`notes::queue_sync`).
-pub fn replies_card_gone(ed: &mut Editor) {
-    let replies = |w: &crate::offer::What| own_card(w, |o| matches!(o, Own::Replies(_)));
-    ed.drop_cards_for(replies, "dropped — a note it asked about closed");
-    next(ed);
-}
-
-/// The words of the replies a card or the kept keys' read holds (`sim::replyline`).
-#[cfg(test)]
-pub fn replies_held(ed: &Editor) -> Vec<String> {
-    let kept = ed.workspace.claude.chat.iter().flat_map(|c| &c.after_kept).filter_map(|o| match o {
-        Own::Replies(r) => Some(r),
-        _ => None,
-    });
-    replies_carded(ed).into_iter().chain(kept).flatten().map(|r| r.text.clone()).collect()
 }
 
 /// Whether the call may go without asking: inside the project, in a place read by default or allowed
@@ -1777,7 +1725,6 @@ fn own_answer(ed: &mut Editor, p: Pending, own: Own, scope: Option<Scope>, keep:
                 Some(_) => {}
             }
         }
-        Own::Replies(replies) => crate::notes::send(ed, replies, Some(lines)),
         Own::Review => crate::codereview::send_as(ed, Some(lines)),
     }
     next(ed);

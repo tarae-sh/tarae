@@ -16,19 +16,19 @@
 13                              │    ╭─ review ──────────────────────────────────────────────────────────────────╮
 14                              │    │ ¶ reviewer · not sent yet                                                 │
 15                              │    │   This value is never checked before use.                                 │
-16                              │    │                                                                           │
-17                              │    │ ¶ claude                                                                  │
-18                              │    │   It is — two lines up.                                                   │
-19                              │    ╰─ space v s send the review · ]n next · q close ───────────────────────────╯
-20                              │ 13▎let added_8 = 8;                                                             ▎
-21                              │ 14▎let added_9 = 9;                                                             ▎
-22                              │ 15▎let added_10 = 10;                                                           ▎
-23                              │ 16▎let added_11 = 11;                                                           ▎
-24   ]g hunk  ]F file           │ 17▎let added_12 = 12;                                                           ▎
-25   space e files  ]u unviewed │ 18▎let added_13 = 13;                                                           ▎
-26   space n comment            │ 19▎let added_14 = 14;                                                           ▎
-27   space v s send 2           │ 20▎let added_15 = 15;                                                           ▎
-28   space v q end              │ 21▎let added_16 = 16;                                                           ▎
+16                              │    ╰─ space v s send the review · ]n next · q close ───────────────────────────╯
+17                              │ 13▎let added_8 = 8;                                                             ▎
+18                              │ 14▎let added_9 = 9;                                                             ▎
+19                              │ 15▎let added_10 = 10;                                                           ▎
+20                              │ 16▎let added_11 = 11;                                                           ▎
+21                              │ 17▎let added_12 = 12;                                                           ▎
+22                              │ 18▎let added_13 = 13;                                                           ▎
+23                              │ 19▎let added_14 = 14;                                                           ▎
+24   ]g hunk  ]F file           │ 20▎let added_15 = 15;                                                           ▎
+25   space e files  ]u unviewed │ 21▎let added_16 = 16;                                                           ▎
+26   space n comment            │ 22▎let added_17 = 17;                                                           ▎
+27   space v s send 2           │ 23▎let added_18 = 18;   ¶ draft · Name this better.                             ▎
+28   space v q end              │ 24▎let added_19 = 19;                                                           ▎
 29  ● normal                                                                                          rust   12:1
 ## bg · surface per cell, blank = ui.background
 00
@@ -48,9 +48,9 @@
 14
 15
 16
-17
-18
-19
+17                                   11111111111111111111111111111111111111111111111111111111111111111111111111111
+18                                   11111111111111111111111111111111111111111111111111111111111111111111111111111
+19                                   11111111111111111111111111111111111111111111111111111111111111111111111111111
 20                                   11111111111111111111111111111111111111111111111111111111111111111111111111111
 21                                   11111111111111111111111111111111111111111111111111111111111111111111111111111
 22                                   11111111111111111111111111111111111111111111111111111111111111111111111111111
@@ -65,7 +65,7 @@
 00 f TTTTTT ff fffffffffff fffffaa ddddd f ddd f TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 01   d dddd                     a  f                                                                              f
 02   f ff f ffffff d d dddddddd a  f                                                                              f
-03                              a  f                                                                              g
+03                              a  f                                                                              f
 04     dddf                     a  f                                                                              g
 05 a f f ttttttt    w ggg aa    a  f                                                                              g
 06                              a  fg                                                                             g
@@ -78,10 +78,10 @@
 13                              a    ff TTTTTT fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 14                              a    f   BBBBBBBB f fff ffff fff                                                 f
 15                              a    f                                                                           f
-16                              a    f                                                                           f
-17                              a    f a AAAAAA                                                                  f
-18                              a    f                                                                           f
-19                              a    ff fffff f f ffff fff ffffff f BB ffff f B fffff ffffffffffffffffffffffffffff
+16                              a    ff fffff f f ffff fff ffffff f BB ffff f B fffff ffffffffffffffffffffffffffff
+17                              a ffg                                                                             g
+18                              a ffg                                                                             g
+19                              a ffg                                                                             g
 20                              a ffg                                                                             g
 21                              a ffg                                                                             g
 22                              a ffg                                                                             g
@@ -89,7 +89,7 @@
 24   BB ffff  BB ffff           a ffg                                                                             g
 25   BBBBB B fffff  BB ffffffff a ffg                                                                             g
 26   BBBBB B fffffff            a ffg                                                                             g
-27   fffff f f ffff f           a ffg                                                                             g
+27   fffff f f ffff f           a ffg                     a                                                       g
 28   BBBBB B B fff              a ffg                                                                             g
 29  a TTTTTT                                                                                          dddd   TTTT
 ## legend

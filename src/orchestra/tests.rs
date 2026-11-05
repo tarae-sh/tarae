@@ -1258,15 +1258,15 @@ fn reviewed_by_parent(
     ids
 }
 
-fn note_of(ed: &Editor, id: WorkspaceId, note: u64) -> crate::notes::Note {
+/// Note `note` of workspace `id`, if it's still there (a sent finding leaves the code — #388).
+fn note_kept(ed: &Editor, id: WorkspaceId, note: u64) -> Option<crate::notes::Note> {
     let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id).unwrap();
-    l.claude.notes.list.iter().find(|n| n.id == note).unwrap().clone()
+    l.claude.notes.list.iter().find(|n| n.id == note).cloned()
 }
 
 /// `session_act send`: the child's `space v s` of the reviewer's findings of the run its parent started — only those,
-/// only the reviewer's words (a finding you replied to in a draft stays yours to send), a finding of no run of the
-/// parent's never; headed as the parent's message; sent once (again: nothing to send); a review the parent didn't
-/// start, none.
+/// only the reviewer's words (a comment of yours stays yours to send), a finding of no run of the parent's never; headed
+/// as the parent's message; sent once (again: nothing to send); a review the parent didn't start, none.
 #[test]
 fn send_sends_only_the_reviewers_findings_of_the_parents_run() {
     let mut p = place("act-send");
@@ -1279,17 +1279,18 @@ fn send_sends_only_the_reviewers_findings_of_the_parents_run() {
     let ids = reviewed_by_parent(
         &mut p.ed,
         kids[0],
-        &["[f-one] Sent.", "[f-two] Replied.", "[f-out] Not the run's."],
+        &["[f-one] Sent.", "[f-two] Sent too.", "[f-out] Not the run's."],
         2,
         State::Done,
     );
-    // (your draft reply on the second: it stays yours)
+    // (a comment of yours there: it stays yours)
+    let mut mine = 0;
     p.ed.with_workspace(kids[0], |ed| {
-        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == ids[1]).unwrap();
-        n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "[mine]".into(), draft: true });
+        let path = ed.workspace.root.join("a.txt");
+        mine = crate::notes::add(ed, &path, 0..1, crate::notes::By::You, "[mine]");
     });
     let r = act(&mut p.ed, 81, "one");
-    assert_eq!(r, "sending one its reviewer's 1 finding — if they can't go, you hear why");
+    assert_eq!(r, "sending one its reviewer's 2 findings — if they can't go, you hear why");
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while p.got("The reviewer's findings") == 0 {
         assert!(std::time::Instant::now() < end, "never reached the child's claude: {}", said(&p.ed));
@@ -1300,12 +1301,11 @@ fn send_sends_only_the_reviewers_findings_of_the_parents_run() {
     let line =
         p.lines().iter().find(|l| l.contains("The reviewer's findings")).cloned().expect("sent to the child");
     let text = sent_text(&line, "The reviewer's findings");
-    assert!(text.contains("[f-one]") && !text.contains("[f-two]") && !text.contains("[f-out]"), "{text}");
+    assert!(text.contains("[f-one]") && text.contains("[f-two]") && !text.contains("[f-out]"), "{text}");
     assert!(!text.contains("[mine]") && text.contains("<from-session name=\""), "{text}");
-    assert!(!note_of(&p.ed, kids[0], ids[0]).thread[0].draft, "sent");
-    assert!(
-        note_of(&p.ed, kids[0], ids[1]).thread[0].draft && note_of(&p.ed, kids[0], ids[2]).thread[0].draft
-    );
+    let sent = [ids[0], ids[1]].map(|id| note_kept(&p.ed, kids[0], id).is_none());
+    assert_eq!(sent, [true, true], "sent: they left the code (#388)");
+    assert!(note_kept(&p.ed, kids[0], ids[2]).is_some() && note_kept(&p.ed, kids[0], mine).is_some());
     let child = p.ed.workspaces.iter().find(|l| l.id == kids[0]).unwrap();
     let last =
         child.claude.chat.as_ref().unwrap().msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
@@ -1535,8 +1535,8 @@ fn one_end_card_a_child_wherever_the_proposal_waits() {
     assert!(after.len() == 1 && !after[0].2, "still one, yours, back in the parent: {after:?}");
 }
 
-/// A parent's send that can't go — here none of its findings is the reviewer's alone any more as it goes — is the
-/// parent's news (`not_sent`), the findings left unsent (the act's answer promises only "sending": `send_sends_only_…`).
+/// A parent's send that can't go — here none of its findings is there any more as it goes — is the parent's news
+/// (`not_sent`; the act's answer promises only "sending": `send_sends_only_…`).
 #[test]
 fn a_parents_send_that_cant_go_is_said() {
     let mut p = place("act-not-sent");
@@ -1549,19 +1549,14 @@ fn a_parents_send_that_cant_go_is_said() {
         wake: false,
         ids: ids.clone(),
     };
-    // (a draft of yours on it since: no longer the reviewer's alone)
+    // (closed by you since: none left to go)
     p.ed.with_workspace(kids[0], |ed| {
-        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == ids[0]).unwrap();
-        n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "[mine]".into(), draft: true });
+        ed.workspace.claude.notes.list.retain(|n| n.id != ids[0]);
         crate::codereview::send_only(ed, None, Some(&by));
     });
     let news = news_of(&p.ed);
     assert_eq!(news.len(), 1, "{news:?}");
-    assert!(
-        news[0].starts_with("one: the findings you sent didn't go — none is the reviewer's alone now"),
-        "{news:?}"
-    );
-    assert!(note_of(&p.ed, kids[0], ids[0]).thread[0].draft, "left unsent");
+    assert!(news[0].starts_with("one: the findings you sent didn't go — none is there now"), "{news:?}");
 }
 
 /// `session_act board` and `review` on children with nothing to review: no card, no reviewer — the parent told why,
@@ -1676,7 +1671,7 @@ fn a_regraded_proposal_keeps_its_card_and_its_answer_is_news() {
 }
 
 /// A busy child's `send`: queued (said as a review waiting), sent at its turn's end — the reviewer's words alone, looked at
-/// again then: a draft of yours written on one meanwhile keeps that one yours.
+/// again then: one you closed meanwhile goes with none.
 #[test]
 fn a_queued_send_takes_only_what_is_still_the_reviewers() {
     let mut p = place("act-queued");
@@ -1690,10 +1685,7 @@ fn a_queued_send_takes_only_what_is_still_the_reviewers() {
         l.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0).unwrap_or_default()
     };
     assert!(queued(&p.ed).contains("review"), "{}", queued(&p.ed));
-    p.ed.with_workspace(kids[1], |ed| {
-        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == ids[1]).unwrap();
-        n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "[mine]".into(), draft: true });
-    });
+    p.ed.with_workspace(kids[1], |ed| ed.workspace.claude.notes.list.retain(|n| n.id != ids[1]));
     end_turn(&mut p.ed, kids[1], Ok("brief done"));
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while p.got("The reviewer's findings") == 0 {
@@ -1704,8 +1696,7 @@ fn a_queued_send_takes_only_what_is_still_the_reviewers() {
     }
     let line = p.lines().iter().find(|l| l.contains("The reviewer's findings")).cloned().unwrap();
     let text = sent_text(&line, "The reviewer's findings");
-    assert!(text.contains("[f-kept]") && !text.contains("[f-mine]") && !text.contains("[mine]"), "{text}");
-    assert!(note_of(&p.ed, kids[1], ids[1]).thread[0].draft, "yours to send");
+    assert!(text.contains("[f-kept]") && !text.contains("[f-mine]"), "{text}");
 }
 
 /// `session_act end`: the end card, asked with nothing to lose, in the parent's stack — its first line who proposed it.

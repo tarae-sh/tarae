@@ -3361,7 +3361,7 @@ mod tests {
         ed.turns_dir = Some(store.clone());
         let wt = new_session(&mut ed, "gone");
         settle_until(&mut ed, |ed| ed.workspace.claude.checkpoints.dir.is_some());
-        crate::notes::add(&mut ed, &wt.join("a.txt"), 0..1, crate::notes::By::Author, "a note");
+        crate::notes::add(&mut ed, &wt.join("a.txt"), 0..1, crate::notes::By::Reviewer, "a note");
         let (before, after) = (Some(ropey::Rope::from_str("one\n")), ropey::Rope::from_str("two\n"));
         let t = Touched { path: wt.join("a.txt"), before, after, ..Default::default() };
         ed.workspace.claude.checkpoints.list.push(Checkpoint::new("a turn".into(), vec![t]));
@@ -4178,7 +4178,7 @@ mod tests {
     }
 
     /// #248: a bring takes the reviewer's unsent findings on what it brought along — closed, said once, never sent
-    /// after; your own draft there stays, and a finding you answered (your words never go unasked).
+    /// after; your own draft there stays (your words never go unasked).
     #[test]
     fn a_bring_closes_the_reviewers_unsent_findings_on_what_it_brought() {
         let (repo, dir) = place("bring-findings");
@@ -4188,18 +4188,13 @@ mod tests {
         git_in(&wt, &["commit", "-qam", "feat"]);
         let a = wt.join("a.txt");
         crate::notes::pin_finding(&mut ed, &a, 0..1, "is feat tested?", None, None);
-        let answered = crate::notes::pin_finding(&mut ed, &a, 0..1, "is it fast?", None, None);
         let mine = crate::notes::add(&mut ed, &a, 0..1, crate::notes::By::You, "why feat?");
-        let notes = &mut ed.workspace.claude.notes.list;
-        notes.iter_mut().filter(|n| n.id == mine).for_each(|n| n.thread[0].draft = true);
-        let you = crate::notes::Entry { by: crate::notes::By::You, text: "it is".into(), draft: true };
-        notes.iter_mut().filter(|n| n.id == answered).for_each(|n| n.thread.push(you.clone()));
         bring_asked(&mut ed, "feat", "main");
         let closed = "closed 1 unsent finding of the reviewer's — its file has no change since main now (landed or undone)";
         settle_until(&mut ed, |ed| says(ed, closed) || says(ed, "bring feat:"));
         assert!(says(&ed, "Brought 1 commit of feat into main"), "{}", said(&ed));
         let left: Vec<u64> = ed.workspace.claude.notes.list.iter().map(|n| n.id).collect();
-        assert_eq!(left, [answered, mine], "the finding left; the one you answered and your draft stayed");
+        assert_eq!(left, [mine], "the finding left; your draft stayed");
         assert_eq!(ed.messages.iter().filter(|m| m.2.contains(closed)).count(), 1, "said once");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
@@ -7123,8 +7118,8 @@ mod tests {
         std::fs::write(&file, "one\ntwo\n").unwrap();
         let mut ed = editor(&dir, &dir);
         ed.turns_dir = Some(store.clone());
-        // At startup the restore file had two notes for it
-        let note = |line: usize, text: &str| json!({ "path": file, "lines": [line, line + 1], "thread": [["claude", text, false]] });
+        // At startup the restore file had two notes for it (the reviewer's drafts: a sent one isn't kept — #388)
+        let note = |line: usize, text: &str| json!({ "path": file, "lines": [line, line + 1], "by": "reviewer", "text": text });
         let notes = json!({ back.to_str().unwrap(): [note(0, "keep me"), note(1, "remove me")] });
         ed.restore = crate::restore::State::from_json(json!({ "notes": notes }));
         let id = ed.workspace_add(back.clone());

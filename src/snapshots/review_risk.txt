@@ -9,7 +9,7 @@
 06   “One risk: the unsafe cal… │  6▎let added_1 = 1;   ▲ high · piece 1/2 · unsafe (rust pack) · space v h       ▎
 07                              │  7▎let added_2 = 2;                                                             ▎
 08     src/                     │  8▎let added_3 = 3;                                                             ▎
-09 ▎ │ ◦ demo.rs         ▲2 +30 │  9▎let added_4 = 4;                                                             ▎
+09 ▎ │ ◦ demo.rs      ▲2 +30 ¶1 │  9▎let added_4 = 4;                                                             ▎
 10                              │ 10▎let added_5 = 5;                                                             ▎
 11                              │ 11▎let added_6 = 6;                                                             ▎
 12                              │ 12▎let pid = unsafe { getpid() };   ¶ reviewer · unsafe without a SAFETY comme… ▎
@@ -27,7 +27,7 @@
 24   ]g hunk  ]F file           │ 24▎let added_19 = 19;                                                           ▎
 25   space e files  ]u unviewed │ 25▎let added_20 = 20;                                                           ▎
 26   space n comment            │ 26▎let added_21 = 21;                                                           ▎
-27   space v m viewed           │ 27▎let added_22 = 22;                                                           ▎
+27   space v s send 1           │ 27▎let added_22 = 22;                                                           ▎
 28   space v q end              │ 28▎let added_23 = 23;                                                           ▎
 29  ● normal                                                                                           rust   4:1
 ## bg · surface per cell, blank = ui.background
@@ -71,7 +71,7 @@
 06   dddd ddddd ddd dddddd dddd a  fg                   e                                                         g
 07                              a  fg                                                                             g
 08     dddf                     a  fg                                                                             g
-09 a f f ttttttt         ee ggg a  fg                                                                             g
+09 a f f ttttttt      ee ggg    a  fg                                                                             g
 10                              a ffg                                                                             g
 11                              a ffg                                                                             g
 12                              a ffg                                                                             g
@@ -89,7 +89,7 @@
 24   BB ffff  BB ffff           a ffg                                                                             g
 25   BBBBB B fffff  BB ffffffff a ffg                                                                             g
 26   BBBBB B fffffff            a ffg                                                                             g
-27   BBBBB B B ffffff           a ffg                                                                             g
+27   fffff f f ffff f           a ffg                                                                             g
 28   BBBBB B B fff              a ffg                                                                             g
 29  a TTTTTT                                                                                           dddd   TTT
 ## legend

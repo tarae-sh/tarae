@@ -1,6 +1,6 @@
 //! #388's flags at the code: drawn, lit, pressed, walked, hovered — and the column a turn's end shows (chatlink Q5).
 
-use crate::chatnotes::tests::{answer, answers_to, feed, project, reads, screen};
+use crate::chatnotes::tests::{answer, answers_about, answers_to, feed, project, reads, screen};
 use crate::editor::Editor;
 use crate::event::{Mouse, MouseKind};
 
@@ -322,8 +322,47 @@ fn next_note_onto_an_older_answers_flag_shows_its_paragraph_whole() {
     assert_eq!(ed.workspace.claude.notes.open, None, "no card");
 }
 
+/// #388 step 3: the lines a question asked about (`space n`'s quote, a review's sent drafts — `Msg.asked`) are a flag of
+/// its answer whether or not the answer cites them — no name, its words the answer's opening sentence, its press the column
+/// at the answer's first paragraph; where the answer names the asked line itself, one flag (the answer's), never two; an
+/// answer with no words of its own after its last call, none.
+#[test]
+fn the_lines_asked_about_are_a_flag_of_the_answer() {
+    let (_s, root, mut ed) = project("flags-asked", &["src/a.rs", "src/b.rs"]);
+    let (a, b) = (root.join("src/a.rs"), root.join("src/b.rs"));
+    let opening = "They hold the count.";
+    answers_about(
+        &mut ed,
+        "why these?",
+        vec![(a.clone(), 4..6)],
+        &["They hold the count. Nothing else reads it."],
+        vec![],
+    );
+    let flags = |ed: &Editor, path: &std::path::Path| -> Vec<(std::ops::Range<usize>, String, String)> {
+        let f = ed.workspace.claude.flags.list.iter().filter(|f| f.path == path);
+        f.map(|f| (f.lines.clone(), f.origin.name.to_string(), f.words.clone())).collect()
+    };
+    assert_eq!(flags(&ed, &a), [(4..6, String::new(), opening.to_string())]);
+    ed.open(&a).unwrap();
+    screen(&mut ed);
+    let id = flag_at(&ed, 4);
+    let at = pilcrow(&ed, id);
+    press(&mut ed, at);
+    assert!(reads(&ed, id), "the column at the answer's first paragraph");
+    let r = crate::flags::find(&ed, id).unwrap().reading();
+    assert_eq!((&*r.name, r.said), ("", 0), "its answer's first paragraph");
+    // The answer names the asked line itself: its own flag alone
+    answers_about(&mut ed, "and this?", vec![(b.clone(), 1..2)], &["It is set in src/b.rs:2."], vec![]);
+    let on_b = flags(&ed, &b);
+    assert_eq!(on_b.len(), 1, "one flag, not two: {on_b:?}");
+    assert!(!on_b[0].1.is_empty(), "the answer's own, by its name");
+    // No words of its own after its last call: no paragraph to lead to, no flag
+    answers_about(&mut ed, "and here?", vec![(a.clone(), 8..9)], &["call"], vec![]);
+    assert_eq!(flags(&ed, &a).len(), 1, "none on line 9");
+}
+
 /// #388 step 2, `space N`'s flag rows (chatlink §1.5): every flag a row — the newest answer's first in the order written,
-/// then the older's — its place and the sentence that named it (Q10), `chat` its hint, a faint `¶`; `enter` on one goes to
+/// then the older's — its place and the question asked, the sentence that named it on the row's card (#388 step 3), `chat` its hint, a faint `¶`; `enter` on one goes to
 /// its line with the column at its paragraph, the keys in the code; `C-x` on one closes nothing and says why. With no
 /// note and no flag, `space N` and `]n` say so.
 #[test]
@@ -336,10 +375,22 @@ fn space_n_lists_every_flag_and_enter_goes_to_its_paragraph() {
     assert_eq!(
         labels,
         [
-            "src/a.rs:7  The loop ends at src/a.rs:7.",
-            "src/a.rs:3  The guard is at src/a.rs:3 too.",
-            "src/a.rs:3  The count is read in src/a.rs:3.",
-            "src/b.rs:2  It is set in src/b.rs:2.",
+            "src/a.rs:7  and the guard?",
+            "src/a.rs:3  and the guard?",
+            "src/a.rs:3  what reads the count?",
+            "src/b.rs:2  what reads the count?",
+        ]
+    );
+    // (the sentence that named the place on the row's card — #388 step 3: the row its place and question)
+    let mut more: Vec<&str> = p.paints.iter().filter_map(|(_, paint)| paint.more.as_deref()).collect();
+    more.sort();
+    assert_eq!(
+        more,
+        [
+            "It is set in src/b.rs:2.",
+            "The count is read in src/a.rs:3.",
+            "The guard is at src/a.rs:3 too.",
+            "The loop ends at src/a.rs:7.",
         ]
     );
     assert!(p.shown().all(|i| i.hint.starts_with("chat") && i.glyph == Some(("¶", "ui.virtual"))));

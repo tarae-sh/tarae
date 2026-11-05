@@ -184,7 +184,6 @@ pub const CLAUDE_TOOLS: &[&str] = &[
     "diagnostics",
     "edit",
     "git",
-    "note",
     "plan",
     "read",
     "references",

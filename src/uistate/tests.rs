@@ -438,17 +438,18 @@ pub(crate) const SCENES: &[Scene] = &[
     }),
     ("a light card", light_card),
     // (orchestra: Claude's set of sessions — waiting as it came, focused, and behind a card of yours)
-    // (focus C1: `space n`'s line in the note's card, a new question's and a reply's — the prompt's keys, as ever)
-    ("a prompt in the note's card, a question", |ed| {
+    // (`space n` outside a review: the ask line, its lines quoted — #388; with drafts waiting, a comment's line in the
+    // note's card — the prompt's keys, as ever)
+    ("space n's ask line, its lines quoted, a draft", |ed| {
         ed.docs[0].path.set(Some(std::env::temp_dir().join("tarae-keys-question.rs")));
         ed.handle_key(Key::plain(Code::Char(' ')));
         ed.handle_key(Key::plain(Code::Char('n')));
         ed.handle_key(Key::plain(Code::Char('w')));
     }),
-    ("a prompt in the note's card, a reply", |ed| {
+    ("a prompt in the note's card, a comment", |ed| {
         let path = std::env::temp_dir().join("tarae-keys-reply.rs");
         ed.docs[0].path.set(Some(path.clone()));
-        let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+        let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Reviewer, "A word about this line.");
         crate::notes::open(ed, id);
         crate::notes::start(ed);
         ed.handle_key(Key::plain(Code::Char('w')));
@@ -1377,7 +1378,7 @@ fn a_note_cards_keys_go_where_keys_to_says() {
             ed.docs[0].text = ropey::Rope::from_str("one\ntwo\n");
             let path = std::env::temp_dir().join("tarae-uistate-note-card.rs");
             ed.docs[0].path.set(Some(path.clone()));
-            let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word.");
+            let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Reviewer, "A word.");
             if open {
                 crate::notes::open(&mut ed, id);
             }

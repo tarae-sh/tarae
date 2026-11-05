@@ -288,8 +288,6 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
         "diagnostics",
         "edit",
         "write",
-        "note",
-        "reply",
         "test",
         "run",
         "rename",

@@ -800,7 +800,6 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     let _drawing = crate::codereview::Drawing::on();
     // (a frame drawn again: nothing of the last one's reading kept — `light_rows`)
     editor.drawn.take();
-    crate::notes::prompt_sync(editor);
     // (this frame's width first: what's docked beside the code and what folds into the slot are judged by it,
     // here and in the editor alike — `Editor::docked_in_sight`)
     editor.screen.width = Some(w as usize);
@@ -4962,7 +4961,7 @@ pub(crate) fn cursor_idx(mode: Mode, r: Range, text: &ropey::Rope) -> usize {
 /// The line of the focused code whose card holds `space n`'s line (focus C1).
 fn asked_line(editor: &Editor, lay: &Layout) -> Option<usize> {
     let kind = editor.prompt.as_ref().map(|p| p.kind);
-    matches!(kind, Some(crate::editor::PromptKind::Note(_))).then_some(())?;
+    matches!(kind, Some(crate::editor::PromptKind::Note)).then_some(())?;
     note_line_fits(editor, lay.text_cols).then_some(())?;
     note_rows(editor, editor.doc(), (lay.text_cols, lay.text_rows)).map(|r| r.0)
 }
@@ -6877,7 +6876,7 @@ fn draw_text(
             };
         }
     }
-    // Claude's notes: the line end of each note's first line (ahead of diagnostics — they're rarer and meant)
+    // The notes: the line end of each note's first line (ahead of diagnostics — they're rarer and meant)
     // (the note the card shows — the focused one, else the first — and how many start on that line)
     let mut note_at: Vec<Option<(&crate::notes::Note, usize)>> = vec![None; span];
     // (and the answers' flags: a line's newest answer's stands for them — #388)
@@ -8771,14 +8770,8 @@ fn draw_note_end(
         let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
         crate::whole::cut_at(editor, crate::whole::On::Code, at, shown, style, cols, None);
     };
-    let tail = match (n.waiting, n.thread.len()) {
-        (true, _) => "  · replying…".to_string(),
-        (false, 1) => String::new(),
-        (false, k) => format!("  +{}", k - 1),
-    };
-    // Several on the line: how many, then the one the card shows; a draft says so, and a
-    // finding of the reviewer's whose it is (in its colour)
-    let reviewer = n.thread.first().is_some_and(|e| e.by == crate::notes::By::Reviewer);
+    // A draft says so, and a finding of the reviewer's whose it is (in its colour)
+    let reviewer = n.by == crate::notes::By::Reviewer;
     // (a stale draft: `stale ·` — its lines changed since it was pinned, polish landing 4)
     let stale = crate::notes::stale_shown(editor).contains(&n.id);
     // (the board's: the angle that found it, `+1` for each other one)
@@ -8787,14 +8780,13 @@ fn draw_note_end(
         Some([first, more @ ..]) => format!("{first} +{} · ", more.len()),
         _ => "reviewer · ".to_string(),
     };
-    let draft = match (stale, reviewer, n.thread.iter().any(|e| e.draft)) {
-        (true, ..) => "stale · ",
-        (false, true, _) => by.as_str(),
-        (false, false, true) => "draft · ",
-        (false, false, false) => "",
+    let draft = match (stale, reviewer) {
+        (true, _) => "stale · ",
+        (false, true) => by.as_str(),
+        (false, false) => "draft · ",
     };
-    // (its card under it: the card says it, right below — the `¶` alone, focus A1b; a reply's shows a closed
-    // one, a question's stands in for an open one, and a code too narrow has none — focus C1)
+    // (its card under it: the card says it, right below — the `¶` alone, focus A1b; a code too narrow has none —
+    // focus C1)
     let open = note_carded(editor, doc, lay.text_cols).is_some_and(|o| o.id == n.id)
         && note_rows(editor, doc, (lay.text_cols, lay.text_rows)).is_some();
     let gist = match () {
@@ -8802,8 +8794,7 @@ fn draw_note_end(
         _ if count > 1 => format!("{count} notes · {draft}{}", n.gist()),
         _ => format!("{draft}{}", n.gist()),
     };
-    let tail = if open || marks_only { String::new() } else { tail };
-    let left = room.saturating_sub(2 + tail.width());
+    let left = room.saturating_sub(2);
     let body = crate::whole::fit(&gist, left);
     let glyph_fg = match () {
         _ if reviewer => reviewer_style(editor, ui).fg,
@@ -8825,9 +8816,7 @@ fn draw_note_end(
     apply(out, Style { fg, italic: true, ..line_base })?;
     queue!(out, Print(body.shown()))?;
     cut_end(2, &body, Style { fg, italic: true, ..line_base });
-    apply(out, Style { fg: ui.linenr.fg, ..line_base })?;
-    queue!(out, Print(&tail))?;
-    Ok(3 + 2 + body.shown().width() + tail.width())
+    Ok(3 + 2 + body.shown().width())
 }
 
 /// The row of the folded doc comment over lines `start..=end` (its rows `indent` in, a code `cols` wide) that a note on
@@ -9943,7 +9932,16 @@ fn draw_list_row(
         let hand = keys.filter(|_| r.selected);
         let plain = Style { fg: ui.virt.fg, ..base };
         let at = (x + 2 + label_at, y);
+        let more = r.paint.as_ref().and_then(|p| p.more.as_deref());
         match r.hint_first && !hint.is_empty() && label_fit.is_cut() {
+            // (a row whose card says more than its label — a flag's sentence: the label, then that, under it)
+            _ if more.is_some() => {
+                let text = format!("{}\n{}", whole.0, more.unwrap_or_default());
+                let pieces = vec![(0..whole.0.len(), style), (whole.0.len()..text.len(), plain)];
+                let (float, cols) = (crate::whole::drawn_in(), (0, usize::MAX));
+                let w = crate::whole::Whole { on, text, style, pieces, cols, state: None, float, key: None };
+                crate::whole::record(editor, (at.1, at.0, at.0 + r.label.width()), w, hand);
+            }
             true => {
                 let text = format!("{}  {}", whole.0, whole.1);
                 let pieces = vec![(0..whole.0.len(), style), (whole.0.len()..text.len(), plain)];
@@ -9957,7 +9955,7 @@ fn draw_list_row(
         }
         // (a hint cut where its label is whole: its `…` is the row in hand's, and so is its card)
         if hint_w > 0 && hint_w < lw {
-            let hand = hand.filter(|_| !label_fit.is_cut());
+            let hand = hand.filter(|_| !label_fit.is_cut() && more.is_none());
             cut_at(editor, on, (x + 3 + lw - hint_w, y), hint_fit, plain, (0, usize::MAX), hand);
         }
     }
@@ -16929,24 +16927,19 @@ fn stale_said(k: usize, drafts: usize) -> Option<String> {
 }
 
 /// What the rail's rows say of each file's notes, each note looked at once a frame (#214: each row walked every
-/// note, twice): its notes waiting to be sent with the review — your drafts, the reviewer's findings (a note the
-/// reviewer began is its, whoever answered it since) — and how many of them are stale.
+/// note, twice): its notes waiting to be sent with the review — your drafts, the reviewer's findings — and how many of
+/// them are stale.
 fn rail_notes(editor: &Editor) -> HashMap<&std::path::Path, (usize, usize, usize)> {
     let shown: std::collections::HashSet<u64> = crate::notes::stale_shown(editor).iter().copied().collect();
     let mut by: HashMap<&std::path::Path, (usize, usize, usize)> = HashMap::new();
     for n in &editor.workspace.claude.notes.list {
-        let (draft, stale) = (n.thread.iter().any(|e| e.draft), shown.contains(&n.id));
-        if !draft && !stale {
-            continue;
-        }
         crate::docpaths::worked(1);
         let e = by.entry(n.path.as_path()).or_default();
-        match n.thread.first().map(|e| e.by) {
-            _ if !draft => {}
-            Some(crate::notes::By::Reviewer) => e.1 += 1,
-            _ => e.0 += 1,
+        match n.by {
+            crate::notes::By::Reviewer => e.1 += 1,
+            crate::notes::By::You => e.0 += 1,
         }
-        e.2 += usize::from(stale);
+        e.2 += usize::from(shown.contains(&n.id));
     }
     by
 }
@@ -17287,9 +17280,6 @@ fn rail_risk(editor: &Editor, r: &crate::codereview::CodeReview, w: usize) -> Ve
             if t.high > 0 {
                 row.push(tone(Tone::High, format!(" ▲{}", t.high)));
             }
-            if t.answered > 0 {
-                row.push(tone(Tone::Faint, format!(" · {} answered", t.answered)));
-            }
         }
         State::Failed(_) => row.push(tone(Tone::Warn, "  stopped")),
         State::Stopped => row.push(tone(Tone::Dim, "  stopped by you")),
@@ -17514,9 +17504,6 @@ fn rail_board(editor: &Editor, rv: &crate::reviewer::Reviewer, w: usize) -> Vec<
     if rv.state == State::Done && !short.is_empty() {
         parts.push(tone(Tone::Warn, format!(" · {} stopped", short.join(", "))));
     }
-    if t.answered > 0 {
-        parts.push(tone(Tone::Faint, format!(" · {} answered", t.answered)));
-    }
     // (what doesn't fit beside the head goes on the row under it, indented)
     let mut row = head;
     for (t, text) in parts {
@@ -17565,8 +17552,7 @@ fn draw_review_rail(
         notes.get(f.path.as_path()).copied().unwrap_or_default()
     };
     let reviewer_fg = reviewer_style(editor, ui).fg;
-    let drafts: usize =
-        editor.workspace.claude.notes.list.iter().filter(|n| n.thread.iter().any(|e| e.draft)).count();
+    let drafts: usize = editor.workspace.claude.notes.list.len();
     // Head: the title, and its rule (drawn in the loop below — the accent while the rail has the keys), the
     // counts, and what's high-risk and left to look at, and the reviewer (`rail_head`)
     let high_fg = editor.theme.try_get("error").and_then(|s| s.fg).or(warn_fg);
@@ -23531,23 +23517,18 @@ fn draw_note_card(
         }
         _ => g.rows[skip..].to_vec(),
     };
-    let replying = note_holds_line(editor, n, g.inner + 4);
     let (x0, y0, w, h) = g.rect();
     // (a screen's edge across it: only the rows in sight, `y0` the first of them — its frame's lines there or not)
     let (above, below) = cut;
     let shown = h.saturating_sub(above + below);
     let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
-    let mut name = note_name(n, editor, ui, card);
-    if let Some(waiting) = note_drafts(editor, ui, card).filter(|_| replying) {
-        name.push((" ── ".into(), frame_line(ui, card)));
-        name.push(waiting);
-    }
+    let name = note_name(n, editor, ui, card);
     // (outside a review `space v s` sends what waits, no review of anything: its count, as the rail's `send 3`)
     let send = match editor.workspace.code_review.is_some() {
         true => "send the review".to_string(),
         false => format!("send {}", crate::notes::drafts(editor)),
     };
-    let mut keys = note_keys(n, replying, editor, &send);
+    let mut keys = note_keys(n, editor, &send);
     // (closing has its own rule, your cursor even while follow holds the view: it's for good)
     let closes = crate::notes::close_target(editor).is_some_and(|t| t.id == n.id);
     keys.retain(|k| k.0 != ":note-close" || closes);
@@ -23573,13 +23554,8 @@ fn draw_note_card(
         };
         docs_row(out, (docs, x, y, (x0, x0 + w)), &r, card, w.saturating_sub(4))?;
     }
-    // (`space n`'s line, the last row inside the frame — a blank one over it, as between a thread's entries)
-    let input = match replying {
-        true => note_input_row(editor, ui, (x0 + 2, y0, g.inner), (h, above, below), card, out)?,
-        false => None,
-    };
-    note_frame(editor, ui, (card, rect), (&name, &keys), (above > 0, below > 0), replying, out)?;
-    Ok((rect, input))
+    note_frame(editor, ui, (card, rect), (&name, &keys), (above > 0, below > 0), false, out)?;
+    Ok((rect, None))
 }
 
 /// `space n`'s line as a card holds it (focus C1): where it was drawn, where its cursor stands, and what's the prompt's to
@@ -23588,9 +23564,6 @@ type NoteInput = (crate::editor::PromptDrawn, (u16, u16), Rect4);
 
 /// A note's card as drawn: its rows in sight, and `space n`'s line where it holds it.
 type NoteDrawn = (Rect4, Option<NoteInput>);
-
-/// The rows a card's `space n` line adds under a thread: a blank one and the line.
-const NOTE_INPUT_ROWS: usize = 2;
 
 /// `space n`'s line on the last row inside a card `h` tall, whose first row in sight is `y0` and whose inside starts at
 /// `x` and is `inner` wide, `above` and `below` of its rows cut by a screen's edge — the prompt's own head, window and
@@ -23797,11 +23770,6 @@ fn note_line_fits(editor: &Editor, cols: usize) -> bool {
     cols.checked_sub(4).is_some_and(|inner| inner >= need)
 }
 
-/// Whether `n`'s card, in a code `cols` wide, holds `space n`'s line.
-fn note_holds_line(editor: &Editor, n: &crate::notes::Note, cols: usize) -> bool {
-    crate::notes::replying(editor, n) && note_line_fits(editor, cols)
-}
-
 /// The lines a question's card stands under in a code `cols` wide: `notes::asking`'s, only where it can hold its line — else
 /// it has no card, the line on the status line and what's open as it was (`note_carded`).
 fn note_asked(
@@ -23812,9 +23780,8 @@ fn note_asked(
     crate::notes::asking(editor, doc).filter(|_| note_ask_geom(editor, cols).is_some())
 }
 
-/// The note whose card stands in `doc`, in a code `cols` wide: `notes::carded`'s, but a line that can't stand in a card here
-/// (a reply, or a question in place of the open one) leaves what's open as it was and a closed card closed, the line on the
-/// status line.
+/// The note whose card stands in `doc`, in a code `cols` wide: `notes::carded`'s, but a comment's line that can't stand in a
+/// card here leaves what's open as it was, the line on the status line.
 fn note_carded<'a>(
     editor: &'a Editor,
     doc: &crate::document::Document,
@@ -23822,8 +23789,7 @@ fn note_carded<'a>(
 ) -> Option<&'a crate::notes::Note> {
     let card = crate::notes::carded(editor, doc);
     let asked = crate::notes::asking(editor, doc).is_some();
-    let lineless =
-        (asked || card.is_some_and(|n| crate::notes::replying(editor, n))) && !note_line_fits(editor, cols);
+    let lineless = asked && !note_line_fits(editor, cols);
     if lineless { crate::notes::opened(editor, doc) } else { card }
 }
 
@@ -23844,9 +23810,8 @@ fn note_inline_geom(
 ) -> Option<FloatGeom> {
     let inner = cols.checked_sub(4).filter(|&w| w >= NOTE_MIN)?;
     let rows = note_lines(n, editor, ui, inner);
-    let input = if note_holds_line(editor, n, cols) { NOTE_INPUT_ROWS } else { 0 };
-    let max_rows = rows.len().min(NOTE_CAP).min((tall / 2).saturating_sub(2 + input).max(3));
-    Some(FloatGeom { x0: 0, y0: 0, inner, h: max_rows + 2 + input, max_rows, rows })
+    let max_rows = rows.len().min(NOTE_CAP).min((tall / 2).saturating_sub(2).max(3));
+    Some(FloatGeom { x0: 0, y0: 0, inner, h: max_rows + 2, max_rows, rows })
 }
 
 /// The fewest cells a note's card writes in — a code narrower has none (`notes::step` says so).
@@ -23872,9 +23837,7 @@ pub(crate) fn note_rows(
         false => last(&n.lines),
     };
     // (once for what it says and the size: every `Measure` asks, several a key — the review of step 1)
-    let said = n.thread.iter().map(|e| e.text.len()).sum::<usize>();
-    let replying = note_holds_line(editor, n, size.0);
-    let key = (n.id, n.thread.len(), said, n.waiting, n.board.is_some(), size, replying);
+    let key = (n.id, n.text.len(), n.board.is_some(), size);
     if let Some((k, h)) = *editor.note_rows.borrow()
         && k == key
     {
@@ -23927,49 +23890,38 @@ fn note_name(n: &crate::notes::Note, editor: &Editor, ui: &Ui, card: Style) -> V
 }
 
 /// What a note's card is named (focus A1b, the user: the frame names what it is): `review` — the reviewer's finding —,
-/// else `note`, a thread you or Claude wrote in.
+/// else `note`, your comment.
 fn note_kind(n: &crate::notes::Note) -> &'static str {
-    match n.thread.first().map(|e| e.by) {
-        Some(crate::notes::By::Reviewer) => "review",
-        _ => "note",
+    match n.by {
+        crate::notes::By::Reviewer => "review",
+        crate::notes::By::You => "note",
     }
 }
 
-/// The keys of `space n`'s line (focus C1): `enter` sends, `tab` keeps it for later; while drafts wait (`drafting`, a review
-/// too) `enter` keeps it and only `space v s` sends — said, so it's never taken for a send. On a card's bottom line, the
-/// status line saying none, else there (`key_hints`).
-fn note_input_keys(editor: &Editor) -> &'static [(&'static str, &'static str)] {
-    match crate::codereview::drafting(editor) {
-        true => &[("enter", "later"), ("esc", "close")],
-        false => &[("enter", "send"), ("tab", "later"), ("esc", "close")],
-    }
+/// The keys of a review's comment line (focus C1): `enter` keeps it with the drafts and only `space v s` sends — said, so
+/// it's never taken for a send. On its card's bottom line, the status line saying none, else there (`key_hints`).
+fn note_input_keys(_editor: &Editor) -> &'static [(&'static str, &'static str)] {
+    &[("enter", "later"), ("esc", "close")]
 }
 
-/// Your drafts' count on `space n`'s card, said on its top line: while they wait `enter` keeps this one with them (a
-/// review's rail counts them).
+/// Your drafts' count on a comment's card, said on its top line: `enter` keeps this one with them (a review's rail counts
+/// them).
 fn note_drafts(editor: &Editor, ui: &Ui, card: Style) -> Option<(String, Style)> {
     let k = crate::notes::drafts(editor);
     (k > 0 && editor.workspace.code_review.is_none())
         .then(|| (crate::nav::count(k, "draft"), Style { fg: ui.linenr.fg, ..card }))
 }
 
-/// The note card's keys: `space n`'s line's while you write a reply on it, else the walk's — `send` what `space v s` says
-/// on a card with a draft.
-fn note_keys<'a>(
-    n: &crate::notes::Note,
-    replying: bool,
-    editor: &Editor,
-    send: &'a str,
-) -> Vec<(&'static str, &'a str)> {
+/// The note card's keys: the walk's — `send` what `space v s` says on a card with a draft.
+fn note_keys<'a>(n: &crate::notes::Note, editor: &Editor, send: &'a str) -> Vec<(&'static str, &'a str)> {
     let stale = crate::notes::stale_shown(editor).contains(&n.id);
     let mut keys = match () {
-        _ if replying => return note_input_keys(editor).to_vec(),
         // (a stale draft: `R` first — what it asks of you, re-placed on its lines as they are, or `:note-close`)
         _ if stale => vec![("R", "re-place"), ("space v s", send), (":note-close", ""), ("q", "close")],
         // (no `space n reply`: `space n` acts at your cursor only — a new note on a line with none, focus C1 — so no
         // card can promise it wherever you are, and a card's keys don't change as you move: #313)
-        _ if n.thread.iter().any(|e| e.draft) => vec![("space v s", send), ("]n", "next"), ("q", "close")],
-        _ => vec![("]n", "next"), ("q", "close"), ("space N", "all"), (":note-close", "")],
+        // (every note a draft — your comment, the reviewer's finding: a sent one leaves the code, #388)
+        _ => vec![("space v s", send), ("]n", "next"), ("q", "close")],
     };
     // (a lone note: `]n` has nowhere to go — never hinted, #265)
     if !crate::notes::walks_on(editor) {
@@ -24011,8 +23963,8 @@ fn note_md(
     rows.into_iter().map(|r| lead.iter().cloned().chain(r).collect()).collect()
 }
 
-/// One note's thread as card rows, `inner` wide — who said it (Claude in accent, you dim), its words as the chat renders
-/// them (a Claude's by `note_md`, yours line by line), a waiting row while Claude answers.
+/// One note as card rows, `inner` wide — who wrote it (`note_head`), its words (the reviewer's as the chat renders
+/// Claude's, by `note_md`; yours line by line), a board's trace under them.
 fn note_thread_lines(
     n: &crate::notes::Note,
     editor: &Editor,
@@ -24021,101 +23973,55 @@ fn note_thread_lines(
 ) -> Vec<Vec<crate::markdown::Span>> {
     use crate::markdown::{Line, Span};
     let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
-    let accent = Style { fg: ui.accent.fg, ..Style::default() };
     let dim = Style { fg: ui.virt.fg, ..Style::default() };
     let faint = Style { fg: ui.linenr.fg, ..Style::default() };
     let wrap = |l: Line| crate::markdown::wrap(&[l], inner, faint);
     let indent = [sp("  ", Style::default())];
     let mut out: Vec<Vec<Span>> = Vec::new();
-    // The newest three; older ones fold into a count
-    const SHOWN: usize = 3;
-    let skip = n.thread.len().saturating_sub(SHOWN);
-    if skip > 0 {
-        out.extend(wrap(Line::Text {
-            spans: vec![sp(&format!("… {skip} earlier — the chat has them"), faint)],
-            indent: 0,
-        }));
-        out.push(Vec::new());
+    out.extend(wrap(Line::Text { spans: note_head(n, (editor, ui)), indent: 0 }));
+    // (the reviewer's words as the chat renders a Claude's — markdown, its single line breaks joined; yours as the chat
+    // draws your message: line by line, a `#` or `|` you typed as you typed it)
+    if n.by == crate::notes::By::You {
+        let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
+        for l in n.text.lines().map(str::trim_end) {
+            out.extend(match l.trim().is_empty() {
+                true => vec![Vec::new()],
+                false => {
+                    let mut spans = indent.to_vec();
+                    spans.extend(message_spans(l, Style::default(), lang.as_deref(), editor));
+                    wrap(Line::Text { spans, indent: 2 })
+                }
+            });
+        }
+    } else {
+        out.extend(note_md(&n.text, &indent, inner, editor, ui));
     }
-    for (i, e) in n.thread.iter().enumerate().skip(skip) {
-        if i > skip {
-            out.push(Vec::new());
-        }
-        let head = note_head(n, i, e, (editor, ui));
-        out.extend(wrap(Line::Text { spans: head, indent: 0 }));
-        // (a Claude's words as the chat renders a Claude's — markdown, its single line breaks joined; yours as the chat
-        // draws your message: line by line, a `#` or `|` you typed as you typed it)
-        if e.by == crate::notes::By::You {
-            let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
-            for l in e.text.lines().map(str::trim_end) {
-                out.extend(match l.trim().is_empty() {
-                    true => vec![Vec::new()],
-                    false => {
-                        let mut spans = indent.to_vec();
-                        spans.extend(message_spans(l, Style::default(), lang.as_deref(), editor));
-                        wrap(Line::Text { spans, indent: 2 })
-                    }
-                });
-            }
-        } else {
-            out.extend(note_md(&e.text, &indent, inner, editor, ui));
-        }
-        // (its skeptic's trace — or why no one checked it — under it, faint, wrapped hanging)
-        if let Some(m) =
-            n.board.as_ref().filter(|m| i == 0 && e.by == crate::notes::By::Reviewer && !m.trace.is_empty())
-        {
-            let who = if m.verdict == crate::board::Verdict::Confirmed { "skeptic — " } else { "" };
-            out.extend(wrap(Line::Text {
-                spans: vec![sp("  ", Style::default()), sp(who, dim), sp(&m.trace, faint)],
-                indent: 6,
-            }));
-        }
-    }
-    if n.waiting {
-        // (a reply waiting for its claude to start says so where it was written: the chat's column may be out of
-        // sight, the toast gone — #381)
-        let starting =
-            editor.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting() && !c.running());
-        let doing = if starting { " claude is starting…" } else { " claude is replying…" };
-        out.push(Vec::new());
+    // (its skeptic's trace — or why no one checked it — under it, faint, wrapped hanging)
+    if let Some(m) = n.board.as_ref().filter(|m| n.by == crate::notes::By::Reviewer && !m.trace.is_empty()) {
+        let who = if m.verdict == crate::board::Verdict::Confirmed { "skeptic — " } else { "" };
         out.extend(wrap(Line::Text {
-            spans: vec![
-                sp(
-                    &wave_here(editor, false, ("note", 0)).unwrap_or_else(|| crate::shimmer::mark("")),
-                    accent,
-                ),
-                sp(doing, dim),
-            ],
-            indent: 0,
+            spans: vec![sp("  ", Style::default()), sp(who, dim), sp(&m.trace, faint)],
+            indent: 6,
         }));
     }
     out
 }
 
-/// Who said entry `i` of `n`'s thread, as its card heads it, `inner` wide: `¶ claude`, `› you · draft`, the reviewer's
-/// angles and verdict; an answer alone, its question — one row (focus A1c, #259).
-fn note_head(
-    n: &crate::notes::Note,
-    i: usize,
-    e: &crate::notes::Entry,
-    (editor, ui): (&Editor, &Ui),
-) -> Vec<crate::markdown::Span> {
+/// Who wrote `n`, as its card heads it: `› you · draft`, the reviewer's angles and verdict — one row (focus A1c, #259).
+fn note_head(n: &crate::notes::Note, (editor, ui): (&Editor, &Ui)) -> Vec<crate::markdown::Span> {
     use crate::markdown::Span;
     use crate::notes::By;
     let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
-    let accent = Style { fg: ui.accent.fg, ..Style::default() };
     let dim = Style { fg: ui.virt.fg, ..Style::default() };
     let faint = Style { fg: ui.linenr.fg, ..Style::default() };
-    match e.by {
-        By::Author => vec![sp("¶ ", accent), sp(By::Author.label(), Style { bold: true, ..accent })],
-        By::You if e.draft => {
+    match n.by {
+        By::You => {
             vec![sp("› ", dim), sp(By::You.label(), Style { bold: true, ..dim }), sp(" · draft", faint)]
         }
-        By::You => vec![sp("› ", dim), sp(By::You.label(), Style { bold: true, ..dim })],
         By::Reviewer => {
             let st = reviewer_style(editor, ui);
             // (the board's: the angles that found it and what its skeptic made of it)
-            let mark = n.board.as_ref().filter(|_| i == 0);
+            let mark = n.board.as_ref();
             let who = mark.map_or_else(|| By::Reviewer.label().to_string(), |m| m.angles.join(" · "));
             let mut v = vec![sp("¶ ", st), sp(&who, Style { bold: true, ..st })];
             match mark.map(|m| m.verdict) {
@@ -24126,9 +24032,7 @@ fn note_head(
                 Some(v2) => v.push(sp(&format!(" · {}", v2.word()), dim)),
                 None => {}
             }
-            if e.draft {
-                v.push(sp(" · not sent yet", faint));
-            }
+            v.push(sp(" · not sent yet", faint));
             v
         }
     }
@@ -24441,7 +24345,7 @@ fn key_hints(editor: &Editor) -> Option<Vec<(&'static str, String)>> {
         let enter = prompt_enter(p.kind);
         match p.kind {
             _ if editor.screen.note_input.get().is_some() => None,
-            crate::editor::PromptKind::Note(_) => hints(note_input_keys(editor)),
+            crate::editor::PromptKind::Note => hints(note_input_keys(editor)),
             // (`space i`'s card says them on its bottom line)
             crate::editor::PromptKind::Change => None,
             crate::editor::PromptKind::Command => {
@@ -24487,7 +24391,7 @@ fn prompt_enter(kind: crate::editor::PromptKind) -> &'static str {
         K::Keep { remove: true } => "remove",
         K::Rename => "rename",
         K::Replace => "replace",
-        K::Note(_) => "send",
+        K::Note => "keep",
         K::Plugin(_) => "done",
         K::Session => "make it",
         K::Change => "send",
@@ -25893,8 +25797,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.docs[0].path.set(Some(std::path::PathBuf::from("/nowhere/a.rs")));
         let path = ed.docs[0].path.clone().unwrap();
-        let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "a note");
-        crate::notes::keep(&mut ed, Some(id), "kept");
+        crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, "kept");
         // (past the stack's room — the card and three peeks: one is counted)
         for n in 1..=5 {
             let what = What::Asks { call: crate::tools::Call::test(n) };
@@ -27434,7 +27337,7 @@ mod tests {
         let ids: Vec<u64> = (0..40)
             .map(|i| {
                 let lines = i * 2..i * 2 + 1;
-                crate::notes::add(&mut ed, &p, lines, crate::notes::By::Author, "a note about this line")
+                crate::notes::add(&mut ed, &p, lines, crate::notes::By::Reviewer, "a note about this line")
             })
             .collect();
         ed.goto_line(10);
@@ -28183,7 +28086,7 @@ mod tests {
                 &mut ed,
                 &path,
                 i * 20..i * 20 + 3,
-                crate::notes::By::Author,
+                crate::notes::By::Reviewer,
                 "a note about this",
             );
         }
@@ -30575,7 +30478,6 @@ mod tests {
         // A draft on a file doesn't move it
         let mut ed = long;
         crate::notes::add(&mut ed, &PathBuf::from("/x").join(name), 0..1, crate::notes::By::You, "draft");
-        ed.workspace.claude.notes.list[0].thread[0].draft = true;
         assert_eq!(rail(&ed, 200), w);
     }
 
@@ -30601,9 +30503,6 @@ mod tests {
         let mut ids = Vec::new();
         for line in [0, 3] {
             ids.push(crate::notes::add(&mut ed, &f.path, line..line + 1, crate::notes::By::You, "draft"));
-        }
-        for n in &mut ed.workspace.claude.notes.list {
-            n.thread[0].draft = true;
         }
         let rail_stale = |ed: &Editor| stale_said(rail_notes(ed).get(f.path.as_path()).map_or(0, |e| e.2), 2);
         assert_eq!(rail_stale(&ed), None, "none stale");

@@ -72,7 +72,11 @@ use crate::workspace::At;
 /// `chat` — an answer's places are flags now.
 /// 33: `flags[].lit` is its line's `¶` as drawn: lit while any answer that named the line has its paragraph in view (#388
 /// step 2), not only the newest's.
-pub const V: u64 = 33;
+/// 34: `notes[].kind` no longer `claude`, `notes[].state` and `notes[].sent` gone, `reviewer_run`'s `answered` and
+/// `unsent` gone, a review report's finding its `text` in place of `thread` and `answered` (#388 step 3: the chat has no
+/// `note`, a thread no replies — a note is your comment or the reviewer's finding, a draft until sent, gone from the code
+/// once it is).
+pub const V: u64 = 34;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -869,7 +873,7 @@ pub struct OverlayState {
     pub until_ms: u64,
 }
 
-/// A note as the state lists it: by id and place, who began it, and how its thread stands.
+/// A note as the state lists it: by id and place, and who wrote it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteState {
     /// `note#4`.
@@ -878,46 +882,28 @@ pub struct NoteState {
     pub path: String,
     /// Its first line, 1-based.
     pub line: usize,
-    /// `finding` (the reviewer's) · `comment` (yours) · `claude` (pinned by its Claude).
+    /// `finding` (the reviewer's) · `comment` (yours) — a draft either way, until `space v s` sends it out of the code.
     pub kind: &'static str,
-    /// Gone to Claude: not a draft `space v s` hasn't sent (`notes::unsent`).
-    pub sent: bool,
-    /// `waiting` (for Claude's answer) · `answered` (Claude replied on it) · `open`.
-    pub state: &'static str,
 }
 
 impl NoteState {
     pub(crate) fn of(root: &std::path::Path, n: &crate::notes::Note) -> NoteState {
         use crate::notes::By;
-        let first = n.thread.first().map(|e| e.by);
         NoteState {
             id: format!("note#{}", n.id),
             path: crate::chat::shown(root, &n.path).to_string(),
             line: n.lines.start + 1,
-            kind: match first {
-                Some(By::Reviewer) => "finding",
-                Some(By::Author) => "claude",
-                _ => "comment",
-            },
-            sent: !crate::notes::unsent(n),
-            state: match n.waiting {
-                true => "waiting",
-                false if n.thread.iter().skip(1).any(|e| e.by == By::Author) => "answered",
-                false => "open",
+            kind: match n.by {
+                By::Reviewer => "finding",
+                By::You => "comment",
             },
         }
     }
 
     pub fn json(&self) -> Value {
         json!({
-            "id": self.id, "path": self.path, "line": self.line, "kind": self.kind, "sent": self.sent,
-            "state": self.state,
+            "id": self.id, "path": self.path, "line": self.line, "kind": self.kind,
         })
-    }
-
-    /// `note#4 src/a.rs:12 · finding · waiting`.
-    pub fn text(&self) -> String {
-        format!("{} {}:{} · {} · {}", self.id, self.path, self.line, self.kind, self.state)
     }
 }
 
@@ -1388,10 +1374,8 @@ pub struct ReviewerState {
     /// How long it read — so far, while it reads.
     pub ms: u64,
     pub reads: usize,
-    /// Its findings still pinned, those answered (by you or the author), and those not sent to the author yet.
+    /// Its findings still pinned — drafts each, not sent to the author yet (a sent one leaves the code).
     pub findings: usize,
-    pub answered: usize,
-    pub unsent: usize,
     /// Those on a high-risk change, by the grades of the snapshot it read.
     pub high: usize,
     /// Its verdict's first line (empty while it reads, or none came).
@@ -1430,8 +1414,6 @@ impl ReviewerState {
             ms: ms(r.took.unwrap_or_else(|| crate::clock::since(r.started))),
             reads: r.reads,
             findings: t.findings,
-            answered: t.answered,
-            unsent: t.unsent,
             high: t.high,
             verdict: r.verdict.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim().to_string(),
             why,
@@ -1448,14 +1430,14 @@ impl ReviewerState {
     pub fn json(&self) -> Value {
         json!({
             "state": self.state, "ms": self.ms, "reads": self.reads, "findings": self.findings,
-            "answered": self.answered, "unsent": self.unsent, "high": self.high, "verdict": self.verdict,
+            "high": self.high, "verdict": self.verdict,
             "why": self.why,
             "by_you": self.by_you, "of": self.of, "taken": self.taken, "files": self.files,
             "changed_since": self.changed_since, "news": self.news, "board": self.board,
         })
     }
 
-    /// One line: `done in 1m 20s · 14 reads · 2 findings ▲1 · 1 not sent · 1 answered — <verdict>`.
+    /// One line: `done in 1m 20s · 14 reads · 2 findings ▲1 — <verdict>`.
     pub fn text(&self) -> String {
         let took = crate::term::run_duration(std::time::Duration::from_millis(self.ms));
         let how = match (self.state, &self.why) {
@@ -1469,14 +1451,6 @@ impl ReviewerState {
         let high = match self.high {
             0 => String::new(),
             h => format!(" ▲{h}"),
-        };
-        let unsent = match self.unsent {
-            0 => String::new(),
-            n => format!(" · {n} not sent"),
-        };
-        let answered = match self.answered {
-            0 => String::new(),
-            n => format!(" · {n} answered"),
         };
         let verdict = match self.verdict.is_empty() {
             true => String::new(),
@@ -1509,7 +1483,7 @@ impl ReviewerState {
             )
         });
         format!(
-            "{how} · {} · {}{high}{unsent}{answered}{board}{verdict}",
+            "{how} · {} · {}{high}{board}{verdict}",
             crate::nav::count(self.reads, "read"),
             crate::nav::count(self.findings, "finding")
         )
@@ -2602,8 +2576,7 @@ impl Editor {
                     path: crate::chat::shown(root, &n.path).to_string(),
                     lines: n.lines.start + 1..n.lines.end.max(n.lines.start + 1) + 1,
                     high: crate::reviewer::on_high_in(l, n.id),
-                    answered: crate::reviewer::answered(n),
-                    thread: n.thread.iter().map(|e| (e.by.label(), e.text.clone())).collect(),
+                    text: n.text.clone(),
                 })
                 .collect(),
             unseen: l.code_review.as_ref().map(|r| self.high_unseen_of(l, r)),
@@ -2689,9 +2662,8 @@ pub struct Finding {
     pub lines: std::ops::Range<usize>,
     /// On a high-risk change, by the grades of the snapshot its reviewer read.
     pub high: bool,
-    pub answered: bool,
-    /// (who, text): `reviewer` · `you` · `claude`.
-    pub thread: Vec<(&'static str, String)>,
+    /// What it says.
+    pub text: String,
 }
 
 impl ReviewReport {
@@ -2702,8 +2674,7 @@ impl ReviewReport {
             .map(|f| {
                 json!({
                     "path": f.path, "line": f.lines.start, "end": f.lines.end - 1, "high": f.high,
-                    "answered": f.answered,
-                    "thread": f.thread.iter().map(|(by, text)| json!({ "by": by, "text": text })).collect::<Vec<_>>(),
+                    "text": f.text,
                 })
             })
             .collect();
@@ -2779,13 +2750,10 @@ impl ReviewReport {
                 _ => format!("{}–{}", f.lines.start, f.lines.end - 1),
             };
             let high = if f.high { " ▲ high" } else { "" };
-            let answered = if f.answered { " · answered" } else { "" };
-            out.push(format!("- {}:{lines}{high}{answered}", f.path));
-            for (by, text) in &f.thread {
-                let mut it = text.trim_end().lines();
-                out.push(format!("  {by}: {}", it.next().unwrap_or_default()));
-                out.extend(it.map(|l| format!("    {l}")));
-            }
+            out.push(format!("- {}:{lines}{high}", f.path));
+            let mut it = f.text.trim_end().lines();
+            out.push(format!("  {}", it.next().unwrap_or_default()));
+            out.extend(it.map(|l| format!("    {l}")));
         }
     }
 }

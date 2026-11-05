@@ -48,12 +48,34 @@ pub struct Quote {
     /// The code's colours over its text, as it was taken (`painted`): byte spans and global capture ids in draw order —
     /// its hover card's and its buffer's (`term::with_card`, `pressed`). None from the chat or the terminal.
     pub paint: Vec<(usize, usize, u32)>,
+    /// The file's lines `space n` asked about (#388 step 3, `notes::ask_about`): a place of the answer to the message that
+    /// carries it, flagged there whether or not the answer cites them (`chatnotes::turn_over`).
+    pub asked: Option<(std::path::PathBuf, std::ops::Range<usize>)>,
 }
 
 impl Quote {
     /// Its chip over the input, and in the sent message's row.
     pub fn chip(&self) -> String {
-        let mut s = self.label.clone();
+        self.chip_beside(None)
+    }
+
+    /// Its chip after the name of the file in front (`front`) — the ask line's frame and a sent message's row name it
+    /// first: a quote of that file says its lines only (`L10–11`), one telling of the file.
+    pub fn chip_beside(&self, front: Option<crate::document::DocId>) -> String {
+        let named =
+            self.attrs.iter().find(|(k, _)| matches!(*k, "path" | "name")).map(|(_, v)| format!("{v} "));
+        let label = match (self.code, named) {
+            (Some((id, ..)), Some(n)) if Some(id) == front => {
+                self.label.strip_prefix(&n).unwrap_or(&self.label)
+            }
+            _ => &self.label,
+        };
+        format!("{label}{}", self.said())
+    }
+
+    /// What its chip says after its label: its cut, its hidden lines.
+    pub fn said(&self) -> String {
+        let mut s = String::new();
         if self.cut.is_some() {
             s.push_str(" · cut");
         }
@@ -110,6 +132,7 @@ fn made(t: Taken, room: usize) -> Quote {
         hidden,
         code: t.code,
         paint: Vec::new(),
+        asked: None,
     }
 }
 

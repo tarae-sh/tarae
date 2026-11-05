@@ -198,15 +198,13 @@ fn laid(name: &str, sessions: usize) -> (Editor, Scratch) {
         }
     }
     ed.workspace.git_branch = Some("main".into());
-    // (your notes: half of them drafts on the review's files — its rail counts them —, half on files not open)
+    // (your notes: half of them on the review's files — its rail counts them —, half on files not open)
     for j in 0..NOTES {
-        let draft = j % 2 == 0;
-        let path = match draft {
+        let path = match j % 2 == 0 {
             true => root(0).join(format!("src/r{}/f{}.rs", (j / 2 % REVIEWED) / 8, j / 2 % REVIEWED)),
             false => root(0).join(format!("docs/n{}.md", j % 40)),
         };
         crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, "a note");
-        ed.workspace.claude.notes.list.last_mut().unwrap().thread[0].draft = draft;
     }
     // (what presence asks on workers landed — the checkouts one repository, the line maps in sight worked out — as in
     // the driver's tarae a while after: a side panel's row then reads the busy ones' places, not the branch that skips)
@@ -613,7 +611,7 @@ const SEARCHES: &[(&str, usize)] = &[
     ("lsp_editor.rs", 14),
     ("motion.rs", 2),
     ("nav.rs", 4),
-    ("notes.rs", 4),
+    ("notes.rs", 3),
     ("offer.rs", 1),
     ("procs.rs", 1),
     ("queued.rs", 1),

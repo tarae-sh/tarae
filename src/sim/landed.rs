@@ -1,10 +1,10 @@
 //! The reviewer's findings leaving with a landed change, simulated (#248): a repository with changed files, and at
-//! random a finding pinned on a changed file, one of them answered by you, a file committed (its change in the base
+//! random a finding pinned on a changed file, a comment of yours on one, a file committed (its change in the base
 //! now — the checkout tarae started in: HEAD), a file changed again, the check a bring or a new round makes
 //! (`notes::landed_check`), the user taking their time — its git and the findings' digests jobs among them. After
-//! every step: a finding gone was on a file committed since it was pinned, never one you answered. Once it's all
-//! quiet and checked again: no finding of the reviewer's alone left on a file with no change, and each one closed
-//! said once.
+//! every step: a finding gone was on a file committed since it was pinned, and no comment of yours went (your words
+//! never go unasked). Once it's all quiet and checked again: no finding of the reviewer's left on a file with no
+//! change, and each one closed said once.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,7 +16,6 @@ use super::{Choices, Sim};
 use crate::editor::Editor;
 use crate::notes::By;
 
-/// (2: a finding you answered on a file committed, the check after — closed with your words, unguarded)
 const SEEDS: &[u64] = &[0, 1, 2];
 
 const INPUTS: usize = 30;
@@ -30,7 +29,7 @@ fn findings_leave_with_their_landed_change() {
     super::seeds("findings_leave_with_their_landed_change", SEEDS, run);
 }
 
-/// What the checks keep: each finding's file and the input it was pinned at, those you answered, each file's last
+/// What the checks keep: each finding's file and the input it was pinned at, your comments, each file's last
 /// commit's input, the files changed now, the inputs so far.
 #[derive(Default)]
 struct Seen {
@@ -82,7 +81,7 @@ fn run(choices: Choices) -> Vec<String> {
 fn input(sim: &mut Sim, ed: &mut Editor, repo: &Path, seen: &RefCell<Seen>) -> String {
     let c = &mut sim.choices;
     seen.borrow_mut().n += 1;
-    // (by arm: a finding pinned 4, answered by you 2, a file committed 2, changed again 2, the check 3, time 1)
+    // (by arm: a finding pinned 4, a comment of yours 2, a file committed 2, changed again 2, the check 3, time 1)
     match c.weighted(&[4, 2, 2, 2, 3, 1]) {
         0 => {
             let changed: Vec<&'static str> = seen.borrow().changed.iter().copied().collect();
@@ -97,16 +96,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &Path, seen: &RefCell<Seen>) -> S
             format!("finding #{id} on {f}")
         }
         1 => {
-            let ids: Vec<u64> = ed.workspace.claude.notes.list.iter().map(|n| n.id).collect();
-            if ids.is_empty() {
-                return "(no finding to answer)".into();
-            }
-            let id = *c.pick(&ids);
-            if let Some(n) = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id) {
-                n.thread.push(crate::notes::Entry { by: By::You, text: "why?".into(), draft: true });
-            }
+            let f = *c.pick(FILES);
+            let id = crate::notes::add(ed, &repo.join(f), 0..1, By::You, "why?");
             seen.borrow_mut().yours.insert(id);
-            format!("#{id} answered by you")
+            format!("#{id} your comment on {f}")
         }
         2 => {
             let f = *c.pick(FILES);
@@ -140,13 +133,13 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &Path, seen: &RefCell<Seen>) -> S
     }
 }
 
-/// A finding gone was on a file committed since it was pinned, and never one you answered.
+/// A finding gone was on a file committed since it was pinned, and no comment of yours went.
 fn held(ed: &Editor, seen: &Seen) -> Result<(), String> {
     let here = |id: u64| ed.workspace.claude.notes.list.iter().any(|n| n.id == id);
+    if let Some(id) = seen.yours.iter().find(|id| !here(**id)) {
+        return Err(format!("#{id}, your comment, closed"));
+    }
     for (&id, &(f, at)) in seen.pinned.iter().filter(|(id, _)| !here(**id)) {
-        if seen.yours.contains(&id) {
-            return Err(format!("#{id} closed with your words in it"));
-        }
         if seen.committed.get(f).is_none_or(|&c| c < at) {
             return Err(format!("#{id} on {f} closed, nothing committed since it was pinned"));
         }
@@ -154,19 +147,20 @@ fn held(ed: &Editor, seen: &Seen) -> Result<(), String> {
     Ok(())
 }
 
-/// None of the reviewer's alone is left on a file with no change, and the findings closed are those said.
+/// None of the reviewer's is left on a file with no change, and the findings closed are those said.
 fn ended(ed: &Editor, seen: &Seen) -> Result<(), String> {
     let still = |f: &str| !git_out(&ed.workspace.root, &["status", "--porcelain", "--", f]).trim().is_empty();
     for n in &ed.workspace.claude.notes.list {
         let Some(&(f, _)) = seen.pinned.get(&n.id) else { continue };
-        if !seen.yours.contains(&n.id) && !still(f) {
+        if !still(f) {
             return Err(format!("#{} left on {f}, whose change is committed", n.id));
         }
     }
     let said: usize = (ed.messages.iter())
         .filter_map(|m| m.2.strip_prefix("closed ")?.split(' ').next()?.parse::<usize>().ok())
         .sum();
-    let gone = seen.pinned.len() - ed.workspace.claude.notes.list.len();
+    let gone =
+        seen.pinned.len() - (ed.workspace.claude.notes.list.iter()).filter(|n| n.by == By::Reviewer).count();
     if said != gone {
         return Err(format!("{gone} closed, {said} said"));
     }

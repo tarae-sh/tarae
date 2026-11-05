@@ -40,8 +40,21 @@ fn answers(ed: &mut Editor, texts: &[&str], stops: Vec<crate::replay::Stop>) {
 
 /// `answers` to the question `asked`.
 pub(crate) fn answers_to(ed: &mut Editor, asked: &str, texts: &[&str], stops: Vec<crate::replay::Stop>) {
+    answers_about(ed, asked, Vec::new(), texts, stops);
+}
+
+/// `answers_to` a question about `lines` (`Msg.asked`: `space n`'s quote, a review's sent drafts — #388 step 3).
+pub(crate) fn answers_about(
+    ed: &mut Editor,
+    asked: &str,
+    lines: Vec<(PathBuf, Range<usize>)>,
+    texts: &[&str],
+    stops: Vec<crate::replay::Stop>,
+) {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
-    c.msgs.push(Msg::new(Role::User, asked, ""));
+    let mut q = Msg::new(Role::User, asked, "");
+    q.asked = lines;
+    c.msgs.push(q);
     c.follow.new_turn();
     for s in stops {
         c.follow.replay.add(s);
@@ -63,17 +76,6 @@ pub(crate) fn answers_to(ed: &mut Editor, asked: &str, texts: &[&str], stops: Ve
 /// The flags as (file, first line from 1, the sentence that named it).
 fn chat_notes(ed: &Editor, root: &Path) -> Vec<(String, usize, String)> {
     let mut v: Vec<_> = (ed.workspace.claude.flags.list.iter())
-        .map(|n| (crate::chat::shown(root, &n.path), n.lines.start + 1, n.words.clone()))
-        .collect();
-    v.sort();
-    v
-}
-
-/// `chat_notes` of the newest answer alone (focus A1b: the ones before it are kept beside them).
-fn newest_notes(ed: &Editor, root: &Path) -> Vec<(String, usize, String)> {
-    let k = ed.workspace.claude.flags.answers;
-    let mut v: Vec<_> = (ed.workspace.claude.flags.list.iter())
-        .filter(|n| n.origin.n == k)
         .map(|n| (crate::chat::shown(root, &n.path), n.lines.start + 1, n.words.clone()))
         .collect();
     v.sort();
@@ -124,6 +126,32 @@ fn the_answers_come_back_with_their_conversation() {
     // (as kept: a continue has nothing to keep — else the next event saved it again, a conversation only looked at made
     // the newest)
     assert_eq!(ed.workspace.claude.flags.kept, before.len());
+}
+
+/// #388 step 3: a continue brings the asked lines' flag back as it was — no name, its answer's opening its words.
+#[test]
+fn an_asked_place_comes_back_with_its_conversation() {
+    let (_s, root, mut ed) = project("chatnotes-asked-kept", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    answers_about(
+        &mut ed,
+        "why these?",
+        vec![(a.clone(), 4..6)],
+        &["They hold the count. Nothing else."],
+        vec![],
+    );
+    let before = chat_notes(&ed, &root);
+    assert_eq!(before, [("src/a.rs".to_string(), 5, "They hold the count.".to_string())]);
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let places = places_json(&ed.workspace.claude.flags, &c.msgs).expect("placed");
+    let rows = crate::chats::rows_of(&c.msgs);
+    crate::flags::forget(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs = crate::chats::msgs_of(&rows);
+    restore(&mut ed, Some(&places));
+    assert_eq!(chat_notes(&ed, &root), before, "{places}");
+    let f = &ed.workspace.claude.flags.list[0];
+    assert_eq!((&*f.origin.name, f.origin.said, f.lines.clone()), ("", 0, 4..6));
 }
 
 /// The reviewer's (note 22): a continue through the store — the line texts of files that weren't open read there; a line
@@ -835,25 +863,4 @@ fn the_files_changing_mid_search_still_places_the_notes() {
         chat_notes(&ed, &root),
         [("src/a.rs".to_string(), 3, "It is read in src/a.rs:3.".to_string())]
     );
-}
-
-/// A line where the answer's own `note` sits takes no chat note — Claude said it there already; the answer's other
-/// places still do, and a note pinned in an earlier turn doesn't hold one back.
-#[test]
-fn the_answers_own_note_keeps_its_line() {
-    let (_s, root, mut ed) = project("chatnotes-own", &["src/a.rs", "src/b.rs"]);
-    let pin = |ed: &mut Editor, line: u64| {
-        let args =
-            serde_json::json!({"path": "src/b.rs", "line": line, "end_line": line + 1, "text": "pinned"});
-        crate::notes::tool_call(ed, &args).unwrap();
-    };
-    pin(&mut ed, 5);
-    answer(&mut ed, "It's src/b.rs:6 that reads it; src/a.rs:1 calls it.");
-    assert_eq!(
-        chat_notes(&ed, &root),
-        [("src/a.rs".to_string(), 1, "It's src/b.rs:6 that reads it; src/a.rs:1 calls it.".to_string())]
-    );
-    // (the next turn pins nothing: the earlier note doesn't keep its line)
-    answer(&mut ed, "Still src/b.rs:5.");
-    assert_eq!(newest_notes(&ed, &root), [("src/b.rs".to_string(), 5, "Still src/b.rs:5.".to_string())]);
 }

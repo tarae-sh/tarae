@@ -231,7 +231,7 @@ fn a_parents_level_holds_nothing_of_a_session_it_didnt_start() {
         std::fs::write(&file, "one\n").unwrap();
         ed.with_workspace(id, |ed| {
             ed.set_warning(format!("{name}-toast"));
-            crate::notes::add(ed, &file, 0..1, crate::notes::By::Author, &format!("{name}-note"));
+            crate::notes::add(ed, &file, 0..1, crate::notes::By::Reviewer, &format!("{name}-note"));
         });
     }
     frame(&mut ed);

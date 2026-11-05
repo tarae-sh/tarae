@@ -192,8 +192,9 @@ impl Editor {
             };
         }
         s.runs.retain(|r| r.session == own);
-        // (only what went to it: a draft — yours, or a finding — is the user's until `space v s` sends it)
-        s.notes.retain(|n| n.sent);
+        // (none: a note is a draft — yours, or a finding — the user's until `space v s` sends it, and a sent one leaves
+        // the code, its words the message's: #388)
+        s.notes.clear();
         // (its answers' places: its own words, where they are drawn is the user's chrome)
         s.flags.clear();
         // (the user's: what runs, with its command lines)
@@ -239,7 +240,7 @@ impl UiState {
         }
         // (its own workspace's reviewer, how it went and its counts — the others' are their `· reviewing` above)
         if let Some(r) = own.and_then(|w| w.reviewer_run.as_ref()) {
-            let unsent = match r.unsent {
+            let unsent = match r.findings {
                 0 => "",
                 _ => " — a finding reaches you when the user sends it (space v s)",
             };
@@ -252,12 +253,6 @@ impl UiState {
                 "writing (drawn as it comes — not applied, nothing decided): {}",
                 w.join("   ")
             ));
-        }
-        // (the notes that went to it, by id: `reply_to` answers one — also once the message that brought it has
-        // left its context)
-        if !self.notes.is_empty() {
-            let notes: Vec<String> = self.notes.iter().map(super::NoteState::text).collect();
-            out.push(format!("notes sent to you: {}", notes.join("   ")));
         }
         // (its own session's sandbox, decision 13 — here, not in the context's `ui:` line every request reads: the
         // run reports say it once a conversation)

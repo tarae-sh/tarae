@@ -31,7 +31,7 @@ pub struct Session {
     pub colour: u8,
     /// Chat pane on the right (if open).
     pub chat: Option<crate::chat::Chat>,
-    /// Claude's notes pinned to code (`notes.rs`).
+    /// The notes pinned to code — your drafts and the reviewer's findings (`notes.rs`).
     pub notes: crate::notes::Notes,
     /// The places its answers named, flagged at their lines (`flags.rs`).
     pub flags: crate::flags::Flags,

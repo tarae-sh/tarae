@@ -100,7 +100,7 @@ pub enum Surface {
     WhichKey,
     /// The completion menu and its docs: a row accepts its item (`Part::Row`: its index among those shown).
     Completion,
-    /// The note card: a press replies (`space n`'s).
+    /// The note card: its keys on its bottom line are buttons, its words text (a drag selects them).
     NoteCard,
     /// Nothing drawn there that takes the mouse.
     Nothing,
@@ -385,8 +385,7 @@ impl Editor {
         }
         // The note card: a press is its own, while its reply's line is open too — the wheel too, nothing under it (another
         // prompt open: a press there is outside that prompt, which closes it)
-        let replying =
-            matches!(self.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
+        let replying = matches!(self.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note));
         // (the wheel over the card between the lines scrolls the code it's in — focus A1b)
         if down && (self.prompt.is_none() || replying) && s.note_card.get().is_some_and(|r| inside(r, x, y)) {
             let hint = hint_on(S::NoteCard).filter(|_| down);
@@ -1556,14 +1555,18 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Hover) => Not("no hover from the language server — K"),
         },
         // (a press on a row presses its key, accepts its item; the rest of the card says so — but the note card's body,
-        // whose press only holds: let go it replies, dragged its words are selected, copied as you let go — focus A1b)
+        // text: dragged its words are selected, copied as you let go — focus A1b; no reply since #388, so a press and its
+        // release alone do nothing)
         Su::WhichKey | Su::Completion | Su::NoteCard => match (part, act) {
             (Part::Row(_), A::Press) => Acts,
             // (the completion list's keys on its bottom line, #234: buttons — a press does its key, the pointer lights it)
             // (and the note card's, #240)
             (Part::Word(Word::Does(_)), A::Press | A::Hover) if surface != Su::WhichKey => Acts,
-            (_, A::Press) if surface == Su::NoteCard => Not("held: its release or a drag decides"),
-            (Part::Blank, A::Release | A::Drag) if surface == Su::NoteCard => Acts,
+            (_, A::Press) if surface == Su::NoteCard => Not("its words are text — a drag selects them"),
+            (Part::Blank, A::Drag) if surface == Su::NoteCard => Acts,
+            (Part::Blank, A::Release) if surface == Su::NoteCard => {
+                Not("nothing to answer — a drag selects its words")
+            }
             (_, A::Press) => Says("a row presses it"),
             (_, A::Double) => AS_ONE,
             // (the note card's: it's between the code's lines, the code it's in scrolls)

@@ -15,7 +15,8 @@
 //!   text —, the words cut again from its rows.
 //! - An answer with words after its last call shows the column by itself at its turn's end, unfocused, never while you
 //!   type (`chat::read_by_itself`, chatlink Q5) — unless you hid the column during that turn: then `◂ new` says it.
-//! - A line where the same answer's own `note` sits gets no flag there (Claude said it there already).
+//! - The lines a message asked about (`space n`'s quote, a review's sent comments — `Msg.asked`) are places of its answer
+//!   whether or not it cites them: a flag each, at the answer's first paragraph (an empty name), unless it named them.
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -43,11 +44,14 @@ pub struct Said {
     pub sentence: String,
 }
 
-/// An answer's places waiting for what their names come to (`Flags.answer`), and the notes its own `note` pinned.
+/// An answer's places waiting for what their names come to (`Flags.answer`), and the lines its question asked about.
 #[derive(Clone, Debug, Default)]
 pub struct Waiting {
     pub places: Vec<Said>,
-    pub own: Vec<u64>,
+    /// The lines its message asked about (`Msg.asked`: `space n`'s quote, a review's sent drafts) — flags of it whether
+    /// or not it cites them, at its first paragraph (`Origin.name` empty), `opening` their sentence.
+    pub about: Vec<(PathBuf, Range<usize>)>,
+    pub opening: String,
     /// The question the answer answered: its first line that says something (`Flag.asked`).
     pub asked: Option<String>,
     /// Its question's place among the conversation's messages of yours, from 0 (`Origin.turn`).
@@ -270,25 +274,25 @@ pub fn plain_words(text: &str) -> String {
 }
 
 /// A chat turn ended (`ok`: whole, neither stopped nor failed): the places its answer names wait for what their names
-/// come to (`sync`) — with the notes it pinned itself, whose lines take none. Words of its own after its last call show
-/// the column by itself (chatlink Q5: the answer is the chat's alone now) — not one that wrote at a note (its answer is
-/// there), nor where you hid the column during the turn. A turn cut short (a partial answer) and one that began with no
-/// message of the user's (`Chat.turn_bare`: idle compaction's `/compact` — its answer isn't an answer, and the last user
-/// message's would be the previous turn's, placed again) place nothing.
+/// come to (`sync`) — with the lines its question asked about (`Msg.asked`). Words of its own after its last call show
+/// the column by itself (chatlink Q5: the answer is the chat's alone) — not where you hid the column during the turn. A
+/// turn cut short (a partial answer) and one that began with no message of the user's (`Chat.turn_bare`: idle
+/// compaction's `/compact` — its answer isn't an answer, and the last user message's would be the previous turn's,
+/// placed again) place nothing.
 pub fn turn_over(ed: &mut Editor, ok: bool) {
-    let notes = &mut ed.workspace.claude.notes;
-    let own = std::mem::take(&mut notes.pinned_now);
-    let noted = std::mem::take(&mut notes.noted_now);
     let Some(c) = ed.workspace.claude.chat.as_ref().filter(|c| ok && !c.turn_bare) else { return };
     let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
     let (mut said, words) = read_answer(&c.msgs[turn..]);
     let users = c.msgs[..turn].iter().filter(|m| m.role == Role::User).count();
     let hid = c.hid_at == Some(users);
-    if words && !noted && !hid {
+    if words && !hid {
         crate::chat::read_by_itself(ed);
     }
     let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
-    if said.places.is_empty() {
+    // (an answer with no words of its own has no paragraph to lead to)
+    said.about = turn.checked_sub(1).map(|q| c.msgs[q].asked.clone()).filter(|_| words).unwrap_or_default();
+    said.opening = opening(&c.msgs[turn..]);
+    if said.places.is_empty() && said.about.is_empty() {
         return;
     }
     // (asked after this frame — a turn's end draws one)
@@ -297,12 +301,20 @@ pub fn turn_over(ed: &mut Editor, ok: bool) {
     }
     said.asked = asked(&c.msgs[..turn]);
     said.turn = users.saturating_sub(1);
-    said.own = own;
     let turn = c.follow.replay.turns().back().map_or(&[][..], |t| &t.stops[..]);
     said.judge = crate::turnmap::Judge::of(turn, &ed.workspace.root, &c.edits.seen);
     ed.workspace.claude.flags.answer = Some(said);
     ed.unchanged = false;
     sync(ed);
+}
+
+/// An answer's opening sentence, from `msgs` — one turn's, after its question: its last message of words' first (the
+/// paragraph an asked place's flag leads to — `chatdoc::reading_rows`'s rule for an empty name).
+fn opening(msgs: &[Msg]) -> String {
+    let Some(m) = msgs.iter().rev().find(|m| m.role == Role::Assistant) else { return String::new() };
+    let Some(b) = blocks(&m.text).into_iter().next() else { return String::new() };
+    let s = sentences(&b).first().map_or(b.as_str(), |r| &b[r.clone()]).trim().to_string();
+    capped(&s, SENTENCE_MAX)
 }
 
 /// The question a turn answered, from the messages up to its answer: its first line that says something.
@@ -353,7 +365,7 @@ pub fn sync(ed: &mut Editor) {
     // (a file made or removed since they were found: asked again after the next frame — never placed by an answer for
     // the files as they were)
     let roots: Vec<PathBuf> = ed.workspace.roots().all().map(|r| r.to_path_buf()).collect();
-    if !c.places.is_for(ed.workspace.listing, &roots) {
+    if !said.places.is_empty() && !c.places.is_for(ed.workspace.listing, &roots) {
         ed.unchanged = false;
         return;
     }
@@ -370,14 +382,17 @@ pub fn sync(ed: &mut Editor) {
         ed.unchanged = false;
         return;
     }
-    let notes = &ed.workspace.claude.notes;
-    let own: Vec<(&PathBuf, &Range<usize>)> =
-        notes.list.iter().filter(|n| said.own.contains(&n.id)).map(|n| (&n.path, &n.lines)).collect();
     let inside = |p: &PathBuf| roots.iter().any(|r| crate::paths::inside(r, p).is_some());
-    let placed: Vec<(PathBuf, Said)> = (found.into_iter())
-        .filter(|(p, s)| inside(p) && !own.iter().any(|(op, ol)| *op == p && ol.contains(&s.lines.start)))
-        .map(|(p, s)| (p, s.clone()))
+    let mut placed: Vec<(PathBuf, Said)> =
+        (found.into_iter()).filter(|(p, _)| inside(p)).map(|(p, s)| (p, s.clone())).collect();
+    // (the lines asked about, each a place of the answer at its first paragraph — but where the answer named them)
+    let named =
+        |p: &PathBuf, l: &Range<usize>| placed.iter().any(|(q, s)| q == p && l.contains(&s.lines.start));
+    let about: Vec<(PathBuf, Said)> = (said.about.iter())
+        .filter(|(p, l)| inside(p) && !named(p, l))
+        .map(|(p, l)| (p.clone(), Said { name: "".into(), lines: l.clone(), sentence: said.opening.clone() }))
         .collect();
+    placed.extend(about);
     let Some(w) = ed.workspace.claude.flags.answer.take() else { return };
     if placed.is_empty() {
         return;
@@ -393,7 +408,9 @@ pub fn sync(ed: &mut Editor) {
             .map(|d| d.text.line(s.lines.start).to_string().trim().to_string());
         let doc = crate::docpaths::find(ed, &path);
         let check = w.judge.judged(&path, &s.lines, doc);
-        let origin = Origin { n, at, turn: w.turn, name: s.name, said: s.lines.start, text };
+        // (an asked place's: no name, its line 0 — `Reading`'s answer's first paragraph)
+        let said = if s.name.is_empty() { 0 } else { s.lines.start };
+        let origin = Origin { n, at, turn: w.turn, name: s.name, said, text };
         crate::flags::add(ed, (&path, s.lines), origin, check, (w.asked.clone(), s.sentence));
     }
     crate::flags::attach(ed);
@@ -468,6 +485,7 @@ pub fn restore(ed: &mut Editor, places: Option<&Value>) {
         };
         let end = at(turn + 1).unwrap_or(c.msgs.len());
         let (said, _) = read_answer(&c.msgs[i + 1..end]);
+        let open = opening(&c.msgs[i + 1..end]);
         let asked = asked(&c.msgs[..i + 1]);
         if asked.as_deref() != a["asked"].as_str() {
             lost += stored.len();
@@ -496,13 +514,20 @@ pub fn restore(ed: &mut Editor, places: Option<&Value>) {
         let n = k as u64 + 1;
         let when = a["at"].as_u64().unwrap_or(0);
         for k in kept {
-            // (its words as its answer says them now: one they no longer name is lost)
-            let Some(s) = said.places.iter().find(|s| s.name == k.0 && s.lines.start == k.1) else {
-                lost += 1;
-                continue;
+            // (its words as its answer says them now: one they no longer name is lost — a place asked about, no name, its
+            // answer's opening)
+            let sentence = match k.0.is_empty() {
+                true => open.clone(),
+                false => match said.places.iter().find(|s| s.name == k.0 && s.lines.start == k.1) {
+                    Some(s) => s.sentence.clone(),
+                    None => {
+                        lost += 1;
+                        continue;
+                    }
+                },
             };
             let origin = Origin { n, at: when, turn, name: k.0, said: k.1, text: k.4 };
-            back.push((k.2, k.3, origin, (asked.clone(), s.sentence.clone())));
+            back.push((k.2, k.3, origin, (asked.clone(), sentence)));
         }
     }
     for (path, lines, origin, words) in back {

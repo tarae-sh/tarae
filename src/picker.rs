@@ -151,6 +151,9 @@ pub struct Paint {
     pub bold: Vec<std::ops::Range<usize>>,
     /// Those of the hint's ranges that are buttons: the turn's map's marks, each its stop (`turnmap::hint`).
     pub presses: Vec<(std::ops::Range<usize>, (usize, usize))>,
+    /// What the row's card says under its label, cut or not: a flag's sentence in the notes list (#388 step 3) — the
+    /// row says its place and its question.
+    pub more: Option<String>,
 }
 
 /// One visible line.

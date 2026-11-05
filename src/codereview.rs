@@ -2207,8 +2207,7 @@ pub fn base_reached(ed: &mut Editor) {
             if !reached || ed.workspace.code_review.as_ref().is_none_or(|r| r.started != started) {
                 return ed.unchanged = true;
             }
-            let drafts =
-                ed.workspace.claude.notes.list.iter().filter(|n| n.thread.iter().any(|e| e.draft)).count();
+            let drafts = ed.workspace.claude.notes.list.len();
             close(ed);
             let kept = match drafts {
                 0 => String::new(),
@@ -3315,7 +3314,7 @@ fn places_said(places: &[String]) -> String {
 }
 
 /// The bring card of session `sid` (its checkout `root`, its base `base`), once what it brings is graded on
-/// a worker: it says what the reviewer found (`reviewer: 2 ▲ findings · 1 answered`) and, while high-risk
+/// a worker: it says what the reviewer found (`reviewer: 1 ▲ of 2 findings`) and, while high-risk
 /// changes in it wait for a person's look, names them and holds its `y` and `p` (`Offer.held`).
 pub fn push_bring_card(
     ed: &mut Editor,
@@ -3447,9 +3446,6 @@ pub(crate) fn reviewer_said(ed: &Editor, root: &Path, highs: &[Held], head: &str
         }
         State::Done => format!("{who}: {}", crate::nav::count(t.findings, "finding")),
     };
-    if t.answered > 0 {
-        s.push_str(&format!(" · {} answered", t.answered));
-    }
     if !rv.head.is_empty() && rv.head != head {
         s.push_str(" · on an earlier state");
     }
@@ -5454,8 +5450,7 @@ pub fn wide_toggle(ed: &mut Editor) {
 
 /// Whether `space n` writes drafts: a review is open, or drafts are waiting to go.
 pub fn drafting(ed: &Editor) -> bool {
-    ed.workspace.code_review.is_some()
-        || ed.workspace.claude.notes.list.iter().any(|n| n.thread.iter().any(|e| e.draft))
+    ed.workspace.code_review.is_some() || !ed.workspace.claude.notes.list.is_empty()
 }
 
 /// The lines around a note as a diff against the review's base: context, `-` removed, `+` added.
@@ -5513,14 +5508,9 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     // it goes with the next `space v s`, a moment later)
     let placing = ed.workspace.claude.notes.list.iter().filter(|n| n.placing).count();
     let drafts: Vec<u64> = (ed.workspace.claude.notes.list.iter())
-        .filter(|n| !n.placing && n.thread.iter().any(|e| e.draft))
-        // (a parent's: the reviewer's words alone, looked at again as they go — a draft of yours written on one while it
-        // waited for the turn's end keeps that one yours to send)
-        .filter(|n| {
-            by.is_none_or(|b| {
-                b.ids.contains(&n.id) && n.thread.iter().filter(|e| e.draft).all(|e| e.by == By::Reviewer)
-            })
-        })
+        .filter(|n| !n.placing)
+        // (a parent's: the reviewer's findings of its run alone, looked at again as they go)
+        .filter(|n| by.is_none_or(|b| b.ids.contains(&n.id) && n.by == By::Reviewer))
         .map(|n| n.id)
         .collect();
     let later = || match by {
@@ -5540,7 +5530,7 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
         );
     }
     if drafts.is_empty() {
-        not_sent(ed, "none is the reviewer's alone now — the user wrote on them, sent or closed them");
+        not_sent(ed, "none is there now — the user sent or closed them");
         return ed.set_status("no drafts — space n on a line writes one");
     }
     // (Claude answering: the notes wait for its turn's end, as a message does — frictions29 18: refused, they sat
@@ -5590,7 +5580,7 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     }
     let label = ed.workspace.code_review.as_ref().map_or_else(|| "changes".to_string(), |r| r.base.label());
     // (the reviewer's findings — a note it began — go as findings, apart from your comments)
-    let by_reviewer = |n: &crate::notes::Note| n.thread.first().is_some_and(|e| e.by == By::Reviewer);
+    let by_reviewer = |n: &crate::notes::Note| n.by == By::Reviewer;
     let findings = drafts
         .iter()
         .filter(|id| ed.workspace.claude.notes.list.iter().any(|n| n.id == **id && by_reviewer(n)))
@@ -5612,24 +5602,18 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
         };
         let tag = if by_reviewer(n) { "finding" } else { "comment" };
         let mut by = (if by_reviewer(n) { " by=\"reviewer\"" } else { "" }).to_string();
-        // (the board's: the angles that found it and what its skeptic made of it — the trace after the thread)
+        // (the board's: the angles that found it and what its skeptic made of it — the trace after its words)
         let mark = n.board.as_ref().filter(|_| by_reviewer(n));
         if let Some(m) = mark {
             by += &format!(" angle=\"{}\" checked=\"{}\"", m.angles.join(" "), m.verdict.word());
         }
         body.push_str(&format!(
-            "<{tag} note=\"{}\"{by} path=\"{}\" lines=\"{}-{}\">\n<diff>\n{diff}</diff>\n",
-            n.id,
+            "<{tag}{by} path=\"{}\" lines=\"{}-{}\">\n<diff>\n{diff}</diff>\n",
             crate::chat::shown(&ed.workspace.root, &n.path),
             n.lines.start + 1,
             n.lines.end
         ));
-        for e in &n.thread {
-            body.push_str(e.by.word());
-            body.push_str(": ");
-            body.push_str(&e.text);
-            body.push('\n');
-        }
+        body.push_str(&format!("{}: {}\n", n.by.word(), n.text));
         // (a skeptic's trace only for what it confirmed — an unchecked one's reason is tarae's own)
         if let Some(m) = mark.filter(|m| !m.trace.is_empty()) {
             let who = if m.verdict == crate::board::Verdict::Confirmed { "skeptic" } else { "tarae" };
@@ -5651,8 +5635,7 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     };
     let mine = if by.is_some() { "The reviewer's findings" } else { "My review" };
     let mut question = format!(
-        "{mine}: {what} on {}. Address each — change the code where it calls for it, and answer every one on \
-         its note.",
+        "{mine}: {what} on {}. Address each — change the code where it calls for it, and answer every one.",
         crate::nav::count(f, "file")
     );
     if findings > 0 {
@@ -5698,13 +5681,22 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
         not_sent(ed, "couldn't reach its claude — the findings are kept unsent");
         return ed.set_warning("couldn't reach claude — the chat panel says why (the drafts are kept)");
     }
-    for n in ed.workspace.claude.notes.list.iter_mut().filter(|n| drafts.contains(&n.id)) {
-        for e in &mut n.thread {
-            e.draft = false;
-        }
-        n.waiting = true;
+    // (sent, they leave the code: their words are the message's, their lines places of its answer — flags, #388 Q9)
+    let notes = &mut ed.workspace.claude.notes;
+    let asked: Vec<_> = notes
+        .list
+        .iter()
+        .filter(|n| drafts.contains(&n.id))
+        .map(|n| (n.path.clone(), n.lines.clone()))
+        .collect();
+    notes.list.retain(|n| !drafts.contains(&n.id));
+    if notes.open.is_some_and(|o| drafts.contains(&o)) {
+        notes.open = None;
     }
-    ed.workspace.claude.notes.turn = drafts;
+    let c = ed.workspace.claude.chat.as_mut();
+    if let Some(m) = c.and_then(|c| c.msgs.iter_mut().rev().find(|m| m.role == crate::chat::Role::User)) {
+        m.asked = asked;
+    }
     // (what it held back said, never in silence: the reviewer's findings still being placed go with the next)
     let held = match placing {
         0 => String::new(),

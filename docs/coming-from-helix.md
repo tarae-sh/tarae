@@ -19,7 +19,7 @@ as it is (put it in tarae's config). Where tarae needed a key for something Heli
 |---|---|---|
 | `space g` | The git panel, lazygit-style: files → their hunks and conflicts (`s` stage, `d` discard, `o`/`t`/`a`), commit (`C`: Claude drafts the message), `p`/`P` pull/push, `B` branches, `L` log, stash — `?` lists them | Changed files (a picker) |
 | `space e` · `space o` · `space q` | Side panel: files · outline · the list (quickfix) | File explorer (a picker) |
-| `space i` · `space l` · `space n` · `space v` | Ask Claude to edit the selection · chat · a note on the line · review your changes | — |
+| `space i` · `space l` · `space n` · `space v` | Ask Claude to edit the selection · chat · ask about these lines · review your changes | — |
 | `space u` · `space U` | Undo what Claude changed in its last turn, across files · bring it back | — |
 | `space m` · `space x` · `space T` | Build tasks · tests · terminal | — |
 | `]q` `[q` · `]x` `[x` · `]m` `[m` · `]n` `[n` | The list · failed tests · conflicts · notes | — |

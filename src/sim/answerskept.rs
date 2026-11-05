@@ -12,7 +12,9 @@
 //! own). At the end, nothing racing: two answers and a flag pressed, then the store holds exactly the
 //! flags that are there, and a resume brings back exactly what it keeps: the places it writes again are the ones read;
 //! and the chat is every answer whole (#388 step 2: nothing folds) — every word of every answer in its document and in
-//! the rows a frame lays out, none standing for words that aren't drawn.
+//! the rows a frame lays out, none standing for words that aren't drawn. Some questions ask about lines of `src/b.rs`
+//! (#388 step 3: `space n`'s quote, `Msg.asked`) — a flag of the answer on each, one a line where the answer names the
+//! same line itself.
 
 use std::path::Path;
 use std::time::Duration;
@@ -69,7 +71,7 @@ fn run(choices: Choices) -> Vec<String> {
         let last = |_: &mut Sim, ed: &mut Editor| match k {
             2 => pressed(ed),
             _ => {
-                let said = turn(ed, &mut asked, 2, 5);
+                let said = turn(ed, &mut asked, (2, 5), Some(4));
                 crate::term::render(ed, &mut Vec::new(), W, H).unwrap();
                 said
             }
@@ -137,19 +139,24 @@ fn where_they_are(places: &Option<Value>) -> Vec<(Value, Value, Value, Value)> {
     answers.iter().flat_map(|a| a["places"].as_array().into_iter().flatten().map(|p| at(a, p))).collect()
 }
 
-/// A turn's end: question `asked` + 1, its answer (led by `A<asked>:`) naming `src/a.rs:a` and, past 0, `src/b.rs:b`.
-fn turn(ed: &mut Editor, asked: &mut usize, a: usize, b: usize) -> String {
+/// A turn's end: question `asked` + 1 — about `src/b.rs`'s line `about` (from 0) where given —, its answer (led by
+/// `A<asked>:`) naming `src/a.rs:a` and, past 0, `src/b.rs:b`.
+fn turn(ed: &mut Editor, asked: &mut usize, (a, b): (usize, usize), about: Option<usize>) -> String {
     *asked += 1;
     let text = match b {
         0 => format!("A{asked}: it is read in src/a.rs:{a}."),
         _ => format!("A{asked}: it is read in src/a.rs:{a}; src/b.rs:{b} checks it.\n\nNothing else."),
     };
+    let lines = about.map(|l| (ed.workspace.root.join("src/b.rs"), l..l + 1));
     let chat = ed.workspace.claude.chat.as_mut().unwrap();
-    chat.msgs.push(Msg::new(Role::User, format!("question {asked}"), ""));
+    let mut q = Msg::new(Role::User, format!("question {asked}"), "");
+    q.asked = lines.into_iter().collect();
+    chat.msgs.push(q);
     chat.follow.new_turn();
     chat.msgs.push(Msg::new(Role::Assistant, &text, ""));
     crate::chatnotes::turn_over(ed, true);
-    format!("question {asked}: {text:?}")
+    let about = about.map_or(String::new(), |l| format!(" about src/b.rs:{}", l + 1));
+    format!("question {asked}{about}: {text:?}")
 }
 
 /// A press on a flag (#388) — the oldest, or one picked —, then what the loop does after it: the chat at its paragraph,
@@ -171,9 +178,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, asked: &mut usize) -> String {
     // (by arm: a turn's end 3, a frame 3, a resume 2, time 1, a flag pressed 2, the chat closed 1, the column scrolled
     // or hidden and shown 2, a flag's row in `space N` 1)
     match c.weighted(&[3, 3, 2, 1, 2, 1, 2, 1]) {
+        // (asked about line 5 — the one `src/b.rs:5` names too — or line 8, or no lines)
         0 => {
-            let (a, b) = (*c.pick(&[2, 5]), *c.pick(&[0, 3, 5]));
-            turn(ed, asked, a, b)
+            let (a, b, about) = (*c.pick(&[2, 5]), *c.pick(&[0, 3, 5]), *c.pick(&[None, Some(4), Some(7)]));
+            turn(ed, asked, (a, b), about)
         }
         1 => {
             crate::term::render(ed, &mut Vec::new(), W, H).unwrap();
@@ -312,6 +320,19 @@ fn held(ed: &Editor) -> Result<(), String> {
             return Err(format!("answer {} twice at line {}", o.n, n.lines.start));
         }
         seen.push(key);
+    }
+    // (each answer's question's asked lines — where the rows still hold them — a flag of that answer, its own or one by name)
+    for n in &flags.list {
+        let about = users.get(n.origin.turn).map_or(&[][..], |m| &m.asked[..]);
+        for (path, lines) in about {
+            if !seen.contains(&(n.origin.n, path.clone(), lines.start)) {
+                return Err(format!(
+                    "answer {} has no flag at the line {} its question asked about",
+                    n.origin.n,
+                    lines.start + 1
+                ));
+            }
+        }
     }
     Ok(())
 }

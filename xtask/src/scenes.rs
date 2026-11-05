@@ -683,78 +683,6 @@ const C1_BOTTOM: &[&str] = &[
     "what does this line do?",
     "@1",
 ];
-/// `notethread`'s note, its card open by `]n` (the chat's turn over): a reply typed on it, and its card sent.
-macro_rules! c1_reply_keys {
-    ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", "anything off in the loop?", "\r", "@20?pinned a note", "@2", "\x1b", "\x1b",
-          " ", "L", "gg", "]n", "@1", " ", "n", "@1", $($more,)* "@1"]
-    };
-}
-const C1_REPLY: &[&str] = c1_reply_keys!("should it warn, or keep the first?");
-const C1_SENT: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\r");
-/// Focus C1b's: a question's and a reply's input (`c1-new`'s, `c1-reply`'s keys) with `tab later` on the bottom line · kept,
-/// the line closed and the status line saying how many · its card, `space v s send 1` · `space n` while one waits, on another
-/// line and on the same note: `enter later`, how many on the top line.
-const C1B_KEPT: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\t");
-const C1B_KEPT_CARD: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\t", "@6");
-const C1B_DRAFTING: &[&str] =
-    c1_reply_keys!("should it warn, or keep the first?", "\t", "@1", "gg", " ", "n", "@1", "and this line?");
-/// Two kept, the card closed, the toast gone: the status line's `2 drafts · space v s` at rest.
-const C1B_STATUS: &[&str] = c1_reply_keys!(
-    "should it warn, or keep the first?",
-    "\t",
-    "@1",
-    "gg",
-    " ",
-    "n",
-    "@1",
-    "and this line?",
-    "\r",
-    "@8"
-);
-const C1B_DRAFTING_REPLY: &[&str] =
-    c1_reply_keys!("should it warn, or keep the first?", "\t", "@1", " ", "n", "@1", "one more thought");
-/// Three questions written while Claude works, the chat beside them: its queued row, the status line's words — `idle`'s turn
-/// never ends — and, `c1b-batch`'s, the one message they went as, answered on their notes.
-macro_rules! c1b_queued_keys {
-    ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", "look over the loop", "\r", "@1", "\x17", "h",
-          "8G", " ", "n", "@1", "why a HashMap?", "\r", "@1",
-          "11G", " ", "n", "@1", "and if two names clash?", "\r", "@1",
-          "14G", " ", "n", "@1", "does this need sorting?", "\r", "@1", $($more,)*]
-    };
-}
-const C1B_QUEUED: &[&str] = c1b_queued_keys!(" ", "l", "@1");
-const C1B_WENT: &[&str] = c1b_queued_keys!("@30?Answered each", "@1");
-/// Its card sent, your cursor gone to a line with no note: no `space n` on its bottom line · `space n` there, a question
-/// standing in for that card, the note's line end saying what it says · a reply on a closed card, the line end left to it.
-const C1_OTHER_LINE: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\r", "@1", "gg");
-const C1_STAND_IN: &[&str] =
-    c1_reply_keys!("should it warn, or keep the first?", "\r", "@1", "gg", " ", "n", "@1", "and this line?");
-const C1_CLOSED: &[&str] = &[
-    "@1",
-    " ",
-    "l",
-    "@1",
-    "anything off in the loop?",
-    "\r",
-    "@20?pinned a note",
-    "@2",
-    "\x1b",
-    "\x1b",
-    " ",
-    "L",
-    "gg",
-    "]n",
-    "@1",
-    "q",
-    "@1",
-    " ",
-    "n",
-    "@1",
-    "should it warn?",
-    "@1",
-];
 
 const A1_LINE: &[&str] = &[
     "@1",
@@ -771,7 +699,7 @@ const A1_LINE: &[&str] = &[
     "@1",
     "why a Vec here?",
     "\r",
-    "@20?answered",
+    "@20?It's a map",
     "@2",
     "\x1b",
     "\x1b",
@@ -842,7 +770,7 @@ const F272_FIRST: &[&str] = f271_keys!("\x1b", "@1", "@hover+4?Checking how");
 const F272_LAST: &[&str] = f271_keys!("\x1b", "@1", "@hover?…");
 const F272_HAND: &[&str] = f271_keys!("/", "Checking", "\r", "\x1b");
 
-/// Focus A1b's: `A1_LINE`'s thread, its card opened by `]n` (the cursor on its line opens nothing now).
+/// Focus A1b's: `A1_LINE`'s answer, `]n` to its flag (#388: the column at its paragraph).
 const A1B_LINE: &[&str] = &[
     "@1",
     " ",
@@ -858,12 +786,39 @@ const A1B_LINE: &[&str] = &[
     "@1",
     "why a Vec here?",
     "\r",
-    "@20?answered",
+    "@20?It's a map",
     "@2",
     "\x1b",
     "\x1b",
     "9G",
     "]n",
+    "@1",
+];
+
+/// #388 step 3's: `space n` on two lines — the ask line, the lines quoted, a question typed; and `A1_LINE`'s answer listed
+/// by `space N` — the asked line's row its place and question, the row in hand's card the answer's opening.
+const S3_ASK: &[&str] = &["@1", "10G", "x", "x", " ", "n", "@1", "why a HashMap here?", "@1"];
+const S3_LIST: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "\x1b",
+    "@0.5",
+    "9",
+    "G",
+    "x",
+    " ",
+    "n",
+    "@1",
+    "why a Vec here?",
+    "\r",
+    "@20?It's a map",
+    "@2",
+    "\x1b",
+    "\x1b",
+    " ",
+    "N",
     "@1",
 ];
 
@@ -4254,27 +4209,15 @@ const SCENES: &[Scene] = &[
     Scene { name: "f269-back", claude: "idle", files: SPOOL, keys: F269_BACK },
     Scene { name: "f269-d", claude: "idle", files: SPOOL, keys: F269_D },
     Scene { name: "f269-dg", claude: "idle", files: SPOOL, keys: F269_DG },
-    // (focus C1: `space n`'s line in the card, at the lines it's about)
+    // (focus C1: `space n` at the lines it's about — the ask line, its lines quoted since #388 step 3; its answer in the
+    // chat, the lines a flag of it)
     Scene { name: "c1-new", claude: "idle", files: MAIN, keys: C1_NEW },
     Scene { name: "c1-new-chat", claude: "idle", files: MAIN, keys: C1_NEW_CHAT },
     Scene { name: "c1-bottom", claude: "idle", files: MAIN, keys: C1_BOTTOM },
-    Scene { name: "c1-reply", claude: "notethread", files: MAIN, keys: C1_REPLY },
-    Scene { name: "c1-sent", claude: "notethread", files: MAIN, keys: C1_SENT },
-    Scene { name: "c1-other-line", claude: "notethread", files: MAIN, keys: C1_OTHER_LINE },
-    Scene { name: "c1-stand-in", claude: "notethread", files: MAIN, keys: C1_STAND_IN },
-    Scene { name: "c1-closed", claude: "notethread", files: MAIN, keys: C1_CLOSED },
-    // (focus C1b: several replies at once — kept for later from the card's input, queued as one message)
-    Scene { name: "c1b-ask", claude: "idle", files: MAIN, keys: C1_NEW },
-    Scene { name: "c1b-reply", claude: "notethread", files: MAIN, keys: C1_REPLY },
-    Scene { name: "c1b-kept", claude: "notethread", files: MAIN, keys: C1B_KEPT },
-    Scene { name: "c1b-kept-card", claude: "notethread", files: MAIN, keys: C1B_KEPT_CARD },
-    Scene { name: "c1b-status", claude: "notethread", files: MAIN, keys: C1B_STATUS },
-    Scene { name: "c1b-drafting", claude: "notethread", files: MAIN, keys: C1B_DRAFTING },
-    Scene { name: "c1b-drafting-reply", claude: "notethread", files: MAIN, keys: C1B_DRAFTING_REPLY },
-    Scene { name: "c1b-queued", claude: "idle", files: MAIN, keys: C1B_QUEUED },
-    Scene { name: "c1b-went", claude: "c1b-batch", files: MAIN, keys: C1B_WENT },
     Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
     Scene { name: "a1b-line-card", claude: "focus-line", files: MAIN, keys: A1B_LINE },
+    Scene { name: "s3-ask", claude: "idle", files: MAIN, keys: S3_ASK },
+    Scene { name: "s3-list", claude: "focus-line", files: MAIN, keys: S3_LIST },
     Scene { name: "a1b-flow-cut", claude: "a1-flow", files: MAIN, keys: A1B_CUT },
     // (focus A1b step 2: the conversation's answers kept, newest first, the newest opening itself)
     Scene { name: "a1b2-turn-open", claude: "a1b-two", files: MAIN, keys: A1B_TWO[0] },
@@ -6882,8 +6825,6 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "focus-asks",
     "focus-line",
     "tour",
-    "notethread",
-    "c1b-batch",
     "a1-none",
     "flow3-none",
     "flow3-error",
@@ -7043,7 +6984,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "focus-typing" => turn.focus_explain(true)?,
             "focus-fix" => turn.focus_fix()?,
             "focus-asks" => turn.focus_asks()?,
-            "focus-line" => turn.focus_line(&line)?,
+            "focus-line" => turn.focus_line()?,
             "e1-map" => turn.e1_map(false)?,
             "e1-failed" => turn.e1_map(true)?,
             // (focus F0's: the three verdicts on one answer, a second answer on the same lines)
@@ -7055,8 +6996,6 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // (focus A1c's: a real answer's shape)
             "a1c" => turn.a1c()?,
             "tour" => turn.tour()?,
-            "notethread" => turn.note_thread(&line)?,
-            "c1b-batch" => turn.c1b_batch(&line, turns)?,
             // (focus A1's: an answer naming no place)
             "a1-none" => turn.a1_none()?,
             // (the flow plan's piece 3: an answer with no place and no stop — the reader opens by itself — and a turn
@@ -8041,17 +7980,12 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
-    /// #187's turn: a run of a long command and a note of several lines — each a call and its result as claude's stream
-    /// says them (nothing runs, no request of tarae's) — then a few words and the turn's end.
+    /// #187's turn: a run of a long command — a call and its result as claude's stream says them (nothing runs, no request
+    /// of tarae's) — then a few words and the turn's end.
     fn cut_hand(&mut self) -> io::Result<()> {
         let run = "cargo fmt --all && git diff --stat | tail -3 && cargo clippy --all-targets -q 2>&1 | grep -E \
                    'warning|error' | head -20 && cargo test -q --bin tarae whole";
-        let note = "The first strand is kept now; the tests cover the entry change.\nThe clone in the loop can go \
-                    once names are borrowed — a later change.";
-        let stops = [
-            ("run", json!({"command": run}), "exit 0"),
-            ("note", json!({"path": "src/main.rs", "line": 3, "text": note}), "noted"),
-        ];
+        let stops = [("run", json!({"command": run}), "exit 0")];
         self.words("I tidied the loop and checked it.")?;
         self.text("\n\n")?;
         for (n, (name, args, said)) in stops.into_iter().enumerate() {
@@ -8326,22 +8260,16 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
-    /// focus D1's `focus-line`: `space n`'s question at a line — a read, then the answer in its thread (`reply_to` the
-    /// note the message names).
-    fn focus_line(&mut self, line: &str) -> io::Result<()> {
-        let id: u64 = line
-            .split("note id=\\\"")
-            .nth(1)
-            .map(|s| s.chars().take_while(char::is_ascii_digit).collect::<String>())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
+    /// focus D1's `focus-line`, the docs' `notes.png`: `space n`'s question at a line — a read, then the answer in the chat,
+    /// naming no place (the lines asked about its flag — #388 step 3).
+    fn focus_line(&mut self) -> io::Result<()> {
         self.words("Reading how the map is filled.")?;
         self.text("\n\n")?;
         self.call(1, "read", json!({"files": ["src/main.rs:7-12"]}))?;
-        let text = "It's a map, not a Vec: threads are keyed by name, so a repeated name replaces the strand before \
-                    it. A Vec would keep both, in order, and the loop would print each.";
-        self.call(2, "note", json!({"reply_to": id, "text": text}))?;
-        self.words("I answered at the note. That is all.")?;
+        self.words(
+            "It's a map, not a Vec: threads are keyed by name, so a repeated name replaces the strand before it. A Vec \
+             would keep both, in order, and the loop would print each.",
+        )?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
@@ -8370,44 +8298,6 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.words(about)?;
             self.text("\n\n")?;
         }
-        self.line(json!({"type": "result", "result": "done"}))
-    }
-
-    /// Focus C1b's: a first turn long enough to write three questions in; the message they went as, each answered on its
-    /// note by `reply_to`, a line of prose after.
-    fn c1b_batch(&mut self, line: &str, turns: usize) -> io::Result<()> {
-        if turns == 1 {
-            self.words("Reading the loop.")?;
-            std::thread::sleep(Duration::from_secs(14));
-            self.words("Nothing off so far.")?;
-            return self.line(json!({"type": "result", "result": "done"}));
-        }
-        let number = |s: &str| {
-            s.trim_start_matches(['\\', '"']).split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
-        };
-        let ids: Vec<u64> = line.split("note id=").skip(1).filter_map(number).collect();
-        for (k, id) in ids.iter().enumerate() {
-            let text =
-                "A map by name: each strand is looked up once per line, and a Vec would walk them all.";
-            self.call(k as u64 + 1, "note", json!({"reply_to": id, "text": text}))?;
-        }
-        self.words("Answered each on its note.")?;
-        self.line(json!({"type": "result", "result": "done"}))
-    }
-
-    /// The docs' `notes.png`: a question answered with a note pinned at its line; your reply there (a message naming the
-    /// note) answered in its thread, as `focus-line` answers.
-    fn note_thread(&mut self, line: &str) -> io::Result<()> {
-        if line.contains("note id=") {
-            return self.focus_line(line);
-        }
-        self.words("Reading the loop.")?;
-        self.text("\n\n")?;
-        self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
-        let text = "insert keys the map by name: a second strand with the same name replaces this one, and nothing \
-                    says so.";
-        self.call(2, "note", json!({"path": "src/main.rs", "line": 10, "text": text}))?;
-        self.words("One thing to watch there: I pinned a note on it.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

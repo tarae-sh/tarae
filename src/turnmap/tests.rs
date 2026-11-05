@@ -191,17 +191,13 @@ fn a_whole_read_marks_the_file_not_a_line() {
     assert!(f.lines.is_empty(), "{:?}", f.lines);
 }
 
-/// What isn't a place in the project: outside it, counted and never marked; a note, a plan and a page, no mark at all.
+/// What isn't a place in the project: outside it, counted and never marked; a plan and a page, no mark at all.
 #[test]
 fn what_has_no_place_on_the_map() {
     let mut page = read("a.rs", 0..1);
     page.page = Some(crate::replay::PageAt { url: "https://a.test".into(), copy: None });
-    let turn = [
-        stop("read", Some(PathBuf::from("/elsewhere/x.rs")), Some(0..1)),
-        stop("note", Some(at("a.rs")), Some(0..1)),
-        stop("plan", None, None),
-        page,
-    ];
+    let turn =
+        [stop("read", Some(PathBuf::from("/elsewhere/x.rs")), Some(0..1)), stop("plan", None, None), page];
     let (files, outside) = fold(&turn, Path::new(ROOT));
     assert!(files.is_empty(), "{files:?}");
     assert_eq!(outside, 1);

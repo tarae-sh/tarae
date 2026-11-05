@@ -65,8 +65,8 @@ pub enum PromptKind {
     Shell(crate::shell::Pipe),
     /// `C-r` in the global search results — the replacement text.
     Replace,
-    /// `space n`: a reply to note N, or (None) a question starting a note on this line.
-    Note(Option<u64>),
+    /// `space n` in a review: a comment on this line, a draft (`notes::submit`; outside a review `space n` is the ask line).
+    Note,
     /// A plugin's line (its token; its label is the prompt's `label`).
     Plugin(u64),
     /// `space W o`: a new session's name (`worktree.rs`; the label says what it's made from).
@@ -90,8 +90,7 @@ impl PromptKind {
             PromptKind::Rename => "rename:",
             PromptKind::Shell(p) => p.label(),
             PromptKind::Replace => "replace with:",
-            PromptKind::Note(Some(_)) => "reply:",
-            PromptKind::Note(None) => "ask claude:",
+            PromptKind::Note => "comment:",
             PromptKind::Plugin(_) => ">",
             PromptKind::Session => "new session:",
             PromptKind::Change => "change:",
@@ -481,10 +480,9 @@ pub struct InputDrawn {
     pub w: usize,
 }
 
-/// What an open note's card's height is laid out from (`Screen.note_rows`): the note, its thread's entries and their
-/// text's length, its waiting row, its board's trace and the code's (columns, rows) — a reply, a placing or a resize lays
-/// it out again. The last: whether it holds `space n`'s line (focus C1).
-pub type NoteRowsKey = (u64, usize, usize, bool, bool, (usize, usize), bool);
+/// What an open note's card's height is laid out from (`Screen.note_rows`): the note, its text's length, its board's trace
+/// and the code's (columns, rows) — a placing or a resize lays it out again.
+pub type NoteRowsKey = (u64, usize, bool, (usize, usize));
 
 /// Whose text a mouse drag selects — where its press was (`Editor.mouse_anchor`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3215,7 +3213,6 @@ impl Editor {
         self.offer_view_sync();
         self.offer_group_sync();
         crate::notes::stale_sync(self);
-        crate::notes::queue_sync(self);
         crate::stuck::sync(self);
         crate::now::sync(self);
         self.bring_queue_sync();
@@ -3631,13 +3628,11 @@ impl Editor {
                     _ => {}
                 }
             }
-            // The note card: a drag over its words selects them, copied as you let go; a press not dragged replies
-            // (`space n`) as you let go; while its reply's line is open, said — what you typed stays, its card's words
-            // still yours to copy
+            // The note card: a drag over its words selects them, copied as you let go; a press not dragged is its words'
+            // — a draft takes no reply (#388)
             (S::NoteCard, _) => {
                 took_mouse(S::NoteCard);
                 let at = crate::term::note_at(self, x, y);
-                let replying = matches!(self.prompt.as_ref().map(|p| p.kind), Some(PromptKind::Note(_)));
                 match m.kind {
                     K::Down => self.note_marked = at.map(|p| (p, p)),
                     K::Drag => {
@@ -3647,26 +3642,17 @@ impl Editor {
                     }
                     // (the gesture over with the release: what it held let go — else every later drag anywhere would
                     // come here while the card is drawn, `mouse_under`)
-                    K::Up => match (crate::term::note_marked_text(self), self.note_marked.take()) {
-                        (Some(text), _) => {
+                    K::Up => {
+                        let text = crate::term::note_marked_text(self);
+                        self.note_marked = None;
+                        if let Some(text) = text {
                             let what = match text.lines().count() {
                                 0 | 1 => format!("{} characters", text.chars().count()),
                                 n => format!("{n} lines"),
                             };
                             crate::clipboard::copy(self, text, what);
                         }
-                        (None, Some(_)) if replying => {
-                            self.set_status(match crate::codereview::drafting(self) {
-                                true => "replying — enter keeps it for later · esc close",
-                                false => "replying — enter sends it · esc close",
-                            })
-                        }
-                        (None, Some(_)) => {
-                            self.pressed_through = Some((x, y, crate::clock::now()));
-                            crate::notes::start_card(self)
-                        }
-                        (None, None) => {}
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -6601,14 +6587,6 @@ impl Editor {
             }
             Code::Backspace if plain && empty => self.cancel_prompt(),
             Code::Char('c') if key.ctrl && !key.alt => self.cancel_prompt(),
-            // `space n`'s line kept for later: a draft, `space v s` sends it with the rest (the line has no completion)
-            Code::Tab if plain && matches!(kind, PromptKind::Note(_)) => {
-                let Some(p) = self.prompt.take() else { return };
-                let PromptKind::Note(target) = p.kind else { return };
-                if !crate::notes::keep(self, target, &p.text()) {
-                    self.prompt_view_back(Some(&p));
-                }
-            }
             // A new session's name: another base to make it from
             Code::Char('b') if key.ctrl && !key.alt && kind == PromptKind::Session => {
                 let name = self.prompt.take().map(|p| p.text()).unwrap_or_default();
@@ -6668,9 +6646,9 @@ impl Editor {
             PromptKind::Plugin(token) => self.plugin_prompt_done(token, Some(text)),
             PromptKind::Shell(p) => self.shell_pipe(p, &text),
             PromptKind::Replace => self.replace_plan_start(text),
-            PromptKind::Note(target) => {
-                // (nothing typed, a review's comment: no card to show, as `esc`)
-                if !crate::notes::submit(self, target, &text) {
+            PromptKind::Note => {
+                // (a review's comment: no card to show, as `esc`)
+                if !crate::notes::submit(self, &text) {
                     self.prompt_view_back(Some(&p));
                 }
             }
@@ -8515,8 +8493,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// At a walk-through's stop, `space n` asks about the stop: the note takes its lines, and Claude hears
-    /// what it said they do. The card says so.
+    /// At a walk-through's stop, `space n` asks about the stop: the ask line quotes the stop's lines (#388 step 3) —
+    /// only them: what Claude said there is its own, already in the conversation.
     #[test]
     fn asking_at_a_walk_through_stop() {
         use serde_json::json;
@@ -8561,15 +8539,28 @@ mod tests {
         assert!(crate::follow::stop_yours(&ed).is_some(), "your cursor at the stop");
         assert!(!card(&mut ed), "none for the stop your cursor is in");
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "your move took over");
+        // (#388 step 3: the ask line, the stop's lines quoted whole — the answer's place whether or not it cites them)
+        // (the answer's column in sight: the quote over its input — `quote::add`; out of sight, the ask line)
         feed(&mut ed, "<esc><space>n");
-        let asking = crate::notes::asking(&ed, ed.doc());
-        assert_eq!(asking, Some(7..9), "its card under the stop's lines as it's typed");
+        assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Chat, "the chat's input has the keys");
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let asked: Vec<_> = c.quotes.iter().map(|q| q.asked.clone()).collect();
+        assert_eq!(asked, [Some((lib.clone(), 7..9))], "one quote, the stop's lines");
+        assert!(c.follow.paused, "the stop holds still while you ask");
         feed(&mut ed, "why here?<ret>");
-        let n = ed.workspace.claude.notes.list.last().expect("a note");
-        assert_eq!((n.path.as_path(), n.lines.clone()), (lib.as_path(), 7..9), "the stop's lines");
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let last = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
+        assert_eq!(last.asked, [(lib.clone(), 7..9)], "the message carries the lines asked");
+        // (the hold goes with the question: its turn follows again — `Follow::new_turn`)
+        assert!(!c.follow.paused, "the question's turn follows");
+        assert!(ed.workspace.claude.notes.list.is_empty(), "no note");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let sent = std::fs::read_to_string(&log).unwrap();
-        assert!(sent.contains("why here?") && sent.contains("you said: where it ends"), "{sent}");
+        let line = sent.lines().find(|l| l.contains("why here?")).expect("sent");
+        assert!(
+            line.contains("<quoted id=") && line.contains(r#"from=\"code\""#) && line.contains("lib.rs"),
+            "{line}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -9223,97 +9214,6 @@ mod tests {
         };
         assert_eq!(said(&ed, "edit.rs"), ["●"]);
         assert_eq!(said(&ed, "lib.rs"), ["•", "◦"]);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Notes end to end over the control protocol: Claude pins one with the `note` tool (tarae answers the
-    /// `mcp_message`), you reply in place with `space n`, Claude answers on the thread with `reply_to`.
-    #[test]
-    fn notes_pinned_by_claude_and_answered_in_place() {
-        use serde_json::json;
-        let (dir, main, _, lib) = follow_project("notes");
-        let log = dir.join("stdin.log");
-        let call = |id: u64, args: serde_json::Value| {
-            json!({"type": "control_request", "request_id": format!("c{id}"), "request": {"subtype": "mcp_message",
-                "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": id, "method": "tools/call",
-                "params": {"name": "note", "arguments": args}}}})
-        };
-        let tool = |args: serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t", "name": "mcp__tarae__note", "input": args}]}});
-        let pin = json!({"path": lib, "line": 3, "text": "Line 3 repeats line 2."});
-        let answer = json!({"reply_to": 1, "text": "Because the fixture counts lines."});
-        let result = json!({"type": "result", "result": "done"});
-        let turn = |events: &[serde_json::Value]| {
-            events.iter().map(|e| format!("printf '%s\\n' '{e}'")).collect::<Vec<_>>().join("; ")
-        };
-        let script = format!(
-            "n=0; while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in '{{\"message\"'*) ;; *) continue;; esac; \
-             n=$((n+1)); if [ $n = 1 ]; then {}; else {}; fi; done",
-            log.display(),
-            turn(&[tool(pin.clone()), call(7, pin), result.clone()]),
-            turn(&[tool(answer.clone()), call(8, answer), result]),
-        );
-        let mut ed = editor("");
-        ed.open(&main).unwrap();
-        ed.config.llm.command = "sh".into();
-        ed.config.llm.args = vec!["-c".into(), script];
-        feed(&mut ed, "<space>lany notes?<ret>");
-        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        assert_eq!(ed.workspace.claude.notes.list.len(), 1);
-        let n = &ed.workspace.claude.notes.list[0];
-        assert_eq!(
-            (n.path.as_path(), n.lines.clone(), n.gist()),
-            (lib.as_path(), 2..3, "Line 3 repeats line 2.")
-        );
-        // Follow went to the note: its line in sight, your cursor apart — `space n` acts at your cursor (#250), so you go
-        // there first
-        assert_eq!(ed.doc().path.as_deref(), Some(lib.as_path()));
-        assert_eq!(crate::follow::view_line(&ed), Some(2));
-        assert_eq!(crate::notes::here(&ed).map(|n| n.id), None, "not at your cursor");
-        // The fake logs our control_response when it reads it — wait for that
-        let logged = |needle: &str| {
-            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-            loop {
-                let sent = std::fs::read_to_string(&log).unwrap_or_default();
-                if sent.contains(needle) || std::time::Instant::now() > end {
-                    return sent;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        };
-        let sent = logged("note #1 pinned at");
-        assert!(
-            sent.lines().next().unwrap().contains("\"sdkMcpServers\":[\"tarae\"]"),
-            "registered first: {sent}"
-        );
-        assert!(sent.contains("\"request_id\":\"c7\"") && sent.contains("note #1 pinned at"), "{sent}");
-        // Reply in place — the keys stay in the editor
-        feed(&mut ed, "<esc><esc>3G<space>nwhy?<ret>");
-        assert!(ed.workspace.claude.notes.list[0].waiting);
-        assert!(
-            !ed.workspace.is_at(crate::workspace::At::Chat),
-            "replying doesn't move the keys to the chat"
-        );
-        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        let n = &ed.workspace.claude.notes.list[0];
-        let thread: Vec<_> = n.thread.iter().map(|e| (e.by, e.text.as_str())).collect();
-        use crate::notes::By;
-        assert_eq!(
-            thread,
-            [
-                (By::Author, "Line 3 repeats line 2."),
-                (By::You, "why?"),
-                (By::Author, "Because the fixture counts lines.")
-            ]
-        );
-        assert!(!n.waiting);
-        let sent = logged("replied on note #1");
-        assert!(
-            sent.contains("<note id=\\\"1\\\"") && sent.contains("claude: Line 3 repeats line 2."),
-            "{sent}"
-        );
-        assert!(sent.contains("replied on note #1"), "{sent}");
-        let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(c.msgs.iter().any(|m| m.role == crate::chat::Role::User && m.chip.starts_with("¶ #1")));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10668,12 +10568,12 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// frictions29 18: while Claude works, the review's notes (`space v s`) and a reply on a note wait for the
-    /// turn's end as a message does — not refused, drafts until they go — and the queued row says what waits: how
-    /// many messages (a second joins the first) and the last one's start, the review's notes, the replies. At the
-    /// turn's end they go first, one a turn, the messages after.
+    /// frictions29 18: while Claude works, the review's notes (`space v s`) wait for the turn's end as a message does —
+    /// not refused, drafts until they go — and the queued row says what waits: how many messages (a second joins the
+    /// first) and the last one's start, the review's notes. At the turn's end they go first, one a turn, the messages
+    /// after.
     #[test]
-    fn review_notes_and_replies_wait_for_the_turns_end_and_the_row_counts_them() {
+    fn review_notes_wait_for_the_turns_end_and_the_row_counts_them() {
         let s = crate::scratch::Scratch::new("chat-sends-queued");
         let log = s.join("sent.log");
         let draw = |ed: &mut Editor| {
@@ -10700,29 +10600,17 @@ mod tests {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!(c.queued.as_deref(), Some("second\n\nthird"));
         assert!(draw(&mut ed).contains("2 messages queued · third"), "{}", draw(&mut ed));
-        // A reply on a note while Claude works: in its thread now, sent at the turn's end (review 5)
-        let path = s.join("a.rs");
-        let other = crate::notes::add(&mut ed, &path, 2..3, crate::notes::By::You, "and here?");
-        crate::notes::submit(&mut ed, Some(other), "this one too");
-        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-        assert_eq!(said, "reply queued — it goes when Claude's turn ends");
-        let said = ed.workspace.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0);
-        assert_eq!(said.as_deref(), Some("a reply and 2 messages queued"));
         // A draft note sent as a review while Claude works: queued, still a draft
+        let path = s.join("a.rs");
         let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, "why?");
-        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
-        (n.thread[0].draft, n.waiting) = (true, false);
         crate::codereview::send_as(&mut ed, None);
         let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         assert_eq!(said, "review queued — its 1 comment goes when Claude's turn ends");
-        assert!(
-            ed.workspace.claude.notes.list.iter().find(|n| n.id == id).unwrap().thread[0].draft,
-            "a draft until sent"
-        );
+        assert!(ed.workspace.claude.notes.list.iter().any(|n| n.id == id), "a draft until sent");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(matches!(c.sends[..], [crate::chat::Later::Reply { .. }, crate::chat::Later::Review(None)]));
+        assert!(matches!(c.sends[..], [crate::chat::Later::Review(None)]));
         let said = ed.workspace.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0);
-        assert_eq!(said.as_deref(), Some("review notes, a reply and 2 messages queued"));
+        assert_eq!(said.as_deref(), Some("review notes and 2 messages queued"));
         let s = draw(&mut ed);
         assert!(s.contains("queued · third"), "{s}");
         // (one that sends nothing by its turn — its drafts gone with the first: the next goes on — review 1)
@@ -10735,22 +10623,20 @@ mod tests {
             parser.process(&bytes);
             parser.screen().contents()
         };
-        assert!(narrow(&mut ed).contains("5 queued · third"), "{}", narrow(&mut ed));
+        assert!(narrow(&mut ed).contains("4 queued · third"), "{}", narrow(&mut ed));
         assert!(
-            ed.ui_state().text().contains("review notes, a reply and 2 messages queued"),
+            ed.ui_state().text().contains("review notes and 2 messages queued"),
             "{}",
             ed.ui_state().text()
         );
         assert_eq!(sent(&log).lines().count(), 1, "nothing goes while Claude works");
-        // The turn ends: the reply goes first; at the next end the review, its draft sent; at the one after, the
+        // The turn ends: the review goes first, its draft sent (and gone from the code — #388); at the next end the
         // second review has nothing to send and the messages go
         settle_until(&mut ed, |_| sent(&log).lines().count() == 2);
-        assert!(sent(&log).lines().nth(1).unwrap().contains("this one too"), "{}", sent(&log));
+        assert!(sent(&log).lines().nth(1).unwrap().contains("<review of="), "{}", sent(&log));
+        assert!(!ed.workspace.claude.notes.list.iter().any(|n| n.id == id));
         settle_until(&mut ed, |_| sent(&log).lines().count() == 3);
-        assert!(sent(&log).lines().nth(2).unwrap().contains("<review of="), "{}", sent(&log));
-        assert!(!ed.workspace.claude.notes.list.iter().find(|n| n.id == id).unwrap().thread[0].draft);
-        settle_until(&mut ed, |_| sent(&log).lines().count() == 4);
-        let last = sent(&log).lines().nth(3).unwrap().to_string();
+        let last = sent(&log).lines().nth(2).unwrap().to_string();
         assert!(last.contains("second") && last.contains("third"), "{last}");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
@@ -12207,9 +12093,11 @@ mod tests {
         );
     }
 
-    /// Asking about a line starts a note with you; Claude's plain answer (no tool) lands in the thread.
+    /// #388 step 3: `space n` outside a review is the ask line with the lines quoted — the cursor's line, or the lines a
+    /// selection is on — the quote marked with them (`Quote.asked`), no note made; sent, the question carries them
+    /// (`Msg.asked`), the lines its answer's flag. Claude's plain answer lands in the chat, never in a thread.
     #[test]
-    fn a_question_on_a_line_becomes_a_note() {
+    fn space_n_outside_a_review_asks_in_the_chat_with_the_lines_quoted() {
         use serde_json::json;
         let (dir, main, ..) = follow_project("ask");
         let mut ed = editor("");
@@ -12221,18 +12109,35 @@ mod tests {
                 json!({"type": "result", "result": "done"}),
             ],
         );
-        feed(&mut ed, "j<space>nwhat is this?<ret>");
-        let n = &ed.workspace.claude.notes.list[0];
-        assert_eq!((n.lines.clone(), n.waiting), (1..2, true));
-        assert!(
-            ed.workspace.claude.chat.is_some() && !ed.workspace.is_at(At::Chat),
-            "the chat opens without taking the keys"
-        );
+        let asked = |ed: &Editor| -> Vec<_> {
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            c.quotes.iter().map(|q| q.asked.clone()).collect()
+        };
+        // A selection over two lines: both, whole
+        feed(&mut ed, "jxx<space>n");
+        assert!(ed.chat_asking(), "the ask line has the keys");
+        assert_eq!(asked(&ed), [Some((main.clone(), 1..3))]);
+        assert!(ed.workspace.claude.notes.list.is_empty(), "no note");
+        // (its frame says the lines once: the quote in the file's place, the selection within them not again)
+        assert_eq!(crate::chat::ask_goes(&ed), ["main.rs:2–3 · 2 lines"]);
+        // Dropped, then one line selected
+        feed(&mut ed, "<esc>");
+        ed.workspace.claude.chat.as_mut().unwrap().quotes.clear();
+        feed(&mut ed, ";x<space>n");
+        let line = ed.cursor_line();
+        assert_eq!(asked(&ed), [Some((main.clone(), line..line + 1))]);
+        feed(&mut ed, "what is this?<ret>");
+        assert!(!ed.workspace.is_at(At::Chat) || !ed.chat_asking(), "the ask line went");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        let n = &ed.workspace.claude.notes.list[0];
-        assert_eq!(n.thread.len(), 2);
-        assert_eq!(n.thread[1].text, "It prints line 2.");
-        assert!(!n.waiting);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let q = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
+        assert_eq!(q.asked, [(main.clone(), line..line + 1)]);
+        // (its row names the file once, the quote its lines; the selection doesn't go again beside the quote)
+        assert_eq!(q.chip, format!("main.rs · L{}", line + 1));
+        assert!(
+            c.msgs.iter().any(|m| m.role == crate::chat::Role::Assistant && m.text == "It prints line 2.")
+        );
+        assert!(ed.workspace.claude.notes.list.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -12275,8 +12180,7 @@ mod tests {
         let mut ed = editor("");
         ed.open(&lib).unwrap();
         for (line, text) in [(3, "one"), (3, "two"), (3, "three"), (6, "later")] {
-            crate::notes::tool_call(&mut ed, &serde_json::json!({"path": lib, "line": line, "text": text}))
-                .unwrap();
+            crate::notes::add(&mut ed, &lib, line - 1..line, crate::notes::By::Reviewer, text);
         }
         let shown = |ed: &Editor| crate::notes::here(ed).map(|n| n.gist().to_string());
         ed.goto_line(2);
@@ -18292,8 +18196,7 @@ mod tests {
         feed(&mut ed, "<space>nwhy 10?<ret>");
         assert!(ed.workspace.claude.chat.is_none(), "a draft doesn't go anywhere yet");
         let n = &ed.workspace.claude.notes.list[0];
-        assert!(n.thread[0].draft && !n.waiting);
-        assert_eq!(n.lines, 1..2);
+        assert_eq!((n.by, n.lines.clone()), (crate::notes::By::You, 1..2));
         feed(&mut ed, "<space>vm");
         let r = ed.workspace.code_review.as_ref().unwrap();
         assert!(r.viewed(&ed, &r.files[0]));
@@ -18309,11 +18212,8 @@ mod tests {
             ),
         ];
         feed(&mut ed, "<space>vs");
-        assert!(
-            !ed.workspace.claude.notes.list[0].thread[0].draft && ed.workspace.claude.notes.list[0].waiting
-        );
+        assert!(ed.workspace.claude.notes.list.is_empty(), "sent, it left the code (#388)");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        assert!(!ed.workspace.claude.notes.list[0].waiting);
         let sent = std::fs::read_to_string(&log).unwrap();
         for want in [
             "<review of=\\\"uncommitted\\\" comments=\\\"1\\\">",
@@ -18588,30 +18488,13 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// If claude can't be reached, a reply or a new note is taken back instead of waiting forever.
-    #[test]
-    fn a_note_claude_never_saw_is_taken_back() {
-        let (dir, main, ..) = follow_project("unreachable");
-        let mut ed = editor("");
-        ed.open(&main).unwrap();
-        ed.config.llm.command = "/nonexistent/no-llm".into();
-        feed(&mut ed, "<space>nhello<ret>");
-        assert!(ed.workspace.claude.notes.list.is_empty(), "the new note went away");
-        crate::notes::add(&mut ed, &main, 0..1, crate::notes::By::Author, "hi");
-        feed(&mut ed, "<space>nreply<ret>");
-        let n = &ed.workspace.claude.notes.list[0];
-        assert_eq!((n.thread.len(), n.waiting), (1, false), "the reply was taken back");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     /// A note rides its mark: lines added above push it down, and the jump list's pruning keeps it.
     #[test]
     fn notes_follow_edits() {
         let (dir, _, _, lib) = follow_project("edits");
         let mut ed = editor("");
         ed.open(&lib).unwrap();
-        let args = serde_json::json!({"path": lib, "line": 5, "end_line": 6, "text": "here"});
-        crate::notes::tool_call(&mut ed, &args).unwrap();
+        crate::notes::add(&mut ed, &lib, 4..6, crate::notes::By::Reviewer, "here");
         feed(&mut ed, "ggOa<ret>b<esc>");
         ed.push_jump();
         crate::notes::attach(&mut ed);
@@ -18620,8 +18503,7 @@ mod tests {
         assert_eq!(ed.cursor_line(), 6);
         // Across files, in (file, line) order, wrapping
         let util = dir.join("util.rs");
-        crate::notes::tool_call(&mut ed, &serde_json::json!({"path": util, "line": 2, "text": "there"}))
-            .unwrap();
+        crate::notes::add(&mut ed, &util, 1..2, crate::notes::By::Reviewer, "there");
         feed(&mut ed, "]n");
         assert_eq!(ed.doc().path.as_deref(), Some(util.as_path()), "the next note is in another file");
         feed(&mut ed, "]n");
@@ -18630,8 +18512,6 @@ mod tests {
         assert_eq!(ed.doc().path.as_deref(), Some(util.as_path()));
         ed.open(&lib).unwrap();
         ed.goto_line(6);
-        assert!(crate::notes::tool_call(&mut ed, &serde_json::json!({"path": lib, "text": "x"})).is_err());
-        assert!(crate::notes::tool_call(&mut ed, &serde_json::json!({"reply_to": 9, "text": "x"})).is_err());
         feed(&mut ed, ":note-close<ret>");
         assert_eq!(ed.workspace.claude.notes.list.len(), 1, "only the one here");
         feed(&mut ed, ":notes-clear<ret>");

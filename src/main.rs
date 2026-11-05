@@ -453,7 +453,7 @@ fn main() -> Result<()> {
     if !editor.workspace_store.restored {
         editor.workspaces_restore();
     }
-    // Claude's notes from last time in this folder (the open files get them right away), and its turns, for
+    // The notes (your drafts, the reviewer's findings) from last time in this folder (the open files get them right away), and its turns, for
     // `space u` and `space v t` (a restart's, or ones a crash cut short) — the checkout tarae started in;
     // the other sessions' came back with them
     editor.workspace_kept_back(crate::event::WorkspaceId::HOME);

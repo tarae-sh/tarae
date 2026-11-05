@@ -178,8 +178,8 @@ side git · 4 rows · in hand git:src/term.rs
   waiting for `doing: idle` waits for the chat's turn, not a review), and `reviewer_run`, how its reviewer's
   last run went, from its start until the next one, whether or not its review is open:
   - `state`: `waiting` (its turn in the line, none of it reading yet) · `reading` · `done` · `stopped`; `ms`: how long it read (so far, while it reads); `reads`.
-  - `findings`: those still pinned; `answered`: those you or the author answered; `unsent`: those not sent to
-    the author yet (`space v s`).
+  - `findings`: those still pinned — each a draft, not sent to the author yet (`space v s` sends them, and they leave
+    the code).
   - `high`: those on a high-risk change, `null` when its review isn't the one open.
   - `verdict`: its first line; `why`: why it stopped; `by_you`: you stopped it (`:reviewer-stop`); `of`: what
     its review was of.
@@ -205,10 +205,8 @@ side git · 4 rows · in hand git:src/term.rs
   level has only its own session's.
 - **`notes`** (f24, `notes.rs`) — the front session's notes in the order pinned, where each is, never what it
   says: `id` (`note#4`), `path` (from the session's root), `line` (1-based), `kind` (`finding` the reviewer's ·
-  `comment` yours · `claude` its Claude's · `chat` what its last answer said of that place, #239), `sent` (not a
-  draft `space v s` hasn't sent, nor a chat note no one answered), `state` (`waiting` for
-  Claude's answer · `answered` · `open`). Claude's level lists only the sent ones (`notes sent to you: …`) —
-  what `reply_to` answers; `reply_to` on a draft is refused.
+  `comment` yours) — each a draft until `space v s` sends it, when it leaves the code (#388). Claude's level lists
+  none: every note there is the user's until sent.
 - **`motions`** (motion, `motion.rs`) — motions on a clock under way: `kind` (`flash` · `press` · `wet`), `act` (a flash's `undo` ·
   `redo` · `repeat` · `yank` · `paste`, a press's `stamp`, Claude's fresh writing's `write`), `until_ms` (left until it's gone) — a driver waits for one to end, never sleeps.
   Not at Claude's level.
@@ -482,7 +480,7 @@ another session as counts — never carries it.
 
 `--review [SESSION]` (#213) is the same for a session's reviewer, as `space v r` reads it: `"review": "s1"` in
 the `state` request; the JSON is `{"v", "review": {session, name, reviewer, verdict, findings: [{path, line,
-end, high, answered, thread: [{by, text}]}]}}` — `reviewer` is the state's `reviewer` row (null: none yet),
+end, high, text}]}}` — `reviewer` is the state's `reviewer` row (null: none yet),
 `verdict` whole, `high` null when its review isn't the one open. The user's level only, as `--chat`. Beside
 them, `high_unseen` (#214): the high-risk changes of the session's open review no one has looked at yet —
 `[{path, line, end, why, since, text}]` (`since`: lines since an earlier look; `text`: the lines where the file is

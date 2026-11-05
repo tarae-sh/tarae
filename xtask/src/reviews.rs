@@ -186,17 +186,10 @@ fn report(from: &str, text: &str) -> String {
     let t: Vec<Vec<String>> = arms.iter().map(|(l, es)| [vec![l.clone()], times(es)].concat()).collect();
     out += &table(&["Lens", "Changes", "Median active", "Per line", "Acted on"], &t);
 
-    // Findings: one line each (`finding`: by whom, sent, answered — the review panel adds its lens, skeptic
-    // and outcome there)
+    // Findings: one line each (`finding`: by whom — the review panel adds its lens, skeptic and outcome there)
     let findings: Vec<&Value> = all.iter().filter(|e| s(e, "entry") == "finding").collect();
-    let flag = |k: &str| findings.iter().filter(|e| e["finding"][k] == true).count();
     let on = findings.iter().filter(|e| !s(e, "change").is_empty()).count();
-    out += &format!(
-        "\n## Findings: {} — {on} on a change followed, {} sent, {} answered\n",
-        findings.len(),
-        flag("sent"),
-        flag("answered")
-    );
+    out += &format!("\n## Findings: {} — {on} on a change followed\n", findings.len());
 
     // High-risk rules
     let high: Vec<&Value> = changes.iter().copied().filter(|e| s(e, "grade") == "high").collect();
@@ -249,7 +242,7 @@ mod tests {
         has("| turn | 4       | 1 left · 1 looked · 1 undone · 1 viewed |");
         has("| turn | 1       | 50.0 s        | 5.6 min       |");
         has("| off  | 6       | 8.0 s         | 3.0 s    | 2 (33 %) |");
-        has("## Findings: 2 — 1 on a change followed, 1 sent, 0 answered");
+        has("## Findings: 2 — 1 on a change followed");
         has("## High-risk rules: 2 changes");
         has("| rust pack #0 | 2       | 1           | 1        | 0                |");
     }

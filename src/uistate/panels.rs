@@ -497,7 +497,7 @@ impl Panels {
                 "base": r.base, "files": r.files, "viewed": r.viewed, "file": r.file, "focused": r.focused,
                 "rows": rows_json(&r.rows), "high": r.high,
                 "reviewer": r.reviewer.map(|(state, t)| json!({ "state": state, "findings": t.findings,
-                    "high": t.high, "answered": t.answered })),
+                    "high": t.high })),
             })),
             "edit_review": self.edit_review.as_ref().map(|r| json!({
                 "id": r.id, "file": r.file, "change": [r.change.0, r.change.1], "undecided": r.undecided,

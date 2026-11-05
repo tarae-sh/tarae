@@ -31,8 +31,9 @@ use crate::editor::Editor;
 
 /// The record's folder in tarae's state: a file a month, `2026-10.jsonl`.
 pub const DIR: &str = "reviews";
-/// The record's version, in each entry (`v`).
-const RECORD_V: u64 = 1;
+/// The record's version, in each entry (`v`) — 2: a review's `unsent` and a finding's `sent`/`answered` gone (#388 step 3:
+/// a finding sent leaves the code, so every one still there is a draft, and none is answered on its line).
+const RECORD_V: u64 = 2;
 /// A moment counts when an input came within this long of it, before or after.
 pub const IDLE: Duration = Duration::from_secs(20);
 
@@ -1161,10 +1162,9 @@ fn outcomes(ed: &Editor, r: &crate::codereview::CodeReview, w: &mut Watch) {
                 .iter()
                 .filter(|n| n.path == f.path && overlaps(&n.lines, &c.lines));
             let notes: Vec<&crate::notes::Note> = notes.collect();
-            let yours =
-                |n: &&crate::notes::Note| n.id > w.notes_before && n.thread.iter().any(|e| e.by == By::You);
+            let yours = |n: &&crate::notes::Note| n.id > w.notes_before && n.by == By::You;
             let commented = notes.iter().any(yours);
-            c.finding = notes.iter().any(|n| n.thread.first().is_some_and(|e| e.by == By::Reviewer));
+            c.finding = notes.iter().any(|n| n.by == By::Reviewer);
             c.outcome = c.outcome.or(Some(match () {
                 _ if undone => "undone",
                 _ if c.edited => "edited",
@@ -1187,8 +1187,6 @@ fn outcomes(ed: &Editor, r: &crate::codereview::CodeReview, w: &mut Watch) {
             let on = w.kept().find(|c| c.file == file && overlaps(&c.lines, &n.lines));
             let mut finding = serde_json::Map::new();
             finding.insert("by".into(), json!("reviewer"));
-            finding.insert("sent".into(), json!(!crate::notes::unsent(n)));
-            finding.insert("answered".into(), json!(crate::reviewer::answered(n)));
             let change = on.filter(|c| !c.secret && !c.mode).map(|c| c.id.clone());
             w.findings.push(Finding { file, change, finding });
         }
@@ -1243,13 +1241,10 @@ fn say(ed: &mut Editor, mut ev: Value) {
     ed.ui_said(ev);
 }
 
-/// The reviewer's findings and those not sent yet — when it read for this review (`Reviewer.review`).
-fn review_findings(ed: &Editor, w: &Watch) -> Option<(usize, usize)> {
+/// The reviewer's findings still pinned — when it read for this review (`Reviewer.review`).
+fn review_findings(ed: &Editor, w: &Watch) -> Option<usize> {
     let review = ed.workspace.reviewer.as_ref()?.review?;
-    (w.of == Of::Code(review))
-        .then(|| crate::reviewer::review_tally(ed))
-        .flatten()
-        .map(|t| (t.findings, t.unsent))
+    (w.of == Of::Code(review)).then(|| crate::reviewer::review_tally(ed)).flatten().map(|t| t.findings)
 }
 
 fn ms(d: Duration) -> u64 {
@@ -1258,12 +1253,7 @@ fn ms(d: Duration) -> u64 {
 
 /// Watch `w`'s entries: one per change it followed, one per finding, then the review's. No text of the code —
 /// its file, its id, counts, grades, times; a finding's place and its `finding` object, never what it says.
-pub fn entries(
-    w: &Watch,
-    session: &str,
-    at: std::time::SystemTime,
-    findings: Option<(usize, usize)>,
-) -> Vec<Value> {
+pub fn entries(w: &Watch, session: &str, at: std::time::SystemTime, findings: Option<usize>) -> Vec<Value> {
     let at = crate::log::stamp(at);
     let mut out: Vec<Value> = w
         .kept()
@@ -1294,7 +1284,7 @@ pub fn entries(
     out.push(pruned(json!({
         "v": RECORD_V, "at": at, "session": session, "review": w.id, "kind": w.kind, "entry": "review",
         "changes": w.kept().count(), "total": w.total, "lines": { "added": added, "removed": removed },
-        "active_ms": ms(w.active), "findings": findings.map(|f| f.0), "unsent": findings.map(|f| f.1),
+        "active_ms": ms(w.active), "findings": findings,
         "lens": [], "restarted": w.restarted,
     })));
     out

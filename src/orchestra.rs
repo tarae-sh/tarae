@@ -1411,10 +1411,8 @@ pub fn act(ed: &mut Editor, args: &Value) -> Result<String, String> {
                 return Err(format!("{label}'s reviewer is still reading — send once it's done"));
             }
             let notes = &child.claude.notes.list;
-            let of_run = || notes.iter().filter(|n| r.findings.contains(&n.id) && crate::notes::unsent(n));
-            let reviewers = |n: &&crate::notes::Note| {
-                n.thread.iter().filter(|e| e.draft).all(|e| e.by == crate::notes::By::Reviewer)
-            };
+            let of_run = || notes.iter().filter(|n| r.findings.contains(&n.id));
+            let reviewers = |n: &&crate::notes::Note| n.by == crate::notes::By::Reviewer;
             let ids: Vec<u64> = of_run().filter(|n| !n.placing).filter(reviewers).map(|n| n.id).collect();
             if ids.is_empty() {
                 return Err(match of_run().any(|n| n.placing) {
@@ -1505,9 +1503,8 @@ fn review_said(ed: &Editor, l: &crate::workspace::Workspace) -> String {
     }
     for n in &notes {
         let mark = if r.high.contains(&n.id) { "▲ " } else { "" };
-        let sent = if crate::notes::unsent(n) { "" } else { " (sent)" };
         let at = crate::chat::shown(&l.root, &n.path);
-        text += &format!("{mark}{at}:{}{sent} — {}\n", n.lines.start + 1, n.gist());
+        text += &format!("{mark}{at}:{} — {}\n", n.lines.start + 1, n.gist());
     }
     match text.is_empty() {
         true => format!("{name} · {state}"),
