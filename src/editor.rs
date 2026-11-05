@@ -414,6 +414,28 @@ impl Screen {
         self.lists.borrow().iter().find(|l| l.0 == kind).map(|l| l.1)
     }
 
+    /// Where the surface showing `kind` was laid out last frame (`rects`) — None where none was, or it had no room.
+    pub fn rect(&self, kind: crate::pane::Shows) -> Option<crate::split::Rect> {
+        self.rects.iter().find(|r| r.0 == kind).map(|r| r.1)
+    }
+
+    /// How wide `kind` was drawn last frame — 0 where it wasn't.
+    pub fn drawn_w(&self, kind: crate::pane::Shows) -> usize {
+        self.rect(kind).map_or(0, |r| r.w)
+    }
+
+    /// The bottom slot as laid last frame: 0 high when it's empty, its first row the one under the code's either way
+    /// (all 0 before the first frame).
+    pub fn slot(&self) -> crate::split::Rect {
+        self.rect(crate::pane::Shows::Slot).unwrap_or_default()
+    }
+
+    /// One past the last row of the code and the bottom slot together, as last drawn (`text_top` their first).
+    pub fn body_end(&self) -> usize {
+        let s = self.slot();
+        s.y + s.h
+    }
+
     /// The column past the bottom slot's last — the chat's first (or a group docked right's), as last drawn.
     pub fn slot_end(&self) -> usize {
         match self.slot_w {
@@ -654,8 +676,13 @@ pub struct Screen {
     pub task_steps: std::cell::RefCell<Vec<(usize, usize, usize, usize)>>,
     /// The side panel's rows: (screen row, list row) — a click opens it.
     pub sidebar: std::cell::RefCell<Vec<(usize, usize)>>,
+    /// Every surface laid out with room last frame, by kind (onetree S1g, `term::Layout`'s `shown`): the side panel's
+    /// only while the review's rail isn't up, the rail's only while it is and nothing fills the screen, the bottom
+    /// slot's always — as laid, 0 high when it's empty, its first row under the code's (`slot`, `body_end`). `sizes.rs`
+    /// and `dock.rs` start a change from these (`rect`, `drawn_w`).
+    pub rects: Vec<(crate::pane::Shows, crate::split::Rect)>,
     /// The whole screen's width (None before the first frame — tests) · the chat's, the side panel's (0: not shown — folded away if it's open) and
-    /// the bottom slot's (rows) as drawn last frame (`sizes.rs` starts a change from these).
+    /// the bottom slot's (rows) as drawn last frame (`rects` says them too: these go with onetree S1h).
     pub width: Option<usize>,
     pub chat_w: usize,
     pub side_w: usize,

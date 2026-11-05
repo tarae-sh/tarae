@@ -21,6 +21,7 @@
 //! `C-w j` or a click: they're its panel's view mode (`view.rs` — `q` closes it, Esc or `C-w k` back to the
 //! code).
 
+use crate::pane::Shows;
 use crate::workspace::At;
 
 use std::path::{Path, PathBuf};
@@ -383,10 +384,11 @@ impl crate::editor::Editor {
     /// What `C-w <`/`>` acts on: the chat or the side panel, whichever has the keys — from the code, the
     /// chat if it's shown as a panel, else the side panel.
     fn sized(&self) -> Option<Which> {
-        let chat = self.screen.chat_w > 0 && self.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden);
+        let chat = self.screen.drawn_w(Shows::Chat) > 0
+            && self.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden);
         let side = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
         // (the review's rail with its keys: its own width)
-        if self.screen.rail_w > 0 && self.review_rail_up() && self.workspace.is_at(At::Rail) {
+        if self.screen.drawn_w(Shows::Rail) > 0 && self.review_rail_up() && self.workspace.is_at(At::Rail) {
             return Some(Which::Rail);
         }
         if chat && self.workspace.is_at(At::Chat) {
@@ -401,7 +403,7 @@ impl crate::editor::Editor {
     /// How wide the chat can be on this screen: beside the side panel no wider than leaves the code
     /// `CODE_MIN` (else the panel would go), alone what leaves it `CHAT_FULL_CODE`.
     fn chat_max(&self, total: usize) -> usize {
-        match self.screen.side_w {
+        match self.screen.drawn_w(Shows::Side) {
             0 => total.saturating_sub(CHAT_FULL_CODE),
             side => total.saturating_sub(side + CODE_MIN),
         }
@@ -409,17 +411,18 @@ impl crate::editor::Editor {
 
     /// How wide the side panel can be: what leaves the code `CODE_MIN` beside the chat.
     fn side_max(&self, total: usize) -> usize {
-        total.saturating_sub(self.screen.chat_w + CODE_MIN).min(SIDE_MAX)
+        total.saturating_sub(self.screen.drawn_w(Shows::Chat) + CODE_MIN).min(SIDE_MAX)
     }
 
     /// How wide the review's rail can be: what leaves the code beside it `RAIL_CODE`, `RAIL_MAX` at most.
     fn rail_max(&self, total: usize) -> usize {
-        total.saturating_sub(self.screen.chat_w + RAIL_CODE).min(RAIL_MAX)
+        total.saturating_sub(self.screen.drawn_w(Shows::Chat) + RAIL_CODE).min(RAIL_MAX)
     }
 
     /// How tall the bottom slot can be: the code keeps `BOTTOM_CODE`.
     fn bottom_max(&self) -> usize {
-        self.screen.body_h.saturating_sub(BOTTOM_CODE).max(BOTTOM_MIN)
+        let s = &self.screen;
+        s.body_end().saturating_sub(s.text_top + BOTTOM_CODE).max(BOTTOM_MIN)
     }
 
     /// The border at screen cell (`x`, `y`) — as last drawn: the gutter left of the chat, the one right of
@@ -445,15 +448,24 @@ impl crate::editor::Editor {
                 return Some(Border::Follow { cols, rows });
             }
         }
-        let end = s.text_top + s.body_h;
-        let bottom_y = end - s.bottom_h;
-        if s.chat_w > 0 && s.chat_w < total && x == total - s.chat_w && y < end {
+        let (end, slot) = (s.body_end(), s.slot());
+        // (the chat's left line, where it doesn't fill the screen; the left column's right one)
+        if let Some(c) = s.rect(Shows::Chat).filter(|c| c.w < total)
+            && x == c.x
+            && y < end
+        {
             return Some(Border::Chat);
         }
-        if s.side_w > 0 && x + 1 == s.side_w && y < end {
+        if let Some(r) = s.rect(Shows::Side)
+            && x + 1 == r.x + r.w
+            && y < end
+        {
             return Some(Border::Side);
         }
-        if s.rail_w > 0 && x + 1 == s.rail_w && y < end {
+        if let Some(r) = s.rect(Shows::Rail)
+            && x + 1 == r.x + r.w
+            && y < end
+        {
             return Some(Border::Rail);
         }
         let tab = || {
@@ -464,10 +476,10 @@ impl crate::editor::Editor {
         if let Some(kind) = self.dock_edge_at(x, y) {
             return Some(Border::Leaf(kind));
         }
-        if s.bottom_h > 0
-            && y == bottom_y
-            && x >= s.slot_x
-            && x < s.slot_end().min(total - s.chat_w)
+        if slot.h > 0
+            && y == slot.y
+            && x >= slot.x
+            && x < s.slot_end().min(s.rect(Shows::Chat).map_or(total, |c| c.x))
             && !tab()
         {
             return Some(Border::Bottom);
@@ -625,7 +637,7 @@ impl crate::editor::Editor {
                 self.sizes.rail = Some(cols as u16);
             }
             Border::Bottom => {
-                let rows = (s.text_top + s.body_h).saturating_sub(y).clamp(BOTTOM_MIN, self.bottom_max());
+                let rows = s.body_end().saturating_sub(y).clamp(BOTTOM_MIN, self.bottom_max());
                 self.sizes.bottom = Some(rows as u16);
             }
             // (a docked group's edge: the far side of it stays)
@@ -772,7 +784,7 @@ impl crate::editor::Editor {
         let Some(which) = self.sized() else {
             return self.set_status("nothing to widen — the chat (space l) and the side panel (space e) are");
         };
-        let (chat, side) = (self.screen.chat_w, self.screen.side_w);
+        let (chat, side) = (self.screen.drawn_w(Shows::Chat), self.screen.drawn_w(Shows::Side));
         let step = |now: usize, min: usize, max: usize| {
             let to = if wider { now + STEP_COLS } else { now.saturating_sub(STEP_COLS) };
             to.clamp(min, max.max(min))
@@ -798,7 +810,7 @@ impl crate::editor::Editor {
             }
             Which::Rail => {
                 let max = self.rail_max(total);
-                let cols = step(from(self.sizes.rail, self.screen.rail_w, max), RAIL_MIN, max);
+                let cols = step(from(self.sizes.rail, self.screen.drawn_w(Shows::Rail), max), RAIL_MIN, max);
                 self.sizes.rail = Some(cols as u16);
                 ("review rail", cols)
             }
@@ -816,7 +828,7 @@ impl crate::editor::Editor {
         {
             return;
         }
-        let now = self.screen.bottom_h;
+        let now = self.screen.slot().h;
         if now == 0 {
             return self.set_status("no panel at the bottom — tests, tasks and the terminal show there");
         }
@@ -986,7 +998,6 @@ impl crate::editor::Editor {
     /// What has the keys, as `C-w z` would fill the screen with it — None: the review's file list (it keeps
     /// its width).
     pub fn focused_area(&self) -> Option<Zoom> {
-        use crate::pane::Shows;
         let s = &self.workspace;
         let shows = if s.is_at(At::Chat) && s.claude.chat.as_ref().is_some_and(|c| !c.hidden) {
             Shows::Chat
@@ -1027,9 +1038,9 @@ impl crate::editor::Editor {
         };
         let s = &self.screen;
         let alone = self.workspace.views.len() == 1
-            && s.chat_w == 0
-            && s.side_w == 0
-            && s.bottom_h == 0
+            && s.drawn_w(Shows::Chat) == 0
+            && s.drawn_w(Shows::Side) == 0
+            && s.slot().h == 0
             && !(self.workspace.code_review.is_some() && self.review_rail_up());
         if self.workspace.shows(z.0) == Some(crate::pane::Shows::Code) && alone {
             return self.set_status("the code has the whole screen already");

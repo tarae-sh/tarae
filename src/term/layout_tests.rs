@@ -234,17 +234,32 @@ fn printed(name: &str, ed: &Editor, w: u16, h: u16) -> String {
         .map(|(id, r)| format!("{}#{id} {},{} {}x{}", kind(ed, *id), r.x, r.y, r.w, r.h))
         .collect();
     let chat_x = s.chat_x.map_or("-".into(), |x| x.to_string());
+    // (the home scalars from the frame's rects by kind (onetree S1g), each the same as the field it stands for while
+    // the fields last)
+    use crate::pane::Shows;
+    let slot = s.slot();
+    let from_rects = [
+        ("chat_w", s.drawn_w(Shows::Chat), s.chat_w),
+        ("side_w", s.drawn_w(Shows::Side), s.side_w),
+        ("rail_w", s.drawn_w(Shows::Rail), s.rail_w),
+        ("bottom_h", slot.h, s.bottom_h),
+        ("body_h", s.body_end() - s.text_top, s.body_h),
+        ("slot_x", slot.x, s.slot_x),
+    ];
+    for (what, rects, field) in from_rects {
+        assert_eq!(rects, field, "{w}x{h} · {name}: {what} from the rects");
+    }
     let mut out = format!(
         "## {w}x{h} · {name}\nleaves  {}\nscreen  chat_x {chat_x} · chat_w {} · side_w {} · rail_w {} · bottom_h {} · \
          body_h {} · text_top {} · slot_x {}\n",
         leaves.join(" · "),
-        s.chat_w,
-        s.side_w,
-        s.rail_w,
-        s.bottom_h,
-        s.body_h,
+        from_rects[0].1,
+        from_rects[1].1,
+        from_rects[2].1,
+        from_rects[3].1,
+        from_rects[4].1,
         s.text_top,
-        s.slot_x,
+        from_rects[5].1,
     );
     for l in lines(ed, w, h) {
         out.push_str(&format!("  {l}\n"));

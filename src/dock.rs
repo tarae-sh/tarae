@@ -87,7 +87,7 @@ impl Editor {
         let mut out = [0; crate::pane::DOCKABLE];
         let side_open = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
         let w = crate::sizes::widths(total, self.chat_panel(total), side_open, self.sizes);
-        let rail = if self.review_rail_up() { self.screen.rail_w } else { 0 };
+        let rail = if self.review_rail_up() { self.screen.drawn_w(Shows::Rail) } else { 0 };
         let mut left = total.saturating_sub(w.chat + w.side + rail);
         if w.chat >= total {
             return out;
@@ -436,12 +436,13 @@ impl Editor {
                     }
                 }
                 let beside: usize = columns.iter().map(|c| c.1).sum();
-                let code = total.saturating_sub(s.chat_w + s.side_w + s.rail_w + beside);
+                let left = s.drawn_w(Shows::Side) + s.drawn_w(Shows::Rail);
+                let code = total.saturating_sub(s.drawn_w(Shows::Chat) + left + beside);
                 (DOCK_MIN, r.w + code.saturating_sub(CODE_MIN))
             }
             false => {
-                // (the code's rows: `body_h` leaves out the group's own and the path bar's already)
-                let code = s.body_h.saturating_sub(s.bottom_h);
+                // (the code's rows: from its first to the slot's, the group's own and the path bar's left out already)
+                let code = s.slot().y.saturating_sub(s.text_top);
                 (DOCK_MIN_ROWS, r.h + code.saturating_sub(crate::sizes::BOTTOM_CODE))
             }
         };

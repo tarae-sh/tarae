@@ -906,6 +906,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         review_rail_more: Default::default(),
         task_steps: Default::default(),
         sidebar: Default::default(),
+        rects: screen_rects(editor, &lay),
         width: Some(lay.width),
         over_folded: editor.screen.over_folded,
         chat_w: lay.chat().map_or(0, |r| r.w),
@@ -1262,6 +1263,24 @@ struct Layout {
     /// The chat floating over the code (`Editor::chat_floating`, the flow plan's reader): its frame's cells on the
     /// screen — no chat column then (`chat`), the code its whole width.
     chat_frame: Option<crate::split::Rect>,
+}
+
+/// The frame's surfaces by kind for `Screen.rects` (onetree S1g): `Layout.shown`, the side panel's while the review's
+/// rail isn't up and the rail's while it is and nothing fills the screen (what the left column draws), the bottom slot
+/// as laid (`Layout.slot`, 0 high when it's empty) in place of its leaf.
+fn screen_rects(editor: &Editor, lay: &Layout) -> Vec<(crate::pane::Shows, crate::split::Rect)> {
+    use crate::pane::Shows;
+    let rail = editor.review_rail_up();
+    let mut out: Vec<(Shows, crate::split::Rect)> = (lay.shown.iter().copied())
+        .filter(|s| match s.0 {
+            Shows::Side => !rail,
+            Shows::Rail => rail && lay.zoom.is_none(),
+            Shows::Slot => false,
+            _ => true,
+        })
+        .collect();
+    out.push((Shows::Slot, lay.slot));
+    out
 }
 
 /// Where the chat is drawn this frame (`Layout::chat_at`): its first column and row, its width and rows — floating
