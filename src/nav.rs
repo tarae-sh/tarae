@@ -1384,9 +1384,9 @@ fn tree_defs(ed: &mut Editor, call: Call, word: String, goto: Goto, why: String,
     if word.is_empty() {
         return answer(ed, call, Ok(format!("{why} — and there's no name at that column to look for")));
     }
-    let (root, keys) = (project_root(ed), crate::reads::Keys::of(ed));
+    let (root, keys, edited) = (project_root(ed), crate::reads::Keys::of(ed), edited(ed));
     ed.events.jobs().spawn(move || {
-        let r = tree_found(&root, &word, goto, &keys).map(|(places, no_grammar)| {
+        let r = tree_found(&root, &word, goto, &keys, &edited).map(|(places, no_grammar)| {
             let then = if later { " — ask again in a moment for the server's" } else { "" };
             let what = if goto == Goto::Implementation { "implementation" } else { "definition" };
             let langs = match no_grammar.is_empty() {
@@ -1421,15 +1421,26 @@ fn tree_defs(ed: &mut Editor, call: Call, word: String, goto: Goto, why: String,
     });
 }
 
+/// The buffers with edits not saved, by path, their text as it is (a rope's clone shares its nodes): what the syntax
+/// tree's stand-in reads in place of the disk's (`tree_found`).
+pub(crate) fn edited(ed: &Editor) -> HashMap<PathBuf, ropey::Rope> {
+    (ed.docs.iter())
+        .filter(|d| d.is_modified() && !d.loading)
+        .filter_map(|d| Some((d.path.clone()?, d.text.clone())))
+        .collect()
+}
+
 /// The places the tree says define `word` (or implement it), each with its signature and what defines it
 /// (`function`, `struct`, `impl`) — and the languages of files with hits that have no grammar here. On a
-/// worker: a search, then each file with hits parsed (at most `TREE_FILES`).
+/// worker: a search, then each file with hits parsed (at most `TREE_FILES`). A buffer with edits (`edited`) is read as
+/// it is, never as saved.
 pub(crate) type TreeFound = (Vec<(Place, String)>, std::collections::BTreeSet<String>);
 pub(crate) fn tree_found(
     root: &Path,
     word: &str,
     goto: Goto,
     keys: &crate::reads::Keys,
+    edited: &HashMap<PathBuf, ropey::Rope>,
 ) -> Result<TreeFound, String> {
     let q = crate::grep::Query {
         pattern: word,
@@ -1447,14 +1458,26 @@ pub(crate) fn tree_found(
     let mut files: Vec<(PathBuf, Vec<usize>)> = Vec::new();
     crate::grep::search(root, &[], &q, &|| false, &mut |f| {
         let path = root.join(&f.rel);
-        if keys.shut(&path) {
+        if keys.shut(&path) || edited.contains_key(&path) {
             return true;
         }
         files.push((path, f.rows.iter().filter(|r| r.hit).map(|r| r.line - 1).collect()));
         files.len() < TREE_FILES
     })?;
-    crate::sorting::sort(&mut files);
     let re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(word))).map_err(|e| e.to_string())?;
+    // (a buffer with edits: its own lines searched, the disk's left)
+    let texts: HashMap<&PathBuf, String> = (edited.iter())
+        .filter(|(p, _)| p.starts_with(root) && !keys.shut(p))
+        .map(|(p, t)| (p, t.to_string()))
+        .collect();
+    for (path, text) in &texts {
+        let hits: Vec<usize> =
+            text.lines().enumerate().filter(|(_, l)| re.is_match(l)).map(|(i, _)| i).collect();
+        if !hits.is_empty() && files.len() < TREE_FILES {
+            files.push(((*path).clone(), hits));
+        }
+    }
+    crate::sorting::sort(&mut files);
     let (mut out, mut no_grammar) = (Vec::new(), std::collections::BTreeSet::new());
     let mut parser = tree_sitter::Parser::new();
     for (path, hits) in files {
@@ -1463,7 +1486,13 @@ pub(crate) fn tree_found(
             no_grammar.insert(spec.name.clone());
             continue;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let text = match texts.get(&path) {
+            Some(t) => t.clone(),
+            None => match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            },
+        };
         if text.len() > TREE_FILE_MAX || parser.set_language(&lang.language).is_err() {
             continue;
         }

@@ -98,12 +98,26 @@ fn asked(ed: &Editor) -> Option<(ClientId, u64, Option<Goto>)> {
     })
 }
 
-/// The chat's question by name asked of the server: its request's id.
+/// The chat's question by name asked of the server: its request's id (a key's — never an underline's).
 fn asked_by_name(ed: &Editor) -> Option<(ClientId, u64)> {
+    let key = named(ed).map(|q| q.0)?;
     ed.lsp.pending.iter().find_map(|(&(cid, id), p)| match p.kind {
-        Kind::ChatNamed { .. } => Some((cid, id)),
+        Kind::ChatNamed { n } if n == key => Some((cid, id)),
         _ => None,
     })
+}
+
+/// The underlines' questions asked of the server: each request's id and the name it asks.
+fn underlines_asked(ed: &Editor) -> Vec<(ClientId, u64, String)> {
+    let batch = &ed.workspace.claude.chat.as_ref().unwrap().links.batch;
+    let mut out: Vec<(ClientId, u64, String)> = (ed.lsp.pending.iter())
+        .filter_map(|(&(cid, id), p)| match p.kind {
+            Kind::ChatNamed { n } => batch.iter().find(|a| a.n == n).map(|a| (cid, id, a.word.to_string())),
+            _ => None,
+        })
+        .collect();
+    crate::sorting::by_key(&mut out, |a| a.2.clone());
+    out
 }
 
 /// A `workspace/symbol` answer: each symbol's name, line and character in `file`, and container.
@@ -284,9 +298,9 @@ fn the_chat_says_why_a_name_isnt_asked() {
         "gd",
         &format!("these lines aren't in src/main.rs as quoted — found by the syntax tree ({NONE})"),
     );
-    // (the tree reads the file as saved: its definition's line there)
+    // (the tree reads the buffer as it is, never as saved: its definition under the line added)
     let d = ed.doc();
-    assert_eq!(d.text.byte_to_line(d.selection().primary().cursor(&d.text)), 0, "found by name instead");
+    assert_eq!(d.text.byte_to_line(d.selection().primary().cursor(&d.text)), 1, "found by name instead");
 }
 
 /// #389 step 5: an answer naming code no cited place holds — a qualified name in prose, a bare one, one in a block
@@ -365,6 +379,108 @@ fn a_name_no_cited_place_holds_is_asked_by_name() {
     ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, &[("helpers", 1, 0, "")]) }));
     let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
     assert_eq!(toasts, ["fake found nothing named `helper`"]);
+}
+
+/// #389 step 5b: names written as code — two that come to a definition, one that doesn't, a keyword, words, a file — and
+/// a block with a keyword and a name in it.
+const UNDERLINED: &str = "Both `helper` and `Total::helper` are found; `nothing_here` isn't.\n\nSkip `let`, `cargo test` and `main.rs`.\n\n```rust\nlet x = helper();\n```\n";
+
+/// The words underlined in the chat's column, each run of underlined cells one, top to bottom.
+fn underlined(ed: &mut Editor) -> Vec<String> {
+    let mut bytes = Vec::new();
+    crate::term::render(ed, &mut bytes, W, H).unwrap();
+    let mut p = vt100::Parser::new(H, W, 0);
+    p.process(&bytes);
+    let s = p.screen();
+    let left = chat_left(&s.contents()) as u16;
+    let mut out = Vec::new();
+    for y in 0..H {
+        let mut run = String::new();
+        for x in left..W {
+            match s.cell(y, x).filter(|c| c.underline()) {
+                Some(c) => run.push_str(c.contents()),
+                None if !run.is_empty() => out.push(std::mem::take(&mut run)),
+                None => {}
+            }
+        }
+        out.extend((!run.is_empty()).then_some(run));
+    }
+    out
+}
+
+/// A name written as code is underlined once it comes to a definition by name, asked after the frame that drew it — once,
+/// in a batch, never a keyword, words or a file's name; one that comes to none stays plain; a loading server's empty
+/// answer asked again as its work ends; a press on an underlined name is `gd` there. A keyword's `gd` is said at once,
+/// nothing asked — in prose and in a block alike.
+#[test]
+fn a_name_written_as_code_is_underlined_once_it_comes_to_a_definition() {
+    // (its keywords read from the grammar's highlights query)
+    crate::syntax::Loader::global().load(crate::syntax::spec("rust").unwrap()).unwrap();
+    let (_s, mut ed, file) = setup("chatlink-underlined", true, UNDERLINED);
+    // Asked after the frame: the names only, once each
+    let batch = underlines_asked(&ed);
+    let words: Vec<&str> = batch.iter().map(|a| &*a.2).collect();
+    assert_eq!(words, ["Total", "helper", "nothing_here"], "never a keyword, words or a file");
+    assert!(underlined(&mut ed).is_empty(), "nothing underlined before it's known");
+    let cid = batch[0].0;
+    let progress = |kind: &str| json!({ "method": "$/progress", "params": { "token": "t", "value": { "kind": kind, "title": "Indexing" } } });
+    ed.on_lsp_message(cid, progress("begin"));
+    for (_, id, word) in &batch {
+        let found = match word.as_str() {
+            "helper" => symbols(&file, &[("helper", 0, 3, "Total")]),
+            "Total" => symbols(&file, &[("Total", 0, 0, "")]),
+            _ => symbols(&file, &[("nothing_here_too", 1, 0, "")]),
+        };
+        ed.on_lsp_message(cid, json!({ "id": id, "result": found }));
+    }
+    // (in prose only: the block's `helper` answers the keys unmarked)
+    assert_eq!(underlined(&mut ed), ["helper", "Total", "helper"]);
+    assert!(
+        underlines_asked(&ed).is_empty(),
+        "each asked once; the one the loading server didn't find waits"
+    );
+    ed.on_lsp_message(cid, progress("end"));
+    let again = underlines_asked(&ed);
+    assert_eq!(
+        again.iter().map(|a| &*a.2).collect::<Vec<_>>(),
+        ["nothing_here"],
+        "asked again as its work ends"
+    );
+    ed.on_lsp_message(cid, json!({ "id": again[0].1, "result": [] }));
+    frame(&mut ed);
+    assert!(underlines_asked(&ed).is_empty(), "never asked again");
+    assert_eq!(underlined(&mut ed), ["helper", "Total", "helper"], "`nothing_here` plain");
+    // A press on an underlined name: `gd` there, asked by name
+    press(&mut ed, "are found", "helper", false);
+    assert_eq!(
+        named(&ed).map(|q| (q.1, q.2, q.3)),
+        Some(("helper".to_string(), Some("Total".to_string()), Some(Goto::Definition)))
+    );
+    // A keyword: said at once, nothing asked
+    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys stay in the chat");
+    // (in prose, then in the block: the cursor ends on the match's last character)
+    for keys in ["gg/le<ret>gd", "gg/le<ret>ngd"] {
+        ed.toasts.clear();
+        feed(&mut ed, keys);
+        let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(toasts, ["`let` is a rust keyword — nothing to look up"], "{keys}");
+        assert!(named(&ed).is_none() && asked(&ed).is_none(), "{keys}: nothing asked");
+    }
+}
+
+/// A grammar's keywords are what its highlights query captures as one: a string's own capture, a group's, a predicate's
+/// on a keyword capture — never punctuation, a macro's name or a name the query captures otherwise.
+#[test]
+fn a_grammars_keywords_are_its_highlights_querys() {
+    let rust = crate::syntax::Loader::global().load(crate::syntax::spec("rust").unwrap()).unwrap();
+    for kw in ["let", "fn", "for", "match", "struct", "use", "in", "while"] {
+        assert!(rust.keywords.contains(kw), "{kw}");
+    }
+    for not in ["&", "macro_rules", "macro_rules!", "self", "helper", "Some"] {
+        assert!(!rust.keywords.contains(not), "{not}");
+    }
+    assert_eq!(crate::syntax::keyword_in(["rust"], "fn").as_deref(), Some("rust"));
+    assert_eq!(crate::syntax::keyword_in(["rust"], "helper"), None);
 }
 
 /// A qualified name's container: the name right before its `::` or `.`.

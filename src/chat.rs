@@ -506,6 +506,8 @@ pub struct ChatRow {
     /// The places its message's text names, their part on this row (`places::mark_rows`: found in the message's
     /// lines, so one the wrap broke is on each of its rows) — underlined where the name comes to a file.
     pub places: Vec<crate::places::Named>,
+    /// The names written as code on it (`chatlink::mark_names`) — underlined where one came to a definition by name.
+    pub names: Vec<crate::chatlink::NameAt>,
 }
 
 /// What goes with the input's next message, each kind in the order added (`Chat.with`).

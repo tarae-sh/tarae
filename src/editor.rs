@@ -633,6 +633,8 @@ pub struct Screen {
     pub rest_end: std::cell::Cell<Option<usize>>,
     /// Clickable spots in the chat pane: (row, start col, end col, where it points) — drawing fills them in.
     pub chat_links: std::cell::RefCell<Vec<(usize, usize, usize, crate::chat::Link)>>,
+    /// The names written as code the chat underlines (row, start col, end col): a press is `gd` there (#389 step 5b).
+    pub chat_names: std::cell::RefCell<Vec<(usize, usize, usize)>>,
     /// The chat's rows of tool calls: (row, call id) — a click goes to that call's replay stop.
     pub chat_calls: std::cell::RefCell<Vec<(usize, String)>>,
     /// Where a text that's cut is: (row, start col, end col, which) — the mouse over it shows it whole (`whole.rs`).
@@ -4040,6 +4042,15 @@ impl Editor {
                                     s.chat_calls.borrow().iter().find(|c| c.0 == y).map(|c| c.1.clone());
                                 if !call.is_some_and(|call| crate::follow::replay_call(self, &call)) {
                                     crate::chat::jump(self, link);
+                                }
+                            }
+                            // A name written as code, underlined: `gd` there, the cursor on the character pressed
+                            // (#389 step 5b — what's underlined opens, as a place does)
+                            Part::Link(Link::Name(_)) => {
+                                if let Part::Text { line, col } = self.transcript_text(x, y)
+                                    && crate::chatdoc::click(self, line, col).is_some()
+                                {
+                                    crate::chatlink::key(self, Some(crate::lsp_editor::Goto::Definition));
                                 }
                             }
                             // A chip over the input: what goes, whole (`quote::pressed`) — never taken off

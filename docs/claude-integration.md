@@ -608,7 +608,16 @@ there. Where the name stands decides what's asked, exact first:
   one; a qualified `Thread::length` the ones in `Thread` first). One definition: `gd` goes there, and the other keys
   ask there — `space k` shows its hover, `gr` lists its uses. Several: `gd` lists them, grouped by file as every list
   of places is; the other keys say how many and that `gd` lists them. With no server running, `gd` is the syntax
-  tree's guess among the name's text matches, said as such.
+  tree's guess among the name's text matches, said as such — your open files read as they are, unsaved edits too.
+
+**What's underlined opens.** A name written as code in an answer's prose (`` `helper` ``, `` `Thread::length` ``) is
+underlined once the project's language servers know a definition of it by that exact name — asked after the
+conversation is drawn, a few names at a time, each once, never on your keys. One they don't know stays as written,
+plain, and so does what isn't a name (`` `cargo test` ``, `` `main.rs` ``). A press on an underlined name is `gd`
+there. Code blocks are never underlined, as code isn't in the editor, yet every key above works on their names.
+
+**A keyword is never asked.** `gd` on `let`, `fn` or `for` says at once that it's a keyword of the language it's
+written in — the code block's, else the files the answer cites — as the language's own grammar marks its keywords.
 
 **The keys stay in the conversation.** `gd` moves the code beside it to the definition, its cursor in the
 conversation where it was, so you can follow one name after another as you read; `esc` (or `C-w h`) takes you to

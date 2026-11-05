@@ -4234,6 +4234,21 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: chatlink_keys!("/", "by tie", "\r", "@0.5", "g", "d"),
     },
+    // (#389 step 5b: names written as code underlined once they come to a definition — `say`, `tie`; `grow` (Claude's new
+    // code) left plain; `for` a keyword, never asked, said at once)
+    Scene { name: "chatlink-under", claude: "chatlink-under", files: MAIN, keys: chatlink_keys!("@1") },
+    Scene {
+        name: "chatlink-keyword",
+        claude: "chatlink-under",
+        files: MAIN,
+        keys: chatlink_keys!("/", "the fo", "\r", "@0.5", "g", "d"),
+    },
+    Scene {
+        name: "chatlink-plain",
+        claude: "chatlink-under",
+        files: MAIN,
+        keys: chatlink_keys!("/", "defines gro", "\r", "@0.5", "g", "d"),
+    },
     // (the flow plan's piece 5: a message queued, steered, then heard at Claude's next tool answer; the ask line at work)
     Scene { name: "steer-queued", claude: "steer", files: MAIN, keys: STEER_QUEUED },
     Scene { name: "steer-steering", claude: "steer", files: MAIN, keys: STEER_STEERING },
@@ -6903,7 +6918,8 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-replay" => vec![("src/spool.rs", SPOOL_V4_RS.into())],
         "main-moved" | "three-claudes" | "managers-view" => vec![("src/main.rs", MAIN_MOVED_RS.into())],
-        "edit-in-buffer" | "chatlink-named-one" | "chatlink-named-list" => {
+        "edit-in-buffer" | "chatlink-named-one" | "chatlink-named-list" | "chatlink-under" | "chatlink-keyword"
+        | "chatlink-plain" => {
             vec![("src/main.rs", MAIN_V3_RS.into())]
         }
         // (its lines ended CRLF, committed so: the gutter calm, the status line's form the one thing said)
@@ -6947,6 +6963,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "full",
     "chatlink",
     "chatlink-named",
+    "chatlink-under",
     "three",
     "v3",
     "v4",
@@ -7192,6 +7209,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // (#389's: an answer citing a place, quoting its lines, naming code in prose)
             "chatlink" => turn.chatlink()?,
             "chatlink-named" => turn.chatlink_named()?,
+            "chatlink-under" => turn.chatlink_under()?,
             // (the flow plan's piece 3: an answer with no place and no stop — the reader opens by itself — and a turn
             // that fails, its error said only in the conversation)
             "flow3-none" => turn.flow3_none()?,
@@ -8240,6 +8258,19 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(1, "read", json!({"files": ["src/main.rs:17-20"]}))?;
         self.words(
             "Each thread is said by `say`, and a knot goes on by `tie`. To grow every thread by one:",
+        )?;
+        self.text("\n\n```rust\nfn grow(m: &mut Map) {\n    for t in m.values_mut() {\n        tie(t, 4);\n    }\n}\n```\n\n")?;
+        self.words("Nothing else changes.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #389 step 5b's answer: names written as code — two the project defines, one it doesn't yet (Claude's new code),
+    /// a keyword — and a block of Claude's own.
+    fn chatlink_under(&mut self) -> io::Result<()> {
+        self.call(1, "read", json!({"files": ["src/main.rs:17-20"]}))?;
+        self.words(
+            "Each thread is said by `say`, and a knot goes on by `tie`. Nothing defines `grow` yet, so add it — \
+             the `for` walks every thread:",
         )?;
         self.text("\n\n```rust\nfn grow(m: &mut Map) {\n    for t in m.values_mut() {\n        tie(t, 4);\n    }\n}\n```\n\n")?;
         self.words("Nothing else changes.")?;

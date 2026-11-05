@@ -237,6 +237,202 @@ pub struct Links {
     asking: bool,
     asked: Option<Asked>,
     named: Option<Named>,
+    /// The underlines (§2.3, Q6): what each name written as code came to by name (true: a definition or several), for
+    /// the conversation and the checkout's files as they are — asked once each.
+    words: HashMap<Arc<str>, bool>,
+    /// The names drawn not known yet, in the order drawn: asked after the frame (`ask_names`).
+    wanted: std::cell::RefCell<Vec<Arc<str>>>,
+    /// The batch asked, each name's question until every server asked has answered.
+    batch: Vec<Underline>,
+    /// Names a loading server answered empty: asked again as its work ends (`work_ended`).
+    later: Vec<Arc<str>>,
+    /// The servers' count when none could be asked by name: nothing asked again until it changes.
+    none_at: Option<usize>,
+}
+
+/// A name of the underlines' batch asked by name: its question's number, the servers yet to answer, whether one found
+/// it, whether one was loading.
+#[derive(Debug)]
+struct Underline {
+    n: u64,
+    word: Arc<str>,
+    waiting: Vec<ClientId>,
+    found: bool,
+    busy: bool,
+}
+
+/// Names asked at most in one batch (§2.4): the next batch once this one's answers are all in.
+const BATCH: usize = 16;
+
+/// Where a name written as code stands on a chat row (`ChatRow.names`): the bytes of the row's spans it covers, the name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NameAt {
+    pub bytes: Range<usize>,
+    pub word: Arc<str>,
+}
+
+impl Links {
+    /// Whether `word` is underlined: it came to a definition by name. Not known yet: asked after this frame.
+    pub fn underlined(&self, word: &Arc<str>) -> bool {
+        if let Some(&found) = self.words.get(word) {
+            return found;
+        }
+        let asked = self.batch.iter().any(|a| a.word == *word) || self.later.contains(word);
+        let mut wanted = self.wanted.borrow_mut();
+        if !asked && !wanted.contains(word) {
+            wanted.push(word.clone());
+        }
+        false
+    }
+}
+
+/// Whether `span` (a code span's text) is a name: an identifier or a path of them (`a::b`, `ui.accent`, a call's `()`
+/// after it), ≤ 80 characters — not a file's name (`main.rs`), a flag, a key, a number or words.
+fn name_shaped(span: &str) -> bool {
+    let s = span.strip_suffix("()").unwrap_or(span);
+    let ident = |w: &str| {
+        w.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+            && w.chars().all(|c| c.is_alphanumeric() || c == '_')
+    };
+    !s.is_empty()
+        && s.len() <= 80
+        && s.split("::").all(|p| p.split('.').all(ident))
+        && !(s.contains('.') && crate::syntax::detect(Path::new(s)).is_some())
+}
+
+/// The names written as code on a message's rows (`ChatRow.names`), each word of a name-shaped code span its own (both
+/// of `Editor::root`): a span drawn in the inline code's style (`code`) whose text is one of the message's code spans.
+/// Laid out once with the message's rows; what's underlined is decided each frame (`Links::underlined`).
+pub fn mark_names(rows: &mut [crate::chat::ChatRow], text: &str, code: crate::theme::Style) {
+    if code.fg.is_none() && code.bg.is_none() || !text.contains('`') {
+        return;
+    }
+    let parts = parts(&crate::chat::displayed(text));
+    let spans: Vec<&str> = (parts.iter())
+        .filter_map(|p| if let Part::Prose(t) = p { Some(t) } else { None })
+        .flat_map(|t| t.split('`').skip(1).step_by(2).map(str::trim))
+        .filter(|s| name_shaped(s))
+        .collect();
+    if spans.is_empty() {
+        return;
+    }
+    let styled = |s: &crate::theme::Style| {
+        code.fg.is_none_or(|f| s.fg == Some(f)) && code.bg.is_none_or(|b| s.bg == Some(b))
+    };
+    let w = |c: char| c.is_alphanumeric() || c == '_';
+    for r in rows.iter_mut().filter(|r| r.link.is_none()) {
+        let mut at = 0;
+        for s in &r.spans {
+            let t = s.text.trim();
+            if styled(&s.style) && spans.contains(&t) {
+                let lead = at + (s.text.len() - s.text.trim_start().len());
+                let mut i = 0;
+                while i < t.len() {
+                    let start = i + t[i..].find(w).unwrap_or(t.len() - i);
+                    let end = start + t[start..].find(|c| !w(c)).unwrap_or(t.len() - start);
+                    if start < end {
+                        let word = Arc::from(&t[start..end]);
+                        r.names.push(NameAt { bytes: lead + start..lead + end, word });
+                    }
+                    i = end.max(start + 1);
+                }
+            }
+            at += s.text.len();
+        }
+    }
+}
+
+/// After the frame (`after_frame`): the names it drew not known yet, asked by name — the newest answer's first, one
+/// batch at a time (`BATCH`), each name once. A keyword is never asked (`syntax::keyword_in`: none underlined); with no
+/// server that searches by name, nothing is asked until one starts. The main thread only sends: the answers land as
+/// events (`named_answered`).
+fn ask_names(ed: &mut Editor) {
+    let servers = ed.lsp.clients.len();
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let l = &mut c.links;
+    if !l.batch.is_empty() || l.wanted.get_mut().is_empty() {
+        return;
+    }
+    if l.none_at == Some(servers) {
+        l.wanted.get_mut().clear();
+        return;
+    }
+    l.none_at = None;
+    // (drawn top to bottom: the newest answer's last)
+    let mut wanted = std::mem::take(l.wanted.get_mut());
+    wanted.reverse();
+    let rest = wanted.split_off(wanted.len().min(BATCH));
+    *l.wanted.get_mut() = rest;
+    let root = ed.workspace.root.clone();
+    for word in wanted {
+        if crate::syntax::keyword_in([], &word).is_some() {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                c.links.words.insert(word, false);
+            }
+            continue;
+        }
+        let n = next(ed);
+        let asked = ed.ask_named(&word, Kind::ChatNamed { n }, &root);
+        let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+        match asked {
+            Ok(asked) => {
+                let waiting = asked.into_iter().map(|a| a.0).collect();
+                c.links.batch.push(Underline { n, word, waiting, found: false, busy: false });
+            }
+            // (a server starting: asked again when a frame draws it once it's ready)
+            Err((_, true)) => {}
+            Err((_, false)) => {
+                c.links.none_at = Some(servers);
+                c.links.wanted.get_mut().clear();
+                return;
+            }
+        }
+    }
+}
+
+/// A server's answer to an underline's question (`i` in the batch): found by its exact name, a shared server's for this
+/// checkout only. Once every server asked has answered, what it came to is kept — a loading server's empty answer asked
+/// again as its work ends — and once the batch is in, the next asked; a frame only where an underline came.
+fn underline_answered(ed: &mut Editor, cid: ClientId, i: usize, result: Result<&Value, &Value>) {
+    let loading = ed.client(cid).is_some_and(|c| !c.progress.is_empty());
+    let roots = ed.client(cid).map(|c| c.roots.clone()).unwrap_or_default();
+    let mine = ed.workspace.root.clone();
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let l = &mut c.links;
+    let a = &mut l.batch[i];
+    let Some(k) = a.waiting.iter().position(|&w| w == cid) else { return };
+    a.waiting.remove(k);
+    match result {
+        Ok(v) => {
+            let exact = |s: &&Value| {
+                let name = s["name"].as_str().unwrap_or_default();
+                let path = s["location"]["uri"].as_str().and_then(crate::lsp::path_from_uri);
+                name.split('(').next() == Some(&*a.word)
+                    && path.is_some_and(|p| !crate::share::foreign(&roots, &mine, &p))
+            };
+            let found = v.as_array().is_some_and(|s| s.iter().any(|s| exact(&s)));
+            a.found |= found;
+            a.busy |= !found && loading;
+        }
+        Err(e) if matches!(e["code"].as_i64(), Some(-32801 | -32802)) => a.busy = true,
+        Err(_) => {}
+    }
+    if !a.waiting.is_empty() {
+        ed.unchanged = true;
+        return;
+    }
+    let a = l.batch.remove(i);
+    let came = a.found;
+    match (a.found, a.busy) {
+        (false, true) => l.later.push(a.word),
+        (found, _) => {
+            l.words.insert(a.word, found);
+        }
+    }
+    if l.batch.is_empty() {
+        ask_names(ed);
+    }
+    ed.unchanged = !came;
 }
 
 /// A message's key: its version and its text's length (an append the version didn't see).
@@ -263,12 +459,16 @@ struct Want {
 /// changed (another `listing`): every map made again.
 pub fn after_frame(ed: &mut Editor) {
     let listing = ed.workspace.listing;
-    let docs = &ed.docs;
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if c.links.listing != listing || c.links.generation == 0 {
         c.links.maps.clear();
         (c.links.listing, c.links.generation, c.links.asking) = (listing, generation(), false);
+        // (what the names came to, asked again for the files as they are — an answer in flight lands on nothing)
+        (c.links.words, c.links.batch, c.links.later) = Default::default();
     }
+    ask_names(ed);
+    let docs = &ed.docs;
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if c.links.asking {
         return;
     }
@@ -568,14 +768,26 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
         Ok(Target::Named { word: word.clone(), container: qualifier(&here, w.start), why })
     };
     let parts = parts(&crate::chat::displayed(&m.text));
+    // (a keyword of the language it's written in is never asked: said at once)
+    let keyword = |langs: Vec<&str>| {
+        crate::syntax::keyword_in(langs, &word)
+            .map(|l| format!("`{word}` is a {l} keyword — nothing to look up"))
+    };
     // In a code block: its run of lines in the message's, found in order
     let drawn: Vec<String> = lines.clone().map(text_of).collect();
     let k = line - lines.start;
     let (mut from, mut b) = (0, 0);
     for (j, p) in parts.iter().enumerate() {
-        let Part::Code { lines: code, .. } = p else { continue };
+        let Part::Code { lines: code, lang } = p else { continue };
         if let Some(s) = run_of(&drawn, code, from) {
             if (s..s + code.len()).contains(&k) {
+                let langs = match crate::syntax::resolve(lang) {
+                    Some(l) => vec![l.name.as_str()],
+                    None => langs_of(&parts),
+                };
+                if let Some(said) = keyword(langs) {
+                    return Err(said);
+                }
                 let Some(map) = map else { return Err(WAIT.into()) };
                 let Some(q) = map.quoted.get(b).and_then(Option::as_ref) else {
                     // (the paragraph before it cites a file: the lines aren't there, as quoted)
@@ -615,6 +827,9 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
     if !backticked(&parts, &word) {
         return Err(NOT_CODE.into());
     }
+    if let Some(said) = keyword(langs_of(&parts)) {
+        return Err(said);
+    }
     if cites.is_empty() {
         return named(None);
     }
@@ -641,6 +856,26 @@ pub(crate) fn target(ed: &Editor) -> Result<Target, String> {
             named(Some(format!("`{word}` isn't on the lines this paragraph cites ({})", places.join(", "))))
         }
     }
+}
+
+/// The languages a message's words may be written in: its code blocks' and the files it cites' (none: every one loaded,
+/// `syntax::keyword_in`).
+fn langs_of(parts: &[Part]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for p in parts {
+        let found: Vec<&'static crate::languages::LangSpec> = match p {
+            Part::Code { lang, .. } => crate::syntax::resolve(lang).into_iter().collect(),
+            Part::Prose(t) => {
+                cited(t).iter().filter_map(|(n, ..)| crate::syntax::detect(Path::new(&**n))).collect()
+            }
+        };
+        for l in found {
+            if !out.contains(&l.name.as_str()) {
+                out.push(l.name.as_str());
+            }
+        }
+    }
+    out
 }
 
 /// The container a qualified name at byte `at` of `line` names: `Thread` of `Thread::length`, `ui` of `ui.accent` — the
@@ -755,6 +990,14 @@ fn send(ed: &mut Editor, mut a: Asked) {
 /// A server's work ended: the chat's question it was busy with asked again — at its spot, or by name (while the
 /// transcript's cursor is where it was asked).
 pub fn work_ended(ed: &mut Editor, cid: ClientId) {
+    // (the underlines a loading server answered empty: asked again)
+    if let Some(c) = ed.workspace.claude.chat.as_mut()
+        && !c.links.later.is_empty()
+    {
+        let later = std::mem::take(&mut c.links.later);
+        c.links.wanted.get_mut().extend(later);
+        ask_names(ed);
+    }
     let head = head(ed);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if let Some(q) = c.links.named.take_if(|q| q.again && q.busy.contains(&cid)) {
@@ -898,11 +1141,13 @@ fn by_name(ed: &mut Editor, mut q: Named) {
 /// Claude's `definition`'s stand-in) — said as the tree's, `why` with it.
 fn stand_in(ed: &mut Editor, q: Named, why: String) {
     let (root, keys, word, n) = (ed.workspace.root.clone(), crate::reads::Keys::of(ed), q.word.clone(), q.n);
+    // (a buffer with edits read as it is — a rope's clone, its nodes shared)
+    let edited = crate::nav::edited(ed);
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.links.named = Some(q);
     }
     ed.events.jobs().spawn(move || {
-        let found = crate::nav::tree_found(&root, &word, Goto::Definition, &keys);
+        let found = crate::nav::tree_found(&root, &word, Goto::Definition, &keys, &edited);
         move |ed: &mut Editor| {
             let head = head(ed);
             let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
@@ -949,6 +1194,10 @@ fn go_to_name(ed: &mut Editor, path: &Path, line: usize, word: &str) {
 /// server's for this checkout only — and once every server asked has answered, what they came to (`finish`). Another
 /// asked since, or the transcript's cursor moved: dropped.
 pub fn named_answered(ed: &mut Editor, cid: ClientId, n: u64, result: Result<&Value, &Value>) {
+    let batch = ed.workspace.claude.chat.as_ref().and_then(|c| c.links.batch.iter().position(|a| a.n == n));
+    if let Some(i) = batch {
+        return underline_answered(ed, cid, i, result);
+    }
     let head = head(ed);
     let (server, loading) = match ed.client(cid) {
         Some(c) => (c.name.clone(), !c.progress.is_empty()),
@@ -1114,6 +1363,16 @@ fn ask_there(
         tries: 0,
     };
     send(ed, a);
+}
+
+/// The front chat's underlines as kept: the files' listing they're for, and each name asked with whether it came to a
+/// definition (the simulation's check).
+#[cfg(test)]
+pub(crate) fn underlines(ed: &Editor) -> Option<(u64, Vec<(String, bool)>)> {
+    let l = &ed.workspace.claude.chat.as_ref()?.links;
+    let mut words: Vec<(String, bool)> = l.words.iter().map(|(w, &f)| (w.to_string(), f)).collect();
+    crate::sorting::by_key(&mut words, |w| w.0.clone());
+    Some((l.listing, words))
 }
 
 /// The front chat's question by name in flight or waiting: its number, the name, its container, and what it asks.

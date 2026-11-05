@@ -167,6 +167,8 @@ pub enum Link {
     Id(usize),
     /// A link, a tool call's row, a trail row (`Screen.chat_links`).
     Chat(usize),
+    /// A name written as code that came to a definition, underlined (`Screen.chat_names`): a press is `gd` there.
+    Name(usize),
 }
 
 /// The surface under the pointer, whose lines light half while it's there (zellij's `mouse_hover_effects` —
@@ -908,6 +910,9 @@ impl Editor {
         if let Some(i) = s.chat_links.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y)) {
             return at(S::Transcript, Part::Link(Link::Chat(i)));
         }
+        if let Some(i) = s.chat_names.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y)) {
+            return at(S::Transcript, Part::Link(Link::Name(i)));
+        }
         let chip = |l: &(usize, usize, usize, crate::whole::Cut)| match l.3 {
             crate::whole::Cut::With(which) if on(l.0, l.1, l.2, x, y) => Some(which),
             _ => None,
@@ -927,7 +932,7 @@ impl Editor {
     }
 
     /// The conversation's row and column under (`x`, `y`), if a row of it was drawn there.
-    fn transcript_text(&self, x: usize, y: usize) -> Part {
+    pub(crate) fn transcript_text(&self, x: usize, y: usize) -> Part {
         let text_x = self.screen.chat_x().unwrap_or(0) + crate::chrome::GAP + crate::chrome::PAD;
         self.screen.chat_row(y).map_or(Part::Blank, |line| Part::Text { line, col: x.saturating_sub(text_x) })
     }

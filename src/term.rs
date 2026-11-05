@@ -890,6 +890,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
             && editor.offers.first().is_some_and(|o| !o.installing()),
         offer_cut: offer.as_ref().filter(|c| !c.bar).map(|c| c.cut),
         chat_links: Default::default(),
+        chat_names: Default::default(),
         chat_calls: Default::default(),
         cut_spots: Default::default(),
         cut_hand: Default::default(),
@@ -18606,6 +18607,9 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             let mut rows = laid_out(i, m, &mut read);
             // (its places found in its lines, each on every row the wrap put it on — #196)
             crate::places::mark_rows(&mut rows);
+            // (and the names written as code — underlined once they come to a definition, #389 step 5b)
+            let code = t.try_get("markup.raw.inline").or_else(|| t.try_get("markup.raw")).unwrap_or_default();
+            crate::chatlink::mark_names(&mut rows, &m.text, code);
             let rows: std::sync::Arc<[ChatRow]> = rows.into();
             let lang = read.default_lang.then_some(lang_hash);
             *m.cache.borrow_mut() = Some(Laid { key, lang, unloaded: read.unloaded, rows: rows.clone() });
@@ -19942,10 +19946,13 @@ fn draw_chat(
                 }
                 // `path:line` and an element's id in an answer: underlined, clickable
                 None => {
-                    let (l, found, ids) = underline_refs(editor, r, &c.places, faint);
+                    let (l, found, ids, names) = underline_refs(editor, r, c, faint);
                     for (a, b, link) in found {
                         chat_links.push((y, text_x + a, text_x + b, link));
                     }
+                    let mut spots = editor.screen.chat_names.borrow_mut();
+                    spots.extend(names.into_iter().map(|(a, b)| (y, text_x + a, text_x + b)));
+                    drop(spots);
                     let mut spots = editor.screen.chat_ids.borrow_mut();
                     spots.extend(ids.into_iter().map(|(a, b, id)| (y, text_x + a, text_x + b, id)));
                     let used = match painted(from + i, Some(r), &l, y) {
@@ -22367,17 +22374,21 @@ fn thought_rows_drawn(
 type RefSpot = (usize, usize, crate::chat::Link);
 /// …one that's a UI element's id (`card#12`, `git:src/a.rs`).
 type IdSpot = (usize, usize, String);
+/// What `underline_refs` gives: the row's spans, its places, its ids and its names underlined (from, to).
+type Underlined<'a> =
+    (std::borrow::Cow<'a, [crate::markdown::Span]>, Vec<RefSpot>, Vec<IdSpot>, Vec<(usize, usize)>);
 
 /// Underlines the places on one answer row — their parts on it (`ChatRow.places`), each only where its name comes to
-/// a file (`places::Known`: one asked for after this frame isn't yet) — and the UI elements' ids (`card#12` — one that
-/// never was an element here stays plain, in `faint`) → (row, where they are). A name several files end with is a
-/// place too: pressed, its picker.
+/// a file (`places::Known`: one asked for after this frame isn't yet) —, the names written as code that came to a
+/// definition (`ChatRow.names`, `chatlink::Links::underlined`: one not known yet is asked after this frame) and the UI
+/// elements' ids (`card#12` — one that never was an element here stays plain, in `faint`) → (row, where they are). A
+/// name several files end with is a place too: pressed, its picker.
 fn underline_refs<'a>(
     editor: &Editor,
     r: &'a crate::chat::ChatRow,
-    known: &crate::places::Known,
+    c: &crate::chat::Chat,
     faint: Style,
-) -> (std::borrow::Cow<'a, [crate::markdown::Span]>, Vec<RefSpot>, Vec<IdSpot>) {
+) -> Underlined<'a> {
     use crate::markdown::Span;
     let row = &r.spans[..];
     let joined: String = row.iter().map(|s| s.text.as_str()).collect();
@@ -22387,12 +22398,17 @@ fn underline_refs<'a>(
         .filter(|p| !ids.iter().any(|(i, _)| i.start <= p.bytes.start && p.bytes.end <= i.end))
         .filter_map(|p| {
             // (a name several files end with: pressed, found again — its picker, `chat::jump`)
-            let path = known.link(root, &p.name)?;
+            let path = c.places.link(root, &p.name)?;
             Some((p.bytes.clone(), crate::chat::Link { path, line: p.line }))
         })
         .collect();
-    if refs.is_empty() && ids.is_empty() {
-        return (std::borrow::Cow::Borrowed(row), Vec::new(), Vec::new());
+    let names: Vec<std::ops::Range<usize>> = (r.names.iter())
+        .filter(|n| !refs.iter().any(|(b, _)| b.start < n.bytes.end && n.bytes.start < b.end))
+        .filter(|n| c.links.underlined(&n.word))
+        .map(|n| n.bytes.clone())
+        .collect();
+    if refs.is_empty() && ids.is_empty() && names.is_empty() {
+        return (std::borrow::Cow::Borrowed(row), Vec::new(), Vec::new(), Vec::new());
     }
     let known: Vec<bool> = ids.iter().map(|(_, id)| editor.ui_known(id)).collect();
     let mut out = Vec::new();
@@ -22401,7 +22417,7 @@ fn underline_refs<'a>(
         let end = at + s.text.len();
         // Cut the span at every ref edge inside it
         let mut cuts = vec![at, end];
-        for r in refs.iter().map(|r| &r.0).chain(ids.iter().map(|i| &i.0)) {
+        for r in refs.iter().map(|r| &r.0).chain(ids.iter().map(|i| &i.0)).chain(&names) {
             cuts.extend([r.start, r.end].into_iter().filter(|&b| b > at && b < end));
         }
         #[expect(clippy::disallowed_methods, reason = "each chat row's spans, every frame: std's, in place")]
@@ -22409,7 +22425,7 @@ fn underline_refs<'a>(
         cuts.dedup();
         for pair in cuts.windows(2) {
             let (a, b) = (pair[0], pair[1]);
-            let inside = refs.iter().any(|(r, _)| r.start <= a && b <= r.end);
+            let inside = refs.iter().map(|r| &r.0).chain(&names).any(|r| r.start <= a && b <= r.end);
             let id = ids.iter().position(|(r, _)| r.start <= a && b <= r.end);
             let style = match id {
                 Some(i) if !known[i] => Style { fg: faint.fg, ..s.style },
@@ -22423,7 +22439,8 @@ fn underline_refs<'a>(
     let col = |b: usize| joined[..b].width();
     let found = refs.into_iter().map(|(r, link)| (col(r.start), col(r.end), link)).collect();
     let elements = ids.into_iter().map(|(r, id)| (col(r.start), col(r.end), id)).collect();
-    (std::borrow::Cow::Owned(out), found, elements)
+    let names = names.into_iter().map(|r| (col(r.start), col(r.end))).collect();
+    (std::borrow::Cow::Owned(out), found, elements, names)
 }
 
 /// `s` right-aligned in `width` cells — by display width (`format!("{:>w$}")` counts chars, so Korean or

@@ -171,6 +171,9 @@ pub struct LangData {
     pub name: String,
     pub language: Language,
     pub highlights: Query,
+    /// The words its highlights query captures as a keyword (`"let" @keyword.storage`, `(#eq? @keyword "use")`): the
+    /// grammar's own, never a list of tarae's (`keywords_of`).
+    pub keywords: std::collections::HashSet<String>,
     /// For `mi`/`ma` syntax objects (None if absent or failed to compile — text-based objects still work).
     pub textobjects: Option<Query>,
     /// Where other languages get injected (markdown code blocks·TODO in comments·macros …) — None if absent.
@@ -250,6 +253,7 @@ impl Loader {
             .and_then(|src| Query::new(&language, &src).ok())
             .map(crate::indent::Indents::new);
         let global = highlights.capture_names().iter().map(|n| capture_id(n)).collect();
+        let keywords = keywords_of(&highlights, &source);
         let not_local = (0..highlights.pattern_count())
             .map(|p| {
                 highlights
@@ -262,6 +266,7 @@ impl Loader {
             name: spec.name.clone(),
             language,
             highlights,
+            keywords,
             textobjects,
             injections,
             locals,
@@ -299,6 +304,102 @@ impl Loader {
         self.libs.lock().unwrap().push(lib);
         Ok(language)
     }
+}
+
+/// The words `query` (compiled from `source`) captures as a keyword: in each pattern, a string a `@keyword…` capture
+/// takes — the string's own (`"fn" @keyword.function`), a group's around it (`["if" "else"] @keyword…`), or a predicate's
+/// on a keyword capture (`(#any-of? @keyword "then" "do")`) — word-shaped ones only (`&` and `macro_rules!` aren't).
+fn keywords_of(query: &Query, source: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let keyword = |cap: &str| cap == "keyword" || cap.starts_with("keyword.");
+    let word = |s: &str| {
+        s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+    };
+    for p in 0..query.pattern_count() {
+        let Some(text) = source.get(query.start_byte_for_pattern(p)..query.end_byte_for_pattern(p)) else {
+            continue;
+        };
+        // (each open group's strings, and whether it's a predicate naming a keyword capture)
+        let mut groups: Vec<(Vec<&str>, bool)> = vec![(Vec::new(), false)];
+        // (what the token before a capture was: a string, or a group just closed with its strings)
+        let mut last: Vec<&str> = Vec::new();
+        let mut it = text.char_indices().peekable();
+        while let Some((i, c)) = it.next() {
+            match c {
+                ';' => {
+                    while it.next_if(|&(_, c)| c != '\n').is_some() {}
+                    last.clear();
+                }
+                '"' => {
+                    let mut end = text.len();
+                    let mut escaped = false;
+                    for (j, c) in it.by_ref() {
+                        match (escaped, c) {
+                            (false, '\\') => escaped = true,
+                            (false, '"') => {
+                                end = j;
+                                break;
+                            }
+                            _ => escaped = false,
+                        }
+                    }
+                    let s = &text[i + 1..end];
+                    if let Some(g) = groups.last_mut() {
+                        g.0.push(s);
+                    }
+                    last = vec![s];
+                }
+                '(' | '[' => {
+                    let rest = text[i + 1..].trim_start();
+                    let predicate = rest.starts_with('#');
+                    let on_keyword = predicate
+                        && rest
+                            .split_whitespace()
+                            .nth(1)
+                            .and_then(|w| w.strip_prefix('@'))
+                            .is_some_and(|cap| keyword(cap.trim_end_matches(')')));
+                    groups.push((Vec::new(), on_keyword));
+                    last.clear();
+                }
+                ')' | ']' => {
+                    let (strings, on_keyword) = groups.pop().unwrap_or_default();
+                    if on_keyword {
+                        out.extend(strings.iter().filter(|s| word(s)).map(|s| s.to_string()));
+                    }
+                    if let Some(g) = groups.last_mut() {
+                        g.0.extend(&strings);
+                    }
+                    last = strings;
+                }
+                '@' => {
+                    let end = text[i + 1..]
+                        .find(|c: char| !(c.is_alphanumeric() || "._-".contains(c)))
+                        .map_or(text.len(), |e| i + 1 + e);
+                    if keyword(&text[i + 1..end]) {
+                        out.extend(last.iter().filter(|s| word(s)).map(|s| s.to_string()));
+                    }
+                    while it.next_if(|&(j, _)| j < end).is_some() {}
+                }
+                c if c.is_whitespace() => {}
+                _ => last.clear(),
+            }
+        }
+    }
+    out
+}
+
+/// The first of `langs` (loaded languages only — never a load: safe on the main thread) whose grammar takes `word` for
+/// a keyword: its name as a person reads it. No language given: every one loaded.
+pub fn keyword_in<'a>(langs: impl IntoIterator<Item = &'a str>, word: &str) -> Option<String> {
+    let loader = Loader::global();
+    let mut langs: Vec<String> = langs.into_iter().map(str::to_string).collect();
+    if langs.is_empty() {
+        langs = loader.langs.lock().unwrap().keys().cloned().collect();
+        crate::sorting::sort(&mut langs);
+    }
+    let kw = |l: &String| loader.loaded(l).is_some_and(|d| d.keywords.contains(word));
+    langs.iter().find(|l| kw(l)).map(|l| shown(l).to_string())
 }
 
 /// A compiled `locals.scm` and what its captures mean.

@@ -7,7 +7,9 @@
 //! start, a line that may have moved since). After every step: a question asked only at its name in the file as the
 //! buffer is then — never at a guess (a line moved since its map, or since the server's place, is said, not asked); a
 //! question by name only about the name under the transcript's cursor; a hover card in the chat only for the newest
-//! question, while the transcript's cursor is where it was asked, saying the place it was asked of.
+//! question, while the transcript's cursor is where it was asked, saying the place it was asked of. The underlines
+//! (step 5b): the project changing (`total` defined or not, the files' listing moved) while a batch is asked or in
+//! flight — a name is kept as found only as the stand-in finds it for the files as they are, never an answer from before.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -50,6 +52,8 @@ struct World {
     last: Option<(bool, String, usize)>,
     /// The questions by name seen asked: their numbers.
     named: Vec<u64>,
+    /// Whether the project defines `total` now (the stand-in finds it by name).
+    defined: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn run(choices: Choices) -> Vec<String> {
@@ -67,6 +71,8 @@ fn run(choices: Choices) -> Vec<String> {
     static TRAITS: std::sync::LazyLock<crate::lsp::ServerTraits> =
         std::sync::LazyLock::new(crate::lsp::ServerTraits::default);
     let file_uri = file.clone();
+    let world = RefCell::new(World::default());
+    let defined = world.borrow().defined.clone();
     let serve: crate::lsp::Serve = Box::new(move |method, params| match method {
         "initialize" => Some(json!({ "capabilities": { "positionEncoding": "utf-8", "hoverProvider": true,
             "definitionProvider": true, "workspaceSymbolProvider": true } })),
@@ -76,7 +82,11 @@ fn run(choices: Choices) -> Vec<String> {
                 json!({ "name": name, "kind": 12, "location": { "uri": crate::lsp::uri(&file_uri),
                     "range": { "start": { "line": line, "character": 0 }, "end": { "line": line, "character": 0 } } } })
             };
-            Some(json!([at("helper", 0), at("helpers", 4)]))
+            let total = defined.load(std::sync::atomic::Ordering::Relaxed) && params["query"] == "total";
+            Some(match total {
+                true => json!([at("total", 5)]),
+                false => json!([at("helper", 0), at("helpers", 4)]),
+            })
         }
         "textDocument/hover" => {
             let p = &params["position"];
@@ -102,7 +112,6 @@ fn run(choices: Choices) -> Vec<String> {
     crate::term::render(&mut ed, &mut Vec::new(), 120, 30).unwrap();
     // (its view mode: `gd` and `space k` act on its cursor)
     ed.handle_key(Key::plain(Code::Esc));
-    let world = RefCell::new(World::default());
     let check = |ed: &Editor| held(ed, id, &mut world.borrow_mut());
     sim.walk(&mut ed, INPUTS, |sim, ed| step(sim, ed, id, &mut world.borrow_mut()), check, print);
     let trace = sim.trace().to_vec();
@@ -119,8 +128,8 @@ fn keys(ed: &mut Editor, keys: &str) {
 
 fn step(sim: &mut Sim, ed: &mut Editor, file: crate::document::DocId, w: &mut World) -> String {
     let c = &mut sim.choices;
-    // (by arm: a frame 2, the file edited 2, the cursor put 3, `gd` 2, `space k` 2, time 2)
-    match c.weighted(&[2, 2, 3, 2, 2, 2]) {
+    // (by arm: a frame 2, the file edited 2, the cursor put 3, `gd` 2, `space k` 2, time 2, the project changed 1)
+    match c.weighted(&[2, 2, 3, 2, 2, 2, 1]) {
         0 => {
             crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
             "a frame".into()
@@ -154,16 +163,36 @@ fn step(sim: &mut Sim, ed: &mut Editor, file: crate::document::DocId, w: &mut Wo
             keys(ed, " k");
             "space k".into()
         }
-        _ => {
+        5 => {
             let ms = *c.pick(&[1, 30, 300]);
             sim.wait(Duration::from_millis(ms));
             format!("{ms} ms pass")
+        }
+        // (as a change set or a run's end says: the files moved — `total` now defined, or no longer)
+        _ => {
+            let now = !w.defined.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            let path = ed.workspace.root.join("src/total.rs");
+            ed.files_moved(&path);
+            format!("`total` {} the project", if now { "defined in" } else { "gone from" })
         }
     }
 }
 
 /// The rules, after every step.
 fn held(ed: &Editor, file: crate::document::DocId, w: &mut World) -> Result<(), String> {
+    // An underline kept for the files as they are: as the stand-in finds the name now (judged from the frame after
+    // the files moved, which asks again)
+    if let Some((listing, words)) = crate::chatlink::underlines(ed)
+        && listing == ed.workspace.listing
+    {
+        let defined = w.defined.load(std::sync::atomic::Ordering::Relaxed);
+        for (word, found) in words {
+            let now = word == "helper" || (word == "total" && defined);
+            if found != now {
+                return Err(format!("`{word}` kept as {} for the files as they are", found_said(found)));
+            }
+        }
+    }
     // A question newly asked: at its name in the file as the buffer is now
     if let Some((n, doc, byte, word, head, goto)) = crate::chatlink::asked(ed)
         && !w.seen.contains(&n)
@@ -223,10 +252,17 @@ fn held(ed: &Editor, file: crate::document::DocId, w: &mut World) -> Result<(), 
     Ok(())
 }
 
-/// What a trace line ends with: the question in flight, the card in the chat.
+fn found_said(found: bool) -> &'static str {
+    if found { "found" } else { "not found" }
+}
+
+/// What a trace line ends with: the question in flight, the card in the chat, the underlines kept.
 fn print(ed: &Editor) -> String {
+    let kept = crate::chatlink::underlines(ed).map(|u| u.1);
+    let kept: Vec<String> =
+        kept.into_iter().flatten().map(|(w, f)| format!("{w} {}", found_said(f))).collect();
     let asked = crate::chatlink::asked(ed).map(|a| format!("asked {} `{}`@{}", a.0, a.3, a.2));
     let named = crate::chatlink::named(ed).map(|q| format!("by name {} `{}`", q.0, q.1));
     let card = (ed.popup_chat && ed.popup.is_some()).then(|| format!("{:?}", ed.popup).contains("asked at"));
-    format!("{asked:?} · {named:?} · card {card:?}")
+    format!("{asked:?} · {named:?} · card {card:?} · underlines {kept:?}")
 }
