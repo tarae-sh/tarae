@@ -32,7 +32,7 @@ For how tarae is built and why, see [architecture.md](architecture.md). For what
 | **M0–M2** | Core model (rope, multiple selections, transactions, undo), movement and editing, a non-blocking event loop, config as data with live reload, performance budgets as tests, tree-sitter highlighting, themes, pickers, search |
 | **M3** | Language servers: diagnostics, navigation, hover, completion, signature help, inlay hints, code actions, rename, format |
 | **M4** | Claude: select → instruct → diff, the chat panel, follow mode, notes on lines, every edit reviewed before it's written |
-| **Experience, Workbench** | which-key, palette, tutor, start screen, mouse, side panel, git tab, merge conflicts, tests, debugger, built-in terminal |
+| **Experience, Workbench** | which-key, palette, tutor, start screen, mouse, side panel, git tab, merge conflicts, tests, built-in terminal; the debugger left the core on 2026-10-26 (`e0bc6b9b`), kept as a patch for a plugin |
 | **M6** | Plugins in Rust, compiled to WebAssembly, sandboxed on tarae's own runtime ([plugins.md](plugins.md)) |
 | **Sessions** | Several branches of work at once, each in its own checkout with its own panes, chat, terminal, tests and tasks. A session is brought into its base by fast-forward, or by a rebase whose conflicts its own Claude resolves ([claude-integration.md](claude-integration.md#rebasing-a-session)) |
 | **Review mode** | A pull-request-style review over the real buffers, comments sent in one go. Claude's turn is reviewed at its end and can be undone as a whole, a run's file changes included. A second Claude can review the changes, or a board of them — one per angle, then a skeptic per group of their claims, only what a skeptic traced pinned as confirmed (`space v C`) — and risk grades mark what a person must look at. Each review is recorded: how long a person spends on each change and what it ended as, never its code ([code review](claude-integration.md#code-review)) |
@@ -47,9 +47,20 @@ For how tarae is built and why, see [architecture.md](architecture.md). For what
 | **Notifications** | Toasts as one calm card, `:messages`, news from sessions behind, the inbox's count on the status line — all inside tarae |
 | **Projects** | A project starts at the nearest `.git` or `.tarae.toml` above where tarae starts — never home or above — and every store keys by it; where you started stays where you are (step 1, `28cc4485`). A start begins a new conversation, the latest a key away among the empty chat's first keys (`C-p continue "…" · 2h ago · 41k`); a session the list brought back continues its own and says so on its top line (step 2, `0c974bfc`). After a crash the recovery card's restore brings the conversations back by their ids, each said with its size and, past its cache, that it's read anew; discard starts fresh (step 3) |
 | **Restart with sessions** | `:restart` brings back every session as it was, with its chat, code review and waiting cards; unsaved edits are kept and offered back after a crash ([features.md](features.md#updating-without-losing-your-place)) |
-| **Language packs** | A language is a folder of data: grammar, queries, servers, tests, debugger, and what its tools need from the sandbox. The core names no language |
+| **Language packs** | A language is a folder of data: grammar, queries, servers, tests, and what its tools need from the sandbox. The core names no language |
 | **Shared rust-analyzer** | One server for a repository's checkouts, swapped in the background as sessions come and go |
 | **Usage** | What each session's Claude spends, from claude's own stream: the chat's last row, `:usage`, `tarae state`. Each turn's requests in order with their calls' tool names (`$state/calls/`, `cargo xtask turns`). A big conversation left idle is compacted (`/compact`) before its hour's cache expires, by Claude Code's own rule and your Claude settings (`idleCompaction`), said on the row (`compacts 14:26`) |
+| **Panes** | Every surface a pane under one focus (P2a `e002ceb1`); splits, floating panes and linked groups under one header (P2b `e6d8891c`, `e131542c`; P3 steps 1–8, `3d7ca662` to `f3afdbd9`, follow per pane the last); the run panels' output and the chat's transcript and input as documents under the editor's keys (P2c `d95b3f13`, `54bcfbdf`); a view mode and quoting on every surface (`2696b066`, `8e17fc36`, `1b988324`). P3b's tabs were dropped for zellij's (2026-10-27) |
+| **Participants** | A workspace is a checkout with its layout, a session one participant (C0, `621acbd8`). Where every session reads and writes, in its colour (C1, `1eb04ee5`); an overlap said the moment it would conflict (C2, `c4513975`); the woven view, a file as every workspace's changes merge (C2b part 1, `3501b885`, `320cc45e`); workspaces kept close to their base (C3, `4b8ece93`), a move that never leaves conflict markers (`305ef94d`). The woven tree's preflight (C2b part 2) waits: the bring's preflight already catches a combined break |
+| **The chat and the code as one flow** | The focus plan: D1 the measure (`1cf0e527`), B1 the step said once (`026c1cda`), A1 an answer's place (`877ad7f2`), A1b a note card between the lines (`e26a185d`), E1 the turn as a map (`3a18d92f`), F0 what a note knows (`2038d9ad`), C1 the question at its lines (`6982a139`), C1b several replies (`a57d70a1`), A1c (`584b787b`). Then the flow plan's five pieces: the reader (`d529f481`), the ask line (`fc21d0aa`), the column back and the minimize gone (`152d7bcb`), `space i`'s line as a `change` card by its lines (`7b3a3196`), and steering (`2f422cb3`: while Claude works `tab` steers and `enter` still queues — in its A/B 115 of 115 steers acted on in turn, −24 % $ against queuing) |
+| **Orchestra, Part I** | The home session's Claude starts sessions of its own and steers them through session tools, never the screen: `sessions_start` and `session_send` (P1a `e3afe033`), `sessions` and news of a turn it started (P1b `e9160970`), wakes and each child's cost (P2 `0e3a602d`), one `session_act` — a review, a board, a send, a proposed bring or end, every card still yours (P3 `72b18178`, +696 tokens of definitions) |
+| **The remote split, steps 1–3 and 5** | The loop draws for an interface (step 1, `87aea884`); "drawn" means presented, by the frame an interface showed (step 2, `e776cec5`); `tarae --host` and `tarae attach` on this machine, the protocol a crate of its own, `crates/tarae-wire` (step 3: `ef6701a4`, `c4373767`, `b687c981`, `870808d4`, `fc25a9cf` — an attach to its first frame 8.8 ms, a key 0.3 ms against the terminal's 0.25). Over SSH (step 5, pieces 1–4: `1b2094f3`, `2122e788`, `2a3baeb0`, `47b6e5ac`; S-H `a4b5e00f`): `tarae attach ssh://…` through a relay there, one protocol version, a link that comes back by itself; measured by `cargo xtask remote` into a Lima VM: the first frame 506 ms, a key 1.07 ms (p90 1.37), a cut link back in 94 ms, a frozen link and a focus back 3.1 s ([remote.md](remote.md)) |
+| **The polish list** | Commercial-grade before new features (the user, 2026-11-03). Landing 0, the freeze watcher (`1dd88904`); 1, what waits for you in one home, the card stack (`d1a07187`); 2, one copy per screen, the chat's column saying the step (`fe076ef3`, #295); 3, quiet code (`6c62a0c4`); 4, cards ask less, one bring card (`57421255`, `e0905197`); 5, the status line diet (`718138ff`); 6, follow's words and motion (`6c6953bd`); 7, the docs' pictures retaken (`c9215106`, #303, #319) |
+| **The bring queue** | Every bring waits its turn in one queue, its place in line said; a tip that moves rebases and preflights the ones waiting by themselves; what lands is the commit its preflight tested (#371 `e9cf6289`, #373 `ca7a9476`, #379 with it) |
+| **Linux checks' room** | Before each `cargo xtask linux` run tarae's Docker volumes are held under 30 GB, the oldest landed checkout's target first, never one in use or with changes (#380, `ae318d5f`); one run at a time on a Docker, machine-wide (#352, `79120c58`) |
+| **The sandbox on several kernels** | `cargo xtask kernels` (`74e8f3fb`): one kernel per behaviour that differs, as Lima VMs on this Mac. Every row green on 2026-11-05 — K1, K2, K3, K5, K6 and Y2 on `8c197b4b`, K4 on `ec8b9494` once #380 freed its Docker's disk. Nested user namespaces: tier own's mounts hold against them (M1 and M2, `f508be48`; M2 on K4 under AppArmor's restriction, `36932d1d`) |
+| **The Shorts recorder** | A scene as a video (xtask only, takes kept out of git): every frame kept and judged in motion (`scenes --record`, `e03a8dea`), drawn at 30 fps with captions in a band under the screen (`scenes --video`, `a45c97c2`), as a 1080×1920 Short (`--shorts`, `e8173972`); its six scenes, V1 `three-claudes` (`3e8356ad`), V2 `waits-60s` (`e03a8dea`), V3 `main-moved` (`a96c5ba9`), V4 `edit-in-buffer` (`a3e9940f`), V5 `follow-replay` (`57d7f718`) and V6 `managers-view` (`2a685218`). The whole is the default and the zoom the exception, as the camera's one rule (`48f062c9`, `camera::course`): each beat opens on the whole for 2 s, its one read lit there 0.8 s before the camera goes in for 2.5 s and back, shallow unless a scene says `@zoom-deep` |
+| **Sound** | An ASMR mode (`4ca79e7f`): `editor.sound`, off by default, yours only — key clicks as Claude's writing appears and a settle as an edit lands unseen, a recorded keyboard (CC0) in a person's rhythm, macOS's output by tarae's own few lines; Linux's output next |
 
 The Claude Code IDE protocol (M5) was retired on 2026-10-04, once the chat did all of it inside tarae.
 
@@ -121,70 +132,51 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-11-03):
+Under way (2026-11-05):
 
-- **The conversation as a card you summon** (collab's `.sb/flow-plan.md`) — piece 1, the reader, landed (`d529f481`:
-  `C-w e` floats the chat and docks it back, `space L` opens it at your line's paragraph); piece 2, the ask line, landed
-  (`fc21d0aa`); piece 3, the column back and the minimize gone (`◂ new`, `── new ──`), landed (`152d7bcb`); piece 4,
-  `space i`'s line as a `change` card by its lines, is under way, then steering, each landed alone, shots first
-  ([next](#next)).
-- **The sandbox on several kernels** — `cargo xtask kernels` on this Mac's Lima VMs: K4 and K3 green, K1, K2, K5, K6 and
-  Y2 next ([§2](#2-sandbox-validation)).
-- **Orchestra Part I's week of use** (P3 `72b18178`), then Part II's P6 ([§4](#4-panes-the-terminal-line-and-orchestra)).
+- **The polish list's remainder** (main's `.sb/polish-list.md`; landings 0–7 are [done](#done)). **One pane tree**
+  (panes4's `.sb/onetree-plan.md`, decided 2026-11-04: every docked surface a pane of one tree, moved and split by `C-w`
+  as zellij does, kept per workspace): S0, today's layout pinned (`3b992e8f`), and S1a–S1f (`e5822c78`, `0ae3e46e`,
+  `62c0a87f`, `0405edb7`, `55a3e051`, `a13c069f`: `body_h` goes) landed, nothing seen changing; then
+  S1g–S4 the same way. Then S5, where what you
+  see moves (`C-w H/J/K/L` moves the pane in hand, `C-w < > + -` grow and shrink it; shots first), S8 (the phone's
+  layout a preset of the tree, before remote step 6's phone piece) and S9 (two sessions' conversations side by side,
+  after a week of S5).
+- **#388/#389, an answer's notes leave the code** (motion's `.sb/chatlink-plan.md`, its eight decided 2026-11-05):
+  step 1, flags (`6023bbfb`: a faint `¶` at each line an answer names, lit while its paragraph is in the column, a
+  press the chat at that paragraph), and step 2, the chat whole (`575c31c8`: an older answer reads as written, the fold
+  to one row gone; `space N` lists every note and flag), landed. Steps 3–6: `space n`'s own questions into the chat,
+  the `note` tool gone with its pins and `reply_to`, F0's words beside the place in the chat, and a name in the chat
+  answering the code's language keys — hover, `gd`, ctrl+click (#389).
+- **Three Shorts, each two features as one story** (whole; CLAUDE.md's Shorts bullet, the user 2026-11-05): ~45–60 s,
+  a problem, its answer, the payoff — *several Claudes, one repository* (V1 + V3), *watch Claude work, take it back*
+  (V5 + V4), *you decide* (V2 + V6). The hook first, the brand last: a Short opens on its most striking moment, the
+  mascot and `t a r a e` on the end card. Short 1 taken (by the user's word; no commit shows it), 2 and 3 to
+  take.
 
-Open of #255–#285: #257 (main can break Linux unseen until a push), #258 (a test failed once — determinism), #264 and
-#265 (a key that does nothing and says nothing); #278 (ASCII scenes) dropped by the user.
+Open of #286–#392 (main's `.sb/frictions29.md`): #293 (build folders regrow; `cargo xtask build-prune` by hand, a
+way that needs no hand the user's call), #317 (an overlap said right on a move's own news), #324 (a base move's card
+~19 s late once — watched), #343 (the disk warning's estimate jumps), #344 (the live harness's other callers still
+open the chat with `space l`), #350 (viewed marks flapped once — to check on current main), #369 (`:`'s whole list
+flashes before typing narrows it), #372 (a frame's colour is a process-wide switch), #375 (a small file opened on the
+main loop), #382 (a same-tick test that fails under load), #383 (the scene driver's socket path past `sun_path`),
+#384 (an undone turn's note says nothing of it), and #388 and #389 above.
 
 ## Next
 
-In this order.
+In this order, once the polish list ([now](#now)) is done:
 
-**The main line from here** (user, 2026-10-25): panes P3 is done — its last step, follow per pane (`f3afdbd9`), and on
-the way the toast became news (`6a7c457e`: never focused, no frame, a press opens `:messages`) and a floating card's keys
-went to its bottom line (`1d5161f5`: one order for what that line gives up, the card growing left only as far as its
-line needs, always bottom-right, over the chat standing on the input's rule) → C0, the workspace split out of the
-session, is done (`621acbd8`, 2026-10-26: `Workspace` the place, its Claude's `Session` the participant, where you are in
-it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[workspace]`, the state's
-`workspaces[].sessions[]`; no visible change but the words) → the cleanup audit (§1 item 7, **done** 2026-10-26: the
-diagram model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b`, the spare claude `a1c66678`,
-Claude's four rarely used tools `52085039` and the debugger `e0bc6b9b` gone — 13,500 lines net, the fixed prompt
-11,880 → 10,715 tokens a request (`4f6762d4`); `space i` a one-turn claude of its own with tarae's `read` and `edit`
-(`05092df7`, B′); keep-warm's pings replaced by Claude Code's idle compaction, on by default (`94cf92d8`)) → the crate split (§1 item 6; `crates/tarae-wasm` `cb4c570b`, `crates/tarae-web` `9ebf029a`) → Orchestra Part I (P1 and P2 done, P3 under way — §4) →
-the terminal line (§4; P3b's tabs dropped for zellij's — the user, 2026-10-27, #184/#186). The Linux test red on main, an xattr error's order on kernel 6.8, is fixed (`071e028e`:
-the running kernel's order, read once as Landlock's ABI is), as is the Read card's width pinned at macOS's path
-(`94ded1e6`). Plans and notes moved out of `target/` into each
-checkout's `.sb/` (`c09fa01a`, after a `cargo clean` took eight checkouts' notes; most rebuilt from tarae's turn
-checkpoints). An overlap or a weave named a base branch by any repository's checkout of that name — now by the same
-repository's (`fa1c2bb5`). Done beside it, in sessions of their own: an ASMR mode (`4ca79e7f`: `editor.sound`, off by
-default, yours only — key clicks as Claude's writing appears and a settle as an edit lands unseen or a run of
-Claude's rewrites an open file, a recorded keyboard's strokes (trollarch2's, CC0, chosen by ear over a synthesized
-Topre) typed in a person's rhythm, macOS's output by tarae's own few lines of AudioToolbox; Linux's output next), motion's last pieces (the honest shimmer `cfbf2a7b`,
-the strip of marks `4c56cb6f`), what PR #6's merge left (`8059c6d8`, the git base read's race `0b105abe`, the tests' one
-settle `b935aac6`), what's cut shown whole where you look (`f48b2be8`), and a move onto the base that never leaves
-conflict markers (`305ef94d`: `--autostash` had left two checkouts half moved — the changes now set aside on a ref of
-the checkout's own, a conflict after all putting it back exactly as it was). Since 2026-10-26: what Claude is doing now
-on the status line (`7497ae62`) and one working sign in place of the wave and the band (`85d73fcb`) — motion,
-Alongside —, the mouse's first landings (the chat's drag and the plan's F, M0 and S — Alongside), and from the frictions the prompt's and the
-pickers' line edited as the chat's input, a selection that keeps the code's colours and the chat's prose filling a
-width you set (§3). Since 2026-10-28: projects steps 1 and 2 and the sandbox follow-ups (Done), the mouse's five
-kinds A (Alongside), plugin API 0.3's overlays (§7) and frictions #188–#214 (§3). Since 2026-10-29: Orchestra P2
-(§4), the mouse's five kinds B and C (Alongside), the focus plan's first pieces — D1 the measure (`1cf0e527`: where each
-thing to read is drawn in the UI state, `cargo xtask focus`), B1 the step said once, on the follow card (`026c1cda`), A1
-the answer's place (`877ad7f2`), A1b a note card opening between the lines (`e26a185d`), every answer's notes kept for
-the conversation (`1c476659`) and an older answer's placed paragraphs folded to a row in the chat (`b1d84ecf`) — and
-frictions #213, #214's pieces 2–4 and #223–#254 (§3). Since 2026-11-01: the focus plan's E1, the turn as a map
-(`3a18d92f`), F0, what a note knows (`2038d9ad`), C1, the question typed at its lines (`6982a139`), C1b, several
-replies at once (`a57d70a1`), and A1c, the card saying this line and the chat the whole answer (`584b787b`, #259–#263);
-the flow plan's first piece, the reader (`d529f481`, #274 with it); `cargo xtask kernels` (`74e8f3fb`) and userns A's
-reporting part (`533743d0`) — §2; and from the frictions the mouse walk's every target (`b4aa9bf0`, #255/#256), the
-follow card never empty and its size yours, `C-l` asking before it drops a conversation and `space L` only hiding the
-chat (`3118b951`, #266–#268, #270), a fold kept under a selection, in code and the chat (`2ca72640`, `e07cb059`,
-#269, #271, #272), no follow card left after a turn (`11eed8b7`, #273), a big file's turn review and undo (`4d3d4fb0`,
-`47768bba`, #275, #281), the working sign back to three cells (`b70e609b`, #277), a key hint never typing into a
-text it wasn't drawn for (`594cc598`, #279), the kernel runs' three (`33874fb7`, #276, #280, #285) and K3's
-two (`38589a33`, #282 the `/proc/self` path in another pid namespace, #283 the wet-ink test pinned to its age) and a write to a
-file named `mount` a write (`fdfdbcd1`, #284). Frictions go on. Code mode (§3)
-and the review lens's A + E wait on their records' data.
+1. **Orchestra Part II's P6**, cards answered for a child — after Part I's week of use (2026-10-31 → 11-07) and a fresh
+   `cargo xtask cards` ([§4](#4-panes-the-terminal-line-and-orchestra)).
+2. **Crews** — a session's own helpers, placed and visible (§4).
+3. **Remote step 6**, the browser: `tarae share`, passkeys, the phone's layout ([§5](#5-a-remote-split)).
+4. **Working together** ([§6](#6-working-together)).
+5. **Plugin API 0.3's rest and the forge plugin** ([§7](#7-plugin-api-03), [§8](#8-the-forge-plugin)).
+6. **Stabilization** ([§9](#9-stabilization-before-release)).
+7. **The homepage's README demo** ([§10](#10-the-homepage)).
+
+§1–§3 are mostly done; what's left in them — publishing in small batches, §2's remaining items, the frictions and the
+card and review burden — goes on beside the line.
 
 ### 1. Publishing
 
@@ -288,8 +280,8 @@ The aim is to state what the sandbox guarantees and show that it holds.
    21–26 measured against an unsandboxed baseline. Since sandbox C (2026-10-20, `4b130f35`) it holds each user's
    runs to their own table. On several kernels: `cargo xtask kernels` (steps 0 and 1, `74e8f3fb`), one kernel per
    behaviour that differs as Lima VMs on this Mac, run before a publish and after a sandbox landing
-   (`:preflight-full` says when it's due); K4 and K3 green (`38589a33`), K1, K2, K5, K6 and Y2 next; a dispatch-only
-   GitHub job for the x86_64 rows later.
+   (`:preflight-full` says when it's due); every row green on 2026-11-05 (K1, K2, K3, K5, K6 and Y2 on `8c197b4b`, K4
+   on `ec8b9494`); a dispatch-only GitHub job for the x86_64 rows later.
 4. **Yama ptrace scope 2** — done (2026-10-18, D-h): Yama asks for `CAP_SYS_PTRACE` in a run's user namespace,
    which tarae owns in the session's, so tier own is served at scope 2 (the tier probe tries it on its keeper's
    run); without namespaces the session stays offline, said with the way out. No capability on tarae, no privileged
@@ -321,7 +313,8 @@ The aim is to state what the sandbox guarantees and show that it holds.
    those outside hidden too (the keeper dropped its mounts then). Nested user namespaces: allowed where the system
    allows (the user, 2026-11-02, the sandbox checkout's `.sb/userns-plan.md`, A), once M1 shows a namespace a run
    makes gets the covers and seals locked; A's reporting part built (`533743d0`: a mount refused said as a mount,
-   no grant offered for it; `fdfdbcd1`, #284); M1 and M2 with an outside session (main's `.sb/userns-m1-brief.md`).
+   no grant offered for it; `fdfdbcd1`, #284); M1 and M2 done (`f508be48`: tier own's mounts hold against nested user
+   namespaces; M2 on K4 under AppArmor's restriction, `36932d1d`).
 
 ### 3. Frictions, and lighter cards and reviews
 
@@ -514,6 +507,26 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   (#250, `364a7f78`); no panic on a path that's no text (#251 + #252, `5b97028c`); the status line short only while
   the follow card's head is in sight, and `¶ claude` (#253 + #254, `cc2ab1fd`); and tests that failed under load
   waiting on what they check (#222, #236, #238, #242, #249 — `9e4ffc78`, `ef6c1141`, `f4b807c6`, `4747652e`).
+  Since 2026-11-03, beside the polish landings and the bring queue (Done), which took most of #291–#323: a key never
+  silent and the harness's own patience (#258, #264, #265, `c2ef9859`); a Linux clippy at every landing, in
+  `:preflight` (#257); a same-size write within one mtime tick seen (#286, `50f69d60`); a terminal question split
+  across two reads answered (#287, `0dc7b071`); a review that froze the loop 5½ minutes (#288, `94aadcbc`, and the
+  freeze watcher); tarae's state and log kept from Claude's runs and reads (#292, `3814067d`); a base move checking
+  every idle checkout (#294, #297, `6c4faa7f`, `13fd58e9`); a binary file a row, never an error (#326, #330, #332,
+  #334, `3bc72c3e`); the others' `working` kept and an overlap's partner named (#329, #331, #333, #335, `29b6c3b0`); a
+  config that doesn't read starts no claude (#339, `14163b89`); a run's report naming only what that run was refused
+  (#349, `c9be46f1`, `9fc474a9`); a preflight step refused before it starts said not run, never a pass (#354,
+  `9cf92246`); the woven view never blank (#355, `806e27b3`); a base move's `y` waiting for a busy workspace (#360,
+  `ca83de3e`); only the home session's `C-t` saving your default model (#361, `2c7f6ad2`); `cargo perf` saying "not
+  measured" where it can't read the load (#363, `2ad5a1a2`); the release binary 0.26 MB smaller and its budgets 19 MB,
+  24 bundled (#365, `4e40d8c2`, `8c197b4b`); a base move's card as soon as its tip is read (#368, `49540b52`); a
+  picture Claude reads a read, never an error (#370, `882ffb18`); the shared rust-analyzer's first scan waited out and a
+  server that exits started again (#374, `7be42948`); a drag over a folded doc comment acting as on code, and a jump
+  centring its target only when it was out of sight (#385–#387, `da49f78d`); and tests that failed under load or on one
+  kernel, fixed at their cause (#289, #337, #341, #348, #351, #356–#358, #362, #366, #367, #381, #390 `e438afa7`).
+  Then every card the mouse brings waiting for the pointer to rest, 0.5 s as the docs' hover, the next one at once
+  while one is up (#391, `6fa25a73`), and socket readers reading again every second, so a lost end can't leave the host
+  a ghost interface (#392, `a86bb764`: macOS can leave a blocking read asleep through its peer's end, #390's finding).
 
 - **`:session-apply`** — done (2026-10-19, `a525a775`): an outside tree's change — a patch, `--base <rev>` for
   where it was made — brought in as one reviewed change set, never written unseen.
@@ -548,8 +561,8 @@ suite runs again.
 
 ### 4. Panes, the terminal line and Orchestra
 
-**Before the remote split** — plans decided 2026-10-19, each built only once its checkout is rebased on a
-main that has what it waits for, and the user says go:
+Panes P2–P3, the participants plan, view mode and quoting, and Orchestra Part I are [done](#done). What's left here, each
+built only once its checkout is rebased on a main that has what it waits for, and the user says go:
 
 - **PDFs in `read`**, later (user, 2026-10-20): its own piece after images (readimg, [done](#done)), starting from readimg's measurement (tests/live.rs
   `mcp_image_and_pdf_reach_the_model`: a PDF an MCP tool hands Claude Code never reaches the model — it's saved
@@ -557,117 +570,47 @@ main that has what it waits for, and the user says go:
   in tarae's sandbox (deny-default, reads listed, nothing of home), or a pure-Rust renderer in-process.
 - **A review started by itself** (bgreview P3, `.sb/bgreview-plan.md`): at a turn's end
   (`review.auto = "turn"`, off by default, your config only) — its own PR once P1–P2 (done) have been used.
-- **View mode, then quoting** (the quoteplan checkout's `.sb/quote-plan.md`): every surface — the chat's
-  transcript, the terminal panel, the task, preflight and test panels — gets a view mode, one rule: a cursor on
-  its rows as read-only text, Helix's keys, to read, search and copy. Then quoting (인용): select part of any of
-  them and ask about it, a chip over the input like pointing's, sent with where it came from, cut to a limit and
-  said so; `C-s` follows `llm.screen-terminal`. Phases: P1 view mode for the chat and the terminal, P2 quoting, P3
-  the run panels, P4 the mouse. Under way: P1a done (2026-10-20, `2696b066`), the chat's view mode — `esc` from its
-  input or `space >` from anywhere, `q`/`esc` leave, `y` copies; held still while Claude writes, `G` catches up; one
-  cursor on screen, where the keys go (`keys_to()`). P1b done (2026-10-21): the terminal's — `C-\` goes round
-  (code → program → view → code), its scrollback and screen read as text, the program's output held until you
-  catch up, the wheel into it; `[keys.terminal]` replaced `editor.terminal-escape`. P2 done (2026-10-21, `8e17fc36`): quoting —
-  `enter` on a view's selection, `space >` (`:quote`) on the code's, a chip over the input; `<quoted>` with its own
-  closing id, the source said, cut past 16 KB and said, the terminal's token-like lines out; `C-s` follows
-  `llm.screen-terminal`. P3 done (2026-10-21, `1b988324`): the task, preflight and test panels' keys are their view
-  mode (`Handler::RunView` for `Bottom`, `[view.run]`: `tab` the slot's panels, `K`, `o`, `enter` runs the waiting run or
-  quotes the selection as `<quoted from="task|preflight|test">`), held still while a run prints, `G` catches up;
-  `space` in any view mode opens view mode's own which-key; the search prompt names the view (the run panels' half
-  became panes P2c's documents). P4, the mouse, after panes' P2b.
-- **Panes** (the panes checkout's `.sb/panes-plan.md`): splits as first-class, so tarae alone does what
-  zellij does for you today — several terminals, any surface in a pane, a floating terminal, shells kept across
-  `:restart`. The user's direction (2026-10-20): every surface — the tree, the editor, the chat, the terminal, the
-  panels — a pane on one base; focus decides the one cursor; focus moves as zellij's (`Alt`+arrows, `Alt h/j/k/l`)
-  and as Helix's (`C-w h/j/k/l`); sizes by key and by drag. Inside zellij its `Alt` keys are zellij's, so a twin is
-  settled in the plan. After view mode and the measurement (both touch the terminal panel). It brings tarae's own terminal engine (a workspace
-  crate, in place of `vt100`, measured against a baseline taken first) and a terminal that understands the shell
-  while the shell stays yours. **The skeleton first** (the user, 2026-10-21: design / session / tab / pane before anything else;
-  the plan's §2.1b–d): **linked panes** (a master–detail pair is one group — one header, one `q`, the list drives the
-  detail), **everything is a pane** (cards, pickers, which-key, prompts are floating panes under the one focus; a
-  card is a pane that asks; a group lays its members side by side or stacked under one header, `tab`/`S-tab`
-  between them, never `]`/`[`), **session → tabs → panes as zellij's** (a tab is one of a session's named layouts;
-  the tab bar top-left only with two or more), **a session is Claude's task on its own checkout** (the session list
-  is the task list, the main checkout the home session, the chat the spine). Done: P2a (`e002ceb1`: focus as one
-  value — `Session.at`, the six flags gone; one search and selection per pane — the user's friction 84 replayed as a
-  test; `C-w h/j/k/l` from every surface, said where nothing is that way; the `C-w`-inside-a-terminal decision in
-  the plan's §2.6), view P3 (`1b988324`). Order from here: design pass 2's D2/D3 (under way) → **P2b** surfaces as
-  leaves (+ `C-w` tarae's inside a terminal, `C-w C-w` to the program; part 1 `e6d8891c`: the tree holding every surface, the layout from it, hops of any kind, zoom, the code splits' sizes, `C-w` inside a terminal's program, restart and the state's panes; part 2 `e131542c`: floating panes under the one focus — `At::Float`, the pane under remembered —, the tests panel as two linked panes under one header, `C-w H J K L`/`t`/`w` over every kind, the layout kept across quit and start in `$state/layouts.json`, the divider lit beside the pane with the keys; four panes' key-to-frame 0.48 ms) → **P2c** text surfaces
-  as documents (the user, 2026-10-21: the chat's transcript, the run panels' output and later the terminal as
-  buffers under the editor's keys — view mode becomes normal mode on a read-only document); step 1 (`d95b3f13`): the task's, a preflight's and the tests'
-  detail are read-only documents of the session's, normal mode on them with `[run]` over, edits put back and said,
-  held still while the run prints; step 2 (`54bcfbdf`, 2026-10-22): the chat's transcript a document, a line a
-  paragraph, its view mode normal mode on it (`● normal · chat`), its input a small document in insert mode, a
-  run's output kept once (footprint −60 % on 20,000 lines); the document pane one module (`docpane.rs`); the
-  terminal's waits for the engine → **P3** panes of their own (the tests panel
-  the first linked group; its 12 decisions taken 2026-10-22; step 1 (`3d7ca662`): the
-  slot's header in the line where it meets the code, one drawer with a frame's top line, the code a row taller; step 2
-  (`3b00bb04`): groups as one model; step 3 (`66a80e78`): the task's places and a preflight's steps as linked groups, the
-  one output scrolled to the place's line or the step's heading; step 3b (`41aa64ec`): a group's members
-  named in the line over their own columns, the one with the keys lit, side by side or stacked when narrow; step 4
-  (`4ede51f9`): `:procs` as a group, its detail what the selected process is; step 5 (`5295fbde`): the git tab's
-  selection drives the code, a file's changes inline against the index while the tab has the keys, the files passed
-  over one italic preview buffer; the polish (`05037fbf`): a stacked group as tall as the member in sight, one run-time
-  format; step 6 (`e864ba15`): a group docked beside the code — `C-w H L K`, `C-w J` back to the slot, its size its
-  kind's, its members laid by its pane's shape (`C-w t`), folded into the slot when narrow, kept across `:restart`;
-  one format for every time (`7c9ed828`: `1h 20m`, ages `3d ago`); step 6b (`345f0b09`): every pane's top one line with its
-  name, `editor.header` gone (user, 2026-10-23); step 7a: a group floating in a frame of its own (`C-w e`, `C-w m`,
-  sizes, the mouse; the whole screen its frame, user 2026-10-23) and the session list a floating pane, the manager's
-  overview (`35fd6cc7`); step 7b (`e466b200`): a card takes the keys only once focused — `C-q`, a click or `C-w w`,
-  your own key's at once, its frame faint while it waits and lit once focused; the settle and typing-quiet guards gone;
-  step 7c (`f7eea996`): toasts are panes — a faint frame named `messages`, focused by a press or `C-w w`'s round, its
-  rect unchanged; `:messages` a floating list (oldest first; the toasts go while it's up, a message whose row isn't in
-  sight still a toast); a floating list done once used; step 7d (`bb50abad`): every session's asks in one stack
-  bottom-right — over the chat's foot, or a right-docked session list's — named in their colours (another session's a
-  peek, alone when none of yours waits), the follow card a floating pane, every card at the foot on one row, the chat's
-  line with whole names and `+N` carrying the folded ones' signs, the session list docking (`C-w H/J/K/L`, kept across
-  `:restart`, floating for a frame with no room); the chat's foot (`f9d9d59e`): its text `PAD` from the screen's edge, the
-  outer cell the transcript's thumb, the usage row the conversation's (the weekly window only while it presses — user,
-  2026-10-24); the toast news, never a pane with the keys (the user, 2026-10-25, on the shots of borderless rows beside
-  the faint frame: 7c's focus, keys and frame gone; the peek's look, a press opening `:messages`); next step 8, follow
-  per pane),
-  beside it **C1–C3** of the participants plan (the user, 2026-10-22:
-  a session = one participant, a workspace = a checkout with its layout; C1 (`1eb04ee5`) where
-  every session reads and writes, shown wherever that file is, each session its name in its colour; C2 (`c4513975`) an overlap between workspaces said the moment it
-  would conflict (to you; a Claude hears nothing of the others — the user, 2026-10-23) — 1 rebase in 3 stopped on a conflict over 10-16…21, ~6 min each; C2b the woven view (`:weave` — the user's name, 2026-10-22: a view, never a merge done) — everyone works in their own workspace and tarae shows the merge, each change in its
-  participant's colour (part 1 `3501b885`: a file, in memory on a worker; 1b `320cc45e`: the name, deletions shown, numbers where each
-  line is, `enter` goes to that session's line), the woven tree's preflight on demand (part 2 — waits: the bring's preflight already catches a combined break); C3 (`4b8ece93`) workspaces kept close to their base — one card when it moves, what would conflict and where in words, `y` the clean ones moved once each is idle, `c` the conflicting ones too through the resolve loop, `workspace.sync` ask · idle · off) → **C0** the split of `Workspace` out of `Session` → **P3b** tabs (the workspace's) and the task list — its tabs dropped: zellij's tabs do that (the user, 2026-10-27, #184/#186) → the terminal line: several terminals → the engine →
-  reflow → the shell understood → `tarae` verbs → output for Claude → another session beside → the floating
-  terminal → shells across `:restart`. After its own terminal engine, then images at full
-  resolution (kitty graphics, iTerm2's inline images) where the terminal speaks them, the half-block view
-  elsewhere (user, 2026-10-20).
-- **Orchestra, Part I** (the orchestra checkout's `.sb/orchestra-plan.md`; the user, 2026-10-23: main's Claude
-  is to do what the outside driver does today — Part III there lists the driver's steps, what covers each, and two
-  decisions it needs, which cards and whether the bring; order: after P3 steps 7–8, C0 and the cleanup audit): a session's Claude starts
-  sessions of its own and steers them through session tools that act on the editor's model, never on the screen —
-  nothing switches the front session or types into an input you can see. P1 children (start them on a card, send
-  to them, read their reports, news told once), P2 watching (wakes, cost per child), P3 reviews and proposals.
-  P1 builds on bgreview (landed; P3 builds on its start); what stays yours — cards, brings, ends — stays yours.
-  P1a done (2026-10-28, `e3afe033`): the home chat's Claude starts sessions of its own on one card (`sessions_start`,
-  each behind, its brief its first message, the front never moving) and puts words into them (`session_send`, its own
-  children only, after anything of yours queued there). P1b done (`e9160970`): `sessions` reads back its children's
-  states and the reply of the last turn it started there, framed as another Claude's words; a turn it started that
-  ended is news, told once; `session_send { fresh }` starts a child's conversation anew between its turns; children
-  follow their parent in the session list and on the chat's line. P2 done (`0e3a602d`): a turn it asked to be woken
-  for wakes it once it's idle (`wake`, `llm.parent-wakes`, never while the plan's limit presses, each wake said with
-  its cost); what its children cost is in `sessions`, the session list and the state. Under way: P3, one
-  `session_act` ([now](#now)); then a week of Part I in use before Part II's P6.
+- **One pane tree** — the polish list's, under way ([now](#now)).
+- **Orchestra, Part II's P6** (the orchestra checkout's `.sb/orchestra-plan.md`): cards answered for a child, after
+  Part I's week of use (2026-10-31 → 11-07) and a fresh `cargo xtask cards`. Until then cards, brings and ends stay
+  yours.
+- **Crews** (the user, 2026-11-04, after Cursor's pstack; the orchestra checkout's `.sb/crew-plan.md`, its §10
+  decided as recommended): a session's own helpers, set in your config — each member tarae's own one-turn claude, as the
+  reviewer and `space i` are, never Claude Code's Agent tool. A model per today's helpers first (the reviewer first), a
+  read-only explorer behind its A/B, an advisor off by default; one `crew { role, ask }` tool (≤ 200 tokens, listed only
+  while a role the lead calls is on); orchestra's children taking a role; a flow view in the session list's group
+  (`sessions › flow`), one train a hand-off. The A/Bs' $31.50 approved, each rule set before it runs; each role's tokens
+  measured before it's on. #361's rule for `C-t` landed ahead of it (`2c7f6ad2`).
+- **The terminal line**, after tarae's own terminal engine (a workspace crate in place of `vt100`, measured against a
+  baseline taken first): reflow → the shell understood, while it stays yours → `tarae` verbs → output for Claude →
+  another session beside → the floating terminal → shells across `:restart`; then images at full resolution (kitty
+  graphics, iTerm2's inline images) where the terminal speaks them, the half-block view elsewhere (user, 2026-10-20).
+  zellij stays the outer frame (the user, 2026-10-27, #184/#186). Where it falls in the order after the polish list is
+  not confirmed.
 
 ### 5. A remote split
 
 tarae as a host — sessions, Claude, runs, the sandbox — and its interfaces — the screen and the keys — apart,
-joined by one thin protocol: the screen's changes go out (tarae already draws by cell diff), keys come in. An
-interface reaches the host from anywhere the host can be reached; how it authenticates and encrypts is decided in
-its plan. Two interfaces:
+joined by one thin protocol: the screen's cells go out, keys come in (collab's `.sb/remote-plan.md`,
+[remote.md](remote.md)). Steps 1–3 and 5 are [done](#done): an attach on this machine, and over SSH — SSH the
+channel and the identity, run over the tailnet. Ahead:
 
-- **The terminal**, as today.
-- **A web client**: the thin client built to WebAssembly, in a browser. The same screen, not a GUI.
+- **Step 4, the split by default**: `tarae` starts the project's host if none and attaches; decided on step 3's
+  numbers after a week of use.
+- **Step 6, the browser** (decided 2026-11-04): `tarae share`, a process of its own (the same binary, `:share` and
+  `:share-stop`), one more attach to the host — it alone holds the HTTP, WebSocket and login code and relays the
+  browser's bytes unread; the editor gets no network code. Passkeys are the login: a one-time code on the host's card
+  enrols a device, only public keys kept, `:share-devices` revokes. On a phone tarae is the chat first — a layout the
+  host draws for a touch interface (one pane tree's S8 preset), cards as sheets from the bottom, cells larger so a tap
+  lands; shot at phone sizes first. A sleeping screen never loses the session.
+- Later, a QUIC channel bootstrapped by SSH (mosh's way), only once a real phone or work link is measured.
 
 The egress proxy is designed to live with the runs, wherever they are.
 
-After it, **Orchestra, Part II** (the same plan, §§10–16): the parent session's Claude as the improver — a
+After it, the rest of **Orchestra, Part II** (the same plan, §§10–16): the parent session's Claude as the improver — a
 fixed procedure; a library of lessons in the project's `.tarae/`, the only thing that grows; card delegation
 written down as your rules, off unless a rule names a card (never a bring); checks the parent can't loosen; safety
-kept outside the loop. After Part I's P1–P3 and this split.
+kept outside the loop. P6 comes first (§4); the rest after this split.
 
 ### 6. Working together
 
@@ -740,8 +683,9 @@ bugs its reviewer found, two of tarae's own gates misbehaved in daily use, four 
    Alongside it, the rest of what tests hold still: the screen's width, the load, and the property loops widened
    with real output.
 3. **Less code**: what the card model's P3 replaced goes (its piece 5: the parser's gates, ~2,200 lines), and
-   whatever else the hunt finds unused. The binary with it: back under the old budgets (12 MB, 17 MB bundled —
-   raised to 13 / 18 on 2026-10-15 at 11.98 / 17.07, from 8.7 / 12.5 on 2026-10-04) or a reason why not.
+   whatever else the hunt finds unused. The binary with it: back under older budgets or a reason why not — they
+   were 12 / 17 MB bundled until 2026-10-15, are 19 / 24 since 2026-11-05 (#365: 18.17 and 23.27 then, the growth
+   tarae's own code).
    `cargo bloat` first, for where the size is, then what P3 piece 5 removes and what the hunt finds unused.
 4. **Independent reviews of the sandbox** by Claude sessions that didn't build it: each given the threat model's
    claims and the code, not the design's reasoning, trying to show a claim false; their findings fixed like any
@@ -817,7 +761,9 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   height the stream's level, a 2 s breath where nothing streams by nature, low and still when the stream stops — so
   nothing moves a cell from a turn's start to its end. Then the breath alone (`703293f3`; the user, 2026-10-28, on
   `cargo xtask sign`'s animations of six candidates: the level read as stutters): an even 2 s breath the whole turn, from the floor
-  as the turn starts and as it leaves a stall, low and still while the stream has stopped.
+  as the turn starts and as it leaves a stall, low and still while the stream has stopped. Then three cells again, the
+  homepage's old wave (`b70e609b`, #277: one cell felt too plain), and one wave moving on the screen at a time
+  (`fa76b96c`).
 - **The mouse, one way on every surface** (user, 2026-10-26, after a day at work through Windows Terminal into WSL;
   panes4's `.sb/mouse-plan.md`, its twelve as recommended but the right button, which stays as it is): a press gives
   the keys to where it lands, a drag selects wherever there's text, the wheel scrolls what's under the pointer and
@@ -834,11 +780,11 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   every key hint printed known, one walk holding them to their kind — the pointer in `tarae state`; B (`e4eafaa4`,
   `b9e5a4bc`): every key hint drawn a button but the pairs that cost, a row under the pointer lit a step weaker than
   the selected one; C (`7cf6c4a6`, `83e23059`): the wheel only scrolls — never the keys, never a list's selection.
-- **Short videos, made ahead** (user, 2026-10-23): scripted scenes as docshots are — 16:9, English captions, no
-  voice — for YouTube, the homepage and the README; a live stream once orchestra drives (Part I) and there's a
-  homepage and a release to point at. Planned and measured (collab's spike: 1080p, MP4 ~600 KB a clip); made — `cargo xtask
-  video` and seven scenes — on hold until the user says (not before P3 step 7's toasts, asks and follow card), kept out
-  of git.
+- **Short videos** (user, 2026-10-23): scripted scenes as docshots are — English captions, no voice — for YouTube,
+  the homepage and the README; a live stream once there's a homepage and a release to point at. Going since 2026-11-03
+  (the user: "when you have room"): `cargo xtask scenes --record` (`e03a8dea`) and `--video` (`a45c97c2`), 16:9 and as
+  Shorts (1080×1920, `--shorts`); the camera's rule [done](#done), the three two-feature Shorts under way
+  ([now](#now)). The takes are kept out of git.
 
 - **The simulation harness's first piece** (§9.2) — done (detsim P1, `7a3f142b`): the simulated loop and one
   scenario. New code is tested in it from now on, so the harness grows with what's built instead of being fitted
@@ -914,11 +860,11 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   rewrites and stays there when it lands; Claude's caret, an accent bar after the last character written, rides
   the writing every frame (the person's cursor stays a block); `● follow` / `● chat · follow`; a key of yours that
   moves, edits or enters INSERT/SELECT pauses it, a key sequence under way only holds it; the saver's writes are
-  jobs the process's end waits for.
+  jobs the process's end waits for. Since C1 (2026-10-22) follow moves the view, never your cursor.
 - **The docs' pictures from scenes** — phase 1 done (2026-10-19, `f3a08b30`): every picture the docs show is a row
   naming the scene that makes it; `cargo xtask scenes --docs` retakes them into `target/docshots/` and compares,
-  and `--keep` copies only what you've seen. Rows with no scene yet are named apart; a `@?` wait that timed out
-  isn't said yet (frictions29 39 b), next.
+  and `--keep` copies only what you've seen. Rows with no scene yet are named apart; a `@?` wait that timed out fails
+  the shot.
 
 ## Later
 
@@ -951,7 +897,8 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
 - **Core audit**: a session's own build folders. (Sandbox rules as pack data are done.)
 - **A size pass.** The release binary's budget was raised to 12 MB (2026-10-09), then to 13 MB (18 bundled,
   2026-10-15), then to 17 MB (22 bundled, 2026-10-24: 16.55 and 21.62 then — the web reader's TLS and parsers, the
-  image decoder, panes P3 and collab C1–C3, hidden while `cargo perf` passed "not measured") until stabilization
+  image decoder, panes P3 and collab C1–C3, hidden while `cargo perf` passed "not measured"), then to 19 MB (24
+  bundled, 2026-11-05, #365: 18.17 and 23.27 then, every MB since tarae's own code) until stabilization
   (§9) brings it back; `cargo perf` fails a jump of more than 0.3 MB meanwhile. Four helpers LTO had copied into many callers are kept out of line
   (−66 KB measured). From the size audit (2026-10-09):
   - Per-package `opt-level = "s"` for crates off the hot path, the frame path kept at 3 (tarae, ropey,
@@ -982,9 +929,8 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   code into a note (view mode's quoting). Open, for its plan: where notes live (in the project, or a folder of
   yours outside it — reads there ask, as any read outside the project); Obsidian-compatible links and front
   matter; one store or separate from the memory card and panel ([alongside](#alongside-not-ordered)) and
-  Orchestra's library of lessons in `.tarae/` (Part II, [§5](#5-a-remote-split)). It waits on two pieces not
-  built yet: the half-block image view ([alongside](#alongside-not-ordered)) and view mode's quoting
-  ([§4](#4-panes-the-terminal-line-and-orchestra)). Beyond API 0.2/0.3 it needs a search through tarae's engine (as
+  Orchestra's library of lessons in `.tarae/` (Part II, [§5](#5-a-remote-split)). It waits on the half-block image
+  view ([alongside](#alongside-not-ordered)); view mode's quoting is in (`8e17fc36`). Beyond API 0.2/0.3 it needs a search through tarae's engine (as
   the to-do plugin), a project file written on a reviewed edit, and a link followed by `gd`/`enter`.
 - **Viewport-bounded injections**: branch `viewport-injections` (10 commits past main, last 2026-10-02; draft PR
   #1 on ethnw/tarae). Rebase and land, or drop: to decide with the user.
