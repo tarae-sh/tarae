@@ -678,6 +678,29 @@ fn a_reply_sent_while_claude_starts_waits_for_it() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// #381: a reply written while claude starts, the chat's column out of sight — its note card says `claude is
+/// starting…`, never `replying`, so it's said once the toast has gone.
+#[test]
+fn a_replys_card_says_claude_is_starting_with_the_chat_out_of_sight() {
+    let root = temp("starting-card");
+    std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+    let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
+    ed.claude_settings_gate = true;
+    stand_in(&mut ed);
+    ed.open(&root.join("a.rs")).unwrap();
+    crate::notes::submit(&mut ed, None, "why this?");
+    assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting()), "{}", state(&ed));
+    ed.toasts.clear();
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, 112, 30).unwrap();
+    let mut vt = vt100::Parser::new(30, 112, 0);
+    vt.process(&bytes);
+    let screen = vt.screen().contents();
+    assert!(screen.contains("claude is starting…") && !screen.contains("replying"), "{screen}");
+    drop(ed);
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// The review of frictions36: a re-read of the settings while the chat's claude runs (its watch) holds nothing —
 /// what waits for a turn's end goes at it as ever (one re-read finding nothing new never opens the gate again).
 #[test]

@@ -11,7 +11,8 @@ use std::time::Duration;
 use super::{Choices, Sim};
 use crate::editor::Editor;
 
-const SEEDS: &[u64] = &[0, 1, 2, 3];
+// (6: two rounds' looks land out of order, the older laid over the newer — the same stamp, #381)
+const SEEDS: &[u64] = &[0, 1, 2, 3, 6];
 
 const INPUTS: usize = 40;
 

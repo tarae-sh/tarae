@@ -756,6 +756,11 @@ impl Document {
         self.version != self.saved_version
     }
 
+    /// The version the buffer last matched its file at (read or saved) — it moves with every reload and save.
+    pub fn saved_version(&self) -> u64 {
+        self.saved_version
+    }
+
     /// The text as on disk (last read or saved), while the undo history still holds it — None once it
     /// doesn't (a rope clone, sharing what didn't change).
     pub fn saved_text(&self) -> Option<Rope> {

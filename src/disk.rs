@@ -368,6 +368,7 @@ impl Editor {
             .collect();
         let moving = self.moving_roots();
         let mut racy: Vec<Racy> = self.docs.iter().filter_map(|d| racy_of(d, &moving)).collect();
+        let held: Vec<(DocId, u64)> = self.docs.iter().map(|d| (d.id, d.saved_version())).collect();
         let waker = crate::fswatch::Waker::new();
         let watched = files.iter().map(|(id, p, _)| (*id, p.clone())).collect();
         if let Some((old, _)) = self.disk_round.replace((waker.clone(), watched)) {
@@ -401,18 +402,31 @@ impl Editor {
             };
             move |ed: &mut Editor| {
                 ed.drawn_for(ROUND);
-                for (id, held) in confirmed {
-                    if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id && d.disk == Some(held)) {
-                        d.disk_sure = Some(held);
+                // (a buffer read or saved since this round began holds another text as its file's than the one the
+                // round looked from — a stamp can't tell it, a write of the same size in the same tick keeps it, and
+                // rounds land in any order: what it saw is left out and looked at again, never laid over a newer
+                // read, #381)
+                let since = |ed: &Editor, id: DocId| {
+                    let then = held.iter().find(|(d, _)| *d == id).map(|(_, v)| *v);
+                    ed.docs.iter().find(|d| d.id == id).is_some_and(|d| then != Some(d.saved_version()))
+                };
+                for (id, sure) in confirmed {
+                    if since(ed, id) {
+                        continue;
+                    }
+                    if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id && d.disk == Some(sure)) {
+                        d.disk_sure = Some(sure);
                     }
                 }
+                let (stats, moved): (Vec<Stat>, Vec<Stat>) =
+                    stats.into_iter().partition(|(id, ..)| !since(ed, *id));
                 // (a backstop round that found nothing is nothing to draw)
                 ed.unchanged = stats.is_empty();
                 // (a reload landed while this round looked — an earlier round's, handled first, which may have
                 // read a file half-written: what this one saw is looked at again at once, against what's held
                 // now, and a git action's line waits for that look — else its file's last reload came after the
                 // line, said on its own: flaky80)
-                if ed.on_disk(stats) && ed.disk_poll_gen == generation {
+                if (ed.on_disk(stats) || !moved.is_empty()) && ed.disk_poll_gen == generation {
                     ed.disk_poll(false);
                     let again = ed.disk_poll_gen;
                     for b in ed.disk_batch.iter_mut().filter(|b| b.after.is_some_and(|g| g <= generation)) {

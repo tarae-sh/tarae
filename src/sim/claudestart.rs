@@ -3,7 +3,7 @@
 //! a line (`notes::submit`), a frame, the user taking their time — the read's job among them; its claude a stand-in
 //! whose lines are kept (`Editor.claude_lines`). After every step: no reply refused ("couldn't reach claude"), each
 //! reply written either in the claude's lines or waiting its turn (`Chat.sends`) — never lost — and a chat waiting
-//! for its claude says so in its header (`starting`).
+//! for its claude says so in its header (`starting`), or out of sight on the reply's note card (#381).
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -13,7 +13,8 @@ use std::time::Duration;
 use super::{Choices, Sim};
 use crate::editor::Editor;
 
-const SEEDS: &[u64] = &[0, 1];
+// (2: a reply before the chat's column was ever shown — its note card the one place that says `starting`, #381)
+const SEEDS: &[u64] = &[0, 1, 2];
 
 const INPUTS: usize = 24;
 
@@ -84,7 +85,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> 
             let mut vt = vt100::Parser::new(30, 112, 0);
             vt.process(&bytes);
             let starting = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting());
-            if starting && !vt.screen().contents().contains(" starting ") {
+            // (the chat's header, or a reply's note card where its column is out of sight — never the toast alone,
+            // which fades)
+            let said = |s: &str| s.contains(" starting ") || s.contains("claude is starting…");
+            if starting && !said(&vt.screen().contents()) {
                 seen.borrow_mut().unsaid = Some(vt.screen().contents());
             }
             "a frame".into()

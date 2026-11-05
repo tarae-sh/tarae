@@ -3,7 +3,8 @@
 //! instruction, the ask's claude (a stand-in of its own) calling `edit`, the review answered, its turn ending, frames
 //! and time. After every step: an ask asked is under way at once — never waiting behind the chat's turn, nothing of it
 //! queued in the chat; nothing of it reaches the chat (its lines, its messages, what it has seen); the review up while
-//! the ask's card waits is the ask's. At the end every call of the ask's has its answer in the ask's own lines.
+//! the ask's card waits is the ask's. At the end every call of the ask's has its answer in the ask's own lines — but
+//! the last, while its review is still up for you.
 
 use std::cell::RefCell;
 use std::sync::mpsc::Receiver;
@@ -14,7 +15,8 @@ use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::llm::StreamEv;
 
-const SEEDS: &[u64] = &[0, 1, 2, 5];
+// (3: the walk ends with the ask's review up, its call waiting for you — #381)
+const SEEDS: &[u64] = &[0, 1, 2, 3, 5];
 
 const INPUTS: usize = 50;
 
@@ -57,10 +59,13 @@ fn run(choices: Choices) -> Vec<String> {
     let world = RefCell::new(World::default());
     let check = |ed: &Editor| held(ed, &chat, &ask, &mut world.borrow_mut());
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &root, &world), check, print);
+    // (a call whose review is still up waits for you — the walk may end before anyone answered it, #381)
+    let review_up = ed.workspace.claude.ask.is_some() && ed.workspace.claude.review.is_some();
     sim.at_end(|| {
         let w = world.borrow();
         let answered = |id: &u64| w.ask_lines.iter().any(|l| l.contains(&format!("\"id\":{id}")));
-        match w.calls.iter().find(|id| !answered(id)) {
+        let waits = |id: &u64| review_up && w.called && w.calls.last() == Some(id);
+        match w.calls.iter().find(|id| !answered(id) && !waits(id)) {
             Some(id) => Err(format!("the ask's call {id} has no answer in its lines")),
             None => Ok(()),
         }

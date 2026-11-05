@@ -24047,6 +24047,11 @@ fn note_thread_lines(
         }
     }
     if n.waiting {
+        // (a reply waiting for its claude to start says so where it was written: the chat's column may be out of
+        // sight, the toast gone — #381)
+        let starting =
+            editor.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting() && !c.running());
+        let doing = if starting { " claude is starting…" } else { " claude is replying…" };
         out.push(Vec::new());
         out.extend(wrap(Line::Text {
             spans: vec![
@@ -24054,7 +24059,7 @@ fn note_thread_lines(
                     &wave_here(editor, false, ("note", 0)).unwrap_or_else(|| crate::shimmer::mark("")),
                     accent,
                 ),
-                sp(" claude is replying…", dim),
+                sp(doing, dim),
             ],
             indent: 0,
         }));
