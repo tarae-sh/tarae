@@ -734,6 +734,189 @@ fn your_split_is_sized_by_keys_and_by_its_divider() {
     );
 }
 
+/// The share of the leaf showing `shows`, in the node holding it.
+fn share(ed: &Editor, shows: Shows) -> Option<crate::split::Share> {
+    ed.workspace.split.share(ed.workspace.leaf(shows)?)
+}
+
+/// Every surface's rect as the last frame laid it out, and the code's.
+fn rects(ed: &Editor) -> Vec<Option<crate::split::Rect>> {
+    let code = ed.screen.leaves.iter().find(|l| l.0 == ed.workspace.viewer.focus).map(|l| l.1);
+    [Shows::Side, Shows::Chat]
+        .iter()
+        .map(|&s| ed.screen.rect(s))
+        .chain([Some(ed.screen.slot()), code])
+        .collect()
+}
+
+/// onetree S2c: a border dragged sets its surface's share in the tree — the chat's, the side panel's, the slot's a
+/// `Share::Cells` of what `sizes.json` keeps — and the layout draws it from there, that size exactly.
+#[test]
+fn a_border_dragged_is_its_surfaces_share_in_the_tree() {
+    use crate::split::Share;
+    let mut ed = every_surface();
+    let mouse = |ed: &mut Editor, kind, (x, y): (usize, usize)| {
+        ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        frame(ed);
+    };
+    let drag = |ed: &mut Editor, from: (usize, usize), to: (usize, usize)| {
+        mouse(ed, MouseKind::Down, from);
+        mouse(ed, MouseKind::Drag, to);
+        mouse(ed, MouseKind::Up, to);
+    };
+    let auto = Some(Share::Auto);
+    assert_eq!([share(&ed, Shows::Chat), share(&ed, Shows::Side), share(&ed, Shows::Slot)], [auto; 3]);
+    // The chat's line, 6 to the left
+    let c = ed.screen.rect(Shows::Chat).unwrap();
+    assert_eq!(ed.border_at(c.x, 3), Some(crate::sizes::Border::Chat));
+    drag(&mut ed, (c.x, 3), (c.x - 6, 3));
+    let n = (c.w + 6) as u16;
+    assert_eq!(
+        (ed.sizes.chat, share(&ed, Shows::Chat)),
+        (Some(n), Some(Share::Cells(n))),
+        "the tree's share"
+    );
+    assert_eq!(ed.screen.drawn_w(Shows::Chat), n as usize, "drawn from it");
+    // The side panel's right line, 4 to the right
+    let s = ed.screen.rect(Shows::Side).unwrap();
+    let edge = s.x + s.w - 1;
+    assert_eq!(ed.border_at(edge, 3), Some(crate::sizes::Border::Side));
+    drag(&mut ed, (edge, 3), (edge + 4, 3));
+    let n = (s.w + 4) as u16;
+    assert_eq!((ed.sizes.side, share(&ed, Shows::Side)), (Some(n), Some(Share::Cells(n))));
+    assert_eq!(ed.screen.drawn_w(Shows::Side), n as usize);
+    // The slot's top line, 3 up (a task's output in it, as `borders_drag_and_the_size_is_kept`'s; off its tabs and its
+    // keys' words)
+    ed.workspace.test_run = None;
+    let mut run = crate::task::Run::for_test(crate::task::Task {
+        name: "t".into(),
+        cmd: "true".into(),
+        cwd: std::env::temp_dir(),
+    });
+    run.output = [(false, "one")].into_iter().collect();
+    ed.workspace.task_run = Some(run);
+    frame(&mut ed);
+    let b = ed.screen.slot();
+    let word =
+        |x: usize| ed.screen.word_spots.borrow().iter().any(|w| w.y == b.y && (w.from..w.to).contains(&x));
+    let x = (b.x..b.x + b.w)
+        .find(|&x| ed.border_at(x, b.y) == Some(crate::sizes::Border::Bottom) && !word(x))
+        .expect("a cell of the slot's line");
+    drag(&mut ed, (x, b.y), (x, b.y - 3));
+    let n = (b.h + 3) as u16;
+    assert_eq!((ed.sizes.bottom, share(&ed, Shows::Slot)), (Some(n), Some(Share::Cells(n))));
+    assert_eq!(ed.screen.slot().h, n as usize);
+}
+
+/// onetree S2c: `C-w < >` from the code size the chat, from the side panel the side panel, `C-w + -` the slot — each
+/// a step, its share in the tree; a second press from the code is the chat's again (a surface's set share is no
+/// split of yours: `Workspace::own_sized`).
+#[test]
+fn the_size_keys_set_the_surfaces_share_in_the_tree() {
+    use crate::sizes::{STEP_COLS, STEP_ROWS};
+    use crate::split::Share;
+    let mut ed = every_surface();
+    let (chat, side, slot) =
+        (ed.screen.drawn_w(Shows::Chat), ed.screen.drawn_w(Shows::Side), ed.screen.slot().h);
+    let cells = |n: usize| Some(Share::Cells(n as u16));
+    feed(&mut ed, "<C-w>><C-w>>");
+    assert_eq!(ed.screen.drawn_w(Shows::Chat), chat + 2 * STEP_COLS, "the chat two steps wider");
+    assert_eq!(share(&ed, Shows::Chat), cells(chat + 2 * STEP_COLS));
+    feed(&mut ed, "<C-w><lt>");
+    assert_eq!(
+        (ed.screen.drawn_w(Shows::Chat), share(&ed, Shows::Chat)),
+        (chat + STEP_COLS, cells(chat + STEP_COLS))
+    );
+    ed.workspace.viewer.at = At::Side;
+    feed(&mut ed, "<C-w>>");
+    assert_eq!(
+        (ed.screen.drawn_w(Shows::Side), share(&ed, Shows::Side)),
+        (side + STEP_COLS, cells(side + STEP_COLS))
+    );
+    ed.workspace.viewer.at = At::Code;
+    feed(&mut ed, "<C-w>+<C-w>+<C-w>-");
+    assert_eq!((ed.screen.slot().h, share(&ed, Shows::Slot)), (slot + STEP_ROWS, cells(slot + STEP_ROWS)));
+    assert_eq!(ed.screen.drawn_w(Shows::Chat), chat + STEP_COLS, "the chat as it was set");
+}
+
+/// onetree S2c: `C-w =` makes every share you set automatic again — the surfaces' `Auto`, a split of the code's even
+/// — and the screen is laid out as before any was set.
+#[test]
+fn c_w_equals_makes_every_share_automatic_again() {
+    use crate::split::Share;
+    let mut ed = every_surface();
+    let before = rects(&ed);
+    feed(&mut ed, "<C-w>><C-w>+");
+    ed.workspace.viewer.at = At::Side;
+    feed(&mut ed, "<C-w><lt>");
+    ed.workspace.viewer.at = At::Code;
+    feed(&mut ed, "<C-w>v<C-w>>");
+    for s in [Shows::Chat, Shows::Side, Shows::Slot] {
+        assert!(matches!(share(&ed, s), Some(Share::Cells(_))), "{s:?} set");
+    }
+    assert_ne!(rects(&ed), before);
+    feed(&mut ed, "<C-w>=");
+    for s in [Shows::Chat, Shows::Side, Shows::Slot] {
+        assert_eq!(share(&ed, s), Some(Share::Auto), "{s:?} automatic");
+    }
+    assert!(!ed.workspace.split.sized(), "nothing set anywhere");
+    assert_eq!((ed.sizes.chat, ed.sizes.side, ed.sizes.bottom), (None, None, None));
+    feed(&mut ed, "<C-w>o");
+    assert_eq!(rects(&ed), before, "laid out as before");
+}
+
+/// onetree S2c: a restart keeps the sizes you set — the new tarae's read from `sizes.json`, its tree from the
+/// restart's file — every surface in the same rect, each share as it was.
+#[test]
+fn a_restart_keeps_the_sizes_you_set_in_the_same_rects() {
+    let dir = crate::scratch::Scratch::new("s2c-restart");
+    let (file, path) = (dir.join("a.rs"), dir.join("sizes.json"));
+    std::fs::write(&file, "fn main() {}\n").unwrap();
+    // (the side panel, a finished run in the slot and the chat — each tarae's own, brought again)
+    let scene = |ed: &mut Editor| {
+        let root = dir.to_path_buf();
+        ed.workspace.root = root.clone();
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, root));
+        ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
+        ed.workspace.claude.chat.get_or_insert_with(crate::chat::Chat::new);
+        frame(ed);
+    };
+    // (a stand-in claude for the chat each brings back)
+    let config = || {
+        let mut c = Config::default();
+        c.editor.llm.command = "sh".into();
+        c.editor.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        c
+    };
+    let mut ed = Editor::new(config());
+    ed.sizes_path = Some(path.clone());
+    ed.open(&file).unwrap();
+    scene(&mut ed);
+    feed(&mut ed, "<C-w>><C-w>+");
+    ed.workspace.viewer.at = At::Side;
+    feed(&mut ed, "<C-w><lt>");
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    let (sizes, laid) = (ed.sizes, rects(&ed));
+    let shares = [Shows::Side, Shows::Chat, Shows::Slot].map(|s| share(&ed, s));
+    // (written on a worker)
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while crate::sizes::Sizes::read(Some(&path)) != sizes && std::time::Instant::now() < end {
+        if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+            ed.handle_event(ev);
+        }
+    }
+    let state = crate::restart::snapshot(&mut ed);
+    drop(ed);
+    let mut ed = Editor::new(config());
+    ed.sizes = crate::sizes::Sizes::read(Some(&path));
+    crate::restart::restore(&mut ed, &state);
+    scene(&mut ed);
+    assert_eq!(ed.sizes, sizes, "read from sizes.json");
+    assert_eq!([Shows::Side, Shows::Chat, Shows::Slot].map(|s| share(&ed, s)), shares, "the tree's shares");
+    assert_eq!(rects(&ed), laid, "every surface where it was");
+}
+
 /// The user's decision (2026-10-21, plan §2.6): `C-w` is tarae's inside the terminal's program too — its next key
 /// is the window table's (which-key up, `C-w k` to the code), `C-w C-w` sends the program one `C-w`, `esc` cancels
 /// it with nothing sent; a `[keys.terminal]` row hands it back whole.

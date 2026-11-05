@@ -87,8 +87,8 @@ impl Editor {
         let mut out = [0; crate::pane::DOCKABLE];
         let side_open = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
         use crate::sizes::{Nav, Wants};
-        let chat = self.chat_panel(total).then_some(self.sizes.chat);
-        let nav = if side_open { Nav::Side(self.sizes.side) } else { Nav::None };
+        let chat = self.chat_panel(total).then_some(self.workspace.kept(Shows::Chat));
+        let nav = if side_open { Nav::Side(self.workspace.kept(Shows::Side)) } else { Nav::None };
         let w = crate::sizes::give_way(Wants { total, chat, nav });
         let rail = if self.review_rail_up() { self.screen.drawn_w(Shows::Rail) } else { 0 };
         let mut left = total.saturating_sub(w.chat + w.nav + rail);

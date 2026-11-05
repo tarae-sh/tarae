@@ -2,7 +2,9 @@
 //! project: kept as columns and rows in `$state/sizes.json`, read at startup (so across `:restart` too). A
 //! screen too small for a kept size shows less of it — clamped here, never written back — and a bigger one
 //! gets it again. Unset, each is automatic: the chat 2/5 of the screen (36–96 columns — U3), the side panel
-//! 32 and more on a wide screen, the bottom slot what its panel wants (a task's output — U2).
+//! 32 and more on a wide screen, the bottom slot what its panel wants (a task's output — U2). The layout reads them
+//! from the tree: each fed into its surface's leaf as a `Share::Cells` (`Editor::sizes_feed`, onetree S2c), which its
+//! rule here clamps (`split::Room::share`) — `sizes.json` stays their home, global, until panes move (S5).
 //!
 //! `C-w <`/`>` narrow/widen the focused one (the chat, the side panel, the review rail; from the code: the chat if
 //! it's open, else the side panel), `C-w -`/`+` the bottom slot, `C-w =` makes them all automatic again. A split of the
@@ -669,7 +671,9 @@ impl crate::editor::Editor {
             };
             Some(to - from)
         };
-        let others: Vec<usize> = (0..kids.len()).filter(|&j| j != i && kids[j].0 != Share::Auto).collect();
+        // (a surface's leaf is no split of yours, a size you set on it neither — `Workspace::own_sized`)
+        let own = |j: usize| kids[j].0 == Share::Auto || self.workspace.own_sized(&kids[j].1);
+        let others: Vec<usize> = (0..kids.len()).filter(|&j| j != i && !own(j)).collect();
         if others.is_empty() {
             return None;
         }
@@ -782,6 +786,7 @@ impl crate::editor::Editor {
                 }
             }
         }
+        self.sizes_feed();
     }
 
     /// The press let go: what it set is kept, and said.
@@ -915,6 +920,7 @@ impl crate::editor::Editor {
                 ("review rail", cols)
             }
         };
+        self.sizes_feed();
         self.sizes_keep();
         self.say_size(format!("{what} {cols} columns"));
     }
@@ -937,6 +943,7 @@ impl crate::editor::Editor {
         let rows =
             if taller { now + STEP_ROWS } else { now.saturating_sub(STEP_ROWS) }.clamp(BOTTOM_MIN, max);
         self.sizes.bottom = Some(rows as u16);
+        self.sizes_feed();
         self.sizes_keep();
         self.say_size(format!("bottom panel {rows} rows"));
     }
@@ -946,10 +953,10 @@ impl crate::editor::Editor {
     pub fn side_folded(&self) -> bool {
         let Some(total) = self.screen.width else { return false };
         let chat_open = self.chat_panel(total);
-        let chat = chat_open.then_some(self.sizes.chat);
+        let chat = chat_open.then_some(self.workspace.kept(Shows::Chat));
         self.workspace.viewer.sidebar.is_some()
             && !self.review_rail_up()
-            && give_way(Wants { total, chat, nav: Nav::Side(self.sizes.side) }).nav == 0
+            && give_way(Wants { total, chat, nav: Nav::Side(self.workspace.kept(Shows::Side)) }).nav == 0
     }
 
     /// The chat is a panel on a screen `total` wide: open, not minimized — and where it would take the whole
@@ -964,7 +971,8 @@ impl crate::editor::Editor {
             return false;
         }
         self.workspace.is_at(At::Chat)
-            || give_way(Wants { total, chat: Some(self.sizes.chat), nav: Nav::None }).chat < total
+            || give_way(Wants { total, chat: Some(self.workspace.kept(Shows::Chat)), nav: Nav::None }).chat
+                < total
     }
 
     /// The chat floats over the code this frame: shown as the ask line (`Chat.asking`, the flow plan's piece 2) — the one
@@ -1011,7 +1019,11 @@ impl crate::editor::Editor {
             sessions_dock: s.sessions_dock,
             ..Sizes::default()
         };
-        self.workspace.split.even();
+        // (the shares you set: a code pane's even again, a surface's its own — `Split::even`)
+        let mut split = self.workspace.split.clone();
+        split.even(&|k| self.workspace.own_sized(k));
+        self.workspace.split = split;
+        self.sizes_feed();
         for g in &mut self.workspace.groups {
             g.laid = crate::pane::Laid::Auto;
         }
@@ -1205,6 +1217,24 @@ impl crate::editor::Editor {
         }
         // (a card, the picker, a prompt, which-key: the keys' while up, the docked pane's again once gone)
         self.float_sync();
+    }
+
+    /// The sizes you set (`Sizes`: global, `sizes.json`, through onetree S0–S4) fed into every workspace's tree — the
+    /// side panel's, the review rail's, the slot's and the chat's leaf a `Share::Cells` of yours, else `Auto` — the
+    /// shares the layout reads (`Workspace::kept`). At each size set and each frame (a tree new or brought back takes
+    /// them there). A docked group's stays `Sizes.docked`: two stacked on one side share one share in the tree.
+    pub fn sizes_feed(&mut self) {
+        use crate::split::Share;
+        let s = self.sizes;
+        let kept =
+            [(Shows::Side, s.side), (Shows::Rail, s.rail), (Shows::Slot, s.bottom), (Shows::Chat, s.chat)];
+        for w in std::iter::once(&mut self.workspace).chain(self.workspaces.iter_mut()) {
+            for (shows, n) in kept {
+                if let Some(id) = w.leaf(shows) {
+                    w.split.set_share(id, n.map_or(Share::Auto, Share::Cells));
+                }
+            }
+        }
     }
 
     /// Writes the sizes (worker — the newest write wins).

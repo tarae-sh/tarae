@@ -12,7 +12,9 @@ pub type PaneId = u64;
 pub enum Share {
     /// An equal part of what the others leave (the remainder a cell each to the leading ones).
     Even,
-    /// As many cells as you set (a drag, `C-w < > - +`) — clamped to the room there is, never written back.
+    /// As many cells as you set (a drag, `C-w < > - +`) — clamped to the room there is, never written back. On a
+    /// surface's leaf (`Room::share`: the chat, the side panel …) the size you set, which its own rule clamps — laid
+    /// out as `Auto`, the surface asked.
     Cells(u16),
     /// The surface's own: the chat's width (`sizes::give_way`), the slot's height (`sizes::bottom`) … — asked of
     /// the layout's `Room`; 0 = no room (closed, folded away). An `Auto` child carries its own edge cell.
@@ -38,6 +40,11 @@ pub enum Split {
 pub trait Room {
     /// How many cells along `dir` the `Auto` child `kid` takes, of `avail`.
     fn auto(&self, kid: &Split, dir: Dir, avail: usize) -> usize;
+    /// How `kid`'s `share` is laid out: as it is, but a surface's size you set (`Cells` on its leaf), which is the
+    /// surface's own to clamp — `Auto`, asked of `auto`.
+    fn share(&self, share: Share, _kid: &Split) -> Share {
+        share
+    }
     /// Rows node `node` keeps at its top, over its children.
     fn over(&self, _node: &Split) -> usize {
         0
@@ -197,15 +204,36 @@ impl Split {
         kids.iter().find(|k| k.1.holds(id)).is_some_and(|k| *d == dir || k.1.has_parent_along(id, dir))
     }
 
-    /// Every share back to `Even` but the surfaces' own (`Auto`) — `C-w =`.
-    pub fn even(&mut self) {
+    /// Every share you set back to `Even` — a surface's (`own`: the chat's, the side panel's …) to `Auto` — `C-w =`.
+    pub fn even(&mut self, own: &impl Fn(&Split) -> bool) {
         if let Split::Node(_, kids) = self {
             for (share, kid) in kids.iter_mut() {
                 if matches!(share, Share::Cells(_)) {
-                    *share = Share::Even;
+                    *share = if own(kid) { Share::Auto } else { Share::Even };
                 }
-                kid.even();
+                kid.even(own);
             }
+        }
+    }
+
+    /// Leaf `id`'s share in the node holding it (None: not in the tree, or the tree's root).
+    pub fn share(&self, id: PaneId) -> Option<Share> {
+        let Split::Node(_, kids) = self else { return None };
+        match kids.iter().find(|k| k.1 == Split::Leaf(id)) {
+            Some(k) => Some(k.0),
+            None => kids.iter().find_map(|k| k.1.share(id)),
+        }
+    }
+
+    /// Leaf `id`'s share in the node holding it set to `to` — false where it isn't a child of a node.
+    pub fn set_share(&mut self, id: PaneId, to: Share) -> bool {
+        let Split::Node(_, kids) = self else { return false };
+        match kids.iter_mut().find(|k| k.1 == Split::Leaf(id)) {
+            Some(k) => {
+                k.0 = to;
+                true
+            }
+            None => kids.iter_mut().any(|k| k.1.set_share(id, to)),
         }
     }
 
@@ -241,11 +269,13 @@ impl Split {
             Dir::Vertical => r.w,
             Dir::Horizontal => r.h,
         };
-        // The surfaces' own first, then what's set, then the even ones share the rest
+        // The surfaces' own first, then what's set, then the even ones share the rest (a surface's set size is its own
+        // — `Room::share`)
+        let shares: Vec<Share> = kids.iter().map(|(s, k)| room.share(*s, k)).collect();
         let mut sizes: Vec<Option<usize>> = vec![None; kids.len()];
         let mut left = total;
-        for (i, (share, kid)) in kids.iter().enumerate() {
-            if *share == Share::Auto {
+        for (i, (_, kid)) in kids.iter().enumerate() {
+            if shares[i] == Share::Auto {
                 let n = room.auto(kid, *dir, left).min(left);
                 sizes[i] = Some(n);
                 left -= n;
@@ -258,13 +288,13 @@ impl Split {
             Dir::Horizontal => 0,
             Dir::Vertical => {
                 let open: Vec<usize> = (0..kids.len()).filter(|&i| sizes[i].is_none_or(|n| n > 0)).collect();
-                open.windows(2).filter(|w| kids[w[0]].0 != Share::Auto && kids[w[1]].0 != Share::Auto).count()
+                open.windows(2).filter(|w| shares[w[0]] != Share::Auto && shares[w[1]] != Share::Auto).count()
             }
         };
         left = left.saturating_sub(gaps);
-        let evens = kids.iter().filter(|k| k.0 == Share::Even).count();
-        let mut cells = kids.iter().filter(|k| matches!(k.0, Share::Cells(_))).count();
-        for (i, (share, _)) in kids.iter().enumerate() {
+        let evens = shares.iter().filter(|s| **s == Share::Even).count();
+        let mut cells = shares.iter().filter(|s| matches!(s, Share::Cells(_))).count();
+        for (i, share) in shares.iter().enumerate() {
             if let Share::Cells(n) = share {
                 // (a cell kept for each even one and each of yours after it)
                 cells -= 1;
@@ -274,7 +304,7 @@ impl Split {
             }
         }
         let mut k = 0;
-        for (i, (share, _)) in kids.iter().enumerate() {
+        for (i, share) in shares.iter().enumerate() {
             if *share == Share::Even {
                 // the remainder goes one cell each to the leading panes
                 sizes[i] = Some(left / evens + usize::from(k < left % evens));
@@ -283,7 +313,7 @@ impl Split {
         }
         // (all of them set by you and short of the room: the last of yours takes the rest — no blank cells)
         if evens == 0
-            && let Some(i) = (0..kids.len()).rev().find(|&i| matches!(kids[i].0, Share::Cells(_)))
+            && let Some(i) = (0..kids.len()).rev().find(|&i| matches!(shares[i], Share::Cells(_)))
         {
             sizes[i] = sizes[i].map(|n| n + left);
         }
@@ -294,8 +324,8 @@ impl Split {
             if size > 0 {
                 if *dir == Dir::Vertical
                     && let Some(b) = before
-                    && kids[b].0 != Share::Auto
-                    && kids[i].0 != Share::Auto
+                    && shares[b] != Share::Auto
+                    && shares[i] != Share::Auto
                 {
                     at += 1;
                 }
@@ -426,7 +456,7 @@ mod tests {
         assert_eq!((at(panes.clone(), 1).w, at(panes, 2).w), (1, 10));
         let mut t = s.clone();
         assert!(t.sized());
-        t.even();
+        t.even(&|_| false);
         assert!(!t.sized(), "C-w =: yours even again, the surfaces' own kept");
         let (kids, i) = t.parent_along(2, Dir::Vertical).unwrap();
         assert_eq!((kids.len(), i), (4, 2));

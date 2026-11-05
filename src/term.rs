@@ -803,6 +803,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     let _drawing = crate::codereview::Drawing::on();
     // (a frame drawn again: nothing of the last one's reading kept — `light_rows`)
     editor.drawn.take();
+    // (the sizes you set, global in `sizes.json`, fed into the trees' shares the layout reads — onetree S2c)
+    editor.sizes_feed();
     // (this frame's width first: what's docked beside the code and what folds into the slot are judged by it,
     // here and in the editor alike — `Editor::docked_in_sight`)
     editor.screen.width = Some(w as usize);
@@ -919,7 +921,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         terminal_size: std::cell::Cell::new(Some((
             crate::sizes::bottom(
                 lay.text_rows + lay.slot.h,
-                editor.sizes.bottom,
+                editor.workspace.kept(crate::pane::Shows::Slot),
                 terminal_panel_h(lay.text_rows + lay.slot.h, lay.slot_panel().head),
             )
             .saturating_sub(lay.slot_panel().head)
@@ -1537,7 +1539,7 @@ fn group_shape(editor: &Editor, g: &crate::pane::Group, w: usize, h: usize) -> O
     let tall = h >= OVER_ROWS && w >= list_min.max(detail_min);
     // (by itself only where the pane's height isn't the group's own making — docked, or a slot size you set: the slot's
     // own follows the member in sight, and a shape it made would change the next frame's height)
-    let own = editor.out_of_slot(g.kind) || editor.sizes.bottom.is_some();
+    let own = editor.out_of_slot(g.kind) || editor.workspace.kept(crate::pane::Shows::Slot).is_some();
     let shape = match (g.laid, !narrow, tall) {
         (Laid::Auto | Laid::Beside, true, _) => Shape::Beside,
         (Laid::Auto, _, true) if own => Shape::Over,
@@ -1749,10 +1751,10 @@ impl Layout {
             Some(r) if review => {
                 Nav::Rail { natural: review_rail_natural(editor, r), focus: editor.workspace.is_at(At::Rail) }
             }
-            _ if side_open => Nav::Side(editor.sizes.side),
+            _ if side_open => Nav::Side(editor.workspace.kept(crate::pane::Shows::Side)),
             _ => Nav::None,
         };
-        let chat = chat_open.then_some(editor.sizes.chat);
+        let chat = chat_open.then_some(editor.workspace.kept(crate::pane::Shows::Chat));
         let widths = match zoom_shows {
             None if wide => Given { chat: 0, nav: 0 },
             None => crate::sizes::give_way(crate::sizes::Wants { total: w as usize, chat, nav }),
@@ -1818,7 +1820,7 @@ impl Layout {
         let slot_h = match zoom_shows {
             Some(Shows::Slot) => total,
             _ if natural == 0 => 0,
-            _ => crate::sizes::bottom(total, editor.sizes.bottom, natural),
+            _ => crate::sizes::bottom(total, editor.workspace.kept(crate::pane::Shows::Slot), natural),
         };
         let mut leaves = editor.workspace.split.layout(body, &room(slot_h));
         // (filling the screen: that pane alone — a code pane in the code's whole column, under the path bar; a
@@ -1912,9 +1914,9 @@ impl Layout {
     }
 }
 
-/// What the tree's layout asks of the surfaces this frame: their own sizes (`Share::Auto`) — the left column's
-/// (the side panel's, or the review's rail while it's up), the chat's width, the slot's height — and the path
-/// bar's rows over the code's column.
+/// What the tree's layout asks of the surfaces this frame: their own sizes (`Share::Auto`, and a size you set on one —
+/// its `Share::Cells`, clamped by its rule) — the left column's (the side panel's, or the review's rail while it's up),
+/// the chat's width, the slot's height — and the path bar's rows over the code's column.
 struct Surfaces<'a> {
     editor: &'a Editor,
     session: &'a crate::workspace::Workspace,
@@ -1967,6 +1969,15 @@ impl crate::split::Room for Surfaces<'_> {
             // (by direction already: `Editor::dock_auto`)
             Some(Shows::Group(k)) => self.editor.dock_auto(k, dir, self.width, self.rows, self.slot),
             _ => 0,
+        }
+    }
+
+    fn share(&self, share: crate::split::Share, kid: &crate::split::Split) -> crate::split::Share {
+        use crate::split::Share;
+        // (a size you set on a surface is its own rule's to clamp — `sizes::give_way`, `sizes::bottom`: read above)
+        match share {
+            Share::Cells(_) if self.session.own_sized(kid) => Share::Auto,
+            s => s,
         }
     }
 
@@ -13699,9 +13710,13 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     let way = way_w(&editor.card_way_said()) + 3;
     let answer = keys.map(|w| w + 3).sum::<usize>().checked_sub(3).map(|w| w + way);
     let side = editor.workspace.viewer.sidebar.is_some();
-    let nav = if side { crate::sizes::Nav::Side(editor.sizes.side) } else { crate::sizes::Nav::None };
+    let nav = if side {
+        crate::sizes::Nav::Side(editor.workspace.kept(crate::pane::Shows::Side))
+    } else {
+        crate::sizes::Nav::None
+    };
     let chat = |w: usize| {
-        let chat = editor.chat_panel(w).then_some(editor.sizes.chat);
+        let chat = editor.chat_panel(w).then_some(editor.workspace.kept(crate::pane::Shows::Chat));
         crate::sizes::give_way(crate::sizes::Wants { total: w, chat, nav }).chat
     };
     // (over the chat's foot or a docked list's: its own width, whatever the column's (#177); the rows from its top line
@@ -16860,7 +16875,7 @@ const REVIEW_RAIL_MAX: usize = crate::sizes::RAIL_AUTO_MAX;
 /// `sizes::give_way`'s.
 fn review_rail_natural(editor: &Editor, r: &crate::codereview::CodeReview) -> usize {
     use crate::chrome::{GAP, PAD, PAD_R};
-    if let Some(k) = editor.sizes.rail {
+    if let Some(k) = editor.workspace.kept(crate::pane::Shows::Rail) {
         return (k as usize).clamp(REVIEW_RAIL_MIN, crate::sizes::RAIL_MAX);
     }
     let need = *r.rail_need.get_or_init(|| review_rail_need(editor, r));
@@ -18250,7 +18265,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let strong = card.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let warn_fg = t.try_get("warning").and_then(|s| s.fg).map_or(accent, |fg| Style { fg: Some(fg), ..card });
     // (the prose's measure: 72 at the automatic width, the width you set else — #163)
-    let (w, mw) = chat_widths(chat_w, editor.sizes.chat.is_some());
+    let (w, mw) = chat_widths(chat_w, editor.workspace.kept(crate::pane::Shows::Chat).is_some());
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
     use crate::chat::{ChatRow, Laid, LaidKey};
     let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
@@ -18905,7 +18920,7 @@ const BESIDE_MIN: usize = 12;
 fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
     let c = editor.workspace.claude.chat.as_ref()?;
     let at = lay.chat()?;
-    let (w, _) = chat_widths(at.w, editor.sizes.chat.is_some());
+    let (w, _) = chat_widths(at.w, editor.workspace.kept(crate::pane::Shows::Chat).is_some());
     let input_h = c.input.laid(w).height().min(CHAT_INPUT_MAX);
     let now_ms = crate::usage::now_ms();
     let compacts = crate::idlecompact::next_at(editor, &editor.workspace, now_ms);
@@ -19441,7 +19456,7 @@ fn draw_chat(
     // and bottom lines outside `cw` and `rows`, its keys in the bottom line — a floating pane's)
     let Some(at) = lay.chat_at() else { return Ok(None) };
     let (x0, top, rows, cw, framed) = (at.x, at.y, at.h, at.w, at.framed);
-    let (w, _) = chat_widths(cw, editor.sizes.chat.is_some());
+    let (w, _) = chat_widths(cw, editor.workspace.kept(crate::pane::Shows::Chat).is_some());
     // (its frame's lines while it floats: lit as every floating frame's, recorded for the mouse — `Ui::frame_lit`)
     let frame = (x0, top, cw + 1, rows + 1);
     let frame_lit = ui.frame_lit(Some(crate::mouse::Lights::Chat), frame, ui.lit == Some(Region::Chat));

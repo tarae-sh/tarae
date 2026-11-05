@@ -535,6 +535,22 @@ impl Workspace {
         }
     }
 
+    /// The size you set for surface `shows` (the side panel, the review's rail, the slot, the chat): its leaf's
+    /// `Share::Cells` in the tree — fed from `Sizes` (`Editor::sizes_feed`, onetree S2c). None: automatic.
+    pub fn kept(&self, shows: crate::pane::Shows) -> Option<u16> {
+        match self.split.share(self.leaf(shows)?)? {
+            crate::split::Share::Cells(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Whether `kid` is a surface's leaf (no code pane): sized by its own rule, a size you set on it too
+    /// (`Room::share`, `Split::even`).
+    pub fn own_sized(&self, kid: &crate::split::Split) -> bool {
+        use crate::pane::Shows;
+        matches!(kid, crate::split::Split::Leaf(id) if !matches!(self.shows(*id), Some(Shows::Code) | None))
+    }
+
     /// Its linked group of kind `kind`, when it has one.
     pub fn group(&self, kind: crate::pane::GroupKind) -> Option<crate::pane::Group> {
         self.groups.iter().find(|g| g.kind == kind).copied()
