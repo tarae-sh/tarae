@@ -62,7 +62,12 @@ nothing a Docker says tells it's this machine's alone (a socket may be forwarded
 name collides), so otherwise only volumes carrying this machine's id are dropped. `cargo xtask linux prune` says
 how many it judged by path, or kept. It also lists the targets of checkouts that landed — nothing changed there
 and their branch in the main branch, what `:workspace-end` reads as nothing to lose; never the main branch's own
-checkout nor the one running it — and drops them, each said, only with `--yes`. Past
+checkout nor the one running it — and drops them, each said, only with `--yes`. Before it starts, each run holds
+tarae's volumes under 30 GB: past it, this machine's targets of checkouts tarae made (under its worktrees folder)
+go by last use, a landed checkout's first, then one
+with nothing changed, until under, each said — never the run's own, one a container mounts (a run's, or the hold
+`cargo xtask kernels` keeps on its kept binary's volume for its whole length), nor one whose checkout has changes or
+can't be read. Past
 30 GB a run says what tarae's volumes take (or that Docker couldn't measure them), the
 checkouts' targets apart from the shared ones (registry, toolchains), which only `cargo xtask linux prune --all`
 frees: it lists every volume and image of this repository's on this machine — gone checkouts' targets,

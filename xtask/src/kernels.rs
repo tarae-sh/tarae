@@ -606,6 +606,53 @@ fn carry(from: &Docker, to: &Docker, n: &Needs) -> Vec<(Cmd, Option<Cmd>)> {
     ]
 }
 
+/// The commands that hold the build's target volume while the run goes (#380): it made as `cargo xtask linux`
+/// makes it, then a container created on it and never started (`crate::linux::HOLD_LABEL`) — Docker then counts it
+/// in use, so no other checkout's run drops it for room between this run's steps, nor `docker volume rm` — and
+/// the one that lets it go.
+fn hold_cmds(d: &Docker, n: &Needs, name: &str) -> (Vec<Cmd>, Cmd) {
+    let label = format!("{}=kernels", crate::linux::HOLD_LABEL);
+    let target = format!("{}:/target:ro", n.target);
+    let create =
+        Cmd::new(&["docker", "create", "--name", name, "--label", &label, "--network", "none", "-v"]).args([
+            target.as_str(),
+            n.image.as_str(),
+            "true",
+        ]);
+    let make = Cmd::new(&["docker"]).args(&n.make);
+    (vec![make.on(d), create.on(d)], Cmd::new(&["docker", "rm", "--force", name]).on(d))
+}
+
+/// The build's target volume held (`hold_cmds`) until this is dropped.
+struct Hold {
+    rm: Option<Cmd>,
+    x: PathBuf,
+}
+
+impl Hold {
+    fn take(d: &Docker, n: &Needs, x: &Path) -> Hold {
+        let (take, rm) = hold_cmds(d, n, &format!("tarae-hold-kernels-{}", std::process::id()));
+        let held = take.iter().all(|c| said_status(c, x));
+        if !held {
+            eprintln!(
+                "the kept binary isn't held: another checkout's `cargo xtask linux` may drop {} for room between \
+                 the kernels",
+                n.target
+            );
+        }
+        Hold { rm: held.then_some(rm), x: x.to_path_buf() }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if let Some(rm) = self.rm.take() {
+            eprintln!("$ {}", rm.line());
+            let _ = quiet(rm.command(&self.x));
+        }
+    }
+}
+
 /// The kept binary's sha256 in `d`, as `sha256sum` prints it.
 fn kept_sum(d: &Docker, n: &Needs) -> Cmd {
     let target = format!("{}:/target", n.target);
@@ -1405,6 +1452,10 @@ pub fn run(args: &[String]) -> Result<()> {
             t.build
         );
         println!("{}    # {READ_FIRST}", context_show().line());
+        let (take, rm) = hold_cmds(&from, &n, "tarae-hold-kernels-<pid>");
+        for c in &take {
+            println!("{}    # the target volume held: no run drops it for room", c.line());
+        }
         if a.build {
             println!("{}", build_cmd(&from).line());
         }
@@ -1428,6 +1479,7 @@ pub fn run(args: &[String]) -> Result<()> {
                 println!("# {}.yaml:\n{}", vm_name(k), lima_yaml(k, &mounts)?);
             }
         }
+        println!("\n{}    # at the end: the target volume let go", rm.line());
         println!("(`xtask` is `cargo xtask`)");
         return Ok(());
     }
@@ -1455,6 +1507,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let started = Instant::now();
     let build_profile = t.build.clone();
     let stop_build = colima_up(&build_profile, &[], was.as_deref(), &x)?;
+    // (before the build, so no step of it finds the volume free)
+    let hold = Hold::take(&from, &n, &x);
     if a.build {
         let t0 = Instant::now();
         let c = build_cmd(&from);
@@ -1471,6 +1525,7 @@ pub fn run(args: &[String]) -> Result<()> {
     eprintln!("$ {}", c.line());
     let said = quiet(c.command(&x)).unwrap_or_default();
     let Some(sum) = sum_of(&said) else {
+        drop(hold);
         if stop_build {
             colima_down(&build_profile, was.as_deref(), &x);
         }
@@ -1483,6 +1538,8 @@ pub fn run(args: &[String]) -> Result<()> {
         // (the build's own profile stays up for the carrying; a colima kernel on it isn't stopped by its run)
         one_kernel(&mut run, k, repeat, &from, (&n, sum), a.keep_vm, &x);
     }
+    // (let go before the build's VM stops: its Docker is gone after)
+    drop(hold);
     if stop_build {
         colima_down(&build_profile, was.as_deref(), &x);
     }
@@ -1596,6 +1653,23 @@ mod tests {
             make: ["volume", "create", "--label", "tarae.checkout=/w", "tv"].map(String::from).into(),
             rustup: "rv".into(),
         }
+    }
+
+    /// #380: the build's target volume is held the whole run by a container created on it, never started — the
+    /// volume made labelled first (a `docker create` would make it bare), mounted read-only, no network — and let
+    /// go by name.
+    #[test]
+    fn the_kept_binarys_volume_is_held_by_a_container_never_started() {
+        let d = Docker::Context("colima-b".into());
+        let (take, rm) = hold_cmds(&d, &needs(), "tarae-hold-kernels-7");
+        let lines: Vec<String> = take.iter().map(Cmd::line).collect();
+        assert_eq!(lines[0], "DOCKER_CONTEXT=colima-b docker volume create --label tarae.checkout=/w tv");
+        assert_eq!(
+            lines[1],
+            "DOCKER_CONTEXT=colima-b docker create --name tarae-hold-kernels-7 --label tarae.hold=kernels \
+             --network none -v tv:/target:ro rust:1.95 true"
+        );
+        assert_eq!(rm.line(), "DOCKER_CONTEXT=colima-b docker rm --force tarae-hold-kernels-7");
     }
 
     /// The set as the plan decided it (K1–K6 and Y2), each kernel read whole: modes, expectations among them, a VM.

@@ -41,7 +41,14 @@
 //! many it judged by path, or kept. `prune --all` lists every volume and image of the repository's but live
 //! checkouts' targets (an open session's in the UI state, or a folder that's there), and drops them only with
 //! `--yes`.
-//! After the checks, past `VOLUMES_SAY` (30 GB), a line says what tarae's volumes take — the checkouts'
+//! Before a run, tarae's volumes are held under `VOLUMES_MAX` (30 GB, #380 — every checkout's target, 6–10 GB each,
+//! passed colima's 90 % three times in a morning): past it, this machine's target volumes go by last use (`LAST_USE`,
+//! a file each run touches: Docker keeps none) — only checkouts tarae made, under its worktrees folder (another
+//! tool's, yours, only `prune` drops, once gone) —, a landed checkout's first, then one with nothing changed, until
+//! under (`to_free`), each said. Never this run's own, one a container mounts (Docker's `Links`: a run's, or the
+//! hold `cargo xtask kernels` creates on its kept binary's for its whole length — `HOLD_LABEL`), nor one whose
+//! checkout has changes or can't be told of (tarae's sandbox reads no sibling checkout: nothing goes from there).
+//! After the checks, past `VOLUMES_MAX`, a line says what tarae's volumes take — the checkouts'
 //! targets, which ends and `prune` free, apart from the shared ones (colima's disk filled at 40 GB, 2026-10-06,
 //! with nothing said); a Docker that can't measure them is said so. The line says the disk's use too (the
 //! container's `df -P /target`, read off its output), and comes past `DISK_SAY` (80 %) however little they take.
@@ -464,6 +471,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let machine = machine_id(&root);
     // (a run never judges a volume without a machine id: only `prune --mine` does — `local`)
     prune_volumes(machine.as_deref().ok(), false, false);
+    // (#380: tarae's volumes held under their limit — a disk past 90 % stops a run, and the kernels run's K4 with it)
+    free_room(machine.as_deref().ok(), &target_volume(&root, &pin, platform), &image(&pin));
     // (made here, not by `docker run`: only a volume made this way carries its labels)
     if let Err(why) = &machine {
         eprintln!("no machine id ({why}): a target volume made now carries none — judged by its path");
@@ -1310,8 +1319,9 @@ fn prune_notes(
     notes
 }
 
-/// Past this, a run says what tarae's volumes take — before a full disk does.
-const VOLUMES_SAY: u64 = 30_000_000_000;
+/// tarae's volumes are held under this (`free_room`, before each run), and past it a run says what they take —
+/// before a full disk does.
+const VOLUMES_MAX: u64 = 30_000_000_000;
 
 /// Past this share of the disk used (the Docker machine's, where the target volume is), a run says what
 /// tarae's volumes take however little that is — a disk filled by others' fills for tarae too.
@@ -1582,12 +1592,12 @@ fn df_answer(out: &std::process::Output) -> std::result::Result<String, String> 
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// What tarae's volumes take, said once past `VOLUMES_SAY` or the disk (`disk`: the container's) past
+/// What tarae's volumes take, said once past `VOLUMES_MAX` or the disk (`disk`: the container's) past
 /// `DISK_SAY` — and said when it can't be measured, with the disk past `DISK_SAY` all the same.
 fn say_sizes(disk: Option<Disk>) {
     match df(&mut Command::new("docker")) {
         Ok(listed) => {
-            if let Some(line) = size_line(&sizes(&listed), VOLUMES_SAY, disk) {
+            if let Some(line) = size_line(&sizes(&listed), VOLUMES_MAX, disk) {
                 eprintln!("{line}");
             }
         }
@@ -1843,12 +1853,14 @@ fn prune_args(args: &[String]) -> std::result::Result<(bool, bool, bool), String
 }
 
 /// A checkout whose work is all in its base: its target volume is only a build to make again.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Landed {
     /// Landed: why, in words (`s1 is in main, nothing changed`)
     In(String),
-    /// Not: work of its own there, or the base's own checkout
+    /// Not: work of its own committed there, or the base's own checkout — nothing changed
     Not,
+    /// Changes not committed there (untracked files too): its target is never dropped for room (`to_free`)
+    Changed,
     /// Can't tell (git couldn't read it — tarae's sandbox reads no sibling checkout): kept, said why
     Unknown(String),
 }
@@ -1881,14 +1893,15 @@ fn landed(checkout: &Path) -> Landed {
     let Some(base) = remote.into_iter().chain(["main".into(), "master".into()]).find(|b| local(b)) else {
         return Landed::Unknown("no main branch there (origin/HEAD's, main or master)".into());
     };
+    // (changes first: the base's own checkout with changes is `Changed` too)
+    match text(&["status", "--porcelain", "--untracked-files=all"]) {
+        Ok(s) if !s.is_empty() => return Landed::Changed,
+        Ok(_) => {}
+        Err(why) => return Landed::Unknown(why),
+    }
     let branch = text(&["symbolic-ref", "--quiet", "--short", "HEAD"]).ok();
     if branch.as_deref() == Some(base.as_str()) {
         return Landed::Not;
-    }
-    match text(&["status", "--porcelain", "--untracked-files=all"]) {
-        Ok(s) if !s.is_empty() => return Landed::Not,
-        Ok(_) => {}
-        Err(why) => return Landed::Unknown(why),
     }
     match git(&["merge-base", "--is-ancestor", "HEAD", &format!("refs/heads/{base}")])
         .map(|o| o.status.code())
@@ -1927,7 +1940,7 @@ fn landed_targets(
         }
         match landed(at) {
             Landed::In(why) => found.push((v.name.clone(), v.checkout.clone(), why)),
-            Landed::Not => {}
+            Landed::Not | Landed::Changed => {}
             Landed::Unknown(why) => {
                 untold.push(format!("kept {}: can't tell whether {} landed ({why})", v.name, v.checkout))
             }
@@ -1975,6 +1988,278 @@ fn prune_volumes(ours: Option<&str>, local: bool, shared: bool) -> (Vec<Volume>,
     (listed, gone)
 }
 
+/// The file in a target volume whose time is its last use: each run touches it (`script`) — Docker keeps no
+/// volume's last use.
+const LAST_USE: &str = ".tarae-last-use";
+
+/// The label on a container that holds a target volume for a run that isn't in a container all along —
+/// `cargo xtask kernels`' kept binary between its steps: created, never started, it makes the volume in use.
+pub(crate) const HOLD_LABEL: &str = "tarae.hold";
+
+/// A volume as `free_room` judges it: what Docker says of it (`ROOM_FORMAT`), and — for the target volumes it
+/// may drop — its checkout's state and its last use.
+#[derive(Clone, Debug, PartialEq)]
+struct Held {
+    name: String,
+    size: u64,
+    /// The containers that mount it, running or not (`docker system df -v`'s `Links`: a run's, a kernels run's
+    /// hold) — None: Docker didn't say, judged in use
+    links: Option<u32>,
+    /// Its checkout's path — empty when unlabelled
+    checkout: String,
+    /// The machine it was made on — empty without the label
+    machine: String,
+    /// Its checkout's state (`landed`) — None: not asked
+    state: Option<Landed>,
+    /// Its last use, seconds since the epoch (`LAST_USE`'s time, else its folder's) — None: not read
+    used: Option<u64>,
+}
+
+/// `docker system df -v`'s volumes for `free_room`: name, size, the containers mounting it, labels a line.
+const ROOM_FORMAT: &str = "{{range .Volumes}}{{.Name}}\t{{.Size}}\t{{.Links}}\t{{.Labels}}{{println}}{{end}}";
+
+/// `ROOM_FORMAT`'s rows, tarae's volumes only (every one counts toward `VOLUMES_MAX`).
+fn held(listed: &str) -> Vec<Held> {
+    listed
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split('\t').map(str::trim);
+            let (name, size) = (cols.next()?, bytes(cols.next()?)?);
+            let links = cols.next().and_then(|n| n.parse().ok());
+            let labels = cols.next().unwrap_or("");
+            let label = |k: &str| {
+                labels.split(',').find_map(|kv| kv.strip_prefix(&format!("{k}="))).unwrap_or("").to_string()
+            };
+            name.starts_with("tarae-").then(|| Held {
+                name: name.to_string(),
+                size,
+                links,
+                checkout: label(CHECKOUT_LABEL),
+                machine: label(MACHINE_LABEL),
+                state: None,
+                used: None,
+            })
+        })
+        .collect()
+}
+
+/// What `free_room` judges by besides each volume: this machine's id (`ours` — a run never judges a volume
+/// without), the run's own target volume (`this`), the folder tarae makes its sessions' checkouts in (`made`:
+/// another checkout — your own, another tool's — is never dropped for room; only `prune` judges it, once gone).
+struct Judge<'a> {
+    ours: Option<&'a str>,
+    this: &'a str,
+    made: Option<&'a Path>,
+}
+
+impl Judge<'_> {
+    /// Whether `v` is this machine's target volume of a checkout tarae made.
+    fn ours(&self, v: &Held) -> bool {
+        v.name.starts_with("tarae-target-")
+            && !v.checkout.is_empty()
+            && self.ours.is_some_and(|m| v.machine == m)
+            && self.made.is_some_and(|w| Path::new(&v.checkout).starts_with(w))
+    }
+
+    /// Whether `v` may go for room at all, before its checkout or last use is asked: `ours`, not this run's own,
+    /// no container mounting it.
+    fn may_go(&self, v: &Held) -> bool {
+        self.ours(v) && v.name != self.this && v.links == Some(0)
+    }
+}
+
+/// The folder tarae makes its sessions' checkouts in, by default (`[workspace] worktrees` moves it: then no
+/// checkout is judged for room) — as a real path where it can be read.
+fn tarae_worktrees() -> Option<PathBuf> {
+    let w = crate::data_dir().ok()?.join("worktrees");
+    Some(w.canonicalize().unwrap_or(w))
+}
+
+/// The target volumes to drop so tarae's volumes (`vols`, every one counted) come under `limit`, in the order
+/// they go: those that `may_go`, a landed checkout's first, then a checkout's with nothing changed (work of its
+/// own committed), each the oldest last use first, until under. Never one whose checkout has changes or can't be
+/// told, nor one whose last use wasn't read. Under `limit` already: none.
+fn to_free<'a>(vols: &'a [Held], limit: u64, j: &Judge) -> Vec<&'a Held> {
+    let total: u64 = vols.iter().map(|v| v.size).sum();
+    let Some(mut over) = total.checked_sub(limit).filter(|o| *o > 0) else {
+        return Vec::new();
+    };
+    let mut could: Vec<(u8, u64, &Held)> = vols
+        .iter()
+        .filter(|v| j.may_go(v))
+        .filter_map(|v| {
+            let first = match v.state.as_ref()? {
+                Landed::In(_) => 0,
+                Landed::Not => 1,
+                Landed::Changed | Landed::Unknown(_) => return None,
+            };
+            Some((first, v.used?, v))
+        })
+        .collect();
+    could.sort_by(|a, b| (a.0, a.1, &a.2.name).cmp(&(b.0, b.1, &b.2.name)));
+    let mut drop = Vec::new();
+    for (_, _, v) in could {
+        if over == 0 {
+            break;
+        }
+        over = over.saturating_sub(v.size);
+        drop.push(v);
+    }
+    drop
+}
+
+/// What `free_room` says of a volume it kept while past `limit` after dropping `gone`: the ones in use, those
+/// whose checkout has changes or can't be told, those of checkouts tarae didn't make — and that it's still past,
+/// with the way.
+fn room_notes(vols: &[Held], limit: u64, j: &Judge, gone: &[String]) -> Vec<String> {
+    let left: Vec<&Held> = vols.iter().filter(|v| !gone.contains(&v.name)).collect();
+    let total: u64 = left.iter().map(|v| v.size).sum();
+    if total <= limit {
+        return Vec::new();
+    }
+    let ours_t = |v: &&&Held| j.ours(v);
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    let mut notes = Vec::new();
+    let elsewhere: Vec<&&Held> = (left.iter())
+        .filter(|v| v.name.starts_with("tarae-target-") && !v.checkout.is_empty() && !j.ours(v))
+        .filter(|v| j.ours.is_some_and(|m| v.machine == m))
+        .collect();
+    if !elsewhere.is_empty() {
+        let n = elsewhere.len();
+        let size = gb(elsewhere.iter().map(|v| v.size).sum());
+        let at =
+            j.made.map_or("tarae's worktrees folder unknown".into(), |w| format!("outside {}", w.display()));
+        notes.push(format!(
+            "kept {n} target volume{} ({size}) of checkouts tarae didn't make ({at}): never dropped for room — \
+             `cargo xtask linux prune` drops one once its checkout is gone",
+            s(n)
+        ));
+    }
+    let used = left.iter().filter(ours_t).filter(|v| v.links != Some(0)).count();
+    if used > 0 {
+        notes.push(format!(
+            "kept {used} target volume{} in use — a container mounts it: a run's, or a kernels run's hold \
+             (`docker ps -a --filter label={HOLD_LABEL}`)",
+            s(used)
+        ));
+    }
+    let changed = left.iter().filter(ours_t).filter(|v| v.state == Some(Landed::Changed)).count();
+    if changed > 0 {
+        notes.push(format!("kept {changed} target volume{} whose checkout has changes", s(changed)));
+    }
+    let untold: Vec<&str> = (left.iter().filter(ours_t))
+        .filter_map(|v| match &v.state {
+            Some(Landed::Unknown(why)) => Some(why.as_str()),
+            _ => None,
+        })
+        .collect();
+    if let Some(why) = untold.first() {
+        let n = untold.len();
+        notes.push(format!("kept {n} target volume{} whose checkout can't be told of ({why})", s(n)));
+    }
+    notes.push(format!(
+        "tarae's Docker volumes still take {}, past {}: `cargo xtask linux prune --all` lists them",
+        gb(total),
+        gb(limit)
+    ));
+    notes
+}
+
+/// `docker run` reading each of `names`' last use (`LAST_USE`'s time, else its folder's — a volume no run has
+/// touched since): every one mounted read-only in one container of `image`, no network.
+fn last_use_args(names: &[&str], image: &str) -> Vec<String> {
+    let mut a: Vec<String> = ["run", "--rm", "--network", "none"].map(String::from).into();
+    for (i, n) in names.iter().enumerate() {
+        a.extend(["-v".to_string(), format!("{n}:/v/{i}:ro")]);
+    }
+    a.extend([image.to_string(), "sh".into(), "-c".into()]);
+    a.push(format!(
+        "for d in /v/*; do echo \"${{d#/v/}} $(stat -c %Y \"$d/{LAST_USE}\" 2>/dev/null || stat -c %Y \"$d\")\"; done"
+    ));
+    a
+}
+
+/// `last_use_args`' answer: (index, seconds) a line — a line it can't read left out.
+fn last_uses(said: &str) -> Vec<(usize, u64)> {
+    said.lines()
+        .filter_map(|l| {
+            let (i, t) = l.trim().split_once(' ')?;
+            Some((i.parse().ok()?, t.trim().parse().ok()?))
+        })
+        .collect()
+}
+
+/// Before a run: tarae's volumes held under `VOLUMES_MAX` by `to_free` — each one dropped said, with its checkout,
+/// why it could go and its last use; what kept it past the limit said too. `this`: the run's own target volume.
+fn free_room(ours: Option<&str>, this: &str, image: &str) {
+    let made = tarae_worktrees();
+    let j = Judge { ours, this, made: made.as_deref() };
+    let listed = Command::new("docker")
+        .args(["system", "df", "-v", "--format", ROOM_FORMAT])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())
+        .and_then(|o| df_answer(&o));
+    let mut vols = match listed {
+        Ok(l) => held(&l),
+        Err(why) => {
+            eprintln!("couldn't measure tarae's volumes ({why}): none dropped for room");
+            return;
+        }
+    };
+    if vols.iter().map(|v| v.size).sum::<u64>() <= VOLUMES_MAX {
+        return;
+    }
+    for v in vols.iter_mut().filter(|v| j.may_go(v)) {
+        v.state = Some(landed(Path::new(&v.checkout)));
+    }
+    let ask: Vec<usize> = (0..vols.len())
+        .filter(|&i| j.may_go(&vols[i]) && matches!(vols[i].state, Some(Landed::In(_) | Landed::Not)))
+        .collect();
+    if !ask.is_empty() {
+        let names: Vec<&str> = ask.iter().map(|&i| vols[i].name.as_str()).collect();
+        match Command::new("docker")
+            .args(last_use_args(&names, image))
+            .stdin(std::process::Stdio::null())
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                for (i, t) in last_uses(&String::from_utf8_lossy(&o.stdout)) {
+                    if let Some(&at) = ask.get(i) {
+                        vols[at].used = Some(t);
+                    }
+                }
+            }
+            _ => eprintln!("couldn't read the target volumes' last use: none dropped for room"),
+        }
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let mut gone = Vec::new();
+    for v in to_free(&vols, VOLUMES_MAX, &j) {
+        let why = match &v.state {
+            Some(Landed::In(why)) => why.clone(),
+            _ => "nothing changed, its work committed".into(),
+        };
+        let ago = crate::buildprune::ago(Duration::from_secs(now.saturating_sub(v.used.unwrap_or(now))));
+        match Command::new("docker").args(["volume", "rm", &v.name]).output() {
+            Ok(o) if o.status.success() => {
+                eprintln!(
+                    "dropped {} ({}, {} — {why}, last used {ago} ago): tarae's volumes past {}",
+                    v.name,
+                    v.checkout,
+                    gb(v.size),
+                    gb(VOLUMES_MAX)
+                );
+                gone.push(v.name.clone());
+            }
+            _ => eprintln!("kept {} for now: Docker didn't drop it (a run using it?)", v.name),
+        }
+    }
+    for note in room_notes(&vols, VOLUMES_MAX, &j, &gone) {
+        eprintln!("{note}");
+    }
+}
+
 /// The image for `pin`: `rust:<major.minor>` — rustup in it then takes `rust-toolchain.toml`'s exact version
 /// (installing it, into the rustup volume, when the image's patch release differs). The exact tag would be a
 /// pull of its own for every patch release, for the same compiler.
@@ -1997,6 +2282,8 @@ fn script(tree: Tree, what: &What) -> String {
          git config --global --add safe.directory '*'\n\
          mkdir -p /target/tarae-second-mount && chmod 1777 /target/tarae-second-mount\n",
     );
+    // (the volume's last use, for `free_room`: Docker keeps none)
+    s.push_str(&format!("touch /target/{LAST_USE}\n"));
     s.push_str(match tree {
         Tree::Mounted(_) => {
             "git clone -q /src /work/tarae && cd /work/tarae\n\
@@ -3018,7 +3305,7 @@ mod tests {
         assert_eq!(landed(&fresh), Landed::In("fresh is in main, nothing changed".into()));
         assert_eq!(landed(&merged), Landed::In("merged is in main, nothing changed".into()));
         assert_eq!(landed(&ahead), Landed::Not, "a commit of its own");
-        assert_eq!(landed(&dirty), Landed::Not, "a file not committed");
+        assert_eq!(landed(&dirty), Landed::Changed, "a file not committed");
         assert_eq!(landed(&main), Landed::Not, "the base's own checkout");
         assert!(matches!(landed(&dir.join("none")), Landed::Unknown(_)), "no checkout there");
         std::fs::remove_dir_all(&dir).ok();
@@ -3358,7 +3645,7 @@ mod tests {
         let listed = sizes(df);
         assert_eq!(listed.len(), 5, "tarae's only: {listed:?}");
         assert_eq!(listed[0], ("tarae-target-1.99.0-aaaa".into(), 12_000_000_000, "/w/wt/landlock".into()));
-        assert_eq!(size_line(&listed, VOLUMES_SAY, None), None, "29.4 GB: under the line");
+        assert_eq!(size_line(&listed, VOLUMES_MAX, None), None, "29.4 GB: under the line");
         let line = size_line(&listed, 29_000_000_000, None).expect("past it");
         let (targets, shared) = line.split_once("; ").expect("two parts");
         assert!(
@@ -3378,12 +3665,12 @@ mod tests {
         );
         // (only shared ones: only that advice; more than three: counted)
         let shared_only = sizes("tarae-trace-target-1.99.0\t40GB\t\n");
-        let line = size_line(&shared_only, VOLUMES_SAY, None).unwrap();
+        let line = size_line(&shared_only, VOLUMES_MAX, None).unwrap();
         assert!(!line.contains("workspace.ended") && line.contains("prune --all"), "{line}");
         let many: Vec<_> =
             (0..5).map(|i| (format!("tarae-target-1.99.0-{i}"), 7_000_000_000, String::new())).collect();
-        assert!(size_line(&many, VOLUMES_SAY, None).unwrap().contains(" and 2 more)"));
-        assert_eq!(VOLUMES_SAY, 30_000_000_000);
+        assert!(size_line(&many, VOLUMES_MAX, None).unwrap().contains(" and 2 more)"));
+        assert_eq!(VOLUMES_MAX, 30_000_000_000);
     }
 
     /// f22 l: the checks' script ends saying the target volume's disk (`df -P`, on any exit), read off the
@@ -3412,7 +3699,7 @@ mod tests {
         // (past 30 GB: its use with it)
         let listed = sizes("tarae-target-1.99.0-aaaa\t31GB\ttarae.checkout=/w/wt/landlock\n");
         let low = Disk { pct: 52, ..d };
-        let line = size_line(&listed, VOLUMES_SAY, Some(low)).unwrap();
+        let line = size_line(&listed, VOLUMES_MAX, Some(low)).unwrap();
         assert!(
             line.starts_with(
                 "tarae's Docker volumes take 31.0 GB (past 30.0 GB) — the disk 52 % used (49 of 63 GB): "
@@ -3421,9 +3708,9 @@ mod tests {
         );
         // (under 30 GB: only past 80 %)
         let small = sizes("tarae-target-1.99.0-aaaa\t12GB\ttarae.checkout=/w/wt/landlock\n");
-        assert_eq!(size_line(&small, VOLUMES_SAY, Some(low)), None);
-        assert_eq!(size_line(&small, VOLUMES_SAY, None), None);
-        let line = size_line(&small, VOLUMES_SAY, Some(d)).expect("past 80 %");
+        assert_eq!(size_line(&small, VOLUMES_MAX, Some(low)), None);
+        assert_eq!(size_line(&small, VOLUMES_MAX, None), None);
+        let line = size_line(&small, VOLUMES_MAX, Some(d)).expect("past 80 %");
         assert!(line.starts_with("tarae's Docker volumes take 12.0 GB — the disk 83 % used (49 of 63 GB): checkouts' targets 12.0 GB (landlock's 12.0 GB)"), "{line}");
         assert_eq!(DISK_SAY, 80);
     }
@@ -3746,5 +4033,162 @@ mod tests {
         assert_eq!(way_in(env(false, &host), never), START_IT, "outside the sandbox");
         assert_eq!(way_in(env(true, "tcp://127.0.0.1:2375"), never), START_IT, "a host not a socket");
         assert_eq!(skipped_with("x", &refused), format!("skipped — Docker isn't reachable: x ({refused})"));
+    }
+
+    /// A stand-in target volume of this machine's (`m1`): `size` GB, last used at `used`, its checkout in `state`.
+    fn held_one(name: &str, size: u64, used: Option<u64>, state: Landed) -> Held {
+        Held {
+            name: format!("tarae-target-1.99.0-{name}"),
+            size: size * 1_000_000_000,
+            links: Some(0),
+            checkout: format!("/w/worktrees/{name}"),
+            machine: "m1".into(),
+            state: Some(state),
+            used,
+        }
+    }
+
+    fn names(v: &[&Held]) -> Vec<String> {
+        v.iter().map(|v| v.name.trim_start_matches("tarae-target-1.99.0-").to_string()).collect()
+    }
+
+    /// #380: tarae's volumes held under their limit — a landed checkout's target first, then one with nothing
+    /// changed, each the oldest last use first, until under; never one in use, with changes, can't-tell, another
+    /// machine's, this run's own, or one whose last use wasn't read. Each rule broken once.
+    #[test]
+    fn tarae_volumes_are_held_under_their_limit_oldest_landed_first() {
+        let landed = || Landed::In("s is in main, nothing changed".into());
+        let shared = Held {
+            name: "tarae-registry".into(),
+            checkout: String::new(),
+            machine: String::new(),
+            state: None,
+            ..held_one("x", 5, None, Landed::Not)
+        };
+        let base = vec![
+            shared.clone(),
+            held_one("newer", 10, Some(100), landed()),
+            held_one("older", 10, Some(50), landed()),
+            held_one("clean", 10, Some(10), Landed::Not),
+        ];
+        // 35 GB against 30: the oldest landed goes alone, the shared one counted, never dropped
+        let j = Judge {
+            ours: Some("m1"),
+            this: "tarae-target-1.99.0-this",
+            made: Some(Path::new("/w/worktrees")),
+        };
+        assert_eq!(names(&to_free(&base, 30_000_000_000, &j)), ["older"]);
+        assert_eq!(names(&to_free(&base, 35_000_000_000, &j)), Vec::<String>::new(), "under: none");
+        // past by 20: both landed, oldest first, before the clean one though it's older still; then the clean one
+        assert_eq!(names(&to_free(&base, 15_000_000_000, &j)), ["older", "newer"]);
+        assert_eq!(names(&to_free(&base, 1_000_000_000, &j)), ["older", "newer", "clean"]);
+        let no_id = Judge { ours: None, ..j };
+        assert_eq!(to_free(&base, 1, &no_id), Vec::<&Held>::new(), "no machine id: none judged");
+        let no_folder = Judge { made: None, ..no_id };
+        let no_folder = Judge { ours: Some("m1"), ..no_folder };
+        assert_eq!(
+            to_free(&base, 1, &no_folder),
+            Vec::<&Held>::new(),
+            "tarae's worktrees unknown: none judged"
+        );
+        // each that may never go, the oldest of all and the limit far past: kept
+        let never = |v: Held, why: &str| {
+            let mut vols = base.clone();
+            vols.push(v);
+            let drop = names(&to_free(&vols, 1, &j));
+            assert_eq!(drop, ["older", "newer", "clean"], "{why}");
+        };
+        never(held_one("dirty", 10, Some(1), Landed::Changed), "its checkout has changes");
+        never(held_one("unread", 10, Some(1), Landed::Unknown("refused".into())), "can't tell");
+        never(Held { links: Some(1), ..held_one("run", 10, Some(1), landed()) }, "a container mounts it");
+        never(Held { links: None, ..held_one("na", 10, Some(1), landed()) }, "Docker didn't say");
+        never(
+            Held { machine: "m2".into(), ..held_one("theirs", 10, Some(1), landed()) },
+            "another machine's",
+        );
+        never(
+            Held { machine: String::new(), ..held_one("noid", 10, Some(1), landed()) },
+            "made without an id",
+        );
+        never(Held { state: None, ..held_one("unasked", 10, Some(1), landed()) }, "its checkout not asked");
+        never(held_one("this", 10, Some(1), landed()), "this run's own");
+        never(held_one("when", 10, None, landed()), "its last use not read");
+        never(Held { checkout: String::new(), ..held_one("bare", 10, Some(1), landed()) }, "unlabelled");
+        let theirs = "/Users/u/Workspace/tarae/.claude/worktrees/cmsg-fuzz".to_string();
+        never(
+            Held { checkout: theirs, ..held_one("argon", 15, Some(1), Landed::Not) },
+            "not tarae's checkout",
+        );
+        let beside = "/w/worktrees-old/a".to_string();
+        never(
+            Held { checkout: beside, ..held_one("beside", 10, Some(1), landed()) },
+            "a folder beside, by part",
+        );
+    }
+
+    /// What's kept past the limit is said — in use (and how to find a kernels run's hold), with changes, can't
+    /// tell — and that it's still past; nothing said once under.
+    #[test]
+    fn what_keeps_the_volumes_past_their_limit_is_said() {
+        let vols = vec![
+            held_one("gone", 20, Some(1), Landed::In("x".into())),
+            Held { links: Some(1), ..held_one("run", 10, Some(1), Landed::Not) },
+            held_one("dirty", 10, Some(1), Landed::Changed),
+            held_one("a", 10, Some(1), Landed::Unknown("Operation not permitted".into())),
+            held_one("b", 10, Some(1), Landed::Unknown("Operation not permitted".into())),
+            Held { checkout: "/u/.claude/worktrees/f".into(), ..held_one("f", 15, Some(1), Landed::Not) },
+        ];
+        let gone = ["tarae-target-1.99.0-gone".to_string()];
+        let j = Judge { ours: Some("m1"), this: "", made: Some(Path::new("/w/worktrees")) };
+        let mut notes = room_notes(&vols, 30_000_000_000, &j, &gone);
+        assert_eq!(notes.len(), 5, "{notes:?}");
+        assert_eq!(
+            notes.remove(0),
+            "kept 1 target volume (15.0 GB) of checkouts tarae didn't make (outside /w/worktrees): never dropped \
+             for room — `cargo xtask linux prune` drops one once its checkout is gone"
+        );
+        assert!(notes[0].starts_with("kept 1 target volume in use"), "{notes:?}");
+        assert!(notes[0].contains(&format!("--filter label={HOLD_LABEL}")), "{notes:?}");
+        assert_eq!(notes[1], "kept 1 target volume whose checkout has changes");
+        assert_eq!(
+            notes[2],
+            "kept 2 target volumes whose checkout can't be told of (Operation not permitted)"
+        );
+        assert!(notes[3].starts_with("tarae's Docker volumes still take 55.0 GB, past 30.0 GB"), "{notes:?}");
+        assert_eq!(room_notes(&vols, 55_000_000_000, &j, &gone), Vec::<String>::new(), "under");
+    }
+
+    /// Docker's own words: the containers mounting each volume (`Links`, `N/A` judged in use), its labels — only
+    /// tarae's volumes; the last uses read in one read-only container, a line it can't read left out; each run
+    /// touches its volume's.
+    #[test]
+    fn docker_says_which_volumes_are_in_use_and_each_run_marks_its_last_use() {
+        let listed = "tarae-target-1.99.0-aa\t7.2GB\t0\ttarae.checkout=/w/a,tarae.machine=m1\n\
+                      tarae-target-1.99.0-bb\t1.5GB\t2\ttarae.checkout=/w/b\n\
+                      tarae-registry\t606.3MB\tN/A\t\n\
+                      other\t9GB\t0\t\n";
+        let h = held(listed);
+        assert_eq!(h.len(), 3, "{h:?}");
+        assert_eq!(
+            (h[0].size, h[0].links, h[0].checkout.as_str(), h[0].machine.as_str()),
+            (7_200_000_000, Some(0), "/w/a", "m1")
+        );
+        assert_eq!((h[1].links, h[1].machine.as_str()), (Some(2), ""));
+        assert_eq!(h[2].links, None);
+        assert!(ROOM_FORMAT.contains("{{.Links}}"));
+        let a = last_use_args(&["tarae-target-x", "tarae-target-y"], "rust:1.99");
+        assert_eq!(a[..4], ["run", "--rm", "--network", "none"]);
+        assert!(
+            a.contains(&"tarae-target-x:/v/0:ro".to_string())
+                && a.contains(&"tarae-target-y:/v/1:ro".to_string())
+        );
+        assert!(a.last().unwrap().contains(&format!("$d/{LAST_USE}")), "{a:?}");
+        assert_eq!(
+            last_uses("0 1730000000\n1 \nx 5\n1 1730000100\n"),
+            [(0, 1_730_000_000), (1, 1_730_000_100)]
+        );
+        for w in [What::Clippy, What::Test { args: Vec::new(), repeat: 1, keep_going: false }] {
+            assert!(script(Tree::Mounted(None), &w).contains(&format!("touch /target/{LAST_USE}\n")));
+        }
     }
 }
