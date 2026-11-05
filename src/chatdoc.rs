@@ -433,6 +433,22 @@ impl Transcript {
         last
     }
 
+    /// The message the document's `line` is in (`msg_at`'s, the air before one not counted) and its lines in the
+    /// document — what a name at that line is read in (`chatlink::target`).
+    pub fn msg_lines(&self, line: usize) -> Option<(usize, std::ops::Range<usize>)> {
+        let mut base = 0;
+        for p in &self.pieces {
+            if let Of::Msg(i) = p.of
+                && line >= base
+                && line < base + p.lines
+            {
+                return Some((i, base..base + p.lines));
+            }
+            base += p.lines;
+        }
+        None
+    }
+
     /// The row of message `i`'s row `k` (its last, past its end).
     fn row_of_msg(&self, i: usize, k: usize) -> Option<usize> {
         let mut at = 0;

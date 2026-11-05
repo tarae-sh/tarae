@@ -25,6 +25,7 @@ mod cardwarn;
 mod chat;
 mod chatdoc;
 mod chatinput;
+mod chatlink;
 mod chatnotes;
 mod chats;
 mod checkpoint;

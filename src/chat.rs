@@ -733,6 +733,9 @@ pub struct Chat {
     pub queued_laid: RefCell<Option<(u64, std::sync::Arc<[ChatRow]>)>>,
     /// What the names of its places came to (`places.rs`): a place is drawn as one only where its name is a file.
     pub places: crate::places::Known,
+    /// What its messages' code blocks and cited places came to in their files, and the language key's question asked
+    /// from it (`chatlink.rs`, #389).
+    pub links: crate::chatlink::Links,
     /// Hosts the next run of this conversation's Claude that starts reaches, then spent — `y` on a host card whose
     /// run had ended (`hosts::next_run`, frictions29 16); the conversation over, gone (`conversation_left`).
     pub hosts_next: Vec<(String, u16)>,
@@ -1214,6 +1217,7 @@ impl Chat {
             waking: None,
             queued_laid: RefCell::new(None),
             places: Default::default(),
+            links: Default::default(),
             hosts_next: Vec::new(),
             screen: None,
             conversation: None,

@@ -562,6 +562,12 @@ const FLOW3_FOLLOW_WIDER: &[&str] = &[
 const FLOW3_FOLLOW_HEAD: &[&str] =
     &["@1", " ", "L", "@1", "keep the first strand on a repeat", "\r", "@10?unit tests", "@1"];
 const FLOW3_ALONE: &[&str] = &["@1", " ", "l", "@1", "why a hash map?", "\r", "@30=done", "@2"];
+/// #389's scenes: asked in the column, the answer in, its view mode (`esc`), then `keys` there.
+macro_rules! chatlink_keys {
+    ($($k:expr),*) => {
+        &["@1", " ", "L", "@1", "where is the length summed?", "\r", "@30=done", "@1", "\x1b", "@0.5", $($k,)* "@1.5"]
+    };
+}
 /// The flow plan's piece 5, steering: asked in the column, Claude at work (its read done, the turn held), a second message
 /// queued (`steer-queued`: `tab steer` beside `↑ edit queued`), then `tab` (`steer-steering`: the steering line), then
 /// Claude's next tool answer carrying it (`steer-steered`: its row where Claude heard it). `steer-ask`: the ask line at
@@ -3264,10 +3270,16 @@ const CURSOR_TURN_ESC2: &[&str] = &[
 /// `diag`'s config (its scene's and the docs' `ux-error-lens.png`): Rust's server the stand-in, this xtask as
 /// `scenes --lsp`.
 fn stand_in_lsp(me: &Path, toml: String) -> String {
+    stand_in_lsp_as(me, toml, "")
+}
+
+/// …with its mode's word after `--lsp` (`knows`: #389's scenes).
+fn stand_in_lsp_as(me: &Path, toml: String, mode: &str) -> String {
     let me = toml::Value::String(me.to_string_lossy().into_owned());
     let toml = toml.replacen("lsp = false\n", "", 1);
+    let mode = if mode.is_empty() { String::new() } else { format!(", \"{mode}\"") };
     toml + &format!(
-        "\n[lsp.stand-in]\ncommand = {me}\nargs = [\"scenes\", \"--lsp\"]\n\n[lang.rust]\nlsp = [\"stand-in\"]\n"
+        "\n[lsp.stand-in]\ncommand = {me}\nargs = [\"scenes\", \"--lsp\"{mode}]\n\n[lang.rust]\nlsp = [\"stand-in\"]\n"
     )
 }
 
@@ -4189,6 +4201,26 @@ const SCENES: &[Scene] = &[
     Scene { name: "flow3-docked", claude: "a1c", files: SPOOL, keys: FLOW2_FOOT },
     Scene { name: "flow3-pilcrow", claude: "a1c", files: SPOOL, keys: FLOW3_PILCROW },
     Scene { name: "flow3-none", claude: "flow3-none", files: MAIN, keys: FLOW3_ALONE },
+    // (#389 step 4: `gd` on a name the answer's paragraph cites, `space k` on one in the lines it quotes, a word that
+    // isn't code — the stand-in server answering from the project's files)
+    Scene {
+        name: "chatlink-gd",
+        claude: "chatlink",
+        files: MAIN,
+        keys: chatlink_keys!("/", "Thread", "\r", "@0.5", "g", "d"),
+    },
+    Scene {
+        name: "chatlink-hover",
+        claude: "chatlink",
+        files: MAIN,
+        keys: chatlink_keys!("/", "fn length", "\r", "@0.5", " ", "k"),
+    },
+    Scene {
+        name: "chatlink-miss",
+        claude: "chatlink",
+        files: MAIN,
+        keys: chatlink_keys!("/", "printed", "\r", "@0.5", "g", "d"),
+    },
     // (the flow plan's piece 5: a message queued, steered, then heard at Claude's next tool answer; the ask line at work)
     Scene { name: "steer-queued", claude: "steer", files: MAIN, keys: STEER_QUEUED },
     Scene { name: "steer-steering", claude: "steer", files: MAIN, keys: STEER_STEERING },
@@ -5497,7 +5529,8 @@ pub fn run(args: &[String]) -> Result<()> {
             .map_err(|e| format!("the stand-in claude: {e}"));
     }
     if args.first().is_some_and(|a| a == "--lsp") {
-        return lsp(&mut io::stdin().lock(), &mut io::stdout().lock())
+        let knows = args.get(1).is_some_and(|a| a == "knows");
+        return lsp(&mut io::stdin().lock(), &mut io::stdout().lock(), knows)
             .map_err(|e| format!("the stand-in language server: {e}"));
     }
     if args.first().is_some_and(|a| a == "--compare") {
@@ -5759,8 +5792,11 @@ fn tint_one(
 
 /// The stand-in language server (`scenes --lsp`, `diag`'s): `initialize` answered with whole-text sync, each file
 /// opened told an error on its 12th line and a warning on its 4th, every other request answered `null`; gone at `exit`
-/// or at its input's end.
-fn lsp(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<()> {
+/// or at its input's end. `knows` (`scenes --lsp knows`, #389's scenes): no diagnostics, and a definition and a hover
+/// answered from the project's own files — the name at the place asked, its `fn`/`struct`/… line found in them.
+fn lsp(input: &mut impl BufRead, out: &mut impl Write, knows: bool) -> io::Result<()> {
+    let mut root = std::path::PathBuf::new();
+    let mut open: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     loop {
         let mut len = None;
         loop {
@@ -5782,10 +5818,48 @@ fn lsp(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<()> {
         let msg: Value = serde_json::from_slice(&body).unwrap_or_default();
         let range = |line: u32, from: u32, to: u32| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
         match msg["method"].as_str() {
+            Some("initialize") if knows => {
+                let uri = msg["params"]["rootUri"].as_str().unwrap_or_default();
+                root = std::path::PathBuf::from(uri.strip_prefix("file://").unwrap_or(uri));
+                let caps = json!({"textDocumentSync": 1, "hoverProvider": true, "definitionProvider": true,
+                    "positionEncoding": "utf-8"});
+                lsp_send(out, &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": caps}}))?
+            }
             Some("initialize") => lsp_send(
                 out,
                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"capabilities": {"textDocumentSync": 1}}}),
             )?,
+            Some("textDocument/didOpen") if knows => {
+                let d = &msg["params"]["textDocument"];
+                open.insert(
+                    d["uri"].as_str().unwrap_or_default().into(),
+                    d["text"].as_str().unwrap_or_default().into(),
+                );
+            }
+            Some("textDocument/didChange") if knows => {
+                let p = &msg["params"];
+                if let Some(t) = p["contentChanges"][0]["text"].as_str() {
+                    open.insert(p["textDocument"]["uri"].as_str().unwrap_or_default().into(), t.into());
+                }
+            }
+            Some(m @ ("textDocument/definition" | "textDocument/hover")) if knows => {
+                let p = &msg["params"];
+                let text = open.get(p["textDocument"]["uri"].as_str().unwrap_or_default());
+                let (line, ch) = (p["position"]["line"].as_u64(), p["position"]["character"].as_u64());
+                let word = text.zip(line.zip(ch)).and_then(|(t, (l, c))| lsp_word(t, l as usize, c as usize));
+                let found = word.and_then(|w: String| lsp_defined(&root, &w));
+                let result = match (m, found) {
+                    (_, None) => Value::Null,
+                    ("textDocument/definition", Some((path, l, c, _, _))) => {
+                        let uri = format!("file://{}", path.display());
+                        json!([{"uri": uri, "range": range(l as u32, c as u32, c as u32)}])
+                    }
+                    (_, Some((_, _, _, sig, docs))) => {
+                        json!({"contents": {"kind": "markdown", "value": format!("```rust\n{sig}\n```\n{docs}")}})
+                    }
+                };
+                lsp_send(out, &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}))?
+            }
             Some("textDocument/didOpen") => lsp_send(
                 out,
                 &json!({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
@@ -5805,6 +5879,58 @@ fn lsp(input: &mut impl BufRead, out: &mut impl Write) -> io::Result<()> {
             _ => {}
         }
     }
+}
+
+/// The name at `line`, `ch` (bytes) of `text`.
+fn lsp_word(text: &str, line: usize, ch: usize) -> Option<String> {
+    let l = text.lines().nth(line)?;
+    let w = |c: char| c.is_alphanumeric() || c == '_';
+    let ch = ch.min(l.len());
+    let start = l[..ch].rfind(|c: char| !w(c)).map_or(0, |i| i + 1);
+    let end = l[ch..].find(|c: char| !w(c)).map_or(l.len(), |i| ch + i);
+    (start < end).then(|| l[start..end].to_string())
+}
+
+/// Where `word` is defined in the project's `.rs` files: the file, the line and column of the name, its line (its
+/// signature, the `{` off) and the doc comment above it.
+fn lsp_defined(root: &Path, word: &str) -> Option<(std::path::PathBuf, usize, usize, String, String)> {
+    let mut files = Vec::new();
+    let mut dirs = vec![root.join("src")];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            match p.is_dir() {
+                true => dirs.push(p),
+                false if p.extension().is_some_and(|x| x == "rs") => files.push(p),
+                false => {}
+            }
+        }
+    }
+    files.sort();
+    let kinds = ["fn ", "struct ", "enum ", "trait ", "type ", "const ", "mod "];
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let Some(c) = kinds.iter().find_map(|k| {
+                let at = l.find(&format!("{k}{word}"))? + k.len();
+                (!l[at + word.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')).then_some(at)
+            }) else {
+                continue;
+            };
+            let docs: Vec<&str> = lines[..i]
+                .iter()
+                .rev()
+                .map(|l| l.trim())
+                .take_while(|l| l.starts_with("///"))
+                .map(|l| l.trim_start_matches('/').trim())
+                .collect();
+            let docs: Vec<&str> = docs.into_iter().rev().collect();
+            let sig = l.trim().trim_end_matches('{').trim_end().to_string();
+            return Some((path, i, c, sig, docs.join(" ")));
+        }
+    }
+    None
 }
 
 /// One message out, as the protocol frames it.
@@ -6124,6 +6250,9 @@ fn scene_config(scene: &Scene, bg: &str, transparent: bool, me: &Path, dir: &Pat
     }
     if scene.name == "diag" {
         toml = stand_in_lsp(me, toml);
+    }
+    if scene.name.starts_with("chatlink-") {
+        toml = stand_in_lsp_as(me, toml, "knows");
     }
     if transparent {
         let theme = if bg == "dark" { "meok-transparent" } else { "hanji-transparent" };
@@ -6756,6 +6885,7 @@ fn wide_rs(lines: usize, width: usize) -> String {
 pub(crate) const SCRIPTS: &[&str] = &[
     "idle",
     "full",
+    "chatlink",
     "three",
     "v3",
     "v4",
@@ -6998,6 +7128,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "tour" => turn.tour()?,
             // (focus A1's: an answer naming no place)
             "a1-none" => turn.a1_none()?,
+            // (#389's: an answer citing a place, quoting its lines, naming code in prose)
+            "chatlink" => turn.chatlink()?,
             // (the flow plan's piece 3: an answer with no place and no stop — the reader opens by itself — and a turn
             // that fails, its error said only in the conversation)
             "flow3-none" => turn.flow3_none()?,
@@ -8036,6 +8168,18 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "One caveat: a repeated name replaces the earlier strand before the loop ever sees it, so a skein with \
              two threads of one name prints one. That is all.",
         )?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #389's answer: a read, then a paragraph citing `src/thread.rs:9` with names written as code, the lines there quoted,
+    /// a last paragraph citing `src/main.rs:12`.
+    fn chatlink(&mut self) -> io::Result<()> {
+        self.call(1, "read", json!({"files": ["src/thread.rs:7-11"]}))?;
+        self.words("The length is summed in `Thread::length`, at src/thread.rs:9:")?;
+        self.text(
+            "\n\n```rust\n    pub fn length(&self) -> u32 {\n        self.knots.iter().sum()\n    }\n```\n\n",
+        )?;
+        self.words("It's printed at src/main.rs:12, beside how many `knots` the thread has.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

@@ -1014,6 +1014,8 @@ pub struct Editor {
     pub popup_name: String,
     /// How many lines the floating text is scrolled down (C-d / C-u).
     pub popup_scroll: usize,
+    /// The floating text is about a name in the chat (`chatlink.rs`, #389): drawn in the chat at its cursor's name.
+    pub popup_chat: bool,
     /// Where the pointer rests on a name, and its hover card once answered (`hoverrest.rs`, #233).
     pub hover_rest: crate::hoverrest::State,
     /// Insert-mode completion list.
@@ -1558,6 +1560,7 @@ impl Editor {
             lsp: LspState::default(),
             popup: None,
             popup_name: String::new(),
+            popup_chat: false,
             hover_rest: Default::default(),
             popup_scroll: 0,
             completion: None,
@@ -4045,9 +4048,17 @@ impl Editor {
                             Part::Row(i) if u.surface == S::Input => crate::chat::slash_pick(self, i),
                             // The conversation's text: its view mode, the cursor on the character pressed (as the
                             // code's) — a drag from there selects
+                            // (ctrl+press: `gd` there — a name the answer cites or quotes to its definition in the
+                            // code, as the code's ctrl+click, #389)
                             Part::Text { line, col } if u.surface == S::Transcript => {
                                 if let Some(pos) = crate::chatdoc::click(self, line, col) {
-                                    crate::mouse::text_press(self, Drag::Transcript, pos);
+                                    match m.ctrl && !m.alt {
+                                        true => crate::chatlink::key(
+                                            self,
+                                            Some(crate::lsp_editor::Goto::Definition),
+                                        ),
+                                        false => crate::mouse::text_press(self, Drag::Transcript, pos),
+                                    }
                                 }
                             }
                             // The input: the cursor on the character pressed, as in the code's insert mode
@@ -6007,6 +6018,7 @@ impl Editor {
             }
         }
         self.popup_scroll = 0;
+        self.popup_chat = false;
         if self.popup.take().is_some() && key.code == Code::Esc {
             return took(Handler::Popup);
         }

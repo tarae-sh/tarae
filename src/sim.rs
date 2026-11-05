@@ -32,6 +32,7 @@ mod bigturn;
 mod board;
 mod brings;
 mod cardwait;
+mod chatlink;
 mod chatstream;
 mod claudestart;
 mod codetrust;

@@ -343,7 +343,7 @@ impl Goto {
     }
 
     /// Picker title / what "nothing found" names.
-    fn noun(self) -> &'static str {
+    pub(crate) fn noun(self) -> &'static str {
         match self {
             Goto::Definition => "definitions",
             Goto::Declaration => "declarations",
@@ -452,6 +452,12 @@ pub enum Kind {
     PointerHover {
         n: u64,
     },
+    /// A language key on a name in the chat (`chatlink.rs`, #389), question `n` — a go-to, or the hover (None) — asked at
+    /// the spot in the file the answer cites or quotes. Answered wherever the cursors are by then (the newest `n` only).
+    ChatAt {
+        n: u64,
+        goto: Option<Goto>,
+    },
     /// A swap's definition in folder `root`, asked of both servers to see they agree (`share.rs`).
     SwapCheck {
         root: std::path::PathBuf,
@@ -465,15 +471,19 @@ impl Kind {
     /// server (resolves, commands).
     fn route(&self) -> Option<(&'static str, &'static str)> {
         Some(match self {
-            Kind::Goto(Goto::References) => ("goto", "referencesProvider"),
-            Kind::Goto(g) | Kind::ToolGoto { goto: g, .. } => {
+            Kind::Goto(Goto::References) | Kind::ChatAt { goto: Some(Goto::References), .. } => {
+                ("goto", "referencesProvider")
+            }
+            Kind::Goto(g) | Kind::ToolGoto { goto: g, .. } | Kind::ChatAt { goto: Some(g), .. } => {
                 ("goto", g.provider().unwrap_or("definitionProvider"))
             }
             Kind::ToolNamed { .. } => ("symbols", "workspaceSymbolProvider"),
             Kind::Declared { .. } | Kind::ToolDeclared { .. } => ("goto", "definitionProvider"),
             Kind::ToolRefs { .. } => ("goto", "referencesProvider"),
             Kind::Highlights => ("highlights", "documentHighlightProvider"),
-            Kind::Hover | Kind::PointerHover { .. } => ("hover", "hoverProvider"),
+            Kind::Hover | Kind::PointerHover { .. } | Kind::ChatAt { goto: None, .. } => {
+                ("hover", "hoverProvider")
+            }
             Kind::CodeAction { .. } => ("code-action", "codeActionProvider"),
             Kind::Rename | Kind::ToolPrepareRename { .. } | Kind::ToolRename { .. } => {
                 ("rename", "renameProvider")
@@ -1150,6 +1160,8 @@ impl Editor {
                     &Kind::ToolPrepareRename { ask } => {
                         self.for_workspace(session, |ed| crate::refactor::prepared(ed, ask, answered))
                     }
+                    &Kind::ChatAt { n, goto } => self
+                        .for_workspace(session, |ed| crate::chatlink::answered(ed, cid, n, goto, answered)),
                     &Kind::ToolRename { ask } => {
                         self.for_workspace(session, |ed| crate::refactor::renamed(ed, ask, answered))
                     }
@@ -1349,6 +1361,7 @@ impl Editor {
                         }
                         self.lsp.work_ended.insert(cid, std::time::Instant::now());
                         self.ask_again(cid);
+                        crate::chatlink::work_ended(self, cid);
                         self.inlay_after_work(cid);
                         crate::nav::diagnostics_moved(self);
                     }
@@ -1416,6 +1429,7 @@ impl Editor {
                     self.code_agents_imported(cid);
                 }
                 self.ask_again(cid);
+                crate::chatlink::work_ended(self, cid);
                 self.inlay_after_work(cid);
             }
             "window/logMessage" => {
@@ -1552,7 +1566,8 @@ impl Editor {
             | Kind::ToolGoto { .. }
             | Kind::ToolNamed { .. }
             | Kind::ToolPrepareRename { .. }
-            | Kind::ToolRename { .. } => {}
+            | Kind::ToolRename { .. }
+            | Kind::ChatAt { .. } => {}
             Kind::Rename => match self.apply_workspace_edit(cid, result) {
                 Ok(n) => self.set_status(format!("renamed in {n} file(s)")),
                 Err(e) => self.set_error(format!("rename: {e}")),
@@ -1584,6 +1599,7 @@ impl Editor {
                 } else {
                     let lang = self.doc().syntax.as_ref().map(|s| s.lang.name.clone());
                     self.popup = Some(crate::markdown::render(&text, &self.theme, lang.as_deref()));
+                    self.popup_chat = false;
                     // (its frame named by the name it's about: the one `K` asked of, where the request was sent — its
                     // document and position)
                     let name = self.docs.iter().find(|d| d.id == p.doc).map(|d| {
@@ -3121,8 +3137,13 @@ impl Editor {
         let from = crate::completion::word_start(&doc.text, head);
         let name: String =
             doc.text.byte_slice(from..).chars().take_while(|&c| crate::completion::is_word(c)).collect();
-        self.lsp.refs = Refs { generation: self.lsp.refs.generation + 1, name, ..Refs::default() };
+        self.refs_anew(name);
         self.goto_ask(goto, false);
+    }
+
+    /// A new round of go-to lists, about `name` (what its rows show standing out) — an older one's list is moot.
+    pub(crate) fn refs_anew(&mut self, name: String) {
+        self.lsp.refs = Refs { generation: self.lsp.refs.generation + 1, name, ..Refs::default() };
     }
 
     /// The question — from its key, or `again` once the busy server it waited for has done a piece of work.
@@ -3300,15 +3321,19 @@ impl Editor {
         cannot: &str,
     ) -> Result<(ClientId, String), (String, bool)> {
         let method = match kind {
-            Kind::ToolGoto { goto, .. } => goto.method(),
+            Kind::ToolGoto { goto, .. } | Kind::ChatAt { goto: Some(goto), .. } => goto.method(),
             _ => "textDocument/hover",
         };
+        let refs = matches!(kind, Kind::ChatAt { goto: Some(Goto::References), .. });
         let cid = self.tool_server(id, &kind, cannot)?;
         let name = self.client(cid).map(|c| c.name.clone()).unwrap_or_default();
         let doc = self.docs.iter().find(|d| d.id == id).ok_or(("the file was closed".to_string(), false))?;
         let Some(path) = doc.path.as_deref() else { return Err(("the file has no path".into(), false)) };
-        let at = json!({ "textDocument": { "uri": lsp::uri(path) },
+        let mut at = json!({ "textDocument": { "uri": lsp::uri(path) },
             "position": lsp::to_position(&doc.text, byte, self.encoding_of(cid)) });
+        if refs {
+            at["context"] = json!({ "includeDeclaration": true });
+        }
         match self.lsp_send_for(id, cid, kind, method, at) {
             Some(_) => Ok((cid, name)),
             None => Err((format!("{name} couldn't be asked"), true)),
@@ -3487,7 +3512,7 @@ impl Editor {
 
     /// A go-to's places as a list (N2): each row the code there, the name it's about standing out, by file
     /// then line, the declaration first — the lines read on a worker (files not open are on disk).
-    fn list_places(&mut self, goto: Goto, found: Vec<(std::path::PathBuf, usize, usize)>) {
+    pub(crate) fn list_places(&mut self, goto: Goto, found: Vec<(std::path::PathBuf, usize, usize)>) {
         let open: HashMap<std::path::PathBuf, ropey::Rope> = self
             .docs
             .iter()
@@ -3555,7 +3580,7 @@ impl Editor {
         self.lsp.traced.push(t.line());
     }
 
-    fn lsp_jump(&mut self, path: &std::path::Path, pos: &Value, enc: Encoding) {
+    pub(crate) fn lsp_jump(&mut self, path: &std::path::Path, pos: &Value, enc: Encoding) {
         self.push_jump();
         if let Err(e) = self.open(path) {
             return self.set_error(format!("{e:#}"));

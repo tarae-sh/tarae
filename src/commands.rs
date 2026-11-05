@@ -1768,20 +1768,28 @@ fn rename_symbol(cx: &mut Context) {
     let word = doc.text.byte_slice(r.from()..r.to()).to_string();
     cx.editor.open_prompt(PromptKind::Rename, word.trim());
 }
+/// A go-to: the code's at its cursor; on the chat's transcript, at the spot in the file the name there stands for
+/// (`chatlink.rs`, #389).
+fn goto(cx: &mut Context, goto: crate::lsp_editor::Goto) {
+    match crate::docpane::swapped(cx.editor) {
+        Some(crate::docpane::Which::Chat) => crate::chatlink::key(cx.editor, Some(goto)),
+        _ => cx.editor.goto_location(goto),
+    }
+}
 fn goto_definition(cx: &mut Context) {
-    cx.editor.goto_location(crate::lsp_editor::Goto::Definition)
+    goto(cx, crate::lsp_editor::Goto::Definition)
 }
 fn goto_declaration(cx: &mut Context) {
-    cx.editor.goto_location(crate::lsp_editor::Goto::Declaration)
+    goto(cx, crate::lsp_editor::Goto::Declaration)
 }
 fn goto_type_definition(cx: &mut Context) {
-    cx.editor.goto_location(crate::lsp_editor::Goto::TypeDefinition)
+    goto(cx, crate::lsp_editor::Goto::TypeDefinition)
 }
 fn goto_implementation(cx: &mut Context) {
-    cx.editor.goto_location(crate::lsp_editor::Goto::Implementation)
+    goto(cx, crate::lsp_editor::Goto::Implementation)
 }
 fn goto_reference(cx: &mut Context) {
-    cx.editor.goto_location(crate::lsp_editor::Goto::References)
+    goto(cx, crate::lsp_editor::Goto::References)
 }
 /// `gf` (body in gotofile.rs).
 fn goto_file(cx: &mut Context) {
@@ -1822,6 +1830,9 @@ fn completion(cx: &mut Context) {
 }
 
 fn hover(cx: &mut Context) {
+    if crate::docpane::swapped(cx.editor) == Some(crate::docpane::Which::Chat) {
+        return crate::chatlink::key(cx.editor, None);
+    }
     cx.editor.lsp_request(crate::lsp_editor::Kind::Hover, "textDocument/hover", serde_json::json!({}));
 }
 /// To the next/previous git hunk — selects its lines (for a deletion, the line start at that spot). In a code

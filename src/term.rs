@@ -765,6 +765,9 @@ fn render_drawing(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> 
     editor.frame_drawn();
     // (kept: the screen as the user sees it — `C-s` in the chat sends it as text)
     editor.last_frame = Some((frame, w, h));
+    // (what the chat's messages drawn quote, mapped to their files on a worker — `chatlink.rs`; it asks for the place
+    // names it needs, then those are found)
+    crate::chatlink::after_frame(editor);
     // (the chat's place names this frame drew unanswered: found on a worker — `places.rs`)
     crate::places::after_frame(editor);
     Ok(())
@@ -5838,9 +5841,17 @@ fn draw(
         (follow_rect, follow_says) = (drawn.map(|d| d.0), drawn.is_some_and(|d| d.1));
         drew(editor, Kind::Follow, follow_rect);
     }
-    if let (Some(lines), Some(at)) = (&editor.popup, text_cursor) {
-        draw_popup(lines, at, ui, editor, lay, out)?;
-        drew(editor, Kind::Hover, editor.screen.popup.get());
+    match &editor.popup {
+        // (a name in the chat's: in the chat, by its cursor's name — #389)
+        Some(lines) if editor.popup_chat => {
+            draw_chat_popup(lines, ui, editor, lay, out)?;
+            drew(editor, Kind::Hover, editor.screen.popup.get());
+        }
+        Some(lines) if let Some(at) = text_cursor => {
+            draw_popup(lines, at, ui, editor, lay, out)?;
+            drew(editor, Kind::Hover, editor.screen.popup.get());
+        }
+        _ => {}
     }
     // (the pointer's hover card: `K`'s look, at the name it rests on — after the cursor's cards, the mouse's first)
     draw_rest_card(editor, ui, lay, out)?;
@@ -23032,6 +23043,51 @@ fn draw_popup(
     let (container, body) = docs_container(lines);
     let name = (cx as usize).saturating_sub(before);
     let by = (name, cy as usize);
+    if let Some((rect, end)) =
+        docs_popup(&body, container, &editor.popup_name, editor.popup_scroll, by, &pane, ui, editor, out)?
+    {
+        editor.screen.popup.set(Some(rect));
+        editor.screen.popup_end.set(Some(end));
+    }
+    Ok(())
+}
+
+/// `K`'s card about a name in the chat (`chatlink.rs`, #389) — `draw_popup`'s look, in the chat's column: by the name
+/// under the transcript's cursor as this frame painted it, below its row if it fits, else above. No cursor painted (the
+/// view lost the keys): none.
+fn draw_chat_popup(
+    lines: &[crate::markdown::Line],
+    ui: &Ui,
+    editor: &Editor,
+    lay: &Layout,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    editor.screen.popup.set(None);
+    editor.screen.popup_end.set(None);
+    let (Some(at), Some((y, _, rows, _))) = (lay.chat_at(), editor.screen.chat_view.get()) else {
+        return Ok(());
+    };
+    let inside =
+        |&&(cx, cy): &&(usize, usize)| (at.x..at.x + at.w).contains(&cx) && (y..y + rows).contains(&cy);
+    let Some(&(cx, cy)) = editor.screen.cursors.borrow().iter().find(inside) else { return Ok(()) };
+    // (the text under the name: its first cell at the name's)
+    let doc = editor
+        .workspace
+        .claude
+        .chat
+        .as_ref()
+        .and_then(|c| c.transcript.as_ref())
+        .and_then(|t| t.pane.doc_in());
+    let before = doc.map_or(0, |d| {
+        let head = d.selection().primary().cursor(&d.text);
+        d.text.byte_slice(crate::completion::word_start(&d.text, head)..head).to_string().width()
+    });
+    let mut pane = lay.clone();
+    // (clear of the line between the chat and the code)
+    (pane.x0, pane.x1, pane.gutter) = (at.x + 1, at.x + at.w, 0);
+    (pane.text_top, pane.text_rows) = (y as u16, rows);
+    let (container, body) = docs_container(lines);
+    let by = (cx.saturating_sub(before), cy);
     if let Some((rect, end)) =
         docs_popup(&body, container, &editor.popup_name, editor.popup_scroll, by, &pane, ui, editor, out)?
     {
