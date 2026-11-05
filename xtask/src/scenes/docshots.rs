@@ -708,7 +708,8 @@ const DOCS: &[DocShot] = &[
     row("chat-undo-turn.png", None, S),
     row("chat-tests.png", None, S),
     row("chat-run.png", Some("runcard"), S).varies(&[wait_time(9, (102, 108))]),
-    row("notes.png", Some("notethread"), S),
+    // (the turn's time on the answer's last row, right-aligned: tarae's clock, a tenth either way)
+    row("notes.png", Some("notethread"), S).varies(&[turn_time(7, (103, 111))]),
     row("commit-draft.png", Some("commitdraft"), S),
     row("review.png", Some("codereview"), S),
     row("claude-reviews.png", Some("bgreviewnote"), S),
