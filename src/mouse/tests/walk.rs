@@ -253,11 +253,10 @@ const MOUSE_SCENES: &[Scene] = &[
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "It is read here, once.", ""));
         c.hidden = true;
         ed.workspace.viewer.at = crate::workspace::At::Code;
-        let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Chat, "It is read here, once.");
-        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
         let name = "tarae-mouse-walk-answer.rs:1".into();
-        n.answer = Some(crate::chatnotes::Origin { n: 1, at: 0, turn: 0, name, said: 0, text: None });
-        ed.workspace.claude.notes.open = None;
+        let origin = crate::chatnotes::Origin { n: 1, at: 0, turn: 0, name, said: 0, text: None };
+        let words = (Some("where?".to_string()), "It is read here, once.".to_string());
+        crate::flags::add(ed, (&path, 0..1), origin, None, words);
     }),
     ("a note's card open, the chat holding the keys", |ed| {
         chat(ed, "");

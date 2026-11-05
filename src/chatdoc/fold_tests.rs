@@ -54,7 +54,7 @@ fn turn(ed: &mut Editor, question: &str, text: &str) {
     crate::chatnotes::turn_over(ed, true);
     frame(ed, W);
     crate::test_results::settle_until(ed, |ed| {
-        crate::places::answered(ed) && ed.workspace.claude.notes.answer.is_none()
+        crate::places::answered(ed) && ed.workspace.claude.flags.answer.is_none()
     });
     frame(ed, W);
 }
@@ -570,24 +570,23 @@ fn a_hit_in_a_stub_keeps_its_row_in_sight() {
     assert!((top..top + size).contains(&row), "row {row} past {top}..+{size}");
 }
 
-/// `enter` on a stub goes to its place and opens its card, the chat keeping the keys; with a selection it quotes, as
-/// everywhere; on any other row with none, the input.
+/// `enter` on a stub goes to its flag's line, no card (#388: its words are the chat's), the chat keeping the keys; with a
+/// selection it quotes, as everywhere; on any other row with none, the input.
 #[test]
-fn enter_on_a_stub_opens_its_card_at_the_code() {
+fn enter_on_a_stub_goes_to_its_flags_line() {
     let (_s, root, mut ed) = project("fold-enter");
     two_turns(&mut ed);
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, W);
     onto_a_stub(&mut ed);
-    let (link, note) = stub_here(&ed).unwrap();
+    let (link, flag) = stub_here(&ed).unwrap();
     assert_eq!(link.path, root.join("src/a.rs"));
     let said = frame(&mut ed, W).matches("enter go there").count();
     assert_eq!(said, 1, "its hint, at the chat's foot — never the status line too (polish landing 5)");
     feed(&mut ed, "<ret>");
     assert_eq!(ed.doc().path.as_deref(), Some(root.join("src/a.rs").as_path()));
     assert_eq!(ed.cursor_line(), 2);
-    let notes = &ed.workspace.claude.notes;
-    assert_eq!((notes.open, notes.focus), (Some(note), Some(note)));
+    assert_eq!((ed.workspace.claude.notes.open, ed.workspace.claude.flags.focus), (None, Some(flag)));
     assert!(has_keys(&ed), "the keys stay the chat's, as a link's");
     // (any other row, nothing selected: the input)
     feed(&mut ed, "gg<ret>");
@@ -600,39 +599,34 @@ fn enter_on_a_stub_opens_its_card_at_the_code() {
     assert_eq!(c.quotes[0].text, FIRST.split("\n\n").next().unwrap());
 }
 
-/// An older answer's stub on a line the newest names too: its card's earlier unfolded, or it would hide what it opened
-/// for. The newest's own note leaves them folded.
+/// An older answer's stub goes to its flag's line, the walk going on from it (`]n`). No card: its words are the chat's.
 #[test]
-fn a_stubs_card_shows_its_own_answer_under_a_newer_one() {
-    let (_s, _root, mut ed) = project("fold-earlier");
+fn a_stubs_link_goes_to_its_flags_line() {
+    let (_s, root, mut ed) = project("fold-earlier");
     two_turns(&mut ed);
-    let note = stub_row(&ed, "◂ a.rs:3").stub.unwrap();
+    let flag = stub_row(&ed, "◂ a.rs:3").stub.unwrap();
     let link = stub_row(&ed, "◂ a.rs:3").link.unwrap();
-    go(&mut ed, link, note);
-    assert!(ed.workspace.claude.notes.earlier, "the older answer in sight");
-    assert_eq!(ed.workspace.claude.notes.open, Some(note));
-    let note = stub_row(&ed, "◂ b.rs:2").stub.unwrap();
-    let link = stub_row(&ed, "◂ b.rs:2").link.unwrap();
-    go(&mut ed, link, note);
-    assert!(!ed.workspace.claude.notes.earlier, "its line's only answer");
+    go(&mut ed, link, flag);
+    assert_eq!(ed.doc().path.as_deref(), Some(root.join("src/a.rs").as_path()));
+    assert_eq!((ed.cursor_line(), ed.workspace.claude.flags.focus), (2, Some(flag)));
+    assert_eq!(ed.workspace.claude.notes.open, None, "no card");
 }
 
-/// A stub whose file is gone goes nowhere, said; no card opens on nothing.
+/// A stub whose file is gone goes nowhere, said.
 #[test]
-fn a_stub_whose_file_is_gone_opens_no_card() {
+fn a_stub_whose_file_is_gone_goes_nowhere() {
     let (_s, root, mut ed) = project("fold-file-gone");
     two_turns(&mut ed);
-    let note = stub_row(&ed, "◂ b.rs:2").stub.unwrap();
+    let flag = stub_row(&ed, "◂ b.rs:2").stub.unwrap();
     let link = stub_row(&ed, "◂ b.rs:2").link.unwrap();
     std::fs::remove_file(root.join("src/b.rs")).unwrap();
-    ed.workspace.claude.notes.open = None;
-    go(&mut ed, link, note);
-    assert_eq!(ed.workspace.claude.notes.open, None);
+    go(&mut ed, link, flag);
+    assert_ne!(ed.doc().path.as_deref(), Some(root.join("src/b.rs").as_path()));
 }
 
 /// A press on a stub does what its `enter` does.
 #[test]
-fn a_press_on_a_stub_opens_its_card_at_the_code() {
+fn a_press_on_a_stub_goes_to_its_flags_line() {
     let (_s, root, mut ed) = project("fold-press");
     two_turns(&mut ed);
     // (the second: the turn's own card is open on the first's line)
@@ -641,8 +635,7 @@ fn a_press_on_a_stub_opens_its_card_at_the_code() {
     let (x, y) = (x as u16 + 1, row as u16);
     ed.handle_mouse(Mouse { kind: MouseKind::Down, x, y, alt: false, ctrl: false });
     assert_eq!(ed.doc().path.as_deref(), Some(root.join("src/b.rs").as_path()));
-    assert_eq!(ed.workspace.claude.notes.open, Some(note), "its card");
-    assert_eq!(ed.workspace.claude.notes.focus, Some(note));
+    assert_eq!(ed.workspace.claude.flags.focus, Some(note));
 }
 
 /// An answer all placed is its stubs; nothing else of it stays but its air.
@@ -658,20 +651,6 @@ fn an_answer_all_placed_is_its_stubs() {
     // (short enough to stand whole: no `…`, no card)
     let row = stub_row(&ed, "◂ a.rs:3");
     assert!(row.cut.is_none() && row.rest.is_none(), "{row:?}");
-}
-
-/// A note closed: its paragraph is whole again, the document as it was.
-#[test]
-fn a_place_gone_is_its_paragraph_whole_again() {
-    let (_s, _root, mut ed) = project("fold-gone");
-    two_turns(&mut ed);
-    let doc = text(&ed);
-    let note = stub_row(&ed, "◂ b.rs:2").stub.unwrap();
-    crate::notes::close(&mut ed, note);
-    frame(&mut ed, W);
-    assert_eq!(stubs(&ed).len(), 1, "{:#?}", rows(&ed));
-    assert!(rows(&ed).iter().any(|r| r.starts_with("The map is filled")), "{:#?}", rows(&ed));
-    assert_eq!(text(&ed).replace("\n\n", "\n"), doc.replace("\n\n", "\n"));
 }
 
 /// Only the paragraph that first names a place folds — a later naming's words are on no card — across an answer's
@@ -717,7 +696,7 @@ fn a_narrow_stub_cuts_its_words_first_then_its_place() {
         said: 8,
         path: Path::new("/p/src/thread.rs").to_path_buf(),
         line: 8,
-        note: 1,
+        flag: 1,
     };
     let para = [ChatRow {
         spans: vec![crate::markdown::Span {
@@ -762,13 +741,14 @@ fn a_frame_with_nothing_new_lays_nothing_out_again() {
     }
 }
 
-/// A place's line moved by an edit: the stub says where it is now.
+/// A place's line moved by an edit: the stub says where its flag is now.
 #[test]
-fn a_stub_says_where_its_note_is_now() {
+fn a_stub_says_where_its_flag_is_now() {
     let (_s, _root, mut ed) = project("fold-moved");
     two_turns(&mut ed);
-    let note = stub_row(&ed, "◂ b.rs:2").stub.unwrap();
-    crate::notes::find_mut(&mut ed, note).unwrap().lines = 6..7;
+    let flag = stub_row(&ed, "◂ b.rs:2").stub.unwrap();
+    let flags = &mut ed.workspace.claude.flags.list;
+    flags.iter_mut().find(|f| f.id == flag).unwrap().lines = 6..7;
     frame(&mut ed, W);
     assert!(stubs(&ed).iter().any(|s| s.starts_with("◂ b.rs:7")), "{:?}", stubs(&ed));
 }

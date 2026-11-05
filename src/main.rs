@@ -70,6 +70,7 @@ mod features;
 mod fetch;
 mod filetree;
 mod filters;
+mod flags;
 mod float;
 mod floatlist;
 mod folders;

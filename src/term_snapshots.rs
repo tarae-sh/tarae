@@ -10218,19 +10218,17 @@ fn frames_of_note_cards() {
                 s.ed.workspace.claude.notes.focus = Some(id);
             }
             "chat" => {
-                crate::notes::add_said(
-                    &mut s.ed,
-                    &path,
-                    5..6,
-                    (
-                        "`word_counts` builds the map in one pass.".into(),
-                        "`word_counts` (src/main.rs:6) builds the map in one pass — every word goes through `entry`, so \
-                         a word seen twice costs one lookup, not two."
-                            .into(),
-                    ),
-                    Vec::new(),
-                    Some("what does word_counts do?".into()),
-                );
+                let origin = crate::chatnotes::Origin {
+                    n: 1,
+                    at: 0,
+                    turn: 0,
+                    name: "src/main.rs".into(),
+                    said: 5,
+                    text: None,
+                };
+                let words = "`word_counts` builds the map in one pass.".to_string();
+                let asked = Some("what does word_counts do?".to_string());
+                crate::flags::add(&mut s.ed, (&path, 5..6), origin, None, (asked, words));
             }
             _ => {
                 let id = crate::notes::add(

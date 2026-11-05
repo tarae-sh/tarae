@@ -198,6 +198,50 @@ pub fn reading_rows(c: &Chat, laid: &Laid) -> Option<std::ops::Range<usize>> {
     None
 }
 
+/// The paragraphs of the frame's `laid` rows in the view — `area` rows from row `from` — by the places their rows name:
+/// what lights their flags (`flags::lit_sync`). A paragraph is a source line, its wrapped rows with it, as `reading_rows`
+/// finds one: any of them in sight, every place it names is — an older answer's folded to its stub (`Fold`) too, the
+/// stub's row holding its places.
+pub fn in_view(c: &Chat, laid: &Laid, from: usize, area: usize) -> Vec<Reading> {
+    use crate::chat::Role;
+    let mut out: Vec<Reading> = Vec::new();
+    // (each message's question's place among yours, as `reading_rows` counts it)
+    let mut users = 0;
+    let turns: Vec<usize> = (c.msgs.iter())
+        .map(|m| {
+            users += usize::from(m.role == Role::User);
+            users.saturating_sub(1)
+        })
+        .collect();
+    let mut row = 0;
+    for (o, rows) in laid {
+        let at = match o {
+            Of::Msg(i) => c.msgs.get(*i).filter(|m| m.role == Role::Assistant).and(turns.get(*i)),
+            _ => None,
+        };
+        let Some(&turn) = at.filter(|_| row < from + area && row + rows.len() > from) else {
+            row += rows.len();
+            continue;
+        };
+        // (each paragraph: its first row, then the rows it wrapped to)
+        let mut k = 0;
+        while k < rows.len() {
+            let end = k + 1 + rows[k + 1..].iter().take_while(|r| r.join.is_some()).count();
+            if row + k < from + area && row + end > from {
+                for p in rows[k..end].iter().flat_map(|r| r.places.iter()) {
+                    let r = Reading { turn, name: Arc::from(&*p.name), said: p.line };
+                    if !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
+            }
+            k = end;
+        }
+        row += rows.len();
+    }
+    out
+}
+
 /// After a frame (`term::render`): the chat taken to the paragraph a note's card read on to (`Chat.reading`) — or, shown
 /// by `space L` with none at your line, to the first message you hadn't had in sight (`Chat.unread_at`) — once its rows
 /// are laid out: at the top, a row of air above it (#274: near the conversation's end too, air under its last row —
@@ -291,7 +335,7 @@ pub fn had_in_sight(ed: &mut Editor) {
 /// every word: the row's text is the paragraph's start, what it folds its `rest` (`keep_whole`), so search and `y` find
 /// and copy all of it. A selection never opens it (#271, #269's rule): a drag onto it takes its paragraph whole
 /// (`drag`), a selection wider than a character on its line lights its words (`term::chat_paint`); it opens only by its
-/// own acts — `enter` and a press go to its place, `notes::read_on` holds it open (`reading`).
+/// own acts — `enter` and a press go to its flag's line, a flag pressed holds it open (`Chat.reading`).
 #[derive(Debug, Default)]
 pub struct Fold {
     /// The messages before it are older answers': the question of the newest answer that's done.
@@ -301,12 +345,12 @@ pub struct Fold {
     stubs: Vec<crate::chatnotes::Stub>,
     /// Each turn's stubs hashed, by turn: what a message's rows depend on, worked out once a frame.
     keys: Vec<(usize, u64)>,
-    /// The paragraph a note's card read on to (`Chat.reading`): its stub held open.
+    /// The paragraph the column was taken to (`Chat.reading`: a flag pressed, `]n`): its stub held open.
     reading: Option<Reading>,
 }
 
 impl Fold {
-    pub fn of(c: &Chat, notes: &crate::notes::Notes) -> Fold {
+    pub fn of(c: &Chat, flags: &crate::flags::Flags) -> Fold {
         use crate::chat::Role;
         // (the turn under way isn't an answer yet: the one before it stays whole until it's done)
         let end = match c.busy() {
@@ -315,7 +359,7 @@ impl Fold {
         };
         let answer = c.msgs[..end].iter().rposition(|m| m.role == Role::Assistant);
         let upto = answer.and_then(|a| c.msgs[..a].iter().rposition(|m| m.role == Role::User)).unwrap_or(0);
-        let stubs = crate::chatnotes::stubs(notes);
+        let stubs = crate::chatnotes::stubs(flags);
         if upto == 0 || stubs.is_empty() {
             return Fold::default();
         }
@@ -456,7 +500,10 @@ fn stub_row(
         spans: vec![span(head), span(words)],
         skip,
         link: Some(crate::chat::Link { path: s.path.clone(), line: s.line }),
-        stub: Some(s.note),
+        stub: Some(s.flag),
+        // (the places its paragraph names: in sight, their flags lit — `in_view`; a link row's are never underlined, so
+        // their bytes, the paragraph's rows', are read by nothing)
+        places: para.iter().flat_map(|r| r.places.iter().cloned()).collect(),
         ..ChatRow::default()
     };
     keep_whole(&mut row, whole);
@@ -1336,14 +1383,11 @@ pub fn stub_here(ed: &Editor) -> Option<(crate::chat::Link, u64)> {
     t.stub_at(mv::line_of(&d.text, d.selection().primary().cursor(&d.text)))
 }
 
-/// A stub's `enter` or a press on it: its place in the code, its note's card open with its answer in sight — the keys
-/// where they are, as a link's (`chat::jump`). A file gone says so; no card opens on nothing.
-pub fn go(ed: &mut Editor, link: crate::chat::Link, note: u64) {
-    let path = link.path.clone();
+/// A stub's `enter` or a press on it: its place in the code, at its flag's line — the keys where they are, as a link's
+/// (`chat::jump`). A file gone says so.
+pub fn go(ed: &mut Editor, link: crate::chat::Link, flag: u64) {
     crate::chat::jump(ed, link);
-    if ed.doc().path.as_deref() == Some(path.as_path()) {
-        crate::notes::open_answer(ed, note);
-    }
+    ed.workspace.claude.flags.focus = Some(flag);
 }
 
 /// What a command asked for, once its key is done.

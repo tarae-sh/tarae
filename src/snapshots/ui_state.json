@@ -98,6 +98,7 @@
       "withheld": []
     }
   ],
+  "flags": [],
   "frame": 1,
   "front": "w0",
   "gone": [],
@@ -292,7 +293,7 @@
       "where": "card"
     }
   ],
-  "v": 31,
+  "v": 32,
   "workspaces": [
     {
       "cards": 1,

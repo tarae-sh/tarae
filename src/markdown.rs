@@ -39,13 +39,7 @@ pub enum Line {
     },
     Rule,
     Blank,
-    /// One row, never wrapped: what doesn't fit cut with `…`, whole under the mouse (`whole::fit`) — the note card's
-    /// line for a paragraph said at another place.
-    Cut(Vec<Span>),
 }
-
-/// The most a `Line::Cut` widens what it's in: past it, it's cut.
-const CUT_WIDE: usize = 48;
 
 /// A table column's alignment (`---` · `:---:` · `---:`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,7 +59,6 @@ impl Line {
                     + GAP * header.len().saturating_sub(1)
             }
             Line::Rule | Line::Blank => 0,
-            Line::Cut(spans) => spans_width(spans).min(CUT_WIDE),
         }
     }
 }
@@ -581,22 +574,6 @@ pub fn wrap_drawn(lines: &[Line], width: usize, rule: Style, label: Style) -> (V
             }
             Line::Table { aligns, header, rows } => {
                 table(aligns, header, rows, width, (rule, label), &mut out)
-            }
-            Line::Cut(spans) => {
-                let mut row = Vec::new();
-                let mut used = 0;
-                for s in spans {
-                    let w = s.text.width();
-                    if used + w <= width {
-                        row.push(s.clone());
-                        used += w;
-                        continue;
-                    }
-                    row.push(crate::whole::fit(&s.text, width - used).span(s.style));
-                    break;
-                }
-                out.push(row);
-                joins.push(None);
             }
         }
         for (k, row) in out[from..].iter().enumerate() {

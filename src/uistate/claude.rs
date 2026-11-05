@@ -194,6 +194,8 @@ impl Editor {
         s.runs.retain(|r| r.session == own);
         // (only what went to it: a draft — yours, or a finding — is the user's until `space v s` sends it)
         s.notes.retain(|n| n.sent);
+        // (its answers' places: its own words, where they are drawn is the user's chrome)
+        s.flags.clear();
         // (the user's: what runs, with its command lines)
         s.procs = Default::default();
         s.gone = self.ui_gone.iter().rev().filter(|g| g.session == own).take(3).cloned().collect();

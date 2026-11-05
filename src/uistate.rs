@@ -68,7 +68,9 @@ use crate::workspace::At;
 /// (`tarae --host`), else its `kind` (`terminal`) and the last frame it `presented`.
 /// 30: `interface.kind` `wire`: an interface attached to a host across its socket (`tarae attach`).
 /// 31: a run's `state` may be `not run · <why>` (#354: refused before it started — not a pass, nor `failed`).
-pub const V: u64 = 31;
+/// 32: `flags` (#388: an answer's places in the code, `flag:src/a.rs:12`, `answers`, `lit`); `notes[].kind` no longer
+/// `chat` — an answer's places are flags now.
+pub const V: u64 = 32;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -752,6 +754,9 @@ pub struct UiState {
     pub limits: Vec<crate::limits::Reading>,
     /// The front session's notes (`notes.rs`), in the order pinned — where each is, never what it says.
     pub notes: Vec<NoteState>,
+    /// The front session's answers' flags (`flags.rs`), a line each — where, never what was said; never Claude's (its
+    /// answers are its own).
+    pub flags: Vec<FlagState>,
     /// Motions on a clock under way (`motion.rs`) — a driver waits for one to end, never sleeps; never Claude's.
     pub motions: Vec<MotionState>,
     /// The plugins' overlays while they're up (`plugin/overlay.rs`), by plugin — chrome, never Claude's.
@@ -890,11 +895,9 @@ impl NoteState {
             kind: match first {
                 Some(By::Reviewer) => "finding",
                 Some(By::Author) => "claude",
-                Some(By::Chat) => "chat",
                 _ => "comment",
             },
-            // (a chat note went to Claude only once you answered it: before, its words are Claude's own answer)
-            sent: !crate::notes::unsent(n) && !crate::notes::bare_chat(n),
+            sent: !crate::notes::unsent(n),
             state: match n.waiting {
                 true => "waiting",
                 false if n.thread.iter().skip(1).any(|e| e.by == By::Author) => "answered",
@@ -913,6 +916,38 @@ impl NoteState {
     /// `note#4 src/a.rs:12 · finding · waiting`.
     pub fn text(&self) -> String {
         format!("{} {}:{} · {} · {}", self.id, self.path, self.line, self.kind, self.state)
+    }
+}
+
+/// An answer's flag as the state lists it (#388): by id and place, which answer, and whether it's lit — its paragraph in
+/// the column's view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlagState {
+    /// `flag:src/a.rs:12` — its line's `¶`, the newest answer's (one a line).
+    pub id: String,
+    /// The answers that named its line, newest first, by their number in the chat.
+    pub answers: Vec<u64>,
+    pub lit: bool,
+}
+
+impl FlagState {
+    /// One a line: the line's newest answer's flag, with every answer there.
+    fn all(root: &std::path::Path, flags: &crate::flags::Flags) -> Vec<FlagState> {
+        let mut out: Vec<FlagState> = Vec::new();
+        for f in &flags.list {
+            let id = format!("flag:{}:{}", crate::chat::shown(root, &f.path), f.lines.start + 1);
+            if out.iter().any(|s| s.id == id) {
+                continue;
+            }
+            let all = crate::flags::on_line(flags, &f.path, f.lines.start);
+            let lit = all.first().is_some_and(|g| crate::flags::lit(flags, g));
+            out.push(FlagState { id, answers: all.iter().map(|g| g.origin.n).collect(), lit });
+        }
+        out
+    }
+
+    pub fn json(&self) -> Value {
+        json!({ "id": self.id, "answers": self.answers, "lit": self.lit })
     }
 }
 
@@ -1853,6 +1888,7 @@ impl Editor {
             procs: ProcsState::of(&self.procs),
             limits: self.limits.known(now_ms).into_iter().cloned().collect(),
             notes: front.claude.notes.list.iter().map(|n| NoteState::of(&front.root, n)).collect(),
+            flags: FlagState::all(&front.root, &front.claude.flags),
             motions: self
                 .motions
                 .iter()
@@ -2191,6 +2227,7 @@ impl UiState {
             "procs": self.procs.json(),
             "limits": crate::limits::json(&self.limits.iter().collect::<Vec<_>>()),
             "notes": self.notes.iter().map(NoteState::json).collect::<Vec<_>>(),
+            "flags": self.flags.iter().map(FlagState::json).collect::<Vec<_>>(),
             "motions": self
                 .motions
                 .iter()

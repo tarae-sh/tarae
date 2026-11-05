@@ -74,7 +74,7 @@ fn run(choices: Choices) -> Vec<String> {
         "typing over, a frame".to_string()
     };
     sim.walk(&mut ed, 1, end, held, print);
-    let settled = |ed: &Editor| ed.workspace.claude.notes.answer.is_none();
+    let settled = |ed: &Editor| ed.workspace.claude.flags.answer.is_none();
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     let (wanted, hidden) = (c.read_wanted, c.hidden);
     let card = ed.workspace.claude.notes.open.is_some();
@@ -179,7 +179,7 @@ fn print(ed: &Editor) -> String {
     let c = ed.workspace.claude.chat.as_ref();
     let shown = c.is_some_and(|c| !c.hidden);
     let wanted = c.is_some_and(|c| c.read_wanted);
-    let notes = &ed.workspace.claude.notes;
-    let waits = if notes.answer.is_some() { " · places asked" } else { "" };
-    format!("shown {shown} · wants {wanted} · {:?} · open {:?}{waits}", ed.mode, notes.open)
+    let waits = if ed.workspace.claude.flags.answer.is_some() { " · places asked" } else { "" };
+    let open = ed.workspace.claude.notes.open;
+    format!("shown {shown} · wants {wanted} · {:?} · open {open:?}{waits}", ed.mode)
 }

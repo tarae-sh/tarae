@@ -40,9 +40,12 @@ pub enum Press {
     /// A folder's or the file's name in a code pane's path (`tarae › src › main.rs`): its row in the side panel's files,
     /// opened and unfolded down to it, the keys there (`space e`'s).
     Reveal(std::path::PathBuf),
-    /// A note's `¶` at its line's end: an answer's takes the chat's column to its paragraph, the keys staying in the
-    /// code; another's card between the lines opens, or closes when it's the one open (`notes::pressed`, focus A1b).
+    /// A note's `¶` at its line's end: its card between the lines opens, or closes when it's the one open
+    /// (`notes::pressed`, focus A1b).
     Note(u64),
+    /// A flag's `¶` (its line's newest answer's) or a row of its hover card (that answer's): the chat's column at its
+    /// paragraph, the keys staying in the code (`flags::to_paragraph`, #388).
+    Flag(u64),
     /// A mark of the turn's map (`turnmap.rs`): its stop, as `]r`/`[r` step to it.
     Stop((usize, usize)),
 }
@@ -238,6 +241,7 @@ pub fn press(ed: &mut Editor, i: usize) {
         }
         Press::Reveal(path) => ed.sidebar_reveal(&path),
         Press::Note(id) => crate::notes::pressed(ed, id),
+        Press::Flag(id) => crate::flags::to_paragraph(ed, id),
         Press::Stop(at) => crate::follow::replay_at(ed, at),
     }
 }

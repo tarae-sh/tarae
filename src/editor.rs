@@ -439,10 +439,9 @@ pub struct InputDrawn {
 }
 
 /// What an open note's card's height is laid out from (`Screen.note_rows`): the note, its thread's entries and their
-/// text's length, its waiting row, its flow's parts, its board's trace, the question it answers, and the code's (columns,
-/// rows) — a reply, a placing or a resize lays it out again. A line's answers (focus A1b): all their words, and (how many,
-/// how many folded). The last: whether it holds `space n`'s line (focus C1).
-pub type NoteRowsKey = (u64, usize, usize, bool, (usize, usize), bool, usize, (usize, usize), bool);
+/// text's length, its waiting row, its board's trace and the code's (columns, rows) — a reply, a placing or a resize lays
+/// it out again. The last: whether it holds `space n`'s line (focus C1).
+pub type NoteRowsKey = (u64, usize, usize, bool, bool, (usize, usize), bool);
 
 /// Whose text a mouse drag selects — where its press was (`Editor.mouse_anchor`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -696,9 +695,11 @@ pub struct Screen {
     /// The open note's card's words as drawn this frame, a row each (its screen row, its first column, its spans) —
     /// what a drag over them selects (`Editor.note_marked`, focus A1b).
     pub note_text: std::cell::RefCell<Vec<(usize, usize, Vec<crate::markdown::Span>)>>,
-    /// The open note whose card this frame ended on its `…` row, cut short of its words (focus A1c): `enter` and a press
-    /// there read on in the chat (`notes::read_on`).
-    pub note_more: std::cell::Cell<Option<u64>>,
+    /// Each flag's `¶` drawn this frame: (row, column, flag, its pane's left and right columns) — where its hover card
+    /// opens (`flags::hovered`).
+    pub flag_ends: std::cell::RefCell<Vec<crate::flags::End>>,
+    /// A flag's hover card as drawn this frame (x, y, width, height): the pointer on it keeps it.
+    pub flag_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// A note's card this frame says `space v s send N` on its bottom line in sight: the status line's drafts count is
     /// then left out (#329, one home: the status line counts only what no card draws).
     pub drafts_drawn: std::cell::Cell<bool>,
@@ -869,6 +870,8 @@ pub struct Editor {
     pub turnmap: crate::turnmap::State,
     /// The cut row the mouse is over — drawn whole while it stays there (`whole.rs`).
     pub cut_hover: Option<crate::whole::Cut>,
+    /// The flag whose `¶` the mouse is over, or whose card it's on — that card drawn (`flags.rs`).
+    pub flag_hover: Option<crate::flags::Hover>,
     /// A press that landed on a cut text's card, until its release: its drags and release are that row's too
     /// (`whole::held`).
     pub cut_press: Option<crate::whole::Held>,
@@ -1460,6 +1463,7 @@ impl Editor {
             presence: Default::default(),
             turnmap: Default::default(),
             cut_hover: None,
+            flag_hover: None,
             cut_press: None,
             word_hover: Default::default(),
             row_hover: Default::default(),
@@ -3023,6 +3027,7 @@ impl Editor {
             let tag = crate::presence::hovered(self, x, y);
             let mark = crate::follow::strip_hovered(self, x, y);
             let cut = crate::whole::hovered(self, x, y);
+            let flag = crate::flags::hovered(self, x, y);
             let word = crate::wordspot::hovered(self, x, y);
             // (the surface under the pointer lights its lines half, a line that drags itself — a frame only when
             // either changed: a move within one draws nothing)
@@ -3039,7 +3044,7 @@ impl Editor {
             // the follow card's edges are its frame's, #267)
             let edged = edge != std::mem::replace(&mut self.border_hover, edge);
             let lit = over != std::mem::replace(&mut self.pointer_over, over) || edged;
-            self.unchanged = !(tag || mark || cut || word || lit || rest);
+            self.unchanged = !(tag || mark || cut || flag || word || lit || rest);
             return;
         }
         // Input means the terminal has focus, whatever it said last (a focus-in lost on the way)
@@ -3143,6 +3148,7 @@ impl Editor {
         crate::chatnotes::sync(self);
         crate::chat::read_sync(self);
         crate::notes::attach(self);
+        crate::flags::attach(self);
         crate::edits::lost_review(self);
         crate::refactor::next(self);
         crate::codereview::land(self);
@@ -3595,12 +3601,6 @@ impl Editor {
                                 false => "replying — enter sends it · esc close",
                             })
                         }
-                        // (on its `… N earlier`: the line's earlier answers unfolded — focus A1b)
-                        (None, Some(_)) if crate::term::note_earlier_at(self, y) => {
-                            crate::notes::unfold_earlier(self)
-                        }
-                        // (on its `… enter reads on in the chat`: the chat at its paragraph — focus A1c)
-                        (None, Some(_)) if crate::term::note_more_at(self, y) => crate::notes::read_on(self),
                         (None, Some(_)) => {
                             self.pressed_through = Some((x, y, crate::clock::now()));
                             crate::notes::start_card(self)
@@ -8074,14 +8074,14 @@ mod tests {
         }
         crate::term::render(&mut ed, &mut Vec::new(), 120, 40).unwrap();
         crate::test_results::settle_until(&mut ed, |ed| {
-            crate::places::answered(ed) && ed.workspace.claude.notes.answer.is_none()
+            crate::places::answered(ed) && ed.workspace.claude.flags.answer.is_none()
         });
         let saw = |ed: &Editor, f: &str, line: usize| {
             let path = dir.join(f);
             let n =
-                ed.workspace.claude.notes.list.iter().find(|n| n.path == path && n.lines.start + 1 == line);
-            let n = n.unwrap_or_else(|| panic!("no note at {f}:{line}"));
-            crate::docpaths::find(ed, &path).and_then(|d| crate::notes::check_word(n, d))
+                ed.workspace.claude.flags.list.iter().find(|n| n.path == path && n.lines.start + 1 == line);
+            let n = n.unwrap_or_else(|| panic!("no flag at {f}:{line}"));
+            crate::docpaths::find(ed, &path).and_then(|d| n.check.map(|c| c.word(d)))
         };
         assert_eq!(saw(&ed, "main.rs", 1), Some("read this turn"), "past Claude's edit in the same file");
         assert_eq!(saw(&ed, "main.rs", 4), Some("changed, no test seen"));
@@ -8093,7 +8093,7 @@ mod tests {
         assert_eq!(saw(&ed, "real.rs", 1), Some("changed, no test seen"), "changed by the link");
         assert_eq!(saw(&ed, "real.rs", 3), Some("read this turn"), "read by it, moved by that change");
         assert_eq!(saw(&ed, "real.rs", 5), Some("not read this turn"), "past the lines read");
-        let notes = &ed.workspace.claude.notes.list;
+        let notes = &ed.workspace.claude.flags.list;
         let check_of = |f: &str, line: usize| {
             let n = notes.iter().find(|n| n.path == dir.join(f) && n.lines.start + 1 == line).unwrap();
             n.check.map(|j| j.check)

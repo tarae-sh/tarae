@@ -773,6 +773,9 @@ pub struct Chat {
     /// An answer with no place, or an error said only here, waits for you to stop typing to open the reader
     /// (`read_by_itself`, `read_sync`).
     pub read_wanted: bool,
+    /// You hid the column (`space L`) with this many messages of yours sent: hidden during that turn, its end leaves it
+    /// hidden (chatlink Q5 — `◂ new` says what came).
+    pub hid_at: Option<usize>,
     /// The chat taken to a paragraph near the conversation's end (#274): the rows it shows as if there were this many,
     /// so that paragraph stands at the top with air under the last row — until the conversation is that long, or goes
     /// back to its bottom (a key typed, a message sent).
@@ -1203,6 +1206,7 @@ impl Chat {
             news: None,
             new_at: None,
             read_wanted: false,
+            hid_at: None,
             read_lift: None,
             transcript: None,
             sends: Vec::new(),
@@ -1617,7 +1621,7 @@ pub fn reopen_left(ed: &mut Editor) -> bool {
     if ed.workspace.claude.chat.is_some() {
         return true;
     }
-    let Some((saved, _)) = ed.workspace.claude.notes.left.take() else { return false };
+    let Some((saved, _)) = ed.workspace.claude.flags.left.take() else { return false };
     let at = ed.workspace.viewer.at;
     made(ed);
     continue_from(ed, *saved, false, true);
@@ -1637,7 +1641,7 @@ fn made(ed: &mut Editor) {
     // kept with theirs first, a reply that opened this chat having just made one a thread; a continue brings
     // them back)
     crate::chatnotes::kept_sync(ed);
-    crate::notes::forget_answers(ed);
+    crate::flags::forget(ed);
     let mut c = Chat::new();
     // (the stops the closed chat left: the turn's map stays until the next turn starts)
     if let Some(left) = ed.workspace.claude.stops_left.take() {
@@ -1924,7 +1928,7 @@ fn kept_of(
     let plan = c.plan.as_ref().map(crate::plan::Plan::to_json);
     let saved = crate::chats::Saved {
         usage: l.claude.usage.conv_json(&id),
-        places: crate::chatnotes::places_json(&l.claude.notes, &c.msgs),
+        places: crate::chatnotes::places_json(&l.claude.flags, &c.msgs),
         id,
         title,
         updated: c.said_at.unwrap_or_else(crate::chats::now),
@@ -1958,9 +1962,9 @@ pub fn keep_places(ed: &Editor) {
 /// The conversation a closed chat left (`Notes.left`) with its answers' places now, its `seq` now: of two keeps landing
 /// out of order the older is refused, a note closed never coming back.
 pub(crate) fn left_kept(ed: &Editor) -> Option<crate::chats::Saved> {
-    let notes = &ed.workspace.claude.notes;
-    let (left, users) = notes.left.as_ref()?;
-    let places = crate::chatnotes::places_of(notes, *users);
+    let flags = &ed.workspace.claude.flags;
+    let (left, users) = flags.left.as_ref()?;
+    let places = crate::chatnotes::places_of(flags, *users);
     Some(crate::chats::Saved { places, seq: crate::chats::seq(), ..(**left).clone() })
 }
 
@@ -1985,14 +1989,9 @@ pub fn toggle(ed: &mut Editor) {
     }
     // (the flow plan's reader: shown at the paragraph about your line — the answer's note there, as its card's `enter`
     // reads on —, else at the first answer you haven't had in sight, else at the end)
-    let here = crate::notes::answer_here(ed);
+    let here = crate::flags::answer_here(ed);
     let had = ed.workspace.claude.chat.is_some();
     open(ed);
-    // (the line's card closed: its words are the column's now, as a press on its `¶` leaves them — one home a fact,
-    // the user on the rework's shots, 2026-11-03; the line end keeps its sentence)
-    if let Some(o) = &here {
-        crate::notes::close_card_of(ed, o);
-    }
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| had) else { return };
     // (`── new ──` where you'd read to, the conversation taken to what's new — from its question, what it answers in sight
     // over it, as the reader's mockup)
@@ -2002,10 +2001,7 @@ pub fn toggle(ed: &mut Editor) {
         (c.msgs.iter().enumerate().skip(c.seen)).find(|(_, m)| m.role == Role::Assistant).map(|m| m.0);
     let asked = unread.map(|i| c.msgs[..i].iter().rposition(|m| m.role == Role::User).unwrap_or(i));
     match (here, c.unread_at.or(asked)) {
-        (Some(o), _) => {
-            let at = crate::chatdoc::Reading { turn: o.turn, name: o.name.clone(), said: o.said };
-            (c.reading, c.unread_at) = (Some((at, false)), None);
-        }
+        (Some(at), _) => (c.reading, c.unread_at) = (Some((at, false)), None),
         (None, Some(i)) => c.unread_at = Some(i),
         (None, None) => (c.scroll, c.read_lift) = (0, None),
     }
@@ -2078,6 +2074,7 @@ pub fn keys_left(ed: &mut Editor) {
 pub fn hide(ed: &mut Editor) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.hidden = true;
+    c.hid_at = Some(c.msgs.iter().filter(|m| m.role == Role::User).count());
 }
 
 /// `:chat-close`: the conversation ended — its process, a turn under way cut off, follow with it. Only by name (#270:
@@ -2101,7 +2098,7 @@ pub fn close(ed: &mut Editor) {
         .chat
         .as_ref()
         .map_or(0, |c| c.msgs.iter().filter(|m| m.role == Role::User).count());
-    ed.workspace.claude.notes.left = kept(ed).map(|k| (Box::new(k.2), users));
+    ed.workspace.claude.flags.left = kept(ed).map(|k| (Box::new(k.2), users));
     // (as its stops stay for the turn's map, until the next turn starts — `turnmap.rs`)
     let session = &mut ed.workspace.claude;
     if let Some(c) = session.chat.as_mut() {
@@ -2179,8 +2176,8 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     c.msgs.clear();
     c.plan = None;
     c.conversation_left();
-    // (its answers' notes go with it — focus A1b)
-    crate::notes::forget_answers(ed);
+    // (its answers' flags go with it — focus A1b)
+    crate::flags::forget(ed);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.state = State::Idle;
     c.scroll = 0;
@@ -5376,17 +5373,22 @@ mod tests {
             "no panel, the keys the code's"
         );
         assert!(ed.screen.thought_card.get().is_some(), "the follow card at the code, the chat out of sight");
-        // The answer comes while it's hidden: no place in the code holds it — it comes into sight by itself, the keys
-        // staying in the code (the flow plan's Q7)
+        // The answer comes while it's hidden: hidden by you during its turn, it stays so — `◂ new` says it (chatlink
+        // Q5), the keys staying in the code
         on_event(&mut ed, g, StreamEv::Text("The answer, in short.".into()));
         on_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
         crate::uistate::tests::frame(&mut ed);
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(!c.busy() && shown(&ed), "the turn over, its answer in sight");
+        assert!(!c.busy() && !shown(&ed), "the turn over, the column as you left it");
         let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
-        assert!(text.contains("The answer, in short."), "{text}");
+        assert!(text.contains("◂ new · space L") && !text.contains("The answer, in short."), "{text}");
         assert_eq!(region(&ed), "code", "the keys where they were");
-        // Shown: `space L` hides it, and brings it back with the keys in it
+        // Hidden: `space L` brings it back with the keys in it, its answer in sight
+        keys(&mut ed, "space L");
+        let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+        assert!(shown(&ed) && text.contains("The answer, in short."), "{text}");
+        assert_eq!(region(&ed), "chat", "the keys in its input");
+        keys(&mut ed, "C-w h");
         keys(&mut ed, "space L");
         assert!(!shown(&ed), "hidden");
         keys(&mut ed, "space L");

@@ -33,6 +33,8 @@ pub struct Session {
     pub chat: Option<crate::chat::Chat>,
     /// Claude's notes pinned to code (`notes.rs`).
     pub notes: crate::notes::Notes,
+    /// The places its answers named, flagged at their lines (`flags.rs`).
+    pub flags: crate::flags::Flags,
     /// The closed chat's stops: the turn's map stays until the next turn starts, as its answers stay at the code
     /// (`chat::close`, `turnmap.rs`) — the chat takes them back as it opens.
     pub stops_left: Option<crate::replay::Replay>,
@@ -148,6 +150,7 @@ impl Session {
             colour: 0,
             chat: None,
             notes: Default::default(),
+            flags: Default::default(),
             stops_left: None,
             checkpoints: Default::default(),
             review: None,

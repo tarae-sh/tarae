@@ -33,9 +33,6 @@ pub enum By {
     You,
     /// The reviewer (`reviewer.rs`) — a second Claude, apart from the chat's.
     Reviewer,
-    /// What the chat's last answer said of a place (`chatnotes.rs`) — the chat's Claude's words, not a note it
-    /// pinned.
-    Chat,
 }
 
 impl By {
@@ -45,7 +42,6 @@ impl By {
             By::Author => "claude",
             By::You => "you",
             By::Reviewer => "reviewer",
-            By::Chat => "chat",
         }
     }
 
@@ -56,7 +52,6 @@ impl By {
             By::Author => "claude",
             By::You => "you",
             By::Reviewer => "reviewer",
-            By::Chat => "chat",
         }
     }
 
@@ -64,7 +59,6 @@ impl By {
         match w {
             "you" => By::You,
             "reviewer" => By::Reviewer,
-            "chat" => By::Chat,
             _ => By::Author,
         }
     }
@@ -99,23 +93,9 @@ pub struct Note {
     /// A finding still being placed on the lines now from the snapshot its reviewer read (`pin_finding`): no
     /// mark yet.
     pub placing: bool,
-    /// A chat note's (`chatnotes.rs`): the sentence that names its place — the line end's words; its first entry
-    /// is the paragraph, the card's.
-    pub sentence: Option<String>,
-    /// A chat note at the answer's place (`chatnotes::Part`, focus A1): the answer's flow its card draws — its first
-    /// entry the same as one text. Empty for every other note.
-    pub flow: Vec<crate::chatnotes::Part>,
-    /// A chat note's: the question its answer answered, its first line — the card's head says which answer (focus A1b).
-    pub asked: Option<String>,
-    /// A chat note's: which answer it's of and where in it (`chatnotes::Origin`) — one line's answers one card, newest
-    /// first; kept with the conversation.
-    pub answer: Option<crate::chatnotes::Origin>,
     /// A finding's: the branch its round's changes were since (`Reviewer.since`; None: uncommitted, or not a
     /// finding) — what its change lands in, in the checkout tarae started in (`landed_check`, #248).
     pub since: Option<String>,
-    /// A chat note's on a place its answer named: what tarae saw of that place in its turn (focus F0). None where its
-    /// stops weren't kept (a continue brought it back): nothing said.
-    pub check: Option<crate::turnmap::Judged>,
 }
 
 /// What a finding of the board's carries beside its text: the angles that found it (the first pinned it),
@@ -151,19 +131,10 @@ pub fn unsent(n: &Note) -> bool {
 }
 
 impl Note {
-    /// The first thing said — what the line end shows (a chat note's, the sentence that names its place).
+    /// The first thing said — what the line end shows.
     pub fn gist(&self) -> &str {
-        if let Some(s) = self.sentence.as_deref() {
-            return s;
-        }
         self.thread.first().map_or("", |e| e.text.lines().find(|l| !l.trim().is_empty()).unwrap_or(""))
     }
-}
-
-/// Whether `n` is what one of the conversation's answers said of a place, nothing more (`chatnotes.rs`): kept with the
-/// conversation (never in the restore file), never told to Claude. Answered with `space n`, it's a thread.
-pub fn bare_chat(n: &Note) -> bool {
-    n.thread.len() == 1 && n.thread[0].by == By::Chat
 }
 
 #[derive(Default)]
@@ -178,20 +149,6 @@ pub struct Notes {
     /// A1b): opened by an act only (`]n`/`[n`, `enter` on its line, a press on its `¶`), never by the cursor passing;
     /// open until closed (`q`, `esc`, `enter` again) or another opens — leaving the file keeps it.
     pub open: Option<u64>,
-    /// The open card is the one a turn's end opened (`open_by_turn`): the next answer's replaces it; one you opened
-    /// stays.
-    pub turned: bool,
-    /// A turn's card waiting for you to stop typing (`opening_sync`).
-    pub opening: Option<u64>,
-    /// The open card shows its line's earlier answers too (`enter`, a press on its `… N earlier`).
-    pub earlier: bool,
-    /// The answers this chat has placed notes for — the newest's number (`chatnotes::Origin.n`).
-    pub answers: u64,
-    /// The chat notes that are bare as the conversation last kept them (`chatnotes::kept_sync`).
-    pub kept_bare: usize,
-    /// The chat closed, its answers' notes still here: their conversation as it stood then and how many messages of yours
-    /// it holds (`chat::keep_places`), until the chat opens again.
-    pub left: Option<(Box<crate::chats::Saved>, usize)>,
     /// Drafts whose lines changed since they were pinned (`stale_check`, `stale_mark`): each says `stale` on itself —
     /// its line end, its card (`R` re-places it there), the review rail's count — and the notes list's top line counts
     /// them, `C-l` there closing them all (`close_stale`). No card (polish landing 4: 266 of its 294 answers were `y`).
@@ -202,10 +159,8 @@ pub struct Notes {
     /// (`chatnotes::turn_over`).
     pub pinned_now: Vec<u64>,
     /// The chat's Claude wrote at a note in the turn under way — pinned one or replied on one: its answer is at the code,
-    /// so it gets no flow at its place (`chatnotes::turn_over`).
+    /// so the column doesn't show by itself at its end (`chatnotes::turn_over`).
     pub noted_now: bool,
-    /// The last answer's places, waiting for what their names come to (`chatnotes::sync`).
-    pub answer: Option<crate::chatnotes::Waiting>,
     /// A note on a path that's no text was said not to last (`unkept_said`) — once.
     unkept_said: bool,
 }
@@ -266,12 +221,7 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         pinned: None,
         board: None,
         placing: false,
-        sentence: None,
-        flow: Vec::new(),
-        asked: None,
-        answer: None,
         since: None,
-        check: None,
     });
     ed.workspace.claude.notes.focus = Some(id);
     attach(ed);
@@ -290,50 +240,6 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         });
     }
     id
-}
-
-/// A chat note on `lines` of `path` (`chatnotes::sync`): `sentence` at the line end, `paragraph` on its card — or, at
-/// the answer's place, its `flow`. Not focused (a crowded line shows the note you stepped to) and no lines kept as pinned
-/// (no draft's: never stale). `asked`: the question the answer answered.
-pub fn add_said(
-    ed: &mut Editor,
-    path: &Path,
-    lines: Range<usize>,
-    (sentence, paragraph): (String, String),
-    flow: Vec<crate::chatnotes::Part>,
-    asked: Option<String>,
-) -> u64 {
-    let notes = &mut ed.workspace.claude.notes;
-    notes.next += 1;
-    notes.list.push(Note {
-        id: notes.next,
-        path: path.to_path_buf(),
-        at: None,
-        lines,
-        thread: vec![Entry { by: By::Chat, text: paragraph, draft: false }],
-        waiting: false,
-        anchor: None,
-        pinned: None,
-        board: None,
-        placing: false,
-        sentence: Some(sentence),
-        flow,
-        asked,
-        answer: None,
-        since: None,
-        check: None,
-    });
-    notes.next
-}
-
-/// What note `n` says tarae saw of its place, `doc` the file's buffer — nothing for a note no answer's check is on.
-pub fn check_word(n: &Note, doc: &crate::document::Document) -> Option<&'static str> {
-    n.check.as_ref().map(|c| c.word(doc))
-}
-
-/// `check_word` where it's a doubt: what its line end says (`Judged::doubt`).
-pub fn check_doubt(n: &Note, doc: &crate::document::Document) -> Option<&'static str> {
-    n.check.as_ref().and_then(|c| c.doubt(doc))
 }
 
 /// What a note keeps of its lines' text to tell a change (`Note.pinned`): a SHA-256 of them. None past the
@@ -371,42 +277,52 @@ fn attach_in(notes: &mut Notes, docs: &mut crate::docpaths::Docs) {
     // (a note looks for its buffer every event — by id once attached, else by its path: the buffers laid out once,
     // kept while none moves (`Docs`; a mark added moves none). #214: each such note searched every buffer)
     for n in notes.list.iter_mut().filter(|n| !n.placing) {
-        // (its mark as stored, its ends snapped as `Document::mark` does — never a selection made for it each event:
-        // #214's third piece, an allocation a note)
-        match n.at.and_then(|(d, m)| {
-            let doc = &docs[docs.index_of(d)?];
-            Some((doc, doc.mark_raw(m)?.primary()))
-        }) {
-            Some((doc, r)) => {
-                let line = |p| mv::line_of(&doc.text, crate::graphemes::snap(&doc.text, p));
-                let (a, b) = (line(r.anchor), line(r.head));
-                n.lines = a.min(b)..a.max(b) + 1;
+        let made = follow_mark((&mut n.at, &mut n.lines, &mut n.anchor), &n.path, docs);
+        // (its lines as pinned, when not known yet — a note restored from an earlier build)
+        if let Some(i) = made.filter(|_| n.pinned.is_none()) {
+            n.pinned = lines_digest(&docs[i].text, &n.lines);
+        }
+    }
+}
+
+/// One mark's lines followed — a note's or a flag's (`flags::attach`): attached, its lines are its mark's; not yet, its
+/// file's buffer once open gets one (moved first to its first line's text as kept, `anchor`, if the file moved it). The
+/// buffer's index where it was just made.
+pub(crate) fn follow_mark(
+    (at, lines, anchor): (&mut Option<(DocId, u64)>, &mut Range<usize>, &mut Option<String>),
+    path: &Path,
+    docs: &mut crate::docpaths::Docs,
+) -> Option<usize> {
+    // (its mark as stored, its ends snapped as `Document::mark` does — never a selection made for it each event:
+    // #214's third piece, an allocation a note)
+    match at.and_then(|(d, m)| {
+        let doc = &docs[docs.index_of(d)?];
+        Some((doc, doc.mark_raw(m)?.primary()))
+    }) {
+        Some((doc, r)) => {
+            let line = |p| mv::line_of(&doc.text, crate::graphemes::snap(&doc.text, p));
+            let (a, b) = (line(r.anchor), line(r.head));
+            *lines = a.min(b)..a.max(b) + 1;
+            None
+        }
+        None => {
+            *at = None;
+            let i = docs.first(path, |d| !d.loading)?;
+            let doc = &mut docs[i];
+            // Saved last time: follow its first line if the file moved it meanwhile
+            if let Some(want) = anchor.take() {
+                let shift = nearest_line(&doc.text, lines.start, &want);
+                *lines = lines.start.saturating_add_signed(shift)..lines.end.saturating_add_signed(shift);
             }
-            None => {
-                n.at = None;
-                if let Some(doc) = docs.first(&n.path, |d| !d.loading).map(|i| &mut docs[i]) {
-                    // Saved last time: follow its first line if the file moved it meanwhile
-                    if let Some(want) = n.anchor.take() {
-                        let shift = nearest_line(&doc.text, n.lines.start, &want);
-                        n.lines = n.lines.start.saturating_add_signed(shift)
-                            ..n.lines.end.saturating_add_signed(shift);
-                    }
-                    // (the file may have shrunk: both ends within it, the first not after the last)
-                    let last = mv::last_line(&doc.text);
-                    let a = n.lines.start.min(last);
-                    let b = n.lines.end.saturating_sub(1).max(a).min(last);
-                    let sel = Selection::single(SelRange::new(
-                        mv::line_start(&doc.text, a),
-                        mv::line_start(&doc.text, b),
-                    ));
-                    n.at = Some((doc.id, doc.add_mark(sel)));
-                    n.lines = a..b + 1;
-                    // (its lines as pinned, when not known yet — a note restored from an earlier build)
-                    if n.pinned.is_none() {
-                        n.pinned = lines_digest(&doc.text, &n.lines);
-                    }
-                }
-            }
+            // (the file may have shrunk: both ends within it, the first not after the last)
+            let last = mv::last_line(&doc.text);
+            let a = lines.start.min(last);
+            let b = lines.end.saturating_sub(1).max(a).min(last);
+            let sel =
+                Selection::single(SelRange::new(mv::line_start(&doc.text, a), mv::line_start(&doc.text, b)));
+            *at = Some((doc.id, doc.add_mark(sel)));
+            *lines = a..b + 1;
+            Some(i)
         }
     }
 }
@@ -436,8 +352,7 @@ pub fn to_json(notes: &Notes, docs: &[crate::document::Document]) -> Vec<Value> 
         .iter()
         // (a finding still being placed has the snapshot's lines and a copy that won't outlive a restart: not
         // kept on the wrong lines — its placing lands within the moment)
-        // (and the chat's answers' places: kept with their conversation, never here — focus A1b)
-        .filter(|n| !n.placing && !bare_chat(n) && n.path.to_str().is_some())
+        .filter(|n| !n.placing && n.path.to_str().is_some())
         .map(|n| {
             let anchor = n.anchor.clone().or_else(|| {
                 let doc = docs.iter().find(|d| d.path.as_deref() == Some(n.path.as_path()))?;
@@ -518,20 +433,17 @@ fn restore_from(notes: &mut Notes, docs: &mut crate::docpaths::Docs, saved: Vec<
             pinned: v["pinned"].as_str().and_then(of_hex),
             board: Mark::of(&v["board"]),
             placing: false,
-            sentence: None,
-            flow: Vec::new(),
-            asked: None,
-            answer: None,
             since: v["since"].as_str().map(str::to_string),
-            check: None,
         });
     }
     attach_in(notes, docs);
 }
 
-/// Marks notes point at (the jump list's pruning keeps them).
+/// Marks notes and flags point at (the jump list's pruning keeps them).
 pub fn marks(ed: &Editor) -> Vec<(DocId, u64)> {
-    ed.workspace.claude.notes.list.iter().filter_map(|n| n.at).collect()
+    let mut v: Vec<(DocId, u64)> = ed.workspace.claude.notes.list.iter().filter_map(|n| n.at).collect();
+    v.extend(crate::flags::marks(ed));
+    v
 }
 
 /// Notes over `line` in the current document, in (first line, age) order.
@@ -599,7 +511,7 @@ fn replying_to(ed: &Editor) -> Option<&Note> {
 
 /// Whether `space n`'s line is a reply on the card that shows `n` (focus C1): the card holds it.
 pub fn replying(ed: &Editor, n: &Note) -> bool {
-    replying_to(ed).is_some_and(|r| group(&ed.workspace.claude.notes, n).iter().any(|g| g.id == r.id))
+    replying_to(ed).is_some_and(|r| r.id == n.id)
 }
 
 /// The note whose card is drawn in `doc`: the one `space n`'s line replies to while it's open (focus C1) — the line
@@ -619,16 +531,6 @@ pub fn here(ed: &Editor) -> Option<&Note> {
     first_of(ed, &all_at(ed, line), line)
 }
 
-/// The answer's paragraph about your line, for `space L` (the flow plan's reader): of the answers' notes starting at
-/// your cursor's line, the newest one's that names a place there (a walk-through's stop on the same line names none —
-/// its paragraph is the one naming it), else the note `here`'s. None: no answer's note on your line.
-pub fn answer_here(ed: &Editor) -> Option<crate::chatnotes::Origin> {
-    let line = ed.cursor_line();
-    let starts = all_at(ed, line).into_iter().filter(|n| n.lines.start == line);
-    let named = starts.filter_map(|n| n.answer.as_ref()).filter(|o| !o.name.is_empty()).max_by_key(|o| o.n);
-    named.cloned().or_else(|| here(ed).and_then(|n| n.answer.clone()))
-}
-
 /// Whether follow holds the view on note `n`'s lines — Claude's place, in sight but not where you are: a key of yours
 /// never takes its card (#250).
 fn at_claudes(ed: &Editor, n: &Note) -> bool {
@@ -641,17 +543,17 @@ fn opened_yours(ed: &Editor) -> Option<&Note> {
     opened(ed, ed.doc()).filter(|n| !at_claudes(ed, n))
 }
 
-/// Of the notes over `line`: the one its line end shows — starting there, the focused one, else the first that is its
-/// line's own (a line's answers one, `shown`) — so a key on a line takes its `¶`, never an older answer's range running
-/// through it; none starting there, the focused one, else the first. As the card shows it.
+/// Of the notes over `line`: the one its line end shows — starting there, the focused one, else the first — so a key on
+/// a line takes its `¶`, never a range running through it; none starting there, the focused one, else the first. As the
+/// card shows it.
 fn first_of<'a>(ed: &'a Editor, v: &[&'a Note], line: usize) -> Option<&'a Note> {
     let notes = &ed.workspace.claude.notes;
     let focused = |n: &&&'a Note| Some(n.id) == notes.focus;
     let starts = || v.iter().filter(|n| n.lines.start == line);
-    (starts().find(focused).or_else(|| starts().find(|n| shown(notes, n).id == n.id)))
+    (starts().find(focused).or_else(|| starts().next()))
         .or_else(|| v.iter().find(focused))
         .or(v.first())
-        .map(|n| shown(notes, n))
+        .copied()
 }
 
 /// The note `enter` acts on: the one here, else the open card's in this file — a card a turn opened leaves your cursor
@@ -659,14 +561,7 @@ fn first_of<'a>(ed: &'a Editor, v: &[&'a Note], line: usize) -> Option<&'a Note>
 /// holds the view: your cursor's, and the open card only where it isn't Claude's place (`opened_yours`). `space n` has
 /// no such second place: `here`, else a new note on your line (focus C1, the user on its shots).
 pub fn target(ed: &Editor) -> Option<&Note> {
-    let notes = &ed.workspace.claude.notes;
-    here(ed).or_else(|| opened_yours(ed).map(|n| shown(notes, n)))
-}
-
-/// Note `n` as the card and the line end show it: a chat note its line's newest answer (`group`), so what a key acts on
-/// is what's in sight, never an older answer folded under it; else `n`.
-fn shown<'a>(notes: &'a Notes, n: &'a Note) -> &'a Note {
-    group(notes, n).first().copied().unwrap_or(n)
+    here(ed).or_else(|| opened_yours(ed))
 }
 
 // ── The tool ────────────────────────────────────────────────────────────────
@@ -802,11 +697,6 @@ pub fn pin_finding(
         pinned: None,
         board: mark,
         placing: true,
-        sentence: None,
-        flow: Vec::new(),
-        asked: None,
-        answer: None,
-        check: None,
         since,
     });
     place(ed, id, from, snap, lines);
@@ -1279,12 +1169,10 @@ pub fn began(ed: &Editor, id: u64) -> Option<By> {
     find(ed, id).and_then(|n| n.thread.first()).map(|e| e.by)
 }
 
-/// Who `word` names, as `:notes-clear` takes it — the words the cards head entries with: `you`, `claude`, `reviewer`,
-/// `chat`.
+/// Who `word` names, as `:notes-clear` takes it — the words the cards head entries with: `you`, `claude`, `reviewer`.
 pub fn by_word(word: &str) -> Option<By> {
     match word {
         "reviewer" => Some(By::Reviewer),
-        "chat" => Some(By::Chat),
         "claude" => Some(By::Author),
         "you" => Some(By::You),
         _ => None,
@@ -1304,8 +1192,7 @@ pub fn start(ed: &mut Editor) {
 
 /// A press on the open card's words: a reply to that card, wherever your cursor is.
 pub fn start_card(ed: &mut Editor) {
-    let notes = &ed.workspace.claude.notes;
-    let at = notes.open.and_then(|o| find(ed, o)).map(|n| shown(notes, n).id);
+    let at = ed.workspace.claude.notes.open.filter(|o| find(ed, *o).is_some());
     // (what you type stands in this card: follow, holding the view, doesn't take it away — nor does your cursor once
     // the line ends: the card you pressed is what's in sight)
     crate::follow::pause_at_card(ed);
@@ -1454,8 +1341,7 @@ fn write(ed: &mut Editor, target: Option<u64>, text: &str, later: bool) -> bool 
     }
     // (sent, it stays where you typed it: the card that held the line shows the thread now, the view on it wherever your
     // cursor is — a review's comments go on to the next line, each a draft of its own, above)
-    let notes = &mut ed.workspace.claude.notes;
-    (notes.open, notes.turned, notes.opening) = (Some(id), false, None);
+    ed.workspace.claude.notes.open = Some(id);
     // (its lines past a screen, the card stands under their first, not where the line was typed: in sight there —
     // focus A1c, #263)
     let lines = find(ed, id).map(|n| n.lines.clone());
@@ -1685,8 +1571,7 @@ fn message(ed: &Editor, n: &Note, code: bool, sending: &[&str]) -> String {
         }
     }
     for e in told {
-        // (a chat note's first entry is Claude's own answer: said as its words)
-        s.push_str(if e.by == By::Chat { "claude, in the chat" } else { e.by.word() });
+        s.push_str(e.by.word());
         s.push_str(": ");
         s.push_str(&e.text);
         s.push('\n');
@@ -1704,8 +1589,7 @@ pub fn close_target(ed: &Editor) -> Option<&Note> {
     let open = opened(ed, ed.doc());
     let mine = all_at(ed, ed.cursor_line());
     let card = mine.iter().find(|n| open.is_some_and(|o| o.id == n.id)).copied();
-    let at = card.or(first_of(ed, &mine, ed.cursor_line())).or(opened_yours(ed));
-    at.map(|n| shown(&ed.workspace.claude.notes, n))
+    card.or(first_of(ed, &mine, ed.cursor_line())).or(opened_yours(ed))
 }
 
 /// `:note-close` — the note `close_target` names goes, for good; follow, holding the view, pauses and the view comes back
@@ -1717,88 +1601,68 @@ pub fn close_here(ed: &mut Editor) -> Result<(), String> {
     Ok(())
 }
 
-/// The newest answer's number among the chat notes (`chatnotes::Origin.n`) — the one whose places the line ends say.
-pub fn newest(notes: &Notes) -> Option<u64> {
-    notes.list.iter().filter(|n| bare_chat(n)).filter_map(|n| n.answer.as_ref().map(|o| o.n)).max()
-}
-
-/// Whether chat note `n` is of an answer older than the newest (its line end a faint `¶` alone).
-pub fn older(notes: &Notes, n: &Note) -> bool {
-    bare_chat(n) && n.answer.as_ref().is_some_and(|o| newest(notes).is_some_and(|k| o.n < k))
-}
-
-/// The notes one card shows for `n` (focus A1b): a chat note's line's answers — every chat note starting on its line,
-/// newest answer first —, else `n` alone.
-pub fn group<'a>(notes: &'a Notes, n: &'a Note) -> Vec<&'a Note> {
-    if !bare_chat(n) {
-        return vec![n];
-    }
-    let mut v: Vec<&Note> = (notes.list.iter())
-        .filter(|m| bare_chat(m) && m.path == n.path && m.lines.start == n.lines.start)
-        .collect();
-    crate::sorting::by_key(&mut v, |m| (std::cmp::Reverse(m.answer.as_ref().map_or(0, |o| o.n)), m.id));
-    v
-}
-
-/// Which of its own `n` is, and of how many (focus A1c, #260): an answer's place among that answer's, in the order written
-/// (`]n`'s after a turn); the reviewer's finding among the review's, any other note among the others, in `]n`'s order
-/// (file, line, age). None where it's the only one.
+/// Which of its own `n` is, and of how many (focus A1c, #260): the reviewer's finding among the review's, any other note
+/// among the others, in `]n`'s order (file, line, age). None where it's the only one.
 pub fn position(notes: &Notes, n: &Note) -> Option<(usize, usize)> {
     let reviewer = |m: &Note| m.thread.first().is_some_and(|e| e.by == By::Reviewer);
-    let kin = |m: &&Note| match (&n.answer, &m.answer) {
-        (Some(a), Some(b)) => a.n == b.n,
-        (Some(_), None) | (None, Some(_)) => false,
-        (None, None) => reviewer(n) == reviewer(m),
-    };
-    let mut all: Vec<&Note> = notes.list.iter().filter(kin).collect();
-    match n.answer.is_some() {
-        true => crate::sorting::by_key(&mut all, |m| m.id),
-        false => crate::sorting::by_key(&mut all, |m| (m.path.clone(), m.lines.start, m.id)),
-    }
+    let mut all: Vec<&Note> = notes.list.iter().filter(|m| reviewer(n) == reviewer(m)).collect();
+    crate::sorting::by_key(&mut all, |m| (m.path.clone(), m.lines.start, m.id));
     let at = all.iter().position(|m| m.id == n.id)?;
     (all.len() > 1).then_some((at + 1, all.len()))
 }
 
-/// The stop `]n` makes for `n`: its line's newest answer for a chat note (one card a line), else `n`.
-fn stop_of(notes: &Notes, n: &Note) -> u64 {
-    shown(notes, n).id
+/// A stop of `]n`'s walk: a note, or a line's flags (its newest answer's flag stands for them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Stop {
+    Note(u64),
+    Flag(u64),
 }
 
-/// `]n`'s stops in its order (focus A1b): the newest answer's places in the order written, then every other note by
-/// (file, line, age) — one stop a line's answers.
-fn walk(notes: &Notes) -> Vec<(PathBuf, usize, u64)> {
-    let newest = newest(notes);
-    let of_newest = |n: &Note| bare_chat(n) && n.answer.as_ref().map(|o| o.n) == newest;
-    let stops = notes.list.iter().filter(|n| stop_of(notes, n) == n.id);
-    let (mut first, mut rest): (Vec<&Note>, Vec<&Note>) = stops.partition(|n| of_newest(n));
-    crate::sorting::by_key(&mut first, |n| n.id);
-    crate::sorting::by_key(&mut rest, |n| (n.path.clone(), n.lines.start, n.id));
-    first.into_iter().chain(rest).map(|n| (n.path.clone(), n.lines.start, n.id)).collect()
+/// `]n`'s stops in its order (chatlink Q8): the newest answer's flags in the order written, then every other note and
+/// line of flags by (file, line, age) — one stop a line's answers.
+fn walk(ed: &Editor) -> Vec<(PathBuf, usize, Stop)> {
+    let (notes, flags) = (&ed.workspace.claude.notes, &ed.workspace.claude.flags);
+    let lead = |f: &crate::flags::Flag| {
+        crate::flags::on_line(flags, &f.path, f.lines.start).first().is_some_and(|g| g.id == f.id)
+    };
+    let (mut first, mut rest): (Vec<_>, Vec<_>) =
+        flags.list.iter().filter(|f| lead(f)).partition(|f| f.origin.n == flags.answers);
+    crate::sorting::by_key(&mut first, |f| f.id);
+    let mut rest: Vec<(PathBuf, usize, Stop)> =
+        rest.drain(..).map(|f| (f.path.clone(), f.lines.start, Stop::Flag(f.id))).collect();
+    rest.extend(notes.list.iter().map(|n| (n.path.clone(), n.lines.start, Stop::Note(n.id))));
+    crate::sorting::by_key(&mut rest, |s| s.clone());
+    let first = first.into_iter().map(|f| (f.path.clone(), f.lines.start, Stop::Flag(f.id)));
+    first.chain(rest).collect()
 }
 
 /// Whether `]n`/`[n` have another note to go to — a card's `]n next` drawn only then (a key hinted does its key).
-pub fn walks_on(notes: &Notes) -> bool {
-    walk(notes).len() > 1
+pub fn walks_on(ed: &Editor) -> bool {
+    walk(ed).len() > 1
 }
 
-/// `]n`/`[n` — the next/previous note across every file, wrapping around: after a turn the newest answer's places in
-/// the order written, then the rest in (file, line, age) order (`walk`); notes sharing a line are visited one by one
-/// (the card shows the one stepped to), a line's answers one stop.
+/// `]n`/`[n` — the next/previous note or flag across every file, wrapping around: after a turn the newest answer's
+/// flags in the order written, then the rest in (file, line, age) order (`walk`); notes sharing a line are visited one
+/// by one (the card shows the one stepped to), a line's flags one stop.
 pub fn step(ed: &mut Editor, forward: bool) {
     let notes = &ed.workspace.claude.notes;
-    let all = walk(notes);
-    // From the note shown here, else the open card's (not one at Claude's place: you aren't there), else from the cursor
-    // line
+    let all = walk(ed);
+    // From the note shown here, else the flag stepped to there (else the line's), else the open card's (not one at
+    // Claude's place: you aren't there), else from the cursor line
     let card = notes.open.and_then(|id| find(ed, id)).filter(|n| !at_claudes(ed, n));
-    let from = here(ed).or(card).map(|n| stop_of(notes, n));
+    let flag = crate::flags::here(ed).map(|f| {
+        let flags = &ed.workspace.claude.flags;
+        let lead = crate::flags::on_line(flags, &f.path, f.lines.start).first().map_or(f.id, |g| g.id);
+        Stop::Flag(lead)
+    });
+    let from = here(ed).map(|n| Stop::Note(n.id)).or(flag).or(card.map(|n| Stop::Note(n.id)));
     let target = match from.and_then(|id| all.iter().position(|t| t.2 == id)) {
         Some(k) if forward => all.get(k + 1).or(all.first()),
         Some(k) => k.checked_sub(1).and_then(|k| all.get(k)).or(all.last()),
         None => {
-            let key = |n: &(PathBuf, usize, u64)| (n.0.clone(), n.1, n.2);
             let mut sorted = all.clone();
-            crate::sorting::by_key(&mut sorted, key);
-            let here = (ed.doc().path.clone().unwrap_or_default(), ed.cursor_line(), 0);
+            crate::sorting::by_key(&mut sorted, |s| s.clone());
+            let here = (ed.doc().path.clone().unwrap_or_default(), ed.cursor_line(), Stop::Note(0));
             let t = if forward {
                 sorted.iter().find(|t| **t > here).or(sorted.first())
             } else {
@@ -1810,15 +1674,20 @@ pub fn step(ed: &mut Editor, forward: bool) {
     // (from the one note there is: round to itself — said, never silent: #265)
     let lone = all.len() == 1 && from == Some(all[0].2);
     match target.cloned() {
-        Some((p, l, id)) => {
+        Some((p, l, stop)) => {
             // (a key of yours: follow, holding the view, pauses — said once, never left to notice a move, as a note on
             // your own line moves nothing)
             crate::follow::your_view(ed);
-            ed.workspace.claude.notes.focus = Some(id);
-            if let Err(e) = ed.open_at(&p, l, 0) {
-                ed.set_error(format!("{e:#}"));
+            match stop {
+                Stop::Note(id) => {
+                    ed.workspace.claude.notes.focus = Some(id);
+                    if let Err(e) = ed.open_at(&p, l, 0) {
+                        ed.set_error(format!("{e:#}"));
+                    }
+                    open(ed, id);
+                }
+                Stop::Flag(id) => crate::flags::stepped(ed, id),
             }
-            open(ed, id);
             if lone {
                 ed.set_status("the only note — 1 of 1");
             }
@@ -1834,8 +1703,7 @@ pub fn step(ed: &mut Editor, forward: bool) {
 /// Note `id`'s card open (`Notes.open`, any other closed): its lines and the card under them put in sight as one block
 /// where its file is in front. A code too narrow for a card says so (its line end stays).
 pub fn open(ed: &mut Editor, id: u64) {
-    let notes = &mut ed.workspace.claude.notes;
-    (notes.open, notes.turned, notes.earlier, notes.opening) = (Some(id), false, false, None);
+    ed.workspace.claude.notes.open = Some(id);
     ed.note_marked = None;
     if ed.viewport.1 < crate::term::NOTE_MIN + 4 && ed.viewport.1 > 0 {
         ed.set_status("too narrow for the note's card here — space N lists every note whole");
@@ -1847,103 +1715,10 @@ pub fn open(ed: &mut Editor, id: u64) {
     }
 }
 
-/// A stub of the chat's going to its note (`chatdoc::go`): `id`'s card open, its own answer in sight — an older answer's
-/// on a line a newer one names too, the earlier unfolded: it's what the stub stands for.
-pub fn open_answer(ed: &mut Editor, id: u64) {
-    ed.workspace.claude.notes.focus = Some(id);
-    open(ed, id);
-    let notes = &ed.workspace.claude.notes;
-    let under = find(ed, id).is_some_and(|n| group(notes, n).first().is_some_and(|f| f.id != id));
-    ed.workspace.claude.notes.earlier = under;
-}
-
-/// A turn's end: its answer's first place's card opens (focus A1b) — no keys taken, your cursor where it is; where
-/// follow leads, its view takes the line and the card in sight (`follow::show_card`); not while you type (`typing`: it
-/// waits, `opening_sync`), never over a card you opened yourself, which stays until you close it. It stays until the
-/// next answer opens its own or you close it.
-pub fn open_by_turn(ed: &mut Editor, id: u64) {
-    // (the chat's column in sight: that paragraph is there — no card opens by itself, and one an earlier turn opened
-    // goes; a card you opened stays. The user, 2026-11-03, panes4's polish audit, decision 2)
-    if crate::chat::column_in_sight(ed) {
-        let notes = &mut ed.workspace.claude.notes;
-        if notes.turned {
-            (notes.open, notes.turned, notes.earlier) = (None, false, false);
-        }
-        notes.opening = None;
-        return;
-    }
-    let notes = &mut ed.workspace.claude.notes;
-    // (a card of yours whose note is gone holds nothing: five paths close a note, none says so here)
-    let open = notes.open.filter(|o| notes.list.iter().any(|n| n.id == *o));
-    if open.is_some_and(|o| o != id) && !notes.turned {
-        return;
-    }
-    match typing(ed) {
-        true => ed.workspace.claude.notes.opening = Some(id),
-        false => {
-            // (the same card open — a new answer on its line: it stays as it was, the newest on top)
-            let notes = &ed.workspace.claude.notes;
-            let same = (notes.open.and_then(|o| find(ed, o)))
-                .is_some_and(|o| group(notes, o).iter().any(|g| g.id == id));
-            let notes = &mut ed.workspace.claude.notes;
-            (notes.open, notes.turned, notes.opening) = (Some(id), true, None);
-            notes.earlier &= same;
-            if !same {
-                ed.note_marked = None;
-            }
-            // (in sight with its card, where follow leads — its line alone was, the card's foot below the pane)
-            if let Some((path, lines)) = find(ed, id).map(|n| (n.path.clone(), n.lines.clone())) {
-                crate::follow::show_card(ed, &path, lines);
-            }
-        }
-    }
-}
-
-/// Whether you're typing — in the code's insert mode, a prompt, or a message in the chat's input: a turn's card waits.
-fn typing(ed: &Editor) -> bool {
-    ed.mode == crate::editor::Mode::Insert
-        || ed.prompt.is_some()
-        || ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.input.is_empty())
-}
-
-/// Every event: a turn's card that waited for you to stop typing opens — if its note is still there and no card of
-/// yours opened meanwhile.
-pub fn opening_sync(ed: &mut Editor) {
-    let Some(id) = ed.workspace.claude.notes.opening else { return };
-    if find(ed, id).is_none() {
-        ed.workspace.claude.notes.opening = None;
-    } else if !typing(ed) {
-        ed.workspace.claude.notes.opening = None;
-        open_by_turn(ed, id);
-        ed.unchanged = false;
-    }
-}
-
-/// A new conversation, or another continued: the chat notes of the one left go (`chatnotes.rs` — a thread you began
-/// on one stays, it's yours), their card with them.
-pub fn forget_answers(ed: &mut Editor) {
-    let notes = &mut ed.workspace.claude.notes;
-    notes.list.retain(|n| !bare_chat(n));
-    notes.answer = None;
-    let alive = |id: &u64| notes.list.iter().any(|n| n.id == *id);
-    notes.open = notes.open.filter(alive);
-    notes.opening = notes.opening.filter(alive);
-    notes.turned &= notes.open.is_some();
-    notes.answers = 0;
-    notes.kept_bare = 0;
-    notes.left = None;
-}
-
-/// How many earlier answers the card of `n` folds (`… N earlier`): its line's answers but the newest, while they're
-/// folded.
-pub fn earlier_folded(notes: &Notes, n: &Note) -> usize {
-    if notes.earlier { 0 } else { group(notes, n).len().saturating_sub(1) }
-}
-
 /// The keys the card layer takes now (`card_key` — the layer `keys_chain` names `Region::NoteCard`): in normal mode
 /// with nothing under way, on a file's code (a woven view has no notes) — `enter` on a note's line (its card opens, or
-/// closes when it's the one open), `q` and `esc` while a card is open in this file (it closes). Helix's `q`
-/// (`replay_macro`) is one `esc` away.
+/// closes when it's the one open) or a flag's (the column at its paragraph, `flags::enter`), `q` and `esc` while a card
+/// is open in this file (it closes). Helix's `q` (`replay_macro`) is one `esc` away.
 pub fn card_keys(ed: &Editor) -> Vec<crate::key::Key> {
     use crate::key::{Code, Key};
     let free = ed.mode == crate::editor::Mode::Normal
@@ -1953,17 +1728,13 @@ pub fn card_keys(ed: &Editor) -> Vec<crate::key::Key> {
         && !ed.doc().loading
         && crate::weave::of(ed.doc()).is_none();
     let mut keys = Vec::new();
-    // (on a note's line — its card cut short there reads on in the chat, focus A1c; anywhere while the open card has
-    // earlier answers folded: its key says so — not a card at Claude's place while follow holds the view there)
-    let notes = &ed.workspace.claude.notes;
-    let folded = opened_yours(ed).is_some_and(|o| earlier_folded(notes, o) > 0);
-    if free && (here(ed).is_some() || folded) {
+    if free && (here(ed).is_some() || crate::flags::here(ed).is_some()) {
         keys.push(Key::plain(Code::Enter));
     }
     if free && let Some(o) = opened(ed, ed.doc()) {
         keys.extend([Key::plain(Code::Char('q')), Key::plain(Code::Esc)]);
         // (a stale draft's card: `R` re-places it — polish landing 4)
-        if notes.stale.contains(&o.id) {
+        if ed.workspace.claude.notes.stale.contains(&o.id) {
             keys.push(Key::plain(Code::Char(RE_PLACE_KEY)));
         }
     }
@@ -1982,117 +1753,35 @@ pub fn card_key(ed: &mut Editor, key: crate::key::Key) -> bool {
         }
         return true;
     }
+    // (a flag's line, no note on it: the column at its paragraph, no card between the lines — a note's line is its
+    // card's, the flag's `¶` after it the way to the chat)
+    if key.code == crate::key::Code::Enter && here(ed).is_none() && crate::flags::enter(ed) {
+        return true;
+    }
     let notes = &ed.workspace.claude.notes;
-    let here = target(ed);
-    // (its card's line: the open one's group — `enter` there unfolds its earlier answers first)
-    let open_here = here
-        .zip(notes.open.and_then(|o| find(ed, o)))
-        .filter(|(h, o)| group(notes, o).iter().any(|g| g.id == h.id));
-    let folded = open_here.is_some_and(|(_, o)| earlier_folded(notes, o) > 0);
-    // (cut short as the last frame drew it: its `…` row's — `term::draw_note_card`)
-    let cut = open_here.is_some_and(|(_, o)| ed.screen.note_more.get() == Some(o.id));
-    let (id, open_here) = (here.map(|n| n.id), open_here.is_some());
+    let id = target(ed).map(|n| n.id);
+    let open_here = id.is_some() && notes.open == id;
     // (`enter` acts at your cursor: follow, holding the view, pauses and the view comes back to it)
     if key.code == crate::key::Code::Enter {
         crate::follow::your_view(ed);
     }
-    // (an answer's line: the column at its paragraph, no card between the lines — the user, 2026-11-03; one open there
-    // closes, its words in the column. Off its line `enter` is the open card's own: its earlier answers, its `…`)
-    let on_line = self::here(ed).is_some_and(|n| Some(n.id) == id);
-    let answer = on_line && id.and_then(|id| find(ed, id)).is_some_and(|n| n.answer.is_some());
     match (key.code, id) {
-        (crate::key::Code::Enter, Some(id)) if answer => {
-            close_card(ed);
-            to_paragraph(ed, id, false);
-        }
-        (crate::key::Code::Enter, _) if folded => ed.workspace.claude.notes.earlier = true,
-        (crate::key::Code::Enter, _) if cut => read_on(ed),
         (crate::key::Code::Enter, Some(id)) if !open_here => open(ed, id),
         _ => close_card(ed),
     }
     true
 }
 
-/// `enter` on a card cut short, or a press on its `…` row (focus A1c, #259): the chat at that answer's paragraph — the
-/// card never grows, the chat is where the whole answer is read. The chat opened if closed (on the conversation it left,
-/// its answers' notes with it, this card open again), shown if minimized, the paragraph's stub held unfolded and the
-/// chat taken to it once a frame lays it out (`chatdoc::reading`) — the keys where they are, as a stub's link to its
-/// card leaves them (`chatdoc::go`), in reverse.
-pub fn read_on(ed: &mut Editor) {
-    if let Some(id) = ed.workspace.claude.notes.open {
-        to_paragraph(ed, id, true);
-    }
-}
-
-/// The column at note `id`'s answer's paragraph, the keys where they are: from its card cut short (`card`: that card
-/// open again on a conversation reopened, `read_on`), or from its line — a press on its `¶`, `enter` there (the user,
-/// 2026-11-03: the conversation is the docked column, no card between the lines on that press; a thread and a reply are
-/// `space n`'s).
-fn to_paragraph(ed: &mut Editor, id: u64, card: bool) {
-    let Some(n) = find(ed, id) else { return };
-    let Some(o) = n.answer.as_ref() else {
-        return ed.set_status("the chat has no answer of this note's — space n replies here");
-    };
-    let at = crate::chatdoc::Reading { turn: o.turn, name: o.name.clone(), said: o.said };
-    let path = n.path.clone();
-    if !crate::chat::reopen_left(ed) {
-        return ed.set_status("this answer's conversation isn't kept — the card is all there is of it");
-    }
-    // (opened again on its conversation, its notes are made anew: this one's card open as it was)
-    let notes = &mut ed.workspace.claude.notes;
-    if card && notes.open.is_none() {
-        let same = |m: &&Note| {
-            m.path == path
-                && m.answer
-                    .as_ref()
-                    .is_some_and(|a| (a.turn, &*a.name, a.said) == (at.turn, &*at.name, at.said))
-        };
-        notes.open = notes.list.iter().find(same).map(|m| m.id);
-    }
-    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
-    // (hidden by `space L`: shown — #270 — as the conversation, never the ask line)
-    c.hidden = false;
-    c.asking = false;
-    c.reading = Some((at, false));
-    ed.unchanged = false;
-}
-
 /// The open card closed (`q`, `esc`, `enter` again, a press on its `¶`).
 fn close_card(ed: &mut Editor) {
-    let notes = &mut ed.workspace.claude.notes;
-    (notes.open, notes.turned, notes.earlier) = (None, false, false);
+    ed.workspace.claude.notes.open = None;
 }
 
-/// The open card closed where it shows answer `o` (`space L` opening the column at that answer's paragraph).
-pub fn close_card_of(ed: &mut Editor, o: &crate::chatnotes::Origin) {
-    let notes = &ed.workspace.claude.notes;
-    let open = notes.open.and_then(|id| find(ed, id));
-    if open.is_some_and(|n| group(notes, n).iter().any(|m| m.answer.as_ref() == Some(o))) {
-        close_card(ed);
-    }
-}
-
-/// A press on the open card's `… N earlier`: its line's earlier answers unfolded.
-pub fn unfold_earlier(ed: &mut Editor) {
-    ed.workspace.claude.notes.earlier = true;
-}
-
-/// A press on note `id`'s line end (`¶`): an answer's, the column at its paragraph (`to_paragraph`), the keys staying
-/// in the code, its card closed if open (its words in the column); another's (a thread, a note Claude pinned) its card
-/// opens, or closes when it's the one open.
+/// A press on note `id`'s line end (`¶`): its card between the lines opens, or closes when it's the one open.
 pub fn pressed(ed: &mut Editor, id: u64) {
-    let notes = &ed.workspace.claude.notes;
-    let shown =
-        notes.open.and_then(|o| find(ed, o)).is_some_and(|o| group(notes, o).iter().any(|g| g.id == id));
-    let answer = find(ed, id).is_some_and(|n| n.answer.is_some());
-    match (shown, answer) {
-        (_, true) => {
-            close_card(ed);
-            ed.workspace.claude.notes.focus = Some(id);
-            to_paragraph(ed, id, false);
-        }
-        (true, false) => close_card(ed),
-        (false, false) => {
+    match ed.workspace.claude.notes.open == Some(id) {
+        true => close_card(ed),
+        false => {
             ed.workspace.claude.notes.focus = Some(id);
             open(ed, id);
         }
@@ -2165,10 +1854,10 @@ mod tests {
         assert_eq!(said, 1, "{:?}", ed.messages);
     }
 
-    /// #251's review: what doesn't come through `add` is said too — a reviewer's finding placed from its snapshot, and
-    /// a chat note answered into a thread (`to_json` leaves both out).
+    /// #251's review: what doesn't come through `add` is said too — a reviewer's finding placed from its snapshot
+    /// (`to_json` leaves it out).
     #[test]
-    fn a_finding_or_an_answered_chat_note_on_such_a_path_is_said() {
+    fn a_finding_on_such_a_path_is_said() {
         use std::os::unix::ffi::OsStrExt as _;
         let bad = Path::new(std::ffi::OsStr::from_bytes(b"/p/caf\xe9.rs"));
         let said = |ed: &Editor| ed.messages.iter().any(|m| m.2.contains("its path isn't text"));
@@ -2182,13 +1871,6 @@ mod tests {
         let snap = std::sync::Arc::new(crate::snapread::Snap::list(&root, &tree).unwrap());
         let mut ed = editor();
         pin_finding(&mut ed, bad, 0..1, "a finding", None, Some(("a.rs".into(), snap)));
-        assert!(said(&ed), "{:?}", ed.messages);
-        let mut ed = editor();
-        ed.workspace.root = root.clone();
-        ed.config.llm.command = root.join("no-claude-here").display().to_string();
-        let id = add_said(&mut ed, bad, 0..1, ("s".into(), "p".into()), Vec::new(), None);
-        assert!(!said(&ed), "a chat note's words are the conversation's");
-        submit(&mut ed, Some(id), "why?");
         assert!(said(&ed), "{:?}", ed.messages);
     }
 

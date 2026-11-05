@@ -455,10 +455,10 @@ const F0_EDITED: &[&str] = f0_keys!("q", "4G", "ix", "\x1b", "j");
 const F0_OLDER: &[&str] = f0_two_keys!("4G", "\r");
 const F0_LINE: &[&str] = f0_two_keys!("10G", "\r", "\r");
 /// Focus A1c's keys: a real answer's shape (`a1c`) — a question nine rows long, its answer read in `src/spool.rs`, the
-/// keys in the code at its turn's end (its answer's card up: the chat's words out of sight with it floating), then `$more`.
+/// keys in the code at its turn's end (#388: its places flags, the answer the column's), then `$more`.
 macro_rules! a1c_keys {
     ($($more:expr),* $(,)?) => {
-        &["@1", " ", "l", "@1", A1C_ASKED, "\r", "@20?╭─ chat", "@2", "\x1b", "\x1b", "@20!walk-through",
+        &["@1", " ", "l", "@1", A1C_ASKED, "\r", "@30=done", "@2", "\x1b", "\x1b", "@20!walk-through",
           $($more,)* "@1"]
     };
 }
@@ -822,6 +822,16 @@ const A1B_FOLD: [&[&str]; 4] = [
     a1b_two_keys!(" ", "l", "@1", "\x1b", "@1", "gg", "7j"),
     a1b_two_keys!(" ", "l", "@1", "\x1b", "@1", "gg", "/", "length", "\r"),
 ];
+
+/// #388 step 1's scenes, on `a1b-two`'s two answers (lines 10 and 11 flagged, 11 by both): the flags lit, their paragraphs
+/// in the column · dim, the column hidden · the mouse on line 11's `¶` (a row an answer) · that `¶` pressed with the column
+/// hidden (shown at the newest's paragraph, the keys in the code) · a note of yours on the same line, kept for later.
+const FLAG_LIT: &[&str] = a1b_two_keys!();
+const FLAG_DIM: &[&str] = a1b_two_keys!("\x17", "h", " ", "L");
+const FLAG_HOVER: &[&str] = a1b_two_keys!("@hover+13?&threads {", "@1");
+const FLAG_PRESS: &[&str] = a1b_two_keys!("\x17", "h", " ", "L", "@1", "@press+13?&threads {", "@1");
+const FLAG_NOTE: &[&str] =
+    a1b_two_keys!("\x17", "h", " ", "L", "11G", " ", "n", "@1", "keep the first one?", "\t", "@2");
 
 /// #271/#272's keys: `a1b_two_keys!` on `f271` (each answer after a thinking summary), the chat's view mode at its top.
 macro_rules! f271_keys {
@@ -4266,6 +4276,12 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1b3-mouse", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[1] },
     Scene { name: "a1b3-cursor", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[2] },
     Scene { name: "a1b3-search", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[3] },
+    // (#388 step 1: an answer's places are flags at the code — lit, dim, hovered, pressed, beside a note)
+    Scene { name: "flag-lit", claude: "a1b-two", files: MAIN, keys: FLAG_LIT },
+    Scene { name: "flag-dim", claude: "a1b-two", files: MAIN, keys: FLAG_DIM },
+    Scene { name: "flag-hover", claude: "a1b-two", files: MAIN, keys: FLAG_HOVER },
+    Scene { name: "flag-press", claude: "a1b-two", files: MAIN, keys: FLAG_PRESS },
+    Scene { name: "flag-note", claude: "a1b-two", files: MAIN, keys: FLAG_NOTE },
     Scene { name: "a1b3-all-placed", claude: "a1b-all", files: MAIN, keys: A1B_FOLD[0] },
     // (#271: a stub stays folded under a selection · #272: every row of a cut text its hover zone)
     Scene { name: "f271-drag", claude: "f271", files: MAIN, keys: F271_DRAG },

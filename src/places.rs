@@ -277,6 +277,12 @@ impl Known {
         self.found.get(name).or_else(|| self.was.get(name))
     }
 
+    /// Whether its answers are for the checkout's files as they are (`Workspace.listing`, the roots): a file made or
+    /// removed since leaves them standing until the next frame asks them again — drawn meanwhile, never placed.
+    pub fn is_for(&self, listing: u64, roots: &[PathBuf]) -> bool {
+        self.key.as_ref().is_some_and(|(l, r)| *l == listing && r[..] == *roots)
+    }
+
     /// Whether `name` waits for its answer: asked after the last frame, or in the search under way.
     pub fn pending(&self, name: &str) -> bool {
         self.asked.iter().chain(self.wanted.borrow().iter()).any(|n| &**n == name)

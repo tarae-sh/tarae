@@ -460,87 +460,29 @@ fn a_cards_buttons_are_said_only_where_they_act_on_it() {
     assert!(ed.workspace.claude.notes.list.iter().all(|n| n.id != card), "the card's, as it said");
 }
 
-/// While follow leads to a card's line, `space n` and `:note-close` go by your cursor (#250: a key of yours acts there):
-/// the card says neither — with a note on your line they'd act on that one, with none `space n` starts one there and
-/// `:note-close` is refused. Follow paused, there's no one's place: `:note-close` the card's own again, and `space n` still
-/// your line's (focus C1).
+/// A thread's fold row (`… N earlier — the chat has them`), pressed: the card's words, a reply as anywhere on them.
 #[test]
-fn a_cards_buttons_go_by_your_cursor_while_follow_leads() {
-    let scratch = crate::scratch::Scratch::new("mouse-overlays-note-follow");
-    let root = std::fs::canonicalize(&*scratch).unwrap();
-    let path = root.join("a.rs");
-    std::fs::write(&path, (0..40).map(|i| format!("line {i}\n")).collect::<String>()).unwrap();
-    let mut ed = editor();
-    ed.workspace.root = root;
-    ed.open(&path).unwrap();
-    let mut chat = crate::chat::Chat::new();
-    // (out of sight, as the ask line leaves it: in sight, the column has the answer and no card opens by itself)
-    (chat.follow.on, chat.hidden) = (true, true);
-    ed.workspace.claude.chat = Some(chat);
-    frame(&mut ed);
-    let yours = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "At your cursor.");
-    let card = crate::notes::add(&mut ed, &path, 20..21, crate::notes::By::Author, "On the turn's card.");
-    crate::notes::open_by_turn(&mut ed, card);
-    let shown = frame(&mut ed);
-    assert_eq!(crate::follow::view_line(&ed), Some(20), "follow leads to the card's line");
-    assert_eq!(ed.cursor_line(), 0, "your cursor on the other note");
-    assert!(!shown.contains("space n") && !shown.contains(":note-close"), "{shown}");
-    // (none on your line: the card is at Claude's place, not yours — no button)
-    crate::notes::close(&mut ed, yours);
-    let shown = frame(&mut ed);
-    assert!(!shown.contains("space n") && !shown.contains(":note-close"), "{shown}");
-    // (paused: the open card's)
-    ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
-    let shown = frame(&mut ed);
-    assert!(
-        shown.contains(":note-close") && !shown.contains("space n"),
-        "its own again, and it fits this wide: {shown}"
-    );
-}
-
-/// The note card's row of `… N earlier`, pressed: only a line's folded answers unfold — a thread's own fold row reads alike
-/// and is the card's words, a press there replying as anywhere on them.
-#[test]
-fn a_press_on_the_earlier_row_unfolds_a_lines_answers_only() {
+fn a_press_on_a_threads_earlier_row_replies() {
     let scratch = crate::scratch::Scratch::new("mouse-overlays-note-earlier");
     let mut ed = editor();
     let path = scratch.join("a.rs");
     ed.docs[0].path.set(Some(path.clone()));
-    let said = |ed: &mut Editor, text: &str, n: u64| {
-        let words = (text.to_string(), text.to_string());
-        let id = crate::notes::add_said(ed, &path, 3..4, words, Vec::new(), Some("where?".into()));
-        let name: std::sync::Arc<str> = "a.rs".into();
-        let origin = crate::chatnotes::Origin { n, at: 1, turn: 0, name, said: 3, text: None };
-        crate::notes::find_mut(ed, id).unwrap().answer = Some(origin);
-        id
-    };
-    said(&mut ed, "The first answer.", 1);
-    let newest = said(&mut ed, "The second answer.", 2);
     let row = |ed: &Editor, words: &str| {
         let rows = ed.screen.note_text.borrow();
         let on = |r: &&(usize, usize, Vec<crate::markdown::Span>)| r.2.iter().any(|s| s.text.contains(words));
         rows.iter().find(on).map(|r| (r.1, r.0)).expect("its row recorded")
     };
-    frame(&mut ed);
-    crate::notes::open(&mut ed, newest);
-    frame(&mut ed);
-    let (x, y) = row(&ed, "… 1 earlier");
-    press(&mut ed, x + 3, y);
-    assert!(ed.workspace.claude.notes.earlier && ed.prompt.is_none(), "unfolded, no reply");
-    assert!(frame(&mut ed).contains("The first answer."), "the earlier answer in sight");
-    // A thread's fold row: its words, a reply
     let thread = crate::notes::add(&mut ed, &path, 10..11, crate::notes::By::Author, "It begins.");
     for k in 0..4 {
         let text = format!("Then {k}.");
         let e = crate::notes::Entry { by: crate::notes::By::You, text, draft: false };
         crate::notes::find_mut(&mut ed, thread).unwrap().thread.push(e);
     }
+    frame(&mut ed);
     crate::notes::open(&mut ed, thread);
     frame(&mut ed);
     let (x, y) = row(&ed, "… 2 earlier");
-    ed.list_click = None;
     press(&mut ed, x + 3, y);
-    assert!(!ed.workspace.claude.notes.earlier, "nothing to unfold");
     let kind = ed.prompt.as_ref().map(|p| p.kind);
     assert!(matches!(kind, Some(crate::editor::PromptKind::Note(Some(i))) if i == thread), "{kind:?}");
 }
