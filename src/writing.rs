@@ -860,9 +860,18 @@ fn past_sight(ed: &Editor) -> Option<std::ops::Range<usize>> {
         return None;
     }
     let wrap = ed.wraps(doc).then_some(cols);
-    let m = crate::codeview::Measure::new(ed, doc, ed.editing_in(true), (wrap, cols), b.first, rows);
-    let above = (doc.top..b.first).map(|l| m.rows(l)).sum::<usize>().saturating_sub(doc.top_skip());
-    (above < rows && above + m.removed(b.first) + m.head(b.first) >= rows).then_some(b.first..b.last + 1)
+    // (the rows from the top counted no further than a screen, its lines looked at from there: a block far below costs
+    // a screen, never every line between — each one past `Measure`'s look a doc comment's scan of ~400 lines, #393)
+    let m = crate::codeview::Measure::new(ed, doc, ed.editing_in(true), (wrap, cols), doc.top, rows);
+    let mut above = 0;
+    for l in doc.top..b.first {
+        above += m.rows(l);
+        if above >= rows + doc.top_skip() {
+            return None;
+        }
+    }
+    let above = above.saturating_sub(doc.top_skip());
+    (above + m.removed(b.first) + m.head(b.first) >= rows).then_some(b.first..b.last + 1)
 }
 
 /// Where Claude is writing now: the newest item still being written that's bound to a buffer — its file and lines

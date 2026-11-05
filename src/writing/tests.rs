@@ -1373,6 +1373,123 @@ fn perf_budget_reveal_frame_with_live_rows() {
     assert!(worst < budget, "a frame took {worst:?} (budget {budget:?})");
 }
 
+/// The block being written whose first row is on the screen, its head past the bottom (`past_sight`: the view taken onto
+/// it), counted in rows as the pane lays them out — a folded doc comment above it many lines and few rows; one whose
+/// first row is more than a screen of rows below the top is out of sight already (none: counted no further, #393).
+#[test]
+fn the_writing_past_the_screen_is_counted_in_rows_from_the_top() {
+    let doc: String = (0..60).map(|i| format!("/// w{i}\n")).collect();
+    let code: String = (0..60).map(|i| format!("let x{i} = {i};\n")).collect();
+    let new: String = (0..40).map(|i| format!("let w{i} = {i};\n")).collect();
+    // (`let x{at}` is line 61 + at: the comment's 60 lines, then `fn f`)
+    for (at, past) in [(10, Some(71)), (50, None)] {
+        let (mut ed, dir, g) = scene("writing-past-sight");
+        std::fs::write(dir.join("a.rs"), format!("{doc}fn f() {{}}\n{code}")).unwrap();
+        crate::typed::execute(&mut ed, "reload").unwrap();
+        // (follow off while it's written: nothing moves the view from the top)
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
+        let rows = frame(&mut ed, 100, 30);
+        let folded = ed.view.iter().filter(|r| matches!(r, crate::codeview::Row::Doc { .. })).count();
+        assert!((1..10).contains(&folded), "the comment folds to a few rows: {rows:#?}");
+        let old = format!("let x{at} = {at};\n");
+        let s = |t: &str| serde_json::to_string(t).unwrap();
+        let input = format!(
+            r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#,
+            s(&old),
+            s(&new)
+        );
+        Writer::new("t1").send(&mut ed, g, &input[..input.len() - 12], &[], false);
+        settle(&mut ed, |ed| shown(ed.doc()).is_some());
+        frame(&mut ed, 100, 30);
+        assert_eq!(ed.doc().top, 0, "{at}: the view stayed at the top");
+        assert_eq!(past_sight(&ed).map(|l| l.start), past, "{at}");
+    }
+}
+
+/// Performance budget (#393): a frame while an edit's text is shown at its pace into a big file with doc comments
+/// (this repository's `src/chat.rs` as of `tests/perf.rs`'s `CORPUS`), near its end, the view at its top — follow
+/// off, so the view stays there. Each step's cost is what it changes, never the lines between
+/// the view and the edit (each counted through the doc-comment fold: ~400 lines scanned a line, at every step). The
+/// worst frame within one frame (16 ms; `TARAE_PERF_SLACK`), each its best of 3 rounds.
+#[test]
+fn perf_budget_reveal_far_below_the_view() {
+    if crate::test_results::unoptimized("writing::tests::perf_budget_reveal_far_below_the_view") {
+        return;
+    }
+    let name = "writing::tests::perf_budget_reveal_far_below_the_view";
+    let slack = std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+    let budget = Duration::from_millis(16) * slack.max(1);
+    let corpus = crate::test_results::corpus();
+    let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["show", &format!("{corpus}:src/chat.rs")])
+        .current_dir(&here)
+        .output();
+    let Some(text) = out.ok().filter(|o| o.status.success()).and_then(|o| String::from_utf8(o.stdout).ok())
+    else {
+        return crate::test_results::said_skip(&format!("{name} — no commit {corpus} here"));
+    };
+    // (five lines near its end found once in it: what the edit replaces)
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let old = (lines.len() - 120..lines.len() - 5)
+        .map(|i| lines[i..i + 5].concat())
+        .find(|o| o.trim().len() > 40 && text.matches(o.as_str()).count() == 1)
+        .expect("five lines found once");
+    let new: String = (0..40).map(|i| format!("    let written_{i} = compute({i}, \"타래\");\n")).collect();
+    let s = |t: &str| serde_json::to_string(t).unwrap();
+    let input =
+        format!(r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#, s(&old), s(&new));
+    let chars: Vec<char> = input.chars().collect();
+    let head = input.find("new_string").unwrap() + 14;
+    let lumps: Vec<usize> = (0..5).map(|k| (head + k * 190).min(chars.len())).collect();
+    let frames = 4 * 25;
+    let mut best = vec![Duration::MAX; frames];
+    for _ in 0..3 {
+        let (mut ed, dir, g) = scene("writing-perf-reveal-far");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.writing.paced = true;
+        c.follow.on = false;
+        std::fs::write(dir.join("a.rs"), &text).unwrap();
+        crate::typed::execute(&mut ed, "reload").unwrap();
+        let mut buf = Vec::with_capacity(1 << 16);
+        crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
+        assert!(
+            ed.view.iter().any(|r| matches!(r, crate::codeview::Row::Doc { .. })),
+            "its doc comments fold"
+        );
+        let mut w = Writer::new("t1");
+        let first: String = chars[..head].iter().collect();
+        w.send(&mut ed, g, &first, &[], false);
+        settle(&mut ed, |ed| shown(ed.doc()).is_some());
+        let mut sim = crate::sim::Sim::new(
+            "writing_perf_reveal_far",
+            crate::sim::Choices::seeded(1),
+            Duration::from_secs(120),
+        );
+        for (k, pair) in lumps.windows(2).enumerate() {
+            let piece: String = chars[pair[0]..pair[1]].iter().collect();
+            w.send(&mut ed, g, &piece, &[], false);
+            for f in 0..25 {
+                sim.wait(REVEAL_EVERY + Duration::from_micros(600));
+                let t = Instant::now();
+                tick(&mut ed);
+                buf.clear();
+                crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
+                best[k * 25 + f] = best[k * 25 + f].min(t.elapsed());
+            }
+        }
+        let b = &shown(ed.doc()).expect("its rows").blocks[0];
+        assert!(b.rows.len() > 10 && b.first > lines.len() - 130, "its rows drawn near the end: {}", b.first);
+        assert!(ed.doc().top < 40, "the view stayed at the top: {}", ed.doc().top);
+        drop(sim);
+    }
+    let worst = best.iter().max().copied().unwrap_or_default();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let line = format!("PERF reveal_far_below_the_view {:.3} budget={:.0}\n", ms(worst), ms(budget));
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    assert!(worst < budget, "a frame took {worst:?} (budget {budget:?})");
+}
+
 /// Claude Code's own Edit, from the stream's lines to the rows: its block read by the reader (`Reading`), its
 /// pieces drawn where they go. A message's start begins its blocks anew: a piece for a block of the message before
 /// is no one's.
