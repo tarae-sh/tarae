@@ -1742,38 +1742,24 @@ impl Layout {
         let review = editor.review_rail_up() && !wide;
         let chat_open = editor.chat_panel(w as usize);
         let side_open = !review && editor.workspace.viewer.sidebar.is_some();
-        // (the review's rail is the side panel there: an automatic chat narrows beside it — `sizes::chat_beside` —
-        // only where the rail is then drawn: one too narrow for it anyway keeps its chat as it was — frictions25
-        // fix: at 120 the chat lost 12 columns for a rail that didn't come, and its rows wrapped)
-        let focus = editor.workspace.code_review.is_some() && editor.workspace.is_at(At::Rail);
-        let beside = match editor.workspace.code_review.as_ref() {
-            Some(r) if review && chat_open => {
-                let chat =
-                    crate::sizes::chat_beside(w as usize, review_rail_natural(editor, r), editor.sizes);
-                review_rail_code_min((w as usize).saturating_sub(chat), focus).map(|_| chat)
+        // (the review's rail is the navigator there — who gives way to whom is `sizes::give_way`'s table)
+        use crate::sizes::{Given, Nav};
+        let nav = match editor.workspace.code_review.as_ref() {
+            Some(r) if review => {
+                Nav::Rail { natural: review_rail_natural(editor, r), focus: editor.workspace.is_at(At::Rail) }
             }
-            _ => None,
+            _ if side_open => Nav::Side(editor.sizes.side),
+            _ => Nav::None,
         };
+        let chat = chat_open.then_some(editor.sizes.chat);
         let widths = match zoom_shows {
-            None if wide => crate::sizes::Widths { chat: 0, side: 0 },
-            None => match beside {
-                Some(chat) => crate::sizes::Widths { chat, side: 0 },
-                None => crate::sizes::widths(w as usize, chat_open, side_open, editor.sizes),
-            },
-            Some(Shows::Chat) => crate::sizes::Widths { chat: w as usize, side: 0 },
-            Some(Shows::Side) => crate::sizes::Widths { chat: 0, side: w as usize },
-            Some(_) => crate::sizes::Widths { chat: 0, side: 0 },
+            None if wide => Given { chat: 0, nav: 0 },
+            None => crate::sizes::give_way(crate::sizes::Wants { total: w as usize, chat, nav }),
+            Some(Shows::Chat) => Given { chat: w as usize, nav: 0 },
+            Some(Shows::Side) => Given { chat: 0, nav: w as usize },
+            Some(_) => Given { chat: 0, nav: 0 },
         };
-        let rail_w = match editor.workspace.code_review.as_ref() {
-            Some(r) if review && zoom.is_none() => {
-                let area_w = w as usize - widths.chat;
-                match review_rail_code_min(area_w, editor.workspace.is_at(At::Rail)) {
-                    Some(code_min) => review_rail_w(editor, r, area_w, code_min),
-                    None => widths.side,
-                }
-            }
-            _ => widths.side,
-        };
+        let rail_w = widths.nav;
         // The session's tree laid out in the frame (panes P2b): each surface its own size (`Share::Auto` — the
         // sizes above, `sizes.rs`'s rules), the code the rest under the path bar; the fields below are its rects
         let room = |slot: usize| Surfaces {
@@ -13697,7 +13683,11 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     let way = way_w(&editor.card_way_said()) + 3;
     let answer = keys.map(|w| w + 3).sum::<usize>().checked_sub(3).map(|w| w + way);
     let side = editor.workspace.viewer.sidebar.is_some();
-    let chat = |w: usize| crate::sizes::widths(w, editor.chat_panel(w), side, editor.sizes).chat;
+    let nav = if side { crate::sizes::Nav::Side(editor.sizes.side) } else { crate::sizes::Nav::None };
+    let chat = |w: usize| {
+        let chat = editor.chat_panel(w).then_some(editor.sizes.chat);
+        crate::sizes::give_way(crate::sizes::Wants { total: w, chat, nav }).chat
+    };
     // (over the chat's foot or a docked list's: its own width, whatever the column's (#177); the rows from its top line
     // down to the input's line)
     if let Some((ax, aw, _, arows)) = asks_foot(editor, lay) {
@@ -13725,7 +13715,7 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
         // (too few rows for its text and answers — how many depends on the card)
         return Some("card needs more rows".into());
     }
-    // The window width that leaves the code that much beside the chat as it's laid out (`sizes::widths`)
+    // The window width that leaves the code that much beside the chat as it's laid out (`sizes::give_way`)
     let code = |w: usize| w - chat(w);
     let cols = (lay.width..lay.width + 400).find(|&w| code(w) >= need_w)?;
     Some(format!("card needs {cols} cols"))
@@ -16845,36 +16835,13 @@ const RAIL_HINTS: usize = 6;
 /// The review rail's width bounds, and the columns the code keeps beside it.
 const REVIEW_RAIL_MIN: usize = crate::sizes::RAIL_MIN;
 const REVIEW_RAIL_MAX: usize = crate::sizes::RAIL_AUTO_MAX;
-const REVIEW_CODE_MIN: usize = crate::sizes::RAIL_CODE;
-
-/// The review rail's width: what its rows need — every file's whole (bar, guides, glyph, name, `+a −r`,
-/// `new`), its folders, the head and the key hints — between 24 and 48 columns, the code keeping 60. Measured
-/// once (the files don't change), so it never shifts while you read; a draft's `¶n` cuts the name a little
-/// rather than widening it. A name that still doesn't fit is cut from the left (its end stays). The code
-/// keeps `code_min` (60; 48 — as beside the side panel — while the rail has the keys on a narrow screen).
-fn review_rail_w(
-    editor: &Editor,
-    r: &crate::codereview::CodeReview,
-    area_w: usize,
-    code_min: usize,
-) -> usize {
-    review_rail_natural(editor, r).min(area_w.saturating_sub(code_min))
-}
-
-/// Whether the review's rail is drawn in an editing area `area_w` columns wide (the screen less the chat), and
-/// what it leaves the code — from 90 on, `REVIEW_CODE_MIN`; narrower, while it has the keys
-/// (`space g` back from the git tab, `space e`), in the room the side panel would have — they went to a rail
-/// that wasn't drawn (#146). None: not drawn.
-fn review_rail_code_min(area_w: usize, focus: bool) -> Option<usize> {
-    match area_w {
-        w if w >= 90 => Some(REVIEW_CODE_MIN),
-        w if focus && w >= REVIEW_RAIL_MIN + crate::sizes::CODE_MIN => Some(crate::sizes::CODE_MIN),
-        _ => None,
-    }
-}
 
 /// The review rail's width with room for it: yours (a drag of its edge, `C-w < >` with its keys — up to
-/// `sizes::RAIL_MAX`), else what its rows need, between `REVIEW_RAIL_MIN` and `_MAX`.
+/// `sizes::RAIL_MAX`), else what its rows need — every file's whole (bar, guides, glyph, name, `+a −r`, `new`), its
+/// folders, the head and the key hints — between `REVIEW_RAIL_MIN` and `_MAX`. Measured once (the files don't change),
+/// so it never shifts while you read; a draft's `¶n` cuts the name a little rather than widening it. A name that still
+/// doesn't fit is cut from the left (its end stays). Where it's drawn and what it leaves the code is
+/// `sizes::give_way`'s.
 fn review_rail_natural(editor: &Editor, r: &crate::codereview::CodeReview) -> usize {
     use crate::chrome::{GAP, PAD, PAD_R};
     if let Some(k) = editor.sizes.rail {
@@ -25321,7 +25288,11 @@ mod tests {
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
         };
         // (the screen widths that give the chat each of its widths, widest first: narrow, the chat takes the whole screen)
-        let chat_w = |w: u16| crate::sizes::widths(w as usize, true, false, Default::default()).chat;
+        let chat_w = |w: u16| {
+            let alone =
+                crate::sizes::Wants { total: w as usize, chat: Some(None), nav: crate::sizes::Nav::None };
+            crate::sizes::give_way(alone).chat
+        };
         let mut widths: Vec<u16> = (20..=240).collect();
         crate::sorting::by_key(&mut widths, |&w| std::cmp::Reverse(chat_w(w)));
         widths.dedup_by_key(|w| chat_w(*w));

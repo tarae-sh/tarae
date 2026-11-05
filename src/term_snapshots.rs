@@ -5990,7 +5990,15 @@ fn the_chat_narrows_for_the_review_rail_only_where_the_rail_is_drawn() {
         s.ed.open(&files[0].path).unwrap();
         s.frame();
         let alone = s.ed.screen.drawn_w(crate::pane::Shows::Chat);
-        assert_eq!(alone, crate::sizes::widths(w as usize, true, false, Default::default()).chat);
+        assert_eq!(
+            alone,
+            crate::sizes::give_way(crate::sizes::Wants {
+                total: w as usize,
+                chat: Some(None),
+                nav: crate::sizes::Nav::None
+            })
+            .chat
+        );
         s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files.clone()));
         s.frame();
         assert_eq!(

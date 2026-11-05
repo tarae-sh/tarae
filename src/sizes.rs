@@ -13,8 +13,8 @@
 //! Beside each other (140 columns: side panel 32 + chat 56 left the code 52): an automatic chat narrows to
 //! leave the code `CODE_ROOM` (down to `CHAT_MIN`); if the code would still have less than `CODE_MIN`, the side
 //! panel gives way, whole (it comes back when there's room — its keys go back to the code meanwhile).
-//! Beside the code review's rail an automatic chat narrows further, to leave the code `REVIEW_CODE_ROOM`
-//! (`chat_beside`).
+//! Beside the code review's rail an automatic chat narrows further, to leave the code `REVIEW_CODE_ROOM`. Who gives
+//! way to whom is one table, `give_way`.
 //!
 //! `C-w z` fills the screen with what has the keys — the code (its pane alone), the bottom slot, the chat, the
 //! side panel — and back (`Zoom`); it ends when the keys go elsewhere. The bottom slot takes the keys with
@@ -42,7 +42,7 @@ pub const SIDE_MORE: usize = 12;
 /// gives way.
 pub const CODE_ROOM: usize = 60;
 pub const CODE_MIN: usize = 48;
-/// The code beside the review's rail: an automatic chat narrows to leave it this much (`chat_beside`).
+/// The code beside the review's rail: an automatic chat narrows to leave it this much (`give_way`'s row 3).
 pub const REVIEW_CODE_ROOM: usize = 100;
 /// The code review's rail: what its rows need between `RAIL_MIN` and `RAIL_AUTO_MAX`, or yours up to `RAIL_MAX` (a drag
 /// of its edge, `C-w < >` with its keys — mouse R, Q4); the code beside it keeps `RAIL_CODE` (from 90 columns on).
@@ -173,61 +173,135 @@ pub fn save(path: &Path, sizes: Sizes, seq: u64) {
     }
 }
 
-/// The chat's and the side panel's widths on a screen `total` columns wide.
+/// The gives-way table (onetree §2.3): on a screen too narrow for every pane at its own width, which kinds give way and
+/// in what order — by kind, never by edge. Kept sizes are clamped here, never written back.
+/// 1. a group docked beside the code folds into the slot (`group_beside`: under `DOCK_MIN`, or the code keeping less
+///    than `CODE_MIN`);
+/// 2. the navigator goes, whole: the side panel where the code would keep less than `CODE_MIN`, the review's rail
+///    where it would keep less than its room (`rail_code_min`);
+/// 3. an automatic conversation narrows to leave the code `CODE_ROOM` beside the side panel, `REVIEW_CODE_ROOM` beside
+///    the review's rail (frictions25 R6: reading the code is what a review is for), down to `CHAT_MIN`;
+/// 4. below `CHAT_FULL_CODE` beside it the conversation takes the whole width (`Editor::chat_panel`: only while it has
+///    the keys).
+///
+/// Down the screen, the slot's height (`bottom`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Widths {
+pub struct Wants {
+    /// The screen's columns.
+    pub total: usize,
+    /// The conversation docked as a column (`Editor::chat_panel`) and the width you set (None inside: automatic);
+    /// None: no column.
+    pub chat: Option<Option<u16>>,
+    pub nav: Nav,
+}
+
+/// The navigator beside the code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nav {
+    None,
+    /// The side panel, and the width you set (None: automatic).
+    Side(Option<u16>),
+    /// The code review's rail: its width with room (`term::review_rail_natural` — yours, or what its rows need), and
+    /// whether it has the keys.
+    Rail {
+        natural: usize,
+        focus: bool,
+    },
+}
+
+/// What the table gives each: the conversation's width and the navigator's (0: none, or given way).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Given {
     pub chat: usize,
-    pub side: usize,
+    pub nav: usize,
 }
 
-/// The chat's width beside a panel `side` columns wide that keeps its own width — the code review's rail
-/// (frictions25 R6: beside it the chat kept its 2/5 and the code read ~45 columns, wrapping): as beside the side
-/// panel, an automatic chat narrows to leave the code its room — a review's, `REVIEW_CODE_ROOM`: reading the
-/// code is what a review is for — down to `CHAT_MIN`; one you set stays, and so does a chat taking the whole
-/// width.
-pub fn chat_beside(total: usize, side: usize, kept: Sizes) -> usize {
-    let chat = widths(total, true, false, kept).chat;
-    if kept.chat.is_some() || chat >= total {
-        return chat;
+/// The table's widths (above) for what `w` wants.
+pub fn give_way(w: Wants) -> Given {
+    let Wants { total, chat, nav } = w;
+    let alone = chat.map_or(0, |kept| chat_alone(total, kept));
+    match nav {
+        Nav::None => Given { chat: alone, nav: 0 },
+        Nav::Side(kept_side) => {
+            // (row 4: the conversation takes it all, no navigator beside it)
+            if chat.is_some() && alone >= total {
+                return Given { chat: total, nav: 0 };
+            }
+            let auto_side =
+                |edit: usize| SIDE_AUTO + (edit.saturating_sub(SIDE_AUTO + 100) / 2).min(SIDE_MORE);
+            let side_of = |chat: usize| match kept_side {
+                Some(k) => (k as usize).clamp(SIDE_MIN, SIDE_MAX),
+                None => auto_side(total - chat),
+            };
+            let (mut c, mut side) = (alone, side_of(alone));
+            // (row 3: an automatic conversation makes room for the code beside the panel)
+            if chat == Some(None) && total < c + side + CODE_ROOM {
+                c = total.saturating_sub(side + CODE_ROOM).max(CHAT_MIN).min(c);
+                side = side_of(c);
+            }
+            // (row 2: at its width it would leave the code less than `CODE_MIN` — it gives way, not squeezed, the
+            // conversation as it would be without it)
+            match total < c + side + CODE_MIN {
+                true => Given { chat: alone, nav: 0 },
+                false => Given { chat: c, nav: side },
+            }
+        }
+        Nav::Rail { natural, focus } => {
+            // (row 3 beside the rail, only where the rail is then drawn: one too narrow for it anyway keeps its
+            // conversation as it was — frictions25: at 120 the chat lost 12 columns for a rail that didn't come)
+            let c = match chat {
+                Some(None) if alone < total => {
+                    let beside = total.saturating_sub(natural + REVIEW_CODE_ROOM).max(CHAT_MIN).min(alone);
+                    match rail_code_min(total.saturating_sub(beside), focus) {
+                        Some(_) => beside,
+                        None => alone,
+                    }
+                }
+                _ => alone,
+            };
+            // (row 2: the rail drawn only where the code keeps its room beside it)
+            let area = total - c;
+            let nav = rail_code_min(area, focus).map_or(0, |min| natural.min(area.saturating_sub(min)));
+            Given { chat: c, nav }
+        }
     }
-    total.saturating_sub(side + REVIEW_CODE_ROOM).max(CHAT_MIN).min(chat)
 }
 
-/// How wide the chat (`chat_open`: shown as a panel) and the side panel (`side_open`) are — kept sizes
-/// clamped to the screen, automatic ones as the module says.
-pub fn widths(total: usize, chat_open: bool, side_open: bool, kept: Sizes) -> Widths {
-    let mut chat = match (chat_open, kept.chat) {
-        (false, _) => 0,
-        (true, Some(k)) => (k as usize).clamp(CHAT_MIN, total.saturating_sub(CHAT_FULL_CODE).max(CHAT_MIN)),
-        (true, None) => (total * 2 / 5).clamp(CHAT_MIN, CHAT_AUTO_MAX),
+/// The conversation's width with no navigator beside it: yours clamped, else 2/5 of the screen (`CHAT_MIN`–
+/// `CHAT_AUTO_MAX`) — the whole width where the code would keep less than `CHAT_FULL_CODE` (row 4).
+fn chat_alone(total: usize, kept: Option<u16>) -> usize {
+    let chat = match kept {
+        Some(k) => (k as usize).clamp(CHAT_MIN, total.saturating_sub(CHAT_FULL_CODE).max(CHAT_MIN)),
+        None => (total * 2 / 5).clamp(CHAT_MIN, CHAT_AUTO_MAX),
     };
-    // Too narrow for the chat and code side by side: the chat takes it all
-    if chat_open && total < chat + CHAT_FULL_CODE {
-        return Widths { chat: total, side: 0 };
-    }
-    if !side_open {
-        return Widths { chat, side: 0 };
-    }
-    let auto_side = |edit: usize| SIDE_AUTO + (edit.saturating_sub(SIDE_AUTO + 100) / 2).min(SIDE_MORE);
-    let side_of = |chat: usize| match kept.side {
-        Some(k) => (k as usize).clamp(SIDE_MIN, SIDE_MAX),
-        None => auto_side(total - chat),
-    };
-    let mut side = side_of(chat);
-    // An automatic chat makes room for the code beside the panel
-    if chat_open && kept.chat.is_none() && total < chat + side + CODE_ROOM {
-        chat = total.saturating_sub(side + CODE_ROOM).max(CHAT_MIN).min(chat);
-        side = side_of(chat);
-    }
-    // At its width it would leave the code less than CODE_MIN: it gives way (not squeezed), the chat as it
-    // would be without it
-    if total < chat + side + CODE_MIN {
-        return widths(total, chat_open, false, kept);
-    }
-    Widths { chat, side }
+    if total < chat + CHAT_FULL_CODE { total } else { chat }
 }
 
-/// The bottom slot's height in `total` rows (code and slot): a kept size clamped, else what its panel wants.
+/// Whether the review's rail is drawn in an area `area` columns wide (the screen less the conversation), and what it
+/// leaves the code — from 90 on, `RAIL_CODE`; narrower, while it has the keys (`space g` back from the git tab,
+/// `space e`), in the room the side panel would have — they went to a rail that wasn't drawn (#146). None: not drawn.
+fn rail_code_min(area: usize, focus: bool) -> Option<usize> {
+    match area {
+        w if w >= 90 => Some(RAIL_CODE),
+        w if focus && w >= RAIL_MIN + CODE_MIN => Some(CODE_MIN),
+        _ => None,
+    }
+}
+
+/// Row 1: a group docked beside the code, in `room` columns (what the other columns leave, with its side's column
+/// given back) — yours (`Sizes.docked`) as much as leaves the code `CODE_MIN`, automatic as much as leaves it
+/// `CODE_ROOM` up to 2/5 of the screen, at least as wide as its side's `column` so far. None: it folds into the slot.
+pub fn group_beside(total: usize, room: usize, kept: Option<u16>, column: usize) -> Option<usize> {
+    let want = match kept {
+        Some(k) => (k as usize).min(room.saturating_sub(CODE_MIN)),
+        None => (total * 2 / 5).min(room.saturating_sub(CODE_ROOM)),
+    }
+    .max(column);
+    (want >= crate::dock::DOCK_MIN && room.saturating_sub(want) >= CODE_MIN).then_some(want)
+}
+
+/// The table down the screen: the bottom slot's height in `total` rows (code and slot) — a kept size clamped, the
+/// code keeping `BOTTOM_CODE` (none where not even `BOTTOM_MIN` fits), else what its panel wants.
 pub fn bottom(total: usize, kept: Option<u16>, natural: usize) -> usize {
     let max = total.saturating_sub(BOTTOM_CODE);
     match kept {
@@ -846,9 +920,10 @@ impl crate::editor::Editor {
     pub fn side_folded(&self) -> bool {
         let Some(total) = self.screen.width else { return false };
         let chat_open = self.chat_panel(total);
+        let chat = chat_open.then_some(self.sizes.chat);
         self.workspace.viewer.sidebar.is_some()
             && !self.review_rail_up()
-            && widths(total, chat_open, true, self.sizes).side == 0
+            && give_way(Wants { total, chat, nav: Nav::Side(self.sizes.side) }).nav == 0
     }
 
     /// The chat is a panel on a screen `total` wide: open, not minimized — and where it would take the whole
@@ -862,7 +937,8 @@ impl crate::editor::Editor {
         if !self.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden) || self.chat_floating() {
             return false;
         }
-        self.workspace.is_at(At::Chat) || widths(total, true, false, self.sizes).chat < total
+        self.workspace.is_at(At::Chat)
+            || give_way(Wants { total, chat: Some(self.sizes.chat), nav: Nav::None }).chat < total
     }
 
     /// The chat floats over the code this frame: shown as the ask line (`Chat.asking`, the flow plan's piece 2) — the one
@@ -1118,20 +1194,6 @@ impl crate::editor::Editor {
 mod tests {
     use super::*;
 
-    const AUTO: Sizes = Sizes {
-        chat: None,
-        side: None,
-        rail: None,
-        bottom: None,
-        docked: [None; crate::pane::DOCKABLE],
-        sessions: None,
-        messages: None,
-        folders: None,
-        sessions_dock: None,
-        follow_w: None,
-        follow_h: None,
-    };
-
     /// Panes P2a: where the keys are is one value (`Viewer.at`) — once what it names is gone (the chat closed,
     /// the side panel closed, the terminal hidden, the slot showing nothing that takes them) the next event
     /// gives them to the code; a pane still there keeps them; `C-w z` ends with them.
@@ -1214,23 +1276,21 @@ mod tests {
     /// 60; narrower still, the panel gives way; a narrow screen is all chat.
     #[test]
     fn automatic_widths() {
-        assert_eq!(widths(140, true, false, AUTO), Widths { chat: 56, side: 0 });
-        assert_eq!(widths(200, true, false, AUTO), Widths { chat: 80, side: 0 });
-        assert_eq!(widths(300, true, false, AUTO), Widths { chat: 96, side: 0 }, "the cap: 96");
+        let given = |total, chat, nav| give_way(Wants { total, chat, nav });
+        let (chat, side) = (Some(None), Nav::Side(None));
+        assert_eq!(given(140, chat, Nav::None), Given { chat: 56, nav: 0 });
+        assert_eq!(given(200, chat, Nav::None), Given { chat: 80, nav: 0 });
+        assert_eq!(given(300, chat, Nav::None), Given { chat: 96, nav: 0 }, "the cap: 96");
         // 140, both: the chat gives 4 columns so the code keeps 60 (it had 52)
-        let w = widths(140, true, true, AUTO);
-        assert_eq!(w, Widths { chat: 48, side: 32 });
-        assert_eq!(140 - w.chat - w.side, CODE_ROOM);
+        let w = given(140, chat, side);
+        assert_eq!(w, Given { chat: 48, nav: 32 });
+        assert_eq!(140 - w.chat - w.nav, CODE_ROOM);
         // 120: the chat at its least, the code 52 — the panel stays (48 is its line)
-        assert_eq!(widths(120, true, true, AUTO), Widths { chat: 36, side: 32 });
+        assert_eq!(given(120, chat, side), Given { chat: 36, nav: 32 });
         // 110: the code would have 42 — the panel gives way
-        assert_eq!(widths(110, true, true, AUTO), Widths { chat: 44, side: 0 });
-        assert_eq!(
-            widths(70, true, true, AUTO),
-            Widths { chat: 70, side: 0 },
-            "narrow: the chat takes it all"
-        );
-        assert_eq!(widths(200, false, true, AUTO), Widths { chat: 0, side: 32 + 12 });
+        assert_eq!(given(110, chat, side), Given { chat: 44, nav: 0 });
+        assert_eq!(given(70, chat, side), Given { chat: 70, nav: 0 }, "narrow: the chat takes it all");
+        assert_eq!(given(200, None, side), Given { chat: 0, nav: 32 + 12 });
     }
 
     /// frictions25 R6: beside the review's rail (36 columns here) an automatic chat narrows to leave the code a
@@ -1238,71 +1298,51 @@ mod tests {
     /// screen it's the chat's 2/5 again; a width you set, or a chat taking the whole width, stays.
     #[test]
     fn beside_the_review_rail_the_chat_leaves_the_code_its_room() {
-        assert_eq!(widths(160, true, false, AUTO).chat, 64, "as it was beside the rail");
-        assert_eq!(chat_beside(160, 36, AUTO), CHAT_MIN, "160: the code 88");
-        assert_eq!(chat_beside(140, 36, AUTO), CHAT_MIN);
-        assert_eq!(chat_beside(200, 36, AUTO), 64, "200: the code keeps 100");
-        assert_eq!(chat_beside(260, 36, AUTO), CHAT_AUTO_MAX, "wide: no wider than without the rail");
-        let kept = Sizes {
-            chat: Some(70),
-            side: None,
-            rail: None,
-            bottom: None,
-            docked: [None; crate::pane::DOCKABLE],
-            sessions: None,
-            messages: None,
-            folders: None,
-            sessions_dock: None,
-            follow_w: None,
-            follow_h: None,
-        };
-        assert_eq!(chat_beside(160, 36, kept), 70, "yours stays");
-        assert_eq!(chat_beside(70, 36, AUTO), 70, "narrow: the chat takes it all, as without the rail");
+        let rail = Nav::Rail { natural: 36, focus: false };
+        let chat = |total, kept| give_way(Wants { total, chat: Some(kept), nav: rail }).chat;
+        let alone = give_way(Wants { total: 160, chat: Some(None), nav: Nav::None }).chat;
+        assert_eq!(alone, 64, "as it was beside the rail");
+        assert_eq!(chat(160, None), CHAT_MIN, "160: the code 88");
+        assert_eq!(chat(140, None), CHAT_MIN);
+        assert_eq!(chat(200, None), 64, "200: the code keeps 100");
+        assert_eq!(chat(260, None), CHAT_AUTO_MAX, "wide: no wider than without the rail");
+        assert_eq!(chat(160, Some(70)), 70, "yours stays");
+        assert_eq!(chat(70, None), 70, "narrow: the chat takes it all, as without the rail");
+        // (the rail itself: what its rows need beside the code's 60 — none where the code can't keep its room)
+        assert_eq!(give_way(Wants { total: 160, chat: Some(None), nav: rail }).nav, 36);
+        assert_eq!(give_way(Wants { total: 70, chat: Some(None), nav: rail }).nav, 0);
+        let narrow = |focus| give_way(Wants { total: 80, chat: None, nav: Nav::Rail { natural: 36, focus } });
+        assert_eq!(narrow(false).nav, 0, "80: under 90, not drawn");
+        assert_eq!(narrow(true).nav, 32, "with the keys: in the side panel's room, the code 48");
     }
 
     /// A kept size is shown as it is where it fits, clamped where it doesn't — the kept value itself isn't
     /// touched (it's the caller's, unchanged), so a bigger screen gets it whole again.
     #[test]
     fn kept_widths_are_clamped_not_changed() {
-        let kept = Sizes {
-            chat: Some(90),
-            side: Some(40),
-            rail: None,
-            bottom: None,
-            docked: [None; crate::pane::DOCKABLE],
-            sessions: None,
-            messages: None,
-            folders: None,
-            sessions_dock: None,
-            follow_w: None,
-            follow_h: None,
-        };
-        assert_eq!(widths(200, true, true, kept), Widths { chat: 90, side: 40 });
+        let kept = Wants { total: 200, chat: Some(Some(90)), nav: Nav::Side(Some(40)) };
+        assert_eq!(give_way(kept), Given { chat: 90, nav: 40 });
         // 150: the chat keeps its 90; the panel's 40 would leave the code 20 — it gives way
-        assert_eq!(widths(150, true, true, kept), Widths { chat: 90, side: 0 });
+        assert_eq!(give_way(Wants { total: 150, ..kept }), Given { chat: 90, nav: 0 });
         // 120: the chat as wide as leaves the code 40
-        assert_eq!(widths(120, true, false, kept), Widths { chat: 80, side: 0 });
-        assert_eq!(kept.chat, Some(90), "kept as it was");
-        assert_eq!(
-            widths(200, true, true, kept),
-            Widths { chat: 90, side: 40 },
-            "the bigger screen: whole again"
-        );
+        assert_eq!(give_way(Wants { total: 120, nav: Nav::None, ..kept }), Given { chat: 80, nav: 0 });
+        assert_eq!(kept.chat, Some(Some(90)), "kept as it was");
+        assert_eq!(give_way(kept), Given { chat: 90, nav: 40 }, "the bigger screen: whole again");
         // Out of bounds kept values (an edited file): within them
-        let odd = Sizes {
-            chat: Some(5),
-            side: Some(500),
-            rail: None,
-            bottom: None,
-            docked: [None; crate::pane::DOCKABLE],
-            sessions: None,
-            messages: None,
-            folders: None,
-            sessions_dock: None,
-            follow_w: None,
-            follow_h: None,
-        };
-        assert_eq!(widths(240, true, true, odd), Widths { chat: CHAT_MIN, side: SIDE_MAX });
+        let odd = Wants { total: 240, chat: Some(Some(5)), nav: Nav::Side(Some(500)) };
+        assert_eq!(give_way(odd), Given { chat: CHAT_MIN, nav: SIDE_MAX });
+    }
+
+    /// Row 1: a group beside the code — automatic 2/5 leaving the code its room, yours leaving it `CODE_MIN`, at least
+    /// its side's column; folded where it'd be under `DOCK_MIN` or squeeze the code.
+    #[test]
+    fn a_group_beside_the_code_gives_way_first() {
+        assert_eq!(group_beside(200, 200, None, 0), Some(80));
+        assert_eq!(group_beside(200, 100, None, 0), Some(40), "the code keeps 60");
+        assert_eq!(group_beside(200, 100, Some(70), 0), Some(52), "yours: the code keeps 48");
+        assert_eq!(group_beside(200, 120, None, 70), Some(70), "as wide as its column");
+        assert_eq!(group_beside(200, 80, None, 0), None, "under DOCK_MIN: folded");
+        assert_eq!(group_beside(200, 100, None, 60), None, "its column would squeeze the code");
     }
 
     #[test]

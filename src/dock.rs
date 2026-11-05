@@ -13,7 +13,7 @@
 
 use crate::editor::Editor;
 use crate::pane::{Group, GroupKind, Pane, Place, Shows, Side};
-use crate::sizes::{CODE_MIN, CODE_ROOM, Slot};
+use crate::sizes::{CODE_MIN, Slot};
 use crate::split::{Dir, PaneId, Share, Split};
 use crate::workspace::At;
 
@@ -80,15 +80,18 @@ impl Editor {
 
     /// The groups docked beside the code and in sight on a screen `total` wide: each kind's width there (its edge
     /// cell in it) — 0 for one not docked beside it, with nothing to show, or folded: the code would keep less than
-    /// `CODE_MIN` beside it. Automatic, as much as leaves the code `CODE_ROOM`, up to 2/5 of the screen; yours
-    /// (`Sizes.docked`) as much as leaves it `CODE_MIN`. In the kinds' order, each after the ones before it; two on one
+    /// `CODE_MIN` beside it (`sizes::group_beside`, the gives-way table's first row). In the kinds' order, each after the
+    /// ones before it; two on one
     /// side are stacked in one column (`place`), as wide as the wider, its width taken off the room once.
     pub fn dock_widths(&self, total: usize) -> [usize; crate::pane::DOCKABLE] {
         let mut out = [0; crate::pane::DOCKABLE];
         let side_open = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
-        let w = crate::sizes::widths(total, self.chat_panel(total), side_open, self.sizes);
+        use crate::sizes::{Nav, Wants};
+        let chat = self.chat_panel(total).then_some(self.sizes.chat);
+        let nav = if side_open { Nav::Side(self.sizes.side) } else { Nav::None };
+        let w = crate::sizes::give_way(Wants { total, chat, nav });
         let rail = if self.review_rail_up() { self.screen.drawn_w(Shows::Rail) } else { 0 };
-        let mut left = total.saturating_sub(w.chat + w.side + rail);
+        let mut left = total.saturating_sub(w.chat + w.nav + rail);
         if w.chat >= total {
             return out;
         }
@@ -103,12 +106,9 @@ impl Editor {
             let col = &mut column[usize::from(side == Side::Right)];
             // (the room with this side's column given back: one stacked in it is at least as wide)
             let room = left + *col;
-            let want = match self.sizes.docked[kind.dock_index()] {
-                Some(k) => (k as usize).min(room.saturating_sub(CODE_MIN)),
-                None => (total * 2 / 5).min(room.saturating_sub(CODE_ROOM)),
-            }
-            .max(*col);
-            if want >= DOCK_MIN && room.saturating_sub(want) >= CODE_MIN {
+            if let Some(want) =
+                crate::sizes::group_beside(total, room, self.sizes.docked[kind.dock_index()], *col)
+            {
                 out[kind.dock_index()] = want;
                 left = room - want;
                 *col = want;

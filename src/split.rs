@@ -14,7 +14,7 @@ pub enum Share {
     Even,
     /// As many cells as you set (a drag, `C-w < > - +`) — clamped to the room there is, never written back.
     Cells(u16),
-    /// The surface's own: the chat's width (`sizes::widths`), the slot's height (`sizes::bottom`) … — asked of
+    /// The surface's own: the chat's width (`sizes::give_way`), the slot's height (`sizes::bottom`) … — asked of
     /// the layout's `Room`; 0 = no room (closed, folded away). An `Auto` child carries its own edge cell.
     Auto,
 }
