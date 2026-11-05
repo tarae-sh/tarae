@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use crate::document::DocId;
 use crate::editor::Editor;
 use crate::movement as mv;
+use crate::picker::Item;
 use crate::selection::{Range as SelRange, Selection};
 
 /// Who wrote an entry: the chat's Claude (the author of the changes) · you · the reviewer.
@@ -1689,12 +1690,13 @@ pub fn step(ed: &mut Editor, forward: bool) {
                 Stop::Flag(id) => crate::flags::stepped(ed, id),
             }
             if lone {
-                ed.set_status("the only note — 1 of 1");
+                ed.set_status(match stop {
+                    Stop::Note(_) => "the only note — 1 of 1",
+                    Stop::Flag(_) => "the only flag — 1 of 1",
+                });
             }
         }
-        None => {
-            ed.set_status("no notes yet — Claude pins them while it explores, or space n asks about a line")
-        }
+        None => ed.set_status(NONE_YET),
     }
 }
 
@@ -1788,44 +1790,67 @@ pub fn pressed(ed: &mut Editor, id: u64) {
     }
 }
 
-/// `space N` — every note, newest first. `C-x` closes the note on its row, `A-x` every note its author began
-/// (#197).
+/// What `]n` and `space N` say with neither a note nor a flag to go to.
+const NONE_YET: &str =
+    "no notes or flags yet — an answer's places are flagged at the code, space n asks about a line";
+
+/// `space N` — every note and flag (#388): `]n`'s lead first, the newest answer's flags in the order written, then the
+/// notes newest first, then the older answers' flags, newest answer first. `C-x` closes the note on its row, `A-x` every
+/// note its author began (#197); a flag's `enter` goes to its line with the chat at its paragraph.
 pub fn picker(ed: &mut Editor) {
-    if ed.workspace.claude.notes.list.is_empty() {
-        return ed
-            .set_status("no notes yet — Claude pins them while it explores, or space n asks about a line");
+    if ed.workspace.claude.notes.list.is_empty() && ed.workspace.claude.flags.list.is_empty() {
+        return ed.set_status(NONE_YET);
     }
     let items = picker_items(ed);
     ed.open_picker(crate::picker::Picker::of("notes", NOTES, items, false), None);
 }
 
-/// The notes list's rows, newest first.
+/// The notes list's rows (`picker`'s order).
 pub fn picker_items(ed: &Editor) -> Vec<crate::picker::Item> {
-    use crate::picker::{Action, Item};
-    ed.workspace
-        .claude
-        .notes
-        .list
-        .iter()
-        .rev()
-        .map(|n| Item {
-            label: row_label(ed, n),
-            action: Action::Note { id: n.id, path: n.path.clone(), line: n.lines.start },
-            // (who began it, and how many answered)
-            hint: {
-                let by = n.thread.first().map_or(By::Author, |e| e.by).label();
-                match n.thread.len() {
-                    1 => by.to_string(),
-                    2 => format!("{by} · +1 reply"),
-                    k => format!("{by} · +{} replies", k - 1),
-                }
-            },
-            glyph: Some(match n.thread.first().map(|e| e.by) {
-                Some(By::Reviewer) => ("¶", "type"),
-                _ => ("¶", "ui.accent"),
-            }),
-        })
-        .collect()
+    let flags = &ed.workspace.claude.flags;
+    let (newest, older): (Vec<Item>, Vec<Item>) = {
+        let mut all: Vec<&crate::flags::Flag> = flags.list.iter().collect();
+        crate::sorting::by_key(&mut all, |f| (std::cmp::Reverse(f.origin.n), f.id));
+        let (a, b): (Vec<_>, Vec<_>) = all.into_iter().partition(|f| f.origin.n == flags.answers);
+        (a.into_iter().map(|f| flag_row(ed, f)).collect(), b.into_iter().map(|f| flag_row(ed, f)).collect())
+    };
+    newest.into_iter().chain(note_rows(ed)).chain(older).collect()
+}
+
+/// A flag's row in the notes list: where it is and the sentence that named it (chatlink Q10, as its hover's row), F0's
+/// doubt after `chat` where tarae has one.
+fn flag_row(ed: &Editor, f: &crate::flags::Flag) -> Item {
+    let doc = ed.docs.by_path(&f.path);
+    let doubt = f.check.as_ref().zip(doc).and_then(|(c, d)| c.doubt(d));
+    let at = format!("{}:{}", crate::chat::shown(&ed.workspace.root, &f.path), f.lines.start + 1);
+    Item {
+        label: format!("{at}  {}", crate::chatnotes::plain_words(&f.words)),
+        action: crate::picker::Action::Flag { id: f.id, path: f.path.clone(), line: f.lines.start },
+        hint: doubt.map_or("chat".to_string(), |d| format!("chat · {d}")),
+        glyph: Some(("¶", "ui.virtual")),
+    }
+}
+
+/// The notes' rows, newest first.
+fn note_rows(ed: &Editor) -> impl Iterator<Item = Item> + '_ {
+    use crate::picker::Action;
+    ed.workspace.claude.notes.list.iter().rev().map(|n| Item {
+        label: row_label(ed, n),
+        action: Action::Note { id: n.id, path: n.path.clone(), line: n.lines.start },
+        // (who began it, and how many answered)
+        hint: {
+            let by = n.thread.first().map_or(By::Author, |e| e.by).label();
+            match n.thread.len() {
+                1 => by.to_string(),
+                2 => format!("{by} · +1 reply"),
+                k => format!("{by} · +{} replies", k - 1),
+            }
+        },
+        glyph: Some(match n.thread.first().map(|e| e.by) {
+            Some(By::Reviewer) => ("¶", "type"),
+            _ => ("¶", "ui.accent"),
+        }),
+    })
 }
 
 #[cfg(test)]

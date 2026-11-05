@@ -185,7 +185,9 @@ impl Editor {
             .filter_map(|i| {
                 let (path, line, col) = match &i.action {
                     Action::Goto { path, line, col } => (path.clone(), *line, *col),
-                    Action::Note { path, line, .. } => (path.clone(), *line, 0),
+                    Action::Note { path, line, .. } | Action::Flag { path, line, .. } => {
+                        (path.clone(), *line, 0)
+                    }
                     Action::Open(path) => (path.clone(), 0, 0),
                     _ => return None,
                 };

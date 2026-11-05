@@ -70,7 +70,9 @@ use crate::workspace::At;
 /// 31: a run's `state` may be `not run · <why>` (#354: refused before it started — not a pass, nor `failed`).
 /// 32: `flags` (#388: an answer's places in the code, `flag:src/a.rs:12`, `answers`, `lit`); `notes[].kind` no longer
 /// `chat` — an answer's places are flags now.
-pub const V: u64 = 32;
+/// 33: `flags[].lit` is its line's `¶` as drawn: lit while any answer that named the line has its paragraph in view (#388
+/// step 2), not only the newest's.
+pub const V: u64 = 33;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -940,7 +942,7 @@ impl FlagState {
                 continue;
             }
             let all = crate::flags::on_line(flags, &f.path, f.lines.start);
-            let lit = all.first().is_some_and(|g| crate::flags::lit(flags, g));
+            let lit = all.iter().any(|g| crate::flags::lit(flags, g));
             out.push(FlagState { id, answers: all.iter().map(|g| g.origin.n).collect(), lit });
         }
         out

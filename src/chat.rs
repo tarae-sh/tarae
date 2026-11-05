@@ -503,11 +503,6 @@ pub struct ChatRow {
     /// The places its message's text names, their part on this row (`places::mark_rows`: found in the message's
     /// lines, so one the wrap broke is on each of its rows) — underlined where the name comes to a file.
     pub places: Vec<crate::places::Named>,
-    /// A row of prose (`markdown::Drawn.prose`): what an older answer's stub may fold.
-    pub prose: bool,
-    /// An older answer's paragraph folded to this one row (`chatdoc::Fold`, focus A1b step 3): the note at the code that
-    /// holds its words.
-    pub stub: Option<u64>,
 }
 
 /// What goes with the input's next message, each kind in the order added (`Chat.with`).
@@ -756,8 +751,8 @@ pub struct Chat {
     /// Its view mode was asked for before its rows were laid out (closed, minimized): made after the next frame
     /// (`chatdoc::wanted`).
     pub view_wanted: bool,
-    /// A note's card read on here (focus A1c, `notes::read_on`): its answer's paragraph held unfolded, and whether the
-    /// chat was taken to it yet — once a frame laid it out (`chatdoc::reading`).
+    /// The answer's paragraph the chat is taken to (a flag pressed, `]n`, `space L` at a flagged line), and whether it
+    /// was taken there yet — once a frame laid it out (`chatdoc::reading`); then a `▎` down its rows while you read.
     pub reading: Option<(crate::chatdoc::Reading, bool)>,
     /// `space L` showing the chat with no answer's note on your line (the flow plan's reader): the first message you
     /// haven't had in sight (`seen`), taken to the top once a frame laid it out (`chatdoc::reading`).

@@ -102,6 +102,13 @@ pub enum Action {
         path: PathBuf,
         line: usize,
     },
+    /// Flag `id` (`flags.rs`, #388), on line `line` of the file — the notes list's row for a place an answer named: Enter
+    /// goes there and takes the chat to its paragraph (`flags::to_paragraph`).
+    Flag {
+        id: u64,
+        path: PathBuf,
+        line: usize,
+    },
 }
 
 /// Job that builds the list on a worker thread.
@@ -1264,6 +1271,7 @@ impl Action {
             Action::Open(_)
                 | Action::Goto { .. }
                 | Action::Note { .. }
+                | Action::Flag { .. }
                 | Action::Buffer(_)
                 | Action::ChangedFile(_)
                 | Action::Jump { .. }
@@ -1285,6 +1293,7 @@ impl Action {
             Action::Open(p) => Some((p, None)),
             Action::Goto { path, line, .. }
             | Action::Note { path, line, .. }
+            | Action::Flag { path, line, .. }
             | Action::JumpParked { path, line, .. } => Some((path, Some(*line))),
             Action::Buffer(_)
             | Action::Jump { .. }

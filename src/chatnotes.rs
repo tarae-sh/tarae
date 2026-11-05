@@ -73,37 +73,6 @@ pub struct Origin {
     pub text: Option<String>,
 }
 
-/// A place of an answer with a flag at the code (focus A1b step 3): what the chat folds that paragraph to once a newer
-/// answer came (`chatdoc::Fold`).
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Stub {
-    /// Its answer's question's place among the conversation's messages of yours (`Origin.turn`).
-    pub turn: usize,
-    /// The place as written (`Origin.name`, `Origin.said`).
-    pub name: Arc<str>,
-    pub said: usize,
-    pub path: PathBuf,
-    /// Its line now, from 0.
-    pub line: usize,
-    pub flag: u64,
-}
-
-/// Every place the conversation's answers have a flag at, by answer.
-pub fn stubs(flags: &crate::flags::Flags) -> Vec<Stub> {
-    let mut out: Vec<Stub> = (flags.list.iter())
-        .map(|f| Stub {
-            turn: f.origin.turn,
-            name: f.origin.name.clone(),
-            said: f.origin.said,
-            path: f.path.clone(),
-            line: f.lines.start,
-            flag: f.id,
-        })
-        .collect();
-    crate::sorting::by_key(&mut out, |s| (s.turn, s.flag));
-    out
-}
-
 /// The places `text` (Claude's answer as written) names, each with its sentence — the first time each place is named.
 #[cfg(test)]
 fn cut(text: &str) -> Vec<Said> {

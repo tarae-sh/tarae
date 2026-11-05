@@ -890,7 +890,6 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         offer_cut: offer.as_ref().filter(|c| !c.bar).map(|c| c.cut),
         chat_links: Default::default(),
         chat_calls: Default::default(),
-        chat_stubs: Default::default(),
         cut_spots: Default::default(),
         cut_hand: Default::default(),
         cut_card: Default::default(),
@@ -8691,7 +8690,7 @@ pub(crate) fn fold_rows(
 const FLAG_END_W: usize = 4;
 
 /// An answer's flag at a line's end on a row of pane `lay` whose words take `used` cells (`y` its screen row): `   ¶`,
-/// faint, the accent while its paragraph is in the column's view (`flags::lit`) — a button: pressed, the column at its
+/// faint, the accent while a paragraph about its line is in the column's view (`flags::line_lit`) — a button: pressed, the column at its
 /// paragraph; under the mouse, its card (`flag_card`). The cells it took (none where there's no room).
 fn draw_flag_end(
     out: &mut impl Write,
@@ -8706,7 +8705,7 @@ fn draw_flag_end(
     if used + 3 > lay.text_cols {
         return Ok(0);
     }
-    let lit = crate::flags::lit(&editor.workspace.claude.flags, f);
+    let lit = crate::flags::line_lit(&editor.workspace.claude.flags, f);
     let fg = if lit { ui.accent.fg } else { ui.virt.fg };
     let style = Style { fg, ..line_base };
     apply(out, line_base)?;
@@ -10167,6 +10166,7 @@ fn draw_picker(
             Action::Open(path)
             | Action::Goto { path, .. }
             | Action::Note { path, .. }
+            | Action::Flag { path, .. }
             | Action::JumpParked { path, .. },
         ) => rel_path(editor, path),
         Some(Action::Buffer(id) | Action::Jump { doc: id, .. } | Action::Line { doc: id, .. }) => editor
@@ -18282,15 +18282,12 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let last_user = c.msgs.iter().rposition(|m| m.role == Role::User);
     let turn_end = |i: usize| !c.busy() && last_user.is_none_or(|u| u < i);
     let stops = c.follow.replay.latest();
-    // (an older answer's paragraphs with a place at the code, each one stub row — focus A1b step 3)
-    let fold = crate::chatdoc::Fold::of(c, &editor.workspace.claude.flags);
     // What a message's rows depend on beyond its text and the look: being written, live, a turn's end
     let state = |i: usize, m: &crate::chat::Msg| -> u64 {
         let last = i + 1 == n;
         match m.role {
             Role::User => 0,
-            // (and what of it folds: the notes that hold its paragraphs, the selection holding one open)
-            Role::Assistant => u64::from(last && c.state == State::Writing) | fold.key(i) << 1,
+            Role::Assistant => u64::from(last && c.state == State::Writing),
             Role::Thought => u64::from(last && c.busy()),
             // (and a press drying on its stamps: a step a layout — §5)
             Role::Tool => u64::from(m.is_call(hand)) | (((knot_lit(editor, m, false) * 1000.0) as u64) << 1),
@@ -18404,7 +18401,6 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     skip: if d.code { d.lead } else { 0 } + d.join.map_or(0, |j| j.drop),
                     join: d.join.map(|j| j.space),
                     rest: d.rest,
-                    prose: d.prose,
                     ..ChatRow::default()
                 }));
                 if writing && let Some(l) = lines.last_mut() {
@@ -18627,7 +18623,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             let mut rows = laid_out(i, m, &mut read);
             // (its places found in its lines, each on every row the wrap put it on — #196)
             crate::places::mark_rows(&mut rows);
-            let rows: std::sync::Arc<[ChatRow]> = fold.rows(c, i, rows, w, (faint, card)).into();
+            let rows: std::sync::Arc<[ChatRow]> = rows.into();
             let lang = read.default_lang.then_some(lang_hash);
             *m.cache.borrow_mut() = Some(Laid { key, lang, unloaded: read.unloaded, rows: rows.clone() });
             rows
@@ -19627,7 +19623,6 @@ fn draw_chat(
     }
     let mut chat_links = editor.screen.chat_links.borrow_mut();
     let mut chat_calls = editor.screen.chat_calls.borrow_mut();
-    let mut chat_stubs = editor.screen.chat_stubs.borrow_mut();
     let mut chat_ran = editor.screen.chat_ran.borrow_mut();
 
     // ── Draw row by row: [gutter][padding][text w][padding — its outer cell the transcript's thumb]
@@ -19881,13 +19876,10 @@ fn draw_chat(
         let row = crate::chatdoc::doc_row(&pieces, row)?;
         let (d, s) = (t.pane.doc_in()?, t.row(row)?);
         let skip = r.map_or(0, |r| r.skip);
-        let stub = r.is_some_and(|r| r.stub.is_some());
-        let (p, cursors) = chat_paint(d, t.pane.hits(), s, skip, spans, ui, view_cursor, stub)?;
-        // (where its cursors land on screen: recorded, as the code's are — a stub's on its card, which stands from the
-        // row's first cell: over the paragraph's own letters, not the row's)
-        let card = r.filter(|r| r.stub.is_some() && r.cut.is_some()).map_or(0, |_| s.x0);
+        let (p, cursors) = chat_paint(d, t.pane.hits(), s, skip, spans, ui, view_cursor)?;
+        // (where its cursors land on screen: recorded, as the code's are)
         let mut at = editor.screen.cursors.borrow_mut();
-        at.extend(cursors.into_iter().filter(|&x| x < w).map(|x| (text_x + x.saturating_sub(card), y)));
+        at.extend(cursors.into_iter().filter(|&x| x < w).map(|x| (text_x + x, y)));
         Some(p)
     };
     // (the transcript taller than its rows: its thumb in the outer cell, as the code's last column says its view)
@@ -19956,9 +19948,6 @@ fn draw_chat(
                     chat_links.push((y, text_x, text_x + w, link.clone()));
                     if let Some(call) = &r.call {
                         chat_calls.push((y, call.clone()));
-                    }
-                    if let Some(note) = r.stub {
-                        chat_stubs.push((y, note));
                     }
                     match painted(from + i, Some(r), &r.spans, y) {
                         Some(p) => {
@@ -20180,11 +20169,9 @@ fn draw_chat(
     let bound = |name: &str, like: &str| crate::view::bound(editor, crate::view::Surface::Chat, name, like);
     // (`enter` quotes what's selected — said while something is)
     let quotes = crate::view::quotes(editor);
-    let stub = crate::chatdoc::stub_here(editor).is_some();
     // (the ways back to typing and out first, the last to fold — the status line doesn't say them too)
     let viewing = [
         (bound("view_take", "enter").filter(|_| quotes), "quote"),
-        (bound("view_take", "enter").filter(|_| stub && !quotes), "go there"),
         (bound("view_input", "i"), "type"),
         (bound("view_leave", "esc"), "code"),
         (bound("view_copy", "y"), "copy"),
@@ -20556,26 +20543,10 @@ fn chat_paint(
     spans: &[crate::markdown::Span],
     ui: &Ui,
     cursor: bool,
-    stub: bool,
 ) -> Option<(Vec<crate::markdown::Span>, Vec<usize>)> {
     use crate::markdown::Span;
-    let mut marks = view_marks(d, hits, s.line, ui, cursor)?;
+    let marks = view_marks(d, hits, s.line, ui, cursor)?;
     let ls = mv::line_start(&d.text, s.line);
-    // (a stub stands for its paragraph whole, #271: a selection wider than a character anywhere on its line lights all
-    // its words — the primary's ground where the primary is on it — as a folded doc comment's row, #269)
-    if stub {
-        let le = mv::line_end(&d.text, s.line);
-        let sel = d.selection();
-        let on = |r: &Range| {
-            crate::graphemes::next_boundary(&d.text, r.from()) < r.to() && r.from() <= le && ls < r.to()
-        };
-        let mut on_it = sel.ranges().iter().enumerate().filter(|(_, r)| on(r)).map(|(i, _)| i).peekable();
-        if on_it.peek().is_some() {
-            let primary = on_it.any(|i| i == sel.primary_index());
-            let bg = if primary { ui.selection_primary.bg } else { ui.selection.bg };
-            marks.insert(0, (0, le - ls + 1, Style { bg, ..Style::default() }));
-        }
-    }
     let cursors: Vec<usize> = match cursor {
         true => d.selection().ranges().iter().filter_map(|r| r.cursor(&d.text).checked_sub(ls)).collect(),
         false => Vec::new(),
@@ -20806,7 +20777,6 @@ fn chat_markdown_drawn(
                     code: true,
                     join: None,
                     rest: (full > inner).then(|| rest.into()),
-                    prose: false,
                 });
             }
             // (prose at the measure; a rule or a table as wide as the panel)
@@ -28248,8 +28218,7 @@ mod tests {
             Span { cut: None, hint: false, text: "The latest".into(), style: red },
             Span { cut: None, hint: false, text: " answer starts here.".into(), style: Style::default() },
         ];
-        let (p, cursors) =
-            chat_paint(d, None, s, 2, &spans, &ui, true, false).expect("the selected row is painted");
+        let (p, cursors) = chat_paint(d, None, s, 2, &spans, &ui, true).expect("the selected row is painted");
         let text: String = p.iter().map(|s| s.text.as_str()).collect();
         assert_eq!(
             text, "▎ The latest answer starts here. ",
@@ -28267,9 +28236,9 @@ mod tests {
         );
         assert_eq!(cursors, [2 + 30], "its cell: after the lead and the text");
         let next = t.row(row + 1).unwrap();
-        assert!(chat_paint(d, None, next, 0, &spans, &ui, true, false).is_none(), "nothing on the next row");
+        assert!(chat_paint(d, None, next, 0, &spans, &ui, true).is_none(), "nothing on the next row");
         // (without the keys: the selection's ground, no cursor)
-        let (p, cursors) = chat_paint(d, None, s, 2, &spans, &ui, false, false).unwrap();
+        let (p, cursors) = chat_paint(d, None, s, 2, &spans, &ui, false).unwrap();
         assert!(p[1..].iter().all(|s| s.style.bg == ui.selection_primary.bg), "{p:?}");
         assert!(cursors.is_empty());
     }

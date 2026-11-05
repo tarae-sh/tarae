@@ -2,14 +2,17 @@
 //! naming lines of `src/a.rs` and `src/b.rs` (flags once their names are found on a worker after a frame, the
 //! conversation then kept again with its places on a job — `chat::keep_places`), frames, time and `:chat-resume` of the
 //! same conversation (its store read on a job, `chatnotes::restore` from its rows), a flag pressed (#388: the chat at
-//! its paragraph), a flag pressed with the chat closed (opened again on the conversation it left, `Flags.left`), in any
+//! its paragraph), a flag's row of `space N` picked (#388 step 2: its line, the chat at its paragraph), a flag pressed
+//! with the chat closed (opened again on the conversation it left, `Flags.left`), in any
 //! order — a resume may read the store before a keep lands —, and the column scrolled or hidden and shown (#388's lit
 //! `¶`). After every step: every flag is of an answer the conversation's rows hold (its question where its `Origin`
-//! says), none of one answer twice on a line, the newest's number the highest; and the flags lit are exactly those whose
+//! says), none of one answer twice on a line, the newest's number the highest, `space N` listing each once, the newest
+//! answer's first, at its line; and the flags lit are exactly those whose
 //! paragraph the last frame presented shows (`flags::lit_sync` — read from its text, each answer's lead `A<n>:` its
 //! own). At the end, nothing racing: two answers and a flag pressed, then the store holds exactly the
 //! flags that are there, and a resume brings back exactly what it keeps: the places it writes again are the ones read;
-//! and the chat, its older answers folded to stubs, still has every word of every answer in its document.
+//! and the chat is every answer whole (#388 step 2: nothing folds) — every word of every answer in its document and in
+//! the rows a frame lays out, none standing for words that aren't drawn.
 
 use std::path::Path;
 use std::time::Duration;
@@ -94,27 +97,31 @@ fn run(choices: Choices) -> Vec<String> {
         true => Ok(()),
         false => Err(format!("the store kept {before:?}, a resume brought back {now:?}")),
     });
-    // The chat folds the older answers (focus A1b step 3): every word of every answer is still in its document
+    // The chat whole (#388 step 2): every word of every answer in its document and drawn in its rows — the older answers,
+    // their places flagged at the code, too
     crate::term::render(&mut ed, &mut Vec::new(), W, H).unwrap();
-    // (an older answer folded at all: else the words below hold for nothing folded)
-    let laid = ed.screen.chat_laid.borrow();
-    let stubs = laid.iter().flat_map(|(_, rows)| rows.iter()).filter(|r| r.stub.is_some()).count();
-    drop(laid);
-    sim.at_end(|| match stubs {
-        0 => Err("no older answer folded, two answers with notes kept".into()),
-        _ => Ok(()),
-    });
     let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let laid = ed.screen.chat_laid.borrow();
+    let answer = |o: &crate::chatdoc::Of| matches!(o, crate::chatdoc::Of::Msg(i) if c.msgs.get(*i).is_some_and(|m| m.role == Role::Assistant));
+    let rows: Vec<&crate::chat::ChatRow> =
+        laid.iter().filter(|(o, _)| answer(o)).flat_map(|(_, rows)| rows.iter()).collect();
+    let drawn: String =
+        rows.iter().flat_map(|r| r.spans.iter().map(|s| s.text.as_str()).chain([" "])).collect();
+    // (what a row stands for and doesn't draw: none in an answer's prose)
+    let standing = rows.iter().filter(|r| r.rest.is_some()).count();
+    drop(laid);
     let doc =
         c.transcript.as_ref().and_then(|t| t.pane.doc_in()).map_or(String::new(), |d| d.text.to_string());
     let answers = c.msgs.iter().filter(|m| m.role == Role::Assistant);
-    let lost: Vec<String> = answers
-        .flat_map(|m| m.text.split_whitespace().map(str::to_string).collect::<Vec<_>>())
-        .filter(|w| !doc.contains(w.as_str()))
-        .collect();
-    sim.at_end(|| match lost.is_empty() {
-        true => Ok(()),
-        false => Err(format!("words gone from the transcript: {lost:?}")),
+    let words: Vec<String> =
+        answers.flat_map(|m| m.text.split_whitespace().map(str::to_string).collect::<Vec<_>>()).collect();
+    let lost: Vec<&String> = words.iter().filter(|w| !doc.contains(w.as_str())).collect();
+    let hidden: Vec<&String> = words.iter().filter(|w| !drawn.contains(w.as_str())).collect();
+    sim.at_end(|| match (lost.is_empty(), hidden.is_empty(), standing) {
+        (false, ..) => Err(format!("words gone from the transcript: {lost:?}")),
+        (_, false, _) => Err(format!("words of an answer not drawn in the chat's rows: {hidden:?}")),
+        (.., 0) => Ok(()),
+        (.., k) => Err(format!("{k} rows stand for words they don't draw")),
     });
     let trace = sim.trace().to_vec();
     drop(sim);
@@ -162,8 +169,8 @@ fn press(ed: &mut Editor, id: u64) -> String {
 fn input(sim: &mut Sim, ed: &mut Editor, asked: &mut usize) -> String {
     let c = &mut sim.choices;
     // (by arm: a turn's end 3, a frame 3, a resume 2, time 1, a flag pressed 2, the chat closed 1, the column scrolled
-    // or hidden and shown 2)
-    match c.weighted(&[3, 3, 2, 1, 2, 1, 2]) {
+    // or hidden and shown 2, a flag's row in `space N` 1)
+    match c.weighted(&[3, 3, 2, 1, 2, 1, 2, 1]) {
         0 => {
             let (a, b) = (*c.pick(&[2, 5]), *c.pick(&[0, 3, 5]));
             turn(ed, asked, a, b)
@@ -207,6 +214,18 @@ fn input(sim: &mut Sim, ed: &mut Editor, asked: &mut usize) -> String {
             ed.workspace.claude.chat.as_mut().unwrap().conversation = Some(ID.into());
             format!("the chat closed, {said}, resumed")
         }
+        // (#388 step 2: its row picked as `enter` does — the line, the column at its paragraph)
+        7 => {
+            let rows = crate::notes::picker_items(ed);
+            if rows.is_empty() {
+                return "no row in space N".into();
+            }
+            let k = *c.pick(&(0..rows.len()).collect::<Vec<_>>());
+            let action = rows[k].action.clone();
+            ed.run_picker_action(action);
+            crate::chatnotes::sync(ed);
+            format!("space N's row {k}: {:?}", rows[k].label)
+        }
         _ => {
             let flags: Vec<u64> = ed.workspace.claude.flags.list.iter().map(|f| f.id).collect();
             if flags.is_empty() {
@@ -216,6 +235,35 @@ fn input(sim: &mut Sim, ed: &mut Editor, asked: &mut usize) -> String {
             press(ed, id)
         }
     }
+}
+
+/// `space N`'s rows (#388 step 2): every flag once, the newest answer's first — and its row's place where the flag is.
+fn listed(ed: &Editor) -> Result<(), String> {
+    let flags = &ed.workspace.claude.flags;
+    let rows: Vec<(u64, std::path::PathBuf, usize)> = (crate::notes::picker_items(ed).into_iter())
+        .filter_map(|i| match i.action {
+            crate::picker::Action::Flag { id, path, line } => Some((id, path, line)),
+            _ => None,
+        })
+        .collect();
+    if rows.len() != flags.list.len() {
+        return Err(format!("space N lists {} flags, there are {}", rows.len(), flags.list.len()));
+    }
+    let mut newest_done = false;
+    for (id, path, line) in &rows {
+        let Some(f) = crate::flags::find(ed, *id) else {
+            return Err(format!("space N lists flag {id}, gone"));
+        };
+        if (&f.path, f.lines.start) != (path, *line) {
+            return Err(format!("flag {id} at line {}, its row says {line}", f.lines.start + 1));
+        }
+        match f.origin.n == flags.answers {
+            true if newest_done => return Err(format!("the newest answer's flag {id} after an older one's")),
+            true => {}
+            false => newest_done = true,
+        }
+    }
+    Ok(())
 }
 
 /// The flags lit are those whose paragraph the last frame presented shows — its lead `A<n>:` in its text (the code has
@@ -238,10 +286,11 @@ fn lit_as_drawn(ed: &Editor) -> Result<(), String> {
 }
 
 /// Every flag is of an answer the conversation's rows hold: its question the `Origin.turn`th message of yours, whose
-/// first line is the flag's `asked`; one answer's flags on distinct lines; `Flags.answers` the highest number — and its
-/// light as the last frame drew it (`lit_as_drawn`).
+/// first line is the flag's `asked`; one answer's flags on distinct lines; `Flags.answers` the highest number — its
+/// light as the last frame drew it (`lit_as_drawn`), and its row in `space N` (`listed`).
 fn held(ed: &Editor) -> Result<(), String> {
     lit_as_drawn(ed)?;
+    listed(ed)?;
     let flags = &ed.workspace.claude.flags;
     let Some(c) = ed.workspace.claude.chat.as_ref() else { return Err("the chat closed".into()) };
     let users: Vec<&Msg> = c.msgs.iter().filter(|m| m.role == Role::User).collect();

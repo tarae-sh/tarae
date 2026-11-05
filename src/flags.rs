@@ -2,7 +2,8 @@
 //! the end of each line an answer names (`chatnotes.rs` reads the places), no words: the paragraph is the chat's.
 //!
 //! - **Lit** in the accent while its paragraph is in the column's view (`lit_sync`, after each frame: the rows the chat
-//!   showed, each paragraph by the places its rows name), faint otherwise — the paragraph you read and the code it names
+//!   showed, each paragraph by the places its rows name) — a line's `¶` while any of its answers' is (`line_lit`) —,
+//!   faint otherwise — the paragraph you read and the code it names
 //!   linked without a word.
 //! - **A press** on it, `enter` on its line and `space L` there: the column at the newest answer's paragraph about that
 //!   line, the keys staying where they are (`to_paragraph`; the chat shown if hidden, opened on its conversation if
@@ -158,6 +159,12 @@ pub fn answer_here(ed: &Editor) -> Option<Reading> {
 /// Whether flag `f`'s paragraph was in the column's view as the last frame drew it.
 pub fn lit(flags: &Flags, f: &Flag) -> bool {
     flags.lit.iter().any(|r| *r == f.reading())
+}
+
+/// Whether the `¶` flag `f` draws for its line is lit: any answer's paragraph about that line in view — the one `¶`
+/// leads to each of them (its hover lists them all), and an older answer reads whole (#388 step 2).
+pub fn line_lit(flags: &Flags, f: &Flag) -> bool {
+    on_line(flags, &f.path, f.lines.start).iter().any(|g| lit(flags, g))
 }
 
 /// The column at flag `id`'s paragraph, the keys where they are: a press on its `¶` or a row of its hover, `enter` on its

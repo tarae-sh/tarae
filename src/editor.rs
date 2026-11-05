@@ -612,8 +612,6 @@ pub struct Screen {
     pub chat_links: std::cell::RefCell<Vec<(usize, usize, usize, crate::chat::Link)>>,
     /// The chat's rows of tool calls: (row, call id) — a click goes to that call's replay stop.
     pub chat_calls: std::cell::RefCell<Vec<(usize, String)>>,
-    /// The stubs among them (`ChatRow.stub`): (row, its note).
-    pub chat_stubs: std::cell::RefCell<Vec<(usize, u64)>>,
     /// Where a text that's cut is: (row, start col, end col, which) — the mouse over it shows it whole (`whole.rs`).
     pub cut_spots: std::cell::RefCell<Vec<(usize, usize, usize, crate::whole::Cut)>>,
     /// Which of `cut_spots` is the row in hand — a list's selected row, the chat's view mode's cursor's: whole on its
@@ -4015,11 +4013,7 @@ impl Editor {
                                 };
                                 let call =
                                     s.chat_calls.borrow().iter().find(|c| c.0 == y).map(|c| c.1.clone());
-                                // (an older answer's folded paragraph: its place, its card open)
-                                let stub = s.chat_stubs.borrow().iter().find(|c| c.0 == y).map(|c| c.1);
-                                if let Some(note) = stub {
-                                    crate::chatdoc::go(self, link, note);
-                                } else if !call.is_some_and(|call| crate::follow::replay_call(self, &call)) {
+                                if !call.is_some_and(|call| crate::follow::replay_call(self, &call)) {
                                     crate::chat::jump(self, link);
                                 }
                             }
@@ -4848,6 +4842,10 @@ impl Editor {
     /// The list follows, the row in hand where it was — or goes (kept for `space '`) when a card asks first
     /// (your unsent drafts among them): the card takes the keys.
     fn picker_close_notes(&mut self, item: &crate::picker::Item, all: bool) {
+        // (a flag's row: nothing to close — it goes with its conversation, said: no silent key)
+        if let Action::Flag { .. } = item.action {
+            return self.set_status("a flag isn't closed — it goes with its conversation; C-x closes a note");
+        }
         let Some(id) = crate::notes::of_row(self, item) else { return };
         match crate::notes::began(self, id).filter(|_| all) {
             Some(by) if crate::notes::close_by(self, Some(by)) => return self.keep_last_picker(),
@@ -5289,6 +5287,12 @@ impl Editor {
                 }),
             Action::Goto { path, line, col } => self.open_at(&path, line, col),
             Action::Note { path, line, .. } => self.open_at(&path, line, 0),
+            // (the line, and the chat at the paragraph that named it — the keys in the code)
+            Action::Flag { id, path, line } => {
+                self.open_at(&path, line, 0)?;
+                crate::flags::to_paragraph(self, id);
+                Ok(())
+            }
             Action::Line { doc, line, col } => {
                 let Some(i) = self.docs.iter().position(|d| d.id == doc) else {
                     return Err(anyhow::anyhow!("that buffer is closed"));

@@ -197,6 +197,134 @@ fn a_flag_on_a_folded_doc_comment_is_at_its_paragraphs_row() {
     assert!(reads(&ed, id), "the column at its paragraph");
 }
 
+/// The rows the last frame laid out for message `i`, their words joined as the paragraph reads (a wrap's break a space).
+fn laid_words(ed: &Editor, i: usize) -> Option<String> {
+    let laid = ed.screen.chat_laid.borrow();
+    let rows = laid.iter().find(|(o, _)| *o == crate::chatdoc::Of::Msg(i))?.1.clone();
+    assert!(rows.iter().all(|r| r.rest.is_none()), "no row stands for words it doesn't draw");
+    let text: Vec<String> = rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
+    Some(text.join(" ").split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// #388 step 2, the chat whole: once a newer answer's turn ended, the older answer — every place of it flagged at the code
+/// — is drawn whole, every word on its rows (focus A1b step 3 folded it to `◂ a.rs:3  The count…` stubs).
+#[test]
+fn an_older_answers_flagged_paragraphs_are_drawn_whole() {
+    let (_s, _root, mut ed) = two_answers("flags-whole");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    (c.hidden, c.scroll) = (false, 200);
+    let rows = screen(&mut ed);
+    assert!(!rows.iter().any(|r| r.contains('◂')), "no stub: {rows:#?}");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let first = c.msgs.iter().position(|m| m.role == crate::chat::Role::Assistant).unwrap();
+    let flagged = ed.workspace.claude.flags.list.iter().filter(|f| f.origin.n == 1).count();
+    assert_eq!(flagged, 2, "both its places flagged");
+    assert_eq!(
+        laid_words(&ed, first).as_deref(),
+        Some("The count is read in src/a.rs:3. It is set in src/b.rs:2."),
+        "the older answer whole"
+    );
+}
+
+/// #388 step 2: a line two answers named has one `¶`, lit while either answer's paragraph about it is in view — the
+/// older one's too, now that it reads whole (the newest's alone lit it before); the state's `lit` says the same.
+#[test]
+fn a_lines_flag_is_lit_by_any_of_its_answers_paragraphs() {
+    let (_s, root, mut ed) = project("flags-line-lit", &["src/a.rs"]);
+    answer(&mut ed, "The count is read in src/a.rs:3.");
+    // (a long answer between: the two paragraphs about line 3 never in view at once)
+    let long: String = (0..60).map(|i| format!("Paragraph {i} says nothing of the code.\n\n")).collect();
+    answers_to(&mut ed, "more?", &[&long], vec![]);
+    answers_to(&mut ed, "and the guard?", &["The guard is at src/a.rs:3 too."], vec![]);
+    ed.open(&root.join("src/a.rs")).unwrap();
+    let path = ed.doc().path.clone().unwrap();
+    let both = crate::flags::on_line(&ed.workspace.claude.flags, &path, 2);
+    let (newest, older) = (both[0].id, both[1].id);
+    // (the older answer's paragraph in view, the newest's not: as `]n` or a hover row takes the column there)
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
+    crate::flags::to_paragraph(&mut ed, older);
+    screen(&mut ed);
+    screen(&mut ed);
+    let flags = &ed.workspace.claude.flags;
+    let f = |id| crate::flags::find(&ed, id).unwrap();
+    assert!(crate::flags::lit(flags, f(older)) && !crate::flags::lit(flags, f(newest)), "{:?}", flags.lit);
+    assert!(crate::flags::line_lit(flags, f(newest)), "the line's `¶` lit by the older answer's paragraph");
+    let state = ed.ui_state();
+    assert!(state.flags.iter().any(|s| s.id == "flag:src/a.rs:3" && s.lit), "{:?}", state.flags);
+}
+
+/// #388 step 2, `]n` (chatlink Q8): on to the older answer's flag with the column in sight, the column at its paragraph —
+/// whole, `▎` down its rows once the frame took it there (`Chat.reading` landed) — the keys in the code, no card.
+#[test]
+fn next_note_onto_an_older_answers_flag_shows_its_paragraph_whole() {
+    let (_s, root, mut ed) = two_answers("flags-next-whole");
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = false;
+    screen(&mut ed);
+    // (the newest answer's two, then the older one's `src/a.rs:3`, `src/b.rs:2` — from line 1 the first is a.rs:3)
+    feed(&mut ed, "]n]n");
+    assert_eq!(crate::chat::shown(&root, ed.doc().path.as_ref().unwrap()), "src/b.rs");
+    let id = flag_at(&ed, 1);
+    assert_eq!(crate::flags::find(&ed, id).unwrap().origin.n, 1, "the older answer's");
+    assert!(reads(&ed, id), "the column taken to its paragraph");
+    screen(&mut ed);
+    screen(&mut ed);
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(matches!(c.reading, Some((_, true))), "taken there: the `▎` beside it");
+    let laid = ed.screen.chat_laid.borrow().clone();
+    let at = crate::chatdoc::reading_rows(c, &laid).expect("its rows marked");
+    let rows: Vec<&crate::chat::ChatRow> = laid.iter().flat_map(|(_, r)| r.iter()).collect();
+    let words: Vec<String> =
+        rows[at].iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
+    let words = words.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("It is set in src/b.rs:2."), "the paragraph whole: {words}");
+    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code, "the keys in the code");
+    assert_eq!(ed.workspace.claude.notes.open, None, "no card");
+}
+
+/// #388 step 2, `space N`'s flag rows (chatlink §1.5): every flag a row — the newest answer's first in the order written,
+/// then the older's — its place and the sentence that named it (Q10), `chat` its hint, a faint `¶`; `enter` on one goes to
+/// its line with the column at its paragraph, the keys in the code; `C-x` on one closes nothing and says why. With no
+/// note and no flag, `space N` and `]n` say so.
+#[test]
+fn space_n_lists_every_flag_and_enter_goes_to_its_paragraph() {
+    let (_s, _root, mut ed) = two_answers("flags-list");
+    feed(&mut ed, " N");
+    let p = ed.picker.as_ref().expect("the notes list");
+    assert!(crate::notes::is_list(&p.title));
+    let labels: Vec<String> = p.shown().map(|i| i.label.clone()).collect();
+    assert_eq!(
+        labels,
+        [
+            "src/a.rs:7  The loop ends at src/a.rs:7.",
+            "src/a.rs:3  The guard is at src/a.rs:3 too.",
+            "src/a.rs:3  The count is read in src/a.rs:3.",
+            "src/b.rs:2  It is set in src/b.rs:2.",
+        ]
+    );
+    assert!(p.shown().all(|i| i.hint.starts_with("chat") && i.glyph == Some(("¶", "ui.virtual"))));
+    // `C-x` on a flag's row: nothing closed, said
+    feed(&mut ed, "<C-x>");
+    assert_eq!(ed.picker.as_ref().map(|p| p.len()), Some(4), "every row still there");
+    let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+    assert!(said.starts_with("a flag isn't closed"), "{said}");
+    // `enter` on the last row: src/b.rs's line 2, the column at the older answer's paragraph
+    feed(&mut ed, "<C-n><C-n><C-n><ret>");
+    assert!(ed.picker.is_none());
+    assert_eq!((ed.doc().path.as_ref().unwrap().ends_with("src/b.rs"), ed.cursor_line()), (true, 1));
+    let id = flag_at(&ed, 1);
+    assert!(reads(&ed, id), "the column at its paragraph");
+    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code, "the keys in the code");
+    // None of either: said, no list
+    let (_s2, _root2, mut ed) = project("flags-list-none", &["src/a.rs"]);
+    for keys in [" N", "]n"] {
+        ed.status = None;
+        feed(&mut ed, keys);
+        assert!(ed.picker.is_none(), "{keys}");
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert!(said.starts_with("no notes or flags yet"), "{keys}: {said}");
+    }
+}
+
 /// Chatlink Q5: an answer with words after its last call shows the hidden column at its turn's end — not one you hid
 /// during that turn (`◂ new` says it). (Hidden by you before the question went, it shows.)
 #[test]
