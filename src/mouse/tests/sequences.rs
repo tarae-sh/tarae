@@ -6,7 +6,7 @@
 
 use super::{code_cell, editor, feed, frame, press};
 use crate::editor::{Editor, Mode};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 #[test]
 fn a_press_after_a_count_keeps_no_count() {
@@ -44,7 +44,7 @@ fn a_press_on_a_run_panels_text_ends_its_own_sequence() {
     assert_eq!(ed.pending_display(), "g", "the output's own `g` under way");
     let (_, y0, x0, _) = ed.screen.run_rows.of(crate::sizes::Slot::Task).expect("its rows drawn");
     press(&mut ed, x0 + 1, y0);
-    assert!(!ed.workspace.is_at(At::Code), "the keys still the output's");
+    assert!(!ed.workspace.is_at(Here::Code), "the keys still the output's");
     assert_eq!(ed.pending_display(), "", "no `g` left waiting for its second key");
 }
 
@@ -100,7 +100,7 @@ fn a_press_ends_inserts_register_wait_in_the_code_and_the_chats_input() {
     // (the chat's input: a press on it)
     feed(&mut ed, "<esc>");
     crate::uistate::tests::chat(&mut ed, "he");
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     frame(&mut ed);
     feed(&mut ed, "<A-g>");
     let idle = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().input.pane.keys.idle();
@@ -190,7 +190,7 @@ fn a_press_types_insert_modes_held_keys_where_they_were_typed() {
     // (the chat's input: its held `j` typed in it before a press elsewhere)
     feed(&mut ed, "<esc>");
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     frame(&mut ed);
     feed(&mut ed, "hej");
     let input = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().input.pane.doc().text.to_string();

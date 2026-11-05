@@ -3,7 +3,7 @@ use crate::config::Config;
 use crate::editor::Editor;
 use crate::event::{Mouse, MouseKind};
 use crate::key::{Code, Key};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const W: u16 = 160;
 const H: u16 = 40;
@@ -43,6 +43,100 @@ fn rect(ed: &Editor, shows: Shows) -> crate::split::Rect {
     ed.screen.leaves.iter().find(|l| l.0 == id).map(|l| l.1).unwrap_or_default()
 }
 
+/// onetree S4: the keys are a pane's — every docked surface's by its leaf's id, a list's by its own, the terminal's
+/// program and a plugin's panel the slot's typing states — and what the code asks of them is that pane's kind, from what
+/// it shows. The state names the pane (`keys.pane`), under a floating one too.
+#[test]
+fn the_keys_are_a_panes_and_their_kind_is_what_it_shows() {
+    use crate::workspace::At;
+    let mut ed = every_surface();
+    let list = ed.workspace.group(GroupKind::Tests).unwrap().list;
+    for (here, shows) in [
+        (Here::Code, Shows::Code),
+        (Here::Side, Shows::Side),
+        (Here::Slot, Shows::Slot),
+        (Here::Chat, Shows::Chat),
+    ] {
+        let id = ed.workspace.leaf(shows).unwrap();
+        ed.workspace.set_at(here);
+        assert_eq!(ed.workspace.viewer.at, At::Pane(id), "{here:?}: its pane's id");
+        assert_eq!(ed.workspace.here(), here, "{here:?}: the kind of what pane#{id} shows");
+        assert_eq!(ed.keys_to().pane, Some(format!("pane#{id}")), "{here:?}: the state names it");
+    }
+    ed.workspace.set_at(Here::List(list));
+    assert_eq!(
+        (ed.workspace.viewer.at, ed.workspace.here()),
+        (At::List(list), Here::List(list)),
+        "a list, by its id"
+    );
+    // (a group's detail is the slot's, as its keys are)
+    let detail = ed.workspace.group(GroupKind::Tests).unwrap().detail_pane().unwrap();
+    assert_eq!(ed.workspace.kind_of(At::Pane(detail)), Here::Slot, "a detail: the slot's");
+    // (under the prompt the pane is still the side panel's)
+    let side = ed.workspace.leaf(Shows::Side).unwrap();
+    ed.workspace.set_at(Here::Side);
+    feed(&mut ed, ":");
+    assert!(matches!(ed.workspace.here(), Here::Float(_)), "the prompt has them");
+    assert_eq!(ed.workspace.viewer.under, At::Pane(side), "under it: the side panel's pane");
+    assert_eq!((ed.workspace.under_here(), ed.keys_to().pane), (Here::Side, Some(format!("pane#{side}"))));
+    // (the side panel left under it: the code's pane gets them back, the prompt keeps them meanwhile)
+    ed.workspace.leave(Here::Side);
+    let code = ed.workspace.viewer.focus;
+    assert!(matches!(ed.workspace.viewer.at, At::Float(_)), "the prompt still has them");
+    assert_eq!(ed.workspace.viewer.under, At::Pane(code), "left: the code's under it");
+}
+
+/// onetree S4: the keys on a code pane name the one focused — `C-w w` to another code pane moves them there, and a
+/// code pane closed with them leaves them on the code pane focused next (`Workspace::code_at_sync`), never on a pane
+/// gone.
+#[test]
+fn the_keys_on_the_code_follow_its_focus_and_never_name_a_pane_gone() {
+    use crate::workspace::At;
+    let mut ed = every_surface();
+    let first = ed.workspace.viewer.focus;
+    ed.split_view(crate::split::Dir::Vertical);
+    frame(&mut ed);
+    let second = ed.workspace.viewer.focus;
+    assert_ne!(first, second);
+    assert_eq!(ed.workspace.viewer.at, At::Pane(second), "the new pane has them");
+    assert_eq!(ed.keys_to().pane, Some(format!("pane#{second}")));
+    // (`focus` moved by another way than `set_at`: the keys follow at the event's end)
+    ed.workspace.viewer.focus = first;
+    ed.focus_sync();
+    assert_eq!(ed.workspace.viewer.at, At::Pane(first), "they follow the focus");
+    // (the pane with them closed: the next one focused has them)
+    ed.workspace.viewer.focus = second;
+    ed.focus_sync();
+    assert!(ed.close_view());
+    frame(&mut ed);
+    let left = ed.workspace.viewer.focus;
+    assert!(ed.workspace.views.iter().all(|v| v.id != second));
+    assert_eq!(ed.workspace.kind_of(At::Pane(second)), Here::Code, "a pane gone: the code's");
+    assert_eq!(
+        (ed.workspace.viewer.at, ed.workspace.here()),
+        (At::Pane(left), Here::Code),
+        "never a pane gone"
+    );
+}
+
+/// onetree S4: the text form's `keys →` line keeps its words and adds the pane they're in where `to` names something
+/// else — the chat, a card over the code — never twice where `to` is that pane.
+#[test]
+fn the_keys_line_adds_the_pane_only_where_to_names_another_thing() {
+    let mut ed = every_surface();
+    let line =
+        |ed: &Editor| ed.ui_state().text().lines().find(|l| l.starts_with("keys →")).unwrap().to_string();
+    let code = ed.workspace.viewer.focus;
+    let said = line(&ed);
+    assert!(said.starts_with(&format!("keys → pane#{code}, the code (")), "{said}");
+    assert!(!said.contains(" · in pane#"), "the code's pane once: {said}");
+    ed.workspace.set_at(Here::Chat);
+    let chat = ed.workspace.leaf(Shows::Chat).unwrap();
+    let said = line(&ed);
+    assert!(said.starts_with("keys → chat ("), "its words as they were: {said}");
+    assert!(said.contains(&format!(") · in pane#{chat}")), "the chat's pane added: {said}");
+}
+
 /// §2.1c, P2b's decision: a floating pane with the keys is `Viewer.at` — the picker, a prompt, which-key, a card —
 /// risen over the docked pane (`under`), which gets them back when it goes; the docked surface it acts on is still
 /// `is_at`'s; the state lists the floating pane with the keys, no leaf. A hop never starts from a floating pane:
@@ -51,28 +145,28 @@ fn rect(ed: &Editor, shows: Shows) -> crate::split::Rect {
 #[test]
 fn a_floating_pane_has_the_keys_and_gives_them_back_to_the_pane_under_it() {
     let mut ed = every_surface();
-    let floated = |ed: &Editor| match ed.workspace.viewer.at {
-        At::Float(id) => ed.float_of(id),
+    let floated = |ed: &Editor| match ed.workspace.here() {
+        Here::Float(id) => ed.float_of(id),
         _ => None,
     };
     // (the prompt over the side panel: the panel is what it acts on, and has the keys again after it)
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     feed(&mut ed, ":");
     assert_eq!(floated(&ed), Some(Floating::Prompt));
-    assert_eq!((ed.workspace.viewer.under, ed.workspace.is_at(At::Side)), (At::Side, true));
+    assert_eq!((ed.workspace.under_here(), ed.workspace.is_at(Here::Side)), (Here::Side, true));
     let state = ed.ui_state();
     let panes = &state.workspaces.iter().find(|s| s.front).unwrap().panes;
     assert_eq!(panes.iter().filter(|p| p.at).map(|p| p.id.as_str()).collect::<Vec<_>>(), ["prompt"]);
     feed(&mut ed, "<esc>");
-    assert_eq!(ed.workspace.viewer.at, At::Side, "esc: back to the side panel");
+    assert_eq!(ed.workspace.here(), Here::Side, "esc: back to the side panel");
     // (which-key while a sequence is under way, from the code; the hop it leads to is the code's)
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "<C-w>");
     assert_eq!(floated(&ed), Some(Floating::WhichKey));
     feed(&mut ed, "l");
-    assert_eq!(ed.workspace.viewer.at, At::Chat, "C-w l from the code, which-key over it");
+    assert_eq!(ed.workspace.here(), Here::Chat, "C-w l from the code, which-key over it");
     // (a card focused over the code: its answer gives the keys back; `C-w l` goes from the code)
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     ed.push_offer(crate::offer::Offer::new(
         "End the review?".into(),
         "2 files not viewed.",
@@ -88,23 +182,23 @@ fn a_floating_pane_has_the_keys_and_gives_them_back_to_the_pane_under_it() {
     assert_eq!(floated(&ed), None, "waiting: the keys stay the code's");
     feed(&mut ed, "<C-q>");
     assert_eq!(floated(&ed), Some(Floating::Card(card)));
-    let id = ed.workspace.viewer.at;
+    let id = ed.workspace.here();
     feed(&mut ed, "<C-w>");
     assert_eq!(floated(&ed), Some(Floating::WhichKey), "the card yields to the prefix");
     feed(&mut ed, "l");
-    assert_eq!((ed.workspace.viewer.at, ed.offers.len()), (At::Chat, 1), "from the code; the card waits");
+    assert_eq!((ed.workspace.here(), ed.offers.len()), (Here::Chat, 1), "from the code; the card waits");
     feed(&mut ed, "<C-w>h");
-    assert_eq!(ed.workspace.viewer.at, At::Code, "back on the code: the card waits");
+    assert_eq!(ed.workspace.here(), Here::Code, "back on the code: the card waits");
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.workspace.viewer.at, id, "focused again: the same pane");
+    assert_eq!(ed.workspace.here(), id, "focused again: the same pane");
     feed(&mut ed, "n");
-    assert_eq!((ed.offers.len(), ed.workspace.viewer.at), (0, At::Code), "answered: the code's again");
+    assert_eq!((ed.offers.len(), ed.workspace.here()), (0, Here::Code), "answered: the code's again");
     // (the picker opened from the code: a pane id of its own, the code's again after esc)
     feed(&mut ed, " b");
     assert_eq!(floated(&ed), Some(Floating::Picker));
-    assert_ne!(ed.workspace.viewer.at, id, "a pane id of its own");
+    assert_ne!(ed.workspace.here(), id, "a pane id of its own");
     feed(&mut ed, "<esc>");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
 }
 
 /// §2.6 in P2b: `C-w v` from the chat splits the code pane last focused, the keys to the new one; from the
@@ -113,10 +207,10 @@ fn a_floating_pane_has_the_keys_and_gives_them_back_to_the_pane_under_it() {
 fn c_w_v_off_the_code_splits_the_code_and_on_the_terminal_says_it_waits() {
     let mut ed = every_surface();
     let first = ed.workspace.viewer.focus;
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     feed(&mut ed, "<C-w>v");
     assert_eq!(ed.workspace.views.len(), 2);
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     assert_ne!(ed.workspace.viewer.focus, first, "the new pane has the keys");
     let _sent = crate::terminal::stand_in(&mut ed, 10, 80, 100);
     frame(&mut ed);
@@ -157,7 +251,7 @@ fn c_w_swaps_and_turns_the_codes_panes_and_c_w_w_goes_round_every_kind() {
     assert_eq!(ed.code_leaves(), vec![ed.workspace.viewer.focus], "the tree holds the one pane left");
     feed(&mut ed, "<C-w>v<C-w>q");
     assert_eq!(ed.workspace.views.len(), 1);
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     feed(&mut ed, "<C-w>J");
     assert!(
         ed.toasts.iter().any(|t| t.text.starts_with("the side panel and the chat keep their places")),
@@ -191,7 +285,7 @@ fn chat_view(ed: &mut Editor) {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(Msg::new(Role::User, "a question", ""));
     c.msgs.push(Msg::new(Role::Assistant, "An answer, in a few words.", ""));
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     frame(ed);
     feed(ed, "<esc>");
 }
@@ -217,14 +311,14 @@ fn s_tab_goes_to_the_next_pane_from_every_pane() {
     };
     let code = from(&|_| {});
     assert_eq!(code.1, "output:tests", "from the code: the slot, as C-w w");
-    from(&|ed| ed.workspace.viewer.at = At::Side);
+    from(&|ed| ed.workspace.set_at(Here::Side));
     // (the lists that read their keys by hand let it go on as `space`, `:` and `C-w`: the review's rail, a plugin's
     // panel, a floating list — the session list, `:messages`)
     let rail = |ed: &mut Editor| {
         let root = ed.workspace.root.clone();
         let r = crate::codereview::CodeReview::for_test(crate::codereview::Base::Head, root, Vec::new());
         ed.workspace.code_review = Some(r);
-        ed.workspace.viewer.at = At::Rail;
+        ed.workspace.set_at(Here::Rail);
         frame(ed);
         assert_eq!(ed.keys_to().region.name(), "review");
     };
@@ -267,7 +361,7 @@ fn s_tab_goes_to_the_next_pane_from_every_pane() {
     feed(&mut ed, "<C-w>v");
     let new = ed.workspace.viewer.focus;
     feed(&mut ed, "<S-tab>");
-    assert!(ed.workspace.is_at(At::Code) && ed.workspace.viewer.focus != new, "the other code pane");
+    assert!(ed.workspace.is_at(Here::Code) && ed.workspace.viewer.focus != new, "the other code pane");
     // The terminal's view mode — its program first, which keeps `S-tab` (`CSI Z`); `tab` there the slot's next tab
     let terminal = || {
         let mut ed = every_surface();
@@ -294,7 +388,7 @@ fn s_tab_goes_to_the_next_pane_from_every_pane() {
     assert_eq!(s_tab, c_w_w, "from the terminal's view mode: C-w w's round");
     let slot = ed.slot();
     feed(&mut ed, "<tab>");
-    assert!(ed.slot() != slot && ed.workspace.is_at(At::Slot), "tab: the slot's next tab, {:?}", ed.slot());
+    assert!(ed.slot() != slot && ed.workspace.is_at(Here::Slot), "tab: the slot's next tab, {:?}", ed.slot());
     // (run on the editor, the view's document put back first: round to a code pane of another buffer than the one
     // last focused, that pane's buffer is the code's — run on the view's, putting it back took the code back too)
     let mut ed = Editor::new(Config::default());
@@ -308,8 +402,8 @@ fn s_tab_goes_to_the_next_pane_from_every_pane() {
     assert_eq!(ed.keys_to().region.name(), "view:terminal");
     feed(&mut ed, "<S-tab>");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.focus),
-        (At::Code, a),
+        (ed.workspace.here(), ed.workspace.viewer.focus),
+        (Here::Code, a),
         "round to the first code pane"
     );
     assert_eq!(ed.doc().id, first, "its own buffer the code's");
@@ -317,7 +411,7 @@ fn s_tab_goes_to_the_next_pane_from_every_pane() {
     let mut ed = every_surface();
     let text = ed.doc().text.to_string();
     feed(&mut ed, "i<S-tab>");
-    assert_eq!((ed.mode, ed.workspace.viewer.at), (crate::editor::Mode::Insert, At::Code), "insert mode");
+    assert_eq!((ed.mode, ed.workspace.here()), (crate::editor::Mode::Insert, Here::Code), "insert mode");
     assert_eq!(ed.doc().text.to_string(), text, "nothing typed");
     let mut ed = every_surface();
     feed(&mut ed, ":<S-tab>");
@@ -355,7 +449,7 @@ fn s_tab_goes_to_the_next_pane_from_the_chats_input() {
     };
     let at_chat = |draft: &str| {
         let mut ed = every_surface();
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
         frame(&mut ed);
         feed(&mut ed, draft);
         frame(&mut ed);
@@ -373,7 +467,7 @@ fn s_tab_goes_to_the_next_pane_from_the_chats_input() {
     assert_eq!((ed.at_pane().and_then(|id| ed.workspace.shows(id)), ed.keys_to().region.name()), c_w_w);
     assert_eq!(input(&ed), draft, "the draft and its cursor as they were");
     // (round again, back to the chat: the draft there to go on with)
-    while !ed.workspace.is_at(At::Chat) {
+    while !ed.workspace.is_at(Here::Chat) {
         feed(&mut ed, "<S-tab>");
     }
     feed(&mut ed, "!");
@@ -381,7 +475,7 @@ fn s_tab_goes_to_the_next_pane_from_the_chats_input() {
     // `tab` from an empty chat: its suggestions, the keys kept
     let mut ed = at_chat("");
     feed(&mut ed, "<tab>");
-    assert!(ed.workspace.is_at(At::Chat) && !input(&ed).0.is_empty(), "a suggestion");
+    assert!(ed.workspace.is_at(Here::Chat) && !input(&ed).0.is_empty(), "a suggestion");
 }
 
 /// `C-w s` from the default tree: the two code panes are a split of their own in the code's column (not the slot's
@@ -454,11 +548,11 @@ fn the_tests_panel_is_a_linked_group_of_two_panes() {
     ed.focus_pane(detail_id);
     frame(&mut ed);
     assert!(
-        ed.workspace.is_at(At::Slot) && crate::rundoc::has_keys(&ed).is_some(),
+        ed.workspace.is_at(Here::Slot) && crate::rundoc::has_keys(&ed).is_some(),
         "the detail: the run's output"
     );
     feed(&mut ed, "<C-w>h");
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list));
+    assert_eq!(ed.workspace.here(), Here::List(g.list));
     assert_eq!(ed.keys_to().region, crate::uistate::Region::List(GroupKind::Tests));
     assert_eq!(ed.keys_to().region.name(), "list:tests");
     assert_eq!(ed.keys_to().to, format!("pane#{}", g.list));
@@ -470,7 +564,7 @@ fn the_tests_panel_is_a_linked_group_of_two_panes() {
     assert!(!shown(&mut ed).contains("left != right"), "a passed test: the output");
     // (tab to the detail, tab again back: the one tab there is rounds its two members)
     feed(&mut ed, "<tab>");
-    assert!(ed.workspace.is_at(At::Slot), "tab: the detail");
+    assert!(ed.workspace.is_at(Here::Slot), "tab: the detail");
     let state = ed.ui_state();
     let panes = &state.workspaces.iter().find(|s| s.front).unwrap().panes;
     let at: Vec<_> = panes.iter().filter(|p| p.at).map(|p| p.shows.as_str()).collect();
@@ -478,12 +572,12 @@ fn the_tests_panel_is_a_linked_group_of_two_panes() {
     // (`C-w w` goes round from where the keys are on screen — the detail, not the slot's leaf under it: on to the
     // chat; from the list, on to the detail)
     feed(&mut ed, "<C-w>w");
-    assert_eq!(ed.workspace.viewer.at, At::Chat, "C-w w from the detail: the next pane, the chat");
+    assert_eq!(ed.workspace.here(), Here::Chat, "C-w w from the detail: the next pane, the chat");
     ed.focus_pane(g.list);
     feed(&mut ed, "<C-w>w");
-    assert!(ed.workspace.is_at(At::Slot), "C-w w from the list: its detail");
+    assert!(ed.workspace.is_at(Here::Slot), "C-w w from the list: its detail");
     feed(&mut ed, "<tab>");
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list), "tab: the list");
+    assert_eq!(ed.workspace.here(), Here::List(g.list), "tab: the list");
     // (the state: both members, the keys the list's)
     let state = ed.ui_state();
     let panes = &state.workspaces.iter().find(|s| s.front).unwrap().panes;
@@ -498,30 +592,30 @@ fn the_tests_panel_is_a_linked_group_of_two_panes() {
     };
     let (y0, _, first) = ed.screen.list(crate::pane::GroupKind::Tests).unwrap();
     let list = ed.screen.leaves.iter().find(|l| l.0 == g.list).unwrap().1;
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     click(&mut ed, list.x + 3, y0 + 1 - first);
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.test_run.as_ref().unwrap().selected),
-        (At::List(g.list), 1)
+        (ed.workspace.here(), ed.workspace.test_run.as_ref().unwrap().selected),
+        (Here::List(g.list), 1)
     );
     let name = ed.screen.member_names.borrow().iter().find(|n| n.3 == detail_id).copied().expect("its name");
     assert_eq!(name.0, y0 - 1, "in the line over the members");
     click(&mut ed, name.1, name.0);
-    assert!(ed.workspace.is_at(At::Slot), "the detail's name: its keys");
+    assert!(ed.workspace.is_at(Here::Slot), "the detail's name: its keys");
     click(&mut ed, list.x + 3, y0 + 2);
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.test_run.as_ref().unwrap().selected),
-        (At::List(g.list), 1)
+        (ed.workspace.here(), ed.workspace.test_run.as_ref().unwrap().selected),
+        (Here::List(g.list), 1)
     );
     // (a word the list has no use for is said; esc to the code; back, and one q closes the group)
     feed(&mut ed, "x");
     assert!(ed.toasts.iter().any(|t| t.text.contains("the tests' list")), "said");
     feed(&mut ed, "<esc>");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     ed.focus_pane(g.list);
     feed(&mut ed, "q");
     assert!(ed.workspace.test_run.is_none() || ed.slot() != Some(crate::sizes::Slot::Test), "closed");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
 }
 
 /// P3 §2.1: the groups are one model — `Workspace.groups` holds the tests' from a session's start, in the slot's leaf;
@@ -540,7 +634,7 @@ fn a_groups_list_has_the_keys_only_while_its_laid_out() {
     // (no results: the output alone — the list no pane to go to, said)
     ed.focus_pane(g.list);
     frame(&mut ed);
-    assert_ne!(ed.workspace.viewer.at, At::List(g.list));
+    assert_ne!(ed.workspace.here(), Here::List(g.list));
     assert!(ed.toasts.iter().any(|t| t.text.contains("no results to list")), "said");
     with_results(&mut ed);
     ed.focus_pane(g.list);
@@ -552,15 +646,15 @@ fn a_groups_list_has_the_keys_only_while_its_laid_out() {
     assert_eq!(ed.workspace.test_run.as_ref().unwrap().selected, 0, "g: the first");
     // (enter on the failed one: its place, the code given the keys)
     feed(&mut ed, "j<ret>");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     assert!(ed.doc().path.as_ref().is_some_and(|p| p.ends_with("src/lib.rs")), "{:?}", ed.doc().path);
     // (the run gone while the list has the keys: they go back to the code, the list no layer)
     ed.focus_pane(g.list);
     frame(&mut ed);
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list));
+    assert_eq!(ed.workspace.here(), Here::List(g.list));
     ed.workspace.test_run = None;
     frame(&mut ed);
-    assert_eq!((ed.workspace.viewer.at, ed.list_focused()), (At::Code, None));
+    assert_eq!((ed.workspace.here(), ed.list_focused()), (Here::Code, None));
     assert_eq!(ed.keys_to().region, crate::uistate::Region::Code);
 }
 
@@ -638,37 +732,37 @@ fn c_w_hops_to_every_kind_of_pane_and_back() {
     let (left, right) = (ed.code_leaves()[0], ed.code_leaves()[1]);
     assert_eq!(ed.workspace.viewer.focus, right);
     feed(&mut ed, "<C-w>l");
-    assert_eq!(ed.workspace.viewer.at, At::Chat, "right of the code: the chat");
+    assert_eq!(ed.workspace.here(), Here::Chat, "right of the code: the chat");
     feed(&mut ed, "<C-w>h");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.focus),
-        (At::Code, right),
+        (ed.workspace.here(), ed.workspace.viewer.focus),
+        (Here::Code, right),
         "back: the pane it came from"
     );
     feed(&mut ed, "<C-w>h");
     assert_eq!(ed.workspace.viewer.focus, left);
     feed(&mut ed, "<C-w>h");
-    assert_eq!(ed.workspace.viewer.at, At::Side, "left of the code: the side panel");
+    assert_eq!(ed.workspace.here(), Here::Side, "left of the code: the side panel");
     feed(&mut ed, "<C-w>h");
-    assert_eq!(ed.workspace.viewer.at, At::Side, "nothing further");
+    assert_eq!(ed.workspace.here(), Here::Side, "nothing further");
     assert_eq!(ed.status.as_ref().map(|s| s.0.as_str()), Some("nothing to the left"));
     feed(&mut ed, "<C-w>l");
-    assert_eq!((ed.workspace.viewer.at, ed.workspace.viewer.focus), (At::Code, left));
+    assert_eq!((ed.workspace.here(), ed.workspace.viewer.focus), (Here::Code, left));
     feed(&mut ed, "<C-w>j");
-    assert_eq!(ed.workspace.viewer.at, At::Slot, "below: the slot");
+    assert_eq!(ed.workspace.here(), Here::Slot, "below: the slot");
     assert!(crate::rundoc::has_keys(&ed).is_some(), "its output");
     feed(&mut ed, "<C-w>l");
-    assert_eq!(ed.workspace.viewer.at, At::Chat, "right of the slot: the chat (it runs the body's height)");
+    assert_eq!(ed.workspace.here(), Here::Chat, "right of the slot: the chat (it runs the body's height)");
     feed(&mut ed, "<C-w>h");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.focus),
-        (At::Code, right),
+        (ed.workspace.here(), ed.workspace.viewer.focus),
+        (Here::Code, right),
         "the last focused isn't beside it: the nearest"
     );
     feed(&mut ed, "<C-w>j<C-w>h");
-    assert_eq!(ed.workspace.viewer.at, At::Side, "left of the slot: the side panel");
+    assert_eq!(ed.workspace.here(), Here::Side, "left of the slot: the side panel");
     feed(&mut ed, "<C-w>l<C-w>j<C-w>k");
-    assert_eq!((ed.workspace.viewer.at, ed.workspace.viewer.focus), (At::Code, left), "up from the slot");
+    assert_eq!((ed.workspace.here(), ed.workspace.viewer.focus), (Here::Code, left), "up from the slot");
 }
 
 /// `C-w z` fills the screen with a pane — `Zoom(PaneId)`, the chat's, a code pane's — and the hops see that one.
@@ -681,7 +775,7 @@ fn the_zoom_is_a_pane() {
     assert_eq!(ed.screen.leaves, [(chat, rect(&ed, Shows::Chat))], "that pane alone");
     assert_eq!(rect(&ed, Shows::Chat).w, W as usize);
     feed(&mut ed, "<C-w>h");
-    assert_eq!(ed.workspace.viewer.at, At::Chat, "nothing beside it while it fills the screen");
+    assert_eq!(ed.workspace.here(), Here::Chat, "nothing beside it while it fills the screen");
     feed(&mut ed, "<C-w>z<C-w>h<C-w>z");
     assert_eq!(ed.zoomed(), Some(crate::sizes::Zoom(ed.workspace.viewer.focus)));
     assert_eq!(ed.screen.panes.len(), 1);
@@ -827,13 +921,13 @@ fn the_size_keys_set_the_surfaces_share_in_the_tree() {
         (ed.screen.drawn_w(Shows::Chat), share(&ed, Shows::Chat)),
         (chat + STEP_COLS, cells(chat + STEP_COLS))
     );
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     feed(&mut ed, "<C-w>>");
     assert_eq!(
         (ed.screen.drawn_w(Shows::Side), share(&ed, Shows::Side)),
         (side + STEP_COLS, cells(side + STEP_COLS))
     );
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "<C-w>+<C-w>+<C-w>-");
     assert_eq!((ed.screen.slot().h, share(&ed, Shows::Slot)), (slot + STEP_ROWS, cells(slot + STEP_ROWS)));
     assert_eq!(ed.screen.drawn_w(Shows::Chat), chat + STEP_COLS, "the chat as it was set");
@@ -847,9 +941,9 @@ fn c_w_equals_makes_every_share_automatic_again() {
     let mut ed = every_surface();
     let before = rects(&ed);
     feed(&mut ed, "<C-w>><C-w>+");
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     feed(&mut ed, "<C-w><lt>");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "<C-w>v<C-w>>");
     for s in [Shows::Chat, Shows::Side, Shows::Slot] {
         assert!(matches!(share(&ed, s), Some(Share::Cells(_))), "{s:?} set");
@@ -893,9 +987,9 @@ fn a_restart_keeps_the_sizes_you_set_in_the_same_rects() {
     ed.open(&file).unwrap();
     scene(&mut ed);
     feed(&mut ed, "<C-w>><C-w>+");
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     feed(&mut ed, "<C-w><lt>");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let (sizes, laid) = (ed.sizes, rects(&ed));
     let shares = [Shows::Side, Shows::Chat, Shows::Slot].map(|s| share(&ed, s));
@@ -938,9 +1032,9 @@ fn c_w_is_tarae_s_in_the_terminal_and_c_w_c_w_the_program_s() {
     assert!(drained(&sent).is_empty(), "esc: cancelled, nothing sent");
     assert!(ed.pending.is_empty() && ed.workspace.program_has_keys(), "the program keeps the keys");
     feed(&mut ed, "<C-w>k");
-    assert_eq!(ed.workspace.viewer.at, At::Code, "C-w k: up to the code");
+    assert_eq!(ed.workspace.here(), Here::Code, "C-w k: up to the code");
     feed(&mut ed, "<C-w>j");
-    assert_eq!(ed.workspace.viewer.at, At::Slot, "and back down: its view mode");
+    assert_eq!(ed.workspace.here(), Here::Slot, "and back down: its view mode");
     // Handed back: every `C-w` the program's
     let (config, warnings) = crate::config::parse("[keys.terminal]\n\"C-w\" = \"to_program\"\n");
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -969,5 +1063,5 @@ fn c_w_is_tarae_s_in_the_terminal_and_c_w_c_w_the_program_s() {
     feed(&mut ed, "<C-w><C-w>");
     assert!(drained(&sent).is_empty(), "no stray C-w: the window table had none");
     feed(&mut ed, "<C-w>k");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
 }

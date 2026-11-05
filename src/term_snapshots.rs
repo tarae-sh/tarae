@@ -1388,7 +1388,7 @@ fn frictions36_frames() {
                 c.settings.reading_since(crate::clock::now() - std::time::Duration::from_millis(1200));
             }
             s.ed.workspace.claude.chat = Some(c);
-            s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+            s.ed.workspace.set_at(crate::workspace::Here::Chat);
         };
         let mut s = shot();
         chat(&mut s, false);
@@ -1704,7 +1704,7 @@ fn frames_of_frictions30() {
         c.queue("then add a test for it".into(), false);
         c.sends.push(crate::chat::Later::Review(None));
         s.ed.workspace.claude.chat = Some(c);
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         s.frame();
         s.frames_both(&format!("f30_queued-{w}"));
         // 16: a host card whose run ended before it was answered (the network closed)
@@ -1730,7 +1730,7 @@ fn frames_of_frictions30() {
         let (root, repo) =
             (PathBuf::from("/Users/me/src/tarae"), PathBuf::from("/Users/me/src/sandbox-runtime"));
         s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         let input = json!({ "file_path": repo.join("README.md") });
         let mut look = crate::reads::look("Read", &input, &root);
         look.at = Some(repo.join("README.md"));
@@ -1782,7 +1782,7 @@ fn frames_of_the_read_card_with_its_repository() {
         let caps = crate::caps::Caps { root: root.clone(), here, ..Default::default() };
         s.ed.workspace.claude.caps = Some((1, std::sync::Arc::new(caps)));
         s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         let input = json!({ "file_path": repo.join("src/layout/flex.rs") });
         let mut look = crate::reads::look("Read", &input, &root);
         look.at = Some(repo.join("src/layout/flex.rs"));
@@ -2636,7 +2636,7 @@ fn elapsed_time_frames() {
     ));
     let generation = chat.generation();
     s.ed.workspace.claude.chat = Some(chat);
-    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+    s.ed.workspace.set_at(crate::workspace::Here::Chat);
     s.frames_both("time-running");
     crate::chat::stream_event(&mut s.ed, generation, crate::llm::StreamEv::Done(Ok(String::new())));
     s.frames_both("time-ended");
@@ -2682,7 +2682,7 @@ fn sessions_reviewing(w: u16) -> Shot {
     let mut chat = crate::chat::Chat::new();
     chat.state = crate::chat::State::Thinking;
     l.claude.chat = Some(chat);
-    l.viewer.at = crate::workspace::At::Chat;
+    l.set_at(crate::workspace::Here::Chat);
     l.reviewer = Some(reviewer(&dir, State::Reading));
     let dir = behind(&mut s.ed, "docs");
     let mut done = reviewer(&dir, State::Done);
@@ -2971,7 +2971,7 @@ fn the_empty_chat_offers_the_latest_conversation_on_its_first_row() {
         chat.hidden = false;
         chat.past = past;
         s.ed.workspace.claude.chat = Some(chat);
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         let mut parser = vt100::Parser::new(s.h, s.w, 0);
         parser.process(&s.frame());
         let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
@@ -3065,7 +3065,7 @@ fn a_press_on_the_top_line_lands_after_a_part_folded() {
         });
         s.ed.workspace.claude.chat = Some(chat);
         s.ed.workspace.claude.hosts.push(("crates.io".into(), 443));
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         let mut parser = vt100::Parser::new(s.h, s.w, 0);
         parser.process(&s.frame());
         let top = parser.screen().rows(0, s.w).next().unwrap();
@@ -3306,7 +3306,7 @@ fn queued_behind_a_stopped_turn(ran: Duration, w: u16) -> Shot {
     chat.msgs.push(Msg::tool(look, "toolu_r1"));
     let generation = chat.generation();
     s.ed.workspace.claude.chat = Some(chat);
-    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+    s.ed.workspace.set_at(crate::workspace::Here::Chat);
     let call = crate::tools::Call::of(generation, "r1", json!(1));
     let job = crate::tools::Job::Command("cargo test -p tarae".into(), cwd);
     let who = crate::tools::For::Claude(call);
@@ -5510,7 +5510,8 @@ fn a_turns_rail_stamp_is_pressed_as_it_first_shows() {
     let place = Place::File(cwd.join("src/demo.rs"));
     // The presses the rail drew at `at` ms, its keys' hand on other.rs: (strength in hundredths, its letter)
     let drawn = |s: &mut Shot, at: u64| {
-        let was = std::mem::replace(&mut s.ed.workspace.viewer.at, crate::workspace::At::Rail);
+        let rail = s.ed.workspace.at_of(crate::workspace::Here::Rail);
+        let was = std::mem::replace(&mut s.ed.workspace.viewer.at, rail);
         s.ed.workspace.code_review.as_mut().unwrap().selected = 1;
         s.ed.motion_at = Some(Duration::from_millis(at));
         super::MOTION_SEEN.with_borrow_mut(Vec::clear);
@@ -5650,7 +5651,7 @@ fn a_click_on_the_rails_file_names_opens_them_in_a_full_layout() {
     ));
     let chat = crate::chat::Chat::new();
     s.ed.workspace.claude.chat = Some(chat);
-    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+    s.ed.workspace.set_at(crate::workspace::Here::Chat);
     for name in ["b", "c", "d", "e"] {
         let other = dir.join(format!("session-{name}"));
         std::fs::create_dir_all(&other).unwrap();
@@ -5986,7 +5987,7 @@ fn the_chat_narrows_for_the_review_rail_only_where_the_rail_is_drawn() {
         s.ed.config.llm.command = "sh".into();
         s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut s.ed);
-        s.ed.workspace.leave(crate::workspace::At::Chat);
+        s.ed.workspace.leave(crate::workspace::Here::Chat);
         s.ed.open(&files[0].path).unwrap();
         s.frame();
         let alone = s.ed.screen.drawn_w(crate::pane::Shows::Chat);
@@ -6045,7 +6046,7 @@ fn review_rail_with_80_files_scrolls_and_keeps_its_counts() {
         s.ed.config.llm.command = "sh".into();
         s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut s.ed);
-        s.ed.workspace.leave(crate::workspace::At::Chat);
+        s.ed.workspace.leave(crate::workspace::Here::Chat);
         s.ed.open(&dir.join(rel(0))).unwrap();
         let turn = Base::Turn { at: 0, question: "split the modules".into() };
         s.ed.workspace.code_review = Some(CodeReview::for_test(turn, dir.clone(), files.clone()));
@@ -6180,7 +6181,7 @@ fn review_rail_scrolls_by_click_and_marks_by_click() {
     };
     assert_eq!(viewed(&s), 1, "marked once, not toggled back");
     // A click on its name opens it, nothing more; `space v m` keeps the mark (set-only), `space v M` takes it back
-    s.ed.workspace.leave(crate::workspace::At::Chat);
+    s.ed.workspace.leave(crate::workspace::Here::Chat);
     s.keys(" vm");
     assert_eq!(viewed(&s), 1, "space v m only marks");
     s.keys(" vM");
@@ -6414,7 +6415,7 @@ fn snapshot_side_panel_git() {
     st.generation = 1;
     s.ed.workspace.git_status = Some(st.with_rows());
     s.ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, cwd));
-    s.ed.workspace.viewer.at = crate::workspace::At::Side;
+    s.ed.workspace.set_at(crate::workspace::Here::Side);
     s.keys("j");
     s.check("side_panel_git");
     s.frames_both("side_panel_git");
@@ -6461,7 +6462,7 @@ fn the_draft_card_stays_in_the_codes_room() {
         s.ed.config.llm.args = vec!["-c".into(), "read -r line; sleep 5".into()];
         if side.is_none() {
             crate::chat::open(&mut s.ed);
-            s.ed.workspace.leave(crate::workspace::At::Chat);
+            s.ed.workspace.leave(crate::workspace::Here::Chat);
         }
         crate::llm::draft(&mut s.ed, doc, "a commit message", "draft it", 0, 0).unwrap();
         let mut vt = vt100::Parser::new(h, w, 0);
@@ -6997,7 +6998,7 @@ fn snapshot_terminal_panel() {
     at(&mut s, K::Down, 10, 3);
     assert!(
         s.ed.workspace.terminal.as_ref().unwrap().selection.is_none()
-            && !s.ed.workspace.is_at(crate::workspace::At::Program)
+            && !s.ed.workspace.is_at(crate::workspace::Here::Program)
     );
     at(&mut s, K::Drag, 10, y + 1);
     at(&mut s, K::Up, 10, y + 1);
@@ -7254,7 +7255,7 @@ fn a_long_name_shows_whole_when_selected() {
             .iter()
             .position(|l| l.label.ends_with(".tsx"))
             .unwrap();
-    s.ed.workspace.viewer.at = crate::workspace::At::Side;
+    s.ed.workspace.set_at(crate::workspace::Here::Side);
     let sb = s.ed.workspace.viewer.sidebar.as_mut().unwrap();
     sb.selected = row;
     assert!(text(&mut s).contains("user_profile_settings_view_controller.tsx"), "whole when selected");
@@ -7791,7 +7792,7 @@ fn an_ask_over_the_chat_is_as_wide_as_with_the_chat_closed() {
             s.file("src/demo.rs", DEMO_RS);
             if chat {
                 s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-                s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+                s.ed.workspace.set_at(crate::workspace::Here::Chat);
             }
             s.ed.push_offer(card.clone());
             let shown = cells(&s.frame(), 112, 30).screen().contents();
@@ -7828,7 +7829,7 @@ fn frames_of_fixesy_asks() {
             s.file("src/demo.rs", DEMO_RS);
             if chat {
                 s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-                s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+                s.ed.workspace.set_at(crate::workspace::Here::Chat);
             }
             s.ed.push_offer(card.clone());
             s.frames_both(&format!("fixesy-{name}-{}", if chat { "chat" } else { "nochat" }));
@@ -7851,7 +7852,7 @@ fn frames_of_fixesy_stack() {
             s.file("src/demo.rs", DEMO_RS);
             s.ed.workspace.name = "main".into();
             s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-            s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+            s.ed.workspace.set_at(crate::workspace::Here::Chat);
             s.ed.offer_popups = true;
             let dir = root.with_file_name("fix-login");
             std::fs::create_dir_all(&dir).unwrap();
@@ -7891,7 +7892,7 @@ fn an_ask_wraps_its_text_at_its_own_width() {
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
         s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         s.ed.push_offer(card);
         let p = cells(&s.frame(), 112, 30);
         let (x, y, w, h) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{name}: drawn"));
@@ -7937,7 +7938,7 @@ fn an_ask_over_the_chat_stands_on_its_inputs_rule() {
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
         s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         s
     };
     let rows = |s: &mut Shot| -> Vec<String> { cells(&s.frame(), 112, 30).screen().rows(0, 112).collect() };
@@ -8072,7 +8073,7 @@ fn frames_of_cardkeys() {
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
         s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        s.ed.workspace.set_at(crate::workspace::Here::Chat);
         s.ed.push_offer(base_moved(true).card());
         s.frames_both(&format!("cardkeys-moved-chat-{w}"));
         // The chat taking a narrow screen whole: the card waits over its foot, and focused it stays there
@@ -8081,7 +8082,7 @@ fn frames_of_cardkeys() {
             s.ed.offer_popups = true;
             s.file("src/demo.rs", DEMO_RS);
             s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-            s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+            s.ed.workspace.set_at(crate::workspace::Here::Chat);
             s.ed.push_offer(chat112_cards().swap_remove(2).1);
             s.frames_both("cardkeys-narrow-57-waiting");
             s.keys("<C-q>");
@@ -8800,7 +8801,7 @@ fn a_line_that_drags_lights_under_the_pointer() {
     assert_eq!(cell(&mut s, x, low.y).1, accent, "held: the accent");
     s.ed.dragging = None;
     // The keys back in the code: the slot's line, off its names — then off every line: none lit
-    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    s.ed.workspace.viewer.keys_to_code();
     hover(&mut s, 30, low.y + 2);
     let slot = s.ed.screen.slot().y;
     let cols = s.ed.screen.slot().x..s.ed.screen.slot_end();
@@ -8813,7 +8814,7 @@ fn a_line_that_drags_lights_under_the_pointer() {
     // (lit by the keys: under the pointer it stays full)
     s.ed.bottom_take_keys();
     assert_eq!(cell(&mut s, x, slot).1, accent, "the slot with the keys: its line full");
-    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    s.ed.workspace.viewer.keys_to_code();
     hover(&mut s, 30, low.y + 2);
     assert_eq!(cell(&mut s, x, slot).1, wash, "let go");
 }
@@ -8831,7 +8832,7 @@ fn the_surface_under_the_pointer_lights_its_lines_half() {
     let lines = (0..20).map(|i| format!("output line {i}")).collect();
     s.ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
     crate::uistate::tests::chat(&mut s.ed, "");
-    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    s.ed.workspace.viewer.keys_to_code();
     let (_, _, accent) = chrome_colors(&s.ed);
     let fg = |s: &mut Shot, x: usize, y: usize| {
         let c = cells(&s.frame(), w, h).screen().cell(y as u16, x as u16).unwrap().clone();
@@ -8861,14 +8862,14 @@ fn the_surface_under_the_pointer_lights_its_lines_half() {
     hover(&mut s, chat_x + 9, 7);
     assert!(s.ed.unchanged, "a move within it: nothing to draw");
     // The keys there too: full
-    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+    s.ed.workspace.set_at(crate::workspace::Here::Chat);
     assert_eq!(fg(&mut s, chat_rule, 0), Some(accent), "keys and pointer: full");
     // (the keys in the chat: the code's line the wash — under the pointer, half)
     let code_wash = fg(&mut s, code_rule, 0).unwrap();
     assert_ne!(code_wash, accent);
     hover(&mut s, 10, 6);
     assert_eq!(fg(&mut s, code_rule, 0), Some(half(code_wash)), "the code pane under the pointer: half");
-    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    s.ed.workspace.viewer.keys_to_code();
     // The bottom slot's line, the pointer over its output
     let slot = s.ed.screen.slot().y;
     let cols = s.ed.screen.slot().x..s.ed.screen.slot_end();
@@ -9155,7 +9156,7 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
         ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains("hi"))
     });
     s.ed.terminal_focus();
-    let typing = |ed: &Editor| ed.workspace.is_at(crate::workspace::At::Program);
+    let typing = |ed: &Editor| ed.workspace.is_at(crate::workspace::Here::Program);
     assert!(typing(&s.ed));
     // A task started meanwhile (harmless: a pause and a failure) — a tab, running
     let cwd = std::env::temp_dir();
@@ -9194,7 +9195,7 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
     }));
     s.frame();
     assert_eq!(
-        (s.ed.slot(), s.ed.workspace.is_at(crate::workspace::At::Slot), typing(&s.ed)),
+        (s.ed.slot(), s.ed.workspace.is_at(crate::workspace::Here::Slot), typing(&s.ed)),
         (Some(Slot::Task), true, false)
     );
     // `tab` while the slot has the keys: the next tab, round to the first (`C-w t` is Helix's transpose again)
@@ -9202,7 +9203,7 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
     assert_eq!(s.ed.slot(), Some(Slot::Terminal));
     s.keys("<tab>");
     assert_eq!(s.ed.slot(), Some(Slot::Task));
-    assert!(s.ed.workspace.is_at(crate::workspace::At::Slot), "the keys stayed in the slot");
+    assert!(s.ed.workspace.is_at(crate::workspace::Here::Slot), "the keys stayed in the slot");
     s.ed.workspace.terminal = None; // hangs it up
 }
 
@@ -9441,7 +9442,7 @@ fn the_git_tab_opens_on_a_file() {
     st.generation = 1;
     s.ed.workspace.git_status = Some(st.with_rows());
     s.ed.workspace.viewer.sidebar = Some(Sidebar::new(Mode::Git, root));
-    s.ed.workspace.viewer.at = crate::workspace::At::Side;
+    s.ed.workspace.set_at(crate::workspace::Here::Side);
     s.ed.sidebar_sync();
     s.frame();
     let sb = s.ed.workspace.viewer.sidebar.as_ref().unwrap();
@@ -9496,7 +9497,7 @@ fn the_git_tab_reopened_starts_fresh_or_keeps_your_row() {
     // A tab built while it hadn't the keys (`:restart`, a link) and never had them: on a file too
     s.ed.workspace.viewer.sidebar = None;
     s.ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(Mode::Git, s.root.clone()));
-    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    s.ed.workspace.viewer.keys_to_code();
     s.ed.sidebar_sync();
     s.ed.sidebar_show(Mode::Git);
     s.frame();
@@ -10088,7 +10089,7 @@ fn frames_of_f235() {
         let mut c = Chat::new();
         c.msgs = msgs;
         s.ed.workspace.claude.chat = Some(c);
-        s.ed.workspace.viewer.at = crate::workspace::At::Code;
+        s.ed.workspace.viewer.keys_to_code();
     };
     let docs = |s: &mut Shot, text: &str| {
         s.in_project();

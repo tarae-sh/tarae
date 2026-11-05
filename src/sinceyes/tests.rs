@@ -430,7 +430,7 @@ fn the_card_says_what_changed_since_your_y() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -582,7 +582,7 @@ fn the_same_run_in_the_sandbox_says_what_changed_in_what_it_runs() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -696,7 +696,7 @@ fn what_a_run_made_is_a_change_since_its_answer() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -741,7 +741,7 @@ fn chat_in(root: &Path) -> (crate::editor::Editor, u64) {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     (ed, generation)
 }
@@ -916,7 +916,7 @@ fn an_answer_outlasts_the_conversation() {
     crate::chat::reset(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let (_, q) = ask_run(&mut ed, generation, 2, args);
     assert!(q.starts_with(&format!("Same as card#{first} — n at ")), "{q}");

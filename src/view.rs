@@ -18,7 +18,7 @@ use crate::key::{Code, Key};
 use crate::keymap::Lookup;
 use crate::movement as mv;
 use crate::selection::{Range, Selection};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// What has a view mode: the chat's conversation (normal mode on its transcript — `chatdoc.rs`), the terminal's
 /// scrollback and screen. (The run panels' output is a document of its own with normal mode's keys — `rundoc.rs`.)
@@ -263,7 +263,7 @@ pub fn has_keys(ed: &Editor) -> Option<Surface> {
 
 /// The terminal's view still has its surface: tarae's keys on its panel, in front, the same run.
 fn terminal_holds(ed: &Editor, v: &View) -> bool {
-    ed.workspace.is_at(At::Slot)
+    ed.workspace.is_at(Here::Slot)
         && ed.slot() == Some(crate::sizes::Slot::Terminal)
         && ed.workspace.terminal.as_ref().is_some_and(|t| t.visible && t.generation() == v.made.generation)
 }
@@ -387,7 +387,7 @@ fn terminal_enter(ed: &mut Editor, land: Land) {
     doc.set_top(top.min(last));
     let made_of = Made { generation, size, back, lines: last + 1 };
     ed.workspace.viewer.view = Some(made(doc, made_of, wraps));
-    ed.workspace.viewer.at = At::Slot;
+    ed.workspace.set_at(Here::Slot);
     ed.workspace.viewer.hand = None;
     ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
     in_sight(ed);
@@ -673,16 +673,16 @@ fn after(ed: &mut Editor) {
     match a {
         After::Leave => {
             leave(ed);
-            ed.workspace.leave(At::Slot);
+            ed.workspace.leave(Here::Slot);
         }
         After::Input | After::Enter => {
             if ed.workspace.terminal.as_ref().is_some_and(|t| t.exited.is_some()) {
                 return ed.set_status("its program has ended — q close, esc code");
             }
             leave(ed);
-            ed.workspace.leave(At::Slot);
+            ed.workspace.leave(Here::Slot);
             if let Some(t) = ed.workspace.terminal.as_mut() {
-                ed.workspace.viewer.at = At::Program;
+                ed.workspace.viewer.at = crate::workspace::At::Program;
                 t.parser.screen_mut().set_scrollback(0);
             }
         }
@@ -891,7 +891,7 @@ pub fn sync(ed: &mut Editor) {
     {
         leave(ed);
     }
-    if ed.workspace.viewer.view.is_some() || !ed.workspace.is_at(At::Slot) {
+    if ed.workspace.viewer.view.is_some() || !ed.workspace.is_at(Here::Slot) {
         return;
     }
     match ed.slot() {

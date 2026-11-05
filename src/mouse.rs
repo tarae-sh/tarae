@@ -1089,7 +1089,7 @@ pub fn review_mouse(ed: &mut Editor, kind: MouseKind, x: usize, y: usize, hunk: 
             }
             ed.plugin_panel_unfocus();
             ed.procs_unfocus();
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
         }
         _ => return false,
     }

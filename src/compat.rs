@@ -563,7 +563,7 @@ pub fn run(entry: &Entry, at: &Place) -> Verdict {
         return v;
     };
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let id = json!(format!("compat-{n}"));
     let call = crate::tools::Call::of(c.generation(), &format!("compat{n}"), id.clone());
     // (what it's let change outside the project, and what's the harness's own)

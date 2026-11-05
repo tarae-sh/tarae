@@ -237,7 +237,7 @@ fn chat(msgs: Vec<Msg>) -> Editor {
     let mut c = Chat::new();
     c.msgs = msgs;
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     ed
 }
@@ -410,7 +410,7 @@ fn a_cut_rows_card_covers_it_to_its_end_and_keeps_the_cursor() {
 #[test]
 fn the_mouse_over_a_cut_row_shows_it_whole_on_a_card() {
     let mut ed = chat(convo());
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let before = frame(&mut ed);
     let (y, x, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16));
@@ -485,7 +485,7 @@ fn the_last_row_held_in_a_full_chat_shows_whole() {
                again, then say goodbye";
     let long = (0..30).map(|i| format!("Paragraph {i} of the answer.")).collect::<Vec<_>>().join("\n\n");
     let mut ed = chat(vec![Msg::new(Role::User, "walk it", ""), Msg::new(Role::Assistant, long, "")]);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     c.queue(msg.to_string(), false);
@@ -516,7 +516,7 @@ fn a_held_row_folds_when_it_leaves_a_still_mouse() {
         ]
     };
     let mut ed = chat(msgs());
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let (y, x, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16));
@@ -532,7 +532,7 @@ fn a_held_row_folds_when_it_leaves_a_still_mouse() {
     assert!(!screen.contains("farewell"), "gone:\n{screen}");
     // (the focus gone, the mouse with it)
     let mut ed = chat(msgs());
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16));
     assert!(ed.cut_hover.is_some());
@@ -738,7 +738,7 @@ fn a_run_panels_command_is_whole_on_a_card_over_its_line() {
     ed.handle_key("K".parse().unwrap());
     let said = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
     assert!(said.starts_with(&format!("{cmd} — ran outside")), "{said}");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let before = frame(&mut ed);
     // (the mouse over the label: the card, right over the line, its words whole)
     ed.handle_event(Event::Hover(x as u16, y as u16));
@@ -883,7 +883,7 @@ fn a_cut_text_under_a_picker_is_not_in_hand() {
 }
 
 /// The side panel with two long names, the second selected.
-fn side_panel(at: crate::workspace::At) -> Editor {
+fn side_panel(at: crate::workspace::Here) -> Editor {
     let mut ed = Editor::new(Config::default());
     let files = vec![
         "a_first_long_file_name_that_says_hello_and_never_fits_in_the_panel.rs".to_string(),
@@ -894,7 +894,7 @@ fn side_panel(at: crate::workspace::At) -> Editor {
     let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
     sb.selected = 1;
     ed.workspace.viewer.sidebar = Some(sb);
-    ed.workspace.viewer.at = at;
+    ed.workspace.set_at(at);
     frame(&mut ed);
     ed
 }
@@ -908,11 +908,11 @@ fn a_lists_selected_row_is_whole_on_its_card_while_the_list_has_the_keys() {
     let (long, other) =
         ("farewell_the_panel_never_has_room_for_at_all.rs", "hello_and_never_fits_in_the_panel.rs");
     let row_of = |s: &str, y: usize| s.lines().nth(y).unwrap_or_default().to_string();
-    let mut ed = side_panel(crate::workspace::At::Code);
+    let mut ed = side_panel(crate::workspace::Here::Code);
     let before = frame(&mut ed);
     let (y, ..) = cut_text(&ed, "farewell").expect("marked, and cut");
     assert!(!row_of(&before, y).contains(long) && card(&ed).is_none(), "no keys, no row in hand:\n{before}");
-    let mut ed = side_panel(crate::workspace::At::Side);
+    let mut ed = side_panel(crate::workspace::Here::Side);
     let screen = frame(&mut ed);
     let (y, a, _, w) = cut_text(&ed, "farewell").expect("recorded as cut");
     assert!(row_of(&screen, y).contains(long), "whole:\n{screen}");
@@ -941,7 +941,7 @@ fn a_lists_selected_row_is_whole_on_its_card_while_the_list_has_the_keys() {
 /// next name's shows at once; off them, it goes at once and the next waits again; off before it came, none comes.
 #[test]
 fn a_cut_rows_card_waits_for_the_pointer_to_rest_then_hands_off_at_once() {
-    let mut ed = side_panel(crate::workspace::At::Code);
+    let mut ed = side_panel(crate::workspace::Here::Code);
     ed.card_rest = true;
     let before = frame(&mut ed);
     let (y0, a0, ..) = cut_text(&ed, "hello").expect("recorded as cut");
@@ -985,7 +985,7 @@ fn a_cut_rows_card_waits_for_the_pointer_to_rest_then_hands_off_at_once() {
 /// the row in hand's card (the list with the keys) never waits.
 #[test]
 fn a_key_or_the_wheel_lets_a_waiting_card_go_and_the_row_in_hand_never_waits() {
-    let mut ed = side_panel(crate::workspace::At::Code);
+    let mut ed = side_panel(crate::workspace::Here::Code);
     ed.card_rest = true;
     frame(&mut ed);
     let (y, a, ..) = cut_text(&ed, "hello").expect("recorded as cut");
@@ -1011,7 +1011,7 @@ fn a_key_or_the_wheel_lets_a_waiting_card_go_and_the_row_in_hand_never_waits() {
         // (the pointer moving off and on again starts its rest anew)
         ed.handle_event(Event::Hover(0, H - 1));
     }
-    let mut ed = side_panel(crate::workspace::At::Side);
+    let mut ed = side_panel(crate::workspace::Here::Side);
     ed.card_rest = true;
     frame(&mut ed);
     assert!(card(&ed).is_some(), "the row in hand's card at once");
@@ -1024,7 +1024,7 @@ fn side_long(long: &str) -> Editor {
     let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
     sb.selected = 0;
     ed.workspace.viewer.sidebar = Some(sb);
-    ed.workspace.viewer.at = crate::workspace::At::Side;
+    ed.workspace.set_at(crate::workspace::Here::Side);
     frame(&mut ed);
     ed
 }
@@ -1512,11 +1512,11 @@ fn a_card_never_ends_inside_a_word_under_it() {
             let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
             sb.selected = 0;
             ed.workspace.viewer.sidebar = Some(sb);
-            ed.workspace.viewer.at = at;
+            ed.workspace.set_at(at);
             ed
         };
-        let before = frame(&mut side(crate::workspace::At::Code));
-        let mut ed = side(crate::workspace::At::Side);
+        let before = frame(&mut side(crate::workspace::Here::Code));
+        let mut ed = side(crate::workspace::Here::Side);
         let screen = frame(&mut ed);
         let c = ed.screen.cut_card.borrow().clone().expect("the row in hand's card");
         for (k, &end) in c.ends.iter().enumerate() {
@@ -1554,11 +1554,11 @@ fn a_card_reaches_a_words_end_never_past_its_punctuation_nor_twelve_cells() {
             let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
             sb.selected = 0;
             ed.workspace.viewer.sidebar = Some(sb);
-            ed.workspace.viewer.at = at;
+            ed.workspace.set_at(at);
             ed
         };
-        let before = frame(&mut side(crate::workspace::At::Code));
-        let mut ed = side(crate::workspace::At::Side);
+        let before = frame(&mut side(crate::workspace::Here::Code));
+        let mut ed = side(crate::workspace::Here::Side);
         let screen = frame(&mut ed);
         let Some(c) = ed.screen.cut_card.borrow().clone() else { continue };
         for (k, &end) in c.ends.iter().enumerate() {
@@ -1787,7 +1787,7 @@ fn code_answer() -> Editor {
     crate::syntax::Loader::global().load(rust).expect("rust's grammar");
     let answer = format!("Counted by owner:\n\n```rust\nfn count() {{\n{CODE}\n}}\n```\n\nThat's all.");
     let mut ed = chat(vec![Msg::new(Role::User, "count them", ""), Msg::new(Role::Assistant, answer, "")]);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     ed
 }
@@ -1825,7 +1825,7 @@ fn a_cut_code_row_in_the_chat_is_whole_under_the_mouse() {
     );
     nothing_moved(&before, &screen, (cx, top, 0, h), H as usize);
     // (a press on it: the transcript's cursor on the code's line)
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     click(&mut ed, a + 6, y + 1);
     let line = crate::chatdoc::cursor_line(&ed).expect("the transcript's cursor");
     let doc = transcript_text(&ed);
@@ -2011,7 +2011,7 @@ fn on_of(ed: &Editor, word: &str) -> On {
 fn a_stacked_tables_header_cut_is_whole_under_the_mouse() {
     let answer = format!("A table:\n\n{WIDE_TABLE}\n\nThat's all.");
     let mut ed = chat(vec![Msg::new(Role::User, "show them", ""), Msg::new(Role::Assistant, answer, "")]);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let whole = whole_under_the_mouse(&mut ed, On::Transcript, "farewell");
     assert_eq!(whole, "the_owner_whose_name_runs_far_and_farewell");
@@ -2047,7 +2047,7 @@ fn the_follow_cards_folded_log_is_whole_under_the_mouse() {
         .collect();
     let mut ed =
         chat(vec![Msg::new(Role::User, "go", ""), Msg::new(Role::Assistant, words.join("\n\n"), "")]);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let c = chat_of(&mut ed);
     c.hidden = true;
     c.follow.on = true;
@@ -2100,10 +2100,10 @@ fn the_follow_cards_folded_log_is_whole_under_the_mouse() {
         assert!(screen.contains("Firstly"), "kept, the pointer at row {row}:\n{screen}");
     }
     // (a press on its body: a reveal, nothing — the code it covers is out of sight, its cursor unmoved)
-    let (top, cursor, at) = (top, ed.doc().selection().primary(), ed.workspace.viewer.at);
+    let (top, cursor, at) = (top, ed.doc().selection().primary(), ed.workspace.here());
     click(&mut ed, a, top);
     assert_eq!(
-        (ed.doc().selection().primary(), ed.workspace.viewer.at),
+        (ed.doc().selection().primary(), ed.workspace.here()),
         (cursor, at),
         "nothing under it pressed"
     );
@@ -2289,7 +2289,7 @@ fn a_floating_groups_cut_row_is_whole_on_a_fresh_frame_and_a_cached_one() {
     let g = ed.workspace.group(crate::pane::GroupKind::Tests).unwrap();
     assert!(matches!(g.place, crate::pane::Place::Floating(_)), "floated");
     // (the keys back in the code: no row in hand, the mouse's alone)
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     whole_fresh_and_cached(&mut ed, On::List, "farewell", |_| {});
     // (no test ran: its note over the output, in the same frame)
     let r = ed.workspace.test_run.as_mut().unwrap();
@@ -2457,7 +2457,7 @@ fn a_cut_hidden_under_a_floating_pane_is_not_in_hand() {
     ed.set_status("a message to list");
     ed.messages_open(None);
     frame(&mut ed);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     for (over, at) in [(true, y), (false, y + 12)] {
         ed.float_set(GroupKind::Messages, Rect { x: x.saturating_sub(10), y: at, w: 40, h: 6 });
         let before = frame(&mut ed);

@@ -125,7 +125,7 @@ pub(super) fn setup(
     let mut c = Chat::new();
     c.msgs = vec![Msg::new(Role::User, "where?", ""), Msg::new(Role::Assistant, ANSWER, "")];
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     crate::term::render(&mut ed, &mut Vec::new(), 120, 30).unwrap();
     // (its view mode: `gd` and `space k` act on its cursor)
     ed.handle_key(Key::plain(Code::Esc));

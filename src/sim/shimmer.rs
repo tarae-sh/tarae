@@ -102,7 +102,7 @@ fn run(choices: Choices) -> Vec<String> {
     c.follow.on = true;
     ed.workspace.claude.chat = Some(c);
     ed.motion_drawn = true;
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     let world = World::default();
     assert!(crate::chat::submit(&mut ed, "and the second?", None, None), "the first turn asked");
     world.turn();

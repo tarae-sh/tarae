@@ -437,8 +437,9 @@ pub fn add(ed: &mut Editor, taken: Vec<Taken>) {
     }
     // (out of sight, the ask line comes with them — its top line says they go; the conversation in sight keeps them)
     crate::chat::ask_for(ed);
+    let chat = ed.workspace.at_of(crate::workspace::Here::Chat);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.viewer.at = chat;
     c.hidden = false;
     let mut left = 0;
     for t in taken {

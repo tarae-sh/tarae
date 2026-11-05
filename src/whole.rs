@@ -806,7 +806,7 @@ pub fn open(ed: &mut Editor, title: &str, text: &str, paint: Vec<(usize, usize, 
             }
         }
     }
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     ed.sync_focus_view();
 }
 

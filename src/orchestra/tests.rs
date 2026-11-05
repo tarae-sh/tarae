@@ -124,10 +124,10 @@ fn start_two(p: &mut Place) -> Vec<WorkspaceId> {
 #[test]
 fn a_set_is_made_behind_each_brief_its_first_message() {
     let mut p = place("made");
-    let (front, at, from) = (p.ed.workspace.id, p.ed.workspace.viewer.at, p.ed.workspace.label().to_string());
+    let (front, at, from) = (p.ed.workspace.id, p.ed.workspace.here(), p.ed.workspace.label().to_string());
     let kids = start_two(&mut p);
     assert_eq!(kids.len(), 2, "{}", said(&p.ed));
-    assert_eq!((p.ed.workspace.id, p.ed.workspace.viewer.at), (front, at), "nothing in front moved");
+    assert_eq!((p.ed.workspace.id, p.ed.workspace.here()), (front, at), "nothing in front moved");
     assert!(git_in(&p.repo, &["rev-parse", "--verify", "-q", "refs/heads/one"]));
     assert!(git_in(&p.repo, &["rev-parse", "--verify", "-q", "refs/heads/two"]));
     let r = answered(1).unwrap().unwrap();
@@ -159,7 +159,7 @@ fn a_parents_message_is_headed_by_its_name_in_its_colour() {
     // (the chat with the keys, not following — folded into the follow card it shows no transcript; a surface without
     // the keys fades all its text alike)
     p.ed.workspace.claude.chat.as_mut().expect("its chat").follow.on = false;
-    p.ed.workspace.viewer.at = crate::workspace::At::Chat;
+    p.ed.workspace.set_at(crate::workspace::Here::Chat);
     crossterm::style::force_color_output(true);
     let mut bytes = Vec::new();
     crate::term::render(&mut p.ed, &mut bytes, 120, 30).unwrap();
@@ -997,7 +997,7 @@ fn a_fresh_send_starts_a_new_conversation_only_between_turns() {
     // Between its turns: anew
     end_turn(&mut p.ed, one, Ok("done"));
     p.ed.with_workspace(one, |ed| ed.workspace.claude.chat.as_mut().unwrap().input = "[draft]".into());
-    let at = p.ed.workspaces.iter().find(|l| l.id == one).unwrap().viewer.at;
+    let at = p.ed.workspaces.iter().find(|l| l.id == one).unwrap().here();
     let r = fresh(&mut p.ed, 81, "[f2]");
     assert_eq!(r, Ok("in a new conversation: sent — its turn started".into()));
     let c = of(&p.ed, one);
@@ -1013,11 +1013,7 @@ fn a_fresh_send_starts_a_new_conversation_only_between_turns() {
         ("[draft]".into(), None),
         "the draft untouched"
     );
-    assert_eq!(
-        p.ed.workspaces.iter().find(|l| l.id == one).unwrap().viewer.at,
-        at,
-        "its keys where they were"
-    );
+    assert_eq!(p.ed.workspaces.iter().find(|l| l.id == one).unwrap().here(), at, "its keys where they were");
     let line = p.lines().iter().find(|l| l.contains("[f2]")).cloned().unwrap();
     let whose = format!("This message is from Claude in session {from},");
     assert!(sent_text(&line, "[f2]").contains(&whose), "whose, said anew");
@@ -1209,7 +1205,7 @@ fn no_session_tool_answers_a_card() {
     p.ed.card_focus_front();
     p.ed.focus_sync();
     let parked = [park_card(&mut p.ed, kids[0], 52), park_card(&mut p.ed, kids[1], 53)];
-    let keys = |ed: &Editor| (ed.workspace.id, ed.workspace.viewer.at, ed.card_focus, ed.keys_to().region);
+    let keys = |ed: &Editor| (ed.workspace.id, ed.workspace.here(), ed.card_focus, ed.keys_to().region);
     let before = keys(&p.ed);
     assert!(before.2.is_some(), "the parent's card has the keys");
     let front: Vec<u64> = p.ed.offers.iter().map(|o| o.id).collect();

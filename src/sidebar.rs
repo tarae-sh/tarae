@@ -16,7 +16,7 @@ use crate::editor::{Editor, Mode as EdMode};
 use crate::filetree::{Kind, Tree};
 use crate::key::{Code, Key};
 use crate::syntax::Def;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -733,7 +733,7 @@ impl Editor {
     /// A tab's name pressed on the panel's top line (`wordspot::Press::Side`): that tab, the keys there — on it
     /// already, nothing more (a press never closes what it names).
     pub fn sidebar_tab(&mut self, mode: Mode) {
-        let on = self.workspace.is_at(At::Side)
+        let on = self.workspace.is_at(Here::Side)
             && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == mode);
         if !on {
             self.sidebar_show(mode);
@@ -744,7 +744,7 @@ impl Editor {
     /// file selected and unfolded down to — in front of a review's rail, as the other tabs go (its files aren't the
     /// project's).
     pub fn sidebar_reveal(&mut self, path: &std::path::Path) {
-        let on = self.workspace.is_at(At::Side)
+        let on = self.workspace.is_at(Here::Side)
             && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == Mode::Files);
         if !on {
             self.sidebar_open(Mode::Files, true);
@@ -767,17 +767,17 @@ impl Editor {
         }
         // Another tab (`space o`, `space q`) goes in front of the rail, as the git tab does — #154: it had the
         // keys while the rail stayed drawn in its place (`space g` gives the column back)
-        let on = self.workspace.is_at(At::Side)
+        let on = self.workspace.is_at(Here::Side)
             && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == mode);
         if let Some(r) = self.workspace.code_review.as_mut()
             && !(on && r.behind)
         {
             r.behind = true;
-            if matches!(self.workspace.docked(), At::Rail | At::Side) {
-                self.workspace.viewer.at = At::Code;
+            if matches!(self.workspace.docked(), Here::Rail | Here::Side) {
+                self.workspace.viewer.keys_to_code();
             }
         }
-        let on = self.workspace.is_at(At::Side)
+        let on = self.workspace.is_at(Here::Side)
             && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == mode);
         if !on {
             self.count(crate::features::Area::Panel, crate::features::panel(mode));
@@ -795,7 +795,7 @@ impl Editor {
             }
             None => self.workspace.viewer.sidebar = Some(Sidebar::new(mode, self.workspace.root.clone())),
         }
-        self.workspace.viewer.at = At::Side;
+        self.workspace.set_at(Here::Side);
         if mode == Mode::Files {
             self.sidebar_list_files();
         }
@@ -1014,7 +1014,7 @@ impl Editor {
             }
         }
         let Some(s) = self.workspace.viewer.sidebar.as_ref() else { return };
-        if !self.workspace.is_at(At::Side)
+        if !self.workspace.is_at(Here::Side)
             && let Some(h) = s.here(self)
         {
             self.workspace.viewer.sidebar.as_mut().unwrap().selected = h;
@@ -1024,7 +1024,7 @@ impl Editor {
     /// Enter / a click: a folder folds or unfolds, a file opens, a definition is jumped to — the code gets
     /// the keys back.
     pub fn sidebar_activate(&mut self, row: usize) {
-        let side_keys = self.workspace.is_at(At::Side);
+        let side_keys = self.workspace.is_at(Here::Side);
         let Some(s) = self.workspace.viewer.sidebar.as_mut() else { return };
         let Some(line) = s.lines().get(row).cloned() else { return };
         s.selected = row;
@@ -1034,13 +1034,13 @@ impl Editor {
                 s.set_open([d.as_str()], open);
             }
             Target::File(p) => {
-                self.workspace.leave(At::Side);
+                self.workspace.leave(Here::Side);
                 if let Err(e) = self.open(&p) {
                     self.open_failed(e);
                 }
             }
             Target::Item(i) => {
-                self.workspace.leave(At::Side);
+                self.workspace.leave(Here::Side);
                 self.qlist_goto(i);
             }
             // A changed file (not new): open to its hunks and conflicts — it shows in the editor, the
@@ -1065,14 +1065,14 @@ impl Editor {
                 if !path.exists() {
                     return self.set_warning(format!("{rel} is deleted — nothing to open"));
                 }
-                self.workspace.leave(At::Side);
+                self.workspace.leave(Here::Side);
                 if let Err(e) = self.open(&path) {
                     self.open_failed(e);
                 }
             }
             // A hunk or conflict: there in the code, which gets the keys
             Target::Hunk { .. } | Target::Conflict { .. } => {
-                self.workspace.leave(At::Side);
+                self.workspace.leave(Here::Side);
                 self.git_reveal(&line.target);
             }
             // A plugin's row: where it's defined (there, in the code), or the plugin's to act on
@@ -1084,7 +1084,7 @@ impl Editor {
                     .and_then(|(_, side)| side.rows.get(i)?.at.clone());
                 match at {
                     Some((path, line, _)) => {
-                        self.workspace.leave(At::Side);
+                        self.workspace.leave(Here::Side);
                         let goto =
                             crate::picker::Action::Goto { path: path.into(), line: line as usize, col: 0 };
                         self.run_picker_action(goto);
@@ -1095,7 +1095,7 @@ impl Editor {
             Target::None | Target::Change { .. } => {}
             Target::At(at) => {
                 if side_keys {
-                    self.workspace.viewer.at = At::Code;
+                    self.workspace.viewer.at = crate::workspace::At::Pane(self.workspace.viewer.focus);
                 }
                 let fresh = s.outline_of.is_some_and(|o| o == (self.doc().id, self.doc().version()));
                 if !fresh {
@@ -1207,7 +1207,7 @@ fn git_key(ed: &mut Editor, key: Key, at: Option<Line>) -> bool {
                 ed.open_failed(e);
                 return true;
             }
-            ed.workspace.leave(At::Side);
+            ed.workspace.leave(Here::Side);
             if c == 'D'
                 && let Err(e) = ed.diff_against("")
             {
@@ -1215,7 +1215,7 @@ fn git_key(ed: &mut Editor, key: Key, at: Option<Line>) -> bool {
             }
         }
         ('e', Some(t @ (Target::Hunk { .. } | Target::Conflict { .. })), _) => {
-            ed.workspace.leave(At::Side);
+            ed.workspace.leave(Here::Side);
             ed.git_reveal(t);
         }
         // `l` / `h` open and close a changed file's hunks, like a folder
@@ -1292,12 +1292,12 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     }
     // Folded away (the terminal is too narrow for it and the code): the keys are the code's
     let folded = ed.side_folded();
-    if !ed.workspace.is_at(At::Side) {
+    if !ed.workspace.is_at(Here::Side) {
         return false;
     }
     let Some(s) = ed.workspace.viewer.sidebar.as_mut() else { return false };
     if folded {
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         return false;
     }
     // A key here: the selection is the user's — `space g`'s aim at the row under the code's cursor goes (#187:
@@ -1393,7 +1393,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
                 Mode::Git if plugin => Mode::Plugin,
                 Mode::Git | Mode::Plugin => Mode::Files,
             };
-            ed.workspace.viewer.at = At::Code; // so sidebar_show switches instead of closing
+            ed.workspace.viewer.keys_to_code(); // so sidebar_show switches instead of closing
             ed.sidebar_show(mode);
             if mode == Mode::Git {
                 ed.git_refresh();
@@ -1403,7 +1403,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         (Code::Esc, _) if ed.workspace.code_review.as_ref().is_some_and(|r| r.behind) => {
             crate::codereview::rail_focus(ed)
         }
-        (Code::Esc, _) => ed.workspace.viewer.at = At::Code,
+        (Code::Esc, _) => ed.workspace.viewer.keys_to_code(),
         (Code::Char('q'), false) => ed.workspace.viewer.sidebar = None,
         _ => ed.key_unused(key, "the side panel", "esc code"),
     }
@@ -1411,7 +1411,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     // tab has the keys, `git_inline_sync`)
     if let Some(s) =
         ed.workspace.viewer.sidebar.as_ref().filter(|s| s.mode == Mode::Git && Some(s.selected) != before)
-        && ed.workspace.is_at(At::Side)
+        && ed.workspace.is_at(Here::Side)
         && let Some(t) = s.lines().get(s.selected).map(|l| l.target.clone())
     {
         match t {

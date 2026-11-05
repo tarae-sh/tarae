@@ -4188,7 +4188,7 @@ mod tests {
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         // (alone: messages said together keep their card)
         ed.toasts.clear();
         ed.set_success("Saved src/sidebar.rs · 1204 lines");
@@ -6532,7 +6532,7 @@ mod tests {
         // One at a time: a review per file — accepted, declined, and into a buffer with unsaved edits
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.edits.at_end = None;
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         ed.open(&third).unwrap();
         feed(&mut ed, "A // mine<esc>");
         ed.open(&file).unwrap();
@@ -7271,7 +7271,7 @@ mod tests {
         let cid = ready(&mut ed);
         let rows = rest_frame(&mut ed);
         let (x, y) = cell_of(&rows, "fn main", "helper", 2);
-        let at = ed.workspace.viewer.at;
+        let at = ed.workspace.here();
         ed.handle_event(Event::Hover(x, y));
         assert!(ed.lsp.pending.is_empty(), "nothing asked before the rest");
         crate::hoverrest::rested(&mut ed);
@@ -7296,7 +7296,7 @@ mod tests {
         assert_eq!(top, y as usize + 1, "under the name's row:\n{}", rows.join("\n"));
         let said = |s: &str| rows.iter().position(|r| r.contains(s));
         assert!(said("helper is deprecated") < said("helps"), "the problem first:\n{}", rows.join("\n"));
-        assert_eq!(ed.workspace.viewer.at, at, "never the keys");
+        assert_eq!(ed.workspace.here(), at, "never the keys");
         assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), 0, "nor the cursor");
         // On the card, or moved within the name: it stays; the wheel over it is its own
         ed.handle_event(Event::Hover(x + 1, y + 2));

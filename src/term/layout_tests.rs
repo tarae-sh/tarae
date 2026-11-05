@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::pane::GroupKind;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const WIDTHS: [u16; 6] = [54, 80, 100, 120, 160, 200];
 const HEIGHTS: [u16; 3] = [20, 34, 50];
@@ -26,39 +26,39 @@ const SCENES: &[Scene] = &[
     ("code", |_, _, _| {}),
     ("code beside code", |ed, w, h| keys(ed, "<C-w>v", w, h)),
     ("code over code", |ed, w, h| keys(ed, "<C-w>s", w, h)),
-    ("chat", |ed, _, _| chat(ed, At::Code)),
-    ("chat with the keys", |ed, _, _| chat(ed, At::Chat)),
+    ("chat", |ed, _, _| chat(ed, Here::Code)),
+    ("chat with the keys", |ed, _, _| chat(ed, Here::Chat)),
     ("chat hidden", |ed, _, _| {
-        chat(ed, At::Code);
+        chat(ed, Here::Code);
         ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
     }),
     ("side panel", |ed, _, _| side(ed)),
     ("side panel and chat", |ed, _, _| {
-        chat(ed, At::Code);
+        chat(ed, Here::Code);
         side(ed);
     }),
     ("review", |ed, _, _| review(ed)),
     ("review and chat", |ed, _, _| {
-        chat(ed, At::Code);
+        chat(ed, Here::Code);
         review(ed);
     }),
     ("slot: tests", |ed, _, _| tests(ed)),
     ("slot: task", |ed, _, _| task(ed)),
     ("slot: tests, side panel and chat", |ed, _, _| {
-        chat(ed, At::Code);
+        chat(ed, Here::Code);
         side(ed);
         tests(ed);
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
     }),
     ("tests docked left, chat", |ed, w, h| docked(ed, "H", w, h)),
     ("tests docked right, chat", |ed, w, h| docked(ed, "L", w, h)),
     ("tests docked over the code, chat", |ed, w, h| docked(ed, "K", w, h)),
     ("code zoomed, chat", |ed, w, h| {
-        chat(ed, At::Code);
+        chat(ed, Here::Code);
         keys(ed, "<C-w>z", w, h);
     }),
     ("chat zoomed", |ed, w, h| {
-        chat(ed, At::Chat);
+        chat(ed, Here::Chat);
         keys(ed, "<C-w>z", w, h);
     }),
 ];
@@ -95,9 +95,9 @@ fn keys(ed: &mut Editor, keys: &str, w: u16, h: u16) {
 }
 
 /// The chat open, empty, the keys `at`.
-fn chat(ed: &mut Editor, at: At) {
+fn chat(ed: &mut Editor, at: Here) {
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = at;
+    ed.workspace.set_at(at);
 }
 
 fn side(ed: &mut Editor) {
@@ -118,7 +118,7 @@ fn review(ed: &mut Editor) {
         binary: false,
     };
     ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, root, vec![file]));
-    ed.workspace.viewer.at = At::Rail;
+    ed.workspace.set_at(Here::Rail);
 }
 
 /// A finished run of two tests, one failed, in the slot.
@@ -146,7 +146,7 @@ fn task(ed: &mut Editor) {
 
 /// The tests' group docked by `C-w <side>` from its list, a task left in the slot, the chat open.
 fn docked(ed: &mut Editor, side: &str, w: u16, h: u16) {
-    chat(ed, At::Code);
+    chat(ed, Here::Code);
     task(ed);
     frame(ed, w, h);
     tests(ed);
@@ -416,7 +416,7 @@ fn each_kind_is_sized_along_the_split_it_sits_in() {
     use crate::split::{Dir, Share, Split};
     let mut ed = editor();
     frame(&mut ed, 120, 50);
-    chat(&mut ed, At::Code);
+    chat(&mut ed, Here::Code);
     let leaf = |ed: &Editor, s: Shows| Split::Leaf(ed.workspace.leaf(s).unwrap());
     let code = Split::Leaf(ed.workspace.views[0].id);
     let (side, rail, slot, conv) =

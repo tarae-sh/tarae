@@ -39,7 +39,7 @@ use crate::selection::Range;
 use crate::syntax;
 use crate::theme::{Style, Theme};
 use crate::whole::Fit;
-use crate::workspace::At;
+use crate::workspace::Here;
 use tree_sitter::QueryCursor;
 
 /// The main loop, drawing for `iface` until tarae quits — made ready first, left as found after. With none (a host
@@ -1069,7 +1069,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         // (its view mode read again at the new size)
         crate::view::terminal_resized(editor);
     }
-    let (side_keys, rail_keys) = (editor.workspace.is_at(At::Side), editor.workspace.is_at(At::Rail));
+    let (side_keys, rail_keys) = (editor.workspace.is_at(Here::Side), editor.workspace.is_at(Here::Rail));
     if let Some(col) = lay.side()
         && !editor.review_rail_up()
         && let Some(sb) = editor.workspace.viewer.sidebar.as_mut()
@@ -1789,9 +1789,10 @@ impl Layout {
         // (the review's rail is the navigator there — who gives way to whom is `sizes::give_way`'s table)
         use crate::sizes::{Given, Nav};
         let nav = match editor.workspace.code_review.as_ref() {
-            Some(r) if review => {
-                Nav::Rail { natural: review_rail_natural(editor, r), focus: editor.workspace.is_at(At::Rail) }
-            }
+            Some(r) if review => Nav::Rail {
+                natural: review_rail_natural(editor, r),
+                focus: editor.workspace.is_at(Here::Rail),
+            },
             _ if side_open => Nav::Side(editor.workspace.kept(crate::pane::Shows::Side)),
             _ => Nav::None,
         };
@@ -2153,7 +2154,7 @@ fn slot_hints(editor: &Editor, p: &Panel) -> Vec<(String, &'static str)> {
         .map(|(k, d)| (k.to_string(), d))
         .collect();
     }
-    if !editor.workspace.is_at(At::Slot) {
+    if !editor.workspace.is_at(Here::Slot) {
         // (only where `C-w` is the window prefix — the code in normal mode, nothing under way: in insert mode or a
         // draft it deletes a word, in the terminal it's the program's — and from a pane with none below it: from
         // one with a pane below, `C-w j` goes to that one)
@@ -2448,18 +2449,18 @@ fn slot_header(
         // then the list's —, the way in typed in the code)
         // (the terminal's round key out of its view mode — `C-\ view` from its program, `C-\ type` from the code — typed
         // where it's said from: lent to its view mode it went round to the code, #279)
-        home: Some(match editor.workspace.viewer.at {
-            at @ At::List(_) if editor.list_focused().is_some() => at,
+        home: Some(match editor.workspace.here() {
+            at @ Here::List(_) if editor.list_focused().is_some() => at,
             at if editor.slot() == Some(crate::sizes::Slot::Terminal)
                 && crate::view::terminal_view_of(editor).is_none() =>
             {
-                if at == At::Program {
+                if at == Here::Program {
                     at
                 } else {
-                    At::Code
+                    Here::Code
                 }
             }
-            _ => At::Slot,
+            _ => Here::Slot,
         }),
         way_in: Some("C-w j"),
     };
@@ -2659,7 +2660,7 @@ struct TopWords<'a> {
     each: &'a [Option<crate::wordspot::Press>],
     /// Where its keys are typed (`Spot.home`) — but the way in (`way_in`: the key that gives the line's surface the keys,
     /// typed in the code).
-    home: Option<At>,
+    home: Option<Here>,
     way_in: Option<&'a str>,
 }
 
@@ -3057,7 +3058,7 @@ fn top_line(
         {
             let spans = vec![(k.to_string(), head.key), (format!(" {v}"), head.faint)];
             let spot = word_spot(w.on, Press::Keys(k.to_string()), (at + gap.len(), y), spans);
-            let home = if w.way_in == Some(*k) { Some(At::Code) } else { w.home };
+            let home = if w.way_in == Some(*k) { Some(Here::Code) } else { w.home };
             w.spots.borrow_mut().push(Spot { home, ..spot });
         }
         at += gap.len() + pair(&(*k, *v));
@@ -3312,7 +3313,7 @@ fn draw_terminal_panel(
         (bound("wclose", "q"), if t.exited.is_some() { "close" } else { "hide" }),
         (Some("C-w z".into()), zoom),
     ];
-    let mut hints: Vec<(&str, &str)> = match (t.exited, editor.workspace.is_at(At::Program)) {
+    let mut hints: Vec<(&str, &str)> = match (t.exited, editor.workspace.is_at(Here::Program)) {
         _ if view.is_some() => viewing.iter().filter_map(|(k, d)| Some((k.as_deref()?, *d))).collect(),
         (Some(_), _) => vec![("space T", "close")],
         // (the round's key: where it goes next — counted in `esc_says_one_word_per_act_in_every_hint`)
@@ -3407,7 +3408,7 @@ fn draw_terminal_panel(
         queue!(out, Spaces(w.saturating_sub(PAD + x)))?;
     }
     let (cr, cc) = screen.cursor_position();
-    let show = editor.workspace.is_at(At::Program)
+    let show = editor.workspace.is_at(Here::Program)
         && t.exited.is_none()
         && !screen.hide_cursor()
         && screen.scrollback() == 0;
@@ -3500,7 +3501,7 @@ fn draw_task_panel(
     let group = lay_group(editor, here, crate::sizes::Slot::Task);
     let members = group.as_ref().and_then(|g| Some((*g, group_members(editor, lay, g)?)));
     // (the output's own keys — not while its group's list has them: the list's are said)
-    let listing = group.is_some_and(|g| editor.workspace.is_at(At::List(g.list)));
+    let listing = group.is_some_and(|g| editor.workspace.is_at(Here::List(g.list)));
     let o = steps.is_some() && !listing;
     if o {
         hints.insert(0, ("o", if members.is_some() { "step" } else { "output" }));
@@ -3682,7 +3683,7 @@ fn draw_task_group(
     if list.w > 0 {
         editor.screen.lists.borrow_mut().push((g.kind, (y, list_rows, first)));
     }
-    let list_keys = editor.workspace.is_at(At::List(g.list));
+    let list_keys = editor.workspace.is_at(Here::List(g.list));
     // (the line between them lit while either has the keys — it edges both, as a code pane's divider)
     let lit = ui.lit == Some(Region::Slot);
     // (the link, while the list has the keys: the place's line, the step's heading)
@@ -3906,7 +3907,7 @@ fn draw_queued(
             at(&t, 0, y + i, faint);
             continue;
         };
-        let hint = match (&r.stops, editor.workspace.is_at(At::Slot)) {
+        let hint = match (&r.stops, editor.workspace.is_at(Here::Slot)) {
             (None, _) => Vec::new(),
             (Some(s), true) => hint_spans(ui, &[("enter", &format!("run now — stops {s}"))], key, faint),
             (Some(s), false) => {
@@ -4603,7 +4604,7 @@ fn draw_test_panel(
     let group = lay_group(editor, here, crate::sizes::Slot::Test);
     let members = group.and_then(|g| Some((g, group_members(editor, lay, &g)?)));
     let splits: Vec<usize> = members.iter().filter_map(|(_, m)| side_by_side(m)).collect();
-    let list_keys = group.is_some_and(|g| editor.workspace.is_at(At::List(g.list)));
+    let list_keys = group.is_some_and(|g| editor.workspace.is_at(Here::List(g.list)));
     let detail_keys = crate::rundoc::has_keys(editor) == Some(crate::sizes::Slot::Test);
     let cwd = &r.target.cwd;
     let rel = |p: &std::path::Path| p.strip_prefix(cwd).unwrap_or(p).display().to_string();
@@ -7234,7 +7235,7 @@ fn draw_text(
                     at,
                     vec![(glyph.clone(), map_style(s))],
                 );
-                editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+                editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
             }
             let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&editor.workspace.root).ok());
             let rel = rel.map(|p| p.display().to_string()).unwrap_or_default();
@@ -8735,7 +8736,7 @@ fn draw_flag_end(
         let at = (lay.x0 + lay.gutter + used + 2, y as usize);
         let on = crate::mouse::Surface::Code(pane);
         let spot = word_spot(on, crate::wordspot::Press::Flag(f.id), at, vec![("¶".to_string(), style)]);
-        editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+        editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
         let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
         editor.screen.flag_ends.borrow_mut().push((at.1, at.0, f.id, cols.0, cols.1));
     }
@@ -8808,7 +8809,7 @@ fn draw_note_end(
         let spans = vec![("¶".to_string(), Style { fg: glyph_fg, ..line_base })];
         let on = crate::mouse::Surface::Code(pane);
         let spot = word_spot(on, crate::wordspot::Press::Note(n.id), at, spans);
-        editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+        editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
     }
     let fg = blend(glyph_fg, line_base.bg.or(ui.tint), 0.62).or(ui.virt.fg);
     apply(out, Style { fg, italic: true, ..line_base })?;
@@ -9974,7 +9975,7 @@ fn draw_list_row(
             let cell = (x + 3 + lw - hint_w + hint[..range.start].width(), y);
             let spot =
                 word_spot(crate::mouse::Surface::Side, crate::wordspot::Press::Stop(*stop), cell, spans);
-            editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+            editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
         }
         // (a painted hint's ranges in their scopes — what's cut off by the fit isn't there to paint)
         let mut at = 0;
@@ -11475,7 +11476,7 @@ fn code_line(
         on: crate::mouse::Surface::PaneTop(id),
         right: None,
         each: &right_press,
-        home: Some(At::Code),
+        home: Some(Here::Code),
         way_in: None,
     };
     let head = TopLine { names: &names, key, faint, right: &right, words: Some(words), ..TopLine::default() };
@@ -11501,7 +11502,7 @@ fn code_line(
                 (a, y0),
                 vec![(k.0.shown().to_string(), k.1), (what.0.shown().to_string(), what.1)],
             );
-            editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+            editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
         }
     }
     // (pointed at: the pane's label on its line past its path — none of the path hidden)
@@ -12595,7 +12596,7 @@ fn draw_completion(
     let name = pane_names(ui, editor, card, &["complete"], 0);
     let on = crate::mouse::Surface::Completion;
     draw_frame(out, ui, editor, on, card, rect, &fits(&name), &keys, &[], (None, true))?;
-    frame_keys_said(editor, on, &keys, (x0 + 3, y0 + h - 1), |_| Some(At::Code));
+    frame_keys_said(editor, on, &keys, (x0 + 3, y0 + h - 1), |_| Some(Here::Code));
     // The selected item's docs: a cell right of the list (left if no room), top with top — else under (over) it
     let Some((_, lines)) = c.docs.as_ref().filter(|(_, l)| !l.is_empty()) else { return Ok(()) };
     const DOCS_MIN: usize = 24;
@@ -12774,7 +12775,7 @@ fn draw_slash_list(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write)
 
 /// The chat's slash list, while it's up: the input has the keys and its line begins a name (#232).
 fn slash_up(editor: &Editor, c: &crate::chat::Chat) -> Option<crate::chat::SlashList> {
-    if !editor.workspace.is_at(At::Chat) || crate::chatdoc::keyed(editor) {
+    if !editor.workspace.is_at(Here::Chat) || crate::chatdoc::keyed(editor) {
         return None;
     }
     crate::chat::slash_list(c)
@@ -15747,7 +15748,7 @@ fn draw_follow_card(
     // `no sandbox` as its details; the turn's time at the right
     let l = &editor.workspace;
     let (who, who_st) = match editor.workspaces.is_empty() {
-        true => ("follow".to_string(), if editor.workspace.is_at(At::Chat) { strong } else { dim }),
+        true => ("follow".to_string(), if editor.workspace.is_at(Here::Chat) { strong } else { dim }),
         false => {
             (l.label().to_string(), Style { fg: ui.participant(l.claude.colour, true), bold: true, ..card })
         }
@@ -15869,7 +15870,7 @@ fn draw_follow_card(
     // never a row inside): a stop's question after the turn, then the key that reads the chat (out of sight: the card is
     // drawn beside the column only in a replay — #295); the replay's pair once there are stops (in the code — the chat's
     // input would take them as letters)
-    let stops = c.follow.replay.latest() > 0 && !editor.workspace.is_at(At::Chat);
+    let stops = c.follow.replay.latest() > 0 && !editor.workspace.is_at(Here::Chat);
     // (paused by you: the key that follows again first — where it's said, never a toast, #308)
     let again =
         crate::follow::again_key_here(editor).filter(|_| paused && !editor.follow_focus && !replaying);
@@ -16133,7 +16134,7 @@ fn draw_follow_card(
     if hovered.is_none() {
         // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the ways in
         // — `space l open the chat`, `[r replay` — typed in the code)
-        let home = |k: &str| Some(if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code });
+        let home = |k: &str| Some(if matches!(k, "C-c" | "C-f") { Here::Chat } else { Here::Code });
         frame_keys_said(editor, on, &bottom, (x0 + 3, y0 + h - 1), home);
     }
     // (each mark's cell, for the mouse, the state and pointing: a mark is its span's last cell)
@@ -16415,7 +16416,7 @@ fn draw_sidebar(
     let w = col.w.saturating_sub(GAP + PAD + PAD_R).max(1);
     let lines = sb.lines();
     // Unfocused, only the row the editor is on is marked (nothing, on a file outside the list)
-    let mark = if editor.workspace.is_at(At::Side) { Some(sb.selected) } else { sb.here(editor) };
+    let mark = if editor.workspace.is_at(Here::Side) { Some(sb.selected) } else { sb.here(editor) };
     // Header: the views stacked (the list's only when there is one), the one showing strong; what it's of
     // at the right (its views are a group stacked: named as `pane_names` names them, `·` between)
     let side = editor.plugins.as_ref().and_then(|p| p.side.as_ref()).map(|(_, s)| s);
@@ -16455,7 +16456,7 @@ fn draw_sidebar(
     };
     // (as many pairs as fit whole — cut, a row ended in a key without its meaning)
     let h = |pairs: &[(&str, &str)]| hint_spans(ui, whole_pairs(pairs, w), key, faint);
-    let hints: [Vec<Span>; 2] = if editor.workspace.is_at(At::Side) && sb.mode == SMode::Git {
+    let hints: [Vec<Span>; 2] = if editor.workspace.is_at(Here::Side) && sb.mode == SMode::Git {
         // The selected row's keys: a hunk's, a conflict's, else the tab's
         match lines.get(sb.selected).map(|l| &l.target) {
             Some(crate::sidebar::Target::Hunk { .. }) => {
@@ -16469,7 +16470,7 @@ fn draw_sidebar(
                 h(&[("c", "commit"), ("C", "Claude drafts")]),
             ],
         }
-    } else if editor.workspace.is_at(At::Side) && sb.mode == SMode::Plugin {
+    } else if editor.workspace.is_at(Here::Side) && sb.mode == SMode::Plugin {
         // Its keys, then the panel's
         // (a plugin names its keys as its `key` event does, `ret`: shown by their one name)
         let said: Vec<(String, &str)> = side
@@ -16477,7 +16478,7 @@ fn draw_sidebar(
             .unwrap_or_default();
         let keys: Vec<(&str, &str)> = said.iter().map(|(k, d)| (k.as_str(), *d)).collect();
         [h(&keys), h(&[("enter", "go"), ("esc", "code"), ("tab", "files")])]
-    } else if editor.workspace.is_at(At::Side) {
+    } else if editor.workspace.is_at(Here::Side) {
         [h(&[("enter", "open"), ("tab", tab.trim_start())]), h(&[("esc", "code"), ("q", "close")])]
     } else if sb.mode == SMode::Git {
         [h(&[("space g", "git")]), h(&[("space e", "files")])]
@@ -16627,7 +16628,7 @@ fn draw_sidebar(
                         crate::whole::On::Side,
                         0,
                         y,
-                        editor.workspace.is_at(At::Side).then_some(hand),
+                        editor.workspace.is_at(Here::Side).then_some(hand),
                     ));
                     // The row's own background runs on to the padding (its bar in the padding before it)
                     let pressed = editor.screen.word_spots.borrow().len();
@@ -16639,7 +16640,7 @@ fn draw_sidebar(
                         ui,
                         base,
                         selected,
-                        editor.workspace.is_at(At::Side),
+                        editor.workspace.is_at(Here::Side),
                         &[],
                         at,
                     )?;
@@ -17667,7 +17668,7 @@ fn draw_review_rail(
                 && !g.looked_at(&editor.workspace.looked)
         })
     });
-    let rail_keys = editor.workspace.is_at(At::Rail);
+    let rail_keys = editor.workspace.is_at(Here::Rail);
     let hints = review_rail_hints(ui, (rail_keys, turn, drafts, high_here), key, faint);
     let fill = col.h.saturating_sub(rows.len() + 1 + hints.len());
     rows.extend(std::iter::repeat_n((Vec::new(), card, None), fill));
@@ -18240,7 +18241,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             Role::Tool => u64::from(m.is_call(hand)) | (((knot_lit(editor, m, false) * 1000.0) as u64) << 1),
             // (the replay's stops, and its keys — which the chat's focus changes)
             Role::Note if turn_end(i) => {
-                1 | (u64::from(editor.workspace.is_at(At::Chat)) << 1) | ((stops as u64) << 2)
+                1 | (u64::from(editor.workspace.is_at(Here::Chat)) << 1) | ((stops as u64) << 2)
             }
             Role::Note => 0,
         }
@@ -18473,7 +18474,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                 // The last turn's end: how to replay its stops (in the code — or `C-]` from here), left
                 // of its time
                 if timing && turn_end(i) && stops > 0 {
-                    let keys = if editor.workspace.is_at(At::Chat) { "C-]" } else { "[r ]r" };
+                    let keys = if editor.workspace.is_at(Here::Chat) { "C-]" } else { "[r ]r" };
                     let said = format!(" replay its {stops} stop{}", if stops == 1 { "" } else { "s" });
                     let gap = w.saturating_sub(keys.width() + said.width() + m.text.width());
                     if gap >= 2 {
@@ -19356,7 +19357,7 @@ fn draw_ask_line(
         on: crate::mouse::Surface::Chat,
         right: None,
         each: &[],
-        home: Some(At::Chat),
+        home: Some(Here::Chat),
         way_in: None,
     };
     let foot = TopLine { keys: &hints, key, faint, plain: true, words: Some(words), ..TopLine::default() };
@@ -19702,9 +19703,10 @@ fn draw_chat(
     // The names: the sessions, as many of their words as fit before the right end (`session_tabs` folds them), or
     // `claude`
     let (names, spots): (Vec<(Fit, Style)>, Vec<_>) = match editor.workspaces.is_empty() {
-        true => {
-            (vec![("claude".into(), if editor.workspace.is_at(At::Chat) { strong } else { dim })], Vec::new())
-        }
+        true => (
+            vec![("claude".into(), if editor.workspace.is_at(Here::Chat) { strong } else { dim })],
+            Vec::new(),
+        ),
         false => {
             let reviewer = Style { fg: reviewer_style(editor, ui).fg, ..card };
             let tabs = |w: usize| {
@@ -20050,9 +20052,9 @@ fn draw_chat(
     // The input's border: lit with the chat's lines (`edge_style`); without the keys, what's typed in it is a
     // draft — said at the border's end, so a message half-written isn't lost from sight
     // (in its view mode the input keeps what's typed, faint, its cursor hidden — `i` comes back to it)
-    let typing = editor.workspace.is_at(At::Chat) && view.is_none();
+    let typing = editor.workspace.is_at(Here::Chat) && view.is_none();
     let border = line;
-    let draft = !editor.workspace.is_at(At::Chat) && !c.input.blank() && w >= used + 12;
+    let draft = !editor.workspace.is_at(Here::Chat) && !c.input.blank() && w >= used + 12;
     let line = w - used - if draft { " draft ──".width() } else { 0 };
     put_line(out, border, &"─".repeat(line))?;
     if draft {
@@ -20138,7 +20140,7 @@ fn draw_chat(
         hints.push(("C-l", crate::chat::CLEAR_AGAIN));
     } else if view.is_some() {
         hints.extend(viewing.iter().filter_map(|(k, d)| Some((k.as_deref()?, *d))));
-    } else if !editor.workspace.is_at(At::Chat) {
+    } else if !editor.workspace.is_at(Here::Chat) {
         hints.push(("space l", "focus"));
         hints.push(("space L", "hide"));
     } else if c.busy() || crate::chat::slash_list(c).is_some() {
@@ -20229,7 +20231,7 @@ fn draw_chat(
         for h in hints.iter_mut().filter(|h| h.1 == "code") {
             h.1 = "close";
         }
-        if editor.workspace.is_at(At::Chat) {
+        if editor.workspace.is_at(Here::Chat) {
             let after =
                 hints.iter().position(|h| h.0 == esc.0 || h.1 == "close").map_or(hints.len(), |i| i + 1);
             hints.insert(after, ("C-w e", "dock"));
@@ -20265,7 +20267,7 @@ fn draw_chat(
                 spans,
             );
             // (the chat's keys while it has them, else the way in from the code — `space l focus`: typed there)
-            let home = if editor.workspace.is_at(At::Chat) { At::Chat } else { At::Code };
+            let home = if editor.workspace.is_at(Here::Chat) { Here::Chat } else { Here::Code };
             editor.screen.word_spots.borrow_mut().push(spot.home(home));
         }
         used += wd;
@@ -20293,7 +20295,7 @@ fn draw_chat(
             queue!(out, MoveTo((x0 + cw) as u16, yy as u16))?;
             put_line(out, frame_line, "│")?;
         }
-        let home = if editor.workspace.is_at(At::Chat) { At::Chat } else { At::Code };
+        let home = if editor.workspace.is_at(Here::Chat) { Here::Chat } else { Here::Code };
         let words = TopWords {
             spots: &editor.screen.word_spots,
             on: crate::mouse::Surface::Chat,
@@ -21599,7 +21601,7 @@ fn flag_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io
             queue!(out, Print(text))?;
         }
         let spot = word_spot(on, crate::wordspot::Press::Flag(id), (cx, ry), drawn);
-        editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+        editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
     }
     editor.screen.flag_card.set(Some(rect));
     Ok(Some(rect))
@@ -21797,7 +21799,7 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         }
     }
     // The key that does what a press does: following Claude, from where the keys are
-    let key = if editor.workspace.is_at(At::Chat) { "C-f" } else { "space F" };
+    let key = if editor.workspace.is_at(Here::Chat) { "C-f" } else { "space F" };
     let key_style = Style { fg: ui.virt.fg.or(card.fg), ..ground };
     rows.push(hint_spans(ui, &[(key, "follow Claude — a click here too")], key_style, faint));
     // (as tall as it takes, up to the rows above the line — the newest kept: the key and the step first)
@@ -23325,7 +23327,7 @@ fn frame_keys_said(
     on: crate::mouse::Surface,
     keys: &[(String, Style)],
     (x, y): (usize, usize),
-    home: impl Fn(&str) -> Option<At>,
+    home: impl Fn(&str) -> Option<Here>,
 ) {
     use crate::wordspot::{Press, Spot};
     let mut words = editor.screen.word_spots.borrow_mut();
@@ -23648,7 +23650,7 @@ fn note_frame(
     draw_frame_cut(out, ui, editor, Surface::NoteCard, card, rect, &fits(name), &foot, lights, ends)?;
     if !ends.1 {
         let at = (rect.0 + 3, rect.1 + rect.3 - 1);
-        frame_keys_said(editor, Surface::NoteCard, &foot, at, |_| (!asks).then_some(At::Code));
+        frame_keys_said(editor, Surface::NoteCard, &foot, at, |_| (!asks).then_some(Here::Code));
         if foot.iter().any(|s| s.0 == "space v s") {
             editor.screen.drafts_drawn.set(true);
         }
@@ -24864,7 +24866,7 @@ mod tests {
             // (gone back to the chat while it waits: in 50 columns the chat takes them all — no room for it)
             ed.workspace.claude.chat = chat.then(crate::chat::Chat::new);
             if chat {
-                ed.workspace.viewer.at = At::Chat;
+                ed.workspace.set_at(Here::Chat);
             }
             let mut bytes = Vec::new();
             render(&mut ed, &mut bytes, cols, rows).unwrap();
@@ -25122,7 +25124,7 @@ mod tests {
         // (the side panel fills the screen: no strip, the chip says it)
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.path().to_path_buf()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         rows(&mut ed);
         ed.zoom_toggle();
         let (top, status) = rows(&mut ed);
@@ -25320,7 +25322,7 @@ mod tests {
                     c.state = crate::chat::State::Thinking;
                 }
                 ed.workspace.claude.chat = Some(c);
-                ed.workspace.viewer.at = At::Chat;
+                ed.workspace.set_at(Here::Chat);
                 let mut went: [Option<u16>; 2] = [None; 2];
                 let (mut folded, mut kept_while_folded) = (false, false);
                 for &w in &widths {
@@ -25435,7 +25437,7 @@ mod tests {
         let mut c = crate::chat::Chat::new();
         c.follow.on = true;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
         let lines: Vec<(u16, String, String)> = (20..=140)
             .map(|w| {
                 let (names, rest) = chats_line(&mut ed, w);
@@ -25573,7 +25575,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.docs[0].text = ropey::Rope::from_str("one\n");
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let what = What::Asks { call: crate::tools::Call::test(1) };
         let title = "Claude asks to see the screen and every pane on it";
         ed.push_offer(Offer::new(title.into(), "to see the screen", "", String::new(), what));
@@ -25690,7 +25692,7 @@ mod tests {
             }
             if view {
                 // (from the chat's input, `esc`: its view mode — the card, come on its own, leaves the chat the keys)
-                ed.workspace.viewer.at = crate::workspace::At::Chat;
+                ed.workspace.set_at(crate::workspace::Here::Chat);
                 frame(&mut ed);
                 ed.handle_key("esc".parse().unwrap());
                 assert!(crate::chatdoc::transcript(&ed).is_some_and(|t| t.keyed), "in the chat's view mode");
@@ -26779,7 +26781,7 @@ mod tests {
             ed.docs[0].set_selection(crate::selection::Selection::point(at));
             if chat {
                 crate::chat::open(&mut ed);
-                ed.workspace.leave(crate::workspace::At::Chat);
+                ed.workspace.leave(crate::workspace::Here::Chat);
             }
             ed.push_offer(crate::offer::Offer {
                 id: 0,
@@ -27372,7 +27374,7 @@ mod tests {
         // (the chat hidden, its turn and follow going on: while its column is in sight no follow card stands, #295)
         crate::chat::open(&mut ed);
         crate::chat::hide(&mut ed);
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.follow.on = true;
         c.state = crate::chat::State::Thinking;
@@ -27430,7 +27432,7 @@ mod tests {
         ed.open(&path).unwrap();
         let files = (0..60).map(|i| format!("src/file_{i}.rs")).collect();
         ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(dir.to_path_buf(), files));
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         ed.goto_line(10);
         let mut buf = Vec::with_capacity(1 << 16);
         render(&mut ed, &mut buf, w, h).unwrap();
@@ -27485,7 +27487,7 @@ mod tests {
         ed.open(&path).unwrap();
         let files = (0..30).map(|i| format!("src/file_{i}.rs")).collect();
         ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(dir.to_path_buf(), files));
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         let mut screen = crate::screen::Screen::new();
         let mut buf = Vec::new();
         let mut frame = |ed: &mut Editor, key: &str| {
@@ -27734,7 +27736,7 @@ mod tests {
                 ed.workspace_switch(crate::event::WorkspaceId::HOME);
             }
             crate::chat::open(&mut ed);
-            ed.workspace.leave(crate::workspace::At::Chat);
+            ed.workspace.leave(crate::workspace::Here::Chat);
             let mut buf = Vec::with_capacity(1 << 16);
             render(&mut ed, &mut buf, 140, 40).unwrap();
             let mut runs: Vec<Duration> = (0..300)
@@ -27964,7 +27966,7 @@ mod tests {
             ed.focus_sync();
             ed.float(crate::pane::GroupKind::Task);
             ed.session_list();
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
             let mut buf = Vec::with_capacity(1 << 16);
             for (i, split) in
                 [crate::split::Dir::Vertical, crate::split::Dir::Horizontal, crate::split::Dir::Horizontal]
@@ -28258,8 +28260,8 @@ mod tests {
                 c.input = "a draft".into();
                 // (up beside the code, the keys in the code)
                 ed.workspace.claude.chat = Some(c);
-                ed.workspace.viewer.at = crate::workspace::At::Chat;
-                ed.workspace.viewer.at = At::Code;
+                ed.workspace.set_at(crate::workspace::Here::Chat);
+                ed.workspace.viewer.keys_to_code();
                 ed
             };
             let keys = |ed: &mut Editor, keys: &[&str]| {
@@ -28365,7 +28367,7 @@ mod tests {
         // (the panel, not the minimized card following would make of it)
         c.hidden = false;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         ed
     }
 
@@ -28519,7 +28521,7 @@ mod tests {
         let (worst, delta) = worst_of_best(&keys, || {
             let mut ed = long_chat(200);
             ed.interface.zellij = true;
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
             let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
             ed.push_offer(crate::offer::Offer::new(
                 "Claude asks".into(),
@@ -28711,7 +28713,7 @@ mod tests {
         c.msgs.push(Msg::new(Role::Note, "5.2s", ""));
         c.hidden = false;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         ed
     }
 
@@ -28994,7 +28996,7 @@ mod tests {
                     call: "x1".into(),
                     ..crate::follow::Gaze::new(run, None, None)
                 });
-                ed.workspace.viewer.at = crate::workspace::At::Code;
+                ed.workspace.viewer.keys_to_code();
                 let s = draw(&mut ed, w, h).join("\n");
                 let state = ed.ui_state();
                 let pane = state.workspaces.iter().flat_map(|l| &l.panes).find(|p| p.id == "follow");
@@ -29084,7 +29086,7 @@ mod tests {
             let run = c.msgs[5].look.clone().unwrap();
             c.follow.gaze =
                 Some(crate::follow::Gaze { call: "x1".into(), ..crate::follow::Gaze::new(run, None, None) });
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
             for k in ["space", "W"] {
                 ed.handle_key(k.parse().unwrap());
             }
@@ -29623,7 +29625,7 @@ mod tests {
     fn a_mark_of_the_strip_is_named_listed_and_pressed_into_its_replay() {
         use crate::event::{Event, Mouse, MouseKind};
         let mut ed = strip_turn(20);
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         screen_at(&mut ed, 160);
         let marks = ed.screen.stop_marks.borrow().clone();
         let calls: Vec<String> = marks.iter().map(|m| m.2.clone()).collect();
@@ -29697,7 +29699,7 @@ mod tests {
             (rows[h - 1].clone(), rows[1..h - 1].to_vec())
         };
         // The chat out of sight, the keys the code's: the way to read it and the replay, in order of use
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         let (bottom, inside) = card(&mut ed, 160);
         assert!(bottom.starts_with("╰─ space L read · [r replay ─") && bottom.ends_with('╯'), "{bottom:?}");
         assert!(!inside.iter().any(|r| r.contains("space L")), "no key inside: {inside:#?}");
@@ -29733,7 +29735,7 @@ mod tests {
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         let rest: Vec<crate::chat::Msg> = c.msgs.drain(2..).filter(|m| m.role != Role::Note).collect();
         (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Thinking);
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         let mut seen = Vec::new();
         for m in rest {
             screen_at(&mut ed, 120);
@@ -29775,7 +29777,7 @@ mod tests {
             link: None,
         };
         c.follow.replaying = Some(crate::follow::Gaze::new(look, Some(file.clone()), Some(2..7)));
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         let vt = screen_at(&mut ed, 120);
         let (_, y, _, h) = ed.screen.thought_card.get().expect("the card");
         let screen = vt.screen().contents();
@@ -29883,7 +29885,7 @@ mod tests {
                 map: Default::default(),
             });
         }
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         assert!(crate::follow::replay_stop(&mut ed, call));
         let vt = screen_at(&mut ed, 120);
         let s = vt.screen();
@@ -29909,7 +29911,7 @@ mod tests {
         // (code to the screen's foot and across it: the card can only float over it)
         let line = format!("{}\n", "x".repeat(90));
         ed.docs[0].text = Rope::from_str(&line.repeat(100));
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.follow.on = true;
         let look = c.msgs[2].look.clone().unwrap();
@@ -30183,7 +30185,7 @@ mod tests {
             }
             c.state = states[k];
             ed.workspace.claude.chat = Some(c);
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
             ed
         };
         let styled = |ed: &Editor| format!("{:?}", kept_rows(ed));
@@ -31186,7 +31188,7 @@ mod tests {
         let mut ed = Editor::new(Config::default());
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, PathBuf::from("/x")));
-        ed.workspace.viewer.at = At::Side;
+        ed.workspace.set_at(Here::Side);
         let rail = |ed: &Editor, w| Layout::new(ed, w, 40).side().map_or(0, |r| r.w);
         assert_eq!(rail(&ed, 112), 32);
         assert_eq!(rail(&ed, 140), 36);
@@ -31691,7 +31693,7 @@ mod tests {
         ed.docs[0].path.set(Some(root.join("d0/e29/f50.rs")));
         ed.docs[0].text = Rope::from_str("fn main() {}\n");
         ed.workspace.viewer.sidebar = Some(sb);
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         let rows = ed.workspace.viewer.sidebar.as_ref().unwrap().lines().len();
         let keys = [
             "j", "j", "k", "C-d", "G", "g", "l", "l", "h", "h", "k", "ret", "esc", "j", "w", "x", "i", "a",
@@ -31800,7 +31802,7 @@ mod tests {
         ed.workspace.git_status = Some(status(1));
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, root.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         let (worst, key) = events_to_frames(&mut ed, &["j", "j", "C-d", "G", "k", "g", "esc", "w"], 180, 50);
         measured("git_tab_with_20k_changes", worst, budget);
         assert!(worst < budget, "key {key:?} took {worst:?} (budget {budget:?})");
@@ -31827,7 +31829,7 @@ mod tests {
                 ed.handle_event(ev);
             }
         }
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         assert!(ed.workspace.terminal.is_some(), "the terminal didn't start");
         let batch: String = (0..200)
             .map(|i| {
@@ -31950,7 +31952,7 @@ mod tests {
         // conversation there or not (it closes, as a prompt's)
         let mut ed = Editor::new(Config::default());
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         for (asking, said, word) in
             [(false, false, "code"), (true, false, "close"), (false, true, "normal"), (true, true, "close")]
         {

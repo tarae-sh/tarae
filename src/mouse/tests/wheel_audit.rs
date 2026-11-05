@@ -8,7 +8,7 @@ use crate::editor::Editor;
 use crate::event::{Mouse, MouseKind as K};
 use crate::pane::GroupKind;
 use crate::uistate::tests::{chat, editor, frame};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const W: u16 = 120;
 const H: u16 = 40;
@@ -66,7 +66,7 @@ fn look(ed: &mut Editor) -> Look {
     Look {
         text,
         keys: format!("{:?}", ed.keys_to().region),
-        at: format!("{:?}", ed.workspace.viewer.at),
+        at: format!("{:?}", ed.workspace.here()),
         focus: format!("{:?}", ed.workspace.viewer.focus),
         doc: format!("{:?}", ed.doc().id),
         selection: format!("{:?}", ed.doc().selection()),
@@ -255,7 +255,7 @@ const CASES: &[Case] = &[
             let files = (0..80).map(|i| format!("f{i:02}.rs")).collect();
             ed.workspace.viewer.sidebar =
                 Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), files));
-            ed.workspace.viewer.at = At::Side;
+            ed.workspace.set_at(Here::Side);
         },
         "line_5 ",
     ),
@@ -265,7 +265,7 @@ const CASES: &[Case] = &[
         |ed| {
             long_text(ed);
             conversation(ed);
-            ed.workspace.viewer.at = At::Code;
+            ed.workspace.viewer.keys_to_code();
         },
         "answer 25",
     ),
@@ -278,8 +278,8 @@ const CASES: &[Case] = &[
         },
         "answer 25",
     ),
-    ("side panel, keys in the code", |ed| side(ed, At::Code), "f05.rs"),
-    ("side panel, its keys", |ed| side(ed, At::Side), "f05.rs"),
+    ("side panel, keys in the code", |ed| side(ed, Here::Code), "f05.rs"),
+    ("side panel, its keys", |ed| side(ed, Here::Side), "f05.rs"),
     ("review rail, keys in the code", |ed| rail(ed, false), "f05.rs"),
     ("review rail, its keys", |ed| rail(ed, true), "f05.rs"),
     ("review rail, its keys, files on disk", |ed| rail_on_disk(ed), "f05.rs"),
@@ -334,11 +334,11 @@ fn conversation(ed: &mut Editor) {
     }
 }
 
-fn side(ed: &mut Editor, at: At) {
+fn side(ed: &mut Editor, at: Here) {
     long_text(ed);
     let files = (0..80).map(|i| format!("f{i:02}.rs")).collect();
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), files));
-    ed.workspace.viewer.at = at;
+    ed.workspace.set_at(at);
 }
 
 fn rail(ed: &mut Editor, focused: bool) {
@@ -421,7 +421,7 @@ fn terminal(ed: &mut Editor, then: Option<&[&str]>) {
         if let Some(t) = ed.workspace.terminal.as_mut() {
             t.visible = true;
             ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
-            ed.workspace.viewer.at = At::Program;
+            ed.workspace.set_at(Here::Program);
             if shown(ed).contains("line 300") {
                 break;
             }
@@ -558,7 +558,7 @@ fn procs(ed: &mut Editor, focused: bool) {
     ed.procs.panel.as_mut().unwrap().selected = 1;
     frame(ed);
     if !focused {
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
     }
 }
 
@@ -567,7 +567,7 @@ fn plugin(ed: &mut Editor, focused: bool) {
     ed.plugin_panel_stand_in(80);
     frame(ed);
     if !focused {
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
     }
 }
 
@@ -637,7 +637,7 @@ fn buffer_names_audit() {
             if selection {
                 keys(&mut ed, &["x", "x", "x"]);
             }
-            ed.workspace.viewer.at = if keys_in == "code" { At::Code } else { At::Chat };
+            ed.workspace.set_at(if keys_in == "code" { Here::Code } else { Here::Chat });
             let draw = |ed: &mut Editor| {
                 ed.focus_sync();
                 crate::term::render(ed, &mut Vec::new(), w, h).unwrap();

@@ -1529,7 +1529,7 @@ pub fn watch(ed: &mut Editor) {
     // sequence under way — `g`…, a count, `space`, `C-w` — isn't yet: follow only holds the cursor still meanwhile
     // (`free`), and the sequence's end decides — a move or an edit pauses, a hop to the chat or a picker doesn't)
     let in_code =
-        matches!(ed.workspace.viewer.at, crate::workspace::At::Code | crate::workspace::At::Float(_));
+        matches!(ed.workspace.here(), crate::workspace::Here::Code | crate::workspace::Here::Float(_));
     let under_way = in_code && ed.mode != crate::editor::Mode::Normal;
     // (your keys in a pane follow doesn't lead never pause it — its view moves, yours stays; a hop between the code's
     // panes isn't a move: where the cursor is there counts as seen — panes P3 step 8)

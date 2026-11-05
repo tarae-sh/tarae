@@ -6,7 +6,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::pane::GroupKind;
 use crate::sizes::Slot;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const W: u16 = 120;
 const H: u16 = 34;
@@ -120,7 +120,7 @@ fn a_tasks_places_list_beside_its_output_drives_it() {
     assert!(ed.screen.list(GroupKind::Task).is_none());
     ed.list_focus(GroupKind::Task);
     assert!(said(&ed).contains("fewer than two places"), "{}", said(&ed));
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     // Two — the error printed far below: a list, the error's row first
     print(&mut ed, 60, place(&b, 9, 1, "mismatched types"));
     let shown = frame(&mut ed);
@@ -168,7 +168,7 @@ fn a_tasks_places_list_beside_its_output_drives_it() {
     feed(&mut ed, "<tab>");
     assert_eq!(region(&ed), "list:task");
     feed(&mut ed, "gg<ret>");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     assert_eq!(ed.doc().path.as_deref(), Some(b.as_path()));
     assert_eq!(ed.cursor_line(), 9, "on its line");
 }
@@ -238,7 +238,7 @@ fn a_click_on_a_places_row_picks_it() {
     print(&mut ed, 2, place(&a, 0, 2, "first"));
     print(&mut ed, 60, place(&a, 4, 2, "second"));
     frame(&mut ed);
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     let (y, rows, first) = ed.screen.list(GroupKind::Task).expect("the places' list drawn");
     assert!(rows >= 2 && first == 0);
     let g = ed.workspace.group(GroupKind::Task).unwrap();
@@ -588,8 +588,8 @@ fn a_preflights_steps_list_beside_its_output_drives_it() {
     // `enter`: its first place, in the code
     feed(&mut ed, "<ret>");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.doc().path.as_deref(), ed.cursor_line()),
-        (At::Code, Some(a.as_path()), 6)
+        (ed.workspace.here(), ed.doc().path.as_deref(), ed.cursor_line()),
+        (Here::Code, Some(a.as_path()), 6)
     );
     // fmt has none: `enter` gives the output the keys at its heading
     ed.list_focus(GroupKind::Preflight);
@@ -821,13 +821,13 @@ fn only_the_member_with_the_keys_is_lit() {
         assert_ne!(strong, dim, "the list's name strong, the detail's dim");
         // `tab`: the detail's
         feed(&mut ed, "<tab>");
-        assert_eq!(ed.workspace.viewer.at, At::Slot, "{kind:?}");
+        assert_eq!(ed.workspace.here(), Here::Slot, "{kind:?}");
         let p = cells(&mut ed, W);
         assert_eq!(look(&p), [wash, lit, lit, lit], "{kind:?}, the detail's keys");
         assert_eq!((name(&p, list), name(&p, detail)), (dim, strong));
         // `esc`: the code's again
         feed(&mut ed, "<esc>");
-        assert_eq!(ed.workspace.viewer.at, At::Code);
+        assert_eq!(ed.workspace.here(), Here::Code);
         assert_eq!(look(&cells(&mut ed, W)), [wash; 4], "{kind:?}: nothing lit again");
     }
 }
@@ -1112,21 +1112,21 @@ fn a_narrow_group_is_stacked() {
     assert!(fg(&p, 0) != wash && fg(&p, N - 1) == fg(&p, 0), "lit end to end");
     // `C-w l` / `C-w h`: the other member opened, as side by side they'd hop to it — each is a pane, whichever layout
     feed_at(&mut ed, "<C-w>l", N);
-    assert_eq!(ed.workspace.viewer.at, At::Slot, "C-w l: the output");
+    assert_eq!(ed.workspace.here(), Here::Slot, "C-w l: the output");
     assert!(cells(&mut ed, N).screen().contents().contains("filler"), "opened");
     feed_at(&mut ed, "<C-w>l", N);
-    assert_eq!(ed.workspace.viewer.at, At::Slot, "nothing further right");
+    assert_eq!(ed.workspace.here(), Here::Slot, "nothing further right");
     feed_at(&mut ed, "<C-w>h", N);
     assert_eq!(region(&ed), "list:task", "C-w h: the list");
     assert!(cells(&mut ed, N).screen().contents().contains("a.rs:3"), "opened");
     // `tab` from the list: the output in sight, the list not
     feed_at(&mut ed, "<tab>", N);
-    assert_eq!(ed.workspace.viewer.at, At::Slot);
+    assert_eq!(ed.workspace.here(), Here::Slot);
     let all = cells(&mut ed, N).screen().contents();
     assert!(all.contains("filler") && !all.contains("a.rs:3 "), "{all}");
     // `esc`: the code's keys, the output still in sight
     feed_at(&mut ed, "<esc>", N);
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     assert!(cells(&mut ed, N).screen().contents().contains("filler"), "kept in sight");
     assert_eq!(ed.workspace.group(GroupKind::Task).unwrap().front, crate::pane::Member::Detail);
     // A click on `places`: the list's keys, in sight

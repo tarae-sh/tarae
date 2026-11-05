@@ -12,7 +12,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key, ListMove};
 use crate::pane::{Group, GroupKind};
 use crate::sizes::Slot;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 impl GroupKind {
     /// The slot's panel it's shown in while the slot hosts it.
@@ -279,10 +279,10 @@ impl Editor {
     /// Every event: the member of a group that has the keys is its front (`Group.front`) — the one in sight while it's
     /// stacked, kept once the keys leave.
     pub fn groups_front(&mut self) {
-        let detail = self.slot_group().filter(|_| self.workspace.is_at(At::Slot)).map(|g| g.kind);
+        let detail = self.slot_group().filter(|_| self.workspace.is_at(Here::Slot)).map(|g| g.kind);
         let at = self.workspace.docked();
         for g in &mut self.workspace.groups {
-            if at == At::List(g.list) {
+            if at == Here::List(g.list) {
                 g.front = crate::pane::Member::List;
             } else if detail == Some(g.kind) {
                 g.front = crate::pane::Member::Detail;
@@ -318,7 +318,7 @@ impl Editor {
 
     /// The group whose list has the keys (normal mode, the group laid out).
     pub fn list_focused(&self) -> Option<Group> {
-        let At::List(id) = self.workspace.docked() else { return None };
+        let Here::List(id) = self.workspace.docked() else { return None };
         self.workspace.groups.iter().find(|g| g.list == id && self.group_laid(g)).copied()
     }
 
@@ -337,7 +337,7 @@ impl Editor {
         let Some(g) = self.group_made(kind) else { return };
         self.hand_to(kind);
         self.plugin_panel_unfocus();
-        self.workspace.viewer.at = At::List(g.list);
+        self.workspace.set_at(Here::List(g.list));
         crate::rundoc::sync(self);
     }
 
@@ -346,7 +346,7 @@ impl Editor {
         if kind.slot().is_some() {
             self.hand_to(kind);
             self.plugin_panel_unfocus();
-            self.workspace.viewer.at = At::Slot;
+            self.workspace.set_at(Here::Slot);
             crate::rundoc::sync(self);
         }
     }
@@ -417,7 +417,7 @@ fn open(ed: &mut Editor, kind: GroupKind) {
         _ => return,
     };
     let Some(it) = place else { return };
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     if let Err(e) = ed.open_at(&it.path, it.line, it.col) {
         ed.set_error(format!("{e:#}"));
     }
@@ -465,7 +465,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         (Code::Char(' ' | ':') | Code::BackTab, false, false) | (Code::Char('w'), true, false) => {
             return false;
         }
-        (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
+        (Code::Esc, ..) => ed.workspace.viewer.keys_to_code(),
         (Code::Char('q'), false, false) => close(ed, g.kind),
         // (an act on the selection brings it back into sight, wherever the wheel left the view)
         (Code::Enter, false, false) => {

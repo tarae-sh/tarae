@@ -196,8 +196,9 @@ fn pick(ed: &mut Editor, id: String) {
     ed.pointing = None;
     // (out of sight, the ask line comes with it, as with a quote)
     crate::chat::ask_for(ed);
+    let chat = ed.workspace.at_of(crate::workspace::Here::Chat);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.viewer.at = chat;
     c.hidden = false;
     if !c.pointed.contains(&id) {
         c.pointed.push(id.clone());

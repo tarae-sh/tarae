@@ -28,7 +28,7 @@ use super::abi::{Hints, HostEvent, Panel, Pick, Side, Tone, View};
 use super::shown;
 use crate::editor::{Editor, Mode, PromptKind};
 use crate::key::{Code, Key};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// The most rows a panel holds (past that, what it sent is cut).
 const MAX_ROWS: usize = 50_000;
@@ -88,7 +88,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     if ed.mode != Mode::Normal || !ed.pending.is_empty() || ed.prompt.is_some() {
         return false;
     }
-    if !ed.workspace.is_at(At::Plugin) || !ed.plugin_panel_in_sight() {
+    if !ed.workspace.is_at(Here::Plugin) || !ed.plugin_panel_in_sight() {
         return false;
     }
     let Some(st) = ed.plugins.as_mut().and_then(|p| p.panel.as_mut()) else {
@@ -120,7 +120,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         | (Code::Char('w'), true, false) => {
             return false;
         }
-        (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
+        (Code::Esc, ..) => ed.workspace.viewer.keys_to_code(),
         // (the plugin's own keys act on the selected row — tarae can't tell a cheap act from a costly one: a row the
         // wheel left out of sight is brought back first, said, and the next press is the plugin's)
         _ if !seen => {
@@ -190,7 +190,7 @@ impl Editor {
 
     /// The panel took the keys: nothing else keeps them.
     fn plugin_panel_took_keys(&mut self) {
-        self.workspace.viewer.at = At::Plugin;
+        self.workspace.set_at(Here::Plugin);
     }
 
     /// A click on the panel's row `row` (None: its header): focused, that row selected.
@@ -218,7 +218,7 @@ impl Editor {
 
     /// Whether the panel has the keys.
     pub fn plugin_panel_focused(&self) -> bool {
-        self.workspace.is_at(At::Plugin)
+        self.workspace.is_at(Here::Plugin)
             && self.plugins.as_ref().is_some_and(|p| p.panel.is_some())
             && self.plugin_panel_in_sight()
     }
@@ -230,7 +230,7 @@ impl Editor {
 
     /// Code clicked: the panel gives the keys back.
     pub fn plugin_panel_unfocus(&mut self) {
-        self.workspace.leave(At::Plugin);
+        self.workspace.leave(Here::Plugin);
     }
 
     /// A plugin's panel of `rows` one-cell rows, as its command shows it (the keys its) — the plugin thread started,
@@ -349,7 +349,7 @@ impl Editor {
                 }
             }
             if focus {
-                self.workspace.viewer.at = At::Side;
+                self.workspace.set_at(Here::Side);
             }
         }
         self.sidebar_sync();
@@ -432,7 +432,7 @@ impl Editor {
         // if this answer shows the panel again after it
         self.plugin_panel_unfocus();
         if self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Plugin) {
-            self.workspace.leave(At::Side);
+            self.workspace.leave(Here::Side);
         }
         if let Some(p) = &mut self.plugins {
             p.answering = None;

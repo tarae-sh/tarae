@@ -986,7 +986,7 @@ mod tests {
         // Its panel shown meanwhile doesn't take the keys: they're the card's
         ed.plugin_run("table", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
-        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::At::Plugin));
+        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::Here::Plugin));
         answer(&mut ed, ask, true);
         until_said(&mut ed, "connected 20");
         // (the bytes and the close go to the plugin undrawn; its answers, which say them, drawn)
@@ -1177,7 +1177,7 @@ mod tests {
         ed.plugin_run("table", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
         assert!(
-            panel(&ed).is_some() && ed.workspace.is_at(crate::workspace::At::Plugin),
+            panel(&ed).is_some() && ed.workspace.is_at(crate::workspace::Here::Plugin),
             "shown by a command: it has the keys"
         );
         // tarae moves through the rows
@@ -1202,14 +1202,14 @@ mod tests {
         // …but `C-w q` doesn't close it, as its own `q` doesn't (the plugin's): said, the keys kept
         key(&mut ed, "q");
         assert!(
-            panel(&ed).is_some() && ed.workspace.is_at(crate::workspace::At::Plugin),
+            panel(&ed).is_some() && ed.workspace.is_at(crate::workspace::Here::Plugin),
             "the panel stays, with the keys"
         );
         let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         assert!(said.contains("closes by its own keys"), "{said}");
         // esc: the keys go back to the code, the panel stays
         key(&mut ed, "esc");
-        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::At::Plugin));
+        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::Here::Plugin));
         ed.toasts.clear();
         key(&mut ed, "d");
         settle_for(&mut ed, Duration::from_millis(100));
@@ -1217,7 +1217,7 @@ mod tests {
         // A click on a row: the keys, and that row
         ed.plugin_panel_click(Some(5));
         assert_eq!(
-            (ed.workspace.is_at(crate::workspace::At::Plugin), panel(&ed).unwrap().selected),
+            (ed.workspace.is_at(crate::workspace::Here::Plugin), panel(&ed).unwrap().selected),
             (true, 5)
         );
         // Rows that moved: the selection stays on its row (by id)
@@ -1408,7 +1408,7 @@ mod tests {
         // (a panel it shows along with it doesn't take the keys back from the buffer)
         ed.plugin_run("view-and-panel", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
-        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::At::Plugin));
+        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::Here::Plugin));
         assert_eq!(text(&ed), ["kind: Pod\n"]);
         assert_eq!(ed.doc().title.as_deref(), Some(title), "in front");
         ed.plugin_run("more", "").unwrap();
@@ -1635,7 +1635,7 @@ mod tests {
             ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == SMode::Plugin)
         });
         let s = ed.workspace.viewer.sidebar.as_ref().unwrap();
-        assert!(!ed.workspace.is_at(crate::workspace::At::Side), "shown, without the keys");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Side), "shown, without the keys");
 
         let labels = |ed: &Editor| {
             ed.workspace
@@ -1661,7 +1661,7 @@ mod tests {
         // Asked to: with the keys, on the row for the code under the cursor — its name cut short, whole on its card
         // (and its state after it) over the code
         ed.plugin_run("side", "focus").unwrap();
-        settle_until(&mut ed, |ed| ed.workspace.is_at(crate::workspace::At::Side));
+        settle_until(&mut ed, |ed| ed.workspace.is_at(crate::workspace::Here::Side));
         assert_eq!(ed.workspace.viewer.sidebar.as_ref().unwrap().selected, 1);
         let mut frame = Vec::new();
         crate::term::render(&mut ed, &mut frame, 140, 20).unwrap();
@@ -1689,12 +1689,12 @@ mod tests {
         // A buffer it shows then takes the keys from its tab
         ed.plugin_run("view", "").unwrap();
         settle_until(&mut ed, |ed| ed.doc().title.as_deref() == Some("web-1 · demo"));
-        assert!(!ed.workspace.is_at(crate::workspace::At::Side));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Side));
+        ed.workspace.set_at(crate::workspace::Here::Side);
         // Enter on a row with a place: there, in the code
         ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 1;
         key(&mut ed, "ret");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Side), "the code has the keys");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Side), "the code has the keys");
         ed.plugin_run("unside", "").unwrap();
         settle_until(&mut ed, |ed| {
             ed.plugins.as_ref().is_some_and(|p| p.side.is_none() && p.badge.is_none())

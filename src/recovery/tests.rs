@@ -643,7 +643,7 @@ fn a_conversation_with_no_unsaved_edits_is_a_card_of_its_own() {
     let stands = crate::offer::Stands { drawn: true, whole: true };
     let compare = matches!(cards[0].act('c', stands), Some(crate::offer::Act::Compare));
     assert!(!compare, "no copy to compare");
-    let at = ed.workspace.viewer.at;
+    let at = ed.workspace.here();
     ed.offer_accept();
     assert!(self::cards(&ed).is_empty());
     settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
@@ -651,7 +651,7 @@ fn a_conversation_with_no_unsaved_edits_is_a_card_of_its_own() {
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(c.resume.as_deref(), Some("left"));
     assert!(c.msgs.iter().any(|m| m.text == "about left"), "its rows back");
-    assert_eq!(ed.workspace.viewer.at, at, "the keys stay");
+    assert_eq!(ed.workspace.here(), at, "the keys stay");
     recovery(&mut ed).flush();
     assert!(!folder.exists(), "its file and folder go");
     assert!(cards_after(&dir).is_empty(), "asked once");

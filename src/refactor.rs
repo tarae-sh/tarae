@@ -869,7 +869,7 @@ pub fn view_all(ed: &mut Editor, whose: Whose) {
                     let keys = ed.card_focus == Some(c);
                     ed.offer_viewed(c, doc, keys)
                 }
-                None => ed.workspace.leave(crate::workspace::At::Chat),
+                None => ed.workspace.leave(crate::workspace::Here::Chat),
             }
         }
     });
@@ -947,7 +947,7 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
     };
     // The keys go to the review; the file is the user's now (follow won't close it as a preview)
     let from_chat = claudes && ed.workspace.chat_has_keys();
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     if let Some(c) = &mut ed.workspace.claude.chat {
         c.follow.keep(doc_id);
     }

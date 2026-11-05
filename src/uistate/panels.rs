@@ -214,8 +214,12 @@ impl Editor {
                     })
                 })
                 .collect();
-            p.side =
-                Some((tab.to_string(), self.workspace.is_at(crate::workspace::At::Side), rows, lines.len()));
+            p.side = Some((
+                tab.to_string(),
+                self.workspace.is_at(crate::workspace::Here::Side),
+                rows,
+                lines.len(),
+            ));
         }
         // The code review: its rail's file rows as drawn
         if let Some(r) = self.workspace.code_review.as_ref() {
@@ -241,7 +245,7 @@ impl Editor {
                 files: r.files.len(),
                 viewed: r.files.iter().filter(|f| r.viewed(self, f)).count(),
                 file: marked.and_then(|i| r.files.get(i)).map(|f| f.rel.clone()),
-                focused: self.workspace.is_at(crate::workspace::At::Rail),
+                focused: self.workspace.is_at(crate::workspace::Here::Rail),
                 rows,
                 high: r
                     .high_unseen(self)
@@ -352,7 +356,7 @@ impl Editor {
         }
         if let Some(c) = self.workspace.claude.chat.as_ref() {
             p.chat = Some(Chat {
-                focused: self.workspace.is_at(crate::workspace::At::Chat),
+                focused: self.workspace.is_at(crate::workspace::Here::Chat),
                 hidden: c.hidden,
                 unread: c.unread(),
                 busy: c.busy(),

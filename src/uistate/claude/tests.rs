@@ -30,7 +30,7 @@ fn chat(ed: &mut Editor, draft: &str) {
     let mut c = crate::chat::Chat::new();
     c.input = draft.into();
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
 }
 
 fn frame(ed: &mut Editor) -> String {
@@ -116,7 +116,7 @@ fn claudes_level_holds_back_unsent_text_and_other_sessions() {
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "q", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "their own answer", ""));
     l.claude.chat = Some(c);
-    l.viewer.at = crate::workspace::At::Chat;
+    l.set_at(crate::workspace::Here::Chat);
     card(&mut ed, "End the review?");
     // (a toast on its card: how strong the frame drew it is the drivers', never Claude's)
     ed.set_warning("a toast on its card");
@@ -344,8 +344,8 @@ fn the_ui_tool_answers_at_once_and_gives_what_it_names() {
     let id = card(&mut ed, "End the review?");
     let files = vec!["a.rs".into(), "b.rs".into()];
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(ed.workspace.root.clone(), files));
-    ed.workspace.viewer.at = crate::workspace::At::Side;
-    ed.workspace.leave(crate::workspace::At::Side);
+    ed.workspace.set_at(crate::workspace::Here::Side);
+    ed.workspace.leave(crate::workspace::Here::Side);
     frame(&mut ed);
     let msg = serde_json::json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
         "params": { "name": "ui", "arguments": {} } });
@@ -426,7 +426,7 @@ fn a_link_to_a_row_shows_its_tab_without_the_keys() {
     assert!(ed.ui_flashing("files:f70.rs"));
     let text = frame(&mut ed);
     assert!(text.contains("f70.rs"), "scrolled into sight:\n{text}");
-    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys stay the chat's");
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the keys stay the chat's");
     assert_eq!(ed.keys_to().region, crate::uistate::Region::Chat);
     ed.ui_flash = None;
     ed.ui_jump("files:nope.rs");
@@ -555,7 +555,7 @@ fn pointing_puts_an_elements_id_in_the_chat() {
     assert!(ed.workspace.claude.chat.as_ref().unwrap().pointed.is_empty(), "taken off");
     ed.handle_key(key("<C-o>"));
     ed.handle_key(key("<esc>"));
-    assert!(ed.pointing.is_none() && ed.workspace.is_at(crate::workspace::At::Chat));
+    assert!(ed.pointing.is_none() && ed.workspace.is_at(crate::workspace::Here::Chat));
 }
 
 /// A framed card's label sits on its title's row — the frame's top line, where its name

@@ -126,7 +126,7 @@ fn every_surface_edits_its_line_at_the_cursor() {
         crate::chat::Msg::new(crate::chat::Role::Assistant, "the needle is here", ""),
     ];
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     feed(&mut ed, "<esc>/nedle<C-a><C-f>e");
     assert_eq!(line(&ed), "ne|edle", "its line, edited at the cursor");

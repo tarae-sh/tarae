@@ -157,7 +157,7 @@ fn an_edit_is_drawn_as_it_is_written() {
     let mid = input.find("let c").unwrap() + "let c = a".len();
     // (its place in sight: the screen holds still — the view held on the line under the row it writes, your cursor
     // where it was, the keys in the chat or not)
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed, 100, 30);
     let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..mid], &[20, 60], false);
@@ -169,7 +169,7 @@ fn an_edit_is_drawn_as_it_is_written() {
         (Some(2), 0, 0),
         "the view on the line it rewrites, your cursor where it was, the screen still"
     );
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     crate::term::BLEED_SEEN.with_borrow_mut(Vec::clear);
     let rows = frame(&mut ed, 100, 30);
     let at =
@@ -488,10 +488,10 @@ fn the_caret_is_a_bar_that_reads_on_the_writing_rows_wash() {
         c => panic!("a true colour: {c:?}"),
     };
     for theme in ["meok", "hanji"] {
-        for at in [crate::workspace::At::Code, crate::workspace::At::Chat] {
+        for at in [crate::workspace::Here::Code, crate::workspace::Here::Chat] {
             let (mut ed, _dir, g) = scene("writing-caret-reads");
             ed.theme = crate::theme::load(theme).unwrap();
-            ed.workspace.viewer.at = at;
+            ed.workspace.set_at(at);
             frame(&mut ed, 100, 30);
             let input = edit_input("    let b = 20;\n    let c = a");
             let mut w = Writer::new("t1");
@@ -504,7 +504,7 @@ fn the_caret_is_a_bar_that_reads_on_the_writing_rows_wash() {
             let r = crate::chrome::contrast(rgb(a.fg), rgb(a.bg));
             assert!(r >= 3.0, "{theme} {at:?}: the caret on the wash {r:.2} (floor 3)");
             // The person's cursor, where it was (follow never moves it): a block of the cursor's colour, never a bar
-            if at == crate::workspace::At::Code {
+            if at == crate::workspace::Here::Code {
                 let mut bytes = Vec::new();
                 crate::term::render(&mut ed, &mut bytes, 100, 30).unwrap();
                 let mut parser = vt100::Parser::new(30, 100, 0);
@@ -732,7 +732,7 @@ fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     // (the ask line over the code, its keys: the code keeps its width)
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     (c.hidden, c.asking) = (false, true);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 20;\n    let c = a");
     let mut w = Writer::new("t1");
@@ -770,7 +770,7 @@ fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     let (other, bar) = fg_before(&mut ed, "    let a = 1;");
     assert!(other != claude_colour(&ed) || bar != "▎", "one line marked");
     // The keys back in the code: your cursor where it was, Claude's place still marked (your cursor isn't on it)
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     assert_eq!((led(&ed), ed.cursor_line()), (Some(3), 0));
     let (mark, bar) = fg_before(&mut ed, r#"    println!("{a} {b}");"#);
     assert_eq!((mark, bar.as_str()), (claude_colour(&ed), "▎"), "still Claude's place");

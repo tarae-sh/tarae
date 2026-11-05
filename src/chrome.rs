@@ -428,7 +428,7 @@ impl Editor {
         }
         self.workspace.viewer.slot_front = Some(s);
         if s != Slot::Terminal {
-            self.workspace.leave(crate::workspace::At::Program);
+            self.workspace.leave(crate::workspace::Here::Program);
         }
         if s != Slot::Procs {
             self.procs_unfocus();
@@ -461,7 +461,7 @@ impl Editor {
             if let Some(g) = self.slot_group()
                 && let Some(detail) = g.detail_pane()
             {
-                let on_list = self.workspace.is_at(crate::workspace::At::List(g.list));
+                let on_list = self.workspace.is_at(crate::workspace::Here::List(g.list));
                 return self.focus_pane(if on_list { detail } else { g.list });
             }
             return self.set_status("its output is all it has yet — C-w J back to the slot");
@@ -473,8 +473,8 @@ impl Editor {
         if let Some(g) = self.slot_group()
             && let Some(detail) = g.detail_pane()
         {
-            let on_list = self.workspace.is_at(crate::workspace::At::List(g.list));
-            let on_detail = !on_list && self.workspace.is_at(crate::workspace::At::Slot);
+            let on_list = self.workspace.is_at(crate::workspace::Here::List(g.list));
+            let on_detail = !on_list && self.workspace.is_at(crate::workspace::Here::Slot);
             match (on_list, on_detail, by > 0) {
                 (true, _, true) => return self.focus_pane(detail),
                 (_, true, false) => return self.focus_pane(g.list),
@@ -535,7 +535,7 @@ impl Editor {
         }
         self.workspace.viewer.slot_seen = now;
         if self.slot() != Some(Slot::Terminal) {
-            self.workspace.leave(crate::workspace::At::Program);
+            self.workspace.leave(crate::workspace::Here::Program);
         }
     }
 }

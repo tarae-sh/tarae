@@ -26,7 +26,7 @@ use crate::editor::Editor;
 use crate::event::{Apply, Event};
 use crate::key::{Code, Key};
 use crate::transaction::{Change, Transaction};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
 const DEFAULT_ARGS: &[&str] = &[
@@ -1765,7 +1765,7 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
     if chat {
         if c_q {
             rev.away = false;
-            ed.workspace.viewer.at = At::Code;
+            ed.workspace.viewer.keys_to_code();
             return true;
         }
         return false;
@@ -1791,7 +1791,7 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
         (Code::Esc, ..) => {
             match ed.workspace.claude.chat.as_mut().filter(|_| rev.from_chat) {
                 Some(_) => {
-                    ed.workspace.viewer.at = At::Chat;
+                    ed.workspace.set_at(Here::Chat);
                     let key = ed.key_said("C-q");
                     ed.set_status(format!(
                         "back to the chat — the change waits unanswered, {key} answers it"
@@ -1934,7 +1934,7 @@ fn finish(ed: &mut Editor) {
     // Answered here, the keys go back to the chat it took them from — as its Esc gives them (they stayed in
     // the code: `keys → pane#29 (commands)` after an edit review's `y`)
     if rev.from_chat && !rev.away && ed.workspace.claude.chat.is_some() {
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
     }
     // A step `space u` takes back on its own
     if applied

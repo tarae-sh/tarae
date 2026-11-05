@@ -26,7 +26,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::llm::{self, StreamEv};
 use crate::markdown::Span;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 pub(crate) const SYSTEM: &str = "You are Claude, built into tarae — a terminal code editor, working in the user's project \
 (your current directory). Explore it with tarae's own code tools — look at the code you need \
@@ -239,7 +239,7 @@ pub fn slash_pick(ed: &mut Editor, row: usize) {
     let (base, _) = slash_round(c);
     c.input.set(SLASH[n].name);
     c.slash = (list.names.len() > 1).then_some((base, row));
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
 }
 
 /// Mid-turn, a slash name that would end the turn or leave it — `/clear` (a new conversation kills this one's claude),
@@ -1525,7 +1525,7 @@ pub fn open(ed: &mut Editor) {
                 c.asking = false;
             }
             c.hidden = false;
-            ed.workspace.viewer.at = At::Chat;
+            ed.workspace.set_at(Here::Chat);
         }
         None => made(ed),
     }
@@ -1558,7 +1558,7 @@ pub fn ask_for(ed: &mut Editor) {
 pub fn ask_close(ed: &mut Editor) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.hidden = true;
-    ed.workspace.leave(At::Chat);
+    ed.workspace.leave(Here::Chat);
 }
 
 /// The ask line grown into the conversation (`pageup`): the docked column, the keys staying in its input.
@@ -1644,10 +1644,10 @@ pub fn reopen_left(ed: &mut Editor) -> bool {
         return true;
     }
     let Some((saved, _)) = ed.workspace.claude.flags.left.take() else { return false };
-    let at = ed.workspace.viewer.at;
+    let at = ed.workspace.here();
     made(ed);
     continue_from(ed, *saved, false, true);
-    ed.workspace.viewer.at = at;
+    ed.workspace.set_at(at);
     true
 }
 
@@ -1674,7 +1674,7 @@ fn made(ed: &mut Editor) {
     c.follow.on = ed.config.llm.follow || armed;
     read_kept(ed);
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     ed.caps_sync();
     crate::edits::at_end_new_chat(ed);
     crate::reads::kept_keys_load(ed);
@@ -1700,9 +1700,9 @@ pub fn left_back(ed: &mut Editor, id: String) {
     if ed.workspace.claude.chat.is_some() {
         return read_kept(ed);
     }
-    let at = ed.workspace.viewer.at;
+    let at = ed.workspace.here();
     made(ed);
-    ed.workspace.viewer.at = at;
+    ed.workspace.set_at(at);
     if !ed.behind {
         ensure_proc(ed);
     }
@@ -1896,7 +1896,7 @@ pub fn restore(ed: &mut Editor, r: Restored) {
     // (the setting changed meanwhile — `:set` gone with the quit, another tarae's key: what Claude was told, then this)
     crate::edits::at_end_follow_here(ed);
     if r.focused {
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
     }
     let spawn = !r.lazy;
     let (Some(id), Some(dir)) = (r.conversation, ed.chats_dir.clone()) else {
@@ -2086,7 +2086,7 @@ fn said_here(ed: &mut Editor, i: usize) {
 /// The keys leave the chat for the code (`esc` from its input with nothing to read, its view mode's `esc` and `q`): the
 /// column stays in sight (a docked pane stays once used).
 pub fn keys_left(ed: &mut Editor) {
-    ed.workspace.leave(At::Chat);
+    ed.workspace.leave(Here::Chat);
 }
 
 /// The chat hidden (`space L` on it shown, #270): the panel hidden, nothing ended — the conversation, its process, a turn under way and follow go
@@ -2173,6 +2173,7 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     crate::hosts::chat_ended(ed);
     // (its view mode — `C-l` is one of its chords — was the conversation that goes: it goes with it)
     crate::chatdoc::forget(ed);
+    let chat = ed.workspace.at_of(Here::Chat);
     let Some(c) = &mut ed.workspace.claude.chat else {
         open(ed);
         if let Some(c) = &mut ed.workspace.claude.chat {
@@ -2182,7 +2183,7 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     };
     c.started_new = true;
     c.hidden = false;
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.viewer.at = chat;
     c.kill();
     // The one just left is an earlier one now (the empty chat offers it)
     if let Some(id) = c.conversation.take() {
@@ -3091,7 +3092,7 @@ pub fn attach_screen(ed: &mut Editor) -> Result<(), String> {
     c.screen = Some(Shot { text, cols, rows });
     c.with.retain(|w| *w != With::Screen);
     c.with.push(With::Screen);
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     Ok(())
 }
 
@@ -3953,7 +3954,7 @@ pub fn turn_gathered(ed: &mut Editor, n: Option<String>) {
         }
         if open {
             // (the keys go to the review, as with an edit's)
-            ed.workspace.leave(At::Chat);
+            ed.workspace.leave(Here::Chat);
             crate::codereview::start_turn(ed, ed.workspace.claude.checkpoints.list.len() - 1);
         }
     }
@@ -4736,7 +4737,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     }
     let page = page(ed);
     let half = crate::key::half(page) as usize;
-    if !ed.workspace.is_at(At::Chat) {
+    if !ed.workspace.is_at(Here::Chat) {
         return false;
     }
     // A key typed in the input — a character, enter, backspace — brings the conversation back to its bottom, as a
@@ -4800,7 +4801,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     match (key.code, key.ctrl, key.alt) {
-        (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
+        (Code::Esc, ..) => ed.workspace.viewer.keys_to_code(),
         (Code::Enter, ..) => send(ed),
         // What's typed first, then the turn (#175, as Claude Code's): a draft typed mid-turn is cleared, a second
         // `C-c` stops — the cleared text kept for `↑`
@@ -4942,7 +4943,7 @@ pub fn apply_code(ed: &mut Editor) {
     let old = doc.text.byte_slice(r.from()..r.to()).to_string();
     let new = llm::match_trailing_newline(&old, code);
     let doc_id = doc.id;
-    ed.workspace.leave(At::Chat);
+    ed.workspace.leave(Here::Chat);
     llm::review_with(ed, doc_id, "apply code from chat", vec![(r.from(), r.to(), old, new)], None);
 }
 
@@ -5126,7 +5127,7 @@ mod tests {
         assert!(!context(&ed, None, &[], &[]).0.contains("<selection"), "off the message");
         assert_eq!(region(&ed), "chat", "the keys still in it");
         // The keys gone elsewhere (a hop, a press): it goes with them, a prompt's way
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         crate::uistate::tests::frame(&mut ed);
         assert!(ed.screen.chat_frame.is_none(), "not drawn without the keys");
         keys(&mut ed, "space l");
@@ -5219,7 +5220,7 @@ mod tests {
             let c = ed.workspace.claude.chat.as_mut().unwrap();
             c.msgs.push(Msg::new(Role::User, q, ""));
             (c.state, c.hidden) = (State::Thinking, true);
-            ed.workspace.viewer.at = At::Code;
+            ed.workspace.viewer.keys_to_code();
             on_event(ed, g, StreamEv::Text("The answer names no file, in a few words.".into()));
             on_event(ed, g, StreamEv::Done(how));
             ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
@@ -5289,14 +5290,14 @@ mod tests {
         };
         ed.handle_mouse(m(crate::event::MouseKind::Down));
         ed.handle_mouse(m(crate::event::MouseKind::Up));
-        assert!(!c(&ed).hidden && ed.workspace.is_at(At::Chat), "read, the keys in it");
+        assert!(!c(&ed).hidden && ed.workspace.is_at(Here::Chat), "read, the keys in it");
         // A refused start (no claude where it's looked for): the column with it, no toast
         let mut ed = crate::uistate::tests::editor();
         ed.config.llm.command = "/nonexistent/tarae-no-claude".into();
         let mut chat = Chat::new();
         chat.hidden = true;
         ed.workspace.claude.chat = Some(chat);
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         ensure_proc(&mut ed);
         assert!(!c(&ed).hidden && c(&ed).msgs.iter().any(|m| m.role == Role::Note), "said in the column");
         assert_eq!(loud(&ed), 0, "no toast: {:?}", ed.toasts);
@@ -5351,7 +5352,7 @@ mod tests {
                 && !ed.workspace.claude.chat.as_ref().unwrap().hidden
         };
         // Out of sight, the keys in the code: `space L` shows it, the keys in it
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         crate::uistate::tests::frame(&mut ed);
         assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 0, "out of sight: no panel");
         keys(&mut ed, "space L");
@@ -5375,8 +5376,8 @@ mod tests {
         let state = (c.hidden, c.proc.is_some(), c.busy(), c.follow.on);
         assert_eq!(state, (true, true, true, true), "hidden; its process, its turn, follow going on");
         assert_eq!(
-            (ed.screen.drawn_w(crate::pane::Shows::Chat), ed.workspace.viewer.at),
-            (0, At::Code),
+            (ed.screen.drawn_w(crate::pane::Shows::Chat), ed.workspace.here()),
+            (0, Here::Code),
             "no panel, the keys the code's"
         );
         assert!(ed.screen.thought_card.get().is_some(), "the follow card at the code, the chat out of sight");
@@ -5419,7 +5420,7 @@ mod tests {
         let rx = stand_in_own(c);
         c.msgs.push(Msg::new(Role::User, "why does it fail?", ""));
         (c.state, c.follow.on) = (State::Thinking, true);
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         for k in crate::wordspot::keys(":").unwrap() {
             ed.handle_key(k);
         }
@@ -5499,7 +5500,7 @@ mod tests {
             alt: false,
             ctrl: false,
         }));
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
         ed.handle_key(ctrl_l);
         assert!(kept(&ed), "a press between: this one asks again");
         // An empty chat: at once
@@ -5639,7 +5640,7 @@ mod tests {
         ));
         c.msgs.push(m);
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 120, 30).unwrap();
         let (y, x0, x1, call) = ed.screen.chat_ran.borrow().first().cloned().expect("the mark's spot");
@@ -5688,7 +5689,7 @@ mod tests {
         let claude = stand_in(&mut c);
         c.hidden = false;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let feed = |ed: &mut Editor, keys: &str| {
             let mut chars = keys.chars();
             while let Some(ch) = chars.next() {
@@ -5743,17 +5744,17 @@ mod tests {
         assert_eq!(ed.doc().title.as_deref(), Some("usage"), "`:usage`'s buffer in front");
         assert_eq!(input(&ed), "", "the line cleared");
         // `/model`: the model's picker, as `C-t`
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         feed(&mut ed, "/m<tab><ret>");
         assert_eq!(ed.picker.as_ref().map(|p| p.kind), Some("model"));
         ed.picker = None;
         // `/resume`: the conversations' picker, as `C-p` (none kept in tests: said so)
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         feed(&mut ed, "/resume<ret>");
         assert_eq!(said(&ed, "conversations aren't kept here"), 1);
         assert!(sent(&claude).is_empty(), "none of them went to Claude");
         // A path is a message, the context before it — no list over it
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         feed(&mut ed, "/tmp");
         screen(&mut ed);
         assert!(ed.screen.slash_card.get().is_none(), "no name begun");
@@ -5790,7 +5791,7 @@ mod tests {
         c.hidden = false;
         c.state = State::Thinking;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
         let offer =
             crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
@@ -5798,7 +5799,7 @@ mod tests {
         let typed = |ed: &mut Editor, text: &str, enter: bool| {
             let c = ed.workspace.claude.chat.as_mut().unwrap();
             c.input.set(text);
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
             if enter {
                 ed.handle_key("ret".parse().unwrap());
             }
@@ -5877,7 +5878,7 @@ mod tests {
         let claude = stand_in(&mut c);
         c.hidden = false;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let feed = |ed: &mut Editor, keys: &str| {
             let mut chars = keys.chars();
             while let Some(ch) = chars.next() {
@@ -5976,7 +5977,7 @@ mod tests {
             let mut c = Chat::new();
             (c.resume, c.conversation) = (Some("s-1".into()), Some("s-1".into()));
             ed.workspace.claude.chat = Some(c);
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
             ensure_proc(&mut ed);
             // (it starts once what it waits on is read — and nothing after: its exit stays unheard)
             settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().proc.is_some());
@@ -6062,7 +6063,7 @@ mod tests {
         let first = stand_in(&mut c);
         c.resume = Some("s-1".into());
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let taken = |t: String| crate::quote::Taken {
             attrs: vec![("from", "terminal".into())],
             label: t.clone(),
@@ -6174,7 +6175,7 @@ mod tests {
         let mut ed = editor("");
         let c = Chat::new();
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         // (12 rows of conversation in sight)
         ed.screen.chat_view.set(Some((0, 60, 12, 0)));
         let press = |ed: &mut Editor, k: &str| assert!(key(ed, k.parse().unwrap()), "{k} is the chat's");
@@ -6246,7 +6247,7 @@ mod tests {
         let mut c = Chat::new();
         let rx = stand_in(&mut c);
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let sent = |rx: &std::sync::mpsc::Receiver<String>| -> Vec<String> {
             rx.try_iter()
                 .filter_map(|l| {
@@ -6328,7 +6329,7 @@ mod tests {
         let first = stand_in(&mut c);
         c.resume = Some("s-1".into());
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         for t in std::iter::once(sent).chain(typed) {
             ed.workspace.claude.chat.as_mut().unwrap().input = t.into();
             send(&mut ed);
@@ -6480,7 +6481,7 @@ mod tests {
         let mut c = Chat::new();
         c.kept_keys = Some(Vec::new());
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         ed.open(&env).unwrap();
         let n = ed.doc().text.len_bytes();
         ed.doc_mut().set_selection(Selection::single(Range::new(0, n)));
@@ -6526,7 +6527,7 @@ mod tests {
             c.kept_keys = Some(Vec::new());
             open(&mut c, &env);
             ed.workspace.claude.chat = Some(c);
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
             let pass = crate::reads::input_pass(&ed);
             let (ctx, chip, _, withheld) = context(&ed, None, &pass, &[]);
             assert!(
@@ -6633,14 +6634,14 @@ mod tests {
         answer_card(&mut ed, "y");
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.input = "with the key".into();
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
         send(&mut ed);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         assert_eq!(c.queued_pointed, std::slice::from_ref(&pane), "its chip waits with it");
         // (one pointed at since, then taken off: the queued one's `y` stays)
         c.pointed.push("card#77".into());
         c.with.push(With::Pointed);
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
         assert!(key(&mut ed, "backspace".parse().unwrap()));
         assert!(
             ed.workspace.claude.chat.as_ref().unwrap().key_pass.iter().any(|(id, _)| *id == pane),
@@ -6707,7 +6708,7 @@ mod tests {
         // The chip taken off: its card goes with it — and so does a `y` already given for it
         let chip_off = |ed: &mut Editor| {
             // (the card took the keys from the empty input — back in the chat)
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
             assert!(key(ed, "backspace".parse().unwrap()));
         };
         point(&mut ed);
@@ -6853,7 +6854,7 @@ mod tests {
         let mut c = Chat::new();
         c.kept_keys = Some(Vec::new());
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         ed.open(&env).unwrap();
         ed.split_view(crate::split::Dir::Horizontal);
         ed.open(&plain).unwrap();
@@ -6968,7 +6969,7 @@ mod tests {
         assert!(side(&ed.ui_state()).contains("API_KEY=tarae-fake-token"), "the user's own state");
         ed.workspace.claude.chat.as_mut().unwrap().allowed.keys.push(env.clone());
         // (the list with the keys again, its row whole: `C-s` gave them to the chat)
-        ed.workspace.viewer.at = At::Side;
+        ed.workspace.set_at(Here::Side);
         for s in shots(&mut ed) {
             assert!(s.contains("API_KEY=tarae-fake-token") && !s.contains("not sent]"), "opened: {s}");
         }
@@ -7149,7 +7150,7 @@ mod tests {
         let mut ed = editor("");
         let root = ed.workspace.root.clone();
         ed.workspace.claude.chat = Some(Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
         let pending = |f: &str| crate::reads::Pending {
             request_id: f.into(),
@@ -7233,7 +7234,7 @@ mod tests {
         let mut ed = editor("");
         (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
         ed.workspace.claude.chat = Some(Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
         let until = |ed: &mut Editor, what: &str, done: &dyn Fn(&Editor) -> bool| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -7362,7 +7363,7 @@ mod tests {
         }
         let mut ed = editor("");
         ed.workspace.claude.chat = Some(Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let ask = |ed: &mut Editor, id: &str, f: &str| {
             let req = serde_json::json!({"tool_name": "Read", "input": {"file_path": shots.join(f)}});
             crate::reads::request(ed, id, &req);
@@ -7473,7 +7474,7 @@ mod tests {
         }
         c.calls.push(Called { id: "r1".into(), name: "mcp__tarae__rename".into(), input: edit.clone() });
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let other = json!({"edits": []});
         assert_eq!(claim_call(&mut ed, "mcp__tarae__edit", &other), None, "another input");
         assert_eq!(claim_call(&mut ed, "mcp__tarae__edit", &edit).as_deref(), Some("t1"));
@@ -7505,7 +7506,7 @@ mod tests {
         c.msgs.push(Msg::tool(r, "t1"));
         let generation = c.generation;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let text = "exit 101 in 2.0s\n$ cargo test -p tarae\n".to_string();
         on_event(&mut ed, generation, StreamEv::ToolResult { id: "t1".into(), text, error: false });
         let c = ed.workspace.claude.chat.as_ref().unwrap();
@@ -7616,7 +7617,7 @@ mod tests {
         c.state = State::Thinking;
         let generation = c.generation;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let root = ed.workspace.root.clone();
         let read = serde_json::json!({ "file_path": root.join("src/a.rs"), "offset": 1, "limit": 40 });
         let calls = [

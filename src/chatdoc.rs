@@ -35,7 +35,7 @@ use crate::movement as mv;
 use crate::selection::{Range, Selection};
 use crate::transaction::{Assoc, Change, Transaction};
 use crate::view::Surface;
-use crate::workspace::At;
+use crate::workspace::Here;
 use crate::wrap::{Given, Part, Row};
 
 /// What a run of the chat's rows is (`Laid`).
@@ -763,7 +763,9 @@ pub fn keyed(ed: &Editor) -> bool {
 
 /// The chat's view mode has the keys now: on, the chat's keys, the chat unfolded.
 pub fn has_keys(ed: &Editor) -> bool {
-    keyed(ed) && ed.workspace.is_at(At::Chat) && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden)
+    keyed(ed)
+        && ed.workspace.is_at(Here::Chat)
+        && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden)
 }
 
 /// What the conversation holds now, as one number: what came changes it.
@@ -828,14 +830,14 @@ pub fn passes(ed: &Editor) -> Vec<Key> {
 /// chat keeps its `esc` (to the code); `space >` brings it back. A chat not drawn yet (closed, minimized) is
 /// viewed once the frame lays its rows out (`wanted`).
 pub fn view(ed: &mut Editor) {
-    let from_input = ed.workspace.is_at(At::Chat);
+    let from_input = ed.workspace.is_at(Here::Chat);
     let Some(c) = ed.workspace.claude.chat.as_mut() else {
         crate::chat::open(ed);
         return want(ed);
     };
     if c.hidden {
         match from_input {
-            true => ed.workspace.viewer.at = At::Code,
+            true => ed.workspace.viewer.keys_to_code(),
             false => {
                 c.hidden = false;
                 want(ed);
@@ -847,7 +849,7 @@ pub fn view(ed: &mut Editor) {
         if from_input {
             return crate::chat::keys_left(ed);
         }
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
         return ed.set_status("nothing to view yet — the conversation is empty: type a question");
     }
     // (`space >` from elsewhere with the chat out of sight: once a frame lays it out; the input's `esc` has it in
@@ -865,14 +867,14 @@ pub fn view(ed: &mut Editor) {
 fn want(ed: &mut Editor) {
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.view_wanted = true;
-        ed.workspace.viewer.at = At::Chat;
+        ed.workspace.set_at(Here::Chat);
     }
 }
 
 /// After a frame (`term::render`): the view asked for before the chat was drawn, made now — true when it was
 /// (the frame is drawn again with it).
 pub fn wanted(ed: &mut Editor) -> bool {
-    let chat_keys = ed.workspace.is_at(At::Chat);
+    let chat_keys = ed.workspace.is_at(Here::Chat);
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.view_wanted) else { return false };
     c.view_wanted = false;
     if !chat_keys || ed.screen.chat_view.get().is_none() || c.transcript.is_none() {
@@ -928,7 +930,7 @@ fn come(ed: &mut Editor, row: Option<usize>) {
     if let Some(r) = land.and_then(|r| g.get(r)) {
         d.set_selection(Selection::point(r.start));
     }
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
 }
 
 /// A press on the conversation's row `row` (counted as `Screen.chat_view`'s) at column `col` of its text: its view

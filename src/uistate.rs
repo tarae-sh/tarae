@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::editor::{Editor, Mode};
 use crate::key::{Code, Key};
 use crate::sizes::Slot;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// The schema's version: a field removed, renamed or meaning something else bumps it; one added doesn't.
 /// 2: `panels.edit_review.by` went (an edit's review is always Claude's); since added: `sessions[].sandbox`, what
@@ -76,7 +76,8 @@ use crate::workspace::At;
 /// `unsent` gone, a review report's finding its `text` in place of `thread` and `answered` (#388 step 3: the chat has no
 /// `note`, a thread no replies — a note is your comment or the reviewer's finding, a draft until sent, gone from the code
 /// once it is).
-pub const V: u64 = 34;
+/// 35: `keys.pane` — the docked pane the keys are in, by its id (`pane#5`; onetree S4: the keys are a pane's).
+pub const V: u64 = 35;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -320,6 +321,8 @@ pub struct KeysTo {
     pub under: Option<Region>,
     /// The element id that takes the next key.
     pub to: String,
+    /// The docked pane the keys are in (`Viewer.at`'s, onetree S4) — under a floating one with them too: `pane#5`.
+    pub pane: Option<String>,
     /// The front card waiting to be focused (P3 §3.8, `Editor::card_waits`): up, without the keys — they go where
     /// `region` says; `C-q`, a click on it or `C-w w` focuses it.
     pub waiting: Option<String>,
@@ -337,6 +340,7 @@ impl KeysTo {
 pub fn keys_json(k: &KeysTo) -> Value {
     json!({
         "to": k.to,
+        "pane": k.pane,
         "region": k.region.name(),
         "takes": k.takes.name(),
         "answers": k.answers.iter().map(char::to_string).collect::<Vec<_>>(),
@@ -500,7 +504,7 @@ impl Editor {
             .claude
             .chat
             .as_ref()
-            .filter(|_| self.workspace.is_at(At::Chat) && self.prompt.is_none());
+            .filter(|_| self.workspace.is_at(Here::Chat) && self.prompt.is_none());
         if let Some(c) = chat.filter(|_| !pending && viewing.is_none()) {
             v.push(match c.input.is_empty() {
                 true => layer(Region::Chat, Filter::Except(vec![ctrl('w'), Key { alt: true, ..ctrl('w') }])),
@@ -516,11 +520,11 @@ impl Editor {
                 Filter::Except(v)
             };
             let at = |a| self.workspace.is_at(a);
-            if self.review_rail_up() && at(At::Rail) && self.workspace.code_review.is_some() {
+            if self.review_rail_up() && at(Here::Rail) && self.workspace.code_review.is_some() {
                 v.push(layer(Region::Rail, editors(&[ctrl('w')])));
             }
             if let Some(s) =
-                self.workspace.viewer.sidebar.as_ref().filter(|_| at(At::Side) && !self.side_folded())
+                self.workspace.viewer.sidebar.as_ref().filter(|_| at(Here::Side) && !self.side_folded())
             {
                 v.push(layer(Region::Side(s.mode), editors(&[ctrl('w')])));
             }
@@ -642,6 +646,7 @@ impl Editor {
             drawn: self.drawn(region),
             under,
             to: self.element_id(region),
+            pane: self.at_pane().map(|id| format!("pane#{id}")),
             chain,
             waiting: self.offers.first().filter(|_| self.card_waits()).map(|o| format!("card#{}", o.id)),
         }
@@ -1207,7 +1212,7 @@ impl Editor {
     /// floating ones over them.
     fn panes_state(&self, l: &crate::workspace::Workspace, is_front: bool) -> Vec<PaneState> {
         use crate::pane::Shows;
-        let floats_keys = matches!(l.viewer.at, At::Float(_));
+        let floats_keys = matches!(l.here(), Here::Float(_));
         // (a session behind: its docked group in hand as it was left)
         let mut at = l.at_pane(|k| !is_front || self.out_of_slot(k)).filter(|_| !floats_keys);
         // (a group on screen: its members after its host, the host's keys its detail's)
@@ -1292,7 +1297,7 @@ impl Editor {
                 id: format!("pane#{}", p.list),
                 shows: Shows::List(kind).name(),
                 rect: rect.map(|r| (r.x, r.y, r.w, r.h)),
-                at: l.viewer.at == At::List(p.list),
+                at: l.here() == Here::List(p.list),
                 float: false,
                 place: Some(if docked { "docked" } else { "floating" }),
                 group: None,
@@ -1301,7 +1306,7 @@ impl Editor {
         if is_front {
             for f in self.floating() {
                 let pane = l.viewer.floats.iter().find(|x| x.0 == f).map(|x| x.1);
-                let has = pane.is_some_and(|p| l.viewer.at == At::Float(p));
+                let has = pane.is_some_and(|p| l.here() == Here::Float(p));
                 let rect = match f {
                     crate::pane::Floating::Card(_) => self.screen.offer_card,
                     _ => None,
@@ -2355,6 +2360,10 @@ impl UiState {
             keys += &format!(" {}", a.join(" "));
         }
         keys.push(')');
+        // (the pane they're in, where `to` names something else: the chat, a card over it, the terminal)
+        if let Some(pane) = k.pane.as_ref().filter(|p| **p != k.to) {
+            keys += &format!(" · in {pane}");
+        }
         if k.held {
             keys += " · held: every key is its";
         }

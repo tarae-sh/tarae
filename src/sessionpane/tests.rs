@@ -1,6 +1,6 @@
 use super::*;
 use crate::key::{Code, Key};
-use crate::workspace::{At, Doing};
+use crate::workspace::{Doing, Here};
 use crate::worktree::{Facts, Shown};
 
 /// A session as the list says it, every column filled.
@@ -190,7 +190,7 @@ fn the_session_list_floats_and_stays_while_you_work() {
     (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     feed(&mut ed, " W");
     let p = ed.sessions_pane.clone().expect("up");
-    assert_eq!(ed.workspace.viewer.at, At::List(p.list));
+    assert_eq!(ed.workspace.here(), Here::List(p.list));
     let s = frame(&mut ed, 160, 40);
     let f = ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).unwrap().1;
     assert_eq!(
@@ -202,7 +202,7 @@ fn the_session_list_floats_and_stays_while_you_work() {
     assert!(top.contains("╭─ sessions ── 1 session") && top.contains("enter switch"), "{top}");
     assert!(s.lines().nth(f.y + 1).unwrap().contains("▎ main"), "its row, selected");
     feed(&mut ed, "<esc>");
-    assert!(ed.sessions_pane.is_some() && ed.workspace.viewer.at == At::Code, "esc: the keys back, it stays");
+    assert!(ed.sessions_pane.is_some() && ed.workspace.here() == Here::Code, "esc: the keys back, it stays");
     assert!(
         !frame(&mut ed, 160, 40).lines().nth(f.y).unwrap().contains("enter switch"),
         "its keys only with them"
@@ -219,7 +219,7 @@ fn the_session_list_floats_and_stays_while_you_work() {
     feed(&mut ed, "<esc><C-w>w");
     assert!(ed.sessions_list_keys(), "C-w w: the list");
     feed(&mut ed, "<C-w>w");
-    assert_eq!(ed.workspace.viewer.at, At::Code, "C-w w on: round to the code");
+    assert_eq!(ed.workspace.here(), Here::Code, "C-w w on: round to the code");
     feed(&mut ed, " W");
     assert!(ed.sessions_list_keys(), "space W again");
     feed(&mut ed, "<C-w>e");
@@ -308,7 +308,7 @@ fn a_floating_session_list_closes_on_a_switch_made_elsewhere() {
     // (and back where it was opened: the code's there too, nothing left of it)
     assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     ed.focus_sync();
-    assert!(ed.workspace.is_at(At::Code) && ed.float_list_in_hand().is_none());
+    assert!(ed.workspace.is_at(Here::Code) && ed.float_list_in_hand().is_none());
     // Docked, it stays — its keys left where it was
     feed(&mut ed, " W<C-w>L");
     frame(&mut ed, 160, 40);

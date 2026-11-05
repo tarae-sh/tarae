@@ -56,7 +56,7 @@ fn a_press_on_a_flag_takes_the_column_to_its_paragraph() {
     let at = pilcrow(&ed, id);
     press(&mut ed, at);
     assert!(reads(&ed, id), "the column at its paragraph");
-    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code, "the keys in the code");
+    assert_eq!(ed.workspace.here(), crate::workspace::Here::Code, "the keys in the code");
 }
 
 /// `enter` on a flag's line does what its press does; `space L` there opens the column at that paragraph too.
@@ -69,10 +69,10 @@ fn enter_and_space_l_on_a_flags_line_go_to_its_paragraph() {
     feed(&mut ed, "7G<ret>");
     let id = flag_at(&ed, 6);
     assert!(reads(&ed, id), "enter: the column at its paragraph");
-    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code);
+    assert_eq!(ed.workspace.here(), crate::workspace::Here::Code);
     // (hidden again, then `space L` on the line: shown at the same paragraph, the keys in it as `space L` gives them)
     crate::chat::hide(&mut ed);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     ed.workspace.claude.chat.as_mut().unwrap().reading = None;
     feed(&mut ed, " L");
     let at = ed.workspace.claude.chat.as_ref().unwrap().reading.as_ref().map(|r| r.0.clone());
@@ -101,7 +101,7 @@ fn next_note_walks_the_newest_answers_flags_first() {
     feed(&mut ed, "]n");
     let id = flag_at(&ed, 1);
     assert!(reads(&ed, id), "its paragraph shown: src/b.rs:2's");
-    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code);
+    assert_eq!(ed.workspace.here(), crate::workspace::Here::Code);
 }
 
 /// The `¶` lit while its paragraph is in the column's view, faint once it scrolled out — in the frame that moved it
@@ -318,7 +318,7 @@ fn next_note_onto_an_older_answers_flag_shows_its_paragraph_whole() {
         rows[at].iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
     let words = words.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(words.contains("It is set in src/b.rs:2."), "the paragraph whole: {words}");
-    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code, "the keys in the code");
+    assert_eq!(ed.workspace.here(), crate::workspace::Here::Code, "the keys in the code");
     assert_eq!(ed.workspace.claude.notes.open, None, "no card");
 }
 
@@ -405,7 +405,7 @@ fn space_n_lists_every_flag_and_enter_goes_to_its_paragraph() {
     assert_eq!((ed.doc().path.as_ref().unwrap().ends_with("src/b.rs"), ed.cursor_line()), (true, 1));
     let id = flag_at(&ed, 1);
     assert!(reads(&ed, id), "the column at its paragraph");
-    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Code, "the keys in the code");
+    assert_eq!(ed.workspace.here(), crate::workspace::Here::Code, "the keys in the code");
     // None of either: said, no list
     let (_s2, _root2, mut ed) = project("flags-list-none", &["src/a.rs"]);
     for keys in [" N", "]n"] {

@@ -92,7 +92,7 @@ impl Editor {
     /// it says so (the side panel's keys are its own, `space e`, `space g`…).
     pub fn float_key(&mut self) {
         // (the conversation is the docked column — the user, 2026-11-03: no floating reader; `space l` asks in one line)
-        if self.workspace.is_at(crate::workspace::At::Chat) && self.workspace.claude.chat.is_some() {
+        if self.workspace.is_at(crate::workspace::Here::Chat) && self.workspace.claude.chat.is_some() {
             return self.set_status("the chat docks beside the code — space l asks in one line");
         }
         if let Some(k) = self.float_list_in_hand() {
@@ -107,7 +107,7 @@ impl Editor {
                 .set_status(format!("the {} list floats — C-w m moves it, q closes it", list_name(k)));
         }
         let Some(kind) = self.group_in_hand() else {
-            if self.bottom_has_keys() || self.workspace.is_at(crate::workspace::At::Program) {
+            if self.bottom_has_keys() || self.workspace.is_at(crate::workspace::Here::Program) {
                 return self.set_status(
                     "this panel stays in the slot — the tests, a task, a preflight and :procs float",
                 );

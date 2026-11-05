@@ -7,7 +7,7 @@ use super::{code_cell, editor, feed, frame, press, said};
 use crate::editor::Editor;
 use crate::event::{Mouse, MouseKind};
 use crate::uistate::Region;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 fn mouse(ed: &mut Editor, kind: MouseKind, x: usize, y: usize) {
     ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
@@ -93,7 +93,7 @@ fn a_press_on_a_completion_row_accepts_it_and_the_wheel_moves_through_it() {
 fn a_press_on_a_slash_row_fills_its_name_in() {
     let mut ed = editor();
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "/c");
     frame(&mut ed);
     let (x, y, ..) = ed.screen.slash_card.get().expect("the list drawn");
@@ -102,7 +102,7 @@ fn a_press_on_a_slash_row_fills_its_name_in() {
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(c.input.text(), "/compact", "filled in");
     assert!(c.msgs.is_empty() && !c.busy(), "nothing sent");
-    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the input keeps the keys");
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the input keeps the keys");
     assert!(ed.screen.slash_card.get().is_some(), "the list stays");
     // (the round goes on from it: the next `tab` the name after it)
     feed(&mut ed, "<tab>");
@@ -120,7 +120,7 @@ fn a_press_on_a_slash_row_fills_its_name_in() {
 fn a_picker_over_the_slash_list_takes_the_press_on_it() {
     let mut ed = editor();
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<C-w>z/m");
     let items: Vec<crate::picker::Item> = (0..60)
         .map(|i| crate::picker::Item {
@@ -379,7 +379,7 @@ fn a_press_on_the_chats_own_line_leaves_it_the_chats() {
     assert_eq!(ed.keys_to().region, Region::Prompt);
     let line = ed.screen.prompt_input.get().expect("its line drawn");
     press(&mut ed, line.x, line.y);
-    assert!(ed.workspace.is_at(At::Chat), "under it the chat still");
+    assert!(ed.workspace.is_at(Here::Chat), "under it the chat still");
     assert!(crate::chatdoc::keyed(&ed), "its view mode with it");
 }
 
@@ -864,7 +864,7 @@ fn the_wheel_sideways_goes_by_cells_and_pauses_follow() {
     ed.docs[0].text = ropey::Rope::from_str(&format!("{}\n", "x".repeat(400)));
     ed.docs[0].wrap = Some(false);
     crate::uistate::tests::chat(&mut ed, "");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
     frame(&mut ed);
     let (x, y) = code_cell(&ed, 0);
@@ -885,7 +885,7 @@ fn a_press_on_the_asks_waiting_card_is_its_own() {
     rev.streamed = "fn total(a: u32) -> u32 {\n    a + 1\n".into();
     ed.workspace.claude.review = Some(rev);
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::Chat, "the chat had them");
     let (cx, cy, cw, ch) = ed.screen.ask_card.get().expect("the ask's card drawn");
@@ -921,7 +921,7 @@ fn asking(ed: &mut Editor) {
     rev.streamed = "fn total(a: u32) -> u32 {\n    a + 1\n".into();
     ed.workspace.claude.review = Some(rev);
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(ed);
 }
 

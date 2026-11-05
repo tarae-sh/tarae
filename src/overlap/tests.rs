@@ -531,7 +531,7 @@ fn claude_hears_nothing_of_the_others() {
     press(&mut ed, "see<ret>");
     let m = message(&mut ed, &rx);
     assert!(m.contains("<quoted") && m.contains("three, main"), "{m}");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let heard = |s: &str| ["conflict", "main's", "merged with"].iter().any(|w| s.contains(w));
     let a = read(&mut ed, 71, "a.rs");
     assert!(a.contains("three, fix") && !heard(&a), "{a}");
@@ -638,7 +638,7 @@ fn the_strip_the_list_and_the_tree_say_it() {
     assert_eq!(main_row.text(Col::Overlap), "≈ fix");
     // The strip over a chat
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     let mut bytes = Vec::new();
     crate::term::render(&mut ed, &mut bytes, 160, 30).unwrap();
     let mut p = vt100::Parser::new(30, 160, 0);
@@ -651,7 +651,7 @@ fn the_strip_the_list_and_the_tree_say_it() {
     assert_eq!(fg_at(&p, "fix ≈ main ·", "≈", "main"), main_c, "the strip's main");
     // The tree
     ed.workspace.claude.chat = None;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     press(&mut ed, "<space>e");
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     let p = loop {

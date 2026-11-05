@@ -38,11 +38,31 @@ impl<'a> Owners<'a> {
     }
 }
 
-/// Where a session's keys are — one value (panes P2a, `.sb/panes-plan.md` §2.3): the code, a surface
-/// beside it, the left rail's two, or a floating pane over them (P2b, §2.1c). Inside a surface its own sub-state
-/// says the rest (the chat's input or its view mode, `Viewer.view`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Where a session's keys are — one value (panes P2a, `.sb/panes-plan.md` §2.3), by pane (onetree S4,
+/// `.sb/onetree-plan.md` §4): a docked pane of the tree, whatever it shows (`Workspace::shows` says), a floating one
+/// over them, or the slot pane's two typing states. What the code asks of it is its kind, `Here` (`Workspace::here`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum At {
+    /// A floating pane with the keys (`Here::Float`).
+    Float(crate::split::PaneId),
+    /// A docked pane of the tree, by its id: a code pane, the chat's, the side panel's, the rail's, the slot's, a
+    /// group's detail — the kind from what it shows. A pane gone is the code's (`Workspace::here`).
+    Pane(crate::split::PaneId),
+    /// A list's pane, by its id, wherever it is: a group's (in the slot, docked, floating) or a floating list (the
+    /// session list, `:messages`, `:folders` — the viewer's, docked and floated again under one id, `floatlist.rs`).
+    /// A list gone keeps its id until `Editor::focus_sync` gives the keys to the code.
+    List(crate::split::PaneId),
+    /// The terminal pane's program typing (the slot's pane, its own keys).
+    Program,
+    /// A plugin's panel in the slot, its own keys.
+    Plugin,
+}
+
+/// What the keys are in, as the code asks it: the kind of the pane `Viewer.at` names (`Workspace::here`) — the code,
+/// a surface beside it, the left rail's two, or a floating pane over them (P2b, §2.1c). Inside a surface its own
+/// sub-state says the rest (the chat's input or its view mode, `Viewer.view`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Here {
     /// A floating pane — a card with the keys, the picker, a prompt, which-key (`pane::Floating`), by its pane id
     /// (`Viewer.floats`); the docked pane it rose over is `Viewer.under`, the keys' again when it goes
     /// (`Editor::float_sync`).
@@ -304,9 +324,11 @@ pub struct Workspace {
 pub struct Viewer {
     /// The code pane last focused — what `doc()` means, wherever the keys are (`at`).
     pub focus: crate::split::PaneId,
-    /// Where the keys are: one value (`At`) — never a flag on each surface.
+    /// Where the keys are: one value (`At`), by pane — never a flag on each surface. Set through
+    /// `Workspace::set_at`, read as its kind through `Workspace::here`.
     pub at: At,
-    /// While a floating pane has the keys (`At::Float`): the docked pane it rose over — never a `Float`.
+    /// While a floating pane has the keys (`At::Float`): the docked pane it rose over — never a `Float`
+    /// (`Workspace::set_under`, `under_here`).
     pub under: At,
     /// The floating panes up with the ids they were given as they rose (`Editor::float_sync`).
     pub floats: Vec<(crate::pane::Floating, crate::split::PaneId)>,
@@ -338,12 +360,17 @@ pub struct Viewer {
 }
 
 impl Viewer {
+    /// The keys to the code pane focused (`Here::Code`'s pane).
+    pub fn keys_to_code(&mut self) {
+        self.at = At::Pane(self.focus);
+    }
+
     /// In a workspace's first code pane `view`: the keys on the code, nothing floating, no side panel.
     pub fn new(view: crate::split::PaneId) -> Viewer {
         Viewer {
             focus: view,
-            at: At::Code,
-            under: At::Code,
+            at: At::Pane(view),
+            under: At::Pane(view),
             floats: Vec::new(),
             zoom: None,
             current_doc: 0,
@@ -497,18 +524,93 @@ impl Workspace {
         }
     }
 
-    /// The docked pane the keys are in, or go back to once the floating one with them goes (`under`).
-    pub fn docked(&self) -> At {
+    /// The kind of what `at` names: a docked pane's from what it shows (a group's detail or docked host is the
+    /// slot's, as its keys are; a pane gone, the code's — `Editor::focus_sync` puts the keys back there).
+    pub fn kind_of(&self, at: At) -> Here {
+        use crate::pane::Shows;
+        match at {
+            At::Float(id) => Here::Float(id),
+            At::List(id) => Here::List(id),
+            At::Program => Here::Program,
+            At::Plugin => Here::Plugin,
+            At::Pane(id) => match self.shows(id) {
+                Some(Shows::Code) | None => Here::Code,
+                Some(Shows::Chat) => Here::Chat,
+                Some(Shows::Side) => Here::Side,
+                Some(Shows::Rail) => Here::Rail,
+                Some(Shows::List(_)) => Here::List(id),
+                Some(Shows::Slot | Shows::Detail(_) | Shows::Group(_)) => Here::Slot,
+            },
+        }
+    }
+
+    /// The pane that takes the keys as kind `here` asks: a surface's leaf (`leaf`), the code pane last focused, a list
+    /// by its id.
+    pub fn at_of(&self, here: Here) -> At {
+        use crate::pane::Shows;
+        let leaf = |shows| At::Pane(self.leaf(shows).unwrap_or(self.viewer.focus));
+        match here {
+            Here::Float(id) => At::Float(id),
+            Here::Program => At::Program,
+            Here::Plugin => At::Plugin,
+            Here::Code => At::Pane(self.viewer.focus),
+            Here::List(id) => At::List(id),
+            Here::Chat => leaf(Shows::Chat),
+            Here::Side => leaf(Shows::Side),
+            Here::Rail => leaf(Shows::Rail),
+            Here::Slot => leaf(Shows::Slot),
+        }
+    }
+
+    /// What the keys are in (`Viewer.at`'s kind): a floating pane's own while one has them.
+    pub fn here(&self) -> Here {
+        self.kind_of(self.viewer.at)
+    }
+
+    /// The docked pane under a floating one with the keys, as a kind (`Viewer.under`'s).
+    pub fn under_here(&self) -> Here {
+        self.kind_of(self.viewer.under)
+    }
+
+    /// The keys to what `here` names (`at_of`).
+    pub fn set_at(&mut self, here: Here) {
+        self.viewer.at = self.at_of(here);
+    }
+
+    /// The docked pane the keys go back to once the floating one with them goes.
+    pub fn set_under(&mut self, here: Here) {
+        self.viewer.under = self.at_of(here);
+    }
+
+    /// The docked pane the keys are in, or go back to once the floating one with them goes (`under`), as a kind.
+    pub fn docked(&self) -> Here {
         match self.viewer.at {
-            At::Float(_) => self.viewer.under,
-            at => at,
+            At::Float(_) => self.under_here(),
+            at => self.kind_of(at),
         }
     }
 
     /// The keys are `at`'s — a docked pane's: under a floating one too (the surface a picker's or a prompt's
     /// answer acts on). `at` itself says whether a floating pane has them.
-    pub fn is_at(&self, at: At) -> bool {
+    pub fn is_at(&self, at: Here) -> bool {
         self.docked() == at
+    }
+
+    /// A code pane's keys name the one focused (`Viewer.focus`): after `focus` moved to another code pane, or the one
+    /// they named closed, they name it again (`Editor::focus_sync`).
+    pub fn code_at_sync(&mut self) {
+        let focus = self.viewer.focus;
+        for at in [&mut self.viewer.at, &mut self.viewer.under] {
+            if let At::Pane(id) = *at
+                && id != focus
+                && (self.views.iter().any(|v| v.id == id) || {
+                    let gone = self.panes.iter().all(|p| p.id != id);
+                    gone && self.groups.iter().all(|g| g.member(id).is_none())
+                })
+            {
+                *at = At::Pane(focus);
+            }
+        }
     }
 
     /// The pane showing surface `shows` (a code pane: the one last focused).
@@ -562,38 +664,39 @@ impl Workspace {
     pub fn at_pane(&self, in_sight: impl Fn(crate::pane::GroupKind) -> bool) -> Option<crate::split::PaneId> {
         use crate::pane::Shows;
         self.leaf(match self.docked() {
-            At::List(id) => return Some(id),
-            At::Float(_) | At::Code => Shows::Code,
-            At::Chat => Shows::Chat,
+            Here::List(id) => return Some(id),
+            Here::Float(_) | Here::Code => Shows::Code,
+            Here::Chat => Shows::Chat,
             // (a docked group's detail: its own leaf's)
-            At::Slot
+            Here::Slot
                 if let Some(g) = self.viewer.hand.filter(|&k| in_sight(k)).and_then(|k| self.group(k)) =>
             {
                 return Some(g.host);
             }
-            At::Program | At::Slot | At::Plugin => Shows::Slot,
-            At::Side => Shows::Side,
-            At::Rail => Shows::Rail,
+            Here::Program | Here::Slot | Here::Plugin => Shows::Slot,
+            Here::Side => Shows::Side,
+            Here::Rail => Shows::Rail,
         })
     }
 
     /// The keys leave `at` for the code — nothing when they were elsewhere.
-    pub fn leave(&mut self, at: At) {
+    pub fn leave(&mut self, at: Here) {
+        let code = At::Pane(self.viewer.focus);
         match self.viewer.at {
-            At::Float(_) if self.viewer.under == at => self.viewer.under = At::Code,
-            a if a == at => self.viewer.at = At::Code,
+            At::Float(_) if self.under_here() == at => self.viewer.under = code,
+            a if self.kind_of(a) == at => self.viewer.at = code,
             _ => {}
         }
     }
 
     /// The chat has the keys (its input, minimized or not, or its view mode) — under a floating pane too.
     pub fn chat_has_keys(&self) -> bool {
-        self.is_at(At::Chat) && self.claude.chat.is_some()
+        self.is_at(Here::Chat) && self.claude.chat.is_some()
     }
 
     /// The terminal's program has the keys: it's shown and runs (under a floating pane too).
     pub fn program_has_keys(&self) -> bool {
-        self.is_at(At::Program) && self.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none())
+        self.is_at(Here::Program) && self.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none())
     }
 
     /// The hosts its `s` let through, at their ports — what its runs' rules carry (`caps::Basis`).
@@ -2002,7 +2105,7 @@ mod tests {
         // The front's chat hidden: its draft on the status line
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         (c.input, c.hidden) = ("half a thought\nmore".into(), true);
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         let rows = screen(&mut ed, 160, 24);
         let status = rows.iter().find(|r| r.contains("● normal")).unwrap_or_else(|| panic!("{rows:#?}"));
         assert!(status.contains("unsent half a thought"), "{status}");
@@ -2430,7 +2533,7 @@ mod tests {
             crate::chat::open(ed);
             let c = ed.workspace.claude.chat.as_mut().unwrap();
             c.state = crate::chat::State::Thinking;
-            ed.workspace.viewer.at = At::Code;
+            ed.workspace.viewer.keys_to_code();
             generation = c.generation();
             for id in [1, 2] {
                 let (id, tool, since, after) = (json!(id), "symbols", Instant::now(), STUCK_AFTER);

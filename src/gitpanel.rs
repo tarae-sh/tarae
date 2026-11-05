@@ -592,7 +592,7 @@ impl Editor {
     /// review the tab and the review's rail take turns in the column: again = the rail back, with the keys
     /// (so the next one doesn't land in the code — `d` there would delete the selected change).
     pub fn git_panel(&mut self) {
-        use crate::workspace::At;
+        use crate::workspace::Here;
         if self.workspace.code_review.is_some() && !self.review_rail_up() {
             return crate::codereview::rail_focus(self);
         }
@@ -600,9 +600,9 @@ impl Editor {
         if let Some(r) = self.workspace.code_review.as_mut() {
             r.behind = true;
             // (a tab focused behind the rail would close instead of coming to the front)
-            self.workspace.leave(At::Rail);
-            self.workspace.leave(At::Side);
-        } else if self.workspace.is_at(At::Side)
+            self.workspace.leave(Here::Rail);
+            self.workspace.leave(Here::Side);
+        } else if self.workspace.is_at(Here::Side)
             && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
         {
             self.workspace.viewer.sidebar = None;
@@ -688,7 +688,7 @@ impl Editor {
     /// buffer with no other base: a review's file or one under `:diff` keeps that, and the tab ends only its own.
     pub fn git_inline_sync(&mut self) {
         let tab = self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
-            && self.workspace.is_at(crate::workspace::At::Side);
+            && self.workspace.is_at(crate::workspace::Here::Side);
         let doc = self.doc();
         let changed = |st: &Status| {
             let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&st.top).ok());
@@ -1080,7 +1080,7 @@ impl Editor {
                         ed.doc_mut().language = Some(COMMIT_LANG);
                         ed.load_language(id, spec);
                     }
-                    ed.workspace.leave(crate::workspace::At::Side);
+                    ed.workspace.leave(crate::workspace::Here::Side);
                     // A new message: typed at once. Amending: the last message is there to change, not to
                     // type over the top of — normal mode
                     if draft {
@@ -2179,7 +2179,7 @@ mod tests {
         ed.workspace.root = dir.clone();
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, dir.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.workspace.git_status = Some(st.with_rows());
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 120, 30).unwrap();

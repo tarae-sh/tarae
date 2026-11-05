@@ -366,7 +366,7 @@ fn two_sessions_on_one_line_each_its_colour() {
     let at = crate::clock::now();
     ed.presence.wrote.insert((WorkspaceId::HOME, main.join("a.rs")), at);
     ed.presence.wrote.insert((fix, other.join("a.rs")), at);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let p = frame(&mut ed, 120);
     let r = rows(&p);
     let y = row_of(&r, "let a = 1;");
@@ -472,7 +472,7 @@ fn every_session_is_named_one_way_in_the_chrome() {
     // The strip over a chat: each name in its colour, its state after it — docs' `▲ waits` in warning (the chat with
     // the keys: a surface without them fades all its text alike)
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     let p = frame(&mut ed, 160);
     let r = rows(&p);
     let y = r.iter().position(|r| r.contains("main working") && r.contains("· docs")).expect("the strip");
@@ -503,7 +503,7 @@ fn every_session_is_named_one_way_in_the_chrome() {
     ed.workspace.git_branch = None;
     // The chat closed: the chip names the front session as the strip does, `fix` in its colour — the one `●` the mode's
     ed.workspace.claude.chat = None;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let chip = |ed: &mut Editor, name: &str, mode: &str| {
         let p = frame(ed, 160);
         let r = rows(&p);
@@ -703,7 +703,7 @@ fn the_side_panel_says_each_session_by_its_initial() {
     let mut sb = crate::sidebar::Sidebar::with_files(other.clone(), vec!["a.rs".into(), "b.rs".into()]);
     sb.selected = 0;
     ed.workspace.viewer.sidebar = Some(sb);
-    ed.workspace.viewer.at = crate::workspace::At::Side;
+    ed.workspace.set_at(crate::workspace::Here::Side);
     let r = rows(&frame(&mut ed, 100));
     assert!(r.iter().any(|r| r.contains("a.rs — main reading")), "the row in hand in words: {r:#?}");
 }

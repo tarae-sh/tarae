@@ -2691,8 +2691,8 @@ impl crate::editor::Editor {
         self.offer_views.push((doc, id));
         // The code has the keys, to read it (#55: the review's rail kept them, and keys did nothing)
         // (a panel in the slot `:procs`, a plugin's, keeps them as it did)
-        if keys && !(self.procs_focused() || self.workspace.is_at(crate::workspace::At::Plugin)) {
-            self.workspace.viewer.at = crate::workspace::At::Code;
+        if keys && !(self.procs_focused() || self.workspace.is_at(crate::workspace::Here::Plugin)) {
+            self.workspace.viewer.keys_to_code();
         }
         // The card keeps the keys while it's read: the keys that read reach the buffer through it (`card_reads`),
         // its answers answer it. In its buffer those are the card's only while it holds them — Esc gives them

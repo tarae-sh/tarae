@@ -112,7 +112,7 @@ const MOUSE_SCENES: &[Scene] = &[
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
     }),
     // (what the wheel has room to scroll on each surface: `SCROLLS`)
     ("a long conversation", |ed| {
@@ -253,7 +253,7 @@ const MOUSE_SCENES: &[Scene] = &[
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "where?", ""));
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "It is read here, once.", ""));
         c.hidden = true;
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let name = "tarae-mouse-walk-answer.rs:1".into();
         let origin = crate::chatnotes::Origin { n: 1, at: 0, turn: 0, name, said: 0, text: None };
         let words = (Some("where?".to_string()), "It is read here, once.".to_string());
@@ -288,7 +288,7 @@ const MOUSE_SCENES: &[Scene] = &[
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
         // (out of sight, as the ask line leaves it once its message went)
         (c.state, c.follow.on, c.hidden) = (crate::chat::State::Thinking, true, true);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
     }),
     // (#207: the review's rail with files, the code reading one — its rows and marks pressed from the code's keys)
     ("the review's rail, the code reading a file", super::turn_review),
@@ -723,7 +723,7 @@ fn holds(ed: &Editor, u: Under) -> bool {
         // (a chip's press shows what it stands for — the keys given aren't all it does; `N things`' is)
         Surface::Chat if matches!(u.part, Part::Word(crate::mouse::Word::With(Some(_)))) => false,
         Surface::Chat | Surface::Transcript | Surface::Input => matches!(r, R::Chat | R::View(_)),
-        Surface::Side => matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::At::Side),
+        Surface::Side => matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::Here::Side),
         Surface::Rail => r == R::Rail,
         Surface::Card => matches!(r, R::Card(_)),
         // (its blank gives it the keys — #267; its rows and marks do their own acts)
@@ -747,7 +747,7 @@ fn holds(ed: &Editor, u: Under) -> bool {
             Part::Border(Border::Divider { heads, .. }) => match ed.workspace.shows(heads) {
                 Some(Shows::Chat) => matches!(r, R::Chat | R::View(_)),
                 Some(Shows::Side) => {
-                    matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::At::Side)
+                    matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::Here::Side)
                 }
                 Some(Shows::Rail) => r == R::Rail,
                 Some(Shows::Slot) => ed.bottom_has_keys(),
@@ -2017,7 +2017,7 @@ fn writing(ed: &Editor) -> (Option<String>, Option<String>, Option<String>) {
 /// The terminal shown, the code with the keys: its line's round key (`C-\ type`) is the code's.
 const THE_TERMINAL_BESIDE: Scene = ("the terminal shown, the code with the keys", |ed| {
     crate::uistate::tests::terminal(ed);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
 });
 
 /// A pressed key hint never types into a text you're writing that it wasn't drawn for (#279): in every scene, each key
@@ -2031,16 +2031,17 @@ fn a_pressed_hint_never_types_into_another_surfaces_text() {
         return;
     }
     use crate::uistate::{Handler, TOOK};
-    use crate::workspace::At;
+    use crate::workspace::Here;
     let started = std::time::Instant::now();
     let (mut typed, mut pressed) = (Vec::new(), 0);
     for &(scene, setup) in SCENES.iter().chain(MOUSE_SCENES).chain([&THE_TERMINAL_BESIDE]) {
-        let hints: Vec<(usize, usize, String, Option<At>)> = (fresh(setup).screen.word_spots.borrow().iter())
-            .filter_map(|s| match &s.press {
-                crate::wordspot::Press::Keys(k) => Some((s.from, s.y, k.clone(), s.home)),
-                _ => None,
-            })
-            .collect();
+        let hints: Vec<(usize, usize, String, Option<Here>)> =
+            (fresh(setup).screen.word_spots.borrow().iter())
+                .filter_map(|s| match &s.press {
+                    crate::wordspot::Press::Keys(k) => Some((s.from, s.y, k.clone(), s.home)),
+                    _ => None,
+                })
+                .collect();
         for (x, y, k, home) in hints {
             let mut ed = fresh(setup);
             let before = writing(&ed);
@@ -2056,10 +2057,10 @@ fn a_pressed_hint_never_types_into_another_surfaces_text() {
             };
             // (what grew: a press outside a prompt closes it, `enter` sends a draft — those take nothing in)
             let into = [
-                (grew(&before.0, &after.0) && home != Some(At::Code), "the code's text"),
+                (grew(&before.0, &after.0) && home != Some(Here::Code), "the code's text"),
                 (grew(&before.1, &after.1), "the draft"),
                 (grew(&before.2, &after.2) && home.is_some(), "a prompt's input"),
-                (TOOK.get() == Some(Handler::Program) && home != Some(At::Program), "the program"),
+                (TOOK.get() == Some(Handler::Program) && home != Some(Here::Program), "the program"),
             ];
             for (_, what) in into.iter().filter(|i| i.0) {
                 typed.push(format!("{scene} · `{k}` (home {home:?}) typed into {what}"));
@@ -2078,7 +2079,7 @@ fn the_terminals_round_key_pressed_goes_where_it_says() {
     if !pty("the_terminals_round_key_pressed_goes_where_it_says") {
         return;
     }
-    use crate::workspace::At;
+    use crate::workspace::Here;
     let round = |ed: &Editor| {
         let spots = ed.screen.word_spots.borrow();
         let s = spots
@@ -2097,12 +2098,12 @@ fn the_terminals_round_key_pressed_goes_where_it_says() {
     assert!(
         crate::view::terminal_view_of(&ed).is_some(),
         "C-\\ view: its view mode, keys {:?}",
-        ed.workspace.viewer.at
+        ed.workspace.here()
     );
     let mut ed = fresh(THE_TERMINAL_BESIDE.1);
     let at = round(&ed);
     press(&mut ed, at);
-    assert!(ed.workspace.is_at(At::Program), "C-\\ type: its program, keys {:?}", ed.workspace.viewer.at);
+    assert!(ed.workspace.is_at(Here::Program), "C-\\ type: its program, keys {:?}", ed.workspace.here());
 }
 
 /// The kinds walk sees what it's for, broken once: every key hint drawn with no button (`wordspot::UNBUTTONED`) — the

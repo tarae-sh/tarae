@@ -1352,7 +1352,7 @@ impl Editor {
         self.workspace_switch(id);
         let shown =
             self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
-                && self.workspace.is_at(crate::workspace::At::Side);
+                && self.workspace.is_at(crate::workspace::Here::Side);
         if !shown {
             self.sidebar_show(crate::sidebar::Mode::Git);
         }
@@ -1522,9 +1522,9 @@ impl Editor {
     fn rebase_ask(&mut self, a: Ask) {
         if self.workspace.claude.chat.is_none() {
             // (the keys where they were — out of sight)
-            let at = self.workspace.viewer.at;
+            let at = self.workspace.here();
             crate::chat::open(self);
-            self.workspace.viewer.at = at;
+            self.workspace.set_at(at);
             if let Some(c) = &mut self.workspace.claude.chat {
                 c.hidden = true;
             }
@@ -1580,7 +1580,7 @@ impl Editor {
         match stop.commit {
             // (the card once the review is open — it's about what the review shows)
             Some((sha, short, subject)) => {
-                self.workspace.leave(crate::workspace::At::Chat);
+                self.workspace.leave(crate::workspace::Here::Chat);
                 let root = self.workspace.root.clone();
                 let label = format!("{short} {subject}");
                 crate::codereview::start_replay(

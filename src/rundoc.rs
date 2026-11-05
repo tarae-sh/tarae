@@ -28,7 +28,7 @@ use crate::movement as mv;
 use crate::selection::{Range, Selection};
 use crate::sizes::Slot;
 use crate::transaction::{Assoc, Change, Transaction};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// What a run panel's document is of: the task's output, a preflight's, the tests' detail — and `:procs`' detail,
 /// what its table selected (no run: a panel's document all the same, `procs::detail`).
@@ -277,7 +277,7 @@ pub fn run_of(ed: &Editor, slot: Slot) -> Option<Run> {
 /// The run panel whose document has the keys now: tarae's keys on the slot, in front, a run panel with its
 /// document (the tests' detail, `:procs`' — the list beside it is a pane of its own, `At::List`).
 pub fn has_keys(ed: &Editor) -> Option<Slot> {
-    if !ed.workspace.is_at(At::Slot) {
+    if !ed.workspace.is_at(Here::Slot) {
         return None;
     }
     let slot = ed.slot().filter(|s| matches!(s, Slot::Task | Slot::Test | Slot::Procs))?;
@@ -887,7 +887,7 @@ fn after(ed: &mut Editor, slot: Slot) {
     let Some(o) = ed.workspace.outputs.get_mut(slot) else { return };
     let Some((a, deferred)) = o.take_after() else { return };
     match a {
-        After::Leave => ed.workspace.leave(At::Slot),
+        After::Leave => ed.workspace.leave(Here::Slot),
         After::Latest => {
             if let Some(o) = ed.workspace.outputs.get_mut(slot) {
                 o.seen = o.lines();
@@ -903,13 +903,13 @@ fn after(ed: &mut Editor, slot: Slot) {
         After::Enter => {
             let line = run_of(ed, slot).map_or(Some(crate::queued::Slot::Task), Run::line);
             if !line.is_some_and(|l| crate::queued::run_now(ed, l)) {
-                ed.workspace.leave(At::Slot);
+                ed.workspace.leave(Here::Slot);
                 crate::chat::open(ed);
             }
         }
         // (`i` isn't bound on an output — normal mode's, refused — but bound by yours: the chat's input)
         After::Input => {
-            ed.workspace.leave(At::Slot);
+            ed.workspace.leave(Here::Slot);
             crate::chat::open(ed);
         }
         After::ChatView => crate::chatdoc::view(ed),

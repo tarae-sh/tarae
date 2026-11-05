@@ -17,7 +17,6 @@ use crate::keymap::{Lookup, MappableCommand};
 use crate::movement as mv;
 use crate::selection::{Range, Selection};
 use crate::sizes::Slot;
-use crate::workspace::At;
 
 /// Which document pane — where its `Pane` is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,7 +391,7 @@ pub fn swap<R>(
         false => false,
     };
     if moved {
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
     }
     // (what its command asked that drops a pane — this one too — now, every document back: the keys follow it, to the
     // code where it closed what had them)

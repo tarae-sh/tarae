@@ -710,7 +710,7 @@ fn a_chat_says_its_account_and_another_login_is_said_and_restarted_into() {
     assert!(crate::chat::submit(&mut ed, "hello", None, None));
     // `:claude-restart` meanwhile: the idle one (the other) started again at once, this busy one at its turn's
     // end — counted apart (typed in the code, not the chat's input)
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     for c in ":claude-restart".chars() {
         ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
     }

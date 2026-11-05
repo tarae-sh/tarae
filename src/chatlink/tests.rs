@@ -62,7 +62,7 @@ fn setup_with(
     let mut c = Chat::new();
     c.msgs = vec![Msg::new(Role::User, "q", ""), Msg::new(Role::Assistant, answer, "")];
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     until(&mut ed, "its places found and its blocks mapped", |ed| {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         crate::places::answered(ed) && !c.links.asking && c.links.maps.contains_key(&1)
@@ -194,7 +194,7 @@ fn a_name_the_answer_quotes_asks_its_server_at_that_spot() {
     frame(&mut ed);
     let d = ed.doc();
     assert_eq!((d.path.as_deref(), d.selection().primary().cursor(&d.text)), (Some(file.as_path()), 3));
-    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys stay in the chat");
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the keys stay in the chat");
     // `space k`: the hover, in the chat at the name
     feed(&mut ed, " k");
     let (cid, id, goto) = asked(&ed).expect("the hover asked");
@@ -283,7 +283,7 @@ fn the_chat_says_why_a_name_isnt_asked() {
     later(&mut ed, "gg/other\\(\\) \\{ helpe<ret>gd", &format!("found by the syntax tree ({NONE})"));
     let d = ed.doc();
     assert_eq!(d.selection().primary().cursor(&d.text), 3, "on `helper` where it's defined");
-    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys still the chat's");
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the keys still the chat's");
     // (the other keys need a server: said)
     said(&mut ed, " k", &format!("{NONE}, so nothing is known of `helper`"));
     said(&mut ed, "gg/helper<ret> k", "src/main.rs: there's no language server for rust files here");
@@ -374,7 +374,7 @@ fn the_pointer_resting_on_a_name_in_the_chat_shows_its_hover_there() {
     let sent = || std::fs::read_to_string(s.join("sent.log")).unwrap_or_default();
     feed(&mut ed, "<esc>");
     ed.toasts.clear();
-    let at = ed.workspace.viewer.at;
+    let at = ed.workspace.here();
     let cursor = head(&ed);
     // Crossing it: nothing asked; resting: asked at the quoted name in the file
     let helper = cell(&mut ed, "let total = helper();", "helper", 1);
@@ -396,7 +396,7 @@ fn the_pointer_resting_on_a_name_in_the_chat_shows_its_hover_there() {
         "in the chat, under the name: {card:?}"
     );
     assert!(ed.popup.is_none(), "not `space k`'s card");
-    assert_eq!((ed.workspace.viewer.at, head(&ed)), (at, cursor), "never the keys nor the cursor");
+    assert_eq!((ed.workspace.here(), head(&ed)), (at, cursor), "never the keys nor the cursor");
     assert!(ed.toasts.is_empty(), "nothing said: {:?}", ed.toasts);
     // Within the name, onto the card: it stays
     hover(&mut ed, (helper.0 + 2, helper.1));
@@ -558,7 +558,7 @@ fn a_rest_on_a_name_whose_file_isnt_open_changes_nothing() {
     quiet(&mut ed, "by name");
     // The file opened by you: the rest asks there
     ed.open(&knot).unwrap();
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     ed.hover_rest.rest = None;
     hover(&mut ed, quoted);
     crate::hoverrest::rested(&mut ed);
@@ -592,7 +592,7 @@ fn a_name_no_cited_place_holds_is_asked_by_name() {
     frame(&mut ed);
     let d = ed.doc();
     assert_eq!((d.path.as_deref(), d.selection().primary().cursor(&d.text)), (Some(file.as_path()), 3));
-    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys stay in the chat");
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the keys stay in the chat");
     assert!(ed.picker.is_none(), "one: no list");
     // A bare name with two definitions: a list of places, grouped by file
     // (the transcript draws a code span without its backticks)
@@ -608,7 +608,7 @@ fn a_name_no_cited_place_holds_is_asked_by_name() {
     feed(&mut ed, "<esc>");
     assert!(ed.picker.is_none());
     // `space k` on a name in a block that quotes nothing: the hover asked at the one found, on its name
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<esc>gg/\\{ helpe<ret> k");
     let (cid, id) = asked_by_name(&ed).expect("asked by name");
     ed.on_lsp_message(cid, json!({ "id": id, "result": symbols(&file, &[("helper", 0, 0, "")]) }));
@@ -719,7 +719,7 @@ fn a_name_written_as_code_is_underlined_once_it_comes_to_a_definition() {
         Some(("helper".to_string(), Some("Total".to_string()), Some(Goto::Definition)))
     );
     // A keyword: said at once, nothing asked
-    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys stay in the chat");
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the keys stay in the chat");
     // (in prose, then in the block: the cursor ends on the match's last character)
     for keys in ["gg/le<ret>gd", "gg/le<ret>ngd"] {
         ed.toasts.clear();

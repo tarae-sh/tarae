@@ -197,9 +197,9 @@ pub fn at_end_set(ed: &mut Editor, on: bool) {
     // (opened as it was set — it's told below)
     if ed.workspace.claude.chat.is_none() {
         // (opened without the keys: they stay where they were — out of sight)
-        let at = ed.workspace.viewer.at;
+        let at = ed.workspace.here();
         crate::chat::open(ed);
-        ed.workspace.viewer.at = at;
+        ed.workspace.set_at(at);
         if let Some(c) = &mut ed.workspace.claude.chat {
             c.hidden = true;
         }

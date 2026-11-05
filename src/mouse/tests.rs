@@ -7,7 +7,7 @@ use crate::event::{Mouse, MouseKind};
 use crate::key::{Code, Key};
 use crate::offer::{Offer, What};
 use crate::uistate::Region;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 mod noteinput;
 mod overlays;
@@ -71,7 +71,7 @@ fn a_press_in_the_code_takes_the_keys_from_the_side_panel() {
     let mut ed = editor();
     let side = crate::sidebar::Sidebar::with_files(std::env::temp_dir(), vec!["a.rs".into(), "b.rs".into()]);
     ed.workspace.viewer.sidebar = Some(side);
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     frame(&mut ed);
     assert!(matches!(ed.keys_to().region, Region::Side(_)));
     let (x, y) = code_cell(&ed, 4);
@@ -95,7 +95,7 @@ fn the_wheel_scrolls_the_view_and_nothing_else() {
     assert!(!sel.primary().is_empty(), "a selection: {sel:?}");
     let side = crate::sidebar::Sidebar::with_files(std::env::temp_dir(), vec!["a.rs".into()]);
     ed.workspace.viewer.sidebar = Some(side);
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     frame(&mut ed);
     let (x, y) = code_cell(&ed, 5);
     let wheel = |ed: &mut Editor, x: usize, y: usize| {
@@ -116,7 +116,7 @@ fn the_wheel_scrolls_the_view_and_nothing_else() {
     assert_eq!(ed.doc().selection(), &sel, "the cursor and the selection where they were");
     assert!(matches!(ed.keys_to().region, Region::Side(_)), "the keys still the side panel's");
     // A move brings the view back to the cursor
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "k");
     assert!(ed.doc().top <= ed.cursor_line(), "back at the cursor: top {}", ed.doc().top);
     // Another split: its own view, the focus stays
@@ -182,7 +182,7 @@ fn a_press_in_the_code_takes_the_keys_from_the_review_rail() {
     assert_eq!(ed.keys_to().region, Region::Rail, "the rail had them");
     let (x, y) = code_cell(&ed, 3);
     press(&mut ed, x, y);
-    assert_eq!(ed.keys_to().region, Region::Code, "{:?}", ed.workspace.viewer.at);
+    assert_eq!(ed.keys_to().region, Region::Code, "{:?}", ed.workspace.here());
     assert_eq!(ed.cursor_line(), 3);
 }
 
@@ -241,7 +241,7 @@ fn review_of_three(ed: &mut Editor, root: std::path::PathBuf, gone: bool) {
     if gone {
         ed.doc_mut().text = ropey::Rope::from_str("fn one() {}\nfn two() {}\n");
     }
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
 }
 
 /// File `i`'s row in the rail as drawn: its screen row and its mark's first column.
@@ -780,7 +780,7 @@ fn a_release_over_the_code_leaves_the_keys_where_the_press_gave_them() {
 fn a_press_on_a_panes_top_line_gives_its_code_the_keys() {
     let mut ed = editor();
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::Chat);
     let (_, rect, ..) = ed.screen.panes.first().expect("a code pane");

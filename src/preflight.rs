@@ -804,7 +804,7 @@ impl Editor {
             self.close_doc(id);
         }
         self.open_virtual(title, &text);
-        self.workspace.leave(crate::workspace::At::Slot);
+        self.workspace.leave(crate::workspace::Here::Slot);
         let at = lines
             .iter()
             .rposition(|l| l.contains("FAILED") || l.contains("panicked") || l.starts_with("error"));
@@ -1904,7 +1904,7 @@ mod tests {
             }
         }
         // The output has the keys (a click on it, `C-w j`), its cursor at its end: `o` — the step in view selected
-        ed.workspace.viewer.at = crate::workspace::At::Slot;
+        ed.workspace.set_at(crate::workspace::Here::Slot);
         ed.focus_sync();
         let key = |ed: &mut Editor, c: char| ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
         key(&mut ed, 'o');
@@ -1919,7 +1919,7 @@ mod tests {
         let text = ed.doc().text.to_string();
         assert_eq!(text, "running 3 tests\ntest a ... ok\ntest b ... FAILED\nfailures:\n", "its lines alone");
         assert_eq!(ed.cursor_line(), 2, "on its failure");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot), "the keys in the buffer");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot), "the keys in the buffer");
         // Any step by name
         crate::typed::execute(&mut ed, "preflight-output test bundled").unwrap();
         assert_eq!(ed.doc().title.as_deref(), Some("preflight · test bundled"));

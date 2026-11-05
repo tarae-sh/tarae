@@ -90,7 +90,7 @@ fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
         crate::chat::hide(&mut ed);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.follow.on = true;
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
         let at = head(&drawn);
@@ -103,7 +103,7 @@ fn a_frame_with_two_sessions_at_work_waves_in_one_place() {
         assert!(all.contains("check ▸"), "{w}: the run its mark —\n{all}");
         // The column in sight: no card — the column's top line says the step, the wave there (#295)
         crate::chat::open(&mut ed);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let drawn = rows(&mut ed, w, h);
         let all = drawn.join("\n");
         assert_eq!(
@@ -164,7 +164,7 @@ fn the_step_and_the_plans_step_are_each_drawn_once() {
                 false => crate::chat::hide(&mut ed),
             }
             ed.workspace.claude.chat.as_mut().unwrap().follow.on = follow;
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
             let drawn = rows(&mut ed, w, h);
             let all = drawn.join("\n");
             // (the step: its verb, wherever said — the run's row says `run`; the plan's step: its words; a plan row: its
@@ -524,7 +524,7 @@ fn a_press_on_the_line_follows_claude() {
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         // (out of sight, as the ask line leaves it once its message went)
         (c.follow.on, c.follow.paused, c.hidden) = (on, paused, true);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let line = status(&mut ed, 160, 40);
         assert_eq!(
             line.contains("running cargo test"),
@@ -619,7 +619,7 @@ fn the_follow_cards_head_keeps_the_signs_cells_through_a_turn() {
     let mut look = |ed: &mut Editor, what: &'static str| {
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         (c.follow.on, c.hidden) = (true, true);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let drawn = rows(ed, 160, 40);
         let head =
             drawn.iter().find(|r| r.contains("╭─ follow")).unwrap_or_else(|| panic!("{what}: {drawn:#?}"));
@@ -687,7 +687,7 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     let following = |ed: &mut Editor| {
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         (c.follow.on, c.hidden) = (true, true);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
     };
     // (the step's time read off a held clock: under a second however slow the machine)
     crate::clock::hold();
@@ -788,7 +788,7 @@ fn the_line_is_whole_while_something_covers_the_cards_head() {
         call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         (c.follow.on, c.hidden) = (true, true);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let mut wholes = Vec::new();
         for (keys, what) in [
             ("", "nothing over it"),
@@ -841,7 +841,7 @@ fn a_press_while_following_brings_the_view_to_claudes_place() {
         f.gaze = Some(crate::follow::Gaze::new(look.clone(), Some(path.clone()), Some(lines)));
     };
     // (following, the view where Claude was — then Claude somewhere else, the view not there yet)
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     gaze(&mut ed, 0..5);
     let id = ed.workspace.id;
     crate::follow::follow_session(&mut ed, id);
@@ -873,7 +873,7 @@ fn the_mouse_over_the_line_shows_it_whole() {
     call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
     // (the column out of sight: in sight, its top line says the step and the line is short — #295)
     crate::chat::hide(&mut ed);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let before = rows(&mut ed, 100, 30);
     assert!(!before[29].contains(long), "cut on the line: {}", before[29]);
     let (x, y) = line_at(&ed);

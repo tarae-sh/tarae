@@ -143,6 +143,7 @@
     "char_next": false,
     "drawn": true,
     "held": false,
+    "pane": "pane#1",
     "pending": "",
     "region": "edit-review",
     "takes": "answers",
@@ -293,7 +294,7 @@
       "where": "card"
     }
   ],
-  "v": 34,
+  "v": 35,
   "workspaces": [
     {
       "cards": 1,

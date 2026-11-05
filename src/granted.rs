@@ -572,7 +572,7 @@ mod tests {
         // (a home of its own: write grants are judged as a run's are, never by where the test's temp folder is)
         ed.caps_home = Some(s.path().join("home"));
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         (ed, root, s.path().join("sandbox.json"))
     }
 
@@ -697,7 +697,7 @@ mod tests {
         assert_eq!(of(&got, "reach db.example.invalid:5432"), Some('s'));
         // (the project's alone: the conversation's copy of the `A` gone — read from `sandbox.json`)
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         assert!(std::fs::read_to_string(&store).unwrap().contains("\"key\": \"A\""), "written with its key");
         assert_eq!(of(&stamps(&mut ed), "connect to port 5432"), Some('A'), "read back");
         // An entry kept with no key: no stamp
@@ -995,7 +995,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         open(&mut ed);
         let listed = rows(&ed);
         let at =
@@ -1029,7 +1029,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         crate::allow::grant_reads(&mut ed, std::slice::from_ref(&outside), Scope::Always);
         until(&mut ed, "kept", |_| crate::allow::Store::read(Some(&store)).get(&wt).reads(&outside));
         let main_id = ed.workspace.id;

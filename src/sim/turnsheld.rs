@@ -157,7 +157,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
         2 => {
             let k = usize::from(ed.workspace.id == w.ids[1]);
             w.stepped[k] = true;
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
             for k in [Code::Char(' '), Code::Char('u')] {
                 ed.handle_key(Key::plain(k));
             }

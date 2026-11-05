@@ -19,7 +19,7 @@ use std::sync::mpsc::Sender;
 use crate::editor::Editor;
 use crate::event::MouseKind;
 use crate::key::{Code, Key};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 pub struct Terminal {
     pub parser: vt100::Parser,
@@ -570,10 +570,10 @@ fn ended(ed: &mut Editor, generation: u64, code: i32) {
     if let Some(t) = ed.workspace.terminal.as_mut().filter(|t| t.generation == generation) {
         t.exited = Some(code);
         // (filling the screen, it goes on doing so — its last lines to read)
-        if ed.workspace.is_at(At::Program) {
+        if ed.workspace.is_at(Here::Program) {
             let slot = ed.workspace.leaf(crate::pane::Shows::Slot);
             let full = slot.is_some() && ed.workspace.viewer.zoom.map(|z| z.0) == slot;
-            ed.workspace.viewer.at = if full { At::Slot } else { At::Code };
+            ed.workspace.set_at(if full { Here::Slot } else { Here::Code });
         }
     } else if ed.workspace.terminal_run == generation {
         ed.workspace.terminal_early.1 = Some(code);
@@ -587,7 +587,7 @@ fn install(ed: &mut Editor, mut t: Terminal) {
     // (the keys its program's — unless it ended already)
     match exited {
         Some(code) => t.exited = Some(code),
-        None => ed.workspace.viewer.at = At::Program,
+        None => ed.workspace.set_at(Here::Program),
     }
     ed.workspace.terminal = Some(t);
 }
@@ -636,20 +636,20 @@ impl Editor {
     /// the keys behind them). From the program's keys `space T` is the program's.
     pub fn terminal_toggle(&mut self) {
         let front = self.slot() == Some(crate::sizes::Slot::Terminal);
-        let inside = front && self.workspace.is_at(At::Slot);
+        let inside = front && self.workspace.is_at(Here::Slot);
         if !inside && self.workspace.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none()) {
             self.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
-            self.workspace.viewer.at = At::Program;
+            self.workspace.set_at(Here::Program);
             return;
         }
         match self.workspace.terminal.as_mut() {
             Some(t) if t.visible => {
                 t.visible = false;
-                self.workspace.leave(At::Program);
+                self.workspace.leave(Here::Program);
             }
             Some(t) if t.exited.is_none() => {
                 t.visible = true;
-                self.workspace.viewer.at = At::Program;
+                self.workspace.set_at(Here::Program);
             }
             _ => {
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
@@ -663,7 +663,7 @@ impl Editor {
         match self.workspace.terminal.as_mut() {
             Some(t) if t.exited.is_none() => {
                 t.visible = true;
-                self.workspace.viewer.at = At::Program;
+                self.workspace.set_at(Here::Program);
                 self.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
             }
             _ => self.terminal_toggle(),
@@ -679,7 +679,7 @@ impl Editor {
             // Asked for a replacement explicitly? Only for an exited one — a live shell is never dropped here
             if let Some(t) = self.workspace.terminal.as_mut() {
                 t.visible = true;
-                self.workspace.viewer.at = At::Program;
+                self.workspace.set_at(Here::Program);
             }
             self.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
             return false;
@@ -828,7 +828,7 @@ impl Editor {
         let ours = alt && kind == MouseKind::Down;
         if live && !t.selecting && !ours && mode != vt100::MouseProtocolMode::None {
             if kind == MouseKind::Down {
-                self.workspace.viewer.at = At::Program;
+                self.workspace.viewer.at = crate::workspace::At::Program;
             }
             // (what its mode doesn't ask for is dropped)
             if let Some(bytes) = cell.and_then(|c| mouse_bytes(mode, encoding, sent, c)) {
@@ -850,8 +850,8 @@ impl Editor {
             }
             MouseKind::Down => {
                 match live {
-                    true => self.workspace.viewer.at = At::Program,
-                    false => self.workspace.leave(At::Program),
+                    true => self.workspace.set_at(Here::Program),
+                    false => self.workspace.leave(Here::Program),
                 }
                 let Some(t) = self.workspace.terminal.as_mut() else { return };
                 t.selection = cell.map(|c| (c, c));
@@ -922,7 +922,7 @@ pub(crate) fn stand_in(
         pid: 0,
     });
     ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
-    ed.workspace.viewer.at = At::Program;
+    ed.workspace.set_at(Here::Program);
     sent
 }
 
@@ -978,7 +978,7 @@ mod tests {
         let screen = t.parser.screen();
         assert!(screen.contents().starts_with("hello tarae"), "{:?}", screen.contents());
         assert!(screen.cell(0, 6).is_some_and(|c| c.bold()), "bold");
-        assert!(!ed.workspace.is_at(At::Program), "an exited program gives the keys back");
+        assert!(!ed.workspace.is_at(Here::Program), "an exited program gives the keys back");
     }
 
     /// A program that asks the terminal what it is (Primary Device Attributes — fish does, and waits 10 s for
@@ -1093,10 +1093,10 @@ mod tests {
             ed.handle_key(crate::key::Key::plain(crate::key::Code::Char('T')));
         };
         let state = |ed: &Editor| {
-            ed.workspace.terminal.as_ref().map(|t| (t.visible, ed.workspace.is_at(At::Program))).unwrap()
+            ed.workspace.terminal.as_ref().map(|t| (t.visible, ed.workspace.is_at(Here::Program))).unwrap()
         };
         // Shown, in front, the keys back in the code
-        ed.workspace.leave(At::Program);
+        ed.workspace.leave(Here::Program);
         assert_eq!(ed.slot(), Some(crate::sizes::Slot::Terminal));
         space_t(&mut ed);
         assert_eq!(state(&ed), (true, true), "shown without the keys: given them, not hidden");
@@ -1493,27 +1493,27 @@ mod tests {
         assert!(seen(&ed), "{:?}", ed.workspace.terminal.as_ref().map(|t| t.parser.screen().contents()));
         let ctrl_backslash = Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false };
         ed.handle_key(ctrl_backslash);
-        assert!(!ed.workspace.is_at(crate::workspace::At::Program));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Program));
         assert!(crate::view::terminal_viewed(&ed), "its view mode");
         ed.handle_key(ctrl_backslash);
-        assert!(!crate::view::terminal_viewed(&ed) && !ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!crate::view::terminal_viewed(&ed) && !ed.workspace.is_at(crate::workspace::Here::Slot));
         ed.handle_key(key('i'));
         assert_eq!(ed.mode, crate::editor::Mode::Insert, "the code has the keys again");
         ed.handle_key(Key::plain(Code::Esc));
         // C-\\ from the code gives the keys back to it; `q` in its view mode hides it, the shell running on — as
         // every list or output panel's `q` closes it (uxaudit D2); `space T` shows it with the keys (#144)
         ed.handle_key(ctrl_backslash);
-        assert!(ed.workspace.is_at(crate::workspace::At::Program));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Program));
         ed.handle_key(ctrl_backslash);
         ed.handle_key(key('q'));
         let t = ed.workspace.terminal.as_ref().unwrap();
         assert!(!t.visible && t.exited.is_none(), "hidden, running");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
         for k in [' ', 'T'] {
             ed.handle_key(key(k));
         }
         let t = ed.workspace.terminal.as_ref().unwrap();
-        assert!(t.visible && ed.workspace.is_at(At::Program), "shown with the keys, the same shell");
+        assert!(t.visible && ed.workspace.is_at(Here::Program), "shown with the keys, the same shell");
         // `C-w q` in its view mode too (D3)
         ed.handle_key(ctrl_backslash);
         ed.handle_key(Key { code: Code::Char('w'), ctrl: true, alt: false, shift: false });
@@ -1560,7 +1560,7 @@ mod tests {
         assert_eq!(back(&ed), 2 * page, "two pages back");
         ed.handle_key("S-pagedown".parse().unwrap());
         assert_eq!(back(&ed), page, "one forward");
-        assert!(ed.workspace.is_at(crate::workspace::At::Program), "the keys still the program's");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Program), "the keys still the program's");
         ed.handle_key("pageup".parse().unwrap());
         assert_eq!(back(&ed), 0, "a key the program gets: back down");
         // A full-screen program (its alternate screen keeps no past): the key is the program's, as a terminal
@@ -1874,23 +1874,23 @@ mod tests {
         };
         let key = |c: char| Key { code: Code::Char(c), ctrl: false, alt: false, shift: false };
         let ctrl = |c: char| Key { code: Code::Char(c), ctrl: true, alt: false, shift: false };
-        let focus = |ed: &Editor| ed.workspace.is_at(crate::workspace::At::Program);
+        let focus = |ed: &Editor| ed.workspace.is_at(crate::workspace::Here::Program);
         draw(&mut ed);
         let small = ed.screen.slot().h;
         // `C-\\` and Esc: back to the code
         ed.handle_key(ctrl('\\'));
         ed.handle_key(Key::plain(Code::Esc));
-        assert!(!focus(&ed) && !ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!focus(&ed) && !ed.workspace.is_at(crate::workspace::Here::Slot));
         for k in [ctrl('w'), key('j'), ctrl('w'), key('z')] {
             ed.handle_key(k);
         }
-        assert!(ed.workspace.is_at(crate::workspace::At::Slot) && !focus(&ed), "tarae's keys on it");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Slot) && !focus(&ed), "tarae's keys on it");
         assert!(crate::view::terminal_viewed(&ed), "its view mode");
         draw(&mut ed);
         assert_eq!(ed.zoomed_shows(), Some(Shows::Slot));
         assert_eq!(ed.screen.slot().h, ed.screen.body_end() - ed.screen.text_top, "all the rows");
         ed.handle_key(key('i'));
-        assert!(focus(&ed) && !ed.workspace.is_at(crate::workspace::At::Slot), "the program's keys");
+        assert!(focus(&ed) && !ed.workspace.is_at(crate::workspace::Here::Slot), "the program's keys");
         for c in "echo zoomed-in".chars() {
             ed.handle_key(key(c));
         }
@@ -1899,12 +1899,12 @@ mod tests {
         assert_eq!(ed.zoomed_shows(), Some(Shows::Slot), "typing in it, it still fills the screen");
         ed.handle_key(ctrl('\\'));
         assert!(
-            !focus(&ed) && ed.workspace.is_at(crate::workspace::At::Slot),
+            !focus(&ed) && ed.workspace.is_at(crate::workspace::Here::Slot),
             "C-\\: the keys stay on it, its view mode"
         );
         assert_eq!(ed.zoomed_shows(), Some(Shows::Slot));
         ed.handle_key(Key::plain(Code::Esc));
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
         assert_eq!(ed.workspace.viewer.zoom, None, "back to the code: it ended");
         draw(&mut ed);
         assert_eq!(ed.screen.slot().h, small);

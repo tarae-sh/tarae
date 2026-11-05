@@ -360,14 +360,14 @@ fn the_key_to_follow_again_is_said_where_the_keys_are() {
     let Scene { mut ed, dir, g, a, b } = scene("pane-follow-key", true);
     // (said once paused: leading, `space F` has nothing to bring back)
     ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     assert_eq!(crate::follow::again_key(&ed), "C-f");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     assert_eq!(crate::follow::again_key(&ed), "space F");
     ed.workspace.claude.chat.as_mut().unwrap().follow.paused = false;
     read(&mut ed, g, &dir, "a.rs", 40);
     frame(&mut ed);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     let rect = ed.screen.leaves.iter().find(|l| l.0 == a).map(|l| l.1).expect("pane a");
     let wheel = crate::event::Mouse {
         kind: crate::event::MouseKind::ScrollDown,

@@ -5,7 +5,7 @@ use crate::key::{Code, Key};
 use crate::pane::{Frame, GroupKind, Place, Shows, Side};
 use crate::sizes::Slot;
 use crate::split::Rect;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const W: u16 = 160;
 const H: u16 = 40;
@@ -106,7 +106,7 @@ fn c_w_e_floats_the_tests_group_and_docks_it_back() {
     assert_eq!(f, Rect { x: 32, y: 10, w: 96, h: 20 });
     assert!(inside(f, leaf(&ed, g.list)) && leaf(&ed, g.list).w > 0, "its list in its frame");
     assert_eq!(ed.slot_shown(), Some(Slot::Task), "the slot shows the task");
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list), "the keys stay in the list");
+    assert_eq!(ed.workspace.here(), Here::List(g.list), "the keys stay in the list");
     assert_eq!(ed.keys_to().region, crate::uistate::Region::List(GroupKind::Tests));
     let s = shown(&mut ed, W, H);
     let top = s.lines().nth(f.y).unwrap();
@@ -120,8 +120,8 @@ fn c_w_e_floats_the_tests_group_and_docks_it_back() {
     assert_eq!(ed.workspace.test_run.as_ref().unwrap().selected, 1, "the list moves");
     feed(&mut ed, "<tab>");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.hand),
-        (At::Slot, Some(GroupKind::Tests)),
+        (ed.workspace.here(), ed.workspace.viewer.hand),
+        (Here::Slot, Some(GroupKind::Tests)),
         "tab: its detail"
     );
     assert_eq!(crate::rundoc::has_keys(&ed), Some(Slot::Test), "the tests' output, not the task's");
@@ -147,13 +147,13 @@ fn c_w_e_floats_the_tests_group_and_docks_it_back() {
     // stays; never the side panel's key
     feed(&mut ed, "<esc><C-w>e");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.sidebar.is_none()),
-        (At::Code, true),
+        (ed.workspace.here(), ed.workspace.viewer.sidebar.is_none()),
+        (Here::Code, true),
         "the code: nothing moves"
     );
     assert!(ed.messages.last().unwrap().2.contains("nothing here floats"), "said");
     feed(&mut ed, " e<C-w>e");
-    assert_eq!(ed.workspace.viewer.at, At::Side, "the side panel keeps the keys");
+    assert_eq!(ed.workspace.here(), Here::Side, "the side panel keeps the keys");
     assert!(ed.messages.last().unwrap().2.contains("nothing here floats"), "said there too");
 }
 
@@ -206,7 +206,7 @@ fn c_w_m_moves_a_floating_pane() {
     assert_eq!(drawn(&ed, GroupKind::Tests), now, "nothing moved");
     feed(&mut ed, "<esc>");
     assert!(ed.float_moving.is_none());
-    assert_eq!(ed.workspace.viewer.at, At::List(tests(&ed).list), "the keys back in its list");
+    assert_eq!(ed.workspace.here(), Here::List(tests(&ed).list), "the keys back in its list");
     feed(&mut ed, "<C-w>mk<C-w>m");
     assert!(ed.float_moving.is_none(), "C-w m again ends it");
     assert_eq!(drawn(&ed, GroupKind::Tests).y, now.y - 2);
@@ -215,7 +215,7 @@ fn c_w_m_moves_a_floating_pane() {
     assert_eq!((tests(&ed).place, ed.float_moving), (Place::Slot, None));
     // The keys leaving it end the move (reviewer, 7a): a hop — `h j k l` and `esc` the code's again, said —…
     feed(&mut ed, "<C-w>e<C-w>m<C-w>h");
-    assert_eq!((ed.workspace.viewer.at, ed.float_moving), (At::Code, None), "a hop out ends it");
+    assert_eq!((ed.workspace.here(), ed.float_moving), (Here::Code, None), "a hop out ends it");
     assert!(said(&ed).contains("moving ended"), "said: {}", said(&ed));
     let (frame, line) = (drawn(&ed, GroupKind::Tests), ed.cursor_line());
     feed(&mut ed, "j");
@@ -226,7 +226,7 @@ fn c_w_m_moves_a_floating_pane() {
     assert!(ed.float_moving.is_some());
     mouse(&mut ed, MouseKind::Down, 10, 3);
     mouse(&mut ed, MouseKind::Up, 10, 3);
-    assert_eq!((ed.workspace.viewer.at, ed.float_moving), (At::Code, None), "a press on the code ends it");
+    assert_eq!((ed.workspace.here(), ed.float_moving), (Here::Code, None), "a press on the code ends it");
 }
 
 /// `C-w < > - +` from its member size it (its left and top edges staying), `C-w =` puts it back in the middle — kept
@@ -254,7 +254,7 @@ fn c_w_sizes_a_floating_group_and_c_w_eq_centres_it() {
 fn a_floating_frame_is_dragged_by_its_top_line_and_sized_by_its_edges() {
     let (_dir, mut ed) = tests_and_a_task();
     feed(&mut ed, "<C-w>e<esc>");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     let f = drawn(&ed, GroupKind::Tests);
     // (its top line, past its names: the stretch of line before the right corner)
     let (x, y) = (f.x + f.w - 3, f.y);
@@ -263,7 +263,7 @@ fn a_floating_frame_is_dragged_by_its_top_line_and_sized_by_its_edges() {
     mouse(&mut ed, MouseKind::Up, x - 10, y + 3);
     let moved = drawn(&ed, GroupKind::Tests);
     assert_eq!((moved.x, moved.y, moved.w, moved.h), (f.x - 10, f.y + 3, f.w, f.h));
-    assert!(matches!(ed.workspace.viewer.at, At::List(_) | At::Slot), "a press on it gave it the keys");
+    assert!(matches!(ed.workspace.here(), Here::List(_) | Here::Slot), "a press on it gave it the keys");
     // Its right edge sizes it, the left staying
     let (x, y) = (moved.x + moved.w - 1, moved.y + 5);
     mouse(&mut ed, MouseKind::Down, x, y);
@@ -272,12 +272,12 @@ fn a_floating_frame_is_dragged_by_its_top_line_and_sized_by_its_edges() {
     let wider = drawn(&ed, GroupKind::Tests);
     assert_eq!((wider.x, wider.w), (moved.x, moved.w + 6));
     // A press inside on a row of the code under it: the frame's, the code's cursor where it was
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let line = ed.cursor_line();
     mouse(&mut ed, MouseKind::Down, wider.x + wider.w - 4, wider.y + wider.h - 3);
     mouse(&mut ed, MouseKind::Up, wider.x + wider.w - 4, wider.y + wider.h - 3);
     assert_eq!(ed.cursor_line(), line, "nothing under it pressed");
-    assert!(!ed.workspace.is_at(At::Code), "the keys to it");
+    assert!(!ed.workspace.is_at(Here::Code), "the keys to it");
 }
 
 /// Hops (§3.3): from the code `C-w l` never lands in a floating pane (they're over it, not beside it); from one, to its
@@ -290,25 +290,25 @@ fn hops_go_by_the_frames_centre_and_never_land_in_one_from_the_code() {
     let g = tests(&ed);
     feed(&mut ed, "<C-w>l");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.hand),
-        (At::Slot, Some(GroupKind::Tests)),
+        (ed.workspace.here(), ed.workspace.viewer.hand),
+        (Here::Slot, Some(GroupKind::Tests)),
         "its own detail"
     );
     feed(&mut ed, "<C-w>h<C-w>h");
-    assert_eq!(ed.workspace.viewer.at, At::Code, "left of its centre: the code");
+    assert_eq!(ed.workspace.here(), Here::Code, "left of its centre: the code");
     feed(&mut ed, "<C-w>l");
     assert!(
-        ed.workspace.viewer.at == At::Code || ed.workspace.viewer.at == At::Chat,
+        ed.workspace.here() == Here::Code || ed.workspace.here() == Here::Chat,
         "not into the float: {:?}",
-        ed.workspace.viewer.at
+        ed.workspace.here()
     );
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let mut seen = Vec::new();
     for _ in 0..8 {
         feed(&mut ed, "<C-w>w");
-        seen.push(ed.workspace.viewer.at);
+        seen.push(ed.workspace.here());
     }
-    assert!(seen.contains(&At::List(g.list)), "C-w w goes round it: {seen:?}");
+    assert!(seen.contains(&Here::List(g.list)), "C-w w goes round it: {seen:?}");
 }
 
 /// Kept (§3.4, §5.3): the restart's file and `layouts.json` keep a floating group's place, frame and where it docks

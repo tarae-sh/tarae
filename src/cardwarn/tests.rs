@@ -458,7 +458,7 @@ fn chat_in(name: &str, project: &str) -> (crate::editor::Editor, u64, PathBuf) {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     (ed, generation, dir)
 }

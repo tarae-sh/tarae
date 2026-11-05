@@ -62,7 +62,7 @@ fn run(choices: Choices) -> Vec<String> {
     let mut c = crate::chat::Chat::new();
     let _claude = crate::chat::stand_in(&mut c);
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let file = infra.join("main.tf");
     let check = |ed: &Editor| held(ed, &file);
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &root, &infra, &mut world.borrow_mut()), check, print);
@@ -161,7 +161,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &Path, infra: &Path, w: &mut Worl
         2 => "(no turn to end)".into(),
         3 => {
             w.undos += 1;
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
             for k in [Code::Char(' '), Code::Char('u')] {
                 ed.handle_key(Key::plain(k));
             }

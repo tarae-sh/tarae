@@ -32,7 +32,7 @@ fn chat_with(config: Config, msgs: Vec<Msg>) -> Editor {
     c.msgs = msgs;
     c.input = "a draft".into();
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     ed
 }
@@ -117,7 +117,7 @@ fn region(ed: &Editor) -> String {
 fn a_view_modes_search_is_its_own_and_the_codes_stays_the_codes() {
     let mut ed = editor();
     ed.docs[0].text = ropey::Rope::from_str("let code = 1;\nlet more = code;\n");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "/code<ret>");
     let code_sel = ed.doc().selection().primary();
     let code_search = |ed: &Editor| {
@@ -126,7 +126,7 @@ fn a_view_modes_search_is_its_own_and_the_codes_stays_the_codes() {
     };
     let before = code_search(&ed);
     assert_eq!(before, (Some("code".into()), true, Some(("code".into(), 2))), "the code's search");
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<esc>");
     assert_eq!(region(&ed), "view:chat");
     // Typing: the view's rows previewed, the code's untouched
@@ -158,7 +158,7 @@ fn a_view_modes_search_is_its_own_and_the_codes_stays_the_codes() {
     assert_eq!(d.text.byte_slice(r.from()..r.to()).to_string(), "code", "the code's n: its own pattern");
     assert_ne!(r, code_sel, "n moved in the code");
     // …and back in the view, its `n` is its own search, kept with it — never the code's
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<esc>n");
     assert_eq!(at(&ed).1, "needle", "the view's own pattern");
     assert_eq!(code_search(&ed), (Some("code".into()), true, Some(("code".into(), 2))));
@@ -278,7 +278,7 @@ fn it_lands_on_the_last_answer_then_where_you_were() {
     // (to the code and back again, by the input)
     feed(&mut ed, "<esc>");
     assert_eq!(region(&ed), "code");
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<esc>");
     assert_eq!(at(&ed).0, there_now);
 }
@@ -502,7 +502,7 @@ pub(crate) fn viewing(keys: &str) -> Editor {
 #[test]
 fn the_wheel_scrolls_the_conversation_and_never_takes_the_keys() {
     let mut ed = chat_with(Config::default(), long());
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     frame(&mut ed);
     let (y0, _, rows, first) = ed.screen.chat_view.get().unwrap();
     let x = ed.screen.chat_x().unwrap() + 4;
@@ -540,7 +540,7 @@ fn the_wheel_scrolls_the_conversation_and_never_takes_the_keys() {
     assert_eq!(first_shown(&ed), top + 3);
     // (from its input: the keys stay there, a key typed brings it back down — a character, enter, backspace, a paste;
     // a cursor move in the draft keeps where it was scrolled)
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "ab");
     for typed in ["c", "<backspace>", "paste"] {
         wheel(&mut ed, crate::event::MouseKind::ScrollUp);
@@ -722,11 +722,11 @@ fn z_k_carries_the_cursor_at_the_edge() {
 #[test]
 fn ctrl_w_q_in_the_chats_view_is_said_and_closes_no_pane() {
     let mut ed = editor();
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     feed(&mut ed, "<C-w>v");
     let panes = ed.workspace.views.len();
     assert!(panes >= 2, "two panes");
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<esc><C-w>q");
     assert_eq!(ed.workspace.views.len(), panes, "no pane closed");
     assert_eq!(
@@ -803,7 +803,7 @@ fn lent(which: Which) -> Editor {
 
 /// The keys to the front workspace's chat: its view mode on the first row (`Which::Chat`), or its input.
 fn into(ed: &mut Editor, which: Which) {
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(ed);
     if which == Which::Chat {
         feed(ed, "<esc>gg");
@@ -1082,14 +1082,14 @@ fn every_act_that_takes_a_workspace_to_the_front_puts_itself_off_whole() {
 fn a_press_on_the_hide_hint_hides_the_chat() {
     for from in ["the code", "the input", "the view mode"] {
         let mut ed = editor();
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         let shown = frame(&mut ed);
         let (y, line) =
             shown.lines().enumerate().find(|(_, l)| l.contains("space L hide")).expect("the hint");
         let x = line[..line.find("space L hide").unwrap()].chars().count() + 2;
         // (the keys moved since the frame drew the hint)
         if from != "the code" {
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
         }
         if from == "the view mode" {
             ed.handle_key(Key::plain(Code::Esc));
@@ -1146,7 +1146,7 @@ fn the_chats_chords_work_in_view_mode() {
 #[test]
 fn space_gt_views_the_conversation_from_the_code() {
     let mut ed = editor();
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     frame(&mut ed);
     assert_eq!(region(&ed), "code");
     feed(&mut ed, " >");
@@ -1166,7 +1166,7 @@ fn space_gt_views_the_conversation_from_the_code() {
     assert!(said.starts_with("nothing to view yet"), "{said}");
     // The chat open but not drawn (the code fills the screen): viewed with the next frame
     let mut ed = editor();
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     frame(&mut ed);
     ed.workspace.viewer.zoom = Some(crate::sizes::Zoom(ed.workspace.viewer.focus));
     frame(&mut ed);

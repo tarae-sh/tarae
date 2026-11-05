@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use tree_sitter::Tree;
 
 use crate::editor::Editor;
-use crate::workspace::At;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -515,7 +514,7 @@ impl Editor {
         let Some((path, line)) = c.at else {
             return self.set_status(format!("{} has no place to go to — the runner named none", c.name));
         };
-        self.workspace.viewer.at = At::Code;
+        self.workspace.viewer.keys_to_code();
         if let Err(e) = self.open_at(&path, line, 0) {
             self.set_error(format!("{e:#}"));
         }

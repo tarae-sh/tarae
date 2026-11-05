@@ -3,7 +3,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::pane::{GroupKind, Place, Shows, Side};
 use crate::sizes::Slot;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const W: u16 = 160;
 const H: u16 = 40;
@@ -104,7 +104,7 @@ fn a_task_docked_at_the_top_has_no_run_card_over_its_line() {
     ed.list_focus(GroupKind::Task);
     feed(&mut ed, "<C-w>K");
     assert_eq!(ed.workspace.group(GroupKind::Task).map(|g| g.place), Some(Place::Docked(Side::Top)));
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let before = shown(&mut ed, W);
     let spot =
         ed.screen.cut_spots.borrow().iter().find(|s| s.3 == crate::whole::Cut::Run(Slot::Task)).cloned();
@@ -149,7 +149,7 @@ fn a_floating_tasks_run_card_is_over_its_own_line_inside_its_columns() {
         matches!(ed.workspace.group(GroupKind::Task).map(|g| g.place), Some(Place::Floating(_))),
         "floating"
     );
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let before = shown(&mut ed, W);
     let f =
         ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Task).map(|f| f.1).expect("floating");
@@ -198,7 +198,7 @@ fn tests(ed: &Editor) -> crate::pane::Group {
 fn c_w_l_docks_the_tests_group_and_c_w_j_brings_it_back() {
     let (_dir, mut ed) = tests_and_a_task();
     let g = tests(&ed);
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list));
+    assert_eq!(ed.workspace.here(), Here::List(g.list));
     assert_eq!(ed.slot_shown(), Some(Slot::Test), "the tests in front");
     feed(&mut ed, "<C-w>L");
     let g = tests(&ed);
@@ -218,7 +218,7 @@ fn c_w_l_docks_the_tests_group_and_c_w_j_brings_it_back() {
     );
     assert_eq!(ed.slot_shown(), Some(Slot::Task), "the slot shows the task");
     assert!(!ed.slot_tabs().iter().any(|t| t.slot == Slot::Test), "the slot's tabs leave the tests out");
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list), "the keys stay in the list");
+    assert_eq!(ed.workspace.here(), Here::List(g.list), "the keys stay in the list");
     assert_eq!(ed.keys_to().region, crate::uistate::Region::List(GroupKind::Tests));
     assert_eq!(ed.slot(), Some(Slot::Test), "the panel in hand");
     assert!(!ed.bottom_has_keys(), "not the slot's");
@@ -226,8 +226,8 @@ fn c_w_l_docks_the_tests_group_and_c_w_j_brings_it_back() {
     assert_eq!(ed.workspace.test_run.as_ref().unwrap().selected, 1, "the list moves");
     feed(&mut ed, "<tab>");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.hand),
-        (At::Slot, Some(GroupKind::Tests)),
+        (ed.workspace.here(), ed.workspace.viewer.hand),
+        (Here::Slot, Some(GroupKind::Tests)),
         "tab: its detail"
     );
     assert_eq!(crate::rundoc::has_keys(&ed), Some(Slot::Test), "the tests' output has them, not the task's");
@@ -249,8 +249,8 @@ fn c_w_l_docks_the_tests_group_and_c_w_j_brings_it_back() {
     assert!(!ed.workspace.panes.iter().any(|p| p.shows == Shows::Group(GroupKind::Tests)), "its leaf gone");
     assert_eq!(ed.slot_shown(), Some(Slot::Test), "in front");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.hand, ed.slot()),
-        (At::Slot, None, Some(Slot::Test))
+        (ed.workspace.here(), ed.workspace.viewer.hand, ed.slot()),
+        (Here::Slot, None, Some(Slot::Test))
     );
     feed(&mut ed, "<C-w>J");
     assert!(ed.toasts.iter().any(|t| t.text.starts_with("tests is in the slot")), "said");
@@ -314,7 +314,7 @@ fn a_new_run_lands_where_its_kind_is_docked() {
     let host = tests(&ed).host;
     feed(&mut ed, "q");
     assert!(ed.workspace.test_run.is_none(), "closed");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     let g = tests(&ed);
     assert_eq!(g.place, Place::Docked(Side::Right), "its place kept");
     assert!(!ed.workspace.split.holds(host), "its leaf gone");
@@ -330,11 +330,11 @@ fn a_new_run_lands_where_its_kind_is_docked() {
         "beside the code"
     );
     assert_eq!(ed.slot_shown(), Some(Slot::Task));
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     // (its output alone has the keys by a click on it; `C-w q` there closes it)
     ed.panel_take_keys(Slot::Test);
     frame(&mut ed, W);
-    assert_eq!((ed.workspace.viewer.at, ed.slot()), (At::Slot, Some(Slot::Test)));
+    assert_eq!((ed.workspace.here(), ed.slot()), (Here::Slot, Some(Slot::Test)));
     // (on the code: a code pane closes, the docked group stays)
     feed(&mut ed, "<esc><C-w>v<C-w>q");
     assert_eq!(ed.workspace.views.len(), 1);
@@ -357,8 +357,8 @@ fn a_docked_group_folds_into_the_slot_when_narrow() {
     assert!(ed.docked_in_sight(GroupKind::Tests));
     ed.slot_show(Slot::Task);
     frame(&mut ed, W);
-    let list = At::List(tests(&ed).list);
-    assert_eq!((ed.workspace.viewer.slot_front, ed.workspace.viewer.at), (Some(Slot::Task), list));
+    let list = Here::List(tests(&ed).list);
+    assert_eq!((ed.workspace.viewer.slot_front, ed.workspace.here()), (Some(Slot::Task), list));
     // (folded by an event: the side panel and the chat open leave the code too little beside it)
     let root = ed.workspace.root.clone();
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, root));
@@ -366,7 +366,7 @@ fn a_docked_group_folds_into_the_slot_when_narrow() {
     frame(&mut ed, W);
     assert!(!ed.docked_in_sight(GroupKind::Tests), "folded");
     assert_eq!(
-        (ed.workspace.viewer.slot_front, ed.workspace.viewer.at),
+        (ed.workspace.viewer.slot_front, ed.workspace.here()),
         (Some(Slot::Test), list),
         "in front, the keys in it"
     );
@@ -381,7 +381,7 @@ fn a_docked_group_folds_into_the_slot_when_narrow() {
     assert!(!ed.docked_in_sight(GroupKind::Tests), "60 columns: folded");
     assert_eq!(tests(&ed).place, Place::Docked(Side::Right), "not moved");
     assert!(ed.slot_tabs().iter().any(|t| t.slot == Slot::Test), "a tab of the slot again");
-    assert_eq!(ed.workspace.viewer.at, At::List(tests(&ed).list), "the keys with it, in the slot");
+    assert_eq!(ed.workspace.here(), Here::List(tests(&ed).list), "the keys with it, in the slot");
     assert!(ed.bottom_has_keys());
     let text = shown(&mut ed, 60);
     assert!(text.contains("tests"), "in the slot's line");
@@ -392,7 +392,7 @@ fn a_docked_group_folds_into_the_slot_when_narrow() {
     frame(&mut ed, W);
     assert!(ed.docked_in_sight(GroupKind::Tests), "wide: docked again");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.hand),
+        (ed.workspace.here(), ed.workspace.viewer.hand),
         (list, Some(GroupKind::Tests)),
         "in hand again"
     );
@@ -408,13 +408,13 @@ fn the_window_keys_hop_from_a_folded_groups_output() {
     feed(&mut ed, "<C-w>L<tab>");
     let g = tests(&ed);
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.hand, ed.at_pane()),
-        (At::Slot, Some(GroupKind::Tests), Some(g.host))
+        (ed.workspace.here(), ed.workspace.viewer.hand, ed.at_pane()),
+        (Here::Slot, Some(GroupKind::Tests), Some(g.host))
     );
     frame(&mut ed, 60);
     assert!(!ed.docked_in_sight(GroupKind::Tests), "folded");
     let slot = ed.workspace.leaf(Shows::Slot);
-    assert_eq!((ed.workspace.viewer.at, ed.at_pane()), (At::Slot, slot), "the slot's");
+    assert_eq!((ed.workspace.here(), ed.at_pane()), (Here::Slot, slot), "the slot's");
     let detail = g.detail_pane().unwrap();
     let state = ed.ui_state().json();
     let panes = state["workspaces"][0]["panes"].as_array().cloned().unwrap_or_default();
@@ -425,13 +425,13 @@ fn the_window_keys_hop_from_a_folded_groups_output() {
         "the state's at: the slot's, not its host's — {at}"
     );
     feed_in(&mut ed, "<C-w>l", 60, H);
-    assert_eq!(ed.workspace.viewer.at, At::Slot, "nothing right of it: the keys stay");
+    assert_eq!(ed.workspace.here(), Here::Slot, "nothing right of it: the keys stay");
     assert!(ed.toasts.iter().any(|t| t.text.starts_with("nothing")), "said");
     let order: Vec<_> = ed.screen.leaves.iter().map(|l| l.0).collect();
     let i = order.iter().position(|&id| id == detail).expect("its detail laid out in the slot");
     let next = order[(i + 1) % order.len()];
     feed_in(&mut ed, "<C-w>w", 60, H);
-    let landed = if ed.workspace.is_at(At::Code) { Some(ed.workspace.viewer.focus) } else { ed.at_pane() };
+    let landed = if ed.workspace.is_at(Here::Code) { Some(ed.workspace.viewer.focus) } else { ed.at_pane() };
     assert_eq!(landed, Some(next), "C-w w: the pane after its detail");
     // (wide again, its detail in hand: its own leaf's)
     ed.detail_focus(GroupKind::Tests);
@@ -448,7 +448,7 @@ fn a_group_docked_over_the_code_folds_on_a_short_screen() {
     let (_dir, mut ed) = tests_and_a_task();
     feed(&mut ed, "<C-w>K");
     let g = tests(&ed);
-    assert_eq!((g.place, ed.workspace.viewer.at), (Place::Docked(Side::Top), At::List(g.list)));
+    assert_eq!((g.place, ed.workspace.here()), (Place::Docked(Side::Top), Here::List(g.list)));
     assert!(ed.docked_in_sight(GroupKind::Tests));
     frame_in(&mut ed, W, 12);
     let s = &ed.screen;
@@ -457,8 +457,8 @@ fn a_group_docked_over_the_code_folds_on_a_short_screen() {
     assert_eq!(tests(&ed).place, Place::Docked(Side::Top), "not moved");
     assert!(ed.slot_tabs().iter().any(|t| t.slot == Slot::Test), "a tab of the slot");
     assert_eq!(
-        (ed.slot_shown(), ed.workspace.viewer.at),
-        (Some(Slot::Test), At::List(g.list)),
+        (ed.slot_shown(), ed.workspace.here()),
+        (Some(Slot::Test), Here::List(g.list)),
         "in front, the keys in it"
     );
     assert!(ed.bottom_has_keys());
@@ -468,8 +468,8 @@ fn a_group_docked_over_the_code_folds_on_a_short_screen() {
     frame_in(&mut ed, W, H);
     assert!(ed.docked_in_sight(GroupKind::Tests), "tall: over the code again");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.workspace.viewer.hand),
-        (At::List(g.list), Some(GroupKind::Tests)),
+        (ed.workspace.here(), ed.workspace.viewer.hand),
+        (Here::List(g.list), Some(GroupKind::Tests)),
         "in hand again"
     );
     assert!(ed.dock_rect(GroupKind::Tests).is_some_and(|d| d.1.h >= crate::dock::DOCK_MIN_ROWS));
@@ -520,7 +520,7 @@ fn a_press_on_a_docked_groups_edge_gives_it_the_keys() {
     for side in ["L", "K"] {
         let (_dir, mut ed) = tests_and_a_task();
         feed(&mut ed, &format!("<C-w>{side}<esc>"));
-        assert_eq!(ed.workspace.viewer.at, At::Code, "{side}: the code's keys first");
+        assert_eq!(ed.workspace.here(), Here::Code, "{side}: the code's keys first");
         let Some(crate::sizes::Border::Divider { heads, .. }) =
             ed.line_of(crate::pane::Shows::Group(GroupKind::Tests))
         else {
@@ -568,7 +568,7 @@ fn a_group_docked_over_the_code_is_sized_by_its_rows() {
     );
     assert_eq!(ed.border_at(10, edge - 1), None, "its last row isn't an edge");
     feed(&mut ed, "<esc>");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     let click = |ed: &mut Editor, x: usize, y: usize, kind| {
         ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
         frame(ed, W);
@@ -577,8 +577,8 @@ fn a_group_docked_over_the_code_is_sized_by_its_rows() {
     click(&mut ed, list.x + 1, edge - 1, crate::event::MouseKind::Down);
     let list_id = tests(&ed).list;
     assert_eq!(
-        (ed.dragging, ed.workspace.viewer.at),
-        (None, At::List(list_id)),
+        (ed.dragging, ed.workspace.here()),
+        (None, Here::List(list_id)),
         "a click on its last row: its list's"
     );
     click(&mut ed, list.x + 1, edge - 1, crate::event::MouseKind::Up);
@@ -704,8 +704,8 @@ fn a_group_lays_its_members_by_its_panes_shape() {
     ed.handle_mouse(crate::event::Mouse { kind, x: a as u16, y: y as u16, alt: false, ctrl: false });
     frame(&mut ed, W);
     assert_eq!(
-        (ed.workspace.viewer.at, ed.slot()),
-        (At::Slot, Some(Slot::Test)),
+        (ed.workspace.here(), ed.slot()),
+        (Here::Slot, Some(Slot::Test)),
         "a click on its name: its keys"
     );
     feed(&mut ed, "<C-w>H");
@@ -803,7 +803,7 @@ fn c_w_t_over_the_code_says_what_it_draws() {
 fn a_docked_groups_panes_are_clicked_and_listed() {
     let (_dir, mut ed) = tests_and_a_task();
     feed(&mut ed, "<C-w>L<esc>");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
     let g = tests(&ed);
     let detail = rect(&ed, g.detail_pane().unwrap());
     let click = |ed: &mut Editor, x: usize, y: usize| {
@@ -821,10 +821,10 @@ fn a_docked_groups_panes_are_clicked_and_listed() {
     ed.toasts.clear();
     frame(&mut ed, W);
     click(&mut ed, detail.x + 3, detail.y + 2);
-    assert_eq!((ed.workspace.viewer.at, ed.slot()), (At::Slot, Some(Slot::Test)), "its detail has the keys");
+    assert_eq!((ed.workspace.here(), ed.slot()), (Here::Slot, Some(Slot::Test)), "its detail has the keys");
     let list = rect(&ed, g.list);
     click(&mut ed, list.x + 3, list.y + 1);
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list), "a row of its list");
+    assert_eq!(ed.workspace.here(), Here::List(g.list), "a row of its list");
     let state = ed.ui_state().json();
     let panes = state["workspaces"][0]["panes"].as_array().cloned().unwrap_or_default();
     let host = panes.iter().find(|p| p["shows"] == "group:tests").expect("its host listed");
@@ -833,5 +833,5 @@ fn a_docked_groups_panes_are_clicked_and_listed() {
     assert_eq!((&member["group"], &member["at"]), (&host["id"], &serde_json::json!(true)));
     let code = rect(&ed, ed.workspace.viewer.focus);
     click(&mut ed, code.x + 8, code.y + 2);
-    assert_eq!(ed.workspace.viewer.at, At::Code, "the code's again");
+    assert_eq!(ed.workspace.here(), Here::Code, "the code's again");
 }

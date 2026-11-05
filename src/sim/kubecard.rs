@@ -64,7 +64,7 @@ fn run(choices: Choices) -> Vec<String> {
     let mut c = crate::chat::Chat::new();
     let _claude = crate::chat::stand_in(&mut c);
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     // (the run slot held by a stand-in for the whole run: a `y` taken queues the run, never starts it)
     let task = crate::task::Task { name: "stand-in".into(), cmd: "true".into(), cwd: root.clone() };
     let mut r = crate::task::Run::for_test(task);

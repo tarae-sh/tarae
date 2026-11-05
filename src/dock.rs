@@ -15,7 +15,7 @@ use crate::editor::Editor;
 use crate::pane::{Group, GroupKind, Pane, Place, Shows, Side};
 use crate::sizes::{CODE_MIN, Slot};
 use crate::split::{Dir, PaneId, Share, Split};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// A group docked beside the code is at least this wide (its edge cell in it) — narrower, it folds into the slot.
 pub const DOCK_MIN: usize = 36;
@@ -233,7 +233,7 @@ impl Editor {
     pub fn hand_sync(&mut self) {
         let Some(kind) = self.workspace.viewer.hand else { return };
         let Some(g) = self.workspace.group(kind) else { return self.workspace.viewer.hand = None };
-        let keys = self.workspace.is_at(At::Slot) || self.workspace.is_at(At::List(g.list));
+        let keys = self.workspace.is_at(Here::Slot) || self.workspace.is_at(Here::List(g.list));
         if !keys || g.place == Place::Slot {
             return self.workspace.viewer.hand = None;
         }
@@ -283,10 +283,10 @@ impl Editor {
     /// The group a docking key acts on: the one whose list or detail has the keys — in the slot (with nothing to list
     /// yet, its panel's output alone is the group's detail) or docked.
     pub fn group_in_hand(&self) -> Option<GroupKind> {
-        if let At::List(id) = self.workspace.docked() {
+        if let Here::List(id) = self.workspace.docked() {
             return self.workspace.groups.iter().find(|g| g.list == id).map(|g| g.kind);
         }
-        if !self.workspace.is_at(At::Slot) {
+        if !self.workspace.is_at(Here::Slot) {
             return None;
         }
         self.slot().and_then(|s| self.kind_of(s))
@@ -323,7 +323,7 @@ impl Editor {
         }
         let Some(kind) = self.group_in_hand() else {
             // (the slot's other panels stay in it: said)
-            if self.bottom_has_keys() || self.workspace.is_at(At::Program) {
+            if self.bottom_has_keys() || self.workspace.is_at(Here::Program) {
                 let what = match self.slot() {
                     Some(Slot::Terminal) => {
                         "the terminal stays in the slot — a terminal pane comes with the terminal work"
@@ -472,10 +472,10 @@ impl Editor {
 
     /// Which of group `g`'s members has the keys.
     pub(crate) fn group_keys(&self, g: &Group) -> Option<crate::pane::Member> {
-        if self.workspace.is_at(At::List(g.list)) {
+        if self.workspace.is_at(Here::List(g.list)) {
             return Some(crate::pane::Member::List);
         }
-        (self.workspace.is_at(At::Slot) && self.slot().and_then(|s| self.kind_of(s)) == Some(g.kind))
+        (self.workspace.is_at(Here::Slot) && self.slot().and_then(|s| self.kind_of(s)) == Some(g.kind))
             .then_some(crate::pane::Member::Detail)
     }
 

@@ -227,7 +227,7 @@ fn an_overlay_over_the_chats_slash_list_takes_the_press_on_it() {
     let mut c = crate::chat::Chat::new();
     c.input.set("/");
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     let o = rect(&ed).expect("the overlay drawn");
     let rows = ed.screen.slash_rows.borrow().clone();

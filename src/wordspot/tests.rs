@@ -1,7 +1,7 @@
 use super::*;
 use crate::event::{Event, Mouse, MouseKind};
 use crate::uistate::tests::{chat, editor, frame};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// The spot of the first word that does `press`, on the frame last drawn.
 fn spot(ed: &Editor, press: &Press) -> Spot {
@@ -84,7 +84,7 @@ fn the_follow_cards_waits_is_c_q() {
     working(&mut ed);
     // (out of sight: the follow card stands for the chat)
     ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
     ed.push_offer(crate::offer::Offer::new("Claude asks".into(), "?", "", String::new(), what));
     frame(&mut ed);
@@ -106,9 +106,9 @@ fn a_hint_pair_does_its_key() {
     let esc = Press::Keys(crate::chatinput::esc_said(&ed).0);
     assert_eq!(spot(&ed, &esc).spans[0].0, "esc");
     press_word(&mut ed, &esc);
-    assert!(ed.workspace.is_at(At::Code), "esc: the code's");
+    assert!(ed.workspace.is_at(Here::Code), "esc: the code's");
     press_word(&mut ed, &Press::Keys("space l".into()));
-    assert!(ed.workspace.is_at(At::Chat), "space l: the chat's");
+    assert!(ed.workspace.is_at(Here::Chat), "space l: the chat's");
 }
 
 /// A double on a word is one press: a toggle isn't undone by a habit's second click.
@@ -299,7 +299,7 @@ fn stop_pressed_stops_the_turn() {
 fn a_hint_pressed_mid_insert_is_refused_and_mid_sequence_ends_it_then_goes() {
     let mut ed = editor();
     chat(&mut ed, "");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let text = ed.doc().text.to_string();
     let focus = Press::Keys("space l".into());
     crate::clock::hold();
@@ -312,7 +312,7 @@ fn a_hint_pressed_mid_insert_is_refused_and_mid_sequence_ends_it_then_goes() {
         (text.clone(), crate::editor::Mode::Insert),
         "nothing typed"
     );
-    assert!(ed.workspace.is_at(At::Code));
+    assert!(ed.workspace.is_at(Here::Code));
     ed.handle_key("esc".parse().unwrap());
     ed.handle_key("2".parse().unwrap());
     ed.handle_key("g".parse().unwrap());
@@ -324,7 +324,7 @@ fn a_hint_pressed_mid_insert_is_refused_and_mid_sequence_ends_it_then_goes() {
     crate::clock::release();
     assert!(ed.pending_display().is_empty(), "the sequence ended: {:?}", ed.pending_display());
     assert_eq!((ed.doc().text.to_string(), ed.doc().selection()), (text, &at), "nothing changed or moved");
-    assert!(ed.workspace.is_at(At::Chat), "then space l's: the chat has the keys");
+    assert!(ed.workspace.is_at(Here::Chat), "then space l's: the chat has the keys");
 }
 
 /// What the last frame shows at `s`'s columns of its row.
@@ -349,14 +349,17 @@ fn a_panes_hint_as_drawn_goes_to_that_pane() {
     crate::web::page::stand_in(&mut ed, "https://example.com/a", "a page\n");
     chat(&mut ed, "hello");
     frame(&mut ed);
-    assert!(ed.workspace.is_at(At::Chat));
+    assert!(ed.workspace.is_at(Here::Chat));
     let stop = Press::Keys("C-c".into());
     let s = spot_on(&ed, Surface::PaneTop(ed.workspace.viewer.focus), &stop);
     let words: Vec<&str> = s.spans.iter().map(|s| s.0.as_str()).collect();
-    assert_eq!((words, drawn(&ed, &s).as_str(), s.home), (vec!["C-c", " stop"], "C-c stop", Some(At::Code)));
+    assert_eq!(
+        (words, drawn(&ed, &s).as_str(), s.home),
+        (vec!["C-c", " stop"], "C-c stop", Some(Here::Code))
+    );
     press_word(&mut ed, &stop);
     assert!(ed.doc().page.as_ref().is_some_and(|p| p.fetching.is_none()), "the page's read stopped");
-    assert!(ed.workspace.is_at(At::Code), "a pane's line: the keys stay in the pane");
+    assert!(ed.workspace.is_at(Here::Code), "a pane's line: the keys stay in the pane");
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!((c.input.text().to_string(), c.msgs.len()), ("hello".to_string(), 0), "the chat untouched");
 }
@@ -371,26 +374,26 @@ fn a_hint_goes_to_the_surface_it_was_drawn_for() {
     working(&mut ed);
     let stop = Press::Keys("C-c".into());
     let s = spot_on(&ed, Surface::Chat, &stop);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("C-c stop", Some(At::Chat)));
-    ed.workspace.viewer.at = At::Code;
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("C-c stop", Some(Here::Chat)));
+    ed.workspace.viewer.keys_to_code();
     press_word(&mut ed, &stop);
     assert_eq!(ed.doc().text.to_string(), "fn a() {}\n", "no comment toggled");
     assert_eq!(status(&ed), "nothing to stop: its claude isn't running");
-    assert!(ed.workspace.is_at(At::Code), "it acted in the chat: the keys back in the code");
+    assert!(ed.workspace.is_at(Here::Code), "it acted in the chat: the keys back in the code");
     // The chat's foot
     let mut ed = editor();
     chat(&mut ed, "hello");
     frame(&mut ed);
     let send = Press::Keys("enter".into());
     let s = spot_on(&ed, Surface::Chat, &send);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("enter send", Some(At::Chat)));
-    ed.workspace.viewer.at = At::Code;
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("enter send", Some(Here::Chat)));
+    ed.workspace.viewer.keys_to_code();
     let (text, at) = (ed.doc().text.to_string(), ed.doc().selection().clone());
     press_word(&mut ed, &send);
     let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.msgs.iter().any(|m| m.text == "hello"), "the chat's draft sent");
     assert_eq!((ed.doc().text.to_string(), ed.doc().selection()), (text, &at), "the code untouched");
-    assert!(ed.workspace.is_at(At::Code), "it acted in the chat: the keys back in the code");
+    assert!(ed.workspace.is_at(Here::Code), "it acted in the chat: the keys back in the code");
 }
 
 /// Two panes on a page being read: the other pane's `C-c stop` pressed focuses that pane, stops the read there, and the
@@ -418,7 +421,7 @@ fn a_panes_hint_focuses_that_pane_and_it_keeps_the_focus() {
         ed.workspace.viewer.focus, other,
         "the pane pressed keeps the focus — not given back to {focused}"
     );
-    assert!(ed.workspace.is_at(At::Code), "the keys in it");
+    assert!(ed.workspace.is_at(Here::Code), "the keys in it");
 }
 
 /// A slot's line drawn while the chat had the keys, a draft in it: its run's `space x c close` is the slot's, by what it
@@ -430,10 +433,10 @@ fn a_slot_lines_hint_drawn_with_the_keys_elsewhere_is_the_slots() {
     ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
     chat(&mut ed, "hello");
     frame(&mut ed);
-    assert!(ed.workspace.is_at(At::Chat));
+    assert!(ed.workspace.is_at(Here::Chat));
     let close = Press::Keys("space x c".into());
     let s = spot_on(&ed, Surface::SlotLine, &close);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("space x c close", Some(At::Slot)));
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("space x c close", Some(Here::Slot)));
     press_word(&mut ed, &close);
     assert_eq!(
         ed.workspace.claude.chat.as_ref().unwrap().input.text(),
@@ -441,7 +444,7 @@ fn a_slot_lines_hint_drawn_with_the_keys_elsewhere_is_the_slots() {
         "nothing typed in the draft"
     );
     assert!(ed.slot().is_none(), "the test panel closed");
-    assert!(ed.workspace.is_at(At::Chat), "the keys back in the chat");
+    assert!(ed.workspace.is_at(Here::Chat), "the keys back in the chat");
 }
 
 /// frictions #266: a press on the follow card, the chat out of sight, gives the card the keys (as every floating pane's —
@@ -453,7 +456,7 @@ fn a_press_on_the_follow_card_leaves_no_empty_card() {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
     c.hidden = true;
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let (x, y, w, h) = ed.screen.chat_mini.get().expect("the follow card standing for the chat");
     let at = (x + w / 2, y + h / 2);
@@ -503,7 +506,7 @@ fn beside_the_column_its_line_says_the_step_and_no_follow_card_stands() {
     // (the turn 5 minutes in, its step just begun)
     c.started -= std::time::Duration::from_secs(300);
     crate::now::sync(&mut ed);
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let text = |ed: &mut Editor| {
         frame(ed);
         crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap()
@@ -543,7 +546,7 @@ fn the_follow_card_is_sized_by_keys_once_it_has_them() {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why does it fail?", ""));
     c.hidden = true;
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let keys = |ed: &mut Editor, k: &str| {
         for k in crate::wordspot::keys(k).expect("keys") {
@@ -682,12 +685,12 @@ fn the_follow_cards_edges_size_it() {
     assert_eq!(card(&ed).2, crate::sizes::FOLLOW_MIN_W);
     // A press on an edge with no drag: the card's — the chat brought back with the keys
     ed.sizes.follow_w = None;
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let (x, y, _, h) = card(&ed);
     mouse(&mut ed, MouseKind::Down, (x, y + h / 2));
     mouse(&mut ed, MouseKind::Up, (x, y + h / 2));
-    assert!(ed.workspace.is_at(At::Chat) && !ed.workspace.claude.chat.as_ref().unwrap().hidden);
+    assert!(ed.workspace.is_at(Here::Chat) && !ed.workspace.claude.chat.as_ref().unwrap().hidden);
 }
 
 /// The follow card's foot keys take their home from what each key is, never from where the keys are: drawn with the
@@ -699,13 +702,13 @@ fn the_follow_cards_keys_are_homed_by_what_they_are() {
     working(&mut ed);
     ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), Vec::new()));
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     frame(&mut ed);
     let read = Press::Keys("space L".into());
     let s = spot_on(&ed, Surface::FollowCard, &read);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("space L read", Some(At::Code)));
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("space L read", Some(Here::Code)));
     press_word(&mut ed, &read);
-    assert!(ed.workspace.is_at(At::Chat), "the chat shown, its keys — {:?}", ed.keys_to().region);
+    assert!(ed.workspace.is_at(Here::Chat), "the chat shown, its keys — {:?}", ed.keys_to().region);
 }
 
 /// Every hint is a word but the pairs whose key costs (piece B, the user 2026-10-29): the idle chat's foot has `enter
@@ -833,8 +836,8 @@ fn a_word_never_types_letters_into_the_chats_draft() {
     chat(&mut ed, "hello");
     frame(&mut ed);
     let pane = Surface::Chat;
-    let spot =
-        Spot::new(pane, Press::Keys("G".into()), (0, 0), vec![("G".into(), Style::default())]).home(At::Chat);
+    let spot = Spot::new(pane, Press::Keys("G".into()), (0, 0), vec![("G".into(), Style::default())])
+        .home(Here::Chat);
     ed.screen.word_spots.borrow_mut().push(spot);
     let i = ed.screen.word_spots.borrow().len() - 1;
     press(&mut ed, i);
@@ -854,7 +857,7 @@ fn a_word_never_types_letters_into_the_terminals_program() {
     frame(&mut ed);
     let line = Surface::SlotLine;
     let spot = Spot::new(line, Press::Keys("G".into()), (0, 0), vec![("G".into(), Style::default())])
-        .home(At::Program);
+        .home(Here::Program);
     ed.screen.word_spots.borrow_mut().push(spot);
     let i = ed.screen.word_spots.borrow().len() - 1;
     crate::uistate::TOOK.set(None);
@@ -862,7 +865,7 @@ fn a_word_never_types_letters_into_the_terminals_program() {
     assert!(status(&ed).starts_with("G would be typed into the terminal's program"), "{}", status(&ed));
     let took = crate::uistate::TOOK.get();
     assert_ne!(took, Some(crate::uistate::Handler::Program), "the program given nothing");
-    assert!(ed.workspace.is_at(At::Program), "its keys where they were");
+    assert!(ed.workspace.is_at(Here::Program), "its keys where they were");
 }
 
 /// #279: the side panel takes keys only in normal mode — in insert mode its `q close`, pressed, would land in the code
@@ -875,7 +878,7 @@ fn a_panels_word_in_insert_mode_never_types_into_the_file() {
     frame(&mut ed);
     let q = Press::Keys("q".into());
     let s = spot_on(&ed, Surface::Side, &q);
-    assert_eq!(s.home, Some(At::Side));
+    assert_eq!(s.home, Some(Here::Side));
     let text = ed.doc().text.to_string();
     mouse(&mut ed, MouseKind::Down, (s.from, s.y));
     mouse(&mut ed, MouseKind::Up, (s.from, s.y));
@@ -892,19 +895,19 @@ fn a_hint_that_goes_there_leaves_the_keys_there() {
     frame(&mut ed);
     let esc = Press::Keys("esc".into());
     let s = spot_on(&ed, Surface::Chat, &esc);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("esc code", Some(At::Chat)));
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("esc code", Some(Here::Chat)));
     crate::clock::hold();
     press_word(&mut ed, &esc);
-    assert!(ed.workspace.is_at(At::Code), "esc code: the code's");
+    assert!(ed.workspace.is_at(Here::Code), "esc code: the code's");
     let focus = Press::Keys("space l".into());
-    assert_eq!(spot_on(&ed, Surface::Chat, &focus).home, Some(At::Code));
+    assert_eq!(spot_on(&ed, Surface::Chat, &focus).home, Some(Here::Code));
     // (the keys gone to the side panel since that frame: lent to the code, `space l` takes them on to the chat)
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), Vec::new()));
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     crate::clock::advance(crate::editor::DOUBLE_CLICK);
     press_word(&mut ed, &focus);
     crate::clock::release();
-    assert!(ed.workspace.is_at(At::Chat), "space l focus: the chat's, not back to the side panel");
+    assert!(ed.workspace.is_at(Here::Chat), "space l focus: the chat's, not back to the side panel");
 }
 
 /// The follow card over a word, the chat out of sight: the press and the light are the card's — a word it covers isn't pressed or
@@ -921,7 +924,7 @@ fn a_word_under_the_follow_card_is_neither_pressed_nor_lit() {
     let pane = Surface::PaneTop(ed.workspace.viewer.focus);
     let under =
         Spot::new(pane, Press::Keys("enter".into()), (x - 1, y), vec![("ent".into(), Style::default())]);
-    ed.screen.word_spots.borrow_mut().push(under.home(At::Code));
+    ed.screen.word_spots.borrow_mut().push(under.home(Here::Code));
     let i = ed.screen.word_spots.borrow().len() - 1;
     let u = ed.mouse_at(x, y);
     assert!(
@@ -949,20 +952,20 @@ fn the_slot_lines_hints_as_drawn() {
     frame(&mut ed);
     let way_in = Press::Keys("C-w j".into());
     let s = spot_on(&ed, Surface::SlotLine, &way_in);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("C-w j scroll", Some(At::Code)));
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("C-w j scroll", Some(Here::Code)));
     // (the keys gone to the side panel since that frame)
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), Vec::new()));
-    ed.workspace.viewer.at = At::Side;
+    ed.workspace.set_at(Here::Side);
     press_word(&mut ed, &way_in);
-    assert!(ed.workspace.is_at(At::Slot), "the slot's keys — {:?}", ed.keys_to().region);
+    assert!(ed.workspace.is_at(Here::Slot), "the slot's keys — {:?}", ed.keys_to().region);
     let esc = Press::Keys("esc".into());
     let s = spot_on(&ed, Surface::SlotLine, &esc);
-    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("esc code", Some(At::Slot)));
+    assert_eq!((drawn(&ed, &s).as_str(), s.home), ("esc code", Some(Here::Slot)));
     crate::clock::hold();
     crate::clock::advance(crate::editor::DOUBLE_CLICK);
     press_word(&mut ed, &esc);
     crate::clock::release();
-    assert!(ed.workspace.is_at(At::Code), "esc: the code's");
+    assert!(ed.workspace.is_at(Here::Code), "esc: the code's");
 }
 
 /// The chat idle: its top line's right end, the model's name as drawn, pressed, is `C-t`'s — the model picker.
@@ -1066,10 +1069,10 @@ fn a_tabs_name_on_the_side_panels_line_shows_that_tab() {
     press_word(&mut ed, &Press::Side(crate::sidebar::Mode::Outline));
     let mode = |ed: &Editor| ed.workspace.viewer.sidebar.as_ref().map(|s| s.mode);
     assert_eq!(mode(&ed), Some(crate::sidebar::Mode::Outline));
-    assert!(ed.workspace.is_at(At::Side), "the keys there");
+    assert!(ed.workspace.is_at(Here::Side), "the keys there");
     press_word(&mut ed, &Press::Side(crate::sidebar::Mode::Outline));
     assert_eq!(mode(&ed), Some(crate::sidebar::Mode::Outline), "pressed again: still there, never closed");
-    assert!(ed.workspace.is_at(At::Side));
+    assert!(ed.workspace.is_at(Here::Side));
     press_word(&mut ed, &Press::Side(crate::sidebar::Mode::Git));
     assert_eq!(mode(&ed), Some(crate::sidebar::Mode::Git));
 }
@@ -1085,10 +1088,10 @@ fn a_buffers_name_on_the_codes_line_switches_to_it() {
     let s = spot(&ed, &Press::Buffer(77));
     assert!(s.spans[0].0.contains("other.rs"), "{:?}", s.spans);
     assert!(matches!(s.on, crate::mouse::Surface::PaneTop(_)));
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     press_word(&mut ed, &Press::Buffer(77));
     assert_eq!(ed.doc().id, 77, "switched");
-    assert!(ed.workspace.is_at(At::Code), "the keys to the code");
+    assert!(ed.workspace.is_at(Here::Code), "the keys to the code");
     // (the one in sight pressed: stays)
     let first = ed.docs[0].id;
     press_word(&mut ed, &Press::Buffer(77));
@@ -1113,21 +1116,21 @@ fn a_name_in_the_codes_path_shows_its_row_in_the_files() {
         .collect();
     assert_eq!(words, ["tarae", "src", "ui", "card.rs"], "the project, each folder, the file");
     in_project(&mut ed);
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let selected = |ed: &Editor| {
         let s = ed.workspace.viewer.sidebar.as_ref().unwrap();
         s.lines()[s.selected].target.clone()
     };
     press_word(&mut ed, &Press::Reveal(root.join("src/ui")));
-    assert!(ed.workspace.is_at(At::Side), "the keys there");
+    assert!(ed.workspace.is_at(Here::Side), "the keys there");
     assert_eq!(selected(&ed), Target::Dir("src/ui".into()));
     assert!(ed.workspace.viewer.sidebar.as_ref().unwrap().is_open("src/ui"), "unfolded");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     press_word(&mut ed, &Press::Reveal(path.clone()));
     assert_eq!(selected(&ed), Target::File(path));
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     press_word(&mut ed, &Press::Reveal(root));
     assert_eq!(ed.workspace.viewer.sidebar.as_ref().unwrap().selected, 0, "the project: its top");
@@ -1381,7 +1384,7 @@ fn esc_back_pressed_is_esc_typed() {
             false => key(&mut ed, "esc"),
         }
         assert!(!ed.card_has_keys() && ed.offers.len() == 1, "pressed {pressed}: the keys back, unanswered");
-        let at = format!("{:?}", ed.workspace.viewer.at);
+        let at = format!("{:?}", ed.workspace.here());
         (ed.card_focus, ed.card_next, ed.pending.len(), ed.float_left.is_some(), at)
     });
     assert_eq!(ends[0], ends[1], "`esc back` pressed leaves the editor as `esc` typed");

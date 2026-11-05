@@ -22,7 +22,7 @@ pub const ROWS: usize = 5;
 /// pressed, as a press in the code's insert mode puts it. Where it landed — a drag from there selects (`drag`).
 pub fn click(ed: &mut Editor, row: usize, col: usize, w: usize) -> usize {
     crate::chatdoc::leave(ed);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return 0 };
     let pos = c.input.at(row, col, w);
     c.input.pane.doc_mut().set_selection(Selection::point(pos));
@@ -33,7 +33,7 @@ pub fn click(ed: &mut Editor, row: usize, col: usize, w: usize) -> usize {
 /// between selected, both included, as a drag in the code selects — insert mode kept, as there. The keys gone from
 /// it since: nothing.
 pub fn drag(ed: &mut Editor, held: crate::selection::Held, row: usize, col: usize, w: usize) {
-    if !ed.workspace.is_at(crate::workspace::At::Chat) || crate::chatdoc::keyed(ed) {
+    if !ed.workspace.is_at(crate::workspace::Here::Chat) || crate::chatdoc::keyed(ed) {
         return;
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };

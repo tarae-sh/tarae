@@ -132,7 +132,7 @@ fn run(choices: Choices) -> Vec<String> {
     let claude = crate::chat::stand_in(&mut c);
     ed.workspace.claude.chat = Some(c);
     ed.motion_drawn = true;
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     let world = World::default();
     world.size.set(SIZES[0]);
     frame(&mut ed, &world);

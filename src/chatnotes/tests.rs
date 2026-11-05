@@ -539,7 +539,7 @@ fn a_file_changed_since_the_read_says_so() {
     let (a, b) = (root.join("src/a.rs"), root.join("src/b.rs"));
     ed.open(&b).unwrap();
     ed.open(&a).unwrap();
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let read = read_of(&mut ed, &a, 0..4);
     ed.workspace.claude.chat.as_mut().unwrap().edits.seen.insert(b.clone(), crate::disk::stamp(&b).unwrap());
     let stops = vec![read, stop(&b, 2..3, true), tests_of(&b, "12 passed")];
@@ -654,7 +654,7 @@ fn a_hit_with_nothing_to_hold_it_against_says_nothing() {
     assert_eq!(saw(&ed, &a, 3), Some("read this turn"));
     // A buffer with unsaved edits holds what no search read: nothing to hold a hit against
     ed.open(&a).unwrap();
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "ix<esc>");
     answers(&mut ed, &["Last at src/a.rs:3."], vec![hit(&a)]);
     assert_eq!(saw(&ed, &a, 3), None);

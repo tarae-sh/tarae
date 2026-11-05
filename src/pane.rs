@@ -572,7 +572,7 @@ impl crate::editor::Editor {
     /// risen over the docked pane (`Viewer.under`), its id the one it rose with — and the docked pane's again once
     /// it goes (answered, closed, `esc`). A docked pane given the keys while a floating one is up goes under it.
     pub fn float_sync(&mut self) {
-        use crate::workspace::At;
+        use crate::workspace::Here;
         let front = self.float_front();
         let mut up = self.floating();
         up.extend(front);
@@ -588,8 +588,8 @@ impl crate::editor::Editor {
             .collect();
         self.workspace.viewer.floats = kept;
         let Some(f) = front else {
-            if let At::Float(_) = self.workspace.viewer.at {
-                self.workspace.viewer.at = self.workspace.viewer.under;
+            if let Here::Float(_) = self.workspace.here() {
+                self.workspace.set_at(self.workspace.under_here());
             }
             return;
         };
@@ -603,10 +603,10 @@ impl crate::editor::Editor {
             }
         };
         let s = &mut self.workspace;
-        if !matches!(s.viewer.at, At::Float(_)) {
-            s.viewer.under = s.viewer.at;
+        if !matches!(s.here(), Here::Float(_)) {
+            s.set_under(s.here());
         }
-        s.viewer.at = At::Float(id);
+        s.set_at(Here::Float(id));
     }
 
     /// The floating pane `id` (`At::Float`'s), while it's up.

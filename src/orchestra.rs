@@ -508,9 +508,9 @@ fn conversation_of(ed: &Editor) -> Option<String> {
 fn to_child(ed: &mut Editor, (from, conversation, wake): (&str, Option<&str>, bool), text: &str) -> String {
     if ed.workspace.claude.chat.is_none() {
         // (opened as a note's reply opens one: where the keys are there stays)
-        let at = ed.workspace.viewer.at;
+        let at = ed.workspace.here();
         crate::chat::open(ed);
-        ed.workspace.viewer.at = at;
+        ed.workspace.set_at(at);
     }
     let name = ed.workspace.label().to_string();
     let moving = ed.workspace.moving.is_some();
@@ -583,12 +583,12 @@ fn anew(ed: &mut Editor, from: &str) -> Result<(), String> {
             "not sent — {name}'s chat can't start anew while a key of the user's is under way there: send again"
         ));
     }
-    let at = ed.workspace.viewer.at;
+    let at = ed.workspace.here();
     let hidden = ed.workspace.claude.chat.as_ref().map(|c| c.hidden);
     // (its toast says whose it was in its row's words — not yours: `:chat-new`'s)
     let said = format!("a new conversation — {from}'s Claude asked for it");
     crate::chat::reset_said(ed, &said);
-    ed.workspace.viewer.at = at;
+    ed.workspace.set_at(at);
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.hidden = hidden.unwrap_or(c.hidden);
         c.note(&said);

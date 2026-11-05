@@ -16,7 +16,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key, ListMove};
 use crate::pane::GroupKind;
 use crate::split::PaneId;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// A list's view as last drawn (`hold`) — a floating list's, a group's list's, `:procs`', a plugin's panel's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -159,12 +159,12 @@ impl Editor {
     /// focuses it again), else `card_key`, first in `handle_key`, would still take every key while the list looks lit.
     fn list_takes_keys(&mut self, list: crate::split::PaneId) {
         self.card_focus = None;
-        self.workspace.viewer.at = At::List(list);
+        self.workspace.set_at(Here::List(list));
     }
 
     /// Kind `kind`'s list has the keys.
     pub fn float_list_keys(&self, kind: GroupKind) -> bool {
-        self.float_list(kind).is_some_and(|p| self.workspace.docked() == At::List(p.list))
+        self.float_list(kind).is_some_and(|p| self.workspace.docked() == Here::List(p.list))
     }
 
     /// The floating list with the keys, if one has them.
@@ -180,7 +180,7 @@ impl Editor {
     /// `q` on a list: it goes, the keys to the code.
     pub fn float_list_close(&mut self, kind: GroupKind) {
         if let Some(p) = self.float_list_place(kind).and_then(Option::take) {
-            self.workspace.leave(At::List(p.list));
+            self.workspace.leave(Here::List(p.list));
         }
         self.float_moving = self.float_moving.filter(|&k| k != kind);
     }
@@ -189,7 +189,7 @@ impl Editor {
     pub(crate) fn float_list_leave(&mut self, kind: GroupKind) {
         if let Some(p) = self.float_list(kind) {
             let list = p.list;
-            self.workspace.leave(At::List(list));
+            self.workspace.leave(Here::List(list));
         }
     }
 

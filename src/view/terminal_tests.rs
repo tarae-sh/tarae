@@ -4,7 +4,7 @@
 use super::*;
 use crate::config::Config;
 use crate::terminal::output;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const W: u16 = 120;
 const H: u16 = 34;
@@ -65,7 +65,7 @@ fn region(ed: &Editor) -> String {
 fn the_walks_search_in_the_terminal_leaves_the_codes_alone() {
     let (mut ed, _sent) = term(Config::default(), 3);
     ed.docs[0].text = ropey::Rope::from_str("fn tests() {}\n// the tests\nmod tests;\n");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "/tests<ret>");
     let status = |ed: &mut Editor| frame(ed).lines().last().unwrap_or_default().to_string();
     assert!(status(&mut ed).contains("1/3"), "{}", status(&mut ed));
@@ -127,7 +127,7 @@ fn view_selected(ed: &Editor) -> String {
 fn the_terminals_view_mode_searches_its_own_rows() {
     let (mut ed, _sent) = term(Config::default(), 40);
     ed.docs[0].text = ropey::Rope::from_str("fn main() {}\nfn line() {}\n");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "/main<ret>");
     let code_sel = ed.doc().selection().primary();
     let code = |ed: &Editor| {
@@ -139,7 +139,7 @@ fn the_terminals_view_mode_searches_its_own_rows() {
         (before.0.as_deref(), before.1, before.2.clone()),
         (Some("main"), true, Some(("main".into(), 1)))
     );
-    ed.workspace.viewer.at = At::Program;
+    ed.workspace.set_at(Here::Program);
     feed(&mut ed, "<C-\\>");
     assert_eq!(region(&ed), "view:terminal");
     feed(&mut ed, "/line 3");
@@ -183,7 +183,7 @@ fn status(shown: &str) -> String {
 }
 
 fn program(ed: &Editor) -> bool {
-    ed.workspace.is_at(crate::workspace::At::Program)
+    ed.workspace.is_at(crate::workspace::Here::Program)
 }
 
 /// `C-s` sends the screen: with `llm.screen-terminal` off the terminal's rows are left out (said in their place) —
@@ -247,7 +247,7 @@ fn enter_quotes_the_selected_rows_to_the_chat() {
     feed(&mut ed, "<ret>");
     assert_eq!(region(&ed), "chat");
     assert!(
-        ed.workspace.viewer.view.is_none() && !ed.workspace.is_at(crate::workspace::At::Slot),
+        ed.workspace.viewer.view.is_none() && !ed.workspace.is_at(crate::workspace::Here::Slot),
         "the view left"
     );
     let q = &ed.workspace.claude.chat.as_ref().unwrap().quotes[0];
@@ -295,7 +295,7 @@ fn ctrl_backslash_goes_round() {
     assert!(ed.workspace.viewer.view.is_none());
     feed(&mut ed, "<C-\\><C-\\>");
     assert_eq!(region(&ed), "code", "the view's C-\\: the code");
-    assert!(ed.workspace.viewer.view.is_none() && !ed.workspace.is_at(crate::workspace::At::Slot));
+    assert!(ed.workspace.viewer.view.is_none() && !ed.workspace.is_at(crate::workspace::Here::Slot));
     feed(&mut ed, "<C-\\>");
     assert_eq!(region(&ed), "terminal-program", "the code's C-\\: the program");
     feed(&mut ed, "<C-\\><esc>");
@@ -355,7 +355,7 @@ fn the_wheel_over_another_surface_leaves_the_view_with_the_keys() {
     );
     // (the other way: the chat's view mode, the terminal's wheel, back)
     feed(&mut ed, "<esc>");
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<esc>");
     assert_eq!(region(&ed), "view:chat");
     ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);

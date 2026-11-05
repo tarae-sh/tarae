@@ -184,7 +184,7 @@ fn editor(
     let (at, heads) = server(true, answer);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     ed.workspace.web_way = Some(Arc::new(move |stop| fetch::Way { stop, ..way(at, yours_rules()) }));
     let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
     (ed, generation, heads)

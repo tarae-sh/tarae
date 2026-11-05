@@ -285,7 +285,7 @@ pub(crate) fn chat(ed: &mut Editor, draft: &str) {
     let mut c = crate::chat::Chat::new();
     c.input = draft.into();
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
 }
 
 /// Claude at work, follow on, the chat out of sight: the follow card stands for it, the keys in the code.
@@ -295,7 +295,7 @@ pub(crate) fn chat_out_of_sight(ed: &mut Editor) {
     c.state = crate::chat::State::Thinking;
     c.follow.on = true;
     c.hidden = true;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
 }
 
 pub(crate) fn edit_review(ed: &mut Editor) {
@@ -327,7 +327,7 @@ pub(crate) fn terminal(ed: &mut Editor) {
     }
     let t = ed.workspace.terminal.as_mut().unwrap();
     t.visible = true;
-    ed.workspace.viewer.at = crate::workspace::At::Program;
+    ed.workspace.set_at(crate::workspace::Here::Program);
     ed.workspace.viewer.slot_front = Some(Slot::Terminal);
 }
 
@@ -335,7 +335,7 @@ fn rail(ed: &mut Editor) {
     let root = ed.workspace.root.clone();
     let r = crate::codereview::CodeReview::for_test(crate::codereview::Base::Head, root, Vec::new());
     ed.workspace.code_review = Some(r);
-    ed.workspace.viewer.at = crate::workspace::At::Rail;
+    ed.workspace.set_at(crate::workspace::Here::Rail);
 }
 
 pub(crate) type Scene = (&'static str, fn(&mut Editor));
@@ -403,7 +403,7 @@ pub(crate) const SCENES: &[Scene] = &[
     // (the flow plan's piece 3: the reader that opened by itself — an answer with no place — the keys staying in the code)
     ("the reader opened by itself", |ed| {
         chat(ed, "");
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.hidden = true;
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "what is it?", ""));
@@ -413,7 +413,7 @@ pub(crate) const SCENES: &[Scene] = &[
         assert!(
             !ed.workspace.claude.chat.as_ref().unwrap().hidden
                 && !ed.chat_floating()
-                && ed.workspace.is_at(crate::workspace::At::Code),
+                && ed.workspace.is_at(crate::workspace::Here::Code),
             "the column shown, the keys the code's"
         );
     }),
@@ -1538,7 +1538,7 @@ fn slip_2_the_terminal_program_has_the_keys_or_tarae_has_them_on_its_panel() {
 fn slip_3_a_chat_out_of_sight_holds_no_keys() {
     let mut ed = editor();
     chat_out_of_sight(&mut ed);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::Code, "the keys the code's");
     feed(&mut ed, &["W"]);
@@ -1714,7 +1714,7 @@ fn the_keys_go_back_to_the_chat_once_its_review_is_answered() {
     let mut ed = editor();
     chat(&mut ed, "");
     edit_review(&mut ed);
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     ed.workspace.claude.review.as_mut().unwrap().from_chat = true;
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::EditReview);
@@ -1867,7 +1867,7 @@ fn a_sessions_last_turn_is_pinned() {
     c.msgs.push(Msg::tool(look, "t1"));
     c.msgs.push(Msg::new(Role::Assistant, "The token check runs before the refresh: src/login.rs:12.", ""));
     l.claude.chat = Some(c);
-    l.viewer.at = crate::workspace::At::Chat;
+    l.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     let t = ed.chat_turn(&format!("s{id}")).unwrap();
     assert_eq!(ed.chat_turn("fix-login").unwrap().rows, t.rows, "by name too");
@@ -2488,7 +2488,7 @@ fn every_row_the_state_lists_is_on_the_frame() {
     let mut side = crate::sidebar::Sidebar::with_files(dir.clone(), rels);
     side.set_open(["src"], true);
     ed.workspace.viewer.sidebar = Some(side);
-    ed.workspace.viewer.at = crate::workspace::At::Side;
+    ed.workspace.set_at(crate::workspace::Here::Side);
     task_panel(&mut ed);
     let w = 160;
     let check = |ed: &mut Editor, what: &str| {
@@ -2584,7 +2584,7 @@ fn every_region_the_state_lists_is_drawn_and_every_cell_drawn_is_in_one() {
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "what does cut do?", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "It walks blocks first.", ""));
-    ed.workspace.viewer.at = crate::workspace::At::Side;
+    ed.workspace.set_at(crate::workspace::Here::Side);
     light_card(&mut ed);
     ed.set_status("saved a.rs");
     let check = |ed: &mut Editor, what: &str| -> Vec<&'static str> {

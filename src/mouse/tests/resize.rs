@@ -9,7 +9,7 @@ use crate::event::{Event, Mouse, MouseKind as K};
 use crate::sizes::Border;
 use crate::split::{Dir, PaneId, Rect};
 use crate::uistate::Region;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 fn mouse(ed: &mut Editor, kind: K, x: usize, y: usize) {
     ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
@@ -92,7 +92,7 @@ fn a_press_on_a_divider_side_by_side_gives_the_pane_right_of_it_the_keys() {
 fn a_drag_draws_one_frame_a_motion() {
     let mut ed = editor();
     crate::uistate::tests::chat(&mut ed, "");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
     mouse(&mut ed, K::Down, chat, 10);
@@ -139,7 +139,7 @@ fn the_review_rails_edge_drags_and_its_keys_size_it() {
     feed(&mut ed, "<C-w><lt>");
     assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Rail), w0 + 6);
     // From the code, `C-w >` isn't the rail's
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "<C-w>>");
     assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Rail), w0 + 6, "the code's keys: not the rail's size");
     feed(&mut ed, "<C-w>=");
@@ -158,13 +158,13 @@ fn a_press_on_a_panels_line_gives_it_the_keys_and_a_name_there_drags_the_line() 
     crate::uistate::tests::chat(&mut ed, "");
     let lines = (0..20).map(|i| format!("output line {i}")).collect();
     ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
     assert_eq!(ed.border_at(chat, 10), Some(ed.line_of(crate::pane::Shows::Chat).unwrap()));
     press(&mut ed, chat, 10);
     assert_eq!(ed.keys_to().region, Region::Chat, "the chat's edge: the chat's keys");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let w = ed.screen.drawn_w(crate::pane::Shows::Chat);
     drag(&mut ed, (chat, 10), (chat - 4, 10));
@@ -202,7 +202,7 @@ fn a_press_on_the_tab_in_front_gives_the_slot_the_keys() {
         crate::uistate::tests::task_panel(&mut ed);
         let lines = (0..20).map(|i| format!("output line {i}")).collect();
         ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         frame(&mut ed);
         ed
     };
@@ -216,31 +216,31 @@ fn a_press_on_the_tab_in_front_gives_the_slot_the_keys() {
     assert_eq!(ed.screen.slot_tabs.borrow().len(), 2, "two tabs");
     let (front, (x, y)) = front_tab(&ed);
     press(&mut ed, x, y);
-    assert!(ed.bottom_has_keys(), "the slot's keys — {:?}", ed.workspace.viewer.at);
+    assert!(ed.bottom_has_keys(), "the slot's keys — {:?}", ed.workspace.here());
     assert_eq!(ed.slot_shown(), Some(front), "its tab still in front");
     // The keys there already: they stay
     let mut ed = two_tabs();
     ed.bottom_take_keys();
     frame(&mut ed);
-    let at = ed.workspace.viewer.at;
+    let at = ed.workspace.here();
     let (front, (x, y)) = front_tab(&ed);
     press(&mut ed, x, y);
-    assert_eq!((ed.workspace.viewer.at, ed.slot_shown()), (at, Some(front)), "as they were");
+    assert_eq!((ed.workspace.here(), ed.slot_shown()), (at, Some(front)), "as they were");
     // A docked group: its own pane's keys, not the task's tab left in the slot
     let mut ed = editor();
     crate::uistate::tests::task_panel(&mut ed);
     crate::uistate::tests::tests_group_list(&mut ed);
     frame(&mut ed);
     ed.dock(crate::pane::GroupKind::Tests, crate::pane::Side::Right);
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     assert!(ed.slot_docked(Slot::Test), "docked");
     ed.slot_press(Slot::Test);
     frame(&mut ed);
     assert!(
-        ed.slot_in_hand().is_some() && !ed.workspace.is_at(At::Slot),
+        ed.slot_in_hand().is_some() && !ed.workspace.is_at(Here::Slot),
         "the docked group's keys — {:?}",
-        ed.workspace.viewer.at
+        ed.workspace.here()
     );
 }
 
@@ -250,7 +250,7 @@ fn a_press_on_the_tab_in_front_gives_the_slot_the_keys() {
 fn a_press_after_a_lost_release_is_its_own() {
     let mut ed = editor();
     crate::uistate::tests::chat(&mut ed, "");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
     let (w, said0) = (ed.screen.drawn_w(crate::pane::Shows::Chat), said(&ed));
@@ -272,7 +272,7 @@ fn a_press_after_a_lost_release_is_its_own() {
 fn the_wheel_lets_go_of_a_held_line() {
     let mut ed = editor();
     crate::uistate::tests::chat(&mut ed, "");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
     let w = ed.screen.drawn_w(crate::pane::Shows::Chat);
@@ -382,7 +382,7 @@ fn floating(ed: &mut Editor) -> (Rect, (usize, usize)) {
     crate::uistate::tests::tests_group_list(ed);
     frame(ed);
     ed.float(GroupKind::Tests);
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(ed);
     let r =
         ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Tests).map(|f| f.1).expect("floating");
@@ -438,7 +438,7 @@ fn a_click_on_a_floats_frame_keeps_nothing_a_drag_keeps_it() {
 fn a_line_under_the_pointer_is_lit_as_one_held() {
     let mut ed = editor();
     crate::uistate::tests::chat(&mut ed, "");
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     frame(&mut ed);
     let chat = super::W as usize - ed.screen.drawn_w(crate::pane::Shows::Chat);
     ed.handle_event(Event::Hover(chat as u16, 10));

@@ -9,7 +9,7 @@ fn editor(code: &str) -> Editor {
     let mut ed = Editor::new(Config::default());
     ed.docs[0].text = ropey::Rope::from_str(code);
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     ed
 }
 
@@ -64,7 +64,7 @@ fn an_insert_sequence_under_way_goes_with_the_message() {
     let mut ed = Editor::new(config);
     (ed.config.llm.command, ed.config.llm.args) = ("sh".into(), vec!["-c".into(), "cat > /dev/null".into()]);
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "hej");
     assert_eq!(input(&ed).0, "he", "the j waits for the next key");
     assert_eq!(ed.pending_display(), "j", "and the status line says it");
@@ -103,7 +103,7 @@ fn a_paste_breaks_off_an_insert_sequence_under_way() {
     assert!(w.is_empty(), "{w:?}");
     let mut ed = Editor::new(config);
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "hej");
     assert_eq!(ed.pending_display(), "j");
     ed.handle_event(crate::event::Event::Paste("X".into()));
@@ -217,11 +217,11 @@ fn a_drag_in_the_input_selects_as_in_the_codes_insert_mode() {
 #[test]
 fn the_codes_repeat_stays_the_codes() {
     let mut ed = editor("abc\n");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "ihey<esc>");
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "zzz");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     feed(&mut ed, ".");
     let code = ed.doc().text.to_string();
     assert_eq!(code.matches("hey").count(), 2, "{code:?}");

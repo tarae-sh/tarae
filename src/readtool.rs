@@ -1163,7 +1163,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = dir.clone();
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
         let settle = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -1226,7 +1226,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = dir.clone();
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
         let settle = |ed: &mut Editor| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -1271,7 +1271,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = dir.clone();
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
         let o = outside.join("o.txt");
         let settle = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {

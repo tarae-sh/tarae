@@ -4,7 +4,7 @@ use crate::key::{Code, Key};
 use crate::offer::{Offer, What};
 use crate::pane::GroupKind;
 use crate::uistate::Region;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 fn frame(ed: &mut Editor) -> String {
     ed.focus_sync();
@@ -72,7 +72,7 @@ fn a_toast_takes_no_key_and_has_no_frame() {
     assert!(state.toasts.len() == 2, "listed as toasts");
     feed(&mut ed, "y");
     assert!(ed.messages.last().unwrap().2.starts_with("yanked"), "y: the code's yank");
-    assert_eq!(ed.workspace.viewer.at, At::Code);
+    assert_eq!(ed.workspace.here(), Here::Code);
 }
 
 /// `C-w w`'s round never stops on a toast: the panes, then a card waiting, then round again — one pane on screen, the
@@ -84,8 +84,8 @@ fn the_round_never_stops_on_a_toast() {
     frame(&mut ed);
     feed(&mut ed, "<C-w>w");
     assert_eq!(
-        (ed.workspace.viewer.at, ed.keys_to().region),
-        (At::Code, Region::Code),
+        (ed.workspace.here(), ed.keys_to().region),
+        (Here::Code, Region::Code),
         "one pane: no stop on the toast"
     );
     assert!(ed.messages.last().unwrap().2.starts_with("one pane on screen"), "{:?}", ed.messages.last());
@@ -107,7 +107,7 @@ fn the_round_never_stops_on_a_toast() {
     assert!(ed.card_has_keys(), "the card");
     feed(&mut ed, "<C-w>w");
     assert!(
-        !ed.card_has_keys() && ed.workspace.viewer.at == At::Code,
+        !ed.card_has_keys() && ed.workspace.here() == Here::Code,
         "then round to the code, past the toast"
     );
     feed(&mut ed, "<C-w>w");

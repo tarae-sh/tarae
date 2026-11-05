@@ -1718,7 +1718,7 @@ impl Editor {
         let detail = crate::rundoc::has_keys(self) == Some(crate::sizes::Slot::Procs);
         self.procs_unfocus();
         if detail {
-            self.workspace.leave(crate::workspace::At::Slot);
+            self.workspace.leave(crate::workspace::Here::Slot);
         }
         self.procs.panel = None;
         self.procs_wake(Wake::Open(false));
@@ -1737,7 +1737,7 @@ impl Editor {
     /// The table gives the keys back (the code was clicked, another place took them).
     pub fn procs_unfocus(&mut self) {
         if let Some(g) = self.workspace.group(crate::pane::GroupKind::Procs) {
-            self.workspace.leave(crate::workspace::At::List(g.list));
+            self.workspace.leave(crate::workspace::Here::List(g.list));
         }
     }
 

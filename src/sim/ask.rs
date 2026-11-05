@@ -55,7 +55,7 @@ fn run(choices: Choices) -> Vec<String> {
     let (tx, ask) = std::sync::mpsc::channel();
     ed.ask_lines = Some(tx);
     assert!(crate::chat::submit(&mut ed, "why is b empty?", None, None), "the chat's turn asked");
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let world = RefCell::new(World::default());
     let check = |ed: &Editor| held(ed, &chat, &ask, &mut world.borrow_mut());
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &root, &world), check, print);
@@ -107,7 +107,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
             }
             let busy = ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy);
             let sends = ed.workspace.claude.chat.as_ref().map_or(0, |c| c.sends.len());
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
             keys(ed, &format!("gg<space>i{ASKED}<ret>"));
             let mut w = world.borrow_mut();
             w.called = false;
@@ -143,7 +143,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
         }
         3 => match ed.workspace.claude.review.as_ref().filter(|r| r.ready) {
             Some(_) => {
-                ed.workspace.viewer.at = crate::workspace::At::Code;
+                ed.workspace.viewer.keys_to_code();
                 let k = *c.pick(&["y", "n", "a"]);
                 keys(ed, k);
                 // (the loop's every event: the landing's next file, or its answer — `handle_event`)
@@ -172,7 +172,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &std::path::Path, world: &RefCell
         5 => {
             crate::chat::stand_in_done(ed);
             let asked = crate::chat::submit(ed, "and a?", None, None);
-            ed.workspace.viewer.at = crate::workspace::At::Code;
+            ed.workspace.viewer.keys_to_code();
             format!("the chat's turn over, the next asked ({asked})")
         }
         6 => {

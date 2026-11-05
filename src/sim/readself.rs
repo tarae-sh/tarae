@@ -11,7 +11,7 @@ use std::time::Duration;
 use super::{Choices, Sim};
 use crate::chat::{Msg, Role};
 use crate::editor::{Editor, Mode};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 const NAME: &str = "an_answer_no_place_holds_opens_the_reader_by_itself";
 
@@ -52,7 +52,7 @@ fn run(choices: Choices) -> Vec<String> {
     crate::chat::open(&mut ed);
     // (out of sight, the keys in the code — as the ask line leaves it once its message went)
     crate::chat::hide(&mut ed);
-    ed.workspace.viewer.at = At::Code;
+    ed.workspace.viewer.keys_to_code();
     let mut last = None;
     let input = |sim: &mut Sim, ed: &mut Editor| {
         let said = input(sim, ed, &mut last);
@@ -164,7 +164,7 @@ fn held(ed: &Editor) -> Result<(), String> {
     if c.read_wanted && ed.mode != Mode::Insert {
         return Err("waiting to open, nobody typing".into());
     }
-    if ed.workspace.is_at(At::Chat) {
+    if ed.workspace.is_at(Here::Chat) {
         return Err("the keys the chat's: it opened with them".into());
     }
     // (the conversation is the docked column — the user, 2026-11-03: never the ask line by itself)

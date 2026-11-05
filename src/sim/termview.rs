@@ -231,7 +231,7 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
                 return Err(format!("row {r}: on the panel {row:?}, the document's line {line} {doc:?}"));
             }
         }
-        if !(ed.workspace.is_at(crate::workspace::At::Slot)
+        if !(ed.workspace.is_at(crate::workspace::Here::Slot)
             && ed.slot() == Some(crate::sizes::Slot::Terminal))
         {
             return Err("viewed, its panel without tarae's keys".into());

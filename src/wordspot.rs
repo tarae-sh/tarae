@@ -11,7 +11,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::mouse::Surface;
 use crate::theme::Style;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// What a press on a word does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct Spot {
     /// A key hint's: where the keys it says are typed — the surface it was drawn for (the chat its foot's while the chat
     /// had them, the code the way in to it; the slot its line's; the code its pane's line's). Pressed, the keys go there
     /// first: a hint never types into another surface.
-    pub home: Option<At>,
+    pub home: Option<Here>,
 }
 
 impl Spot {
@@ -75,7 +75,7 @@ impl Spot {
     }
 
     /// A key hint's spot, its keys typed at `home`.
-    pub fn home(self, home: At) -> Spot {
+    pub fn home(self, home: Here) -> Spot {
         Spot { home: Some(home), ..self }
     }
 }
@@ -149,8 +149,8 @@ pub fn press(ed: &mut Editor, i: usize) {
             // (the terminal's program alike: its `C-\ view` goes, a letter would be typed into it)
             let typed = |k: &&Key| matches!(k.code, Code::Char(_)) && !(k.ctrl || k.alt);
             let into = match home {
-                Some(At::Chat) if !crate::chatdoc::keyed(ed) => Some("the chat's draft"),
-                Some(At::Program) => Some("the terminal's program"),
+                Some(Here::Chat) if !crate::chatdoc::keyed(ed) => Some("the chat's draft"),
+                Some(Here::Program) => Some("the terminal's program"),
                 _ => None,
             };
             if let Some(into) = into
@@ -167,7 +167,7 @@ pub fn press(ed: &mut Editor, i: usize) {
             // (the keys to the surface the hint was drawn for first — the pane whose line it's on, focused or not; the
             // chat its foot's; the slot its line's: a pane's `enter` never the chat's send, the follow card's `C-c` never
             // the code's comment)
-            let (was_at, was_focus) = (ed.workspace.viewer.at, ed.workspace.viewer.focus);
+            let (was_at, was_focus) = (ed.workspace.here(), ed.workspace.viewer.focus);
             if let Surface::PaneTop(id) = on
                 && id != was_focus
             {
@@ -181,9 +181,9 @@ pub fn press(ed: &mut Editor, i: usize) {
                 ed.float_focus(kind);
             }
             if let Some(h) = home.filter(|&h| !ed.workspace.is_at(h)) {
-                ed.workspace.viewer.at = h;
+                ed.workspace.set_at(h);
             }
-            let there = (ed.workspace.viewer.at, ed.workspace.viewer.focus);
+            let there = (ed.workspace.here(), ed.workspace.viewer.focus);
             for k in keys(&said).unwrap_or_default() {
                 ed.handle_key(k);
             }
@@ -198,12 +198,12 @@ pub fn press(ed: &mut Editor, i: usize) {
             // (never back to what can't hold them now: the chat its `space L hide` hid — #270)
             if lent
                 && standing(ed, was_at)
-                && ((ed.workspace.viewer.at, ed.workspace.viewer.focus) == there || gone)
+                && ((ed.workspace.here(), ed.workspace.viewer.focus) == there || gone)
             {
                 if ed.workspace.viewer.focus != was_focus {
                     ed.focus_pane(was_focus);
                 }
-                ed.workspace.viewer.at = was_at;
+                ed.workspace.set_at(was_at);
             }
         }
         Press::Card => {
@@ -229,7 +229,7 @@ pub fn press(ed: &mut Editor, i: usize) {
             {
                 ed.focus_pane(p);
             }
-            ed.workspace.viewer.at = At::Code;
+            ed.workspace.viewer.keys_to_code();
             if let Some(i) = ed.docs.iter().position(|d| d.id == id)
                 && i != ed.current
             {
@@ -247,10 +247,10 @@ pub fn press(ed: &mut Editor, i: usize) {
 }
 
 /// Whether the surface `at` names is still there to hold the keys (a slot closed, a chat closed or hidden: not).
-fn standing(ed: &Editor, at: At) -> bool {
+fn standing(ed: &Editor, at: Here) -> bool {
     match at {
-        At::Slot => ed.slot().is_some(),
-        At::Chat => ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden),
+        Here::Slot => ed.slot().is_some(),
+        Here::Chat => ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden),
         _ => true,
     }
 }
@@ -450,15 +450,15 @@ thread_local! {
 /// mode other than normal (they'd be typed into the file). A panel's keys land there too outside normal mode — the side
 /// panel, the rail, a list take keys only in it (#279: the side panel's `q close` typed `q` into the file). None: they go
 /// (a sequence under way ended first — `press`).
-fn refused(ed: &mut Editor, home: Option<At>) -> Option<String> {
+fn refused(ed: &mut Editor, home: Option<Here>) -> Option<String> {
     use crate::uistate::Region;
     let code = match home {
-        Some(At::Code) => true,
+        Some(Here::Code) => true,
         // (where `home` sends them, as `keys_to` says: the keys lent there for the look, then put back)
         Some(h) => {
-            let was = std::mem::replace(&mut ed.workspace.viewer.at, h);
+            let was = std::mem::replace(&mut ed.workspace.here(), h);
             let region = ed.keys_region();
-            ed.workspace.viewer.at = was;
+            ed.workspace.set_at(was);
             region == Region::Code
         }
         None => matches!(ed.keys_to().region, Region::Code | Region::Weave | Region::NoteCard | Region::Page),

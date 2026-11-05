@@ -1158,14 +1158,14 @@ fn session_json(
             json!({ "id": v.id, "doc": index(doc), "top": top, "left": left })
         })
         .collect();
-    use crate::workspace::At;
+    use crate::workspace::Here;
     let sidebar = l
         .viewer
         .sidebar
         .as_ref()
-        .and_then(|s| Some(json!({ "mode": mode_name(s.mode)?, "focus": l.is_at(At::Side) })));
+        .and_then(|s| Some(json!({ "mode": mode_name(s.mode)?, "focus": l.is_at(Here::Side) })));
     let chat = l.claude.chat.as_ref().map(|c| {
-        json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(At::Chat),
+        json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(Here::Chat),
                 "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end.as_deref().and_then(Path::to_str) })
     });
     let on = docs.iter().find(|d| d.id == current).and_then(|d| d.path.as_deref());
@@ -1335,10 +1335,10 @@ fn restore_quietly(ed: &mut Editor, v: &Value) -> Back {
     // The session list docked comes back up on its side (P3 step 7d, the user 2026-10-24: part of the layout — the
     // overview kept in sight is why one docks it), the keys where they were
     if let Some(side) = v["session_list"].as_str().and_then(crate::pane::Side::of_name) {
-        let at = ed.workspace.viewer.at;
+        let at = ed.workspace.here();
         ed.sizes.sessions_dock = Some(side);
         ed.session_list();
-        ed.workspace.viewer.at = at;
+        ed.workspace.set_at(at);
         ed.dock_sync();
     }
     back.gone_checkouts = gone;
@@ -1411,10 +1411,10 @@ fn restore_session(ed: &mut Editor, v: &Value, behind: bool, back: &mut Back) {
     }
     let sidebar = &v["sidebar"];
     if let Some(mode) = sidebar["mode"].as_str().and_then(mode_of) {
-        let at = ed.workspace.viewer.at;
+        let at = ed.workspace.here();
         ed.sidebar_show(mode);
         if !sidebar["focus"].as_bool().unwrap_or(false) {
-            ed.workspace.viewer.at = at;
+            ed.workspace.set_at(at);
         }
     }
     let chat = &v["chat"];
@@ -1894,7 +1894,7 @@ mod tests {
             (
                 c.input.text().as_str(),
                 c.input.cursor(),
-                ed.workspace.is_at(crate::workspace::At::Chat),
+                ed.workspace.is_at(crate::workspace::Here::Chat),
                 c.scroll
             ),
             ("half 한", 5, true, 2)
@@ -2081,7 +2081,7 @@ mod tests {
             c.conversation = Some("c-back".into());
             c.input.set_at("half a thought", 4);
             ed.workspace.claude.chat = Some(c);
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
         });
         let state = snapshot(&mut ed);
         drop(ed);
@@ -2127,7 +2127,7 @@ mod tests {
             let mut c = crate::chat::Chat::new();
             c.conversation = Some("c-back".into());
             ed.workspace.claude.chat = Some(c);
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
         });
         let state = snapshot(&mut ed);
         drop(ed);
@@ -2181,7 +2181,7 @@ mod tests {
             c
         };
         ed.workspace.claude.chat = Some(chat("c-front", "in front"));
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let id = ed.workspace_add(back.clone());
         ed.workspace_by_id(id).unwrap().claude.chat = Some(chat("c-back", "behind"));
         crate::chat::keep_now(&ed);

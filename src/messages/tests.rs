@@ -1,6 +1,6 @@
 use super::*;
 use crate::key::{Code, Key};
-use crate::workspace::At;
+use crate::workspace::Here;
 
 fn frame(ed: &mut Editor) -> String {
     ed.focus_sync();
@@ -78,7 +78,7 @@ fn messages_is_a_floating_list_at_the_newest() {
     feed(&mut ed, "k");
     assert_eq!(here(&ed).as_deref(), Some("no messages yet"));
     feed(&mut ed, "<esc>");
-    assert!(ed.messages_pane.is_some() && ed.workspace.viewer.at == At::Code, "esc code: it stays");
+    assert!(ed.messages_pane.is_some() && ed.workspace.here() == Here::Code, "esc code: it stays");
     feed(&mut ed, ":messages<ret>");
     assert_eq!(here(&ed).as_deref(), Some("no messages yet"), "up already: where it was");
     feed(&mut ed, "q");

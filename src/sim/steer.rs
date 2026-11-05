@@ -41,7 +41,7 @@ fn run(choices: Choices) -> Vec<String> {
     let mut c = Chat::new();
     let lines = crate::chat::stand_in(&mut c);
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     let w = RefCell::new(World { n: 0, steered: Vec::new(), queued: Vec::new(), lines, got: Vec::new() });
     let check = |ed: &Editor| held(ed, &mut w.borrow_mut());
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &mut w.borrow_mut()), check, print);

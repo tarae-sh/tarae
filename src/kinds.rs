@@ -16,7 +16,7 @@
 use crate::editor::{Editor, Screen};
 use crate::mouse::{Part, Under};
 use crate::theme::Style;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// What an element is (the five kinds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,11 +195,11 @@ fn buttons(ed: &Editor) {
             continue;
         }
         let home = match on {
-            S::Side => Some(At::Side),
-            S::Rail => Some(At::Rail),
-            S::Chat | S::Transcript | S::Input => Some(At::Chat),
-            S::SlotLine | S::Output(_) | S::List(_) => Some(At::Slot),
-            S::NoteCard | S::Ask | S::Code(_) | S::PaneTop(_) | S::EditReview => Some(At::Code),
+            S::Side => Some(Here::Side),
+            S::Rail => Some(Here::Rail),
+            S::Chat | S::Transcript | S::Input => Some(Here::Chat),
+            S::SlotLine | S::Output(_) | S::List(_) => Some(Here::Slot),
+            S::NoteCard | S::Ask | S::Code(_) | S::PaneTop(_) | S::EditReview => Some(Here::Code),
             _ => None,
         };
         let spot = |from: usize, to: usize, key: &str| Spot {

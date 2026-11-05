@@ -65,7 +65,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> 
             true => "(the chat is open)".into(),
             false => {
                 crate::chat::open(ed);
-                ed.workspace.leave(crate::workspace::At::Chat);
+                ed.workspace.leave(crate::workspace::Here::Chat);
                 "the chat opened".into()
             }
         },

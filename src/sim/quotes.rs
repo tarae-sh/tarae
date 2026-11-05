@@ -51,7 +51,7 @@ fn run(choices: Choices) -> Vec<String> {
     ];
     let claude = crate::chat::stand_in(&mut c);
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     // (the copies of what went: in the run's own folder)
     let dir = crate::scratch::Scratch::new("sim-quotes");
     ed.sent_dir = Some(dir.join("sent"));

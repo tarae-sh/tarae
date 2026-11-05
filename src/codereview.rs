@@ -25,7 +25,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::notes::By;
 use crate::risk::Grade;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Base {
@@ -474,7 +474,7 @@ impl CodeReview {
 
     /// The file the rail marks: its selection while it has the keys, else the file in hand.
     pub fn marked(&self, ed: &Editor) -> Option<usize> {
-        if ed.workspace.is_at(At::Rail) { Some(self.selected) } else { self.in_hand(ed) }
+        if ed.workspace.is_at(Here::Rail) { Some(self.selected) } else { self.in_hand(ed) }
     }
 
     /// Before drawing `room` rows of the rail, its files from screen row `top`: scroll only when the marked
@@ -3213,7 +3213,7 @@ fn show_as_brought(ed: &mut Editor, card: u64, missing: Vec<Held>) {
     }
     let version = ed.docs.iter().find(|d| d.id == doc).map_or(0, |d| d.version());
     ed.workspace.held_view = Some(HeldView { doc, version, blocks, drawn: Default::default() });
-    ed.workspace.leave(At::Rail);
+    ed.workspace.leave(Here::Rail);
 }
 
 /// `space v h` in the buffer of a bring's changes (`HeldView`): the block under the cursor looked at — every
@@ -5314,12 +5314,13 @@ const CLOSE_FILES: usize = 6;
 pub fn rail_focus(ed: &mut Editor) {
     let current = ed.workspace.code_review.as_ref().and_then(|r| r.in_hand(ed));
     let up = ed.review_rail_up();
-    let to_rail = !up || !ed.workspace.is_at(At::Rail);
+    let to_rail = !up || !ed.workspace.is_at(Here::Rail);
+    let at = ed.workspace.at_of(if to_rail { Here::Rail } else { Here::Code });
     let Some(r) = ed.workspace.code_review.as_mut() else { return };
     if !up {
         r.behind = false;
     }
-    ed.workspace.viewer.at = if to_rail { At::Rail } else { At::Code };
+    ed.workspace.viewer.at = at;
     if to_rail {
         r.selected = current.or_else(|| r.rail_order().first().copied()).unwrap_or(0);
     }
@@ -5331,7 +5332,7 @@ pub fn rail_focus(ed: &mut Editor) {
 pub fn rail_select(ed: &mut Editor, i: usize) {
     let Some(r) = ed.workspace.code_review.as_mut() else { return };
     r.selected = i;
-    ed.workspace.viewer.at = At::Rail;
+    ed.workspace.set_at(Here::Rail);
 }
 
 /// Keys while the rail has them: `j`/`k` move over the files, Enter (`l`) opens one, `m` marks it viewed
@@ -5347,7 +5348,7 @@ pub fn rail_key(ed: &mut Editor, key: Key) -> bool {
     // (the files drawn: the hand moves a file at a time, so `C-d` is half the files in sight and `C-f` all of them —
     // counting the folders' rows too would carry it past the screen; `C-e`/`C-y` scroll rows, `room` below)
     let rows = ed.screen.review_rail.borrow().len();
-    if !ed.workspace.is_at(At::Rail) {
+    if !ed.workspace.is_at(Here::Rail) {
         return false;
     }
     let Some(r) = ed.workspace.code_review.as_mut() else { return false };
@@ -5376,7 +5377,7 @@ pub fn rail_key(ed: &mut Editor, key: Key) -> bool {
         // (opened: a buffer of its own, not the preview the review's walk shows)
         (Code::Enter | Code::Char('l') | Code::Right, false) => {
             let i = r.selected;
-            ed.workspace.viewer.at = At::Code;
+            ed.workspace.viewer.keys_to_code();
             if let Some(id) = show(ed, i, false) {
                 ed.preview_keep(id);
             }
@@ -5391,7 +5392,7 @@ pub fn rail_key(ed: &mut Editor, key: Key) -> bool {
                 r.selected = pick(at + 1).unwrap_or(i);
             }
         }
-        (Code::Esc, false) => ed.workspace.viewer.at = At::Code,
+        (Code::Esc, false) => ed.workspace.viewer.keys_to_code(),
         // (the next file not viewed, selected — enter opens it; `U` the one before)
         (Code::Char(c @ ('u' | 'U')), false) => {
             let selected = r.selected;
@@ -5425,7 +5426,7 @@ impl Editor {
     /// has the keys — going to one brings it back while it has them.
     pub fn review_wide(&self) -> bool {
         self.workspace.code_review.as_ref().is_some_and(|r| r.wide)
-            && !matches!(self.workspace.docked(), At::Rail | At::Chat)
+            && !matches!(self.workspace.docked(), Here::Rail | Here::Chat)
     }
 }
 
@@ -5438,8 +5439,8 @@ pub fn wide_toggle(ed: &mut Editor) {
     };
     r.wide = !r.wide;
     let wide = r.wide;
-    ed.workspace.leave(At::Rail);
-    ed.workspace.leave(At::Chat);
+    ed.workspace.leave(Here::Rail);
+    ed.workspace.leave(Here::Chat);
     ed.set_status(match wide {
         true => "review wide: the rail and the chat give way — space v z brings them back",
         false => "the review's rail and the chat are back",
@@ -5548,9 +5549,9 @@ pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orches
     }
     if ed.workspace.claude.chat.is_none() {
         // (opened without the keys: they stay where they were — out of sight, its answer news: `◂ new`)
-        let at = ed.workspace.viewer.at;
+        let at = ed.workspace.here();
         crate::chat::open(ed);
-        ed.workspace.viewer.at = at;
+        ed.workspace.set_at(at);
         if let Some(c) = &mut ed.workspace.claude.chat {
             c.hidden = true;
         }
@@ -6348,9 +6349,9 @@ mod tests {
     fn space_e_under_a_review_counts_the_files_tab() {
         let (mut ed, dir) = reviewing("count-files", &[("a.txt", "one\n", "two\n")]);
         ed.config.features_count = true;
-        ed.workspace.leave(At::Rail);
+        ed.workspace.leave(Here::Rail);
         feed(&mut ed, "<space>e");
-        assert!(ed.workspace.is_at(At::Rail), "the rail has the keys");
+        assert!(ed.workspace.is_at(Here::Rail), "the rail has the keys");
         let pending = ed.features.pending();
         assert!(pending.iter().any(|(k, c)| k == "panel:files" && c.n == 1), "{pending:?}");
         std::fs::remove_dir_all(&dir).ok();
@@ -6964,7 +6965,7 @@ mod tests {
         let mut c = crate::chat::Chat::new();
         c.state = crate::chat::State::Thinking;
         ed.workspace.claude.chat = Some(c);
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         assert!(commit(&mut ed).unwrap_err().contains("Claude is working"));
         ed.workspace.claude.chat = None;
         // A file of the review's for the message: refused (left out, its change would go uncommitted)

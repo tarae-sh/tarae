@@ -388,17 +388,17 @@ fn a_change_sets_view_landing_after_esc_leaves_the_keys_where_they_went() {
     crate::term::render(&mut ed, &mut Vec::new(), 100, 16).unwrap();
     // (the keys in the side panel as `v` is pressed on the card: where `esc` gives them back)
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.into()));
-    ed.workspace.viewer.at = crate::workspace::At::Side;
+    ed.workspace.set_at(crate::workspace::Here::Side);
     ed.card_focus_front();
     ed.handle_key(Key::plain(Code::Char('v')));
     ed.handle_key(Key::plain(Code::Esc));
     ed.focus_sync();
     assert!(!ed.card_has_keys(), "esc gave them back");
-    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Side, "back where they were");
+    assert_eq!(ed.workspace.here(), crate::workspace::Here::Side, "back where they were");
     pump(&mut ed, "its changes in a buffer", |ed| ed.offer_viewing());
     ed.focus_sync();
     assert!(!ed.card_has_keys(), "the view landing took them back to the card");
-    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Side, "the keys where they went");
+    assert_eq!(ed.workspace.here(), crate::workspace::Here::Side, "the keys where they went");
 }
 
 /// `--base` and its revision apart by any space, a wide one too (U+3000, a no-break space) — never a panic.

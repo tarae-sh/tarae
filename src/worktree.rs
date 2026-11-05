@@ -3037,7 +3037,7 @@ mod tests {
         let sessions = ed.workspaces.len();
         ed.offer_accept();
         settle_until(ed, |ed| ed.workspaces.len() > sessions);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         ed.workspace.root.clone()
     }
 
@@ -3089,7 +3089,7 @@ mod tests {
         assert!(says(&ed, &format!("Session fix-login — from main ({})", &main[..7])), "{}", said(&ed));
         assert!(ed.offers.is_empty());
         // Taken names: a branch there is (checked out in the session's checkout), and one git refuses
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         feed(&mut ed, ":workspace-switch 0<ret>:session-new fix-login<ret>");
         settle_until(&mut ed, |ed| says(ed, "new session: there's a branch fix-login already"));
         assert!(says(&ed, "already, checked out in "), "says where: {}", said(&ed));
@@ -5329,7 +5329,7 @@ mod tests {
         // Untouched here, changed there: taken, said, told — as the session's claude starts (a new conversation)
         std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\n").unwrap();
         crate::chat::reset(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         settle_until(&mut ed, |ed| says(ed, "updated from the main checkout") || says(ed, "not updated"));
         assert!(says(&ed, "CLAUDE.md updated from the main checkout"), "{}", said(&ed));
         assert_eq!(read(&wt.join("CLAUDE.md")), "rule one\nrule two\n");
@@ -6882,7 +6882,7 @@ mod tests {
             .viewer
             .sidebar
             .as_ref()
-            .map(|s| (s.mode, ed.workspace.is_at(crate::workspace::At::Side)));
+            .map(|s| (s.mode, ed.workspace.is_at(crate::workspace::Here::Side)));
         assert_eq!(git_tab, Some((crate::sidebar::Mode::Git, true)));
         feed(&mut ed, ":w<ret>");
         ed.flush_saves(); // (saving is in the background: on disk before git commits it)

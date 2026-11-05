@@ -21,7 +21,7 @@ use crate::selection::{Range, Selection};
 use crate::syntax;
 use crate::theme::Theme;
 use crate::typed;
-use crate::workspace::At;
+use crate::workspace::Here;
 
 /// Files larger than this are read in the background. Small files take only a few ms synchronously,
 /// so async would only add flicker.
@@ -2357,8 +2357,8 @@ impl Editor {
     /// another surface (§2.6: the chat, a run, the side panel) it's the code pane last focused that splits, the keys
     /// to the new one; from the terminal it's said — a second terminal comes with the terminal work (P1).
     pub fn split_view(&mut self, dir: crate::split::Dir) {
-        let terminal = self.workspace.is_at(At::Program)
-            || (self.workspace.is_at(At::Slot) && self.slot() == Some(crate::sizes::Slot::Terminal));
+        let terminal = self.workspace.is_at(Here::Program)
+            || (self.workspace.is_at(Here::Slot) && self.slot() == Some(crate::sizes::Slot::Terminal));
         if terminal {
             return self.set_status("one terminal for now — a second comes with the terminal work");
         }
@@ -2373,7 +2373,7 @@ impl Editor {
         self.workspace.split.split_among(self.workspace.viewer.focus, id, dir, &|p| views.contains(&p));
         self.workspace.views.push(View { id, ..cur });
         self.workspace.viewer.focus = id;
-        if !self.workspace.is_at(At::Code) {
+        if !self.workspace.is_at(Here::Code) {
             self.focus_pane(id);
         }
     }
@@ -2462,7 +2462,7 @@ impl Editor {
         if self.dock_key(dx, dy) {
             return;
         }
-        if !self.workspace.is_at(At::Code) {
+        if !self.workspace.is_at(Here::Code) {
             return self.set_status(
                 "the side panel and the chat keep their places — C-w H J K L moves the code's panes and docks a group",
             );
@@ -2543,7 +2543,7 @@ impl Editor {
         match to {
             Some(to) => self.focus_pane(to),
             // (below the code with nothing in the slot: it says what shows there)
-            None if dy > 0 && self.workspace.is_at(At::Code) => self.bottom_take_keys(),
+            None if dy > 0 && self.workspace.is_at(Here::Code) => self.bottom_take_keys(),
             None => self.nothing_toward(dx, dy),
         }
     }
@@ -2582,9 +2582,9 @@ impl Editor {
         match shows {
             Shows::Code => {
                 self.focus_view(id);
-                self.workspace.viewer.at = At::Code;
+                self.workspace.viewer.keys_to_code();
             }
-            Shows::Chat => self.workspace.viewer.at = At::Chat,
+            Shows::Chat => self.workspace.set_at(Here::Chat),
             Shows::Side => self.side_focus(),
             // (the rail as `space e` gives it the keys: on the file in hand)
             Shows::Rail => crate::codereview::rail_focus(self),
@@ -2624,7 +2624,7 @@ impl Editor {
     /// it. A closed panel opens at the tab it last showed.
     pub fn side_toggle_focus(&mut self) {
         match self.workspace.viewer.sidebar.as_ref() {
-            Some(_) if self.workspace.is_at(At::Side) => self.workspace.viewer.at = At::Code,
+            Some(_) if self.workspace.is_at(Here::Side) => self.workspace.viewer.keys_to_code(),
             Some(_) => self.side_focus(),
             None => self.sidebar_show(self.workspace.viewer.side_last),
         }
@@ -2632,11 +2632,11 @@ impl Editor {
 
     /// The keys to the open side panel, its row the one for where the code is.
     pub(crate) fn side_focus(&mut self) {
-        self.workspace.leave(At::Chat);
+        self.workspace.leave(Here::Chat);
         if self.workspace.viewer.sidebar.is_none() {
             return;
         }
-        self.workspace.viewer.at = At::Side;
+        self.workspace.set_at(Here::Side);
         self.sidebar_sync();
         let here = self.workspace.viewer.sidebar.as_ref().and_then(|s| s.here(self));
         if let (Some(s), Some(h)) = (self.workspace.viewer.sidebar.as_mut(), here) {
@@ -2946,7 +2946,7 @@ impl Editor {
         // (the chat's input's — the `j` of an `[insert]` sequence, held until the next key)
         if let Some(c) = self.workspace.claude.chat.as_ref().filter(|c| {
             self.pending.is_empty()
-                && self.workspace.is_at(crate::workspace::At::Chat)
+                && self.workspace.is_at(crate::workspace::Here::Chat)
                 && !crate::chatdoc::keyed(self)
                 && !c.input.pane.keys.pending.is_empty()
         }) {
@@ -3274,7 +3274,7 @@ impl Editor {
             return;
         }
         // Straight into the chat's input — as keys, its letters could answer a review or an offer first
-        if self.workspace.is_at(At::Chat)
+        if self.workspace.is_at(Here::Chat)
             && let Some(c) = self.workspace.claude.chat.as_mut()
         {
             let text: String = text.chars().filter(|&c| c == '\n' || !c.is_control()).collect();
@@ -3307,7 +3307,7 @@ impl Editor {
         if reviewing && let Some(c) = self.workspace.claude.chat.as_mut() {
             let text: String = text.chars().filter(|&c| c == '\n' || !c.is_control()).collect();
             c.input.insert_str(&text);
-            self.workspace.viewer.at = At::Chat;
+            self.workspace.set_at(Here::Chat);
             return self.set_status("pasted into the chat — the file is under review (i pastes there)");
         }
         // Normal or select mode: held, not put in (#124 — it went into the file, said only by a toast; a paste
@@ -3478,8 +3478,8 @@ impl Editor {
             t.selecting = false;
             if !on_terminal {
                 t.selection = None;
-                if self.workspace.is_at(At::Program) {
-                    self.workspace.viewer.at = At::Code;
+                if self.workspace.is_at(Here::Program) {
+                    self.workspace.viewer.keys_to_code();
                 }
             }
         }
@@ -3889,7 +3889,7 @@ impl Editor {
             // the git tab's file rows) — a click on `↑/↓ N more` or the wheel scrolls it (`CodeReview::fit` clamps; #73)
             (S::Rail, part) => {
                 took_mouse(S::Rail);
-                let rail_keys = self.workspace.is_at(At::Rail);
+                let rail_keys = self.workspace.is_at(Here::Rail);
                 let by = match (m.kind, part) {
                     (K::ScrollDown, _) => 3,
                     (K::ScrollUp, _) => -3,
@@ -3915,7 +3915,7 @@ impl Editor {
                     Part::Row(i) => {
                         let shown = crate::codereview::show(self, i, false);
                         if self.clicked_again("rail", i) {
-                            self.workspace.viewer.at = At::Code;
+                            self.workspace.viewer.keys_to_code();
                             if let Some(id) = shown {
                                 self.preview_keep(id);
                             }
@@ -4021,7 +4021,7 @@ impl Editor {
                 took_mouse(u.surface);
                 match m.kind {
                     K::Down => {
-                        self.workspace.viewer.at = At::Chat;
+                        self.workspace.set_at(Here::Chat);
                         match part {
                             // Where a command ran, at its row's end: why, said (cardburden 4b)
                             Part::Link(Link::Ran(i)) => {
@@ -4197,7 +4197,7 @@ impl Editor {
     /// unfolds), the wheel scrolls it.
     fn side_mouse(&mut self, kind: crate::event::MouseKind, row: Option<usize>, rows: usize) {
         use crate::event::MouseKind as K;
-        let side_keys = self.workspace.is_at(At::Side);
+        let side_keys = self.workspace.is_at(Here::Side);
         let Some(sb) = self.workspace.viewer.sidebar.as_mut() else { return };
         // (the wheel only scrolls, with the keys or without: the selection stays, in sight or not — the next key that
         // moves it brings the view back to it (`Sidebar::fit`); without the keys it marks where the code is and comes
@@ -4215,8 +4215,8 @@ impl Editor {
                     if let Some(sb) = self.workspace.viewer.sidebar.as_mut() {
                         sb.selected = r;
                     }
-                    self.workspace.leave(At::Chat);
-                    self.workspace.viewer.at = At::Side;
+                    self.workspace.leave(Here::Chat);
+                    self.workspace.set_at(Here::Side);
                     self.git_show_file(&rel.0, rel.1);
                 }
             }
@@ -4283,14 +4283,14 @@ impl Editor {
     /// A press in the code: the keys to it, from wherever they were — the chat, a panel, the side panel, the review's
     /// rail, a group's list in the slot or docked; what floats over it (completion, hover text) goes.
     fn code_takes_keys(&mut self) {
-        self.workspace.leave(At::Chat);
+        self.workspace.leave(Here::Chat);
         self.plugin_panel_unfocus();
         self.procs_unfocus();
-        self.workspace.leave(At::Slot);
-        self.workspace.leave(At::Side);
-        self.workspace.leave(At::Rail);
-        if let At::List(id) = self.workspace.docked() {
-            self.workspace.leave(At::List(id));
+        self.workspace.leave(Here::Slot);
+        self.workspace.leave(Here::Side);
+        self.workspace.leave(Here::Rail);
+        if let Here::List(id) = self.workspace.docked() {
+            self.workspace.leave(Here::List(id));
         }
         self.completion = None;
         self.popup = None;
@@ -4956,7 +4956,7 @@ impl Editor {
                 self.run_command_by_name("paste_clipboard_before");
             }
             (S::Input, Part::Text { line, col }) => {
-                self.workspace.viewer.at = At::Chat;
+                self.workspace.set_at(Here::Chat);
                 let w = self.screen.chat_input.get().map_or(0, |i| i.w);
                 crate::chatinput::click(self, line, col, w);
                 crate::clipboard::paste(self, |ed, text| ed.handle_paste(text));
@@ -5996,7 +5996,7 @@ impl Editor {
         } else if key.code == Code::Esc
             && self.mode == Mode::Normal
             && self.prompt.is_none()
-            && self.workspace.is_at(At::Code)
+            && self.workspace.is_at(Here::Code)
         {
             self.search_hl = false;
             if self.popup.is_none() {
@@ -7781,7 +7781,7 @@ mod tests {
         assert_eq!(text(&ed), "foo BAR");
         // esc = its view mode, esc again = back to the code (pane stays), space L = hidden (#270), :chat-close = ended
         feed(&mut ed, "<space>l<esc><esc>");
-        assert!(ed.workspace.claude.chat.is_some() && !ed.workspace.is_at(At::Chat));
+        assert!(ed.workspace.claude.chat.is_some() && !ed.workspace.is_at(Here::Chat));
         feed(&mut ed, "<space>L");
         assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.hidden));
         feed(&mut ed, ":chat-close<ret>");
@@ -7834,7 +7834,7 @@ mod tests {
         assert_eq!(ed.doc().text.byte_to_line(ed.doc().selection().primary().cursor(&ed.doc().text)), 0);
         feed(&mut ed, "<C-g>");
         assert_eq!(ed.doc().text.byte_to_line(ed.doc().selection().primary().cursor(&ed.doc().text)), 1);
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8351,7 +8351,7 @@ mod tests {
         assert_eq!(led_line(&ed), 4, "the view held there");
         assert_eq!(cursor_line(&ed), 0, "your cursor never led");
         assert!(!ed.docs.iter().any(|d| d.path.as_deref() == Some(util.as_path())), "the preview closed");
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the chat keeps the keys");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the chat keeps the keys");
         feed(&mut ed, "<esc><esc><C-o>");
         assert_eq!(ed.doc().path.as_deref(), Some(main.as_path()), "one jump back = before the turn");
         std::fs::remove_dir_all(&dir).ok();
@@ -8565,7 +8565,7 @@ mod tests {
         // (#388 step 3: the ask line, the stop's lines quoted whole — the answer's place whether or not it cites them)
         // (the answer's column in sight: the quote over its input — `quote::add`; out of sight, the ask line)
         feed(&mut ed, "<esc><space>n");
-        assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Chat, "the chat's input has the keys");
+        assert_eq!(ed.workspace.here(), crate::workspace::Here::Chat, "the chat's input has the keys");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         let asked: Vec<_> = c.quotes.iter().map(|q| q.asked.clone()).collect();
         assert_eq!(asked, [Some((lib.clone(), 7..9))], "one quote, the stop's lines");
@@ -9713,7 +9713,7 @@ mod tests {
         click(&mut ed, crate::event::MouseKind::Down, x, y);
         let heading = ed.workspace.task_run.as_ref().unwrap().output.iter().position(|l| l.1 == "── test ──");
         assert_eq!(ed.workspace.task_run.as_ref().unwrap().scroll, heading, "at the test step's heading");
-        assert!(ed.workspace.is_at(crate::workspace::At::Slot), "the panel has the keys");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Slot), "the panel has the keys");
         let s = draw(&mut ed);
         assert!(s.contains("test line 0"), "{s}");
         // The wheel and C-u: further back
@@ -9773,7 +9773,7 @@ mod tests {
         };
         feed(&mut ed, "<space>Ldo it<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the chat keeps the keys (frictions26)");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the chat keeps the keys (frictions26)");
         assert!(ed.workspace.claude.review.is_none(), "no change of it in review yet");
         let s = screen(&mut ed);
         assert!(s.contains("Claude changes 3 files") && s.contains("replace `old_(\\w+)` → `new_$1`"), "{s}");
@@ -9805,7 +9805,7 @@ mod tests {
         // Again, `n`: every file left as it was
         put();
         std::fs::remove_file(&log).unwrap();
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         feed(&mut ed, "again<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
         screen(&mut ed);
@@ -10033,7 +10033,7 @@ mod tests {
             again.iter().map(|r| r.again.parts.clone()).collect::<Vec<_>>(),
             [[["basename", "one", "two"]]]
         );
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         let answers = |log: &Path| std::fs::read_to_string(log).unwrap_or_default().matches("\"c7\"").count();
         feed(&mut ed, "again<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty() || answers(&log) == 2);
@@ -10212,7 +10212,7 @@ mod tests {
         assert!(tool_answer(&log).contains("tarae-marker-content"), "{}", tool_answer(&log));
         assert!(ed.workspace.claude.chat.as_ref().unwrap().allowed.reads(&marker));
         // The next turn, the same command: allowed now, no card
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         feed(&mut ed, "again<ret>");
         let answers = |log: &Path| std::fs::read_to_string(log).unwrap().matches("\"c7\"").count();
         settle_until(&mut ed, |ed| !ed.offers.is_empty() || answers(&log) == 2);
@@ -10480,7 +10480,7 @@ mod tests {
         feed(&mut ed, "<space>Ltouch it<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
         // A draft in the chat's input: what's typed is the draft's, the card says how to reach it
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         feed(&mut ed, "my draft y");
         let input = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().input.text();
         assert_eq!(input(&ed), "my draft y");
@@ -10490,7 +10490,7 @@ mod tests {
         feed(&mut ed, "<esc><esc>");
         assert_eq!(ed.offers.len(), 1, "Esc never answers a card");
         // Back in the input: C-q — the card has the keys, the draft stays
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         // (the status line's label names where the keys go — #78: it said CHAT while the card had them)
         // (the status line: the screen's last row)
         let label = |s: &str| s.lines().nth(39).unwrap_or_default().to_string();
@@ -10505,7 +10505,7 @@ mod tests {
         assert!(draw(&mut ed).contains("x isn't an answer here"), "{:?}", ed.offer_said_now());
         feed(&mut ed, "<esc>");
         assert!(
-            !ed.card_has_keys() && ed.offers.len() == 1 && ed.workspace.is_at(crate::workspace::At::Chat)
+            !ed.card_has_keys() && ed.offers.len() == 1 && ed.workspace.is_at(crate::workspace::Here::Chat)
         );
         assert_eq!(input(&ed), "my draft y", "back where it was");
         assert!(label(&draw(&mut ed)).contains("● chat "), "the chat's again");
@@ -10517,7 +10517,7 @@ mod tests {
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         assert!(made.exists() && tool_answer(&log).contains("exit 0"));
         assert_eq!(input(&ed), "my draft y");
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10801,7 +10801,7 @@ mod tests {
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         let id = ed.doc().id;
         crate::llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
         let draw = |ed: &mut Editor, w: u16| {
@@ -10896,7 +10896,7 @@ mod tests {
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         ed.workspace.claude.review.as_mut().unwrap().from_chat = true;
         feed(&mut ed, "<tab>");
         let s = draw(&mut ed);
@@ -10909,7 +10909,7 @@ mod tests {
         let s = parser.screen().contents();
         assert!(s.contains("y yes  n no  esc back"), "{s}");
         feed(&mut ed, "<esc>");
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat), "back in the chat");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "back in the chat");
         let s = draw(&mut ed);
         assert!(s.contains("C-q answer it — the chat has the keys"), "{s}");
         feed(&mut ed, "yn");
@@ -10941,7 +10941,7 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.as_ref().is_some_and(|s| s.unstaged.is_empty()));
         let edit = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "e1",
@@ -10978,17 +10978,17 @@ mod tests {
         std::fs::write(dir.join("a.rs"), "fn a() { 1 }\n").unwrap();
         let mut ed = editor("");
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         crate::codereview::start_in(&mut ed, dir.clone(), None);
         settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ed.doc().review_base.is_some());
         let before = ed.doc().text.to_string();
         ed.handle_paste("meant for the chat".into());
         assert_eq!(ed.doc().text.to_string(), before, "the file under review is as it was");
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(ed.workspace.is_at(At::Chat) && c.input == "meant for the chat", "{:?}", c.input);
+        assert!(ed.workspace.is_at(Here::Chat) && c.input == "meant for the chat", "{:?}", c.input);
         assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("pasted into the chat")), "{:?}", ed.status);
         // Insert mode: typed there on purpose
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         feed(&mut ed, "i");
         ed.handle_paste("X".into());
         assert_ne!(ed.doc().text.to_string(), before);
@@ -11006,7 +11006,7 @@ mod tests {
         feed(&mut ed, "<space>vz");
         assert!(ed.toasts.iter().any(|t| t.text.contains("no review open")), "{:?}", ed.toasts);
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         crate::codereview::start_in(&mut ed, dir.clone(), None);
         settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ed.doc().review_base.is_some());
         // (the code's columns: its pane's width · the header's row)
@@ -11031,9 +11031,9 @@ mod tests {
         assert_eq!((x, w, chat), (0, 200, 0), "the code has the screen");
         assert!(head.contains("review 1/1 · wide"), "{head}");
         // The chat with the keys: back while it has them
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         assert!(frame(&mut ed).2 > 0, "the chat has the keys: it shows");
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         assert_eq!(frame(&mut ed).2, 0, "and goes again");
         feed(&mut ed, "<space>vz");
         let (x, _, chat, _) = frame(&mut ed);
@@ -11995,7 +11995,7 @@ mod tests {
         };
         assert!(screen(&mut ed).contains("space m s open it"), "the panel says the key");
         // The list: the folders, widest last, then running it outside
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         feed(&mut ed, " ms");
         settle_until(&mut ed, |ed| ed.picker.is_some());
         let rows: Vec<String> = ed.picker.as_ref().unwrap().items().iter().map(|i| i.label.clone()).collect();
@@ -12156,7 +12156,7 @@ mod tests {
         let line = ed.cursor_line();
         assert_eq!(asked(&ed), [Some((main.clone(), line..line + 1))]);
         feed(&mut ed, "what is this?<ret>");
-        assert!(!ed.workspace.is_at(At::Chat) || !ed.chat_asking(), "the ask line went");
+        assert!(!ed.workspace.is_at(Here::Chat) || !ed.chat_asking(), "the ask line went");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         let q = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
@@ -12681,7 +12681,7 @@ mod tests {
         let log = fake_edits(&mut ed, &dir, &[edit]);
         feed(&mut ed, "<space>lshout line 2<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
-        assert!(!ed.workspace.is_at(crate::workspace::At::Chat), "the keys go to the review");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Chat), "the keys go to the review");
         feed(&mut ed, "y");
         let a = tool_answer_to(&mut ed, &log, "c1");
         assert!(a.contains("main.rs") && !a.contains("\"isError\":true"), "{a}");
@@ -13562,7 +13562,7 @@ mod tests {
         feed(&mut ed, "y");
         // (the answer gave the keys back to the chat: Esc to the code, then typed — before c2 is read, events
         // wait for settle_until)
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat), "back in the chat");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "back in the chat");
         feed(&mut ed, "<esc>ggiX<esc>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
@@ -13619,7 +13619,7 @@ mod tests {
         ed.offer_accept();
         assert!(crate::edits::at_end(&ed));
         let c = ed.workspace.claude.chat.as_ref().expect("the chat it's for");
-        assert!(!ed.workspace.is_at(At::Chat), "the keys stay in the editor");
+        assert!(!ed.workspace.is_at(Here::Chat), "the keys stay in the editor");
         assert!(c.msgs.iter().any(|m| m.text.contains("space v a turns it off")));
         // (opened out of sight, as a chat opened for something else starts; shown, its title says it)
         assert!(c.hidden, "out of sight");
@@ -13656,7 +13656,7 @@ mod tests {
         crate::chat::close(&mut ed);
         crate::chat::open(&mut ed);
         assert!(crate::edits::at_end(&ed), "a chat opened later starts so");
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         feed(&mut ed, ":review-at-end on<ret>:review-at-end off<ret>");
         assert!(ed.offers.is_empty(), "off takes the card away");
         crate::chat::reset(&mut ed);
@@ -13766,7 +13766,7 @@ mod tests {
             ed.workspace.claude.chat = Some(c);
         });
         crate::chat::open(&mut ed);
-        ed.workspace.leave(At::Chat);
+        ed.workspace.leave(Here::Chat);
         ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         let behind = |ed: &mut Editor| {
             let mut on = false;
@@ -14057,7 +14057,7 @@ mod tests {
         // Taken up: a move in the code pane while it's in front — it stays when the turn ends
         ed.open(&outside).unwrap();
         ed.doc_mut().aside = true;
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         for k in [":", "esc"] {
             ed.handle_event(Event::Key(k.parse().unwrap()));
         }
@@ -14123,7 +14123,7 @@ mod tests {
             ed.open(&theirs).unwrap();
             ed.doc_mut().aside = true;
             ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            ed.workspace.set_at(crate::workspace::Here::Chat);
             crate::edits::turn_over(ed);
         });
         assert!(!open(&ed, &theirs), "its own aside file goes with its turn");
@@ -14208,7 +14208,7 @@ mod tests {
         let (mut ed, dir, [main, lib, new]) = turn_of_three("turn-review", None);
         settle_until(&mut ed, reviewing);
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(!c.busy() && !ed.workspace.is_at(At::Chat), "the keys went to the review");
+        assert!(!c.busy() && !ed.workspace.is_at(Here::Chat), "the keys went to the review");
         assert!(c.msgs.iter().any(|m| m.text == "changed 3 files · reviewing them now"));
         // The chat beside it leaves no room for the rail: the header says which file of the review this is
         let mut bytes = Vec::new();
@@ -14529,7 +14529,7 @@ mod tests {
         let s = screen(&mut ed);
         assert!(
             ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Outline)
-                && ed.workspace.is_at(At::Side)
+                && ed.workspace.is_at(Here::Side)
         );
         assert!(
             !ed.review_rail_up() && ed.screen.drawn_w(crate::pane::Shows::Side) > 0,
@@ -14572,7 +14572,7 @@ mod tests {
         feed(&mut ed, "<space>g");
         let s = screen(&mut ed);
         assert!(
-            ed.review_rail_up() && ed.workspace.is_at(crate::workspace::At::Rail),
+            ed.review_rail_up() && ed.workspace.is_at(crate::workspace::Here::Rail),
             "the rail has the keys"
         );
         assert!(
@@ -14616,7 +14616,7 @@ mod tests {
         );
         assert!(
             ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
-                && ed.workspace.is_at(At::Side)
+                && ed.workspace.is_at(Here::Side)
         );
         assert!(s.contains("review behind") && s.contains("space g back"), "{s}");
         assert!(!s.contains("undo the whole turn"), "the rail gave the column: {s}");
@@ -14626,10 +14626,10 @@ mod tests {
         // `space g` again: the rail, with the keys
         feed(&mut ed, "<space>g");
         assert!(
-            ed.review_rail_up() && ed.workspace.is_at(crate::workspace::At::Rail),
+            ed.review_rail_up() && ed.workspace.is_at(crate::workspace::Here::Rail),
             "the rail has the keys"
         );
-        assert!(!ed.workspace.is_at(crate::workspace::At::Side));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Side));
         let s = screen(&mut ed);
         assert!(s.contains("m viewed, next  q end") && !s.contains("review behind"), "{s}");
         feed(&mut ed, "d");
@@ -14638,7 +14638,10 @@ mod tests {
         feed(&mut ed, "<esc><space>g");
         assert!(!ed.review_rail_up());
         feed(&mut ed, "<esc>");
-        assert!(ed.review_rail_up() && ed.workspace.is_at(crate::workspace::At::Rail), "Esc: the rail again");
+        assert!(
+            ed.review_rail_up() && ed.workspace.is_at(crate::workspace::Here::Rail),
+            "Esc: the rail again"
+        );
         // The tab closed (`q`): the rail is back by itself
         feed(&mut ed, "<esc><space>gq");
         assert!(ed.workspace.viewer.sidebar.is_none() && ed.review_rail_up());
@@ -15315,7 +15318,7 @@ mod tests {
         assert_eq!(row.cell(Col::State), [("▲ waits".to_string(), Ink::Warn)]);
         // `esc` gives the keys back, the list stays; `space W` gives them to it again
         feed(&mut ed, "<esc>");
-        assert!(ed.sessions_pane.is_some() && ed.workspace.is_at(At::Code));
+        assert!(ed.sessions_pane.is_some() && ed.workspace.is_at(Here::Code));
         feed(&mut ed, "<space>W");
         assert!(ed.sessions_list_keys());
         // `q` closes it, as every list's (the tutor teaches it)
@@ -15328,7 +15331,7 @@ mod tests {
         assert_eq!(ed.sessions_here(), Some(feat));
         feed(&mut ed, "j<ret>");
         assert_eq!((ed.workspace.id, ed.sessions_pane.is_some()), (two, false));
-        assert!(ed.workspace.is_at(At::Code), "the keys to its code");
+        assert!(ed.workspace.is_at(Here::Code), "the keys to its code");
         // A digit: that row's — and the list closes with it
         feed(&mut ed, "<space>W1");
         let home = crate::event::WorkspaceId::HOME;
@@ -15371,7 +15374,7 @@ mod tests {
         ed.workspace_switch(crate::event::WorkspaceId::HOME);
         waits_for_you(&mut ed, two);
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         let rows = |ed: &mut Editor, w: u16| -> Vec<String> {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, w, 24).unwrap();
@@ -15442,7 +15445,7 @@ mod tests {
         ed.workspace.root = repo.clone();
         // as `restart::restore_session` brings it back: shown, the keys left where they were
         ed.sidebar_show(crate::sidebar::Mode::Git);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         assert_eq!(note(&ed), "reading…");
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         assert_eq!(note(&ed), "nothing to commit — the tree is clean");
@@ -15452,7 +15455,7 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.root = plain.to_path_buf();
         ed.sidebar_show(crate::sidebar::Mode::Git);
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         assert_eq!(note(&ed), "reading…");
         settle_until(&mut ed, |ed| !ed.git_reading());
         assert!(ed.workspace.git_status.is_none());
@@ -15479,7 +15482,7 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         let rows = |ed: &mut Editor| -> Vec<String> {
@@ -15517,7 +15520,7 @@ mod tests {
         );
         std::fs::remove_file(&seen).ok();
         // b.txt: untracked — the first d asks, the second deletes
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 1;
         feed(&mut ed, "d");
         assert!(repo.join("b.txt").exists());
@@ -15541,7 +15544,7 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         ed.sidebar_sync();
@@ -16097,7 +16100,7 @@ mod tests {
         ed.git_refresh();
         settle_until(&mut ed, |ed| status(ed).ahead == 1 && status(ed).behind == 1);
         // P: the card, listing the remote's commit that would go
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "P");
         settle_until(&mut ed, |ed| forcing(ed) == 1);
         let q = ed.offers[0].question.clone();
@@ -16135,7 +16138,7 @@ mod tests {
         assert_eq!(git_out(&bare, &["rev-parse", "main"]), theirs, "the lease kept theirs");
         // Asked again: the colleague's two are named as not yours — first, warned, counted in the title — then
         // ours as it was before the amend; y replaces exactly what it listed
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "P");
         settle_until(&mut ed, |ed| forcing(ed) == 1);
         let q = ed.offers[0].question.clone();
@@ -16181,7 +16184,7 @@ mod tests {
         commit_in(&work, "a.txt", "one\ntwo\nthree\n", "ours later");
         ed.git_refresh();
         settle_until(&mut ed, |ed| status(ed).ahead == 2 && status(ed).behind == 0);
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "P");
         settle_until(&mut ed, |ed| forcing(ed) == 1);
         let q = ed.offers[0].question.clone();
@@ -16253,7 +16256,7 @@ mod tests {
         crate::chat::open(&mut ed);
         draw(&mut ed, 140);
         assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Chat), 56);
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat));
         feed(&mut ed, "<C-w>>");
         draw(&mut ed, 140);
         assert_eq!((ed.sizes.chat, ed.screen.drawn_w(crate::pane::Shows::Chat)), (Some(60), 60));
@@ -16293,8 +16296,8 @@ mod tests {
         crate::chat::close(&mut ed);
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
+        ed.workspace.set_at(crate::workspace::Here::Side);
         draw(&mut ed, 140);
         let side = ed.screen.drawn_w(crate::pane::Shows::Side);
         feed(&mut ed, "<C-w>>");
@@ -16308,7 +16311,7 @@ mod tests {
         });
         run.output = [(false, "one")].into_iter().collect();
         ed.workspace.task_run = Some(run);
-        ed.workspace.leave(crate::workspace::At::Side);
+        ed.workspace.leave(crate::workspace::Here::Side);
         draw(&mut ed, 140);
         assert_eq!(ed.screen.slot().h, 3, "its own: a small one (its header in the line over it, two rows)");
         feed(&mut ed, "<C-w>+<C-w>+");
@@ -16342,7 +16345,7 @@ mod tests {
             ed.handle_mouse(Mouse { kind, x, y, alt: false, ctrl: false })
         };
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         draw(&mut ed);
         // The chat's edge: at column 140 - 56; dragged 10 to the left, 10 wider
         let edge = (140 - ed.screen.drawn_w(crate::pane::Shows::Chat)) as u16;
@@ -16373,7 +16376,7 @@ mod tests {
         crate::chat::close(&mut ed);
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         draw(&mut ed);
         let side = ed.screen.drawn_w(crate::pane::Shows::Side) as u16;
         mouse(&mut ed, K::Down, side - 1, 5);
@@ -16425,7 +16428,7 @@ mod tests {
             crate::term::render(ed, &mut bytes, 140, 40).unwrap();
         };
         feed(&mut ed, "<C-w>j");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
         assert!(ed.toasts.iter().any(|t| t.text.starts_with("nothing at the bottom")));
         task_of_40_lines(&mut ed);
         draw(&mut ed);
@@ -16434,7 +16437,7 @@ mod tests {
         let top = |ed: &Editor| ed.workspace.task_run.as_ref().unwrap().top(rows);
         assert_eq!(top(&ed), end, "its end in sight");
         feed(&mut ed, "<C-w>j");
-        assert!(ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Slot));
         assert_eq!(
             ed.keys_to().region,
             crate::uistate::Region::Output(crate::rundoc::Run::Task),
@@ -16460,23 +16463,23 @@ mod tests {
         assert!(head.contains(" ok ") && head.contains("/ search"), "{head}");
         assert!(screen.lines().any(|l| l.starts_with(" ● normal · task ")), "{screen}");
         feed(&mut ed, "<esc>j");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
         assert_eq!(ed.cursor_line(), 1, "the code's again");
         feed(&mut ed, "<C-w>j<C-w>k");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot), "C-w k: back up");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot), "C-w k: back up");
         // A click on the panel, then one in the code
         let y = ed.screen.task_panel.get().unwrap().0 as u16 + 2;
         ed.handle_mouse(Mouse { kind: K::Down, x: 20, y, alt: false, ctrl: false });
-        assert!(ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Slot));
         let line_1 = ed.screen.text_top as u16 + 1;
         ed.handle_mouse(Mouse { kind: K::Down, x: 20, y: line_1, alt: false, ctrl: false });
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
         assert_eq!(ed.cursor_line(), 1);
         // The panel gone: so are its keys
         feed(&mut ed, "<C-w>j");
         ed.workspace.task_run = None;
         feed(&mut ed, "j");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
         assert_eq!(ed.cursor_line(), 2);
     }
 
@@ -16509,7 +16512,7 @@ mod tests {
         crate::chat::open(&mut ed);
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, std::env::temp_dir()));
-        ed.workspace.viewer.at = At::Code;
+        ed.workspace.viewer.keys_to_code();
         task_of_40_lines(&mut ed);
         feed(&mut ed, "<C-w>v");
         draw(&mut ed);
@@ -16551,7 +16554,7 @@ mod tests {
             "the keys went to the code: it ended"
         );
         // The chat (its empty input lets C-w through)
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        ed.workspace.set_at(crate::workspace::Here::Chat);
         feed(&mut ed, "<C-w>z");
         draw(&mut ed);
         assert_eq!((ed.screen.drawn_w(crate::pane::Shows::Chat), ed.screen.slot().h), (140, 0));
@@ -16560,7 +16563,7 @@ mod tests {
         draw(&mut ed);
         assert_eq!(shown(&ed), all);
         // The side panel
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "<C-w>z");
         draw(&mut ed);
         assert_eq!(
@@ -16574,7 +16577,7 @@ mod tests {
         feed(&mut ed, "<C-w>z");
         draw(&mut ed);
         assert_eq!(shown(&ed), all);
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "back, the keys where they were");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "back, the keys where they were");
         assert_eq!(ed.sizes, sizes, "nothing kept changed");
     }
 
@@ -16586,10 +16589,10 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "A");
         settle_until(&mut ed, |ed| ed.workspace.committing.is_some());
         assert_eq!(ed.doc().display_name_short(), "COMMIT_EDITMSG");
@@ -16609,7 +16612,7 @@ mod tests {
         git_in(&repo, &["add", "a.txt"]);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.as_ref().is_some_and(|s| !s.staged.is_empty()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "c");
         settle_until(&mut ed, |ed| ed.workspace.committing.is_some());
         assert_eq!(ed.mode, Mode::Insert);
@@ -16683,12 +16686,12 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         for key in ["C", "c"] {
             ed.status = None;
-            ed.workspace.viewer.at = crate::workspace::At::Side;
+            ed.workspace.set_at(crate::workspace::Here::Side);
             feed(&mut ed, key);
             settle_until(&mut ed, |ed| ed.status.is_some());
             let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
@@ -16715,10 +16718,10 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.as_ref().is_some_and(|s| s.unstaged.len() == 4));
-        ed.workspace.viewer.at = At::Side;
+        ed.workspace.set_at(Here::Side);
         let sb = ed.workspace.viewer.sidebar.as_mut().unwrap();
         // (the last row: a file, not the heading)
         sb.selected = sb.lines().len() - 1;
@@ -16727,10 +16730,10 @@ mod tests {
             |ed: &Editor| ed.workspace.git_status.as_ref().map(|s| (s.staged.len(), s.unstaged.len()));
         feed(&mut ed, "S");
         settle_until(&mut ed, |ed| counts(ed) == Some((4, 0)));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "S");
         assert_eq!(ed.status.as_ref().map(|s| s.0.as_str()), Some("nothing to stage"));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "U");
         settle_until(&mut ed, |ed| counts(ed) == Some((0, 4)));
         std::fs::remove_dir_all(&repo).ok();
@@ -16755,7 +16758,7 @@ mod tests {
         ];
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         ed.sidebar_sync();
@@ -16807,7 +16810,7 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), "read -r line; sleep 30".into()];
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         ed.sidebar_sync();
@@ -16827,7 +16830,7 @@ mod tests {
         // Esc stops it
         feed(&mut ed, "C");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready));
-        ed.workspace.leave(crate::workspace::At::Side);
+        ed.workspace.leave(crate::workspace::Here::Side);
         assert!(crate::llm::esc_stops(&ed), "Esc stops it, and the card says so");
         let mut screen = Vec::new();
         crate::term::render(&mut ed, &mut screen, 120, 40).unwrap();
@@ -16882,13 +16885,13 @@ mod tests {
         ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files));
         feed(&mut ed, " e");
         let r = ed.workspace.code_review.as_ref().unwrap();
-        assert!(ed.workspace.is_at(At::Rail) && r.selected == 0, "on the file being read");
+        assert!(ed.workspace.is_at(Here::Rail) && r.selected == 0, "on the file being read");
         // The rail's order: src/ (b, c) then a.rs
         feed(&mut ed, "j");
         assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 2, "src/c.rs");
         feed(&mut ed, "<ret>");
         assert_eq!(ed.doc().path.as_deref(), Some(dir.join("src/c.rs").as_path()));
-        assert!(!ed.workspace.is_at(crate::workspace::At::Rail), "the code has the keys");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Rail), "the code has the keys");
         feed(&mut ed, " ek");
         assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 0);
         feed(&mut ed, "m");
@@ -16899,7 +16902,7 @@ mod tests {
         assert!(r.viewed(&ed, &r.files[0]), "b.rs viewed");
         assert_eq!(r.selected, 2, "on to the next");
         feed(&mut ed, "<esc>");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Rail));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Rail));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -16933,7 +16936,7 @@ mod tests {
         assert!(asked(&ed), "two files not viewed: the end asks");
         assert!(ed.workspace.code_review.is_some(), "not ended unasked");
         ed.offers.clear();
-        ed.workspace.viewer.at = crate::workspace::At::Rail;
+        ed.workspace.set_at(crate::workspace::Here::Rail);
         feed(&mut ed, "<C-w>");
         assert!(!ed.pending.is_empty(), "C-w waits for its window key");
         assert!(ed.status.as_ref().is_none_or(|s| !s.0.contains("does nothing")), "{:?}", ed.status);
@@ -16941,7 +16944,7 @@ mod tests {
         assert!(asked(&ed), "C-w q from the rail: its end, asked");
         // Every file viewed: `q` ends it at once, nothing to ask
         ed.offers.clear();
-        ed.workspace.viewer.at = crate::workspace::At::Rail;
+        ed.workspace.set_at(crate::workspace::Here::Rail);
         ed.workspace.code_review.as_mut().unwrap().selected = 0;
         let viewed = |ed: &Editor, i: usize| {
             let r = ed.workspace.code_review.as_ref().unwrap();
@@ -16949,10 +16952,10 @@ mod tests {
         };
         feed(&mut ed, "m");
         settle_until(&mut ed, |ed| viewed(ed, 0));
-        ed.workspace.viewer.at = crate::workspace::At::Rail;
+        ed.workspace.set_at(crate::workspace::Here::Rail);
         feed(&mut ed, "m");
         settle_until(&mut ed, |ed| viewed(ed, 1));
-        ed.workspace.viewer.at = crate::workspace::At::Rail;
+        ed.workspace.set_at(crate::workspace::Here::Rail);
         feed(&mut ed, "q");
         assert!(ed.workspace.code_review.is_none(), "all viewed: ended");
         assert!(!asked(&ed), "nothing asked");
@@ -16975,7 +16978,7 @@ mod tests {
         ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Running;
         head(&mut ed);
         feed(&mut ed, "<C-w>j");
-        assert!(ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Slot));
         let h = head(&mut ed);
         assert!(h.contains("esc code") && !h.contains("q close"), "{h}");
         feed(&mut ed, "q");
@@ -16986,7 +16989,7 @@ mod tests {
         assert!(h.contains("q close"), "{h}");
         feed(&mut ed, "q");
         assert!(ed.workspace.task_run.is_none(), "ended: q closes it");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
         // `C-w q` in it: the same
         task_of_40_lines(&mut ed);
         head(&mut ed);
@@ -16994,7 +16997,7 @@ mod tests {
         assert!(ed.workspace.task_run.is_none(), "C-w q closed the panel");
         // The side panel
         feed(&mut ed, " e");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side));
         feed(&mut ed, "<C-w>q");
         assert!(ed.workspace.viewer.sidebar.is_none(), "C-w q closed the side panel");
         // The code: its pane, as ever — the last one said, kept
@@ -17025,14 +17028,14 @@ mod tests {
         ed.workspace.test_run = Some(run);
         draw(&mut ed);
         feed(&mut ed, "<C-w>j");
-        assert!(ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Slot));
         feed(&mut ed, "q");
         assert!(ed.workspace.test_run.is_some(), "tests under way aren't stopped by q");
         assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("space x c stops")), "{:?}", ed.status);
         ed.workspace.test_run.as_mut().unwrap().state = RunState::NoTests;
         feed(&mut ed, "q");
         assert!(ed.workspace.test_run.is_none(), "ended (no test ran): q closes it");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Slot));
     }
 
     /// `C-w q` from `:procs` closes it, as its `q` does; from the chat it closes nothing and says what does: `space L`
@@ -17087,35 +17090,35 @@ mod tests {
         let at = |ed: &Editor| ed.workspace.viewer.sidebar.as_ref().unwrap().selected;
         let start = at(&ed);
         feed(&mut ed, "k");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "the tab keeps the keys after one k");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "the tab keeps the keys after one k");
         feed(&mut ed, "kk");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "and after three");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "and after three");
         assert!(at(&ed) < start, "k walked up the tab's rows: {} → {}", start, at(&ed));
         assert_eq!(text(&ed), text_before, "no key landed in the code");
         feed(&mut ed, "jjj");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side));
         // A tab key that isn't one of the quick ones (refresh) leaves it a tab — the keys stay
         feed(&mut ed, "<esc>");
         feed(&mut ed, " g");
         settle_until(&mut ed, |ed| ed.workspace.viewer.sidebar.as_ref().unwrap().aim.is_none());
         feed(&mut ed, "r");
         assert!(
-            ed.workspace.is_at(crate::workspace::At::Side),
+            ed.workspace.is_at(crate::workspace::Here::Side),
             "r refreshed it and the tab still has the keys"
         );
         feed(&mut ed, "k");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side));
         assert_eq!(text(&ed), text_before);
         // Pressed before git has answered (the tab still empty): the same
         feed(&mut ed, "<esc>");
         ed.workspace.git_status = None;
         feed(&mut ed, " gk");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "a k before the rows are in");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "a k before the rows are in");
         settle_until(&mut ed, |ed| {
             ed.workspace.git_status.is_some() && ed.workspace.viewer.sidebar.as_ref().unwrap().aim.is_none()
         });
         feed(&mut ed, "kk");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "and the ones after");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "and the ones after");
         assert_eq!(text(&ed), text_before, "no key landed in the code");
         // #50: on the change itself, a file opened from the editor just before — `s` stages it there, and
         // the `j`/`k` after it are still the tab's
@@ -17129,10 +17132,10 @@ mod tests {
         let b_before = text(&ed);
         feed(&mut ed, "s");
         settle_until(&mut ed, |ed| ed.doc().git_hunks.is_empty());
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "the tab keeps the keys after s");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "the tab keeps the keys after s");
         // (`o` would open a line in the code)
         feed(&mut ed, "jjko");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "the tab has the keys");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "the tab has the keys");
         assert_eq!(ed.mode, Mode::Normal);
         let b = ed.docs.iter().find(|d| d.path.as_ref().is_some_and(|p| p.ends_with("b.txt"))).unwrap();
         assert_eq!(b.text.to_string(), b_before, "none landed in the code");
@@ -17215,7 +17218,7 @@ mod tests {
             .unwrap();
         let staged = String::from_utf8_lossy(&staged.stdout);
         assert!(staged.contains("+FOUR") && !staged.contains("+ONE"), "that hunk alone: {staged}");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "the tab keeps the keys (#50)");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "the tab keeps the keys (#50)");
         // In the panel: onto the other hunk (the editor goes there), `d` puts it back
         feed(&mut ed, "<esc> g");
         settle_until(&mut ed, |ed| ed.workspace.viewer.sidebar.as_ref().unwrap().aim.is_none());
@@ -17232,7 +17235,7 @@ mod tests {
         // Stash and back
         feed(&mut ed, ":w<ret>");
         ed.flush_saves(); // (on disk before git stashes it)
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "z");
         settle_until(&mut ed, |ed| said(ed, ToastKind::Success, "Stashed — Z takes them back") == 1);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\ntwo\nthree\nfour\nfive\n");
@@ -17280,7 +17283,7 @@ mod tests {
         feed_events(&mut ed, "j");
         assert_eq!(selected(&ed), Some(file("b.txt")));
         settle_until(&mut ed, |ed| shown(ed, "b.txt") && ed.cursor_line() == 3);
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "the tab keeps the keys");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "the tab keeps the keys");
         let d = ed.doc();
         assert_eq!(Changes::of(d), Changes::Base, "drawn as `:diff` draws it");
         assert_eq!(Changes::Base.removed(d, 0, 3), vec![(3, "w".to_string(), Some(3))]);
@@ -17319,7 +17322,7 @@ mod tests {
         assert!(ed.doc().preview, "a.txt the preview");
         // `esc code`: the rows gone, the gutter back to the index, its change still there
         feed_events(&mut ed, "<esc>");
-        assert!(ed.workspace.is_at(crate::workspace::At::Code));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Code));
         let d = ed.doc();
         assert!(d.inline.is_none() && d.review_base.is_none(), "gone with the keys");
         assert_eq!(Changes::of(d), Changes::Index);
@@ -17469,7 +17472,7 @@ mod tests {
         ed.workspace.root = dir.clone();
         ed.git_auto = true;
         crate::chat::open(&mut ed);
-        ed.workspace.leave(At::Chat);
+        ed.workspace.leave(Here::Chat);
         crate::codereview::start_in(&mut ed, dir.clone(), None);
         settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ed.doc().own_base());
         // (b.txt changed after the review took its files: not the review's)
@@ -17480,7 +17483,7 @@ mod tests {
         settle_until(&mut ed, |ed| ed.doc().inline.is_some());
         ed.handle_paste("for the file".into());
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(c.input.is_empty() && !ed.workspace.is_at(At::Chat), "{:?}", c.input);
+        assert!(c.input.is_empty() && !ed.workspace.is_at(Here::Chat), "{:?}", c.input);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -17609,7 +17612,7 @@ mod tests {
         };
         click(&mut ed);
         assert!(
-            ed.doc().preview && ed.workspace.is_at(At::Side),
+            ed.doc().preview && ed.workspace.is_at(Here::Side),
             "shown as the preview, the tab with the keys"
         );
         assert_eq!(ed.doc().path.as_deref(), Some(repo.join("b.txt").as_path()));
@@ -17632,7 +17635,7 @@ mod tests {
         ed.git_auto = true;
         crate::codereview::start_in(&mut ed, dir.clone(), None);
         settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ed.doc().own_base());
-        ed.workspace.viewer.at = At::Rail;
+        ed.workspace.set_at(Here::Rail);
         let shown = |ed: &Editor| {
             ed.buffers()
                 .into_iter()
@@ -17649,7 +17652,7 @@ mod tests {
         feed_events(&mut ed, "<ret>");
         assert_eq!(shown(&ed), [false], "enter: its own");
         // A click on another row: the preview beside it; the same row again: kept
-        ed.workspace.viewer.at = At::Rail;
+        ed.workspace.set_at(Here::Rail);
         let p = frame_cells(&mut ed);
         let kept = ed.doc().path.clone().unwrap();
         let other = ["a.txt", "b.txt", "c.txt"].into_iter().find(|f| dir.join(f) != kept).unwrap();
@@ -17680,16 +17683,16 @@ mod tests {
         settle_until(&mut ed, |ed| ed.workspace.code_review.is_some() && ed.doc().own_base());
         assert_eq!(ed.doc().path.as_deref(), Some(dir.join("a.txt").as_path()), "on its first file");
         crate::codereview::rail_focus(&mut ed);
-        assert!(ed.workspace.is_at(At::Rail));
+        assert!(ed.workspace.is_at(Here::Rail));
         let binary = |ed: &Editor| ed.doc().title.as_deref() == Some("b.bin · binary");
         let on = |ed: &Editor, f: &str| ed.doc().path.as_deref() == Some(dir.join(f).as_path());
         // `j` onto the binary row: its buffer in front once read, the rail keeping the keys
         feed_events(&mut ed, "j");
         settle_until(&mut ed, binary);
-        assert!(ed.workspace.is_at(At::Rail), "the rail keeps the keys");
+        assert!(ed.workspace.is_at(Here::Rail), "the rail keeps the keys");
         // `j` onto c.txt: the preview, a.txt's place taken
         feed_events(&mut ed, "j");
-        assert!(on(&ed, "c.txt") && ed.doc().preview && ed.workspace.is_at(At::Rail));
+        assert!(on(&ed, "c.txt") && ed.doc().preview && ed.workspace.is_at(Here::Rail));
         assert!(
             !ed.docs.iter().any(|d| d.path.as_deref() == Some(dir.join("a.txt").as_path())),
             "one preview"
@@ -17912,7 +17915,7 @@ mod tests {
         feed(&mut ed, "s");
         settle_until(&mut ed, |ed| ed.workspace.git_status.as_ref().is_some_and(|s| !s.staged.is_empty()));
         assert_eq!(ed.workspace.git_status.as_ref().unwrap().staged[0].rel, "b.txt");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side), "the tab keeps the keys");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side), "the tab keeps the keys");
         std::fs::remove_dir_all(&repo).ok();
     }
 
@@ -17927,7 +17930,7 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         ed.sidebar_sync();
@@ -18052,7 +18055,7 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), format!("{}; cat > /dev/null", pwd("claude"))];
         crate::chat::open(&mut ed);
         ran_in(&mut ed, "claude", &root);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         crate::typed::execute(&mut ed, &format!("sh {}", pwd("sh"))).unwrap();
         ran_in(&mut ed, "sh", &root);
         ed.shell_pipe(crate::shell::Pipe::To, &pwd("pipe"));
@@ -18287,7 +18290,7 @@ mod tests {
             assert!(sent.contains(want), "{want} in {sent}");
         }
         // Ending it with files not viewed: asked first, on a card naming them (#10) — n keeps reviewing
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         feed(&mut ed, "<space>vq");
         assert!(ed.workspace.code_review.is_some(), "not ended without a word");
         let card = ed.offers.first().map(|o| (o.title.clone(), o.question.clone())).unwrap();
@@ -18634,7 +18637,7 @@ mod tests {
         feed(&mut ed, "<C-w>v");
         let came = ed.workspace.viewer.focus;
         let focus = |ed: &Editor| {
-            ed.workspace.viewer.sidebar.as_ref().map(|s| (s.mode, ed.workspace.is_at(At::Side)))
+            ed.workspace.viewer.sidebar.as_ref().map(|s| (s.mode, ed.workspace.is_at(Here::Side)))
         };
         feed(&mut ed, "<C-w>e");
         assert_eq!(focus(&ed), None, "C-w e: not the side panel's");
@@ -19067,9 +19070,9 @@ mod tests {
         // The keys go to it (#55: the side panel or the review's rail kept them, and keys did nothing)
         let side = crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, test_root());
         ed.workspace.viewer.sidebar = Some(side);
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         feed(&mut ed, "v");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Side), "the code has the keys");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Side), "the code has the keys");
         ed.workspace.viewer.sidebar = None;
         assert!(text(&ed).contains("line 80 of what it runs") && text(&ed).starts_with("Trust this project"));
         assert_eq!(ed.mode, Mode::Normal, "v didn't start a selection");
@@ -19491,7 +19494,7 @@ mod tests {
         crate::typed::execute(&mut ed, "chat-screen").unwrap();
         let c = ed.workspace.claude.chat.as_ref().expect("opened");
         assert!(
-            ed.workspace.is_at(At::Chat)
+            ed.workspace.is_at(Here::Chat)
                 && c.screen.as_ref().is_some_and(|s| s.text.contains("fn other() {}"))
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -19515,7 +19518,7 @@ mod tests {
         ed.push_offer(card("Trust this project's settings?"));
         drawn(&mut ed);
         feed(&mut ed, "<space>l");
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat));
         feed(&mut ed, "guard_and_go no");
         assert_eq!(
             ed.workspace.claude.chat.as_ref().unwrap().input,
@@ -19525,14 +19528,14 @@ mod tests {
         assert_eq!(ed.offers.len(), 1, "the card is still there, unanswered");
         // A card that comes mid-message waits; the keys stay the message's
         ed.push_offer(card("Second"));
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat));
         feed(&mut ed, "n");
         assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input, "guard_and_go non");
         // Nothing being typed: a card that comes leaves the chat the keys — `C-q` hands them over
         ed.workspace.claude.chat.as_mut().unwrap().input.clear();
         ed.offers.clear();
         ed.push_offer(card("Claude wants to run"));
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the chat keeps the keys");
+        assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the chat keeps the keys");
         drawn(&mut ed);
         feed(&mut ed, "a");
         assert_eq!(
@@ -19544,7 +19547,7 @@ mod tests {
         feed(&mut ed, "<C-q>y");
         assert!(ed.offers.is_empty(), "y answered it");
         // (in the code from here)
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         // Focused, an answer letter the card doesn't take is said on it (`a` would start inserting in the code)
         ed.push_offer(card("Only y or n"));
         drawn(&mut ed);
@@ -19750,7 +19753,7 @@ mod tests {
         crate::term::render(&mut ed, &mut Vec::new(), 100, 20).unwrap();
         feed(&mut ed, "<C-w>w");
         assert!(
-            !ed.card_has_keys() && ed.workspace.is_at(crate::workspace::At::Code),
+            !ed.card_has_keys() && ed.workspace.is_at(crate::workspace::Here::Code),
             "C-w w from it left it"
         );
         feed(&mut ed, "<C-w>w");
@@ -20264,7 +20267,7 @@ mod tests {
         let (tx, chat_lines) = std::sync::mpsc::channel();
         ed.claude_lines = Some(tx);
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         while chat_lines.try_recv().is_ok() {}
         let (g, rx) = stand_in_ask(&mut ed, "upper");
         let request = serde_json::json!({"subtype": "mcp_message", "server_name": "tarae", "message": {
@@ -20361,7 +20364,7 @@ mod tests {
         let (tx, chat_lines) = std::sync::mpsc::channel();
         ed.claude_lines = Some(tx);
         crate::chat::open(&mut ed);
-        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.leave(crate::workspace::Here::Chat);
         let (g, rx) = stand_in_ask(&mut ed, "upper");
         let id = rx
             .try_iter()
@@ -21898,7 +21901,7 @@ q = \"delete_selection\"\n",
         ed.open(&dir.join("src/ui/card.rs")).unwrap();
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.clone()));
-        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.set_at(crate::workspace::Here::Side);
         ed.sidebar_list_files();
         settle_until(&mut ed, |ed| ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| !s.loading));
         let rows = |ed: &Editor| -> Vec<String> {
@@ -21910,15 +21913,15 @@ q = \"delete_selection\"\n",
         assert_eq!(sel(&ed), Some(2), "on the file being edited");
         feed(&mut ed, "j<ret>");
         assert_eq!(ed.doc().display_name_short(), "a.rs");
-        assert!(!ed.workspace.is_at(crate::workspace::At::Side), "the code has the keys again");
+        assert!(!ed.workspace.is_at(crate::workspace::Here::Side), "the code has the keys again");
         feed(&mut ed, " e");
-        assert!(ed.workspace.is_at(crate::workspace::At::Side));
+        assert!(ed.workspace.is_at(crate::workspace::Here::Side));
         feed(&mut ed, "kkh");
         assert_eq!(rows(&ed), ["src", "  ui", "  a.rs", "b.md"], "ui folded");
         feed(&mut ed, "l");
         assert_eq!(rows(&ed).len(), 5);
         feed(&mut ed, "<esc>");
-        assert!(ed.workspace.viewer.sidebar.is_some() && !ed.workspace.is_at(At::Side), "still showing");
+        assert!(ed.workspace.viewer.sidebar.is_some() && !ed.workspace.is_at(Here::Side), "still showing");
         feed(&mut ed, " e e");
         assert!(ed.workspace.viewer.sidebar.is_none(), "space e on the focused panel closes it");
         std::fs::remove_dir_all(&dir).ok();

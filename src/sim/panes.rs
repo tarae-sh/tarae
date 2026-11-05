@@ -341,16 +341,17 @@ fn docked_held(ed: &Editor) -> Result<(), String> {
     if ed.float_moving.is_some_and(|k| !ed.floating_in_sight(k)) {
         return Err("C-w m moving a pane not floating in sight".into());
     }
-    let keys = ed.workspace.is_at(crate::workspace::At::Slot)
-        || ed.workspace.is_at(crate::workspace::At::List(g.list));
+    let keys = ed.workspace.is_at(crate::workspace::Here::Slot)
+        || ed.workspace.is_at(crate::workspace::Here::List(g.list));
     // (a card over it: the hand stays under it)
     if ed.workspace.viewer.hand.is_some()
         && !keys
-        && !matches!(ed.workspace.viewer.at, crate::workspace::At::Float(_))
+        && !matches!(ed.workspace.here(), crate::workspace::Here::Float(_))
     {
         return Err(format!(
             "the hand {:?} with the keys at {:?}",
-            ed.workspace.viewer.hand, ed.workspace.viewer.at
+            ed.workspace.viewer.hand,
+            ed.workspace.here()
         ));
     }
     Ok(())

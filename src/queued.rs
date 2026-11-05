@@ -598,7 +598,7 @@ mod tests {
         crate::chat::open(&mut ed);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.workspace.viewer.at = crate::workspace::At::Code;
+        ed.workspace.viewer.keys_to_code();
         let generation = c.generation();
         (ed, dir, generation)
     }
@@ -964,7 +964,7 @@ mod tests {
         run(&mut ed, generation, 3, "sh slow.sh");
         pump(&mut ed, "Claude's started", running);
         ed.task_start(mine);
-        ed.workspace.viewer.at = crate::workspace::At::Slot;
+        ed.workspace.set_at(crate::workspace::Here::Slot);
         assert!(screen(&mut ed).contains("enter run now — stops sh slow.sh"));
         ed.handle_key("ret".parse().unwrap());
         pump(&mut ed, "the user's ran", |ed| order(&dir) == ["mine"] && !running(ed));

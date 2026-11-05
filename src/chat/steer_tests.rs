@@ -14,7 +14,7 @@ fn working() -> (Editor, std::sync::mpsc::Receiver<String>) {
     c.msgs.push(Msg::new(Role::User, "fix the parser", ""));
     (c.state, c.started) = (State::Thinking, crate::clock::now());
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = At::Chat;
+    ed.workspace.set_at(Here::Chat);
     (ed, lines)
 }
 

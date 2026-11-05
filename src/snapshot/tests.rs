@@ -213,7 +213,7 @@ fn a_runs_changes_wait_for_a_save_still_being_written() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let answered = || {
         crate::tools::ANSWERED
@@ -272,7 +272,7 @@ fn a_folder_thats_no_checkout_is_said_once_a_turn() {
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let answered = |n: u64| {
         crate::tools::ANSWERED
             .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(n)).map(|(_, r)| r.clone()))
@@ -327,7 +327,7 @@ fn a_save_into_a_folder_during_a_run_isnt_the_runs() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let answered = || {
         crate::tools::ANSWERED
@@ -891,7 +891,7 @@ fn a_runs_changes_join_the_turn_and_undo_takes_them_back() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -991,7 +991,7 @@ fn what_came_with_heads_move_isnt_the_turns() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1172,7 +1172,7 @@ fn an_edit_and_its_commit_in_one_run_stay_the_turns() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1231,7 +1231,7 @@ fn checks_and_tests_are_covered_and_ignored_deletions_said() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1309,7 +1309,7 @@ fn a_protected_name_a_run_made_is_asked_about_before_the_next_run() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1378,7 +1378,7 @@ fn turn_in(dir: &Path) -> (crate::editor::Editor, u64) {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     (ed, generation)
 }
@@ -1604,7 +1604,7 @@ fn a_stopped_run_and_one_past_its_turn_are_kept_too() {
     crate::chat::open(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.workspace.viewer.keys_to_code();
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;

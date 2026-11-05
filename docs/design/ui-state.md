@@ -72,7 +72,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
   "size": [160, 48],
   "mode": "normal",
   "keys": {
-    "to": "card#12", "region": "card", "takes": "answers",
+    "to": "card#12", "pane": "pane#5", "region": "card", "takes": "answers",
     "answers": ["y", "a", "n", "v"], "pending": "", "drawn": true, "under": "chat"
   },
   "prompt": null,
@@ -120,6 +120,9 @@ side git · 4 rows · in hand git:src/term.rs
 
 - **`keys`** — the field that would have stopped all four slips.
   - `to`: the element id that takes the next key.
+  - `pane`: the docked pane the keys are in, by its id (`pane#5`) — under a card, the picker or a prompt with them
+    too, the one they go back to (onetree S4, V 35: the keys are a pane's, `Viewer.at`; its kind is what the pane shows).
+    The text form's `keys →` line adds `· in pane#5` where `to` names something else (`chat`, `side`, a card).
   - `region`: `code` · `prompt` · `picker` · `chat` · `view:chat` (the chat's view mode — normal mode on its
     transcript, a read-only document, `chatdoc.rs`; its handler `chat-view`, V 8) · `view:terminal` (the terminal's — tarae's keys on its panel, its handler
     `terminal-view`; there's no `slot:terminal`) · `output:task` · `output:preflight` · `output:tests` (panes P2c,

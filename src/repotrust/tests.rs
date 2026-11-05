@@ -406,7 +406,7 @@ fn another_checkouts_part_stays_its_own_card() {
 
 /// Keys to the code (the chat opened with them).
 fn feed(ed: &mut Editor, keys: &str) {
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     let mut chars = keys.chars();
     while let Some(c) = chars.next() {
         let key: crate::key::Key = match c {

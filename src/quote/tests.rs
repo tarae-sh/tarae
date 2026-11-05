@@ -464,7 +464,7 @@ fn a_yes_for_a_pointed_key_stays_with_its_element() {
 #[test]
 fn a_queued_message_keeps_its_own_quotes() {
     let (mut ed, claude) = code();
-    let unfocus = |ed: &mut Editor| ed.workspace.leave(crate::workspace::At::Chat);
+    let unfocus = |ed: &mut Editor| ed.workspace.leave(crate::workspace::Here::Chat);
     feed(&mut ed, "x >first<ret>");
     assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "Claude works");
     unfocus(&mut ed);
@@ -485,7 +485,7 @@ fn a_queued_message_keeps_its_own_quotes() {
     assert!(c.queued_quotes.is_empty());
     // `↑`: the queued message back, its quote ahead of the one quoted since
     let (mut ed, _claude) = code();
-    let unfocus = |ed: &mut Editor| ed.workspace.leave(crate::workspace::At::Chat);
+    let unfocus = |ed: &mut Editor| ed.workspace.leave(crate::workspace::Here::Chat);
     feed(&mut ed, "x >first<ret>");
     unfocus(&mut ed);
     feed(&mut ed, "jx >again<ret>");
@@ -580,7 +580,7 @@ fn the_screen_goes_only_with_the_inputs_message() {
     crate::chat::stand_in_done(&mut ed);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     assert_eq!(c.with_chips(), ["screen 80×24"], "it stays");
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "mine<ret>");
     let sent = sent(&claude);
     assert!(!sent[0].contains("the screen as seen") && sent[1].contains("the screen as seen"), "{sent:?}");
@@ -724,14 +724,14 @@ fn a_code_quote_shows_in_its_colours_and_a_press_reads_it_whole() {
     let d = ed.doc();
     assert_eq!(d.title.as_deref(), Some(format!("quoted · {}", q.label).as_str()));
     assert!(d.text == q.text.as_str() && d.read_only.is_some() && d.paint == q.paint);
-    assert!(ed.workspace.is_at(crate::workspace::At::Code));
+    assert!(ed.workspace.is_at(crate::workspace::Here::Code));
     assert_eq!(
         ed.workspace.claude.chat.as_ref().unwrap().quotes,
         std::slice::from_ref(&q),
         "a press never takes it off"
     );
     let id = ed.doc().id;
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     frame(&mut ed);
     press(&mut ed, Some(0));
     assert_eq!((ed.doc().id, ed.docs.len()), (id, docs + 1), "pressed again, the same buffer");
@@ -755,7 +755,7 @@ fn a_press_on_a_chip_shows_what_goes_and_takes_nothing_off() {
     let (docs, current) = (ed.docs.len(), ed.doc().id);
     press(&mut ed, None);
     assert_eq!((ed.docs.len(), ed.doc().id), (docs, current), "3 things: nothing opened");
-    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the chat has the keys");
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the chat has the keys");
     let with = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().with_chips().len();
     assert_eq!(with(&ed), 3);
     // (the quote off: the screen and the element fit, each a chip)
@@ -767,7 +767,7 @@ fn a_press_on_a_chip_shows_what_goes_and_takes_nothing_off() {
     let d = ed.doc();
     assert_eq!(d.title.as_deref(), Some("screen 80×24"));
     assert!(d.text == "the screen as seen" && d.read_only.is_some());
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     ed.status = None;
     frame(&mut ed);
     press(&mut ed, Some(1));
@@ -907,11 +907,11 @@ fn enter_with_nothing_typed_says_so() {
 fn a_quote_keeps_out_only_its_own_buffers_selection() {
     let (mut ed, claude) = code();
     feed(&mut ed, "jx >");
-    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.leave(crate::workspace::Here::Chat);
     ed.new_scratch();
     ed.doc_mut().text = Rope::from_str("fn main() {}\nlet code = 1;\nlet more = 2;\n");
     feed(&mut ed, "jx");
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "why?<ret>");
     let sent = sent(&claude);
     assert!(sent[0].contains("<selection lines=\"2-2\">") && sent[0].contains("<quoted id="), "{}", sent[0]);

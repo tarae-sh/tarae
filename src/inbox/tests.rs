@@ -387,7 +387,7 @@ fn inside_zellij_c_qs_twin_reaches_what_c_q_goes_to() {
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "hi", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "hello", ""));
     ed.workspace.claude.chat = Some(c);
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     park(&mut ed, back, claudes(1, 20));
     assert_eq!(ed.key_said("C-q"), "F2");
     screen(&mut ed, 160, 30);
@@ -418,7 +418,7 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
         let mut c = crate::chat::Chat::new();
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "hi", ""));
         session(&mut ed, back).claude.chat = Some(c);
-        session(&mut ed, back).viewer.at = crate::workspace::At::Chat;
+        session(&mut ed, back).set_at(crate::workspace::Here::Chat);
         up(&mut ed, claudes(1, 20));
         assert!(ed.workspace_switch(back).is_in());
         let says = if twins {
@@ -462,12 +462,12 @@ fn c_q_from_a_chat_holding_the_keys_reaches_the_card() {
     };
     // The chat open and focused here; the card parked behind
     ed.workspace.claude.chat = Some(chat(false));
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     park(&mut ed, back, claudes(1, 20));
     assert!(ed.ui_state().text().contains("keys → chat"), "{}", ed.ui_state().text());
     // (that session's own chat holding the keys too)
     session(&mut ed, back).claude.chat = Some(chat(false));
-    session(&mut ed, back).viewer.at = crate::workspace::At::Chat;
+    session(&mut ed, back).set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<C-q>");
     assert_eq!(ed.workspace.id, back, "C-q went to the card's session");
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 1"));
@@ -477,7 +477,7 @@ fn c_q_from_a_chat_holding_the_keys_reaches_the_card() {
     assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat there");
     // While Claude works, holding the keys: a card up here
     ed.workspace.claude.chat = Some(chat(true));
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.set_at(crate::workspace::Here::Chat);
     up(&mut ed, claudes(2, 5));
     feed(&mut ed, "<C-q>n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());

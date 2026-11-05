@@ -54,9 +54,9 @@ fn run(choices: Choices) -> Vec<String> {
 
 /// The front workspace's side panel on the git tab, the keys where they were — as a restore brings it back.
 fn brought_back(ed: &mut Editor) {
-    let at = ed.workspace.viewer.at;
+    let at = ed.workspace.here();
     ed.sidebar_show(Mode::Git);
-    ed.workspace.viewer.at = at;
+    ed.workspace.set_at(at);
 }
 
 fn input(sim: &mut Sim, ed: &mut Editor, ids: &[WorkspaceId]) -> String {
