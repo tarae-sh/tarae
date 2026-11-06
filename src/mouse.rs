@@ -1335,8 +1335,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Press) => Says(PROMPT_ROWS),
             (_, A::Drag) => Gap(S, "a drag follows the pointer's row"),
             (_, A::Double) => AS_ONE,
-            // (its menu is `tab`'s: what it fills in is the line's text — a wheel never types)
-            (_, A::Wheel) => Not("tab moves through its completions"),
+            // (the completions' rows scrolled, `tab`'s pick and the line kept — a wheel never types, #416)
+            (_, A::Wheel) => Acts,
             (_, A::Release) => RELEASE,
             (_, A::Hover) => HOVER,
         },
@@ -1445,7 +1445,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             }
         },
         Su::Rail => match (part, act) {
-            (_, A::Press) | (_, A::Wheel) | (Part::Row(_), A::Double) => Acts,
+            // (`↑/↓ N more` pages as a scroll arrow does: each press of a double a page — #416, first met with room)
+            (_, A::Press) | (_, A::Wheel) | (Part::Row(_) | Part::More(_), A::Double) => Acts,
             (_, A::Double) => AS_ONE,
             (_, A::Drag) => Gap(S, "a drag follows the pointer's row"),
             (_, A::Release) => RELEASE,

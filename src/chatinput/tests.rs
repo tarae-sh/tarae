@@ -180,6 +180,90 @@ fn an_unused_key_says_where_esc_goes() {
     assert!(said(&ed).ends_with("esc normal"), "{}", said(&ed));
 }
 
+/// #416: the input wraps at words as the transcript does — every row after a line's first starts on a word (none on a
+/// blank: one cell further in than the rest), a blank may hang in a row's last cell, text leaves it free; a word longer
+/// than the row still breaks; the rows hold the text whole, a line break their only gap.
+#[test]
+fn the_inputs_rows_break_at_words() {
+    use unicode_width::UnicodeWidthStr as _;
+    let text = "The wheel over the chat input scrolls its rows past them, out of sight.\n\
+                a_word_far_longer_than_one_row_is_broken_where_it_must and then on\n\nend 中文 字";
+    for w in [12, 22, 30, 41] {
+        let room = w - 2;
+        let laid = crate::input::Input::from(text).laid(w);
+        let rows: Vec<(&str, usize)> = (0..laid.height()).map(|i| laid.row(i)).collect();
+        // (the rows, line breaks between them where the text has one, are the text)
+        let mut whole = String::new();
+        for (i, (row, start)) in rows.iter().enumerate() {
+            if i > 0 && text[..*start].ends_with('\n') {
+                whole.push('\n');
+            }
+            whole.push_str(row);
+        }
+        assert_eq!(whole, text, "{w}: {rows:?}");
+        for (i, (row, start)) in rows.iter().enumerate() {
+            let wraps = rows.get(i + 1).is_some_and(|(_, next)| !text[..*next].ends_with('\n'));
+            assert!(row.trim_end().width() < room, "{w}: {row:?} leaves its last cell to a blank");
+            assert!(row.width() <= room, "{w}: {row:?} wider than {room}");
+            let continued = *start > 0 && !text[..*start].ends_with('\n');
+            assert!(!(continued && row.starts_with(' ')), "{w}: {row:?} starts on a blank");
+            // (broken mid-word only where the word is longer than a row)
+            if wraps && !row.ends_with(' ') {
+                let next = rows[i + 1].0;
+                let word = row.rsplit(' ').next().unwrap_or(row).to_string()
+                    + next.split(' ').next().unwrap_or(next);
+                assert!(word.width() >= room - 1, "{w}: {row:?} | {next:?} breaks a word that fits a row");
+            }
+        }
+    }
+    // (at 22: the rows as read)
+    let laid = crate::input::Input::from("past them, out of sight now").laid(22);
+    let rows: Vec<&str> = (0..laid.height()).map(|i| laid.row(i).0).collect();
+    assert_eq!(rows, ["past them, out of ", "sight now"]);
+    // (the cursor after the hanging blank: at that row's end, in the row)
+    let mut i = crate::input::Input::from("past them, out of sight now");
+    i.set_at("past them, out of sight now", "past them, out of ".len());
+    assert_eq!(i.laid(22).cursor(), (0, 18));
+}
+
+/// #416: a draft taller than the input's rows has a thumb in the cell at their right — the docked chat's outer cell, as
+/// the transcript's above it, the ask line's inside its frame's right line —, sized by the share in sight and where the
+/// wheel left them; none while the draft fits.
+#[test]
+fn a_draft_taller_than_its_rows_has_a_thumb() {
+    use crate::event::MouseKind;
+    for asking in [false, true] {
+        let mut ed = editor("fn main() {}\n");
+        let thumbs = |ed: &mut Editor| {
+            let s = frame(ed);
+            let at = ed.screen.chat_input.get().unwrap();
+            let (_, w) = s.size();
+            let rows: Vec<usize> = (0..at.rows)
+                .filter(|&r| {
+                    (at.x as u16..w)
+                        .any(|x| s.cell((at.y + r) as u16, x).is_some_and(|c| c.contents() == "▎"))
+                })
+                .collect();
+            (at, rows)
+        };
+        let set = |ed: &mut Editor, text: &str| {
+            let c = ed.workspace.claude.chat.as_mut().unwrap();
+            c.input = text.into();
+            c.asking = asking;
+        };
+        set(&mut ed, "a short draft");
+        assert_eq!(thumbs(&mut ed).1, Vec::<usize>::new(), "asking {asking}: it fits, no thumb");
+        let draft: String = (0..40).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        set(&mut ed, &draft);
+        let (at, rows) = thumbs(&mut ed);
+        assert_eq!(rows, [at.rows - 1], "asking {asking}: its end in sight, the thumb at the foot");
+        for _ in 0..40 {
+            mouse(&mut ed, MouseKind::ScrollUp, (at.x, at.y));
+        }
+        assert_eq!(thumbs(&mut ed).1, [0], "asking {asking}: wheeled to the top, the thumb there");
+    }
+}
+
 /// A frame, as the screen shows it.
 fn frame(ed: &mut Editor) -> vt100::Screen {
     let (w, h) = (140, 34);

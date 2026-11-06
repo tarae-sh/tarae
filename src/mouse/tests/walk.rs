@@ -256,12 +256,12 @@ const MOUSE_SCENES: &[Scene] = &[
         c.selected = Some(0);
         ed.completion = Some(c);
     }),
-    // (#413: the selected item's docs longer than their card)
+    // (#413: the selected item's docs longer than their card — and the menu longer than its rows, its wheel the rows': #416)
     ("the completion's docs, long", |ed| {
         long_text(ed);
         feed(ed, &["j", "A"]);
         let docs: String = (0..40).map(|i| format!("Line {i} of the docs.\n\n")).collect();
-        let items: Vec<serde_json::Value> = (0..3)
+        let items: Vec<serde_json::Value> = (0..30)
             .map(|i| serde_json::json!({"label": format!("line_{i}"), "documentation": docs}))
             .collect();
         let at = ed.doc().selection().primary().head;
@@ -380,6 +380,64 @@ const MOUSE_SCENES: &[Scene] = &[
             vec![span(&format!("a row past its cells, {}and farewell", "on and on ".repeat(8)), Role::Faint)],
         ];
         ed.plugin_overlay("demo", Some(Overlay { rows, hold: Some(600_000) }));
+    }),
+    // (#416: the surfaces #413's walk named "no scene yet" — each with more rows than it shows, so its wheel must act)
+    ("the review's rail, many files", |ed| {
+        use crate::codereview::{Base, CodeReview, File};
+        let root = ed.workspace.root.clone();
+        ed.docs[0].path.set(Some(root.join("notes.txt")));
+        let file = |i: usize| {
+            let rel = format!("src/f{i:02}.rs");
+            File { path: root.join(&rel), rel, added: 0, removed: 1, new: false, gone: true, binary: false }
+        };
+        let base = Base::Turn { at: 0, question: "a question".into() };
+        ed.workspace.code_review =
+            Some(CodeReview::for_test(base, root.clone(), (0..80).map(file).collect()));
+        crate::codereview::show(ed, 0, false);
+        // (lines to read: a drag or a double in the code has text to select)
+        ed.doc_mut().text = ropey::Rope::from_str("fn one() {}\nfn two() {}\n");
+        ed.workspace.viewer.keys_to_code();
+    }),
+    ("the terminal, a long past", |ed| {
+        crate::uistate::tests::terminal(ed);
+        let past: String = (0..200).map(|i| format!("past line {i}\r\n")).collect();
+        ed.workspace.terminal.as_mut().unwrap().parser.process(past.as_bytes());
+    }),
+    ("the terminal in view mode, a long past", |ed| {
+        crate::uistate::tests::terminal(ed);
+        let past: String = (0..200).map(|i| format!("past line {i}\r\n")).collect();
+        ed.workspace.terminal.as_mut().unwrap().parser.process(past.as_bytes());
+        feed(ed, &["<C-\\>"]);
+    }),
+    ("the tests' list, many results", |ed| {
+        let case = |i: usize| crate::test_results::Case {
+            name: format!("case_{i:02}"),
+            status: crate::test_results::Status::Passed,
+            secs: None,
+            message: Vec::new(),
+            at: None,
+        };
+        let run = crate::testing::TestRun::finished("t", (0..80).map(case).collect(), vec!["ok".into()]);
+        ed.workspace.test_run = Some(run);
+        shown(ed);
+        ed.list_focus(crate::pane::GroupKind::Tests);
+    }),
+    ("a plugin's panel, many rows", |ed| {
+        // (a host with no thread: nothing of a plugin's answers between the walk's looks)
+        ed.plugins_detached();
+        ed.plugin_panel_stand_in(80);
+    }),
+    ("an edit review, a long file", |ed| {
+        long_text(ed);
+        let (id, at) = (ed.doc().id, ed.doc().text.line_to_byte(30));
+        let old = ed.doc().text.line(30).to_string();
+        crate::llm::review_with(
+            ed,
+            id,
+            "change it",
+            vec![(at, at + old.len(), old, "let changed = 0;\n".into())],
+            None,
+        );
     }),
     // (focus E1: the turn's map — a file row's marks and the code's signs, each a button: its ground lightens, a press
     // is its stop)
@@ -529,8 +587,7 @@ const UNDER_WAY: &[&str] = &[
 thread_local!(static SCENE_UNDER_WAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
 
 /// Scenes made with more than a screen of a surface (by its name in `Surface`'s `Debug`): its wheel has room to scroll,
-/// so there it must act — elsewhere a wheel that does nothing may be one with nothing to scroll. (The wheel's room isn't
-/// set up for the rail, the terminal, a plugin's panel, a floating pane, a group's list or the edit review yet: S's.)
+/// so there it must act — elsewhere a wheel that does nothing may be one with nothing to scroll.
 const SCROLLS: &[(&str, &str)] = &[
     ("a split side by side", "Code"),
     ("a split over and under", "Code"),
@@ -548,6 +605,13 @@ const SCROLLS: &[(&str, &str)] = &[
     ("a card cut to fit, long", "Card"),
     ("the chat's input, a long draft", "Input"),
     ("the ask line, a long draft", "Input"),
+    ("the command line, its completions", "Prompt"),
+    ("the review's rail, many files", "Rail"),
+    ("the terminal, a long past", "Terminal"),
+    ("the terminal in view mode, a long past", "TerminalView"),
+    ("the tests' list, many results", "List"),
+    ("a plugin's panel, many rows", "Plugin"),
+    ("an edit review, a long file", "EditReview"),
 ];
 
 /// What the wheel has to scroll on a surface (#413).
@@ -555,8 +619,6 @@ const SCROLLS: &[(&str, &str)] = &[
 enum Room {
     /// Text or rows that can be taller than the surface: a scene of `SCROLLS` sets that up, and its wheel must act there.
     Scene,
-    /// It scrolls, but no scene sets its room up yet (why) — a list that only shrinks.
-    NotYet(&'static str),
     /// Nothing the wheel could scroll there (why).
     None(&'static str),
 }
@@ -576,17 +638,14 @@ fn room(s: Surface) -> Room {
         | S::Output(_)
         | S::Popup
         | S::Completion
+        | S::Prompt
+        | S::Rail
+        | S::Terminal
+        | S::TerminalView
+        | S::List(_)
+        | S::Plugin
+        | S::EditReview
         | S::Card => Room::Scene,
-        S::Rail => Room::NotYet("the review's rail scrolls (`CodeReview::scroll`)"),
-        S::Terminal | S::TerminalView => {
-            Room::NotYet("the terminal scrolls its past — its scene wants a pty")
-        }
-        S::List(_) => Room::NotYet("a group's list scrolls its view (`grouplist::wheel`)"),
-        S::Plugin => Room::NotYet("a plugin's panel scrolls its view — its scene wants a plugin"),
-        S::EditReview => Room::NotYet("Claude's edit review scrolls (`Review.scroll`)"),
-        S::Prompt => Room::NotYet(
-            "its line is one row, scrolled sideways to its cursor; its completions past 8 rows follow `tab`'s selection",
-        ),
         S::Pointing => Room::None("pointing's labels: a press picks one"),
         S::Toast => Room::None("news, a row a message — the whole text is `:messages`', a press away"),
         S::Overlay => Room::None("news: the wheel goes to what's under it"),
@@ -1537,7 +1596,7 @@ fn every_surface_the_wheel_meets_scrolls_or_says_why() {
             Room::Scene if !set_up => {
                 off.push(format!("{name}: it scrolls, and no scene of `SCROLLS` sets its room up"))
             }
-            Room::NotYet(why) | Room::None(why) if set_up => {
+            Room::None(why) if set_up => {
                 off.push(format!("{name}: in `SCROLLS`, yet classed {room:?} — {why}"))
             }
             _ => {}

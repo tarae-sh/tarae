@@ -44,6 +44,11 @@ pub struct Completion {
     pub docs: Option<(usize, Vec<crate::markdown::Line>)>,
     /// The docs' rows scrolled down by the wheel over them (#413) — from the top again with each item's docs.
     pub docs_scroll: usize,
+    /// Where the wheel left the menu's rows (#416): its first row in sight, held until a key moves the selection or the
+    /// list changes (`move_by`, `filter`) — none: the selection's (`term::draw_completion`).
+    pub wheeled: Option<usize>,
+    /// The menu's first row and its rows in sight, as last drawn — the wheel moves from there.
+    pub drawn: std::cell::Cell<(usize, usize)>,
     matcher: Matcher,
 }
 
@@ -61,6 +66,8 @@ impl Completion {
             incomplete,
             docs: None,
             docs_scroll: 0,
+            wheeled: None,
+            drawn: Default::default(),
             matcher: Matcher::new(Config::DEFAULT),
         }
     }
@@ -117,10 +124,12 @@ impl Completion {
             })
             .collect();
         self.selected = self.selected.filter(|&s| s < self.shown.len());
+        self.wheeled = None;
     }
 
     pub fn move_by(&mut self, delta: isize) {
         let n = self.shown.len() as isize;
+        self.wheeled = None;
         if n == 0 {
             return;
         }
@@ -131,14 +140,30 @@ impl Completion {
         });
     }
 
-    /// The wheel: `delta` rows on, stopping at the ends (never round, as `tab` goes).
-    pub fn wheel(&mut self, delta: isize) {
-        let last = self.shown.len().saturating_sub(1) as isize;
-        if self.shown.is_empty() {
-            return;
+    /// The wheel: the menu's rows `delta` on from where they were drawn, within the list — the selection stays, in sight
+    /// or not (#416: the wheel never moves a list's selection; `tab` and the arrows do). False: nothing to move (the
+    /// list fits, or that end is in sight).
+    pub fn wheel(&mut self, delta: isize) -> bool {
+        let (first, rows) = self.drawn.get();
+        let end = self.shown.len().saturating_sub(rows.max(1));
+        let to = first.saturating_add_signed(delta).min(end);
+        if to == first {
+            return false;
         }
-        let from = self.selected.map_or(-1, |s| s as isize);
-        self.selected = Some((from + delta).clamp(0, last) as usize);
+        self.wheeled = Some(to);
+        true
+    }
+
+    /// The menu's first row in sight, `rows` of them: where the wheel left it, else the selection's (the last row in
+    /// sight) — kept as drawn for the wheel.
+    pub fn first_shown(&self, rows: usize) -> usize {
+        let end = self.shown.len().saturating_sub(rows.max(1));
+        let first = match self.wheeled {
+            Some(top) => top.min(end),
+            None => self.selected.map_or(0, |s| s.saturating_sub(rows.saturating_sub(1))),
+        };
+        self.drawn.set((first, rows));
+        first
     }
 
     pub fn current(&self) -> Option<&Item> {

@@ -12606,7 +12606,7 @@ fn draw_completion(
     if rows == 0 {
         return Ok(());
     }
-    let first = c.selected.map_or(0, |s| s.saturating_sub(rows - 1));
+    let first = c.first_shown(rows);
     let visible = first..first + rows;
     let label_w = visible.clone().map(|i| c.item(i).label.width()).max().unwrap_or(0).min(LABEL_MAX);
     let detail_w = visible.clone().map(|i| c.item(i).detail.width()).max().unwrap_or(0).min(DETAIL_MAX);
@@ -19479,6 +19479,14 @@ fn draw_ask_line(
         queue!(out, MoveTo((x0 + cw) as u16, yy as u16))?;
         put_line(out, line, "│")?;
     }
+    // (a draft taller than its rows: its thumb inside the frame's right side, as a prompt's list has it — #416)
+    if input.height() > input_h {
+        let bar = scroll_thumb(input_h, input.height(), first_input);
+        for i in (0..input_h).filter(|i| bar.contains(i)) {
+            apply(out, faint)?;
+            queue!(out, MoveTo((x0 + cw - 1) as u16, (input_top + i) as u16), Print(THUMB))?;
+        }
+    }
     // Its keys in its bottom line, a prompt's: send (or queue for the turn's end), the conversation, the lines off, close
     let mut hints: Vec<(&str, &str)> = vec![("enter", if c.busy() { "queue" } else { "send" })];
     // (while Claude works the second way in: its next tool answer — `chat::steer`)
@@ -20255,6 +20263,14 @@ fn draw_chat(
         };
         chat_row_end(out, card, cw, 2 + used)?;
         y += 1;
+    }
+    // (a draft taller than its rows: its thumb in the outer cell, as the transcript's above it — #416)
+    if input.height() > input_h {
+        let bar = scroll_thumb(input_h, input.height(), first_input);
+        for i in (0..input_h).filter(|i| bar.contains(i)) {
+            apply(out, faint)?;
+            queue!(out, MoveTo(thumb_x as u16, (input_top + i) as u16), Print(THUMB))?;
+        }
     }
     // Hint — floating, in its frame's bottom line, under the usage row
     let key = Style { bold: true, ..dim };
@@ -24625,7 +24641,7 @@ fn draw_prompt(
     let over = (lay.status_y as usize).saturating_sub(lay.text_top as usize + 2 * pad + 2);
     let rows = cands.len().min(ROWS).min(over);
     let selected_i = p.cycle.as_ref().map(|(_, i)| *i);
-    let first = selected_i.map_or(0, |s| s.saturating_sub(rows.saturating_sub(1)));
+    let first = p.menu_first(cands.len(), rows);
     let visible = first..first + rows;
     let label_w = visible.clone().map(|i| cands[i].label.width()).max().unwrap_or(0).min(LABEL_MAX);
     let hint_w = visible.clone().map(|i| cands[i].hint.width()).max().unwrap_or(0).min(HINT_MAX);

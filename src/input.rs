@@ -244,20 +244,42 @@ impl Laid {
 fn rows(text: &str, w: usize) -> Vec<std::ops::Range<usize>> {
     let room = w.saturating_sub(2);
     let mut rows = Vec::new();
-    let (mut start, mut col) = (0, 0);
-    for (b, ch) in text.char_indices() {
-        let cw = ch.width().unwrap_or(0);
-        if ch == '\n' || col + cw > room {
-            rows.push(start..b);
-            col = 0;
-            start = b;
-            if ch == '\n' {
-                start += 1;
-                continue;
-            }
+    let mut at = 0;
+    for line in text.split('\n') {
+        wrap_line(text, at..at + line.len(), room, &mut rows);
+        at += line.len() + 1;
+    }
+    rows
+}
+
+/// One line of the input (`line`, bytes of `text`) in rows of `room` cells, as the transcript wraps (`wrap::rows`,
+/// #416): broken after a blank where it can — a word longer than the row mid-word — so every row after the first starts
+/// on a word; text leaves a row's last cell free and a blank may hang there, so a word that ends at the edge isn't
+/// carried down by the space after it.
+fn wrap_line(text: &str, line: std::ops::Range<usize>, room: usize, rows: &mut Vec<std::ops::Range<usize>>) {
+    // (each character: its byte, its cells, whether it's a blank)
+    let cs: Vec<(usize, usize, bool)> = text[line.clone()]
+        .char_indices()
+        .map(|(b, ch)| (line.start + b, ch.width().unwrap_or(0), ch == ' ' || ch == '\t'))
+        .collect();
+    let (mut start, mut col) = (line.start, 0);
+    // (where the row could end: after the last blank in it — its byte and the next character's index)
+    let mut brk: Option<(usize, usize)> = None;
+    let mut i = 0;
+    while i < cs.len() {
+        let (b, cw, blank) = cs[i];
+        let fits = col + cw < room + usize::from(blank) || room == 0;
+        if !fits && b > start {
+            let (end, next) = brk.unwrap_or((b, i));
+            rows.push(start..end);
+            (start, col, brk, i) = (end, 0, None, next);
+            continue;
         }
         col += cw;
+        i += 1;
+        if blank {
+            brk = Some((b + 1, i));
+        }
     }
-    rows.push(start..text.len());
-    rows
+    rows.push(start..line.end);
 }

@@ -109,12 +109,47 @@ impl Prompt {
     pub fn new(kind: PromptKind, text: &str) -> Prompt {
         let mut input = crate::input::Input::new(crate::document::PROMPT_INPUT);
         input.set(text);
-        Prompt { kind, label: None, input, cycle: None, recalled: None, left: Default::default(), view: None }
+        Prompt {
+            kind,
+            label: None,
+            input,
+            cycle: None,
+            recalled: None,
+            left: Default::default(),
+            wheeled: None,
+            menu: Default::default(),
+            view: None,
+        }
     }
 
     /// What's typed.
     pub fn text(&self) -> String {
         self.input.text()
+    }
+
+    /// The completions' first row in sight, `rows` of `n`: where the wheel left it while the line and `tab`'s pick are as
+    /// they were then, else the pick's (the last row in sight) — kept as drawn for the wheel.
+    pub fn menu_first(&self, n: usize, rows: usize) -> usize {
+        let picked = self.cycle.as_ref().map(|(_, i)| *i);
+        let held = self.wheeled.as_ref().filter(|(_, text, at)| (text, *at) == (&self.text(), picked));
+        let first = match held {
+            Some((top, ..)) => (*top).min(n.saturating_sub(rows.max(1))),
+            None => picked.map_or(0, |s| s.saturating_sub(rows.saturating_sub(1))),
+        };
+        self.menu.set((first, rows));
+        first
+    }
+
+    /// The wheel over the completions, `n` of them: their rows `by` on from where they were drawn — never `tab`'s pick nor
+    /// the line (#416). False: nothing to move (they fit, or that end is in sight).
+    pub fn menu_wheel(&mut self, n: usize, by: isize) -> bool {
+        let (first, rows) = self.menu.get();
+        let to = first.saturating_add_signed(by).min(n.saturating_sub(rows.max(1)));
+        if rows == 0 || to == first {
+            return false;
+        }
+        self.wheeled = Some((to, self.text(), self.cycle.as_ref().map(|(_, i)| *i)));
+        true
     }
 
     /// Where the cursor is (a byte of `text`).

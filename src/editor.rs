@@ -112,6 +112,11 @@ pub struct Prompt {
     pub recalled: Option<(usize, String)>,
     /// The line's first byte drawn last frame (`term::prompt_window`): a long line moves only as its cursor needs.
     pub left: std::cell::Cell<usize>,
+    /// Where the wheel left the completions' rows (#416): their first in sight, held while the line and `tab`'s pick are
+    /// as they were then (`menu_first`) — none: the pick's.
+    pub wheeled: Option<(usize, String, Option<usize>)>,
+    /// The completions' first row and their rows in sight, as last drawn — the wheel moves from there.
+    pub menu: std::cell::Cell<(usize, usize)>,
     /// `space n`'s: the code's view as it opened — its card moves it as far as it needs, and a line that ends with no card
     /// to show puts it back.
     pub view: Option<ViewAt>,
@@ -3559,6 +3564,14 @@ impl Editor {
                     return;
                 }
                 match part {
+                    // (the wheel over its card: the completions' rows, never `tab`'s pick nor the line — #416; nothing to
+                    // move, nothing drawn)
+                    _ if wheel => {
+                        let n = self.cmdline_completion().map_or(0, |c| c.cands.len());
+                        if !self.prompt.as_mut().is_some_and(|p| p.menu_wheel(n, if up { -3 } else { 3 })) {
+                            self.unchanged = true;
+                        }
+                    }
                     Part::Outside => self.cancel_prompt(),
                     Part::Row(i) if down => self.cmdline_pick(i),
                     // (its line: the cursor on the character pressed — a drag from there selects, #153)
@@ -3647,8 +3660,8 @@ impl Editor {
                     _ => {}
                 }
             }
-            // The completion menu: a row accepts its item, as `enter` on it; the wheel moves through it, as `tab` — over
-            // its docs it scrolls them, the item kept (#413)
+            // The completion menu: a row accepts its item, as `enter` on it; the wheel scrolls its rows, the selection kept
+            // (#416 — `tab` and the arrows move it); over its docs it scrolls them, the item kept (#413)
             (S::Completion, part) => {
                 took_mouse(S::Completion);
                 let over_docs = s.completion_docs.get().is_some_and(|r| crate::mouse::inside(r, x, y));
@@ -3669,10 +3682,9 @@ impl Editor {
                     }
                     (K::Down, None) => self.set_status("a row of the list accepts it · esc close"),
                     (K::ScrollDown | K::ScrollUp, _) => {
-                        if let Some(c) = self.completion.as_mut() {
-                            c.wheel(if up { -3 } else { 3 });
-                        }
-                        self.completion_docs();
+                        // (at an end: nothing moves, nothing drawn)
+                        self.unchanged |=
+                            !self.completion.as_mut().is_some_and(|c| c.wheel(if up { -3 } else { 3 }));
                     }
                     _ => {}
                 }

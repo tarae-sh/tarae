@@ -1,5 +1,5 @@
 //! Landing O of the mouse audit (`.sb/mouse-plan.md` §4): which-key's rows press as their keys, completion's accept,
-//! its wheel moves through it; the note card's press replies; the wheel over a cut card scrolls its body, a drag from a
+//! its wheel scrolls its rows (#416); the note card's press replies; the wheel over a cut card scrolls its body, a drag from a
 //! card says why it selects nothing; the start screen's rows press their keys; a press ends a key sequence under way;
 //! the middle button pastes where it lands, the wheel sideways scrolls the code's columns.
 
@@ -67,17 +67,32 @@ fn completing(ed: &mut Editor) {
     frame(ed);
 }
 
+/// #416: the wheel scrolls the menu's rows and never its selection ("the wheel never moves a list's selection") — `tab`
+/// and the arrows do, bringing the rows back to it.
 #[test]
-fn a_press_on_a_completion_row_accepts_it_and_the_wheel_moves_through_it() {
+fn a_press_on_a_completion_row_accepts_it_and_the_wheel_scrolls_its_rows() {
     let mut ed = editor();
     completing(&mut ed);
     let top = ed.doc().top;
     let (x, y, ..) = ed.screen.completion_card.get().expect("the menu drawn");
+    let first = |ed: &Editor| ed.screen.completion_rows.borrow().first().map(|r| r.1);
+    let selected = |ed: &Editor| ed.completion.as_ref().and_then(|c| c.selected);
+    assert_eq!(first(&ed), Some(0));
     mouse(&mut ed, MouseKind::ScrollDown, x + 4, y + 2);
-    assert_eq!(ed.completion.as_ref().and_then(|c| c.selected), Some(3), "three rows on");
+    assert_eq!((first(&ed), selected(&ed)), (Some(3), Some(0)), "three rows on, the selection kept");
+    mouse(&mut ed, MouseKind::ScrollDown, x + 4, y + 2);
+    assert!(!ed.screen.completion_rows.borrow().iter().any(|r| r.1 == 0), "the selection out of sight");
+    assert_eq!(selected(&ed), Some(0), "still the selection");
+    for _ in 0..20 {
+        mouse(&mut ed, MouseKind::ScrollDown, x + 4, y + 2);
+    }
+    let rows = ed.screen.completion_rows.borrow().len();
+    assert_eq!(first(&ed), Some(30 - rows), "stopped at the last row, never round");
+    // (a key that moves the selection brings the rows back to it)
+    feed(&mut ed, "<tab>");
+    assert_eq!((first(&ed), selected(&ed)), (Some(0), Some(1)), "`tab`: on from the selection, in sight");
     mouse(&mut ed, MouseKind::ScrollUp, x + 4, y + 2);
-    mouse(&mut ed, MouseKind::ScrollUp, x + 4, y + 2);
-    assert_eq!(ed.completion.as_ref().and_then(|c| c.selected), Some(0), "stopped at the first, never round");
+    assert_eq!((first(&ed), selected(&ed)), (Some(0), Some(1)), "at the top: nothing moves");
     assert_eq!(ed.doc().top, top, "the code under it unscrolled");
     let row = ed.screen.completion_rows.borrow().iter().find(|r| r.1 == 2).map(|r| r.0).expect("row 2");
     let label = ed.completion.as_ref().map(|c| c.item(2).label.clone()).unwrap_or_default();
@@ -85,6 +100,45 @@ fn a_press_on_a_completion_row_accepts_it_and_the_wheel_moves_through_it() {
     assert!(ed.completion.is_none(), "accepted, closed");
     assert!(ed.doc().text.line(0).to_string().ends_with(&format!("{label}\n")), "{}", ed.doc().text.line(0));
     assert_eq!(ed.mode, crate::editor::Mode::Insert, "still typing");
+}
+
+/// #416: the wheel over the `:` prompt's completions scrolls their rows past the 8 in sight — never `tab`'s pick nor the
+/// line; `tab` brings them back to its pick; at an end nothing moves and nothing is drawn.
+#[test]
+fn the_wheel_scrolls_the_prompts_completions() {
+    let mut ed = editor();
+    feed(&mut ed, ":");
+    frame(&mut ed);
+    let n = ed.cmdline_completion().map_or(0, |c| c.cands.len());
+    let rows = |ed: &Editor| ed.screen.prompt_rows.borrow().iter().map(|r| r.1).collect::<Vec<_>>();
+    let shown = rows(&ed);
+    assert!(n > shown.len() && shown.first() == Some(&0), "more than in sight: {n}, {shown:?}");
+    let (x, y, ..) = ed.screen.prompt_card.get().expect("the prompt drawn");
+    let at = (x + 4, ed.screen.prompt_rows.borrow()[1].0);
+    let line = |ed: &Editor| ed.prompt.as_ref().map(|p| (p.text(), p.cycle.clone()));
+    let before = line(&ed);
+    mouse(&mut ed, MouseKind::ScrollDown, at.0, at.1);
+    assert_eq!(rows(&ed).first(), Some(&3), "three rows on");
+    assert_eq!(line(&ed), before, "the line and the pick as they were");
+    for _ in 0..(n / 3 + 2) {
+        mouse(&mut ed, MouseKind::ScrollDown, at.0, at.1);
+    }
+    assert_eq!(rows(&ed).last(), Some(&(n - 1)), "as far as the last, no further");
+    ed.unchanged = false;
+    ed.handle_mouse(Mouse {
+        kind: MouseKind::ScrollDown,
+        x: at.0 as u16,
+        y: at.1 as u16,
+        alt: false,
+        ctrl: false,
+    });
+    assert!(ed.unchanged, "at the end: nothing moved, nothing drawn");
+    // (`tab` picks the first: the rows back to it)
+    feed(&mut ed, "<tab>");
+    frame(&mut ed);
+    assert_eq!(ed.prompt.as_ref().and_then(|p| p.cycle.as_ref().map(|c| c.1)), Some(0));
+    assert_eq!(rows(&ed).first(), Some(&0), "`tab`: the pick in sight");
+    assert!(y < at.1, "the rows inside the card");
 }
 
 /// The chat's slash list (#232): a press on a row fills its name in, as `tab` going round to it — the list stays, the
