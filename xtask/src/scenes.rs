@@ -1332,10 +1332,10 @@ macro_rules! waits_keys {
     };
 }
 /// The polish week's landing 1 in motion, the second Short V2 "A card never covers what you opened" (`--video
-/// --shorts waits-60s`, 80×34): you ask main's Claude to run the whole suite, then run this file's tests yourself and
-/// float them (`C-w e`: half the screen, as every floating pane first stands); main's card comes ~10 s into the turn
-/// (`cardlater`) and, the tests in its way, folds to its peek — the one emphasis, the punchline; `C-q` stands it whole
-/// with the keys, `esc` folds it again, the tests closed it stands; `C-q y` answers it and its run goes. Off camera
+/// --shorts waits-60s`, 80×34): you ask main's Claude why the tie test fails, then run this file's tests yourself and
+/// float them (`C-w e`: half the screen, as every floating pane first stands); a moment after (`changelater`,
+/// `@touch:`) main's change of two files asks first — Claude's change set's card, an everyday one — and, the tests in
+/// its way, it folds to its peek: the one emphasis, the punchline; `C-q` takes it up, `y` lets the change in. Off camera
 /// the tests are built once, so yours on camera take a moment. No beat waits to be read: the scene goes at the
 /// stand-in Claude's pace, the tests' and a hand's, but for the fold, which it stands on while the camera eases in,
 /// holds and eases back out (CLAUDE.md's Shorts bullet).
@@ -1353,66 +1353,50 @@ const WAITS_60S: &[&str] = &[
     "q",
     "@1",
     "@rec",
-    "@beat:You ask main's Claude to run the whole suite",
-    " ",
-    "l",
-    // (the question in the caption as it's typed, from its first letter)
-    "@type:r",
-    "@note:you ask: {} → card:ask claude",
-    "@type:un the whole test suite",
+    "@beat:You ask main's Claude why the tie test fails",
+    " l",
+    // (the caption one line that reads whole, from the question's first letter: the question itself in the ask line)
+    "@type:w",
+    "@note:you ask main's Claude → card:ask claude",
+    "@type:hy does the tie test fail?",
     "\r",
     "@beat:Your own tests of this file, floating over the code",
-    " ",
-    "x",
-    "f",
+    // (each one key, as V4's `space l`: a prefix sent apart stands long enough for which-key, over the whole)
+    " xf",
     "@20?right: 8",
-    "\x17",
-    "j",
-    "\x17",
-    "e",
+    "\x17j",
+    "\x17e",
     "@10?floating",
+    // (main's Claude asks a moment after: no stretch of words streaming with nothing else moving)
+    "@touch:.v2-floated",
     // (its toast, top right: the float itself reaches down under the caption's place)
     "@note:your tests, floating → card:tests floating",
     // (one session: the card's frame is its ask, no session's name)
-    "@30?Claude wants to run",
+    "@30?changes 3 files",
     "@beat:Claude's card arrives — folded to a peek, off your tests",
-    // (the peek with its air is 48 columns, under 2.5 mm a glyph on a phone: read at the legible 46, its first 44 the
-    // target — its air, its `▎ ` and its words whole — so the window, centred on them, ends on `sandbox`, your tests and
-    // the follow card over it)
-    "@zoom:card:Claude wants to run|44",
+    // (the peek, your tests and the follow card over it)
+    "@zoom:card:Claude changes 3 files",
     // (the fold's phrases on the status line's `C-q answer`: there only while the card is folded — whole, it's the
     // card's own bottom line's, and the card stands under the caption's place)
-    "@note:Claude asks to run → C-q answer",
-    "@hook",
+    "@note:Claude asks to change → C-q answer",
     // (the one wait for a look: the emphasis's — the camera's 1.2 s move in, 2 s held, 1.2 s back out —, its second
     // phrase as the camera holds)
     "@2",
     "@note:folded, off your tests → C-q answer",
     "@2.4",
-    // (no caption from here: the card stands whole under the caption's place, its own bottom line saying its keys, and
-    // a hand's keys come too close for a phrase each)
-    "@beat:C-q stands it whole, the keys on it; esc folds it again",
+    // (the two acts the story needs, one phrase over both: a hand's keys come too close for a phrase each. It stands
+    // by the follow card's question, there from `C-q` to the take's end — the card, whole, stands under the caption's
+    // place, and goes at `y`)
+    "@beat:C-q takes it up, y lets the change in",
     "\x11",
-    "@10?Its reason",
+    "@note:C-q, then y: applied → why does the tie test fail?",
+    "@10?in 3 files:",
     "@0.6",
-    "\x1b",
-    "@10!Its reason",
-    "@0.6",
-    // (the tests given the keys back and closed)
-    "@beat:Your tests closed: the card stands",
-    "q",
-    "@10?Its reason",
-    "@0.6",
-    "\x11",
-    "@0.6",
-    "@beat:y — the run goes",
+    "@sound:stamp",
     "y",
-    // (the take ends on the last frame before the run's output shows — the card answered, the follow card's `▸
-    // running`: its output slot, and the chat's column the turn's place-less answer opens by itself as it ends, are
-    // nothing the Short is about. Its first frame is told by the slot's top line, the command after its `─` — its
-    // lines open at the failure at 43 rows, past cargo's `running 2 tests`, and its keys fold where the chat's column
-    // stands beside it; the card's row and the follow card's have no `─` before it)
-    "@cut?─ cargo test --quiet",
+    // (the take ends before main's Claude's next words, the change in at a turn's pace: `V2_SAYS_MS`)
+    // (its first word: the follow card shows a word as it comes)
+    "@cut?Both",
 ];
 // (in fix, main's card waiting as a peek: a file saved, its cursor off the top — the toast at the top right)
 const TOAST_PEEK: &[&str] = waits_keys!(":e src/main.rs\r", "@1", "G", ":w\r", "@1");
@@ -2873,12 +2857,14 @@ const THREE_CLAUDES: &[&str] = &[
 /// V2's file. Off camera, main's commit (a line of `thread.rs`) leaves fix and docs a commit behind (`↓ 1`), and each
 /// session is asked twice — the first turn a short answer whose result names its context window (the list says a
 /// context only once a result has: `ctx 34%`, `62%`, `87%` in warning), the second the work, which never ends on camera:
-/// fix's edit of `m.insert` (line 31) lands at once and main's own way of it after, so C2 says they'd conflict; docs asks
-/// to run its tests outside the sandbox, its card left waiting. The columns each Claude's opened by itself at its first
-/// answer hidden again (`space L`). On camera, the floating list (`▲ waits`, `≈`, `↓ 1`, `ctx`) — the one emphasis, the
-/// punchline (`@hook`): every Claude's state in one place is what the Short is for —, then on the whole `j` `f`: into
-/// fix's workspace following it — the moment it's followed (`@touch:`) fix writes `wind`'s key (line 30) —; docs' card
-/// a peek there, `C-q` taking you to it, `y`; the list again, docs at work. The take ends before docs' next words
+/// fix's edit of `m.insert` (line 31) lands at once and main's own way of it after, so C2 says they'd conflict; docs
+/// writes two pages under `docs/`, which the project asks first for (`review-ask`): Claude's change set's card, left
+/// waiting. The columns each Claude's opened by itself at its first
+/// answer hidden again (`space L`). On camera, `space W` opens the floating list (`▲ waits`, `≈`, `↓ 1`, `ctx`) on the
+/// whole, then the one emphasis: every Claude's state in one place is what the Short is for —, then on the whole `j`
+/// `f`: into fix's workspace following it — the moment it's followed (`@touch:`) fix writes `wind`'s key (line 30) —;
+/// docs' card a peek there (Short 3's `@hook`: three sessions at work, a card waiting off your code), `C-q` taking you
+/// to it, `y`; docs at work again where you are, writing `length`'s doc in its colour. The take ends as it writes
 /// (`@cut?`). No beat waits to be read: the scene goes at the stand-in Claudes' pace and a hand's, but for the list it
 /// stands on while the camera eases in, holds and eases back out (CLAUDE.md's Shorts bullet), its four phrases over it.
 const MANAGERS_VIEW: &[&str] = &[
@@ -2935,9 +2921,9 @@ const MANAGERS_VIEW: &[&str] = &[
     " ",
     "l",
     "@1",
-    "run its tests",
+    "write docs for threads and knots",
     "\r",
-    "@20?Its reason",
+    "@20?changes 2 files",
     "@1",
     ":",
     "workspace-switch 0",
@@ -2960,20 +2946,25 @@ const MANAGERS_VIEW: &[&str] = &[
     "@30?would conflict",
     "\x1b",
     "@15!would conflict",
-    " ",
-    "W",
-    "@10?sessions",
     "@1",
     "@rec",
     "@beat:Every Claude at work, in one list.",
-    // (the one emphasis, the punchline: the list whole — what waits for you, a clash ahead, how far behind, how full.
-    // The one wait for a look — the camera's 1.2 s move in, 2 s held, 1.2 s back out —, a phrase for each of what it
-    // says, each its `captions::STAND_MIN_MS` at least)
-    "@zoom:card:sessions",
+    // (the list opened on camera, a hand's pace: its take — Short 3's second part — stands on the whole as it opens,
+    // its frame found before the camera goes in, never a drift begun in the join's crossing. One key, as V4's `space
+    // l`: `space` sent apart stands long enough for which-key)
+    "@0.6",
+    " W",
+    "@10?sessions",
     "@note:three Claudes, one list → card:sessions",
+    "@0.6",
+    // (the one emphasis: the list whole — what waits for you, a clash ahead, how far behind, how full. The one wait for
+    // a look — the camera's 1.2 s move in, 2 s held, 1.2 s back out —, a phrase for each of what it says, each its
+    // `captions::STAND_MIN_MS` at least)
+    // (its first 48 columns — its air, the names, states and `ctx` whole, its right line and air left out —: 2.3 mm a
+    // glyph at 80×34, where the list whole, 50, was under)
+    "@zoom:card:sessions|48",
     "@1.3",
     "@note:docs waits on you → ▲ waits",
-    "@hook",
     "@1.2",
     "@note:main, fix would clash → ≈ fix",
     "@1.2",
@@ -2986,9 +2977,13 @@ const MANAGERS_VIEW: &[&str] = &[
     "@touch:.v6-follow",
     "@10?fix › src › main.rs",
     "@note:f follows fix → fix › src › main.rs",
+    // (Short 3's opening, on the whole: three sessions named in their colours on the top row, fix typing its line where
+    // you follow it, docs' card a peek at the foot — the code yours, nothing over it. From the view's arrival: fix's line
+    // is typed from then, and `C-q` comes well past the hook's 2 s)
+    "@hook",
     "@sound:writing",
-    // (docs' peek said once fix's line is half written: the two phrases ~2.5 s and ~1.5 s at the writing's pace)
-    "@20?name.trim",
+    // (docs' peek said once fix's line is half written: the two phrases ~1.5 s and ~2 s at the writing's pace)
+    "@20?trim()",
     "@beat:Another Claude's card waits here, never in your way.",
     "@note:docs' card waits below → docs asks",
     "@20?trim().to_string()",
@@ -2996,20 +2991,19 @@ const MANAGERS_VIEW: &[&str] = &[
     "@0.6",
     "@beat:C-q takes you to it, and one key answers.",
     "\x11",
-    "@10?Its reason",
-    // (by docs' follow card, which stays through `y` and the run: the card goes at `y`, too soon for a phrase)
-    "@note:C-q takes you there → run its tests",
+    "@10?in 2 files:",
+    // (by docs' follow card, which stays through `y` and its writing: the card goes at `y`, too soon for a phrase)
+    "@note:C-q takes you there → docs for threads",
     "@0.6",
     "@sound:stamp",
     "y",
-    "@0.6",
-    "@beat:And the list says it as it happens.",
-    // (one key, as V4's `space l`: `space` sent apart stands long enough for which-key)
-    " W",
-    "@10?sessions",
-    "@note:the list keeps up → card:sessions",
-    // (the take ends before docs' next words, its run done: nothing this Short is about)
-    "@cut?It builds",
+    // (the payoff on the whole: docs at work again where you are, its line written in its colour, its caret)
+    "@beat:And docs gets on with it, in its colour.",
+    "@20?A thread with",
+    "@sound:writing",
+    "@note:docs writes on → A thread with",
+    // (the take ends as the line is being written, ~2.5 s past the caption's mark: before its last words)
+    "@cut?an empty sum",
 ];
 /// Polish landing 4's one bring card in motion (`--record bring`): fix's own commit (the readme), main moved since (a
 /// line of `thread.rs`, apart from it), the project's quick preflight two passing steps (`run_files`) — then
@@ -4923,7 +4917,7 @@ const SCENES: &[Scene] = &[
     // (…top right, beside main's ask waiting bottom right as a peek: the two one-row looks one family)
     Scene { name: "toast-peek", claude: "card", files: MAIN, keys: TOAST_PEEK },
     // (the polish week's landing 1, to be recorded: another session's card arriving while the session list floats)
-    Scene { name: "waits-60s", claude: "cardlater", files: MAIN, keys: WAITS_60S },
+    Scene { name: "waits-60s", claude: "changelater", files: MAIN, keys: WAITS_60S },
     // (`:messages`, a floating list at the newest — the session list's frame)
     Scene { name: "messages", claude: "idle", files: MAIN, keys: MESSAGES },
     // (the same run asked again after a yes, the program it runs rebuilt since — git ignores it: the card's "Same as")
@@ -5802,6 +5796,22 @@ const STORIES: &[Story] = &[
         opens: None,
         hook: 0,
     },
+    // (Short 3, "You decide": V2, a card that came on its own folds to a peek off the tests you floated, yours to take up
+    // with `C-q`; then V6, the manager's view — every Claude's state in one list, one followed, another's card a peek
+    // there, answered, that Claude at work again where you are: the payoff, last. Both cards Claude's change sets —
+    // everyday, a `y` that lets code in, undone by `space u` —, never a run outside the sandbox. One Claude, then three: V2's last screen, main's run going,
+    // crosses into V6's first, main's code in its own three-workspace tarae, where `space W` opens the list on the whole
+    // before the camera goes in. Each taken whole: no beat of one the other's. The hook is V6's three sessions at work on
+    // the whole — their names in their colours on the top row, fix writing where you follow it, docs' card waiting as a
+    // peek at the foot, the code clear: who works, who waits, and nothing in your way, read in a second; V2's fold keeps
+    // its emphasis in the take, as it was)
+    Story {
+        name: "you-decide",
+        title: "You decide.",
+        parts: ["waits-60s", "managers-view"],
+        opens: None,
+        hook: 1,
+    },
 ];
 
 /// `keys` with its take opening at `step`: the steps between its `@rec` and `step` left out — each a mark that draws
@@ -6526,8 +6536,9 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
         "v4" => "review-at-end = true\n",
         // (V1's: main's edit lands unseen, so fix's — waiting on it — lands too, and the two meet)
         s if s.contains("=v1-main") => "review-at-end = true\n",
-        // (V6's: fix's and main's edits land unseen and meet, the turns going on)
-        s if s.contains("=v6-main") => "review-at-end = true\n",
+        // (V6's: fix's and main's edits land unseen and meet, the turns going on; the project's docs ask first, so docs'
+        // pages raise Claude's change set's card)
+        s if s.contains("=v6-main") => "review-at-end = true\nreview-ask = [\"docs/\"]\n",
         _ => "",
     };
     // (V6's: main's commit leaves fix and docs behind it, said by the list alone — no card for the move)
@@ -7168,7 +7179,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "asktouching",
     "card",
     "cardlong",
-    "cardlater",
+    "changelater",
     "manager",
     "samebinary",
     "nine",
@@ -7321,8 +7332,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "card" => turn.ask_outside()?,
             // (#244: prose enough to reach the ask's rows in the chat, then the same card)
             "cardlong" => turn.ask_outside_long()?,
-            // (`waits-60s`: the same card ~10 s into the turn, its words coming slowly meanwhile)
-            "cardlater" => turn.ask_outside_later()?,
+            // (`waits-60s`: a change of two files, its card a moment after you float your tests)
+            "changelater" => turn.change_later()?,
             // (the session list's scene: a run asked for where the tests are asked, else an edit held mid-line)
             "manager" if line.contains("run the tests") => turn.ask_outside()?,
             "manager" => turn.explain_held(true, true, Some("nots.len());\\n\"}"))?,
@@ -8281,21 +8292,42 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.ask_outside()
     }
 
-    /// `ask_outside` after ~10 s of words streamed slowly: a card that arrives while you're in another session.
-    fn ask_outside_later(&mut self) -> io::Result<()> {
-        let reading = "Reading the tests first: the knots are counted as each thread is spun, so the summary waits \
-                       until every strand is tied, and the registry has to be reached before any of it builds.";
-        for w in reading.split(' ') {
-            self.text(&format!("{w} "))?;
-            std::thread::sleep(Duration::from_millis(290));
-        }
+    /// V2's turn: the test read, then — a moment after you float yours (`V2_FLOATED`) — its change of two files, the
+    /// test's sum, `length`'s doc and the README's: Claude's change set's card, an everyday one, arriving while you're at work on
+    /// something else and never a stretch of nothing to watch before it. Answered, a turn's pace (`V2_SAYS_MS`: the take
+    /// ends before it), a sentence, the turn held there: its end would show the chat's column by itself.
+    fn change_later(&mut self) -> io::Result<()> {
+        self.words("Reading the test first.")?;
         self.text("\n\n")?;
-        // (a reason of four rows: at 80×43 the card, whole, stands on rows 29–40 and meets the tests floating on 11–30, so
-        // it folds to its peek — at 80×50 three rows only touched them and folded nothing)
-        self.ask_outside_for(
-            "cargo needs to fetch the registry index, and the tests bind a port on this machine that the \
-             sandbox keeps closed, so neither works inside it",
-        )
+        self.call(1, "read", json!({"files": ["src/main.rs:25-32"]}))?;
+        if !self.pause.is_zero() {
+            wait_file(Path::new(V2_FLOATED), Duration::from_secs(120))?;
+            std::thread::sleep(Duration::from_millis(V2_ASKS_MS));
+        }
+        self.words("The knots sum to 7, and `length` sums the knots: the test and the docs say gaps.")?;
+        self.text("\n")?;
+        // (three files: at 80×34 the card, whole, then reaches your tests floating, so it folds to its peek — with two it
+        // stood just under them)
+        let edits = [
+            item(
+                "README.md",
+                "A skein of threads.\n",
+                "A skein of threads, each as long as its knots summed.\n",
+            ),
+            item(
+                "src/main.rs",
+                "t.length(), 8, \"the knot at 4 adds its gap\"",
+                "t.length(), 7, \"the knot at 4 adds 4\"",
+            ),
+            item("src/thread.rs", LENGTH_DOC, "    /// The strand's length: the sum of its knots.\n"),
+        ];
+        let input = format!(r#"{{"edits": [{}]}}"#, edits.join(", "));
+        self.call(2, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
+        if !self.pause.is_zero() {
+            std::thread::sleep(Duration::from_millis(V2_SAYS_MS));
+        }
+        self.words(V2_SAYS)?;
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
     fn ask_outside(&mut self) -> io::Result<()> {
@@ -9069,9 +9101,25 @@ const V6_CONTEXT: [(&str, u64, u64); 3] =
 const V6_WINDOW: u64 = 200_000;
 /// Where fix's writing waits for the moment you follow it: made beside the checkouts by the scene's `@touch:`.
 const V6_FOLLOWED: &str = "../.v6-follow";
-/// Docs' first words after its run, and when (a turn's pace after the run's answer): the Short's take ends before them.
-const V6_DOCS_SAYS: &str = "It builds; `tie` is never used, in either file.";
-const V6_DOCS_SAYS_MS: u64 = 2000;
+/// Docs' two pages, under `docs/` — which V6's project asks first for (`config_toml`'s `review-ask`), so its edit
+/// raises Claude's change set's card while every other edit lands unseen.
+const V6_DOCS_PAGES: [(&str, &str); 2] = [
+    ("docs/knots.md", "# Knots\n\nA knot is tied at a span along its thread.\n"),
+    ("docs/threads.md", "# Threads\n\nA thread's length is the sum of its knots.\n"),
+];
+/// Docs' line under `length`'s doc comment once its pages are in, written as fix's is: the Short's take ends while
+/// it's being written, before its last words (`V6_DOCS_LAST`).
+const V6_DOCS_LINE: &str = "    /// A thread with no knots at all is 0 long: an empty sum.\n";
+#[cfg(test)]
+const V6_DOCS_LAST: &str = "an empty sum";
+/// `length`'s doc comment as the demo has it.
+const LENGTH_DOC: &str = "    /// The strand's length: the sum of the gaps between its knots.\n";
+/// Where V2's Claude waits for you to float your tests (made by the scene's `@touch:`), and how long after it asks.
+const V2_FLOATED: &str = "../.v2-floated";
+const V2_ASKS_MS: u64 = 600;
+/// V2's Claude's words once its change is in, and when (a turn's pace): the take ends before them.
+const V2_SAYS: &str = "Both say a sum now.";
+const V2_SAYS_MS: u64 = 1500;
 
 impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// A V6 turn of session `who` (`main`, `fix`, `docs`): its request as a conversation's (`context` tokens carried),
@@ -9150,7 +9198,8 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             r#"{{"edits": [{}]}}"#,
             v1_item("    let k = t.name.clone();\n", "    let k = t.name.trim().to_string();\n")
         );
-        self.v6_written(2, &key, "\"new_string\"")?;
+        // (held at the new line's own words: typed in sight the moment you follow it, none of the edit's JSON between)
+        self.v6_written(2, &key, "let k = t.name.trim")?;
         self.call(2, "edit", serde_json::from_str(&key).map_err(io::Error::other)?)?;
         self.v1_talk(&[
             "A name with a space at its end keys the same strand now.",
@@ -9185,26 +9234,25 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(ev(json!({"type": "content_block_stop", "index": 1})))
     }
 
-    /// V6's docs: a read of `thread.rs`, then a run of its tests asked outside the sandbox — its card waits for you —,
-    /// then its first words on the run at a turn's pace (2 s: the Short ends before them), then talk all through the take.
+    /// V6's docs: a read of `thread.rs`, then its two pages under `docs/` — Claude's change set's card waits for you —,
+    /// then, answered, its line under `length`'s doc comment written in sight (`V6_DOCS_LINE`: you follow it by then, so
+    /// `v6_written` doesn't wait), then talk.
     fn v6_docs(&mut self) -> io::Result<()> {
-        self.words("Let me read what the tests measure.")?;
+        self.words("Let me read what `length` says.")?;
         self.text("\n\n")?;
         self.call(1, "read", json!({"files": ["src/thread.rs:1-13"]}))?;
-        self.words("The tests need the registry, so I will ask to run them outside the sandbox.")?;
+        self.words("A page for each, under docs.")?;
         self.text("\n")?;
-        let run = json!({"command": "cargo test --quiet", "outside_sandbox": true,
-            "reason": "cargo needs to fetch the registry index"});
-        self.call(2, "run", run)?;
-        if !self.pause.is_zero() {
-            std::thread::sleep(Duration::from_millis(V6_DOCS_SAYS_MS));
-        }
-        self.words(V6_DOCS_SAYS)?;
-        self.v1_talk(&[
-            "No test measures a thread yet.",
-            "The doc comment on `length` could say what one would check.",
-            "Nothing else needs a change.",
-        ])
+        let pages = V6_DOCS_PAGES.map(|(path, text)| item(path, "", text));
+        let input = format!(r#"{{"edits": [{}]}}"#, pages.join(", "));
+        self.call(2, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
+        self.words("Now `length`'s own comment.")?;
+        self.text("\n")?;
+        let line = item("src/thread.rs", LENGTH_DOC, &format!("{LENGTH_DOC}{V6_DOCS_LINE}"));
+        let edit = format!(r#"{{"edits": [{line}]}}"#);
+        self.v6_written(3, &edit, "A thread with")?;
+        self.call(3, "edit", serde_json::from_str(&edit).map_err(io::Error::other)?)?;
+        self.v1_talk(&["The comment says it now.", "Nothing else needs a change."])
     }
 }
 
@@ -9235,8 +9283,13 @@ const V1_DOCS_SAY: (&str, &str, &str) =
 /// One item of an `edit` call on `src/main.rs`, its keys in the order the model writes them: what it replaces, then
 /// what it writes.
 fn v1_item(old: &str, new: &str) -> String {
+    item("src/main.rs", old, new)
+}
+
+/// One item of an `edit` call on `path` (an empty `old` where there's no file makes it).
+fn item(path: &str, old: &str, new: &str) -> String {
     let s = |t: &str| Value::from(t).to_string();
-    format!(r#"{{"file_path": "src/main.rs", "old_string": {}, "new_string": {}}}"#, s(old), s(new))
+    format!(r#"{{"file_path": {}, "old_string": {}, "new_string": {}}}"#, s(path), s(old), s(new))
 }
 
 fn wait_file_contains(path: &Path, needle: &str, timeout: Duration) -> io::Result<()> {
@@ -9559,6 +9612,51 @@ mod tests {
         assert!(story.title.chars().count() <= 40 && !story.title.contains('\n'));
     }
 
+    /// Short 3, "You decide" (CLAUDE.md's Shorts bullet: V2 a card never covers what you opened + V6 the manager's view):
+    /// V2 then V6, each a scene of the table taken whole — no beat of one the other's; its hook V6's `@hook`, on the whole
+    /// in fix's workspace, fix writing and docs' card a peek, after the list's read and before `C-q` takes it up — V2
+    /// none, its fold's `@zoom` kept —; the payoff last, the list again keeping up; its title one short line.
+    #[test]
+    fn short_3_is_v2_then_v6_hooked_on_three_sessions_and_a_waiting_peek() {
+        let at = |keys: &[&str], k: &str| keys.iter().position(|x| *x == k).unwrap();
+        let story = STORIES.iter().find(|s| s.name == "you-decide").unwrap();
+        assert_eq!(story.parts, ["waits-60s", "managers-view"]);
+        assert!(story.parts.iter().all(|p| SCENES.iter().any(|s| s.name == *p)), "each part a scene");
+        assert!(!SCENES.iter().any(|s| s.name == story.name), "its name no scene's");
+        assert_eq!(story.opens, None, "each taken whole");
+        let beats =
+            |keys: &[&str]| keys.iter().filter(|k| k.starts_with("@beat:")).map(|k| k.to_string()).collect();
+        let (v2, v6): (Vec<String>, Vec<String>) = (beats(WAITS_60S), beats(MANAGERS_VIEW));
+        assert!(v2.iter().all(|b| !v6.contains(b)), "no beat said twice");
+        let hook = [WAITS_60S, MANAGERS_VIEW][story.hook];
+        let opens = at(hook, "@hook");
+        assert!(at(hook, "@zoom:card:sessions|48") < opens, "on the whole, after the list's read");
+        assert!(
+            at(hook, "f") < opens && opens < at(hook, "\x11"),
+            "in fix's workspace, docs' card still a peek"
+        );
+        // (fix's line held at its own words: typed in sight from the moment it's followed, the hook's 2 s on it)
+        let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
+        Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO }.v6_fix().unwrap();
+        let deltas: Vec<String> = (String::from_utf8(out).unwrap().lines())
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v.pointer("/event/delta/partial_json")?.as_str().map(String::from))
+            .collect();
+        assert!(
+            deltas.iter().any(|d| d.ends_with("\"new_string\": \"    ")),
+            "held as its line's words begin"
+        );
+        assert_eq!(hook.iter().filter(|k| **k == "@hook").count(), 1);
+        assert!(!WAITS_60S.contains(&"@hook"), "one hook");
+        assert!(
+            WAITS_60S.iter().any(|k| k.starts_with("@zoom:card:Claude changes 3 files")),
+            "the fold's emphasis kept"
+        );
+        // (the payoff on the whole: docs writing where you are, the take ending as it writes)
+        assert_eq!(MANAGERS_VIEW[MANAGERS_VIEW.len() - 2], "@note:docs writes on → A thread with");
+        assert!(story.title.chars().count() <= 40 && !story.title.contains('\n'));
+    }
+
     /// Each Short waits for a look only at its emphasis (CLAUDE.md's Shorts bullet: unless something is stressed, it runs
     /// on): on camera (past `@rec`) every timed wait is a hand's (0.6 s at most) but those in the beat of its one read,
     /// after its `@zoom` — V1's the ease in and its look (the hand's move in the ease out), V2's and V3's the ease in,
@@ -9754,64 +9852,96 @@ mod tests {
         assert!(second < pops && pops < end && end < third, "{second} {pops} {end} {third}");
     }
 
-    /// V6 (`managers-view`): the one read is the list as the take opens, the Short opening on it held; then on the whole
-    /// `j` `f` follow fix, `C-q` once fix's line is written, `y`, the list again (`space W` one key: no which-key over the
-    /// whole); the take ends before docs' first words after its run, which come at a turn's pace once the run answers.
+    /// V6 (`managers-view`): the one read is the list, opened on the whole (`space W` one key: no which-key over the
+    /// whole); then on the whole `j` `f` follow fix, `C-q` once fix's line is written, `y` — docs' read of your notes,
+    /// outside the project, never a run; the take ends on docs writing its line under `length`'s doc, before its last
+    /// words.
     #[test]
-    fn v6_reads_its_list_once_answers_docs_from_fix_and_ends_before_docs_says_more() {
+    fn v6_reads_its_list_once_answers_docs_from_fix_and_ends_on_docs_writing() {
         let on: Vec<&str> = MANAGERS_VIEW.iter().copied().skip_while(|k| *k != "@rec").collect();
         let at = |k: &str| on.iter().position(|x| *x == k).unwrap();
         assert!(on.contains(&" W") && !on.contains(&" "), "space W one key");
         let zooms: Vec<&str> = on.iter().copied().filter(|k| k.starts_with("@zoom")).collect();
-        assert_eq!(zooms, ["@zoom:card:sessions"]);
-        assert!(at("@zoom:card:sessions") < at("@hook") && at("@hook") < at("j"), "opens on the list");
-        let keys = ["j", "f", "\x11", "y", " W"].map(at);
+        assert_eq!(zooms, ["@zoom:card:sessions|48"]);
+        assert!(at(" W") < at("@zoom:card:sessions|48"), "the list opened on the whole first");
+        let (followed, hook) = (at("@10?fix › src › main.rs"), at("@hook"));
+        assert!(followed < hook && hook < at("@20?trim()"), "hooked as fix's line is typed, docs waiting");
+        assert_eq!(on.iter().filter(|x| **x == " W").count(), 1, "the list once");
+        let keys = ["j", "f", "\x11", "y", "@20?A thread with"].map(at);
         assert!(keys.windows(2).all(|w| w[0] < w[1]), "{keys:?}");
         assert!(at("@20?trim().to_string()") < at("\x11"), "C-q once fix's line is written");
-        assert_eq!(on.last(), Some(&format!("@cut?{}", &V6_DOCS_SAYS[..9]).as_str()));
+        assert_eq!(on.last(), Some(&format!("@cut?{V6_DOCS_LAST}").as_str()));
+        assert!(V6_DOCS_LINE.contains("A thread with ") && V6_DOCS_LINE.contains(V6_DOCS_LAST));
         let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
         let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
         turn.v6_docs().unwrap();
         let said: Vec<Value> =
             String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        let run = said.iter().position(|v| v.pointer("/request/message/params/name") == Some(&json!("run")));
-        let after: String = (said[run.expect("docs runs") + 1..].iter())
-            .filter_map(|v| v.pointer("/event/delta/text").and_then(Value::as_str))
+        let called = |name: &str| {
+            (said.iter())
+                .filter(|v| v.pointer("/request/message/params/name") == Some(&json!(name)))
+                .map(|v| v.pointer("/request/message/params/arguments").cloned().unwrap_or_default())
+                .collect::<Vec<_>>()
+        };
+        assert!(called("run").is_empty(), "no run: nothing outside the sandbox, no network");
+        // (its pages first, each under the `docs/` the project asks first for: the card; then its line, unseen)
+        let edits = called("edit");
+        assert_eq!(edits.len(), 2, "{edits:?}");
+        let pages: Vec<&str> = (edits[0]["edits"].as_array().unwrap().iter())
+            .map(|e| e["file_path"].as_str().unwrap())
             .collect();
-        assert!(after.trim_start().starts_with(V6_DOCS_SAYS), "its first words after the run: {after}");
-        assert!((1000..=3000).contains(&V6_DOCS_SAYS_MS), "a turn's pace");
+        assert_eq!(pages, V6_DOCS_PAGES.map(|p| p.0));
+        assert!(pages.iter().all(|p| p.starts_with("docs/")));
+        let spec = SCENES.iter().find(|s| s.name == "managers-view").unwrap().claude;
+        assert!(config_toml(Path::new("x"), spec).contains("review-ask = [\"docs/\"]"));
+        assert!(edits[1].to_string().contains("A thread with"));
+        assert!(THREAD_RS.contains(LENGTH_DOC));
     }
 
     /// V2 (`waits-60s`): what you opened is your own tests, floated — the scene's file has them and its keys run them
-    /// (`space x f`) and float them (`C-w e`) on camera before main's card comes; one session, no list.
+    /// (`space x f`) and float them (`C-w e`) on camera before main's card comes, a moment after (`@touch:`); one
+    /// session, no list. The card Claude's change set of two files — never a run outside the sandbox —, taken up and
+    /// answered in two acts.
     #[test]
     fn v2_floats_your_tests_before_its_card_comes() {
         let scene = SCENES.iter().find(|s| s.name == "waits-60s").unwrap();
-        assert_eq!(scene.claude, "cardlater");
+        assert_eq!(scene.claude, "changelater");
         assert!(
             run_files("waits-60s").iter().any(|(f, text)| *f == "src/main.rs" && text.contains(MAIN_TESTS))
         );
         let on: Vec<&str> = WAITS_60S.iter().copied().skip_while(|k| *k != "@rec").collect();
         let at = |seq: &[&str]| on.windows(seq.len()).position(|w| w == seq);
-        let (run, float) = (at(&[" ", "x", "f"]).unwrap(), at(&["\x17", "e"]).unwrap());
-        let card = at(&["@30?Claude wants to run"]).unwrap();
-        assert!(run < float && float < card, "{run} {float} {card}");
+        // (each one key on camera: no which-key over the whole)
+        let (run, float) = (at(&[" xf"]).unwrap(), at(&["\x17e"]).unwrap());
+        assert!(![" ", "\x17"].iter().any(|k| on.contains(k)), "no prefix sent apart");
+        let touched = at(&["@touch:.v2-floated"]).unwrap();
+        let card = at(&["@30?changes 3 files"]).unwrap();
+        assert!(run < float && float < touched && touched < card, "{run} {float} {touched} {card}");
+        assert_eq!(Path::new(V2_FLOATED).file_name(), Some(".v2-floated".as_ref()));
         assert!(!on.contains(&"W"), "no session list");
-        // (the peek read at its words whole — its air, `▎ ` and the card's title —, inside the 46 columns that read at
-        // 2.5 mm at 80×34, not its own 48)
         let zooms: Vec<&str> = on.iter().copied().filter(|k| k.starts_with("@zoom")).collect();
-        let words = 3 + "Claude wants to run — outside the sandbox".chars().count();
-        assert!(words <= 46, "{words} columns");
-        assert_eq!(zooms, [format!("@zoom:card:Claude wants to run|{words}")]);
-        // (the take ends as the run's slot first shows: its top line's `─` and the command the card asked for)
+        assert_eq!(zooms.len(), 1);
+        assert!(zooms[0].starts_with("@zoom:card:Claude changes 3 files"), "{zooms:?}");
+        // (taken up and answered: `C-q`, `y`, nothing between but a hand's pace)
+        let (q, y) = (at(&["\x11"]).unwrap(), at(&["y"]).unwrap());
+        assert!(on[q + 1..y].iter().all(|k| k.starts_with('@')), "{:?}", &on[q..=y]);
+        assert!(!["\x1b", "q"].iter().any(|k| on.contains(k)), "no esc, no q");
         let (mut out, mut lines) = (Vec::new(), std::iter::empty::<io::Result<String>>());
         let mut turn = Turn { out: &mut out, lines: &mut lines, pause: Duration::ZERO };
-        turn.ask_outside_for("a reason").unwrap();
-        let asked = (String::from_utf8(out).unwrap().lines())
+        turn.change_later().unwrap();
+        let asked: Vec<Value> = (String::from_utf8(out).unwrap().lines())
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .find_map(|v| v.pointer("/request/message/params/arguments/command")?.as_str().map(String::from))
-            .expect("a run asked");
-        assert_eq!(on.last(), Some(&format!("@cut?─ {asked}").as_str()));
+            .filter_map(|v| v.pointer("/request/message/params/arguments").cloned())
+            .collect();
+        assert!(asked.iter().all(|a| a.get("command").is_none()), "no run");
+        // (one edit of three files — its card —, each what the demo has; the take ends before its words after)
+        let items = asked.last().and_then(|a| a["edits"].as_array()).expect("an edit last");
+        let files: Vec<&str> = items.iter().map(|e| e["file_path"].as_str().unwrap()).collect();
+        assert_eq!(files, ["README.md", "src/main.rs", "src/thread.rs"]);
+        let old = |i: usize| items[i]["old_string"].as_str().unwrap();
+        assert!(MAIN_TESTS.contains(old(1)) && THREAD_RS.contains(old(2)));
+        assert!(old(0).starts_with("A skein of threads."));
+        assert_eq!(on.last(), Some(&format!("@cut?{}", &V2_SAYS[..4]).as_str()));
     }
 
     /// V6's three Claudes (`managers-view`): each checkout its own script; edits landing unseen and no card for main's
@@ -9863,8 +9993,9 @@ mod tests {
             let calls: Vec<&Value> =
                 said.iter().filter_map(|v| v.pointer("/request/message/params")).collect();
             if who == "docs" {
-                let run = calls.iter().find(|c| c["name"] == "run").unwrap();
-                assert_eq!(run["arguments"]["outside_sandbox"], true);
+                // (its pages and its line under `length`'s doc: `thread.rs`, apart from main's and fix's)
+                assert!(calls.iter().all(|c| c["name"] != "run"), "docs runs nothing");
+                assert!(calls.iter().filter(|c| c["name"] == "edit").count() == 2);
                 continue;
             }
             for c in calls.iter().filter(|c| c["name"] == "edit") {
