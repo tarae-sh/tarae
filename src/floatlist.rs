@@ -196,7 +196,8 @@ impl Editor {
     /// Done once used (user, 2026-10-23): what a list was opened for is done — floating, it closes; docked it stays,
     /// its keys back to the code (the manager's overview kept in sight — P3 step 7d).
     pub(crate) fn float_list_used(&mut self, kind: GroupKind) {
-        match self.docked_in_sight(kind) {
+        // (docked by its place — floating only while it has the keys where its column has no room: #414)
+        match self.list_docked(kind) || self.docked_in_sight(kind) {
             true => self.float_list_leave(kind),
             false => self.float_list_close(kind),
         }
@@ -206,6 +207,17 @@ impl Editor {
     /// is `docked_in_sight` (else it floats for the frame — `floating_in_sight`).
     pub fn list_docked(&self, kind: GroupKind) -> bool {
         kind == GroupKind::Sessions && self.sizes.sessions_dock.is_some()
+    }
+
+    /// Kind `kind`'s list is up and docked where its column has no room, the keys elsewhere: it draws nothing — never
+    /// over the code or the chat you read; the chat's top line names the sessions — and comes back as room does. Given
+    /// the keys (`space W`, `C-w w`'s round, `cycle_view`) it floats for that time (P3 step 7d; #414, the user
+    /// 2026-11-06).
+    pub fn list_unshown(&self, kind: GroupKind) -> bool {
+        self.float_list(kind).is_some()
+            && self.list_docked(kind)
+            && !self.docked_in_sight(kind)
+            && !self.float_list_keys(kind)
     }
 
     /// The row the list's selection is on (by its id, else its first row).
@@ -259,8 +271,8 @@ impl Editor {
 
     /// The list's cells on a screen `w` wide with `h` rows above the status line (`Frame::rect_rows`).
     pub fn float_list_rect(&self, kind: GroupKind, w: usize, h: usize) -> Option<crate::split::Rect> {
-        // (docked in sight: a leaf of the tree, not a frame)
-        if self.docked_in_sight(kind) {
+        // (docked in sight: a leaf of the tree, not a frame; docked with no room and no keys: nothing)
+        if self.docked_in_sight(kind) || self.list_unshown(kind) {
             return None;
         }
         Some(self.float_list_frame(kind)?.rect_rows(w, h, self.float_list_ids(kind).len()))

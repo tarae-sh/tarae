@@ -32,11 +32,14 @@ pub enum Grip {
 impl Editor {
     /// Kind `kind`'s group floats in sight: floating, something to show, its own pane made (`float_groups_sync`). A
     /// list up floats wherever it isn't docked in sight — docked where its column gets no room (a narrow screen, a wide
-    /// chat, no slot's leaf to dock beside), it floats for that frame, its dock kept (as a group's layout choice that
-    /// doesn't fit), so the keys never go to a list nobody sees.
+    /// chat, no slot's leaf to dock beside), it floats for that frame while it has the keys, its dock kept (as a group's
+    /// layout choice that doesn't fit), so the keys never go to a list nobody sees; without them it draws nothing
+    /// (`list_unshown`, #414).
     pub fn floating_in_sight(&self, kind: GroupKind) -> bool {
         if crate::floatlist::is_list(kind) {
-            return self.float_list(kind).is_some() && !self.docked_in_sight(kind);
+            return self.float_list(kind).is_some()
+                && !self.docked_in_sight(kind)
+                && !self.list_unshown(kind);
         }
         let Some(g) = self.workspace.group(kind) else { return false };
         matches!(g.place, Place::Floating(_)) && self.kind_there(kind) && self.float_host(&g)

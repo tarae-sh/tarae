@@ -2435,6 +2435,15 @@ impl Editor {
         if order.is_empty() {
             order = self.code_leaves();
         }
+        // (a docked list with no room here draws nothing while the keys aren't its: its stop after the docked panes,
+        // where it floats as it takes them — never a stop on nothing, #414)
+        for k in crate::floatlist::KINDS {
+            if let Some(p) = self.float_list(k).filter(|_| self.list_unshown(k))
+                && !order.contains(&p.list)
+            {
+                order.push(p.list);
+            }
+        }
         // A card waiting in sight is the round's last stop (P3 §3.8): `C-w w` from the last pane focuses it (backwards
         // from the first); from the card a window prefix just took the keys from the round goes on (never back to it).
         // A toast is never a stop: it takes no key (`toast.rs`)

@@ -1287,10 +1287,11 @@ impl Editor {
         // The floating lists (the session list, `:messages`) — the viewer's: listed with the front session's panes
         let lists = crate::floatlist::KINDS.iter().filter(|_| is_front);
         for (kind, p) in lists.filter_map(|&k| self.float_list(k).map(|p| (k, p))) {
-            // (the session list docked — P3 step 7d: its leaf's rect, as last drawn)
-            let docked = self.docked_in_sight(kind);
+            // (the session list docked — P3 step 7d: its leaf's rect, as last drawn; with no room and no keys, none —
+            // #414)
+            let docked = self.list_docked(kind) && !self.floating_in_sight(kind);
             let rect = match docked {
-                true => self.dock_rect(kind).map(|d| d.1),
+                true => self.dock_rect(kind).filter(|_| self.docked_in_sight(kind)).map(|d| d.1),
                 false => self.screen.floating.borrow().iter().find(|f| f.0 == kind).map(|f| f.1),
             };
             out.push(PaneState {

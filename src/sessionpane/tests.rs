@@ -320,8 +320,10 @@ fn a_docked_session_list_stays_up_across_a_switch_made_where_it_had_no_room() {
     assert_eq!(ed.workspace.id, docs, "C-q took us to docs' card");
     let s = frame(&mut ed, 120, 36);
     let floating = |ed: &Editor| ed.screen.floating.borrow().iter().any(|f| f.0 == GroupKind::Sessions);
-    assert!(floating(&ed) && ed.dock_rect(GroupKind::Sessions).is_none(), "no room beside docs' chat\n{s}");
     assert!(ed.card_has_keys() && !ed.sessions_list_keys(), "the keys the card's, not the list's");
+    // (no room beside docs' chat and the keys elsewhere: nothing drawn, never a box over the chat — #414's second part)
+    assert!(!floating(&ed) && ed.dock_rect(GroupKind::Sessions).is_none(), "nothing drawn in docs\n{s}");
+    assert!(ed.sessions_pane.is_some(), "still up");
     // Answered, back in main by `:workspace-switch`: the list still up, docked there
     feed_at(&mut ed, "n:workspace-switch 0<ret>", 120, 36);
     assert_eq!(ed.workspace.id, WorkspaceId::HOME);
@@ -369,8 +371,8 @@ fn a_floating_session_list_closes_on_a_switch_made_elsewhere() {
 }
 
 /// Docked where its column gets no room — a narrow screen — or with the code zoomed, `space W` gives the keys to a
-/// list that's drawn: it floats for that frame, its dock kept (back docked once there's room), and floating it's done
-/// once used.
+/// list that's drawn: it floats for that frame, its dock kept (back docked once there's room); used, its keys go and it
+/// stays up, docked by its place (#414).
 #[test]
 fn a_docked_list_with_no_room_floats_so_the_keys_go_to_a_list_in_sight() {
     let dir = crate::scratch::Scratch::new("sessiondocknarrow");
@@ -407,11 +409,12 @@ fn a_docked_list_with_no_room_floats_so_the_keys_go_to_a_list_in_sight() {
     // Room again: docked
     frame(&mut ed, 160, 40);
     assert!(floating(&ed).is_none() && ed.dock_rect(GroupKind::Sessions).is_some(), "docked again");
-    // Narrow, `enter` on the front's row: floating, done once used
+    // Narrow, `enter` on the front's row: used, the keys go — docked by its place, it stays up, drawn nothing there
     frame(&mut ed, 60, 30);
     assert!(ed.sessions_list_keys(), "the keys still the list's");
-    feed(&mut ed, "<ret>");
-    assert!(ed.sessions_pane.is_none(), "floating, it closes once used: {:?}", ed.status);
+    feed_at(&mut ed, "<ret>", 60, 30);
+    assert!(ed.sessions_pane.is_some() && !ed.sessions_list_keys(), "docked, it stays: {:?}", ed.status);
+    assert!(floating(&ed).is_none() && ed.dock_rect(GroupKind::Sessions).is_none(), "drawn nothing");
     assert_eq!(ed.sizes.sessions_dock, Some(crate::pane::Side::Right), "its dock still kept");
     // The list docked and up, the code (split) zoomed: `space W` — the list drawn, the keys its
     feed(&mut ed, " W<esc><C-w>v<C-w>z");
@@ -423,6 +426,65 @@ fn a_docked_list_with_no_room_floats_so_the_keys_go_to_a_list_in_sight() {
     let shown = ed.dock_rect(GroupKind::Sessions).map(|d| d.1).or_else(|| floating(&ed));
     let shown = shown.unwrap_or_else(|| panic!("drawn\n{s}"));
     assert!(s.lines().skip(shown.y + 1).take(shown.h).any(|l| l.contains("fix")), "its rows in sight\n{s}");
+}
+
+/// #414: docked where its column has no room — here a narrow screen — the list draws nothing while the keys aren't its
+/// (never a box over the code or the chat you read; the state lists it docked, no rect), comes back docked as room does,
+/// and given the keys floats for that time: `space W`, and `C-w w`'s round, whose stop after the docked panes it is —
+/// never a stop on nothing. A list opened floating floats, keys or not, as it did.
+#[test]
+fn a_docked_list_with_no_room_draws_nothing_until_it_has_the_keys() {
+    let dir = crate::scratch::Scratch::new("sessiondockunshown");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let other = dir.join("fix");
+    std::fs::create_dir_all(&other).unwrap();
+    ed.workspace_open(&other).unwrap();
+    ed.workspace.name = "fix".into();
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
+    feed(&mut ed, " W<C-w>L<esc>");
+    assert!(ed.dock_rect(GroupKind::Sessions).is_some(), "docked at 160");
+    let floating =
+        |ed: &Editor| ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).map(|f| f.1);
+    let listed = |ed: &Editor| {
+        let state = ed.ui_state();
+        let p = state.workspaces.iter().flat_map(|l| &l.panes).find(|p| p.shows == "list:sessions").cloned();
+        p.map(|p| (p.place, p.rect, p.at))
+    };
+    let unshown = |ed: &Editor, s: &str, why: &str| {
+        assert!(floating(ed).is_none() && ed.dock_rect(GroupKind::Sessions).is_none(), "{why}: nothing\n{s}");
+        assert!(!s.contains("─ sessions") && ed.sessions_pane.is_some(), "{why}: up, not drawn\n{s}");
+        assert_eq!(listed(ed), Some((Some("docked"), None, false)), "{why}: listed docked, no rect");
+    };
+    // Narrow, the keys the code's: nothing drawn
+    let s = frame(&mut ed, 60, 30);
+    unshown(&ed, &s, "narrow");
+    // `C-w w` from the code: its stop — it floats with the keys; the round on, back to the code and gone again
+    feed_at(&mut ed, "<C-w>w", 60, 30);
+    assert!(ed.sessions_list_keys(), "C-w w: the list's stop");
+    let r = floating(&ed).expect("floats with the keys");
+    let s = frame(&mut ed, 60, 30);
+    assert!(s.lines().nth(r.y).unwrap().contains("sessions"), "its frame\n{s}");
+    assert_eq!(listed(&ed).map(|l| l.0), Some(Some("floating")));
+    feed_at(&mut ed, "<C-w>w", 60, 30);
+    assert_eq!(ed.workspace.here(), Here::Code, "the round on: the code");
+    let s = frame(&mut ed, 60, 30);
+    unshown(&ed, &s, "the round on");
+    // `space W`: the keys, floating; `esc`: gone again
+    feed_at(&mut ed, " W", 60, 30);
+    assert!(ed.sessions_list_keys() && floating(&ed).is_some(), "space W: floats with the keys");
+    feed_at(&mut ed, "<esc>", 60, 30);
+    let s = frame(&mut ed, 60, 30);
+    unshown(&ed, &s, "esc");
+    // Room back: docked, the keys elsewhere
+    let s = frame(&mut ed, 160, 40);
+    let (_, d) = ed.dock_rect(GroupKind::Sessions).unwrap_or_else(|| panic!("docked again\n{s}"));
+    assert!(floating(&ed).is_none() && s.lines().nth(d.y).unwrap().contains("sessions"), "{s}");
+    // A list opened floating floats where a docked one would have no room, keys or not (today's)
+    feed(&mut ed, " W<C-w>e<esc>");
+    assert!(ed.sizes.sessions_dock.is_none() && !ed.sessions_list_keys());
+    frame(&mut ed, 60, 30);
+    assert!(floating(&ed).is_some(), "floating by its place: drawn without the keys");
 }
 
 /// The chat closed and the list docked right, the asks sit over the list's foot as over the chat's (the user,
