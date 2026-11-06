@@ -1131,7 +1131,10 @@ pub const KEPT_FLOOR: &[&str] = &[".cargo/credentials", ".cargo/credentials.toml
 /// once, where a policy is made, and passed in: what's worked out from it is the same in a test as in a run (a
 /// sandboxed run has a Gradle home of its own).
 pub fn vars_in(home: &Path, here: &Here) -> crate::sandboxpack::Vars {
-    crate::sandboxpack::Vars::new(crate::sandboxpack::get(), home, &|name| here.path(name), here.os)
+    let mut v =
+        crate::sandboxpack::Vars::new(crate::sandboxpack::get(), home, &|name| here.path(name), here.os);
+    v.windows = here.windows.kept.clone();
+    v
 }
 
 /// The system a policy is made for — what the folders it names are on it (`tokens::user_config`). The one tarae
@@ -1188,6 +1191,8 @@ pub struct Here {
     /// been granted there, the write grants kept for any project (`Editor::others_write`) — a store in or holding
     /// one isn't told (`DiskStores::written_passed`). Another tarae's sessions aren't seen.
     pub others_write: Vec<PathBuf>,
+    /// WSL's Windows homes (`winhome::here`): their places that hold keys are kept from every run (`kept_in`).
+    pub windows: crate::winhome::Homes,
     /// Tests: every variable asked (`path`, `var`) — what a policy reads of the environment
     /// (`every_variable_the_policy_reads_reaches_the_run`).
     #[cfg(test)]
@@ -1222,6 +1227,7 @@ impl Here {
             stand_in: None,
             served: None,
             others_write: Vec::new(),
+            windows: crate::winhome::here(),
             #[cfg(target_os = "linux")]
             resolv: std::fs::read_to_string("/etc/resolv.conf").ok(),
             #[cfg(target_os = "linux")]
@@ -1313,7 +1319,7 @@ pub fn reads_above(root: &Path, home: &Path) -> Vec<PathBuf> {
 }
 
 /// What a run never reads, whatever is granted: the places that hold keys (`allow::SECRETS`, and git's
-/// credential store where `$XDG_CONFIG_HOME` puts it), Claude's own (`CLAUDES`), `KEPT_FLOOR`, the packs'
+/// credential store where `$XDG_CONFIG_HOME` puts it; on WSL each Windows profile's too — `winhome`), Claude's own (`CLAUDES`), `KEPT_FLOOR`, the packs'
 /// `kept` at both a home's places, their `kept-moved` where the user's variables move them (the cloud CLIs'
 /// sign-in, #182), tarae's state (every session's conversations, turns, cards, what was allowed, its log) and
 /// tarae's cache (other runs' folders, other projects' run homes, the overlaps' snapshots — a run's own opened
@@ -1380,6 +1386,8 @@ fn kept_in(home: &Path, vars: &crate::sandboxpack::Vars, packs: &[String]) -> Ve
     v.extend(packs.iter().flat_map(|k| vars.places_both(k)).map(at));
     v.extend(vars.kept_moved.iter().cloned().map(at));
     v.push(at(vars.xdg_config.join("git/credentials")));
+    // (WSL: each Windows profile's, outside home — `winhome`)
+    v.extend(vars.windows.iter().cloned().map(at));
     crate::sorting::sort(&mut v);
     v.dedup();
     // tarae's state and its cache as the run's variables say it (`taraes_cache`'s rule: where its folder is made),
@@ -14400,6 +14408,71 @@ mod tests {
         for f in &open {
             let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
             assert!(ok && out == FAKE, "{tier}: {} beside it: {err}", f.display());
+        }
+    }
+
+    /// WSL (Q11, `winhome`): a Windows profile's keys are kept from a run as home's are — a stand-in drive's, in the
+    /// case it spells them — and the rest of the profile reads, as anywhere outside home. Stand-ins where
+    /// `a_kept_place_outside_home_is_closed`'s are.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_windows_homes_keys_are_kept_from_runs() {
+        let test = "a_windows_homes_keys_are_kept_from_runs";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).expect("the build folder");
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(beside.as_os_str().as_bytes()).expect("a path");
+        // SAFETY: a NUL-terminated path; access(2) only reads it.
+        let beside = match unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0 {
+            true => beside.to_path_buf(),
+            false => Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        };
+        std::fs::create_dir_all(&beside).unwrap();
+        let s = crate::scratch::Scratch::in_dir(&beside, "sb-windows-home");
+        let t = profile_path(&s);
+        let (home, root, drive) = (t.join("home"), t.join("home/project"), t.join("mnt/c"));
+        let me = drive.join("Users/Wq");
+        let closed = [
+            me.join(".ssh/id_ed25519"),
+            me.join(".kube/config"),
+            me.join("AppData/Roaming/Microsoft/Credentials/blob"),
+            me.join("AppData/Local/google/chrome/User Data/Default/Cookies"),
+        ];
+        let open = [me.join("Documents/notes.txt"), drive.join("Users/Public/x.txt"), root.join("own.txt")];
+        for f in closed.iter().chain(&open) {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, FAKE).unwrap();
+        }
+        let windows =
+            crate::winhome::find(vec![crate::winhome::Drive { letter: 'c', at: drive }], None, None);
+        let here = Here { windows, ..Here::default() };
+        let reads = Reads {
+            home: Some(home.clone()),
+            kept: kept_reads(&home, &vars_in(&home, &here)),
+            ..Reads::default()
+        };
+        let p = Policy::for_project(&Env {
+            root: root.clone(),
+            reads,
+            run_env: run_env_here(),
+            ..Env::default()
+        });
+        assert!(!p.write_places().iter().any(|w| t.starts_with(w)), "the stand-ins are where no run writes");
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let tier = match &c.confine {
+            Some(Ok(c)) => c.tier(),
+            other => panic!("{test}: not confined: {other:?}"),
+        };
+        for f in &closed {
+            let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
+            assert!(!ok && !out.contains(FAKE), "{tier}: {} read: {out} {err}", f.display());
+        }
+        for f in &open {
+            let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
+            assert!(ok && out == FAKE, "{tier}: {} beside them: {err}", f.display());
         }
     }
 

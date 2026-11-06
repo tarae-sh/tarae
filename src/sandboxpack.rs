@@ -1710,6 +1710,9 @@ pub struct Vars {
     /// Where the tools' shared caches are (`caches`): a home's `dirs` where the home is and at its default, an
     /// asked one's `places` both ways and where its `var` points — never written but through the caches rule.
     pub caches: Vec<CachePlace>,
+    /// WSL's Windows profiles' places that hold keys (`winhome::Homes.kept`, set by `sandbox::vars_in`): kept as
+    /// home's are.
+    pub windows: Vec<PathBuf>,
 }
 
 /// One place of a shared cache's (`Vars::caches`).
@@ -1783,6 +1786,7 @@ impl Vars {
             xdg_data,
             run: None,
             caches: Vec::new(),
+            windows: Vec::new(),
         };
         let mut caches: Vec<CachePlace> = Vec::new();
         for c in &t.caches {

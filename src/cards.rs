@@ -40,7 +40,8 @@ pub enum Class {
     Home,
     /// Outside home — read by default, as runs read it (D3).
     Elsewhere,
-    /// Another user's home (`HOMES`; not `/Users/Shared`), or a folder holding one.
+    /// Another user's home (`HOMES`; not `/Users/Shared`), or a folder holding one — on WSL a Windows profile not
+    /// yours too (`winhome`).
     OtherHome,
     /// A volume mounted where the systems mount them (`VOLUMES`), or a folder holding one — an external disk,
     /// a network share: other projects, their keys (cardauto §8.6).
@@ -83,15 +84,17 @@ pub fn class(at: Option<&Path>, caps: &crate::caps::Caps) -> Class {
     let home = caps.home.as_deref();
     let within = |why: Why| caps.defaults(why).any(|p| at.starts_with(p));
     // (what runs never read is never a default, outside home too: a moved state home, CARGO_HOME, GOPATH —
-    // a folder holding one reads it, but home's class says that already)
+    // a folder holding one reads it, but home's class says that already, and a Windows home's)
+    let win = &caps.windows;
+    let in_a_home = |k: &Path| home.is_some_and(|h| k.starts_with(h)) || win.profile_of(k).is_some();
     let kept = caps.kept.iter().any(|k| at.starts_with(k))
-        || caps.kept.iter().any(|k| k.starts_with(at) && !home.is_some_and(|h| k.starts_with(h)));
+        || caps.kept.iter().any(|k| k.starts_with(at) && !in_a_home(k));
     let holds_or_in = |p: &Path| at.starts_with(p) || p.starts_with(at);
     let other_home = HOMES.iter().map(Path::new).any(|h| {
         let first = at.strip_prefix(h).ok().and_then(|r| r.iter().next());
         h.starts_with(at) || first.is_some_and(|f| f != "Shared" && home.is_none_or(|me| !at.starts_with(me)))
     });
-    if crate::allow::secret(at, home) || kept {
+    if crate::allow::secret_in(at, home, win) || kept {
         Class::Secret
     } else if within(Why::OtherCheckout) {
         Class::OtherCheckout
@@ -99,8 +102,11 @@ pub fn class(at: Option<&Path>, caps: &crate::caps::Caps) -> Class {
         Class::Temp
     } else if within(Why::Toolchain) {
         Class::Toolchain
-    } else if home.is_some_and(holds_or_in) {
+    } else if home.is_some_and(holds_or_in) || win.yours_holds_or_in(at) {
         Class::Home
+    } else if win.holds_a_home(at) || win.profile_of(at).is_some() {
+        // (a Windows profile not yours, on a drive WSL mounts — a volume's place, but a home's class)
+        Class::OtherHome
     } else if VOLUMES.iter().any(|v| holds_or_in(Path::new(v))) {
         Class::Volume
     } else if other_home {

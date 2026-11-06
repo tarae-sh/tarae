@@ -1037,8 +1037,13 @@ pub(crate) const SECRETS: &[&str] = &[
 ];
 
 /// Whether an answer about `real` may last past this once: not home itself or a folder above it (that's
-/// everything), and nothing in a place that holds keys.
+/// everything) — nor a Windows profile or a folder holding one (WSL's `/mnt/c`: `winhome`) —, and nothing in a place
+/// that holds keys.
 pub fn keepable(real: &Path, home: Option<&Path>) -> bool {
+    let windows = crate::winhome::drives();
+    if windows.holds_a_home(real) || windows.secret(real) {
+        return false;
+    }
     let Some(home) = home else { return real != Path::new("/") };
     if home.starts_with(real) {
         return false;
@@ -1052,9 +1057,15 @@ pub fn storable_place(real: &Path, home: Option<&Path>) -> bool {
     real.to_str().is_some() && keepable(real, home)
 }
 
-/// Whether `real` is in a place under home that holds keys (`SECRETS`).
+/// Whether `real` is in a place under home that holds keys (`SECRETS`) — or under a Windows profile on WSL
+/// (`winhome::Homes::secret`: its `SECRETS` and Windows' own, in any case).
 pub fn secret(real: &Path, home: Option<&Path>) -> bool {
-    home.is_some_and(|h| SECRETS.iter().any(|s| real.starts_with(h.join(s))))
+    secret_in(real, home, &crate::winhome::drives())
+}
+
+/// `secret` with the Windows homes given (a session's `Caps.windows`).
+pub fn secret_in(real: &Path, home: Option<&Path>, windows: &crate::winhome::Homes) -> bool {
+    home.is_some_and(|h| SECRETS.iter().any(|s| real.starts_with(h.join(s)))) || windows.secret(real)
 }
 
 /// Places under home that run something later when written — and so are never offered for writing (a

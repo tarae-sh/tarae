@@ -104,6 +104,8 @@ pub struct Caps {
     /// The checkout (empty: none — nothing is read by being in it).
     pub root: PathBuf,
     pub home: Option<PathBuf>,
+    /// WSL's Windows homes (`winhome::here`): yours home too, the others others' (`cards::class`).
+    pub windows: crate::winhome::Homes,
     /// Files, and folders with everything in them, read unasked — Claude's Read, and its commands where the
     /// sandbox confines reads (home).
     pub read: Vec<Entry<PathBuf>>,
@@ -226,6 +228,7 @@ impl Caps {
             self.kept = crate::sandbox::kept_places(h, here);
         }
         self.home = home;
+        self.windows = here.windows.clone();
         self
     }
 
@@ -504,6 +507,7 @@ impl Basis {
         c.read.extend(entries(&self.folders, Source::Default(Why::Folder)));
         c.later = home.map(|h| later_in(&self.root, h, here)).unwrap_or_default();
         c.home = home.map(Path::to_path_buf);
+        c.windows = here.windows.clone();
         c.outside = self.outside;
         c
     }

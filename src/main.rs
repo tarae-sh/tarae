@@ -244,6 +244,7 @@ mod waits;
 mod weave;
 mod web;
 mod whole;
+mod winhome;
 mod wordspot;
 mod workspace;
 mod workspacekeep;
