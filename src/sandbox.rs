@@ -913,13 +913,18 @@ impl Guard {
                     false => format!(" (not {} — while the network is closed)", rules.join("; ")),
                     true => String::new(),
                 };
-                let reads = match p.reads.home.is_some() {
-                    true => {
+                let reads = match (p.reads.home.is_some(), p.reads.profiles.is_empty()) {
+                    (true, true) => {
                         "read in your home folder only the project, the repository's other checkouts and the \
                          toolchains' own folders — never keys, tokens, Claude's or tarae's state, the clipboard \
                          or the keychain — "
                     }
-                    false => "",
+                    (true, false) => {
+                        "read in your home folder and the Windows profiles only the project, the repository's \
+                         other checkouts and the toolchains' own folders — never keys, tokens, Claude's or tarae's \
+                         state, the clipboard or the keychain — "
+                    }
+                    (false, _) => "",
                 };
                 // (said only where a token was there: nothing more to read on a machine without one)
                 // (a tool's store on the project's filesystem: told, or passed over and why — compat B12)
@@ -1095,7 +1100,9 @@ pub struct RunHomeSaid {
 pub struct Reads {
     /// Home — None: reads aren't confined (no home known; tests that don't ask).
     pub home: Option<PathBuf>,
-    /// Places in home it may read, files or folders with everything in them (`reads_for`).
+    /// WSL's Windows profiles (`winhome`, Q11), each closed as home is — none where reads aren't confined.
+    pub profiles: Vec<PathBuf>,
+    /// Places in home or a profile it may read, files or folders with everything in them (`reads_for`).
     pub allow: Vec<PathBuf>,
     /// Never read, denied after every allow (`kept_reads`) — tarae's log too: it says every session's news (#292).
     pub kept: Vec<PathBuf>,
@@ -1112,6 +1119,19 @@ impl Reads {
         self.kept
             .iter()
             .any(|k| real.starts_with(k) && !own.iter().any(|o| o.starts_with(k) && real.starts_with(o)))
+    }
+
+    /// The home `real` is in — home itself, or a Windows profile — where reads are confined: there a run reads
+    /// only the project, where it writes and `allow`.
+    pub fn home_of(&self, real: &Path) -> Option<&Path> {
+        let home = self.home.as_deref()?;
+        std::iter::once(home).chain(self.profiles.iter().map(PathBuf::as_path)).find(|h| real.starts_with(h))
+    }
+
+    /// Home and the Windows profiles, where reads are confined (none where they aren't).
+    pub fn homes(&self) -> impl Iterator<Item = &Path> {
+        let profiles = self.profiles.iter().filter(|_| self.home.is_some()).map(PathBuf::as_path);
+        self.home.as_deref().into_iter().chain(profiles)
     }
 }
 
@@ -1134,6 +1154,7 @@ pub fn vars_in(home: &Path, here: &Here) -> crate::sandboxpack::Vars {
     let mut v =
         crate::sandboxpack::Vars::new(crate::sandboxpack::get(), home, &|name| here.path(name), here.os);
     v.windows = here.windows.kept.clone();
+    v.profiles = here.windows.found.iter().map(|p| profile_path(p)).collect();
     v
 }
 
@@ -1291,7 +1312,9 @@ const CLAUDES: &[&str] = &[".claude", ".claude.json", ".claude.json.backup"];
 /// Where a run reads in `home` (real; `vars` its places): `HOME_READS`, the packs' `reads` (a home alone only
 /// where it's there — its variable may name a folder never made), tarae's grammars (its own tests and shots
 /// load them), the folders on PATH (what's there runs), and `also` (the repository's other checkouts, what the
-/// user let Claude read) — none that's home itself or in a kept place.
+/// user let Claude read) — none that's home itself or in a kept place. On WSL each Windows profile is closed as
+/// home is (`vars.profiles`, Q11): of it a run reads only those that are there — a pack's home a variable moved
+/// there, a PATH folder of Windows', a grant — never `Documents` or `Downloads` unasked.
 pub fn reads_for(home: &Path, also: &[PathBuf], vars: &crate::sandboxpack::Vars) -> Reads {
     let packs = crate::sandboxpack::get().reads.iter();
     let packs = packs.filter_map(|r| vars.place(r).filter(|p| !vars.is_home(r) || p.exists()));
@@ -1301,10 +1324,16 @@ pub fn reads_for(home: &Path, also: &[PathBuf], vars: &crate::sandboxpack::Vars)
     allow.extend(crate::blocked::path_dirs());
     allow.extend(also.iter().cloned());
     let kept = kept_reads(home, vars);
-    allow.retain(|p| p.starts_with(home) && p != home && !kept.iter().any(|k| p.starts_with(k)));
+    // (a profile in home is home's already; one holding home — none such — would open it)
+    let profiles: Vec<PathBuf> =
+        vars.profiles.iter().filter(|p| !p.starts_with(home) && !home.starts_with(p)).cloned().collect();
+    let homes: Vec<&Path> = std::iter::once(home).chain(profiles.iter().map(PathBuf::as_path)).collect();
+    allow.retain(|p| {
+        homes.iter().any(|h| p.starts_with(h) && p != h) && !kept.iter().any(|k| p.starts_with(k))
+    });
     crate::sorting::sort(&mut allow);
     allow.dedup();
-    Reads { home: Some(home.to_path_buf()), allow, kept, copies: Default::default() }
+    Reads { home: Some(home.to_path_buf()), profiles, allow, kept, copies: Default::default() }
 }
 
 /// What a toolchain reads above the project (`root`, real) in `home`: the packs' `reads-above` files in every
@@ -4772,8 +4801,10 @@ pub(crate) fn env_with(
             env.asked_caches.push((key, which, caches_in(c, &d).0));
         }
     }
-    if let Some(h) = &env.reads.home {
-        let keep = found.kept.into_iter().filter(|d| d.starts_with(h) && d != h && !env.root.starts_with(d));
+    if env.reads.home.is_some() {
+        let homes: Vec<PathBuf> = env.reads.homes().map(Path::to_path_buf).collect();
+        let in_a_home = |d: &PathBuf| homes.iter().any(|h| d.starts_with(h) && d != h);
+        let keep = found.kept.into_iter().filter(|d| in_a_home(d) && !env.root.starts_with(d));
         // (after the rest, never sorted among them: the profile names a place by its index — `kept_in`)
         for d in keep {
             if !env.reads.kept.contains(&d) {
@@ -6930,6 +6961,7 @@ mod tests {
             uid: 501,
             reads: Reads {
                 home: Some("/Users/u".into()),
+                profiles: Vec::new(),
                 allow: vec!["/Users/u/.cargo".into(), "/Users/u/.gitconfig".into()],
                 kept: vec![
                     "/Users/u/.ssh".into(),
@@ -15646,6 +15678,8 @@ mod tests {
         }
         let t = scratch("sb-reads");
         let home = t.join("home");
+        // (a Windows profile, closed as home is — Q11: a stand-in, by its place alone)
+        let profile = t.join("mnt/c/Users/x");
         let (root, claudes) = (home.join("work/proj"), home.join(".claude/worktrees/p"));
         for d in [&root, &claudes, &t.join("outside")] {
             std::fs::create_dir_all(d).unwrap();
@@ -15656,8 +15690,12 @@ mod tests {
                 home.join("allowed/m"),
                 home.join("cache/run-homes/own/m"),
                 t.join("outside/m"),
+                profile.join("AppData/Local/Programs/tool/m"),
+                t.join("mnt/c/Users/Public/m"),
             ],
             [
+                profile.join("Documents/m"),
+                profile.join("AppData/Local/other/m"),
                 home.join("other/m"),
                 home.join("dir/.ssh/key"),
                 home.join("state/chat.json"),
@@ -15673,7 +15711,8 @@ mod tests {
         }
         let reads = Reads {
             home: Some(home.clone()),
-            allow: vec![home.join("allowed"), home.join("dir")],
+            profiles: vec![profile.clone()],
+            allow: vec![home.join("allowed"), home.join("dir"), profile.join("AppData/Local/Programs")],
             // (`xcache`: tarae's cache where `XDG_CACHE_HOME` moves it out of home — only its kept rule closes it)
             kept: vec![
                 home.join("dir/.ssh"),
@@ -15718,9 +15757,11 @@ mod tests {
         let cat = |p: &Policy, f: &Path| sh(p, &format!("cat '{}' 2>/dev/null", f.display())) == "marker\n";
         for f in &read {
             assert!(cat(&p, f), "{}: not read", f.display());
+            assert!(p.reads_allow(f), "{}: the rule in Rust says unread", f.display());
         }
         for f in &unread {
             assert!(!cat(&p, f), "{}: read", f.display());
+            assert!(!p.reads_allow(f), "{}: the rule in Rust says read", f.display());
         }
         for (dir, file) in [("other", "other/m"), ("dir/.ssh", "dir/.ssh/key")] {
             let (dir, file) = (home.join(dir).display().to_string(), home.join(file).display().to_string());

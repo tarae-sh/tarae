@@ -1850,8 +1850,12 @@ pub(super) fn confine_in(
     // (`ways_into_holes`, 7e), in every grant but one of a place that way holds (the project reached through it reads
     // by its own rule); a mount is closed whole only where no grant sits at or under it — `/` and the write places
     // can't skip their way into the hole that way
-    let read_holes: Vec<PathBuf> =
-        p.reads.home.iter().chain(&p.reads.kept).chain(&hidden).chain(&pts_hole).cloned().collect();
+    let read_holes: Vec<PathBuf> = p
+        .reads
+        .homes()
+        .map(Path::to_path_buf)
+        .chain(p.reads.kept.iter().chain(&hidden).chain(&pts_hole).cloned())
+        .collect();
     let run_dir = p.run.as_ref().map(|d| d.path());
     let granted: Vec<&Path> = [Path::new("/"), &p.root]
         .into_iter()
@@ -1887,15 +1891,17 @@ pub(super) fn confine_in(
         }
     };
     match &p.reads.home {
-        Some(home) => {
-            // (`/` read but home — and but each kept place outside it: a cloud CLI's sign-in a variable moved,
-            // `AWS_SHARED_CREDENTIALS_FILE=/opt/creds/…`, #182; Landlock only grants, so a place is kept by being
-            // left out. One inside a place a run writes stays read through that grant, as its writes would be)
+        Some(_) => {
+            // (`/` read but home and each Windows profile (Q11) — and but each kept place outside them: a cloud
+            // CLI's sign-in a variable moved, `AWS_SHARED_CREDENTIALS_FILE=/opt/creds/…`, #182; Landlock only
+            // grants, so a place is kept by being left out. One inside a place a run writes stays read through that
+            // grant, as its writes would be)
+            let homes: Vec<PathBuf> = p.reads.homes().map(Path::to_path_buf).collect();
             let outside: Vec<PathBuf> =
-                p.reads.kept.iter().filter(|k| !k.starts_with(home)).cloned().collect();
-            grant(&mut r, Path::new("/"), READ, &[std::slice::from_ref(home), &outside, &pts_hole].concat())?;
-            // In home: the project, where it writes, what's allowed — none inside a kept place (but the
-            // project, when one holds it), and around what's kept or read from a copy below them
+                p.reads.kept.iter().filter(|k| p.reads.home_of(k).is_none()).cloned().collect();
+            grant(&mut r, Path::new("/"), READ, &[homes.as_slice(), &outside, &pts_hole].concat())?;
+            // In home and the profiles: the project, where it writes, what's allowed — none inside a kept place
+            // (but the project, when one holds it), and around what's kept or read from a copy below them
             let kept = &p.reads.kept;
             let run = p.run.as_ref().map(|d| d.path().to_path_buf());
             let places = std::iter::once(&p.root)
@@ -1903,7 +1909,7 @@ pub(super) fn confine_in(
                 .chain(&p.write)
                 .chain(&p.files)
                 .chain(&p.reads.allow);
-            for place in places.filter(|w| w.starts_with(home)) {
+            for place in places.filter(|w| p.reads.home_of(w).is_some()) {
                 let in_kept = kept.iter().any(|k| place.starts_with(k));
                 if in_kept && !place.starts_with(&p.root) {
                     continue;
@@ -2931,6 +2937,72 @@ mod tests {
         }
         assert!(reads(&c, &host.join("cfg/other")) && reads(&c, &dir.join("cfg/other")), "beside it, read");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A Windows profile is closed as home is (Q11): `/` granted around it, no rule at or under it but what a run
+    /// reads there (a grant, Windows' PATH folder) and the project, none of their own on the way down to it; the
+    /// drive's other folders, `Public`'s, read. On 9p every rule's place is held open as long as the rules
+    /// (`landlock::pins`): a stand-in pins every one.
+    #[test]
+    fn a_windows_profile_is_a_hole_as_home_is() {
+        let held = crate::scratch::Scratch::new("winhome-hole");
+        let dir = std::fs::canonicalize(&*held).unwrap();
+        let (home, drive) = (dir.join("home"), dir.join("mnt/c"));
+        let (wq, other) = (drive.join("Users/Wq"), drive.join("Users/other"));
+        let (path_dir, granted, project) = (
+            wq.join("AppData/Local/Microsoft/WindowsApps"),
+            wq.join("Documents/shared"),
+            wq.join("src/proj"),
+        );
+        for d in [&home, &path_dir, &granted, &project, &wq.join("Downloads"), &other.join("Documents")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for d in ["Users/Public", "Windows/System32", "Program Files"] {
+            std::fs::create_dir_all(drive.join(d)).unwrap();
+        }
+        let confine = |p: &Policy, pin_all: bool| {
+            let mut r = Ruleset::written(3).unwrap();
+            r.pin_all = pin_all;
+            confine_in(r, p, Err("not watched".into()), false, Ok(()), RunNet::Served, Own::default())
+                .unwrap()
+        };
+        let rule = |c: &Confine, at: &Path| {
+            let all = c.granted().iter().filter(|(p, _)| p == at).map(|(_, a)| *a);
+            all.reduce(|a, b| a | b)
+        };
+        let reads = |c: &Confine, at: &Path| rule(c, at).is_some_and(|a| a & landlock::READ_FILE != 0);
+        let mut p = Policy {
+            run: crate::sandbox::RunDir::new().ok(),
+            ..Policy::for_project(&Env { root: project.clone(), ..Default::default() })
+        };
+        p.reads.home = Some(home.clone());
+        p.reads.profiles = vec![wq.clone(), other.clone()];
+        p.reads.allow = vec![path_dir.clone(), granted.clone()];
+        // (the stand-ins are in the temp folder, where runs write: that grant would read them whatever `/`'s does)
+        p.write.retain(|w| !dir.starts_with(w));
+        let c = confine(&p, false);
+        let inside = |at: &Path| [&wq, &other].iter().any(|h| at.starts_with(h));
+        let given = [&path_dir, &granted, &project];
+        let stray: Vec<&PathBuf> =
+            c.granted().iter().map(|(at, _)| at).filter(|at| inside(at) && !given.contains(at)).collect();
+        assert!(stray.is_empty(), "granted in a profile: {stray:?}");
+        for at in given {
+            assert!(reads(&c, at), "{}: {:?}", at.display(), rule(&c, at));
+        }
+        for at in [&dir, &dir.join("mnt"), &drive, &drive.join("Users"), &wq, &other, &wq.join("Downloads")] {
+            assert_eq!(rule(&c, at), None, "{}", at.display());
+        }
+        for at in [drive.join("Users/Public"), drive.join("Windows"), drive.join("Program Files")] {
+            assert!(reads(&c, &at), "{}: {:?}", at.display(), rule(&c, &at));
+        }
+        // (the break-once's twin: no profiles, `/` reads them whole)
+        let mut open = p.clone();
+        open.reads.profiles.clear();
+        let o = confine(&open, false);
+        assert!(reads(&o, &dir.join("mnt")), "no profiles: the drive read whole");
+        assert_eq!(c.rules.pinned(), 0, "nothing here is 9p");
+        let pinned = confine(&p, true);
+        assert_eq!(pinned.rules.pinned(), pinned.granted().len(), "every rule's place held open");
     }
 
     /// What every key is mounted over (7d, `Covers::of`) is tarae's own empty file nobody may open, in the run's

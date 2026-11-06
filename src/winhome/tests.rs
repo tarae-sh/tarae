@@ -166,6 +166,47 @@ fn claudes_reads_take_a_windows_home_as_a_home() {
     assert!(crate::allow::keepable(Path::new("/mnt/c/Windows"), Some(home)));
 }
 
+/// Runs read a Windows profile as they read home: the profiles found are `Reads.profiles` (every one — drvfs shows a
+/// run none of Windows' rights), and of them a run reads only what it reads in home — a grant, a PATH folder, a pack's
+/// place a variable moved there — never a profile itself nor a place in it that holds keys; beside them, the drive as
+/// anywhere (`Policy::reads_allow`, the rules in Rust).
+#[test]
+fn a_windows_profile_is_closed_to_runs_as_home_is() {
+    let s = crate::scratch::Scratch::new("winhome-closed");
+    let real = crate::sandbox::profile_path;
+    let c = real(&drive(&s));
+    let home = real(&s).join("home");
+    std::fs::create_dir_all(home.join("proj")).unwrap();
+    let (wq, other) = (c.join("Users/Wq"), c.join("Users/other"));
+    let granted = wq.join("Documents/shared");
+    let windows = find(vec![Drive { letter: 'c', at: c.clone() }], None, Some("wq"));
+    let here = crate::sandbox::Here { windows, ..crate::sandbox::Here::default() };
+    let vars = crate::sandbox::vars_in(&home, &here);
+    let also = [granted.clone(), wq.clone(), wq.join(".ssh/x"), c.clone()];
+    let reads = crate::sandbox::reads_for(&home, &also, &vars);
+    assert_eq!(reads.profiles, [wq.clone(), other.clone()]);
+    assert!(reads.allow.contains(&granted), "{:?}", reads.allow);
+    for no in [&wq, &wq.join(".ssh/x"), &c] {
+        assert!(!reads.allow.contains(no), "{}: {:?}", no.display(), reads.allow);
+    }
+    let env = crate::sandbox::Env { root: home.join("proj"), reads: reads.clone(), ..Default::default() };
+    let mut p = crate::sandbox::Policy::for_project(&env);
+    // (the stand-ins are in the temp folder, where runs write: that grant would read them whatever the rules)
+    p.write.retain(|w| !s.starts_with(w) && !real(&s).starts_with(w));
+    for at in [granted.join("a"), c.join("Users/Public/a"), c.join("Windows/a"), home.join("proj/a")] {
+        assert!(p.reads_allow(&at), "{}", at.display());
+    }
+    for at in [wq.join("Documents/a"), wq.join("Downloads/a"), wq.join(".ssh/id"), other.join("Documents/a")]
+    {
+        assert!(!p.reads_allow(&at), "{}", at.display());
+    }
+    let none = crate::sandbox::reads_for(&home, &also, &crate::sandbox::vars_in(&home, &Default::default()));
+    assert!(
+        none.profiles.is_empty() && !none.allow.contains(&granted),
+        "no drives: no profile, home's alone"
+    );
+}
+
 /// What every run never reads holds each profile's keys — as the drive spells them — beside home's.
 #[test]
 fn every_run_keeps_a_windows_homes_keys() {

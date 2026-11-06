@@ -186,12 +186,36 @@ pub fn scopes(abi: u32) -> u64 {
     if abi >= 6 { SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL } else { 0 }
 }
 
+/// Whether a rule on `at` holds only while its place stays open: on 9p (WSL's drvfs, `/mnt/c`). A rule is tied to
+/// the inode it was added on (`security/landlock/fs.c`'s `get_inode_object`, which holds it), and 9p without its
+/// metadata cache — `cache=none`, the default, and `mmap`, drvfs's (`CACHE_SC_MMAP` has no `CACHE_META`) — makes a
+/// new inode at each lookup (`v9fs_vfs_lookup` → `v9fs_get_new_inode_from_fid`, whose test matches none) and drops
+/// a dentry once unused (`always_delete_dentry`): once the rule's descriptor closed, the next lookup there finds a
+/// fresh inode with no rule, and the run is refused — closed, never open (no rule is found where none was added).
+/// Held open, the dentry stays and every lookup through it finds the rule's inode (`Ruleset.pinned`). Every 9p
+/// mount, whatever its `cache=`: in the cached modes it costs a descriptor and changes nothing.
+fn pins(at: &std::fs::File) -> bool {
+    let mut s = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: an open descriptor and room for the answer, read only once the call filled it.
+    let ok = unsafe { libc::fstatfs(at.as_raw_fd(), s.as_mut_ptr()) } == 0;
+    // SAFETY: filled by the call above.
+    let kind = ok.then(|| unsafe { s.assume_init() }.f_type);
+    // (9p's `statfs` type, `V9FS_MAGIC` in `include/uapi/linux/magic.h` — untyped: `f_type`'s type is the system's)
+    kind.is_some_and(|k| k == 0x0102_1997)
+}
+
 /// A ruleset being made: what it handles is refused once applied, but what a rule grants.
 #[derive(Debug)]
 pub struct Ruleset {
     fd: OwnedFd,
     handled: u64,
     abi: u32,
+    /// The folders and files of its rules on a filesystem whose inodes don't outlive their name (`pins`), held open
+    /// as long as the ruleset: each keeps its rule's inode the one every lookup there finds.
+    pinned: Vec<std::fs::File>,
+    /// Tests: every rule pinned as if on 9p (`pins`).
+    #[cfg(test)]
+    pub pin_all: bool,
     /// Tests: every rule added — (path, the rights granted) — in order.
     #[cfg(test)]
     pub added: Vec<(std::path::PathBuf, u64)>,
@@ -243,6 +267,9 @@ impl Ruleset {
             fd,
             handled: fs,
             abi,
+            pinned: Vec::new(),
+            #[cfg(test)]
+            pin_all: false,
             #[cfg(test)]
             added: Vec::new(),
             #[cfg(test)]
@@ -261,6 +288,8 @@ impl Ruleset {
             fd,
             handled: handled(abi),
             abi,
+            pinned: Vec::new(),
+            pin_all: false,
             added: Vec::new(),
             written: true,
             net: handled_net(abi),
@@ -302,8 +331,15 @@ impl Ruleset {
             return Ok(false);
         }
         #[cfg(test)]
+        let pin = self.pin_all || pins(&at);
+        #[cfg(not(test))]
+        let pin = pins(&at);
+        #[cfg(test)]
         if self.written {
             self.added.push((path.to_path_buf(), access));
+            if pin {
+                self.pinned.push(at);
+            }
             return Ok(true);
         }
         let rule = PathBeneathAttr { allowed_access: access, parent_fd: at.as_raw_fd() };
@@ -322,7 +358,16 @@ impl Ruleset {
         }
         #[cfg(test)]
         self.added.push((path.to_path_buf(), access));
+        if pin {
+            self.pinned.push(at);
+        }
         Ok(true)
+    }
+
+    /// Tests: how many of its rules' places it holds open (`pins`).
+    #[cfg(test)]
+    pub fn pinned(&self) -> usize {
+        self.pinned.len()
     }
 
     /// Confines the calling thread — and what it starts from now on — to the ruleset, for good (the ruleset

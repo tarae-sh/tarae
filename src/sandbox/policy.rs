@@ -202,7 +202,7 @@ impl KeyRules {
     /// it).
     pub fn may_close_below(&self, at: &Path) -> bool {
         let v = self.view();
-        let in_home = self.reads.home.as_ref().is_some_and(|h| at.starts_with(h) || h.starts_with(at));
+        let in_home = self.reads.homes().any(|h| at.starts_with(h) || h.starts_with(at));
         self.keys.is_some()
             && !self.supervised
             && (self.places.iter().any(|k| k.starts_with(at) || at.starts_with(k))
@@ -281,16 +281,17 @@ impl KeyView<'_> {
         }
         // (in no place that closes it: read as any file there, or — in home, nothing opening it — any folder of it
         // opened would close it)
-        let unread = self.reads.home.as_ref().is_some_and(|h| real.starts_with(h)) && !self.reads_place(real);
+        let unread = self.reads.home_of(real).is_some() && !self.reads_place(real);
         let named = self.places.iter().all(|k| !real.starts_with(k)) && key_named_below(Path::new("/"), real);
         (unread && named).then_some(KeyRule::ClosedOnceRead)
     }
 
-    /// Whether the profile's reads in home let a run read `real`, its names aside: the project, where it writes,
-    /// what's allowed, a file the user opened (macOS: `Y<n>`, after the deny of home).
+    /// Whether the profile's reads in home — or a Windows profile, closed as home is — let a run read `real`, its
+    /// names aside: the project, where it writes, what's allowed, a file the user opened (macOS: `Y<n>`, after the
+    /// deny of home).
     fn reads_place(&self, real: &Path) -> bool {
-        match &self.reads.home {
-            Some(home) if real.starts_with(home) => {
+        match self.reads.home_of(real) {
+            Some(_) => {
                 real.starts_with(self.root)
                     || self.run.is_some_and(|d| real.starts_with(d))
                     || self.write.iter().chain(&self.reads.allow).any(|w| real.starts_with(w))
@@ -602,6 +603,10 @@ impl Policy {
             let reads: String =
                 (0..self.reads.allow.len()).map(|i| format!(" (subpath (param \"R{i}\"))")).collect();
             p.push_str(&deny("file-read-data file-read-xattr (subpath (param \"HOME\"))"));
+            // (WSL's Windows profiles, closed as home is — none on a Mac: there are no drives to find them on)
+            for i in 0..self.reads.profiles.len() {
+                p.push_str(&deny(&format!("file-read-data file-read-xattr (subpath (param \"WH{i}\"))")));
+            }
             p.push_str(&format!(
                 "(allow file-read-data file-read-xattr (subpath (param \"ROOT\")){run}{dirs}{files}{reads})\n"
             ));
@@ -1330,6 +1335,8 @@ impl Policy {
         v.extend(spared.enumerate().map(|(i, p)| (format!("KI{i}"), s(p))));
         let r = &self.reads;
         v.extend(r.home.iter().map(|h| ("HOME".to_string(), s(h))));
+        let profiles = r.profiles.iter().filter(|_| r.home.is_some());
+        v.extend(profiles.enumerate().map(|(i, p)| (format!("WH{i}"), s(p))));
         v.extend(
             r.home.iter().flat_map(|_| r.allow.iter().enumerate().map(|(i, p)| (format!("R{i}"), s(p)))),
         );
@@ -1387,9 +1394,9 @@ impl Policy {
         for (key, which, c) in &env.asked_caches {
             let but = env.runs_later.but_cache(key);
             if c.dirs.iter().all(|d| open(d, which, &but, &mut refused_asked)) {
-                reads.allow.extend(
-                    c.dirs.iter().filter(|d| reads.home.as_ref().is_some_and(|h| d.starts_with(h))).cloned(),
-                );
+                let inside: Vec<PathBuf> =
+                    c.dirs.iter().filter(|d| reads.home_of(d).is_some()).cloned().collect();
+                reads.allow.extend(inside);
                 caches_said.push(c.clone());
             }
         }

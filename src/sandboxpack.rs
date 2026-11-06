@@ -1713,6 +1713,9 @@ pub struct Vars {
     /// WSL's Windows profiles' places that hold keys (`winhome::Homes.kept`, set by `sandbox::vars_in`): kept as
     /// home's are.
     pub windows: Vec<PathBuf>,
+    /// WSL's Windows profiles (`winhome::Homes.found`, real, set by `sandbox::vars_in`): closed to runs as home is —
+    /// read only where `sandbox::reads_for` lets a run read in home.
+    pub profiles: Vec<PathBuf>,
 }
 
 /// One place of a shared cache's (`Vars::caches`).
@@ -1787,6 +1790,7 @@ impl Vars {
             run: None,
             caches: Vec::new(),
             windows: Vec::new(),
+            profiles: Vec::new(),
         };
         let mut caches: Vec<CachePlace> = Vec::new();
         for c in &t.caches {
