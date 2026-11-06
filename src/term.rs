@@ -7241,13 +7241,7 @@ fn draw_text(
     // What the last turn did on line `l` (`turnmap.rs`): its mark faint, in the sign column under everything else; a
     // button, and the stop in hand lit
     let map_style = |s: &crate::turnmap::Sign| {
-        use crate::chat::Mark;
-        let fg = match s.mark {
-            _ if s.in_hand => ui.accent.fg,
-            Mark::Edit => blend(ui.diff_plus.fg, ui.base.bg.or(ui.tint), 0.5).or(ui.diff_plus.fg),
-            Mark::Failed => ui.sign[2].fg,
-            Mark::Read | Mark::Lookup | Mark::Run => ui.linenr.fg,
-        };
+        let fg = if s.in_hand { ui.accent.fg } else { map_ink(ui, s.mark) };
         Style { fg, bold: s.in_hand, ..ui.base }
     };
     let map_sign = |s: &crate::turnmap::Sign, y: usize| {
@@ -7362,6 +7356,40 @@ fn draw_text(
         }
         (at, flags)
     };
+    // The turn map's words at a line end (#412, D): each marked block's short words on the first line its mark stands on —
+    // a block begun above the view on its first line in sight —, one a line, the heaviest; the cursor's line its whole
+    // words (focused, its short ones where those don't fit) and nothing while you type there; the rest the mark alone
+    let first_in_sight = view.iter().find_map(|r| match r {
+        crate::codeview::Row::Text { line, .. } | crate::codeview::Row::Doc { start: line, .. } => {
+            Some(*line)
+        }
+        _ => None,
+    });
+    let mut said_on: Vec<(usize, &crate::turnmap::Words)> = Vec::new();
+    for w in &shows.words {
+        if let Some(l) = first_in_sight.and_then(|f| w.said_at(f))
+            && !said_on.iter().any(|(at, _)| *at == l)
+        {
+            said_on.push((l, w));
+        }
+    }
+    let in_hand = shows.blame.then(|| crate::turnmap::line_words(editor, doc, cur_line)).flatten();
+    let map_said = |l: usize| -> Option<(crate::chat::Mark, &str, Option<&str>)> {
+        if l == cur_line && shows.focused {
+            if !shows.blame {
+                return None;
+            }
+            if let Some((mark, whole, short)) = &in_hand {
+                return Some((*mark, whole.as_str(), Some(short.as_str())));
+            }
+        }
+        said_on.iter().find(|(at, _)| *at == l).map(|(_, w)| (w.mark, w.words.as_str(), None))
+    };
+    // (the block a folded doc comment's rows said: once a block)
+    let mut doc_said: Option<usize> = None;
+    // (a mark drawn in the sign column — its line, row, glyph and ink: where its line end can't say its words, the mark
+    // says them on its card, as a cut button — B)
+    let mut mark_drawn: Option<(usize, u16, &str, Style)> = None;
     // (each row takes its ground across the pane first — `ground` — and draws over it)
     for row in 0..lay.text_rows {
         let y = lay.text_top + row as u16;
@@ -7469,7 +7497,21 @@ fn draw_text(
                 }
                 if let Some(f) = doc_flags.get(row).copied().flatten() {
                     queue!(out, MoveTo((lay.x0 + lay.gutter + used + end_w) as u16, y))?;
-                    draw_flag_end(out, editor, ui, (lay, shows), f, (used + 1 + end_w, y), ui.base)?;
+                    end_w += draw_flag_end(out, editor, ui, (lay, shows), f, (used + 1 + end_w, y), ui.base)?;
+                }
+                // (the map's words for a block said in it: on its first row they fit on whole)
+                if doc_said != Some(*start)
+                    && let Some((mark, words, _)) = (*start..=*end)
+                        .find_map(|l| said_on.iter().find(|(at, _)| *at == l))
+                        .map(|(_, w)| (w.mark, w.words.as_str(), None::<&str>))
+                {
+                    let room = lay.text_cols.saturating_sub(used + 1 + end_w + 3);
+                    if room >= words.width() + 2 {
+                        queue!(out, MoveTo((lay.x0 + lay.gutter + used + end_w) as u16, y))?;
+                        let said = (mark, words, None);
+                        draw_map_end(out, editor, (ui, lay), said, (used + 1 + end_w, y), ui.base)?;
+                        doc_said = Some(*start);
+                    }
                 }
                 continue;
             }
@@ -7667,7 +7709,11 @@ fn draw_text(
                         s
                     }
                     None => match crate::turnmap::sign_at(&shows.map, line) {
-                        Some(s) => map_sign(s, y as usize),
+                        Some(s) => {
+                            let (glyph, st) = map_sign(s, y as usize);
+                            mark_drawn = Some((line, y, glyph, st));
+                            (glyph, st)
+                        }
                         None => (" ", ui.base),
                     },
                 },
@@ -8165,26 +8211,60 @@ fn draw_text(
                 cut_end(used, 0, &tag, Style { fg, ..line_base });
             }
         }
-        // Blame (`b` in the git tab): who changed the cursor line, when, and why — faint, only where the line end is
-        // free (a diagnostic takes it first), and not while typing
-        if shows.blame
+        // The turn map's words (#412): where the line end is free as blame's is — a block's on its first line, the
+        // cursor's line's before its blame, blame going first
+        let free = !clipped
             && tag_here.is_none()
-            && line == cur_line
-            && last
-            && !clipped
             && line_message_here.is_none()
             && note_here.is_none()
             && hint_here.is_none()
-            && risk_here.is_none()
+            && risk_here.is_none();
+        let said = map_said(line).filter(|_| last);
+        let mut map_w = 0;
+        let mut said_whole = false;
+        if let Some(said) = said.filter(|_| free) {
+            let used = x0 + col.saturating_sub(row_left) + shift + 1 + end_w;
+            if let Some((w, whole)) = draw_map_end(out, editor, (ui, lay), said, (used, y), line_base)? {
+                (map_w, said_whole) = (w, whole);
+            }
+        }
+        // (where it couldn't say them whole — no room, a line end taken — its mark says them on its card, as a cut button)
+        if let Some((mark, words, _)) = said.filter(|_| !said_whole)
+            && let Some((_, my, glyph, st)) = mark_drawn.filter(|m| m.0 == line)
+        {
+            let words_ink = Style { fg: map_ink(ui, mark), italic: true, ..st };
+            let fit = crate::whole::of(glyph.to_string(), &format!("{glyph} {words}")).named(
+                glyph.len(),
+                Style { bold: false, ..st },
+                words_ink,
+            );
+            let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
+            crate::whole::cut_at(
+                editor,
+                crate::whole::On::Code,
+                (lay.x0 + signs - 1, my as usize),
+                &fit,
+                st,
+                cols,
+                None,
+            );
+        }
+        // Blame (`b` in the git tab): who changed the cursor line, when, and why — faint, only where the line end is
+        // free (a diagnostic takes it first), and not while typing; after the map's words (` · `), the first to go
+        if shows.blame
+            && free
+            && line == cur_line
+            && last
             && let Some(b) = editor.blame_here(line)
         {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1 + end_w;
+            let used = x0 + col.saturating_sub(row_left) + shift + 1 + end_w + map_w;
             let room = lay.text_cols.saturating_sub(used + 3);
             if room >= 12 {
                 let style = Style { fg: ui.linenr.fg, italic: true, ..line_base };
                 apply(out, style)?;
                 let shown = crate::whole::fit(&b, room);
-                queue!(out, Print("   "), Print(shown.shown()))?;
+                let gap = if map_w > 0 { " · " } else { "   " };
+                queue!(out, Print(gap), Print(shown.shown()))?;
                 cut_end(used, 0, &shown, style);
             }
         }
@@ -8766,6 +8846,56 @@ const FLAG_END_W: usize = 4;
 /// An answer's flag at a line's end on a row of pane `lay` whose words take `used` cells (`y` its screen row): `   ¶`,
 /// faint, the accent while a paragraph about its line is in the column's view (`flags::line_lit`) — a button: pressed, the column at its
 /// paragraph; under the mouse, its card (`flag_card`). The cells it took (none where there's no room).
+/// The turn map's ink for `mark` (`turnmap.rs`): faint — a change's green half way to the ground —, a failure the warning.
+fn map_ink(ui: &Ui, mark: crate::chat::Mark) -> Option<crossterm::style::Color> {
+    use crate::chat::Mark;
+    match mark {
+        Mark::Edit => blend(ui.diff_plus.fg, ui.base.bg.or(ui.tint), 0.5).or(ui.diff_plus.fg),
+        Mark::Failed => ui.sign[2].fg,
+        Mark::Read | Mark::Lookup | Mark::Run => ui.linenr.fg,
+    }
+}
+
+/// The turn map's words at a line end (#412) on a row of pane `lay` whose text takes `used` cells (as `draw_flag_end`
+/// counts them): `   ◦ read 1–12` — the mark and its words in the mark's own ink, the words italic (a failure's a tone
+/// lower, as a warning's line end). The line in hand's (`short` its short words): those where the whole don't fit, then
+/// cut to `…`, whole on its card; a block's whole or not at all (a range never cut inside its numbers). None where
+/// nothing's said (8 cells past the gap at least); else the cells it took and whether `words` show whole.
+fn draw_map_end(
+    out: &mut impl Write,
+    editor: &Editor,
+    (ui, lay): (&Ui, &Layout),
+    (mark, words, short): (crate::chat::Mark, &str, Option<&str>),
+    (used, y): (usize, u16),
+    line_base: Style,
+) -> io::Result<Option<(usize, bool)>> {
+    let room = lay.text_cols.saturating_sub(used + 3);
+    let said = match short {
+        Some(s) if words.width() + 2 > room => s,
+        _ => words,
+    };
+    if room < 8 || short.is_none() && said.width() + 2 > room {
+        return Ok(None);
+    }
+    let ink = map_ink(ui, mark);
+    let fg = match mark {
+        crate::chat::Mark::Failed => blend(ink, line_base.bg.or(ui.tint), 0.72).or(ink),
+        _ => ink,
+    };
+    apply(out, line_base)?;
+    queue!(out, Print("   "))?;
+    apply(out, Style { fg: ink, ..line_base })?;
+    queue!(out, Print(mark.glyph()), Print(" "))?;
+    let style = Style { fg, italic: true, ..line_base };
+    apply(out, style)?;
+    let shown = crate::whole::fit(said, room.saturating_sub(2));
+    queue!(out, Print(shown.shown()))?;
+    let at = (lay.x0 + lay.gutter + used + 2 + 2, y as usize);
+    let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
+    crate::whole::cut_at(editor, crate::whole::On::Code, at, &shown, style, cols, None);
+    Ok(Some((3 + 2 + shown.shown().width(), said == words && !shown.is_cut())))
+}
+
 fn draw_flag_end(
     out: &mut impl Write,
     editor: &Editor,

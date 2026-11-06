@@ -1130,6 +1130,150 @@ fn a_place_in_another_folder_is_judged_the_same() {
     assert_eq!(judge_seen.judged(&out, &(5..6), None).map(|j| j.check), Some(Check::NotRead));
 }
 
+// ── The words at a line end (#412, D) ────────────────────────────────────────────────────────────────────
+
+/// A turn on `src/a.rs`: it reads `fn a`–`fn d` (shown), a search hits `fn c`, it changes `fn e` and a `run_tests` of the
+/// file passes — the cursor on `line` (0-based).
+fn worded(s: &crate::scratch::Scratch, line: usize) -> Editor {
+    let mut ed = project(s);
+    let a = s.join("src/a.rs");
+    let in_a = |st: Stop| Stop { path: Some(a.clone()), ..st };
+    let mut r = in_a(read("", 0..4));
+    r.map.shown.push(crate::replay::Shown { path: a.clone(), lines: 0..4, old: false });
+    let ran = in_a(test("", Some(Holds::File), "2 passed"));
+    add(&mut ed, vec![r, in_a(search("", 2)), in_a(edit("", 4..5)), ran]);
+    let at = CODE.lines().take(line).map(|l| l.len() + 1).sum();
+    ed.doc_mut().set_selection(crate::selection::Selection::point(at));
+    ed
+}
+
+/// D: each marked block says its short words once, on its first line — a read with its lines —, in its mark's own ink;
+/// the rest of a block keeps its mark alone. A search inside the read says its own, a change tested its two words.
+#[test]
+fn a_block_says_its_words_once_on_its_first_line() {
+    let s = crate::scratch::Scratch::new("turnmap-words");
+    let mut ed = worded(&s, 5);
+    let rows = frame(&mut ed, 150);
+    assert!(
+        row(&rows, "fn a()").contains("◦ read 1–4"),
+        "the block's first line, its range: {}",
+        row(&rows, "fn a()")
+    );
+    for name in ["fn b()", "fn d()"] {
+        let r = row(&rows, name);
+        assert!(r.contains('◦') && !r.contains("read"), "the mark alone: {r}");
+    }
+    assert!(row(&rows, "fn c()").contains("• searched"), "{}", row(&rows, "fn c()"));
+    assert!(row(&rows, "fn e()").contains("● changed · tested"), "{}", row(&rows, "fn e()"));
+    assert!(!row(&rows, "fn f()").contains(['◦', '●', '•']), "{}", row(&rows, "fn f()"));
+    // (the words in their mark's ink, italic: a change's the change's faint green, a read's the faint ink)
+    crossterm::style::force_color_output(true);
+    let mut buf = Vec::new();
+    crate::term::render(&mut ed, &mut buf, 150, 40).unwrap();
+    let mut vt = vt100::Parser::new(40, 150, 0);
+    vt.process(&buf);
+    let screen = vt.screen();
+    let cell = |name: &str, what: &str| {
+        let y = 1 + rows.iter().skip(1).position(|r| r.contains(name)).unwrap();
+        let x = rows[y][..rows[y].find(what).unwrap()].chars().count();
+        screen.cell(y as u16, x as u16).unwrap().clone()
+    };
+    for (name, mark, words) in [("fn a()", "◦", "read"), ("fn e()", "●", "changed")] {
+        let (m, w) = (cell(name, mark), cell(name, words));
+        assert_eq!(w.fgcolor(), m.fgcolor(), "{name}: the words in the mark's ink");
+        assert!(w.italic() && !m.italic(), "{name}: the words italic");
+    }
+    assert_ne!(cell("fn e()", "changed").fgcolor(), cell("fn a()", "read").fgcolor(), "a change's green");
+}
+
+/// D's block begun above the view says its words on its first line in sight — never on a line scrolled away.
+#[test]
+fn a_block_begun_above_says_on_its_first_line_in_sight() {
+    let s = crate::scratch::Scratch::new("turnmap-words-top");
+    let mut ed = project(&s);
+    let long = s.join("src/long.rs");
+    let text: String = (0..120).map(|i| format!("fn line_{i:03}() {{}}\n")).collect();
+    std::fs::write(&long, &text).unwrap();
+    ed.open_for_claude(&long).unwrap();
+    let mut r = Stop { path: Some(long.clone()), ..read("", 0..100) };
+    r.map.shown.push(crate::replay::Shown { path: long.clone(), lines: 0..100, old: false });
+    add(&mut ed, vec![r]);
+    ed.doc_mut().set_selection(crate::selection::Selection::point(text.find("fn line_070").unwrap()));
+    ed.doc_mut().top = 50;
+    let rows = frame(&mut ed, 150);
+    assert!(!rows.iter().any(|r| r.contains("line_000")), "its first line out of sight");
+    let first = rows.iter().skip(1).find(|r| r.contains("fn line_")).unwrap();
+    assert!(first.contains("◦ read 1–100"), "on the first line in sight: {first}");
+    let said = rows.iter().filter(|r| r.contains("read 1–100")).count();
+    assert_eq!(said, 1, "once: {rows:#?}");
+}
+
+/// The cursor's line says its whole words — F0's, as a note's card — and blame after them, ` · ` between.
+#[test]
+fn the_cursors_line_says_its_whole_words_blame_after() {
+    let s = crate::scratch::Scratch::new("turnmap-words-here");
+    let mut ed = worded(&s, 4);
+    ed.config.git_blame = true;
+    let blame = crate::gitmenu::Blame {
+        author: "eth".into(),
+        time: 0,
+        summary: "wind the thread".into(),
+        uncommitted: false,
+    };
+    ed.blame.lines = vec![Some(blame); CODE.lines().count()];
+    ed.blame.of = Some((ed.doc().id, ed.doc().version()));
+    let rows = frame(&mut ed, 150);
+    let r = row(&rows, "fn e()");
+    let (words, blame) = (r.find("● changed, tested · "), r.find("eth, "));
+    assert!(words.is_some() && words < blame, "its whole words, then blame: {r}");
+    // (on a line a block starts on: the whole words in the block's place)
+    let mut ed = worded(&s, 0);
+    let rows = frame(&mut ed, 150);
+    let r = row(&rows, "fn a()");
+    assert!(r.contains("◦ read this turn") && !r.contains("1–4"), "{r}");
+}
+
+/// Where the line end has no room for the words, the mark says them on its card under the pointer — B, a cut button.
+#[test]
+fn a_narrow_line_says_its_words_on_its_marks_card() {
+    let s = crate::scratch::Scratch::new("turnmap-words-narrow");
+    let mut ed = worded(&s, 5);
+    ed.workspace.viewer.sidebar = None;
+    let rows = frame(&mut ed, 26);
+    let y = 1 + rows.iter().skip(1).position(|r| r.contains("fn a()")).unwrap();
+    assert!(!rows[y].contains("read"), "no room: {}", rows[y]);
+    let marks = ed.screen.map_marks.borrow().clone();
+    let m = marks.iter().find(|m| m.0 == y).unwrap_or_else(|| panic!("no mark on {y}: {marks:?}"));
+    let cards: Vec<String> = ed
+        .screen
+        .cut_spots
+        .borrow()
+        .iter()
+        .filter(|c| c.0 == y && (c.1..c.2).contains(&m.1))
+        .filter_map(|c| match &c.3 {
+            crate::whole::Cut::Text(w) => Some(w.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cards, ["◦ read 1–4"], "the mark's card: {}", rows[y]);
+    // (wide, the line end says them: no card on the mark)
+    frame(&mut ed, 150);
+    let spots = ed.screen.cut_spots.borrow();
+    assert!(!spots.iter().any(|c| matches!(&c.3, crate::whole::Cut::Text(w) if w.text.starts_with('◦'))));
+}
+
+/// While you type, the cursor's line says nothing — as blame —, the other blocks' words staying where they are.
+#[test]
+fn typing_the_cursors_line_says_nothing() {
+    let s = crate::scratch::Scratch::new("turnmap-words-insert");
+    let mut ed = worded(&s, 0);
+    ed.mode = crate::editor::Mode::Insert;
+    let rows = frame(&mut ed, 150);
+    let r = row(&rows, "fn a()");
+    assert!(r.contains('◦') && !r.contains("read"), "the mark alone: {r}");
+    assert!(row(&rows, "fn c()").contains("• searched"), "{}", row(&rows, "fn c()"));
+}
+
 /// The stops the sign column reads are found by line, the heaviest on it first and the one in hand over all.
 #[test]
 fn a_lines_sign_is_its_heaviest_the_one_in_hand_over_all() {

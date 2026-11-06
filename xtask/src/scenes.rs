@@ -421,6 +421,35 @@ const E1_OUTLINE: &[&str] = e1_keys!(" ", "o", "@1");
 const E1_CLOSED: &[&str] = e1_keys!(" ", "L", "@1", " ", "e", "@?main.rs", "@1");
 const E1_HAND: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1", "\x1b", "[", "r", "[", "r", "[", "r", "@1");
 const E1_FOLDED: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1", "g", "@0.5", "\r", "@1");
+// (#412: E1's turn, thread.rs open — the cursor on its changed line, then on a line it read: each block's words at its
+// first line's end, the cursor's line its whole ones)
+const MAP_WORDS: &[&str] = e1_keys!(":", "o src/thread.rs", "\r", "@1", ":", "10", "\r", "@1");
+const MAP_WORDS_READ: &[&str] = e1_keys!(":", "o src/thread.rs", "\r", "@1", ":", "3", "\r", "@1");
+// (a long read: skein.rs 12–380 — the cursor near its start, then in its middle, its first line out of sight)
+macro_rules! map_words_long {
+    ($line:expr) => {
+        &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "read the skein",
+            "\r",
+            "@30=done",
+            "@1",
+            ":",
+            "o src/skein.rs",
+            "\r",
+            "@1",
+            ":",
+            $line,
+            "\r",
+            "@1",
+        ]
+    };
+}
+const MAP_WORDS_LONG: &[&str] = map_words_long!("16");
+const MAP_WORDS_LONG_MID: &[&str] = map_words_long!("200");
 
 /// Focus F0's keys: `F0_ASKS` to `f0-saw`, its edit taken, its turn's end, the keys in the code (`esc esc`), then `$more`.
 macro_rules! f0_keys {
@@ -4302,6 +4331,10 @@ const SCENES: &[Scene] = &[
     Scene { name: "e1-folded", claude: "e1-map", files: MAIN, keys: E1_FOLDED },
     Scene { name: "e1-failed", claude: "e1-failed", files: MAIN, keys: E1_TREE },
     Scene { name: "e1-sessions", claude: "e1-map", files: MAIN, keys: E1_SESSIONS },
+    Scene { name: "map-words", claude: "e1-map", files: MAIN, keys: MAP_WORDS },
+    Scene { name: "map-words-read", claude: "e1-map", files: MAIN, keys: MAP_WORDS_READ },
+    Scene { name: "map-words-long", claude: "map-words-long", files: MAIN, keys: MAP_WORDS_LONG },
+    Scene { name: "map-words-long-mid", claude: "map-words-long", files: MAIN, keys: MAP_WORDS_LONG_MID },
     Scene { name: "f0-card", claude: "f0-saw", files: MAIN, keys: F0_CARD },
     Scene { name: "f0-lines", claude: "f0-saw", files: MAIN, keys: F0_LINES },
     Scene { name: "f0-wide", claude: "f0-saw", files: MAIN, keys: F0_WIDE },
@@ -7175,6 +7208,11 @@ echo '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.42s'
 pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
     match scene {
         // (kinds C: forty tasks — their trust card cut to fit)
+        // (#412: a long file, for a long read)
+        "map-words-long" | "map-words-long-mid" => {
+            let knots: String = (1..=398).map(|i| format!("    knots.push({}); // knot {i}\n", i * 3)).collect();
+            vec![("src/skein.rs", format!("pub fn skein() -> Vec<u32> {{\n{knots}    knots\n}}\n"))]
+        }
         "kindsc-card" | "kindsc-card-end" => {
             let tasks: String = (1..=40).map(|i| format!("[task.step{i}]\ncmd = \"sh step{i}.sh\"\n")).collect();
             vec![(".tarae.toml", tasks)]
@@ -7374,6 +7412,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "f271",
     "e1-map",
     "e1-failed",
+    "map-words-long",
     "f0-saw",
     "f0-tested",
     "f0-failed",
@@ -7526,6 +7565,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "focus-line" => turn.focus_line()?,
             "e1-map" => turn.e1_map(false)?,
             "e1-failed" => turn.e1_map(true)?,
+            "map-words-long" => turn.map_words_long()?,
             // (focus F0's: the three verdicts on one answer, a second answer on the same lines)
             "f0-saw" => turn.f0_saw(turns, None)?,
             "f0-tested" => turn.f0_saw(turns, Some("passed in 0.4s\n$ cargo test thread\n2 passed"))?,
@@ -8846,6 +8886,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         };
         self.ran("m6", "run_tests", json!({"path": "src/thread.rs"}), said)?;
         self.words("Fixed: src/thread.rs:10 now sums the gaps between the knots. That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #412's long read: skein.rs 12–380, then the answer.
+    fn map_words_long(&mut self) -> io::Result<()> {
+        self.words("Reading the skein.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/skein.rs:12-380"]}))?;
+        self.words("Each knot is three past the last. That is all.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

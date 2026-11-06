@@ -471,7 +471,7 @@ fn saw(ed: &Editor, path: &Path, line: usize) -> Option<&'static str> {
 }
 
 /// An answer's three verdicts: the chat says the doubts after the rows that name their places, faint (chatlink Q3); the
-/// code's line ends are `¶` alone; a flag's hover row says every verdict, a doubt or not.
+/// code's line ends are `¶`, the turn map's words after it alone; a flag's hover row says every verdict, a doubt or not.
 #[test]
 fn each_place_says_what_tarae_saw_of_it() {
     let (_s, root, mut ed) = project("chatnotes-check", &["src/a.rs"]);
@@ -494,9 +494,11 @@ fn each_place_says_what_tarae_saw_of_it() {
     assert!(row("The guard moved to src/a.rs:7. · changed, no test seen"), "{rows:#?}");
     assert!(row("Nothing past src/a.rs:9 reads it. · not read this turn"), "{rows:#?}");
     assert!(!row("read this turn ·") && !row("src/a.rs:2. ·"), "a read place no doubt: {rows:#?}");
-    for l in ["let line_2 = 2;", "let line_7 = 7;", "let line_9 = 9;"] {
+    // (and the turn map's words after it on a marked block's first line — #412: line 7 the change's)
+    for (l, then) in [("let line_2 = 2;", ""), ("let line_7 = 7;", "   ● changed"), ("let line_9 = 9;", "")]
+    {
         let r = rows.iter().find(|r| r.contains(l)).unwrap();
-        assert!(r.split('│').next().unwrap().trim_end().ends_with(&format!("{l}   ¶")), "{r}");
+        assert!(r.split('│').next().unwrap().trim_end().ends_with(&format!("{l}   ¶{then}")), "{r}");
     }
     let doc = crate::docpaths::find(&ed, &a);
     let hover = |line: usize| {

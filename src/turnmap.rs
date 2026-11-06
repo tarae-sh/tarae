@@ -137,24 +137,86 @@ impl File {
                 _ => Check::NotRunOver,
             };
         }
-        let covered = |old: bool| {
-            let mut parts: Vec<&Range<usize>> =
-                self.shown.iter().filter(|(_, was)| old || !was).map(|(l, _)| l).collect();
-            crate::sorting::by_key(&mut parts, |l| l.start);
-            let mut from = lines.start;
-            for l in parts {
-                if l.start > from {
-                    break;
-                }
-                from = from.max(l.end);
-            }
-            from >= lines.end
-        };
         match () {
-            _ if covered(false) => Check::Read,
-            _ if covered(true) => Check::ReadThenChanged,
+            _ if self.shown_over(lines, false) => Check::Read,
+            _ if self.shown_over(lines, true) => Check::ReadThenChanged,
             _ => Check::NotRead,
         }
+    }
+
+    /// Whether answers showed Claude every one of `lines` — `old`: those the file changed under since too.
+    fn shown_over(&self, lines: &Range<usize>, old: bool) -> bool {
+        let mut parts: Vec<&Range<usize>> =
+            self.shown.iter().filter(|(_, was)| old || !was).map(|(l, _)| l).collect();
+        crate::sorting::by_key(&mut parts, |l| l.start);
+        let mut from = lines.start;
+        for l in parts {
+            if l.start > from {
+                break;
+            }
+            from = from.max(l.end);
+        }
+        from >= lines.end
+    }
+
+    /// A block's short words (#412): `read 1–12` with its lines, `searched`, `changed · tested` — `since`, the buffer
+    /// changed since the turn.
+    fn block_said(&self, mark: Mark, lines: &Range<usize>, since: bool) -> String {
+        let span = match lines.len() {
+            0 | 1 => String::new(),
+            _ => format!(" {}–{}", lines.start + 1, lines.end),
+        };
+        match mark {
+            Mark::Read if !self.shown_over(lines, false) && self.shown_over(lines, true) => {
+                format!("read{span}, changed since")
+            }
+            Mark::Read => format!("read{span}"),
+            Mark::Lookup => format!("searched{span}"),
+            Mark::Run => "tested".into(),
+            Mark::Failed => "test failed".into(),
+            Mark::Edit => short(self.check(lines), since, false).into(),
+        }
+    }
+
+    /// Line `l`'s words as the line in hand says them, whole and short — its heaviest mark, F0's word for it, a search
+    /// said before it: `changed, tested` · `changed · tested`, `searched · read this turn` · `searched · read`.
+    fn line_said(&self, l: usize, since: bool) -> Option<(Mark, String, String)> {
+        let on: Vec<Mark> = self.lines.iter().filter(|t| t.lines.contains(&l)).map(|t| t.mark).collect();
+        let mark = *on.iter().min_by_key(|m| weight(**m))?;
+        let searched = on.contains(&Mark::Lookup);
+        let check = self.check(&(l..l + 1));
+        let whole = match check {
+            Check::Read if since => "read, changed since",
+            Check::Read => "read this turn",
+            Check::ReadThenChanged => "read, changed since",
+            Check::NotRead if searched => "searched, not read",
+            Check::NotRead => "not read this turn",
+            Check::NotRunOver => "changed, no test seen",
+            Check::RunOver if since => "tested, changed since",
+            Check::RunOver => "changed, tested",
+            Check::Failed => "changed, test failed",
+        };
+        let short = short(check, since, searched);
+        Some(match check {
+            Check::Read | Check::ReadThenChanged if searched => {
+                (mark, format!("searched · {whole}"), format!("searched · {short}"))
+            }
+            _ => (mark, whole.into(), short.into()),
+        })
+    }
+}
+
+/// A verdict's short words (#412): what a block's first line says, and the line in hand where its whole words don't fit.
+fn short(check: Check, since: bool, searched: bool) -> &'static str {
+    match check {
+        Check::Read => "read",
+        Check::ReadThenChanged => "read, changed since",
+        Check::NotRead if searched => "searched",
+        Check::NotRead => "not read",
+        Check::NotRunOver => "changed",
+        Check::RunOver if since => "tested, changed since",
+        Check::RunOver => "changed · tested",
+        Check::Failed => "test failed",
     }
 }
 
@@ -599,7 +661,7 @@ pub fn press_kept(
 pub fn signs(ed: &Editor, doc: &Document) -> Vec<Sign> {
     let m = &ed.turnmap;
     let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&ed.workspace.root).ok());
-    let f = rel.filter(|r| !m.is_empty() && !yours(ed, r)).and_then(|r| m.files.get(r));
+    let f = mapped(ed, doc);
     let sign = |t: &Touched| Sign {
         lines: t.lines.clone(),
         mark: t.mark,
@@ -615,6 +677,67 @@ pub fn signs(ed: &Editor, doc: &Document) -> Vec<Sign> {
         signs.push(Sign { lines, mark: Mark::Read, at, in_hand: true });
     }
     signs
+}
+
+/// Buffer `doc`'s file on the map — none for a file you changed since (`Replay.yours`).
+fn mapped<'a>(ed: &'a Editor, doc: &Document) -> Option<&'a File> {
+    let m = &ed.turnmap;
+    let rel = doc.path.as_deref()?.strip_prefix(&ed.workspace.root).ok()?;
+    m.files.get(rel).filter(|_| !yours(ed, rel))
+}
+
+/// A marked block's words at a line end (#412, D): its short words on the first line its mark stands on, the rest of
+/// it the mark alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Words {
+    /// Its lines: what one mark's touches cover together, overlapping or meeting.
+    pub lines: Range<usize>,
+    pub mark: Mark,
+    pub words: String,
+    /// Its lines a heavier mark stands on: there the sign column shows that one, so its words go past them.
+    under: Vec<Range<usize>>,
+}
+
+impl Words {
+    /// The line it says its words on, `first` the first line in sight: its first where its mark stands — a block
+    /// begun above the view, its first in sight.
+    pub fn said_at(&self, first: usize) -> Option<usize> {
+        (self.lines.start.max(first)..self.lines.end).find(|l| !self.under.iter().any(|u| u.contains(l)))
+    }
+}
+
+/// Buffer `doc`'s blocks, heaviest first, none for a file you changed since — a `▸` says nothing of its own: the change
+/// it ran over says `tested`.
+pub fn words(ed: &Editor, doc: &Document) -> Vec<Words> {
+    let Some(f) = mapped(ed, doc) else { return Vec::new() };
+    let since = doc.is_modified();
+    let mut blocks: Vec<Words> = Vec::new();
+    let mut heavier: Vec<Range<usize>> = Vec::new();
+    for mark in WEIGHT {
+        let mut spans: Vec<Range<usize>> =
+            f.lines.iter().filter(|t| t.mark == mark).map(|t| at_least_a_line(&t.lines)).collect();
+        crate::sorting::by_key(&mut spans, |l| l.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for l in spans {
+            match merged.last_mut() {
+                Some(m) if l.start <= m.end => m.end = m.end.max(l.end),
+                _ => merged.push(l),
+            }
+        }
+        for lines in merged.iter().filter(|_| mark != Mark::Run) {
+            let under =
+                heavier.iter().filter(|h| h.start < lines.end && lines.start < h.end).cloned().collect();
+            let words = f.block_said(mark, lines, since);
+            blocks.push(Words { lines: lines.clone(), mark, words, under });
+        }
+        heavier.extend(merged);
+    }
+    blocks
+}
+
+/// Line `l` of buffer `doc` as the line in hand says it: its heaviest mark, its whole words and its short ones.
+pub fn line_words(ed: &Editor, doc: &Document, l: usize) -> Option<(Mark, String, String)> {
+    mapped(ed, doc)?.line_said(l, doc.is_modified())
 }
 
 /// The lines of `doc` follow shows of Claude's (`Follow::shown`) — none while an edit is shown there (the review's

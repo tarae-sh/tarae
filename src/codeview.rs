@@ -163,6 +163,8 @@ pub struct Shows {
     /// What the last turn touched in it (`turnmap::signs`): a faint mark in the sign column, under every other — a
     /// pane's only.
     pub map: Vec<crate::turnmap::Sign>,
+    /// Its marked blocks' words, said at a line end (`turnmap::words`, #412) — a pane's only.
+    pub words: Vec<crate::turnmap::Words>,
     /// A code pane's: which (an open note's card there records its words as that pane's — focus A1b); None elsewhere.
     pub pane: Option<crate::split::PaneId>,
     /// What a mouse drag selected where there's no cursor to hold it (the edit review: the file's lines and the ones
@@ -650,6 +652,7 @@ impl Shows {
             caret: crate::follow::caret_in(editor, id, doc),
             presence: crate::presence::marks(editor, doc),
             map: crate::turnmap::signs(editor, doc),
+            words: crate::turnmap::words(editor, doc),
             pane: Some(id),
             marked: Vec::new(),
         }
@@ -681,6 +684,7 @@ impl Shows {
             caret: true,
             presence: Vec::new(),
             map: Vec::new(),
+            words: Vec::new(),
             pane: None,
             marked: Vec::new(),
         }
@@ -709,6 +713,7 @@ impl Shows {
             caret: true,
             presence: Vec::new(),
             map: Vec::new(),
+            words: Vec::new(),
             pane: None,
             marked: Vec::new(),
         }
@@ -742,6 +747,7 @@ impl Shows {
             caret: true,
             presence: Vec::new(),
             map: Vec::new(),
+            words: Vec::new(),
             pane: None,
             marked: Vec::new(),
         }
