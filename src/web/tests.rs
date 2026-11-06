@@ -299,9 +299,10 @@ fn a_redirect_to_an_open_page_shows_it_and_closes_only_a_buffer_that_never_lande
 #[test]
 fn a_failed_read_says_its_why_short_on_its_line_and_whole_on_its_first_row() {
     use super::fetch::tests::{way, yours_rules};
-    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // (a port held refusing for the test's length — one bound and let go is any next bind's to take: #430)
+    let (_held, at) = tarae_testkit::net::refused_at();
+    let port = at.port();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
     feed(&mut ed, &format!(":web http://localhost:{port}/<ret>"));

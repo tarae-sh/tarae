@@ -9823,14 +9823,17 @@ mod tests {
         let Some(tiers) = served_tiers("a_socket_put_out_of_the_session_isnt_listened_on") else {
             return;
         };
+        use super::super::owners::tests::{bound_only, port_of};
         let Some(ip) = outside() else { return };
         for (tier, ns) in tiers {
             let name = format!("swaplisten-{tier}");
             let k = keeper_for(&name, ns);
             let (p, c, root) = project_served(&name, Vec::new(), Some(&k), &[], Ok(()));
-            let closed = std::net::TcpListener::bind((ip, 0)).unwrap();
-            let to = closed.local_addr().unwrap().to_string();
-            drop(closed);
+            // (bound and never listening for the test's length, without `SO_REUSEADDR`: a connect there is refused,
+            // and no bind takes its number — `answering`'s port 0 below could be handed one let go, and the first
+            // run's connect would reach it: #430)
+            let closed = bound_only(true, &format!("{ip}:0"), false, None).unwrap();
+            let to = format!("{ip}:{}", port_of(&closed));
             let (at, served) = answering(&format!("{ip}:0"), "out hello");
             // (this machine's own address, both ports opened: the route that swaps — step 5)
             let ports = vec![to.rsplit_once(':').unwrap().1.parse().unwrap(), at.port()];
