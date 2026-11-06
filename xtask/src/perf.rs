@@ -13,7 +13,8 @@
 //! The release binary's size is measured too (`SIZES`, against a budget), and a jump in it fails: more than
 //! `SIZE_JUMP` above the median of its last runs on this branch (`size_jump`) — the budget leaves room for
 //! the roadmap's features, so alone it wouldn't see a dependency's +0.5 MB. `--accept-jump` keeps one that's
-//! meant. A size's failure is said after the table: the timings measured are shown, none kept (`report`).
+//! meant, its size's row marked `ACCEPTED` (a sixth field): the jump's baseline starts anew there. A size's
+//! failure is said after the table: the timings measured are shown, none kept (`report`).
 //!
 //! Only on a quiet machine: with a load of `BUSY` or more it waits up to `WAIT` for it to fall (a fat-LTO
 //! build leaves the load up) — numbers from a busy machine (or a sandboxed parallel run) would only be noise.
@@ -143,12 +144,13 @@ pub fn run(args: &[String]) -> Result<()> {
         (jump, said)
     });
     let accept_jump = args.iter().any(|a| a == "--accept-jump");
+    let accepted = accept_jump && matches!(jump, Some((Jump::Over { .. }, _)));
     let (lines, verdict) = report(&now, &history, &SizeSaid { failed, jump, accept_jump });
     for l in lines {
         println!("{l}");
     }
     let (date, commit) = (today(), commit(&root));
-    let slower = keep(&root, verdict, &now, past, (&date, &commit), bundled)?;
+    let slower = keep(&root, verdict, &now, past, (&date, &commit), bundled, accepted)?;
     println!(
         "{} numbers, median of {RUNS} runs, kept in {} ({commit}){}",
         now.len(),
@@ -165,7 +167,8 @@ const HISTORY_FILE: &str = "target/perf/history.tsv";
 /// (`past`, its text before), stamped `date` and `commit`, then the bundled size's key when it was measured
 /// (`bundled`). The key only with the numbers: kept by a run that kept nothing (a size over budget, a refused
 /// jump), it would make the next run skip the bundled build, and its size stay out of the history until the
-/// grammars or the release profile change. `Err`: nothing written.
+/// grammars or the release profile change. `accepted`: a jump was accepted (`--accept-jump`) — the size's row
+/// says so, `ACCEPTED` after its budget. `Err`: nothing written.
 fn keep(
     root: &Path,
     verdict: Result<usize>,
@@ -173,6 +176,7 @@ fn keep(
     past: String,
     (date, commit): (&str, &str),
     bundled: Option<String>,
+    accepted: bool,
 ) -> Result<usize> {
     let slower = verdict?;
     let file = root.join(HISTORY_FILE);
@@ -181,7 +185,8 @@ fn keep(
         kept.push_str("date\tcommit\tname\tvalue\tbudget\n");
     }
     for p in now {
-        kept.push_str(&format!("{date}\t{commit}\t{}\t{:.3}\t{}\n", p.name, p.value, p.budget));
+        let mark = if accepted && p.name == SIZE_JUMP.0 { format!("\t{ACCEPTED}") } else { String::new() };
+        kept.push_str(&format!("{date}\t{commit}\t{}\t{:.3}\t{}{mark}\n", p.name, p.value, p.budget));
     }
     std::fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(&file, kept).map_err(|e| format!("{}: {e}", file.display()))?;
@@ -450,12 +455,20 @@ const SIZE_NOISE: f64 = 0.05;
 /// more than a third of it per recorded run trips it too — the median is three runs back.
 const SIZE_JUMP: (&str, f64) = ("release_size_mb", 0.3);
 
-/// One kept run of a number (`target/perf/history.tsv`): when, at which commit (`+`: with changes), its value.
+/// The sixth field of a size's row whose jump was accepted (`--accept-jump`): the runs kept before it are left
+/// out of the jump's median from then on (#409: one accepted run was one of five, and the next runs failed the
+/// same jump against the same month-old median). In the history itself, so it travels with it; a row without
+/// it — every row before — is a plain run.
+const ACCEPTED: &str = "jump-accepted";
+
+/// One kept run of a number (`target/perf/history.tsv`): when, at which commit (`+`: with changes), its value,
+/// and whether it's a jump accepted (`ACCEPTED`).
 #[derive(Clone, Debug, PartialEq)]
 struct Kept {
     date: String,
     commit: String,
     value: f64,
+    accepted: bool,
 }
 
 /// What `size_jump` found.
@@ -472,10 +485,17 @@ enum Jump {
 /// The release size `now` against the median of the last `HISTORY` kept runs (`rows`, oldest first) whose
 /// commit HEAD has (`has`: that commit is HEAD or comes before it) — a checkout's history mixes branches (a
 /// session's branch brought to main, an experiment, a rebase), and another branch's size says nothing of
-/// this one's step. Fewer such runs than `HISTORY`: the median of those there are (sizes don't jitter: one is
+/// this one's step. A jump accepted among them (`ACCEPTED`, HEAD having it) is where they start: the runs before
+/// it are left out. Fewer such runs than `HISTORY`: the median of those there are (sizes don't jitter: one is
 /// enough to see a jump); none: nothing to compare.
 fn size_jump(now: f64, rows: &[Kept], mut has: impl FnMut(&str) -> bool) -> Jump {
-    let runs: Vec<Kept> = rows.iter().rev().filter(|r| has(&r.commit)).take(HISTORY).cloned().collect();
+    let mut runs: Vec<Kept> = Vec::new();
+    for r in rows.iter().rev().filter(|r| has(&r.commit)) {
+        runs.push(r.clone());
+        if r.accepted || runs.len() == HISTORY {
+            break;
+        }
+    }
     if runs.is_empty() {
         return Jump::NoHistory;
     }
@@ -487,12 +507,23 @@ fn size_jump(now: f64, rows: &[Kept], mut has: impl FnMut(&str) -> bool) -> Jump
     }
 }
 
-/// How a jump is said: the size, by how much over which median, and the runs it's the median of.
+/// How a jump is said: the size, by how much over which median, and the runs it's the median of — how old
+/// they are first (the oldest's and the newest's dates, a month-old median seen at a glance), and whether they
+/// start at a jump accepted.
 fn jump_said(name: &str, now: f64, j: &Jump) -> String {
     let runs = |runs: &[Kept]| {
         let each: Vec<String> =
             runs.iter().map(|r| format!("{} {} {:.3}", r.date, r.commit, r.value)).collect();
-        format!("{} run{} ({})", runs.len(), if runs.len() == 1 { "" } else { "s" }, each.join(", "))
+        // (newest first: never empty — `NoHistory` has none)
+        let (newest, oldest) = (&runs[0].date, &runs[runs.len() - 1]);
+        let when = if *newest == oldest.date {
+            format!("kept {newest}")
+        } else {
+            format!("kept {} to {newest}", oldest.date)
+        };
+        let since = if oldest.accepted { " since the jump accepted" } else { "" };
+        let s = if runs.len() == 1 { "" } else { "s" };
+        format!("{} run{s}{since}, {when} ({})", runs.len(), each.join(", "))
     };
     match j {
         Jump::NoHistory => format!("{name}: no kept run on this branch to compare a jump with"),
@@ -515,7 +546,13 @@ fn kept(tsv: &str, name: &str) -> Vec<Kept> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
             let value = f.get(3)?.parse().ok()?;
-            (f.get(2) == Some(&name)).then(|| Kept { date: f[0].into(), commit: f[1].into(), value })
+            let accepted = f.get(5) == Some(&ACCEPTED);
+            (f.get(2) == Some(&name)).then(|| Kept {
+                date: f[0].into(),
+                commit: f[1].into(),
+                value,
+                accepted,
+            })
         })
         .collect()
 }
@@ -1002,14 +1039,14 @@ mod tests {
         let now = [perf("a", 1.0, 16.0)];
         let stamp = ("2026-10-14", "abc");
         let refused = || Err("a jump".to_string());
-        assert!(keep(&dir, refused(), &now, String::new(), stamp, Some("k1".into())).is_err());
+        assert!(keep(&dir, refused(), &now, String::new(), stamp, Some("k1".into()), false).is_err());
         assert_eq!((read(&history), read(&key)), (None, None), "a run that kept nothing");
-        assert_eq!(keep(&dir, Ok(2), &now, String::new(), stamp, Some("k1".into())), Ok(2));
+        assert_eq!(keep(&dir, Ok(2), &now, String::new(), stamp, Some("k1".into()), false), Ok(2));
         let rows = "date\tcommit\tname\tvalue\tbudget\n2026-10-14\tabc\ta\t1.000\t16\n";
         assert_eq!((read(&history).as_deref(), read(&key).as_deref()), (Some(rows), Some("k1")));
-        assert!(keep(&dir, refused(), &now, rows.into(), stamp, Some("k2".into())).is_err());
+        assert!(keep(&dir, refused(), &now, rows.into(), stamp, Some("k2".into()), false).is_err());
         assert_eq!(read(&key).as_deref(), Some("k1"), "a refused run after a kept one");
-        assert_eq!(keep(&dir, Ok(0), &now, rows.into(), stamp, None), Ok(0));
+        assert_eq!(keep(&dir, Ok(0), &now, rows.into(), stamp, None, false), Ok(0));
         assert_eq!(read(&history).map(|h| h.lines().count()), Some(3));
         assert_eq!(read(&key).as_deref(), Some("k1"), "no bundled build");
         std::fs::remove_dir_all(&dir).ok();
@@ -1107,6 +1144,7 @@ mod tests {
             date: format!("2026-10-{:02}", i + 1),
             commit: format!("c{i}"),
             value: *v,
+            accepted: false,
         };
         values.iter().enumerate().map(row).collect()
     }
@@ -1126,7 +1164,7 @@ mod tests {
             ["c4", "c3", "c2", "c1", "c0"]
         );
         let said = jump_said("release_size_mb", 11.40, &j);
-        assert!(said.starts_with("release_size_mb: 11.400 MB is 0.400 MB above 11.000, the median of its last 5 runs (2026-10-05 c4 11.050, 2026-10-04 c3 11.000,"), "{said}");
+        assert!(said.starts_with("release_size_mb: 11.400 MB is 0.400 MB above 11.000, the median of its last 5 runs, kept 2026-10-01 to 2026-10-05 (2026-10-05 c4 11.050, 2026-10-04 c3 11.000,"), "{said}");
         assert!(said.ends_with("— more than the 0.3 MB a jump may be (a dependency?)"), "{said}");
         assert!(matches!(size_jump(11.31, &rows, |_| true), Jump::Over { .. }), "just over");
         assert!(matches!(size_jump(11.30, &rows, |_| true), Jump::Within { .. }), "0.3 itself");
@@ -1157,20 +1195,113 @@ mod tests {
                    2026-10-04\tb+\trelease_size_mb\t11.050\t12\n2026-10-05\ty\trelease_size_mb\t9.000\t12\n";
         let rows = kept(tsv, "release_size_mb");
         assert_eq!(rows.len(), 5);
-        assert_eq!(rows[3], Kept { date: "2026-10-04".into(), commit: "b+".into(), value: 11.05 });
+        assert_eq!(
+            rows[3],
+            Kept { date: "2026-10-04".into(), commit: "b+".into(), value: 11.05, accepted: false }
+        );
         let ours = |c: &str| ["a", "b"].contains(&c.trim_end_matches('+'));
         let j = size_jump(11.10, &rows, ours);
         let Jump::Within { median, runs } = &j else { panic!("the other branch's 9.0 MB counted: {j:?}") };
         assert_eq!((*median, runs.len()), (11.05, 2), "the two this branch has");
-        assert!(
-            jump_said("release_size_mb", 11.10, &j)
-                .contains("its last 2 runs (2026-10-04 b+ 11.050, 2026-10-01 a 11.000)")
-        );
+        assert!(jump_said("release_size_mb", 11.10, &j).contains(
+            "its last 2 runs, kept 2026-10-01 to 2026-10-04 (2026-10-04 b+ 11.050, 2026-10-01 a 11.000)"
+        ));
         assert!(matches!(size_jump(11.50, &rows, ours), Jump::Over { .. }), "against 11.05: a jump still");
         assert_eq!(size_jump(11.10, &rows, |_| false), Jump::NoHistory);
         assert_eq!(
             jump_said("release_size_mb", 11.10, &Jump::NoHistory),
             "release_size_mb: no kept run on this branch to compare a jump with"
         );
+    }
+
+    /// #409: the runs of 2026-10-01–04 at 11 MB, then a jump to 18.48 accepted on 10-05 — written by `keep` and
+    /// read back by `kept`, as the next run reads the file.
+    fn after_an_accepted_jump(dir: &Path) -> Vec<Kept> {
+        let past: String = (1..=4)
+            .map(|d| format!("2026-10-0{d}\tc{d}\trelease_size_mb\t11.000\t19\n"))
+            .fold("date\tcommit\tname\tvalue\tbudget\n".to_string(), |h, r| h + &r);
+        let now = [perf("startup_ms", 6.0, 500.0), perf("release_size_mb", 18.48, 19.0)];
+        keep(dir, Ok(0), &now, past, ("2026-10-05", "c5"), None, true).unwrap();
+        let tsv = std::fs::read_to_string(dir.join(HISTORY_FILE)).unwrap();
+        assert!(tsv.ends_with(
+            "\tstartup_ms\t6.000\t500\n2026-10-05\tc5\trelease_size_mb\t18.480\t19\tjump-accepted\n"
+        ));
+        assert_eq!(
+            read_history(&tsv)["release_size_mb"],
+            [11.0, 11.0, 11.0, 11.0, 18.48],
+            "the table reads it"
+        );
+        kept(&tsv, "release_size_mb")
+    }
+
+    /// After an accepted jump the next run within `SIZE_JUMP` of it passes: the runs before it are left out of
+    /// the median (against them, 18.6 is 7.6 MB over 11.0), said as runs since the jump, kept from its date.
+    #[test]
+    fn after_an_accepted_jump_the_next_run_within_it_passes() {
+        let dir = crate::scenes::Fresh::new("tarae-xtask-accepted").unwrap();
+        let rows = after_an_accepted_jump(&dir.0);
+        assert!(rows[4].accepted && !rows[3].accepted, "{rows:?}");
+        let j = size_jump(18.60, &rows, |_| true);
+        let Jump::Within { median, runs } = &j else { panic!("the accepted jump judged again: {j:?}") };
+        assert_eq!((*median, runs.len()), (18.48, 1));
+        let said = jump_said("release_size_mb", 18.60, &j);
+        assert!(
+            said.ends_with(
+                "the median of its last 1 run since the jump accepted, kept 2026-10-05 (2026-10-05 c5 18.480)"
+            ),
+            "{said}"
+        );
+        // A run kept after it: both count, still nothing from before
+        let mut more = rows.clone();
+        more.push(Kept { date: "2026-10-09".into(), commit: "c6".into(), value: 18.50, accepted: false });
+        let j = size_jump(18.70, &more, |_| true);
+        assert!(matches!(&j, Jump::Within { runs, .. } if runs.len() == 2), "{j:?}");
+        assert!(
+            jump_said("release_size_mb", 18.70, &j)
+                .contains("2 runs since the jump accepted, kept 2026-10-05 to 2026-10-09 (")
+        );
+    }
+
+    /// One past `SIZE_JUMP` of the accepted run fails, measured against it — not the older runs.
+    #[test]
+    fn a_jump_past_the_accepted_one_fails_against_it() {
+        let dir = crate::scenes::Fresh::new("tarae-xtask-accepted-over").unwrap();
+        let rows = after_an_accepted_jump(&dir.0);
+        let j = size_jump(18.90, &rows, |_| true);
+        let Jump::Over { median, by, runs } = &j else {
+            panic!("0.42 MB over the accepted run passed: {j:?}")
+        };
+        assert_eq!(
+            (*median, runs.iter().map(|r| r.commit.as_str()).collect::<Vec<_>>()),
+            (18.48, vec!["c5"])
+        );
+        assert!((by - 0.42).abs() < 1e-9, "{by}");
+        let said = jump_said("release_size_mb", 18.90, &j);
+        assert!(
+            said.starts_with("release_size_mb: 18.900 MB is 0.420 MB above 18.480, the median of its last 1 run since the jump accepted, kept 2026-10-05 ("),
+            "{said}"
+        );
+    }
+
+    /// With no accepted jump on this branch it's as before: the last `HISTORY` runs — another branch's accepted
+    /// jump doesn't start this one's anew; a history that has it does.
+    #[test]
+    fn with_no_accepted_jump_on_this_branch_the_last_runs_count() {
+        let tsv = "date\tcommit\tname\tvalue\tbudget\n\
+                   2026-10-01\ta\trelease_size_mb\t11.000\t12\n2026-10-02\ta\trelease_size_mb\t11.000\t12\n\
+                   2026-10-03\tx\trelease_size_mb\t11.600\t12\tjump-accepted\n\
+                   2026-10-04\tb\trelease_size_mb\t11.000\t12\n2026-10-05\tb\trelease_size_mb\t11.400\t12\n";
+        let rows = kept(tsv, "release_size_mb");
+        assert_eq!(rows.iter().filter(|r| r.accepted).count(), 1, "{rows:?}");
+        let ours = |c: &str| c != "x";
+        let j = size_jump(11.20, &rows, ours);
+        let Jump::Within { median, runs } = &j else { panic!("{j:?}") };
+        assert_eq!((*median, runs.len()), (11.0, 4), "the four this branch has, x's jump not theirs");
+        assert!(
+            jump_said("release_size_mb", 11.20, &j)
+                .contains("its last 4 runs, kept 2026-10-01 to 2026-10-05 (")
+        );
+        assert!(matches!(size_jump(11.40, &rows, |_| true), Jump::Within { median, .. } if median == 11.4));
+        assert!(matches!(size_jump(11.80, &rows, ours), Jump::Over { median, .. } if median == 11.0));
     }
 }
