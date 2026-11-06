@@ -737,19 +737,39 @@ fn v_shows_the_instruction_files_the_main_checkout_changed_since_each_copy() {
 /// nobody). The save waits, and goes once that workspace is in front.
 #[test]
 fn a_moved_file_of_an_idle_workspace_is_no_save_until_someone_looks() {
-    let out = Scratch::new("keepclose-294-server");
+    no_save_until_someone_looks("keepclose-294", false);
+}
+
+/// …and with its server rested meanwhile (#428: a loaded machine stretched the test past `IDLE_STOP`, 60 s in tests — fix
+/// behind, its Claude idle): the server that comes back as fix comes to the front is a new one, and the held save goes
+/// to it once it's up — still one.
+#[test]
+fn a_moved_file_of_an_idle_workspace_is_no_save_until_someone_looks_its_server_rested_meanwhile() {
+    no_save_until_someone_looks("keepclose-294-rested", true);
+}
+
+/// `rests`: fix's server rests (stops) before the move, as it does after `rest_after` behind and idle.
+fn no_save_until_someone_looks(name: &str, rests: bool) {
+    let out = Scratch::new(&format!("{name}-server"));
     let sent = out.join("sent.log");
+    // (appended: a server started again for fix's file adds to what the first heard — `>` emptied it as it started)
     let cfg = format!(
-        "[lsp.fake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > '{}'\"]\n[lang.rust]\nlsp = [\"fake\"]\n",
+        "[lsp.fake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat >> '{}'\"]\n[lang.rust]\nlsp = [\"fake\"]\n",
         sent.display()
     );
-    let mut s = scene_with("keepclose-294", Some(&cfg));
+    let mut s = scene_with(name, Some(&cfg));
+    if rests {
+        s.ed.lsp.rest_after = Some(Duration::ZERO);
+    }
     let fix = s.id("fix");
     s.ed.workspace_switch(fix);
     s.ed.open(&s.root("fix").join("a.rs")).unwrap();
     let (id, cid) = (s.ed.doc().id, s.ed.doc().lsp.client.expect("its server"));
     s.ed.on_lsp_message(cid, serde_json::json!({ "id": 0, "result": { "capabilities": {} } }));
     s.ed.workspace_switch(WorkspaceId::HOME);
+    if rests {
+        until(&mut s.ed, "fix's server rested", |ed| ed.client(cid).is_none());
+    }
     asked(&mut s);
     key(&mut s.ed, 'y');
     until(&mut s.ed, "both moved", |ed| ed.keep_close.moved == 2 && ed.keep_close.moving.is_none());
@@ -769,18 +789,32 @@ fn a_moved_file_of_an_idle_workspace_is_no_save_until_someone_looks() {
     // Its quiet long past: still held, nothing sent
     std::thread::sleep(2 * crate::lsp_editor::SAVE_QUIET);
     quiet(&mut s.ed);
-    let saves = || std::fs::read_to_string(&sent).unwrap_or_default().matches("textDocument/didSave").count();
+    // (what the server heard, in order — each message's method)
+    let heard = || -> Vec<String> {
+        let log = std::fs::read_to_string(&sent).unwrap_or_default();
+        log.split("\"method\":\"")
+            .skip(1)
+            .map(|m| m.split('"').next().unwrap_or_default().to_string())
+            .collect()
+    };
+    let saves = || heard().iter().filter(|m| *m == "textDocument/didSave").count();
     assert!(s.ed.lsp_holds(id), "held while fix is behind, its Claude idle");
-    assert_eq!(saves(), 0, "no save to its server");
+    assert_eq!(saves(), 0, "no save to its server: {:?}", heard());
     // fix in front: its save goes
     s.ed.workspace_switch(fix);
     s.ed.handle_event(crate::event::Event::Resize);
     assert!(!s.ed.lsp_holds(id), "sent once fix is in front");
+    // (rested: fix's file has a new server, started as fix came to the front — what it's sent waits until it answers)
+    let now = s.ed.docs.iter().find(|d| d.id == id).and_then(|d| d.lsp.client).expect("a server again");
+    assert!(!rests || now != cid, "the first rested: a new one");
+    if now != cid {
+        s.ed.on_lsp_message(now, serde_json::json!({ "id": 0, "result": { "capabilities": {} } }));
+    }
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while saves() == 0 && std::time::Instant::now() < end {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(saves(), 1);
+    assert_eq!(saves(), 1, "one save, once fix is in front: {:?}", heard());
 }
 
 #[test]
