@@ -4186,6 +4186,10 @@ pub(crate) mod tests {
         let said = head.split("second").nth(1).map(str::trim_start);
         assert!(said.is_some_and(|s| s.starts_with("working")), "the faint word: {head}");
         assert!(!head.contains('●') && !head.chars().any(|c| crate::shimmer::CELLS.contains(&c)), "{head}");
+        // (but its word come on the strip, which dries once — motion §6: that alone, never the wave)
+        let landed: Vec<&crate::motion::What> = ed.motions.iter().map(|m| &m.what).collect();
+        assert_eq!(landed, [&crate::motion::What::Arrived(vec![crate::motion::Place::Strip(id)])]);
+        ed.motions.clear();
         assert!(ed.tick_wanted().is_none(), "nothing moves for it");
         at_work(&mut ed, crate::chat::State::Idle);
         // On the heading `s` only says what it is

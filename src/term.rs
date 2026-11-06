@@ -737,6 +737,8 @@ fn render_drawing(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> 
         | crate::whole::drawn(editor)
         // (and a flash's words that it didn't draw: their toast — `motion.rs`)
         | editor.words_drawn()
+        // (and a session's "waits for you" whose card it didn't draw: its toast — #405)
+        | crate::motion::peeks_said(editor)
         // (and a chat a restore brought back that it didn't draw: said — `recovery.rs`)
         | crate::recovery::chat_drawn(editor)
     {
@@ -827,6 +829,12 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         (None, _) => None,
     };
     editor.offer_drawn.set(since);
+    // (what comes on its own and lands in this frame dries once, from this frame on — `motion::arrivals`)
+    let (peeks, drawn): (Vec<u64>, Vec<u64>) = offer
+        .as_ref()
+        .map_or_else(Default::default, |c| (c.peeks.iter().map(|p| p.4).collect(), c.drawn_ids()));
+    let unread = editor.workspace.claude.chat.as_ref().is_some_and(|c| c.unread()) && lay.chat_at().is_none();
+    crate::motion::arrivals(editor, &peeks, &drawn, unread);
     if front.is_some() && editor.card_next == front {
         editor.card_focus = editor.card_next.take();
         editor.card_handed = front.map(|f| (f.0, f.1, editor.frames));
@@ -884,6 +892,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         offer_card: offer.as_ref().map(OfferCard::rect),
         asks_drawn: offer.as_ref().map(OfferCard::drawn_ids).unwrap_or_default(),
         top_strip: Default::default(),
+        news: Default::default(),
         offer_held: offer.is_none()
             && !editor.pending.is_empty()
             && editor.picker.is_none()
@@ -1202,7 +1211,10 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     // (one drawn again: kept until this frame is presented — `Editor::offer_unshown_now`)
     let again = editor.offer_unshown.get().filter(|u| front == Some((u.0, u.1)));
     editor.offer_unshown.set(unshown.or(again));
-    draw(editor, &lay, &ui, review_rows.as_deref().map(Vec::as_slice), offer.as_ref(), out)
+    let drawn = draw(editor, &lay, &ui, review_rows.as_deref().map(Vec::as_slice), offer.as_ref(), out);
+    // (what changes on its own as this frame drew it: the next frame's landings are told against it)
+    crate::motion::drawn(editor);
+    drawn
 }
 
 /// Whether a pane shows document `doc`'s last line (its last non-empty one, past a final newline).
@@ -2364,6 +2376,10 @@ fn slot_header(
         run.map_or(s, |n| flashed(ui, editor, &format!("run#{n}"), s))
     };
     let mut spots = editor.screen.slot_tabs.borrow_mut();
+    // (the badges drawn, for what lands on them next — §6, `motion::arrivals`)
+    let mut news = editor.screen.news.borrow_mut();
+    news.badges.get_or_insert_default().extend(tabs.iter().map(|t| (t.slot, t.badge)));
+    drop(news);
     // The names as a frame's top line has them (`pane_names`' `·` between), each tab its label and badge
     let mut names = Vec::new();
     let mut owner = Vec::new();
@@ -2375,7 +2391,11 @@ fn slot_header(
         names.push((label.clone(), lit(t, if Some(t.slot) == front { strong } else { dim })));
         owner.push(Some(t.slot));
         if let Some((g, fg)) = badge_glyph(t, editor, ui) {
-            names.push((format!(" {g}").into(), lit(t, Style { fg, ..card })));
+            // (turned to its end mark on its own: its mark's ground dries from the flash's — §6)
+            let mark = arrived_style(ui, editor, &crate::motion::Place::Badge(t.slot), Style { fg, ..card });
+            names.push((" ".into(), lit(t, Style { fg, ..card })));
+            owner.push(Some(t.slot));
+            names.push((g.into(), lit(t, mark)));
             owner.push(Some(t.slot));
         }
     }
@@ -6422,7 +6442,8 @@ fn draw_sessions_pane(
     for (k, row) in rows.iter().enumerate().skip(top).take(inner) {
         let y = y0 + k - top;
         let on = k == selected;
-        let base = if on { sel } else { card };
+        // (a session a Claude started, just come: its row whole dries from the flash's — §6, `motion::arrivals`)
+        let base = arrived_style(ui, editor, &crate::motion::Place::Row(row.id), if on { sel } else { card });
         queue!(out, MoveTo(x0 as u16, y as u16))?;
         apply(out, Style { fg: ui.accent.fg, ..base })?;
         queue!(out, Print(if on { "▎ " } else { "  " }))?;
@@ -6457,6 +6478,12 @@ fn draw_sessions_pane(
             apply(out, base)?;
             queue!(out, Print("  "))?;
             used += 2;
+            // (its state word just changed: its ground dries from the flash's — §6, `motion::arrivals`; its words only,
+            // never the column's room after them)
+            let words = match c == Col::State {
+                true => arrived_style(ui, editor, &crate::motion::Place::State(row.id), base),
+                false => base,
+            };
             let mut left = w;
             // (a column's parts searched as one text: each part lit where a match falls in it)
             let hits = hits_in(&row.text(c));
@@ -6467,7 +6494,7 @@ fn draw_sessions_pane(
                     .filter(|h| h.1 > off && h.0 < off + text.len())
                     .map(|h| (h.0.max(off) - off, h.1.min(off + text.len()) - off))
                     .collect();
-                let st = ink(*i, base);
+                let st = ink(*i, words);
                 print_lit(out, (t.shown(), text), (st, hit(on, st)), &mine)?;
                 let at = (x0 + used + w - left, y);
                 crate::whole::at(crate::whole::On::List, &t, at, st, (0, usize::MAX));
@@ -9177,6 +9204,15 @@ fn flash_bg(ui: &Ui, ground: Option<Color>, k: f32) -> Option<Color> {
     Some(Color::Rgb { r, g, b })
 }
 
+/// `st` on the ground of what just came on its own at `place` (§6, `motion::arrivals`): the flash's, drying — else as it
+/// is.
+fn arrived_style(ui: &Ui, editor: &Editor, place: &crate::motion::Place, st: Style) -> Style {
+    match editor.arrival(place) {
+        k if k > 0.0 => Style { bg: flash_bg(ui, st.bg, k).or(st.bg), ..st },
+        _ => st,
+    }
+}
+
 /// A change's wash over the ground (code review, a shown edit): its green's mix — a step stronger on the cursor line.
 const ADDED_MIX: f32 = 0.10;
 const ADDED_HERE_MIX: f32 = 0.18;
@@ -11112,13 +11148,24 @@ fn top_strip(
     let reviewer = Style { fg: reviewer_style(editor, ui).fg, ..card };
     let colour = |c| Style { fg: ui.participant(c, true), ..card };
     // (the front's file is the path bar's, right beside it)
-    let tabs = |room| session_tabs_in(editor, room, 0, [dim, faint, accent, warn, reviewer], &colour, false);
+    let tabs = |room| {
+        session_tabs_in(editor, room, 0, [dim, faint, accent, warn, reviewer], &colour, false, Some(ui))
+    };
     // (the path as it's fitted beside the strip's whole third — never beside what the strip says: no name or count of its
     // own moves its room; what that leaves past the air is the strip's too)
     let third = (line_w / 3).max(12);
     let left = line_w.saturating_sub(text_w(line_w.saturating_sub(third + 4)) + 4);
     let (spans, spots) = tabs(third.max(left));
     (!spans.is_empty()).then_some((spans, spots))
+}
+
+/// The sessions a strip named this frame (`spots`), for what lands on it next (§6, `motion::arrivals`).
+fn strip_drawn(editor: &Editor, spots: &[(usize, usize, crate::workspace::Spot)]) {
+    let ids = spots.iter().filter_map(|s| match s.2 {
+        crate::workspace::Spot::Session(id) => Some(id),
+        _ => None,
+    });
+    editor.screen.news.borrow_mut().strip.extend(ids);
 }
 
 /// `top_strip`'s sessions drawn from `(x, y)` on the top row, the line's `─` around them — each name a button (a press its
@@ -11158,6 +11205,7 @@ fn draw_top_strip(
     let mut taken = editor.screen.session_spots.borrow_mut();
     taken.extend(spots.iter().map(|&(a, b, s)| (y, base + a, base + b, s)));
     drop(taken);
+    strip_drawn(editor, &spots);
     for &(a, b, s) in &spots {
         let spans = spans_in(laid.iter().map(|(c, t, st)| (*c, t.as_str(), *st)), base + a, base + b);
         word_lit(editor, crate::mouse::Word::Session(s), y, (base + a, base + b), spans);
@@ -11901,11 +11949,19 @@ fn draw_statusline(
     }
     let mut gap = if chip { " " } else { "  " };
     let short_of = card_short(editor, lay);
+    // (what lands on its own here dries there — §6, `motion::arrivals`: its words, never the gap before them)
+    let fresh = |place: crate::motion::Place, st: Style| arrived_style(ui, editor, &place, st);
+    {
+        let mut news = editor.screen.news.borrow_mut();
+        let quiet = inbox.iter().filter(|e| e.kind == "silent-run").count();
+        (news.waiting, news.quiet) = (unseen, quiet);
+    }
     if unseen > 0 {
+        left.push(Seg { cut: None, text: gap.into(), style: ui.status, keep: INBOX });
         left.push(Seg {
             cut: None,
-            text: format!("{gap}▲{unseen} waiting"),
-            style: ui.status.patch(warn),
+            text: format!("▲{unseen} waiting"),
+            style: fresh(crate::motion::Place::Waiting, ui.status.patch(warn)),
             keep: INBOX,
         });
         // (what it needs folds first — that one waits is what's left when the room runs out)
@@ -11941,7 +11997,9 @@ fn draw_statusline(
     let quiet = inbox.iter().filter(|e| e.kind == "silent-run").count();
     if quiet > 0 {
         let runs = if quiet == 1 { "run" } else { "runs" };
-        left.push(Seg { cut: None, text: format!("{gap}{quiet} {runs} quiet"), style: dim, keep: INBOX });
+        left.push(Seg { cut: None, text: gap.into(), style: dim, keep: INBOX });
+        let style = fresh(crate::motion::Place::Quiet, dim);
+        left.push(Seg { cut: None, text: format!("{quiet} {runs} quiet"), style, keep: INBOX });
     }
     // Your drafts, while they wait: calm, apart from what asks for you (no `▲`, not `waiting`); a press sends them
     if let Some(k) = crate::notes::drafts_said(editor, lay.side().map_or(0, |r| r.w)) {
@@ -11953,7 +12011,10 @@ fn draw_statusline(
     // What's new since you looked (the flow plan's piece 3, no toast): the conversation out of sight, its newest answer
     // or an error said only there not yet in front of you — `space L` reads it, and so does a press
     if editor.workspace.claude.chat.as_ref().is_some_and(|c| c.unread()) && lay.chat_at().is_none() {
-        left.push(Seg { cut: None, text: "  ◂ new".into(), style: accent, keep: UNREAD });
+        editor.screen.news.borrow_mut().unread = true;
+        left.push(Seg { cut: None, text: "  ".into(), style: ui.status, keep: UNREAD });
+        let style = fresh(crate::motion::Place::Unread, accent);
+        left.push(Seg { cut: None, text: "◂ new".into(), style, keep: UNREAD });
         let key = Style { bold: true, ..dim };
         left.push(Seg { cut: None, text: " · space L".into(), style: key, keep: UNREAD_KEY });
     }
@@ -14864,8 +14925,11 @@ impl OfferCard {
             let (px, pw, py) = (*px, *pw, self.y - k - air);
             let peek_id = format!("card#{peek}");
             spot(*peek, px, py, pw);
+            // (just come on its own: its ground dries from the flash's — §6, `motion::arrivals`)
+            let ground = Style { bg: peek_bg(*k), ..Style::default() };
+            let ground = arrived_style(ui, editor, &crate::motion::Place::Peek(*peek), ground);
             // (it flashes where it is — brought forward, `y` would answer it)
-            let bg = flashed(ui, editor, &peek_id, Style { bg: peek_bg(*k), ..Style::default() }).bg;
+            let bg = flashed(ui, editor, &peek_id, ground).bg;
             let mark = ui_mark(ui, editor, &peek_id, Style { bg, ..Style::default() });
             let text = Style { fg: blend(card.fg, bg, 0.5).or(card.fg), bg, ..Style::default() };
             let bar_st = Style {
@@ -17847,6 +17911,14 @@ fn sessions_counted(editor: &Editor) -> [String; 2] {
 /// `+N ▲k` — the front's name alone. While `+N` shows, the `+` goes (the list's `o` makes one). Styles: dim, faint,
 /// accent, warning, the reviewer's · where each click goes (from the row's start).
 #[allow(clippy::type_complexity)]
+/// The strip's spans as drawn in this theme (§6's tests: what dries there), every style `base`.
+#[cfg(test)]
+pub(crate) fn session_tabs_drawn(editor: &Editor, w: usize, base: Style) -> Vec<crate::markdown::Span> {
+    let ui = Ui::new(editor);
+    session_tabs_in(editor, w, 0, [base; 5], &|_| base, true, Some(&ui)).0
+}
+
+#[cfg(test)]
 fn session_tabs(
     editor: &Editor,
     w: usize,
@@ -17855,7 +17927,7 @@ fn session_tabs(
     // (a session's own colour, collab C1: its name in it is who it is)
     colour: &dyn Fn(u8) -> Style,
 ) -> (Vec<crate::markdown::Span>, Vec<(usize, usize, crate::workspace::Spot)>) {
-    session_tabs_in(editor, w, rail_w, styles, colour, true)
+    session_tabs_in(editor, w, rail_w, styles, colour, true, None)
 }
 
 /// `session_tabs`, the front's file said or not (`front_file`): the top row's strip leaves it to the path bar beside it
@@ -17868,9 +17940,23 @@ fn session_tabs_in(
     [dim, faint, accent, warn, reviewer]: [Style; 5],
     colour: &dyn Fn(u8) -> Style,
     front_file: bool,
+    // (drawn: what just came on its own dries there — §6; None where the spans are only measured)
+    drawn: Option<&Ui>,
 ) -> (Vec<crate::markdown::Span>, Vec<(usize, usize, crate::workspace::Spot)>) {
     use crate::markdown::Span;
+    use crate::motion::Place;
     use crate::workspace::{Doing, Spot};
+    // (what just came at `place` on its own: its words' ground the flash's, drying — never the space before them)
+    let fresh = |place: Place, s: Span| -> Vec<Span> {
+        let Some(ui) = drawn.filter(|_| editor.arrival(&place) > 0.0) else { return vec![s] };
+        let word = s.text.trim_start().to_string();
+        let lead = s.text[..s.text.len() - word.len()].to_string();
+        let style = arrived_style(ui, editor, &place, s.style);
+        let lead = (!lead.is_empty()).then(|| Span { text: lead, ..s.clone() });
+        lead.into_iter().chain([Span { text: word, style, ..s }]).collect()
+    };
+    // (a session a Claude started, just come on the strip: its name and its word, as its row in the list)
+    let come = |id| editor.arrival(&Place::Row(id)) > 0.0;
     // (a child right after its parent — orchestra N6)
     let sessions = editor.sessions_by_parent();
     // (how many of its cards wait: `▲2 waits` from two — frictions26)
@@ -17932,14 +18018,16 @@ fn session_tabs_in(
         // (who it is: its name in its colour, the front's bold — its state after it)
         let own = colour(l.claude.colour);
         let own = Style { bold: l.id == editor.workspace.id || own.bold, ..own };
-        let mut v = vec![Span { cut: None, hint: false, text: l.label().to_string(), style: own }];
+        let name = Span { cut: None, hint: false, text: l.label().to_string(), style: own };
+        let mut v = fresh(Place::Row(l.id), name);
         let folded = |m: Span| match m.text.trim_start().chars().next() {
             _ if states => Some(m),
             Some(g @ ('▲' | '◦')) => Some(Span { cut: None, hint: false, text: format!(" {g}"), ..m }),
             _ if m.text == " done" => Some(m),
             _ => None,
         };
-        v.extend(mark(l).and_then(folded));
+        let place = if come(l.id) { Place::Row(l.id) } else { Place::Strip(l.id) };
+        v.extend(mark(l).and_then(folded).into_iter().flat_map(|m| fresh(place.clone(), m)));
         // (whom its changes would conflict with — `≈ main`, each in its colour: `overlap.rs`)
         let others = crate::overlap::others(editor, l.id);
         if !whom && !others.is_empty() {
@@ -17981,7 +18069,10 @@ fn session_tabs_in(
         // (news while it was behind: files came again from disk — #6, its reviewer ended — #195; a sign already, kept
         // at every fold, as `+N` carries it)
         if l.news() {
-            v.push(Span { cut: None, hint: false, text: " •".into(), style: dim });
+            v.extend(fresh(
+                Place::News(l.id),
+                Span { cut: None, hint: false, text: " •".into(), style: dim },
+            ));
         }
         // (a message typed in its chat, not sent — its input isn't on screen; folding never drops it)
         if unsent(l) {
@@ -19761,12 +19852,14 @@ fn draw_chat(
         false => {
             let reviewer = Style { fg: reviewer_style(editor, ui).fg, ..card };
             let tabs = |w: usize| {
-                session_tabs(
+                session_tabs_in(
                     editor,
                     w,
                     lay.side().map_or(0, |r| r.w),
                     [dim, faint, accent, warn_fg, reviewer],
                     &|c| Style { fg: ui.participant(c, true), ..card },
+                    true,
+                    Some(ui),
                 )
             };
             let room = names_room_kept(&details, names_room, (sandbox_at, follow_at), || {
@@ -19836,6 +19929,7 @@ fn draw_chat(
         }
     }
     // (where its names and its granted chip were drawn: their clicks)
+    strip_drawn(editor, &spots);
     let mut taken = editor.screen.session_spots.borrow_mut();
     if let Some(&(base, _)) = cols.first() {
         taken.extend(spots.into_iter().map(|(a, b, s)| (y, base + a, base + b, s)));

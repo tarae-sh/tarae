@@ -25,6 +25,19 @@
 //! that wash lands deeper and dries to its own instead (`term::wet_deeper` — one sign). None after your `y` in its
 //! review (the stamp's press says that act). Only at `full`.
 //!
+//! What came on its own dries once as it lands in sight (§6, #401/#402: `arrived`, `What::Arrived` — "a state that
+//! just changed dries once"; the user, 2026-11-06: "the other places too, so it all behaves consistently"): a card's peek
+//! the first frame it's drawn in any form; where the frame before drew them (`Seen`, told after each frame by `drawn`), a
+//! session list row's state word changed (`Doing::word`), a session a Claude started come (its row whole, its name on the
+//! strip), the sessions' strip's state word and its `•`, the status line's `◂ new`, its `▲N waiting` and `N runs quiet`
+//! grown, a run's tab's badge turned to its end mark with the slot out of hand — the flash's ground (`term::flash_bg`,
+//! `term::arrived_style`) under its words, drying over `ARRIVED`, the ink's time: news you didn't make. A session's
+//! "waits for you" says it once: no toast where a frame drew its card's peek (#405, `peeks_said`). Each on its own clock:
+//! what lands in one frame dries together, a newer landing elsewhere never cuts it short (a drying isn't a wave — two
+//! may dry at once), a place landing again while it dries starts over. None for what your key opened or answered right there
+//! (a card you asked for is focused whole; your key's own place has the flash or the press), none while you type (it's
+//! taken in silence: nothing moves while you type) — at `calm` whole for its time, at `none` nothing, as the flash.
+//!
 //! What a flash says (`flash_saying`: a yank's "yanked …") is a note only where a frame drew that flash: kept in
 //! `:messages` at once, its toast after the frame that didn't draw it (the chat's transcript draws no flash, a
 //! buffer moved or out of sight, named colours) or as it goes undrawn (`words_drawn`, `words_unseen`).
@@ -115,6 +128,7 @@ impl Editor {
             What::Flash { .. } => FLASH,
             What::Press(_) => PRESS,
             What::Wet(_) => WET,
+            What::Arrived(_) => ARRIVED,
         };
         self.motions.push(Moving {
             what,
@@ -240,6 +254,47 @@ impl Editor {
             .map_or(0.0, |m| self.motion_strength(m))
     }
 
+    /// What came on its own landed in sight at `places`, in this frame (§6): it dries once, together, on its own clock —
+    /// a landing still drying elsewhere dries on, never cut short; a place of it landing again starts over (it leaves
+    /// the older landing, which goes once it holds none). What a row still drying says isn't news again: a row come
+    /// whole covers its own word (a child's `working` a frame after it came keeps its row drying). None at `none` or
+    /// while you type.
+    pub fn arrived(&mut self, mut places: Vec<Place>) {
+        if self.motion() == Motion::None || self.typing() {
+            return;
+        }
+        places.retain(
+            |p| !matches!(p, Place::State(id) | Place::Strip(id) if self.arrival(&Place::Row(*id)) > 0.0),
+        );
+        if places.is_empty() {
+            return;
+        }
+        for m in &mut self.motions {
+            if let What::Arrived(at) = &mut m.what {
+                at.retain(|p| !places.contains(p));
+            }
+        }
+        self.motions.retain(|m| !matches!(&m.what, What::Arrived(at) if at.is_empty()));
+        self.motion_start(What::Arrived(places));
+    }
+
+    /// How fresh what landed at `place` is drawn now, 0 (dry) ‥ 1 (just come) — 0 with none under way.
+    pub fn arrival(&self, place: &Place) -> f32 {
+        (self.motions.iter())
+            .find(|m| matches!(&m.what, What::Arrived(at) if at.contains(place)))
+            .map_or(0.0, |m| self.motion_strength(m))
+    }
+
+    /// You're typing (focus §7 I, `watch::typing`'s rule): your letters become text — insert mode, a prompt, a picker's
+    /// query, the chat's input once something's in it.
+    pub fn typing(&self) -> bool {
+        use crate::uistate::{Region, Takes};
+        let k = self.keys_to();
+        k.takes == Takes::Text
+            && (k.region != Region::Chat
+                || self.workspace.claude.chat.as_ref().is_some_and(|c| !c.input.text().is_empty()))
+    }
+
     /// `flash` begins saying `msg` (a yank's "yanked …"): kept in `:messages` and a note now, a toast only if no
     /// frame draws it (`words_drawn`); no flash, a toast at once.
     pub fn flash_saying(&mut self, flash: Option<What>, kind: ToastKind, msg: String) {
@@ -358,6 +413,193 @@ impl Editor {
     }
 }
 
+/// Before a frame is drawn (`term::render_frame`), what it draws of what comes on its own, against what the frame before
+/// drew (`Seen`): `peeks`, the cards it draws as a peek, of `drawn`, every card it draws — a peek whose card no frame drew
+/// before has just come, not one your key made; where the frame before drew the session list, a row whose state changed to
+/// another word, and a row a Claude started (a child: `Session.parent`) that wasn't there; where it drew the sessions'
+/// strip, a session's state word changed there, and its `•` come; `◂ new` come (`unread`); `▲N waiting` and `N runs
+/// quiet` grown; and where it drew the slot's tabs, a run's badge turned to its end mark — the slot not in hand. They dry
+/// together, on their own clock (`arrived`); what's drawn is kept, for the cards still waiting.
+pub fn arrivals(ed: &mut Editor, peeks: &[u64], drawn: &[u64], unread: bool) {
+    use crate::event::WorkspaceId;
+    let mut places = Vec::new();
+    for &id in peeks.iter().filter(|id| !ed.seen.cards.contains(id)) {
+        if !ed.offers.iter().any(|o| o.id == id && o.yours) {
+            places.push(Place::Peek(id));
+        }
+    }
+    if !(drawn.is_empty() && ed.seen.cards.is_empty()) {
+        let waiting: Vec<u64> =
+            (ed.offers.iter()).chain(ed.workspaces.iter().flat_map(|l| &l.parked)).map(|o| o.id).collect();
+        ed.seen.cards.retain(|id| waiting.contains(id));
+        for &id in drawn {
+            if !ed.seen.cards.contains(&id) {
+                ed.seen.cards.push(id);
+            }
+        }
+    }
+    // (against the list as the frame before drew it: a frame where it opens takes its states as they are; a word come in
+    // the place of another, or of none — one gone to no word dries nothing)
+    if let Some(before) = &ed.seen.list {
+        let changed = |&(id, word): &(WorkspaceId, &str)| {
+            !word.is_empty() && before.iter().any(|b| b.0 == id && b.1 != word)
+        };
+        places.extend(states(ed).iter().filter(|s| changed(s)).map(|s| Place::State(s.0)));
+        let new = |l: &&crate::workspace::Workspace| {
+            l.claude.parent.is_some() && !before.iter().any(|b| b.0 == l.id)
+        };
+        places.extend(
+            (std::iter::once(&ed.workspace).chain(&ed.workspaces)).filter(new).map(|l| Place::Row(l.id)),
+        );
+    }
+    if let Some(before) = &ed.seen.strip {
+        let front = ed.workspace.id;
+        let child = |id| {
+            (std::iter::once(&ed.workspace).chain(&ed.workspaces))
+                .any(|l| l.id == id && l.claude.parent.is_some())
+        };
+        for (id, (word, news)) in strip(ed) {
+            match before.iter().find(|b| b.0 == id).map(|b| b.1) {
+                Some((was, had)) => {
+                    // (the front's `working` is said where its step is, never on the strip — `term::session_tabs_in`)
+                    if !word.is_empty() && word != was && !(id == front && word == "working") {
+                        places.push(Place::Strip(id));
+                    }
+                    if news && !had {
+                        places.push(Place::News(id));
+                    }
+                }
+                // (a child come on the strip, as in the list: its name)
+                None if child(id) => places.push(Place::Row(id)),
+                None => {}
+            }
+        }
+    }
+    if ed.seen.unread == Some(false) && unread {
+        places.push(Place::Unread);
+    }
+    let (waiting, quiet) = waiting_counts(ed, drawn);
+    if ed.seen.waiting.is_some_and(|w| waiting > w) {
+        places.push(Place::Waiting);
+    }
+    if ed.seen.quiet.is_some_and(|q| quiet > q) {
+        places.push(Place::Quiet);
+    }
+    // (a run's tab while its slot is in sight and your keys aren't in it: where they are, its panel says how it went)
+    if let Some(before) =
+        ed.seen.badges.as_ref().filter(|_| !ed.workspace.is_at(crate::workspace::Here::Slot))
+    {
+        use crate::chrome::Badge;
+        let ended = |b: Badge| !matches!(b, Badge::None | Badge::Running);
+        for t in ed.panel_tabs() {
+            if ended(t.badge) && before.contains(&(t.slot, Badge::Running)) {
+                places.push(Place::Badge(t.slot));
+            }
+        }
+    }
+    // (a child come in the list and on the strip: one place)
+    let mut once = Vec::with_capacity(places.len());
+    for p in places {
+        if !once.contains(&p) {
+            once.push(p);
+        }
+    }
+    ed.arrived(once);
+}
+
+/// After a frame (`term::render_drawing`): a session's "waits for you" held for its card's peek (#405,
+/// `Editor::said_by_peek`) — dropped where this frame drew a card of that session's, whole or as a peek (it says it),
+/// else its toast. Whether one was made (the frame is drawn again with it).
+pub fn peeks_said(ed: &mut Editor) -> bool {
+    if ed.peek_words.is_empty() {
+        return false;
+    }
+    let mut said = false;
+    for (id, kind, msg) in std::mem::take(&mut ed.peek_words) {
+        let cards: Vec<u64> = match id == ed.workspace.id {
+            true => ed.offers.iter().map(|o| o.id).collect(),
+            false => {
+                ed.workspaces.iter().filter(|l| l.id == id).flat_map(|l| &l.parked).map(|o| o.id).collect()
+            }
+        };
+        if !cards.iter().any(|c| ed.screen.asks_drawn.contains(c)) {
+            ed.peek_unseen(id, kind, msg);
+            said = true;
+        }
+    }
+    said
+}
+
+/// After a frame (`term::render_frame`): what it drew of what changes on its own (`Seen`) — the session list's states,
+/// the strip's words, `◂ new`, the status line's counts, the slot's badges; each None where it drew none.
+pub fn drawn(ed: &mut Editor) {
+    let listed = ed.screen.lists.borrow().iter().any(|l| l.0 == crate::pane::GroupKind::Sessions);
+    ed.seen.list = listed.then(|| states(ed));
+    let d = ed.screen.news.take();
+    ed.seen.strip =
+        (!d.strip.is_empty()).then(|| strip(ed).into_iter().filter(|s| d.strip.contains(&s.0)).collect());
+    ed.seen.unread = Some(d.unread);
+    (ed.seen.waiting, ed.seen.quiet) = (Some(d.waiting), Some(d.quiet));
+    ed.seen.badges = d.badges;
+}
+
+/// Each session's state word (`Doing::word`), as the session list says it now.
+fn states(ed: &Editor) -> Vec<(crate::event::WorkspaceId, &'static str)> {
+    (std::iter::once(&ed.workspace).chain(&ed.workspaces)).map(|l| (l.id, ed.doing(l).word())).collect()
+}
+
+/// Each session's words on the strip that change on their own: its state word, and its `•` (news while it was behind).
+fn strip(ed: &Editor) -> Vec<(crate::event::WorkspaceId, (&'static str, bool))> {
+    (std::iter::once(&ed.workspace).chain(&ed.workspaces))
+        .map(|l| (l.id, (ed.doing(l).word(), l.news())))
+        .collect()
+}
+
+/// The status line's `▲N waiting` (what waits for your answer and no card of `drawn` draws) and `N runs quiet`, as it
+/// counts them (`term::draw_statusline`).
+pub fn waiting_counts(ed: &Editor, drawn: &[u64]) -> (usize, usize) {
+    let inbox = ed.inbox();
+    let here = crate::uistate::session_id(ed.workspace.claude.id);
+    let in_sight = |e: &crate::inbox::Entry| match e.card() {
+        Some(id) => drawn.contains(&id),
+        None => {
+            e.kind == "edit" && e.up == "review" && e.session == here && ed.screen.review_area.get().is_some()
+        }
+    };
+    let waiting = inbox.iter().filter(|e| e.asks_answer() && !in_sight(e)).count();
+    (waiting, inbox.iter().filter(|e| e.kind == "silent-run").count())
+}
+
+/// What the frame before drew of what changes on its own (`arrivals` tells this frame's landings against it; `drawn`
+/// takes it after each frame). Each None before a frame drew that place.
+#[derive(Clone, Debug, Default)]
+pub struct Seen {
+    /// Every card a frame drew so far, whole or as a peek, while it waits — a peek not among them has just come.
+    pub cards: Vec<u64>,
+    /// The session list's rows' state words — None where the frame drew no list (opened: nothing on it has just changed).
+    pub list: Option<Vec<(crate::event::WorkspaceId, &'static str)>>,
+    /// The strip's sessions it drew, each its state word and its `•` — None where it drew no strip.
+    pub strip: Option<Vec<(crate::event::WorkspaceId, (&'static str, bool))>>,
+    /// `◂ new` on the status line.
+    pub unread: Option<bool>,
+    /// `▲N waiting`'s N and `N runs quiet`'s.
+    pub waiting: Option<usize>,
+    pub quiet: Option<usize>,
+    /// The slot's tabs' badges — None where the frame drew no slot's tabs.
+    pub badges: Option<Vec<(crate::sizes::Slot, crate::chrome::Badge)>>,
+}
+
+/// What a frame draws of `Seen`'s places, recorded where each is drawn (`Screen.news`).
+#[derive(Clone, Debug, Default)]
+pub struct Drawn {
+    /// The sessions the strip named.
+    pub strip: Vec<crate::event::WorkspaceId>,
+    pub unread: bool,
+    pub waiting: usize,
+    pub quiet: usize,
+    pub badges: Option<Vec<(crate::sizes::Slot, crate::chrome::Badge)>>,
+}
+
 /// Every event (`handle_event`): a buffer a run of Claude's rewrote (`run_wrote`) whose version moved — wet and heard
 /// if it's now the file as the run left it, else let go (your edit, another write).
 pub fn wet_sync(ed: &mut Editor) {
@@ -391,6 +633,9 @@ pub const FLASH: Duration = Duration::from_millis(300);
 pub const PRESS: Duration = Duration::from_millis(300);
 /// How long Claude's fresh writing dries (§2): drying ink is slow — ten `TICK` steps on the ease-out.
 pub const WET: Duration = Duration::from_secs(1);
+/// How long what came on its own dries (§6): the ink's time — news you didn't make, seen at the eye's edge, where the
+/// flash's 0.3 s blink is for the place your key just acted on.
+pub const ARRIVED: Duration = WET;
 /// The most ranges a flash keeps (a `.` over thousands of cursors flashes none).
 pub const RANGES_MAX: usize = 256;
 /// The most lines an undo's span may cover and still flash (past it, its line diff would be the cost).
@@ -427,6 +672,8 @@ pub enum What {
     Press(Place),
     /// Claude's fresh writing in a document (§2) — its lines are the document's own (`Document.wet`).
     Wet(DocId),
+    /// What came on its own and landed in sight in one frame (§6): a peek, a session list row's state.
+    Arrived(Vec<Place>),
 }
 
 /// A buffer a run of Claude's rewrote on disk, waiting to take that text (`Editor::run_wrote`, `wet_sync`): its
@@ -448,6 +695,8 @@ impl What {
             (What::Flash { doc: a, .. }, What::Flash { doc: b, .. }) => a == b,
             (What::Press(a), What::Press(b)) => a == b,
             (What::Wet(a), What::Wet(b)) => a == b,
+            // (each landing dries on its own clock: a place landing again leaves the older one — `Editor::arrived`)
+            (What::Arrived(_), What::Arrived(_)) => false,
             _ => false,
         }
     }
@@ -458,6 +707,7 @@ impl What {
             What::Flash { act, .. } => act.name(),
             What::Press(_) => "stamp",
             What::Wet(_) => "write",
+            What::Arrived(_) => "news",
         }
     }
 }
@@ -471,6 +721,24 @@ pub enum Place {
     File(std::path::PathBuf),
     /// The chat's knot row of call `id` (and the follow card's, the same call).
     Knot(String),
+    /// A card's peek (§6), by the card's id.
+    Peek(u64),
+    /// A session list row's state word (§6), by its workspace.
+    State(crate::event::WorkspaceId),
+    /// A session a Claude started, come in the list (its row whole) or on the strip (its name) (§6).
+    Row(crate::event::WorkspaceId),
+    /// A session's state word on the sessions' strip (§6).
+    Strip(crate::event::WorkspaceId),
+    /// A session's `•` on the strip: news while it was behind (§6).
+    News(crate::event::WorkspaceId),
+    /// The status line's `◂ new` (§6).
+    Unread,
+    /// The status line's `▲N waiting`, its count grown (§6).
+    Waiting,
+    /// The status line's `N runs quiet`, its count grown (§6).
+    Quiet,
+    /// A run's tab's badge, turned to its end mark (§6).
+    Badge(crate::sizes::Slot),
 }
 
 /// The act a flash shows.
@@ -502,6 +770,7 @@ impl Moving {
             What::Flash { .. } => "flash",
             What::Press(_) => "press",
             What::Wet(_) => "wet",
+            What::Arrived(_) => "arrived",
         }
     }
 }

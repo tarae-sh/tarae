@@ -1552,6 +1552,143 @@ const SESSIONS_FLOAT: &[&str] = overlap_keys!(
     "W",
     "@3"
 );
+/// Motion §6 (#401/#402): docs's Claude asks for a run ~10 s into its turn while you're in main with the session list
+/// closed — its peek lands and its word on the top row's strip turns `working` → `▲ waits`, both drying once; `C-q y`
+/// answers it there. Then every other place (the user, 2026-11-06: "the other places too"): back in main, the list
+/// docked right (`C-w L`), you ask main's Claude for the count, the conversation shown and hidden while it works; its
+/// card, `C-q y`, and knot-count's row comes whole, its state word after as its turn goes; the turn's end says `◂ new`;
+/// your tests again (built off camera), the slot in sight and the keys in the code, its badge turning `▲`. Beats at the
+/// drying's steps: the sheets show each.
+const ARRIVED_KEYS: &[&str] = &[
+    // (the tests built off camera, in main: on camera they run at once)
+    "@1",
+    " ",
+    "x",
+    "f",
+    "@90?right: 8",
+    "@1",
+    "\x1b",
+    "@1",
+    // (closed: on camera the run opens its tab anew, its `tests ▲` there only once it ends)
+    " ",
+    "x",
+    "c",
+    "@1",
+    ":",
+    "sh git worktree add -q ../docs && echo checkout made",
+    "\r",
+    "@20?checkout made",
+    ":",
+    "workspace-open ../docs",
+    "\r",
+    "@3",
+    // (its file open: changed on disk while docs is behind, its buffer takes it again — the strip's `•`)
+    ":",
+    "open src/main.rs",
+    "\r",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "run the tests",
+    "\r",
+    "@1",
+    ":",
+    "workspace-switch 0",
+    "\r",
+    "@1",
+    "@rec",
+    // The strip (the top row's right, the list closed) and the peek: docs's card lands, its word turns `▲ waits`
+    "@beat:the strip, docs working",
+    "@30?docs asks",
+    "@beat:landed",
+    "@0.1",
+    "@beat:+0.1 s",
+    "@0.2",
+    "@beat:+0.3 s",
+    "@0.5",
+    "@beat:+0.8 s",
+    "@1",
+    "@beat:dry",
+    // The strip's `•`: docs's file changed on disk while it's behind
+    ":",
+    "sh echo '// docs' >> ../docs/src/main.rs && echo appended",
+    "\r",
+    "@10? •",
+    "@beat:docs •",
+    "@0.2",
+    "@beat:+0.2 s",
+    "@0.3",
+    "@beat:+0.5 s",
+    "@1",
+    "@beat:dry",
+    // (answered there: `C-q` takes you to docs's card — back in main after)
+    "\x11",
+    "@1",
+    "y",
+    "@1",
+    ":",
+    "workspace-switch 0",
+    "\r",
+    "@1",
+    // The list docked right: main's Claude asks for the count, its conversation shown and hidden while it works (its
+    // end: `◂ new`); `C-q y`, and knot-count's row comes whole — its state word after, as its turn goes
+    " ",
+    "W",
+    "@1",
+    "\x17",
+    "L",
+    "@1",
+    "\x1b",
+    "@1",
+    "@beat:the list docked",
+    " ",
+    "l",
+    "@0.5",
+    "start the count",
+    "\r",
+    "@0.5",
+    " ",
+    "L",
+    "@0.5",
+    "\x1b",
+    "@0.3",
+    " ",
+    "L",
+    "@20?Start ",
+    "@1",
+    "@beat:main's card",
+    "\x11",
+    "@0.5",
+    "y",
+    "@20?knot-count",
+    "@beat:knot-count came",
+    "@0.2",
+    "@beat:+0.2 s",
+    "@0.3",
+    "@beat:+0.5 s",
+    "@20?◂ new",
+    "@beat:◂ new",
+    "@0.2",
+    "@beat:+0.2 s",
+    "@0.3",
+    "@beat:+0.5 s",
+    "@1",
+    "@beat:dry",
+    // A run's badge: your tests again, the keys in the code (the list docked, its failure stacked out of sight: the
+    // tab's end mark is what's waited on — built, the run ends within its key's frames)
+    " ",
+    "x",
+    "f",
+    "@90?tests ▲",
+    "@beat:its badge",
+    "@0.2",
+    "@beat:+0.2 s",
+    "@0.3",
+    "@beat:+0.5 s",
+    "@1",
+    "@beat:dry",
+];
 // (…the strip over fix's chat: `fix ≈ main`, `main ≈ fix`, each name in its colour)
 const OVERLAP_STRIP: &[&str] = overlap_keys!(" ", "l", "@2");
 // (focus E1, 2+ sessions: fix's turn on the map, main's overlap and marks beside it)
@@ -5088,6 +5225,13 @@ const SCENES: &[Scene] = &[
     // (panes P3 step 7: the session list floating over the code with main's chat open — the manager's overview: fix
     // working, overlapping main and a commit behind it; docs waiting on its card, behind too)
     Scene { name: "sessions-float", claude: "manager", files: MAIN, keys: SESSIONS_FLOAT },
+    // (motion §6: what came on its own dries once as it lands — another session's peek, a list row's state)
+    Scene {
+        name: "arrived",
+        claude: "main=startgo,docs=cardlater,knot-count=childcount",
+        files: MAIN,
+        keys: ARRIVED_KEYS,
+    },
     Scene { name: "overlapfiles", claude: "writemid", files: MAIN, keys: OVERLAP_FILES },
     // (collab C2b: the woven view — a conflict side by side and stacked, a clean weave of three in their colours, and a
     // removal's head where its lines went)
@@ -7091,7 +7235,7 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
             ),
         ],
         "output-tests" | "panes-tests-code" | "panes-float" | "group-tests-list" | "group-tests-detail"
-        | "group-tests-stacked" | "float-tests" | "float-tests-moved" | "waits-60s" => vec![
+        | "group-tests-stacked" | "float-tests" | "float-tests-moved" | "waits-60s" | "arrived" => vec![
             ("src/main.rs", format!("{MAIN_RS}{MAIN_TESTS}")),
             (".cargo/config.toml", "[build]\nbuild-dir = \"target/build\"\n".into()),
         ],

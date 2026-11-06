@@ -1766,6 +1766,13 @@ fn steady(mut v: Value) -> Value {
     for e in v["inbox"].as_array_mut().unwrap() {
         e["waited_ms"] = json!(0);
     }
+    // (a motion's time left, and the frame its clock asks — fix-login's peek landed as the frame drew it: as long as the
+    // test took since)
+    let motions = v["motions"].as_array_mut().unwrap();
+    motions.iter_mut().for_each(|m| m["until_ms"] = json!(0));
+    if !motions.is_empty() {
+        v["tick_in_ms"] = json!(0);
+    }
     v
 }
 

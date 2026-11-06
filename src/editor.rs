@@ -614,6 +614,9 @@ pub struct Screen {
     /// The sessions' strip drawn on the screen's top row this frame (`term::draw_header`): the home of a bring's
     /// progress — the status line's chip says it only on a frame with none (#319).
     pub top_strip: std::cell::Cell<bool>,
+    /// What this frame drew of what changes on its own (`motion::Drawn`, §6): the strip's sessions, `◂ new`, the status
+    /// line's counts, the slot's badges.
+    pub news: std::cell::RefCell<crate::motion::Drawn>,
     /// How many of the front card's lines its drawing left out (`↓ 2 more lines`; 0: drawn whole) — None
     /// when no card is drawn, or it stepped aside to a bar while its text is read (the UI state's `cut`).
     pub offer_cut: Option<usize>,
@@ -1096,6 +1099,12 @@ pub struct Editor {
     pub bleed_ink: bool,
     /// Motions on a clock under way (`motion.rs`): flashes, … — each let go once over (`motions_prune`).
     pub motions: Vec<crate::motion::Moving>,
+    /// What the frames have drawn of what comes on its own (`motion::arrivals`, §6): what lands in a frame is told against
+    /// it.
+    pub seen: crate::motion::Seen,
+    /// A session's "waits for you" while a peek of its card may say it (#405): kept in `:messages`, its toast only after a
+    /// frame that drew no card of that session's (`motion::peeks_said`).
+    pub peek_words: Vec<(crate::event::WorkspaceId, ToastKind, String)>,
     /// A hunk reset waiting on its diff (§5): (the document, the version it left) — a turn's file's `u` shows once
     /// that version's diff lands empty, and is pressed then (`Editor::diff_landed`).
     pub press_on_diff: Option<(crate::document::DocId, u64)>,
@@ -1596,6 +1605,8 @@ impl Editor {
             offer_popups: !cfg!(test),
             bleed_ink: !cfg!(test),
             motions: Vec::new(),
+            seen: Default::default(),
+            peek_words: Vec::new(),
             press_on_diff: None,
             wet_waiting: Vec::new(),
             motion_drawn: !cfg!(test),
@@ -2795,6 +2806,19 @@ impl Editor {
     pub(crate) fn flash_unseen(&mut self, kind: ToastKind, msg: String) {
         let of = self.behind.then_some(self.workspace.id);
         self.toast(kind, msg, of);
+    }
+
+    /// Session `id`'s "waits for you" (#405, one home per fact): kept in `:messages` and a note now, its toast only after a
+    /// frame that drew no card of that session's — whole or as its peek, the card says it (`motion::peeks_said`).
+    pub(crate) fn said_by_peek(&mut self, id: crate::event::WorkspaceId, kind: ToastKind, msg: String) {
+        self.recorded(kind, msg.clone());
+        self.note(msg.clone());
+        self.peek_words.push((id, kind, msg));
+    }
+
+    /// Words `said_by_peek` held that no frame drew a card of session `id`'s saying: their toast after all (kept already).
+    pub(crate) fn peek_unseen(&mut self, id: crate::event::WorkspaceId, kind: ToastKind, msg: String) {
+        self.toast(kind, msg, Some(id));
     }
 
     /// `msg` as a toast of `kind` — `set_status`, `set_success`, … by its kind.

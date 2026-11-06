@@ -153,7 +153,13 @@
   },
   "limits": {},
   "mode": "normal",
-  "motions": [],
+  "motions": [
+    {
+      "act": "news",
+      "kind": "arrived",
+      "until_ms": 0
+    }
+  ],
   "notes": [],
   "panels": {
     "chat": null,
@@ -283,7 +289,7 @@
     "pid": 0,
     "version": "-"
   },
-  "tick_in_ms": 100,
+  "tick_in_ms": 0,
   "toasts": [
     {
       "id": "toast#1",

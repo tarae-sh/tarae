@@ -491,6 +491,365 @@ fn a_flash_wakes_on_its_steps_then_never() {
     crate::clock::release();
 }
 
+/// A Claude's card, as one comes on its own.
+fn asks(n: u64) -> crate::offer::Offer {
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(n) };
+    crate::offer::Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
+}
+
+fn frame(ed: &mut Editor) {
+    crate::term::render(ed, &mut Vec::new(), 100, 30).unwrap();
+}
+
+/// An editor rooted in a folder of its own (the session list asks git about its root), motions drawn, the session list
+/// open — and the folder, removed on drop.
+fn listing(name: &str) -> (Editor, crate::scratch::Scratch) {
+    let dir = crate::scratch::Scratch::new(&format!("motion-{name}"));
+    let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
+    ed.docs[0].text = ropey::Rope::from_str("one\n");
+    ed.motion_drawn = true;
+    feed(&mut ed, "<space>W");
+    (ed, dir)
+}
+
+/// The places of what's drying as it landed (§6), if any is.
+fn landed(ed: &Editor) -> Option<Vec<Place>> {
+    ed.motions.iter().find_map(|m| match &m.what {
+        What::Arrived(at) => Some(at.clone()),
+        _ => None,
+    })
+}
+
+/// §6 (#401, #402): with the session list open, a Claude's card comes on its own — drawn whole (its frame says it came),
+/// the row's state turns to `▲ waits`: that word dries once, whole on the frame it lands; the frames after take nothing
+/// new, the drying ends on its own clock, then no wake. A second card stacks behind it as a peek: the peek dries. A
+/// state that goes to no word dries nothing.
+#[test]
+fn what_came_on_its_own_dries_once_as_it_lands() {
+    let (mut ed, _dir) = listing("lands");
+    crate::clock::hold();
+    frame(&mut ed);
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "the list opened: nothing on it has just changed");
+    ed.push_offer(asks(1));
+    let here = ed.workspace.id;
+    frame(&mut ed);
+    assert_eq!(landed(&ed), Some(vec![Place::State(here)]), "the row's word; the card whole, no peek");
+    assert_eq!(ed.arrival(&Place::State(here)), 1.0, "whole on the frame it lands");
+    frame(&mut ed);
+    assert_eq!(ed.motions.len(), 1, "once: the next frame takes nothing new");
+    let ms = |d: Option<Duration>| d.map(|d| d.as_millis());
+    assert_eq!(ms(ed.motion_wake()), Some(102), "its first step a TICK on, on its own clock");
+    crate::clock::advance(shown_for(ARRIVED));
+    assert_eq!(ms(ed.motion_wake()), Some(0), "over: the frame that draws it dry");
+    ed.schedule_tick();
+    assert_eq!((landed(&ed), ed.motion_wake()), (None, None), "dry, and no wake: idle again");
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "it waits on: nothing lands again");
+    ed.push_offer(asks(2));
+    let behind = ed.offers[1].id;
+    frame(&mut ed);
+    assert_eq!(landed(&ed), Some(vec![Place::Peek(behind)]), "the card behind, its peek");
+    assert_eq!(ed.arrival(&Place::Peek(behind)), 1.0);
+    crate::clock::advance(shown_for(ARRIVED));
+    ed.schedule_tick();
+    ed.offers.clear();
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "its state gone to no word: nothing to dry");
+    crate::clock::release();
+}
+
+/// Every landing drying now, each its places (§6).
+fn landings(ed: &Editor) -> Vec<Vec<Place>> {
+    (ed.motions.iter())
+        .filter_map(|m| match &m.what {
+            What::Arrived(at) => Some(at.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// §6 (the user, 2026-11-06, on the takes: knot-count's row cut dry by `◂ new` 0.2 s after it landed — a pop): each
+/// landing dries on its own clock — a newer one elsewhere never cuts an older short, the two dry together, each over its
+/// own `ARRIVED`; a place landing again while it dries starts over, in one landing only. And nothing dries while you
+/// type, nor later for what came then (it isn't news by the time you stop).
+#[test]
+fn each_landing_dries_on_its_own_clock_and_none_while_you_type() {
+    let (mut ed, _dir) = listing("own");
+    crate::clock::hold();
+    frame(&mut ed);
+    let here = ed.workspace.id;
+    ed.workspace.claude.chat = working();
+    frame(&mut ed);
+    assert_eq!(landings(&ed), [vec![Place::State(here)]], "its word come: `working`");
+    crate::clock::advance(Duration::from_millis(300));
+    // (its word again while it dries: `waits` — the card whole, no peek)
+    ed.push_offer(asks(1));
+    frame(&mut ed);
+    assert_eq!(landings(&ed), [vec![Place::State(here)]], "landed again: one landing, started over");
+    assert_eq!(ed.arrival(&Place::State(here)), 1.0, "whole again");
+    crate::clock::advance(Duration::from_millis(300));
+    ed.push_offer(asks(2));
+    let second = ed.offers[1].id;
+    frame(&mut ed);
+    assert_eq!(landings(&ed), [vec![Place::State(here)], vec![Place::Peek(second)]], "the two dry together");
+    assert_eq!(
+        ed.arrival(&Place::State(here)),
+        strength(Duration::from_millis(300), ARRIVED),
+        "never cut short"
+    );
+    assert_eq!(ed.arrival(&Place::Peek(second)), 1.0, "the newer whole");
+    let ms = |d: Option<Duration>| d.map(|d| d.as_millis());
+    assert_eq!(ms(ed.motion_wake()), Some(102), "each on its own steps: the next of either");
+    // (the older over first, on its own time; the newer dries on)
+    crate::clock::advance(shown_for(ARRIVED) - Duration::from_millis(300));
+    assert_eq!(ms(ed.motion_wake()), Some(0), "the older over: the frame that draws it dry");
+    ed.schedule_tick();
+    assert_eq!(landings(&ed), [vec![Place::Peek(second)]], "the newer dries on");
+    let left = shown_for(ARRIVED) - Duration::from_millis(500);
+    assert_eq!(ed.arrival(&Place::Peek(second)), strength(Duration::from_millis(500), ARRIVED));
+    crate::clock::advance(left);
+    ed.schedule_tick();
+    assert_eq!((landings(&ed), ed.motion_wake()), (vec![], None), "both dry, and no wake");
+    // Typing: the keys back in the code, insert mode
+    feed(&mut ed, "<esc>i");
+    assert!(ed.typing(), "insert mode is typing");
+    ed.push_offer(asks(3));
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "taken in silence while you type");
+    feed(&mut ed, "<esc>");
+    frame(&mut ed);
+    assert_eq!((landed(&ed), ed.motion_wake()), (None, None), "nor kept for later");
+    crate::clock::release();
+}
+
+/// Two sessions, main in front and docs behind, in a folder of their own; motions drawn, the clock held — and the folder,
+/// removed on drop (`clock::release` is the test's).
+fn two(name: &str) -> (Editor, crate::event::WorkspaceId, crate::scratch::Scratch) {
+    let dir = crate::scratch::Scratch::new(&format!("motion-{name}"));
+    let mut ed = Editor::with_root(crate::config::Config::default(), dir.path().to_path_buf());
+    ed.docs[0].text = ropey::Rope::from_str("one\n");
+    ed.motion_drawn = true;
+    ed.workspace.name = "main".into();
+    let docs = ed.workspace_add(dir.path().join("docs"));
+    ed.workspace_by_id(docs).unwrap().name = "docs".into();
+    crate::clock::hold();
+    frame(&mut ed);
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "as the strip first came: nothing on it has just changed");
+    (ed, docs, dir)
+}
+
+fn working() -> Option<crate::chat::Chat> {
+    let mut c = crate::chat::Chat::new();
+    c.state = crate::chat::State::Thinking;
+    Some(c)
+}
+
+/// What landed at `place` dries once: whole on the frame it lands, the frame after takes nothing new, dry over `ARRIVED`
+/// and no wake after.
+fn lands_once(ed: &mut Editor, place: Place) {
+    let before = ed.seen.strip.clone();
+    frame(ed);
+    assert_eq!(landed(ed), Some(vec![place.clone()]), "{place:?} lands alone — against {before:?}");
+    assert_eq!(ed.arrival(&place), 1.0, "{place:?}: whole on the frame it lands");
+    frame(ed);
+    assert_eq!(ed.motions.len(), 1, "{place:?}: once — the next frame takes nothing new");
+    crate::clock::advance(shown_for(ARRIVED));
+    ed.schedule_tick();
+    assert_eq!((landed(ed), ed.motion_wake()), (None, None), "{place:?}: dry, and no wake");
+    frame(ed);
+    assert_eq!(landed(ed), None, "{place:?}: it stays: nothing lands again");
+}
+
+/// §6 on the sessions' strip (the user, 2026-11-06: "the other places too, so it all behaves consistently"): a session
+/// behind turning to work, its word dries once; the front's `working` (never on the strip) dries nothing; its `•` come
+/// (files again from disk while it was behind) dries once. Drawn: the word's ground the flash's, the space before it not.
+#[test]
+fn the_strips_word_and_its_news_dry_once() {
+    let (mut ed, docs, _dir) = two("strip");
+    ed.workspace_by_id(docs).unwrap().claude.chat = working();
+    lands_once(&mut ed, Place::Strip(docs));
+    // (its column out of sight: the strip on the top row, room for both)
+    ed.workspace.claude.chat = working();
+    ed.workspace.claude.chat.as_mut().unwrap().hidden = true;
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "the front's `working` is said where its step is, never on the strip");
+    ed.workspace_by_id(docs).unwrap().reloaded = 1;
+    lands_once(&mut ed, Place::News(docs));
+    // Drawn: on the strip's spans, the word's ground alone
+    ed.workspace_by_id(docs).unwrap().claude.chat = None;
+    frame(&mut ed);
+    ed.workspace_by_id(docs).unwrap().claude.chat = working();
+    frame(&mut ed);
+    let ground = Some(crossterm::style::Color::Rgb { r: 10, g: 10, b: 10 });
+    let base = crate::theme::Style { bg: ground, ..Default::default() };
+    let spans = crate::term::session_tabs_drawn(&ed, 200, base);
+    let lit: Vec<&str> = spans.iter().filter(|p| p.style.bg != ground).map(|p| p.text.as_str()).collect();
+    assert_eq!(lit, ["working"], "{spans:?}");
+    crate::clock::release();
+}
+
+/// §6: a session a Claude started (an orchestra child) comes — with the list open its row whole dries, on the strip its
+/// name: one place. One you opened (no parent) dries nothing. Its word turning `working` a frame after it came is its row's
+/// already: the row keeps drying whole (the `arrived` take: its name cut dry, its word alone washed).
+#[test]
+fn a_child_come_dries_once_in_the_list_and_on_the_strip() {
+    let (mut ed, _docs, dir) = two("child");
+    feed(&mut ed, "<space>W");
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "the list opened");
+    let yours = ed.workspace_add(dir.path().join("fix"));
+    ed.workspace_by_id(yours).unwrap().name = "fix".into();
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "yours: no news");
+    let main = ed.workspace.claude.id;
+    let child = ed.workspace_add(dir.path().join("knot"));
+    let l = ed.workspace_by_id(child).unwrap();
+    (l.name, l.claude.parent) = ("knot".into(), Some(main));
+    lands_once(&mut ed, Place::Row(child));
+    // (again, its word coming a frame after it)
+    let late = ed.workspace_add(dir.path().join("late"));
+    let l = ed.workspace_by_id(late).unwrap();
+    (l.name, l.claude.parent) = ("late".into(), Some(main));
+    frame(&mut ed);
+    assert_eq!(landed(&ed), Some(vec![Place::Row(late)]));
+    crate::clock::advance(Duration::from_millis(200));
+    ed.workspace_by_id(late).unwrap().claude.chat = working();
+    frame(&mut ed);
+    assert_eq!(landed(&ed), Some(vec![Place::Row(late)]), "its word is its row's: still the row drying");
+    assert!(ed.arrival(&Place::Row(late)) > 0.0, "never cut dry");
+    crate::clock::release();
+}
+
+/// §6, as the takes had it: a child's row come, then `◂ new` 0.2 s on — the row keeps drying on its own clock beside it.
+#[test]
+fn a_newer_landing_never_cuts_an_older_short() {
+    let (mut ed, _docs, dir) = two("cut");
+    let mut c = crate::chat::Chat::new();
+    c.hidden = true;
+    ed.workspace.claude.chat = Some(c);
+    feed(&mut ed, "<space>W");
+    frame(&mut ed);
+    let main = ed.workspace.claude.id;
+    let child = ed.workspace_add(dir.path().join("knot-count"));
+    let l = ed.workspace_by_id(child).unwrap();
+    (l.name, l.claude.parent) = ("knot-count".into(), Some(main));
+    frame(&mut ed);
+    assert_eq!(landings(&ed), [vec![Place::Row(child)]]);
+    crate::clock::advance(Duration::from_millis(200));
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "done", ""));
+    c.news = Some(0);
+    frame(&mut ed);
+    assert_eq!(landings(&ed), [vec![Place::Row(child)], vec![Place::Unread]]);
+    assert_eq!(
+        ed.arrival(&Place::Row(child)),
+        strength(Duration::from_millis(200), ARRIVED),
+        "the row dries on"
+    );
+    assert_eq!(ed.arrival(&Place::Unread), 1.0);
+    crate::clock::release();
+}
+
+/// §6: `◂ new` come on the status line (an answer said while the conversation is out of sight) dries once; drawn, its
+/// words' ground the flash's.
+#[test]
+fn the_status_lines_new_dries_once() {
+    let (mut ed, _docs, _dir) = two("unread");
+    let mut c = crate::chat::Chat::new();
+    c.hidden = true;
+    ed.workspace.claude.chat = Some(c);
+    frame(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "done", ""));
+    c.news = Some(0);
+    lands_once(&mut ed, Place::Unread);
+    crate::clock::release();
+}
+
+/// §6: the status line's `▲N waiting` grown (a card no frame draws: here one past what the frame had, told against
+/// none drawn) and `N runs quiet` grown (a run of Claude's quiet for minutes) dry once; fewer dries nothing.
+#[test]
+fn the_status_lines_counts_dry_once_as_they_grow() {
+    let (mut ed, _docs, dir) = two("counts");
+    // (`▲N waiting`: the rule, told against a frame that drew no card — nor the strip, where main's word would turn
+    // `▲ waits`)
+    (ed.seen.waiting, ed.seen.strip) = (Some(0), None);
+    ed.push_offer(asks(1));
+    arrivals(&mut ed, &[], &[], false);
+    assert_eq!(landed(&ed), Some(vec![Place::Waiting]));
+    ed.motions.clear();
+    ed.seen.waiting = Some(1);
+    arrivals(&mut ed, &[], &[], false);
+    assert_eq!(landed(&ed), None, "as many: nothing grew");
+    ed.offers.clear();
+    // `N runs quiet`: a run of Claude's printing nothing for minutes
+    frame(&mut ed);
+    use crate::task::{Run, State, Task};
+    let Some(then) = std::time::Instant::now().checked_sub(Duration::from_secs(400)) else { return };
+    let cmd = "docker run img";
+    let mut r = Run::for_test(Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.path().to_path_buf() });
+    (r.state, r.by_claude, r.last_output, r.started) = (State::Running, true, then, then);
+    r.wait.looked(0.0, then);
+    ed.workspace.task_run = Some(r);
+    assert_eq!(waiting_counts(&ed, &[]).1, 1, "quiet");
+    let ups = |ed: &Editor| {
+        let quiet = |m: &&Moving| matches!(&m.what, What::Arrived(at) if at.contains(&Place::Quiet));
+        ed.motions.iter().filter(quiet).count()
+    };
+    frame(&mut ed);
+    assert_eq!(ups(&ed), 1, "{:?}", landed(&ed));
+    frame(&mut ed);
+    assert_eq!(ups(&ed), 1, "once");
+    crate::clock::release();
+}
+
+/// §6: a run's tab's badge turning to its end mark while its slot is in sight and the keys aren't in it dries once; with
+/// the keys in the slot, nothing (its panel says how it went where you are).
+#[test]
+fn a_runs_badge_dries_once_as_it_ends_out_of_hand() {
+    use crate::task::{Run, State, Task};
+    let (mut ed, _docs, dir) = two("badge");
+    let cmd = "cargo test";
+    let mut r = Run::for_test(Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.path().to_path_buf() });
+    r.state = State::Running;
+    ed.workspace.task_run = Some(r);
+    frame(&mut ed);
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "under way: its wave, no landing");
+    ed.workspace.task_run.as_mut().unwrap().state = State::Failed(Some(1));
+    lands_once(&mut ed, Place::Badge(crate::sizes::Slot::Task));
+    // In hand: nothing
+    ed.workspace.task_run.as_mut().unwrap().state = State::Running;
+    ed.workspace.set_at(crate::workspace::Here::Slot);
+    frame(&mut ed);
+    ed.workspace.task_run.as_mut().unwrap().state = State::Passed;
+    frame(&mut ed);
+    assert_eq!(landed(&ed), None, "the keys in its slot: its panel says it");
+    crate::clock::release();
+}
+
+/// #405: a session left waiting says so once — its card's peek drawn, no toast beside it (kept in `:messages`); no card
+/// of it drawn, its toast after that frame.
+#[test]
+fn a_peek_says_waits_for_you_no_toast_beside_it() {
+    let (mut ed, docs, _dir) = two("peek-words");
+    let msg = "docs · waits for you — C-q goes there".to_string();
+    let toasts = |ed: &Editor| ed.toasts.iter().filter(|t| t.text.contains("waits for you")).count();
+    ed.workspace_by_id(docs).unwrap().parked.push(asks(1));
+    ed.said_by_peek(docs, crate::editor::ToastKind::Info, msg.clone());
+    assert!(ed.messages.iter().any(|m| m.2 == msg), "kept at once");
+    frame(&mut ed);
+    assert!(ed.screen.asks_drawn.contains(&ed.workspaces[0].parked[0].id), "its peek drawn");
+    assert_eq!(toasts(&ed), 0, "the peek says it");
+    ed.workspace_by_id(docs).unwrap().parked.clear();
+    ed.said_by_peek(docs, crate::editor::ToastKind::Info, msg);
+    frame(&mut ed);
+    assert_eq!(toasts(&ed), 1, "no card drawn: its toast");
+    crate::clock::release();
+}
+
 /// Nothing stays listed past its time: at `none` no flash is made (the state's `motions` empty, no wake); one made
 /// before a switch to `none`, or while unfocused, asks one wake at its end and is let go by it — listed nowhere when
 /// focus comes back.

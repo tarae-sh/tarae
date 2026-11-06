@@ -850,6 +850,19 @@ impl Doing {
             _ => String::new(),
         }
     }
+
+    /// Its state by kind — a stuck call's time and a run's place in line left out: what a change of state is told by
+    /// (`motion::arrivals`). Empty: idle, no word.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Doing::Idle => "",
+            Doing::Working => "working",
+            Doing::Waiting => "waits",
+            Doing::Done => "done",
+            Doing::Stuck { .. } => "stuck",
+            Doing::Queued { .. } => "queued",
+        }
+    }
 }
 
 /// How long a card waits in a session behind before one warning names it (`Editor::card_nudge`).
@@ -1413,7 +1426,7 @@ impl Editor {
         }
         if tell {
             let msg = format!("{name} · waits for you — {}", self.c_q_says(id, true));
-            self.said_for(id, crate::editor::ToastKind::Info, msg);
+            self.said_by_peek(id, crate::editor::ToastKind::Info, msg);
         }
         !tell && ended.is_none() && self.messages.last().map(|m| m.0) == said
     }
@@ -1579,7 +1592,7 @@ impl Editor {
         std::mem::swap(&mut self.workspace, &mut self.workspaces[i]);
         if waits {
             let msg = format!("{name} · waits for you — {}", self.c_q_says(out, true));
-            self.said_for(out, crate::editor::ToastKind::Info, msg);
+            self.said_by_peek(out, crate::editor::ToastKind::Info, msg);
         }
         // In: its panes on documents that are still there (its own, else a blank one), its cards up, its tour
         // going on

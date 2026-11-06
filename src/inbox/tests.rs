@@ -426,7 +426,8 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
         } else {
             "front · waits for you — C-q goes there"
         };
-        let all: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+        // (kept at once; its toast waits on the frame, which may draw its card's peek — #405)
+        let all: Vec<&str> = ed.messages.iter().map(|m| m.2.as_str()).collect();
         assert!(all.iter().any(|t| t.ends_with(says)), "{says}: {all:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
