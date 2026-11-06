@@ -12058,6 +12058,19 @@ fn draw_statusline(
         }
         false => now_segments(editor, ui, &mut left),
     };
+    // An open of yours read past `opening::SAY_AFTER` (#375): the code in front stays until it lands — what it reads and
+    // for how long, faint
+    if let Some((name, since)) = editor.opening_said() {
+        let faint = Style { fg: ui.linenr.fg, ..ui.status };
+        left.push(Seg { cut: None, text: format!("  opening {name}…"), style: faint, keep: OPENING });
+        let time = timer(crate::clock::since(since), !editor.moving());
+        left.push(Seg {
+            cut: None,
+            text: format!(" {}", time.trim_start()),
+            style: faint,
+            keep: OPENING - 1,
+        });
+    }
     // The session's reviewer in the background (bgreview): reading, waiting its turn, or what it found not read
     // yet — in its colour, the counts dim, then the key — while no review rail says it. A click reads its report
     if let Some((head, counts, key)) = crate::reviewer::status_said(editor)
@@ -12664,6 +12677,10 @@ const INBOX: u8 = 245;
 /// A code pane's top line's key hint (`enter go there`, `C-c stop`): a blank, then `hint_spans`' key and words, all
 /// this `keep` — folded before the line's details, the gap with them (`fit_segments`: a blank that leads its run).
 const PATH_HINTS: u8 = 238;
+
+/// The status line's `opening src/b.rs… 1.2s` (#375, `Editor::opening_said`): an open of yours past
+/// `opening::SAY_AFTER`, the code in front still — below the session chip, its time one below (it folds first).
+const OPENING: u8 = 236;
 
 /// The status line's `¶ reviewing` (bgreview, `reviewer::status_said`): below the session chip (a typing
 /// program and the session's name outlast it); its counts one below, its key two — the key folds first, the

@@ -979,7 +979,7 @@ pub fn restore(ed: &mut Editor, card: u64, mut f: Found) {
     chats_back(ed, std::mem::take(&mut f.chats));
     compare_close(ed, &f.path);
     // (not opened: the copy stays, asked about again at the next start)
-    if let Err(e) = ed.open(&f.path) {
+    if let Err(e) = ed.open_now(&f.path) {
         return ed.set_error(format!("not restored — {e:#}"));
     }
     let id = ed.doc().id;

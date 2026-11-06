@@ -272,7 +272,7 @@ pub(crate) fn buffer_for(ed: &mut Editor, path: &Path) -> Result<crate::document
         return Ok(d.id);
     }
     let before = ed.current;
-    ed.open(path).map_err(|e| format!("{e:#}"))?;
+    ed.open_now(path).map_err(|e| format!("{e:#}"))?;
     let id = ed.doc().id;
     ed.current = before.min(ed.docs.len() - 1);
     Ok(id)

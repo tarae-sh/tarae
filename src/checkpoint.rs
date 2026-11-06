@@ -709,6 +709,11 @@ pub fn can_undo(ed: &Editor) -> bool {
 
 /// `C-z` · `:undo-turn` (`undo`) · `:redo-turn`.
 pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
+    step_as(ed, undo, false)
+}
+
+/// `step`; `read`: its files not open were read already (`read_then`) — one still not open is a file missing now.
+fn step_as(ed: &mut Editor, undo: bool, read: bool) -> Result<(), String> {
     if !ed.workspace.claude.checkpoints.turn.is_empty()
         || ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
     {
@@ -748,19 +753,27 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
         return Err(why);
     }
     let question = list[i].question.clone();
-    // (a big file's buffer loads in the background: every one the step writes as text is in first, then this step
-    // again — never the turn stepped with one of them left as it was, "still loading")
-    let mut waits = Vec::new();
-    for f in files.iter().filter(|f| f.bytes.is_none()) {
-        let open = match ed.docs.by_path(&f.path).map(|d| (d.id, d.loading)) {
-            Some(d) => Some(d),
-            None if f.path.exists() && ed.open(&f.path).is_ok() => Some((ed.doc().id, ed.doc().loading)),
-            None => None,
-        };
-        if let Some((id, true)) = open {
-            waits.push((id, f.path.clone()));
-        }
+    // (every file the step writes as text and no buffer holds is read first, on a worker — all of them, then this step
+    // again: never the turn stepped with one of them left as it was, nor a file's text read on the loop, #375)
+    let unread: Vec<PathBuf> = (files.iter())
+        .filter(|f| f.bytes.is_none() && ed.docs.by_path(&f.path).is_none())
+        .map(|f| f.path.clone())
+        .collect();
+    if !read && !unread.is_empty() {
+        ed.workspace.claude.checkpoints.loading = Some((undo, Vec::new()));
+        ed.read_then(unread, move |ed, _| {
+            ed.workspace.claude.checkpoints.loading = None;
+            if let Err(e) = step_as(ed, undo, true) {
+                ed.set_warning(e);
+            }
+        });
+        return Ok(());
     }
+    // (a big file's buffer still loading — one Claude's turn opened: every one in first, then this step again)
+    let waits: Vec<_> = (files.iter())
+        .filter(|f| f.bytes.is_none())
+        .filter_map(|f| ed.docs.by_path(&f.path).filter(|d| d.loading).map(|d| (d.id, f.path.clone())))
+        .collect();
     if !waits.is_empty() {
         ed.workspace.claude.checkpoints.loading = Some((undo, waits));
         ed.set_status(format!("reading “{}”'s big files — a moment", quote(&question)));
@@ -895,7 +908,8 @@ pub(crate) fn file(
     if !open && !path.exists() && from.is_some() {
         return Err(format!("{shown} is gone"));
     }
-    ed.open(path).map_err(|e| format!("{shown}: {e:#}"))?;
+    // (read already where it's there — `step`'s `read_then`: a file missing now is made empty here)
+    ed.open_now(path).map_err(|e| format!("{shown}: {e:#}"))?;
     if ed.doc().loading {
         return Err(format!("{shown} is still loading"));
     }

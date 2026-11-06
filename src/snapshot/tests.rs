@@ -1815,7 +1815,8 @@ fn a_files_edit_after_a_run_is_the_turns_by_its_blobs_too() {
 
 /// #281: a step waits for its big buffers to load, a second step refused meanwhile; another buffer that couldn't be
 /// read isn't the step's — it goes on once its own is in. One of its own that couldn't be read leaves the turn as it
-/// is, said, and its load landing later takes nothing on; the next step asked goes.
+/// is, said, and its load landing later takes nothing on; the next step asked goes. (A buffer loading is one opened on
+/// the loop's way — Claude's, restore's: `open_now`; a file not open the step reads whole first, #375.)
 #[test]
 fn a_step_waits_for_its_big_buffers_and_only_their_failure_stops_it() {
     let (dir, big, mut ed) = big_repo("big-waits");
@@ -1825,9 +1826,10 @@ fn a_step_waits_for_its_big_buffers_and_only_their_failure_stops_it() {
     turn_ends(&mut ed);
     let other = dir.join("other.txt");
     std::fs::write(&other, &big).unwrap();
-    ed.open(&other).unwrap();
+    ed.open_now(&other).unwrap();
     let other = ed.doc().id;
     assert!(ed.doc().loading, "a big buffer of the user's, loading");
+    ed.open_now(&path).unwrap();
     crate::checkpoint::step(&mut ed, true).unwrap();
     let waits = |ed: &crate::editor::Editor| {
         ed.workspace.claude.checkpoints.loading.as_ref().map(|(undo, w)| (*undo, w.len(), w[0].1.clone()))
@@ -1842,6 +1844,7 @@ fn a_step_waits_for_its_big_buffers_and_only_their_failure_stops_it() {
     // Its own buffer couldn't be read: the turn as it is, said
     let id = ed.docs.by_path(&path).unwrap().id;
     ed.close_doc(id);
+    ed.open_now(&path).unwrap();
     crate::checkpoint::step(&mut ed, false).unwrap();
     let id = ed.docs.by_path(&path).expect("opened again").id;
     crate::checkpoint::loaded(&mut ed, id, false);

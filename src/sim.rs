@@ -59,6 +59,7 @@ mod kubecard;
 mod landed;
 mod motion;
 mod now;
+mod opening;
 mod orchestra;
 mod overlap;
 mod overlay;

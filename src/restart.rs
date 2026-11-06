@@ -1372,7 +1372,7 @@ fn restore_session(ed: &mut Editor, v: &Value, behind: bool, back: &mut Back) {
     (ed.lsp.unseen_later, ed.lsp.attach_later) = (true, behind);
     for d in v["docs"].as_array().into_iter().flatten() {
         let path = d["path"].as_str();
-        let opened = path.filter(|p| Path::new(p).is_file()).and_then(|p| ed.open(Path::new(p)).ok());
+        let opened = path.filter(|p| Path::new(p).is_file()).and_then(|p| ed.open_now(Path::new(p)).ok());
         if opened.is_none()
             && let Some(name) = path.and_then(|p| Path::new(p).file_name()).map(|n| n.to_string_lossy())
             && !back.gone.iter().any(|g| *g == name)

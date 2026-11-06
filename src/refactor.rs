@@ -925,7 +925,7 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
     }
     let asks = matches!(whose, Whose::Ask(_));
     let warnings = if f.protected { crate::edits::warned(ed) } else { Vec::new() };
-    if let Err(e) = ed.open(&f.path) {
+    if let Err(e) = ed.open_now(&f.path) {
         return done_one(ed, whose, &f, Outcome::Failed(format!("{e:#}")));
     }
     let doc = ed.doc();

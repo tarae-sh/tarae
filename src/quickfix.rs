@@ -152,19 +152,25 @@ impl Editor {
             .mark
             .and_then(|(d, m)| self.docs.iter().find(|x| x.id == d)?.mark(m))
             .map(|s| s.primary().head);
-        let result = match marked {
-            Some(pos) => {
-                self.push_jump();
-                self.open(&it.path).map(|_| {
-                    self.doc_mut().set_selection(Selection::point(pos));
-                    self.jumped();
-                })
-            }
-            None => self.open_at(&it.path, it.line, it.col),
-        };
-        if let Err(e) = result {
-            return self.set_error(format!("{e:#}"));
+        // (said once it's there; what couldn't open said instead)
+        let (path, line, col) = (it.path.clone(), it.line, it.col);
+        let say = move |ed: &mut Self| ed.qlist_said(i, &it);
+        match marked {
+            // (a mark is a buffer's: open already, in front at once)
+            Some(pos) => self.open_file_then(&path, true, move |ed, r| match r {
+                Ok(_) => {
+                    ed.doc_mut().set_selection(Selection::point(pos));
+                    ed.jumped();
+                    say(ed)
+                }
+                Err(e) => ed.set_error(format!("{e:#}")),
+            }),
+            None => self.open_at_then(&path, line, col, say),
         }
+    }
+
+    /// `]q`'s item `i` said: where it is in the list, its message in its severity.
+    fn qlist_said(&mut self, i: usize, it: &Item) {
         let n = self.workspace.qlist.as_ref().map_or(0, |l| l.items.len());
         let msg = it.message.lines().next().unwrap_or_default().to_string();
         let text = if msg.is_empty() { format!("{}/{n}", i + 1) } else { format!("{}/{n} · {msg}", i + 1) };

@@ -417,10 +417,8 @@ fn open(ed: &mut Editor, kind: GroupKind) {
         _ => return,
     };
     let Some(it) = place else { return };
-    ed.workspace.viewer.keys_to_code();
-    if let Err(e) = ed.open_at(&it.path, it.line, it.col) {
-        ed.set_error(format!("{e:#}"));
-    }
+    // (the keys go to the code as its place comes in front)
+    ed.open_at_then(&it.path, it.line, it.col, |ed| ed.workspace.viewer.keys_to_code());
 }
 
 /// `o` on a group's list: a preflight's selected step's output whole, in a buffer of its own (`:preflight-output`).

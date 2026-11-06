@@ -1980,18 +1980,30 @@ impl Editor {
                 if ed.workspace.rebase.as_ref().is_none_or(|r| r.stage != Stage::Resolved) {
                     return;
                 }
-                if let Err(e) = ed.open(&file) {
-                    ed.set_error(format!("{e:#}"));
-                    return ed.rebase_resolved_card();
-                }
-                let doc = ed.doc_mut();
-                doc.throwaway = true;
-                doc.set_selection(crate::selection::Selection::point(0));
-                let doc = doc.id;
-                if let Some(r) = ed.workspace.rebase.as_mut() {
-                    r.messages.editing = Some((doc, file));
-                }
-                ed.set_status(":w goes on with this message · :q leaves it as it was");
+                // (in front as it's read; went to another file meanwhile: among your buffers, `:w` there goes on all the
+                // same — said as it lands, "ready — space b")
+                let at = file.clone();
+                ed.open_file_then_behind(&at, false, move |ed, r| {
+                    let (doc, front) = match r {
+                        Ok(d) => d,
+                        Err(e) => {
+                            ed.set_error(format!("{e:#}"));
+                            return ed.rebase_resolved_card();
+                        }
+                    };
+                    if ed.workspace.rebase.as_ref().is_none_or(|r| r.stage != Stage::Resolved) {
+                        return;
+                    }
+                    let Some(d) = ed.docs.iter_mut().find(|d| d.id == doc) else { return };
+                    d.throwaway = true;
+                    d.set_selection(crate::selection::Selection::point(0));
+                    if let Some(r) = ed.workspace.rebase.as_mut() {
+                        r.messages.editing = Some((doc, file));
+                    }
+                    if front {
+                        ed.set_status(":w goes on with this message · :q leaves it as it was");
+                    }
+                });
             });
         });
     }

@@ -1258,13 +1258,24 @@ impl Editor {
                         Value::Array(roots.iter().map(folder).collect())
                     }
                     // Many code action commands send their edits this way.
-                    "workspace/applyEdit" => match self.apply_workspace_edit(cid, &msg["params"]["edit"]) {
-                        Ok(_) => json!({ "applied": true }),
-                        Err(e) => {
-                            self.set_error(format!("lsp edit: {e}"));
-                            json!({ "applied": false, "failureReason": e })
-                        }
-                    },
+                    // (answered once its files are read and it's applied — always answered: `apply_workspace_edits_then`)
+                    "workspace/applyEdit" => {
+                        let id = id.clone();
+                        let edit = msg["params"]["edit"].clone();
+                        self.apply_workspace_edits_then(cid, vec![edit], move |ed, r| {
+                            let result = match r {
+                                Ok(_) => json!({ "applied": true }),
+                                Err(e) => {
+                                    ed.set_error(format!("lsp edit: {e}"));
+                                    json!({ "applied": false, "failureReason": e })
+                                }
+                            };
+                            if let Some(c) = ed.client_mut(cid) {
+                                c.reply(&id, result);
+                            }
+                        });
+                        return;
+                    }
                     _ => Value::Null,
                 };
                 let id = id.clone();
@@ -1576,10 +1587,10 @@ impl Editor {
             | Kind::ToolRename { .. }
             | Kind::ChatAt { .. }
             | Kind::ChatNamed { .. } => {}
-            Kind::Rename => match self.apply_workspace_edit(cid, result) {
-                Ok(n) => self.set_status(format!("renamed in {n} file(s)")),
-                Err(e) => self.set_error(format!("rename: {e}")),
-            },
+            Kind::Rename => self.apply_workspace_edits_then(cid, vec![result.clone()], |ed, r| match r {
+                Ok(n) => ed.set_status(format!("renamed in {n} file(s)")),
+                Err(e) => ed.set_error(format!("rename: {e}")),
+            }),
             Kind::FormatSave { quit } => {
                 let edits = result.as_array().cloned().unwrap_or_default();
                 let why = self
@@ -2315,8 +2326,39 @@ impl Editor {
         Ok(())
     }
 
-    /// WorkspaceEdit (`changes` or `documentChanges`) — multiple files, in order. Unopened files are opened
-    /// and edited (current buffer stays). Also file create/move/delete (`resourceOperations`) — not undoable.
+    /// `edits` (WorkspaceEdits) applied in order once every file they edit or move that isn't open is read (one worker,
+    /// `read_then`: never one file's text read on the loop, never half an edit applied with the rest still being read);
+    /// the first that fails stops the rest. `then` with the files changed, or why not.
+    pub(crate) fn apply_workspace_edits_then(
+        &mut self,
+        cid: ClientId,
+        edits: Vec<Value>,
+        then: impl FnOnce(&mut Editor, Result<usize, String>) + Send + 'static,
+    ) {
+        let uri = |u: &Value| u.as_str().and_then(lsp::path_from_uri);
+        let mut paths = Vec::new();
+        for edit in &edits {
+            let changes = edit["changes"].as_object().filter(|_| edit["documentChanges"].is_null());
+            paths.extend(changes.into_iter().flat_map(|m| m.keys()).filter_map(|u| lsp::path_from_uri(u)));
+            for dc in edit["documentChanges"].as_array().into_iter().flatten() {
+                paths.extend(uri(&dc["textDocument"]["uri"]).or_else(|| uri(&dc["oldUri"])));
+            }
+        }
+        // (a file missing now is one the edit makes: `edit_file` takes it as it comes)
+        self.read_then(paths, move |ed, _| {
+            let mut n = 0;
+            for edit in &edits {
+                match ed.apply_workspace_edit(cid, edit) {
+                    Ok(k) => n += k,
+                    Err(e) => return then(ed, Err(e)),
+                }
+            }
+            then(ed, Ok(n))
+        });
+    }
+
+    /// WorkspaceEdit (`changes` or `documentChanges`) — multiple files, in order. Files not open are read first
+    /// (`apply_workspace_edits_then`) and edited (current buffer stays). Also file create/move/delete (`resourceOperations`) — not undoable.
     /// Returns the number of files changed (including created·renamed·deleted).
     pub fn apply_workspace_edit(&mut self, cid: ClientId, edit: &Value) -> Result<usize, String> {
         let enc = self.encoding_of(cid);
@@ -2428,12 +2470,13 @@ impl Editor {
         self.docs.iter().find(|d| d.path.as_deref() == Some(path.as_path()))
     }
 
-    /// TextEdit[] for one file — opened if not already open.
+    /// TextEdit[] for one file — read already (`apply_workspace_edits_then`); one that wasn't there then is a file this
+    /// edit made (`create`, just written, empty) and opened here.
     fn edit_file(&mut self, path: &std::path::Path, enc: Encoding, edits: &[Value]) -> Result<(), String> {
         let id = match self.open_doc_at(path) {
             Some(d) => d.id,
             None => {
-                self.open(path).map_err(|e| format!("{e:#}"))?;
+                self.open_now(path).map_err(|e| format!("{e:#}"))?;
                 self.doc().id
             }
         };
@@ -2759,14 +2802,17 @@ impl Editor {
             self.lsp_send(cid, Kind::ResolveAction, "codeAction/resolve", a);
             return;
         }
-        if !edit.is_null()
-            && let Err(e) = self.apply_workspace_edit(cid, edit)
-        {
-            return self.set_error(format!("code action: {e}"));
-        }
-        if cmd.is_object() {
-            self.execute_command(cid, cmd);
-        }
+        // (its command after its edit is in: as it lands)
+        let cmd = cmd.is_object().then(|| cmd.clone());
+        let edits = if edit.is_null() { Vec::new() } else { vec![edit.clone()] };
+        self.apply_workspace_edits_then(cid, edits, move |ed, r| {
+            if let Err(e) = r {
+                return ed.set_error(format!("code action: {e}"));
+            }
+            if let Some(cmd) = cmd {
+                ed.execute_command(cid, &cmd);
+            }
+        });
     }
 
     fn execute_command(&mut self, cid: ClientId, cmd: &Value) {
@@ -2774,12 +2820,12 @@ impl Editor {
         let traits = self.client(cid).map_or(&lsp::NO_TRAITS, |c| c.traits);
         let ours = traits.client_commands.iter().find(|(name, _)| cmd["command"] == name.as_str());
         if let Some((_, lsp::ClientAction::ApplyEdit)) = ours {
-            for edit in cmd["arguments"].as_array().into_iter().flatten() {
-                if let Err(e) = self.apply_workspace_edit(cid, edit) {
-                    return self.set_error(format!("code action: {e}"));
+            let edits = cmd["arguments"].as_array().cloned().unwrap_or_default();
+            return self.apply_workspace_edits_then(cid, edits, |ed, r| {
+                if let Err(e) = r {
+                    ed.set_error(format!("code action: {e}"))
                 }
-            }
-            return;
+            });
         }
         let params = json!({ "command": cmd["command"], "arguments": cmd["arguments"] });
         self.lsp_send(cid, Kind::ExecuteCommand, "workspace/executeCommand", params);
@@ -3587,13 +3633,17 @@ impl Editor {
         self.lsp.traced.push(t.line());
     }
 
+    /// A go-to's place: the file opened (a jump left behind), the cursor at `pos` in the event its text lands.
     pub(crate) fn lsp_jump(&mut self, path: &std::path::Path, pos: &Value, enc: Encoding) {
-        self.push_jump();
-        if let Err(e) = self.open(path) {
-            return self.set_error(format!("{e:#}"));
-        }
-        self.lsp.jump_after_load = Some((self.doc().id, pos.clone(), enc));
-        self.jump_if_loaded(self.doc().id);
+        let pos = pos.clone();
+        self.open_file_then(path, true, move |ed, r| {
+            let id = match r {
+                Ok(id) => id,
+                Err(e) => return ed.set_error(format!("{e:#}")),
+            };
+            ed.lsp.jump_after_load = Some((id, pos, enc));
+            ed.jump_if_loaded(id);
+        });
     }
 
     /// A go-to target waiting for this doc — taken once its text is there (big files load in the background).

@@ -86,7 +86,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &Path, w: &mut World) -> String {
                 _ => c.below(n),
             };
             let path: PathBuf = root.join(file);
-            ed.open_at(&path, line, 0).unwrap();
+            ed.open_at(&path, line, 0);
             w.jump = Some(path);
             format!("a jump to {file}:{}", line + 1)
         }

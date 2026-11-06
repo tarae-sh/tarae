@@ -514,10 +514,7 @@ impl Editor {
         let Some((path, line)) = c.at else {
             return self.set_status(format!("{} has no place to go to — the runner named none", c.name));
         };
-        self.workspace.viewer.keys_to_code();
-        if let Err(e) = self.open_at(&path, line, 0) {
-            self.set_error(format!("{e:#}"));
-        }
+        self.open_at_then(&path, line, 0, |ed| ed.workspace.viewer.keys_to_code());
     }
 
     /// `]x` · `[x` — go to a failed test's location (first the picked one; if already there, next·prev).
@@ -547,17 +544,20 @@ impl Editor {
         r.selected = next;
         let case = r.cases[next].clone();
         let n = fails.iter().position(|&i| i == next).unwrap_or(0) + 1;
-        if let Some((path, line)) = case.at {
-            if let Err(e) = self.open(&path) {
-                return self.set_error(format!("{e:#}"));
+        let msg = case.message.first().map(|m| format!(" — {}", m.trim())).unwrap_or_default();
+        let said = format!("failure {n}/{} · {}{msg}", fails.len(), case.name);
+        let Some((path, line)) = case.at else { return self.note(said) };
+        // (said once it's there: the note is the place's)
+        self.open_file_then(&path, false, move |ed, r| {
+            if let Err(e) = r {
+                return ed.set_error(format!("{e:#}"));
             }
-            let doc = self.doc_mut();
+            let doc = ed.doc_mut();
             let line = line.min(crate::movement::last_line(&doc.text));
             let at = crate::movement::line_start(&doc.text, line);
             doc.set_selection(crate::selection::Selection::point(at));
-        }
-        let msg = case.message.first().map(|m| format!(" — {}", m.trim())).unwrap_or_default();
-        self.note(format!("failure {n}/{} · {}{msg}", fails.len(), case.name));
+            ed.note(said);
+        });
     }
 
     /// `space x o` — the run's whole output in a buffer (search it, copy from it; the pane shows a window).

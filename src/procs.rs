@@ -2338,11 +2338,7 @@ impl Editor {
                 self.events.jobs().spawn(move || {
                     let text = std::fs::read_to_string(&path).unwrap_or_default();
                     let line = last_line_of(&text, &source);
-                    move |ed: &mut Editor| {
-                        if let Err(e) = ed.open_at(&path, line, 0) {
-                            ed.set_error(format!("{e:#}"));
-                        }
-                    }
+                    move |ed: &mut Editor| ed.open_at(&path, line, 0)
                 });
             }
         }

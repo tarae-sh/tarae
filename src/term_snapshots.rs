@@ -4828,10 +4828,10 @@ fn a_jump_centres_its_target_only_when_out_of_sight() {
     s.keys(&format!("{}j", half - 1));
     let (at, view) = (s.ed.cursor_line(), top(&s));
     let path = s.root.join("src/v.txt");
-    s.ed.open_at(&path, 200, 0).unwrap();
+    s.ed.open_at(&path, 200, 0);
     s.frame();
     assert_eq!((s.ed.cursor_line(), top(&s)), (200, view), "opened at a line in sight: the view stays");
-    s.ed.open_at(&path, 279, 0).unwrap();
+    s.ed.open_at(&path, 279, 0);
     s.frame();
     assert_eq!((s.ed.cursor_line(), top(&s)), (279, 279 - half), "opened at a line out of sight: centred");
     // (a plain motion out of sight: the margin's rule, never centred)

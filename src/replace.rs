@@ -178,21 +178,32 @@ impl crate::editor::Editor {
         self.open_picker(crate::picker::Picker::of("replace", title, items, true).grouped(root), None);
     }
 
-    /// Apply plan files `files` — one undo step each; a file changed since the plan is skipped.
+    /// Apply plan files `files` — one undo step each; a file changed since the plan is skipped. Those not open are
+    /// read first, all of them (`read_then`), and the plan applied as they land.
     pub fn replace_apply(&mut self, files: &[usize]) {
+        let plans: Vec<FilePlan> = files.iter().filter_map(|&n| self.replace_plan.get(n).cloned()).collect();
+        self.replace_plan.clear();
+        let paths =
+            plans.iter().filter(|f| self.open_doc_at(&f.path).is_none()).map(|f| f.path.clone()).collect();
+        self.read_then(paths, move |ed, failed| ed.replace_files(plans, failed));
+    }
+
+    /// `replace_apply`'s files, each open now but `failed`'s.
+    fn replace_files(&mut self, plans: Vec<FilePlan>, failed: Vec<(std::path::PathBuf, anyhow::Error)>) {
         let current = self.doc().id;
         let (mut done, mut matches, mut skipped) = (0, 0, Vec::new());
-        for &n in files {
-            let Some(f) = self.replace_plan.get(n).cloned() else { continue };
+        for f in plans {
             let id = match self.open_doc_at(&f.path) {
                 Some(d) => d.id,
-                None => match self.open(&f.path) {
-                    Ok(()) => self.doc().id,
-                    Err(e) => {
-                        skipped.push(format!("{}: {e:#}", f.path.display()));
-                        continue;
-                    }
-                },
+                None => {
+                    let why = failed.iter().find(|(p, _)| *p == f.path).map(|(_, e)| format!("{e:#}"));
+                    skipped.push(format!(
+                        "{}: {}",
+                        f.path.display(),
+                        why.unwrap_or_else(|| "not read".into())
+                    ));
+                    continue;
+                }
             };
             let same = self.docs.iter().find(|d| d.id == id).is_some_and(|d| d.text == f.base);
             if !same {
@@ -207,7 +218,6 @@ impl crate::editor::Editor {
         if let Some(i) = self.docs.iter().position(|d| d.id == current) {
             self.current = i;
         }
-        self.replace_plan.clear();
         if done > 0 {
             self.set_success(format!("Replaced {matches} in {done} file(s) · :wa saves them"));
         }

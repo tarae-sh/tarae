@@ -498,7 +498,10 @@ impl Editor {
                         });
                         Ok(())
                     }
-                    _ => self.open(Path::new(path)).map_err(|e| format!("{e:#}")),
+                    _ => {
+                        self.open_file(Path::new(path));
+                        Ok(())
+                    }
                 },
                 Action::Spawn(sp) => self.plugin_spawn(plugin, sp.clone()),
                 Action::Stop(id) => {

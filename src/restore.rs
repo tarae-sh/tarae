@@ -254,7 +254,7 @@ impl Editor {
         // (outside the checkouts, a file's server waits until it's shown — #141)
         self.lsp.unseen_later = true;
         for (i, f) in files.iter().enumerate() {
-            if !f.is_file() || self.open(f).is_err() {
+            if !f.is_file() || self.open_now(f).is_err() {
                 continue;
             }
             opened += 1;

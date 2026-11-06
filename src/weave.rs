@@ -1091,14 +1091,14 @@ pub fn go(ed: &mut Editor) {
         crate::workspace::Switched::Gone => return ed.set_status(format!("{name}'s workspace has ended")),
     }
     // (its file may have changed since the weave: the line kept to it)
-    match ed.open(&path) {
-        Ok(()) => {
+    ed.open_file_then(&path, false, move |ed, r| match r {
+        Ok(_) => {
             let line = line.min(ed.doc().text.len_lines().saturating_sub(1));
             ed.goto_line(line);
             ed.set_status(format!("{name} · {rel}:{}", line + 1));
         }
         Err(e) => ed.set_error(format!("{e:#}")),
-    }
+    });
 }
 
 /// A click on a side by side conflict of the woven view in front: the column clicked is the part `enter` goes to

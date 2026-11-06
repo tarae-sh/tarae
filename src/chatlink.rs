@@ -1196,15 +1196,17 @@ fn stand_in(ed: &mut Editor, q: Named, why: String) {
     });
 }
 
-/// `path` opened at `line`, the cursor on `word` there (its line's start where it isn't).
+/// `path` opened at `line`, the cursor on `word` there (its line's start where it isn't) — placed once its text is in.
 fn go_to_name(ed: &mut Editor, path: &Path, line: usize, word: &str) {
-    let col = crate::nav::buffer_for(ed, path).ok().and_then(|id| {
-        let d = ed.docs.iter().find(|d| d.id == id && !d.loading)?;
-        whole_in(&d.text.get_line(line)?.to_string(), word).first().copied()
+    let word = word.to_string();
+    ed.open_at_then(path, line, 0, move |ed| {
+        let d = ed.doc();
+        let Some(col) = d.text.get_line(line).and_then(|l| whole_in(&l.to_string(), &word).first().copied())
+        else {
+            return;
+        };
+        crate::editor::place_cursor(ed.doc_mut(), line, col);
     });
-    if let Err(e) = ed.open_at(path, line, col.unwrap_or(0)) {
-        ed.set_error(format!("{e:#}"));
-    }
 }
 
 /// A server's answer to the chat's question `n` by name (Err: its error): the exact name's symbols kept — a shared

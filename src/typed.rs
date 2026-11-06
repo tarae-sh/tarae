@@ -34,8 +34,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             };
             editor.split_view(dir);
             if !rest.is_empty() {
-                let r = editor.open(std::path::Path::new(rest));
-                opened(editor, r)?;
+                editor.open_file(std::path::Path::new(rest));
             }
             Ok(())
         }
@@ -98,14 +97,19 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             if paths.is_empty() {
                 return Err("usage: :open <path>...".into());
             }
-            for p in paths {
-                let path = typed_path(editor, &p);
-                let r = match at_line(&path, |p| p.exists()) {
-                    Some((path, line, col)) => editor.open_at(&path, line, col),
-                    None => editor.open(&path),
-                };
-                opened(editor, r)?;
-            }
+            // (each in turn, the last in front — a file that isn't text said as its row would say it, the rest still
+            // opened: #326, `Editor::open_failed`)
+            let each = paths
+                .iter()
+                .map(|p| {
+                    let path = typed_path(editor, p);
+                    match at_line(&path, |p| p.exists()) {
+                        Some((path, line, col)) => (path, Some((line, col))),
+                        None => (path, None),
+                    }
+                })
+                .collect();
+            editor.open_each(each);
             Ok(())
         }
         "n" | "new" => {
@@ -256,7 +260,8 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         }
         "config-open" => {
             let path = config::config_path().ok_or("no config directory")?;
-            editor.open(&path).map_err(|e| format!("{e:#}"))
+            editor.open_file(&path);
+            Ok(())
         }
         "project-trust" => editor.project_trust_ask(),
         "project-untrust" => editor.project_untrust(),
@@ -332,7 +337,8 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             if !path.exists() {
                 return Err("no log yet".into());
             }
-            editor.open(&path).map_err(|e| format!("{e:#}"))
+            editor.open_file(&path);
+            Ok(())
         }
         "lsp-restart" => editor.lsp_restart(),
         "procs" => {
@@ -758,18 +764,6 @@ fn run_shell(
         Ok(first)
     } else {
         Err(first.unwrap_or_else(|| format!("command failed: {}", out.status)))
-    }
-}
-
-/// A typed open's outcome: a file that isn't text said as its row would say it, not an error (#326,
-/// `Editor::open_failed`) — the rest of the paths still opened.
-fn opened(editor: &mut Editor, r: anyhow::Result<()>) -> Result<(), String> {
-    match r {
-        Err(e) if e.downcast_ref::<crate::document::NotText>().is_some() => {
-            editor.open_failed(e);
-            Ok(())
-        }
-        r => r.map_err(|e| format!("{e:#}")),
     }
 }
 

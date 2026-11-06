@@ -1248,10 +1248,8 @@ pub fn step(ed: &mut Editor, forward: bool) {
             match stop {
                 Stop::Note(id) => {
                     ed.workspace.claude.notes.focus = Some(id);
-                    if let Err(e) = ed.open_at(&p, l, 0) {
-                        ed.set_error(format!("{e:#}"));
-                    }
-                    open(ed, id);
+                    // (its card as its file comes in front)
+                    ed.open_at_then(&p, l, 0, move |ed| open(ed, id));
                 }
                 Stop::Flag(id) => crate::flags::stepped(ed, id),
             }

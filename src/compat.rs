@@ -1167,6 +1167,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "not a run's: only which language servers start goes by it (`codetrust.rs`)",
     ),
     ("src/editor.rs", "in fn with_root: recovery", NOT_RUNS),
+    ("src/editor.rs", "in fn with_root: read_inline", NOT_RUNS),
     (
         "src/editor.rs",
         "in fn with_root: sandbox",
@@ -1224,9 +1225,6 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox.rs", "in fn spawn_as: held", HOOK),
     ("src/sandbox.rs", "in fn spawn_as: if let Some(held) = held {", HOOK),
     ("src/sandbox/keeper.rs", "in fn child: if exec.leak {", SEAM),
-    ("src/sandbox/keeper.rs", "in fn child: entered", SEAM),
-    ("src/sandbox/keeper.rs", "in fn child: entered", SEAM),
-    ("src/sandbox/keeper.rs", "in fn child: if exec.chdir_first && libc::chdir(exec.cwd.as_ptr", SEAM),
     (
         "src/sandbox/keeper.rs",
         "in fn child: crate",
@@ -1258,7 +1256,6 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "none unless the run's project is in the two-deep test's own scratch folder: compat's never are",
     ),
     ("src/sandbox/keeper.rs", "in fn of: leak", SEAM),
-    ("src/sandbox/keeper.rs", "in fn of: chdir_first", SEAM),
     ("src/sandbox/keeper.rs", "in fn ready_in: if let Some((_, began, go)) = slow {", HOOK),
     ("src/sandbox/keeper.rs", "in fn ready_in: slow", HOOK),
     ("src/sandbox/keeper.rs", "in fn start_with: covers", SEAM),

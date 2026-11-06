@@ -1068,26 +1068,35 @@ impl Editor {
                 }
                 Ok(file) => {
                     let then_end = std::mem::take(&mut ed.workspace.commit_then_end);
-                    if let Err(e) = ed.open(std::path::Path::new(&file)) {
-                        return ed.set_error(format!("{e:#}"));
-                    }
-                    let doc = ed.doc_mut();
-                    doc.throwaway = true;
-                    doc.set_selection(crate::selection::Selection::point(0));
-                    let id = doc.id;
-                    ed.workspace.committing = Some(Committing { doc: id, top, amend, then_end });
-                    if let Some(spec) = crate::syntax::spec(COMMIT_LANG) {
-                        ed.doc_mut().language = Some(COMMIT_LANG);
-                        ed.load_language(id, spec);
-                    }
-                    ed.workspace.leave(crate::workspace::Here::Side);
-                    // A new message: typed at once. Amending: the last message is there to change, not to
-                    // type over the top of — normal mode
-                    if draft {
-                        ed.commit_draft();
-                    } else if !amend {
-                        ed.mode = crate::editor::Mode::Insert;
-                    }
+                    // (in front as it's read — went to another file meanwhile: among your buffers, `:wq` there commits
+                    // all the same, said as it lands "ready — space b")
+                    ed.open_file_then_behind(std::path::Path::new(&file), false, move |ed, r| {
+                        let (id, front) = match r {
+                            Ok(d) => d,
+                            Err(e) => return ed.set_error(format!("{e:#}")),
+                        };
+                        let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
+                        doc.throwaway = true;
+                        doc.set_selection(crate::selection::Selection::point(0));
+                        ed.workspace.committing = Some(Committing { doc: id, top, amend, then_end });
+                        if let Some(spec) = crate::syntax::spec(COMMIT_LANG) {
+                            if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id) {
+                                d.language = Some(COMMIT_LANG);
+                            }
+                            ed.load_language(id, spec);
+                        }
+                        if !front {
+                            return;
+                        }
+                        ed.workspace.leave(crate::workspace::Here::Side);
+                        // A new message: typed at once. Amending: the last message is there to change, not to
+                        // type over the top of — normal mode
+                        if draft {
+                            ed.commit_draft();
+                        } else if !amend {
+                            ed.mode = crate::editor::Mode::Insert;
+                        }
+                    });
                 }
                 Err(e) => {
                     ed.workspace.commit_then_end = false;

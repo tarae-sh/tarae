@@ -149,14 +149,29 @@ fn found(
 
 /// Each found one opened in turn (the last in front); what opened nothing said.
 fn opened(ed: &mut Editor, found: Vec<Found>) {
-    let mut not = Vec::new();
-    for f in found {
+    opened_from(ed, found.into(), Vec::new())
+}
+
+/// `opened` from `found`'s first on, `not` what opened nothing so far: a file read on a worker goes on with the rest as
+/// it lands in front (#375 — each passes through the front as before, the jumps between them kept); one that didn't
+/// come in front (another file in front since, another open) leaves the rest.
+fn opened_from(ed: &mut Editor, mut found: std::collections::VecDeque<Found>, mut not: Vec<String>) {
+    while let Some(f) = found.pop_front() {
         let done = match f {
             Found::Page(url) => crate::web::page::open(ed, &url, None, crate::web::Prefer::Guess, false),
-            Found::File(p, Some((line, col))) => ed.open_at(&p, line, col).map_err(|e| format!("{e:#}")),
-            Found::File(p, None) => {
-                ed.push_jump();
-                ed.open(&p).map(|_| ed.jumped()).map_err(|e| format!("{e:#}"))
+            Found::File(p, at) => {
+                return ed.open_file_then(&p, true, move |ed, r| {
+                    match (r, at) {
+                        (Ok(_), Some((line, col))) => {
+                            crate::editor::place_cursor(ed.doc_mut(), line, col);
+                            ed.jumped();
+                        }
+                        (Ok(_), None) => ed.jumped(),
+                        (Err(e), _) => not.push(format!("{e:#}")),
+                    }
+                    ed.track_doc_switch();
+                    opened_from(ed, found, not)
+                });
             }
             Found::Several(said, n, lines) => {
                 crate::places::several(ed, &said, n, lines);

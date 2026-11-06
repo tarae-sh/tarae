@@ -134,6 +134,7 @@ mod nofile;
 mod notes;
 mod now;
 mod offer;
+mod opening;
 mod orchestra;
 mod outlines;
 mod overlap;
@@ -438,7 +439,7 @@ fn main() -> Result<()> {
     editor.palette_ran = palette::load();
     editor.restore = restore::State::load();
     for f in &files {
-        if let Err(e) = editor.open(f) {
+        if let Err(e) = editor.open_now(f) {
             editor.open_failed(e);
         }
     }

@@ -199,14 +199,13 @@ pub fn stepped(ed: &mut Editor, id: u64) {
         return;
     };
     ed.workspace.claude.flags.focus = Some(id);
-    if let Err(e) = ed.open_at(&path, line, 0) {
-        return ed.set_error(format!("{e:#}"));
-    }
-    if crate::chat::column_in_sight(ed)
-        && let Some(c) = ed.workspace.claude.chat.as_mut()
-    {
-        c.reading = Some((at, false));
-    }
+    ed.open_at_then(&path, line, 0, move |ed| {
+        if crate::chat::column_in_sight(ed)
+            && let Some(c) = ed.workspace.claude.chat.as_mut()
+        {
+            c.reading = Some((at, false));
+        }
+    });
 }
 
 /// After a frame (`term::render_drawing`): the paragraphs the column showed — each a source line of an answer, by the

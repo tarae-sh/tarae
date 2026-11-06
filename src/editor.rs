@@ -30,7 +30,7 @@ const ASYNC_LOAD_BYTES: u64 = 1 << 20;
 /// Who opens a file (`Editor::open_as`): you, Claude's turn (`claudes_only`) or a code review (`review_only`) —
 /// for the last two no grammar or server is offered until you take the file up.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Opener {
+pub(crate) enum Opener {
     You,
     Claude,
     Review,
@@ -1007,6 +1007,11 @@ pub struct Editor {
     pub change_draft: String,
     /// A woven view's first merge under way: the view comes in front as it lands (`weave::open`).
     pub weaving: Option<crate::weave::Weaving>,
+    /// A file of yours being read, not made yet: it comes in front as it lands (`opening.rs`, #375).
+    pub opening: Option<crate::opening::Opening>,
+    /// An open's read runs right where it's asked, not on a worker — on in tests (their `open(…).unwrap()` reads at
+    /// once), off where a test or simulation is about the worker's path.
+    pub read_inline: bool,
     pub status: Option<(String, Severity)>,
     pub should_quit: bool,
     /// Text area (rows, cols) — the terminal updates it every frame. Used by page motions.
@@ -1565,6 +1570,8 @@ impl Editor {
             prompt_history: Default::default(),
             change_draft: String::new(),
             weaving: None,
+            opening: None,
+            read_inline: cfg!(test),
             status: None,
             should_quit: false,
             viewport: (24, 80),
@@ -1963,8 +1970,24 @@ impl Editor {
         path.strip_prefix(&self.workspace.root).unwrap_or(path)
     }
 
-    /// Opens a file (a relative path is from the root). If already open, switches to that buffer.
+    /// Tests' open (`open_file_then`, read right there under `read_inline`): Err what couldn't open. With `read_inline`
+    /// off it returns at once — Ok — and the file comes as it lands, a failure said.
+    #[cfg(test)]
     pub fn open(&mut self, path: &Path) -> Result<()> {
+        let got = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let put = got.clone();
+        self.open_file_then(path, false, move |ed, r| match r {
+            Ok(_) => *put.lock().unwrap() = Some(Ok(())),
+            Err(e) if ed.read_inline => *put.lock().unwrap() = Some(Err(e)),
+            Err(e) => ed.open_failed(e),
+        });
+        got.lock().unwrap().take().unwrap_or(Ok(()))
+    }
+
+    /// Opens a file of yours reading it right here, on the loop — only where an open can't wait yet: restore, `:restart`'s
+    /// and recovery's files, the command line's, `nav::buffer_for`'s look, `space u`'s buffers (#375's steps 3 and 4 take
+    /// them); every other open of yours is `open_file` (`opening.rs`). If already open, switches to that buffer.
+    pub fn open_now(&mut self, path: &Path) -> Result<()> {
         self.open_as(path, Opener::You)
     }
 
@@ -2113,10 +2136,22 @@ impl Editor {
         doc.claudes_only = by == Opener::Claude;
         doc.review_only = by == Opener::Review;
         self.add_doc(doc);
+        self.opened_setup(id, &path, true);
+        Ok(())
+    }
+
+    /// What a file opened has once its document is in the list (`open_as`'s, an open's landing — `opening.rs`): its
+    /// saved spot and undo, its grammar (`syntax`: asked now — a read's landing brings its tree), its servers, its diff
+    /// base, the list's marks, the plugins told, the recent files.
+    pub(crate) fn opened_setup(&mut self, id: DocId, path: &Path, syntax: bool) {
         self.restore.opened = true;
-        self.restore_position(self.current);
+        if let Some(i) = self.docs.iter().position(|d| d.id == id) {
+            self.restore_position(i);
+        }
         self.undo_restore(id);
-        self.attach_syntax(id);
+        if syntax {
+            self.attach_syntax(id);
+        }
         self.attach_lsp(id);
         self.git_load_base(id);
         self.qlist_mark_open();
@@ -2124,12 +2159,11 @@ impl Editor {
         if !self.docs.iter().any(|d| d.id == id && d.loading) {
             self.plugin_event(crate::plugin::PluginEvent::Opened, id);
         }
-        self.recent = crate::recent::bump(&self.recent, &path);
+        self.recent = crate::recent::bump(&self.recent, path);
         if !cfg!(test) {
             let list = self.recent.clone();
             self.events.jobs().background(move || crate::recent::save(&list));
         }
-        Ok(())
     }
 
     fn finish_loading(&mut self, id: DocId, result: Result<ropey::Rope>, took: std::time::Duration) {
@@ -2678,21 +2712,6 @@ impl Editor {
         let mine = self.buffers();
         let at = mine.iter().position(|&i| i == self.current).unwrap_or(0) as isize;
         self.current = mine[(at + delta).rem_euclid(mine.len() as isize) as usize];
-    }
-
-    /// Opens `path` with the cursor at (line, byte column) — a jump point is left behind.
-    /// A big file still loading gets the spot once its text is there (`goto_after_load`).
-    pub fn open_at(&mut self, path: &Path, line: usize, col: usize) -> Result<()> {
-        self.push_jump();
-        self.open(path)?;
-        let i = self.current;
-        if self.docs[i].loading {
-            self.goto_after_load = Some((self.docs[i].id, line, col));
-        } else {
-            place_cursor(&mut self.docs[i], line, col);
-            self.jumped();
-        }
-        Ok(())
     }
 
     pub fn goto_line(&mut self, line: usize) {
@@ -4558,6 +4577,7 @@ impl Editor {
             || self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
             || (run && slot_drawn)
             || crate::web::page::reading_in_sight(self)
+            || self.opening_said().is_some()
             || self.offer_busy();
         // (the working sign held still where nothing moves on a clock: a frame a second, for the time waited — its timers
         // say whole seconds there, `term::running`)
@@ -5282,7 +5302,13 @@ impl Editor {
             self.theme_before = None;
             self.split_view(dir);
         });
-        if let Err(e) = self.picker_action(action) {
+        // (a split made for it: its file read right here, as before #375 — read on a worker, the new pane would show the
+        // file it split from until the read landed; how a split and a read meet is the user's to decide)
+        let done = match made {
+            Some(()) => self.picker_place_now(action),
+            None => self.picker_action(action),
+        };
+        if let Err(e) = done {
             // (the place didn't open: the pane made for it goes — no split nobody asked for)
             if made.is_some() {
                 self.close_view();
@@ -5290,6 +5316,34 @@ impl Editor {
             // (a file that isn't text is its row's words, nothing failed — #326)
             self.open_failed(e);
         }
+    }
+
+    /// A picker's place opened into the split just made for it, its file read on the loop (`open_now`).
+    fn picker_place_now(&mut self, action: Action) -> anyhow::Result<()> {
+        let (path, at, flag) = match action {
+            Action::Open(path) => (path, None, None),
+            Action::Goto { path, line, col } => (path, Some((line, col)), None),
+            Action::Note { path, line, .. } => (path, Some((line, 0)), None),
+            Action::Flag { id, path, line } => (path, Some((line, 0)), Some(id)),
+            other => return self.picker_action(other),
+        };
+        if at.is_some() {
+            self.push_jump();
+        }
+        self.open_now(&path)?;
+        if let Some((line, col)) = at {
+            match self.doc().loading {
+                true => self.goto_after_load = Some((self.doc().id, line, col)),
+                false => {
+                    place_cursor(self.doc_mut(), line, col);
+                    self.jumped();
+                }
+            }
+        }
+        if let Some(id) = flag {
+            crate::flags::to_paragraph(self, id);
+        }
+        Ok(())
     }
 
     /// Runs one command by name (`:theme` → theme picker, etc.).
@@ -5384,7 +5438,10 @@ impl Editor {
                 }
                 None => Err(anyhow::anyhow!("that buffer is closed")),
             },
-            Action::Open(path) => self.open(&path),
+            Action::Open(path) => {
+                self.open_file(&path);
+                Ok(())
+            }
             Action::Command(name) => {
                 self.run_command_by_name(name);
                 Ok(())
@@ -5396,12 +5453,17 @@ impl Editor {
                 .map(|_| {
                     self.set_success(format!("Theme {name} · saved to your config"));
                 }),
-            Action::Goto { path, line, col } => self.open_at(&path, line, col),
-            Action::Note { path, line, .. } => self.open_at(&path, line, 0),
+            Action::Goto { path, line, col } => {
+                self.open_at(&path, line, col);
+                Ok(())
+            }
+            Action::Note { path, line, .. } => {
+                self.open_at(&path, line, 0);
+                Ok(())
+            }
             // (the line, and the chat at the paragraph that named it — the keys in the code)
             Action::Flag { id, path, line } => {
-                self.open_at(&path, line, 0)?;
-                crate::flags::to_paragraph(self, id);
+                self.open_at_then(&path, line, 0, move |ed| crate::flags::to_paragraph(ed, id));
                 Ok(())
             }
             Action::Line { doc, line, col } => {
@@ -6159,9 +6221,7 @@ impl Editor {
             && let Some(d) = key.plain_char().and_then(|c| c.to_digit(10)).filter(|d| *d >= 1)
             && let Some(path) = self.recent.get(d as usize - 1).cloned()
         {
-            if let Err(e) = self.open(&path) {
-                self.open_failed(e);
-            }
+            self.open_file(&path);
             return;
         }
         if self.prompt.is_some() {
@@ -6757,7 +6817,7 @@ impl Editor {
 }
 
 /// Cursor to (line, byte column) — clamped to the text, snapped to a character start (the file may have changed).
-fn place_cursor(doc: &mut Document, line: usize, col: usize) {
+pub(crate) fn place_cursor(doc: &mut Document, line: usize, col: usize) {
     let line = line.min(mv::last_line(&doc.text));
     let (ls, le) = (mv::line_start(&doc.text, line), mv::line_end(&doc.text, line));
     let pos = doc.text.char_to_byte(doc.text.byte_to_char((ls + col).min(le)));
@@ -12318,9 +12378,9 @@ mod tests {
         };
         let (a, b) = (big("a.txt"), big("b.txt"));
         let mut ed = editor("");
-        ed.open_at(&a, 30_000, 5).unwrap();
-        assert!(ed.doc().loading);
-        settle_until(&mut ed, |ed| !ed.doc().loading);
+        // (yours: read whole before it comes in front, any size — #375; here right there, `read_inline`)
+        ed.open_at(&a, 30_000, 5);
+        assert!(!ed.doc().loading);
         assert_eq!(ed.cursor_line(), 30_000);
         // Follow reading the other big file
         ed.config.llm.command = "sh".into();
@@ -20618,7 +20678,8 @@ mod tests {
         let body = "0123456789 abcdefghij\n".repeat(60_000); // ≈ 1.3 MB > threshold
         std::fs::write(&path, &body).unwrap();
         let mut ed = editor("");
-        ed.open(&path).unwrap();
+        // (a big file opened on the loop's way — restore's, Claude's: an empty buffer first; yours read whole first, #375)
+        ed.open_now(&path).unwrap();
         assert!(ed.doc().loading, "big files load in the background");
         feed(&mut ed, "d");
         assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("still loading")));
@@ -21147,6 +21208,9 @@ q = \"delete_selection\"\n",
         let mut grammar = true;
         for n in &names[..8] {
             ed.open(&dir.join(format!("{n}.rs"))).unwrap();
+            // (shown and seen, as an event's end has it: its tree may have come with its text — #375's read)
+            ed.sync_focus_view();
+            ed.schedule_parses();
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
             while !has_tree(&ed, n) && std::time::Instant::now() < end {
                 if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(50)) {

@@ -4688,9 +4688,7 @@ pub fn jump(ed: &mut Editor, link: Link) {
 
 /// A file opened at a link's line — a jump: centred when it was out of sight (`Editor::jumped`).
 pub fn open_place(ed: &mut Editor, link: Link) {
-    if let Err(e) = ed.open_at(&link.path, link.line, 0) {
-        ed.open_failed(e);
-    }
+    ed.open_at(&link.path, link.line, 0);
 }
 
 /// `C-]` (`C-g`): the newest link, then one further back each press (wraps) — a tool call's row goes to its

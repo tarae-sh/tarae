@@ -1034,10 +1034,7 @@ impl Editor {
                 s.set_open([d.as_str()], open);
             }
             Target::File(p) => {
-                self.workspace.leave(Here::Side);
-                if let Err(e) = self.open(&p) {
-                    self.open_failed(e);
-                }
+                self.open_leaving_side(&p);
             }
             Target::Item(i) => {
                 self.workspace.leave(Here::Side);
@@ -1055,9 +1052,7 @@ impl Editor {
                     return self.set_warning(format!("{rel} is deleted — nothing to open"));
                 }
                 s.expanded.insert(rel);
-                if let Err(e) = self.open(&path) {
-                    self.open_failed(e);
-                }
+                self.open_file(&path);
             }
             Target::Change { rel, file: true, .. } => {
                 let Some(top) = self.workspace.git_status.as_ref().map(|s| s.top.clone()) else { return };
@@ -1065,10 +1060,7 @@ impl Editor {
                 if !path.exists() {
                     return self.set_warning(format!("{rel} is deleted — nothing to open"));
                 }
-                self.workspace.leave(Here::Side);
-                if let Err(e) = self.open(&path) {
-                    self.open_failed(e);
-                }
+                self.open_leaving_side(&path);
             }
             // A hunk or conflict: there in the code, which gets the keys
             Target::Hunk { .. } | Target::Conflict { .. } => {
@@ -1110,16 +1102,22 @@ impl Editor {
 }
 
 impl Editor {
+    /// `path` opened from the side panel: the keys go to the code as it comes in front (#375 — nothing moves before).
+    fn open_leaving_side(&mut self, path: &std::path::Path) {
+        self.open_file_then(path, false, |ed, r| match r {
+            Ok(_) => ed.workspace.leave(Here::Side),
+            Err(e) => ed.open_failed(e),
+        });
+    }
+
     /// The code at a git row's hunk (selected) or conflict (the cursor on it), centered — its file shown.
     /// False when it's gone.
     pub(crate) fn git_reveal(&mut self, t: &Target) -> bool {
         let (Target::Hunk { doc, .. } | Target::Conflict { doc, .. }) = t else { return false };
-        let Some(path) = self.docs.iter().find(|d| d.id == *doc).and_then(|d| d.path.clone()) else {
-            return false;
-        };
-        if self.doc().id != *doc && self.open(&path).is_err() {
-            return false;
-        }
+        // (its buffer is open: in front at once, nothing read)
+        let Some(i) = self.docs.iter().position(|d| d.id == *doc && d.path.is_some()) else { return false };
+        self.current = i;
+        self.workspace_keeps(*doc);
         let d = self.doc();
         match t {
             Target::Hunk { index, .. } => {
@@ -1203,16 +1201,18 @@ fn git_key(ed: &mut Editor, key: Key, at: Option<Line>) -> bool {
                 ed.set_warning(format!("{rel} is deleted — nothing to open"));
                 return true;
             }
-            if let Err(e) = ed.open(&path) {
-                ed.open_failed(e);
-                return true;
-            }
-            ed.workspace.leave(Here::Side);
-            if c == 'D'
-                && let Err(e) = ed.diff_against("")
-            {
-                ed.set_error(e);
-            }
+            // (the keys go to the code as the file comes in front)
+            ed.open_file_then(&path, false, move |ed, r| {
+                if let Err(e) = r {
+                    return ed.open_failed(e);
+                }
+                ed.workspace.leave(Here::Side);
+                if c == 'D'
+                    && let Err(e) = ed.diff_against("")
+                {
+                    ed.set_error(e);
+                }
+            });
         }
         ('e', Some(t @ (Target::Hunk { .. } | Target::Conflict { .. })), _) => {
             ed.workspace.leave(Here::Side);
