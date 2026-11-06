@@ -53,7 +53,8 @@ fn clamp_char(text: &Rope, pos: usize) -> usize {
 /// Last "real" line. The empty ghost line after a trailing newline doesn't count.
 pub fn last_line(text: &Rope) -> usize {
     let n = text.len_lines();
-    if n > 1 && text.line(n - 1).len_bytes() == 0 { n - 2 } else { n - 1 }
+    // (empty: it starts at the text's end — asked with no slice made, #406)
+    if n > 1 && text.line_to_byte(n - 1) == text.len_bytes() { n - 2 } else { n - 1 }
 }
 
 // (LTO copies it into many callers; −66 KB with node_slice, line_end, line_full_end — measured 2026-10-09)
@@ -142,7 +143,20 @@ pub fn cursor_col(text: &Rope, r: Range, tab: usize) -> usize {
 
 /// Char position covering screen cell `col` on line `line` (line end if the line is shorter).
 pub fn pos_at_col(text: &Rope, line: usize, col: usize, tab: usize) -> usize {
-    let (start, end) = (line_start(text, line), line_end(text, line));
+    // Most lines lie in one chunk: read there, with no slice made and the same window — the mouse asks it at every
+    // cell it crosses (#406)
+    let (start, full) = (line_start(text, line), line_full_end(text, line));
+    let (chunk, at, _, _) = text.chunk_at_byte(start);
+    if full <= at + chunk.len() {
+        let all = &chunk[start - at..full - at];
+        let s = all.strip_suffix('\n').map_or(all, |l| l.strip_suffix('\r').unwrap_or(l));
+        let window = s.char_indices().nth(col + 256).map_or(s.len(), |(i, _)| i);
+        return match graphemes::seek(&s[..window], 0, tab, col) {
+            (b, _) if b < window => start + b,
+            _ => start + window,
+        };
+    }
+    let end = line_end(text, line);
     // Don't copy a very long line wholesale — cut the window end at a char boundary.
     let (sc, ec) = (text.byte_to_char(start), text.byte_to_char(end));
     let window = text.char_to_byte(ec.min(sc + col + 256));
@@ -422,6 +436,48 @@ pub fn copy_on_line(text: &Rope, r: Range, delta: isize, tab: usize) -> Option<R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `pos_at_col` reading a line from its chunk (#406) answers as the slice it made before: every line of text whose
+    /// lines lie in one chunk or across chunks — tabs, CRLF, a lone CR, wide and combining characters, lines past the
+    /// 256-character window — at columns around the window's edge.
+    #[test]
+    fn pos_at_col_from_its_chunk_answers_as_its_slice() {
+        let sliced = |text: &Rope, line: usize, col: usize, tab: usize| {
+            let (start, end) = (line_start(text, line), line_end(text, line));
+            let (sc, ec) = (text.byte_to_char(start), text.byte_to_char(end));
+            let window = text.char_to_byte(ec.min(sc + col + 256));
+            let s: std::borrow::Cow<str> = text.byte_slice(start..window).into();
+            match graphemes::seek(&s, 0, tab, col) {
+                (b, _) if b < s.len() => start + b,
+                _ => window,
+            }
+        };
+        let long = "x".repeat(300);
+        let mut texts: Vec<String> =
+            (1..5).map(|seed| crate::graphemes::tests::random_text(seed, 1500, true)).collect();
+        let acute = '\u{301}';
+        texts.push(format!("\ta\tb\r\n한글 e{acute}x\r\n{long}\n\nab\rcd\n{long}é\t한\r\n"));
+        texts.push("".into());
+        for s in texts {
+            let t = Rope::from_str(&s);
+            for line in 0..t.len_lines() {
+                for col in [0..=8, 250..=262, 296..=306].into_iter().flatten() {
+                    for tab in [1, 4] {
+                        let (got, want) = (pos_at_col(&t, line, col, tab), sliced(&t, line, col, tab));
+                        assert_eq!(got, want, "line {line} col {col} tab {tab}: {:?}", t.line(line));
+                    }
+                }
+            }
+        }
+    }
+
+    /// `last_line` asked with no slice (#406): the empty line after a trailing newline doesn't count.
+    #[test]
+    fn last_line_leaves_out_the_line_after_a_trailing_newline() {
+        for (s, last) in [("", 0), ("a", 0), ("a\n", 0), ("a\nb", 1), ("a\n\n", 1), ("a\r\n", 0), ("\n", 0)] {
+            assert_eq!(last_line(&Rope::from_str(s)), last, "{s:?}");
+        }
+    }
 
     /// `visual_col` and `pos_at_col` (16-byte blocks) give what walking the cells gives — at every position of
     /// random multi-line text spanning several rope chunks.

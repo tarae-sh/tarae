@@ -624,38 +624,64 @@ fn a_tag_shows_only_while_it_says_something_new() {
 
 /// Performance budget: a sweep of the mouse is dozens of hovers a second, each only a look at what's under it
 /// (`presence::hovered`) — none of the work every other event does (`Editor::handle_event`): over a session's bar,
-/// still there, away, still away — under 200 ns a hover (4 measured).
+/// still there, away, still away — under 200 ns a hover (73 measured, #406). A sweep as a terminal reports one, each
+/// hover a cell away from the last across the code, the bar and the strip, is said beside it (406 measured, #406) — not
+/// held to the budget yet (#408).
 #[test]
 fn perf_budget_hover_burst() {
     if crate::test_results::unoptimized("presence::tests::perf_budget_hover_burst") {
         return;
     }
-    let Scene { mut ed, main, _dir, .. } = scene("presence-hover-burst");
-    gaze(&mut ed, main.join("a.rs"), 1..2);
-    settle(&mut ed, |ed| !main_marks(ed).is_empty());
-    let y = row_of(&rows(&frame(&mut ed, 100)), "let a = 1;") as u16;
+    let (mut ed, y, sweep, _dir) = hover_scene("presence-hover-burst");
     let at = [(0, y), (0, y), (0, 0), (5, 0)];
-    const N: usize = 40_000;
-    let mut runs: Vec<f64> = (0..9)
-        .map(|_| {
-            let t = std::time::Instant::now();
-            for i in 0..N {
-                let (x, y) = at[i & 3];
-                ed.handle_event(crate::event::Event::Hover(x, y));
-            }
-            t.elapsed().as_secs_f64() * 1e9 / N as f64
-        })
-        .collect();
-    crate::sorting::by(&mut runs, f64::total_cmp);
-    let ns = runs[runs.len() / 2];
-    let line = format!("PERF hover_ns {ns:.0} budget=200 noise=5\n");
-    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    let ns = hover_burst(&mut ed, &at, 9);
+    let swept = hover_burst(&mut ed, &sweep, 9);
+    for (name, ns, noise) in [("hover_ns", ns, 5), ("hover_sweep_ns", swept, 20)] {
+        let line = format!("PERF {name} {ns:.0} budget=200 noise={noise}\n");
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    }
     // (and it saw them: over the bar, its tag; away, none)
     ed.handle_event(crate::event::Event::Hover(0, y));
     assert_eq!(ed.presence.hover, Some(crate::event::WorkspaceId::HOME));
     ed.handle_event(crate::event::Event::Hover(0, 0));
     assert_eq!(ed.presence.hover, None);
     assert!(ns < 200.0, "{ns:.0} ns a hover (budget 200)");
+}
+
+/// The hover burst's scene: the bar's row `y`, and a sweep of 40 cells as a terminal reports one — each a cell away
+/// from the last — along the bar's row across the code, down the code's first column, along the top row's strip.
+fn hover_scene(name: &str) -> (Editor, u16, Vec<(u16, u16)>, Scratch) {
+    let Scene { mut ed, main, _dir, .. } = scene(name);
+    gaze(&mut ed, main.join("a.rs"), 1..2);
+    settle(&mut ed, |ed| !main_marks(ed).is_empty());
+    let r = rows(&frame(&mut ed, 100));
+    let y = row_of(&r, "let a = 1;") as u16;
+    let top: Vec<char> = r[0].chars().collect();
+    let strip =
+        (0..top.len()).find(|&i| top[i..].starts_with(&['m', 'a', 'i', 'n'])).expect("the strip") as u16;
+    let sweep: Vec<(u16, u16)> = (0..14)
+        .map(|x| (x, y))
+        .chain((0..13).map(|r| (0, r)))
+        .chain((0..13).map(|x| (strip + x, 0)))
+        .collect();
+    (ed, y, sweep, _dir)
+}
+
+/// The median of `runs` bursts of 40,000 hovers over `at`, in turn: ns a hover.
+fn hover_burst(ed: &mut Editor, at: &[(u16, u16)], runs: usize) -> f64 {
+    const N: usize = 40_000;
+    let mut runs: Vec<f64> = (0..runs)
+        .map(|_| {
+            let t = std::time::Instant::now();
+            for i in 0..N {
+                let (x, y) = at[i % at.len()];
+                ed.handle_event(crate::event::Event::Hover(x, y));
+            }
+            t.elapsed().as_secs_f64() * 1e9 / N as f64
+        })
+        .collect();
+    crate::sorting::by(&mut runs, f64::total_cmp);
+    runs[runs.len() / 2]
 }
 
 /// The side panel's file rows: each session by the shortest prefix of its name that tells it from the other open

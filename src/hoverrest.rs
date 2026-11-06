@@ -191,7 +191,11 @@ fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
     let text = &doc.text;
     let line = line.min(crate::movement::last_line(text));
     let pos = crate::movement::pos_at_col(text, line, col, ed.config.tab_width);
-    let c = text.get_byte_slice(pos..).and_then(|s| s.chars().next())?;
+    // (the character there from its chunk — no slice to the file's end at every cell the pointer crosses, #406)
+    let c = match (pos <= text.len_bytes()).then(|| text.chunk_at_byte(pos)) {
+        Some((chunk, at, ..)) if pos < at + chunk.len() => chunk[pos - at..].chars().next(),
+        _ => text.get_byte_slice(pos..).and_then(|s| s.chars().next()),
+    }?;
     let name = crate::completion::is_word(c);
     let problem = doc.lsp.diagnostics.iter().any(|d| crate::term::underlines(d, pos));
     if !name && !problem {
@@ -199,7 +203,7 @@ fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
     }
     let word = if name { crate::completion::word_at(text, pos) } else { pos..pos + c.len_utf8() };
     // (its first cell: back from the pointer by what's before it on the row — a name is never wrapped inside)
-    let before = text.byte_slice(word.start..pos).to_string().width();
+    let before = std::borrow::Cow::<str>::from(text.byte_slice(word.start..pos)).width();
     let x0 = ed.screen.panes.iter().find(|p| p.0 == pane).map_or(0, |p| p.1.x + p.2);
     Some(Spot {
         pane: In::Code(pane),

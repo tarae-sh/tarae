@@ -247,6 +247,13 @@ impl Screen {
         let all = self.elements.borrow();
         all.iter().rev().find(|e| e.kind == kind && e.y == y && (e.from..e.to).contains(&x)).cloned()
     }
+
+    /// `element`'s row and columns alone — what's drawn there not copied (a hover asks it at every cell, #406).
+    pub fn element_cells(&self, kind: Kind, x: usize, y: usize) -> Option<(usize, usize, usize)> {
+        let all = self.elements.borrow();
+        let e = all.iter().rev().find(|e| e.kind == kind && e.y == y && (e.from..e.to).contains(&x))?;
+        Some((e.y, e.from, e.to))
+    }
 }
 
 impl Under {

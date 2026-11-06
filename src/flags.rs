@@ -227,8 +227,8 @@ pub fn lit_sync(ed: &mut Editor) -> bool {
 /// The mouse at (`x`, `y`) (`Event::Hover`): on a flag's `¶` its card opens once the pointer rests there — at once while
 /// one of the mouse's cards is up (`hoverrest::bring`, #391); on the card it stays; elsewhere it goes. Whether what's
 /// drawn changed — a move that changes nothing draws nothing.
-pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
-    let over = over_at(ed, x, y);
+pub fn hovered(ed: &mut Editor, u: crate::mouse::Under, x: usize, y: usize) -> bool {
+    let over = over_under(ed, u, x, y);
     crate::hoverrest::bring(ed, |ed| (&mut ed.flag_hover, &mut ed.flag_wait), over)
 }
 
@@ -241,6 +241,11 @@ pub fn rest_due(ed: &mut Editor, now: std::time::Instant) -> Option<std::time::D
 
 /// What a flag's card is for with the pointer at (`x`, `y`): the `¶` there, or the card up while it's on it.
 pub(crate) fn over_at(ed: &Editor, x: usize, y: usize) -> Option<Hover> {
+    over_under(ed, ed.mouse_under(crate::event::MouseKind::Down, x, y), x, y)
+}
+
+/// `over_at`, `u` what's under (`x`, `y`) (`mouse_under`).
+fn over_under(ed: &Editor, u: crate::mouse::Under, x: usize, y: usize) -> Option<Hover> {
     // (a cut `…`'s there, or its card run along its row over the `¶`: that one's — one card at a time)
     if crate::whole::under(ed, x, y).is_some() {
         return None;
@@ -251,7 +256,7 @@ pub(crate) fn over_at(ed: &Editor, x: usize, y: usize) -> Option<Hover> {
         .get()
         .is_some_and(|(cx, cy, w, h)| (cx..cx + w).contains(&x) && (cy..cy + h).contains(&y));
     // (a `¶` the press would reach: none under a card or a picker)
-    let end = match ed.mouse_under(crate::event::MouseKind::Down, x, y).part {
+    let end = match u.part {
         crate::mouse::Part::Word(crate::mouse::Word::Does(i)) => {
             let spot = s.word_spots.borrow().get(i).map(|w| (w.y, w.from, w.press.clone()));
             let ends = s.flag_ends.borrow();

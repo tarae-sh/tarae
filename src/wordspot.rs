@@ -477,14 +477,23 @@ pub type Lit = (usize, usize, usize, Vec<(String, Style)>);
 /// word lights only where its press lands. Not the three whose hover says more: what Claude is doing now (its card), a
 /// mark of the strip (its words) and a chip over the chat's input (what goes).
 pub fn lit(ed: &Editor, x: usize, y: usize) -> Option<Lit> {
+    let p = lit_part(ed.mouse_under(crate::event::MouseKind::Down, x, y))?;
+    let e = ed.screen.element(crate::kinds::Kind::Button(p), x, y)?;
+    Some((e.y, e.from, e.to, e.spans))
+}
+
+/// `lit`'s row and columns alone, `u` what's under (`x`, `y`) — nothing of what's drawn there copied.
+fn lit_cells(ed: &Editor, u: crate::mouse::Under, x: usize, y: usize) -> Option<(usize, usize, usize)> {
+    ed.screen.element_cells(crate::kinds::Kind::Button(lit_part(u)?), x, y)
+}
+
+/// What lights as a word with `u` under the pointer: the part a press there lands on.
+fn lit_part(u: crate::mouse::Under) -> Option<crate::mouse::Part> {
     use crate::mouse::{Part, Word};
-    match ed.mouse_under(crate::event::MouseKind::Down, x, y).part {
+    match u.part {
         Part::Word(Word::Now | Word::Stop(_) | Word::With(_)) => None,
         // (a card's answers on its bottom line — its way in, each answer a press does: `term::OfferCard::answers_lit`)
-        p @ (Part::Word(_) | Part::Answer(_)) => {
-            let e = ed.screen.element(crate::kinds::Kind::Button(p), x, y)?;
-            Some((e.y, e.from, e.to, e.spans))
-        }
+        p @ (Part::Word(_) | Part::Answer(_)) => Some(p),
         _ => None,
     }
 }
@@ -509,15 +518,19 @@ pub fn row_lit(ed: &Editor, x: usize, y: usize) -> Vec<(usize, usize, usize)> {
 
 /// What a press at (`x`, `y`) lands on, where it lights as a row (`row_lit`).
 pub fn row_under(ed: &Editor, x: usize, y: usize) -> Option<crate::mouse::Under> {
+    row_under_of(ed, ed.mouse_under(crate::event::MouseKind::Down, x, y), x, y)
+}
+
+/// `row_under`, `u` what's under (`x`, `y`).
+fn row_under_of(ed: &Editor, u: crate::mouse::Under, x: usize, y: usize) -> Option<crate::mouse::Under> {
     use crate::mouse::{Link, Part, Word};
-    let u = ed.mouse_under(crate::event::MouseKind::Down, x, y);
     let row = match u.part {
         Part::Row(_) | Part::Mark(_) | Part::More(_) | Part::Word(Word::Now | Word::With(_)) => true,
         // (a card's answers on its bottom line light as words, #200: a peek's doesn't; a hint made a button at the
         // frame's end — `kinds::buttons` — has no spans to light: its cells as drawn)
-        Part::Word(Word::Does(_)) => lit(ed, x, y).is_none(),
+        Part::Word(Word::Does(_)) => lit_cells(ed, u, x, y).is_none(),
         // (a peek, by its digit — a card's own answers light as words on its bottom line, a held one nothing: #200)
-        Part::Answer(c) => c.is_ascii_digit() && lit(ed, x, y).is_none(),
+        Part::Answer(c) => c.is_ascii_digit() && lit_cells(ed, u, x, y).is_none(),
         Part::Link(Link::Chat(_)) => u.surface == Surface::FollowCard,
         _ => false,
     };
@@ -526,10 +539,10 @@ pub fn row_under(ed: &Editor, x: usize, y: usize) -> Option<crate::mouse::Under>
 
 /// The mouse at (`x`, `y`) (`Event::Hover`): over a word, it's lit; over a row, the row. Whether that changed — a move
 /// that changes nothing draws nothing. A row's cells are the frame's to find, once (`term::light_rows`): here only
-/// whether the pointer is still in the one lit, on the same thing.
-pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
-    let over = lit(ed, x, y).map(|l| (l.0, l.1, l.2));
-    let same = match row_under(ed, x, y) {
+/// whether the pointer is still in the one lit, on the same thing. `u`: what's under it (`mouse_under`).
+pub fn hovered(ed: &mut Editor, u: crate::mouse::Under, x: usize, y: usize) -> bool {
+    let over = lit_cells(ed, u, x, y);
+    let same = match row_under_of(ed, u, x, y) {
         Some(u) => {
             ed.row_under.get() == Some(u)
                 && ed.row_hover.borrow().iter().any(|&(r, a, b)| r == y && (a..b).contains(&x))

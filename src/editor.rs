@@ -3083,16 +3083,17 @@ impl Editor {
         // changed), none of the work every other event does below (a sweep sends dozens a second)
         if let Event::Hover(x, y) = ev {
             let (x, y) = (x as usize, y as usize);
+            // (what a press there lands on, asked once for all that follows — none of them changes what it reads, #406)
+            let u = self.mouse_under(crate::event::MouseKind::Down, x, y);
             // (one of the mouse's cards up as the pointer comes: the next target's at once — #391's hand-off)
             self.hover_rest.warm = crate::hoverrest::card_up(self);
             let tag = crate::presence::hovered(self, x, y);
             let mark = crate::follow::strip_hovered(self, x, y);
             let cut = crate::whole::hovered(self, x, y);
-            let flag = crate::flags::hovered(self, x, y);
-            let word = crate::wordspot::hovered(self, x, y);
+            let flag = crate::flags::hovered(self, u, x, y);
+            let word = crate::wordspot::hovered(self, u, x, y);
             // (the surface under the pointer lights its lines half, a line that drags itself — a frame only when
             // either changed: a move within one draws nothing)
-            let u = self.mouse_under(crate::event::MouseKind::Down, x, y);
             // (resting on a name: its hover asked once it's stayed — the card of the one left gone)
             let rest = crate::hoverrest::hovered(self, u, x, y);
             let edge = match u.part {
