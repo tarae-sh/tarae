@@ -1,0 +1,18 @@
+# A unix socket by a path past `sun_path` (#383): bound and connected from its folder — on Linux by a descriptor of it
+# (`/proc/self/fd/N/<name>`), on macOS by a thread of its own whose working folder alone moves — never the process's
+# folder. Every client of tarae's sockets (the state socket, a host's
+# attach socket) and their servers go through it: tarae, xtask's scene driver, the e2e harness.
+[package]
+name = "tarae-sock"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tarae-testkit = { path = "../tarae-testkit" }

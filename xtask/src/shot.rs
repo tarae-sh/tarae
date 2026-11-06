@@ -494,9 +494,11 @@ fn watched(sock: &Path, ask: &str, told: &std::sync::Mutex<Vec<serde_json::Value
     use std::io::BufRead;
     let end = Instant::now() + Duration::from_secs(20);
     let stream = loop {
-        match std::os::unix::net::UnixStream::connect(sock) {
+        match ui_connect(sock) {
             Ok(s) => break s,
-            Err(_) if Instant::now() < end => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) if not_there_yet(&e) && Instant::now() < end => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
             Err(e) => return eprintln!("focus: {}: {e}", sock.display()),
         }
     };
@@ -619,11 +621,32 @@ fn live_socket(pid: Option<u32>, ui: Option<std::ffi::OsString>, dir: Option<&Pa
     }
 }
 
+/// A tarae's UI state socket, connected — a path past `sun_path` from its folder, as tarae binds it (#383,
+/// `tarae_sock`).
+pub(crate) fn ui_connect(sock: &Path) -> io::Result<std::os::unix::net::UnixStream> {
+    tarae_sock::connect(sock)
+}
+
+/// A connect that failed only because the socket isn't bound yet (tarae starting): worth asking again. Any other
+/// failure is said.
+fn not_there_yet(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
+}
+
 /// One request to a tarae's UI state socket, its answer (its `error` as Err).
 fn ui_ask(sock: &Path, req: &serde_json::Value) -> Result<serde_json::Value> {
+    let s = ui_connect(sock).map_err(|e| format!("{}: {e}", sock.display()))?;
+    ui_ask_on(s, sock, req)
+}
+
+/// `ui_ask` on its socket `s`, connected.
+fn ui_ask_on(
+    mut s: std::os::unix::net::UnixStream,
+    sock: &Path,
+    req: &serde_json::Value,
+) -> Result<serde_json::Value> {
     use std::io::BufRead;
     let said = |e: io::Error| format!("{}: {e}", sock.display());
-    let mut s = std::os::unix::net::UnixStream::connect(sock).map_err(said)?;
     s.set_read_timeout(Some(Duration::from_secs(10))).map_err(said)?;
     writeln!(s, "{req}").map_err(said)?;
     let mut line = String::new();
@@ -1118,18 +1141,30 @@ fn drive_with(
                 .join(format!("{}.sock", child.id()));
             let ask = serde_json::json!({ "get": "state", "timeout_ms": 2000 });
             let t = Instant::now();
-            let mut done = false;
+            let (mut done, mut cant) = (false, None);
             while !done && t.elapsed().as_secs_f64() < max {
                 pump(vt, 0.2);
-                done = ui_ask(&sock, &ask).is_ok_and(|v| v["panels"]["chat"]["busy"] == false);
+                // (a socket not there yet is asked again; one that can't be reached is said at once — #383's path
+                // past `sun_path` waited the whole wait out, said as "still under way")
+                match ui_connect(&sock) {
+                    Ok(s) => {
+                        done = ui_ask_on(s, &sock, &ask).is_ok_and(|v| v["panels"]["chat"]["busy"] == false)
+                    }
+                    Err(e) if not_there_yet(&e) => {}
+                    Err(e) => {
+                        cant = Some(format!("{}: {e}", sock.display()));
+                        break;
+                    }
+                }
             }
-            match done {
+            match (done, cant) {
                 // (and the frame the turn's end drew)
-                true => {
+                (true, _) => {
                     pump(vt, 0.35);
                     eprintln!("shot: the turn over after {:.1}s", t.elapsed().as_secs_f64());
                 }
-                false => missed.push(format!("waited {max} s for the turn to end: still under way")),
+                (false, Some(e)) => missed.push(format!("the turn's end can't be asked: {e}")),
+                (false, None) => missed.push(format!("waited {max} s for the turn to end: still under way")),
             }
             continue;
         }
@@ -2264,6 +2299,30 @@ mod tests {
         assert_eq!(live_socket(Some(42), Some("/x.sock".into()), Some(&dir)), Ok(dir.join("42.sock")));
         assert_eq!(live_socket(None, Some("/x.sock".into()), Some(&dir)), Ok(PathBuf::from("/x.sock")));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// #383: a tarae whose state socket's path is past `sun_path` (110 bytes) is asked and watched all the same —
+    /// the driver's `@=done` and the focus watcher, never 20 s of retries ending in "still under way".
+    #[test]
+    fn a_state_socket_past_sun_path_is_asked_and_watched() {
+        use std::io::BufRead;
+        let dir = tarae_testkit::scratch::Scratch::new("shot-long");
+        let sock = tarae_testkit::scratch::long_socket(dir.path(), "7.sock");
+        let listener = tarae_sock::at(&sock, |p: &Path| std::os::unix::net::UnixListener::bind(p)).unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (s, _) = listener.accept().unwrap();
+                let mut req = String::new();
+                io::BufReader::new(&s).read_line(&mut req).unwrap();
+                writeln!(&s, "{}", serde_json::json!({ "asked": req.trim() })).unwrap();
+            }
+        });
+        let v = ui_ask(&sock, &serde_json::json!({ "get": "state" })).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(v["asked"], r#"{"get":"state"}"#);
+        let told = std::sync::Mutex::new(Vec::new());
+        watched(&sock, r#"{"watch":[]}"#, &told);
+        server.join().unwrap();
+        assert_eq!(told.into_inner().unwrap(), [serde_json::json!({ "asked": r#"{"watch":[]}"# })]);
     }
 
     /// The frame a tarae answers with (a stand-in socket here, answering as `{"get":"frame"}` does) is drawn

@@ -48,6 +48,8 @@ tarae-wasm = { path = "crates/tarae-wasm" }
 tarae-sorting = { path = "crates/tarae-sorting" }
 # The attach protocol (crates/tarae-wire): a host and the interface showing it — src/attach.rs, src/client.rs
 tarae-wire = { path = "crates/tarae-wire" }
+# A unix socket by a path past `sun_path` (crates/tarae-sock, #383): the state and attach sockets' servers and clients
+tarae-sock = { path = "crates/tarae-sock" }
 
 [profile.release]
 lto = true
@@ -138,8 +140,8 @@ toml = "1.1.6"
 # them here); the dev task crate (cargo xtask — .cargo/config.toml) a member only. None affects
 # `cargo install --path .`
 [workspace]
-members = ["xtask", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire"]
-default-members = [".", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire"]
+members = ["xtask", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire", "crates/tarae-sock"]
+default-members = [".", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire", "crates/tarae-sock"]
 
 [workspace.package]
 edition = "2024"

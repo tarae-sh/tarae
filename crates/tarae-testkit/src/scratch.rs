@@ -71,6 +71,22 @@ impl Scratch {
     }
 }
 
+/// How long `long_socket`'s paths are: past `sun_path` on both systems (macOS 104, Linux 108, the NUL included) —
+/// #383's scene socket was 106.
+pub const LONG_SOCKET: usize = 110;
+
+/// A socket's path `LONG_SOCKET` bytes long ending in `name` (`ui/7.sock` too), in `dir` (a test's own) — its folder
+/// made (longer only where `dir` already is).
+pub fn long_socket(dir: &Path, name: &str) -> PathBuf {
+    let room = LONG_SOCKET.saturating_sub(dir.as_os_str().len() + 2 + name.len());
+    let folder = if room == 0 { dir.to_path_buf() } else { dir.join("l".repeat(room)) };
+    let path = folder.join(name);
+    let made = path.parent().unwrap_or(&folder);
+    std::fs::create_dir_all(made).unwrap_or_else(|e| panic!("{}: {e}", made.display()));
+    assert!(path.as_os_str().len() >= LONG_SOCKET, "{}", path.display());
+    path
+}
+
 /// A test's script at `path`, executable — written by a child `sh`, never opened for writing by the test binary:
 /// Linux won't exec a file any process holds open for writing, and every child another test forks holds a copy of
 /// this process's descriptors until its own exec (ETXTBSY: `stopping_claudes_command_stops_its_containers` once,

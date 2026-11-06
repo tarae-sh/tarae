@@ -1219,7 +1219,7 @@ fn tarae_sessions(ui: Option<std::ffi::OsString>) -> std::result::Result<Vec<Pat
     let sock =
         ui.ok_or("not run from a tarae — its terminal or a task of yours has TARAE_UI, the socket to ask")?;
     let said = |e: std::io::Error| format!("{}: {e}", Path::new(&sock).display());
-    let mut s = std::os::unix::net::UnixStream::connect(&sock).map_err(said)?;
+    let mut s = crate::shot::ui_connect(Path::new(&sock)).map_err(said)?;
     s.set_read_timeout(Some(std::time::Duration::from_secs(5))).map_err(said)?;
     writeln!(s, "{}", serde_json::json!({ "get": "state", "timeout_ms": 2000 })).map_err(said)?;
     let mut line = String::new();

@@ -93,6 +93,14 @@ impl No {
 
 /// The host asked for, connected: its socket, pid and project.
 fn found(args: &[String]) -> Result<(std::os::unix::net::UnixStream, u32, String), No> {
+    found_in(args, crate::config::state_dir())
+}
+
+/// `found`, its hosts in `state`'s `ui` folder.
+fn found_in(
+    args: &[String],
+    state: Option<PathBuf>,
+) -> Result<(std::os::unix::net::UnixStream, u32, String), No> {
     let (mut wait, mut pid, mut place) = (None, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -110,8 +118,7 @@ fn found(args: &[String]) -> Result<(std::os::unix::net::UnixStream, u32, String
         }
     }
     let here = machine();
-    let state = crate::config::state_dir()
-        .ok_or_else(|| No::just("no state folder (neither XDG_STATE_HOME nor HOME)"))?;
+    let state = state.ok_or_else(|| No::just("no state folder (neither XDG_STATE_HOME nor HOME)"))?;
     let ui = state.join("ui");
     let hosts = || hosts_in(&ui);
     let listed = |hosts: &[(u32, Vec<PathBuf>)]| hosts.iter().map(|(p, roots)| line(*p, roots)).collect();
@@ -140,7 +147,8 @@ fn found(args: &[String]) -> Result<(std::os::unix::net::UnixStream, u32, String
             }
         }
     };
-    let path = crate::attach::path_for(pid).ok_or_else(|| No::just("no state folder"))?;
+    // (`attach::path_for`'s, in this state folder)
+    let path = ui.join(format!("{pid}.attach"));
     let until = crate::clock::now() + wait.unwrap_or_default();
     let stream = loop {
         match crate::attach::connect(&path) {
@@ -289,6 +297,21 @@ mod tests {
         assert_eq!(pick(&hosts, Path::new("/h/a/x")), Some((10, Path::new("/h/a"))));
         assert_eq!(pick(&hosts, Path::new("/h/ab")), None, "by whole parts, never a name's prefix");
         assert_eq!(line(20, &hosts[1].1), "     20  /h/b, /h/a/c");
+    }
+
+    /// #383: a host whose attach socket's path is past `sun_path` (110 bytes) is reached from its folder, never
+    /// "no tarae host".
+    #[test]
+    fn a_host_past_sun_path_is_reached() {
+        let dir = crate::scratch::Scratch::new("relay-long");
+        let path = crate::scratch::long_socket(dir.path(), "ui/4242.attach");
+        let listener =
+            crate::uisocket::at(&path, |p: &Path| std::os::unix::net::UnixListener::bind(p)).unwrap();
+        let state = path.parent().and_then(Path::parent).unwrap().to_path_buf();
+        let args = ["--stdio", "--pid", "4242"].map(String::from);
+        let (_stream, pid, _) = found_in(&args, Some(state)).unwrap_or_else(|n| panic!("{}", n.why));
+        assert_eq!(pid, 4242);
+        listener.accept().expect("the relay's connect");
     }
 
     /// The relay's two ends: the client's (its stdin ended) is the host's EOF, the host's (its socket closed) ends the

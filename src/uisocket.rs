@@ -30,12 +30,6 @@ use serde_json::{Value, json};
 /// How long a snapshot is waited for, unless the request says (`timeout_ms`, at most `WAIT_MAX`).
 pub(crate) const WAIT: Duration = Duration::from_secs(10);
 const WAIT_MAX: Duration = Duration::from_secs(120);
-/// `sun_path`'s room, its closing NUL included (macOS 104, Linux 108): a longer path is bound from its folder.
-#[cfg(target_os = "macos")]
-const SUN_PATH: usize = 104;
-#[cfg(not(target_os = "macos"))]
-const SUN_PATH: usize = 108;
-
 /// This process's socket, once bound (`TARAE_UI` for the terminal panel and the user's tasks).
 static BOUND: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -49,8 +43,8 @@ pub fn bound() -> Option<&'static Path> {
     BOUND.get().map(PathBuf::as_path)
 }
 
-/// Binds this process's socket. At startup, before any thread exists: the umask (and, for a path too long
-/// for `sun_path`, the working folder) are the process's for a moment.
+/// Binds this process's socket. At startup, before any thread exists: the umask is the process's for a moment (a
+/// path too long for `sun_path` is bound from its folder, `at`).
 pub fn bind() -> Result<UnixListener, String> {
     let pid = std::process::id();
     let path = path_for(pid).ok_or("no state folder (neither XDG_STATE_HOME nor HOME)")?;
@@ -117,19 +111,10 @@ pub(crate) fn bind_named(dir: &Path, name: &str) -> Result<UnixListener, String>
     Ok(listener)
 }
 
-/// `f` on `path` — from its folder when the path is too long for `sun_path` (single-threaded callers only:
-/// the working folder is the process's).
-pub(crate) fn at<T>(path: &Path, f: impl FnOnce(&Path) -> std::io::Result<T>) -> std::io::Result<T> {
-    if path.as_os_str().len() < SUN_PATH {
-        return f(path);
-    }
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return f(path) };
-    let back = std::env::current_dir()?;
-    std::env::set_current_dir(dir)?;
-    let r = f(Path::new(name));
-    std::env::set_current_dir(back)?;
-    r
-}
+/// `f` on `path` — from its folder when the path is too long for `sun_path`, never moving the process's folder (#383,
+/// `tarae_sock`): Linux by a descriptor of it (`/proc/self/fd/N/<name>`), macOS on a thread of its own whose working
+/// folder alone moves. Every server and client of tarae's sockets names one this way.
+pub(crate) use tarae_sock::at;
 
 /// The socket goes with this tarae (the process ending; `:restart`'s new binary binds it again).
 pub fn remove() {

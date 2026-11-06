@@ -1289,6 +1289,7 @@ dependencies = [
  "serde_json",
  "streaming-iterator",
  "tar",
+ "tarae-sock",
  "tarae-sorting",
  "tarae-testkit",
  "tarae-wasm",
@@ -1301,6 +1302,14 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vt100",
+]
+
+[[package]]
+name = "tarae-sock"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tarae-testkit",
 ]
 
 [[package]]
@@ -1755,6 +1764,7 @@ dependencies = [
  "png",
  "serde_json",
  "tar",
+ "tarae-sock",
  "tarae-testkit",
  "toml",
  "vt100",

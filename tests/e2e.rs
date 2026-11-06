@@ -1686,11 +1686,9 @@ fn a_wrong_version_is_refused() {
     use std::io::{Read, Write};
     let sb = Sandbox::new("attach-version");
     let h = sb.host(&[]);
-    let real = sb.state().join("ui").join(format!("{}.attach", h.pid()));
-    // (by a link at a short path: the real one may be past `sun_path`)
-    let at = sb.socket("attach");
-    std::os::unix::fs::symlink(&real, &at).unwrap();
-    let mut s = std::os::unix::net::UnixStream::connect(&at).expect("the host's attach socket");
+    // (the real one may be past `sun_path`: from its folder, as every client connects — `tarae_sock`)
+    let at = sb.state().join("ui").join(format!("{}.attach", h.pid()));
+    let mut s = tarae_sock::connect(&at).expect("the host's attach socket");
     let hello = tarae_wire::Hello {
         v: tarae_wire::V + 1,
         build: "0.0.0-other".into(),
@@ -1727,7 +1725,7 @@ fn a_wrong_version_is_refused() {
     }
     assert_eq!(h.state_json()["interface"], serde_json::Value::Null);
     // (another build, the same protocol: let in)
-    let mut s = std::os::unix::net::UnixStream::connect(&at).expect("the host's attach socket");
+    let mut s = tarae_sock::connect(&at).expect("the host's attach socket");
     out.clear();
     tarae_wire::encode(&tarae_wire::ToHost::Hello(tarae_wire::Hello { v: tarae_wire::V, ..hello }), &mut out)
         .unwrap();
@@ -1777,12 +1775,10 @@ fn an_attach_saying_it_runs_in_the_hosts_own_panel_is_refused() {
     use std::io::{Read, Write};
     let sb = Sandbox::new("attach-inside-ssh");
     let h = sb.host(&[]);
-    let real = sb.state().join("ui").join(format!("{}.attach", h.pid()));
-    let at = sb.socket("attach");
-    std::os::unix::fs::symlink(&real, &at).unwrap();
+    let at = sb.state().join("ui").join(format!("{}.attach", h.pid()));
     let panel = sb.state().join("ui").join(format!("{}.sock", h.pid()));
     let first = |inside: String| {
-        let mut s = std::os::unix::net::UnixStream::connect(&at).expect("the host's attach socket");
+        let mut s = tarae_sock::connect(&at).expect("the host's attach socket");
         let hello = tarae_wire::Hello {
             v: tarae_wire::V,
             build: tarae_wire::BUILD.into(),
@@ -2771,8 +2767,8 @@ fn the_prompts_history_never_reaches_the_state_folder() {
     assert!(read > 0, "tarae wrote its state there (else this proves nothing)");
 }
 
-/// A state folder past `sun_path`'s 104 bytes: the socket is bound from its folder, and `tarae state`
-/// reaches it the same way.
+/// A state folder past `sun_path` (#383: 110 bytes at least, past Linux's 108 too): the socket is bound from its
+/// folder, and `tarae state` — the harness's `Term` asks through it — reaches it the same way.
 #[test]
 fn the_socket_lives_in_a_long_state_folder() {
     let sb = Sandbox::new("uistate-long");
@@ -2781,7 +2777,7 @@ fn the_socket_lives_in_a_long_state_folder() {
     let sb = sb.with_env("XDG_STATE_HOME", &deep.to_string_lossy());
     let t = sb.spawn(&[]);
     let sock = deep.join(format!("tarae/ui/{}.sock", t.pid()));
-    assert!(sock.as_os_str().len() > 104, "{}", sock.display());
+    assert!(sock.as_os_str().len() >= tarae_testkit::scratch::LONG_SOCKET, "{}", sock.display());
     assert!(sock.exists(), "{} listens", sock.display());
     assert_eq!(t.state_json(0)["keys"]["region"], "code");
 }

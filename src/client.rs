@@ -988,6 +988,17 @@ fn write_out(bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// #383: `tarae attach`'s local connect reaches a host whose attach socket's path is past `sun_path` (110 bytes).
+    #[test]
+    fn a_host_past_sun_path_is_attached_to() {
+        let dir = crate::scratch::Scratch::new("client-long");
+        let path = crate::scratch::long_socket(dir.path(), "4242.attach");
+        let listener =
+            crate::uisocket::at(&path, |p: &Path| std::os::unix::net::UnixListener::bind(p)).unwrap();
+        connect_here(&path, None).unwrap_or_else(|e| panic!("{e}"));
+        listener.accept().expect("the client's connect");
+    }
+
     /// S-F: what the host asks of this machine (a copy, a paste, an address opened) is answered only within 5 s of the
     /// person's own input — a key, a press or a drag, a paste; never after the wheel, the pointer resting or a focus
     /// alone, never with none at all — refused in words that say why.

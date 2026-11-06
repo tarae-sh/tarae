@@ -916,9 +916,9 @@ pub fn find(pid: Option<u32>) -> anyhow::Result<(u32, PathBuf)> {
     Ok((pid, path))
 }
 
-/// Connects to the attach socket at `path` (a long path from its folder, as the state socket's).
+/// Connects to the attach socket at `path` (a long path from its folder, as the state socket's — `tarae_sock`).
 pub fn connect(path: &Path) -> io::Result<UnixStream> {
-    crate::uisocket::at(path, |p: &Path| UnixStream::connect(p))
+    tarae_sock::connect(path)
 }
 
 #[cfg(test)]
