@@ -141,7 +141,8 @@ fn one_linux_check_at_a_time_on_a_docker() {
 }
 
 /// One lock a Docker: an endpoint's own file, the same for the same endpoint; `endpoint` takes `DOCKER_HOST` first,
-/// else what the context says, a socket by its real path.
+/// else what the context says, else Docker's own — a socket by its real path, Docker's own too (a socket that isn't
+/// there as written).
 #[test]
 fn each_docker_has_its_own_lock() {
     let dir = Path::new("/locks");
@@ -167,7 +168,11 @@ fn each_docker_has_its_own_lock() {
     assert_eq!(endpoint(&docker), "tcp://lima-k:2375", "the context's");
     let mut docker = Command::new("tarae-no-such-docker");
     docker.env_remove("DOCKER_HOST");
-    assert_eq!(endpoint(&docker), DEFAULT, "nothing names one");
+    // (Docker's own as a link would have it — Debian's `/var/run` → `/run` — so this holds wherever it runs)
+    let linked = format!("unix://{}", s.join("link.sock").display());
+    assert_eq!(endpoint_or(&docker, &linked), format!("unix://{}", real.display()), "nothing names one");
+    let gone = format!("unix://{}", s.join("gone.sock").display());
+    assert_eq!(endpoint_or(&docker, &gone), gone, "nothing names one, and it isn't there");
 }
 
 /// A file at the lock's place that isn't this user's own plain file is never used: said, and no turn waited for.

@@ -52,8 +52,14 @@ pub(crate) struct Held(#[allow(dead_code, reason = "held for its flock")] File);
 
 /// The Docker `docker` talks to: `DOCKER_HOST` (set on it, else this process's), else the context's endpoint
 /// (`DOCKER_CONTEXT`, else the current one), else Docker's own socket — a socket's path as a real path, so one Docker
-/// reached through a link is one lock.
+/// reached through a link is one lock (Docker's own too: on Debian and Ubuntu `/var/run` is a link to `/run`, and a
+/// `DOCKER_HOST` naming `/run/docker.sock` is the same Docker as nothing named).
 pub(crate) fn endpoint(docker: &Command) -> String {
+    endpoint_or(docker, DEFAULT)
+}
+
+/// `endpoint` with `default` as Docker's own socket (its test's: one a scratch link names).
+fn endpoint_or(docker: &Command, default: &str) -> String {
     let set = |name: &str| docker.get_envs().find(|(k, _)| *k == name).map(|(_, v)| v.map(|v| v.to_owned()));
     let var = |name: &str| match set(name) {
         Some(v) => v.and_then(|v| v.into_string().ok()),
@@ -73,7 +79,7 @@ pub(crate) fn endpoint(docker: &Command) -> String {
         let host = String::from_utf8_lossy(&out.stdout).trim().to_string();
         (out.status.success() && !host.is_empty()).then_some(host)
     });
-    let host = host.unwrap_or_else(|| DEFAULT.into());
+    let host = host.unwrap_or_else(|| default.into());
     match host.strip_prefix("unix://").map(std::fs::canonicalize) {
         Some(Ok(real)) => format!("unix://{}", real.display()),
         _ => host,

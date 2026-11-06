@@ -1919,6 +1919,9 @@ fn restart_under_a_client_keeps_the_client() {
 
 /// The stand-in `ssh` (S-J): a script on the sandbox's PATH that writes down what it was given, drops ssh's options and
 /// host, and runs the remote command with the login shell here, as sshd would there. No real ssh, no network.
+/// The command in a session of its own, as sshd gives it (`ssh_jobs`), by perl's `setsid` — never `set -m`: dash, Debian's
+/// and Ubuntu's `sh`, has no job control without a terminal — and on ssh's stdin, held as 3 first: a background job
+/// without job control has `/dev/null` for its stdin before its own redirections.
 fn with_ssh(name: &str) -> Sandbox {
     let sb = Sandbox::new(name);
     let bin = sb.outside("bin");
@@ -1927,7 +1930,9 @@ fn with_ssh(name: &str) -> Sandbox {
         &bin.join("ssh"),
         "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.calls\"\n\
          while [ $# -gt 0 ]; do case \"$1\" in --) shift; break;; esac; shift; done\n\
-         set -m\n\"$SHELL\" -c \"$1\" &\necho $! >> \"$0.pids\"\nwait $!\n",
+         exec 3<&0\n\
+         perl -MPOSIX -e 'POSIX::setsid() > 0 or die \"setsid: $!\"; exec @ARGV or die \"exec: $!\"' \
+         \"$SHELL\" -c \"$1\" <&3 3<&- &\necho $! >> \"$0.pids\"\nwait $!\n",
     );
     let path = format!("{}:/usr/bin:/bin", bin.display());
     sb.with_env("PATH", &path)
@@ -1939,8 +1944,8 @@ fn ssh_calls(sb: &Sandbox) -> Vec<String> {
     calls.lines().map(String::from).collect()
 }
 
-/// The stand-in `ssh`'s remote commands, a process group each (its job, `set -m`: the login shell and the relay under
-/// it), as each run wrote it down.
+/// The stand-in `ssh`'s remote commands, a process group each (its session, `setsid`: the login shell and the relay
+/// under it), as each run wrote it down.
 fn ssh_jobs(sb: &Sandbox) -> Vec<i32> {
     let pids = fs::read_to_string(sb.outside("bin/ssh.pids")).unwrap_or_default();
     pids.lines().filter_map(|p| p.trim().parse().ok()).collect()

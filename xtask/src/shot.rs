@@ -1528,9 +1528,11 @@ impl Fonts {
     }
 }
 
+/// A font's file: the system's folders first, then xtask's own `fonts/` (`xtask/fonts/README.md`: JetBrains Mono's
+/// Regular, so the renderer draws on CI and any Linux without it installed).
 fn find_font(name: &str) -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let dirs = [
+    let system = [
         home.join("Library/Fonts"),
         "/Library/Fonts".into(),
         "/System/Library/Fonts".into(),
@@ -1539,7 +1541,17 @@ fn find_font(name: &str) -> Option<PathBuf> {
         "/usr/share/fonts".into(),
         "/usr/local/share/fonts".into(),
     ];
-    dirs.iter().find_map(|d| search(d, name, 3))
+    find_font_in(&system, name)
+}
+
+/// xtask's own fonts (`xtask/fonts/README.md`).
+fn vendored_fonts() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fonts")
+}
+
+/// `name` in the `system` folders (three levels down), else in `vendored_fonts`.
+fn find_font_in(system: &[PathBuf], name: &str) -> Option<PathBuf> {
+    system.iter().find_map(|d| search(d, name, 3)).or_else(|| search(&vendored_fonts(), name, 0))
 }
 
 fn search(dir: &Path, name: &str, depth: u8) -> Option<PathBuf> {
@@ -2356,6 +2368,29 @@ mod tests {
         vt.feed(FRAME_END);
         assert_eq!(vt.parser.screen().contents(), "ab\ncd");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// JetBrains Mono's Regular is found with no font installed — xtask's own, so the renderer draws on CI's runners and
+    /// `cargo xtask linux`'s image — and one in the system's folders (a level down too) comes first.
+    #[test]
+    fn the_vendored_font_is_found_last() {
+        const REGULAR: &str = "JetBrainsMono-Regular.ttf";
+        let s = tarae_testkit::scratch::Scratch::new("xtask-fonts");
+        let (none, installed) = (s.join("none"), s.join("installed"));
+        std::fs::create_dir_all(installed.join("truetype")).unwrap();
+        std::fs::create_dir(&none).unwrap();
+        assert_eq!(find_font_in(std::slice::from_ref(&none), REGULAR), Some(vendored_fonts().join(REGULAR)));
+        assert!(vendored_fonts().join("OFL.txt").is_file(), "its license beside it");
+        std::fs::write(installed.join("truetype").join(REGULAR), "").unwrap();
+        assert_eq!(
+            find_font_in(&[none, installed.clone()], REGULAR),
+            Some(installed.join("truetype").join(REGULAR))
+        );
+        assert_eq!(
+            find_font_in(&[], "JetBrainsMono-Bold.ttf"),
+            None,
+            "Regular only: the others fall back to it"
+        );
     }
 
     /// A screen with every kind of cell `render` draws: colors, faces, underline, inverse, box drawing, blocks,
