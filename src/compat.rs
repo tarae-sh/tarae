@@ -1258,6 +1258,8 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/keeper.rs", "in fn of: leak", SEAM),
     ("src/sandbox/keeper.rs", "in fn ready_in: if let Some((_, began, go)) = slow {", HOOK),
     ("src/sandbox/keeper.rs", "in fn ready_in: slow", HOOK),
+    ("src/sandbox/keeper.rs", "in fn read: if let Some(f) = self.before_started(&msg) {", HOOK),
+    ("src/sandbox/keeper.rs", "in fn run: within", HOOK),
     ("src/sandbox/keeper.rs", "in fn start_with: covers", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: cant", SEAM),
     ("src/sandbox/linux.rs", "in fn confine_in: granted", SEAM),

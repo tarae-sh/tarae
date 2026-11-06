@@ -168,6 +168,9 @@ pub enum Msg {
     AskUsage,
     /// End every run and what they left, then exit (as EOF does).
     End,
+    /// End what the runs left — its children that aren't a run it forked and hasn't reaped — and go on (D14: a
+    /// keeper of another key took its place).
+    Sweep,
     // keeper → tarae
     /// It's there; with an `O_PATH` handle of each device place it has (`places`, the names — the fds in their
     /// order), opened in its own mount namespace before any run (`keeper::DEVICE_HANDLES`).
@@ -216,6 +219,7 @@ impl Msg {
             Msg::Signal { .. } => 2,
             Msg::AskUsage => 3,
             Msg::End => 4,
+            Msg::Sweep => 5,
             Msg::Ready { .. } => 64,
             Msg::Started { .. } => 65,
             Msg::Failed { .. } => 66,
@@ -271,7 +275,7 @@ pub fn encode(msg: &Msg) -> Result<Vec<u8>, Refused> {
             b.extend(id.to_le_bytes());
             b.extend(sig.to_le_bytes());
         }
-        Msg::AskUsage | Msg::End => {}
+        Msg::AskUsage | Msg::End | Msg::Sweep => {}
         Msg::Ready { pid, places } => {
             if places.len() > FDS_MAX {
                 return Err(Refused("more places than a message takes descriptors"));
@@ -469,6 +473,7 @@ pub fn decode(b: &[u8], fds: usize) -> Result<Msg, Refused> {
         2 => Msg::Signal { id: r.u64()?, sig: r.i32()? },
         3 => Msg::AskUsage,
         4 => Msg::End,
+        5 => Msg::Sweep,
         64 => {
             let pid = r.u32()?;
             let places = r.list()?;
@@ -660,6 +665,7 @@ mod tests {
             Msg::Signal { id: 7, sig: libc::SIGTERM },
             Msg::AskUsage,
             Msg::End,
+            Msg::Sweep,
             Msg::Ready { pid: 4242, places: Vec::new() },
             Msg::Ready {
                 pid: 1,

@@ -101,6 +101,12 @@ struct State {
     /// Tests: how long tarae waits before it numbers a held run (a slow reader thread, made sure).
     #[cfg(test)]
     number_after: Option<std::time::Duration>,
+    /// Tests: what tarae's reader does with the next `Started` in hand, before it's heard (#425's window).
+    #[cfg(test)]
+    before_started: Option<Box<dyn FnOnce() + Send>>,
+    /// Tests: how long a run's start is waited for, in place of `STARTED_WITHIN` (a reader the test holds up).
+    #[cfg(test)]
+    started_within: Option<Duration>,
     /// Tests: how its runs ended, as it said (`Exited`), whether tarae still waited on them or not.
     #[cfg(test)]
     exits: Vec<i32>,
@@ -178,15 +184,17 @@ fn ready_in(root: &Path, key: Option<&str>, ns: Ns, held: bool) -> Result<Arc<Ke
             (Some(was), Some(new)) if was == new && k.ns == ns => return take(&mut s),
             _ => {
                 s.superseded = true;
-                let idle = s.holds == 0 && s.runs.values().all(|r| r.exited.is_some() || r.started.is_none());
+                // (a run asked for whose `Started` isn't heard yet is going: it may be forked already — #425)
+                let idle = s.holds == 0 && s.runs.values().all(|r| r.exited.is_some());
                 drop(s);
-                let k = k.clone();
-                crate::event::thread("tarae-kend", move || match idle {
-                    true => k.end(),
-                    false => {
-                        crate::reaper::end(&k.leftovers(), LEFT_TERM);
+                match idle {
+                    true => {
+                        let k = k.clone();
+                        crate::event::thread("tarae-kend", move || k.end());
                     }
-                });
+                    // (what its runs left, by the keeper's own record — never by what tarae has read of the channel)
+                    false => k.sweep(),
+                }
             }
         }
     }
@@ -496,11 +504,23 @@ impl Keeper {
         let mut buf = Vec::new();
         loop {
             match channel::recv(self.chan.as_fd(), &mut buf) {
-                Ok(Some((Ok(msg), fds))) => self.heard(msg, fds),
+                Ok(Some((Ok(msg), fds))) => {
+                    #[cfg(test)]
+                    if let Some(f) = self.before_started(&msg) {
+                        f();
+                    }
+                    self.heard(msg, fds)
+                }
                 Ok(Some((Err(e), _))) => self.log().line("sandbox", "warn", &format!("its keeper: {e}")),
                 Ok(None) | Err(_) => return self.gone("its channel closed".into()),
             }
         }
+    }
+
+    /// Tests: what to do with `msg` in hand before it's heard, when it's the `Started` a test waits for.
+    #[cfg(test)]
+    fn before_started(&self, msg: &Msg) -> Option<Box<dyn FnOnce() + Send>> {
+        matches!(msg, Msg::Started { .. }).then(|| lock(&self.state).before_started.take()).flatten()
     }
 
     fn heard(self: &Arc<Self>, msg: Msg, mut fds: Vec<OwnedFd>) {
@@ -739,7 +759,15 @@ impl Keeper {
         lock(&self.state).gone.is_some()
     }
 
-    /// What its runs left running: its children that aren't a run going.
+    /// Asks the keeper to end what its runs left, the runs going left alone (`Kept::sweep`: told by its own record
+    /// of what it forked for a request).
+    fn sweep(&self) {
+        let _ = channel::send(self.chan.as_fd(), &Msg::Sweep, &[]);
+    }
+
+    /// What its runs left running, as tarae sees it now: its children that aren't a run whose `Started` it has
+    /// heard — a run just forked is among them until then, so nothing ends what this lists while runs may start
+    /// (`sweep` does that); what reads it is the report of a session's end, which ends every run anyway, and tests.
     pub fn leftovers(&self) -> Vec<u32> {
         let runs: Vec<u32> = lock(&self.state)
             .runs
@@ -798,7 +826,10 @@ impl Keeper {
             lock(&self.state).runs.remove(&id);
             return Err(e);
         }
-        let deadline = Instant::now() + STARTED_WITHIN;
+        let within = STARTED_WITHIN;
+        #[cfg(test)]
+        let within = lock(&self.state).started_within.unwrap_or(within);
+        let deadline = Instant::now() + within;
         let mut s = lock(&self.state);
         loop {
             if let Some(started) = s.runs.get(&id).and_then(|r| r.started.clone()) {
@@ -1642,7 +1673,7 @@ pub fn main() -> ! {
         }
         (OwnedFd::from_raw_fd(CHANNEL_FD), OwnedFd::from_raw_fd(sfd))
     };
-    let mut k = Kept { chan, signals, children: HashMap::new(), reaped: 0 };
+    let mut k = Kept { chan, signals, children: HashMap::new(), reaped: 0, swept: Vec::new() };
     // SAFETY: getpid has no preconditions.
     let me = unsafe { libc::getpid() } as u32;
     // Its device places, as its own mount namespace has them, opened now — before any run exists — and handed
@@ -1668,9 +1699,15 @@ pub fn main() -> ! {
             .chain(errors.iter().map(|e| e.1))
             .map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 })
             .collect();
+        // (until a swept leftover's KILL is due, if one waits)
+        let timeout = k.swept.iter().map(|(_, due)| *due).min().map_or(-1, |due| {
+            let left = due.saturating_duration_since(crate::clock::now());
+            left.as_millis().saturating_add(1).min(i32::MAX as u128) as i32
+        });
         // SAFETY: the pollfds, live for the call.
-        let r = unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, -1) };
-        if r < 0 {
+        let r = unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, timeout) };
+        k.kill_due();
+        if r <= 0 {
             continue;
         }
         // A child's failure first: it comes before its end
@@ -1687,6 +1724,7 @@ pub fn main() -> ! {
                 Ok(Some((Ok(Msg::End), _))) | Ok(None) | Err(_) => k.end_all(me),
                 Ok(Some((Ok(Msg::Run(run)), fds))) => k.start(*run, fds),
                 Ok(Some((Ok(Msg::Signal { id, sig }), _))) => k.signal(id, sig),
+                Ok(Some((Ok(Msg::Sweep), _))) => k.sweep(me),
                 Ok(Some((Ok(Msg::AskUsage), _))) => {
                     let (rss_kb, pss_kb) = own_usage();
                     let _ = k.say(&Msg::Usage { rss_kb, pss_kb }, &[]);
@@ -1707,6 +1745,9 @@ struct Kept {
     children: HashMap<u64, Child>,
     /// Orphans reaped since `Reaped` last said so.
     reaped: u32,
+    /// What a sweep sent TERM (`sweep`), each with when its KILL is due — one reaped leaves it (its pid may be a
+    /// run's next).
+    swept: Vec<(i32, Instant)>,
 }
 
 impl Kept {
@@ -1809,7 +1850,10 @@ impl Kept {
                     self.children.remove(&id);
                     let _ = self.say(&Msg::Exited { id, status }, &[]);
                 }
-                None => self.reaped += 1,
+                None => {
+                    self.reaped += 1;
+                    self.swept.retain(|(p, _)| *p != pid);
+                }
             }
         }
         if self.reaped > 0 {
@@ -1827,6 +1871,38 @@ impl Kept {
                 libc::kill(c.pid, sig);
             }
         }
+    }
+
+    /// Ends what the runs left (`Msg::Sweep`, D14): TERM to each child that isn't a run — its whole group when it
+    /// leads one —, KILL once `LEFT_TERM` has passed (`kill_due`), the loop going on meanwhile. Told by its own
+    /// record: a run is in `children` from its fork on, before its `Started` is said and before the next request is
+    /// read, so none asked for is ever taken for a leftover, whatever tarae has read of the channel (#425).
+    fn sweep(&mut self, me: u32) {
+        let due = crate::clock::now() + LEFT_TERM;
+        for p in crate::procs::children(me) {
+            let p = p as i32;
+            if self.children.values().any(|c| c.pid == p) || self.swept.iter().any(|(s, _)| *s == p) {
+                continue;
+            }
+            signal_left(p, libc::SIGTERM);
+            self.swept.push((p, due));
+        }
+    }
+
+    /// KILL to what a sweep sent TERM whose `LEFT_TERM` has passed (each still unreaped: `reap` takes one that ended
+    /// off the list).
+    fn kill_due(&mut self) {
+        let now = crate::clock::now();
+        let children = &self.children;
+        self.swept.retain(|&(p, due)| {
+            if due > now {
+                return true;
+            }
+            if !children.values().any(|c| c.pid == p) {
+                signal_left(p, libc::SIGKILL);
+            }
+            false
+        });
     }
 
     /// Ends every run and what they left — TERM to each child and its group, KILL after `LEFT_TERM`, again
@@ -1858,6 +1934,18 @@ impl Kept {
         }
         self.reap();
         std::process::exit(0)
+    }
+}
+
+/// `sig` to `p`, a leftover of the keeper's — its own unreaped child, so its pid is it — and to the group it leads
+/// if it leads one (a daemon that called `setsid` takes the workers it started with it, as `reaper::end`).
+fn signal_left(p: i32, sig: i32) {
+    // SAFETY: getpgid and kill of our own unreaped child, and of the group it leads (its id held while it is).
+    unsafe {
+        if libc::getpgid(p) == p {
+            libc::kill(-p, sig);
+        }
+        libc::kill(p, sig);
     }
 }
 
@@ -2733,6 +2821,7 @@ mod tests {
             signals: open_null(libc::O_RDONLY).unwrap(),
             children: HashMap::new(),
             reaped: 0,
+            swept: Vec::new(),
         };
         let mut buf = Vec::new();
         let mut heard = || match channel::recv(theirs.as_fd(), &mut buf) {
@@ -3211,6 +3300,75 @@ mod tests {
         assert!(gone_within(&k, END_WITHIN), "let go with it");
         third.end();
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// #425: a key change superseding the keeper while a run's `Started` is on its way to tarae (forked, not heard)
+    /// ends what an earlier run left and leaves that run going — the sweep is the keeper's, by its own record of what
+    /// it forked (`Msg::Sweep`), never tarae's view of its children. The supersede is put in that window: tarae's
+    /// reader, the run's `Started` in hand, has the other key asked (on a thread: its keeper's birth isn't waited)
+    /// and waits until the earlier run's leftover has ended, then hears it. The run waits on a FIFO the test opens
+    /// after, so it's there through the sweep in every tier. (Swept by tarae's `leftovers()`, the run was TERMed:
+    /// `killed by signal 15` — as was it ended with the keeper, idle, when an unheard run counted as none.)
+    #[test]
+    fn a_run_starting_as_its_keeper_is_superseded_is_not_a_leftover() {
+        use std::io::Write;
+        use std::os::unix::process::ExitStatusExt;
+        let Some(rules) = open_rules("a_run_starting_as_its_keeper_is_superseded_is_not_a_leftover") else {
+            return;
+        };
+        let dir = crate::scratch::Scratch::new("keeper-sweep");
+        let root = dir.path().to_path_buf();
+        let old = ready(&root, Some("key 1"), ns()).unwrap();
+        let (out, status) = sh_through(&old, &rules, "setsid sleep 30 >/dev/null 2>&1 & echo $!");
+        assert!(status.success(), "{out}");
+        let left = outer_pid(&old, out.trim().parse().unwrap());
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        while crate::procs::read(left).map(|o| o.ppid) != Some(old.pid) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(old.leftovers(), [left], "left by its run");
+        // SAFETY: a pidfd of the leftover, owned below (its parent is the keeper: it isn't reaped while it's there).
+        let left_fd = unsafe { libc::syscall(libc::SYS_pidfd_open, left as libc::pid_t, 0u32) };
+        assert!(left_fd >= 0, "{}", io::Error::last_os_error());
+        // SAFETY: just made.
+        let left_fd = unsafe { OwnedFd::from_raw_fd(left_fd as RawFd) };
+        let fifo = root.join("go");
+        let c = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a path we own, NUL-terminated.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", io::Error::last_os_error());
+        let (said, heard) = std::sync::mpsc::channel();
+        let (r, birth) = (root.clone(), std::sync::mpsc::channel());
+        {
+            let mut s = lock(&old.state);
+            s.started_within = Some(crate::test_results::PATIENCE);
+            s.before_started = Some(Box::new(move || {
+                let tx = birth.0;
+                std::thread::spawn(move || tx.send(ready(&r, Some("key 2"), ns())));
+                let _ = said.send((readable(left_fd.as_fd(), crate::test_results::PATIENCE), birth.1));
+            }));
+        }
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", &format!("read x < '{}'; echo went", fifo.display())]);
+        let s = old.start(&cmd, &crate::landlock::thread_name(), rules.fd(), RunNet::Plain).unwrap();
+        let (ended, birth) =
+            heard.recv_timeout(crate::test_results::PATIENCE).expect("superseded in the window");
+        assert!(ended.is_ok_and(|e| e), "what the earlier run left ended");
+        let new = birth.recv_timeout(crate::test_results::PATIENCE).expect("its birth").unwrap();
+        assert_ne!(new.pid, old.pid, "a new keeper for the new key");
+        // (read and written: the open never waits for a reader — one killed would never come)
+        let mut w = std::fs::OpenOptions::new().read(true).write(true).open(&fifo).unwrap();
+        w.write_all(b"go\n").unwrap();
+        let mut out = String::new();
+        io::Read::read_to_string(&mut s.spawned.stdout.unwrap(), &mut out).unwrap();
+        let status = crate::spawn::wait(s.spawned.pid).unwrap();
+        let how =
+            status.signal().map_or_else(|| format!("ended {status}"), |n| format!("killed by signal {n}"));
+        assert!(
+            status.success() && out == "went\n",
+            "the run going was taken for a leftover: {how}, said {out:?}"
+        );
+        assert!(gone_within(&old, END_WITHIN), "ended after its run");
+        new.end();
     }
 
     /// A tarae session for the keeper's lifetime tests: an editor on a project of its own, the sandbox on, and

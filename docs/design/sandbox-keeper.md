@@ -188,6 +188,7 @@ supervisor–proxy messages would move onto it only if they ever leave tarae's p
 | `Signal { id, sig }` | cancel: the keeper signals the run's process group, only while it hasn't reaped it (`dap::term_group` asks here: once the keeper has reaped a run, a kill from tarae could reach a reused pid) |
 | `AskUsage` | its own Rss and Pss (M3): its `smaps_rollup` is unreadable to tarae |
 | `End`, or EOF | end every run and leftover, then exit |
+| `Sweep` | end what the runs left and go on (D14): TERM to each child that isn't a run it forked and hasn't reaped (its group when it leads one), KILL after 1 s, its loop going on meanwhile. By its own record: a run is its from the fork on, before `Started` is said, so a run whose `Started` tarae hasn't read yet is never taken for a leftover (#425) |
 
 | keeper → tarae | |
 |---|---|
@@ -259,8 +260,9 @@ the keeper — and in the session's user namespace Yama 1 and 2 let tarae throug
 - **The session ends** (`:workspace-end`), or **tarae quits, restarts or crashes**: `End`, or EOF on its channel, which
   is close-on-exec.
 - **The session's policy key changes** (D14): a daemon started under the old key would keep its rights, narrower or
-  wider. The old keeper takes no run more. What its runs left ends at once, and it ends itself after its last run
-  (`keeper::ready`).
+  wider. The old keeper takes no run more. What its runs left ends at once (`Sweep` — the keeper tells a leftover from a
+  run by what it forked, never tarae by what it has read), and it ends itself after its last run, a run asked for whose
+  `Started` isn't read yet among them (`keeper::ready`).
 - **There is no idle end**; Gradle's and Kotlin's own timeouts end their daemons.
 
 ### Its protection
