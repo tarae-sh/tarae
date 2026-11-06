@@ -94,8 +94,24 @@ pub enum ToProxy {
         rules: Arc<Egress>,
         told: Sender<Relayed>,
     },
-    /// The run ended (reaped): macOS's listener closes, its token is gone (`sandbox::after_run`); on both
-    /// systems (the main loop, `hosts::run_ended`) a question asked for it goes to whoever still waits.
+    /// A session's own port (the unserved tier's bridge, `.sb/offline-bridge-plan.md` A): a listener at
+    /// `route::PROXY` in the session's network namespace, made by its keeper — its connections' runs known by their
+    /// tokens (`RunToken`), looked up within this session alone. A newer one takes the session's last one's place
+    /// (a new keeper, a new namespace): that one closes.
+    SessionPort { session: u64, listener: OwnedFd },
+    /// A run of a session with a port (`SessionPort`) started: the token its proxy URL carries as the password —
+    /// the one way its connections are told from the session's other runs'.
+    RunToken {
+        run: u64,
+        session: u64,
+        process: String,
+        token: String,
+        rules: Arc<Egress>,
+        told: Sender<Relayed>,
+    },
+    /// The run ended (reaped): macOS's listener closes, its token is gone (`sandbox::after_run`), a session port's
+    /// run's token too; on both systems (the main loop, `hosts::run_ended`) a question asked for it goes to
+    /// whoever still waits.
     RunEnded { run: u64 },
     /// The user's answer to an `Ask`, or a grant from what a run was refused (main loop). An allow takes the place
     /// of a refusal before it, and a refusal of an allow.
@@ -199,16 +215,31 @@ enum In {
     Ended {
         session: u64,
     },
-    /// A run's listener took a connection (macOS).
+    /// A run's listener (macOS) or a session's took a connection.
     Accepted {
-        run: u64,
+        of: Of,
         stream: TcpStream,
     },
-    /// A run's listener stopped taking connections for good (macOS): said on the run's sender.
+    /// A run's listener stopped taking connections for good (macOS): said on the run's sender; a session's
+    /// logged (no run to say it to).
     PortStopped {
-        run: u64,
+        of: Of,
         why: String,
     },
+    /// A session port's connection asks whose its password is: a run of that session holding it as its token,
+    /// else none.
+    Lookup {
+        session: u64,
+        password: Vec<u8>,
+        reply: Sender<Option<RunOf>>,
+    },
+}
+
+/// Whose a port is: a run's own (macOS), or a session's (`ToProxy::SessionPort`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Of {
+    Run(u64),
+    Session(u64),
 }
 
 /// The proxy: messages go in through it.
@@ -225,6 +256,7 @@ impl Proxy {
             shared: Shared { resolve, limits, tx: tx.clone() },
             asks,
             runs: HashMap::new(),
+            ports: HashMap::new(),
             per_session: HashMap::new(),
             total: 0,
             latest: HashMap::new(),
@@ -278,14 +310,30 @@ impl Key {
     }
 }
 
-/// A macOS run's: what each of its connections gets, and its listener's stop (dropped: the listener closes).
+/// A run with a token (macOS's, or a session port's): what each of its connections gets.
 struct Run {
     session: u64,
     process: String,
     token: String,
     rules: Arc<Egress>,
     told: Sender<Relayed>,
-    _stop: io::PipeWriter,
+    /// macOS: its own listener's stop (dropped: the listener closes). None: a session port's run, found by its
+    /// token there (`State::looked_up`) — never a macOS run's, whose token is for its own port alone.
+    port: Option<io::PipeWriter>,
+}
+
+impl Run {
+    fn of(&self, run: u64) -> RunOf {
+        RunOf { run, process: self.process.clone(), rules: self.rules.clone(), told: self.told.clone() }
+    }
+}
+
+/// A run as each of its connections has it: what the report names, its rules, where its refusals are said.
+struct RunOf {
+    run: u64,
+    process: String,
+    rules: Arc<Egress>,
+    told: Sender<Relayed>,
 }
 
 /// The dispatcher's own state.
@@ -293,6 +341,8 @@ struct State {
     shared: Shared,
     asks: Sender<FromProxy>,
     runs: HashMap<u64, Run>,
+    /// The sessions' ports (`ToProxy::SessionPort`), each its accept loop's stop (dropped: the listener closes).
+    ports: HashMap<u64, io::PipeWriter>,
     per_session: HashMap<u64, usize>,
     total: usize,
     /// The user's latest answer for the session (or the project, or taken back).
@@ -353,7 +403,40 @@ fn open(s: &TcpStream) -> bool {
             ))
 }
 
-/// A connection, ready to be served.
+/// A connection as it comes, its run known or not yet.
+struct Incoming {
+    stream: TcpStream,
+    session: u64,
+    who: Who,
+}
+
+/// How a connection's run is known.
+enum Who {
+    /// The supervisor's pair (Linux, served): by who connected.
+    Run(RunOf),
+    /// A run's own port (macOS): its requests carry this password, the run's token.
+    Port(RunOf, String),
+    /// A session's port: by the token its request carries, looked up among the session's runs.
+    Session,
+}
+
+impl Incoming {
+    /// A refusal before its run is known: said on the run's sender where it's known, else logged.
+    fn say(&self, why: &str) {
+        match &self.who {
+            Who::Run(r) | Who::Port(r, _) => tell_run(r, OP, why),
+            Who::Session => session_said(self.session, why),
+        }
+    }
+}
+
+/// What a session port's connection that names no run comes to: a line in tarae's log, the session's — never its
+/// password.
+fn session_said(session: u64, why: &str) {
+    crate::log::line("sandbox", "warning", &format!("session {session:016x}'s proxy port: {why}"));
+}
+
+/// A connection, its run known, ready to be served.
 struct Conn {
     stream: TcpStream,
     run: u64,
@@ -361,8 +444,13 @@ struct Conn {
     process: String,
     rules: Arc<Egress>,
     told: Sender<Relayed>,
-    /// macOS: the password its requests must carry.
-    token: Option<String>,
+}
+
+impl RunOf {
+    fn conn(self, stream: TcpStream, session: u64) -> Conn {
+        let RunOf { run, process, rules, told } = self;
+        Conn { stream, run, session, process, rules, told }
+    }
 }
 
 impl State {
@@ -370,26 +458,25 @@ impl State {
         while let Ok(m) = rx.recv() {
             match m {
                 In::Msg(ToProxy::Connection(c)) => {
-                    let conn = Conn {
-                        stream: TcpStream::from(c.fd),
-                        run: c.run,
-                        session: c.session,
-                        process: c.process,
-                        rules: c.rules,
-                        told: c.told,
-                        token: None,
-                    };
-                    self.admit(conn);
+                    let r = RunOf { run: c.run, process: c.process, rules: c.rules, told: c.told };
+                    let stream = TcpStream::from(c.fd);
+                    self.admit(Incoming { stream, session: c.session, who: Who::Run(r) });
                 }
                 In::Msg(ToProxy::RunStarts { run, session, process, listener, token, rules, told }) => {
-                    let Ok((stop_r, stop_w)) = io::pipe() else { continue };
-                    let tx = self.shared.tx.clone();
-                    let spawned = std::thread::Builder::new()
-                        .name("tarae-proxy-run".into())
-                        .spawn(move || accept(run, listener, stop_r, tx));
-                    if spawned.is_ok() {
-                        self.runs.insert(run, Run { session, process, token, rules, told, _stop: stop_w });
+                    if let Some(stop) = self.accepting(Of::Run(run), listener) {
+                        let port = Some(stop);
+                        self.runs.insert(run, Run { session, process, token, rules, told, port });
                     }
+                }
+                In::Msg(ToProxy::SessionPort { session, listener }) => {
+                    // (the last one's stop dropped: its loop ends, its listener closes)
+                    match self.accepting(Of::Session(session), listener) {
+                        Some(stop) => self.ports.insert(session, stop),
+                        None => self.ports.remove(&session),
+                    };
+                }
+                In::Msg(ToProxy::RunToken { run, session, process, token, rules, told }) => {
+                    self.runs.insert(run, Run { session, process, token, rules, told, port: None });
                 }
                 In::Msg(ToProxy::RunEnded { run }) => self.run_ended(run),
                 In::Msg(ToProxy::Answer { session, run, host, port, scope }) => {
@@ -431,31 +518,59 @@ impl State {
                         *n = n.saturating_sub(1);
                     }
                 }
-                In::PortStopped { run, why } => {
+                In::PortStopped { of: Of::Run(run), why } => {
                     let Some(r) = self.runs.get(&run) else { continue };
                     let target = format!("its port to tarae's proxy stopped taking connections: {why}");
                     crate::log::line("sandbox", "warning", &format!("run {run}: {target}"));
                     let _ = r.told.send(Denial { process: r.process.clone(), op: OP.into(), target }.into());
                 }
-                In::Accepted { run, stream } => {
+                In::PortStopped { of: Of::Session(session), why } => {
+                    session_said(session, &format!("stopped taking connections: {why}"));
+                }
+                In::Accepted { of: Of::Run(run), stream } => {
                     let Some(r) = self.runs.get(&run) else { continue };
-                    let conn = Conn {
-                        stream,
-                        run,
-                        session: r.session,
-                        process: r.process.clone(),
-                        rules: r.rules.clone(),
-                        told: r.told.clone(),
-                        token: Some(r.token.clone()),
-                    };
-                    self.admit(conn);
+                    let who = Who::Port(r.of(run), r.token.clone());
+                    self.admit(Incoming { stream, session: r.session, who });
+                }
+                In::Accepted { of: Of::Session(session), stream } => {
+                    self.admit(Incoming { stream, session, who: Who::Session });
+                }
+                In::Lookup { session, password, reply } => {
+                    let _ = reply.send(self.looked_up(session, &password));
                 }
             }
         }
     }
 
+    /// `listener`'s accept loop started on a thread of its own, each connection to the dispatcher as `of`'s — its
+    /// stop, None where no thread could start.
+    fn accepting(&self, of: Of, listener: OwnedFd) -> Option<io::PipeWriter> {
+        let (stop_r, stop_w) = io::pipe().ok()?;
+        let tx = self.shared.tx.clone();
+        let name = match of {
+            Of::Run(_) => "tarae-proxy-run",
+            Of::Session(_) => "tarae-proxy-port",
+        };
+        let spawned =
+            std::thread::Builder::new().name(name.into()).spawn(move || accept(of, listener, stop_r, tx));
+        spawned.is_ok().then_some(stop_w)
+    }
+
+    /// The run of `session` whose token `password` is — a session port's runs only, every one's token compared
+    /// whole (`same_token`); none for another session's, an ended run's (`RunEnded` took it) or no run's.
+    fn looked_up(&self, session: u64, password: &[u8]) -> Option<RunOf> {
+        let mut found = None;
+        for (run, r) in &self.runs {
+            let holds = same_token(password, r.token.as_bytes());
+            if r.port.is_none() && r.session == session && holds && found.is_none() {
+                found = Some(r.of(*run));
+            }
+        }
+        found
+    }
+
     /// A connection counted and served on a thread of its own — or, past a cap, answered 503 and said.
-    fn admit(&mut self, c: Conn) {
+    fn admit(&mut self, c: Incoming) {
         let limits = self.shared.limits;
         let mine = self.per_session.get(&c.session).copied().unwrap_or(0);
         if mine >= limits.per_session || self.total >= limits.total {
@@ -466,7 +581,7 @@ impl State {
             // (a fresh connection's send buffer is empty: this doesn't wait)
             let _ = c.stream.set_nonblocking(true);
             answer(&c.stream, 503, &why, "");
-            tell(&c, &why);
+            c.say(&why);
             return;
         }
         *self.per_session.entry(c.session).or_default() += 1;
@@ -593,14 +708,14 @@ impl State {
     }
 }
 
-/// A run's listener's connections (macOS), each to the dispatcher, until its stop's other end is dropped. A port
-/// that stops for good (an accept error that isn't one connection's or a passing want of descriptors) is said on
-/// the run's sender (`In::PortStopped`).
-fn accept(run: u64, listener: OwnedFd, stop: io::PipeReader, tx: Sender<In>) {
+/// A run's listener's connections (macOS) or a session's, each to the dispatcher, until its stop's other end is
+/// dropped. A port that stops for good (an accept error that isn't one connection's or a passing want of
+/// descriptors) is said on the run's sender, or logged for a session's (`In::PortStopped`).
+fn accept(of: Of, listener: OwnedFd, stop: io::PipeReader, tx: Sender<In>) {
     let listener = match port_listener(listener) {
         Ok(l) => l,
         Err(e) => {
-            let _ = tx.send(In::PortStopped { run, why: e.to_string() });
+            let _ = tx.send(In::PortStopped { of, why: e.to_string() });
             return;
         }
     };
@@ -608,10 +723,10 @@ fn accept(run: u64, listener: OwnedFd, stop: io::PipeReader, tx: Sender<In>) {
         &listener,
         &stop,
         || listener.accept().map(|(s, _)| s),
-        |stream| tx.send(In::Accepted { run, stream }).is_ok(),
+        |stream| tx.send(In::Accepted { of, stream }).is_ok(),
     );
     if let Some(e) = stopped {
-        let _ = tx.send(In::PortStopped { run, why: e.to_string() });
+        let _ = tx.send(In::PortStopped { of, why: e.to_string() });
     }
 }
 
@@ -687,6 +802,10 @@ fn tell(c: &Conn, target: &str) {
 
 fn tell_op(c: &Conn, op: &str, target: &str) {
     let _ = c.told.send(Denial { process: c.process.clone(), op: op.into(), target: target.into() }.into());
+}
+
+fn tell_run(r: &RunOf, op: &str, target: &str) {
+    let _ = r.told.send(Denial { process: r.process.clone(), op: op.into(), target: target.into() }.into());
 }
 
 /// An HTTP answer (`extra`: header lines, each ending CR LF), its body the why; the connection closes after.
@@ -818,10 +937,23 @@ fn held(shared: &Shared, a: Asking, not_named: &str) -> Decided {
     }
 }
 
+/// The 407 a run's port or a session's answers a request without its run's password: the challenge git waits for.
+fn wants_password(s: &TcpStream) {
+    answer(s, 407, "this proxy takes its run's password", "Proxy-Authenticate: Basic realm=\"tarae\"\r\n");
+}
+
+/// Whose a session port's connection is: the run its password is the token of (`State::looked_up`), else None —
+/// the dispatcher gone too.
+fn whose(shared: &Shared, session: u64, password: &[u8]) -> Option<RunOf> {
+    let (reply, found) = mpsc::channel();
+    shared.tx.send(In::Lookup { session, password: password.to_vec(), reply }).ok()?;
+    found.recv().ok().flatten()
+}
+
 /// One connection, start to end.
-fn serve(c: Conn, shared: &Shared) {
+fn serve(inc: Incoming, shared: &Shared) {
     let limits = shared.limits;
-    let s = &c.stream;
+    let s = &inc.stream;
     let mut buf = Vec::new();
     let by = Instant::now() + limits.head_time;
     let h = match read_until(s, &mut buf, by, |b| match parse::head(b) {
@@ -832,41 +964,61 @@ fn serve(c: Conn, shared: &Shared) {
         Ok(Ok(None)) => return,
         Ok(Err(r)) => {
             answer(s, r.status(), &r.said(), "");
-            return tell(&c, &r.said());
+            return inc.say(&r.said());
         }
         Err(true) => {
             let why = format!("no whole request head within {} s", limits.head_time.as_secs_f32());
             answer(s, 408, &why, "");
-            return tell(&c, &why);
+            return inc.say(&why);
         }
         Err(false) => return,
     };
-    if let Some(token) = &c.token {
+    let at = {
         let (host, port) = match &h.request {
             Request::Connect { host, port } | Request::Plain { host, port, .. } => (host, port),
         };
-        let at = match host {
+        match host {
             Host::Name(n) => format!("{n}:{port}"),
             Host::Addr(a) => std::net::SocketAddr::new(*a, *port).to_string(),
-        };
-        let wrong = match &h.auth {
-            Auth::Basic { password, .. } if same_token(password, token.as_bytes()) => None,
-            Auth::None => Some(None),
-            _ => Some(Some(format!("{at}: a wrong proxy password — not its run's (HTTPS_PROXY)"))),
-        };
-        if let Some(said) = wrong {
-            answer(
-                s,
-                407,
-                "this proxy takes its run's password",
-                "Proxy-Authenticate: Basic realm=\"tarae\"\r\n",
-            );
-            if let Some(why) = said {
-                tell(&c, &why);
-            }
-            return;
         }
-    }
+    };
+    let Incoming { stream, session, who } = inc;
+    let c = match who {
+        Who::Run(r) => r.conn(stream, session),
+        Who::Port(r, token) => match &h.auth {
+            Auth::Basic { password, .. } if same_token(password, token.as_bytes()) => r.conn(stream, session),
+            // (a client's first try, before the challenge: unsaid)
+            Auth::None => return wants_password(&stream),
+            _ => {
+                wants_password(&stream);
+                return tell_run(
+                    &r,
+                    OP,
+                    &format!("{at}: a wrong proxy password — not its run's (HTTPS_PROXY)"),
+                );
+            }
+        },
+        // (no run to say it to: tarae's log has it, never the password)
+        Who::Session => match &h.auth {
+            Auth::Basic { password, .. } => match whose(shared, session, password) {
+                Some(r) => r.conn(stream, session),
+                None => {
+                    let why = "a password no run of this session holds (another session's, an ended run's, or none's)";
+                    session_said(session, &format!("{at}: {why} — 407"));
+                    return wants_password(&stream);
+                }
+            },
+            Auth::None => {
+                session_said(session, &format!("{at}: no proxy password — 407"));
+                return wants_password(&stream);
+            }
+            Auth::Unreadable => {
+                session_said(session, &format!("{at}: a proxy password that can't be read — 407"));
+                return wants_password(&stream);
+            }
+        },
+    };
+    let s = &c.stream;
     let (host, port, default) = match &h.request {
         Request::Connect { host, port } => (host, *port, 443),
         Request::Plain { host, port, .. } => (host, *port, 80),
@@ -1128,12 +1280,7 @@ impl RunPort {
     pub fn new(run: u64) -> io::Result<Arc<RunPort>> {
         let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         let port = listener.local_addr()?.port();
-        let mut raw = [0u8; 32];
-        // SAFETY: a buffer of ours, its length (≤ 256, getentropy's most).
-        if unsafe { libc::getentropy(raw.as_mut_ptr().cast(), raw.len()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let token = raw.iter().map(|b| format!("{b:02x}")).collect();
+        let token = fresh_token()?;
         Ok(Arc::new(RunPort {
             run,
             port,
@@ -1191,6 +1338,72 @@ impl RunPort {
     /// Its run ended (reaped — `sandbox::after_run`): its port closes, its token is gone.
     pub fn ended(run: u64) {
         get().send(ToProxy::RunEnded { run });
+    }
+}
+
+/// A run's token: 32 bytes from `getentropy`, in hex.
+fn fresh_token() -> io::Result<String> {
+    let mut raw = [0u8; 32];
+    // SAFETY: a buffer of ours, its length (≤ 256, getentropy's most).
+    if unsafe { libc::getentropy(raw.as_mut_ptr().cast(), raw.len()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(raw.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// A run's way to its session's port (the unserved tier's bridge, `.sb/offline-bridge-plan.md` A): the token its
+/// proxy URL carries as the password, as macOS's `RunPort` — the one way the port tells it from the session's
+/// other runs (what can reach the port but not read the run's environment can't use it; another session can't
+/// reach the port at all: it's in the session's network namespace). Made with the run's policy.
+#[cfg_attr(not(test), allow(dead_code))] // (pieces 2 and 3: the keeper's port, the policy's URL)
+pub struct RunToken {
+    /// The run, as the proxy knows it (`ToProxy::RunToken`, `RunEnded`).
+    pub run: u64,
+    token: String,
+}
+
+#[allow(dead_code)] // (`started` and `ended` too, tests or not: pieces 2 and 3 start and end its runs)
+impl RunToken {
+    /// For run `run` (`Policy.run_id`).
+    pub fn new(run: u64) -> io::Result<RunToken> {
+        Ok(RunToken { run, token: fresh_token()? })
+    }
+
+    /// The URL its run's proxy variables name: `route::PROXY`, the address the served tiers' variables name too,
+    /// and the token as the password (`run:` the user, as `RunPort::url`).
+    pub fn url(&self) -> ProxyUrl {
+        ProxyUrl {
+            host: route::PROXY.ip().to_string(),
+            port: route::PROXY.port(),
+            user: Some("run".into()),
+            password: Some(self.token.clone()),
+            per_run: true,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Its run started: the token to the proxy, with what each of its connections gets — the session (its
+    /// project's), its policy's rules, where its refusals are said (`told`), and what they name (`process`).
+    pub fn started(&self, policy: &super::Policy, process: String, told: Sender<Relayed>) {
+        let (run, session, token) = (self.run, policy.session, self.token.clone());
+        let rules = Arc::new(policy.egress.clone());
+        get().send(ToProxy::RunToken { run, session, process, token, rules, told });
+    }
+
+    /// Its run ended (reaped): its token is gone.
+    pub fn ended(run: u64) {
+        get().send(ToProxy::RunEnded { run });
+    }
+}
+
+/// Its run only: never the token.
+impl std::fmt::Debug for RunToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunToken").field("run", &self.run).finish_non_exhaustive()
     }
 }
 

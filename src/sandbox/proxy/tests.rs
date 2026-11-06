@@ -1822,8 +1822,178 @@ fn a_runs_port_goes_on_past_a_failed_accept() {
     let (token, rules) = ("tarae-fake-token-7".to_string(), Arc::new(rules(&[])));
     let process = "curl".to_string();
     assert!(f.proxy.send(ToProxy::RunStarts { run: 7, session: 1, process, listener, token, rules, told }));
-    let _ = f.proxy.tx.send(In::PortStopped { run: 7, why: "Bad file descriptor".into() });
+    let _ = f.proxy.tx.send(In::PortStopped { of: Of::Run(7), why: "Bad file descriptor".into() });
     assert!(said(&d).contains("its port to tarae's proxy stopped taking connections"));
+}
+
+/// A session's port (the unserved tier's bridge), stood in by a listener of the test's own on loopback — the keeper's
+/// at `route::PROXY` in the session's namespace (piece 2): its port.
+fn session_port(p: &Proxy, session: u64) -> u16 {
+    let l = TcpListener::bind((LO, 0)).unwrap();
+    let port = l.local_addr().unwrap().port();
+    assert!(p.send(ToProxy::SessionPort { session, listener: l.into() }));
+    port
+}
+
+/// A run of `session` with a token of its own (`RunToken`, as made with a run's policy) and these rules: the token,
+/// and the sender its refusals come on.
+fn token_run(p: &Proxy, session: u64, run: u64, rules: Egress) -> (RunToken, Receiver<Relayed>) {
+    let t = RunToken::new(run).unwrap();
+    let (told, d) = mpsc::channel();
+    let (process, token, rules) = ("curl".to_string(), t.token().to_string(), Arc::new(rules));
+    assert!(p.send(ToProxy::RunToken { run, session, process, token, rules, told }));
+    (t, d)
+}
+
+/// The header a run's proxy URL makes its client send: `run:<token>` (git and pip with `run:` the user, M1).
+fn basic(token: &str) -> String {
+    format!("Proxy-Authorization: Basic {}\r\n", parse::base64(format!("run:{token}").as_bytes()))
+}
+
+/// A request through a session's port: its answer's status.
+fn through_port(port: u16, head: &str) -> u16 {
+    let mut c = TcpStream::connect((LO, port)).unwrap();
+    c.set_read_timeout(Some(WAIT)).unwrap();
+    ask(&mut c, head)
+}
+
+/// The lines tarae's log has of a session's port since `log` began.
+fn port_lines(log: &crate::log::Capture, session: u64) -> Vec<String> {
+    let of = format!("session {session:016x}'s proxy port");
+    log.lines().into_iter().filter(|l| l.contains(&of)).collect()
+}
+
+/// A session's port takes a run's connection by the token its proxy URL carries (piece 1, A): it reaches its host
+/// by its run's rules, as the served tiers' pair does; a newer port for the session (a new keeper) takes the last
+/// one's place, which closes.
+#[test]
+fn a_session_ports_connection_reaches_its_host_by_its_runs_token() {
+    let out = outside(echo);
+    let (resolve, _) = resolver(vec![("example.invalid", vec![vec![out.at]])]);
+    let f = start(resolve, limits());
+    let session = 0x5e55_0101;
+    let port = session_port(&f.proxy, session);
+    let (t, d) = token_run(&f.proxy, session, 31, rules(&["example.invalid"]));
+    let head = format!("CONNECT example.invalid:443 HTTP/1.1\r\n{}\r\n", basic(t.token()));
+    let mut c = TcpStream::connect((LO, port)).unwrap();
+    c.set_read_timeout(Some(WAIT)).unwrap();
+    assert_eq!(ask(&mut c, &head), 200);
+    c.write_all(curl_hello()).unwrap();
+    let mut back = vec![0u8; curl_hello().len()];
+    c.read_exact(&mut back).unwrap();
+    assert_eq!(back, curl_hello(), "the tunnel reached the host");
+    assert!(d.try_recv().is_err(), "nothing refused");
+    let newer = session_port(&f.proxy, session);
+    assert_eq!(through_port(newer, &head), 200, "the newer port serves the session's runs");
+    let gone = Instant::now() + WAIT;
+    while TcpStream::connect((LO, port)).is_ok() {
+        assert!(Instant::now() < gone, "the session's last port still takes connections");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A session's port answers 407 to a request whose password is no run's of that session — another session's run's
+/// token, an ended run's, none — and logs it (no run to say it to: no run's sender hears of it). The same tokens
+/// pass where they belong: run 42's at its own session's port, run 41's until its run ended.
+#[test]
+fn a_session_port_refuses_another_sessions_token_an_ended_runs_and_none() {
+    let out = outside(echo);
+    let (resolve, _) = resolver(vec![("example.invalid", vec![vec![out.at]])]);
+    let f = start(resolve, limits());
+    let log = crate::log::capture();
+    let (one, two) = (0x5e55_0201, 0x5e55_0202);
+    let (port_one, port_two) = (session_port(&f.proxy, one), session_port(&f.proxy, two));
+    let (mine, d_mine) = token_run(&f.proxy, one, 41, rules(&["example.invalid"]));
+    let (theirs, d_theirs) = token_run(&f.proxy, two, 42, rules(&["example.invalid"]));
+    let head = |auth: &str| format!("CONNECT example.invalid:443 HTTP/1.1\r\n{auth}\r\n");
+    assert_eq!(through_port(port_one, &head(&basic(mine.token()))), 200);
+    assert_eq!(through_port(port_two, &head(&basic(theirs.token()))), 200);
+    assert!(port_lines(&log, one).is_empty(), "{:?}", port_lines(&log, one));
+    // Another session's run's token
+    assert_eq!(through_port(port_one, &head(&basic(theirs.token()))), 407, "another session's token");
+    let lines = port_lines(&log, one);
+    assert!(lines.len() == 1 && lines[0].contains("no run of this session holds"), "{lines:?}");
+    // None
+    assert_eq!(through_port(port_one, &head("")), 407, "no password");
+    let lines = port_lines(&log, one);
+    assert!(lines.len() == 2 && lines[1].contains("no proxy password"), "{lines:?}");
+    // An ended run's
+    assert!(f.proxy.send(ToProxy::RunEnded { run: 41 }));
+    assert_eq!(through_port(port_one, &head(&basic(mine.token()))), 407, "an ended run's token");
+    let lines = port_lines(&log, one);
+    assert!(lines.len() == 3 && lines[2].contains("no run of this session holds"), "{lines:?}");
+    assert!(d_mine.try_recv().is_err() && d_theirs.try_recv().is_err(), "no run's sender hears of it");
+}
+
+/// Two runs of one session at its one port are told apart by their tokens, each its own rules: the run whose rules
+/// name the host goes through, the other's request is its own — the user asked for it (by its run), refused as its
+/// hold runs out, said on its sender alone.
+#[test]
+fn two_runs_at_a_session_port_are_told_apart_by_their_tokens() {
+    let out = outside(web);
+    let (resolve, _) = resolver(vec![("web.test", vec![vec![out.at]])]);
+    let f = start(resolve, Limits { hold: Duration::from_millis(300), ..limits() });
+    let session = 0x5e55_0301;
+    let port = session_port(&f.proxy, session);
+    let (granted, d_granted) = token_run(&f.proxy, session, 51, rules(&["web.test"]));
+    let (other, d_other) = token_run(&f.proxy, session, 52, rules(&[]));
+    let get =
+        |token: &str| format!("GET http://web.test/x HTTP/1.1\r\nHost: web.test\r\n{}\r\n", basic(token));
+    assert_eq!(through_port(port, &get(granted.token())), 200, "run 51's rules name the host");
+    assert!(f.asks.try_recv().is_err(), "run 51's request asked nothing");
+    assert_eq!(through_port(port, &get(other.token())), 403, "run 52's rules don't");
+    assert!(
+        matches!(f.asks.recv_timeout(WAIT), Ok(FromProxy::Ask { run: 52, host, .. }) if host == "web.test"),
+        "the user asked for run 52"
+    );
+    assert!(said_host(&d_other).contains("didn't answer"));
+    assert!(d_granted.try_recv().is_err(), "run 51 heard nothing of run 52's refusal");
+    assert_eq!(through_port(port, &get(granted.token())), 200, "run 51 still goes through");
+}
+
+/// A run's token is a secret: its URL (`http://run:<64 hex>@192.0.2.1:3128`) is the only thing that holds it — a
+/// policy's `Debug` (its key, in logs) and the token's own show none; the card record's rule (`tokens::redacted`)
+/// takes it out of a command naming its variable; and no line the port logs nor any refusal a run's report says
+/// holds it, whatever comes to the port (the run's own token, a wrong one, none, a host refused).
+#[test]
+fn a_runs_token_is_in_no_log_line_or_report() {
+    let f = start(resolver(vec![]).0, Limits { hold: Duration::from_millis(300), ..limits() });
+    let log = crate::log::capture();
+    let session = 0x5e55_0401;
+    let port = session_port(&f.proxy, session);
+    let (t, d) = token_run(&f.proxy, session, 61, rules(&[]));
+    let (ended, _) = token_run(&f.proxy, session, 62, rules(&[]));
+    let token = t.token().to_string();
+    assert!(token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()), "{token}");
+    let url = t.url();
+    assert_eq!(url.url(), format!("http://run:{token}@192.0.2.1:3128"));
+    assert!(url.per_run, "never written where another run reads");
+    for shown in [format!("{url:?}"), format!("{t:?}")] {
+        assert!(!shown.contains(&token), "{shown}");
+    }
+    let line = format!("env HTTPS_PROXY={} curl https://example.invalid", url.url());
+    let kept = crate::tokens::redacted(&line);
+    assert!(!kept.contains(&token) && kept.contains("@192.0.2.1:3128"), "{kept}");
+    assert!(f.proxy.send(ToProxy::RunEnded { run: 62 }));
+    let head = |auth: &str| format!("GET http://nowhere.test/ HTTP/1.1\r\nHost: nowhere.test\r\n{auth}\r\n");
+    let wrong = format!("{}0", &token[1..]);
+    for (auth, status) in [
+        (basic(&token), 403),
+        (basic(&wrong), 407),
+        (basic(ended.token()), 407),
+        (String::new(), 407),
+        ("Proxy-Authorization: Basic !!\r\n".into(), 407),
+    ] {
+        assert_eq!(through_port(port, &head(&auth)), status, "{auth}");
+    }
+    let said = said_host(&d);
+    let lines = port_lines(&log, session);
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    let secrets =
+        [token.clone(), ended.token().to_string(), wrong, parse::base64(format!("run:{token}").as_bytes())];
+    for text in lines.iter().chain([&said]) {
+        assert!(!secrets.iter().any(|s| text.contains(s.as_str())), "a token in: {text}");
+    }
 }
 
 /// The pair a run's connection to the proxy is made of (Linux's `supervisor::proxied`) holds only the run's
