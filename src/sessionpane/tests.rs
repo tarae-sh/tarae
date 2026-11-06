@@ -169,6 +169,11 @@ fn frame(ed: &mut Editor, w: u16, h: u16) -> String {
 }
 
 fn feed(ed: &mut Editor, keys: &str) {
+    feed_at(ed, keys, 160, 40);
+}
+
+/// `keys`, a frame `w` × `h` drawn after each.
+fn feed_at(ed: &mut Editor, keys: &str, w: u16, h: u16) {
     let mut chars = keys.chars();
     while let Some(c) = chars.next() {
         let k: Key = match c {
@@ -176,7 +181,7 @@ fn feed(ed: &mut Editor, keys: &str) {
             c => Key::plain(Code::Char(c)),
         };
         ed.handle_key(k);
-        frame(ed, 160, 40);
+        frame(ed, w, h);
     }
 }
 
@@ -282,6 +287,52 @@ fn the_session_list_docks_and_stays_after_enter() {
     assert!(ed.sizes.sessions_dock.is_none(), "floating again");
     frame(&mut ed, 160, 40);
     assert!(ed.screen.floating.borrow().iter().any(|f| f.0 == GroupKind::Sessions));
+}
+
+/// #414: docked right in main, the list goes with you where `C-q` takes you for a card — where docs' conversation leaves
+/// its column no room it floats for those frames, its dock kept (P3 step 7d) — and a switch made from there leaves it up:
+/// a docked list stays. #302's close (a floating list is done once a session is picked elsewhere) read where it was that
+/// frame, so it closed it, and back in main it was gone.
+#[test]
+fn a_docked_session_list_stays_up_across_a_switch_made_where_it_had_no_room() {
+    let dir = crate::scratch::Scratch::new("sessiondockcq");
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let other = dir.join("docs");
+    std::fs::create_dir_all(&other).unwrap();
+    let docs = ed.workspace_open(&other).unwrap();
+    ed.workspace.name = "docs".into();
+    // (docs' conversation in sight, as the scene's: asked to run the tests)
+    feed_at(&mut ed, " L<esc>", 120, 36);
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
+    feed_at(&mut ed, " W<C-w>L<esc>", 120, 36);
+    assert!(ed.dock_rect(GroupKind::Sessions).is_some(), "docked in main");
+    // A card of docs' Claude, waiting behind
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+    let mut o = crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
+    ed.offer_seq += 1;
+    o.id = ed.offer_seq;
+    ed.workspaces.iter_mut().find(|w| w.id == docs).unwrap().parked.push(o);
+    frame(&mut ed, 120, 36);
+    feed_at(&mut ed, "<C-q>", 120, 36);
+    assert_eq!(ed.workspace.id, docs, "C-q took us to docs' card");
+    let s = frame(&mut ed, 120, 36);
+    let floating = |ed: &Editor| ed.screen.floating.borrow().iter().any(|f| f.0 == GroupKind::Sessions);
+    assert!(floating(&ed) && ed.dock_rect(GroupKind::Sessions).is_none(), "no room beside docs' chat\n{s}");
+    assert!(ed.card_has_keys() && !ed.sessions_list_keys(), "the keys the card's, not the list's");
+    // Answered, back in main by `:workspace-switch`: the list still up, docked there
+    feed_at(&mut ed, "n:workspace-switch 0<ret>", 120, 36);
+    assert_eq!(ed.workspace.id, WorkspaceId::HOME);
+    let s = frame(&mut ed, 120, 36);
+    assert!(ed.sessions_pane.is_some(), "a docked list stays up\n{s}");
+    let (_, r) = ed.dock_rect(GroupKind::Sessions).unwrap_or_else(|| panic!("docked in main again\n{s}"));
+    assert!(!floating(&ed) && s.lines().nth(r.y).unwrap().contains("sessions"), "its top line\n{s}");
+    // …and where there's room in docs, docked there too
+    feed_at(&mut ed, ":workspace-switch 1<ret>", 200, 40);
+    let s = frame(&mut ed, 200, 40);
+    assert!(ed.dock_rect(GroupKind::Sessions).is_some() && !floating(&ed), "docked in docs at 200\n{s}");
 }
 
 /// #302: floating, the list is done once a session is picked any other way too — its tag, `:workspace-switch` — as

@@ -1545,9 +1545,11 @@ impl Editor {
         }
         // (a floating session list is done once a session is picked — by its `enter` or any other way, as zellij's
         // session manager closes: its keys are the workspace's it was opened in while it floats over every one, so kept
-        // it took them back on a round there and the code's keys went to it — #302; docked it stays, the overview)
+        // it took them back on a round there and the code's keys went to it — #302; docked it stays, the overview —
+        // by its place, not where this frame drew it: docked where this workspace's columns leave it no room, it floats
+        // for those frames, its dock kept, and a switch made there closed it — #414)
         let sessions = crate::pane::GroupKind::Sessions;
-        if self.float_list(sessions).is_some() && !self.docked_in_sight(sessions) {
+        if self.float_list(sessions).is_some() && !self.list_docked(sessions) {
             self.float_list_close(sessions);
         }
         // Out: where it was, and its own cards — Claude's, its review's end (they wait for it)
