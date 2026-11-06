@@ -10995,11 +10995,16 @@ mod tests {
 
     /// #29: the git tab reads the status again when Claude edits, writes or runs something — not only when
     /// it's reopened ("nothing to commit — the tree is clean" over files Claude had changed). Mid-turn: the
-    /// fake claude changes the file (standing in for its `edit`), then sends the edit's result, then waits.
+    /// fake claude changes the file (standing in for its `edit`), then sends the edit's result, then holds its
+    /// turn open until the test has seen the tab dirty (#423: a `sleep 2` was the window, and a loaded machine's
+    /// status read landed after it).
     #[test]
     fn the_git_tab_follows_claudes_edits() {
         let repo = git_repo("git-follow", &[("a.txt", "one\n")]);
         let file = repo.join("a.txt");
+        // (outside the repository: a file there would make the tab dirty by itself)
+        let held = crate::scratch::Scratch::new("git-follow-held");
+        let seen = held.join("seen");
         let mut ed = editor("");
         ed.workspace.viewer.sidebar =
             Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
@@ -11017,17 +11022,17 @@ mod tests {
                 edit,
                 json_str(&write),
                 result,
-                json_str("sleep 2"),
+                json_str(&format!("until [ -e '{}' ]; do sleep 0.05; done", seen.display())),
                 serde_json::json!({"type": "result", "result": "ok"}),
             ],
         );
         feed(&mut ed, "<space>lchange it<ret>");
         let dirty = |ed: &Editor| ed.workspace.git_status.as_ref().is_some_and(|s| !s.unstaged.is_empty());
-        settle_until(&mut ed, |ed| dirty(ed) || !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        assert!(
-            dirty(&ed) && ed.workspace.claude.chat.as_ref().unwrap().busy(),
-            "the tab caught up mid-turn"
-        );
+        let busy = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().busy();
+        settle_until(&mut ed, |ed| dirty(ed) || !busy(ed));
+        assert!(dirty(&ed) && busy(&ed), "the tab caught up mid-turn");
+        std::fs::write(&seen, "").unwrap();
+        settle_until(&mut ed, |ed| !busy(ed));
         std::fs::remove_dir_all(&repo).ok();
     }
 
@@ -11790,7 +11795,9 @@ mod tests {
 
     /// Landlock ABI 2 (a stand-in: this kernel's rules, the availability ABI 2 has): the session's first run
     /// of Claude's asks first, saying why — `n` tells Claude, `y` runs it in the sandbox, `s` the rest of the
-    /// session's too (still sandboxed: the title doesn't say "no sandbox").
+    /// session's too (still sandboxed: the title doesn't say "no sandbox"). Its project is its own folder (#424):
+    /// a session's keeper is the root's, and at `editor()`'s root — the temp folder — another test's run of
+    /// another policy supersedes it, its sweep ending what this run's keeper had forked but not yet said started.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_partial_sandbox_asks_each_run() {
@@ -11798,15 +11805,15 @@ mod tests {
         if landlock_at_least(2, "a_partial_sandbox_asks_each_run").is_none() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("tarae-run-partial-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let dir = std::fs::canonicalize(&dir).unwrap();
+        let scratch = crate::scratch::Scratch::new("run-partial");
+        let dir = std::fs::canonicalize(&scratch).unwrap();
         let made = dir.join("made");
         let why = "this kernel's Landlock (ABI 2) can't control truncating files";
         let start = || {
             std::fs::remove_file(&made).ok();
             std::fs::remove_file(dir.join("stdin.log")).ok();
             let mut ed = editor("");
+            ed.workspace.root = dir.clone();
             ed.sandbox = crate::sandbox::linux::availability(Ok(2), true);
             ed.config.llm.run_allow = vec!["touch".into()];
             let command = format!("touch {}", made.display());
@@ -11815,23 +11822,27 @@ mod tests {
             settle_until(&mut ed, |ed| !ed.offers.is_empty());
             (ed, log)
         };
+        let idle = |ed: &Editor| !ed.workspace.claude.chat.as_ref().unwrap().busy();
         let (mut ed, log) = start();
         let o = &ed.offers[0];
         assert_eq!(o.title, crate::tools::PARTIAL_SANDBOX_TITLE);
         assert!(o.question.contains(why) && o.weighty(), "{}", o.question);
         ed.offer_dismiss();
-        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, idle);
         assert!(tool_answer(&log).contains("goes only so far") && !made.exists());
+        // (each editor gone before the next: its claude with it)
+        drop(ed);
         let (mut ed, log) = start();
         ed.offer_accept();
-        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        assert!(made.exists());
+        settle_until(&mut ed, idle);
+        assert!(made.exists(), "{}", tool_answer(&log));
         assert!(tool_answer(&log).contains("In tarae's sandbox"), "{}", tool_answer(&log));
-        let (mut ed, _) = start();
+        drop(ed);
+        let (mut ed, log) = start();
         ed.offer_for_session();
-        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        assert!(made.exists() && !crate::tools::unsandboxed(&ed), "agreed, and still sandboxed");
-        std::fs::remove_dir_all(&dir).ok();
+        settle_until(&mut ed, idle);
+        assert!(made.exists(), "it ran: {}", tool_answer(&log));
+        assert!(!crate::tools::unsandboxed(&ed), "agreed, and still sandboxed");
     }
 
     /// Landlock ABI 1 is no sandbox (the user's decision, 2026-10-05): the no-sandbox card, saying why, and
