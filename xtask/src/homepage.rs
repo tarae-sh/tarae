@@ -10,11 +10,10 @@
 //! pinned via `TZ`, and every recorded frame is checked with `none_of_yours` so no host path or username can leak.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::recording::{self, screen_cells};
 use crate::scenes::docshots::{Bg, Named, fixed_clock, homes, none_of_yours, now};
-use crate::scenes::{MAIN_RS, MAIN_TESTS, config_toml, demo_crate_with, write};
+use crate::scenes::{MAIN_RS, MAIN_TESTS, config_toml, demo_crate_with, demo_git, write};
 use crate::shot::{self, Fonts, Setup};
 use crate::{Result, root};
 
@@ -190,9 +189,9 @@ fn record_theme(bg: Bg, bin: &Path, me: &Path, out: &Path) -> Result<()> {
     ];
     demo_crate_with(&cwd, false, &extra)?;
     for wt in ["../fix", "../docs"] {
-        let status = Command::new("git")
+        let status = demo_git(&cwd)
             .args(["worktree", "add", "-q", wt])
-            .current_dir(&cwd)
+            .stdout(std::process::Stdio::null())
             .status()
             .map_err(|e| format!("git worktree add {wt}: {e}"))?;
         if !status.success() {
@@ -287,14 +286,8 @@ fn english(text: &str) -> Result<String> {
 /// Everything in `dir` committed as the demo's author (no hooks, none of your git config).
 fn commit_in(dir: &Path, message: &str) -> Result<()> {
     for args in [&["add", "-A"][..], &["commit", "-q", "-m", message]] {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false"])
-            .args(["-c", "core.hooksPath=/dev/null"])
+        let status = demo_git(dir)
             .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdout(std::process::Stdio::null())
             .status()
             .map_err(|e| format!("git {}: {e}", args.join(" ")))?;

@@ -7,11 +7,11 @@
 //! their real paths, as tarae will.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::{Value, json};
 
-use super::super::{demo_crate_at, write};
+use super::super::{demo_crate_at, demo_git, write};
 use crate::Result;
 
 /// A docs scene's project, a folder of the shot's home.
@@ -74,17 +74,10 @@ fn repo(
 }
 
 /// git at `dir` with none of your settings (no hooks, no signing), finding no repository above it, what it commits
-/// dated `date` — as `demo_crate_at` runs it.
+/// dated `date`.
 fn git(dir: &Path, args: &[&str], date: &str) -> Result<()> {
-    let st = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "user.name=demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false"])
-        .args(["-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main"])
+    let st = demo_git(dir)
         .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap_or(dir))
         .env("GIT_AUTHOR_DATE", date)
         .env("GIT_COMMITTER_DATE", date)
         .stdout(Stdio::null())
@@ -377,14 +370,7 @@ mod tests {
     /// git's word for each path of `dir` that's changed since its commit (`git status --porcelain`) — with none of
     /// your settings, as `git` makes the fixture (a global `status.showUntrackedFiles=no` would hide `build.rs`).
     fn status(dir: &Path) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["status", "--porcelain"])
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .unwrap();
+        let out = demo_git(dir).args(["status", "--porcelain"]).output().unwrap();
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
@@ -420,14 +406,7 @@ mod tests {
         for f in [Fixture::Demo, Fixture::Trusted, Fixture::Calc, Fixture::Words] {
             let at = dir.0.join(format!("{f:?}"));
             f.make(&at, now).unwrap();
-            let out = Command::new("git")
-                .arg("-C")
-                .arg(&at)
-                .args(["log", "-1", "--format=%at %ct"])
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .output()
-                .unwrap();
+            let out = demo_git(&at).args(["log", "-1", "--format=%at %ct"]).output().unwrap();
             let day_before = now - 86_400;
             assert_eq!(
                 String::from_utf8_lossy(&out.stdout).trim(),

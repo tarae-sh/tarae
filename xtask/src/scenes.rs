@@ -6940,15 +6940,8 @@ fn demo_crate_at(dir: &Path, trusted: bool, extra: &[(&str, String)], date: Opti
         write(&dir.join(path), text)?;
     }
     let git = |args: &[&str]| -> Result<()> {
-        let st = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false"])
-            .args(["-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main"])
+        let st = demo_git(dir)
             .args(args)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap_or(dir))
             .envs(date.into_iter().flat_map(|d| [("GIT_AUTHOR_DATE", d), ("GIT_COMMITTER_DATE", d)]))
             .stdout(Stdio::null())
             .status()
@@ -6964,6 +6957,25 @@ fn demo_crate_at(dir: &Path, trusted: bool, extra: &[(&str, String)], date: Opti
         git(&["config", "core.sshCommand", "ssh -o BatchMode=yes"])?;
     }
     demo_files(dir, true, trusted)
+}
+
+/// git at `dir`, a demo repository of a scene's or the homepage's: none of your settings (no hooks, no signing, neither
+/// the global config nor the system's), finding no repository above `dir`, committing as the demo's author.
+pub(crate) fn demo_git(dir: &Path) -> Command {
+    let mut git = Command::new("git");
+    demo_apart(&mut git, dir);
+    git
+}
+
+/// `demo_git`'s settings laid over `git`, whatever it was given before (a test's own global config).
+fn demo_apart<'a>(git: &'a mut Command, dir: &Path) -> &'a mut Command {
+    git.arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false"])
+        .args(["-c", "core.hooksPath=/dev/null", "-c", "init.defaultBranch=main"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap_or(dir))
 }
 
 /// A failing test and one that passes, below `main` (`cargo test` on the bin): the tests panel's failure.
@@ -9244,6 +9256,37 @@ fn wait_file_contains(path: &Path, needle: &str, timeout: Duration) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #407: a demo repository's git runs none of your hooks and reads none of your config — here a global config of
+    /// the test's own, its `core.hooksPath` a `post-checkout` that leaves a marker, run by `git worktree add` as the
+    /// homepage adds its sessions' checkouts. Your own git (the control) runs it.
+    #[test]
+    fn a_demo_git_runs_no_global_hook() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tarae_testkit::scratch::Scratch::new("xtask-demo-git");
+        let (hook, marker, repo) = (dir.join("hooks/post-checkout"), dir.join("hook-ran"), dir.join("demo"));
+        write(&hook, &format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let global = dir.join("gitconfig");
+        let config =
+            format!("[core]\n\thooksPath = {}\n[demo]\n\tmark = yours\n", dir.join("hooks").display());
+        write(&global, &config).unwrap();
+        let yours = || {
+            let mut git = Command::new("git");
+            git.env("GIT_CONFIG_GLOBAL", &global).stdout(Stdio::null());
+            git
+        };
+        demo_crate_with(&repo, false, &[]).unwrap();
+
+        let st = demo_apart(&mut yours(), &repo).args(["worktree", "add", "-q", "../fix"]).status().unwrap();
+        assert!(st.success() && dir.join("fix/src/main.rs").is_file(), "{st}");
+        assert!(!marker.exists(), "the global post-checkout ran");
+        let read = demo_apart(&mut yours(), &repo).args(["config", "--get", "demo.mark"]).output().unwrap();
+        assert!(read.stdout.is_empty(), "the global config was read");
+
+        let st = yours().arg("-C").arg(&repo).args(["worktree", "add", "-q", "../control"]).status().unwrap();
+        assert!(st.success() && marker.exists(), "your own git runs the hook: {st}");
+    }
 
     /// #342: every scene's `:sh` is waited on by its end, never a fixed time (`sh_waits_by_time`).
     #[test]
