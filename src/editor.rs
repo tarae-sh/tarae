@@ -728,6 +728,8 @@ pub struct Screen {
     /// item's index among those shown) — a press on one accepts it.
     pub completion_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     pub completion_docs: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// Its last page: the first row it shows scrolled to its end (the wheel stops there — #413).
+    pub completion_docs_end: std::cell::Cell<usize>,
     pub completion_rows: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The chat's slash list this frame (x, y, width, height — `term::draw_slash_list`, #232) and its rows: (screen
     /// row, the name's place among those shown) — a press on one fills it in.
@@ -3612,10 +3614,19 @@ impl Editor {
                     _ => {}
                 }
             }
-            // The completion menu: a row accepts its item, as `enter` on it; the wheel moves through it, as `tab`
+            // The completion menu: a row accepts its item, as `enter` on it; the wheel moves through it, as `tab` — over
+            // its docs it scrolls them, the item kept (#413)
             (S::Completion, part) => {
                 took_mouse(S::Completion);
+                let over_docs = s.completion_docs.get().is_some_and(|r| crate::mouse::inside(r, x, y));
                 match (m.kind, row_of(part)) {
+                    (K::ScrollDown | K::ScrollUp, _) if over_docs => {
+                        let end = s.completion_docs_end.get();
+                        if let Some(c) = self.completion.as_mut() {
+                            let by: isize = if up { -3 } else { 3 };
+                            c.docs_scroll = c.docs_scroll.min(end).saturating_add_signed(by).min(end);
+                        }
+                    }
                     (K::Down, Some(i)) => {
                         if let Some(c) = self.completion.as_mut() {
                             c.selected = Some(i);
@@ -4086,7 +4097,9 @@ impl Editor {
                             _ => {}
                         }
                     }
-                    // The wheel over the conversation: it scrolls, the keys where they are (`chatdoc::wheel`)
+                    // The wheel over the input: its rows (`chatinput::wheel`, #413); over the conversation: it scrolls
+                    // — the keys where they are (`chatdoc::wheel`)
+                    K::ScrollUp | K::ScrollDown if u.surface == S::Input => crate::chatinput::wheel(self, up),
                     K::ScrollUp | K::ScrollDown => crate::chatdoc::wheel(self, up),
                     _ => {}
                 }

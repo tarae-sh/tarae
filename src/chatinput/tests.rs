@@ -32,6 +32,58 @@ fn input(ed: &Editor) -> (String, usize) {
     (i.text(), i.cursor())
 }
 
+/// #413: the wheel over a draft taller than the input's rows scrolls them a row a notch — never the cursor, the selection
+/// or the keys (in the code here); at an end nothing moves and nothing is drawn again; the cursor's row out of sight draws
+/// no cursor; a key that moves the cursor or the text brings its row back.
+#[test]
+fn the_wheel_scrolls_a_draft_taller_than_its_rows() {
+    use crate::event::{Mouse, MouseKind};
+    let mut ed = editor("fn main() {}\n");
+    let draft: String = (0..12).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    ed.workspace.claude.chat.as_mut().unwrap().input = draft.as_str().into();
+    // (the frame: the input as drawn, and whether the terminal's cursor shows)
+    let frame = |ed: &mut Editor| {
+        let mut out = Vec::new();
+        crate::term::render(ed, &mut out, 120, 30).unwrap();
+        let mut p = vt100::Parser::new(30, 120, 0);
+        p.process(&out);
+        (ed.screen.chat_input.get().unwrap(), !p.screen().hide_cursor())
+    };
+    let (at, cursor) = frame(&mut ed);
+    assert_eq!((at.rows, at.first, cursor), (ROWS, 12 - ROWS, true), "its end in sight, the cursor there");
+    let wheel = |ed: &mut Editor, kind| {
+        ed.unchanged = false;
+        ed.handle_mouse(Mouse { kind, x: at.x as u16, y: at.y as u16, alt: false, ctrl: false });
+    };
+    let before = input(&ed);
+    wheel(&mut ed, MouseKind::ScrollDown);
+    assert!(ed.unchanged, "at its end: nothing to scroll, nothing drawn");
+    wheel(&mut ed, MouseKind::ScrollUp);
+    let (now, cursor) = frame(&mut ed);
+    assert_eq!(now.first, 12 - ROWS - 1, "a row up");
+    assert!(!cursor, "the cursor's row out of sight: no cursor drawn");
+    // (the keys in the code: the wheel over the input leaves them there)
+    ed.workspace.viewer.keys_to_code();
+    wheel(&mut ed, MouseKind::ScrollUp);
+    assert_eq!(frame(&mut ed).0.first, 12 - ROWS - 2, "two rows up");
+    assert_eq!(input(&ed), before, "the text and the cursor as they were");
+    assert_eq!(ed.keys_to().region.name(), "code", "the keys where they were");
+    // (as far as its first row, no further)
+    for _ in 0..20 {
+        wheel(&mut ed, MouseKind::ScrollUp);
+    }
+    assert_eq!(frame(&mut ed).0.first, 0);
+    assert!(ed.unchanged, "at its top: the last notches moved nothing");
+    wheel(&mut ed, MouseKind::ScrollDown);
+    assert_eq!(frame(&mut ed).0.first, 1, "and back down a row");
+    // A key typed: the cursor's row in sight again
+    ed.workspace.set_at(crate::workspace::Here::Chat);
+    feed(&mut ed, "!");
+    let (now, cursor) = frame(&mut ed);
+    assert_eq!((now.first, cursor), (12 - ROWS, true), "typing brings it back");
+    assert!(input(&ed).0.ends_with("line 11!"));
+}
+
 /// Insert mode's keys edit it: digits are text (no counts), brackets and quotes as typed (no auto-pairs — it's
 /// prose), `C-w` a word, `A-ret` a new line, `↑` a line up, `C-a`/`C-e` a line's ends, `C-k` to its end — the
 /// code's document and mode untouched.

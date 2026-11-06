@@ -539,7 +539,7 @@ Keys of what's up on the screen — not rebindable, so not in `default_keys.toml
 | A preflight's steps | `o` | The step picked, its whole output in a buffer |
 | Task panel | `K` | Where Claude's command in it ran, and why — its sandbox, the card it ran from, its warnings |
 | The chat | click on a command's row end (`ok · sandbox ▲1`) | Why it ran there — its sandbox, the card it ran from, Claude's reason, its warnings |
-| The chat | `C-u` `C-d`, `pageup` `pagedown`, `↑` `↓`, wheel | Scroll the conversation — half the rows in sight, a page, a row; `C-u` and the arrows from an empty input (with text `C-u` clears to the cursor) |
+| The chat | `C-u` `C-d`, `pageup` `pagedown`, `↑` `↓`, wheel | Scroll the conversation — half the rows in sight, a page, a row; `C-u` and the arrows from an empty input (with text `C-u` clears to the cursor). The wheel over a draft taller than the input's rows scrolls the draft, a row a notch, the cursor left where it is until a key |
 | A list or output panel (side panel, review rail, `:procs`, test, task, terminal, a plugin's) | `j` `k` `↓` `↑` `C-n` `C-p` · `C-e` `C-y` · `C-d` `C-u` · `C-f` `C-b` `pagedown` `pageup` · `g` `G` `home` `end` | A row · the view a row, the selection staying unless it would leave it (the wheel: the view three rows, the selection staying, in sight or not) · half the rows in sight · all of them · the ends — the same keys everywhere, as the code's; a plugin's panel never gets them |
 | Hover text, docs | `C-d` `C-u` · `C-e` `C-y` | Scroll it half its rows · a row |
 | The terminal, its program with the keys | `S-pageup` `S-pagedown` | Scroll back a page · forward (the program's next key brings it down; a full-screen program gets them) |

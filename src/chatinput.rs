@@ -17,6 +17,18 @@ pub use crate::input::Input;
 /// The input's rows at most (more scroll), as the chat draws it.
 pub const ROWS: usize = 5;
 
+/// The wheel over the input (#413): its rows a row a notch while the draft is taller than them (five rows: three of
+/// them a notch would carry a line past before it's read) — never the cursor, the selection or the keys; a key that
+/// moves the cursor or the text brings the cursor's row back (`Input::first`). Nothing to move: nothing drawn again.
+pub fn wheel(ed: &mut Editor, up: bool) {
+    let Some(drawn) = ed.screen.chat_input.get() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let laid = c.input.laid(drawn.w);
+    if !c.input.wheel(&laid, drawn.rows, if up { -1 } else { 1 }) {
+        ed.unchanged = true;
+    }
+}
+
 /// A press on the input's row `row` (`Screen::chat_input_row`) at column `col` of its text, `w` the width it was
 /// wrapped to: the keys to it (the conversation's view mode left, as `i` leaves it), the cursor on the character
 /// pressed, as a press in the code's insert mode puts it. Where it landed — a drag from there selects (`drag`).

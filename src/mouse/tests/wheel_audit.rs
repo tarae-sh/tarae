@@ -83,6 +83,9 @@ fn look(ed: &mut Editor) -> Look {
                 ed.workspace.preflight.as_ref().map(|p| p.selected),
                 ed.procs.panel.as_ref().map(|p| p.selected),
                 ed.plugins.as_ref().and_then(|p| p.panel.as_ref()).map(|p| p.selected),
+                // (the chat's input's cursor and selection, the completion's item in hand — #413)
+                ed.workspace.claude.chat.as_ref().map(|c| c.input.pane.doc().selection().clone()),
+                ed.completion.as_ref().map(|c| c.selected),
             )
         ),
         card: format!("{:?}", ed.screen.offer_card),
@@ -323,7 +326,34 @@ const CASES: &[Case] = &[
         },
         "line 3 of the docs",
     ),
+    // (#413: a draft taller than the input's rows, the docked chat's and the ask line's — its cursor at its end)
+    ("the chat's input, a long draft", |ed| draft(ed, false), "line 17 of"),
+    ("the ask line, a long draft", |ed| draft(ed, true), "line 17 of"),
+    // (#413: the completion's docs longer than their card — the item in hand stays)
+    ("the completion's docs", completion_docs, "Line 2 of the docs"),
 ];
+
+fn draft(ed: &mut Editor, asking: bool) {
+    long_text(ed);
+    let draft: Vec<String> = (0..20).map(|i| format!("line {i} of a long draft")).collect();
+    chat(ed, &draft.join("\n"));
+    ed.workspace.claude.chat.as_mut().unwrap().asking = asking;
+}
+
+fn completion_docs(ed: &mut Editor) {
+    ed.docs[0].text =
+        ropey::Rope::from_str(&(0..60).map(|i| format!("let line_{i} = {i};\n")).collect::<String>());
+    keys(ed, &["j", "A"]);
+    let docs: String = (0..40).map(|i| format!("Line {i} of the docs.\n\n")).collect();
+    let items: Vec<serde_json::Value> =
+        (0..3).map(|i| serde_json::json!({"label": format!("line_{i}"), "documentation": docs})).collect();
+    let at = ed.doc().selection().primary().head;
+    let mut c = crate::completion::Completion::new(0, ed.doc().id, at, serde_json::Value::from(items));
+    c.filter("");
+    c.selected = Some(0);
+    ed.completion = Some(c);
+    ed.completion_docs();
+}
 
 fn conversation(ed: &mut Editor) {
     chat(ed, "");

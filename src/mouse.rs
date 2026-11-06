@@ -17,7 +17,7 @@ use crate::sizes::{Border, Slot};
 use crate::split::PaneId;
 use crate::workspace::Spot;
 
-fn inside((x0, y0, w, h): (usize, usize, usize, usize), x: usize, y: usize) -> bool {
+pub(crate) fn inside((x0, y0, w, h): (usize, usize, usize, usize), x: usize, y: usize) -> bool {
     (x0..x0 + w).contains(&x) && (y0..y0 + h).contains(&y)
 }
 
@@ -898,6 +898,10 @@ impl Editor {
     fn chat_under(&self, wheel: bool, x: usize, y: usize) -> Under {
         use Surface as S;
         let (s, at) = (&self.screen, Under::new);
+        // (the wheel over the input scrolls its rows, over the rest the conversation — #413)
+        if wheel && s.chat_input_row(y).is_some() {
+            return at(S::Input, self.input_text(x, y));
+        }
         if wheel {
             return at(S::Transcript, self.transcript_text(x, y));
         }

@@ -2019,7 +2019,7 @@ impl Editor {
         let Some(c) = &mut self.completion else { return };
         let md = c.item_mut(index).map(|it| completion::doc_markdown(&it.raw, &lang)).unwrap_or_default();
         let lines = crate::markdown::render(&md, &self.theme, Some(&lang));
-        c.docs = Some((index, lines));
+        (c.docs, c.docs_scroll) = (Some((index, lines)), 0);
     }
 
     // ── Inlay hints ───────────────────────────────────────────────────────

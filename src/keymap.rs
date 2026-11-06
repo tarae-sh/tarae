@@ -789,7 +789,7 @@ pub(crate) mod tests {
         (
             "The chat",
             "`C-u` `C-d`, `pageup` `pagedown`, `↑` `↓`, wheel",
-            "Scroll the conversation — half the rows in sight, a page, a row; `C-u` and the arrows from an empty input (with text `C-u` clears to the cursor)",
+            "Scroll the conversation — half the rows in sight, a page, a row; `C-u` and the arrows from an empty input (with text `C-u` clears to the cursor). The wheel over a draft taller than the input's rows scrolls the draft, a row a notch, the cursor left where it is until a key",
         ),
         (
             "A list or output panel (side panel, review rail, `:procs`, test, task, terminal, a plugin's)",

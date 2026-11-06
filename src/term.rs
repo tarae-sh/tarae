@@ -947,6 +947,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         welcome_rows: Default::default(),
         completion_card: Default::default(),
         completion_docs: Default::default(),
+        completion_docs_end: Default::default(),
         completion_rows: Default::default(),
         slash_card: Default::default(),
         slash_rows: Default::default(),
@@ -12665,7 +12666,11 @@ fn draw_completion(
             let rows = docs_rows(&lines, inner, well, ui);
             let shown = rows.len().min(limit.saturating_sub(y0 + 2).clamp(1, DOCS_ROWS));
             let docs = (dx, y0, inner + 4, shown + 2);
-            let foot = more_lines(rows.len() - shown, faint);
+            // (where the wheel left them — #413)
+            let end = rows.len() - shown;
+            let from = c.docs_scroll.min(end);
+            editor.screen.completion_docs_end.set(end);
+            let foot = more_lines(end - from, faint);
             draw_docs_card(
                 out,
                 ui,
@@ -12673,7 +12678,7 @@ fn draw_completion(
                 (on, crate::mouse::Lights::Popup),
                 card,
                 docs,
-                &rows[..shown],
+                &rows[from..from + shown],
                 &name,
                 &foot,
             )?;
@@ -12696,7 +12701,10 @@ fn draw_completion(
                 let dh = shown + 2;
                 let y = if below { y0 + h + 1 } else { y0 - 1 - dh };
                 let docs = (x0, y, inner + 4, dh);
-                let foot = more_lines(rows.len() - shown, faint);
+                let end = rows.len() - shown;
+                let from = c.docs_scroll.min(end);
+                editor.screen.completion_docs_end.set(end);
+                let foot = more_lines(end - from, faint);
                 draw_docs_card(
                     out,
                     ui,
@@ -12704,7 +12712,7 @@ fn draw_completion(
                     (on, crate::mouse::Lights::Popup),
                     card,
                     docs,
-                    &rows[..shown],
+                    &rows[from..from + shown],
                     &name,
                     &foot,
                 )?;
@@ -19298,7 +19306,7 @@ fn draw_ask_line(
     let held = held_here(editor, c);
     let room = rows.saturating_sub(1 + usize::from(ask_past(c).is_some() || held)).max(1);
     let input_h = input.height().clamp(1, CHAT_INPUT_MAX.min(room));
-    let first_input = input.height().saturating_sub(input_h).min(cur_row);
+    let first_input = c.input.first(&input, input_h);
     let text_x = x0 + GAP + PAD;
     let edge = ("│", line);
     let mut y = top + 1;
@@ -19404,8 +19412,9 @@ fn draw_ask_line(
     };
     let foot = TopLine { keys: &hints, key, faint, plain: true, words: Some(words), ..TopLine::default() };
     top_line(out, line, card, (x0, top + rows, cw + 1), ("╰", "╯", "┴"), &[], true, &foot)?;
-    let r = cur_row.saturating_sub(first_input).min(input_h - 1);
-    Ok(Some(((text_x + 2 + cur_col) as u16, (input_top + r) as u16)))
+    // (the wheel left its row out of sight: no cursor drawn until a key brings it back)
+    let r = cur_row.checked_sub(first_input).filter(|&r| r < input_h);
+    Ok(r.map(|r| ((text_x + 2 + cur_col) as u16, (input_top + r) as u16)))
 }
 
 fn draw_chat(
@@ -19450,8 +19459,8 @@ fn draw_chat(
     // (its text and rows from one read — `chatinput::Laid`: the rows only ever slice the text they were made from)
     let input = c.input.laid(w);
     let (cur_row, cur_col) = input.cursor();
-    let first_input = input.height().saturating_sub(CHAT_INPUT_MAX).min(cur_row);
     let input_h = input.height().min(CHAT_INPUT_MAX);
+    let first_input = c.input.first(&input, input_h);
     // ── Claude's plan, pinned under the title (one row when the panel is short) + a divider under it
     let room = rows.saturating_sub(input_h + 4);
     let plan_rows = match &c.plan {
@@ -20350,10 +20359,9 @@ fn draw_chat(
             TopLine { keys: &hints, key, faint, plain: true, words: Some(words), ..TopLine::default() };
         top_line(out, frame_line, card, (x0, top + rows, cw + 1), ("╰", "╯", "┴"), &[], true, &head)?;
     }
-    Ok(typing.then(|| {
-        let r = cur_row.saturating_sub(first_input).min(input_h - 1);
-        ((x0 + 3 + 2 + cur_col) as u16, (input_top + r) as u16)
-    }))
+    // (the wheel left its row out of sight: no cursor drawn until a key brings it back)
+    let r = cur_row.checked_sub(first_input).filter(|&r| typing && r < input_h);
+    Ok(r.map(|r| ((x0 + 3 + 2 + cur_col) as u16, (input_top + r) as u16)))
 }
 
 /// The chat's usage row — this conversation's: `● warm until 14:32  ctx 4% of 200k  turn ≈ API $0.0011  read 8.2k

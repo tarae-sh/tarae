@@ -30,6 +30,11 @@ fn long_text(ed: &mut Editor) {
         ropey::Rope::from_str(&(0..60).map(|i| format!("let line_{i} = {i};\n")).collect::<String>());
 }
 
+/// A draft of 20 lines — four times the input's rows.
+fn long_draft() -> String {
+    (0..20).map(|i| format!("line {i} of a long draft")).collect::<Vec<_>>().join("\n")
+}
+
 fn note_card(ed: &mut Editor) {
     long_text(ed);
     let path = std::env::temp_dir().join("tarae-mouse-walk-note.rs");
@@ -148,6 +153,16 @@ const MOUSE_SCENES: &[Scene] = &[
             .collect();
         ed.open_picker(crate::picker::Picker::of("buffers", "buffers", items, false), None);
     }),
+    // (#413: a draft taller than the input's rows — the docked chat's and the ask line's, the cursor at its end)
+    ("the chat's input, a long draft", |ed| {
+        long_text(ed);
+        chat(ed, &long_draft());
+    }),
+    ("the ask line, a long draft", |ed| {
+        long_text(ed);
+        chat(ed, &long_draft());
+        ed.workspace.claude.chat.as_mut().unwrap().asking = true;
+    }),
     ("the messages list, long", |ed| {
         for i in 0..60 {
             ed.set_status(format!("message {i}"));
@@ -240,6 +255,21 @@ const MOUSE_SCENES: &[Scene] = &[
         c.filter("");
         c.selected = Some(0);
         ed.completion = Some(c);
+    }),
+    // (#413: the selected item's docs longer than their card)
+    ("the completion's docs, long", |ed| {
+        long_text(ed);
+        feed(ed, &["j", "A"]);
+        let docs: String = (0..40).map(|i| format!("Line {i} of the docs.\n\n")).collect();
+        let items: Vec<serde_json::Value> = (0..3)
+            .map(|i| serde_json::json!({"label": format!("line_{i}"), "documentation": docs}))
+            .collect();
+        let at = ed.doc().selection().primary().head;
+        let mut c = crate::completion::Completion::new(0, ed.doc().id, at, serde_json::Value::from(items));
+        c.filter("");
+        c.selected = Some(0);
+        ed.completion = Some(c);
+        ed.completion_docs();
     }),
     ("a note's card open under its line", note_card),
     // (the flow plan's piece 3: an answer's `¶` at its line, its card shut, the chat out of sight — a press takes the
@@ -514,8 +544,68 @@ const SCROLLS: &[(&str, &str)] = &[
     ("a long test output", "Output"),
     ("hover text, long", "Popup"),
     ("the completion menu, long", "Completion"),
+    ("the completion's docs, long", "Completion"),
     ("a card cut to fit, long", "Card"),
+    ("the chat's input, a long draft", "Input"),
+    ("the ask line, a long draft", "Input"),
 ];
+
+/// What the wheel has to scroll on a surface (#413).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Room {
+    /// Text or rows that can be taller than the surface: a scene of `SCROLLS` sets that up, and its wheel must act there.
+    Scene,
+    /// It scrolls, but no scene sets its room up yet (why) — a list that only shrinks.
+    NotYet(&'static str),
+    /// Nothing the wheel could scroll there (why).
+    None(&'static str),
+}
+
+/// Every surface's room for the wheel — by the compiler's count: a new surface is classed here before it builds, and
+/// `every_surface_the_wheel_meets_scrolls_or_says_why` holds `Scene` to `SCROLLS`.
+fn room(s: Surface) -> Room {
+    use Surface as S;
+    match s {
+        S::Code(_)
+        | S::Transcript
+        | S::Input
+        | S::Picker
+        | S::PickerPreview
+        | S::Floatlist(_)
+        | S::Side
+        | S::Output(_)
+        | S::Popup
+        | S::Completion
+        | S::Card => Room::Scene,
+        S::Rail => Room::NotYet("the review's rail scrolls (`CodeReview::scroll`)"),
+        S::Terminal | S::TerminalView => {
+            Room::NotYet("the terminal scrolls its past — its scene wants a pty")
+        }
+        S::List(_) => Room::NotYet("a group's list scrolls its view (`grouplist::wheel`)"),
+        S::Plugin => Room::NotYet("a plugin's panel scrolls its view — its scene wants a plugin"),
+        S::EditReview => Room::NotYet("Claude's edit review scrolls (`Review.scroll`)"),
+        S::Prompt => Room::NotYet(
+            "its line is one row, scrolled sideways to its cursor; its completions past 8 rows follow `tab`'s selection",
+        ),
+        S::Pointing => Room::None("pointing's labels: a press picks one"),
+        S::Toast => Room::None("news, a row a message — the whole text is `:messages`', a press away"),
+        S::Overlay => Room::None("news: the wheel goes to what's under it"),
+        S::Ask => Room::None("the answer streaming in, its newest rows — its review shows it whole"),
+        S::Edge => Room::None("a line between sizes: a handle"),
+        S::Float(_) => Room::None("a floating pane's frame and air: what's in it is a surface of its own"),
+        S::Status => Room::None("one row, its cut words whole on their card"),
+        S::SlotLine => Room::None("one line of names, its cut ones whole on their card"),
+        S::FollowCard => Room::None(
+            "the newest words at its foot, what's above folded into its `…` row, whole on its card",
+        ),
+        S::Chat => Room::None("the chat's top line and edge cells: a wheel there is its conversation's"),
+        S::Welcome => Room::None("the start screen folds to the rows it has"),
+        S::PaneTop(_) => Room::None("a pane's top line: one row of names"),
+        S::WhichKey => Room::None("a row a key, fitted to the screen"),
+        S::NoteCard => Room::None("the code's rows between its lines: a wheel there is the code's"),
+        S::Nothing => Room::None("nothing drawn"),
+    }
+}
 
 fn shown(ed: &mut Editor) -> String {
     frame(ed);
@@ -897,6 +987,8 @@ struct Walk {
     moved: Vec<String>,
     /// `scene · surface` of `SCROLLS` whose wheel was judged with room.
     scrolled: Vec<String>,
+    /// Every surface a wheel landed on, by its name, and its room (`room`).
+    wheeled: Vec<(String, Room)>,
     /// `scene · surface`, the row's cells and the `…`'s cell of a `…` drawn where no cut is recorded (`whole::cut_at`,
     /// the chat's rows).
     dots: Vec<(String, Vec<char>, usize)>,
@@ -1358,6 +1450,7 @@ fn wheel_at(
         let surface = format!("{:?}", wheel.surface);
         let surface = surface.split('(').next().unwrap_or_default();
         let room = SCROLLS.iter().any(|s| s.0 == scene && s.1 == surface);
+        walk.wheeled.push((surface.to_string(), self::room(wheel.surface)));
         if room {
             walk.scrolled.push(format!("{scene} · {surface}"));
         }
@@ -1426,6 +1519,37 @@ fn a_press_gives_its_surface_the_keys() {
         assert!(w.given.iter().any(|g| g == part), "no press on {part} judged: {:?}", w.given);
     }
     assert!(w.keys.is_empty(), "{}:\n{}", w.keys.len(), w.keys.join("\n"));
+}
+
+/// #413: every surface a wheel lands on scrolls or says why not (`room`) — the chat's input took no wheel, a draft taller
+/// than its rows. One whose text can be taller than it has a scene with that room in `SCROLLS` (where its wheel must act,
+/// `no_press_is_lost_in_silence`); a row of `SCROLLS` names a surface that scrolls.
+#[test]
+fn every_surface_the_wheel_meets_scrolls_or_says_why() {
+    if !pty("every_surface_the_wheel_meets_scrolls_or_says_why") {
+        return;
+    }
+    let w = walk();
+    let mut off: Vec<String> = Vec::new();
+    for (name, room) in &w.wheeled {
+        let set_up = SCROLLS.iter().any(|s| s.1 == name);
+        match room {
+            Room::Scene if !set_up => {
+                off.push(format!("{name}: it scrolls, and no scene of `SCROLLS` sets its room up"))
+            }
+            Room::NotYet(why) | Room::None(why) if set_up => {
+                off.push(format!("{name}: in `SCROLLS`, yet classed {room:?} — {why}"))
+            }
+            _ => {}
+        }
+    }
+    off.sort();
+    off.dedup();
+    assert!(off.is_empty(), "{}", off.join("\n"));
+    // (each surface of `SCROLLS` met by a wheel — a scene that lost it doesn't pass by not looking)
+    for s in SCROLLS {
+        assert!(w.wheeled.iter().any(|(n, _)| n == s.1), "no wheel met {}", s.1);
+    }
 }
 
 /// The frame's coverage: every non-blank cell of every scene's frame is under some surface — a new surface that draws

@@ -42,6 +42,8 @@ pub struct Completion {
     pub incomplete: bool,
     /// Docs of the selected item (items index, rendered lines) — built on selection.
     pub docs: Option<(usize, Vec<crate::markdown::Line>)>,
+    /// The docs' rows scrolled down by the wheel over them (#413) — from the top again with each item's docs.
+    pub docs_scroll: usize,
     matcher: Matcher,
 }
 
@@ -58,6 +60,7 @@ impl Completion {
             selected: None,
             incomplete,
             docs: None,
+            docs_scroll: 0,
             matcher: Matcher::new(Config::DEFAULT),
         }
     }

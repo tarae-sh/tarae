@@ -14,6 +14,10 @@ use unicode_width::UnicodeWidthChar as _;
 /// An input: its document pane, always in insert mode.
 pub struct Input {
     pub pane: Pane,
+    /// Where the wheel left its rows (#413): the first row shown, held while the cursor and the text are as they were
+    /// then (its primary range, its version) — the code's `Document.wheel_held`; any move or edit brings the cursor's
+    /// row back (`first`).
+    wheeled: Option<(usize, crate::selection::Range, u64)>,
 }
 
 /// The chat's input (`document::CHAT_INPUT`) — the prompt's is `Input::new(document::PROMPT_INPUT)`.
@@ -70,7 +74,7 @@ impl Input {
         doc.wrap = Some(false);
         let mut pane = Pane::new(doc);
         pane.keys.mode = Mode::Insert;
-        Input { pane }
+        Input { pane, wheeled: None }
     }
 
     /// What's typed.
@@ -135,6 +139,36 @@ impl Input {
         let text = self.text();
         let rows = rows(&text, w);
         Laid { text, rows, cursor: self.cursor() }
+    }
+
+    /// The first of `laid`'s rows shown in `h` rows: where the wheel left it while the cursor and the text are as they
+    /// were then, else the draft's end in sight — the cursor's row the first where it's above that.
+    pub fn first(&self, laid: &Laid, h: usize) -> usize {
+        let most = laid.height().saturating_sub(h);
+        match self.wheeled {
+            Some((first, at, v)) if (at, v) == self.now() => first.min(most),
+            _ => most.min(laid.cursor().0),
+        }
+    }
+
+    /// The wheel over it: its rows moved `by` from where they are (`first` — a burst of notches with no frame between
+    /// adds up), `h` in sight — never the cursor, the selection or the keys. False: nothing to move (the draft fits, or
+    /// that end is in sight).
+    pub fn wheel(&mut self, laid: &Laid, h: usize, by: isize) -> bool {
+        let (from, most) = (self.first(laid, h), laid.height().saturating_sub(h));
+        let to = from.saturating_add_signed(by).min(most);
+        if to == from {
+            return false;
+        }
+        let (at, v) = self.now();
+        self.wheeled = Some((to, at, v));
+        true
+    }
+
+    /// Its cursor and text as they are: what the wheel's hold is kept against.
+    fn now(&self) -> (crate::selection::Range, u64) {
+        let d = self.pane.doc();
+        (d.selection().primary(), d.version())
     }
 
     /// The character drawn at column `col` of row `row` (`laid`, `w` wide): the one whose cells hold it — never past a
