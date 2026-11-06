@@ -4677,6 +4677,135 @@ fn a_folded_doc_comment_stays_folded_while_selected() {
     assert_eq!(folded(&s), [] as [usize; 0], "a paste there: open");
 }
 
+/// What's drawn selected on the folded doc comment rows on screen: each row's characters on another ground than its bar's
+/// (the code's own), rows apart by a space.
+fn lit_folded(s: &mut Shot) -> String {
+    let bytes = s.frame();
+    let mut vt = vt100::Parser::new(s.h, s.w, 0);
+    vt.process(&bytes);
+    let screen = vt.screen();
+    let (_, rect, gutter, _) = s.ed.screen.panes.first().expect("a code pane");
+    let (x0, y0) = (rect.x + gutter, rect.y);
+    let mut rows = Vec::new();
+    for (i, row) in s.ed.view.iter().enumerate() {
+        let crate::codeview::Row::Doc { .. } = row else { continue };
+        let y = (y0 + i) as u16;
+        let cell = |x: usize| screen.cell(y, x as u16);
+        let bar =
+            (x0..s.w as usize).find(|&x| cell(x).is_some_and(|c| c.contents() == "▎")).expect("its bar");
+        let ground = cell(bar).map(|c| c.bgcolor());
+        let lit: String = (bar + 2..s.w as usize)
+            .filter_map(cell)
+            .filter(|c| Some(c.bgcolor()) != ground)
+            .map(|c| c.contents().to_string())
+            .collect();
+        if !lit.trim().is_empty() {
+            rows.push(lit.trim_end().to_string());
+        }
+    }
+    rows.join(" ")
+}
+
+/// A doc comment of three paragraphs: a line that wraps, a code span and a link, a list (#410, #411).
+const SPOOL_DOC: &str = "fn a() {}\n/// A spool keeps the strands waiting, each one wound in the order it came, so the first strand in is the first one out again.\n///\n/// Call `wind` to add one, or see [the docs](https://example.com/spool) for more.\n///\n/// - a strand\n/// - another one\npub struct Spool;\n";
+
+/// #410, #411: a folded doc comment's rows act as the code's — a drag selects from the press's character to the
+/// pointer's, across a wrapped line's rows, and lights exactly what it holds, cell by cell: a code span's word without
+/// its backticks, a link's text never its address, a bullet only when what it stands for (the source just before its
+/// item) is held; a double the word, a triple the source line; `y` yanks it and flashes it there, `space y` copies it.
+#[test]
+fn a_drag_over_a_folded_doc_comment_lights_what_it_holds() {
+    use crate::event::{Mouse, MouseKind as K};
+    let mut s = Shot::new(80, 24);
+    s.file("src/spool.rs", SPOOL_DOC);
+    assert_eq!(folded(&s), [1], "folded");
+    let at = |p: &str| SPOOL_DOC.find(p).expect(p);
+    let cell_of = |s: &mut Shot, p: &str| {
+        let text = screen_text(s);
+        let (y, row) = text.lines().enumerate().find(|(_, r)| r.contains(p)).expect(p);
+        (row[..row.find(p).unwrap()].chars().count(), y)
+    };
+    let mouse = |s: &mut Shot, kind: K, (x, y): (usize, usize)| {
+        s.ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        s.frame();
+    };
+    let presses = |s: &mut Shot, (x, y): (usize, usize), n: usize| {
+        for kind in std::iter::repeat_n([K::Down, K::Up], n).flatten() {
+            s.ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        }
+        s.frame();
+    };
+    let selected = |s: &Shot| {
+        let r = s.ed.doc().selection().primary();
+        s.ed.doc().text.byte_slice(r.from()..r.to()).to_string()
+    };
+    // (a press, then a drag onto the wrapped line's second row: by character, the rows lit only as far as it holds)
+    let (strands, out) = (cell_of(&mut s, "strands waiting"), cell_of(&mut s, "first one out"));
+    assert!(out.1 > strands.1, "the line wraps: {out:?} under {strands:?}");
+    mouse(&mut s, K::Down, strands);
+    assert_eq!(lit_folded(&mut s), "", "a press: the cursor, nothing lit");
+    let ord = cell_of(&mut s, "order it came");
+    mouse(&mut s, K::Drag, (ord.0 + 2, ord.1));
+    assert_eq!(selected(&s), &SPOOL_DOC[at("strands waiting")..=at("order it came") + 2]);
+    assert_eq!(
+        lit_folded(&mut s),
+        "strands waiting, each one wound in the ord",
+        "within a row: up to the pointer's"
+    );
+    mouse(&mut s, K::Drag, out);
+    let held = &SPOOL_DOC[at("strands waiting")..=at("first one out")];
+    assert_eq!(selected(&s), held, "onto the next row");
+    assert_eq!(
+        lit_folded(&mut s),
+        held.split_whitespace().collect::<Vec<_>>().join(" "),
+        "what's lit is what's held"
+    );
+    mouse(&mut s, K::Up, out);
+    // (`y` yanks it and its flash is drawn there; `space y` copies the same)
+    s.ed.motion_drawn = true;
+    super::MOTION_SEEN.with_borrow_mut(Vec::clear);
+    s.keys("y");
+    assert_eq!(s.ed.registers.get(&'"').cloned(), Some(vec![held.to_string()]), "y: what's held");
+    let flashed = super::MOTION_SEEN.with_borrow(|m| {
+        m.iter().filter(|(k, ..)| *k == "flash").map(|(_, _, g)| g.clone()).collect::<String>()
+    });
+    let bare = |t: &str| t.split_whitespace().collect::<String>();
+    assert_eq!(bare(&flashed), bare(held), "y's flash: on its characters");
+    s.ed.motion_drawn = false;
+    s.keys("<space>y");
+    assert!(crate::clipboard::asked(held), "space y: the same text");
+    // (a double on a code span's word: the word, its backticks neither held nor drawn)
+    let wind = cell_of(&mut s, "wind to");
+    presses(&mut s, wind, 2);
+    assert_eq!((selected(&s), lit_folded(&mut s)), ("wind".into(), "wind".into()), "a double: the word");
+    // (over a link: its text lit, its address held but drawn nowhere)
+    let (call, more) = (cell_of(&mut s, "Call"), cell_of(&mut s, "for more"));
+    mouse(&mut s, K::Down, call);
+    mouse(&mut s, K::Drag, more);
+    mouse(&mut s, K::Up, more);
+    assert_eq!(selected(&s), &SPOOL_DOC[at("Call")..=at("for more")]);
+    assert_eq!(lit_folded(&mut s), "Call wind to add one, or see the docs f");
+    // (a triple: its source line, the bullet too; a drag from the item's word: the bullet not)
+    let another = cell_of(&mut s, "another one");
+    presses(&mut s, another, 3);
+    assert_eq!(selected(&s), "/// - another one\n", "a triple: the line");
+    let bullet = lit_folded(&mut s);
+    assert!(
+        bullet.ends_with(" another one") && bullet.len() > " another one".len(),
+        "the bullet lit: {bullet:?}"
+    );
+    let end = (another.0 + "another one".len() - 1, another.1);
+    mouse(&mut s, K::Down, another);
+    mouse(&mut s, K::Drag, end);
+    mouse(&mut s, K::Up, end);
+    assert_eq!(
+        (selected(&s), lit_folded(&mut s)),
+        ("another one".into(), "another one".into()),
+        "from its word"
+    );
+    assert_eq!(folded(&s), [1], "folded throughout");
+}
+
 /// #387: a jump centres its target when it was out of sight and leaves the view as it is when it's in sight — `n`,
 /// `C-o`/`C-i`, a place opened (`open_at`: a picker's, `]q`, `gf`, the chat's `path:line`) —; a plain motion keeps the
 /// scroll margin's rule.

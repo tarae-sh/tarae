@@ -7345,17 +7345,43 @@ fn draw_text(
             // Folded doc comment: on the block's first row its line number, and its lines' signs and git mark
             // folded together
             Some(crate::codeview::Row::Doc { start, end, indent, index, at: (from, to), spans, code }) => {
-                // (a selection over the source its words come from lights them, the block still folded — #269; one no
-                // wider than a character is the cursor, the bar's accent says it)
+                // (a selection over the source its words come from lights them cell by cell, each by the character it
+                // stands for — `doccomment::cell_sources`: what's lit is what's held, #410 —, the block still folded —
+                // #269; one no wider than a character is the cursor, the bar's accent says it; and a flash the same
+                // way, `y`'s too — #411)
                 let (from, to) = (*from, *to);
-                let lit = ranges
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.to() > crate::graphemes::next_boundary(text, r.from()))
-                    .filter(|(_, r)| r.from() < to && r.to() > from)
-                    .map(|(i, _)| i == primary_idx)
-                    .reduce(|a, b| a || b)
-                    .map(|primary| if primary { ui.selection_primary } else { ui.selection });
+                // (only a row something lights is mapped — from the character before its source: a bullet's)
+                let (lo, hi) = (crate::graphemes::prev_boundary(text, from), to.max(from + 1));
+                let wide = ranges.iter().any(|r| {
+                    r.from() < hi && r.to() > lo && r.to() > crate::graphemes::next_boundary(text, r.from())
+                });
+                let flashing = flashed.iter().any(|r| r.start < hi && r.end > lo);
+                let stands = match wide || flashing {
+                    true => crate::doccomment::cell_sources(text, (from, to), spans),
+                    false => Vec::new(),
+                };
+                let paint = |cell: usize, st: Style| {
+                    let Some(&m) = stands.get(cell) else { return st };
+                    let k = ranges.partition_point(|r| r.to() <= m);
+                    let lit = ranges.get(k).filter(|r| {
+                        r.from() <= m && r.to() > crate::graphemes::next_boundary(text, r.from())
+                    });
+                    let mut st = match lit {
+                        Some(_) if k == primary_idx => st.patch(ui.selection_primary),
+                        Some(_) => st.patch(ui.selection),
+                        None => st,
+                    };
+                    let f = flashed.partition_point(|r| r.end <= m);
+                    if flashed.get(f).is_some_and(|r| r.start <= m) {
+                        st.bg = flash_bg(ui, st.bg, flash_k).or(st.bg);
+                        #[cfg(test)]
+                        MOTION_SEEN.with_borrow_mut(|s| {
+                            let g = text.byte_slice(m..crate::graphemes::next_boundary(text, m)).to_string();
+                            s.push(("flash", m, g))
+                        });
+                    }
+                    st
+                };
                 ground(out, lay, y, ui.base)?;
                 apply(out, ui.base)?;
                 if signs > 0 {
@@ -7397,7 +7423,7 @@ fn draw_text(
                         queue!(out, Print(" "))?;
                     }
                 }
-                let row_of = (*indent, &spans[..], *code, lit);
+                let row_of = (*indent, &spans[..], *code, &paint as &dyn Fn(usize, Style) -> Style);
                 draw_folded_row(out, editor, ui, lay.text_cols, row_of, here, labels_on)?;
                 let used = folded_used(lay.text_cols, *indent, spans, *code);
                 let mut end_w = 0;
@@ -8890,14 +8916,15 @@ fn folded_used(width: usize, indent: usize, spans: &[crate::markdown::Span], cod
 /// One screen row of a folded doc comment: indent · bar · text, on the code's own ground — no panel, so a file
 /// thick with comments stays one surface. The bar says where a block is (faint; the accent on the block the cursor
 /// is in); the prose a tone above the comment colour (it's read, and quieter than code); example code set in two
-/// cells, in its syntax colours; `lit` a selection's ground over its words (#269: selected, it stays folded). `width`
-/// cells, the row's end left as it is. (On a card — a picker's preview — `ui` is the card's, `Ui::on`: its ground.)
+/// cells, in its syntax colours; `paint` each cell of its words' style given its index among them — a selection's
+/// ground, a flash (#269: selected, it stays folded; #410: lit by the character each cell stands for). `width` cells,
+/// the row's end left as it is. (On a card — a picker's preview — `ui` is the card's, `Ui::on`: its ground.)
 fn draw_folded_row(
     out: &mut impl Write,
     editor: &Editor,
     ui: &Ui,
     width: usize,
-    (indent, spans, code, lit): (usize, &[crate::markdown::Span], bool, Option<Style>),
+    (indent, spans, code, paint): (usize, &[crate::markdown::Span], bool, &dyn Fn(usize, Style) -> Style),
     current: bool,
     dim: bool,
 ) -> io::Result<()> {
@@ -8916,6 +8943,7 @@ fn draw_folded_row(
         queue!(out, Spaces(2))?;
         used += 2;
     }
+    let words_at = used;
     for sp in spans {
         if used >= width {
             break;
@@ -8925,11 +8953,25 @@ fn draw_folded_row(
             continue;
         }
         let st = base.patch(Style { bg: None, ..sp.style });
-        let st = lit.map_or(st, |l| st.patch(l));
         // `gw` labels up: step back like the rest of the text
-        apply(out, if dim { Style { fg: ui.virt.fg, ..st } } else { st })?;
-        queue!(out, Print(&text))?;
-        used += text.width();
+        let st = if dim { Style { fg: ui.virt.fg, ..st } } else { st };
+        // (a run of characters painted alike printed at once)
+        let mut run = (String::new(), None::<Style>);
+        for g in crate::graphemes::cells(&text, 0, 1) {
+            let painted = paint(used - words_at, st);
+            if run.1 != Some(painted) && !run.0.is_empty() {
+                apply(out, run.1.unwrap_or(st))?;
+                queue!(out, Print(&run.0))?;
+                run.0.clear();
+            }
+            run.1 = Some(painted);
+            run.0.push_str(&text[g.bytes]);
+            used += g.width;
+        }
+        if !run.0.is_empty() {
+            apply(out, run.1.unwrap_or(st))?;
+            queue!(out, Print(&run.0))?;
+        }
     }
     apply(out, ground)?;
     queue!(out, Spaces(width.saturating_sub(used)))?;

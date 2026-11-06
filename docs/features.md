@@ -235,7 +235,9 @@ configs carry over as they are.
   into one. Its rows are text to the mouse, as code is: a click lands on the character under it in the comment's
   source, a double takes the word, a drag selects from the press to the pointer (from the code into it, or back out)
   and the view moves only as it would on code — past an edge, or to keep the scroll margin; the block stays folded
-  and its selected rows light. Nothing is copied as you let go: `y` yanks the source
+  and what's selected lights character by character, each drawn character by the source one it shows (a bullet by
+  the source just before its item; a link's address, never drawn, lights nowhere). Nothing is copied as you let go: `y`
+  yanks the source, its flash on those characters
 - **Indent guides** (the block around the cursor one tone brighter), a **scrollbar** with error and warning ticks for
   the whole file, current-line highlight, per-mode colors and cursor shapes ([screenshot](screenshots/ux-guides.png))
 

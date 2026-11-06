@@ -6338,7 +6338,7 @@ impl Editor {
     /// file's code is drawn and every move over it (`j`/`k`, the mouse, labels) asks it: doc comments render
     /// here (`doc_comments_render`); it isn't being edited — a selection on it opens it only in INSERT where it's
     /// being edited (`editing`) or right after a key of yours edited there (`Document.edited`: `c`, `d`, a paste),
-    /// never for being selected (#269: selected, its rows light, `term::draw_folded_row`); and no change shown on
+    /// never for being selected (#269: selected, what's held lights there, `term::draw_folded_row`); and no change shown on
     /// screen is in or beside it (`doccomment::touches_change`).
     pub fn doc_block_folded(
         &self,

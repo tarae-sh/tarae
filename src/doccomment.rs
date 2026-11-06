@@ -405,6 +405,39 @@ pub fn place_at(
     w.at + w.word.len()
 }
 
+/// The source byte each cell of a folded row's words stands for (`spans`, its source `from..to`): what a selection or
+/// a flash on that byte lights there, so what's lit is what's held (#410, #411). A found word's character its own (both
+/// cells of a wide one); a cell after a word — the space between two, punctuation found with no word of its own, a word
+/// drawn but not written — the byte right after that word, where a press there lands (`place_at`); a cell before the
+/// row's first word — a bullet, a section's label, a list's indent — the character just before that word (the `- ` or
+/// `/// ` it stands for: lit once the selection reaches over it, a press there landing on the word); no word found,
+/// `from`. What isn't drawn — a link's address, a code span's backticks — lights nowhere: it's between two cells.
+pub fn cell_sources(
+    text: &ropey::Rope,
+    (from, to): (usize, usize),
+    spans: &[crate::markdown::Span],
+) -> Vec<usize> {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let width: usize = spans.iter().map(|s| s.text.width()).sum();
+    let found = places(text, (from, to), spans);
+    let Some(first) = found.first() else { return vec![from.min(text.len_bytes()); width] };
+    let mut out = vec![crate::graphemes::prev_boundary(text, first.at); width];
+    for (k, w) in found.iter().enumerate() {
+        let mut c = w.col;
+        for (i, ch) in w.word.char_indices() {
+            for _ in 0..ch.width().unwrap_or(0) {
+                if let Some(cell) = out.get_mut(c) {
+                    *cell = w.at + i;
+                }
+                c += 1;
+            }
+        }
+        let next = found.get(k + 1).map_or(width, |n| n.col).min(width);
+        out[c.min(next)..next].fill(w.at + w.word.len());
+    }
+    out
+}
+
 /// Line range [start, end] of the doc comment block containing `line` (within 200 lines up/down — joins
 /// a `/** */` that starts above).
 pub fn block_at(text: &ropey::Rope, line: usize, syn: &DocComments) -> Option<(usize, usize)> {
