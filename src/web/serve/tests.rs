@@ -170,8 +170,13 @@ fn lines_are_the_buffers_past_a_break_only_the_rope_makes() {
     assert_eq!(f.buffer_line(line_of(&page.text, "## After")), after);
 }
 
+/// Rounds of every input `perf_web_serve_answers` asks, its quickest kept — the first round the warm one.
+const ROUNDS: usize = 3;
+
 /// The server's answers on docs.rs's Rope page (753 links): a `gd` and a `space k` on every link, `space s`, a `gr` on
-/// every heading — the slowest one each. Numbers for `cargo perf`.
+/// every heading — the slowest input each, its time its best of `ROUNDS`, as term.rs's `worst_of_best` (#426: `space s`
+/// was one cold call, and a stall of the machine's in it read 29.40 ms against 1.05; what the code costs on its slowest
+/// input stays — a stall would have to land on every round of the same input). Numbers for `cargo perf`.
 #[test]
 fn perf_web_serve_answers() {
     if crate::test_results::unoptimized("web::serve::tests::perf_web_serve_answers") {
@@ -193,14 +198,23 @@ fn perf_web_serve_answers() {
         let _ = answer(&k, method, &p, now);
         t.elapsed().as_secs_f64() * 1000.0
     };
-    let worst =
-        |method: &str, at: &mut dyn Iterator<Item = usize>| at.map(|b| ask(method, b)).fold(0.0, f64::max);
+    // (a round over all the inputs at a time, so one input's rounds are spread over the measure)
+    let slowest = |method: &str, at: &[usize]| {
+        let mut best = vec![f64::MAX; at.len()];
+        for _ in 0..ROUNDS {
+            for (b, &byte) in best.iter_mut().zip(at) {
+                *b = b.min(ask(method, byte));
+            }
+        }
+        best.into_iter().fold(0.0, f64::max)
+    };
+    let links: Vec<usize> = f.links.iter().map(|l| l.from).collect();
     let heads: Vec<usize> = f.headings.iter().map(|h| f.line_starts[h.line]).collect();
     for (name, ms, budget) in [
-        ("definition", worst("textDocument/definition", &mut f.links.iter().map(|l| l.from)), 1.0),
-        ("hover", worst("textDocument/hover", &mut f.links.iter().map(|l| l.from)), 1.0),
-        ("symbols", ask("textDocument/documentSymbol", 0), 5.0),
-        ("references", worst("textDocument/references", &mut heads.into_iter()), 2.0),
+        ("definition", slowest("textDocument/definition", &links), 1.0),
+        ("hover", slowest("textDocument/hover", &links), 1.0),
+        ("symbols", slowest("textDocument/documentSymbol", &[0]), 5.0),
+        ("references", slowest("textDocument/references", &heads), 2.0),
     ] {
         let line = format!("PERF web_serve_{name}_ms {ms:.3} budget={budget} noise=0.2\n");
         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
