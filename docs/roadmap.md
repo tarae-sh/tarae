@@ -51,15 +51,17 @@ For how tarae is built and why, see [architecture.md](architecture.md). For what
 | **Shared rust-analyzer** | One server for a repository's checkouts, swapped in the background as sessions come and go |
 | **Usage** | What each session's Claude spends, from claude's own stream: the chat's last row, `:usage`, `tarae state`. Each turn's requests in order with their calls' tool names (`$state/calls/`, `cargo xtask turns`). A big conversation left idle is compacted (`/compact`) before its hour's cache expires, by Claude Code's own rule and your Claude settings (`idleCompaction`), said on the row (`compacts 14:26`) |
 | **Panes** | Every surface a pane under one focus (P2a `e002ceb1`); splits, floating panes and linked groups under one header (P2b `e6d8891c`, `e131542c`; P3 steps 1–8, `3d7ca662` to `f3afdbd9`, follow per pane the last); the run panels' output and the chat's transcript and input as documents under the editor's keys (P2c `d95b3f13`, `54bcfbdf`); a view mode and quoting on every surface (`2696b066`, `8e17fc36`, `1b988324`). P3b's tabs were dropped for zellij's (2026-10-27) |
+| **One pane tree, S0–S4** | Every docked surface a pane of one tree, nothing seen changing (panes4's `.sb/onetree-plan.md`, decided 2026-11-04): today's layout pinned (S0, `3b992e8f`); the homes' fields gone, every reader asking the frame's rects by kind (S1a–S1h, `e5822c78` to `ee58fef0`); who gives way to whom one function, each kind sized along the split it sits in, the sizes you set the surfaces' shares (S2a `7949b6fd`, S2b `469ec3ae`, S2c `f8e136d7`); the borders the mouse finds and the lines drawn the frame's edges between leaves (S3a `ac694a36`, S3b `4788ee0e`); the keys a pane's, named by its id (S4, `7e8deb39`). S5, where what you see moves, comes after the polish list |
 | **Participants** | A workspace is a checkout with its layout, a session one participant (C0, `621acbd8`). Where every session reads and writes, in its colour (C1, `1eb04ee5`); an overlap said the moment it would conflict (C2, `c4513975`); the woven view, a file as every workspace's changes merge (C2b part 1, `3501b885`, `320cc45e`); workspaces kept close to their base (C3, `4b8ece93`), a move that never leaves conflict markers (`305ef94d`). The woven tree's preflight (C2b part 2) waits: the bring's preflight already catches a combined break |
 | **The chat and the code as one flow** | The focus plan: D1 the measure (`1cf0e527`), B1 the step said once (`026c1cda`), A1 an answer's place (`877ad7f2`), A1b a note card between the lines (`e26a185d`), E1 the turn as a map (`3a18d92f`), F0 what a note knows (`2038d9ad`), C1 the question at its lines (`6982a139`), C1b several replies (`a57d70a1`), A1c (`584b787b`). Then the flow plan's five pieces: the reader (`d529f481`), the ask line (`fc21d0aa`), the column back and the minimize gone (`152d7bcb`), `space i`'s line as a `change` card by its lines (`7b3a3196`), and steering (`2f422cb3`: while Claude works `tab` steers and `enter` still queues — in its A/B 115 of 115 steers acted on in turn, −24 % $ against queuing) |
+| **The chat whole, the code linked** | #388 and #389 (motion's `.sb/chatlink-plan.md`, its eight decided 2026-11-05): the places an answer names are flags at the code, a faint `¶` lit while its paragraph is in the column, a press the chat there (step 1, `6023bbfb`); every answer drawn whole, `space N` listing every note and flag (step 2, `575c31c8`); `space n`'s questions asked in the chat with their lines quoted, the chat's `note` tool gone (step 3, `41393672`: −342 tokens a request); a name in the chat answering `gd`, ctrl+press and `space k` where the answer cites or quotes it (step 4, `4a3b8da5`), by name where no place holds it (step 5, `20e0f41d`), underlined once it comes to a definition (5b, `09f17e31`), and its hover as the pointer rests on it (step 6, `7fb21b1f`) — the lookups 0 tokens |
 | **Orchestra, Part I** | The home session's Claude starts sessions of its own and steers them through session tools, never the screen: `sessions_start` and `session_send` (P1a `e3afe033`), `sessions` and news of a turn it started (P1b `e9160970`), wakes and each child's cost (P2 `0e3a602d`), one `session_act` — a review, a board, a send, a proposed bring or end, every card still yours (P3 `72b18178`, +696 tokens of definitions) |
 | **The remote split, steps 1–3 and 5** | The loop draws for an interface (step 1, `87aea884`); "drawn" means presented, by the frame an interface showed (step 2, `e776cec5`); `tarae --host` and `tarae attach` on this machine, the protocol a crate of its own, `crates/tarae-wire` (step 3: `ef6701a4`, `c4373767`, `b687c981`, `870808d4`, `fc25a9cf` — an attach to its first frame 8.8 ms, a key 0.3 ms against the terminal's 0.25). Over SSH (step 5, pieces 1–4: `1b2094f3`, `2122e788`, `2a3baeb0`, `47b6e5ac`; S-H `a4b5e00f`): `tarae attach ssh://…` through a relay there, one protocol version, a link that comes back by itself; measured by `cargo xtask remote` into a Lima VM: the first frame 506 ms, a key 1.07 ms (p90 1.37), a cut link back in 94 ms, a frozen link and a focus back 3.1 s ([remote.md](remote.md)) |
-| **The polish list** | Commercial-grade before new features (the user, 2026-11-03). Landing 0, the freeze watcher (`1dd88904`); 1, what waits for you in one home, the card stack (`d1a07187`); 2, one copy per screen, the chat's column saying the step (`fe076ef3`, #295); 3, quiet code (`6c62a0c4`); 4, cards ask less, one bring card (`57421255`, `e0905197`); 5, the status line diet (`718138ff`); 6, follow's words and motion (`6c6953bd`); 7, the docs' pictures retaken (`c9215106`, #303, #319) |
+| **The polish list** | Commercial-grade before new features (the user, 2026-11-03). Landing 0, the freeze watcher (`1dd88904`); 1, what waits for you in one home, the card stack (`d1a07187`); 2, one copy per screen, the chat's column saying the step (`fe076ef3`, #295); 3, quiet code (`6c62a0c4`); 4, cards ask less, one bring card (`57421255`, `e0905197`); 5, the status line diet (`718138ff`); 6, follow's words and motion (`6c6953bd`); 7, the docs' pictures retaken (`c9215106`, #303, #319; after #387 and #388, `335b3290`, `56b43c9b`, `2f4a2edb`). Every landing done; what's left of the list is frictions |
 | **The bring queue** | Every bring waits its turn in one queue, its place in line said; a tip that moves rebases and preflights the ones waiting by themselves; what lands is the commit its preflight tested (#371 `e9cf6289`, #373 `ca7a9476`, #379 with it) |
 | **Linux checks' room** | Before each `cargo xtask linux` run tarae's Docker volumes are held under 30 GB, the oldest landed checkout's target first, never one in use or with changes (#380, `ae318d5f`); one run at a time on a Docker, machine-wide (#352, `79120c58`) |
 | **The sandbox on several kernels** | `cargo xtask kernels` (`74e8f3fb`): one kernel per behaviour that differs, as Lima VMs on this Mac. Every row green on 2026-11-05 — K1, K2, K3, K5, K6 and Y2 on `8c197b4b`, K4 on `ec8b9494` once #380 freed its Docker's disk. Nested user namespaces: tier own's mounts hold against them (M1 and M2, `f508be48`; M2 on K4 under AppArmor's restriction, `36932d1d`) |
-| **The Shorts recorder** | A scene as a video (xtask only, takes kept out of git): every frame kept and judged in motion (`scenes --record`, `e03a8dea`), drawn at 30 fps with captions in a band under the screen (`scenes --video`, `a45c97c2`), as a 1080×1920 Short (`--shorts`, `e8173972`); its six scenes, V1 `three-claudes` (`3e8356ad`), V2 `waits-60s` (`e03a8dea`), V3 `main-moved` (`a96c5ba9`), V4 `edit-in-buffer` (`a3e9940f`), V5 `follow-replay` (`57d7f718`) and V6 `managers-view` (`2a685218`). The whole is the default and the zoom the exception, as the camera's one rule (`48f062c9`, `camera::course`): each beat opens on the whole for 2 s, its one read lit there 0.8 s before the camera goes in for 2.5 s and back, shallow unless a scene says `@zoom-deep` |
+| **The Shorts recorder** | A scene as a video (xtask only, takes kept out of git): every frame kept and judged in motion (`scenes --record`, `e03a8dea`), drawn at 30 fps with captions in a band under the screen (`scenes --video`, `a45c97c2`), as a 1080×1920 Short (`--shorts`, `e8173972`); its six scenes, V1 `three-claudes` (`3e8356ad`), V2 `waits-60s` (`e03a8dea`), V3 `main-moved` (`a96c5ba9`), V4 `edit-in-buffer` (`a3e9940f`), V5 `follow-replay` (`57d7f718`) and V6 `managers-view` (`2a685218`). The whole is the default and the zoom the exception, as the camera's one rule (`48f062c9`, `camera::course`): each beat opens on the whole for 2 s, its one read lit there 0.8 s before the camera goes in for 2.5 s and back, shallow unless a scene says `@zoom-deep`. Shorts 1 and 2, each two features as one story, opened on the whole screen with a music bed under the keys (`10b5f066`), one of them uploaded |
 | **Sound** | An ASMR mode (`4ca79e7f`): `editor.sound`, off by default, yours only — key clicks as Claude's writing appears and a settle as an edit lands unseen, a recorded keyboard (CC0) in a person's rhythm, macOS's output by tarae's own few lines; Linux's output next |
 
 The Claude Code IDE protocol (M5) was retired on 2026-10-04, once the chat did all of it inside tarae.
@@ -132,35 +134,30 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-11-05):
+Under way (2026-11-06):
 
-- **The polish list's remainder** (main's `.sb/polish-list.md`; landings 0–7 are [done](#done)). **One pane tree**
-  (panes4's `.sb/onetree-plan.md`, decided 2026-11-04: every docked surface a pane of one tree, moved and split by `C-w`
-  as zellij does, kept per workspace): S0, today's layout pinned (`3b992e8f`), and S1a–S1f (`e5822c78`, `0ae3e46e`,
-  `62c0a87f`, `0405edb7`, `55a3e051`, `a13c069f`: `body_h` goes) landed, nothing seen changing; then
-  S1g–S4 the same way. Then S5, where what you
-  see moves (`C-w H/J/K/L` moves the pane in hand, `C-w < > + -` grow and shrink it; shots first), S8 (the phone's
-  layout a preset of the tree, before remote step 6's phone piece) and S9 (two sessions' conversations side by side,
-  after a week of S5).
-- **#388/#389, an answer's notes leave the code** (motion's `.sb/chatlink-plan.md`, its eight decided 2026-11-05):
-  step 1, flags (`6023bbfb`: a faint `¶` at each line an answer names, lit while its paragraph is in the column, a
-  press the chat at that paragraph), and step 2, the chat whole (`575c31c8`: an older answer reads as written, the fold
-  to one row gone; `space N` lists every note and flag), landed. Steps 3–6: `space n`'s own questions into the chat,
-  the `note` tool gone with its pins and `reply_to`, F0's words beside the place in the chat, and a name in the chat
-  answering the code's language keys — hover, `gd`, ctrl+click (#389).
+- **The polish list's remainder** (main's `.sb/polish-list.md`): its landings 0–7 are [done](#done), and so are one
+  pane tree's S0–S4 and #388/#389; what's left is the frictions below. After it comes one pane tree's S5, where what
+  you see moves (`C-w H/J/K/L` moves the pane in hand, `C-w < > + -` grow and shrink it; shots first), then S8 (the
+  phone's layout a preset of the tree, before remote step 6's phone piece) and S9 (two sessions' conversations side
+  by side, after a week of S5).
 - **Three Shorts, each two features as one story** (whole; CLAUDE.md's Shorts bullet, the user 2026-11-05): ~45–60 s,
   a problem, its answer, the payoff — *several Claudes, one repository* (V1 + V3), *watch Claude work, take it back*
-  (V5 + V4), *you decide* (V2 + V6). The hook first, the brand last: a Short opens on its most striking moment, the
-  mascot and `t a r a e` on the end card. Short 1 taken (by the user's word; no commit shows it), 2 and 3 to
-  take.
+  (V5 + V4), *you decide* (V2 + V6). Shorts 1 and 2 landed (`10b5f066`, [done](#done)); Short 3, *you decide*, is
+  taken and waits for the user's look.
 
-Open of #286–#392 (main's `.sb/frictions29.md`): #293 (build folders regrow; `cargo xtask build-prune` by hand, a
+Open of #286–#405 (main's `.sb/frictions29.md`): #293 (build folders regrow; `cargo xtask build-prune` by hand, a
 way that needs no hand the user's call), #317 (an overlap said right on a move's own news), #324 (a base move's card
 ~19 s late once — watched), #343 (the disk warning's estimate jumps), #344 (the live harness's other callers still
 open the chat with `space l`), #350 (viewed marks flapped once — to check on current main), #369 (`:`'s whole list
-flashes before typing narrows it), #372 (a frame's colour is a process-wide switch), #375 (a small file opened on the
-main loop), #382 (a same-tick test that fails under load), #383 (the scene driver's socket path past `sun_path`),
-#384 (an undone turn's note says nothing of it), and #388 and #389 above.
+flashes before typing narrows it), #372 (a frame's colour is a process-wide switch), #375 and #397 (a small file
+opened on the main loop, and a lookup that would open a file as yours — motion's `.sb/openaside-plan.md`, its
+questions with the user; its step 1, #400, landed), #383 (the scene driver's socket path past `sun_path` — collab,
+under way), #384 (an undone turn's note says nothing of it), #394 and #398 (tests whose patience the machine's load
+ran out), #401 and #402 (a peek or a session's state that just changed comes with no sign — one rule, a thing that
+came by itself dries once as it lands: built with the user), #403 (answering another session's run card opens that
+run's output where you went only to answer), #404 (the session list's columns spread wide) and #405 (a toast over
+the peek that says the same fact).
 
 ## Next
 
@@ -527,6 +524,12 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   Then every card the mouse brings waiting for the pointer to rest, 0.5 s as the docs' hover, the next one at once
   while one is up (#391, `6fa25a73`), and socket readers reading again every second, so a lost end can't leave the host
   a ghost interface (#392, `a86bb764`: macOS can leave a blocking read asleep through its peer's end, #390's finding).
+  Since 2026-11-05: the overlap toast wrapping at its phrases, in a Short's window too (#336, `718138ff`, `734d66f8`);
+  a same-tick test with a tick of its own (#382, `6f58c8af`); an edit's paced reveal counting a screen, never every
+  line between the view and the edit (#393, `10bab7b6`); a cursor under a cut row's card on its letter (#396,
+  `20e0f41d`); a turn's save a write a quit waits for, and a binary file opened from a picker's split, a chat link or
+  the command line its row's words (#399, #326's last opens, `990e63d5`); and a FIFO that never hangs the loop (#400,
+  `90503cf7`, step 1 of motion's `.sb/openaside-plan.md`).
 
 - **`:session-apply`** — done (2026-10-19, `a525a775`): an outside tree's change — a patch, `--base <rev>` for
   where it was made — brought in as one reviewed change set, never written unseen.
