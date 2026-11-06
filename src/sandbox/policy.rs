@@ -366,6 +366,9 @@ pub struct Policy {
     /// supervisor knows the run). Made for the `Here` a policy is made for (`policy_in`), so both systems'
     /// policies pin alike on either (`golden`); `for_project`: this system's.
     pub supervised: bool,
+    /// Linux: why tarae can't serve its runs' calls here (tier offline, `sandbox::unserved`) — None: served, or not
+    /// Linux. Then a run makes no socket that leaves it: no proxy URL (`proxy_url`), no host said to be reached.
+    pub unserved: Option<String>,
     /// The hosts its network reaches through the proxy, as its rules there hold them (`llm.sandbox-hosts`, and
     /// what the user answered for the project and for this run alone — `tools::with_allowed`). Not part of its key
     /// (`policy_key`): an answer mustn't end what an earlier run left (a daemon) — the proxy's newer answers go
@@ -523,9 +526,19 @@ impl Policy {
     /// Its run's proxy URL — the one thing the packs' proxy lines and the proxy variables hang on (step 5f): a
     /// port and token of the run's own where it has one (`proxy`: macOS), else, where its supervisor hands its
     /// connections over (`supervised`: Linux), that address (`route::PROXY` — no credential: the supervisor
-    /// knows the run). None: the network closed, or no way to the proxy was made — nothing goes beyond this
-    /// machine.
+    /// knows the run). None: the network closed, no way to the proxy was made, or tarae can't serve its runs
+    /// (`unserved`: nothing answers that address — as srt sets no proxy variable without its bridge) — nothing goes
+    /// beyond this machine.
     pub fn proxy_url(&self) -> Option<proxy::ProxyUrl> {
+        match self.unserved {
+            Some(_) => None,
+            None => self.proxy_url_served(),
+        }
+    }
+
+    /// `proxy_url` as if tarae served its runs — what `policy_key` keys by: served or not is the same for a tarae's
+    /// life, and a kept home's key is taken before a run's policy knows (`run_policy_with`).
+    pub(super) fn proxy_url_served(&self) -> Option<proxy::ProxyUrl> {
         match (&self.proxy, self.supervised) {
             _ if !self.network => None,
             (Some(r), _) => Some(r.url()),
@@ -1494,6 +1507,7 @@ impl Policy {
             watch: None,
             trace: None,
             granted: Vec::new(),
+            unserved: None,
             sockets: Vec::new(),
             terminals: false,
             keys: Some(Vec::new()),

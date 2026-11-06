@@ -1082,11 +1082,26 @@ fn also_network(s: &str) -> Result<AlsoAsk, String> {
 
 /// The network as a session's runs reach it, for `also_host`: open (`llm.sandbox-network`), the hosts they reach
 /// without asking then (`llm::Hosts::rules`; None: any), and the session's `s` hosts (`caps::Basis.hosts`: the
-/// proxy's, not in `Caps`).
+/// proxy's, not in `Caps`) — and why tarae can't serve the runs' calls (`sandbox::unserved`, tier offline: no
+/// socket leaves a run, none of this is reached).
 struct NetNow {
     open: bool,
     rules: Option<Vec<crate::sandbox::proxy::egress::Pattern>>,
     session: Vec<(String, u16)>,
+    unserved: Option<String>,
+}
+
+/// What Claude hears of `also` for a socket where tarae can't serve its runs (`why`, tier offline, #417): no card
+/// opens one in the sandbox there — only `outside_sandbox`'s.
+fn offline_said(ask: &AlsoAsk, why: &str) -> String {
+    let what = match ask {
+        AlsoAsk::Network(..) => "no network",
+        _ => "no socket, not even this machine's ports",
+    };
+    format!(
+        "tier offline: {what} for your commands here (not served: {why}) — no card opens it in the sandbox. If the \
+         command needs it, run it again with outside_sandbox and your reason."
+    )
 }
 
 /// `host:port` for a run in a session that may do `caps` on network `net` (C2): None when its runs reach it
@@ -1125,6 +1140,10 @@ fn also_grant(
     };
     let never = never_opened;
     let home = caps.home.as_deref().unwrap_or(Path::new("/"));
+    // (#417: not served, no socket leaves a run — a card would record what no run reaches)
+    if let (Some(why), AlsoAsk::Port(_) | AlsoAsk::Localhost | AlsoAsk::Network(..)) = (&net.unserved, ask) {
+        return Err(offline_said(ask, why));
+    }
     match ask {
         AlsoAsk::Port(n) => {
             if let Some((_, why)) = crate::sandbox::RISKY_PORTS.iter().find(|(p, _)| p == n) {
@@ -1327,9 +1346,10 @@ fn also_ask(
     ed.events.jobs().spawn(move || {
         let caps = basis.build();
         let open = |n: u16| localhost || ports.contains(&n);
-        let net = NetNow { open: open_net, rules: hosts.rules(), session: basis.hosts.clone() };
+        let here = here.map_or_else(crate::sandbox::Here::now, |h| h());
+        let unserved = crate::sandbox::unserved(&here);
+        let net = NetNow { open: open_net, rules: hosts.rules(), session: basis.hosts.clone(), unserved };
         let keys = keys.unwrap_or_else(|| {
-            let here = here.map_or_else(crate::sandbox::Here::now, |h| h());
             crate::sandbox::key_rules_for(&caps.root, with_allowed(&llm, &caps, None), &here)
         });
         let grant = also_grant(&ask, &cwd, &caps, (&open, localhost), env.as_ref(), &net, Some(&keys));
@@ -6963,6 +6983,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        served(&mut ed);
         ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -7062,7 +7083,8 @@ mod tests {
         let caps = crate::caps::Caps::at(&home, &root);
         let closed = |_: u16| false;
         let grant = |a: super::AlsoAsk| {
-            let net = super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new() };
+            let net =
+                super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved: None };
             super::also_grant(&a, &root, &caps, (&closed, false), None, &net, None)
         };
         let at = |p: &std::path::Path| p.display().to_string();
@@ -7104,7 +7126,7 @@ mod tests {
             ..crate::caps::Caps::granted(&root, &granted, &none, &none)
         };
         let closed = |_: u16| false;
-        let net = super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new() };
+        let net = super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved: None };
         let here = crate::sandbox::Here { tmp: None, ..crate::sandbox::Here::now() };
         let w = super::with_allowed(&crate::llm::LlmConfig::default(), &caps, None);
         let keys = crate::sandbox::key_rules_for(&root, w, &here);
@@ -7150,6 +7172,7 @@ mod tests {
     /// chat's generation — C2's `also` tests.
     fn also_chat(dir: &std::path::Path) -> (crate::editor::Editor, u64) {
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        served(&mut ed);
         ed.workspace.root = dir.to_path_buf();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -7158,6 +7181,13 @@ mod tests {
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         (ed, generation)
+    }
+
+    /// A system that serves its runs' calls, whatever this one does: the `also` tests' cards are a served session's —
+    /// in tier offline (`--docker-default`) no card opens a socket (#417, `offline_asks_no_host_and_points_at_outside`).
+    fn served(ed: &mut crate::editor::Editor) {
+        let here = || crate::sandbox::Here { served: Some(|| Ok(())), ..crate::sandbox::Here::now() };
+        ed.sandbox_here = Some(std::sync::Arc::new(here));
     }
 
     /// What `run` decided for call `n` of `generation` with `args`: a card (its question), a run (None), refused
@@ -7201,6 +7231,102 @@ mod tests {
         let o = (ed.offers[0].id, ed.offers[0].rev);
         ed.card_focus = Some((o.0, o.1));
         assert!(ed.offer_key(crate::key::Key::plain(crate::key::Code::Char(c))), "{c} taken");
+    }
+
+    /// #417: where tarae can't serve its runs' calls (tier offline — `cargo xtask linux --docker-default`, WSL2 at work)
+    /// a run makes no socket that leaves it, so `also {network}` raises no card and records no host: Claude hears the
+    /// tier, why, and the one way that reaches it — `outside_sandbox`'s card. Its runs get no proxy variables (nothing
+    /// answers them there), and a host granted is never said to be reached through tarae's proxy. Where the runs are
+    /// served it skips, saying so; `TARAE_EXPECT_TIER=offline` fails instead.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn offline_asks_no_host_and_points_at_outside() {
+        use serde_json::json;
+
+        use crate::allow::Grant;
+        let test = "offline_asks_no_host_and_points_at_outside";
+        let Some(why) = crate::sandbox::supervisor::unavailable() else {
+            let offline = std::env::var("TARAE_EXPECT_TIER").is_ok_and(|t| t.trim() == "offline");
+            assert!(!offline, "{test}: tier offline expected, this system's runs are served");
+            return crate::test_results::said_skip(&format!("{test} — this system's runs are served"));
+        };
+        let base = crate::scratch::Scratch::new("also-offline");
+        std::fs::create_dir_all(base.join("home/proj")).unwrap();
+        let home = std::fs::canonicalize(base.join("home")).unwrap();
+        let root = home.join("proj");
+        let (mut ed, generation) = also_chat(&root);
+        // (this system's own answer, not `also_chat`'s served stand-in)
+        ed.sandbox_here = None;
+        ed.caps_home = Some(home.clone());
+        for (n, also) in
+            [json!({ "network": "example.com" }), json!({ "port": 5432 })].into_iter().enumerate()
+        {
+            let args = json!({ "command": "true", "also": also, "reason": "its server" });
+            let said = match also_sent(&mut ed, generation, n as u64 + 1, args) {
+                Err(e) => e,
+                Ok(card) => panic!("{also}: no card nor run where nothing is served ({why}) — got {card:?}"),
+            };
+            for words in ["tier offline", "not served", why.as_str(), "outside_sandbox"] {
+                assert!(said.contains(words), "{also}: `{words}` in {said}");
+            }
+        }
+        assert!(ed.workspace.claude.hosts.is_empty(), "no host recorded");
+        // (a host the user let through before: a run there neither gets the proxy's variables nor is said to reach it)
+        let caps = crate::caps::Caps::at(&home, &root);
+        let host = Grant::Host("example.com".into(), 443);
+        let w = super::with_allowed(&crate::llm::LlmConfig::default(), &caps, Some(&host));
+        let p = crate::sandbox::policy_from(&root, w, &crate::sandbox::Here::now()).unwrap();
+        assert_eq!(p.proxy_url().map(|u| u.url()), None, "no proxy variables where nothing answers them");
+        let g = crate::sandbox::Guard::In(Box::new(p));
+        let (mark, _, words) = g.where_ran();
+        assert!(!mark.contains("hosts") && !words.contains("through tarae's proxy"), "{mark} — {words}");
+        assert!(!g.rules().contains("example.com"), "{}", g.rules());
+    }
+
+    /// #417 on any machine, a stand-in Linux that can't serve its runs: `also`'s socket asks — a host, a port, every
+    /// port — are refused with the tier, its why and the way out, never a grant; the runs' policy
+    /// has no proxy URL, keeps a host the user let through out of what it says, and marks no host; served, as before.
+    #[test]
+    fn where_runs_arent_served_also_opens_no_socket() {
+        use super::AlsoAsk;
+        use crate::allow::Grant;
+        use crate::sandbox::{Guard, Here, Os};
+        let base = crate::scratch::Scratch::new("also-unserved");
+        std::fs::create_dir_all(base.join("home/proj")).unwrap();
+        let home = std::fs::canonicalize(base.join("home")).unwrap();
+        let root = home.join("proj");
+        let caps = crate::caps::Caps::at(&home, &root);
+        let closed = |_: u16| false;
+        let why = "pidfd_getfd refused";
+        let grant = |a: &AlsoAsk, unserved: Option<&str>| {
+            let unserved = unserved.map(String::from);
+            let net = super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved };
+            super::also_grant(a, &root, &caps, (&closed, false), None, &net, None)
+        };
+        for a in [AlsoAsk::Network("example.com".into(), 443), AlsoAsk::Port(5432), AlsoAsk::Localhost] {
+            let said = grant(&a, Some(why)).unwrap_err();
+            for words in ["tier offline", "not served: pidfd_getfd refused", "outside_sandbox"] {
+                assert!(said.contains(words), "{a:?}: `{words}` in {said}");
+            }
+            assert!(matches!(grant(&a, None), Ok(Some(_))), "{a:?}: served, its card as ever");
+        }
+        // (the policy: the same stand-in, served or not)
+        let host = Grant::Host("example.com".into(), 443);
+        let policy = |served: fn() -> Result<(), String>| {
+            let here = Here { os: Os::Linux, served: Some(served), ..Here::now() };
+            let w = super::with_allowed(&crate::llm::LlmConfig::default(), &caps, Some(&host));
+            Guard::In(Box::new(crate::sandbox::policy_from(&root, w, &here).unwrap()))
+        };
+        let unserved = policy(|| Err("pidfd_getfd refused".into()));
+        let Guard::In(p) = &unserved else { unreachable!() };
+        assert_eq!(p.proxy_url().map(|u| u.url()), None);
+        let (mark, _, words) = unserved.where_ran();
+        assert!(!mark.contains("hosts") && !words.contains("through tarae's proxy"), "{mark} — {words}");
+        assert!(!unserved.rules().contains("example.com"), "{}", unserved.rules());
+        let served = policy(|| Ok(()));
+        let Guard::In(p) = &served else { unreachable!() };
+        assert!(p.proxy_url().is_some(), "served: the proxy's variables");
+        assert!(served.where_ran().2.contains("let reach example.com:443 through tarae's proxy"));
     }
 
     /// C2: `also` names one host by name — `name` (443) or `name:port`, lowercased — and nothing else: an address
@@ -7401,6 +7527,7 @@ mod tests {
         let dir = std::fs::canonicalize(&dir).unwrap();
         std::fs::write(dir.join("gen.sh"), "echo marker\n").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        served(&mut ed);
         ed.workspace.root = dir.clone();
         ed.workspace.name = "also-open".into();
         let also = |cmd: &str, also: serde_json::Value| json!({ "command": cmd, "also": also, "reason": "stand-in" });
@@ -7444,6 +7571,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        served(&mut ed);
         ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -7768,6 +7896,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("also-turn");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        served(&mut ed);
         ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -7840,6 +7969,7 @@ mod tests {
             std::fs::create_dir_all(dir.join(p)).unwrap();
         }
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        served(&mut ed);
         ed.workspace.root = dir.join("front");
         let other = ed.workspace_open(&dir.join("back")).unwrap();
         assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
@@ -7968,7 +8098,8 @@ mod tests {
         let dir = std::path::Path::new("/h/p");
         let closed = |_: u16| false;
         let grant = |a: super::AlsoAsk, localhost: bool, env: Option<&RunEnv>| {
-            let net = super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new() };
+            let net =
+                super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved: None };
             super::also_grant(&a, dir, &caps, (&closed, localhost), env, &net, None)
         };
         assert_eq!(grant(super::AlsoAsk::Localhost, false, None), Ok(Some(Grant::Localhost)));

@@ -383,8 +383,8 @@ Kept:
   `sandbox::keeper::tests::this_machines_own_address_is_reached_only_where_opened` ·
   `sandbox::route::tests::this_machines_own_addresses_are_this_machine`
 - **Beyond, only through tarae's proxy.** On macOS the run gets `HTTPS_PROXY` and may connect only to its own
-  proxy port, with a token of its own. On Linux, in every tier, the variable names the proxy's reserved address,
-  which the supervisor hands to the proxy; a tool that ignores it, or raw TCP (ssh, a database client), can't go
+  proxy port, with a token of its own. On Linux, in the tiers served (own, host), the variable names the proxy's
+  reserved address, which the supervisor hands to the proxy (tier offline: no variable, nothing goes out); a tool that ignores it, or raw TCP (ssh, a database client), can't go
   out — no card opens it, only a run outside the sandbox.
   test: `sandbox::proxy::macos_tests::a_run_goes_out_only_through_its_proxy` ·
   `sandbox::proxy::macos_tests::a_run_reaches_only_its_own_proxy_port` ·

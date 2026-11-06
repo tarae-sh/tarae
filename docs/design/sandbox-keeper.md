@@ -3,8 +3,8 @@
 Design, 2026-10-06. Status: **built** (2026-10-14: steps 1–9 of the [roadmap](../roadmap.md), §Steps). Every Linux
 session's sandboxed runs are forked by a keeper of its own, born in the session's namespaces where user namespaces
 work (`src/sandbox/keeper.rs`, `tier.rs`, `channel.rs`). tarae decides every call that names an address (`route.rs`,
-`supervisor.rs`). What goes out goes through one proxy in tarae, named by the run's proxy variable in every tier
-(`proxy.rs`; the supervisor hands a connect to its address over). Where sessions share a loopback, a run reaches no
+`supervisor.rs`). What goes out goes through one proxy in tarae, named by the run's proxy variable in every served tier
+(`proxy.rs`; the supervisor hands a connect to its address over) — tier offline has none and no variable (#417). Where sessions share a loopback, a run reaches no
 other session's sockets (`owners.rs`). Each run says what its tier keeps apart and shares (`guarantees.rs`). macOS
 keeps Seatbelt, as `src/sandbox.rs` has it; its two-session tests are `apart.rs`.
 

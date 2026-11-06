@@ -229,10 +229,12 @@ impl Guard {
                         words.push_str(" — Docker's: as much as outside the sandbox");
                     }
                 }
-                if p.network && !p.asks_hosts {
+                // (#417: not served, nothing goes beyond — the tier in the mark says so)
+                let served = p.unserved.is_none();
+                if served && p.network && !p.asks_hosts {
                     mark.push_str(" + network");
                     words.push_str(", the network open (llm.sandbox-network)");
-                } else if !p.egress.answered.is_empty() {
+                } else if served && !p.egress.answered.is_empty() {
                     // (piece C: the hosts the user let through when it started — a yes since isn't here)
                     let hosts: Vec<String> =
                         p.egress.answered.iter().map(|(h, p)| format!("{h}:{p}")).collect();
@@ -1179,6 +1181,9 @@ pub struct Here {
     pub filesystems: Option<fn(&Path) -> Option<Filesystem>>,
     /// A test's stand-in tree's top: nothing above it is read for a store (`Who.top`). None: `/`.
     pub stand_in: Option<PathBuf>,
+    /// Linux: whether tarae serves its runs' calls here, or why not (`unserved`) — None: as the tier probe and the
+    /// supervisor say; a test's stand-in gives its own.
+    pub served: Option<fn() -> Result<(), String>>,
     /// What runs besides this project's may write (real paths): every open session's write places with what's
     /// been granted there, the write grants kept for any project (`Editor::others_write`) — a store in or holding
     /// one isn't told (`DiskStores::written_passed`). Another tarae's sessions aren't seen.
@@ -1215,6 +1220,7 @@ impl Here {
             devices: None,
             filesystems: None,
             stand_in: None,
+            served: None,
             others_write: Vec::new(),
             #[cfg(target_os = "linux")]
             resolv: std::fs::read_to_string("/etc/resolv.conf").ok(),
@@ -3706,6 +3712,8 @@ pub fn policy_key(p: &Policy) -> String {
     (q.run, q.tag, q.proxy, q.watch, q.env) = (None, None, None, None, Vec::new());
     // (`supervised` as the proxy URL it gives, below)
     (q.egress, q.run_id, q.trace, q.supervised) = (Default::default(), 0, None, false);
+    // (#417's `unserved` neither: the served form is the key — `proxy_url_served`)
+    q.unserved = None;
     // (the kept homes are the project's and the key's — granted by them, not part of what's compared)
     q.write.retain(|w| !p.kept.iter().any(|k| k.home == *w));
     q.kept = Vec::new();
@@ -3716,7 +3724,7 @@ pub fn policy_key(p: &Policy) -> String {
     let mut text = format!("{q:?}");
     // (a proxy URL that's the same for every run is the policy's: a home a daemon lives from never gets runs
     // whose proxy lines differ from those its daemon started with — a per-run one is never in a kept home)
-    if let Some(url) = p.proxy_url().filter(|u| !u.per_run) {
+    if let Some(url) = p.proxy_url_served().filter(|u| !u.per_run) {
         text.push_str(&format!(" proxy {}", url.url()));
     }
     if let Some(r) = &p.run {
@@ -4952,6 +4960,12 @@ pub fn policy_from(root: &Path, w: crate::tools::Widened, here: &Here) -> Result
     // (what no setting carries goes on before Linux's rules are made from the policy: a file named like a key
     // the user opened is left out of what they close — 7b)
     w.onto(&mut p);
+    // (#417: not served, a host the user let through is reached by no run — never said to be)
+    if p.unserved.is_some() {
+        let hosts: Vec<String> =
+            p.egress.answered.iter().map(|(h, n)| crate::allow::Grant::Host(h.clone(), *n).shown()).collect();
+        p.granted.retain(|g| !hosts.contains(g));
+    }
     #[cfg(target_os = "linux")]
     let p = confined(p);
     Ok(p)
@@ -4993,6 +5007,10 @@ pub(crate) fn run_policy_with(
     here: &Here,
 ) -> Result<Policy, String> {
     let (mut p, found) = policy_computed(root, llm, reads, folders, here);
+    // (#417: not served, nothing answers the proxy's address — known before its proxy lines are made)
+    if p.supervised {
+        p.unserved = unserved(here);
+    }
     // (a run without its own folder would have the temp folders, which every run writes, as its `TMPDIR` and
     // tools' homes, and no tag its denials are watched by: it doesn't start)
     let log = crate::log::Session::of(root);
@@ -5009,6 +5027,23 @@ pub(crate) fn run_policy_with(
         }
     }
     Ok(p)
+}
+
+/// Why tarae can't serve the calls of a session's runs where `here` is (tier offline: `supervisor::served` for the
+/// tier probe's keepers) — None where it can, and on macOS (no supervisor: Seatbelt's proxy port is the run's own).
+/// Then a run makes no socket that leaves it: no network, no port of this machine's, no unix socket. Probes the first
+/// time on Linux: a worker's.
+pub fn unserved(here: &Here) -> Option<String> {
+    if here.os != Os::Linux {
+        return None;
+    }
+    if let Some(served) = here.served {
+        return served().err();
+    }
+    #[cfg(target_os = "linux")]
+    return linux::served_here(tier::get().ns.user).err();
+    #[cfg(not(target_os = "linux"))]
+    None
 }
 
 /// `policy` with what `here` says, computed — its Landlock rules not made yet (`confined`), and nothing made
@@ -12806,6 +12841,7 @@ mod tests {
             tag: None,
             proxy: None,
             supervised: Os::HOST == Os::Linux,
+            unserved: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,
@@ -14739,6 +14775,7 @@ mod tests {
                 tag: None,
                 proxy: None,
                 supervised: Os::HOST == Os::Linux,
+                unserved: None,
                 egress: Default::default(),
                 run_id: 0,
                 session: 0,
@@ -14831,6 +14868,7 @@ mod tests {
             tag: Some(tag.to_string()),
             proxy: None,
             supervised: Os::HOST == Os::Linux,
+            unserved: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,
@@ -14910,6 +14948,7 @@ mod tests {
             tag: None,
             proxy: None,
             supervised: Os::HOST == Os::Linux,
+            unserved: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,
@@ -16474,6 +16513,7 @@ mod tests {
             tag: None,
             proxy: None,
             supervised: Os::HOST == Os::Linux,
+            unserved: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,

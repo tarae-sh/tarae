@@ -1744,12 +1744,14 @@ macOS (Seatbelt). A test keeps this table equal to the code:
   multicast or broadcast. This machine — its loopback and its own addresses (its LAN's, Docker's bridge's, as
   they were when the command started) — it reaches only on the ports `llm.sandbox-ports` and
   `llm.sandbox-localhost` open. Claude's result says so.
-- **Through tarae's proxy, by its variables**, on both systems and in every tier: the commands' proxy variables
-  (`HTTPS_PROXY` and the rest) name tarae's proxy, and the packs tell the tools that ignore them (Gradle's
+- **Through tarae's proxy, by its variables**, on macOS and in the tiers tarae serves (own, host): the commands'
+  proxy variables (`HTTPS_PROXY` and the rest) name tarae's proxy, and the packs tell the tools that ignore them (Gradle's
   `gradle.properties`, Node's `NODE_USE_ENV_PROXY`). Names are looked up by the proxy: a command that looks one up
   itself (`dig`, `getent`) gets no resolver.
 - **When tarae can't make a command's connections**, the command gets no socket at all — no port on this
-  machine, no unix socket, not even the project's — and Claude's result says why (tier offline). That happens:
+  machine, no unix socket, not even the project's, and no proxy variables (nothing would answer them; srt sets none
+  without its bridge either) — and Claude's result says why (tier offline). An `also` for a host, a port or every
+  port is answered with the tier and why, never a card: no grant would reach it, only `outside_sandbox`'s run (#417). That happens:
   - in a container without `CAP_SYS_PTRACE` (Docker's default, a dev container started the usual way): its
     filter refuses the call tarae takes a command's socket with (`pidfd_getfd`). For the network and this
     machine's ports (a Gradle build, a test against a local server), add `"runArgs": ["--cap-add=SYS_PTRACE"]`
