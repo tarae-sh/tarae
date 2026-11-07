@@ -1244,7 +1244,7 @@ const SETTLE: std::time::Duration = std::time::Duration::from_millis(if cfg!(tes
 
 /// Whether server `cid` is at work, or was moments ago (`SETTLE`), or is only just up.
 fn at_work(ed: &Editor, cid: ClientId) -> bool {
-    let recent = |t: &std::time::Instant| t.elapsed() < SETTLE;
+    let recent = |t: &std::time::Instant| crate::clock::since(*t) < SETTLE;
     ed.client(cid).is_some_and(|c| !c.progress.is_empty() || c.ready_at.as_ref().is_some_and(recent))
         || ed.lsp.work_ended.get(&cid).is_some_and(recent)
 }

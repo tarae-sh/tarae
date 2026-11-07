@@ -1328,11 +1328,11 @@ impl Editor {
                     if all.is_empty() {
                         self.lsp.elsewhere.remove(&path);
                     }
-                    self.lsp.published.insert((cid, path), std::time::Instant::now());
+                    self.lsp.published.insert((cid, path), crate::clock::now());
                     return crate::nav::diagnostics_moved(self);
                 };
                 if let Some(p) = self.docs[i].path.clone() {
-                    self.lsp.published.insert((cid, p), std::time::Instant::now());
+                    self.lsp.published.insert((cid, p), crate::clock::now());
                 }
                 let doc = &mut self.docs[i];
                 let mut list: Vec<Diagnostic> = params["diagnostics"]
@@ -1377,7 +1377,7 @@ impl Editor {
                         if ended.is_some_and(|p| hold == Some(p.title.as_str())) {
                             self.saves_held_go(cid);
                         }
-                        self.lsp.work_ended.insert(cid, std::time::Instant::now());
+                        self.lsp.work_ended.insert(cid, crate::clock::now());
                         self.ask_again(cid);
                         crate::chatlink::work_ended(self, cid);
                         self.inlay_after_work(cid);
@@ -3415,7 +3415,9 @@ impl Editor {
         }
         // Only just up and no work done yet: it hasn't begun loading the project (measured: rust-analyzer
         // answers "No references found at position" then)
-        if c.ready_at.is_some_and(|t| t.elapsed() < JUST_UP) && !self.lsp.work_ended.contains_key(&cid) {
+        if c.ready_at.is_some_and(|t| crate::clock::since(t) < JUST_UP)
+            && !self.lsp.work_ended.contains_key(&cid)
+        {
             return Err((format!("{name} is starting"), true));
         }
         let prepare = !prepared && c.caps["renameProvider"]["prepareProvider"] == json!(true);
@@ -6447,6 +6449,9 @@ mod tests {
     #[test]
     fn the_rename_tool_lands_the_servers_edit_as_claudes_change() {
         let (mut ed, file, other, log) = def_fixture("tool-rename");
+        // (#431: "moments ago" is `refactor::SETTLE` on the clock — held, so a loaded machine's slow steps between
+        // the work's end and the prepare's answer never close it; moved on by hand where the test means time passing)
+        crate::clock::hold();
         let dir = file.parent().unwrap().to_path_buf();
         std::fs::write(dir.join("third.rs"), "fn t() { crate::a(1); }\n").unwrap();
         let third = dir.join("third.rs");
@@ -6467,7 +6472,7 @@ mod tests {
         // Only just up, nothing loaded yet: still starting (rust-analyzer finds no references then)
         let e = tool(&mut ed, 20, rename, args("alpha")).unwrap_err();
         assert!(e.contains("fake is starting — not renamed"), "{e}");
-        std::thread::sleep(Duration::from_millis(150)); // (past `refactor::SETTLE`: up a while)
+        crate::clock::advance(Duration::from_millis(150)); // (past `refactor::SETTLE`: up a while)
         // Loading: a rename now could miss uses
         let progress = |kind: &str| {
             json!({ "method": "$/progress", "params": { "token": "i",
@@ -6499,7 +6504,7 @@ mod tests {
         answered(&mut ed, 21, prepare.clone(), Value::Null);
         let e = tool_answer(21).unwrap().unwrap_err();
         assert!(e.contains("fake is still loading the project — not renamed; try again"), "{e}");
-        std::thread::sleep(Duration::from_millis(150));
+        crate::clock::advance(Duration::from_millis(150));
         // The prepare says no
         crate::refactor::rename(&mut ed, crate::tools::Call::test(3), &args("alpha")).unwrap();
         answered(&mut ed, 3, prepare.clone(), Value::Null);

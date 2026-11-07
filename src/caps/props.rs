@@ -2303,10 +2303,60 @@ fn another_taraes_session_take_back_isnt_put_back() {
     ed.workspaces_keep();
     let gone = |ed: &Editor, _: &[String]| !ed.workspace.claude.allowed.ports.contains(&8080);
     settle(&mut ed, "gone here", 0, &gone);
+    // (the file as this tarae's writes leave it: every one queued landed — its memory being right isn't the file)
+    sessions_landed(&mut ed, &w);
     let put_back = sessions_say(&w, "8080");
     answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "again");
     until(&mut ed, "kept again", &|| sessions_say(&w, "8080"));
     assert!(!put_back, "their take-back put back");
+}
+
+/// Every write queued at the sessions' store landed, its result in.
+fn sessions_landed(ed: &mut Editor, w: &World) {
+    let path = w.sessions.clone();
+    // (each landed write's counter is `seen` on its worker, `known` once its result is applied on the loop)
+    let done = move |ed: &Editor, _: &[String]| {
+        crate::storewrite::served(&path) == crate::storewrite::given_turns(&path)
+            && ed.workspace_store.known == *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner())
+    };
+    settle(ed, "the sessions' writes landed", 0, &done);
+}
+
+/// #432: two of this tarae's lists queued before another tarae's take-back lands — the first takes it in, the second
+/// (made before anything here knew of it) lands after: it's left out of that one too, never written back.
+#[test]
+fn a_list_queued_before_another_taraes_take_back_doesnt_put_it_back() {
+    let w = World::new("caps-session-queued");
+    let mut ed = restored(&w);
+    answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "for the session");
+    until(&mut ed, "kept with the session", &|| sessions_say(&w, "8080"));
+    sessions_landed(&mut ed, &w);
+    // (two lists of this tarae's, held before their write: a loaded machine's workers late)
+    crate::storewrite::hold(&w.sessions, Some(0));
+    ed.workspaces_keep();
+    ed.workspaces_keep();
+    // (the other tarae's take-back lands first)
+    let common = ed.workspace_store.repo.clone().unwrap();
+    let s = crate::worktree::load(&w.sessions, &common);
+    let mut theirs = s.sessions.clone();
+    theirs.iter_mut().for_each(|k| k.allowed.remove("port 8080"));
+    let took = [(ed.workspace.root.clone(), "port 8080".to_string())];
+    let stored = crate::worktree::Stored { sessions: theirs, front: s.front, rev: s.rev };
+    crate::worktree::save(&w.sessions, &common, stored, &took, s.rev).unwrap();
+    crate::storewrite::release(&w.sessions, 2);
+    sessions_landed(&mut ed, &w);
+    crate::storewrite::hold(&w.sessions, None);
+    assert!(!ed.workspace.claude.allowed.ports.contains(&8080), "taken back here too");
+    assert!(!sessions_say(&w, "8080"), "their take-back put back by the second list");
+    // (this tarae's own take-back, then the answer given again: kept — its own take-back never counts against it)
+    answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "again");
+    until(&mut ed, "kept again", &|| sessions_say(&w, "8080"));
+    crate::storewrite::hold(&w.sessions, Some(0));
+    ed.sandbox_disallow("port 8080").unwrap();
+    answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "again after its own take-back");
+    crate::storewrite::hold(&w.sessions, None);
+    sessions_landed(&mut ed, &w);
+    assert!(sessions_say(&w, "8080"), "the answer given again after this tarae's own take-back dropped");
 }
 
 /// The same answer another tarae kept first holds: a yes on the version it trusted, an `A` for the grant it kept —

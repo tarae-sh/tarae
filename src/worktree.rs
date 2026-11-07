@@ -46,6 +46,13 @@ pub struct WorkspaceStore {
     /// The file's counter as this tarae last read or wrote it: the take-backs kept there above it it hadn't seen
     /// (`save`) — set on the worker as a write lands.
     pub seen: std::sync::Arc<std::sync::Mutex<crate::storewrite::Rev>>,
+    /// The file's counter as the sessions here last took it in (on the loop: what came back at startup, a write's
+    /// result applied) — a list made then hadn't seen another tarae's take-backs above it, whatever this tarae wrote
+    /// before it lands (`save_judged`'s `known`, #432).
+    pub known: crate::storewrite::Rev,
+    /// This tarae's writes that landed there, the newest `MINE_KEPT` (set on the worker): its own take-backs, which a
+    /// list made after them holds as it means to — an answer given again after one is kept (`save_judged`).
+    pub mine: std::sync::Arc<std::sync::Mutex<Vec<crate::storewrite::Rev>>>,
     /// The repository the last write that landed was for — set on the worker, so `:restart`'s state has it even
     /// when the write's result was never applied (the loop had ended — F6).
     pub landed: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
@@ -1394,17 +1401,45 @@ fn kept_list(v: &Value) -> Vec<Kept> {
     v.get("sessions").and_then(Value::as_array).into_iter().flatten().filter_map(Kept::from_json).collect()
 }
 
+/// Tests: `save_judged` by a writer whose list was made knowing all it had seen (`seen`), with no writes of its own
+/// before — another tarae's write.
+#[cfg(test)]
+pub(crate) fn save(
+    dir: &Path,
+    common: &Path,
+    s: Stored,
+    takes: &[(PathBuf, String)],
+    seen: crate::storewrite::Rev,
+) -> std::io::Result<(crate::storewrite::Rev, Vec<(PathBuf, String)>)> {
+    save_judged(dir, common, s, takes, Judged { seen, known: seen, mine: &[] })
+}
+
+/// What a write knew of the sessions' file (`save_judged`).
+pub(crate) struct Judged<'a> {
+    /// The counter as this tarae last read or wrote it, as the write lands.
+    pub seen: crate::storewrite::Rev,
+    /// The counter its list was made knowing (`WorkspaceStore.known` as the write was queued).
+    pub known: crate::storewrite::Rev,
+    /// The changes this tarae's own writes made there.
+    pub mine: &'a [crate::storewrite::Rev],
+}
+
+/// This tarae's landed writes kept to tell its own take-backs from another's (`WorkspaceStore.mine`).
+const MINE_KEPT: usize = 64;
+
 /// Written (on a worker, its turn taken: this tarae's saves land in the order made — `Editor::workspaces_write`).
 /// Between taraes no clock orders them: under a lock beside the file its counter goes up with each write, and the
-/// take-backs kept there (`takes`, this write's; `TAKEN_KEPT_S`) carry the counter they were written at — a list
-/// from a tarae that had seen an earlier one (`seen`) is written without them (F7). The counter written, and what
-/// of this list another tarae's take-backs left out (each session's checkout, what).
-pub(crate) fn save(
+/// take-backs kept there (`takes`, this write's; `TAKEN_KEPT_S`) carry the counter and tag they were written at — a
+/// list from a tarae that hadn't seen one is written without it (F7): one above `seen`, or above what the list was
+/// made knowing (`known`) and not this tarae's own (#432: a list queued before another tarae's take-back came in, landing
+/// after a write of this tarae's that took it in, put it back). The counter written, and what of this list another
+/// tarae's take-backs left out (each session's checkout, what).
+pub(crate) fn save_judged(
     dir: &Path,
     common: &Path,
     mut s: Stored,
     takes: &[(PathBuf, String)],
-    seen: crate::storewrite::Rev,
+    j: Judged,
 ) -> std::io::Result<(crate::storewrite::Rev, Vec<(PathBuf, String)>)> {
     let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     std::fs::create_dir_all(dir)?;
@@ -1421,7 +1456,10 @@ pub(crate) fn save(
     let old = old.unwrap_or_default();
     let now = crate::storewrite::Rev::of(&old["rev"]).unwrap_or_default();
     // (a counter gone back, or made again: what was seen is another file's — every take-back kept there counts)
-    let seen = if seen.n > now.n || (seen.n == now.n && seen.tag != now.tag) { 0 } else { seen.n };
+    let back =
+        |r: crate::storewrite::Rev| if r.n > now.n || (r.n == now.n && r.tag != now.tag) { 0 } else { r.n };
+    let seen = back(j.seen);
+    let known = back(j.known).min(seen);
     let at = crate::allow::now_s();
     let floor = at.saturating_sub(TAKEN_KEPT_S);
     let mut taken: Vec<Value> = (old["taken"].as_array().into_iter().flatten())
@@ -1434,7 +1472,9 @@ pub(crate) fn save(
         else {
             continue;
         };
-        for k in s.sessions.iter_mut().filter(|k| n > seen && k.root == Path::new(root)) {
+        let ours = t["tag"].as_u64().is_some_and(|tag| j.mine.contains(&crate::storewrite::Rev { n, tag }));
+        let unseen = n > seen || (n > known && !ours);
+        for k in s.sessions.iter_mut().filter(|k| unseen && k.root == Path::new(root)) {
             let had = k.allowed.clone();
             k.allowed.remove(what);
             if k.allowed != had {
@@ -1444,7 +1484,9 @@ pub(crate) fn save(
     }
     let rev = crate::storewrite::Rev { n: now.n + 1, tag: crate::storewrite::tag() };
     taken.extend(
-        takes.iter().map(|(r, what)| json!({ "root": r.to_str(), "what": what, "n": rev.n, "at": at })),
+        takes.iter().map(
+            |(r, what)| json!({ "root": r.to_str(), "what": what, "n": rev.n, "tag": rev.tag, "at": at }),
+        ),
     );
     let sessions: Vec<Value> = s.sessions.iter().map(Kept::json).collect();
     let front = s.front.as_deref().and_then(Path::to_str);
@@ -1483,6 +1525,7 @@ pub fn restore(ed: &mut Editor, v: &Value) -> Vec<String> {
     ed.workspace_store.repo = v["repo"].as_str().map(PathBuf::from).or(ed.workspace_store.repo.take());
     if let Some(seen) = crate::storewrite::Rev::of(&v["seen"]) {
         *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = seen;
+        ed.workspace_store.known = seen;
     }
     let sessions = kept_list(v);
     if sessions.is_empty() {
@@ -1586,6 +1629,7 @@ impl Editor {
         let Some((dir, start, s)) = self.workspaces_stored() else { return };
         let kept_in = self.workspace_store.repo.clone();
         let (seen, landed) = (self.workspace_store.seen.clone(), self.workspace_store.landed.clone());
+        let (known, mine) = (self.workspace_store.known, self.workspace_store.mine.clone());
         // (in this tarae's order — and named by a quit that cuts it off; one with take-backs kept, failed, until a
         // later write lands — which writes them too)
         let said = match takes.is_empty() {
@@ -1606,8 +1650,9 @@ impl Editor {
                 let mut takes = takes;
                 let failed = crate::storewrite::pending(&dir).into_iter().filter(|p| p.failed && p.again);
                 takes.extend(failed.flat_map(|p| takes_of(&p.carry)));
+                let knew = (&*seen, known, &*mine);
                 let (r, kept) =
-                    write_workspaces(&dir, &start, s, &takes, (&seen, &landed), kept_in.as_ref(), turn.fails);
+                    write_workspaces(&dir, &start, s, &takes, knew, &landed, kept_in.as_ref(), turn.fails);
                 turn.done(r.is_ok(), vec![SAVED.into()]);
                 (r, kept)
             });
@@ -1615,8 +1660,10 @@ impl Editor {
                 let Some((r, kept)) = went else { return };
                 // (kept there now: a later take-back that can't find it says so)
                 let left = match (&r, kept) {
-                    (Ok((_, left)), Some(common)) => {
+                    (Ok((rev, left)), Some(common)) => {
                         ed.workspace_store.repo = Some(common);
+                        // (what's left out below is taken in here: a list made from now on knew of it)
+                        ed.workspace_store.known = *rev;
                         left.clone()
                     }
                     _ => Vec::new(),
@@ -1641,16 +1688,26 @@ impl Editor {
 /// What the sessions' file's write left out of this tarae's list: each session's checkout and what.
 type Left = Vec<(PathBuf, String)>;
 
+/// What a sessions' write knew: the counter seen (set here as it lands), the one its list was made knowing, this
+/// tarae's landed writes (one more here as it lands).
+type Knew<'a> = (
+    &'a std::sync::Mutex<crate::storewrite::Rev>,
+    crate::storewrite::Rev,
+    &'a std::sync::Mutex<Vec<crate::storewrite::Rev>>,
+);
+
 /// `Editor::workspaces_write`'s write, its turn taken (`fails`: a test's failing write) — where they're kept for
 /// `kept_in`, the counter seen and the repository it lands for set here (`seen`, `landed`: on the worker, so
 /// `:restart`'s state has them though the result never reaches the loop — F6). How it went, and the repository it
 /// was written for.
+#[allow(clippy::too_many_arguments)]
 fn write_workspaces(
     dir: &Path,
     start: &Path,
     s: Stored,
     takes: &[(PathBuf, String)],
-    (seen, landed): (&std::sync::Mutex<crate::storewrite::Rev>, &std::sync::Mutex<Option<PathBuf>>),
+    (seen, known, mine): Knew,
+    landed: &std::sync::Mutex<Option<PathBuf>>,
     kept_in: Option<&PathBuf>,
     fails: bool,
 ) -> (Result<(crate::storewrite::Rev, Left), String>, Option<PathBuf>) {
@@ -1664,7 +1721,9 @@ fn write_workspaces(
         ),
         Ok(common) => {
             let seen_then = *seen.lock().unwrap_or_else(|e| e.into_inner());
-            let r = save(dir, &common, s, takes, seen_then).map_err(|e| e.to_string());
+            let ours = mine.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let j = Judged { seen: seen_then, known, mine: &ours };
+            let r = save_judged(dir, &common, s, takes, j).map_err(|e| e.to_string());
             (r, Some(common))
         }
         // (outside a repository nothing was kept: nothing to write — but one they're kept for, gone)
@@ -1675,6 +1734,10 @@ fn write_workspaces(
     };
     if let (Ok((rev, _)), Some(common)) = (&r, &kept) {
         *seen.lock().unwrap_or_else(|e| e.into_inner()) = *rev;
+        let mut mine = mine.lock().unwrap_or_else(|e| e.into_inner());
+        mine.push(*rev);
+        let over = mine.len().saturating_sub(MINE_KEPT);
+        mine.drain(..over);
         *landed.lock().unwrap_or_else(|e| e.into_inner()) = Some(common.clone());
     }
     (r, kept)
@@ -1732,6 +1795,7 @@ impl Editor {
                         ed.workspace_store.repo = Some(common);
                         // (the take-backs kept there up to it are in what came back: seen)
                         *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = rev;
+                        ed.workspace_store.known = rev;
                         let take = !ed.workspace_store.keyed;
                         let gone = ed.workspaces_back(here, gone, front, take);
                         if !gone.is_empty() {

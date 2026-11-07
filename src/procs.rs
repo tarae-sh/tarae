@@ -3996,6 +3996,23 @@ pub(crate) mod tests {
             ed.procs.rows.iter().take(2).map(|r| (&r.kind, r.title.as_str())).collect();
         assert_eq!(rows, [(&Kind::Tarae, "tarae"), (&Kind::Lsp(cid), "fake")]);
         assert_eq!(ed.procs.rows[1].what, crate::allow::tilde(&root));
+        // (this tarae is the test binary: its tree holds the children of every test running beside this one — a fake
+        // server, a run's `sh`, one not reaped yet — and their self-checks, more of them the more loaded the machine:
+        // rows that take the checks' line out of the slot, a check of theirs in its place (#434). As a look brings
+        // them:)
+        ed.procs.rows.extend((0..12).map(|i| row(90_000 + i, Kind::Other, 0.0, 1, 3_600)));
+        let stray = Finding {
+            key: "stray:90000:1".into(),
+            pid: 90_000,
+            what: "p90000 (pid 90000), started by tarae but not one it knows, running 1h".into(),
+            short: "p90000 running".into(),
+            did: "nothing — s stops it".into(),
+            act: Act::Nothing,
+        };
+        ed.procs.record(&[stray], SystemTime::now());
+        // (only this test's own then — no look lands before the frame: nothing here handles an event)
+        ed.procs.rows.retain(|r| r.kind == Kind::Tarae || r.kind == Kind::Lsp(cid));
+        ed.procs.checks.clear();
         keys(&mut ed, "j");
         let shown = screen(&mut ed, 140, 30).join("\n");
         for s in [

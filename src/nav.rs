@@ -1603,7 +1603,7 @@ pub fn diagnostics(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Stri
     // Writes whose save is held for quiet (`lsp_saved_outside`): their servers hear now — the check they
     // start is what a wait waits for
     ed.saves_due(true);
-    let since = std::time::Instant::now();
+    let since = crate::clock::now();
     let wait = std::time::Duration::from_secs(args["wait"].as_u64().unwrap_or(0).min(WAIT_MAX));
     let given: Vec<PathBuf> = match &args["paths"] {
         Value::Array(a) => a.iter().filter_map(Value::as_str).map(|p| root.join(p.trim())).collect(),
@@ -1690,7 +1690,7 @@ pub fn diagnostics_moved(ed: &mut Editor) {
 
 /// `diagnostics_moved` for the calls of the session in `ed.workspace`.
 fn diagnostics_moved_here(ed: &mut Editor) {
-    let (now, here) = (std::time::Instant::now(), ed.workspace.id);
+    let (now, here) = (crate::clock::now(), ed.workspace.id);
     let (mine, others): (Vec<DiagWait>, Vec<DiagWait>) =
         std::mem::take(&mut ed.lsp.tool_diags).into_iter().partition(|w| w.session == here);
     ed.lsp.tool_diags = others;
@@ -1713,7 +1713,8 @@ fn settled(ed: &Editor, cid: ClientId, since: std::time::Instant) -> bool {
     let after = |t: &std::time::Instant| *t > since;
     let moved = ed.lsp.work_ended.get(&cid).is_some_and(after)
         || ed.lsp.published.iter().any(|((s, _), t)| *s == cid && after(t));
-    c.ready && c.progress.is_empty() && since.elapsed() >= SETTLE && (moved || since.elapsed() >= QUIET)
+    let on = crate::clock::since(since);
+    c.ready && c.progress.is_empty() && on >= SETTLE && (moved || on >= QUIET)
 }
 
 /// Where a diagnostic is from and its code, as one label (`rustc E0308`, `clippy needless_return`).
@@ -1740,7 +1741,7 @@ struct Diag {
 /// asked).
 fn diags_text(ed: &Editor, w: &DiagWait, settled: Option<bool>) -> String {
     let root = project_root(ed);
-    let ago = |t: &std::time::Instant| secs(t.elapsed());
+    let ago = |t: &std::time::Instant| secs(crate::clock::since(*t));
     let old = |t: &std::time::Instant| crate::term::ago(crate::clock::since(*t), false);
     let name = |c: &ClientId| ed.client(*c).map(|c| c.name.clone()).unwrap_or_default();
     let mut servers: Vec<ClientId> = Vec::new();

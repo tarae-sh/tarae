@@ -1185,7 +1185,7 @@ impl Client {
             _ => Encoding::Utf16,
         };
         self.ready = true;
-        self.ready_at = Some(std::time::Instant::now());
+        self.ready_at = Some(crate::clock::now());
         let _ = self
             .tx
             .send(Out::Body(json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }).to_string()));

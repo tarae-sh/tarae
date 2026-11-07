@@ -877,13 +877,20 @@ mod tests {
         let root = crate::scratch::Scratch::new("c0-tags");
         let mut ed = Editor::new(crate::config::Config::default());
         let behind = ed.workspace_add(std::fs::canonicalize(&root).unwrap());
+        // (the tag read off a channel of its own: the editor's queue has the setup's results too — `workspace_add`'s
+        // `workspace_kept_back` reads the behind one's notes and turns on a worker — and on a loaded machine one lands
+        // before the tag's: #433)
         let tag = |ed: &Editor| {
-            ed.events.sender().send(Event::Job(Box::new(|_| {}))).unwrap();
-            match ed.events.recv_timeout(crate::test_results::PATIENCE) {
-                Some(Event::For(w, s, _)) => (w, s),
+            let (tx, rx) = mpsc::channel();
+            Tx { tx, ..ed.events.sender() }.send(Event::Job(Box::new(|_| {}))).unwrap();
+            match rx.recv_timeout(crate::test_results::PATIENCE) {
+                Ok(Event::For(w, s, _)) => (w, s),
                 _ => panic!("a tagged result"),
             }
         };
+        // (one of those landed already, as it may)
+        let late = ed.events.tx_for(Some((behind, ed.claude_of(behind))));
+        late.send(Event::Job(Box::new(|_| {}))).unwrap();
         let front = (ed.workspace.id, ed.workspace.claude.id);
         assert_eq!(tag(&ed), front);
         let made = std::cell::Cell::new(None);
