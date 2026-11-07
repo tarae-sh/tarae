@@ -384,8 +384,8 @@ impl Guarantees {
             Row::new(Part::Ptys, f.ns.user || pool.is_some(), if pool.is_some() { ONLY_MADE } else { "" }),
             Row { part: Part::Loopback, kept: true, how: loopback },
         ];
-        // (bridged: a direct connect beyond is the kernel's `ENETUNREACH`, unsaid — read from its output, piece 4 — so
-        // the way is the proxy's as served, no third word)
+        // (bridged: a direct connect beyond is the kernel's `ENETUNREACH`, said from its output — `direct_said_in` —
+        // so the way is the proxy's as served, no third word)
         let way = match net {
             RunNet::Own if f.bridged => Way::Proxy,
             RunNet::Plain | RunNet::Own => Way::NoSocket,

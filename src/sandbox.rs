@@ -363,6 +363,13 @@ impl Guard {
         for d in p.merge_made(&mut b.seen, said) {
             o.add(d);
         }
+        // (bridged: a direct connect beyond is the kernel's `ENETUNREACH`, unseen by any supervisor — read from a
+        // failed run's output, once; a passing run did without it, as `also_line`'s rule)
+        if let Some(d) =
+            p.direct_said_in(output).filter(|_| !passed && !b.seen.iter().any(|d| d.op == DIRECT_OP))
+        {
+            o.add(d);
+        }
         // (compat B11: a failed run whose output says a permission was refused — Landlock's EACCES — and names
         // nothing anywhere, in a folder that takes no new files — Linux, the project's root as a rule — has that
         // rule said as its likely cause: mypy crashed naming no path. Not every failure there: a failing test suite
@@ -2736,6 +2743,12 @@ impl Denial {
                 None => self.shown(),
             },
             // (step 5: beyond this machine only through tarae's proxy — a direct connect, or a send naming it)
+            // (bridged: read from the output, the kernel's `ENETUNREACH` naming no address — `direct_said_in`)
+            DIRECT_OP if t.is_empty() => "connecting beyond this machine directly (\"Network is unreachable\") — \
+                                          beyond this machine your commands go only through tarae's proxy \
+                                          (HTTPS_PROXY); a tool that ignores it (ssh, a database client, Node's \
+                                          fetch without NODE_USE_ENV_PROXY) can't go out"
+                .into(),
             DIRECT_OP => match t.strip_prefix("remote:").map(|r| r.split_once(" — ").unwrap_or((r, ""))) {
                 Some((at, "")) => format!(
                     "connecting to {at} directly — beyond this machine your commands go only through tarae's \
@@ -3997,6 +4010,17 @@ fn named_in(line: &str, root: &Path) -> Vec<PathBuf> {
 /// `os.PathError`): `named_in`.
 const OP_WORDS: &[&str] =
     &["open", "openat", "mkdir", "create", "remove", "unlink", "rename", "link", "symlink", "chmod", "write"];
+
+/// Whether a line says a connect found no route — the kernel's `ENETUNREACH`, as the tools print it (measured in a
+/// namespace holding only `lo`, `.sb/unreach/`, 2026-11-07), in any case: Python's `[Errno 101] Network is
+/// unreachable`, Rust's `Network is unreachable (os error 101)`, Go's `connect: network is unreachable`, git's
+/// `errno=Network is unreachable` (`git://`), ssh's (git's too) `connect to host … port 22: Network is unreachable`,
+/// wget's `failed: Network is unreachable.`, cargo's git (libgit2) `failed to connect to …: Network is unreachable;
+/// class=Os (2)`, `curl -v`'s `Immediate connect fail for …: Network is unreachable`. Not curl's own line (git's
+/// `https://`, cargo's registries): `Could not connect to server` is a refused port's too.
+fn unreachable(line: &str) -> bool {
+    line.to_ascii_lowercase().contains("network is unreachable")
+}
 
 /// Lines of output that say a permission was refused — what's left to go by when nothing watched.
 pub fn refused_lines(output: &[(bool, String)]) -> Vec<String> {
@@ -12610,6 +12634,91 @@ mod tests {
         );
         assert!(!text.contains("space m s") && !text.contains("llm.sandbox-network and"), "{text}");
         assert!(r.open.is_empty(), "nothing for also to open: {:?}", r.open);
+    }
+
+    /// Bridged (`.sb/offline-bridge-plan.md` piece 4): a direct connect beyond is the kernel's `ENETUNREACH`, which
+    /// no supervisor sees — a failed run whose output says it is told, once however many lines say it, in the served
+    /// tiers' `network-direct` words: only the proxy goes out, `outside_sandbox` for a tool that ignores it. A passing
+    /// run is told nothing of it (as `also_line`), nor is a served run, whose supervisor says its own.
+    #[test]
+    fn a_direct_connect_in_a_bridged_run_is_read_from_its_output() {
+        let p = Policy { tag: Some("t.".into()), ..Policy::for_project(&env(Path::new("/Users/u/p"))) };
+        let bridged = Policy {
+            network: true,
+            reach: NetReach::Bridged { unserved: "WSL2's init holds a listener".into() },
+            token: Some(proxy::RunToken::new(7).unwrap()),
+            ..p.clone()
+        };
+        let served = Policy { network: true, ..p };
+        let report = |p: &Policy, output: &[&str], passed: bool| {
+            let output: Vec<(bool, String)> = output.iter().map(|l| (true, l.to_string())).collect();
+            let g = Guard::In(Box::new(Policy { watch: Some(Watch::quiet("t.")), ..p.clone() }));
+            let r = g.report_with(&output, Told::default(), passed);
+            (r.text.split_whitespace().collect::<Vec<_>>().join(" "), r.open)
+        };
+        let lines = [
+            "ssh: connect to host 203.0.113.7 port 22: Network is unreachable",
+            "fatal: Could not read from remote repository.",
+            "ssh: connect to host 203.0.113.7 port 22: Network is unreachable",
+        ];
+        let (text, open) = report(&bridged, &lines, false);
+        let said = "connecting beyond this machine directly (\"Network is unreachable\") — beyond this machine your \
+                    commands go only through tarae's proxy (HTTPS_PROXY)";
+        assert_eq!(text.matches(said).count(), 1, "once, however many lines: {text}");
+        assert!(
+            text.contains(
+                "What says network-direct no grant opens: beyond this machine your commands go only through tarae's \
+                 proxy"
+            ) && text.contains("ask to run it outside the sandbox (outside_sandbox, with your reason — the user \
+                 answers y or n)"),
+            "{text}"
+        );
+        assert!(!text.contains("space m s") && !text.contains("llm.sandbox-network and"), "{text}");
+        assert!(open.is_empty(), "nothing for also to open: {open:?}");
+        let (passing, _) = report(&bridged, &lines, true);
+        assert!(!passing.contains("network-direct") && !passing.contains("directly"), "{passing}");
+        assert_eq!(
+            report(&served, &lines, false),
+            report(&served, &[], false),
+            "served: its supervisor says it"
+        );
+        let (closed, _) = report(
+            &Policy {
+                reach: NetReach::Closed { unserved: "u".into(), bridge: "b".into() },
+                ..bridged.clone()
+            },
+            &lines,
+            false,
+        );
+        assert!(!closed.contains("network-direct"), "closed: no proxy to point at: {closed}");
+    }
+
+    /// The kernel's `ENETUNREACH` as each tool prints it, measured (`.sb/unreach/`: a namespace holding only `lo`,
+    /// 2026-11-07) — every form read, in any case; curl's own line isn't: a refused port's says the same.
+    #[test]
+    fn every_tools_network_unreachable_is_read() {
+        let forms = [
+            ("python", "OSError: [Errno 101] Network is unreachable"),
+            ("python urllib", "urllib.error.URLError: <urlopen error [Errno 101] Network is unreachable>"),
+            ("rust", "Network is unreachable (os error 101)"),
+            ("go", "dial tcp 203.0.113.7:80: connect: network is unreachable"),
+            ("git git://", "203.0.113.7[0: 203.0.113.7]: errno=Network is unreachable"),
+            ("ssh, git ssh", "ssh: connect to host 203.0.113.7 port 22: Network is unreachable"),
+            ("wget", "Connecting to 203.0.113.7:80... failed: Network is unreachable."),
+            ("cargo git", "  failed to connect to 203.0.113.7: Network is unreachable; class=Os (2)"),
+            ("curl -v", "* Immediate connect fail for 203.0.113.7: Network is unreachable"),
+        ];
+        for (tool, line) in forms {
+            assert!(unreachable(line), "{tool}: {line}");
+        }
+        let not = [
+            "curl: (7) Failed to connect to 203.0.113.7 port 80 after 0 ms: Could not connect to server",
+            "curl: (7) Failed to connect to 127.0.0.1 port 9 after 0 ms: Could not connect to server",
+            "Connection refused (os error 111)",
+        ];
+        for line in not {
+            assert!(!unreachable(line), "{line}");
+        }
     }
 
     /// What Claude reads: what was blocked (deduplicated, with who tried); that nothing was; or that nothing

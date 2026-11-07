@@ -305,8 +305,9 @@ refused outright, as before.
 served) the run's calls are its own and reach only that namespace's `lo`: beyond it only the session's port at
 `route::PROXY` where it stands (the bridge, `.sb/offline-bridge-plan.md` A — the keeper made it at its birth, tarae's
 proxy accepts on it across the namespace), the run known by the token in its proxy URL (`proxy::RunToken`, as macOS's
-`RunPort`); anything else beyond `lo` is the kernel's `ENETUNREACH`, unsaid (the report reads it from the output:
-piece 4). This machine's ports aren't in that namespace (Q2), and unix sockets are refused. In `Routed` the run makes its own
+`RunPort`); anything else beyond `lo` is the kernel's `ENETUNREACH`, which no supervisor sees — said from the output: a failed
+run's line saying `Network is unreachable` is told as `network-direct` is in the served tiers, once
+(`Policy::direct_said_in`). This machine's ports aren't in that namespace (Q2), and unix sockets are refused. In `Routed` the run makes its own
 internet sockets — TCP's and UDP's only, by type and protocol, as C's `socket()` makes them (`seccomp::Mode::Routed`):
 not raw, ICMP's, UDP-Lite's, SCTP's or MPTCP's, whose own options and messages (SCTP's `CONNECTX`, its `DSTADDR`
 cmsgs) choose destinations tarae never sees; they belong to the session's netns. `connect`, `bind`, `listen`, an

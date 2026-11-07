@@ -839,8 +839,7 @@ impl Policy {
         #[cfg(target_os = "linux")]
         if let Some(Ok(c)) = &self.confine {
             let asked = self.network || self.localhost || !self.ports.is_empty() || !self.sockets.is_empty();
-            let bridged = matches!(self.reach, super::NetReach::Bridged { .. }) && self.proxy_url().is_some();
-            let net = c.serve.as_ref().err().map(|why| match bridged {
+            let net = c.serve.as_ref().err().map(|why| match self.bridged() {
                 true => format!(
                     ", and reach the network beyond this machine only through tarae's proxy (HTTPS_PROXY, set for \
                      every run, its own token in it) — a tool that ignores it (ssh, a database client, Node's fetch \
@@ -1213,6 +1212,24 @@ impl Policy {
         }
         out.truncate(DENIALS_KEPT);
         out
+    }
+
+    /// Not served but bridged, its proxy URL made (`reach`, `proxy_url`): beyond this machine only through the
+    /// session's port, and nothing serving its calls to see one that goes direct.
+    pub(super) fn bridged(&self) -> bool {
+        matches!(self.reach, super::NetReach::Bridged { .. }) && self.proxy_url().is_some()
+    }
+
+    /// Bridged (`bridged`, `.sb/offline-bridge-plan.md` piece 4): a connect beyond this machine that went direct, as
+    /// the run's output says it — raw TCP, a tool that ignores the proxy variable. The session's namespace holds only
+    /// `lo` and its port, so the kernel answers `ENETUNREACH`, which names no address and reaches no supervisor;
+    /// served, the supervisor says it (`network-direct`). One denial however many lines say it (`unreachable`).
+    pub(super) fn direct_said_in(&self, output: &[(bool, String)]) -> Option<Denial> {
+        (self.bridged() && output.iter().any(|(_, l)| unreachable(l))).then(|| Denial {
+            process: SEEN_IN_OUTPUT.into(),
+            op: DIRECT_OP.into(),
+            target: String::new(),
+        })
     }
 
     /// A connect refused as `line` says it (the packs' `refused-connect` whose `when` the output holds: macOS's nc,
