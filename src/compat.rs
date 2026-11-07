@@ -1224,6 +1224,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox.rs", "in fn runs_root: if let Some(runs) = &here.runs {", RUNS),
     ("src/sandbox.rs", "in fn spawn_as: held", HOOK),
     ("src/sandbox.rs", "in fn spawn_as: if let Some(held) = held {", HOOK),
+    ("src/sandbox/keeper.rs", "in fn born_lo: port_ino", RECORD),
     ("src/sandbox/keeper.rs", "in fn child: if exec.leak {", SEAM),
     (
         "src/sandbox/keeper.rs",

@@ -37,6 +37,9 @@ use super::tier::{BirthError, BirthStep, Ns, RunNet};
 pub const FLAG: &str = "--sandbox-keeper";
 /// The keeper's end of its channel, as the keeper has it.
 const CHANNEL_FD: RawFd = 3;
+/// Its port in the session's network namespace as its birth leaves it through the exec (`Birth::child` made it) —
+/// closed there where it has none; close-on-exec first thing in `main`, handed to tarae with `Ready` and closed.
+const PORT_FD: RawFd = 4;
 /// How long a new keeper has to say it's there.
 const READY_WITHIN: Duration = Duration::from_secs(2);
 /// How long a run's start may take — the main loop waits for it.
@@ -69,6 +72,17 @@ pub struct Keeper {
     pub devices: Vec<(&'static str, OwnedFd)>,
     /// The families whose address its `lo` was to carry (`Families`) but couldn't take — said with it (`said`).
     pub lo_missing: Families,
+    /// Whether its port stands — a listener at `route::PROXY` in the session's network namespace, made at its birth
+    /// (the unserved tier's bridge, `.sb/offline-bridge-plan.md` A) — or why not.
+    pub bridge: Result<(), String>,
+    /// That listener, until it's handed to tarae's proxy (`hand_port`) or the keeper is gone.
+    port: Mutex<Option<OwnedFd>>,
+    /// Tests: that listener's inode (`socket:[N]` in a process's `/proc/<pid>/fd`) — 0: none.
+    #[cfg(test)]
+    port_ino: u64,
+    /// The session it was handed as (`ToProxy::SessionPort`), its end saying so (`SessionPortGone`) — kept: the
+    /// session's id is read from the disk (`proxy::workspace_of`), which may have changed by then.
+    handed: Mutex<Option<u64>>,
     chan: OwnedFd,
     pidfd: OwnedFd,
     state: Mutex<State>,
@@ -221,6 +235,7 @@ fn ready_in(root: &Path, key: Option<&str>, ns: Ns, held: bool) -> Result<Arc<Ke
     let k = Keeper::born(root, key, ns).map_err(|e| format!("the session's keeper couldn't start: {e}"))?;
     lock(&k.state).holds = usize::from(held);
     lock(&KEEPERS).push(k.clone());
+    k.hand_port();
     Ok(k)
 }
 
@@ -368,6 +383,14 @@ impl Keeper {
         let null = open_null(libc::O_RDWR)?;
         let birth = Birth::new(families, off_lo)?;
         let mut lo_missing = Families::default();
+        // (why there's no port where the birth won't try one; else what it says decides)
+        let mut bridge = match (ns.net, families.v4) {
+            (false, _) => Err("no network namespace of the session's".to_string()),
+            (true, false) => Err(format!(
+                "tarae's network has no IPv4: the session's lo carries no {SESSION_V4} to listen on"
+            )),
+            (true, true) => Ok(()),
+        };
         let argv: Vec<CString> = keeper_argv();
         let argv_p: Vec<*const libc::c_char> =
             argv.iter().map(|a| a.as_ptr()).chain(std::iter::once(std::ptr::null())).collect();
@@ -382,7 +405,7 @@ impl Keeper {
         if pid == 0 {
             // SAFETY: as above — async-signal-safe calls only.
             unsafe {
-                birth.child(ns);
+                let port = birth.child(ns);
                 for fd in 0..3 {
                     libc::dup2(null.as_raw_fd(), fd);
                 }
@@ -391,6 +414,13 @@ impl Keeper {
                 } else {
                     libc::dup2(theirs.as_raw_fd(), CHANNEL_FD);
                 }
+                // (its port through the exec at `PORT_FD` — `dup2` leaves it inheritable — or nothing there: what
+                // `main` finds at `PORT_FD` is its birth's listener or none. The port and every other descriptor
+                // made above are close-on-exec and past 4 — `high`, `exe` — but `null` and `theirs`, done with)
+                match port >= 0 {
+                    true => libc::dup2(port, PORT_FD),
+                    false => libc::close(PORT_FD),
+                };
                 // (the limit tarae started with: the keeper's runs inherit it — `nofile`)
                 crate::nofile::restore();
                 let mut mask: libc::sigset_t = std::mem::zeroed();
@@ -437,12 +467,15 @@ impl Keeper {
             if unsafe { libc::write(go.as_raw_fd(), [1u8].as_ptr().cast(), 1) } != 1 {
                 return Err(BirthError { step: BirthStep::Go, errno: errno() }.into());
             }
-            said_ready(ours.as_fd(), told, &mut lo_missing, &crate::log::Session::of(root))
+            said_ready(ours.as_fd(), told, &mut lo_missing, &mut bridge, &crate::log::Session::of(root))
         })();
-        let (ready, devices) = match ready {
-            Ok(devices) => (Ok(()), devices),
-            Err(e) => (Err(e), Vec::new()),
+        let (ready, devices, port) = match ready {
+            Ok(r) => (Ok(()), r.devices, r.port),
+            Err(e) => (Err(e), Vec::new(), None),
         };
+        if bridge.is_ok() && port.is_none() {
+            bridge = Err("it handed no port".into());
+        }
         let ns = had;
         static SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let k = Arc::new(Keeper {
@@ -452,6 +485,16 @@ impl Keeper {
             ns,
             devices,
             lo_missing,
+            bridge,
+            #[cfg(test)]
+            port_ino: port.as_ref().map_or(0, |p| {
+                std::fs::File::from(p.try_clone().expect("a copy of the port")).metadata().map_or(0, |m| {
+                    use std::os::unix::fs::MetadataExt;
+                    m.ino()
+                })
+            }),
+            port: Mutex::new(port),
+            handed: Default::default(),
             chan: ours,
             pidfd,
             state: Mutex::new(State { key: key.map(str::to_string), ..State::default() }),
@@ -467,12 +510,32 @@ impl Keeper {
         }
         let reading = k.clone();
         crate::event::thread("tarae-keeper", move || reading.read());
+        let bridge = match (&k.bridge, k.ns.net) {
+            (Err(why), true) => format!("; no port at {}: {why}", super::route::PROXY),
+            _ => String::new(),
+        };
         k.log().line(
             "sandbox",
             "info",
-            &format!("a keeper for {}: pid {}, {}", root.display(), k.pid, k.said()),
+            &format!("a keeper for {}: pid {}, {}{bridge}", root.display(), k.pid, k.said()),
         );
         Ok(k)
+    }
+
+    /// Its port to tarae's proxy, as the session's (`ToProxy::SessionPort`: its runs known by their tokens) — a
+    /// session's keeper's, once (`ready`); a probe's keeper keeps its own until it's gone.
+    fn hand_port(&self) {
+        let session = super::proxy::workspace_of(&self.root);
+        // (handed under its lock, and only while it's there: `gone`, after it says it's gone, takes this lock to say
+        // its end — so the end goes to the proxy after the port, never before it nor not at all)
+        let mut port = lock(&self.port);
+        let Some(listener) = port.take().filter(|_| !self.is_gone()) else { return };
+        *lock(&self.handed) = Some(session);
+        super::proxy::get().send(super::proxy::ToProxy::SessionPort {
+            session,
+            keeper: self.serial,
+            listener,
+        });
     }
 
     /// Whose its log lines are: the session of its checkout (`log::Session::of`).
@@ -694,6 +757,13 @@ impl Keeper {
         s.gone = Some(why);
         drop(s);
         self.changed.notify_all();
+        // (its port goes with it — the descriptor held keeps its namespace alive: the proxy's, or its own unhanded)
+        let mut port = lock(&self.port);
+        drop(port.take());
+        if let Some(session) = *lock(&self.handed) {
+            super::proxy::get().send(super::proxy::ToProxy::SessionPortGone { session, keeper: self.serial });
+        }
+        drop(port);
         for (pid, pidfd) in &runs {
             kill_run(*pid, pidfd);
         }
@@ -1180,6 +1250,9 @@ struct Birth {
 /// What a birth's child says on its birth pipe of a mirror it couldn't make (`Families`): IPv4's, IPv6's —
 /// codes past `BirthStep`'s, as (code, errno); the birth goes on (`said_ready` takes the family off).
 const LO_NOTES: [u8; 2] = [0x80, 0x81];
+/// What a birth's child says of its port it couldn't make (`Birth::port`): its `socket`, `bind`, `listen` failed —
+/// as `LO_NOTES`, the birth goes on, with no port.
+const PORT_NOTES: [u8; 3] = [0x82, 0x83, 0x84];
 /// The address families tarae's own network has — what glibc's `AI_ADDRCONFIG` counts: an IPv4 address but
 /// loopback, an IPv6 one but loopback and link-local. The session's `lo` carries a documentation address of each
 /// (`SESSION_V4`, `SESSION_V6`), so a lookup inside answers as it would outside (M5). Decided at each birth.
@@ -1291,11 +1364,12 @@ impl Birth {
     /// The child, before the rest of its birth: waits for tarae's go (its id maps written; its end gone —
     /// tarae gave up — it exits), then, with namespaces: its mounts slaved to the system's (nothing it mounts
     /// goes out), a fresh `/proc` with a PID namespace, its own `devpts` with its `ptmx` over `/dev/ptmx`, its
-    /// own `/dev/shm` (D10), `lo` up, and every capability dropped — each checked; a failure said and it exits.
+    /// own `/dev/shm` (D10), `lo` up, its port on it (`port`), and every capability dropped — each checked; a
+    /// failure said and it exits. Its port's descriptor (close-on-exec, past 4) — -1: none.
     ///
     /// # Safety
     /// The birth's child's: raw calls only (a copy of a multithreaded process).
-    unsafe fn child(&self, ns: Ns) {
+    unsafe fn child(&self, ns: Ns) -> libc::c_int {
         let null = std::ptr::null::<libc::c_char>();
         // SAFETY: raw calls on this process's own descriptors, static strings and buffers on its stack.
         unsafe {
@@ -1312,8 +1386,9 @@ impl Birth {
             }
             libc::close(self.go.0.as_raw_fd());
             if !ns.user {
-                return;
+                return -1;
             }
+            let mut port = -1;
             let mount = |src: *const libc::c_char,
                          at: &std::ffi::CStr,
                          fs: *const libc::c_char,
@@ -1387,6 +1462,8 @@ impl Birth {
                         ifa.addr.sin_addr.s_addr = u32::MAX;
                         if libc::ioctl(s, libc::SIOCSIFNETMASK as _, &raw mut ifa) != 0 {
                             self.note(LO_NOTES[0], errno());
+                        } else {
+                            port = self.port();
                         }
                     }
                 }
@@ -1409,6 +1486,47 @@ impl Birth {
             if let Err(e) = capabilities_dropped(self.last_cap) {
                 self.failed(BirthStep::Caps, e);
             }
+            port
+        }
+    }
+
+    /// The session's port: a listener at `route::PROXY` on its `lo` (`SESSION_V4` on it), made before any run exists
+    /// — so no run takes the address first — and moved past the descriptors the birth moves into 0–4. -1, said
+    /// (`PORT_NOTES`), where a call failed: the birth goes on with no port.
+    ///
+    /// # Safety
+    /// The birth's child's: raw calls only.
+    unsafe fn port(&self) -> libc::c_int {
+        let at = super::route::PROXY;
+        let std::net::IpAddr::V4(ip) = at.ip() else { return -1 };
+        // SAFETY: raw calls on a socket this makes, an address of its size on the stack.
+        unsafe {
+            let l = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            if l < 0 {
+                self.note(PORT_NOTES[0], errno());
+                return -1;
+            }
+            let mut sa: libc::sockaddr_in = std::mem::zeroed();
+            sa.sin_family = libc::AF_INET as libc::sa_family_t;
+            sa.sin_port = at.port().to_be();
+            sa.sin_addr.s_addr = u32::from_ne_bytes(ip.octets());
+            let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+            if libc::bind(l, (&raw const sa).cast(), len) != 0 {
+                self.note(PORT_NOTES[1], errno());
+                libc::close(l);
+                return -1;
+            }
+            if libc::listen(l, libc::SOMAXCONN) != 0 {
+                self.note(PORT_NOTES[2], errno());
+                libc::close(l);
+                return -1;
+            }
+            let high = libc::fcntl(l, libc::F_DUPFD_CLOEXEC, 10);
+            libc::close(l);
+            if high < 0 {
+                self.note(PORT_NOTES[2], errno());
+            }
+            high
         }
     }
 }
@@ -1444,13 +1562,15 @@ fn id_maps(pid: i32) -> Result<(), BirthError> {
 /// Waits for a new keeper's `Ready` on `chan` (`READY_WITHIN`) — or what its birth pipe `told` says failed
 /// first (its end, the exec, says nothing). Its device handles: those of `DEVICE_HANDLES`' places, each once
 /// (another name or a second one is left out, said in the log). A mirror its child couldn't make (`LO_NOTES`)
-/// is put in `missing` and said in the log.
+/// is put in `missing` and said in the log; with it, or a port it couldn't make (`PORT_NOTES`), `bridge` says why
+/// there's no port.
 fn said_ready(
     chan: BorrowedFd,
     told: OwnedFd,
     missing: &mut Families,
+    bridge: &mut Result<(), String>,
     log: &crate::log::Session,
-) -> io::Result<Vec<(&'static str, OwnedFd)>> {
+) -> io::Result<Readied> {
     let deadline = Instant::now() + READY_WITHIN;
     let mut told = Some(told);
     loop {
@@ -1481,6 +1601,12 @@ fn said_ready(
                     false => (&mut missing.v6, SESSION_V6.to_string(), "IPv6"),
                 };
                 *family = true;
+                if b[0] == LO_NOTES[0] {
+                    *bridge = Err(format!(
+                        "its lo couldn't take {address} ({})",
+                        io::Error::from_raw_os_error(errno)
+                    ));
+                }
                 log.line(
                     "sandbox",
                     "warn",
@@ -1492,6 +1618,15 @@ fn said_ready(
                 );
                 continue;
             }
+            if let Some(call) = PORT_NOTES.iter().position(|c| *c == b[0]).filter(|_| n == 5) {
+                let call = ["socket", "bind", "listen"][call];
+                *bridge = Err(format!(
+                    "its port at {} couldn't be made: {call} {}",
+                    super::route::PROXY,
+                    io::Error::from_raw_os_error(errno)
+                ));
+                continue;
+            }
             if n == 5 {
                 let step = BirthStep::from_code(b[0]).unwrap_or(BirthStep::Exec);
                 return Err(BirthError { step, errno }.into());
@@ -1501,7 +1636,9 @@ fn said_ready(
         }
         if polled[0].revents != 0 {
             return match channel::recv(chan, &mut Vec::new())? {
-                Some((Ok(Msg::Ready { places, .. }), fds)) => {
+                Some((Ok(Msg::Ready { places, port, .. }), mut fds)) => {
+                    // (its port after the places: `decode` took exactly as many as it says)
+                    let port = port.then(|| fds.pop()).flatten();
                     let mut kept: Vec<(&'static str, OwnedFd)> = Vec::new();
                     for (place, fd) in places.iter().zip(fds) {
                         match DEVICE_HANDLES.iter().find(|d| d.as_bytes() == place.as_slice()) {
@@ -1513,13 +1650,19 @@ fn said_ready(
                             ),
                         }
                     }
-                    Ok(kept)
+                    Ok(Readied { devices: kept, port })
                 }
                 Some((msg, _)) => Err(io::Error::other(format!("it said {msg:?} first"))),
                 None => Err(io::Error::other("it ended at once")),
             };
         }
     }
+}
+
+/// What a keeper handed with its `Ready`: its device handles, and its port (`PORT_FD`).
+struct Readied {
+    devices: Vec<(&'static str, OwnedFd)>,
+    port: Option<OwnedFd>,
 }
 
 /// Tarae's number for the process `pidfd` is of (its fdinfo's `Pid:`) — else `Err(None)`: it's gone,
@@ -1649,12 +1792,29 @@ struct Child {
 pub fn main() -> ! {
     // SAFETY: fd 3 is the channel its birth left there (`Keeper::born`); the rest are plain calls on this
     // process, before anything else runs in it.
-    let (chan, signals) = unsafe {
+    let (chan, signals, port) = unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
         libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
         libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
         drop_capabilities();
         libc::fcntl(CHANNEL_FD, libc::F_SETFD, libc::FD_CLOEXEC);
+        // Its birth's port, if it left one (`PORT_FD`: closed there where it didn't) — a listening socket, or not
+        // taken
+        let listening = {
+            let (mut v, mut len) = (0i32, std::mem::size_of::<i32>() as libc::socklen_t);
+            let r = libc::getsockopt(
+                PORT_FD,
+                libc::SOL_SOCKET,
+                libc::SO_ACCEPTCONN,
+                (&raw mut v).cast(),
+                &mut len,
+            );
+            r == 0 && v == 1
+        };
+        let port = match listening && libc::fcntl(PORT_FD, libc::F_SETFD, libc::FD_CLOEXEC) == 0 {
+            true => Some(OwnedFd::from_raw_fd(PORT_FD)),
+            false => None,
+        };
         libc::setsid();
         // (what tarae had ignored — SIGPIPE, std's — is every run's default again)
         for sig in 1..32 {
@@ -1671,7 +1831,7 @@ pub fn main() -> ! {
         if sfd < 0 {
             libc::_exit(1);
         }
-        (OwnedFd::from_raw_fd(CHANNEL_FD), OwnedFd::from_raw_fd(sfd))
+        (OwnedFd::from_raw_fd(CHANNEL_FD), OwnedFd::from_raw_fd(sfd), port)
     };
     let mut k = Kept { chan, signals, children: HashMap::new(), reaped: 0, swept: Vec::new() };
     // SAFETY: getpid has no preconditions.
@@ -1684,12 +1844,15 @@ pub fn main() -> ! {
         .filter_map(|p| crate::landlock::open_unlinked(Path::new(p), libc::O_PATH).ok().map(|fd| (*p, fd)))
         .collect();
     let places = handles.iter().map(|(p, _)| p.as_bytes().to_vec()).collect();
-    let fds: Vec<BorrowedFd> = handles.iter().map(|(_, fd)| fd.as_fd()).collect();
-    if k.say(&Msg::Ready { pid: me, places }, &fds).is_err() {
+    let fds: Vec<BorrowedFd> =
+        handles.iter().map(|(_, fd)| fd.as_fd()).chain(port.as_ref().map(|p| p.as_fd())).collect();
+    if k.say(&Msg::Ready { pid: me, places, port: port.is_some() }, &fds).is_err() {
         std::process::exit(1);
     }
     drop(fds);
     drop(handles);
+    // (its own copy of the port closed before any run is forked: no run ever holds it — tarae's is the one left)
+    drop(port);
     let mut buf = Vec::new();
     loop {
         let errors: Vec<(u64, RawFd)> =
@@ -4337,6 +4500,7 @@ mod tests {
             short: Some("Ubuntu's restriction (refused at making its mounts its own)".into()),
             brief: None,
             served: Ok(()),
+            bridged: Err("no network namespace of the session's".into()),
             hint: None,
             read: Some(read.into()),
         };
@@ -4513,6 +4677,25 @@ mod tests {
                 return;
             }
             "bound" => helper_bound(&std::env::var("TARAE_TO").unwrap_or_default()),
+            // (piece 2: the session's port's address, and its port on every address, bound and listened on)
+            "bindport" => {
+                let at = super::super::route::PROXY;
+                let take = |a: std::net::SocketAddr| tried(std::net::TcpListener::bind(a));
+                format!("proxy={} any={}", take(at), take(([0, 0, 0, 0], at.port()).into()))
+            }
+            // (piece 2: the sockets this run holds, as `/proc/self/fd` names them)
+            "fds" => {
+                let mut held: Vec<String> = std::fs::read_dir("/proc/self/fd")
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|e| std::fs::read_link(e.path()).ok())
+                    .map(|l| l.display().to_string())
+                    .filter(|l| l.starts_with("socket:"))
+                    .collect();
+                held.sort();
+                format!("sockets={}", held.join(","))
+            }
             "swaplisten" => helper_swap_listen(&std::env::var("TARAE_TO").unwrap_or_default()),
             "racelo" => helper_race_lo(&std::env::var("TARAE_TO").unwrap_or_default()),
             "foreign" => helper_foreign(),
@@ -5257,7 +5440,11 @@ mod tests {
         // SAFETY: the socket made above, ours from here.
         let s = unsafe { std::net::TcpStream::from_raw_fd(fd) };
         s.set_read_timeout(Some(crate::test_results::PATIENCE)).ok();
-        let _ = (&s).write_all(format!("GET http://{host}/ HTTP/1.1\r\n\r\n").as_bytes());
+        // (a session port's run: its token, as its proxy URL makes a client send it — `$TARAE_PROXY_AUTH`, the value)
+        let auth = std::env::var("TARAE_PROXY_AUTH")
+            .map(|a| format!("Proxy-Authorization: {a}\r\n"))
+            .unwrap_or_default();
+        let _ = (&s).write_all(format!("GET http://{host}/ HTTP/1.1\r\n{auth}\r\n").as_bytes());
         let mut reply = String::new();
         let _ = std::io::BufReader::new(&s).read_line(&mut reply);
         (format!("connect={said} {facts} reply={}", reply.trim_end()), s)
@@ -10682,5 +10869,145 @@ mod tests {
             served_said(&k, (&Arc::new(p), &c, &root), "attr_shm_manifest", &[("TARAE_SHM", &shm_file)]);
         assert_eq!(said, "ok", "Cargo.toml, or the machine's /dev/shm beside it, changed:\n{said}");
         k.end();
+    }
+
+    // ── the session's port (offline-bridge piece 2) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// A keeper with the session's network namespace and its port (`TARAE_EXPECT_BRIDGED=1` fails where it has none:
+    /// a birth broken out of its bridge isn't a skip there), and the rules of an own-network run granting everything —
+    /// None after saying the test skips itself. `ready`: the session's keeper, its port handed to the proxy; else one
+    /// of the test's own, its port kept.
+    fn bridged(test: &str, ready: bool) -> Option<(Arc<Keeper>, crate::landlock::Ruleset, PathBuf)> {
+        if !own_network(test) || open_rules(test).is_none() {
+            return None;
+        }
+        let root = std::env::temp_dir().join(format!("tarae-keeper-{}-{test}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let k = match ready {
+            true => super::ready(&root, None, ns()).unwrap(),
+            false => Keeper::born(&root, None, ns()).unwrap(),
+        };
+        if let Err(why) = &k.bridge {
+            assert!(
+                std::env::var_os("TARAE_EXPECT_BRIDGED").is_none(),
+                "{test}: no port (TARAE_EXPECT_BRIDGED): {why}"
+            );
+            crate::test_results::said_skip(&format!("sandbox::keeper::tests::{test} — no port here: {why}"));
+            k.end();
+            return None;
+        }
+        let mut rules = crate::landlock::Ruleset::new_own_network(crate::landlock::abi().unwrap()).unwrap();
+        rules.allow(Path::new("/"), crate::landlock::ALL).unwrap();
+        Some((k, rules, root))
+    }
+
+    /// Whether process `pid` (`self`, or a number) holds the socket of inode `ino` — read from its `/proc/<pid>/fd`.
+    fn holds_socket(pid: &str, ino: u64) -> io::Result<bool> {
+        let want = format!("socket:[{ino}]");
+        let held = std::fs::read_dir(format!("/proc/{pid}/fd"))?
+            .flatten()
+            .any(|e| std::fs::read_link(e.path()).is_ok_and(|l| l.as_os_str() == want.as_str()));
+        Ok(held)
+    }
+
+    /// Piece 2: the session's port is tarae's alone once its keeper said `Ready` — the keeper closed its own copy
+    /// before any run (its `/proc/<pid>/fd`, read as the session's user namespace's owner), and a run holds none: not
+    /// the port, nor any socket of the keeper's (its `/proc/self/fd`).
+    #[test]
+    fn no_run_holds_the_session_port() {
+        let Some((k, rules, root)) = bridged("no_run_holds_the_session_port", false) else { return };
+        assert_ne!(k.port_ino, 0, "its port's inode");
+        assert!(holds_socket("self", k.port_ino).unwrap(), "tarae holds the port it was handed");
+        let said = helper_through(&k, rules.fd(), RunNet::Own, "fds", &[], Some(&root));
+        let port = format!("socket:[{}]", k.port_ino);
+        assert!(!said.contains(&port), "a run holds the session's port: {said}");
+        assert_eq!(said, "sockets=", "a run holds no socket it didn't make");
+        match holds_socket(&k.pid.to_string(), k.port_ino) {
+            Ok(kept) => assert!(!kept, "the keeper closed its own copy after Ready"),
+            // (a running keeper isn't dumpable: as a user its descriptors are closed to this process here — as root in
+            // the container they're read, the kernels' own mode. A part not done, said — the rest ran)
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                let line = format!(
+                    "sandbox::keeper::tests::no_run_holds_the_session_port: in part — the keeper's descriptors are \
+                     closed to this process ({e}): its own copy not looked for; the run's were\n"
+                );
+                let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+            }
+            Err(e) => panic!("the keeper's descriptors: {e}"),
+        }
+        k.end();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Piece 2: the port's address is the keeper's before any run exists — a run that binds `route::PROXY`, or its
+    /// port on every address, is refused by the kernel (`EADDRINUSE`): no run stands in for the proxy.
+    #[test]
+    fn a_run_cant_take_the_proxys_address() {
+        let Some((k, rules, root)) = bridged("a_run_cant_take_the_proxys_address", false) else { return };
+        let said = helper_through(&k, rules.fd(), RunNet::Own, "bindport", &[], Some(&root));
+        let n = libc::EADDRINUSE;
+        assert_eq!(said, format!("proxy={n} any={n}"));
+        k.end();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Piece 2: the session's keeper hands its port to tarae's proxy (`ToProxy::SessionPort`) and the port goes with
+    /// the keeper (`SessionPortGone`): the proxy's copy — the one that keeps the namespace alive — is closed once it's
+    /// gone, tarae holding no copy of it.
+    #[test]
+    fn the_session_port_goes_with_its_keeper() {
+        let Some((k, _, root)) = bridged("the_session_port_goes_with_its_keeper", true) else { return };
+        let ino = k.port_ino;
+        assert_ne!(ino, 0, "its port's inode");
+        assert!(lock(&k.port).is_none(), "handed, none kept");
+        let by = Instant::now() + crate::test_results::PATIENCE;
+        let held = || holds_socket("self", ino).unwrap();
+        assert!(held(), "the proxy holds it");
+        k.end();
+        while held() {
+            assert!(Instant::now() < by, "the session's port outlived its keeper");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Piece 2, end to end: an own-network run (unserved — no supervisor) reaches a host beyond through the session's
+    /// port by its token, its connection made by tarae's proxy from tarae's namespace; with no token, 407. The outside
+    /// is a listener of the test's on loopback, taken for beyond (`Egress::beyond`) and named for the proxy
+    /// (`proxy::TEST_NAMES`), as step 5's tests have it.
+    #[test]
+    fn an_own_network_run_reaches_the_proxy_by_its_token() {
+        use super::super::proxy::{self, RunToken, ToProxy, egress::Egress};
+        let test = "an_own_network_run_reaches_the_proxy_by_its_token";
+        let Some((k, rules, root)) = bridged(test, true) else { return };
+        let (at, served) = answering("127.0.0.1:0", "out hello");
+        let host = "bridged.test";
+        proxy::TEST_NAMES.lock().unwrap().push((host.into(), at));
+        let session = proxy::workspace_of(&root);
+        let run = 0x0b51_d9e0_0000_0000 | u64::from(std::process::id());
+        let t = RunToken::new(run).unwrap();
+        let rules_of = Egress {
+            any: true,
+            own_addresses: Some(Vec::new()),
+            beyond: vec![at.ip()],
+            ..Default::default()
+        };
+        let (told, refused) = std::sync::mpsc::channel();
+        let (process, token, egress) = ("curl".to_string(), t.token().to_string(), Arc::new(rules_of));
+        assert!(proxy::get().send(ToProxy::RunToken { run, session, process, token, rules: egress, told }));
+        let to = super::super::route::PROXY.to_string();
+        let target = format!("{host}:{}", at.port());
+        let auth = format!("Basic {}", proxy::parse::base64(format!("run:{}", t.token()).as_bytes()));
+        let env = [("TARAE_TO", to.as_str()), ("TARAE_HOST", target.as_str())];
+        let none = helper_through(&k, rules.fd(), RunNet::Own, "proxied", &env, Some(&root));
+        assert!(none.contains("reply=HTTP/1.1 407 "), "with no token: {none}");
+        let env = [env[0], env[1], ("TARAE_PROXY_AUTH", auth.as_str())];
+        let said = helper_through(&k, rules.fd(), RunNet::Own, "proxied", &env, Some(&root));
+        let refused: Vec<_> = refused.try_iter().collect();
+        assert!(said.ends_with("peer=192.0.2.1 reply=out hello"), "{said} — refused: {refused:?}");
+        assert!(served.recv_timeout(crate::test_results::PATIENCE).is_ok(), "it arrived outside");
+        RunToken::ended(run);
+        k.end();
+        std::fs::remove_dir_all(&root).ok();
     }
 }

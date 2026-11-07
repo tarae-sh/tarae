@@ -97,8 +97,12 @@ pub enum ToProxy {
     /// A session's own port (the unserved tier's bridge, `.sb/offline-bridge-plan.md` A): a listener at
     /// `route::PROXY` in the session's network namespace, made by its keeper — its connections' runs known by their
     /// tokens (`RunToken`), looked up within this session alone. A newer one takes the session's last one's place
-    /// (a new keeper, a new namespace): that one closes.
-    SessionPort { session: u64, listener: OwnedFd },
+    /// (a new keeper, a new namespace): that one closes. `keeper`: its keeper's serial (`Keeper.serial`).
+    SessionPort { session: u64, keeper: u64, listener: OwnedFd },
+    /// The keeper that made the session's port ended (`Keeper::gone`): the port closes — the namespace it holds
+    /// alive goes with it — unless a newer keeper's has taken its place (one superseded ends after its successor's
+    /// birth, D14). The session's end (`WorkspaceEnded`) closes it too.
+    SessionPortGone { session: u64, keeper: u64 },
     /// A run of a session with a port (`SessionPort`) started: the token its proxy URL carries as the password —
     /// the one way its connections are told from the session's other runs'.
     RunToken {
@@ -341,8 +345,9 @@ struct State {
     shared: Shared,
     asks: Sender<FromProxy>,
     runs: HashMap<u64, Run>,
-    /// The sessions' ports (`ToProxy::SessionPort`), each its accept loop's stop (dropped: the listener closes).
-    ports: HashMap<u64, io::PipeWriter>,
+    /// The sessions' ports (`ToProxy::SessionPort`), each its keeper's serial and its accept loop's stop (dropped:
+    /// the listener closes).
+    ports: HashMap<u64, (u64, io::PipeWriter)>,
     per_session: HashMap<u64, usize>,
     total: usize,
     /// The user's latest answer for the session (or the project, or taken back).
@@ -468,12 +473,17 @@ impl State {
                         self.runs.insert(run, Run { session, process, token, rules, told, port });
                     }
                 }
-                In::Msg(ToProxy::SessionPort { session, listener }) => {
+                In::Msg(ToProxy::SessionPort { session, keeper, listener }) => {
                     // (the last one's stop dropped: its loop ends, its listener closes)
                     match self.accepting(Of::Session(session), listener) {
-                        Some(stop) => self.ports.insert(session, stop),
+                        Some(stop) => self.ports.insert(session, (keeper, stop)),
                         None => self.ports.remove(&session),
                     };
+                }
+                In::Msg(ToProxy::SessionPortGone { session, keeper }) => {
+                    if self.ports.get(&session).is_some_and(|(k, _)| *k == keeper) {
+                        self.ports.remove(&session);
+                    }
                 }
                 In::Msg(ToProxy::RunToken { run, session, process, token, rules, told }) => {
                     self.runs.insert(run, Run { session, process, token, rules, told, port: None });
@@ -489,6 +499,7 @@ impl State {
                     self.latest.remove(&Key { session, host, port });
                 }
                 In::Msg(ToProxy::WorkspaceEnded { session }) => {
+                    self.ports.remove(&session);
                     self.latest.retain(|k, _| k.session != session);
                     self.run_allowed.retain(|(_, k)| k.session != session);
                     self.waiting.retain(|k, _| k.session != session);

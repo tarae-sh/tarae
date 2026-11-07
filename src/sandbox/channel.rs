@@ -18,7 +18,7 @@ use super::tier::RunNet;
 /// The longest record.
 pub const MSG_MAX: usize = 1 << 20;
 /// The most descriptors a record carries (a `Run`'s: its rules, stdio and handoff socket — 5; `Ready`'s device
-/// places — 4), with room to spare.
+/// places and its port — 5), with room to spare.
 pub const FDS_MAX: usize = 10;
 /// The most items a list holds.
 pub const LIST_MAX: usize = 4096;
@@ -173,10 +173,13 @@ pub enum Msg {
     Sweep,
     // keeper → tarae
     /// It's there; with an `O_PATH` handle of each device place it has (`places`, the names — the fds in their
-    /// order), opened in its own mount namespace before any run (`keeper::DEVICE_HANDLES`).
+    /// order), opened in its own mount namespace before any run (`keeper::DEVICE_HANDLES`) — and, `port`, its
+    /// listener at `route::PROXY` in the session's network namespace after them (`keeper::PORT_FD`: the unserved
+    /// tier's bridge), its own copy closed once this is sent.
     Ready {
         pid: u32,
         places: Vec<Vec<u8>>,
+        port: bool,
     },
     /// The run's process is there; its pidfd comes with it. `pid` is the keeper's number for it — in a PID
     /// namespace not tarae's (tarae reads its own from the pidfd).
@@ -234,7 +237,7 @@ impl Msg {
     pub fn fds(&self) -> usize {
         match self {
             Msg::Run(r) => 4 + (r.served() || r.held) as usize,
-            Msg::Ready { places, .. } => places.len(),
+            Msg::Ready { places, port, .. } => places.len() + usize::from(*port),
             Msg::Started { .. } => 1,
             _ => 0,
         }
@@ -276,12 +279,13 @@ pub fn encode(msg: &Msg) -> Result<Vec<u8>, Refused> {
             b.extend(sig.to_le_bytes());
         }
         Msg::AskUsage | Msg::End | Msg::Sweep => {}
-        Msg::Ready { pid, places } => {
-            if places.len() > FDS_MAX {
+        Msg::Ready { pid, places, port } => {
+            if msg.fds() > FDS_MAX {
                 return Err(Refused("more places than a message takes descriptors"));
             }
             b.extend(pid.to_le_bytes());
             list(&mut b, places)?;
+            b.push(*port as u8);
         }
         Msg::Started { id, pid } => {
             b.extend(id.to_le_bytes());
@@ -477,10 +481,11 @@ pub fn decode(b: &[u8], fds: usize) -> Result<Msg, Refused> {
         64 => {
             let pid = r.u32()?;
             let places = r.list()?;
-            if places.len() > FDS_MAX {
+            let port = r.flag()?;
+            if places.len() + usize::from(port) > FDS_MAX {
                 return Err(Refused("more places than a message takes descriptors"));
             }
-            Msg::Ready { pid, places }
+            Msg::Ready { pid, places, port }
         }
         65 => Msg::Started { id: r.u64()?, pid: r.u32()? },
         66 => Msg::Failed { id: r.u64()?, errno: r.i32()?, step: r.step()? },
@@ -666,10 +671,11 @@ mod tests {
             Msg::AskUsage,
             Msg::End,
             Msg::Sweep,
-            Msg::Ready { pid: 4242, places: Vec::new() },
+            Msg::Ready { pid: 4242, places: Vec::new(), port: false },
             Msg::Ready {
                 pid: 1,
                 places: vec![b"/dev/pts".to_vec(), b"/dev/pts/ptmx".to_vec(), b"/dev/shm".to_vec()],
+                port: true,
             },
             Msg::Started { id: 7, pid: 4243 },
             Msg::Failed { id: 7, errno: libc::ENOENT, step: Step::Exec },

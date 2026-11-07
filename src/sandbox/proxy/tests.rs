@@ -1829,10 +1829,52 @@ fn a_runs_port_goes_on_past_a_failed_accept() {
 /// A session's port (the unserved tier's bridge), stood in by a listener of the test's own on loopback — the keeper's
 /// at `route::PROXY` in the session's namespace (piece 2): its port.
 fn session_port(p: &Proxy, session: u64) -> u16 {
+    session_port_of(p, session, 0)
+}
+
+/// `session_port`, made by keeper `keeper` (its serial).
+fn session_port_of(p: &Proxy, session: u64, keeper: u64) -> u16 {
     let l = TcpListener::bind((LO, 0)).unwrap();
     let port = l.local_addr().unwrap().port();
-    assert!(p.send(ToProxy::SessionPort { session, listener: l.into() }));
+    assert!(p.send(ToProxy::SessionPort { session, keeper, listener: l.into() }));
     port
+}
+
+/// Whether `port` stops taking connections within `WAIT` (its listener closed).
+fn closes(port: u16) -> bool {
+    let gone = Instant::now() + WAIT;
+    while TcpStream::connect((LO, port)).is_ok() {
+        if Instant::now() > gone {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+/// Piece 2: a session's port goes with the keeper that made it (`SessionPortGone`) — never with a superseded
+/// keeper's end after its successor's port took the session's (D14: the old one ends after its last run) — and with
+/// the session's end (`WorkspaceEnded`).
+#[test]
+fn a_session_port_goes_with_its_own_keeper_and_its_session() {
+    let f = start(resolver(Vec::new()).0, limits());
+    let session = 0x5e55_0201;
+    let first = session_port_of(&f.proxy, session, 1);
+    let second = session_port_of(&f.proxy, session, 2);
+    assert!(closes(first), "the newer keeper's port took the first's place");
+    assert!(f.proxy.send(ToProxy::SessionPortGone { session, keeper: 1 }));
+    assert!(f.proxy.send(ToProxy::SessionPortGone { session: session + 1, keeper: 2 }));
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        TcpStream::connect((LO, second)).is_ok(),
+        "the superseded keeper's end, or another session's, leaves it"
+    );
+    assert!(f.proxy.send(ToProxy::SessionPortGone { session, keeper: 2 }));
+    assert!(closes(second), "its own keeper's end closes it");
+    let third = session_port_of(&f.proxy, session, 3);
+    assert!(TcpStream::connect((LO, third)).is_ok());
+    assert!(f.proxy.send(ToProxy::WorkspaceEnded { session }));
+    assert!(closes(third), "the session's end closes it");
 }
 
 /// A run of `session` with a token of its own (`RunToken`, as made with a run's policy) and these rules: the token,

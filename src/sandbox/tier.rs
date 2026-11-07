@@ -481,6 +481,10 @@ pub struct Probed {
     pub brief: Option<String>,
     /// Whether tarae serves the calls of runs in the namespaces found (`supervisor::served`).
     pub served: Result<(), String>,
+    /// Whether the session's port stands in the namespaces found (the unserved tier's bridge,
+    /// `.sb/offline-bridge-plan.md` A: the probe's keeper made it at its birth, `keeper::Keeper.bridge`) — or why not:
+    /// no network namespace, or its `lo` couldn't take `route::PROXY`'s address.
+    pub bridged: Bridged,
     /// Ubuntu's restriction kept the namespaces from a tarae under no profile: why, and the step (`hint`).
     pub hint: Option<super::guarantees::Hint>,
     /// What the probe read where a birth failed (`Seen::read`, or how its keeper's run failed) — None: nothing did.
@@ -492,6 +496,9 @@ impl Probed {
         Tier::of(self.ns, self.served.is_ok())
     }
 }
+
+/// Whether a keeper's port stands, or why not (`Probed.bridged`).
+pub type Bridged = Result<(), String>;
 
 /// How long the probe's keeper has, from its birth to its `true` reaped: past it, no namespaces — never
 /// success.
@@ -516,6 +523,7 @@ pub fn get() -> &'static Probed {
                 short: Some("none asked (TARAE_TEST_NO_NS)".into()),
                 brief: Some("none asked".into()),
                 served,
+                bridged: Err("none asked (TARAE_TEST_NO_NS)".into()),
                 hint: None,
                 read: None,
             };
@@ -549,6 +557,12 @@ fn logged(p: &Probed) -> String {
     let said = match &p.served {
         Ok(()) => said,
         Err(why) => format!("{said} — not served: {why}"),
+    };
+    // (the bridge where it was tried: with a network namespace of the session's)
+    let said = match (&p.bridged, p.ns.net) {
+        (Ok(()), true) => format!("{said} — bridged"),
+        (Err(why), true) => format!("{said} — not bridged: {why}"),
+        (_, false) => said,
     };
     match &p.read {
         Some(read) => format!("{said} — the probe read: {read}"),
@@ -593,7 +607,7 @@ fn probe() -> Probed {
 /// was tried: a keeper's run tried there decides it) and a keeper's birth and run is `tried` (tests stand in).
 fn probe_with(
     served: impl Fn(bool) -> Result<(), String>,
-    mut tried: impl FnMut(Ns) -> Result<(), Failed>,
+    mut tried: impl FnMut(Ns) -> Result<Bridged, Failed>,
 ) -> Probed {
     let all = Ns::session(true, true);
     // (no namespaces: why, and the hint where Ubuntu's restriction is why — for the binary running)
@@ -605,21 +619,22 @@ fn probe_with(
             _ => None,
         };
         let (short, read) = (e.brief(), e.read());
-        (Ns::NONE, Some(e.said()), Some(short), hint, Some(read))
+        let bridged = Err("no network namespace of the session's".to_string());
+        (Ns::NONE, Some(e.said()), Some(short), hint, Some(read), bridged)
     };
-    let (ns, short, brief_said, hint, read) = match tried(all) {
-        Ok(()) => (all, None, None, None, None),
+    let (ns, short, brief_said, hint, read, bridged) = match tried(all) {
+        Ok(bridged) => (all, None, None, None, None, bridged),
         Err(Failed::Birth(e)) if e.step == BirthStep::Proc => {
             let seen = Seen::now(e);
             let (no_pid, few) = (why(&seen), brief(&seen));
             match tried(Ns::session(true, false)) {
-                Ok(()) => (Ns::session(true, false), Some(no_pid), Some(few), None, Some(seen.read())),
+                Ok(b) => (Ns::session(true, false), Some(no_pid), Some(few), None, Some(seen.read()), b),
                 Err(e) => without(e),
             }
         }
         Err(e) => without(e),
     };
-    Probed { ns, short, brief: brief_said, served: served(ns.user), hint, read }
+    Probed { ns, short, brief: brief_said, served: served(ns.user), bridged, hint, read }
 }
 
 /// How a probe's keeper failed.
@@ -665,8 +680,9 @@ impl Failed {
 }
 
 /// A keeper born with `ns` and a `true` run through it, all within `PROBE_WITHIN` (on a thread: what hangs is left
-/// to it, said as late) — and where `asks` (Yama's scope 2), a held run tried as the supervisor would read it.
-fn tried(ns: Ns, asks: bool) -> Result<(), Failed> {
+/// to it, said as late) — and where `asks` (Yama's scope 2), a held run tried as the supervisor would read it. Its
+/// port's standing as its birth left it.
+fn tried(ns: Ns, asks: bool) -> Result<Bridged, Failed> {
     let (tx, rx) = std::sync::mpsc::channel();
     crate::event::thread("tarae-nsprobe", move || {
         let _ = tx.send(true_through(ns, asks));
@@ -677,7 +693,7 @@ fn tried(ns: Ns, asks: bool) -> Result<(), Failed> {
 /// `true` run by a keeper born with `ns` for a root no session has, which ends after. Where `asks` and `ns` has the
 /// session's user namespace, first a `sleep` it holds, tried with the supervisor's two calls and ended
 /// (`held_read`): what was found kept (`supervisor::tried_in_session`).
-fn true_through(ns: Ns, asks: bool) -> Result<(), Failed> {
+fn true_through(ns: Ns, asks: bool) -> Result<Bridged, Failed> {
     let (ran, read) = true_through_holding(ns, (asks && ns.user).then_some("sleep"));
     if let Some(read) = read {
         crate::log::line("sandbox", "info", &format!("a run in the session's namespaces, read: {read:?}"));
@@ -689,7 +705,7 @@ fn true_through(ns: Ns, asks: bool) -> Result<(), Failed> {
 /// `true_through`, the run held and read first being `held` (tests name one that doesn't start) — what was read
 /// beside how `true` went, kept by nobody: a held run that didn't start is an answer of its own, never the
 /// namespaces failing (review C2: a `sleep` not found, `true` there, gave the session none).
-fn true_through_holding(ns: Ns, held: Option<&str>) -> (Result<(), Failed>, Option<Result<(), String>>) {
+fn true_through_holding(ns: Ns, held: Option<&str>) -> (Result<Bridged, Failed>, Option<Result<(), String>>) {
     let mut read = None;
     let root = std::env::temp_dir().join(format!("tarae-nsprobe-{}", std::process::id()));
     let k = match super::keeper::born_for_probe(&root, ns) {
@@ -723,7 +739,7 @@ fn true_through_holding(ns: Ns, held: Option<&str>) -> (Result<(), Failed>, Opti
         .map_err(|e: io::Error| Failed::Run(e.to_string())),
     };
     k.end();
-    (ran, read)
+    (ran.map(|()| k.bridge.clone()), read)
 }
 
 /// `program` held by keeper `k` (`program 30`) and tried with the supervisor's two calls (`supervisor::reaches`, by
@@ -811,7 +827,7 @@ mod tests {
                 |_| served.clone(),
                 |ns: Ns| {
                     asked.push(ns.netns());
-                    Ok(())
+                    Ok(Ok(()))
                 },
             );
             (asked, p)
@@ -823,6 +839,24 @@ mod tests {
         let (taken, p) = asked(Err(super::super::guarantees::PIDFD_REFUSED.into()));
         assert_eq!(taken, [true]);
         assert_eq!(p.tier(), Tier::Offline);
+        assert_eq!(p.bridged, Ok(()), "its keeper's port, as its birth left it");
+    }
+
+    /// Piece 2: the probe's `bridged` is its keeper's port as its birth left it — one that couldn't stand (its `lo`
+    /// without `192.0.2.1`) says why, its namespaces kept; a probe with no namespaces has none, said so; and the log's
+    /// line says it where there's a network namespace. (Keepers stood in for.)
+    #[test]
+    fn the_probe_says_whether_the_bridge_stands() {
+        let lo = "its lo couldn't take 192.0.2.1 (Operation not permitted)".to_string();
+        let p = probe_with(|_| Err("listener above".into()), |_| Ok(Err(lo.clone())));
+        assert_eq!((p.tier(), p.bridged.clone()), (Tier::Offline, Err(lo.clone())));
+        assert!(logged(&p).contains(&format!("not bridged: {lo}")), "{}", logged(&p));
+        let p = probe_with(|_| Err("listener above".into()), |_| Ok(Ok(())));
+        assert!(logged(&p).contains(" — bridged"), "{}", logged(&p));
+        let clone = BirthError { step: BirthStep::Clone, errno: libc::EPERM };
+        let p = probe_with(|_| Ok(()), |ns| if ns.user { Err(Failed::Birth(clone)) } else { Ok(Ok(())) });
+        assert_eq!(p.bridged, Err("no network namespace of the session's".into()));
+        assert!(!logged(&p).contains("bridged"), "none said without a netns: {}", logged(&p));
     }
 
     /// Served is asked for the namespaces found: where only a keeper with the session's user namespace is served
@@ -832,10 +866,10 @@ mod tests {
     fn served_is_asked_for_the_namespaces_found() {
         let without = super::super::guarantees::YAMA_2_WITHOUT_NS;
         let served = |user: bool| if user { Ok(()) } else { Err(without.to_string()) };
-        let p = probe_with(served, |_| Ok(()));
+        let p = probe_with(served, |_| Ok(Ok(())));
         assert_eq!((p.tier(), p.served.clone()), (Tier::Own, Ok(())));
         let clone = BirthError { step: BirthStep::Clone, errno: libc::EPERM };
-        let p = probe_with(served, |ns| if ns.user { Err(Failed::Birth(clone)) } else { Ok(()) });
+        let p = probe_with(served, |ns| if ns.user { Err(Failed::Birth(clone)) } else { Ok(Ok(())) });
         assert_eq!((p.tier(), p.served), (Tier::Offline, Err(without.into())));
     }
 
@@ -947,23 +981,23 @@ mod tests {
     /// other's place); a run that failed or a keeper that didn't answer in their own few words. (Keepers stood in for.)
     #[test]
     fn the_probe_says_in_a_few_words_what_it_says_whole() {
-        let probe = |fail: &dyn Fn(Ns) -> Result<(), Failed>| probe_with(|_| Ok(()), fail);
-        let p = probe(&|_| Ok(()));
+        let probe = |fail: &dyn Fn(Ns) -> Result<Bridged, Failed>| probe_with(|_| Ok(()), fail);
+        let p = probe(&|_| Ok(Ok(())));
         assert_eq!((p.short, p.brief), (None, None), "every namespace: nothing to say");
         let proc = BirthError { step: BirthStep::Proc, errno: libc::EPERM };
-        let p = probe(&|ns| if ns.pid { Err(Failed::Birth(proc)) } else { Ok(()) });
+        let p = probe(&|ns| if ns.pid { Err(Failed::Birth(proc)) } else { Ok(Ok(())) });
         assert_eq!(p.ns, Ns::session(true, false), "no PID namespace");
         let seen = Seen::now(proc);
         assert_eq!((p.short, p.brief), (Some(why(&seen)), Some(brief(&seen))));
         let clone = BirthError { step: BirthStep::Clone, errno: libc::EPERM };
-        let p = probe(&|ns| if ns.user { Err(Failed::Birth(clone)) } else { Ok(()) });
+        let p = probe(&|ns| if ns.user { Err(Failed::Birth(clone)) } else { Ok(Ok(())) });
         assert_eq!(p.ns, Ns::NONE, "no namespaces");
         let seen = Seen::now(clone);
         assert_eq!((p.short, p.brief), (Some(why(&seen)), Some(brief(&seen))));
-        let p = probe(&|ns| if ns.user { Err(Failed::Late) } else { Ok(()) });
+        let p = probe(&|ns| if ns.user { Err(Failed::Late) } else { Ok(Ok(())) });
         assert!(p.short.as_deref().is_some_and(|w| w.contains("didn't answer within")), "{:?}", p.short);
         assert_eq!(p.brief.as_deref(), Some("namespaces didn't answer in time"));
-        let p = probe(&|ns| if ns.user { Err(Failed::Run("`true` ended 1".into())) } else { Ok(()) });
+        let p = probe(&|ns| if ns.user { Err(Failed::Run("`true` ended 1".into())) } else { Ok(Ok(())) });
         assert!(p.short.as_deref().is_some_and(|w| w.ends_with("`true` ended 1")), "{:?}", p.short);
         assert_eq!(p.brief.as_deref(), Some("a run in namespaces failed"));
     }
@@ -973,11 +1007,11 @@ mod tests {
     /// with every namespace, nothing. (Keepers stood in for.)
     #[test]
     fn the_probe_keeps_what_it_read_where_it_found_less() {
-        let probe = |fail: &dyn Fn(Ns) -> Result<(), Failed>| probe_with(|_| Ok(()), fail);
-        assert_eq!(probe(&|_| Ok(())).read, None, "every namespace: nothing read to say");
+        let probe = |fail: &dyn Fn(Ns) -> Result<Bridged, Failed>| probe_with(|_| Ok(()), fail);
+        assert_eq!(probe(&|_| Ok(Ok(()))).read, None, "every namespace: nothing read to say");
         let map = BirthError { step: BirthStep::Map, errno: libc::EACCES };
         let read =
-            probe(&|ns| if ns.user { Err(Failed::Birth(map)) } else { Ok(()) }).read.unwrap_or_default();
+            probe(&|ns| if ns.user { Err(Failed::Birth(map)) } else { Ok(Ok(())) }).read.unwrap_or_default();
         for word in [
             "failed at writing its id maps with errno 13",
             "apparmor_restrict_unprivileged_userns ",
@@ -988,9 +1022,9 @@ mod tests {
         assert!(read.contains("thread ") && read.contains("NoNewPrivs"), "the thread's own: {read}");
         let proc = BirthError { step: BirthStep::Proc, errno: libc::EPERM };
         let read =
-            probe(&|ns| if ns.pid { Err(Failed::Birth(proc)) } else { Ok(()) }).read.unwrap_or_default();
+            probe(&|ns| if ns.pid { Err(Failed::Birth(proc)) } else { Ok(Ok(())) }).read.unwrap_or_default();
         assert!(read.contains("failed at mounting a fresh /proc"), "without the PID namespace: {read}");
-        let read = probe(&|ns| if ns.user { Err(Failed::Late) } else { Ok(()) }).read.unwrap_or_default();
+        let read = probe(&|ns| if ns.user { Err(Failed::Late) } else { Ok(Ok(())) }).read.unwrap_or_default();
         assert!(read.contains("no answer within") && read.contains("NoNewPrivs"), "{read}");
     }
 
@@ -1029,6 +1063,7 @@ mod tests {
             short: Some(why(&s)),
             brief: Some(brief(&s)),
             served: Ok(()),
+            bridged: Err("no network namespace of the session's".into()),
             hint: None,
             read: Some(read.clone()),
         };
