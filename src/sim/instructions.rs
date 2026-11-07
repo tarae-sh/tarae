@@ -2,7 +2,10 @@
 //! `sim/sessions.rs`, `CLAUDE.md` copied into each session's checkout with its base kept, and at random a line
 //! added to the main checkout's or to a session's, a look asked (as the session's claude starts), the card in
 //! front answered `y` or `n`, a frame, a switch of sessions, the user taking their time — the looks' jobs among
-//! them. After every step: no line a session wrote is gone from its file, and at most one card a file.
+//! them. After every step: no line a session wrote is gone from its file, and at most one card a file. A second
+//! scenario (#415) adds a sync: the main checkout's copied over a session's, as a script or a person does — a card up
+//! for it gone as a look or its answer finds it, its base moved.
+//! (its own scenario: an arm more would change every seed of the first, whose seeds are its regressions)
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,14 +26,20 @@ const LIMIT: Duration = crate::test_results::PATIENCE;
 
 #[test]
 fn instruction_files_follow() {
-    super::seeds("instruction_files_follow", SEEDS, run);
+    super::seeds("instruction_files_follow", SEEDS, |c| run(c, false));
 }
 
-fn run(choices: Choices) -> Vec<String> {
+#[test]
+fn instruction_files_follow_a_sync() {
+    super::seeds("instruction_files_follow_a_sync", &[0, 1, 2, 3], |c| run(c, true));
+}
+
+fn run(choices: Choices, sync: bool) -> Vec<String> {
     let world = World::new();
     // (a run's own: a scratch folder's name comes again in the next run)
     MINE.with(|m| m.borrow_mut().clear());
-    let mut sim = Sim::new("instruction_files_follow", choices, LIMIT);
+    let name = if sync { "instruction_files_follow_a_sync" } else { "instruction_files_follow" };
+    let mut sim = Sim::new(name, choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
     (ed.workspace.root, ed.workspace.name) = (world.repo.clone(), "proj".into());
     std::fs::write(world.repo.join("CLAUDE.md"), "rule\n").unwrap();
@@ -52,10 +61,21 @@ fn run(choices: Choices) -> Vec<String> {
     sim.walk(
         &mut ed,
         INPUTS,
-        |sim, ed| input(sim, ed, &ids, &repo, &mut lines),
+        |sim, ed| input(sim, ed, &ids, &repo, &mut lines, sync),
         |ed| held(ed, &roots, &repo),
         |ed| print(ed, &dir),
     );
+    if sync {
+        // (a last look in each session, all quiet after each: a copy that is the main checkout's has no card and is
+        // its base)
+        for (id, _) in &ids {
+            ed.workspace_switch(*id);
+            crate::instructions::follow(&mut ed);
+            let check = |ed: &Editor| held(ed, &roots, &repo);
+            sim.walk(&mut ed, 0, |_, _| String::new(), check, |ed| print(ed, &dir));
+        }
+        sim.at_end(|| same_held(&ed, &roots, &repo));
+    }
     let trace = sim.trace().to_vec();
     drop(sim);
     drop(ed);
@@ -68,12 +88,18 @@ fn input(
     ids: &[(crate::event::WorkspaceId, PathBuf)],
     repo: &std::path::Path,
     n: &mut usize,
+    sync: bool,
 ) -> String {
     let c = &mut sim.choices;
     let (sid, wt) = c.pick(ids).clone();
     // (by arm: the main checkout's line 2, a session's 2, a look 3, `y` 2, `n` 1, a frame 1, a switch 2, time 1,
-    // its changes asked for the main checkout's — a bring, frictions29 #79 — 2)
-    match c.weighted(&[2, 2, 3, 2, 1, 1, 2, 1, 2]) {
+    // its changes asked for the main checkout's — a bring, frictions29 #79 — 2; and with `sync` the main
+    // checkout's copied over the session's 2)
+    let weights: &[usize] = match sync {
+        true => &[2, 2, 3, 2, 1, 1, 2, 1, 2, 2],
+        false => &[2, 2, 3, 2, 1, 1, 2, 1, 2],
+    };
+    match c.weighted(weights) {
         0 => {
             *n += 1;
             let at_top = *c.pick(&[true, false]);
@@ -116,6 +142,14 @@ fn input(
         8 => {
             crate::instructions::carry_out(ed, wt);
             format!("session {sid}: its changes asked for the main checkout's")
+        }
+        9 => {
+            let text = std::fs::read_to_string(repo.join("CLAUDE.md")).unwrap_or_default();
+            std::fs::write(wt.join("CLAUDE.md"), &text).unwrap();
+            // (its own lines taken away by the sync itself, not by tarae: what's left is what's kept from here)
+            let mine = text.lines().filter(|l| l.starts_with("mine ")).count();
+            MINE.with(|m| m.borrow_mut().insert(wt.clone(), mine));
+            format!("session {sid}: the main checkout's copied over its own")
         }
         _ => unreachable!("one arm a weight"),
     }
@@ -166,6 +200,29 @@ fn held(ed: &Editor, roots: &[PathBuf], repo: &std::path::Path) -> Result<(), St
         Some(w) => Err(format!("two cards for {}'s {}", w[0].0.display(), w[0].1)),
         None => Ok(()),
     }
+}
+
+/// #415, after a last look in each session: a copy that is the main checkout's has no card up or parked, either
+/// direction, and is its base.
+fn same_held(ed: &Editor, roots: &[PathBuf], repo: &std::path::Path) -> Result<(), String> {
+    let main = std::fs::read_to_string(repo.join("CLAUDE.md")).unwrap_or_default();
+    for root in roots {
+        if std::fs::read_to_string(root.join("CLAUDE.md")).ok().as_deref() != Some(main.as_str()) {
+            continue;
+        }
+        let real = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+        let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+        if ed.offers.iter().chain(parked).any(|o| matches!(&o.what, What::Instructions(b) if b.root == real))
+        {
+            return Err(format!("{}: the main checkout's, yet a card stands for it", root.display()));
+        }
+        let git_dir = crate::gitrepo::repo(&real).map_err(|e| format!("{e:?}"))?.git_dir.clone();
+        let base = std::fs::read_to_string(git_dir.join("tarae-instructions/CLAUDE.md")).unwrap_or_default();
+        if base != main {
+            return Err(format!("{}: the main checkout's, its base\n{base}", root.display()));
+        }
+    }
+    Ok(())
 }
 
 thread_local! {

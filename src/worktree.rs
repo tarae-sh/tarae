@@ -5422,6 +5422,105 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #415: a copy that is the main checkout's byte for byte (a sync's write, a person's copy) asks nothing and is
+    /// the base — the main checkout's next change taken as an untouched copy's, never asked as the session's own; a card
+    /// up for it goes as its answer or a look finds so, said calmly; a copy with a line of its own keeps today's card.
+    #[test]
+    fn a_copy_that_is_the_main_checkouts_asks_nothing_and_is_the_base() {
+        let (repo, dir) = place("instructions-same");
+        std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
+        git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
+        std::fs::write(repo.join("CLAUDE.md"), "rule one\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        let wt = new_session(&mut ed, "feat");
+        let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+        let git_dir = PathBuf::from(git_in(&wt, &["rev-parse", "--absolute-git-dir"]).trim());
+        let base = git_dir.join("tarae-instructions/CLAUDE.md");
+        let title = "CLAUDE.md: the main checkout's changed";
+        let same = "CLAUDE.md is the main checkout's now — nothing to take";
+        let times = |ed: &Editor, s: &str| ed.messages.iter().filter(|m| m.2.contains(s)).count();
+        let look = |ed: &mut Editor| {
+            settle_until(ed, |ed| !ed.workspace.instructions.under_way());
+            crate::instructions::follow(ed);
+            settle_until(ed, |ed| !ed.workspace.instructions.under_way());
+        };
+        // (both changed since the copy: the card)
+        let both = |ed: &mut Editor, main: &str, here: &str| {
+            std::fs::write(repo.join("CLAUDE.md"), main).unwrap();
+            std::fs::write(wt.join("CLAUDE.md"), here).unwrap();
+            look(ed);
+            assert!(card(ed, title).is_some(), "{}", said(ed));
+        };
+        look(&mut ed);
+
+        // Made the main checkout's while no card stands: nothing asked, the base moved — the next change taken
+        std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\n").unwrap();
+        std::fs::write(wt.join("CLAUDE.md"), "rule one\nrule two\n").unwrap();
+        look(&mut ed);
+        assert!(card(&ed, title).is_none(), "{}", said(&ed));
+        assert_eq!(read(&base), "rule one\nrule two\n", "the base");
+        assert_eq!(times(&ed, same), 0, "no card went: nothing said");
+        std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\nrule three\n").unwrap();
+        look(&mut ed);
+        assert!(card(&ed, title).is_none(), "the sync's lines aren't the session's own: {}", said(&ed));
+        assert!(says(&ed, "CLAUDE.md updated from the main checkout"), "{}", said(&ed));
+        assert_eq!(read(&wt.join("CLAUDE.md")), "rule one\nrule two\nrule three\n");
+
+        // Made the main checkout's while the card stands: its answer takes nothing and asks nothing again
+        both(
+            &mut ed,
+            "rule zero\nrule one\nrule two\nrule three\n",
+            "rule one\nrule two\nrule three\nmine\n",
+        );
+        std::fs::write(wt.join("CLAUDE.md"), "rule zero\nrule one\nrule two\nrule three\n").unwrap();
+        ed.offer_accept();
+        settle_until(&mut ed, |ed| !ed.workspace.instructions.under_way());
+        assert_eq!(times(&ed, same), 1, "{}", said(&ed));
+        assert!(!says(&ed, "changed since the card"), "{}", said(&ed));
+        assert_eq!(read(&base), "rule zero\nrule one\nrule two\nrule three\n", "the base");
+        assert_eq!(read(&wt.join("CLAUDE.md")), "rule zero\nrule one\nrule two\nrule three\n", "as it was");
+        look(&mut ed);
+        assert!(card(&ed, title).is_none(), "not asked again: {}", said(&ed));
+        // … and a look takes it down unanswered
+        both(&mut ed, "rule zero\nrule one\nrule two\nrule three\nrule four\n", "rule zero\nmine\n");
+        let id = card(&ed, title).unwrap().id;
+        std::fs::write(wt.join("CLAUDE.md"), "rule zero\nrule one\nrule two\nrule three\nrule four\n")
+            .unwrap();
+        look(&mut ed);
+        assert!(card(&ed, title).is_none(), "{}", said(&ed));
+        assert_eq!(
+            ed.ui_card_how.get(&id).map(String::as_str),
+            Some("dropped — the copy is the main checkout's now")
+        );
+        assert_eq!(times(&ed, same), 2, "{}", said(&ed));
+        assert_eq!(read(&base), "rule zero\nrule one\nrule two\nrule three\nrule four\n", "the base");
+
+        // A copy with a line of its own: today's card, a look keeping it, an answer on a copy changed since refused
+        both(
+            &mut ed,
+            "rule zero\nrule one\nrule two\nrule three\nrule four\nrule five\n",
+            "rule zero\nmine\n",
+        );
+        let q = card(&ed, title).unwrap().question.clone();
+        assert!(q.starts_with(
+            "The main checkout's CLAUDE.md changed since this session's copy, and so did this one."
+        ));
+        look(&mut ed);
+        assert!(card(&ed, title).is_some_and(|c| c.question == q), "{}", said(&ed));
+        std::fs::write(wt.join("CLAUDE.md"), "rule zero\nmine\nmine too\n").unwrap();
+        ed.offer_dismiss();
+        settle_until(&mut ed, |ed| !ed.workspace.instructions.under_way());
+        assert!(
+            says(&ed, "CLAUDE.md: it changed since the card — asked again at claude's next start"),
+            "{}",
+            said(&ed)
+        );
+        assert_eq!(times(&ed, same), 2, "{}", said(&ed));
+        assert_eq!(read(&wt.join("CLAUDE.md")), "rule zero\nmine\nmine too\n");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// #175: the rebase stopped in `feat`, its card answered `n`, and the user went to another session (as an
     /// inbox jump does): `:workspace-bring feat` from there puts its card up in front — saying the file isn't
     /// staged, `y` going on — and `:rebase-continue` typed there goes on in feat, not "no rebase under way" in

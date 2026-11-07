@@ -5,8 +5,9 @@
 //! rebase, a worker compares the three: a copy untouched since its base takes the main checkout's (said, and
 //! told to Claude with the next message); one changed on both sides is a card (`What::Instructions`: `y` takes
 //! the main checkout's changes where they don't touch the session's own — `checkpoint::rebase` — `v` shows
-//! them, `n` keeps it); a copy made before bases were kept that differs is asked the same way, once. The
-//! session's own changes are never written over, nor a buffer with unsaved changes. `.claude/settings*.json`
+//! them, `n` keeps it); a copy made before bases were kept that differs is asked the same way, once. A copy
+//! that is the main checkout's (a sync's write, a person's copy) asks nothing and is the base — a card up for it
+//! goes as a look or its answer finds so (#415). The session's own changes are never written over, nor a buffer with unsaved changes. `.claude/settings*.json`
 //! aren't followed: they go through `claudetrust.rs`.
 
 use std::ffi::OsStr;
@@ -233,12 +234,16 @@ mod tests {
     }
 }
 
-/// What a look found: the files taken from the main checkout, the ones changed on both sides, what failed.
+/// What a look found: the files taken from the main checkout, the ones changed on both sides, what failed — and
+/// the ones already the main checkout's (#415: a sync's copy, a person's `cp`), whose cards have nothing to ask.
 #[derive(Debug, Default)]
 pub struct Found {
     pub updated: Vec<String>,
     pub both: Vec<Both>,
     pub failed: Vec<String>,
+    pub same: Vec<String>,
+    /// The session's checkout looked at
+    pub root: PathBuf,
 }
 
 /// The session's checkout `root` against the main checkout `main` (a worker): `dirty`, buffers with unsaved
@@ -252,7 +257,7 @@ fn plain(root: &Path, rel: &str) -> Option<String> {
 }
 
 pub fn look(root: &Path, main: &Path, dirty: &[PathBuf]) -> Found {
-    let mut found = Found::default();
+    let mut found = Found { root: root.to_path_buf(), ..Found::default() };
     let Some(dir) = bases(root) else { return found };
     // (only what git doesn't carry: a tracked one comes with the checkout)
     let untracked = crate::worktree::instructions(main);
@@ -265,10 +270,13 @@ pub fn look(root: &Path, main: &Path, dirty: &[PathBuf]) -> Found {
         let base = std::fs::read_to_string(dir.join(rel)).ok();
         // (the same on both sides now: nothing of either's left out)
         let keep = |text: &str| keep_both(&dir, rel, text, text);
+        // (already the main checkout's, whoever wrote it: nothing to take — the base, so a sync's write never reads as
+        // the session's own at the main checkout's next change)
         if here == main_text {
             if base.as_deref() != Some(main_text.as_str()) || dir.join(OWN).join(rel).exists() {
                 let _ = keep(&main_text);
             }
+            found.same.push(rel.to_string());
             continue;
         }
         match base {
@@ -377,11 +385,38 @@ pub fn carry_out(ed: &mut Editor, root: PathBuf) {
 /// `look_out` for checkout `root` against its repository's main checkout (a worker; none: it is that one).
 pub fn look_out_of(root: &Path) -> Vec<Both> {
     let real = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let main = crate::gitrepo::repo(&real)
-        .ok()
-        .and_then(|r| crate::worktree::main_checkout(&r.common_dir, &real))
-        .filter(|m| *m != real);
+    let main = main_of(&real).filter(|m| *m != real);
     main.map(|main| look_out(&real, &main)).unwrap_or_default()
+}
+
+/// The main checkout of real path `root`'s repository (git runs: a worker).
+fn main_of(root: &Path) -> Option<PathBuf> {
+    crate::gitrepo::repo(root).ok().and_then(|r| crate::worktree::main_checkout(&r.common_dir, root))
+}
+
+/// The cards for checkout `root`'s `rel`, either direction, wherever they wait — up, or parked in any session —
+/// gone: the copy is the main checkout's now, nothing to take or carry (#415). Said calmly where any went (true).
+fn same_now(ed: &mut Editor, root: &Path, rel: &str) -> bool {
+    let mine = |o: &Offer| matches!(&o.what, What::Instructions(x) if x.root == root && x.rel == rel);
+    let gone: Vec<u64> = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .flat_map(|l| &l.parked)
+        .chain(&ed.offers)
+        .filter(|o| mine(o))
+        .map(|o| o.id)
+        .collect();
+    if gone.is_empty() {
+        return false;
+    }
+    ed.offers.retain(|o| !mine(o));
+    for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
+        l.parked.retain(|o| !mine(o));
+    }
+    for id in gone {
+        ed.card_how(id, "dropped — the copy is the main checkout's now");
+    }
+    ed.set_status(format!("{rel} is the main checkout's now — nothing to take"));
+    true
 }
 
 /// `b`'s card, in place of one for the same file and direction wherever it waits — up, or parked in any session:
@@ -467,10 +502,7 @@ pub fn follow(ed: &mut Editor) {
         ed.docs.iter().filter(|d| d.is_modified()).filter_map(|d| d.path.clone()).collect();
     ed.events.jobs().spawn(move || {
         let real = std::fs::canonicalize(&root).unwrap_or(root);
-        let main = crate::gitrepo::repo(&real)
-            .ok()
-            .and_then(|r| crate::worktree::main_checkout(&r.common_dir, &real));
-        let found = main.map(|main| look(&real, &main, &dirty)).unwrap_or_default();
+        let found = main_of(&real).map(|main| look(&real, &main, &dirty)).unwrap_or_default();
         move |ed: &mut Editor| {
             let (state, mut found) = (&mut ed.workspace.instructions, found);
             state.under_way = false;
@@ -494,10 +526,14 @@ fn again(ed: &mut Editor) {
 }
 
 /// What a look found, said: the files taken — a toast, and Claude told with the next message; a card for each
-/// changed on both sides (one a file).
+/// changed on both sides (one a file); a card standing for one already the main checkout's, gone.
 fn said(ed: &mut Editor, found: Found) {
-    let Found { updated, both, failed } = found;
-    if updated.is_empty() && both.is_empty() && failed.is_empty() {
+    let Found { updated, both, failed, same, root } = found;
+    let mut dropped = false;
+    for rel in &same {
+        dropped |= same_now(ed, &root, rel);
+    }
+    if updated.is_empty() && both.is_empty() && failed.is_empty() && !dropped {
         ed.unchanged = true;
         return;
     }
@@ -535,13 +571,19 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
         ));
     }
     let out = b.out.is_some();
-    // (Ok: whether its session had ended — its checkout gone)
-    let work = move || -> Result<bool, String> {
+    let work = move || -> Result<Wrote, String> {
         // (a session ended: what the card showed is what's carried — read as the end began; whatever is at its path
         // now, another session's maybe, is no part of it)
         let gone = b.out.is_some() && b.ended;
         if !gone {
             let here = plain(&b.root, &b.rel).ok_or("it isn't a plain file now — left as it is")?;
+            // (#415: the copy and the main checkout's the same now — a sync's write, a person's copy: nothing to take
+            // or carry whatever the card read, and that text the base)
+            let main = b.out.clone().or_else(|| main_of(&b.root));
+            if main.and_then(|m| plain(&m, &b.rel)).is_some_and(|m| m == here) {
+                let dir = bases(&b.root).ok_or("no git folder")?;
+                return keep_both(&dir, &b.rel, &here, &here).map(|_| Wrote::Same).map_err(|e| e.to_string());
+            }
             if here != b.here {
                 return Err("it changed since the card — asked again at claude's next start".into());
             }
@@ -551,7 +593,7 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
         // ones — never taken as untouched and written over them)
         if let Some(main) = &b.out {
             if !take {
-                return Ok(gone);
+                return Ok(if gone { Wrote::Ended } else { Wrote::Done });
             }
             let now = plain(main, &b.rel);
             // (an ended session's changes are never asked again: merged into the main checkout's as it is now —
@@ -569,7 +611,7 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
                 .and_then(|d| d.replace(OsStr::new(&b.rel), merged.as_bytes()))
                 .map_err(|e| e.to_string())?;
             if gone {
-                return Ok(true);
+                return Ok(Wrote::Ended);
             }
             let dir = bases(&b.root).ok_or("no git folder")?;
             let own = match (&b.base, b.left) {
@@ -578,7 +620,7 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
             };
             let base = std::fs::read_to_string(dir.join(&b.rel))
                 .map_or_else(|_| own.clone(), |old| carried(&b.main, &merged, &old));
-            return keep_both(&dir, &b.rel, &base, &own).map(|_| false).map_err(|e| e.to_string());
+            return keep_both(&dir, &b.rel, &base, &own).map(|_| Wrote::Done).map_err(|e| e.to_string());
         }
         let dir = bases(&b.root).ok_or("no git folder")?;
         // (`n`: the main checkout's changes left out stay out of what the session's own are told against — a
@@ -595,7 +637,7 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
             }
             (false, own) => own.unwrap_or_else(|| b.main.clone()),
         };
-        keep_both(&dir, &b.rel, &b.main, &own).map(|_| false).map_err(|e| e.to_string())
+        keep_both(&dir, &b.rel, &b.main, &own).map(|_| Wrote::Done).map_err(|e| e.to_string())
     };
     let state = &mut ed.workspace.instructions;
     (state.answered, state.answering) = (state.answered + 1, state.answering + 1);
@@ -609,25 +651,38 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
         let done = work();
         move |ed: &mut Editor| {
             ed.workspace.instructions.answering -= 1;
-            match out {
-                true => answered_out(ed, rel, done, take),
-                false => answered(ed, rel, done.map(|_| ()), take),
+            match (out, done) {
+                (_, Ok(Wrote::Same)) => {
+                    ed.set_status(format!("{rel} is the main checkout's now — nothing to take"))
+                }
+                (true, done) => answered_out(ed, rel, done, take),
+                (false, done) => answered(ed, rel, done, take),
             }
             again(ed);
         }
     });
 }
 
-/// A carry-out card's answer, said — `n` for an ended session's (`Ok(true)`) is final: never asked again.
-fn answered_out(ed: &mut Editor, rel: String, done: Result<bool, String>, take: bool) {
+/// What an answer's write came to.
+enum Wrote {
+    /// As the card said (`n`: left)
+    Done,
+    /// Carried out of an ended session — its checkout gone
+    Ended,
+    /// Nothing: the copy is the main checkout's now, its base that text (#415)
+    Same,
+}
+
+/// A carry-out card's answer, said — `n` for an ended session's (`Wrote::Ended`) is final: never asked again.
+fn answered_out(ed: &mut Editor, rel: String, done: Result<Wrote, String>, take: bool) {
     match (done, take) {
         (Ok(_), true) => ed.set_success(format!(
             "the main checkout's {rel} takes this session's changes — every session's Claude reads it from its next start"
         )),
-        (Ok(true), false) => ed.set_status(format!(
+        (Ok(Wrote::Ended), false) => ed.set_status(format!(
             "the main checkout's {rel} left as it is — the ended session's changes to it are dropped"
         )),
-        (Ok(false), false) => ed.set_status(format!(
+        (Ok(_), false) => ed.set_status(format!(
             "the main checkout's {rel} left as it is — asked again at the next bring"
         )),
         (Err(e), _) => ed.set_warning(format!("{rel}: {e}")),
@@ -635,9 +690,9 @@ fn answered_out(ed: &mut Editor, rel: String, done: Result<bool, String>, take: 
 }
 
 /// An answer's write, said.
-fn answered(ed: &mut Editor, rel: String, done: Result<(), String>, take: bool) {
+fn answered(ed: &mut Editor, rel: String, done: Result<Wrote, String>, take: bool) {
     match (done, take) {
-        (Ok(()), true) => {
+        (Ok(_), true) => {
             ed.set_success(format!(
                 "{rel} takes the main checkout's changes — Claude reads it from its next start"
             ));
@@ -646,7 +701,7 @@ fn answered(ed: &mut Editor, rel: String, done: Result<(), String>, take: bool) 
                  with is older — read it again before you rely on it."
             ));
         }
-        (Ok(()), false) => {
+        (Ok(_), false) => {
             ed.set_status(format!("{rel} kept as it is — only the main checkout's later changes are asked"))
         }
         (Err(e), _) => ed.set_warning(format!("{rel}: {e}")),

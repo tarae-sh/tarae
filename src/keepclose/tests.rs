@@ -732,6 +732,33 @@ fn v_shows_the_instruction_files_the_main_checkout_changed_since_each_copy() {
     assert!(card(&s.ed).is_some(), "the card stays");
 }
 
+/// #415: a copy made the main checkout's (a sync's write) is its base once a session's look sees it — the move card's
+/// `v` names only the main checkout's changes since, never the synced lines again; a copy that is the main checkout's
+/// now names nothing.
+#[test]
+fn v_agrees_with_a_base_a_copy_made_the_main_checkouts_moved() {
+    let mut s = scene("keepclose-instructions-same");
+    let common = crate::gitrepo::repo(&s.main).unwrap().common_dir.clone();
+    std::fs::write(common.join("info/exclude"), "CLAUDE.md\n").unwrap();
+    std::fs::write(s.main.join("CLAUDE.md"), "rules\n").unwrap();
+    for name in ["fix", "up"] {
+        std::fs::write(s.root(name).join("CLAUDE.md"), "rules\n").unwrap();
+        crate::instructions::keep_bases(&s.main, &s.root(name), &["CLAUDE.md".to_string()]);
+    }
+    std::fs::write(s.main.join("CLAUDE.md"), "rules\nmain's first\n").unwrap();
+    std::fs::write(s.root("fix").join("CLAUDE.md"), "rules\nmain's first\n").unwrap();
+    let found = crate::instructions::look(&s.root("fix"), &s.main, &[]);
+    assert!(found.updated.is_empty() && found.both.is_empty() && found.same == ["CLAUDE.md"], "{found:?}");
+    std::fs::write(s.main.join("CLAUDE.md"), "rules\nmain's first\nmain's new\n").unwrap();
+    // (up: synced again, no look since)
+    std::fs::write(s.root("up").join("CLAUDE.md"), "rules\nmain's first\nmain's new\n").unwrap();
+    asked(&mut s);
+    let m = moves(&s.ed);
+    let of = |name: &str| m.ws.iter().find(|w| w.name == name).unwrap().instructions.clone();
+    assert_eq!(of("fix"), [("CLAUDE.md".to_string(), vec!["+ main's new".to_string()])]);
+    assert_eq!(of("up"), [], "the main checkout's already: nothing to take");
+}
+
 /// #294: a move rewrites an idle workspace's open file, its buffer takes it from disk — and its server hears no save
 /// (one rust-analyzer serves every checkout: a save each started a check in every idle checkout at once, read by
 /// nobody). The save waits, and goes once that workspace is in front.
