@@ -99,9 +99,7 @@ fn a_held_cards_line_says_why_its_yes_is_missing() {
 /// A light card up here, and an older one waiting in a session behind (`C-q` goes to that one first —
 /// `inbox.rs`).
 fn older_card_behind(ed: &mut Editor) {
-    let dir = crate::scratch::Scratch::new("uistate-behind").into_path();
-    let id = ed.workspace_open(&dir).unwrap();
-    // (in front as it opens; named as a session is, never by its folder: a scratch folder's number varies)
+    let id = workspace_in_front(ed, "behind");
     ed.workspace.name = "fix".into();
     let mut o = Offer::new(
         "Restart anyway?".into(),
@@ -114,6 +112,16 @@ fn older_card_behind(ed: &mut Editor) {
     ed.workspace.parked.push(o);
     assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in() && ed.workspace.id != id);
     light_card(ed);
+}
+
+/// Another workspace, in front as `:workspace-open` leaves one, at a stand-in root no one makes — a scene is a
+/// `fn`, with nowhere to keep a scratch folder for its editor's life, and nothing of a workspace's is made at its
+/// root (#435: `Scratch::new(…).into_path()` here left 438 folders in the temp folder a test run, never removed).
+fn workspace_in_front(ed: &mut Editor, name: &str) -> crate::event::WorkspaceId {
+    let root = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("tarae-uistate-{name}"));
+    let id = ed.workspace_add(root);
+    assert!(ed.workspace_switch(id).is_in());
+    id
 }
 
 /// A card your own key asked for (`:features-reset`'s): focused as it comes (P3 §3.8).
@@ -581,11 +589,9 @@ pub(crate) const SCENES: &[Scene] = &[
     }),
     ("a card up, an older one in a session behind", older_card_behind),
     ("nothing waits, a turn ended in a session behind", |ed| {
-        let dir = crate::scratch::Scratch::new("uistate-done").into_path();
-        let id = ed.workspace_open(&dir).unwrap();
+        let id = workspace_in_front(ed, "done");
         assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in() && ed.workspace.id != id);
         let l = ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
-        // (named as a session is, never by its folder: a scratch folder's number varies)
         l.name = "fix".into();
         l.claude.turn_end = Some((Instant::now(), Ok(())));
         assert_eq!(ed.next_up(), crate::inbox::Next::Done(id));
@@ -793,9 +799,7 @@ pub(crate) const SCENES: &[Scene] = &[
     // (#302: a session picked another way — its tag, `:workspace-switch` — the floating list done as its `enter` leaves
     // it: the keys the code's there)
     ("the session list floating, another workspace switched to by its tag", |ed| {
-        let dir = crate::scratch::Scratch::new("uistate-switched").into_path();
-        let id = ed.workspace_open(&dir).unwrap();
-        assert_eq!(ed.workspace.id, id);
+        workspace_in_front(ed, "switched");
         ed.session_list();
         frame(ed);
         assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
@@ -990,6 +994,26 @@ fn keys_to_is_where_handle_key_sends_every_key() {
     let off = mismatches(SCENES, Editor::keys_to);
     let all = SCENES.len() * (PROBES.len() + MOVES.len() + ROUTED.len());
     assert!(off.is_empty(), "{} of {all}:\n{}", off.len(), off.join("\n"));
+}
+
+/// #435: a scene leaves no folder behind once its editor is gone. A scene is a `fn` run hundreds of times a test
+/// run (every probe of every walk, here and in `mouse::tests::walk`, `plugin::keys::tests`), so the folders three of
+/// them kept by `Scratch::into_path` were 438 new ones in the temp folder a run, never removed.
+#[test]
+fn the_scenes_leave_no_folder_behind() {
+    if no_pty_here("the_scenes_leave_no_folder_behind") {
+        return;
+    }
+    let before = crate::scratch::made();
+    for (name, setup) in SCENES.iter().chain(PLUGIN_SCENES) {
+        let mut ed = editor();
+        setup(&mut ed);
+        frame(&mut ed);
+        drop(ed);
+        let left: Vec<PathBuf> =
+            crate::scratch::made().into_iter().filter(|p| !before.contains(p) && p.exists()).collect();
+        assert!(left.is_empty(), "{name:?} left {left:?}");
+    }
 }
 
 /// …and it would see a model that's off. In every scene, each case broken once: what has the keys named

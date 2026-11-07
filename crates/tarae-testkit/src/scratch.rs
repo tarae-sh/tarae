@@ -22,6 +22,12 @@ pub fn holds(path: &Path) -> bool {
     plain && MADE.with(|m| m.borrow().iter().any(|s| path.starts_with(s)))
 }
 
+/// The scratch folders this thread made and still has — `into_path`'s too, which nothing removes for it: what a
+/// check that a run leaves no folder behind compares before and after (#435).
+pub fn made() -> Vec<PathBuf> {
+    MADE.with(|m| m.borrow().clone())
+}
+
 /// A folder of the test's own under the temp folder, removed (with what's in it) when dropped.
 #[derive(Debug)]
 pub struct Scratch {
