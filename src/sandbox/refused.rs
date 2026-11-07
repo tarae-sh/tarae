@@ -1607,6 +1607,10 @@ fn an_aarch64_table_with_no_snapshot_yet_is_said_not_failed() {
 /// 2026-11-03 on 6010433f). Unserved with namespaces has none: no kernel's mode reaches it.
 const AARCH64_BLESSED: [&str; 6] = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"];
 
+/// The aarch64 tables with no x86-64 twin (`K5:wsl-user`: unserved with namespaces as a user — WSL2's mirrored and
+/// Consomme networking, 2026-11-08 on cb77f2c2): compared as the others, never held against an x86-64 table.
+const AARCH64_ONLY: [&str; 1] = ["unserved-ns-user"];
+
 /// K5's six tables, blessed: aarch64's words are x86-64's but row 24's other ABI — i386's `int 0x80` is x86-64's
 /// alone; an arm64 process has no other ABI to call (AArch32's calls come only from a 32-bit program, and the
 /// filter finds none of another ABI's: `the_filter_knows_only_the_native_calls`). Every other part the same, so a
@@ -1643,7 +1647,7 @@ fn a_blessed_aarch64_table_is_compared_and_a_changed_row_fails() {
     if blessing() {
         return; // (the compare would write the changed table over the snapshot)
     }
-    for mode in AARCH64_BLESSED {
+    for mode in AARCH64_BLESSED.into_iter().chain(AARCH64_ONLY) {
         let name = format!("refused_linux_{mode}-aarch64");
         assert!(held_yet(&name), "{name}: held");
         let table = fs::read_to_string(snapshot_path(&name)).unwrap();
