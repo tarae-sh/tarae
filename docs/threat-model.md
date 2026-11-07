@@ -428,6 +428,26 @@ Kept:
   `sandbox::proxy::tests::a_risky_port_is_reached_only_where_a_rule_names_it`
 - **Your upstream proxy** (`llm.sandbox-upstream = "env"`): its host and credentials never reach a run.
   test: `sandbox::tests::runs_never_see_the_upstream` · `sandbox::proxy::tests::upstream::upstream_credentials_go_only_to_the_upstream`
+- **A run's trust bundle** (#419): the proxy relays HTTPS unread, so a run's own TLS client decides whom it trusts —
+  behind a company's intercepting proxy, the company's root. A run with a proxy URL gets one PEM file in its own
+  folder that every CA variable the packs name points at: the system's roots, the certificates of the files your
+  own CA variables name, `llm.sandbox-ca`'s — never narrower than the tools' own defaults: the system's roots
+  unread, no bundle and no variable set (one of only those files would take each tool's own store away), said in
+  the run's report. CERTIFICATE blocks only, never a key; at most 2,000 certificates, a
+  file read up to 4 MB, never a FIFO. Who decides what's in it: you and your system — `llm.sandbox-ca` only from
+  your own config, never a project's. What a run can do with it: change its own copy, which gives it nothing it
+  couldn't set itself (its own `SSL_CERT_FILE`); another run's copy is out of its reach (each run's folder its
+  own). tarae's own check of an `https://` upstream takes `llm.sandbox-ca`'s roots too. Not covered: a root in
+  Windows' store under WSL2 (named in `llm.sandbox-ca` by hand), a JVM's truststore, Go before 1.27 on macOS; the
+  macOS keychain path for an MDM root is the seam's and rustls-native-certs' own tests', not reproduced here.
+  test: `sandbox::proxy::mitm_tests::a_runs_fetch_through_a_company_mitm_trusts_your_ca_variables_root` ·
+  `sandbox::proxy::mitm_tests::a_runs_fetch_through_a_company_mitm_trusts_your_ca_setting` ·
+  `sandbox::proxy::mitm_tests::a_runs_fetch_through_a_company_mitm_fails_without_its_root` ·
+  `sandbox::cabundle::tests::a_key_beside_a_certificate_never_reaches_the_bundle` ·
+  `sandbox::tests::a_run_whose_system_roots_failed_keeps_its_tools_own` ·
+  `config::tests::a_project_cannot_name_whom_runs_trust` ·
+  `sandbox::proxy::tests::upstream::an_https_upstream_is_checked_against_your_ca_setting_too` ·
+  `sandbox::keeper::tests::a_supervisor_above_tarae_leaves_its_runs_bridged` (Linux, WSL2's condition)
 - Each session's host rules are its own.
   test: `sandbox::proxy::tests::two_sessions_rules_stay_apart`
 - **A plugin's connection** (not a run's: its own card a host:port, [plugins](plugins.md)) keeps the proxy's address

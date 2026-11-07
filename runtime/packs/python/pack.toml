@@ -170,6 +170,10 @@ env = { UV_HTTP_RETRIES = { value = "0", on = "each-host-asked" } }
 # never read nor written, wherever `UV_CACHE_DIR` puts it (runs have their own, below)
 kept = ["{uv}"]
 
+# requests' roots and pip's: the run's trust bundle (#419 — srt's)
+[sandbox.proxy]
+trust = ["REQUESTS_CA_BUNDLE", "PIP_CERT"]
+
 [sandbox.homes]
 uv = { env = "UV_CACHE_DIR", else = "~/.cache/uv" }
 uv-python = { env = "UV_PYTHON_INSTALL_DIR", else = "~/.local/share/uv/python" }

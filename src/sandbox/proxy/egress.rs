@@ -311,7 +311,8 @@ fn handshake(
     timeout: Duration,
 ) -> Result<rustls::ClientConnection, Failed> {
     use rustls::pki_types::ServerName;
-    let config = upstream::tls().map_err(|_| Failed::Tls("the system's certificates couldn't be read"))?;
+    let config =
+        upstream::tls(&up.ca).map_err(|_| Failed::Tls("the system's certificates couldn't be read"))?;
     let name = match up.host.parse::<IpAddr>() {
         Ok(ip) => ServerName::IpAddress(ip.into()),
         Err(_) => {

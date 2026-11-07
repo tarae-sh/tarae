@@ -136,6 +136,26 @@ pub fn platform(alpn: Vec<Vec<u8>>) -> Result<Arc<rustls::ClientConfig>, String>
     Ok(Arc::new(c))
 }
 
+/// `platform`, its verifier trusting `roots` besides the OS's — an https:// upstream proxy's with `llm.sandbox-ca`'s
+/// roots (`proxy::upstream::tls`, #419).
+#[cfg_attr(test, allow(dead_code))]
+pub fn platform_with(
+    roots: Vec<rustls::pki_types::CertificateDer<'static>>,
+    alpn: Vec<Vec<u8>>,
+) -> Result<Arc<rustls::ClientConfig>, String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = rustls_platform_verifier::Verifier::new_with_extra_roots(roots, provider.clone())
+        .map_err(|e| format!("the system's certificates with llm.sandbox-ca's: {e}"))?;
+    let mut c = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("TLS: {e}"))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+    c.alpn_protocols = alpn;
+    Ok(Arc::new(c))
+}
+
 /// A fetch's way to stop: its socket, shut down from another thread — one call that never waits — so its worker's
 /// read returns at once.
 #[derive(Clone, Default)]

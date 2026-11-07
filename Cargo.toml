@@ -42,6 +42,11 @@ tarae-web = { path = "crates/tarae-web" }
 # own; gzip tarae-web's
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
+# A run's trust bundle (#419, sandbox/cabundle.rs): the system's roots as files a run's own TLS client reads — macOS's
+# trust settings read (the User, Admin and System domains: an MDM's company root is the Admin one's; reading them never
+# asks), Linux's distro bundle as openssl-probe finds it. Already built as the verifier's (Linux), its security-framework
+# already built on macOS
+rustls-native-certs = "=0.8.5"
 # The WebAssembly runtime and the plugin host (crates/tarae-wasm): the editor's side of plugins is src/plugin/
 tarae-wasm = { path = "crates/tarae-wasm" }
 # The one sort (clippy.toml), shared with the runtime's crate: `crate::sorting` re-exports it

@@ -33,6 +33,7 @@ mod apart;
 mod macdeny_measure;
 // (the profile and its hint: plain text, built everywhere — said on Linux)
 pub mod apparmor;
+pub mod cabundle;
 #[cfg(target_os = "linux")]
 pub mod channel;
 #[cfg(test)]
@@ -1241,6 +1242,10 @@ pub struct Here {
     /// is the test's temp folder, which holds every scratch folder.
     #[cfg(test)]
     pub judged_runs: Option<PathBuf>,
+    /// Tests: the system's roots a run's trust bundle starts from (DER; `cabundle`) — None: none. A test never reads
+    /// the real store (but `cabundle::tests::the_systems_roots_are_read`'s one load).
+    #[cfg(test)]
+    pub system_roots: Option<Vec<Vec<u8>>>,
 }
 
 impl Here {
@@ -1283,6 +1288,8 @@ impl Here {
             runs: Some(profile_path(&std::env::temp_dir())),
             #[cfg(test)]
             judged_runs: None,
+            #[cfg(test)]
+            system_roots: None,
         }
     }
 
@@ -3775,6 +3782,9 @@ pub fn policy_key(p: &Policy) -> String {
     // (the kept homes are the project's and the key's — granted by them, not part of what's compared)
     q.write.retain(|w| !p.kept.iter().any(|k| k.home == *w));
     q.kept = Vec::new();
+    // (what its report says once a conversation is words, not what it allows: the trust bundle's line comes after
+    // the kept homes' key was taken — #419)
+    q.run_env.notes = Vec::new();
     #[cfg(target_os = "linux")]
     {
         q.confine = None;
@@ -4797,7 +4807,8 @@ pub(crate) fn env_with(
         ports: llm.sandbox_ports.clone(),
         localhost: llm.sandbox_localhost,
         hosts: llm.sandbox_hosts.rules(),
-        upstream: upstream_of(here, llm.sandbox_upstream),
+        upstream: upstream_of(here, llm.sandbox_upstream)
+            .with_ca(&cabundle::yours(here, &llm.sandbox_ca).into_iter().flatten().collect::<Vec<_>>()),
         tmux_tmpdir: here.path("TMUX_TMPDIR"),
         zellij_dir: here.path("ZELLIJ_SOCKET_DIR"),
         uid: here.uid,
@@ -5095,7 +5106,7 @@ pub(crate) fn run_policy_with(
         log.line("sandbox", "warning", &why);
         format!("The sandbox gives each command a folder of its own, and {why}, then run it again.")
     })?;
-    for_its_run(&mut p, Some(run), reads, here, &found);
+    for_its_run(&mut p, Some(run), reads, here, &found, &llm.sandbox_ca);
     for (own, tool) in &found.own {
         match own_build_made(own, tool) {
             Ok(true) => log.line("sandbox", "info", &format!("made {} for its first build", own.display())),
@@ -5169,7 +5180,7 @@ pub fn reach(here: &Here) -> NetReach {
 #[cfg(test)]
 pub(crate) fn policy_in(root: &Path, llm: &crate::llm::LlmConfig, reads: &[PathBuf], here: &Here) -> Policy {
     let (mut p, found) = policy_computed(root, llm, reads, &[], here);
-    for_its_run(&mut p, None, reads, here, &found);
+    for_its_run(&mut p, None, reads, here, &found, &llm.sandbox_ca);
     p
 }
 
@@ -5268,6 +5279,7 @@ fn for_its_run(
     reads: &[PathBuf],
     here: &Here,
     found: &Found,
+    ca: &[String],
 ) {
     (p.tag, p.run) = (run.as_ref().map(|r| r.tag()), run);
     let real_home = &found.real_home;
@@ -5337,10 +5349,15 @@ fn for_its_run(
     for (store, names) in &p.disk_stores.told {
         p.env.extend(names.iter().map(|n| (n.clone(), store.display().to_string())));
     }
-    // What a run with a proxy URL gets of the packs besides (`[sandbox.proxy]`)
+    // What a run with a proxy URL gets of the packs besides (`[sandbox.proxy]`): its trust bundle among it — what
+    // that holds said once a conversation
     let mut env = std::mem::take(&mut p.env);
-    proxy_made(p.run.as_ref().map(|r| r.path()), url.as_ref(), &mut env, &p.run_env);
+    let sources = if url.is_some() { cabundle::Sources::of(here, ca) } else { cabundle::Sources::default() };
+    let trusted = proxy_made(p.run.as_ref().map(|r| r.path()), url.as_ref(), &mut env, &p.run_env, &sources);
     p.env = env;
+    // (no bundle made — nothing to put in it — is said only where the system's roots couldn't be read)
+    let trusted = trusted.filter(|m| !m.pem.is_empty() || m.system_failed.is_some());
+    p.run_env.notes.extend(trusted.map(|m| m.said()));
 }
 
 /// What copies of the settings handed to a run (each tool's variable, `tokens::Copies`) take out of its `env`: each
@@ -5609,23 +5626,40 @@ fn proxy_text(lines: &[String], url: &proxy::ProxyUrl) -> String {
 
 /// What the packs' `[sandbox.proxy]` gives a run with a proxy URL (none without one): variables set, appended to
 /// the run's own (`env` holds what's set so far — the run homes'), and files written in its own folder `run` —
-/// their `append` naming them (`{file}`). Blocks (a worker's).
+/// their `append` naming them (`{file}`) — its trust bundle among them (#419, `cabundle`: made from `trust`), every
+/// CA variable of the packs' (`trust`) set to it: what it holds (None: no proxy URL, no bundle). Blocks (a
+/// worker's).
 fn proxy_made(
     run: Option<&Path>,
     url: Option<&proxy::ProxyUrl>,
     env: &mut Vec<(String, String)>,
     run_env: &runenv::RunEnv,
-) {
-    let Some(url) = url else { return };
+    trust: &cabundle::Sources,
+) -> Option<cabundle::Made> {
+    let url = url?;
     let p = &crate::sandboxpack::get().proxy;
     env.extend(p.env.iter().cloned());
     for (var, more) in &p.append {
         appended(env, run_env, var, more);
     }
-    if p.files.is_empty() {
-        return;
-    }
     let dir = run.ok_or_else(|| "no folder of the run's own".to_string()).and_then(Unlinked::made);
+    // (none made — nothing to put in it, or the system's roots unread (`cabundle::made`) — leaves each tool its
+    // own roots: then the variables stay unset)
+    let made = cabundle::made(trust);
+    let written = dir.as_ref().map_err(Clone::clone).and_then(|d| match made.pem.is_empty() {
+        true => Err("nothing in it".to_string()),
+        false => d.write_file(cabundle::FILE, made.pem.as_bytes()).map(|()| d.at.join(cabundle::FILE)),
+    });
+    match written {
+        Ok(at) => {
+            env.retain(|(k, _)| !p.trust.contains(k));
+            env.extend(p.trust.iter().map(|var| (var.clone(), at.display().to_string())));
+        }
+        Err(e) if run.is_some() => {
+            crate::log::line("sandbox", "warning", &format!("a run's trust bundle: {e}"))
+        }
+        Err(_) => {}
+    }
     for f in &p.files {
         let written = dir.as_ref().map_err(Clone::clone).and_then(|d| {
             d.write_file(&f.file, proxy_text(&f.lines, url).as_bytes())?;
@@ -5640,6 +5674,7 @@ fn proxy_made(
             Err(e) => crate::log::line("tarae", "warning", &format!("a run's proxy file {}: {e}", f.file)),
         }
     }
+    Some(made)
 }
 
 /// A run home's folder, opened through no link — what's made in it goes from it a step at a time, each
@@ -10780,8 +10815,86 @@ mod tests {
         let env = HashMap::from([("GRADLE_USER_HOME".to_string(), t.join("user/.gradle").into())]);
         let vars = vars_in(&t.join("no-home"), &Here { env, ..Here::default() });
         let mut env = run_homes_made(run, &vars, &Default::default(), kept, url);
-        proxy_made(Some(run), url, &mut env, &Default::default());
+        proxy_made(Some(run), url, &mut env, &Default::default(), &Default::default());
         env
+    }
+
+    /// #419: a run with a proxy URL gets its trust bundle in its own folder — every CA variable of the packs'
+    /// (`[sandbox.proxy] trust`: srt's eleven) naming it, set over one a pack's `env` set; what it holds said. With
+    /// no proxy URL (the network closed, tier offline) there's none, nor with nothing to put in it: a bundle with
+    /// nothing in it would take each tool's own roots away.
+    #[test]
+    fn a_run_with_a_proxy_url_gets_its_trust_bundle() {
+        let scratch = crate::scratch::Scratch::new("sb-trust-bundle");
+        let run = scratch.join("run");
+        let root = crate::web::fetch::tests::authority("company");
+        let sources = cabundle::Sources { system: vec![root.der.clone()], ..Default::default() };
+        let url = stand_in_url(true);
+        let mut env = vec![("SSL_CERT_FILE".to_string(), "/elsewhere.pem".to_string())];
+        let made = proxy_made(Some(&run), Some(&url), &mut env, &Default::default(), &sources).unwrap();
+        let bundle = run.join(cabundle::FILE).display().to_string();
+        let trust = [
+            "SSL_CERT_FILE",
+            "CURL_CA_BUNDLE",
+            "GIT_SSL_CAINFO",
+            "AWS_CA_BUNDLE",
+            "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+            "NODE_EXTRA_CA_CERTS",
+            "DENO_CERT",
+            "REQUESTS_CA_BUNDLE",
+            "PIP_CERT",
+            "CARGO_HTTP_CAINFO",
+            "NIX_SSL_CERT_FILE",
+        ];
+        let mut named: Vec<&str> = crate::sandboxpack::get().proxy.trust.iter().map(String::as_str).collect();
+        named.sort_unstable();
+        let mut want = trust.to_vec();
+        want.sort_unstable();
+        assert_eq!(named, want, "srt's list, as pack data");
+        for var in trust {
+            let set: Vec<&String> = env.iter().filter(|(k, _)| k == var).map(|(_, v)| v).collect();
+            assert_eq!(set, [&bundle], "{var}");
+        }
+        assert_eq!(std::fs::read_to_string(&bundle).unwrap(), cabundle::pem(&root.der));
+        assert_eq!(
+            made.said(),
+            "TLS: your commands trust the system's roots — SSL_CERT_FILE and the tools' other CA variables name that bundle."
+        );
+        // No proxy URL: no bundle, nothing set
+        let mut env = Vec::new();
+        assert_eq!(proxy_made(Some(&run), None, &mut env, &Default::default(), &sources), None);
+        assert!(env.is_empty());
+        // Nothing to put in it: the tools keep their own roots
+        let other = scratch.join("other");
+        let mut env = Vec::new();
+        proxy_made(Some(&other), Some(&url), &mut env, &Default::default(), &Default::default()).unwrap();
+        assert!(!env.iter().any(|(k, _)| trust.contains(&k.as_str())), "{env:?}");
+        assert!(!other.join(cabundle::FILE).exists());
+    }
+
+    /// #419, never narrower than the tools' own defaults: where the system's roots couldn't be read, a CA variable's
+    /// file makes no bundle of its own — it would replace each tool's store, an ordinary https to a public host
+    /// failing where today it passes. No `trust.pem`, no CA variable set; the report says why.
+    #[test]
+    fn a_run_whose_system_roots_failed_keeps_its_tools_own() {
+        let scratch = crate::scratch::Scratch::new("sb-trust-unread");
+        let run = scratch.join("run");
+        let company = scratch.join("company.pem");
+        std::fs::write(&company, cabundle::pem(&crate::web::fetch::tests::authority("company").der)).unwrap();
+        let sources = cabundle::Sources {
+            vars: vec![("SSL_CERT_FILE".into(), company)],
+            system_fails: Some("no keychain".into()),
+            ..Default::default()
+        };
+        let mut env = Vec::new();
+        let made = proxy_made(Some(&run), Some(&stand_in_url(true)), &mut env, &Default::default(), &sources);
+        let trust = &crate::sandboxpack::get().proxy.trust;
+        assert!(!env.iter().any(|(k, _)| trust.contains(k)), "{env:?}");
+        assert!(!run.join(cabundle::FILE).exists());
+        assert_eq!(
+            made.unwrap().said(),
+            "TLS: the system's roots couldn't be read (no keychain) — your commands use their own."
+        );
     }
 
     fn gradle_kept(home: &Path) -> Kept {
@@ -16886,8 +16999,9 @@ mod tests {
     /// PATH) reaches the run — a run that saw another `CARGO_HOME` than the policy would look where nothing was
     /// opened. What the policy reads is recorded as it asks (`Here::asked`), each set in turn until no new one
     /// is asked; the multiplexers' socket folders aside (the policy keeps them from runs — a run has no use
-    /// for them), and the packs' `kept-moved` variables (only kept places: without one, a tool reads its home
-    /// place, kept too — #182's cloud CLIs' sign-in).
+    /// for them), the packs' `kept-moved` variables (only kept places: without one, a tool reads its home
+    /// place, kept too — #182's cloud CLIs' sign-in), and their CA variables (`proxy.trust`: what they name goes
+    /// into the run's trust bundle, and the run's own name that bundle — #419).
     #[test]
     fn every_variable_the_policy_reads_reaches_the_run() {
         let scratch = crate::scratch::Scratch::new("runenv-reads");
@@ -16902,8 +17016,10 @@ mod tests {
         let mut env: HashMap<String, std::ffi::OsString> =
             HashMap::from([("HOME".into(), home.clone().into())]);
         let mut asked: Vec<String> = Vec::new();
+        let packs = crate::sandboxpack::get();
+        let kept_only: Vec<&str> = packs.kept_moved.iter().map(|k| k.env.as_str()).collect();
         let kept_only: Vec<&str> =
-            crate::sandboxpack::get().kept_moved.iter().map(|k| k.env.as_str()).collect();
+            kept_only.into_iter().chain(packs.proxy.trust.iter().map(String::as_str)).collect();
         for _ in 0..4 {
             let here = Here { env: env.clone(), ..Here::default() };
             toolchain_found_in(&root, ToolDirs::default(), &here);

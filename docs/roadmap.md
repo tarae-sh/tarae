@@ -946,7 +946,8 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
 - **A memory comparison with other editors** (Helix, Neovim with an AI plugin, Zed, VS Code). Method agreed
   2026-10-03: the same scenario; the editor alone and its whole process tree; measured numbers only; a one-off
   script.
-- **TLS termination in the egress proxy** (user, 2026-10-19), a sandbox piece of its own, a plan first. It was
+- **TLS termination in the egress proxy** (user, 2026-10-19) — planned, P0 landed with #419 (credential masking
+  through it: main's `.sb/credential-masking-plan.md`, decided 2026-11-07; P0 the run's trust bundle). It was
   "not taken" while it meant TLS interception no one else did; Anthropic's sandbox-runtime now has it as an
   experimental feature (srt `626a596`, its README's "TLS termination": `network.tlsTerminate` — HTTPS CONNECTs
   terminated in-process with a per-run CA put in the run's trust bundle (`SSL_CERT_FILE`, `GIT_SSL_CAINFO`, …),

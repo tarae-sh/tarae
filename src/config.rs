@@ -1147,6 +1147,42 @@ Z = ["move_line_down", ":sh touch marker"]
         assert!(t.editor.llm.run_allow == ["make"] && t.editor.motion == "calm", "trusted: still refused");
     }
 
+    /// Whom Claude's commands trust is yours to say (`llm.sandbox-ca`, `trust::YOURS_ONLY` — #419): a project's
+    /// `.tarae.toml` naming a root — trusted or not — and its `.tarae.local.toml` are refused and said; your own
+    /// config's list stays, and reaches the run's bundle.
+    #[test]
+    fn a_project_cannot_name_whom_runs_trust() {
+        use crate::trust::Store;
+        let scratch = crate::scratch::Scratch::new("config-ca");
+        let dir = scratch.to_path_buf();
+        let ok = std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();
+        assert!(ok.status.success());
+        let (user, project, local) =
+            (dir.join("user.toml"), dir.join(".tarae.toml"), dir.join(".tarae.local.toml"));
+        // (a risky setting beside it, so the project has a trust card to answer)
+        fs::write(&project, "[llm]\nrun-allow = [\"make\"]\nsandbox-ca = [\"/project/evil-root.pem\"]\n")
+            .unwrap();
+        fs::write(&local, "[llm]\nsandbox-ca = [\"/project/evil-root.pem\"]\n").unwrap();
+        fs::write(dir.join(".gitignore"), ".tarae.local.toml\n").unwrap();
+        fs::write(&user, "[llm]\nsandbox-ca = [\"~/corp-root.pem\"]\n").unwrap();
+        let load = |store: &Store| {
+            load_layers(Some(user.clone()), Some(project.clone()), Some((dir.clone(), local.clone())), store)
+        };
+        let (c, w) = load(&Store::default());
+        assert_eq!(c.editor.llm.sandbox_ca, ["~/corp-root.pem"], "{w:?}");
+        for said in [
+            ".tarae.toml:3: llm.sandbox-ca is set only in your own config",
+            ".tarae.local.toml:2: llm.sandbox-ca is set only in your own config",
+        ] {
+            assert!(w.iter().any(|w| w.contains(said)), "{said}: {w:?}");
+        }
+        let mut trusted = Store::default();
+        trusted.answer(crate::trust::Kind::Tarae, &project, c.project.as_ref().unwrap().hash, true, 0);
+        let (t, _) = load(&trusted);
+        assert!(t.editor.llm.run_allow == ["make"], "trusted");
+        assert_eq!(t.editor.llm.sandbox_ca, ["~/corp-root.pem"], "trusted: still refused");
+    }
+
     /// What the board's Claudes are asked is yours to say: a project's `[[review.angles]]` is refused and said,
     /// trusted or not — but which of its files draw the screen (`review.screen`) is the project's to name (it
     /// only brings an angle you have). Your own config sets the angles.

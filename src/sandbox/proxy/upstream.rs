@@ -100,6 +100,8 @@ pub struct Upstream {
     pub host: String,
     pub port: u16,
     auth: Option<Secret>,
+    /// `llm.sandbox-ca`'s files: an https:// one's certificate is checked against their roots too (`tls`, #419).
+    pub ca: Vec<std::path::PathBuf>,
 }
 
 /// Its variable, how and where — host:port goes to tarae's log, never to a report — and whether it has
@@ -317,7 +319,7 @@ fn read(var: &'static str, url: &str) -> Result<Upstream, Unusable> {
         (Proto::Socks5, _) => 1080,
     };
     let port = port.map_err(|_| unreadable)?.unwrap_or(default);
-    Ok(Upstream { var, proto, tls, host, port, auth })
+    Ok(Upstream { var, proto, tls, host, port, auth, ca: Vec::new() })
 }
 
 fn port_of(p: &str) -> Result<u16, ()> {
@@ -377,6 +379,14 @@ fn no_proxy(v: &str) -> Vec<Direct> {
 }
 
 impl Upstreams {
+    /// These, an https:// one's certificate checked against `ca`'s roots too (`llm.sandbox-ca`'s files).
+    pub fn with_ca(mut self, ca: &[std::path::PathBuf]) -> Upstreams {
+        for u in [&mut self.tunnel, &mut self.plain].into_iter().flatten().flatten() {
+            u.ca = ca.to_vec();
+        }
+        self
+    }
+
     /// Whether `NO_PROXY`'s entry `d` sends `host` direct at `port` (None: at every port).
     fn direct_at(d: &Direct, host: &str, port: Option<u16>) -> bool {
         match d {
@@ -450,17 +460,41 @@ pub struct Answer {
 }
 
 /// The TLS to an https:// upstream: the page fetch's (`web::fetch::platform`: rustls on ring, the system's
-/// verifier) with no ALPN — a proxy is spoken HTTP/1.1 to, as srt speaks it. Made once, on the first connection's
-/// thread (Linux reads the distro's certificates there). Tests: their own CA's alone.
-pub fn tls() -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
-    #[cfg(test)]
-    return Ok(crate::web::fetch::tests::client_without_alpn());
-    #[cfg(not(test))]
+/// verifier) with no ALPN — a proxy is spoken HTTP/1.1 to, as srt speaks it — its verifier taking `ca`'s roots
+/// besides the system's (`llm.sandbox-ca`, #419; a file that can't be read logged, the rest taken). Made on the first
+/// connection's thread (Linux reads the distro's certificates there), again only when `ca` names other files or one
+/// of them changed. Tests: their own CA's, and `ca`'s.
+pub fn tls(ca: &[std::path::PathBuf]) -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    type Made =
+        (Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>, Result<Arc<rustls::ClientConfig>, String>);
+    use std::sync::Arc;
+    static TLS: std::sync::Mutex<Option<Made>> = std::sync::Mutex::new(None);
+    let stamps: Vec<_> =
+        ca.iter().map(|f| (f.clone(), std::fs::metadata(f).and_then(|m| m.modified()).ok())).collect();
+    let mut kept = TLS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((was, made)) = kept.as_ref()
+        && *was == stamps
+        && !cfg!(test)
     {
-        static TLS: std::sync::OnceLock<Result<std::sync::Arc<rustls::ClientConfig>, String>> =
-            std::sync::OnceLock::new();
-        TLS.get_or_init(|| crate::web::fetch::platform(Vec::new())).clone()
+        return made.clone();
     }
+    let (roots, missed) = crate::sandbox::cabundle::roots(ca);
+    for m in &missed {
+        crate::log::line(
+            "sandbox",
+            "warning",
+            &format!("llm.sandbox-ca, for the upstream proxy's certificate: {m}"),
+        );
+    }
+    #[cfg(test)]
+    let made = Ok(crate::web::fetch::tests::client_trusting_also(&roots));
+    #[cfg(not(test))]
+    let made = match roots.is_empty() {
+        true => crate::web::fetch::platform(Vec::new()),
+        false => crate::web::fetch::platform_with(roots, Vec::new()),
+    };
+    *kept = Some((stamps, made.clone()));
+    made
 }
 
 /// A TLS failure in tarae's words — what the report and the log say; never the certificate's own text.
@@ -468,7 +502,8 @@ pub fn tls_said(e: &rustls::Error) -> &'static str {
     use rustls::{CertificateError as C, Error as E};
     match e {
         E::InvalidCertificate(C::UnknownIssuer | C::BadSignature) => {
-            "its certificate isn't one this system trusts (a company's root goes in the system's store)"
+            "its certificate isn't one this system trusts (a company's root goes in the system's store, or in \
+             llm.sandbox-ca)"
         }
         E::InvalidCertificate(C::NotValidForName | C::NotValidForNameContext { .. }) => {
             "its certificate is for another name"

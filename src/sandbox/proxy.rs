@@ -1624,6 +1624,9 @@ mod m5_tests;
 // (step 5g: a run's way out through the upstream proxy, the real path on both systems)
 #[cfg(test)]
 mod upstream_real;
+// (#419: a run's fetch through a company's TLS-intercepting proxy, the real path on both systems)
+#[cfg(test)]
+pub(crate) mod mitm_tests;
 // (macOS's runs through the real path: a run's port, its profile, its environment, its spawn and end)
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests;

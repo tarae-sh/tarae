@@ -49,10 +49,24 @@ listener a command makes stay inside the session. tarae brings the session's `lo
 - a file's owner and extended attributes (`cp -a`, `rsync -a`, `install -m` fail); a file's mode and times change
   outside the write places but on the protected names, which read-only mounts seal (G29).
 
+## A company's CA
+
+Behind a company's TLS-inspecting proxy every certificate is re-signed with the company's own root, and tarae's proxy
+relays HTTPS unread, so a command's own TLS client must trust that root. Each command gets a trust bundle the CA
+variables point at ([the sandbox](claude-integration.md), #419), the same in every tier and mode, bridged too. Its
+system roots are the distro's store (and the files tarae's own `SSL_CERT_FILE`/`SSL_CERT_DIR` name) — what tarae's own
+`read` of a page trusts. A company root installed only in Windows' certificate store isn't in the distro's: put its
+PEM file in the distro and name it in your config:
+
+```toml
+[llm]
+sandbox-ca = ["~/corp-root.pem"]
+```
+
+`llm.sandbox-ca` is yours only (a project can't set it). Reading Windows' store from WSL is a later piece.
+
 ## Still to come
 
-- **A company's CA** (#419): the proxy relays HTTPS unread, so behind TLS inspection a command must trust the
-  company's root itself.
 - **Windows programs and `/mnt/c`**: a test pinning that `cmd.exe`, `powershell.exe` and `clip.exe` fail in a
   command, and a check of what Claude's `read` and a command reach under the Windows home (`/mnt/c/Users/…`, with its
   `.ssh`, `.aws`, `.kube`) — counted as a home once checked.

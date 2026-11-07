@@ -64,7 +64,8 @@ pub const RISKY: &[&str] = &[
 /// `review.record`), how much of your turns' history is (`llm.turns-max-mb`), what the board's Claudes are asked (`review.angles`) and how many of them run on your
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
-/// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`) — a project never does.
+/// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`), whom Claude's commands
+/// trust (`llm.sandbox-ca`) — a project never does.
 pub const YOURS_ONLY: &[&str] = &[
     "llm.card-record",
     // (a project's 1 would take your `space u` history back to its newest turn)
@@ -94,6 +95,8 @@ pub const YOURS_ONLY: &[&str] = &[
     "llm.parent-wakes",
     // (whether a plugin hears the keys you press: a project's would turn a keylogger on)
     "plugins.keys",
+    // (whom Claude's commands trust: a project's root would let whoever holds its key read their TLS — #419)
+    "llm.sandbox-ca",
 ];
 
 pub fn yours_only(setting: &str) -> bool {
@@ -1368,7 +1371,8 @@ mod tests {
 
     /// Every `llm.sandbox*` setting changes what Claude's commands may do unasked — where they write, what they
     /// reach and by which way (`llm.sandbox-upstream`: around the user's own proxy, or through it) — so a
-    /// project's waits for trust. A new one is risky unless it's named here as tarae's own housekeeping.
+    /// project's waits for trust, or is never a project's (`llm.sandbox-ca`: whom they trust — #419). A new one is
+    /// risky unless it's named here as tarae's own housekeeping.
     #[test]
     fn every_sandbox_setting_waits_for_trust() {
         // (when tarae removes the kept run homes no run has used: nothing a run can do changes)
@@ -1376,9 +1380,12 @@ mod tests {
         let sandbox = crate::settings::SETTINGS.iter().filter(|s| s.path.starts_with("llm.sandbox"));
         let mut n = 0;
         for s in sandbox {
-            assert_eq!(is_risky(s.path), !HOUSEKEEPING.contains(&s.path), "{}", s.path);
+            let guarded = is_risky(s.path) || yours_only(s.path);
+            assert_eq!(guarded, !HOUSEKEEPING.contains(&s.path), "{}", s.path);
+            assert!(!(is_risky(s.path) && yours_only(s.path)), "{}: one of the two", s.path);
             n += 1;
         }
+        assert!(yours_only("llm.sandbox-ca"), "whom runs trust is never a project's");
         assert!(n >= 10, "the sandbox's settings found: {n}");
     }
 

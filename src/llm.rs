@@ -162,6 +162,10 @@ pub struct LlmConfig {
     pub sandbox_upstream: crate::sandbox::proxy::upstream::Setting,
     /// More folders the sandbox may write to (`~/` for home).
     pub sandbox_write: Vec<String>,
+    /// PEM files whose certificates a run's trust bundle holds besides the system's and the CA variables'
+    /// (`sandbox::cabundle`, #419) — and tarae's own check of an https:// upstream. Only your own config sets it
+    /// (`trust::YOURS_ONLY`): it decides whom runs trust.
+    pub sandbox_ca: Vec<String>,
     /// Paths in the project the sandbox keeps as they are, besides the names it always keeps
     /// (`sandbox::protected_names`).
     pub sandbox_protect: Vec<String>,
@@ -219,6 +223,7 @@ impl Default for LlmConfig {
             sandbox_hosts: Hosts::default(),
             sandbox_upstream: Default::default(),
             sandbox_write: Vec::new(),
+            sandbox_ca: Vec::new(),
             sandbox_protect: Vec::new(),
             sandbox_ports: Vec::new(),
             sandbox_localhost: false,

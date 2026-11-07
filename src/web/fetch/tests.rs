@@ -130,6 +130,24 @@ pub(crate) fn client_without_alpn() -> Arc<rustls::ClientConfig> {
     Arc::new(c)
 }
 
+/// An https:// upstream proxy's TLS in tests with `llm.sandbox-ca`'s roots (`proxy::upstream::tls`): the test's CA
+/// and `also`, no ALPN.
+pub(crate) fn client_trusting_also(
+    also: &[rustls::pki_types::CertificateDer<'static>],
+) -> Arc<rustls::ClientConfig> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(made().ca.clone().into()).unwrap();
+    for r in also {
+        let _ = roots.add(r.clone());
+    }
+    let c = rustls::ClientConfig::builder_with_provider(ring())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Arc::new(c)
+}
+
 /// A server's TLS under the test's leaf (`page.test`, `other.test`, `localhost`) — the page servers', and a stand-in
 /// https:// upstream proxy's.
 pub(crate) fn server_tls() -> Arc<rustls::ServerConfig> {
@@ -149,6 +167,55 @@ pub(crate) fn stranger_tls() -> Arc<rustls::ServerConfig> {
     ];
     let cert = certificate(3, "localhost", key.public_key().as_ref(), "a stranger", &key, &ext);
     with_cert(cert, pkcs8.as_ref().to_vec())
+}
+
+/// A CA of a test's own besides `made()`'s — a company's that re-signs what it intercepts, a public one an origin's
+/// leaf comes from (#419's stand-ins) — and its key, to issue leaves with (`issued`).
+pub(crate) struct Authority {
+    pub name: String,
+    /// Its certificate, DER.
+    pub der: Vec<u8>,
+    key: ring::signature::EcdsaKeyPair,
+}
+
+/// A new CA named `name` (ECDSA P-256, made here, held only by the test).
+pub(crate) fn authority(name: &str) -> Authority {
+    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING as ALG, EcdsaKeyPair, KeyPair};
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap();
+    let ext = [extension(BASIC_CONSTRAINTS, true, &seq(&[&tlv(0x01, &[0xff])]))];
+    let der = certificate(1, name, key.public_key().as_ref(), name, &key, &ext);
+    Authority { name: name.to_string(), der, key }
+}
+
+/// A server's TLS under a leaf for `names` that `by` issued (its key a new one).
+pub(crate) fn issued(by: &Authority, names: &[&str]) -> Arc<rustls::ServerConfig> {
+    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING as ALG, EcdsaKeyPair, KeyPair};
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap();
+    let alt: Vec<Vec<u8>> = names.iter().map(|n| tlv(0x82, n.as_bytes())).collect();
+    let ext = [
+        extension(ALT_NAMES, false, &seq(&alt.iter().map(Vec::as_slice).collect::<Vec<_>>())),
+        extension(KEY_PURPOSES, false, &seq(&[SERVER_AUTH])),
+    ];
+    let leaf = certificate(2, names[0], key.public_key().as_ref(), &by.name, &by.key, &ext);
+    with_cert(leaf, pkcs8.as_ref().to_vec())
+}
+
+/// A client's TLS trusting `roots` alone (no ALPN).
+pub(crate) fn trusting(roots: &[&[u8]]) -> Arc<rustls::ClientConfig> {
+    let mut store = rustls::RootCertStore::empty();
+    for r in roots {
+        store.add(r.to_vec().into()).unwrap();
+    }
+    let c = rustls::ClientConfig::builder_with_provider(ring())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(store)
+        .with_no_client_auth();
+    Arc::new(c)
 }
 
 fn with_cert(cert: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {

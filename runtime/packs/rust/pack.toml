@@ -241,6 +241,10 @@ env = { CARGO_NET_RETRY = { value = "0", on = "each-host-asked" } }
 # How the sandbox names the folders `[builds]` asks cargo for (#20: the checkout's cargo config names them)
 builds-said = { who = "cargo", target = "target-dir", build = "build-dir" }
 
+# Cargo's roots for its downloads: the run's trust bundle (#419 — srt's)
+[sandbox.proxy]
+trust = ["CARGO_HTTP_CAINFO"]
+
 [sandbox.homes]
 cargo = { env = "CARGO_HOME", else = "~/.cargo" }
 rustup = { env = "RUSTUP_HOME", else = "~/.rustup" }

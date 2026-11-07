@@ -658,6 +658,16 @@ pub static SETTINGS: &[Setting] = &[
         },
     },
     Setting {
+        path: "llm.sandbox-ca",
+        kind: Kind::StrList,
+        doc: "Chat, with the network open (only your own config): PEM files of certificates Claude's commands trust besides the system's and those your CA variables name (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS…) — a company's root its proxy re-signs with, one installed only in Windows under WSL (\"~/corp-root.pem\"); tarae's check of an https:// upstream proxy takes them too",
+        get: |c| Value::Array(c.llm.sandbox_ca.iter().map(|a| Value::from(a.as_str())).collect()),
+        set: |c, v| {
+            c.llm.sandbox_ca =
+                v.as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_string)).collect()
+        },
+    },
+    Setting {
         path: "llm.sandbox-env",
         kind: Kind::StrList,
         doc: "Chat: more of your environment Claude's commands get (\"DATABASE_URL\", \"MYAPP_*\") — they start with PATH, HOME, the locale and the toolchains' own; a token-like one only by its whole name (:sandbox-env lists them)",

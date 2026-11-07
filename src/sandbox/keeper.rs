@@ -11282,7 +11282,8 @@ mod tests {
     }
 
     /// `a_supervisor_above_tarae_leaves_its_runs_bridged`'s child, under the supervisor's filter: the tier probe, then
-    /// a run of a real policy (`sandbox::policy`, `spawn`) asking a stand-in host through its `HTTPS_PROXY`.
+    /// a run of a real policy (`sandbox::policy`, `spawn`) asking a stand-in host through its `HTTPS_PROXY` — and
+    /// #419's company-MITM fetch (`proxy::mitm_tests`), its trust bundle as a served run's.
     #[test]
     #[ignore = "run by a_supervisor_above_tarae_leaves_its_runs_bridged in a process of its own"]
     fn bridged_under_a_supervisor() {
@@ -11333,6 +11334,22 @@ mod tests {
         assert!(said.starts_with("proxy=192.0.2.1:3128 "), "{test}: by its own variable — {said}");
         assert!(said.ends_with("peer=192.0.2.1 reply=out hello"), "{test}: {said}");
         assert!(served.recv_timeout(crate::test_results::PATIENCE).is_ok(), "{test}: it arrived outside");
+        // #419 in WSL2's condition: behind a company's intercepting proxy, a bridged run gets the trust bundle and
+        // variables a served one does, and its real curl's fetch goes through the same way
+        use proxy::mitm_tests::{ANSWER, Company, Given, fetched, root_file};
+        let company = Company::start();
+        let given =
+            Given { vars: vec![("SSL_CERT_FILE", root_file(&company, &scratch))], ..Given::default() };
+        let (fetch, report) = fetched(&format!("keeper::tests::{test}"), &company, given)
+            .unwrap_or_else(|| panic!("{test}: the company's fetch skipped though bridged"));
+        assert!(
+            fetch.starts_with(&format!("{ANSWER} exit=0")),
+            "{test}: through the company's proxy — {fetch}"
+        );
+        assert!(
+            report.contains("TLS: your commands trust the system's roots + 1 from your CA variables"),
+            "{report}"
+        );
         println!("{test}: reached");
     }
 }

@@ -2,7 +2,7 @@
 //! tarae's environment would name it, records every byte it gets and answers as the test says. Hosts are
 //! `*.example.invalid`, credentials fake ones; nothing leaves this machine.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::sandbox::proxy::upstream::{self as up, Setting, Upstreams};
@@ -553,6 +553,53 @@ fn an_upstreams_bytes_after_its_2xx_are_refused() {
         let denial = d.recv_timeout(WAIT).expect("said");
         assert!(denial.target.contains("it sent bytes before the client's own"), "{case}: {}", denial.target);
     }
+}
+
+/// A company's https:// upstream: its certificate one the company's own CA issued (made once).
+fn company() -> &'static (crate::web::fetch::tests::Authority, Arc<rustls::ServerConfig>) {
+    static COMPANY: std::sync::OnceLock<(crate::web::fetch::tests::Authority, Arc<rustls::ServerConfig>)> =
+        std::sync::OnceLock::new();
+    COMPANY.get_or_init(|| {
+        let ca = crate::web::fetch::tests::authority("tarae test company CA");
+        let tls = crate::web::fetch::tests::issued(&ca, &["localhost"]);
+        (ca, tls)
+    })
+}
+
+fn tls_company(s: TcpStream) -> Vec<u8> {
+    over_tls(s, company().1.clone(), opens_inside)
+}
+
+/// #419: an https:// upstream whose certificate a company's own CA issued — a root the system doesn't hold — is
+/// refused as one the system doesn't trust, the words naming `llm.sandbox-ca`; once that names the root's file
+/// (`Upstreams::with_ca`), its TLS is trusted and the tunnel asked inside it. A file it names that can't be read
+/// takes nothing away.
+#[test]
+fn an_https_upstream_is_checked_against_your_ca_setting_too() {
+    let up = outside(tls_company);
+    let (resolve, _) = resolver(vec![("localhost", vec![vec![up.at]])]);
+    let f = start(resolve, limits());
+    let scratch = crate::scratch::Scratch::new("upstream-ca");
+    let root = scratch.join("company-root.pem");
+    std::fs::write(&root, crate::sandbox::cabundle::pem(&company().0.der)).unwrap();
+    let creds = ("u", "tarae-fake-token-419");
+    let named = |ca: &[PathBuf]| via_https("localhost", up.at.port(), creds).with_ca(ca);
+    let (mut c, d) = connection(&f.proxy, 1, 1, rules_via(&["example.invalid"], named(&[])));
+    c.write_all(connect_head("example.invalid:443").as_bytes()).unwrap();
+    let head = head_of(&mut c);
+    assert!(head.starts_with("HTTP/1.1 502 "), "{head}");
+    let denial = d.recv_timeout(WAIT).expect("said");
+    assert!(denial.target.contains("isn't one this system trusts"), "{}", denial.target);
+    assert!(denial.target.contains("llm.sandbox-ca"), "{}", denial.target);
+    let refused = String::from_utf8_lossy(&up.got.recv_timeout(WAIT).unwrap()).into_owned();
+    assert!(!refused.contains("CONNECT"), "nothing asked past a TLS tarae didn't trust: {refused}");
+    let ca = [scratch.join("gone.pem"), root];
+    let (mut c, _) = connection(&f.proxy, 1, 1, rules_via(&["example.invalid"], named(&ca)));
+    assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
+    drop(c);
+    let got =
+        String::from_utf8_lossy(&up.got.recv_timeout(WAIT).expect("the tunnel inside its TLS")).into_owned();
+    assert!(got.starts_with("server name localhost\nCONNECT example.invalid:443 HTTP/1.1\r\n"), "{got}");
 }
 
 /// What fails at an https:// upstream's TLS is said as the upstream's, in tarae's words — never the

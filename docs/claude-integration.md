@@ -1399,6 +1399,32 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   Anthropic's sandbox runtime and Claude Code speak it; for a proxy that wants NTLM or Kerberos, a local helper
   (Px, cntlm) that signs in for you, named as an `http://` proxy, is the way.
   `llm.sandbox-upstream = "none"` sends the commands straight out, with every check
+- **Whom the commands' TLS trusts** (#419). tarae's proxy relays HTTPS unread, so a command's own TLS client checks
+  the certificate itself, and behind a company's TLS-inspecting proxy that certificate is the company's own. So every
+  command with the network open (or asking hosts on cards) gets a trust bundle in its own folder, `trust.pem`, and
+  each CA variable the language packs name points at it: `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
+  `AWS_CA_BUNDLE`, `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, `NODE_EXTRA_CA_CERTS`, `DENO_CERT`, `REQUESTS_CA_BUNDLE`,
+  `PIP_CERT`, `CARGO_HTTP_CAINFO`, `NIX_SSL_CERT_FILE` (Anthropic's sandbox runtime's list). It holds, each
+  certificate once:
+  1. the system's roots: macOS's trust settings (yours, the administrator's, where an MDM puts a company root,
+     and the system's; reading them never asks), Linux's distro bundle — on either, the files tarae's own
+     `SSL_CERT_FILE`/`SSL_CERT_DIR` name instead, where they're set;
+  2. the certificates in the files those CA variables name in tarae's own environment;
+  3. those in `llm.sandbox-ca`'s files — a list of PEM files, only your own config sets it (a project's
+     `.tarae.toml` naming it is refused and said, trusted or not: it decides whom the commands trust).
+
+  Only CERTIFICATE blocks are taken: a key in the same file never reaches the bundle. The report says once a
+  conversation what it holds (`TLS: your commands trust the system's roots + 1 from your CA variables`). It's never
+  narrower than the tools' own defaults: where the system's roots couldn't be read there's no bundle — one of only
+  your files would replace each tool's own store — and the variables stay unset, each tool on its own roots, the
+  report saying why (`TLS: the system's roots couldn't be read (…) — your commands use their own`); so too with
+  nothing to put in it. tarae's own check of an `https://`
+  upstream proxy takes `llm.sandbox-ca`'s roots besides the system's too. Tools that read no CA variable keep their
+  own trust: Go before 1.27 on macOS verifies through the system's keychain and ignores `SSL_CERT_FILE` (Go 1.27
+  and later honour it there too, `crypto/x509`'s `cert_pool.go`), so a Go tool's result behind a company proxy
+  depends on the Go it was built with; a JVM reads a truststore, not a PEM file — not set yet. On WSL2 a company
+  root installed only in Windows' store isn't in the distro's: name its file in `llm.sandbox-ca`
+  ([tarae on WSL2](wsl.md))
 - Each command gets a folder of its own as `TMPDIR`, in tarae's cache (`~/.cache/tarae/runs/`, or under
   `$XDG_CACHE_HOME`) — not in a temp folder, which every command writes: no other command, this session's or
   another's, can put a file there (tools' homes are in it, Gradle's among them). A tarae that's gone leaves its

@@ -16,3 +16,7 @@ rev = "1b69cf1fa92366eefbe6863c184e5d2ece5f187d"
 [install.nil]
 what = "Nix's language server (nil)"
 hint = "add nil to your Nix config (home-manager's home.packages, NixOS's environment.systemPackages, or your flake's devShell)"
+
+# Nix's roots for its fetches: the run's trust bundle (#419 — srt's)
+[sandbox.proxy]
+trust = ["NIX_SSL_CERT_FILE"]

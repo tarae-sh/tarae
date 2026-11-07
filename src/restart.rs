@@ -2276,6 +2276,7 @@ mod tests {
             ("Checkout", "log.rs"),
             ("Claim", "basetree.rs"),
             ("Client", "lsp.rs"),
+            ("Company", "sandbox/proxy/mitm_tests.rs"),
             ("CoverTarget", "sandbox/refused.rs"),
             ("Deadline", "sandbox/proxy/packs_tests.rs"),
             ("DirTurn", "grammar.rs"),

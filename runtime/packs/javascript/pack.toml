@@ -112,6 +112,8 @@ registries = ["registry.npmjs.org"]
 # closed. npm itself reads the proxy variables
 [sandbox.proxy]
 env = { NODE_USE_ENV_PROXY = "1" }
+# Node's roots besides its own bundled ones, and Deno's (the run's trust bundle, #419 — srt's)
+trust = ["NODE_EXTRA_CA_CERTS", "DENO_CERT"]
 # npm's, pnpm's and yarn's own proxy settings win over the proxy variables (npm-registry-fetch: `opts.httpsProxy ||
 # opts.proxy`, the variables only when both are empty; pnpm's `httpsProxy = proxy ?? https_proxy`): one of the
 # user's in a run would go straight to it, which the sandbox refuses — never a run's, in any case

@@ -48,10 +48,12 @@
 //!   (`sandbox::Policy::proxy_url`) and removed for one without — `{proxy.<value>}` in its lines
 //!   (`proxy::URL_VALUES`; a line whose value is empty for the run is left out). A run whose URL is its own
 //!   alone (a port and token of its own) gets the run's own home, never a kept one (step 5f).
-//! - `proxy = { env, append, files }`: what a run with a proxy URL gets besides the core's proxy variables —
+//! - `proxy = { env, append, files, out, trust }`: what a run with a proxy URL gets besides the core's proxy variables —
 //!   variables set and appended to the run's own (no `{proxy.…}`: a variable may end up on a command line), and
 //!   `files."<name>" = { lines, append }`: a file in the run's own folder, `{proxy.<value>}` in its lines, `{file}`
-//!   (its path) in its `append`.
+//!   (its path) in its `append`; `out`: the tools' own proxy settings, never a run's; `trust`: the tools' CA
+//!   variables, each set to the run's trust bundle (`sandbox::cabundle`, #419) — and read in tarae's own
+//!   environment for the files they name.
 //! - `registries`: the hosts the pack's tools fetch from, as `llm.sandbox-hosts` writes them — words only, never
 //!   a grant: the host card names them (Q6).
 //! - `env`: variables in every run's environment (`{run}`: the run's own folder) — or `{ value, on }`: only where
@@ -408,6 +410,9 @@ pub struct Proxy {
     /// The tools' own proxy settings in the user's environment (`out`, matched in any case, `-` as `_`): never
     /// a run's, as the core's proxy variables — a tool's own wins over those, and goes direct (`runenv::of`).
     pub out: Vec<String>,
+    /// The tools' CA variables (`trust`): each set to the run's trust bundle (`sandbox::cabundle`), and read in
+    /// tarae's own environment for the files they name there.
+    pub trust: Vec<String>,
 }
 
 /// What a home a daemon lives from gets besides (`run-home`'s `daemon`).
@@ -989,7 +994,14 @@ fn read_key_of(
         }
         ("sandbox", "proxy") => {
             let p = tab(v)?;
-            known(&p, &["env", "append", "files", "out"], "`proxy`")?;
+            known(&p, &["env", "append", "files", "out", "trust"], "`proxy`")?;
+            for n in list_in(&p, "trust")? {
+                match check_proxy_var(&n) {
+                    Ok(()) if !out.proxy.trust.contains(&n) => out.proxy.trust.push(n),
+                    Ok(()) => wrong.push(format!("`proxy.trust`: `{n}` is named twice")),
+                    Err(e) => wrong.push(format!("`proxy.trust`: {e}")),
+                }
+            }
             for n in list_in(&p, "out")? {
                 match crate::sandbox::runenv::entry_ok(&n) && !n.ends_with('*') {
                     true if !out.proxy.out.contains(&n) => out.proxy.out.push(n),

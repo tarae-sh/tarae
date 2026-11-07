@@ -1301,12 +1301,14 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "a test's record of the switch to splicing (`switched_by`): kept, never read by the run — the relay's \
          behaviour unchanged",
     ),
-    (
-        "src/sandbox/proxy/upstream.rs",
-        "in fn tls: return Ok(crate::web::fetch::tests::client_without",
-        UPSTREAM_TLS,
-    ),
-    ("src/sandbox/proxy/upstream.rs", "in fn tls: {", UPSTREAM_TLS),
+    ("src/sandbox/proxy/upstream.rs", "in fn tls: && !cfg!(test)", UPSTREAM_TLS),
+    ("src/sandbox/proxy/upstream.rs", "in fn tls: made", UPSTREAM_TLS),
+    ("src/sandbox/proxy/upstream.rs", "in fn tls: made", UPSTREAM_TLS),
+    ("src/sandbox.rs", "in fn now: system_roots", SYSTEM_ROOTS),
+    ("src/sandbox/cabundle.rs", "in fn made: system", SYSTEM_ROOTS),
+    ("src/sandbox/cabundle.rs", "in fn made: system", SYSTEM_ROOTS),
+    ("src/sandbox/cabundle.rs", "in fn of: system", SYSTEM_ROOTS),
+    ("src/sandbox/cabundle.rs", "in fn of: system_fails", SYSTEM_ROOTS),
     ("src/sandbox/supervisor.rs", "in fn kept_apart: if APART_OFF.load(Relaxed) == self.session {", HOOK),
     (
         "src/sandbox/supervisor/attrs.rs",
@@ -1346,8 +1348,11 @@ const ASKS: &str = "the proxy's questions go to a test's sender (`TEST_ASKS`): t
 const NAMES: &str = "names resolved from `TEST_NAMES`/`TEST_RECORDS` only, never the network — the network lane \
                      needs a seam (piece 5)";
 const BEYOND: &str = "macOS: addresses a test stands for beyond this machine (`TEST_BEYOND`): none";
-const UPSTREAM_TLS: &str = "an https:// upstream's TLS trusts the tests' own CA alone: compat names no upstream \
-                            proxy, so none is spoken to";
+const UPSTREAM_TLS: &str = "an https:// upstream's TLS trusts the tests' own CA alone (and llm.sandbox-ca's), made \
+                            anew each time: compat names no upstream proxy, so none is spoken to";
+const SYSTEM_ROOTS: &str = "a run's trust bundle starts from no system roots (`Here.system_roots`: a test never reads \
+                            the store): compat's runs get the CA variables' files and llm.sandbox-ca's alone — none \
+                            set, no bundle and no CA variable, each tool's own roots as before #419";
 
 #[cfg(test)]
 mod tests {

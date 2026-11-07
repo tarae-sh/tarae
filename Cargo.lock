@@ -1285,6 +1285,7 @@ dependencies = [
  "ring",
  "ropey",
  "rustls",
+ "rustls-native-certs",
  "rustls-platform-verifier",
  "serde_json",
  "streaming-iterator",

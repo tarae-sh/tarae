@@ -30,6 +30,13 @@ kept-moved = [
     { env = "AZURE_CONFIG_DIR", else = "~/.azure" },
 ]
 
+# The CA variables a run's TLS clients read, each set to the run's trust bundle — the system's roots, the files these
+# name in tarae's own environment, llm.sandbox-ca's (#419: behind a company's intercepting proxy its root is there).
+# srt's list (sandbox-utils.ts): OpenSSL's and what reads it (Go 1.27 and later on macOS too, older Go there only
+# Security.framework), curl's, git's, the AWS CLI's and SDKs', gcloud's
+[sandbox.proxy]
+trust = ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "AWS_CA_BUNDLE", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE"]
+
 # What a run card of Claude's warns of (`cardwarn.rs`, cardburden 4) — the tools no one language has. Each is a
 # line in the warning colour under what the card asks, said as this pack's; `asks = true`: `a` on an earlier card
 # doesn't let it run unasked.
