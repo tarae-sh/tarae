@@ -470,6 +470,10 @@ pub struct Document {
     /// Its grammar's offer held back while `claudes_only` or `review_only` (`load_language`): the language —
     /// offered when the user takes it up (`edits::taken_up`).
     pub grammar_held: Option<&'static crate::syntax::LangSpec>,
+    /// Its own language's load landed failed (`Editor::language_loaded`): no tree will come until a grammar is
+    /// downloaded and it's attached again — said by its own load's result, never by the loader's memory of another's
+    /// (#439: a review's grades read that memory, filled whenever any thread had tried, and ran two ways).
+    pub language_failed: bool,
     /// The language it's held to, whatever its file's name says (`Editor::language_loaded`, `language_of`): the git
     /// tab's message is `gitpanel::COMMIT_LANG`, and a load its name asked as it opened — `git-commit` — never
     /// takes its place, in whichever workspace it lands; a grammar's download attaches this one; `:lang` holds it to
@@ -610,6 +614,7 @@ impl Document {
             preview: false,
             wheel_held: None,
             grammar_held: None,
+            language_failed: false,
             language: None,
             shown: None,
             writing: None,

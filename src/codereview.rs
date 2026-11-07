@@ -176,13 +176,6 @@ pub struct CodeReview {
     /// another program changed since is graded again (`grades_sync`) — else its viewed mark held against the
     /// grades it opened with (frictions29 82: `]u` found none left, the count dropped once a walk opened them).
     digests: Digests,
-    /// Whether a language's grammar failed to load (`Loader::failed_to_load`; tests say so of one that's here).
-    failed_to_load: fn(&str) -> bool,
-}
-
-/// Whether language `name`'s grammar failed to load, as the loader says.
-fn grammar_failed(name: &str) -> bool {
-    crate::syntax::Loader::global().failed_to_load(name)
 }
 
 impl CodeReview {
@@ -223,7 +216,6 @@ impl CodeReview {
             defs: Default::default(),
             plain: Default::default(),
             digests: Default::default(),
-            failed_to_load: grammar_failed,
         }
     }
 
@@ -316,7 +308,7 @@ impl CodeReview {
             (None, _, None) => CutAt::Lines,
             (Some(d), None, None) => match crate::syntax::detect(Path::new(&f.rel)) {
                 None => CutAt::Lines,
-                Some(s) if d.syntax.is_none() && (self.failed_to_load)(&s.name) => CutAt::Lines,
+                Some(_) if d.syntax.is_none() && d.language_failed => CutAt::Lines,
                 Some(_) => CutAt::Whole,
             },
         };
@@ -2851,7 +2843,6 @@ fn open_at(
         defs,
         plain,
         digests,
-        failed_to_load: grammar_failed,
     });
     // (what was looked at that this base has moved past goes)
     prune_looked(ed);
@@ -7392,19 +7383,19 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// cardburden 2: a file of a language whose grammar can't load (not built in, not downloaded — what the
-    /// loader says is the review's to ask: `failed_to_load`) never gets a tree: its tall high-risk change is
-    /// cut every pane's height, as with no language, not left whole waiting for a tree that won't come.
+    /// cardburden 2: a file of a language whose grammar can't load (not built in, not downloaded — its own load's
+    /// result says so: `Document.language_failed`) never gets a tree: its tall high-risk change is cut every pane's
+    /// height, as with no language, not left whole waiting for a tree that won't come.
     #[test]
     fn a_language_whose_grammar_cant_load_is_cut_every_panes_height() {
         let now = text_of(30, |i| format!("line {i}"));
         let (mut ed, dir) = reviewing("grammarless", &[("a.py", "", &now)]);
         assert_eq!(crate::risk::lang_of("a.py"), Some("python"));
-        // (no grammar here or there: the document has no syntax, and the loader says it failed)
+        // (no grammar here or there: the document has no syntax, and its load landed failed)
         ed.doc_mut().syntax = None;
+        ed.doc_mut().language_failed = true;
         ed.config.review_risky = vec!["a.py".into()];
         if let Some(r) = ed.workspace.code_review.as_mut() {
-            r.failed_to_load = |name| name == "python";
             r.set_rules(crate::risk::Rules::of(&ed.config));
         }
         crate::term::render(&mut ed, &mut Vec::new(), 100, 12).unwrap();

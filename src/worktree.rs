@@ -3872,6 +3872,15 @@ mod tests {
         ed.screen.offer_buttons.iter().map(|b| b.3).collect()
     }
 
+    /// Every card a peek could stand for, for a failure's message (#440: a third answer, `1` — a card behind the bring
+    /// card's, here or another session's — and nothing said which): this session's stack, then the others' asks.
+    fn stack(ed: &Editor) -> String {
+        let here = ed.offers.iter().map(|o| format!("{} ({}, card#{})", o.title, o.kind(), o.id));
+        let there = (ed.asks_elsewhere().into_iter())
+            .map(|(l, o)| format!("{}'s {} ({}, card#{})", l.name, o.title, o.kind(), o.id));
+        format!("cards: {} · said: {}", here.chain(there).collect::<Vec<_>>().join(" | "), said(ed))
+    }
+
     /// Something to lose: the card says what — the changed files, the commits not in main (squash merges
     /// look unmerged), what deleting the branch too would take. Work in no commit: no `y` (a reflex `y`
     /// would throw away what no reflog keeps) — `c` commits it on the branch first, Claude drafting the
@@ -3984,7 +3993,7 @@ mod tests {
         passing_preflight(ed);
         feed(ed, ":workspace-bring<ret>");
         settle_until(ed, |ed| card(ed, &title).is_some() || says(ed, &format!("bring {branch}:")));
-        assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", said(ed));
+        assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", stack(ed));
         feed(ed, "y");
     }
 
@@ -4188,7 +4197,7 @@ mod tests {
         settle_until(&mut ed, |ed| card(ed, "Bring feat into main").is_some() || says(ed, "bring feat:"));
         let q = &card(&ed, "Bring feat into main").unwrap().question;
         assert!(q.starts_with("Run the preflight, then bring it into main?\n1 commit on main's tip."), "{q}");
-        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "{}", stack(&ed));
         feed(&mut ed, "n");
         assert_eq!(git_in(&repo, &["rev-parse", "main"]), main_was, "nothing brought yet");
         bring_asked(&mut ed, "feat", "main");
@@ -4217,7 +4226,7 @@ mod tests {
             ),
             "{q}"
         );
-        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n'], "{}", stack(&ed));
         feed(&mut ed, "n");
         assert!(says(&ed, "Not rebased — late as it is, nothing brought"), "{}", said(&ed));
         assert_eq!(git_in(&repo, &["rev-parse", "main"]), main);

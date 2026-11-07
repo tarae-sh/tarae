@@ -5521,6 +5521,7 @@ impl Editor {
         if doc.language.is_some_and(|held| held != spec.name) {
             return;
         }
+        doc.language_failed = result.is_err();
         match result {
             Ok(lang) => doc.syntax = Some(syntax::Syntax::new(lang)),
             // (only Claude's turn or a review opened it: offered once the user takes it up — #208)
