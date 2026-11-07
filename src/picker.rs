@@ -1696,6 +1696,58 @@ mod tests {
         assert_eq!(marks, &[3], "the label's match lands on the hit row, shifted");
     }
 
+    /// The live search's batches keep the row in hand by what it is, so the row a first key reaches depends on which
+    /// file's batch came first — `the_project_search_needs_no_rg`'s one `↓` from the first hit: the walk reads the
+    /// root's `src.rs` before `.github/ci.yml` (a folder's files are queued once it's read), and a first batch past
+    /// `PARTIAL_FIRST` holds `src.rs` alone; selected, it stays as `ci.yml` lands above it, and `↓` goes round to
+    /// `ci.yml`. The final list's order is fixed (by path: the hidden folder first); a batch between a key and `enter`
+    /// moves nothing.
+    #[test]
+    fn the_row_a_key_reaches_in_a_live_search_is_by_the_order_its_batches_came() {
+        let s = crate::scratch::Scratch::new("picker-batches");
+        let root = std::fs::canonicalize(s.path()).unwrap();
+        std::fs::create_dir_all(root.join(".github")).unwrap();
+        std::fs::write(root.join("notes.md"), "# notes\n").unwrap();
+        std::fs::write(root.join("src.rs"), "fn one() {}\n\nfn needle_here() {}\n").unwrap();
+        std::fs::write(root.join(".github/ci.yml"), "needle: ci\n").unwrap();
+        let roots = crate::folders::Roots::new(root.clone(), Vec::new());
+        let all = search(&roots, "needle", &|| false, &mut |_| {}).unwrap();
+        let labels: Vec<&str> = all.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, [".github/ci.yml:1: needle: ci", "src.rs:3: fn needle_here() {}"], "by path");
+        let of = |rel: &str| all.iter().filter(|i| i.label.starts_with(rel)).cloned().collect::<Vec<_>>();
+        // (the e2e's keys after its batches came in `batches`' order: the file in front after `↓` and `enter`)
+        let opened = |batches: &[Vec<Item>], between: Option<Vec<Item>>| {
+            let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+            ed.workspace.root = root.clone();
+            ed.open(&root.join("notes.md")).unwrap();
+            let mut p = Picker::of("search", "search", Vec::new(), false).grouped(root.clone());
+            p.live = true;
+            p.set_query("needle");
+            ed.open_picker(p, None);
+            for b in batches {
+                ed.picker.as_mut().unwrap().set_found(b.clone());
+            }
+            crate::term::render(&mut ed, &mut Vec::new(), 100, 24).unwrap();
+            ed.handle_key("down".parse().unwrap());
+            if let Some(b) = between {
+                ed.picker.as_mut().unwrap().set_found(b);
+            }
+            ed.handle_key("ret".parse().unwrap());
+            assert!(ed.picker.is_none(), "enter opened the hit");
+            let path = ed.doc().path.clone().unwrap();
+            path.strip_prefix(&root).unwrap().to_string_lossy().into_owned()
+        };
+        assert_eq!(opened(std::slice::from_ref(&all), None), "src.rs", "every hit at once: `↓` the second");
+        assert_eq!(opened(&[of(".github"), all.clone()], None), "src.rs", "ci.yml's batch first");
+        assert_eq!(
+            opened(&[of("src.rs"), all.clone()], None),
+            ".github/ci.yml",
+            "src.rs's batch first: round"
+        );
+        // (a batch landing between `↓` and `enter` keeps the row the key reached)
+        assert_eq!(opened(std::slice::from_ref(&all), Some(all.clone())), "src.rs", "a batch after the key");
+    }
+
     /// Hits' line numbers are right-aligned to the widest in the list — their code starts in one column —
     /// and what's marked in the code (typed letters, the emphasis) moves along.
     #[test]

@@ -2802,7 +2802,9 @@ fn file_picker_opens_lists_and_survives_no_matches() {
 }
 
 /// The project search (`space /`) with no rg anywhere — the harness's PATH is `/usr/bin:/bin`: ripgrep's
-/// crates search in-process, hidden files too, and Enter opens the hit at its line.
+/// crates search in-process, hidden files too, and Enter opens the hit at its line — `src.rs`'s picked by what it is,
+/// its pattern typed on until it's the only hit: a first key's row depends on which file's batch came first (the
+/// selection is kept by item as batches land — `picker::tests::the_row_a_key_reaches_in_a_live_search_…`).
 #[test]
 fn the_project_search_needs_no_rg() {
     let sb = Sandbox::new("search");
@@ -2816,7 +2818,9 @@ fn the_project_search_needs_no_rg() {
     t.wait_for("the search", |s| s.contains("type to search"));
     t.send("needle");
     t.wait_for("both hits", |s| s.contains("needle: ci") && s.contains("fn needle_here() {}"));
-    t.send("\x1b[B\r");
+    t.send("_here");
+    t.wait_for("src.rs's hit alone", |s| !s.contains("needle: ci") && s.contains("fn needle_here() {}"));
+    t.send("\r");
     t.wait_for("src.rs at the hit", |s| s.rows[0].contains("› src.rs") && s.status().contains(" 3:4 "));
 }
 
