@@ -35,7 +35,7 @@ cargo install --path .
 tarae .
 ```
 
-macOS or Linux (WSL on Windows), with rustup and a C compiler. Claude features need
+macOS or Linux ([WSL](docs/wsl.md) on Windows), with rustup and a C compiler. Claude features need
 [Claude Code](https://claude.com/claude-code) logged in. `space ?` finds any command; `:tutor` teaches the keys.
 
 ## Why tarae
@@ -56,7 +56,7 @@ macOS or Linux (WSL on Windows), with rustup and a C compiler. Claude features n
 
 [Features](docs/features.md) · [Claude](docs/claude-integration.md) · [Threat model](docs/threat-model.md) ·
 [Web pages](docs/web.md) · [A host and its interface](docs/remote.md) · [Configuration](docs/configuration.md) ·
-[Languages](docs/languages.md) · [Plugins](docs/plugins.md) · [Keymap](docs/reference/keymap.md) · [Architecture](docs/architecture.md) ·
+[Languages](docs/languages.md) · [WSL2](docs/wsl.md) · [Plugins](docs/plugins.md) · [Keymap](docs/reference/keymap.md) · [Architecture](docs/architecture.md) ·
 [Roadmap](docs/roadmap.md)
 
 ## License

@@ -1294,12 +1294,55 @@ struct In6Ifreq {
 /// The loopback device's index in every network namespace (the kernel's `LOOPBACK_IFINDEX`).
 const LOOPBACK_INDEX: libc::c_int = 1;
 
-/// `struct ifreq` as `SIOCGIFFLAGS`/`SIOCSIFFLAGS` take it: a name, the flags, the rest of its 40 bytes.
-#[repr(C)]
-struct IfFlags {
-    name: [u8; 16],
-    flags: libc::c_short,
-    rest: [u8; 22],
+/// The session's `lo` up, by rtnetlink (`RTM_NEWLINK`, `IFF_UP` in its flags and its change mask, the kernel's
+/// acknowledgement read) — never `ioctl(SIOCSIFFLAGS)`: WSL2's port tracker, in its mirrored and Consomme networking,
+/// hands every `SIOCSIFFLAGS` of every network namespace to Windows as an interface of its own coming up
+/// (`.sb/wsl-q7q8.md`), and netlink it doesn't watch. The errno where it failed.
+///
+/// # Safety
+/// The birth's child's: raw calls only, buffers on the stack.
+unsafe fn lo_up() -> Result<(), i32> {
+    // `struct nlmsghdr` (length, type, flags, sequence, port), then `struct ifinfomsg` (family, pad, type, index,
+    // flags, change)
+    let mut req = [0u8; 32];
+    req[0..4].copy_from_slice(&32u32.to_ne_bytes());
+    req[4..6].copy_from_slice(&libc::RTM_NEWLINK.to_ne_bytes());
+    req[6..8].copy_from_slice(&((libc::NLM_F_REQUEST | libc::NLM_F_ACK) as u16).to_ne_bytes());
+    req[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    req[16] = libc::AF_UNSPEC as u8;
+    req[20..24].copy_from_slice(&LOOPBACK_INDEX.to_ne_bytes());
+    req[24..28].copy_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
+    req[28..32].copy_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
+    // SAFETY: raw calls on a socket this makes, buffers of ours with their lengths.
+    unsafe {
+        let s = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, libc::NETLINK_ROUTE);
+        if s < 0 {
+            return Err(errno());
+        }
+        let done = 'ask: {
+            if libc::send(s, req.as_ptr().cast(), req.len(), 0) != req.len() as isize {
+                break 'ask Err(errno());
+            }
+            // (the acknowledgement: an `NLMSG_ERROR` carrying 0 or a negated errno, the request echoed after it)
+            let mut ack = [0u8; 128];
+            loop {
+                let n = libc::recv(s, ack.as_mut_ptr().cast(), ack.len(), 0);
+                if n < 0 && errno() == libc::EINTR {
+                    continue;
+                }
+                if n < 20 {
+                    break 'ask Err(if n < 0 { errno() } else { libc::EPROTO });
+                }
+                if u16::from_ne_bytes([ack[4], ack[5]]) != libc::NLMSG_ERROR as u16 {
+                    continue;
+                }
+                let code = i32::from_ne_bytes([ack[16], ack[17], ack[18], ack[19]]);
+                break 'ask if code == 0 { Ok(()) } else { Err(code.checked_neg().unwrap_or(libc::EPROTO)) };
+            }
+        };
+        libc::close(s);
+        done
+    }
 }
 
 /// `struct ifreq` as `SIOCSIFADDR`/`SIOCSIFNETMASK` take it: a name, an IPv4 address, the rest of its 40 bytes.
@@ -1437,14 +1480,11 @@ impl Birth {
                 self.failed(BirthStep::Shm, errno());
             }
             if ns.net {
-                let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
-                let mut ifr = IfFlags { name: [0; 16], flags: 0, rest: [0; 22] };
-                ifr.name[..2].copy_from_slice(b"lo");
-                if s < 0 || libc::ioctl(s, libc::SIOCGIFFLAGS as _, &raw mut ifr) != 0 {
-                    self.failed(BirthStep::Lo, errno());
+                if let Err(e) = lo_up() {
+                    self.failed(BirthStep::Lo, e);
                 }
-                ifr.flags |= libc::IFF_UP as libc::c_short;
-                if libc::ioctl(s, libc::SIOCSIFFLAGS as _, &raw mut ifr) != 0 {
+                let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+                if s < 0 {
                     self.failed(BirthStep::Lo, errno());
                 }
                 // The families tarae's network has, mirrored (`Families`): `SESSION_V4` as `lo:1`, a /32;
@@ -8102,6 +8142,8 @@ mod tests {
         };
         // Without a supervisor a run has no socket but netlink
         let sockets = net != RunNet::Plain;
+        // Unserved in the session's own network (bridged), a run makes no unix socket: they'd cross the namespace
+        let unix = sockets && net != RunNet::Own;
         // (IPv6 judged only where `::1` is there: this system's loopback — a container's often has none, so neither
         // session makes one — or a session's own netns, whose `lo` has its own whatever tarae's network carries)
         let v6 = got["own-tcp6"] != "unmade";
@@ -8119,8 +8161,8 @@ mod tests {
             ("udp6", sockets && v6),
             ("tcp-any", sockets),
             ("udp-any", sockets),
-            ("abstract", sockets && ns.net),
-            ("path", sockets),
+            ("abstract", unix && ns.net),
+            ("path", unix),
             ("ipc", true),
             ("shm", true),
             ("pty", true),
@@ -8166,6 +8208,7 @@ mod tests {
                 (false, "tcp" | "tcp6" | "udp" | "udp6" | "tcp-any" | "udp-any" | "abstract" | "path") => {
                     Unmade
                 }
+                _ if !unix && matches!(what, "abstract" | "path") => Unmade,
                 _ if own => in_own,
                 _ => without,
             };
@@ -8335,8 +8378,9 @@ mod tests {
     }
 
     /// Step 8: a loopback listener of no session's — this test's, standing for the user's own — is reached on a
-    /// port the policy opens (`llm.sandbox-ports`), and stays refused on one it doesn't, in every tier: the rule
-    /// refuses another session's socket, never one it knows nothing of.
+    /// port the policy opens (`llm.sandbox-ports`), and stays refused on one it doesn't, in every served tier: the rule
+    /// refuses another session's socket, never one it knows nothing of. Unserved in the session's own network (bridged)
+    /// neither is reached: that `lo` is the session's (Q2).
     #[test]
     fn the_users_listener_is_reached_where_opened() {
         let test = "the_users_listener_is_reached_where_opened";
@@ -8361,8 +8405,16 @@ mod tests {
         };
         let (to_opened, to_closed) = (tried(&opened), tried(&closed));
         let tier = s.confine.tier();
+        let own_net = s.confine.net == RunNet::Own;
         s.end();
-        assert_eq!(to_opened, "ok", "tier {tier}: the opened port");
+        // (unserved in the session's own network, bridged: this machine's ports aren't reached, opened or not —
+        // the session's `lo` is its own, #417's answer: `.sb/offline-bridge-plan.md` Q2)
+        let opened_reached = if own_net { "refused" } else { "ok" };
+        assert_eq!(
+            if to_opened == "ok" { "ok" } else { "refused" },
+            opened_reached,
+            "tier {tier}: the opened port ({to_opened})"
+        );
         assert_ne!(to_closed, "ok", "tier {tier}: the closed port");
     }
 
@@ -11029,19 +11081,20 @@ mod tests {
     /// Set for `bridged_under_a_supervisor`, run by its parent.
     const ABOVE: &str = "TARAE_SUPERVISOR_ABOVE";
 
-    /// Where the stand-in supervisor's listener is held in the child (past every descriptor tarae's code places).
-    const ABOVE_FD: i32 = 200;
-
-    /// Piece 3, WSL2's condition reproduced (`.sb/offline-bridge-plan.md` §4): a supervisor's filter above tarae, its
-    /// listener held (`seccomp::Above`) — so tarae can't serve its runs' calls (a listener below is refused, `EBUSY`)
-    /// while every namespace is still made, as under WSL2's init. In a process of its own (a filter is for good):
-    /// `bridged_under_a_supervisor` finds tier unserved with `user net ipc pid mnt` and the bridge, and a run reaches
-    /// a stand-in beyond through tarae's proxy by its own token, from its own `HTTPS_PROXY`. A system already under
-    /// such a filter (WSL2 itself) runs the child as it is. Skips where keepers get no network namespace;
-    /// `TARAE_EXPECT_BRIDGED=1` fails there instead (and in the child where it isn't bridged).
+    /// Pieces 3 and 5, WSL2's condition reproduced (`.sb/offline-bridge-plan.md` §4, `.sb/wsl-q7q8.md`): WSL's port
+    /// tracker above tarae (`seccomp::Above`: `bind`, `listen` and `ioctl(SIOCSIFFLAGS)` handed to its listener, each
+    /// let on as the tracker does) — so tarae can't serve its runs' calls (a listener below is refused, `EBUSY`) while
+    /// every namespace is still made, as under WSL2's mirrored or Consomme networking. In a process of its own (a
+    /// filter is for good): `bridged_under_a_supervisor` finds tier unserved with `user net ipc pid mnt` and the
+    /// bridge, and a run reaches a stand-in beyond through tarae's proxy by its own token, from its own `HTTPS_PROXY`.
+    /// What the tracker saw: no `SIOCSIFFLAGS` at all (WSL hands it to Windows from any namespace: the session's `lo`
+    /// comes up by netlink), and every `bind` and `listen` but tarae's own process's in the session's network
+    /// namespace, which the tracker passes by (one in its own would be a host port reservation — exclusive in
+    /// mirrored mode). A system already under such a filter (WSL2 itself) runs the child as it is, nothing tracked.
+    /// Skips where keepers get no network namespace; `TARAE_EXPECT_BRIDGED=1` fails there instead (and in the child
+    /// where it isn't bridged).
     #[test]
     fn a_supervisor_above_tarae_leaves_its_runs_bridged() {
-        use std::os::unix::process::CommandExt as _;
         let test = "a_supervisor_above_tarae_leaves_its_runs_bridged";
         if std::env::var_os("TARAE_EXPECT_BRIDGED").is_none()
             && (!own_network(test) || open_rules(test).is_none())
@@ -11059,24 +11112,118 @@ mod tests {
         .env(ABOVE, "1");
         // (this system served: the stand-in above it; already not served, the condition is its own)
         let above = super::super::supervisor::unavailable().is_none();
-        if above {
-            let filter = crate::seccomp::Above::new().unwrap();
-            // SAFETY: `Above::apply` makes raw calls only, allocating nothing, between fork and exec.
-            unsafe { cmd.pre_exec(move || filter.apply(ABOVE_FD)) };
-        }
-        let out = cmd.output().unwrap();
+        cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let (out, pid, seen) = if above {
+            let (out, pid, seen) = under_wsls_tracker(cmd);
+            (out, pid, Some(seen))
+        } else {
+            let child = cmd.spawn().unwrap();
+            let pid = child.id();
+            (child.wait_with_output().unwrap(), pid, None)
+        };
         let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
         assert!(
             out.status.success() && said.contains("1 passed"),
             "the child ran it (above: {above}):\n{said}"
         );
-        if !said.contains("bridged_under_a_supervisor: reached") {
+        let reached = said.contains("bridged_under_a_supervisor: reached");
+        if let (Some(seen), true) = (&seen, reached) {
+            let flags: Vec<_> = seen.iter().filter(|s| s.call == "SIOCSIFFLAGS").collect();
+            assert!(
+                flags.is_empty(),
+                "{test}: an interface's flags set by ioctl, which WSL hands to Windows: {flags:?}"
+            );
+            let theirs = |s: &&crate::seccomp::Seen| s.pid != pid;
+            let outside: Vec<_> = seen.iter().filter(theirs).filter(|s| s.root_net).collect();
+            assert!(
+                outside.is_empty(),
+                "{test}: a bind or listen of the session's outside its namespace: {outside:?}"
+            );
+            let inside = seen.iter().filter(|s| !s.root_net).count();
+            let session = seen.iter().filter(theirs).filter(|s| !s.root_net).count();
+            let by_session = |call| seen.iter().filter(theirs).any(|s| !s.root_net && s.call == call);
+            assert!(
+                by_session("bind") && by_session("listen"),
+                "{test}: the session port's bind and listen tracked (every call handed over): {seen:?}"
+            );
+            println!(
+                "{test}: tracked {} calls — {inside} in the session's namespaces ({session} of its processes), {} of \
+                 tarae's own process in its own, no SIOCSIFFLAGS",
+                seen.len(),
+                seen.len() - inside,
+            );
+        }
+        if !reached {
             // (the child skipped itself: its why, said again as this test's)
             let skipped = "sandbox::keeper::tests::bridged_under_a_supervisor — ";
             let why = said.lines().find_map(|l| l.split_once(skipped).map(|(_, why)| why.to_string()));
             let why = why.unwrap_or_else(|| panic!("the child neither reached nor skipped:\n{said}"));
             crate::test_results::said_skip(&format!("sandbox::keeper::tests::{test} — {why}"));
         }
+    }
+
+    /// `cmd` started under WSL's port tracker (`seccomp::Above`: the filter put on in its child, its listener handed
+    /// back here and answered as the tracker answers) and waited for: its output (where `cmd` pipes it), its pid, and
+    /// what the tracker saw.
+    fn under_wsls_tracker(
+        mut cmd: std::process::Command,
+    ) -> (std::process::Output, u32, Vec<crate::seccomp::Seen>) {
+        use std::os::unix::net::UnixStream;
+        use std::os::unix::process::CommandExt as _;
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let filter = crate::seccomp::Above::new().unwrap();
+        let handoff = theirs.as_raw_fd();
+        // SAFETY: `Above::apply` and `send_listener` make raw calls only, allocating nothing, between fork and exec;
+        // the child's copy of the listener closed once sent (the parent's holds the filter's notifications).
+        unsafe {
+            cmd.pre_exec(move || {
+                let l = filter.apply()?;
+                let sent = if send_listener(handoff, l) { Ok(()) } else { Err(io::Error::last_os_error()) };
+                libc::close(l);
+                sent
+            })
+        };
+        let child = cmd.spawn().unwrap();
+        drop(theirs);
+        let pid = child.id();
+        let tracker = crate::seccomp::Above::track(recv_listener(&OwnedFd::from(ours)).unwrap());
+        let out = child.wait_with_output().unwrap();
+        (out, pid, tracker.seen())
+    }
+
+    /// The kernels plan's `wsl` mode (`xtask/kernels.toml`'s K5, `cargo xtask kernels K5:wsl`): WSL2's mirrored and
+    /// Consomme networking reproduced for the whole suite — the reproduction first, with its tracker's checks
+    /// (`a_supervisor_above_tarae_leaves_its_runs_bridged`), then every `sandbox::` test in a process under WSL's port
+    /// tracker, expecting what the row gives (`TARAE_EXPECT_TIER=unserved`, `TARAE_EXPECT_BRIDGED=1`): they fail
+    /// rather than skip. Their output is the children's own. Already unserved (WSL2 itself), the suite runs as it is.
+    #[test]
+    #[ignore = "the kernels plan's wsl mode: cargo xtask kernels K5:wsl"]
+    fn sandbox_under_wsls_tracker() {
+        let exe = std::env::current_exe().unwrap();
+        let first = "sandbox::keeper::tests::a_supervisor_above_tarae_leaves_its_runs_bridged";
+        let status =
+            std::process::Command::new(&exe).args(["--exact", first, "--nocapture"]).status().unwrap();
+        assert!(status.success(), "the reproduction, {first}: {status}");
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("sandbox::");
+        if super::super::supervisor::unavailable().is_some() {
+            let status = cmd.status().unwrap();
+            return assert!(status.success(), "sandbox:: as this system is (not served): {status}");
+        }
+        let (out, pid, seen) = under_wsls_tracker(cmd);
+        assert!(out.status.success(), "sandbox:: under WSL's port tracker: {}", out.status);
+        let count = |call| seen.iter().filter(|s| s.call == call).count();
+        let mut outside: Vec<&str> =
+            seen.iter().filter(|s| s.root_net && s.pid != pid).map(|s| s.comm.as_str()).collect();
+        outside.dedup();
+        println!(
+            "sandbox_under_wsls_tracker: sandbox:: passed under the tracker — {} bind, {} listen ({} outside a \
+             session's namespace by another process than the suite's: {outside:?}), {} SIOCSIFFLAGS",
+            count("bind"),
+            count("listen"),
+            seen.iter().filter(|s| s.root_net && s.pid != pid).count(),
+            count("SIOCSIFFLAGS"),
+        );
     }
 
     /// `a_supervisor_above_tarae_leaves_its_runs_bridged`'s child, under the supervisor's filter: the tier probe, then

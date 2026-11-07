@@ -1653,7 +1653,8 @@ and terminals. How much of that a session gets is its tier:
 - **own**: user namespaces work. Where `/proc` is masked (Docker's default) the session has no process numbering of
   its own, said.
 - **host**: no user namespaces — Ubuntu's restriction without tarae's profile, or a container's seccomp profile.
-- **unserved**: tarae can't serve a command's sockets (below) — WSL2, a container without `CAP_SYS_PTRACE`: no port of
+- **unserved**: tarae can't serve a command's sockets (below) — WSL2 in its mirrored or Consomme networking (its NAT networking is served: [tarae on WSL2](wsl.md)), a
+  container without `CAP_SYS_PTRACE`: no port of
   this machine's, no unix socket. With the session's namespaces its own loopback, and the network beyond only
   through tarae's proxy, the command known by a token of its own (the bridge); without them no socket at all.
 

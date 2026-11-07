@@ -474,12 +474,35 @@ impl Filter {
     }
 }
 
-/// Tests: a supervisor above tarae, as WSL2's init puts one on every process (`.sb/offline-bridge-plan.md` §4) — a
-/// filter that hands one call nothing makes (`acct`) to a listener and lets every other through. Made before a fork,
-/// put on in its child (`apply`: raw calls only), its listener kept open past the exec: the kernel frees a filter's
-/// notifications as its listener closes, and with them what refuses another listener below it (`EBUSY`).
+/// Tests: a supervisor above tarae, as WSL2's init puts one on every process in its mirrored and Consomme networking
+/// (`.sb/offline-bridge-plan.md` §4, `.sb/wsl-q7q8.md`) — WSL's port tracker's filter: native `bind`, `listen` and
+/// `ioctl(*, SIOCSIFFLAGS)` handed to its listener (`RegisterSeccompHook`), every other call let through. Made before
+/// a fork, put on in its child (`apply`: raw calls only), its listener handed to the parent, which answers every call
+/// as the tracker does — on with the call (`track`) — and holds it open: the kernel frees a filter's notifications
+/// as its listener closes, and with them what refuses another listener below it (`EBUSY`).
 #[cfg(test)]
 pub struct Above(Vec<libc::sock_filter>);
+
+/// What the stand-in tracker saw of one call (`Above::track`).
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub struct Seen {
+    /// `bind`, `listen` or `SIOCSIFFLAGS`.
+    pub call: &'static str,
+    /// The caller's process (its `Tgid`) and its `comm`.
+    pub pid: u32,
+    pub comm: String,
+    /// In the tracker's own network namespace — the only calls WSL's tracker acts on for `bind` and `listen` (a
+    /// host port reservation; one it can't make is `EADDRINUSE`); `SIOCSIFFLAGS` it hands to Windows from any.
+    pub root_net: bool,
+}
+
+/// The stand-in tracker's thread (`Above::track`), until `seen`.
+#[cfg(test)]
+pub struct Tracker {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<Vec<Seen>>,
+}
 
 #[cfg(test)]
 impl Above {
@@ -488,15 +511,21 @@ impl Above {
             io::Error::new(io::ErrorKind::Unsupported, "no seccomp filter for this architecture")
         })?;
         let mut ops = native(arch);
-        ops.push(Op::Is(libc::SYS_acct as u32, To::Tarae, To::Next));
+        ops.push(Op::Is(libc::SYS_bind as u32, To::Tarae, To::Next));
+        ops.push(Op::Is(libc::SYS_listen as u32, To::Tarae, To::Next));
+        ops.extend([
+            Op::Is(libc::SYS_ioctl as u32, To::Next, To::Skip(2)),
+            Op::Load(arg_low(1)),
+            Op::Is(libc::SIOCSIFFLAGS as u32, To::Tarae, To::Next),
+        ]);
         Ok(Above(assemble(&ops)))
     }
 
-    /// Puts it on the calling thread (`no_new_privs` first), its listener moved to descriptor `at` without
-    /// close-on-exec — what the thread execs holds it, as WSL's init holds its own. Raw calls only.
-    pub fn apply(&self, at: i32) -> io::Result<()> {
+    /// Puts it on the calling thread (`no_new_privs` first): its listener's descriptor (close-on-exec), for the
+    /// caller to hand over. Raw calls only.
+    pub fn apply(&self) -> io::Result<i32> {
         let fprog = libc::sock_fprog { len: self.0.len() as u16, filter: self.0.as_ptr().cast_mut() };
-        // SAFETY: the program outlives the call (the kernel copies it); this thread only; descriptors of its own.
+        // SAFETY: the program outlives the call (the kernel copies it); this thread only.
         unsafe {
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 return Err(io::Error::last_os_error());
@@ -506,13 +535,75 @@ impl Above {
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
-            // (`dup2` leaves the copy without close-on-exec)
-            if libc::dup2(fd as i32, at) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            libc::close(fd as i32);
+            Ok(fd as i32)
         }
-        Ok(())
+    }
+
+    /// The tracker on `listener`: every call it hands over recorded — the caller's network namespace read from
+    /// `/proc/<tid>/ns/net` while it waits, as WSL's tracker reads it — and let go on (`SECCOMP_USER_NOTIF_FLAG_
+    /// CONTINUE`).
+    pub fn track(listener: OwnedFd) -> Tracker {
+        use std::os::fd::AsRawFd as _;
+        use std::sync::atomic::Ordering::SeqCst;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("tarae-test-above".into())
+            .spawn(move || {
+                let own = std::fs::read_link("/proc/self/ns/net").ok();
+                let mut seen = Vec::new();
+                loop {
+                    let mut pfd = libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                    // SAFETY: one live pollfd.
+                    let r = unsafe { libc::poll(&mut pfd, 1, 50) };
+                    if r == 0 && stopped.load(SeqCst) || r > 0 && pfd.revents & libc::POLLIN == 0 {
+                        break; // (POLLHUP: no process is under the filter any more)
+                    }
+                    if r <= 0 {
+                        continue;
+                    }
+                    // SAFETY: an all-integer struct, zeroed as the kernel asks of it.
+                    let mut n: libc::seccomp_notif = unsafe { std::mem::zeroed() };
+                    // SAFETY: the struct the request names, live for the call.
+                    if unsafe { libc::ioctl(listener.as_raw_fd(), libc::SECCOMP_IOCTL_NOTIF_RECV, &mut n) }
+                        != 0
+                    {
+                        continue; // (its caller gone meanwhile)
+                    }
+                    let call = match n.data.nr as libc::c_long {
+                        libc::SYS_bind => "bind",
+                        libc::SYS_listen => "listen",
+                        _ => "SIOCSIFFLAGS",
+                    };
+                    let tid = n.pid;
+                    let status = std::fs::read_to_string(format!("/proc/{tid}/status")).unwrap_or_default();
+                    let pid = status
+                        .lines()
+                        .find_map(|l| l.strip_prefix("Tgid:"))
+                        .and_then(|v| v.trim().parse().ok())
+                        .unwrap_or(tid);
+                    let comm = std::fs::read_to_string(format!("/proc/{tid}/comm")).unwrap_or_default();
+                    let net = std::fs::read_link(format!("/proc/{tid}/ns/net")).ok();
+                    let root_net = net.is_some() && net == own;
+                    seen.push(Seen { call, pid, comm: comm.trim().into(), root_net });
+                    let flags = libc::SECCOMP_USER_NOTIF_FLAG_CONTINUE as u32;
+                    let mut resp = libc::seccomp_notif_resp { id: n.id, val: 0, error: 0, flags };
+                    // SAFETY: the struct the request names, live for the call.
+                    unsafe { libc::ioctl(listener.as_raw_fd(), libc::SECCOMP_IOCTL_NOTIF_SEND, &mut resp) };
+                }
+                seen
+            })
+            .expect("the tracker's thread");
+        Tracker { stop, thread }
+    }
+}
+
+#[cfg(test)]
+impl Tracker {
+    /// What it saw, once the processes it watches are gone (it stops at the next quiet 50 ms).
+    pub fn seen(self) -> Vec<Seen> {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.thread.join().unwrap_or_default()
     }
 }
 

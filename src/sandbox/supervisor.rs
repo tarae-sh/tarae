@@ -199,14 +199,36 @@ fn probe() -> Result<(), String> {
     let taken = pidfd_open(unsafe { libc::getpid() })
         .map_err(|e| format!("pidfd_open: {e}"))
         .map(|pidfd| pidfd_getfd(pidfd.as_fd(), pidfd.as_raw_fd()).map(drop));
-    decided(listener, taken)
+    let version = std::fs::read_to_string("/proc/version").unwrap_or_default();
+    decided(listener, taken, wsl2(&version))
 }
 
+/// Whether `version` (`/proc/version`) is WSL2's kernel: `microsoft` in its name (`6.18.40.1-microsoft-standard-
+/// WSL2`) — not WSL1's, which says `Microsoft` without `WSL2` (`tier::Read.wsl1`).
+fn wsl2(version: &str) -> bool {
+    let wsl1 = version.contains("Microsoft") && !version.contains("WSL2");
+    version.to_lowercase().contains("microsoft") && !wsl1
+}
+
+/// Where WSL2 holds the listener above tarae: its port tracker's (`RegisterSeccompHook` in the VM's mini_init),
+/// put on every process in its mirrored and Consomme networking only (`.sb/wsl-q7q8.md`) — a fact for the user's
+/// choice of networking mode, said with the reason, never a step.
+pub const WSL_ABOVE: &str = "WSL2's mirrored or Consomme networking puts its port tracker's seccomp listener on every \
+                             process; its NAT networking has none, and there tarae serves runs";
+
 /// The probe's answer from what it found: a listener of a thread's own (or why not — `EBUSY`: inside another
-/// supervisor's filter), a descriptor of tarae's own taken through its pidfd (or why not — refused: Docker's
-/// default filter refuses `pidfd_getfd` without `CAP_SYS_PTRACE`, `PIDFD_REFUSED`).
-fn decided(listener: io::Result<()>, taken: Result<io::Result<()>, String>) -> Result<(), String> {
+/// supervisor's filter, on WSL2 its port tracker's: `WSL_ABOVE`), a descriptor of tarae's own taken through its
+/// pidfd (or why not — refused: Docker's default filter refuses `pidfd_getfd` without `CAP_SYS_PTRACE`,
+/// `PIDFD_REFUSED`).
+fn decided(
+    listener: io::Result<()>,
+    taken: Result<io::Result<()>, String>,
+    wsl2: bool,
+) -> Result<(), String> {
     listener.map_err(|e| match e.raw_os_error() {
+        Some(libc::EBUSY) if wsl2 => {
+            format!("tarae itself runs under another supervisor's filter — {WSL_ABOVE}")
+        }
         Some(libc::EBUSY) => "tarae itself runs under another supervisor's filter".to_string(),
         _ => format!("no seccomp listener: {e}"),
     })?;
@@ -2142,12 +2164,19 @@ mod tests {
     #[test]
     fn the_probe_cant_serve_where_pidfd_getfd_is_refused() {
         let refused = || Err(io::Error::from_raw_os_error(libc::EPERM));
-        assert_eq!(decided(Ok(()), Ok(Ok(()))), Ok(()));
+        assert_eq!(decided(Ok(()), Ok(Ok(())), false), Ok(()));
         let pidfd = Err(super::super::guarantees::PIDFD_REFUSED.to_string());
-        assert_eq!(decided(Ok(()), Ok(refused())), pidfd);
-        let busy = Err(io::Error::from_raw_os_error(libc::EBUSY));
-        assert!(decided(busy, Ok(refused())).is_err_and(|e| e.contains("another supervisor")));
-        assert!(decided(Ok(()), Err("pidfd_open: no".into())).is_err());
+        assert_eq!(decided(Ok(()), Ok(refused()), false), pidfd);
+        let busy = || Err(io::Error::from_raw_os_error(libc::EBUSY));
+        let said = decided(busy(), Ok(refused()), false).unwrap_err();
+        assert!(said.contains("another supervisor") && !said.contains("WSL"), "{said}");
+        assert!(decided(Ok(()), Err("pidfd_open: no".into()), false).is_err());
+        // (on WSL2: its port tracker's listener named, and NAT's none, as a fact — no step to take)
+        let wsl = decided(busy(), Ok(refused()), true).unwrap_err();
+        assert!(wsl.contains("mirrored or Consomme") && wsl.contains("NAT networking has none"), "{wsl}");
+        assert!(wsl2("Linux version 6.18.40.1-microsoft-standard-WSL2 (root@...) #1 SMP"));
+        assert!(!wsl2("Linux version 4.4.0-19041-Microsoft (Microsoft@Microsoft.com)"), "WSL1");
+        assert!(!wsl2("Linux version 6.12.111+deb13-cloud-arm64"));
         let three = Yama::Refuses("Yama's ptrace_scope 3".into());
         assert_eq!(
             served_from(pidfd.clone(), &three, true, None),

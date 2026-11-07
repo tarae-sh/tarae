@@ -117,8 +117,9 @@ a birth pipe as (step, errno) — `tier::BirthStep` — and its exec closes the 
      when that's the cause.
 2. Mount propagation to slave; a fresh `procfs` on `/proc` (with a PID namespace only); a new `devpts` instance with
    its `ptmx` bound over `/dev/ptmx`; a `tmpfs` on `/dev/shm` unless shared (D10).
-3. `lo` up (`ioctl(SIOCSIFFLAGS)`), with a network namespace only; then the address families tarae's own network
-   has, mirrored (`keeper::Families`, decided from `getifaddrs` before each birth — what glibc's `AI_ADDRCONFIG`
+3. `lo` up (rtnetlink's `RTM_NEWLINK` with `IFF_UP`, never `ioctl(SIOCSIFFLAGS)`: WSL2's port tracker hands that
+   ioctl from any namespace to Windows, see [tarae on WSL2](../wsl.md)), with a network namespace only; then the
+   address families tarae's own network has, mirrored (`keeper::Families`, decided from `getifaddrs` before each birth — what glibc's `AI_ADDRCONFIG`
    counts: IPv4 but loopback, IPv6 but loopback and link-local): `192.0.2.1/32` as `lo:1` (`SESSION_V4`:
    `SIOCSIFADDR`, `SIOCSIFNETMASK`) and `2001:db8::1/128` (`SESSION_V6`: `SIOCSIFADDR` on an IPv6 socket, `lo`'s
    index 1), documentation addresses both. Without them glibc reads "no IPv4 here" (or IPv6) and a lookup asking
@@ -542,7 +543,7 @@ address nothing goes (no rule names an address).
 |---|---|---|---|---|
 | **own** | user, net, ipc, pid, mnt (`/proc`, `devpts`, `/dev/shm`); where `/proc` can't be mounted fresh (Docker's masked `/proc`), no pid and no fresh `/proc` (D12) — processes shared, said | serving | the proxy's variable and the pair, its own loopback kept (6f's F3) | the keeper's PID namespace: one kill (without one, the keeper's tree) |
 | **host** | none (no unprivileged user namespaces) | serving | the proxy's variable and the pair (6f's F2) | the keeper's tree |
-| **unserved** | as own, or none | plain (Yama 3, Yama 2 without the session's namespaces — D-h, inside another listener — WSL2's init, `pidfd_getfd` refused — D-g) | with the session's namespaces, the proxy's variable and the session's port, by the run's token (the bridge); without them nothing: no socket at all but netlink | as own, or the keeper's tree |
+| **unserved** | as own, or none | plain (Yama 3, Yama 2 without the session's namespaces — D-h, inside another listener — WSL2's port tracker in its mirrored and Consomme networking, `pidfd_getfd` refused — D-g) | with the session's namespaces, the proxy's variable and the session's port, by the run's token (the bridge); without them nothing: no socket at all but netlink | as own, or the keeper's tree |
 
 The tier is what a user can tell apart: whether tarae serves a command's calls (served or unserved), and whether its
 loopback, IPC, `/dev/shm` and terminals are the session's own (own) or this machine's (host). The rest — a PID

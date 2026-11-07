@@ -3,8 +3,9 @@
 # suite among them), then tarae's own tests `repeat` times in `whole`'s mode — every run on the one test binary built
 # in `build`'s colima VM (`cargo xtask linux test --keep`), the same binary on every kernel.
 #
-# modes: `own` (`--userns`), `host` (Docker's profiles, SYS_PTRACE added), `unserved` (`--docker-default`), each as
-# root or as a user (`-user`: `--as-user`). They name how the container runs; `expect` names the tier each reaches
+# modes: `own` (`--userns`), `host` (Docker's profiles, SYS_PTRACE added), `unserved` (`--docker-default`), `wsl`
+# (`--userns`, the sandbox's tests under a stand-in of WSL2's port tracker: its mirrored and Consomme networking), each
+# as root or as a user (`-user`: `--as-user`). `K5:wsl-user` runs that one mode alone, no whole. They name how the container runs; `expect` names the tier each reaches
 # (`TARAE_EXPECT_TIER`: the probe and the suite fail rather than skip). A mode not in `expect` runs expecting nothing
 # — the tier it found is said, then written here (`--docker-default` expects unserved unless told). A failure is a
 # tarae bug (fixed, pinned by a test) or the kernel lacking something (said missing in the product, the expectation
@@ -75,12 +76,17 @@ says = "6.12, Debian 13 with Yama's ptrace_scope 1: Landlock ABI 6 — the first
 image = "debian-13"
 install = "curl -fsSL https://get.docker.com | sh"
 sysctl = ["kernel.yama.ptrace_scope=1"]
-modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"]
+modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user", "wsl-user"]
 whole = "host-user"
 # (its first run, 2026-11-03 on 6010433f: Debian 13's 6.12.111, aarch64, Landlock ABI 6, every mode the tier
 # expected; its six tables blessed as aarch64's snapshots — x86-64's but row 24's other ABI, not tried here.
 # `--docker-default` makes no namespaces, so unserved's is unserved's, not unserved-ns's)
-expect = { own = "own", own-user = "own", host = "host", host-user = "host", unserved = "unserved", unserved-user = "unserved" }
+# (`wsl-user`: WSL2's mirrored and Consomme networking, as a user as WSL runs tarae — its port tracker's seccomp
+# listener above tarae on every process (`.sb/wsl-q7q8.md`), reproduced by the test binary under `--userns`: every
+# namespace made, nothing served. Unserved with the session's namespaces, bridged (`TARAE_EXPECT_BRIDGED=1`), each
+# failing rather than skipping; the tracker sees no `SIOCSIFFLAGS` and no bind or listen of the session's outside its
+# namespace. The nearest kernel to WSL's 6.18 at Yama 1. NAT, WSL's default, has no listener: tier own, the `own` row)
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", unserved = "unserved", unserved-user = "unserved", wsl-user = "unserved" }
 
 [[kernel]]
 name = "K6"

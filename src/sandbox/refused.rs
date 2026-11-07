@@ -1493,8 +1493,9 @@ struct Machine<'a> {
 /// and aarch64's apart (row 24 tries another ABI's calls only on x86-64; aarch64's are `cargo xtask kernels`'
 /// Lima VMs on a Mac), Landlock ABI 6 or more (rows 17 and 25: a run's signals scoped), Yama's `ptrace_scope` 1
 /// (row 25's ptrace and `pidfd_getfd`, against a baseline Yama refuses or not) — keyed by tier, unserved with
-/// namespaces apart (it has a network of its own), a user's apart (the system refuses some calls first; in own its
-/// names are sealed, B9). Elsewhere the rows' properties still hold, and the table is said, not compared.
+/// namespaces apart (it has a network of its own), a user's apart (the system refuses some calls first; in own and
+/// unserved with namespaces its names are sealed, B9). Elsewhere the rows' properties still hold, and the table is
+/// said, not compared.
 fn snapshot_for(m: &Machine) -> Result<String, String> {
     if m.tier.ends_with("partial") {
         return Err(format!("Landlock ABI {}: partial", m.abi));
@@ -1512,9 +1513,6 @@ fn snapshot_for(m: &Machine) -> Result<String, String> {
         return Err(format!("{had}: the snapshots are ptrace_scope 1's"));
     }
     let ns = if m.tier == "unserved" && m.ns { "-ns" } else { "" };
-    if m.user && !ns.is_empty() {
-        return Err("unserved with namespaces as a user: no snapshot of its words yet".into());
-    }
     let user = if m.user { "-user" } else { "" };
     Ok(format!("refused_linux_{}{ns}{user}{arch}", m.tier))
 }
@@ -1536,8 +1534,9 @@ fn a_linux_table_is_held_against_a_snapshot_only_where_its_words_are_the_snapsho
     }
     let unserved_user = Machine { tier: "unserved", ns: false, user: true, ..vm };
     assert_eq!(snapshot_for(&unserved_user).as_deref(), Ok("refused_linux_unserved-user"));
-    let got = snapshot_for(&Machine { ns: true, ..unserved_user });
-    assert!(got.as_ref().is_err_and(|e| e.contains("as a user")), "unserved-ns as a user: {got:?}");
+    // (WSL2's mirrored networking as a user, `K5:wsl-user`: its own table)
+    let unserved_ns_user = Machine { ns: true, ..unserved_user };
+    assert_eq!(snapshot_for(&unserved_ns_user).as_deref(), Ok("refused_linux_unserved-ns-user"));
     // (aarch64's apart, every table of its own: row 24 is x86-64's only — the rest of the rule the same)
     let arm = Machine { arch: "aarch64", ..vm };
     for (m, name) in [
@@ -1545,6 +1544,7 @@ fn a_linux_table_is_held_against_a_snapshot_only_where_its_words_are_the_snapsho
         (Machine { user: true, ..arm }, "refused_linux_host-user-aarch64"),
         (Machine { tier: "own", ns: true, ..arm }, "refused_linux_own-aarch64"),
         (Machine { tier: "unserved", ns: true, ..arm }, "refused_linux_unserved-ns-aarch64"),
+        (Machine { tier: "unserved", ns: true, user: true, ..arm }, "refused_linux_unserved-ns-user-aarch64"),
     ] {
         assert_eq!(snapshot_for(&m).as_deref(), Ok(name));
     }

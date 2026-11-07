@@ -384,8 +384,8 @@ Kept:
   `sandbox::route::tests::this_machines_own_addresses_are_this_machine`
 - **Beyond, only through tarae's proxy.** On macOS the run gets `HTTPS_PROXY` and may connect only to its own
   proxy port, with a token of its own. On Linux, in the tiers served (own, host), the variable names the proxy's
-  reserved address, which the supervisor hands to the proxy. In tier unserved with the session's namespaces (WSL2:
-  its init's filter above tarae) the variable names the same address with a token of the run's own, as macOS's: the
+  reserved address, which the supervisor hands to the proxy. In tier unserved with the session's namespaces (WSL2
+  in its mirrored or Consomme networking: its port tracker's filter above tarae, [tarae on WSL2](wsl.md)) the variable names the same address with a token of the run's own, as macOS's: the
   session's keeper made a listener there in the session's network namespace before any run existed, tarae's proxy
   accepts on it, and a connection's head picks its run by the token within that session alone (none, unknown or ended:
   `407`) — then every check as served. Anything else beyond the namespace's `lo` is unreachable (the kernel's).
@@ -552,7 +552,7 @@ Not kept:
 |---|---|---|
 | own | unprivileged user namespaces work, and tarae serves a run's sockets (at Yama's `ptrace_scope` 2 too) | the session's own processes, loopback, IPC, `/dev/shm`, terminals; where `/proc` is masked (Docker's default) no PID namespace: processes shared (command lines, priority) |
 | host | no user namespaces (Ubuntu's restriction without tarae's profile; a container), sockets served | files and signals kept; loopback this machine's, other sessions' sockets refused; processes, SysV IPC, `/dev/shm` shared |
-| unserved | tarae can't serve a run's sockets (Yama 3, Yama 2 without the session's namespaces, inside another seccomp listener — WSL2's init, `pidfd_getfd` refused), with the session's namespaces or none | no port of this machine's, no unix socket; with the namespaces the network beyond only through tarae's proxy, by the run's token (the bridge), and its own loopback, IPC, `/dev/shm`, terminals; without, no socket at all and those shared |
+| unserved | tarae can't serve a run's sockets (Yama 3, Yama 2 without the session's namespaces, inside another seccomp listener — WSL2's port tracker in its mirrored and Consomme networking, `pidfd_getfd` refused), with the session's namespaces or none | no port of this machine's, no unix socket; with the namespaces the network beyond only through tarae's proxy, by the run's token (the bridge), and its own loopback, IPC, `/dev/shm`, terminals; without, no socket at all and those shared |
 
 Yama's `ptrace_scope` 2 asks for `CAP_SYS_PTRACE` in a run's user namespace, and tarae holds every capability in
 the session's, which it made: there it serves a run's sockets (tier own; the tier probe tries it on a run of its own

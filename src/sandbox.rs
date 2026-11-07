@@ -8465,9 +8465,12 @@ mod tests {
         std::fs::write(g.join("settings.gradle.kts"), "").unwrap();
         let here = |os: Os| {
             let env = [("HOME", home.clone().into()), ("GRADLE_OPTS", "-Xmx1g".into())];
+            // (served, whatever this machine is: bridged, a run's proxy URL is its own and no kept home stands —
+            // `kept_takes`, as on macOS)
             Here {
                 env: env.map(|(k, v): (&str, std::ffi::OsString)| (k.to_string(), v)).into(),
                 os,
+                served: Some(|| Ok(())),
                 ..Here::default()
             }
         };
@@ -9495,7 +9498,8 @@ mod tests {
         let opts_in_run = |opts: &str, os: Os| {
             let env = [("HOME", home.clone().into()), ("GRADLE_OPTS", opts.into())];
             let env = env.map(|(k, v): (&str, std::ffi::OsString)| (k.to_string(), v)).into();
-            let here = Here { env, os, ..Here::default() };
+            // (served, whatever this machine is: bridged, Linux's append is macOS's — `kept_takes`)
+            let here = Here { env, os, served: Some(|| Ok(())), ..Here::default() };
             toolchain_found_in(&g, ToolDirs::default(), &here);
             let p = run_policy_in(&g, &crate::llm::LlmConfig::default(), &[], &here).expect("a run's policy");
             let c = command(Some(&p), "/bin/sh", &["-c".into(), "true".into()]);
@@ -13960,6 +13964,12 @@ mod tests {
         let mode_times_where = attrs["mode_times"] == "where-writes";
         let xattrs_where = attrs["xattrs"] == "where-writes";
         let owner_where = attrs["owner_flags"] == "where-writes";
+        // (unserved with the session's mount namespace: the protected names sealed by read-only mounts — their mode
+        // and times kept by the kernel, `EROFS`, where G29 leaves every other file's open)
+        #[cfg(target_os = "linux")]
+        let sealed = matches!(&p.confine, Some(Ok(c)) if c.keeper.as_ref().is_some_and(|k| k.ns.user));
+        #[cfg(not(target_os = "linux"))]
+        let sealed = false;
         let fresh = |f: &Path| {
             let _ = std::fs::remove_file(f);
             std::fs::write(f, "marker\n").unwrap();
@@ -14118,7 +14128,7 @@ mod tests {
             for (f, is_mine) in [(&theirs, false), (&hook, false), (&mine, true)] {
                 let by_name = cfg!(target_os = "linux") && what.ends_with("/dev/fd");
                 let kept = if is_mode_times {
-                    if mode_times_where { !is_mine || by_name } else { false }
+                    if mode_times_where { !is_mine || by_name } else { sealed && f == &hook }
                 } else if is_xattr {
                     if xattrs_where { !is_mine } else { true }
                 } else {

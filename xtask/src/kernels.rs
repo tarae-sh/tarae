@@ -1,4 +1,4 @@
-//! `cargo xtask kernels [--dry-run] [--repeat N] [--keep-going] [--no-build] [--keep-vm] [kernel …]` — tarae's sandbox tests on
+//! `cargo xtask kernels [--dry-run] [--repeat N] [--keep-going] [--no-build] [--keep-vm] [kernel[:mode] …]` — tarae's sandbox tests on
 //! several kernels (`.sb/kernels-plan.md`): the set is data, `xtask/kernels.toml` (each kernel's VM, its sysctls,
 //! the modes it runs and the tier each is expected to reach). Run by you, outside tarae's sandbox (Lima and colima
 //! keep their VMs in your home) — before a publish, and after a landing that touches the sandbox's Linux code.
@@ -18,7 +18,9 @@
 //! Each mode runs `repeat` times in a row (the `sandbox::` tests, the must-be-refused suite among them), stopping
 //! at the first failure — `--keep-going` runs every one and says each test that failed once, with the runs it
 //! failed in, after the mode and again at the end (`failures`); then tarae's own tests `repeat` times in the
-//! kernel's `whole` mode. Each kernel's facts
+//! kernel's `whole` mode (`K5:wsl` runs that one mode alone, no whole). A `wsl` mode is WSL2's mirrored and Consomme
+//! networking reproduced (`--userns`, the suite under a stand-in of WSL's port tracker, its seccomp listener above
+//! tarae: tier unserved, bridged). Each kernel's facts
 //! first (uname, arch, Landlock's ABI read by the kernel, Yama, the user-namespace restriction, the LSMs).
 //! Results: `.sb/kernels/<date>-<commit>/<kernel>-<mode>.txt` (the facts, every run's output and time), the tables
 //! a run printed for a snapshot it had none of or that differed in `tables/` (to bless from), sizes in
@@ -48,8 +50,7 @@ const TABLE: &str = "xtask/kernels.toml";
 const OUT: &str = ".sb/kernels";
 const HISTORY_HEAD: &str =
     "date\tcommit\tkernel\tuname\tarch\tabi\tyama\tmode\texpected\tfound\tpassed\tcompared\tminutes\n";
-const USAGE: &str =
-    "usage: cargo xtask kernels [--dry-run] [--repeat N] [--keep-going] [--no-build] [--keep-vm] [kernel …]";
+const USAGE: &str = "usage: cargo xtask kernels [--dry-run] [--repeat N] [--keep-going] [--no-build] [--keep-vm] [kernel[:mode] …]";
 
 /// The tests a mode runs: the sandbox's, the must-be-refused suite among them.
 const FILTER: &str = "sandbox::";
@@ -66,7 +67,13 @@ enum Opts {
     Host,
     /// `--docker-default`
     Unserved,
+    /// `--userns`, and the suite under WSL2's port tracker (its mirrored and Consomme networking's seccomp listener,
+    /// reproduced by the test binary: `WSL_TEST`), the bridge expected (`TARAE_EXPECT_BRIDGED=1`)
+    Wsl,
 }
+
+/// The test a `wsl` mode runs (`--exact --ignored`): the reproduction, then `sandbox::` under the stand-in tracker.
+const WSL_TEST: &str = "sandbox::keeper::tests::sandbox_under_wsls_tracker";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Mode {
@@ -85,7 +92,10 @@ impl Mode {
             "own" => Opts::Own,
             "host" => Opts::Host,
             "unserved" => Opts::Unserved,
-            _ => return Err(format!("{s}: a mode is own, host or unserved, `-user` after it as a user")),
+            "wsl" => Opts::Wsl,
+            _ => {
+                return Err(format!("{s}: a mode is own, host, unserved or wsl, `-user` after it as a user"));
+            }
         };
         Ok(Mode { opts, user })
     }
@@ -95,6 +105,7 @@ impl Mode {
             Opts::Own => "own",
             Opts::Host => "host",
             Opts::Unserved => "unserved",
+            Opts::Wsl => "wsl",
         };
         format!("{base}{}", if self.user { "-user" } else { "" })
     }
@@ -163,6 +174,8 @@ struct Kernel {
     /// The tier each mode reaches, by the mode's name.
     expect: BTreeMap<String, String>,
     whole: Mode,
+    /// Whether this invocation runs `whole` — not where one mode was asked alone (`K5:wsl`).
+    whole_too: bool,
 }
 
 struct Table {
@@ -227,6 +240,9 @@ fn kernel(t: &toml::Table) -> Result<Kernel> {
         return Err(format!("{of}: no modes"));
     }
     let whole = Mode::parse(&string(t, "whole", of)?.ok_or(format!("{of}: no whole"))?)?;
+    if whole.opts == Opts::Wsl {
+        return Err(format!("{of}: whole: own, host or unserved — wsl runs the sandbox's tests only"));
+    }
     let mut expect = BTreeMap::new();
     if let Some(e) = t.get("expect") {
         let e = e.as_table().ok_or(format!("{of}: expect: a table of mode = tier"))?;
@@ -243,7 +259,7 @@ fn kernel(t: &toml::Table) -> Result<Kernel> {
         }
     }
     let says = string(t, "says", of)?.unwrap_or_default();
-    Ok(Kernel { name, says, at, sysctl, env, modes, expect, whole })
+    Ok(Kernel { name, says, at, sysctl, env, modes, expect, whole, whole_too: true })
 }
 
 fn table(text: &str) -> Result<Table> {
@@ -357,11 +373,11 @@ fn shown(w: &str) -> String {
 }
 
 /// The tier `mode` is expected to reach on `k`: the table's, else unserved under `--docker-default` (as `cargo xtask
-/// linux` expects unless told), else none — said on the command and in the history row alike.
+/// linux` expects unless told) and under WSL's tracker, else none — said on the command and in the history row alike.
 fn expected(k: &Kernel, mode: Mode) -> Option<&str> {
     match k.expect.get(&mode.name()) {
         Some(t) => Some(t),
-        None => (mode.opts == Opts::Unserved).then_some("unserved"),
+        None => matches!(mode.opts, Opts::Unserved | Opts::Wsl).then_some("unserved"),
     }
 }
 
@@ -389,12 +405,16 @@ fn suite_cmd(k: &Kernel, mode: Mode, filter: Option<&str>, docker: &Docker) -> C
         Opts::Own => a.push("--userns".into()),
         Opts::Host => {}
         Opts::Unserved => a.push("--docker-default".into()),
+        Opts::Wsl => a.extend(["--env".into(), "TARAE_EXPECT_BRIDGED=1".into(), "--userns".into()]),
     }
     a.extend(["test".into(), "--kept".into()]);
     if mode.user {
         a.push("--as-user".into());
     }
-    a.extend(filter.map(str::to_string));
+    match mode.opts {
+        Opts::Wsl => a.extend([WSL_TEST, "--exact", "--ignored"].map(str::to_string)),
+        _ => a.extend(filter.map(str::to_string)),
+    }
     Cmd::new(&["xtask"]).args(a).on(docker)
 }
 
@@ -767,7 +787,9 @@ fn plan(k: &Kernel, repeat: u32, from: &Docker, n: &Needs) -> Vec<String> {
     for m in &k.modes {
         l.push(format!("{}    # ×{repeat}", suite_cmd(k, *m, Some(FILTER), &docker).line()));
     }
-    l.push(format!("{}    # ×{repeat}, the whole", suite_cmd(k, k.whole, None, &docker).line()));
+    if k.whole_too {
+        l.push(format!("{}    # ×{repeat}, the whole", suite_cmd(k, k.whole, None, &docker).line()));
+    }
     match &k.at {
         At::Colima { profile, .. } => {
             l.push(format!(
@@ -1093,13 +1115,39 @@ fn ask(args: &[String]) -> Result<Asked> {
     Ok(a)
 }
 
-/// The kernels asked, in the table's order — all of them when none is named.
-fn chosen<'a>(t: &'a Table, names: &[String]) -> Result<Vec<&'a Kernel>> {
-    if let Some(n) = names.iter().find(|n| !t.kernels.iter().any(|k| &k.name == *n)) {
-        let all: Vec<&str> = t.kernels.iter().map(|k| k.name.as_str()).collect();
-        return Err(format!("{n}: not in {TABLE} ({})", all.join(", ")));
+/// The kernels asked, in the table's order — all of them when none is named; `K5:wsl` one of a kernel's modes alone,
+/// without its whole suite.
+fn chosen(t: &Table, names: &[String]) -> Result<Vec<Kernel>> {
+    let mut asked: Vec<(&str, Option<Mode>)> = Vec::new();
+    for n in names {
+        let (name, mode) = match n.split_once(':') {
+            Some((k, m)) => (k, Some(Mode::parse(m)?)),
+            None => (n.as_str(), None),
+        };
+        let Some(k) = t.kernels.iter().find(|k| k.name == name) else {
+            let all: Vec<&str> = t.kernels.iter().map(|k| k.name.as_str()).collect();
+            return Err(format!("{name}: not in {TABLE} ({})", all.join(", ")));
+        };
+        if let Some(m) = mode.filter(|m| !k.modes.contains(m)) {
+            return Err(format!("{n}: {} isn't one of {name}'s modes", m.name()));
+        }
+        asked.push((name, mode));
     }
-    Ok(t.kernels.iter().filter(|k| names.is_empty() || names.contains(&k.name)).collect())
+    let mut kernels = Vec::new();
+    for k in &t.kernels {
+        let modes: Vec<Option<Mode>> = asked.iter().filter(|(n, _)| *n == k.name).map(|(_, m)| *m).collect();
+        if !names.is_empty() && modes.is_empty() {
+            continue;
+        }
+        let mut k = k.clone();
+        // (a kernel named bare anywhere: all of it; else only the modes named, and no whole)
+        if !modes.is_empty() && modes.iter().all(Option::is_some) {
+            k.modes.retain(|m| modes.contains(&Some(*m)));
+            k.whole_too = false;
+        }
+        kernels.push(k);
+    }
+    Ok(kernels)
 }
 
 fn colima_running(profile: &str) -> bool {
@@ -1348,8 +1396,10 @@ fn one_kernel(
     for m in &k.modes {
         run.mode(k, &facts, (&m.name(), *m), &suite_cmd(k, *m, Some(FILTER), &docker), repeat, x);
     }
-    let whole = format!("whole-{}", k.whole.name());
-    run.mode(k, &facts, (&whole, k.whole), &suite_cmd(k, k.whole, None, &docker), repeat, x);
+    if k.whole_too {
+        let whole = format!("whole-{}", k.whole.name());
+        run.mode(k, &facts, (&whole, k.whole), &suite_cmd(k, k.whole, None, &docker), repeat, x);
+    }
     down(x);
     eprintln!("{}: {} min", k.name, minutes(started.elapsed()));
 }
@@ -1689,7 +1739,14 @@ mod tests {
         assert!(y2.sysctl.contains(&"kernel.yama.ptrace_scope=2".to_string()));
         let k5 = t.kernels.iter().find(|k| k.name == "K5").unwrap();
         assert!(k5.sysctl.contains(&"kernel.yama.ptrace_scope=1".to_string()), "the snapshots are Yama 1's");
-        assert_eq!(k5.modes.len(), 6, "every table on the kernel that compares");
+        assert_eq!(
+            k5.modes.len(),
+            7,
+            "every table on the kernel that compares, and WSL's mirrored condition"
+        );
+        let wsl = Mode::parse("wsl-user").unwrap();
+        assert!(k5.modes.contains(&wsl), "WSL2's condition on the kernel nearest its 6.18 at Yama 1");
+        assert_eq!(expected(k5, wsl), Some("unserved"));
         let k6 = t.kernels.iter().find(|k| k.name == "K6").unwrap();
         assert!(
             k6.sysctl.contains(&"kernel.yama.ptrace_scope=1".to_string()),
@@ -1702,7 +1759,7 @@ mod tests {
     fn a_table_that_says_wrong_is_refused_with_why() {
         let head = "build = \"tarae-test\"\n[[kernel]]\nname = \"K\"\ncolima = \"p\"\nwhole = \"host\"\n";
         let bad = [
-            ("modes = [\"guest\"]", "own, host or unserved"),
+            ("modes = [\"guest\"]", "own, host, unserved or wsl"),
             ("modes = []", "no modes"),
             ("modes = [\"host\"]\nexpect = { own = \"own\" }", "not one of its modes"),
             ("modes = [\"host\"]\nexpect = { host = \"mine\" }", "own, host or unserved"),
@@ -1746,6 +1803,8 @@ mod tests {
             "{head}modes = [\"host\"]\n[[kernel]]\nname = \"K\"\ncolima = \"p\"\nwhole = \"host\"\nmodes = [\"host\"]\n"
         );
         assert!(table(&twice).is_err_and(|e| e.contains("K twice")));
+        let wsl = head.replace("whole = \"host\"", "whole = \"wsl\"") + "modes = [\"wsl\"]\n";
+        assert!(table(&wsl).is_err_and(|e| e.contains("wsl runs the sandbox's tests only")));
     }
 
     /// A mode is `cargo xtask linux`'s options for its container, the kept binary as root or a user, the tier
@@ -1782,9 +1841,19 @@ mod tests {
         assert!(envs.contains(&("DOCKER_CONTEXT".into(), None)), "one Docker named: {envs:?}");
         assert_eq!(c.get_program(), "/x/xtask");
         let _ = c.stdin(Stdio::null());
-        for m in ["own", "own-user", "host", "host-user", "unserved", "unserved-user"] {
+        for m in ["own", "own-user", "host", "host-user", "unserved", "unserved-user", "wsl", "wsl-user"] {
             assert_eq!(Mode::parse(m).unwrap().name(), m);
         }
+        // (WSL's: the namespaces as own, the reproduction's one test, which runs `sandbox::` under the tracker)
+        let k5 = t.kernels.iter().find(|k| k.name == "K5").unwrap();
+        let h = Docker::Host("unix:///l/tarae-k5/sock/docker.sock".into());
+        let wsl = suite_cmd(k5, Mode::parse("wsl-user").unwrap(), Some(FILTER), &h);
+        assert_eq!(
+            wsl.line(),
+            "DOCKER_HOST=unix:///l/tarae-k5/sock/docker.sock xtask linux --env TARAE_EXPECT_TIER=unserved \
+             --env TARAE_EXPECT_BRIDGED=1 --userns test --kept --as-user \
+             sandbox::keeper::tests::sandbox_under_wsls_tracker --exact --ignored"
+        );
     }
 
     /// A Lima VM: Lima's own template for the image, only the checkout and its git folder mounted and read-only,
@@ -2018,10 +2087,19 @@ mod tests {
     #[test]
     fn the_kernels_asked_are_the_tables_in_its_order() {
         let t = the_table();
-        let got: Vec<&str> =
-            chosen(&t, &["Y2".into(), "K4".into()]).unwrap().iter().map(|k| k.name.as_str()).collect();
+        let got: Vec<String> =
+            chosen(&t, &["Y2".into(), "K4".into()]).unwrap().into_iter().map(|k| k.name).collect();
         assert_eq!(got, ["K4", "Y2"]);
         assert!(chosen(&t, &["K9".into()]).is_err_and(|e| e.contains("K9: not in")));
+        // (one mode alone: that mode, no whole; the kernel bare beside it: all of it)
+        let alone = chosen(&t, &["K5:wsl-user".into()]).unwrap();
+        assert_eq!(alone.len(), 1);
+        assert_eq!(alone[0].modes, [Mode::parse("wsl-user").unwrap()]);
+        assert!(!alone[0].whole_too);
+        let both = chosen(&t, &["K5:wsl-user".into(), "K5".into()]).unwrap();
+        assert!(both[0].whole_too && both[0].modes.len() == 7);
+        assert!(chosen(&t, &["K2:own".into()]).is_err_and(|e| e.contains("isn't one of K2's modes")));
+        assert!(ask(&["K5:wsl".into()]).is_ok_and(|a| a.names == ["K5:wsl"]));
         let a = ask(&["--dry-run".into(), "--repeat".into(), "1".into(), "K4".into()]).unwrap();
         assert!(a.dry && a.repeat == Some(1) && a.build && !a.keep_going && a.names == ["K4"]);
         let a = ask(&["--repeat".into(), "5".into(), "--keep-going".into(), "K2".into()]).unwrap();
