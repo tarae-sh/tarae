@@ -612,7 +612,13 @@ your `PATH`.
   changes that would conflict said the moment they do (`fix ≈ main · src/term.rs L210–260`, `git merge-tree` of the
   working trees) — to you, never to a Claude; any file as every session's changes
   woven together, unsaved ones too (`:weave`, `space v w`: each change in its session's colour, conflicts side by
-  side, `enter` into the workspace a change is from)
+  side, `enter` into the workspace a change is from); `O` on a row (`:session-fork [name]`) forks a session — a new
+  one from its present, "try another way from here": its commit, its changes in no commit (staged ones arriving
+  unstaged), its unsaved buffers (saved first) and its conversation so far, the two going on apart; none of its
+  answers come (runs, reads and hosts ask again), nor its ignored folders, and new files past 5,000 at once are named
+  on the card, not carried; forked only between its turns (a `y` while it works waits, and its messages wait from the
+  `y` until the fork's tree is written); the fork's first message writes the whole conversation again — another
+  checkout's prompt is another prefix, warm or not —, its price on the card
   ([several sessions](claude-integration.md#follow-mode))
 - **Another folder** `:folder-add ~/work/infra` — a folder outside the project the workspace works in too (a service
   and its infra, a library and its user): Claude reads, edits and runs there as in the project, its edits reviewed the

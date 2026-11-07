@@ -77,6 +77,7 @@ mod float;
 mod floatlist;
 mod folders;
 mod follow;
+mod fork;
 mod fswatch;
 mod git;
 mod gitmenu;

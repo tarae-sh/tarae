@@ -746,6 +746,9 @@ pub struct Chat {
     /// claude's id for this conversation (its `session_id`, from `init`) · the one the next process resumes.
     pub conversation: Option<String>,
     pub resume: Option<String>,
+    /// `resume` is another session's conversation this one forks (`fork.rs`): the next claude starts with
+    /// `--fork-session` after it — until claude names the fork's own (`StreamEv::Conversation`).
+    pub(crate) fork: bool,
     /// When this conversation last had a message or a turn's end (unix seconds, `chats::Saved.updated`) — None: not
     /// yet. What's done to its notes, a close or a restart never moves it: the picker's order and age say the talk.
     said_at: Option<u64>,
@@ -1224,6 +1227,7 @@ impl Chat {
             screen: None,
             conversation: None,
             resume: None,
+            fork: false,
             said_at: None,
             past: Vec::new(),
             plan: None,
@@ -1740,6 +1744,8 @@ fn loaded(ed: &mut Editor, saved: Vec<crate::chats::Saved>) {
             ));
         }
         None if left.is_some() => ed.set_status("that conversation is no longer kept"),
+        // (a fork brought back before its own conversation began: it forks still)
+        None if free => fork_again(ed),
         _ => {}
     }
 }
@@ -1900,6 +1906,8 @@ pub fn restore(ed: &mut Editor, r: Restored) {
     }
     let spawn = !r.lazy;
     let (Some(id), Some(dir)) = (r.conversation, ed.chats_dir.clone()) else {
+        // (a fork whose own conversation hadn't begun: it forks still)
+        fork_again(ed);
         if spawn {
             ensure_proc(ed);
         }
@@ -1944,11 +1952,17 @@ fn kept_of(
     dir: std::path::PathBuf,
     l: &crate::workspace::Workspace,
 ) -> Option<(std::path::PathBuf, Vec<std::path::PathBuf>, crate::chats::Saved)> {
+    Some((dir, roots_of(l), saved_of(l)?))
+}
+
+/// Session `l`'s conversation as it would be kept — from memory, nothing read (a fork's rows: `fork.rs`). None before
+/// claude gave it an id.
+pub(crate) fn saved_of(l: &crate::workspace::Workspace) -> Option<crate::chats::Saved> {
     let c = l.claude.chat.as_ref()?;
     let id = c.conversation.clone()?;
     let title = c.msgs.iter().find(|m| m.role == Role::User).map(|m| m.text.clone()).unwrap_or_default();
     let plan = c.plan.as_ref().map(crate::plan::Plan::to_json);
-    let saved = crate::chats::Saved {
+    Some(crate::chats::Saved {
         usage: l.claude.usage.conv_json(&id),
         places: crate::chatnotes::places_json(&l.claude.flags, &c.msgs),
         id,
@@ -1957,8 +1971,71 @@ fn kept_of(
         rows: crate::chats::rows_of(&c.msgs),
         plan,
         seq: crate::chats::seq(),
-    };
-    Some((dir, roots_of(l), saved))
+    })
+}
+
+/// Session `l`'s conversation and how many messages of yours it has had (its turn) — None before claude named it.
+pub(crate) fn conversation_of(l: &crate::workspace::Workspace) -> Option<(String, usize)> {
+    let c = l.claude.chat.as_ref()?;
+    Some((c.conversation.clone()?, c.msgs.iter().filter(|m| m.role == Role::User).count()))
+}
+
+/// A fork made (`fork.rs`): its chat opened in front on the source's rows (`saved`, its conversation as it was), its
+/// claude forking that conversation (`Chat.fork`).
+pub(crate) fn fork_open(ed: &mut Editor, saved: Option<crate::chats::Saved>) {
+    if ed.workspace.claude.chat.is_none() {
+        made(ed);
+    }
+    fork_apply(ed, saved);
+    open(ed);
+}
+
+/// The fork not begun yet (`Session.fork`) onto this session's chat — none of its own yet, not forking already: the
+/// source's rows when given, a row saying where it came from, the next claude forking the source's conversation, and
+/// its first message telling Claude where it was forked from (D3, `checkpoints.tell`).
+fn fork_apply(ed: &mut Editor, saved: Option<crate::chats::Saved>) {
+    let Some(from) = ed.workspace.claude.fork.clone() else { return };
+    let me = ed.workspace.label().to_string();
+    let note = crate::fork::noted(&from);
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
+    // (once a chat: a fork of no conversation forks no claude, its row says it's done)
+    if c.conversation.is_some() || c.fork || c.busy() || c.msgs.iter().any(|m| m.text == note) {
+        return;
+    }
+    if let Some(s) = saved.filter(|s| Some(&s.id) == from.conversation.as_ref()) {
+        c.msgs = crate::chats::msgs_of(&s.rows);
+        c.msgs.retain(|m| !(m.role == Role::Note && m.text.starts_with("continued from ")));
+        c.plan = s.plan.as_ref().and_then(crate::plan::Plan::from_json);
+    }
+    c.msgs.push(Msg::new(Role::Note, note, ""));
+    if let Some(id) = &from.conversation {
+        (c.resume, c.fork) = (Some(id.clone()), true);
+    }
+    ed.workspace.claude.checkpoints.tell.push(crate::fork::told(&from, &me));
+}
+
+/// A fork not begun, back after `:restart` or a start (`Kept.fork`): its chat forks again — the source's rows read from
+/// its store on a worker, shown once they land if nothing was said meanwhile.
+fn fork_again(ed: &mut Editor) {
+    fork_apply(ed, None);
+    let Some(from) = ed.workspace.claude.fork.clone() else { return };
+    let (Some(dir), Some(id)) = (ed.chats_dir.clone(), from.conversation.clone()) else { return };
+    ed.events.jobs().spawn(move || {
+        let saved = crate::chats::load(&dir, &from.root).into_iter().find(|s| s.id == id);
+        move |ed: &mut Editor| {
+            let Some(s) = saved else { return };
+            let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.fork && !c.busy()) else { return };
+            // (only its own row so far: the source's rows before it)
+            if c.msgs.iter().any(|m| m.role != Role::Note) {
+                return;
+            }
+            let mut rows = crate::chats::msgs_of(&s.rows);
+            rows.retain(|m| !(m.role == Role::Note && m.text.starts_with("continued from ")));
+            rows.append(&mut c.msgs);
+            c.msgs = rows;
+            c.plan = s.plan.as_ref().and_then(crate::plan::Plan::from_json);
+        }
+    });
 }
 
 /// The turn ended: the conversation is kept (on a worker) — its rows and claude's id for it.
@@ -2208,6 +2285,11 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     c.conversation = None;
     crate::recovery::moved(&mut ed.recovery);
     c.resume = None;
+    // (a fork not begun: a new conversation of yours instead — its first message forks nothing)
+    if std::mem::take(&mut c.fork) {
+        crate::fork::begun(ed);
+    }
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.switched = None;
     // (a refusal for money read in a turn the new chat cut off is that turn's — `money_out` never sees it)
     c.money = None;
@@ -2426,6 +2508,10 @@ fn ensure_proc(ed: &mut Editor) {
     }
     if let Some(id) = &c.resume {
         args.extend(["--resume".to_string(), id.clone()]);
+        // (a fork's first claude: the source's conversation copied under a new id, the source's untouched)
+        if c.fork {
+            args.push("--fork-session".into());
+        }
     }
     if let Some((settings, sources)) = settings {
         // CLAUDE.md files and settings as `claude` loads them — but hooks don't run, and edits always come
@@ -2594,8 +2680,10 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         // Kept from the first question on — a tarae closed mid-turn still has it
         StreamEv::Conversation { id, model, version, key_source } => {
             let new = c.conversation.as_deref() != Some(id.as_str());
-            // (a process that didn't resume one began it: it has cost nothing before)
-            match c.resume.is_none() {
+            // (a fork's first: the copy is a conversation of its own from here — resumed as itself from now on)
+            let forked = c.fork && c.generation == generation;
+            // (a process that didn't resume one began it, or forked it: it has cost nothing before)
+            match c.resume.is_none() || forked {
                 true => ed.workspace.claude.usage.fresh(&id),
                 false => ed.workspace.claude.usage.resumed(&id),
             }
@@ -2617,9 +2705,15 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             if key_source.is_some() {
                 ed.workspace.claude.usage.key_source = key_source;
             }
+            if forked {
+                (c.fork, c.resume) = (false, Some(id.clone()));
+            }
             c.conversation = Some(id);
             crate::recovery::moved(&mut ed.recovery);
             c.model = model;
+            if forked {
+                crate::fork::begun(ed);
+            }
             if new {
                 keep(ed);
             }
@@ -2939,6 +3033,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             // the new one
             if err.contains("No conversation found") && c.resume.is_some() {
                 c.resume = None;
+                c.fork = false;
                 c.conversation = None;
                 crate::recovery::moved(&mut ed.recovery);
                 let unanswered = match std::mem::replace(&mut c.state, State::Idle) {
@@ -3271,8 +3366,10 @@ pub(crate) fn send_queued(ed: &mut Editor) {
     // of frictions36. A re-read while it runs — the settings' watch — holds nothing: its claude is there)
     // (nor while its checkout is moved onto its base: sent as the move lands — `keepclose::moved`)
     // (nor while no claude starts until the config reads, none running: it goes as it reads — `config_read`)
+    // (nor while a fork of it is made from its `y` to its tree written: sent as it lands — `fork::release`)
     let held = |ed: &Editor| {
         ed.workspace.moving.is_some()
+            || crate::fork::holds_sends(ed, ed.workspace.id)
             || (!ed.config_unread.is_empty()
                 && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.running()))
             || ed
@@ -3486,8 +3583,9 @@ pub fn send_typed(ed: &mut Editor) {
 
 /// `send` — the slash names taken only when `slash` (the input's `enter`).
 fn send_from(ed: &mut Editor, slash: bool) {
-    // (its checkout being moved onto its base: the message waits for that as for a turn — `keepclose.rs`)
-    let moving = ed.workspace.moving.is_some();
+    // (its checkout being moved onto its base, or forked: the message waits for that as for a turn — `keepclose.rs`,
+    // `fork.rs`)
+    let moving = ed.workspace.moving.is_some() || crate::fork::holds_sends(ed, ed.workspace.id);
     let unread = !ed.config_unread.is_empty();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     let question = c.input.text().trim().to_string();

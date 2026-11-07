@@ -514,7 +514,7 @@ fn to_child(ed: &mut Editor, (from, conversation, wake): (&str, Option<&str>, bo
         ed.workspace.set_at(at);
     }
     let name = ed.workspace.label().to_string();
-    let moving = ed.workspace.moving.is_some();
+    let moving = ed.workspace.moving.is_some() || crate::fork::holds_sends(ed, ed.workspace.id);
     let Some(c) = ed.workspace.claude.chat.as_ref() else {
         return format!("not sent — {name} has no chat");
     };

@@ -86,7 +86,7 @@ pub struct Tree {
 /// New files a snapshot keeps at most at once (not ignored, not in tarae's index yet). Measured 2026-10-05
 /// (`.sb/p5-checkpoint.md`): 200k untracked files took 91 s and 800 MB of git's objects the first
 /// time — past this a snapshot keeps what it had (`add -u`: stats, ~0.4 s at 200k) and says so.
-const NEW_MAX: usize = 5_000;
+pub(crate) const NEW_MAX: usize = 5_000;
 
 /// The checkout's git folder (`gitrepo` keeps it once resolved: a process saved per snapshot).
 fn git_dir(root: &Path) -> Result<PathBuf, String> {

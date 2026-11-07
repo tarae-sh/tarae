@@ -177,6 +177,15 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             }
         }
         // Making, ending, bringing in a session — a branch in a checkout of its own (worktree.rs)
+        "session-fork" => {
+            let id = editor.workspace.id;
+            match rest.split_whitespace().collect::<Vec<_>>()[..] {
+                [] => crate::fork::ask(editor, id, None),
+                [name] => crate::fork::ask(editor, id, Some(name)),
+                _ => return Err("usage: :session-fork [<name>]".into()),
+            }
+            Ok(())
+        }
         "session-new" => {
             match rest.split_whitespace().collect::<Vec<_>>()[..] {
                 [name] => editor.session_new(name, None),

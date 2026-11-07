@@ -138,6 +138,10 @@ pub struct Session {
     /// The conversation a crash's restore gave back (`recovery.rs`, `chat::left_back`): continued as `brought_back`'s is,
     /// by this id, once its chat's conversations are read — cleared by a new conversation, as that is.
     pub continues: Option<String>,
+    /// Forked from another session and its own conversation not begun yet (`fork.rs`): its claude starts with
+    /// `--resume <the source's> --fork-session` and its first message says where it came from — kept with the workspace
+    /// (`worktree::Kept.fork`) until claude names the fork's own conversation.
+    pub fork: Option<crate::fork::ForkFrom>,
     /// `space F` with no Claude here yet (#231): its chat opens following, whatever `llm.follow` says. Until you quit.
     pub follow_armed: bool,
 }
@@ -182,6 +186,7 @@ impl Session {
             wakes: Vec::new(),
             brought_back: false,
             continues: None,
+            fork: None,
             follow_armed: false,
             caps: None,
             caps_asked: 0,

@@ -137,6 +137,8 @@ pub struct Kept {
     pub mark: Option<String>,
     /// The model and effort its Claude runs on when not your default (`Session.choice`).
     pub choice: Option<crate::models::Choice>,
+    /// A fork whose own conversation hasn't begun yet (`Session.fork`, `fork.rs`): its first claude still forks.
+    pub fork: Option<crate::fork::ForkFrom>,
 }
 
 impl Kept {
@@ -153,6 +155,7 @@ impl Kept {
             parent: None,
             mark: l.claude.mark.clone(),
             choice: l.claude.choice.clone(),
+            fork: l.claude.fork.clone(),
         }
     }
 
@@ -188,6 +191,9 @@ impl Kept {
         if let Some(c) = &self.choice {
             v["choice"] = json!({ "model": c.model, "effort": c.effort });
         }
+        if let Some(f) = &self.fork {
+            v["fork"] = f.json();
+        }
         v
     }
 
@@ -212,6 +218,7 @@ impl Kept {
                 model: c.get("model").and_then(Value::as_str).map(str::to_string),
                 effort: c.get("effort").and_then(Value::as_str).unwrap_or_default().to_string(),
             }),
+            fork: crate::fork::ForkFrom::from_json(&v["fork"]),
         })
     }
 }
@@ -466,7 +473,7 @@ pub(crate) fn instructions(top: &Path) -> Vec<String> {
 
 /// `files` (relative) from `top` into the new checkout `path` — never over a file that's there. What
 /// couldn't be copied, said.
-fn copy_instructions(top: &Path, path: &Path, files: &[String]) -> Vec<String> {
+pub(crate) fn copy_instructions(top: &Path, path: &Path, files: &[String]) -> Vec<String> {
     let mut failed = Vec::new();
     for rel in files {
         let to = path.join(rel);
@@ -568,20 +575,7 @@ impl Making {
         if !self.copies.is_empty() {
             q += &format!("\n\nCopied into it (not in git here):\n  {}", self.copies.join("  "));
         }
-        // Who pays: asked near the plan's weekly limit (D2), said when something else decided it
-        let api = self.billing == crate::billing::Billing::Api;
-        if let Some(window) = &self.billing_ask {
-            let (on, other) = if api { ("your API key", "your plan") } else { ("your plan", "your API key") };
-            q += &format!("\n\nThe plan's {window}. Its Claude runs on {on} — $ puts it on {other}.");
-        }
-        if let Some(note) = &self.billing_note {
-            q += &format!("\n\n{note}");
-        }
-        let warn = (api && weakness).then(|| {
-            let at = q.split('\n').count() + 1;
-            q += &format!("\n\n{}", crate::billing::WEAKNESS);
-            at..at + 1
-        });
+        let warn = self.billing_said(&mut q, weakness);
         if let Some((b, s)) = self.others.first() {
             let said = if b == s { s[..7].to_string() } else { format!("{b} ({})", &s[..7]) };
             q += &format!("\n\nb — from {said} instead");
@@ -597,6 +591,25 @@ impl Making {
             Some(lines) => o.warning(lines),
             None => o,
         }
+    }
+
+    /// Who pays, on its card (and a fork's, `fork.rs` — one wording): asked near the plan's weekly limit (D2), said when
+    /// something else decided it — added to `q`; the lines that warn (`billing::WEAKNESS`, when it bills the key and
+    /// `weakness` says it's not been said).
+    pub(crate) fn billing_said(&self, q: &mut String, weakness: bool) -> Option<std::ops::Range<usize>> {
+        let api = self.billing == crate::billing::Billing::Api;
+        if let Some(window) = &self.billing_ask {
+            let (on, other) = if api { ("your API key", "your plan") } else { ("your plan", "your API key") };
+            *q += &format!("\n\nThe plan's {window}. Its Claude runs on {on} — $ puts it on {other}.");
+        }
+        if let Some(note) = &self.billing_note {
+            *q += &format!("\n\n{note}");
+        }
+        (api && weakness).then(|| {
+            let at = q.split('\n').count() + 1;
+            *q += &format!("\n\n{}", crate::billing::WEAKNESS);
+            at..at + 1
+        })
     }
 }
 
@@ -679,7 +692,7 @@ pub fn making_beside(first: &Making, name: &str, setting: &str) -> Result<Making
 }
 
 /// `name` as a new branch here and where its checkout would go — neither there yet.
-fn named(top: &Path, name: &str, setting: &str) -> Result<(String, PathBuf), String> {
+pub(crate) fn named(top: &Path, name: &str, setting: &str) -> Result<(String, PathBuf), String> {
     let branch = branch_name(top, name.trim())?;
     if sha(top, &format!("refs/heads/{branch}")).is_ok() {
         let list = git(top, &["worktree", "list", "--porcelain"], None).unwrap_or_default();
@@ -752,6 +765,16 @@ fn big_ignored(top: &Path, until: Instant) -> Vec<(String, (u64, bool))> {
 /// `git worktree add -b` for the card's plan (on a worker), its instruction files copied in — the
 /// checkout's real path, and what couldn't be copied.
 pub(crate) fn make(m: &Making) -> Result<(PathBuf, Vec<String>), String> {
+    add(m)?;
+    let failed = copy_instructions(&m.top, &m.path, &m.copies);
+    // (the copies as made: what tells the session's own changes from the main checkout's later — #27)
+    crate::instructions::keep_bases(&m.top, &m.path, &m.copies);
+    Ok((std::fs::canonicalize(&m.path).unwrap_or_else(|_| m.path.clone()), failed))
+}
+
+/// `git worktree add -b` for the card's plan, no hooks (on a worker) — nothing copied into it yet: a fork writes its
+/// working tree first (`fork::make` — `read-tree -u` refuses over an untracked file a copy put there).
+pub(crate) fn add(m: &Making) -> Result<(), String> {
     if let Some(parent) = m.path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", crate::allow::tilde(parent)))?;
     }
@@ -759,11 +782,7 @@ pub(crate) fn make(m: &Making) -> Result<(PathBuf, Vec<String>), String> {
         return Err(format!("{} is there already", crate::allow::tilde(&m.path)));
     }
     let path = m.path.to_str().ok_or("a checkout path that isn't UTF-8")?;
-    git_no_hooks(&m.top, &["worktree", "add", "-q", "-b", &m.branch, path, &m.base_sha])?;
-    let failed = copy_instructions(&m.top, &m.path, &m.copies);
-    // (the copies as made: what tells the session's own changes from the main checkout's later — #27)
-    crate::instructions::keep_bases(&m.top, &m.path, &m.copies);
-    Ok((std::fs::canonicalize(&m.path).unwrap_or_else(|_| m.path.clone()), failed))
+    git_no_hooks(&m.top, &["worktree", "add", "-q", "-b", &m.branch, path, &m.base_sha]).map(|_| ())
 }
 
 // ── Ending one ───────────────────────────────────────────────────────────────
@@ -1882,6 +1901,8 @@ impl Editor {
                 l.claude.mark = k.mark.take();
                 // (what its `C-t` chose, its own again — its chat starts on it)
                 l.claude.choice = k.choice.take();
+                // (a fork not begun yet: its first claude still forks — `chat::fork_again`)
+                l.claude.fork = k.fork.take();
                 // (judged again before they're read as the workspace's — `folders_back`)
                 l.folders_judging = k.folders;
                 // (its claude, if one already runs — session 0's chat opened before the list came back — keeps the
@@ -2533,6 +2554,12 @@ impl Editor {
             'o' => {
                 self.float_list_used(crate::pane::GroupKind::Sessions);
                 self.session_prompt();
+            }
+            // A new session from the row in hand — its commit, changes and conversation (`fork.rs`): `o`'s shifted twin,
+            // as Helix's `o`/`O`
+            'O' => {
+                let Some(id) = here else { return };
+                crate::fork::ask(self, id, None);
             }
             'd' | 'b' => {
                 let Some(id) = here else { return };
@@ -8461,6 +8488,7 @@ mod tests {
             parent: None,
             mark: None,
             choice: None,
+            fork: None,
         };
         ed.workspaces_back(vec![k], Vec::new(), None, false);
         // The start: a new conversation, the last one offered (the column, `space L`)
@@ -8581,6 +8609,7 @@ mod tests {
             parent: None,
             mark: None,
             choice: None,
+            fork: None,
         };
         let s = Stored { sessions: vec![kept.clone()], front: Some("/wt/a".into()), rev: Default::default() };
         save(&dir, &common, s, &[], Default::default()).unwrap();
@@ -8616,6 +8645,7 @@ mod tests {
             parent: None,
             mark: None,
             choice: Some(crate::models::Choice { model: model.map(str::to_string), effort: effort.into() }),
+            fork: None,
         };
         let sessions = vec![kept("/wt/a", Some("sonnet"), "low"), kept("/wt/b", None, "")];
         let s = Stored { sessions: sessions.clone(), front: None, rev: Default::default() };
@@ -8659,6 +8689,7 @@ mod tests {
             parent: Some(bad.clone()),
             mark: None,
             choice: None,
+            fork: None,
         };
         let sessions = vec![Kept { root: bad.clone(), ..kept("") }, kept("/wt/a")];
         let s = Stored { sessions, front: Some(bad.clone()), rev: Default::default() };

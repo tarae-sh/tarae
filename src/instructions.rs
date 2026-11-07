@@ -72,6 +72,22 @@ pub fn keep_bases(top: &Path, path: &Path, copied: &[String]) {
     }
 }
 
+/// A fork's checkout `path`'s copies from its source `top` (`fork.rs`): the source's bases taken, so both tell their
+/// changes from the main checkout's copy, never one from the other's edited one — what the session's own changes are
+/// told against (`OWN`) too. A source with none kept for a file (the main checkout, a copy from before bases): the
+/// copy is its base, as `keep_bases`. On a worker.
+pub fn keep_bases_from(top: &Path, path: &Path, copied: &[String]) {
+    let (Some(from), Some(dir)) = (bases(top), bases(path)) else { return };
+    for rel in copied.iter().filter(|r| crate::worktree::INSTRUCTIONS.contains(&r.as_str())) {
+        let Ok(base) = std::fs::read_to_string(from.join(rel)) else {
+            keep_bases(top, path, std::slice::from_ref(rel));
+            continue;
+        };
+        let own = own_base(&from, rel).unwrap_or_else(|| base.clone());
+        let _ = keep_both(&dir, rel, &base, &own);
+    }
+}
+
 /// A file changed in the session and in the main checkout since its copy (or no base to tell by).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Both {

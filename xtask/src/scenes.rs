@@ -1214,6 +1214,21 @@ const FOCUS_CARD_Q: &[&str] =
 /// The chat opened, a question asked, its answer waited for to its end.
 const FOOT: &[&str] = &["@1", " ", "l", "@1", "how is the map filled?", "\r", " ", "L", "@30=done", "@1"];
 
+/// The fork card on a conversation answered (`fork`): a message, its answer, `:session-fork`.
+const FORK: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "how is the map filled?",
+    "\r",
+    "@?warm until ",
+    "\x1b",
+    ":session-fork\r",
+    "@?Fork main",
+    "@1",
+];
+
 /// Three messages said one after another: a save, two commands that don't exist (errors, so they stay).
 const TOAST_THREE: &[&str] = &["@1", ":w\r", "@1", ":nope\r", "@1", ":wat\r", "@1"];
 
@@ -4967,6 +4982,35 @@ const SCENES: &[Scene] = &[
     },
     // (the chat's foot: a long answer — the transcript's thumb in its outer cell — with the plan's weekly window at
     // 41 % (not on the row) and at 93 % (on it, with its reset); a short one, no thumb)
+    // (a session forked, `fork.rs`: its card on a conversation of 245k tokens — the first message's write priced —, then
+    // asked while main works and `y` given: the card holds, saying it forks once the turn ends)
+    Scene { name: "fork", claude: "fork", files: MAIN, keys: FORK },
+    Scene {
+        name: "forkheld",
+        claude: "fork",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "how is the map filled?",
+            "\r",
+            "@?warm until ",
+            " ",
+            "l",
+            "keep going",
+            "\r",
+            "@2",
+            "\x1b",
+            ":session-fork\r",
+            "@?Fork main",
+            "@1",
+            "y",
+            "@?y given",
+            "@1",
+        ],
+    },
     Scene { name: "chatfoot41", claude: "foot41", files: MAIN, keys: FOOT },
     Scene { name: "chatfoot93", claude: "foot93", files: MAIN, keys: FOOT },
     Scene { name: "chatfootshort", claude: "footshort", files: MAIN, keys: FOOT },
@@ -7369,6 +7413,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "volumecard",
     "grants",
     "big",
+    "fork",
     "foot41",
     "foot93",
     "footshort",
@@ -7529,6 +7574,11 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "volumecard" => turn.read_volume()?,
             "grants" => turn.grants()?,
             "big" => turn.big()?,
+            // (the fork's scenes: a big conversation, then a turn still going — its edit held mid-line)
+            "fork" if line.contains("keep going") => {
+                turn.explain_held(true, true, Some("nots.len());\\n\"}"))?
+            }
+            "fork" => turn.big()?,
             "foot41" => turn.foot(41, true)?,
             "foot93" => turn.foot(93, true)?,
             "footshort" => turn.foot(41, false)?,

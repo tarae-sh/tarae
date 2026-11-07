@@ -3307,6 +3307,7 @@ impl Editor {
         self.sidebar_map();
         crate::overlap::sync(self);
         crate::keepclose::sync(self);
+        crate::fork::sync(self);
         crate::orchestra::wakes_sync(self);
         self.brought_ends_sync();
         crate::weave::sync(self);

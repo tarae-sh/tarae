@@ -713,6 +713,31 @@ pub fn dismissed(ed: &mut Editor, m: &Moves) {
 /// at the end opens one as the turn ends, behind too) isn't: it shows the turn's changes against the files as they
 /// were before it, and a move would put the base's changes among them.
 pub fn busy(ed: &Editor, l: &Workspace) -> Option<&'static str> {
+    if let Some(why) = busy_turn(ed, l) {
+        return Some(why);
+    }
+    match l.code_review.as_ref().map(|r| &r.base) {
+        Some(crate::codereview::Base::Turn { .. }) => return Some("its turn's review is closed"),
+        Some(_) => return Some("its review is closed"),
+        None => {}
+    }
+    let queue = ed.bring_queue.run.as_ref();
+    if queue.is_some_and(|r| r.now.is_some_and(|(id, _)| id == l.id) || r.left.contains(&l.id)) {
+        return Some("the bring queue is past it");
+    }
+    let unsaved = |d: &crate::document::Document| {
+        d.is_modified() && d.path.as_ref().is_some_and(|p| p.starts_with(&l.root))
+    };
+    if ed.docs.iter().any(unsaved) {
+        return Some("its buffers are saved");
+    }
+    None
+}
+
+/// What of `busy` is session `l`'s work under way — its rebase or move, its Claude's turn (waiting on you too), its
+/// edit review, its runs, its change set: what a fork waits for (`fork.rs`, D2), its tree and conversation taken only
+/// between turns. Its buffers and reviews are the fork card's own to say.
+pub fn busy_turn(ed: &Editor, l: &Workspace) -> Option<&'static str> {
     use crate::workspace::Doing;
     if l.rebase.is_some() {
         return Some("its rebase ends");
@@ -729,11 +754,6 @@ pub fn busy(ed: &Editor, l: &Workspace) -> Option<&'static str> {
     if l.claude.review.is_some() {
         return Some("its edit review is answered");
     }
-    match l.code_review.as_ref().map(|r| &r.base) {
-        Some(crate::codereview::Base::Turn { .. }) => return Some("its turn's review is closed"),
-        Some(_) => return Some("its review is closed"),
-        None => {}
-    }
     let task = l.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running);
     let tests = l.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running);
     if task || tests || !l.runs_next.is_empty() {
@@ -741,16 +761,6 @@ pub fn busy(ed: &Editor, l: &Workspace) -> Option<&'static str> {
     }
     if l.applying.is_some() {
         return Some("its change set lands");
-    }
-    let queue = ed.bring_queue.run.as_ref();
-    if queue.is_some_and(|r| r.now.is_some_and(|(id, _)| id == l.id) || r.left.contains(&l.id)) {
-        return Some("the bring queue is past it");
-    }
-    let unsaved = |d: &crate::document::Document| {
-        d.is_modified() && d.path.as_ref().is_some_and(|p| p.starts_with(&l.root))
-    };
-    if ed.docs.iter().any(unsaved) {
-        return Some("its buffers are saved");
     }
     None
 }

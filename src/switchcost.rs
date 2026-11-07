@@ -101,6 +101,22 @@ pub fn price_of<'a>(prices: &'a [Price], id: &str, tokens: u64) -> Option<&'a Pr
     prices.iter().find(|p| p.model == id && p.up_to.is_none_or(|n| tokens <= n))
 }
 
+/// What a fork's first request costs (`fork.rs`): another checkout's system prompt is another prefix, so it writes the
+/// source's whole context `tokens` again, warm or not — at the hour-long write, an API chat's cache. As the chat's row
+/// says money: `≈ $0.84 (112k tokens)` on the key, `≈ API $0.84 (112k tokens)` where the session isn't on it (what
+/// the API would charge, not what you pay); tokens only for a model the table doesn't price. None: no request reported
+/// yet, its size unknown.
+pub fn fork_said(tokens: Option<u64>, to: Billing, model: &str, prices: &[Price]) -> Option<String> {
+    let tokens = tokens?;
+    let said = crate::usage::tokens(tokens);
+    Some(match price_of(prices, model, tokens).map(|p| tokens as f64 * p.write_1h / 1e6) {
+        Some(d) if to == Billing::Api => format!("≈ {} ({said} tokens)", crate::usage::dollars(d)),
+        Some(d) => format!("≈ API {} ({said} tokens)", crate::usage::dollars(d)),
+        None if to == Billing::Api => format!("≈ {said} tokens (no price for this model)"),
+        None => format!("≈ {said} tokens, toward your plan's limits"),
+    })
+}
+
 /// What the next request costs after a switch, against staying.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cost {

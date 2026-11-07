@@ -196,6 +196,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["folders"], Arg::None, "The folders added to this workspace"),
     c(&["workspace-switch"], Arg::None, "Bring another workspace to the front"),
     c(&["session-new"], Arg::None, "New session: a branch in its own checkout"),
+    c(&["session-fork"], Arg::None, "Fork this session: its files and conversation"),
     c(&["workspace-end"], Arg::None, "End a workspace (its checkout goes)"),
     c(&["workspace-bring"], Arg::None, "Move a workspace's base up to it (rebase first if it moved)"),
     c(

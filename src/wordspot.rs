@@ -311,6 +311,8 @@ const BUTTONS: &[&str] = &[
     "i",
     "m",
     "o",
+    // (the session list's fork: its card asks, the cost said there — `fork.rs`)
+    "O",
     "G",
     "/",
     // (a stale draft's card: re-placed on its lines as they are — and the notes list's top line closing every stale

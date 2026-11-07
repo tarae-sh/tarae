@@ -213,6 +213,9 @@ pub enum What {
     ForcePush(Box<crate::gitpanel::ForcePush>),
     /// A new session (`worktree.rs`): `y` makes its branch and checkout as the card says.
     SessionNew(Box<crate::worktree::Making>),
+    /// A session forked from another (`fork.rs`): `y` makes it as the card says — kept as given while the source works
+    /// (`Forking.go`), it forks once nothing holds; `$` as a new session's; `n` none.
+    SessionFork(Box<crate::fork::Forking>),
     /// Sessions Claude asks to start (`orchestra.rs`, `sessions_start`): `y` makes each behind, its brief its first
     /// message; `$` and `b` as a new session's, for the set; `v` the briefs whole; `n` none. Its call waits on it.
     SessionSet(Box<crate::orchestra::Set>),
@@ -335,6 +338,7 @@ pub const KINDS: &[&str] = &[
     "branch-delete",
     "force-push",
     "session-new",
+    "session-fork",
     "session-set",
     "workspace-end",
     "close-reviewed",
@@ -461,6 +465,8 @@ impl What {
             | What::CloseReviewed { .. }
             | What::ReviewEnd { .. }
             | What::SessionNew(_)
+            // (its source's turn and buffers as they were: `:session-fork` asks afresh)
+            | What::SessionFork(_)
             | What::RebaseResolved { .. }
             // (the queue is the editor's: its marks go with it — marked again after)
             | What::BringQueue(_)
@@ -672,6 +678,7 @@ impl Offer {
                     | What::BranchDelete { .. }
                     | What::ForcePush(_)
                     | What::SessionNew(_)
+                    | What::SessionFork(_)
                     | What::WorkspaceEnd(_)
                     | What::CloseReviewed { .. }
                     | What::ReviewEnd { .. }
@@ -765,6 +772,8 @@ impl Offer {
                 | What::BranchDelete { .. }
                 | What::ForcePush(_)
                 | What::SessionNew(_)
+                // (its yes spends: the whole conversation written again)
+                | What::SessionFork(_)
                 // (its yes spends: a Claude and a cold build a session)
                 | What::SessionSet(_)
                 | What::WorkspaceEnd(_)
@@ -809,6 +818,7 @@ impl Offer {
     pub fn making(&self) -> Option<&crate::worktree::Making> {
         match &self.what {
             What::SessionNew(m) => Some(m),
+            What::SessionFork(f) => Some(&f.making),
             What::SessionSet(s) => s.sessions.first().map(|(m, _)| m),
             _ => None,
         }
@@ -1424,6 +1434,23 @@ impl Offer {
                 v.push(plain('n', "Not now"));
                 v
             }
+            // (given: it forks once nothing holds — `n` takes the yes back)
+            W::SessionFork(f) if f.go => vec![plain('n', "Take it back")],
+            W::SessionFork(f) => {
+                let mut v = vec![plain('y', "Fork")];
+                if self.bills() {
+                    v.push(lasts(
+                        '$',
+                        if f.making.billing == crate::billing::Billing::Api {
+                            "Bill plan"
+                        } else {
+                            "Bill API"
+                        },
+                    ));
+                }
+                v.push(plain('n', "Not now"));
+                v
+            }
             W::SessionSet(s) => {
                 let mut v = vec![plain('y', if s.sessions.len() == 1 { "Make it" } else { "Make them" })];
                 if self.bills() {
@@ -1621,6 +1648,7 @@ impl Offer {
             W::BranchDelete { .. } => "branch-delete",
             W::ForcePush(_) => "force-push",
             W::SessionNew(_) => "session-new",
+            W::SessionFork(_) => "session-fork",
             W::SessionSet(_) => "session-set",
             W::WorkspaceEnd(_) => "workspace-end",
             W::CloseReviewed { .. } => "close-reviewed",
@@ -2029,6 +2057,10 @@ impl crate::editor::Editor {
         if crate::tools::kube_recheck(self, key) {
             return;
         }
+        // (a fork while its source works or has buffers unsaved: the yes kept, it forks once nothing holds — D1, D2)
+        if crate::fork::yes_waits(self) {
+            return;
+        }
         let mut o = self.offers.remove(0);
         self.offer_said(&o, key);
         o.state = OfferState::Installing(crate::clock::now());
@@ -2090,6 +2122,7 @@ impl crate::editor::Editor {
             What::BranchDelete { top, branch, tip } => self.git_branch_delete_answer(id, top, branch, tip),
             What::ForcePush(f) => self.git_force_push(id, *f),
             What::SessionNew(m) => self.session_make(id, *m),
+            What::SessionFork(f) => crate::fork::start(self, id, *f),
             What::SessionSet(s) => crate::orchestra::answer(self, id, *s, true),
             What::WorkspaceEnd(e) => self.session_remove(*e, false, Some(id)),
             What::CloseReviewed { doc, force } => {
@@ -2182,6 +2215,20 @@ impl crate::editor::Editor {
                 let mut m = *m;
                 m.billing = other(m.billing);
                 self.session_card(&m)
+            }
+            // (the card says it in place: its yes, if given, stays)
+            Some(What::SessionFork(mut f)) => {
+                f.making.billing = other(f.making.billing);
+                let id = self.offers[0].id;
+                let card = crate::fork::card(&f, self.weakness_due());
+                let o = &mut self.offers[0];
+                (o.question, o.what, o.warning, o.warnings) =
+                    (card.question, card.what, card.warning, card.warnings);
+                o.rev += 1;
+                if self.card_focus.is_some_and(|c| c.0 == id) {
+                    self.card_focus = Some((id, self.offers[0].rev));
+                }
+                return;
             }
             // (one answer for the set — orchestra decision 10)
             Some(What::SessionSet(mut s)) => {
@@ -2835,6 +2882,11 @@ impl crate::editor::Editor {
             What::BranchDelete { branch, .. } => self.set_status(format!("Kept {branch}")),
             What::ForcePush(f) => self.set_status(format!("Not pushed — {} as it was", f.upstream())),
             What::SessionNew(m) => self.set_status(format!("No session {} — nothing was made", m.branch)),
+            What::SessionFork(f) => {
+                self.set_status(format!("No fork of {} — nothing was made", f.from.name));
+                // (a `y` taken back: what it held goes)
+                crate::fork::release(self, f.source);
+            }
             What::SessionSet(s) => crate::orchestra::answer(self, o.id, *s, false),
             What::WorkspaceEnd(e) => self.set_status(format!("Kept {} as it is", e.name)),
             What::CloseReviewed { .. } => {
@@ -2916,6 +2968,14 @@ impl crate::editor::Editor {
         if let Some(id) = other {
             self.inbox_go(&format!("card#{id}"));
         }
+    }
+
+    /// `y` on card `id`, wherever it stands — a fork whose kept yes nothing holds any more (`fork::sync`).
+    pub(crate) fn offer_accept_id(&mut self, id: u64) {
+        let Some(i) = self.offers.iter().position(|o| o.id == id) else { return };
+        let o = self.offers.remove(i);
+        self.offers.insert(0, o);
+        self.offer_accept_by('y');
     }
 
     /// Brings the `i`-th stacked card to the front, focused (a back card clicked).

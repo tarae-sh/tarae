@@ -343,7 +343,7 @@ pub(crate) fn matches(row: &Row, re: &regex::Regex) -> bool {
 
 /// The list's keys for its top line, as they apply to the row in hand: `enter` switches, `/` searches, then what the row's session
 /// takes — `v` its changes woven where it overlaps, `f` follow while its Claude works, `B` the marked ones in turn —,
-/// `o` new, `d` end and `b` bring (not the checkout tarae started in), `m` mark, `x` its build folder once measured,
+/// `o` new, `O` fork, `d` end and `b` bring (not the checkout tarae started in), `m` mark, `x` its build folder once measured,
 /// `$` who pays; `esc code`, `q close`. The line folds them from the last.
 pub fn hints(ed: &Editor) -> Vec<(&'static str, String)> {
     use crate::workspace::Doing;
@@ -356,7 +356,7 @@ pub fn hints(ed: &Editor) -> Vec<(&'static str, String)> {
     let started = here == Some(WorkspaceId::HOME);
     let build =
         here.is_some_and(|id| id != ed.workspace.id && ed.workspace_store.build_dirs.contains_key(&id));
-    // (`/` second: how the list is searched stays in sight as the line folds)
+    // (`/` second: how the list is searched stays in sight as the line folds; `O fork` last, the rarest — it folds first)
     let mut v: Vec<(&'static str, String)> = vec![("enter", "switch".into()), ("/", "search".into())];
     v.extend(woven.then(|| ("v", "woven".into())));
     v.extend(working.then(|| ("f", "follow".into())));
@@ -367,6 +367,7 @@ pub fn hints(ed: &Editor) -> Vec<(&'static str, String)> {
     }
     v.extend(build.then(|| ("x", "drop its build".into())));
     v.extend([("$", "billing".into()), ("esc", "code".into()), ("q", "close".into())]);
+    v.push(("O", "fork".into()));
     v
 }
 

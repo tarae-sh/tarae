@@ -47,6 +47,7 @@ mod diskwatch;
 mod docdrag;
 mod folders;
 mod follow_pane;
+mod fork;
 mod gitbase;
 mod gittab;
 mod hosts;
