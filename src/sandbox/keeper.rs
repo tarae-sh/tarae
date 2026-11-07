@@ -31,6 +31,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use super::channel::{self, Msg, Step};
+use super::netlink;
 use super::tier::{BirthError, BirthStep, Ns, RunNet};
 
 /// The flag tarae's `main` starts a keeper with.
@@ -1302,17 +1303,18 @@ const LOOPBACK_INDEX: libc::c_int = 1;
 /// # Safety
 /// The birth's child's: raw calls only, buffers on the stack.
 unsafe fn lo_up() -> Result<(), i32> {
-    // `struct nlmsghdr` (length, type, flags, sequence, port), then `struct ifinfomsg` (family, pad, type, index,
-    // flags, change)
+    // SAFETY: the caller's.
+    unsafe { link_up(LOOPBACK_INDEX) }
+}
+
+/// Device `index` of this network namespace up by rtnetlink (`netlink::link_up`), the kernel's acknowledgement read:
+/// an `NLMSG_ERROR` carrying 0 or a negated errno, the request echoed after it. The errno where it failed.
+///
+/// # Safety
+/// As `lo_up`: raw calls only, buffers on the stack.
+unsafe fn link_up(index: libc::c_int) -> Result<(), i32> {
     let mut req = [0u8; 32];
-    req[0..4].copy_from_slice(&32u32.to_ne_bytes());
-    req[4..6].copy_from_slice(&libc::RTM_NEWLINK.to_ne_bytes());
-    req[6..8].copy_from_slice(&((libc::NLM_F_REQUEST | libc::NLM_F_ACK) as u16).to_ne_bytes());
-    req[8..12].copy_from_slice(&1u32.to_ne_bytes());
-    req[16] = libc::AF_UNSPEC as u8;
-    req[20..24].copy_from_slice(&LOOPBACK_INDEX.to_ne_bytes());
-    req[24..28].copy_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
-    req[28..32].copy_from_slice(&(libc::IFF_UP as u32).to_ne_bytes());
+    netlink::link_up(&mut req, index);
     // SAFETY: raw calls on a socket this makes, buffers of ours with their lengths.
     unsafe {
         let s = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, libc::NETLINK_ROUTE);
@@ -1323,21 +1325,24 @@ unsafe fn lo_up() -> Result<(), i32> {
             if libc::send(s, req.as_ptr().cast(), req.len(), 0) != req.len() as isize {
                 break 'ask Err(errno());
             }
-            // (the acknowledgement: an `NLMSG_ERROR` carrying 0 or a negated errno, the request echoed after it)
-            let mut ack = [0u8; 128];
+            let mut buf = [0u8; 128];
             loop {
-                let n = libc::recv(s, ack.as_mut_ptr().cast(), ack.len(), 0);
+                let n = libc::recv(s, buf.as_mut_ptr().cast(), buf.len(), 0);
                 if n < 0 && errno() == libc::EINTR {
                     continue;
                 }
-                if n < 20 {
+                if n <= 0 {
                     break 'ask Err(if n < 0 { errno() } else { libc::EPROTO });
                 }
-                if u16::from_ne_bytes([ack[4], ack[5]]) != libc::NLMSG_ERROR as u16 {
-                    continue;
+                let said =
+                    netlink::messages(buf.get(..n as usize).unwrap_or_default()).find_map(|m| match m {
+                        Ok((h, _)) if h.kind != netlink::NLMSG_ERROR => None,
+                        Ok((_, payload)) => Some(netlink::ack(payload)),
+                        Err(_) => Some(Err(libc::EPROTO)),
+                    });
+                if let Some(said) = said {
+                    break 'ask said;
                 }
-                let code = i32::from_ne_bytes([ack[16], ack[17], ack[18], ack[19]]);
-                break 'ask if code == 0 { Ok(()) } else { Err(code.checked_neg().unwrap_or(libc::EPROTO)) };
             }
         };
         libc::close(s);
@@ -5155,6 +5160,56 @@ mod tests {
             };
             format!("setns={} net={}", said(got[0]), said(got[1]))
         }
+    }
+
+    /// The kernel as `netlink`'s oracle: in a network namespace of a fork's own (a process with threads can't make a
+    /// user namespace), `lo` starts down; the birth's request (`link_up`) brings it up, the kernel's acknowledgement
+    /// read as 0; a device that isn't there reads the kernel's own errno (`ENODEV`). Where keepers have no namespaces
+    /// it says it skips.
+    #[test]
+    fn the_kernel_brings_lo_up_by_netlinks_request() {
+        let test = "the_kernel_brings_lo_up_by_netlinks_request";
+        if !namespaced(test) {
+            return;
+        }
+        let (r, w) = io::pipe().unwrap();
+        let (r, w) = (r.as_raw_fd(), w.as_raw_fd());
+        // SAFETY: the child makes raw calls only (on buffers of its own stack), then ends; the parent reads into an
+        // array it owns and reaps the child.
+        let got = unsafe {
+            let pid = libc::fork();
+            if pid == 0 {
+                // (`lo`'s `IFF_UP`, by `SIOCGIFFLAGS` — a read: `struct ifreq`'s name, its flags at 16)
+                let up = || {
+                    let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+                    let mut ifr = [0u8; 40];
+                    ifr[..2].copy_from_slice(b"lo");
+                    let r = libc::ioctl(s, libc::SIOCGIFFLAGS as _, ifr.as_mut_ptr());
+                    libc::close(s);
+                    match r {
+                        0 => i32::from(u16::from_ne_bytes([ifr[16], ifr[17]]) & libc::IFF_UP as u16 != 0),
+                        _ => -*libc::__errno_location(),
+                    }
+                };
+                let said = |r: Result<(), i32>| r.err().unwrap_or(0);
+                let got: [i32; 5] = match libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) {
+                    0 => {
+                        let before = up();
+                        let lo = said(link_up(LOOPBACK_INDEX));
+                        [0, before, lo, up(), said(link_up(0x7fff_0000))]
+                    }
+                    _ => [*libc::__errno_location(), -1, -1, -1, -1],
+                };
+                libc::write(w, got.as_ptr().cast(), 20);
+                libc::_exit(0);
+            }
+            let mut got = [-2i32; 5];
+            libc::read(r, got.as_mut_ptr().cast(), 20);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+            got
+        };
+        let want = [0, 0, 0, 1, libc::ENODEV];
+        assert_eq!(got, want, "unshare, lo up before, the acknowledgement, lo up after, a device not there");
     }
 
     /// The review's finding (2026-10-08), under the profile: a user namespace is refused joined as it's refused

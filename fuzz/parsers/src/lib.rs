@@ -6,6 +6,10 @@
 //! libFuzzer's crash.
 
 #[allow(dead_code)]
+#[path = "../../../src/sandbox/netlink.rs"]
+mod netlink;
+
+#[allow(dead_code)]
 #[path = "../../../src/sandbox/supervisor/wire.rs"]
 mod wire;
 
@@ -20,8 +24,10 @@ pub fn sockaddr(b: &[u8]) {
     wire::check::address(b);
 }
 
-/// An rtnetlink batch a run sends (`wire::netlink_reads`, against the kernel's reading).
+/// An rtnetlink batch a run sends: the walk `netlink_reads` and the owners' sock_diag share (`netlink::messages`),
+/// then `wire::netlink_reads` against the kernel's reading.
 pub fn netlink(b: &[u8]) {
+    netlink::check::walk(b);
     let _ = wire::check::netlink(b);
 }
 

@@ -158,32 +158,23 @@ const RTM_BASE: u16 = 16;
 /// The flags a read carries: a request, a dump, an ack — what a name lookup sends.
 const NETLINK_READ_FLAGS: u16 = (NLM_F_REQUEST | NLM_F_DUMP | NLM_F_ACK) as u16;
 
-/// Whether `data`, a batch of rtnetlink messages, only reads: each `struct nlmsghdr` whole (its length at least
-/// its own and within what's left, the next at the 4-byte alignment, nothing left over), its type a get, its
-/// flags within `NETLINK_READ_FLAGS` — else what's refused, in words.
+/// Whether `data`, a batch of rtnetlink messages, only reads: one at least, each whole (`netlink::messages`: its
+/// length at least its header's and within what's left, the next at the 4-byte alignment, nothing left over), its
+/// type a get, its flags within `NETLINK_READ_FLAGS` — else what's refused, in words.
 pub(super) fn netlink_reads(data: &[u8]) -> Result<(), String> {
-    let mut rest = data;
-    loop {
-        if rest.len() < 16 {
-            return Err("a message cut short".into());
+    if data.is_empty() {
+        return Err("a message cut short".into());
+    }
+    for m in super::netlink::messages(data) {
+        let (h, _) = m.map_err(|_| "a message cut short".to_string())?;
+        if h.kind < RTM_BASE || (h.kind - RTM_BASE) % 4 != 2 {
+            return Err(format!("message type {}", h.kind));
         }
-        let len = u32::from_ne_bytes(rest[..4].try_into().unwrap_or_default()) as usize;
-        let kind = u16::from_ne_bytes([rest[4], rest[5]]);
-        let flags = u16::from_ne_bytes([rest[6], rest[7]]);
-        if len < 16 || len > rest.len() {
-            return Err("a message cut short".into());
-        }
-        if kind < RTM_BASE || (kind - RTM_BASE) % 4 != 2 {
-            return Err(format!("message type {kind}"));
-        }
-        if flags & !NETLINK_READ_FLAGS != 0 {
-            return Err(format!("message flags {flags:#x}"));
-        }
-        rest = &rest[len.next_multiple_of(4).min(rest.len())..];
-        if rest.is_empty() {
-            return Ok(());
+        if h.flags & !NETLINK_READ_FLAGS != 0 {
+            return Err(format!("message flags {:#x}", h.flags));
         }
     }
+    Ok(())
 }
 
 /// One `struct msghdr` of the caller's, read once: where it goes (if it names it), what it carries, and its

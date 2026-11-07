@@ -10,6 +10,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 use super::Row;
+use crate::sandbox::netlink::{self, Header, NLM_F_DUMP, NLM_F_REQUEST, NLMSG_DONE, NLMSG_ERROR};
 
 /// `SOCK_DIAG_BY_FAMILY` (`linux/sock_diag.h`).
 const BY_FAMILY: u16 = 20;
@@ -107,12 +108,7 @@ fn dump(tcp: bool, port: Option<(u16, End)>, states: u32) -> io::Result<Vec<Row>
 fn request(family: u8, tcp: bool, port: Option<(u16, End)>, states: u32, seq: u32) -> Vec<u8> {
     let mut b = Vec::with_capacity(92);
     let len: u32 = 16 + 56 + if port.is_some() { 4 + 16 } else { 0 };
-    // nlmsghdr
-    b.extend(len.to_ne_bytes());
-    b.extend(BY_FAMILY.to_ne_bytes());
-    b.extend(((libc::NLM_F_REQUEST | libc::NLM_F_DUMP) as u16).to_ne_bytes());
-    b.extend(seq.to_ne_bytes());
-    b.extend(0u32.to_ne_bytes());
+    b.extend(Header { len, kind: BY_FAMILY, flags: NLM_F_REQUEST | NLM_F_DUMP, seq, pid: 0 }.bytes());
     // inet_diag_req_v2: family, protocol, ext, pad, states, then an empty inet_diag_sockid (48 bytes)
     let protocol = if tcp { libc::IPPROTO_TCP } else { libc::IPPROTO_UDP } as u8;
     b.extend([family, protocol, 0, 0]);
@@ -147,28 +143,28 @@ fn dumped(fd: &OwnedFd, seq: u32, rows: &mut Vec<Row>) -> io::Result<()> {
         if n < 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut at = &buf[..n as usize];
-        while at.len() >= 16 {
-            let u32_at = |b: &[u8], i: usize| u32::from_ne_bytes(b[i..i + 4].try_into().unwrap());
-            let len = u32_at(at, 0) as usize;
-            let kind = u16::from_ne_bytes([at[4], at[5]]);
-            if len < 16 || len > at.len() {
-                return Err(io::Error::other("sock_diag: a message cut short"));
-            }
-            if u32_at(at, 8) == seq {
-                match kind as i32 {
-                    libc::NLMSG_DONE => return Ok(()),
-                    libc::NLMSG_ERROR => {
-                        let code = i32::from_ne_bytes(at[16..20].try_into().unwrap_or_default());
-                        return Err(io::Error::from_raw_os_error(code.checked_neg().unwrap_or(libc::EPROTO)));
-                    }
-                    _ if kind == BY_FAMILY => rows.extend(row(&at[16..len])),
-                    _ => {}
-                }
-            }
-            at = &at[len.next_multiple_of(4).min(at.len())..];
+        if let Some(end) = replies(&buf[..n as usize], seq, rows) {
+            return end;
         }
     }
+}
+
+/// One datagram of the kernel's answers to request `seq`, each socket a row — Some once they end: their
+/// `NLMSG_DONE`, their error, or a message cut short.
+fn replies(datagram: &[u8], seq: u32, rows: &mut Vec<Row>) -> Option<io::Result<()>> {
+    for m in netlink::messages(datagram) {
+        let Ok((h, payload)) = m else {
+            return Some(Err(io::Error::other("sock_diag: a message cut short")));
+        };
+        match h.kind {
+            _ if h.seq != seq => {}
+            NLMSG_DONE => return Some(Ok(())),
+            NLMSG_ERROR => return Some(netlink::ack(payload).map_err(io::Error::from_raw_os_error)),
+            BY_FAMILY => rows.extend(row(payload)),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// One `inet_diag_msg` and its attributes as a row.
@@ -188,19 +184,11 @@ fn row(m: &[u8]) -> Option<Row> {
     // (`idiag_cookie`: the socket's `SO_COOKIE`, low word first — `sock_diag_save_cookie`)
     let cookie = u64::from(word(44)?) | (u64::from(word(48)?) << 32);
     let inode = word(68)?;
-    let mut v6only = false;
-    let mut a = &m[MSG..];
-    while a.len() >= 4 {
-        let len = u16::from_ne_bytes([a[0], a[1]]) as usize;
-        let kind = u16::from_ne_bytes([a[2], a[3]]);
-        if len < 4 || len > a.len() {
-            break;
-        }
-        if kind == SKV6ONLY && len >= 5 {
-            v6only = a[4] != 0;
-        }
-        a = &a[len.next_multiple_of(4).min(a.len())..];
-    }
+    let v6only = netlink::attrs(&m[MSG..])
+        .map_while(Result::ok)
+        .filter_map(|(kind, v)| v.first().filter(|_| kind == SKV6ONLY))
+        .last()
+        .is_some_and(|&b| b != 0);
     let (local, inode, cookie) = (SocketAddr::new(ip, port), u64::from(inode), Some(cookie));
     let peer = (peer_port != 0).then(|| SocketAddr::new(peer, peer_port));
     Some(Row { local, inode, cookie, open: true, v6only, peer })
@@ -235,6 +223,34 @@ mod tests {
             m.extend([u8::from(v6only), 0, 0, 0]);
         }
         m
+    }
+
+    /// A datagram of answers to request 2: another request's are passed by, a socket's message is a row, and the
+    /// answers end at their `NLMSG_DONE`, their error (one of 16 bytes, with no code, `EPROTO` — never a panic) or a
+    /// message cut short; a datagram with no end, None (the next one is read).
+    #[test]
+    fn a_datagram_of_answers_ends_where_they_end() {
+        let message = |kind: u16, seq: u32, payload: &[u8]| {
+            let len = (netlink::HDR_LEN + payload.len()) as u32;
+            let mut m = Header { len, kind, flags: 0, seq, pid: 0 }.bytes().to_vec();
+            m.extend(payload);
+            m.resize(netlink::align(m.len()), 0);
+            m
+        };
+        let local = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let socket = msg(local, SocketAddr::from(([0; 4], 0)), 9, 41, false);
+        let ours = message(BY_FAMILY, 2, &socket);
+        let (theirs, done) = (message(BY_FAMILY, 1, &socket), message(NLMSG_DONE, 2, &[0; 4]));
+        let mut rows = Vec::new();
+        assert!(replies(&[theirs.clone(), ours.clone()].concat(), 2, &mut rows).is_none());
+        assert_eq!(rows.iter().map(|r| (r.local, r.inode)).collect::<Vec<_>>(), [(local, 41)]);
+        let end = |d: Vec<u8>| replies(&d, 2, &mut Vec::new()).map(|r| r.map_err(|e| e.to_string()));
+        assert_eq!(end([ours.clone(), done].concat()), Some(Ok(())));
+        let errno = |e: i32| Some(Err(io::Error::from_raw_os_error(e).to_string()));
+        assert_eq!(end(message(NLMSG_ERROR, 2, &(-libc::EPERM).to_ne_bytes())), errno(libc::EPERM));
+        assert_eq!(end(message(NLMSG_ERROR, 2, &[])), errno(libc::EPROTO));
+        let cut = Some(Err("sock_diag: a message cut short".to_string()));
+        assert_eq!(end([ours.clone(), ours[..10].to_vec()].concat()), cut);
     }
 
     /// A socket's message as the kernel writes it reads back as that socket — 2,000 random ones of both families —

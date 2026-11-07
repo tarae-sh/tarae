@@ -49,6 +49,9 @@ pub mod keeper;
 pub mod linux;
 #[cfg(test)]
 mod loops;
+// (netlink's wire, one reading for the keeper's `lo`, the owners' sock_diag and the supervisor's check of a run's batch —
+// pure, built everywhere as `wire` is)
+pub mod netlink;
 // (step 8: which session a socket is where sessions share a loopback — given on Linux, the lookup tested everywhere)
 pub mod owners;
 mod policy;
