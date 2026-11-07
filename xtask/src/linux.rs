@@ -143,7 +143,7 @@ fn userns(args: &[String]) -> Result<(Option<Userns>, &[String])> {
 
 /// `--docker-default` (M8b): the container exactly as `docker run` makes one — Docker's default seccomp and
 /// AppArmor profiles, and no `--cap-add SYS_PTRACE` either, so `pidfd_getfd` is refused as in a dev container
-/// started the usual way: tarae can't serve its runs, tier offline (`expect_offline`). Not with `--userns` (which
+/// started the usual way: tarae can't serve its runs, tier unserved (`expect_unserved`). Not with `--userns` (which
 /// lifts those profiles). Leading, or right after `--userns`'s place: the flag and the arguments after it.
 fn docker_default(args: &[String]) -> (bool, &[String]) {
     match args.split_first() {
@@ -379,11 +379,11 @@ fn envs(args: &[String]) -> Result<(Vec<String>, &[String])> {
     Ok((set, rest))
 }
 
-/// The `--env`s, and under `--docker-default` (`stock`) `TARAE_EXPECT_TIER=offline` where none names a tier: the
+/// The `--env`s, and under `--docker-default` (`stock`) `TARAE_EXPECT_TIER=unserved` where none names a tier: the
 /// probe's test then fails where the fallback isn't what's reached, rather than passing on whatever it finds.
-fn expect_offline(mut set: Vec<String>, stock: bool) -> Vec<String> {
+fn expect_unserved(mut set: Vec<String>, stock: bool) -> Vec<String> {
     if stock && !set.iter().any(|e| e.starts_with("TARAE_EXPECT_TIER=")) {
-        set.push("TARAE_EXPECT_TIER=offline".into());
+        set.push("TARAE_EXPECT_TIER=unserved".into());
     }
     set
 }
@@ -452,7 +452,7 @@ pub fn run(args: &[String]) -> Result<()> {
     if stock && ns.is_some() {
         return Err(format!("--docker-default and --userns: one or the other — {USAGE}"));
     }
-    let set = expect_offline(set, stock);
+    let set = expect_unserved(set, stock);
     let (named, args) = image_named(args)?;
     let (volume, args) = volume_named(args)?;
     let (platform, what) = ask(args)?;
@@ -2551,13 +2551,13 @@ mod tests {
     /// `--docker-default` (6f′'s M8b): the container as `docker run` makes one — `--cap-add SYS_PTRACE` taken out
     /// and nothing else changed (no `--security-opt`, the image and its script as they were), leading or in
     /// `--userns`'s place; without it the capability stays.
-    /// `--docker-default` expects tier offline unless an `--env` names the tier; without it nothing's added.
+    /// `--docker-default` expects tier unserved unless an `--env` names the tier; without it nothing's added.
     #[test]
-    fn docker_default_expects_offline_unless_told_otherwise() {
+    fn docker_default_expects_unserved_unless_told_otherwise() {
         let s = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(expect_offline(s(&["A=1"]), true), s(&["A=1", "TARAE_EXPECT_TIER=offline"]));
-        assert_eq!(expect_offline(s(&["TARAE_EXPECT_TIER=host"]), true), s(&["TARAE_EXPECT_TIER=host"]));
-        assert_eq!(expect_offline(s(&["A=1"]), false), s(&["A=1"]));
+        assert_eq!(expect_unserved(s(&["A=1"]), true), s(&["A=1", "TARAE_EXPECT_TIER=unserved"]));
+        assert_eq!(expect_unserved(s(&["TARAE_EXPECT_TIER=host"]), true), s(&["TARAE_EXPECT_TIER=host"]));
+        assert_eq!(expect_unserved(s(&["A=1"]), false), s(&["A=1"]));
     }
 
     #[test]

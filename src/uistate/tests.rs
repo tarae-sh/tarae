@@ -1829,8 +1829,8 @@ fn the_state_as_json_is_pinned() {
     usage_turn(u);
     // (its runs' sandboxes: in front a Linux keeper not served — pidfd_getfd refused —, behind macOS's with ports
     // open — 9d)
-    let offline = landlock_run(crate::sandbox::guarantees::Ns::NONE, false);
-    ed.workspace.claude.sandbox = Some(offline);
+    let unserved = landlock_run(crate::sandbox::guarantees::Ns::NONE, false);
+    ed.workspace.claude.sandbox = Some(unserved);
     ed.workspace_by_id(id).unwrap().claude.sandbox =
         Some(crate::sandbox::guarantees::Guarantees::seatbelt(true, false));
     edit_review(&mut ed);
@@ -2875,6 +2875,7 @@ fn landlock_run(ns: crate::sandbox::guarantees::Ns, served: bool) -> crate::sand
         brief: None,
         hint: None,
         network: false,
+        bridged: false,
     })
 }
 
@@ -2933,13 +2934,13 @@ fn tarae_state_says_the_sandbox() {
     // A run like the last: nothing said
     watch::sandbox(&mut ed, own.clone());
     assert_eq!(events(&mut ed), Vec::<Value>::new());
-    // A keeper born with no namespaces and not served — pidfd_getfd refused: one event, offline, said why
+    // A keeper born with no namespaces and not served — pidfd_getfd refused: one event, unserved, said why
     watch::sandbox(&mut ed, landlock_run(Ns::NONE, false));
     let e = events(&mut ed);
     assert_eq!(e.len(), 1, "{e:?}");
     assert_eq!(
         (&e[0]["was"], &e[0]["tier"], &e[0]["namespaces"]["netns"]),
-        (&json!(line), &json!("offline"), &json!(false))
+        (&json!(line), &json!("unserved"), &json!(false))
     );
     assert_eq!(e[0]["network"]["way"], "no-socket");
     let why = format!("tarae can't serve its calls: {}", crate::sandbox::guarantees::PIDFD_REFUSED);

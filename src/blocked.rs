@@ -712,6 +712,7 @@ mod tests {
             brief: Some("AppArmor blocks user namespaces".into()),
             hint: Some(hint),
             network: false,
+            bridged: false,
         }));
         ed.sandbox_blocked(Which::Either);
         let p = ed.picker.as_ref().expect("the panel");

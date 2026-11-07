@@ -4,7 +4,7 @@
 01  ╭─ what the sandbox blocked ─────────────────────────────────────────────────────────────────────────────────────────╮
 02  │ ›                                                                                                              0/0 │
 03  │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-04  │  tier offline  loopback no socket  network no socket  shared processes, signals, System V IPC, /dev/shm, terminals │
+04  │  tier unserved  loopback no socket  network no socket  shared processes, signals, System V IPC, /dev/shm +1        │
 05  │  a seccomp filter blocks namespaces · not served: pidfd_getfd refused · --cap-add SYS_PTRACE serves the calls      │
 06  │                                                                                                                    │
 07  │  the sandbox blocked nothing in that run                                                                           │
@@ -66,7 +66,7 @@
 01  aa TTTT TTT TTTTTTT TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 02  a A                                                                                                              fff a
 03  a ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff a
-04  a  BBBB fffffff  BBBBBBBB ff ffffff  BBBBBBB ff ffffff  BBBBBB ffffffffff ffffffff ffffff f ffff fffffffff fffffffff a
+04  a  BBBB ffffffff  BBBBBBBB ff ffffff  BBBBBBB ff ffffff  BBBBBB ffffffffff ffffffff ffffff f ffff ffffffff ff        a
 05  a  f fffffff ffffff ffffff ffffffffff f fff fffffff fffffffffff fffffff f fffffffff ffffffffff ffffff fff fffff      a
 06  a                                                                                                                    a
 07  a  fff fffffff fffffff fffffff ff ffff fff                                                                           a

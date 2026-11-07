@@ -1678,7 +1678,7 @@ timeout = 60
         if !sandboxed_here(test) || !on_path("curl") {
             return;
         }
-        // (tier offline — runs not served, `pidfd_getfd` refused under Docker's default profile: no socket reaches
+        // (tier unserved — runs not served, `pidfd_getfd` refused under Docker's default profile: no socket reaches
         // the proxy, so no card to see)
         #[cfg(target_os = "linux")]
         if let Some(why) = crate::sandbox::supervisor::unavailable() {

@@ -67,7 +67,7 @@ profile is (2026-10-17) — what every run may ask the system besides files and 
 `src/sandbox.rs`, each row with the tool that needed it (measured: compat's stacks, tarae's own tests). On Linux each session has a *keeper*: a process
 that forks every command, born in the session's own namespaces where the system allows; each command gets
 Landlock and seccomp of its own, and tarae decides every call that names an address. How much of that a session
-gets is its **tier** (own, host or offline, §1.8). The rules are the same on both systems; the kernel features differ.
+gets is its **tier** (own, host or unserved, §1.8). The rules are the same on both systems; the kernel features differ.
 
 ### 1.1 Files it writes
 
@@ -98,7 +98,7 @@ Kept:
   file's owner or flags; an owner call that changes nothing (`rsync -a`, `cp -a`) is let in tiers own and host where
   a mode would be ([D-h](design/sandbox-keeper.md#decisions)); what the kernel would refuse anyway with your
   credentials (`user.` on a file you may not write, `trusted.` without the capability) gets its own answer, unsaid.
-  In tier offline extended attributes are refused.
+  In tier unserved extended attributes are refused.
   test: `sandbox::tests::a_run_changes_no_attribute_of_a_file_outside_its_write_places` (shown, macOS/Linux) ·
   `sandbox::keeper::tests::a_runs_raw_mode_and_times_calls_are_served_or_refused` ·
   `sandbox::keeper::tests::a_runs_xattr_calls_are_served_or_refused` ·
@@ -122,8 +122,8 @@ Not kept:
   every run at ABI 2 and says why. Below ABI 2: no sandbox, every command asks (§1.12).
 - **Below a pack's tools' output** (`target/`, `node_modules/`, `.venv/`) a run writes freely — what runs from
   there later is §1.2's (G28).
-- **Linux, tier offline: a file's mode and times.** Landlock has no right for them and nothing serves its calls here
-  (user decision 2026-10-18: offline stays a full tier): a run can change the mode and times of any file of yours it can
+- **Linux, tier unserved: a file's mode and times.** Landlock has no right for them and nothing serves its calls here
+  (user decision 2026-10-18: unserved stays a full tier): a run can change the mode and times of any file of yours it can
   name (`chmod 644` on a key, `chmod +x` on a hook, times backdated), never what's in it, nor read it. Said in the
   report, `tarae state` and the state line (G29).
 
@@ -282,7 +282,7 @@ Kept:
   hidden, that the run's panel lets runs use that file only and that once the user removes it the next run's walk
   finds it gone (`sandbox::hidden_keys_said`); one gone or replaced by another file between the walk and the run's
   mount is skipped, which the run's child says before its exec — the report names a replaced one as readable and
-  counts the gone ones, the hidden ones a most past what the child's record holds (`linux::outside_said`); tiers host and offline
+  counts the gone ones, the hidden ones a most past what the child's record holds (`linux::outside_said`); tiers host and unserved
   close them in the project only (Landlock only grants). Claude's Read goes by the rule as designed there too.
   Inside those places a toolchain's own files read: an install the packs name (pyenv's, conda's, rbenv's, asdf's and mise's installs) and what's below an install's
   packages as its layout has them (`lib/python3*/site-packages`, `lib/ruby/gems`, `lib/ruby/3.*` — never a bare
@@ -384,8 +384,18 @@ Kept:
   `sandbox::route::tests::this_machines_own_addresses_are_this_machine`
 - **Beyond, only through tarae's proxy.** On macOS the run gets `HTTPS_PROXY` and may connect only to its own
   proxy port, with a token of its own. On Linux, in the tiers served (own, host), the variable names the proxy's
-  reserved address, which the supervisor hands to the proxy (tier offline: no variable, nothing goes out); a tool that ignores it, or raw TCP (ssh, a database client), can't go
-  out — no card opens it, only a run outside the sandbox.
+  reserved address, which the supervisor hands to the proxy. In tier unserved with the session's namespaces (WSL2:
+  its init's filter above tarae) the variable names the same address with a token of the run's own, as macOS's: the
+  session's keeper made a listener there in the session's network namespace before any run existed, tarae's proxy
+  accepts on it, and a connection's head picks its run by the token within that session alone (none, unknown or ended:
+  `407`) — then every check as served. Anything else beyond the namespace's `lo` is unreachable (the kernel's).
+  Unserved without namespaces (Docker's default profile): no variable, nothing goes out. A tool that ignores it, or
+  raw TCP (ssh, a database client), can't go out — no card opens it, only a run outside the sandbox.
+  test: `sandbox::keeper::tests::an_own_network_run_reaches_the_proxy_by_its_token` ·
+  `sandbox::keeper::tests::a_supervisor_above_tarae_leaves_its_runs_bridged` (Linux, WSL2's condition reproduced) ·
+  `sandbox::keeper::tests::no_run_holds_the_session_port` · `sandbox::keeper::tests::a_run_cant_take_the_proxys_address` ·
+  `sandbox::proxy::tests::a_session_port_goes_with_its_own_keeper_and_its_session` ·
+  `tools::tests::the_reach_decides_what_also_opens_and_what_a_run_gets`
   test: `sandbox::proxy::macos_tests::a_run_goes_out_only_through_its_proxy` ·
   `sandbox::proxy::macos_tests::a_run_reaches_only_its_own_proxy_port` ·
   `sandbox::proxy::macos_tests::a_runs_token_is_its_own_and_never_passed_through` ·
@@ -469,12 +479,13 @@ table is the code's — a test fails when they differ.
 | own, its lo without an IPv6 address | tarae's proxy | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own, without an IPv6 address) | nothing |
 | own, the network closed | closed | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own) | nothing |
 | own without a PID namespace, tarae's proxy | tarae's proxy | files (but the temp folders), signals, System V IPC, /dev/shm, terminals, loopback (its own) | processes (command lines, priority) |
-| offline, the session's namespaces | no socket | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own) | nothing |
-| offline, the session's namespaces without a PID one | no socket | files (but the temp folders), signals, System V IPC, /dev/shm, terminals, loopback (its own) | processes (command lines, priority) |
+| unserved, the session's namespaces, bridged | tarae's proxy | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own) | nothing |
+| unserved, the session's namespaces, no bridge (its lo without an IPv4 address) | no socket | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own, without an IPv4 address) | nothing |
+| unserved, the session's namespaces without a PID one, bridged | tarae's proxy | files (but the temp folders), signals, System V IPC, /dev/shm, terminals, loopback (its own) | processes (command lines, priority) |
 | host, tarae's proxy | tarae's proxy | files (but the temp folders), signals, terminals (only those it makes), loopback (this machine's, other sessions' sockets refused) | processes (command lines, priority), System V IPC, /dev/shm |
 | host, Ubuntu's restriction, no profile | tarae's proxy | files (but the temp folders), signals, terminals (only those it makes), loopback (this machine's, other sessions' sockets refused) | processes (command lines, priority), System V IPC, /dev/shm |
-| offline, no namespaces | no socket | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
-| offline, no namespaces, Ubuntu's restriction, no profile | no socket | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
+| unserved, no namespaces | no socket | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
+| unserved, no namespaces, Ubuntu's restriction, no profile | no socket | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
 | Seatbelt, no port open, the network closed | closed | files (but the temp folders), processes, signals, System V shared memory, loopback (none of its ports open) | POSIX shared memory |
 | Seatbelt, ports open, the network closed | closed | files (but the temp folders), processes, signals, System V shared memory | POSIX shared memory, loopback (the ports it opens, whoever's) |
 | Seatbelt, no port open, the network open | tarae's proxy | files (but the temp folders), processes, signals, System V shared memory, loopback (none of its ports open) | POSIX shared memory |
@@ -541,12 +552,12 @@ Not kept:
 |---|---|---|
 | own | unprivileged user namespaces work, and tarae serves a run's sockets (at Yama's `ptrace_scope` 2 too) | the session's own processes, loopback, IPC, `/dev/shm`, terminals; where `/proc` is masked (Docker's default) no PID namespace: processes shared (command lines, priority) |
 | host | no user namespaces (Ubuntu's restriction without tarae's profile; a container), sockets served | files and signals kept; loopback this machine's, other sessions' sockets refused; processes, SysV IPC, `/dev/shm` shared |
-| offline | tarae can't serve a run's sockets (Yama 3, Yama 2 without the session's namespaces, inside another seccomp listener, `pidfd_getfd` refused), with the session's namespaces or none | no network; with the namespaces its own loopback, IPC, `/dev/shm`, terminals; without, no socket at all and those shared |
+| unserved | tarae can't serve a run's sockets (Yama 3, Yama 2 without the session's namespaces, inside another seccomp listener — WSL2's init, `pidfd_getfd` refused), with the session's namespaces or none | no port of this machine's, no unix socket; with the namespaces the network beyond only through tarae's proxy, by the run's token (the bridge), and its own loopback, IPC, `/dev/shm`, terminals; without, no socket at all and those shared |
 
 Yama's `ptrace_scope` 2 asks for `CAP_SYS_PTRACE` in a run's user namespace, and tarae holds every capability in
 the session's, which it made: there it serves a run's sockets (tier own; the tier probe tries it on a run of its own
 keeper's, test: `sandbox::tier::tests::at_yama_2_the_probe_serves_the_sessions_namespaces` in `cargo xtask linux` on a
-scope 2 machine). Without the session's namespaces (host) it can't, and the session is offline, said with the way
+scope 2 machine). Without the session's namespaces (host) it can't, and the session is unserved, said with the way
 out: user namespaces. **tarae gets no capability for it, and no privileged helper does it** (user decision
 2026-10-18): `CAP_SYS_PTRACE` in this system's namespace would let tarae — and whatever took it over — read and
 write every process here, root's too, which is what scope 2 is set to stop. Only if a user asks, and then as a piece
@@ -616,7 +627,7 @@ Not kept:
   descends from (your shell); at 3 none. True of every user namespace a program of yours makes; tarae opens nothing more (the rule:
   `sandbox::supervisor::tests::reaches_answers_as_yama_does`).
 - **Command lines and priority**: visible and lowerable (renice) where processes are shared — Linux without a PID
-  namespace of the session's (host, and own or offline where `/proc` is masked). (macOS: neither — the profile's
+  namespace of the session's (host, and own or unserved where `/proc` is masked). (macOS: neither — the profile's
   default refuses `setpriority`, a run's own too, and §1.4.)
 - **tarae parses what a run sends** — the supervisor reads a run's call arguments from its memory, the proxy
   parses its requests — inside tarae's own process. A bug there is a bug in tarae: a panic ends the editor
@@ -973,8 +984,9 @@ Not Claude's, but a hostile repository reaches them:
 | G26 | macOS: where the network reaches a host as the run starts, trust's service (`com.apple.trustd.agent`) is reachable, and it fetches revocation lists and issuers itself, outside tarae's proxy | Go's TLS (and Security.framework's) asks it: without it `x509: OSStatus -26276`, measured | only then (as srt's `enableWeakerNetworkIsolation`), never with every host asked; left: a run can make it fetch a URL a certificate names |
 | G27 | macOS: System V shared memory and `setpriority` are refused a run's own too, and a System V segment it makes can't be removed — `shmget` isn't checked, `shmctl(IPC_RMID)` is refused (measured: the probe's 4 KB segment stayed) | the deny-default profile, as srt's (it allows neither); a segment's key doesn't say whose it is; no rule refuses the making (XNU asks the policy nothing then) | said; a tool that needs either (a SysV user, `renice`) fails in the sandbox — a `BASE` row only with a measured need; what was made while a run ran and nothing attached (32 fill the Mac until a restart) its report names with the `ipcrm` that frees them — never removed: nothing ties a segment to the run (its maker may be gone, or the user's own program), so the user decides (`sandbox/sysv.rs`, frictions 56) |
 | G28 | Below a pack's tools' output (`target/`, `node_modules/`, `.venv/`) a run writes freely: what your own builds, tests and tools load from there later can be planted | builds write there; srt and Codex leave it writable too (user decision 2026-10-17: no separate output folder for runs) | narrowed: `__pycache__/` beside the source protected; the programs, bytecode and libraries a run that isn't a build or a check changed there are named in Claude's report (§1.2; tests: `snapshot::tests::code_a_run_changed_below_tools_output_is_named`, `sandbox::tests::bytecode_beside_its_source_is_kept_and_a_virtualenvs_isnt`) |
-| G29 | Linux: a file's mode and times change outside the write places, in tier offline (protected names in the project too); in tiers own and host tarae serves them where writes are allowed; in tier offline a run copies no extended attributes or ACLs (`install -m`, `cp --preserve=all` fail there) | Landlock has no right for a file's attributes; in tier offline nothing serves them | said in tier offline; in own and host tarae serves mode, times and extended attributes (2026-10-20, D2 B); owner, flags, `security.` and `trusted.` refused in every tier (D-h); closed where a Landlock ABI brings an attribute right |
+| G29 | Linux: a file's mode and times change outside the write places, in tier unserved (protected names in the project too); in tiers own and host tarae serves them where writes are allowed; in tier unserved a run copies no extended attributes or ACLs (`install -m`, `cp --preserve=all` fail there) | Landlock has no right for a file's attributes; in tier unserved nothing serves them | said in tier unserved; in own and host tarae serves mode, times and extended attributes (2026-10-20, D2 B); owner, flags, `security.` and `trusted.` refused in every tier (D-h); closed where a Landlock ABI brings an attribute right |
 | G30 | Another workspace's changes reach this one: an overlap names the other session (or a branch) and a path of this checkout, in your toast and list, never to a Claude; the woven view (C2b) shows another workspace's text of a file you have open — to you, read-only, never to a Claude; that file read through no link, only a plain file, its size first (a link, FIFO, huge or binary file a run planted: only that side left out, said — it can't blank the others), never one named like a key; `enter` on a change there opens that workspace's file as `:open` would, your own act in your own session (never Claude's) | collab C2: two workspaces about to conflict are told while it's small | narrowed: a path is data — shown and said, never read, run or followed; Claude hears nothing of another workspace — no line in its tools' answers, nothing at its level of the UI state, nor the toast, and a message's context carries nothing of a woven view in front or on screen (not its name, text, lines on screen or a selection in it); what of it Claude sees, the person shows on purpose, each their own act — a quote (`space >`) or the screen attached (`C-s`): the frame as drawn, another workspace's lines in it too, not blanked (the person chose to show it). **What's written where**: only this tarae's own folder, `~/.cache/tarae/overlap/<pid>-<16 hex>/` (0700, its name unguessable, a `.lock` flock held while it lives, checked after taking it to be the file at that name still — a prune between its making and its taking can't leave it locking a removed file, a busy one is waited for, and a round without it writes nothing; a gone tarae's removed by the next one's first round only when its lock is free, or it has none past a minute — never another live one's, nor a link, a folder others can read, another user's, a name not shaped as a tarae's): per checkout `<hash>/index` and `<hash>/objects/`, removed when that session closes and started anew past 64 MiB of objects (`OBJECTS_MAX`: every take and merge writes some, for the session's whole life — never past that and one round's writes); in the repository nothing — its objects read as an alternate, git may refresh the time of an object already there (git's freshen). **What never runs**: no fetch (`GIT_NO_LAZY_FETCH`: a partial clone's missing blob stays missing, no remote, transport or credential helper started — that merge fails, logged), no hook (`core.hooksPath=/dev/null`), no fsmonitor, no filter (every `filter.*.clean/smudge/process` the config names emptied and not required; a snapshot hashes only the files no `filter` attribute names and has the rest as HEAD has them, staged or new — an LFS file its pointer, never read as changed, never hashed, nothing in `.git/lfs`; every git through tarae's repository runner (gitrepo's): the repository named, its own command-running config held until trusted, `safe.bareRepository=explicit`), no merge driver (each set to git's own `merge-file`), no renormalizing merge. (P5's run snapshots run the user's filters, and a repository's once trusted: a finding of C2's for P5.) (tests: `overlap::tests::claude_hears_nothing_of_the_others`, `overlap::tests::the_bases_tip_counts_and_a_key_named_file_is_never_named`, `overlap::tests::nothing_lands_in_the_repository_and_the_folder_goes_with_the_workspace`, `overlap::tests::no_filter_or_merge_driver_runs_and_a_filtered_file_stays_as_its_index_has_it`, `overlap::tests::two_taraes_keep_their_own_folders_and_a_gone_ones_is_pruned`, `overlap::tests::a_partial_clones_missing_blob_is_never_fetched`, `overlap::tests::a_prune_between_making_the_lock_and_taking_it_is_survived`, `overlap::tests::a_prune_leaves_what_isnt_a_gone_taraes_folder`) |
+| G31 | Linux, tier unserved with the session's namespaces (WSL2): a run is told from the session's other runs by the token in its proxy URL alone — a run of the same session that reads another's environment (the same PID namespace, the same user) can borrow its token, and with it a host's yes given for that run alone; and a direct connect beyond (raw TCP, a tool that ignores the variable) is the kernel's `ENETUNREACH`, which names nothing | nothing serves the run's calls there, so no supervisor knows who connects, nor sees the connect it refuses; the session's port is in the session's network namespace | the token as macOS's `RunPort` has it, other sessions out of reach of the port (test: `sandbox::keeper::tests::an_own_network_run_reaches_the_proxy_by_its_token`); the unsaid refusal read from the run's output next (offline-bridge piece 4) |
 
 ## 5. For a reviewer: where to start
 

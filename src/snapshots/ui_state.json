@@ -300,7 +300,7 @@
       "where": "card"
     }
   ],
-  "v": 36,
+  "v": 37,
   "workspaces": [
     {
       "cards": 1,
@@ -398,7 +398,7 @@
                 "part": "loopback"
               }
             ],
-            "line": "tier offline · Landlock ABI 8 · loopback no socket · network no socket · attributes mode and times anywhere · shared processes, System V IPC, /dev/shm, terminals",
+            "line": "tier unserved · Landlock ABI 8 · loopback no socket · network no socket · attributes mode and times anywhere · shared processes, System V IPC, /dev/shm, terminals",
             "namespaces": {
               "net": false,
               "netns": false,
@@ -428,7 +428,7 @@
                 "part": "ptys"
               }
             ],
-            "tier": "offline",
+            "tier": "unserved",
             "why": "tarae can't serve its calls: pidfd_getfd refused (Docker's default profile) — --cap-add SYS_PTRACE serves the calls"
           }
         }

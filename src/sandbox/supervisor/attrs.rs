@@ -1225,7 +1225,7 @@ mod tests {
     }
 
     /// #127: the answers that tell the three orders apart, and this kernel's — where a filter answers these calls
-    /// before the kernel (tier offline's, Docker's default profile, a run's own), it can't tell: said, that part skipped.
+    /// before the kernel (tier unserved's, Docker's default profile, a run's own), it can't tell: said, that part skipped.
     #[test]
     fn the_kernels_order_is_told_by_its_answers() {
         use libc::{EBADF, EINVAL, ENOENT, EPERM, ERANGE};

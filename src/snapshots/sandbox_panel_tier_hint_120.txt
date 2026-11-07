@@ -4,7 +4,7 @@
 01  ╭─ what the sandbox blocked ─────────────────────────────────────────────────────────────────────────────────────────╮
 02  │ ›                                                                                                              1/1 │
 03  │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-04  │  tier host  loopback this machine's, other sessions' refused  shared processes, signals, System V IPC, /dev/shm    │
+04  │  tier host  loopback this machine's, other sessions' refused  network closed  shared processes, signals +2         │
 05  │  AppArmor blocks user namespaces                                                                                   │
 06  │  tarae's AppArmor profile would give own namespaces                                                                │
 07  │                                                                                                                    │
@@ -66,7 +66,7 @@
 01  aa TTTT TTT TTTTTTT TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 02  a A                                                                                                              fff a
 03  a ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff a
-04  a  BBBB ffff  BBBBBBBB ffff ffffffffff fffff fffffffff fffffff  BBBBBB ffffffffff ffffffff ffffff f ffff ffffffff    a
+04  a  BBBB ffff  BBBBBBBB ffff ffffffffff fffff fffffffff fffffff  BBBBBBB ffffff  BBBBBB ffffffffff fffffff ff         a
 05  a  ffffffff ffffff ffff ffffffffff                                                                                   a
 06  a  fffffff ffffffff fffffff fffff ffff fff ffffffffff                                                                a
 07  a                                                                                                                    a

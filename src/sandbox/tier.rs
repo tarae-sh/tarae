@@ -6,7 +6,7 @@
 //! network one when its policy opens nothing (`for_policy`: until step 4's routing, an opened port or the
 //! network would reach the session's empty loopback); where a fresh `/proc` can't be mounted (Docker's masked
 //! `/proc`), the same without the PID namespace (D12); without user namespaces none. Served, the first two are
-//! tier own, the last host; not serving (`supervisor::served`), any of them is offline. Where Yama's `ptrace_scope`
+//! tier own, the last host; not serving (`supervisor::served`), any of them is unserved. Where Yama's `ptrace_scope`
 //! 2 decides, the probe's keeper also holds a run while tarae tries the supervisor's two calls on it
 //! (`supervisor::reaches`): served in the session's namespaces is what that found.
 
@@ -818,7 +818,7 @@ mod tests {
     }
 
     /// The probe asks one keeper, with the session's netns — never without it — and the session keeps it. Not
-    /// served, the same namespaces: tier offline. (Keepers stood in for: what each was asked.)
+    /// served, the same namespaces: tier unserved. (Keepers stood in for: what each was asked.)
     #[test]
     fn the_probe_always_asks_the_sessions_network_namespace() {
         let asked = |served: Result<(), String>| {
@@ -838,7 +838,7 @@ mod tests {
         assert_eq!(p.tier(), Tier::Own);
         let (taken, p) = asked(Err(super::super::guarantees::PIDFD_REFUSED.into()));
         assert_eq!(taken, [true]);
-        assert_eq!(p.tier(), Tier::Offline);
+        assert_eq!(p.tier(), Tier::Unserved);
         assert_eq!(p.bridged, Ok(()), "its keeper's port, as its birth left it");
     }
 
@@ -849,7 +849,7 @@ mod tests {
     fn the_probe_says_whether_the_bridge_stands() {
         let lo = "its lo couldn't take 192.0.2.1 (Operation not permitted)".to_string();
         let p = probe_with(|_| Err("listener above".into()), |_| Ok(Err(lo.clone())));
-        assert_eq!((p.tier(), p.bridged.clone()), (Tier::Offline, Err(lo.clone())));
+        assert_eq!((p.tier(), p.bridged.clone()), (Tier::Unserved, Err(lo.clone())));
         assert!(logged(&p).contains(&format!("not bridged: {lo}")), "{}", logged(&p));
         let p = probe_with(|_| Err("listener above".into()), |_| Ok(Ok(())));
         assert!(logged(&p).contains(" — bridged"), "{}", logged(&p));
@@ -860,7 +860,7 @@ mod tests {
     }
 
     /// Served is asked for the namespaces found: where only a keeper with the session's user namespace is served
-    /// (Yama's scope 2), the probe that gets them is tier own, the one that falls back to none offline — in
+    /// (Yama's scope 2), the probe that gets them is tier own, the one that falls back to none unserved — in
     /// `YAMA_2_WITHOUT_NS`'s words. (Keepers stood in for.)
     #[test]
     fn served_is_asked_for_the_namespaces_found() {
@@ -870,7 +870,7 @@ mod tests {
         assert_eq!((p.tier(), p.served.clone()), (Tier::Own, Ok(())));
         let clone = BirthError { step: BirthStep::Clone, errno: libc::EPERM };
         let p = probe_with(served, |ns| if ns.user { Err(Failed::Birth(clone)) } else { Ok(Ok(())) });
-        assert_eq!((p.tier(), p.served), (Tier::Offline, Err(without.into())));
+        assert_eq!((p.tier(), p.served), (Tier::Unserved, Err(without.into())));
     }
 
     /// A held run that doesn't start (a program not found where `true` is) is the read's answer — said, kept as not
@@ -895,7 +895,7 @@ mod tests {
     }
 
     /// On the scope 2 VM (`TARAE_EXPECT_YAMA=2`, `TARAE_EXPECT_TIER=own`: CONTRIBUTING's colima recipe) the probe reads its
-    /// keeper's run and the session is served — tier own, never offline for a run tried before its exec. Elsewhere
+    /// keeper's run and the session is served — tier own, never unserved for a run tried before its exec. Elsewhere
     /// nothing to check: the scope decides nothing, or the tier is another.
     #[test]
     fn at_yama_2_the_probe_serves_the_sessions_namespaces() {
@@ -1144,7 +1144,7 @@ mod tests {
         let said = hint(&unconfined, Tier::Host).expect("restricted, no profile: the hint");
         assert!(said.contains("tier host") && said.contains("sudo apparmor_parser -r"), "{said}");
         assert!(
-            hint(&unconfined, Tier::Offline).is_some_and(|h| h.contains("tier offline")),
+            hint(&unconfined, Tier::Unserved).is_some_and(|h| h.contains("tier unserved")),
             "the tier the runs are in"
         );
         assert!(
@@ -1199,6 +1199,7 @@ mod tests {
                 brief: Some(brief(s)),
                 hint: super::hint(s, tier, &place),
                 network: true,
+                bridged: false,
             })
         };
         let c = run(&ubuntu("unconfined"), true);
@@ -1212,12 +1213,12 @@ mod tests {
                 && whole.contains("sudo apparmor_parser -r"),
             "{whole}"
         );
-        let offline = run(&ubuntu("unconfined"), false);
+        let unserved = run(&ubuntu("unconfined"), false);
         assert!(
-            offline.hint.as_ref().is_some_and(|h| h.said.contains("tier offline")),
-            "not served: offline"
+            unserved.hint.as_ref().is_some_and(|h| h.said.contains("tier unserved")),
+            "not served: unserved"
         );
-        assert_eq!(offline.hint_brief(), Some(said), "not served, the profile still gives namespaces");
+        assert_eq!(unserved.hint_brief(), Some(said), "not served, the profile still gives namespaces");
         let debian = Seen { restrict_userns: None, ..ubuntu("unconfined") };
         let none = [
             (run(&ubuntu("/usr/bin/tarae (unconfined)"), true), "a profile attached"),
@@ -1339,7 +1340,7 @@ mod tests {
                 (Ns::NONE, false)
             ]
             .map(|(n, s)| Tier::of(n, s).said()),
-            ["own", "own", "offline", "host", "offline"]
+            ["own", "own", "unserved", "host", "unserved"]
         );
     }
 }

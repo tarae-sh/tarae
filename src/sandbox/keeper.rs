@@ -4666,6 +4666,14 @@ mod tests {
             "connect" => helper_connect(&std::env::var("TARAE_TO").unwrap_or_default()),
             "swap" => helper_swap(&std::env::var("TARAE_TO").unwrap_or_default()),
             "proxied" => helper_proxied(&std::env::var("TARAE_TO").unwrap_or_default()),
+            // (piece 3: `proxied` by the run's own variable — `$HTTPS_PROXY`'s address, its token as the credential)
+            "proxied_env" => {
+                let url = std::env::var("HTTPS_PROXY").unwrap_or_default();
+                let rest = url.strip_prefix("http://").unwrap_or(&url).trim_end_matches('/');
+                let (user, at) = rest.split_once('@').unwrap_or(("", rest));
+                let auth = format!("Basic {}", super::super::proxy::parse::base64(user.as_bytes()));
+                format!("proxy={at} {}", proxied_as(at, Some(auth)).0)
+            }
             // (step 8: `proxied`, its connection then kept open, idle, until `done` is in its folder — 120 s at most)
             "proxyhold" => {
                 let (said, _kept) = proxied(&std::env::var("TARAE_TO").unwrap_or_default());
@@ -5403,6 +5411,12 @@ mod tests {
 
     /// `helper_proxied`'s words, and its connection — still open.
     fn proxied(to: &str) -> (String, std::net::TcpStream) {
+        proxied_as(to, std::env::var("TARAE_PROXY_AUTH").ok())
+    }
+
+    /// `proxied`, sending `auth` as its `Proxy-Authorization` (a session port's run: its token, as its proxy URL makes
+    /// a client send it).
+    fn proxied_as(to: &str, auth: Option<String>) -> (String, std::net::TcpStream) {
         use std::io::{BufRead, Write};
         let sa = sockaddr(to);
         let host = std::env::var("TARAE_HOST").unwrap_or_default();
@@ -5440,10 +5454,7 @@ mod tests {
         // SAFETY: the socket made above, ours from here.
         let s = unsafe { std::net::TcpStream::from_raw_fd(fd) };
         s.set_read_timeout(Some(crate::test_results::PATIENCE)).ok();
-        // (a session port's run: its token, as its proxy URL makes a client send it — `$TARAE_PROXY_AUTH`, the value)
-        let auth = std::env::var("TARAE_PROXY_AUTH")
-            .map(|a| format!("Proxy-Authorization: {a}\r\n"))
-            .unwrap_or_default();
+        let auth = auth.map(|a| format!("Proxy-Authorization: {a}\r\n")).unwrap_or_default();
         let _ = (&s).write_all(format!("GET http://{host}/ HTTP/1.1\r\n{auth}\r\n").as_bytes());
         let mut reply = String::new();
         let _ = std::io::BufReader::new(&s).read_line(&mut reply);
@@ -7061,7 +7072,7 @@ mod tests {
         }
         let utimensat_us = t1.elapsed().as_micros() as f64 / n as f64;
 
-        // (not where the filter refuses it outright: tier offline's, `TARAE_PERF_XATTR=0`)
+        // (not where the filter refuses it outright: tier unserved's, `TARAE_PERF_XATTR=0`)
         let xattrs = std::env::var("TARAE_PERF_XATTR").map_or(true, |v| v != "0");
         let t2 = std::time::Instant::now();
         for _ in 0..if xattrs { n } else { 0 } {
@@ -9031,7 +9042,8 @@ mod tests {
 
     /// 9a: a run's guarantees are what its own keeper and supervisor decide for it — never the session's first run's.
     /// In every tier: runs on the session's keeper served, then not (no supervisor for that run), then served again
-    /// each say how their sockets go out (the network's way: tarae's proxy — then no socket). Where
+    /// each say how their sockets go out (the network's way: tarae's proxy — then no socket, or the proxy still where
+    /// the keeper's port stands in the session's network namespace: bridged, piece 3). Where
     /// the session has namespaces, also its keepers: a policy that writes in `/dev/shm` (its keeper born without a
     /// `/dev/shm` of its own, D14: another keeper for another policy) between two that don't, each says theirs; without
     /// namespaces `/dev/shm` is this system's for every keeper (said, not judged; a machine said to give them fails).
@@ -9082,13 +9094,14 @@ mod tests {
         };
         let served = super::super::linux::served_here(k.ns.user);
         let ways = [way(served.clone()), way(Err("no supervisor for this run".into())), way(served.clone())];
+        let unserved = if k.ns.netns() && k.bridge.is_ok() { Way::Proxy } else { Way::NoSocket };
         for k in of(Some(&root)) {
             k.end();
         }
         let lines: Vec<&String> = got.iter().map(|g| &g.1).chain(ways.iter().map(|w| &w.1)).collect();
         if served.is_ok() {
             let w = ways.each_ref().map(|w| w.0);
-            assert!(w[0] != Way::NoSocket && w[1] == Way::NoSocket && w[2] == w[0], "{w:?}\n{lines:#?}");
+            assert!(w[0] != Way::NoSocket && w[1] == unserved && w[2] == w[0], "{w:?}\n{lines:#?}");
         } else {
             eprintln!("{test}: the network's way not judged — tarae serves no run here");
         }
@@ -10686,7 +10699,7 @@ mod tests {
     }
 
     /// M11: a served `chmod` and `utimensat` on a project file against the same unserved, and a served `setxattr`
-    /// (D2 B) against the same with no sandbox (tier offline's filter refuses it: a refusal is no cost of serving
+    /// (D2 B) against the same with no sandbox (tier unserved's filter refuses it: a refusal is no cost of serving
     /// one), median of five.
     #[test]
     fn perf_a_served_chmod() {
@@ -11009,5 +11022,115 @@ mod tests {
         RunToken::ended(run);
         k.end();
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ── WSL2's condition (offline-bridge piece 3) ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// Set for `bridged_under_a_supervisor`, run by its parent.
+    const ABOVE: &str = "TARAE_SUPERVISOR_ABOVE";
+
+    /// Where the stand-in supervisor's listener is held in the child (past every descriptor tarae's code places).
+    const ABOVE_FD: i32 = 200;
+
+    /// Piece 3, WSL2's condition reproduced (`.sb/offline-bridge-plan.md` §4): a supervisor's filter above tarae, its
+    /// listener held (`seccomp::Above`) — so tarae can't serve its runs' calls (a listener below is refused, `EBUSY`)
+    /// while every namespace is still made, as under WSL2's init. In a process of its own (a filter is for good):
+    /// `bridged_under_a_supervisor` finds tier unserved with `user net ipc pid mnt` and the bridge, and a run reaches
+    /// a stand-in beyond through tarae's proxy by its own token, from its own `HTTPS_PROXY`. A system already under
+    /// such a filter (WSL2 itself) runs the child as it is. Skips where keepers get no network namespace;
+    /// `TARAE_EXPECT_BRIDGED=1` fails there instead (and in the child where it isn't bridged).
+    #[test]
+    fn a_supervisor_above_tarae_leaves_its_runs_bridged() {
+        use std::os::unix::process::CommandExt as _;
+        let test = "a_supervisor_above_tarae_leaves_its_runs_bridged";
+        if std::env::var_os("TARAE_EXPECT_BRIDGED").is_none()
+            && (!own_network(test) || open_rules(test).is_none())
+        {
+            return;
+        }
+        let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "sandbox::keeper::tests::bridged_under_a_supervisor",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(ABOVE, "1");
+        // (this system served: the stand-in above it; already not served, the condition is its own)
+        let above = super::super::supervisor::unavailable().is_none();
+        if above {
+            let filter = crate::seccomp::Above::new().unwrap();
+            // SAFETY: `Above::apply` makes raw calls only, allocating nothing, between fork and exec.
+            unsafe { cmd.pre_exec(move || filter.apply(ABOVE_FD)) };
+        }
+        let out = cmd.output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && said.contains("1 passed"),
+            "the child ran it (above: {above}):\n{said}"
+        );
+        if !said.contains("bridged_under_a_supervisor: reached") {
+            // (the child skipped itself: its why, said again as this test's)
+            let skipped = "sandbox::keeper::tests::bridged_under_a_supervisor — ";
+            let why = said.lines().find_map(|l| l.split_once(skipped).map(|(_, why)| why.to_string()));
+            let why = why.unwrap_or_else(|| panic!("the child neither reached nor skipped:\n{said}"));
+            crate::test_results::said_skip(&format!("sandbox::keeper::tests::{test} — {why}"));
+        }
+    }
+
+    /// `a_supervisor_above_tarae_leaves_its_runs_bridged`'s child, under the supervisor's filter: the tier probe, then
+    /// a run of a real policy (`sandbox::policy`, `spawn`) asking a stand-in host through its `HTTPS_PROXY`.
+    #[test]
+    #[ignore = "run by a_supervisor_above_tarae_leaves_its_runs_bridged in a process of its own"]
+    fn bridged_under_a_supervisor() {
+        use super::super::guarantees::Tier;
+        use super::super::proxy;
+        if std::env::var_os(ABOVE).is_none() {
+            return;
+        }
+        let test = "bridged_under_a_supervisor";
+        let expect = std::env::var_os("TARAE_EXPECT_BRIDGED").is_some();
+        let p = super::super::tier::get();
+        let found =
+            format!("{} ({}), served {:?}, bridged {:?}", p.tier().said(), p.ns.said(), p.served, p.bridged);
+        assert_eq!(p.tier(), Tier::Unserved, "{test}: {found}");
+        if let Err(why) = &p.bridged {
+            assert!(!expect, "{test}: bridged expected (TARAE_EXPECT_BRIDGED) — {found}");
+            return crate::test_results::said_skip(&format!(
+                "sandbox::keeper::tests::{test} — no bridge: {why}"
+            ));
+        }
+        assert_eq!(p.ns.said(), "user net ipc pid mnt", "{test}: {found}");
+        // (the outside: a listener of the test's on loopback, named for the proxy and taken for beyond)
+        let (at, served) = answering("127.0.0.1:0", "out hello");
+        let host = "wsl.test";
+        proxy::TEST_NAMES.lock().unwrap().push((host.into(), at));
+        let scratch = crate::scratch::Scratch::new("bridged-wsl");
+        let root = std::fs::canonicalize(&scratch).unwrap();
+        let mut policy = super::super::policy(&root, &crate::llm::LlmConfig::default(), &[]).unwrap();
+        assert!(matches!(policy.reach, super::super::NetReach::Bridged { .. }), "{test}: {:?}", policy.reach);
+        let url = policy.proxy_url().expect("bridged: its run's proxy URL");
+        assert!(url.per_run && url.url().starts_with("http://run:"), "{test}: {}", url.url());
+        (policy.egress.any, policy.egress.beyond) = (true, vec![at.ip()]);
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        let args =
+            ["--exact", "sandbox::keeper::tests::helper", "--ignored", "--nocapture", "--test-threads=1"];
+        let mut cmd = super::super::command(Some(&policy), &exe, &args.map(String::from));
+        let target = format!("{host}:{}", at.port());
+        cmd.env(HELPER, "proxied_env").env("TARAE_HOST", &target).current_dir(&root);
+        let s = super::super::spawn(Some(&policy), &cmd).expect("the run starts");
+        let (mut out, mut err) = (String::new(), String::new());
+        io::Read::read_to_string(&mut s.stdout.unwrap(), &mut out).unwrap();
+        if let Some(mut e) = s.stderr {
+            io::Read::read_to_string(&mut e, &mut err).unwrap();
+        }
+        crate::spawn::wait(s.pid).unwrap();
+        super::super::after_run(Some(&policy))();
+        let said = said_in(&out, &err);
+        assert!(said.starts_with("proxy=192.0.2.1:3128 "), "{test}: by its own variable — {said}");
+        assert!(said.ends_with("peer=192.0.2.1 reply=out hello"), "{test}: {said}");
+        assert!(served.recv_timeout(crate::test_results::PATIENCE).is_ok(), "{test}: it arrived outside");
+        println!("{test}: reached");
     }
 }

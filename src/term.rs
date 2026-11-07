@@ -22897,11 +22897,12 @@ fn hint_spans(ui: &Ui, pairs: &[(&str, &str)], key: Style, faint: Style) -> Vec<
 }
 
 /// `pairs` as key hints in `width` cells: whole when they fit; else what `fold` doesn't name, then the ones it names
-/// from its end (the most important) to its start, each while it fits — so its first ones go first, and a later one
-/// too long for what's left goes without taking the shorter ones before it along. The first one it tries, a list
-/// (`a, b, c`), keeps its first items and says how many it left (`a +2`) rather than going — never a word cut; what's
-/// never folded and still doesn't fit has its last meaning cut. In `pairs`' order. (The sandbox panel's state line,
-/// 9e: `Guarantees::FOLD`.)
+/// from its end (the most important) to its start, each while it fits — so its first ones go first, and the first one
+/// with no room ends it: nothing less important takes its place (a tier's longer word folds Landlock's ABI, never
+/// the network). The first one it tries, a list (`a, b, c`), keeps its first items and says how many it left (`a +2`)
+/// rather than going — never a word cut —, and where it stands whole it gives up items from its end to let in the
+/// part that missed; what's never folded and still doesn't fit has its last meaning cut. In `pairs`' order. (The
+/// sandbox panel's state line, 9e: `Guarantees::FOLD`.)
 fn fold_hints(pairs: &[(&'static str, String)], fold: &[&str], width: usize) -> Vec<(&'static str, String)> {
     // (as `hint_spans` draws them: `key meaning`, two cells between)
     let one = |k: &str, m: &str| k.width() + if m.is_empty() { 0 } else { 1 + m.width() };
@@ -22924,18 +22925,40 @@ fn fold_hints(pairs: &[(&'static str, String)], fold: &[&str], width: usize) -> 
     if let Some((_, _, m)) = v.last_mut().filter(|_| over > 0) {
         *m = fit_ellipsis(m, m.width().saturating_sub(over));
     }
-    let mut first = true;
-    for k in fold.iter().rev() {
+    // (the list, where it was taken whole: its place in `v`)
+    let mut list: Option<usize> = None;
+    for (n, k) in fold.iter().rev().enumerate() {
         let Some(at) = pairs.iter().position(|p| p.0 == *k) else { continue };
         let m = &pairs[at].1;
         let used = wide(&v) + if v.is_empty() { 0 } else { 2 };
         let room = width.saturating_sub(used + k.width() + 1);
         if used + one(k, m) <= width {
+            if n == 0 && m.contains(", ") {
+                list = Some(v.len());
+            }
             v.push((at, pairs[at].0, m.clone()));
-        } else if let Some(some) = items(m, room).filter(|_| first) {
-            v.push((at, pairs[at].0, some));
+            continue;
         }
-        first = false;
+        if n == 0 {
+            if let Some(some) = items(m, room) {
+                v.push((at, pairs[at].0, some));
+            }
+            break;
+        }
+        // (no room: the list whole gives up its last items for it, else it goes — and nothing after it is tried)
+        if let Some(l) = list {
+            let (lk, lm) = (v[l].1, v[l].2.clone());
+            v[l].2 = String::new();
+            let others = wide(&v) - one(lk, "") + 2 + one(k, m);
+            match items(&lm, width.saturating_sub(others + lk.width() + 1)) {
+                Some(some) => {
+                    v[l].2 = some;
+                    v.push((at, pairs[at].0, m.clone()));
+                }
+                None => v[l].2 = lm,
+            }
+        }
+        break;
     }
     crate::sorting::by_key(&mut v, |p| p.0);
     v.into_iter().map(|(_, k, m)| (k, m)).collect()

@@ -1351,7 +1351,7 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   on a write card, keeps the same names as the project however deep (`.git`, `Makefile`, `Cargo.toml`,
   `.envrc`, … — not below its tools' output): another repository opened for writing can't have its hooks or
   build files changed by a command, since those run later outside the sandbox. On Linux that has a cost wherever
-  those names can't be sealed by mounts of the command's own: in tiers host and offline (Ubuntu's restriction on
+  those names can't be sealed by mounts of the command's own: in tiers host and unserved (Ubuntu's restriction on
   user namespaces, Docker's default profile) always, and in tier own for a folder one of whose names is reached
   through another mount, isn't a file or a folder, or is past the mounts a command takes. There those names are
   closed by their folders' rules instead, so the folder, every folder between it and one of them, and a place
@@ -1653,8 +1653,9 @@ and terminals. How much of that a session gets is its tier:
 - **own**: user namespaces work. Where `/proc` is masked (Docker's default) the session has no process numbering of
   its own, said.
 - **host**: no user namespaces — Ubuntu's restriction without tarae's profile, or a container's seccomp profile.
-- **offline**: tarae can't serve a command's sockets (below): a command reaches no network — with the session's
-  namespaces its own loopback, without them no socket at all.
+- **unserved**: tarae can't serve a command's sockets (below) — WSL2, a container without `CAP_SYS_PTRACE`: no port of
+  this machine's, no unix socket. With the session's namespaces its own loopback, and the network beyond only
+  through tarae's proxy, the command known by a token of its own (the bridge); without them no socket at all.
 
 What each case keeps apart from other sessions' commands, and what it shares with them, at Landlock ABI 6 and on
 macOS (Seatbelt). A test keeps this table equal to the code:
@@ -1667,12 +1668,13 @@ macOS (Seatbelt). A test keeps this table equal to the code:
 | own, its lo without an IPv6 address | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own, without an IPv6 address) | nothing |
 | own, the network closed | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own) | nothing |
 | own without a PID namespace, tarae's proxy | files (but the temp folders), signals, System V IPC, /dev/shm, terminals, loopback (its own) | processes (command lines, priority) |
-| offline, the session's namespaces | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own) | nothing |
-| offline, the session's namespaces without a PID one | files (but the temp folders), signals, System V IPC, /dev/shm, terminals, loopback (its own) | processes (command lines, priority) |
+| unserved, the session's namespaces, bridged | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own) | nothing |
+| unserved, the session's namespaces, no bridge (its lo without an IPv4 address) | files (but the temp folders), processes, signals, System V IPC, /dev/shm, terminals, loopback (its own, without an IPv4 address) | nothing |
+| unserved, the session's namespaces without a PID one, bridged | files (but the temp folders), signals, System V IPC, /dev/shm, terminals, loopback (its own) | processes (command lines, priority) |
 | host, tarae's proxy | files (but the temp folders), signals, terminals (only those it makes), loopback (this machine's, other sessions' sockets refused) | processes (command lines, priority), System V IPC, /dev/shm |
 | host, Ubuntu's restriction, no profile | files (but the temp folders), signals, terminals (only those it makes), loopback (this machine's, other sessions' sockets refused) | processes (command lines, priority), System V IPC, /dev/shm |
-| offline, no namespaces | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
-| offline, no namespaces, Ubuntu's restriction, no profile | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
+| unserved, no namespaces | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
+| unserved, no namespaces, Ubuntu's restriction, no profile | files (but the temp folders), signals, loopback (no socket) | processes (command lines, priority), System V IPC, /dev/shm, terminals |
 | Seatbelt, no port open, the network closed | files (but the temp folders), processes, signals, System V shared memory, loopback (none of its ports open) | POSIX shared memory |
 | Seatbelt, ports open, the network closed | files (but the temp folders), processes, signals, System V shared memory | POSIX shared memory, loopback (the ports it opens, whoever's) |
 | Seatbelt, no port open, the network open | files (but the temp folders), processes, signals, System V shared memory, loopback (none of its ports open) | POSIX shared memory |
@@ -1698,7 +1700,7 @@ macOS (Seatbelt). A test keeps this table equal to the code:
   opens every one, yours too.
 - **Getting namespaces.** Where Ubuntu's restriction is why, the sandbox panel says so faint under its header
   ("tarae's AppArmor profile would give own namespaces"), and its last row copies the step that installs the profile:
-  run it with `sudo`, then restart tarae. In a container, `--cap-add SYS_PTRACE` takes a session from offline to
+  run it with `sudo`, then restart tarae. In a container, `--cap-add SYS_PTRACE` takes a session from unserved to
   host.
 - **Where it's said.** Claude's result says the tier once a conversation, and again when it changes: what its
   commands are kept from and what they share. A command sees it in `TARAE_SANDBOX_STATUS` (`own:6`, `host:4`,
@@ -1744,14 +1746,19 @@ macOS (Seatbelt). A test keeps this table equal to the code:
   multicast or broadcast. This machine — its loopback and its own addresses (its LAN's, Docker's bridge's, as
   they were when the command started) — it reaches only on the ports `llm.sandbox-ports` and
   `llm.sandbox-localhost` open. Claude's result says so.
-- **Through tarae's proxy, by its variables**, on macOS and in the tiers tarae serves (own, host): the commands'
-  proxy variables (`HTTPS_PROXY` and the rest) name tarae's proxy, and the packs tell the tools that ignore them (Gradle's
-  `gradle.properties`, Node's `NODE_USE_ENV_PROXY`). Names are looked up by the proxy: a command that looks one up
-  itself (`dig`, `getent`) gets no resolver.
-- **When tarae can't make a command's connections**, the command gets no socket at all — no port on this
-  machine, no unix socket, not even the project's, and no proxy variables (nothing would answer them; srt sets none
-  without its bridge either) — and Claude's result says why (tier offline). An `also` for a host, a port or every
-  port is answered with the tier and why, never a card: no grant would reach it, only `outside_sandbox`'s run (#417). That happens:
+- **Through tarae's proxy, by its variables**, on macOS, in the tiers tarae serves (own, host) and in tier unserved
+  where the session has its namespaces (the bridge): the commands' proxy variables (`HTTPS_PROXY` and the rest) name
+  tarae's proxy, and the packs tell the tools that ignore them (Gradle's `gradle.properties`, Node's
+  `NODE_USE_ENV_PROXY`). Bridged, the variables carry a token of the command's own, as macOS's do: the session's
+  keeper listens at the proxy's address inside the session's network namespace, and tarae's proxy tells the command by
+  it. Names are looked up by the proxy: a command that looks one up itself (`dig`, `getent`) gets no resolver.
+- **When tarae can't make a command's connections** (tier unserved), the command reaches no port on this machine and
+  no unix socket, not even the project's; an `also` for a port or every port is answered with the tier and why,
+  never a card: no grant would reach it, only `outside_sandbox`'s run (#417). With the session's namespaces (WSL2)
+  the network goes through tarae's proxy as above, each host on its card, `also` for a host its card as served.
+  Without them (a container's default profile) the command gets no socket at all and no proxy variables (nothing
+  would answer them; srt sets none without its bridge either), an `also` for a host is answered as a port's, and
+  Claude's result says why. That happens:
   - in a container without `CAP_SYS_PTRACE` (Docker's default, a dev container started the usual way): its
     filter refuses the call tarae takes a command's socket with (`pidfd_getfd`). For the network and this
     machine's ports (a Gradle build, a test against a local server), add `"runArgs": ["--cap-add=SYS_PTRACE"]`
@@ -1817,7 +1824,7 @@ macOS (Seatbelt). A test keeps this table equal to the code:
   `package.json`, `make`'s first build beside its `Makefile`.
 - **Files named like keys** (`.env`, `*.pem`, `id_*` …, and a key's other names in the project — hard links made
   earlier, tools' output too) are closed one of two ways, said in Claude's result. Where the session's commands have
-  a user namespace (tier own, or offline with namespaces) and tarae doesn't run as root, each command hides them by mounts of its own: a key
+  a user namespace (tier own, or unserved with namespaces) and tarae doesn't run as root, each command hides them by mounts of its own: a key
   reads as an empty file it may not open, and can't be written, renamed, removed, replaced or linked; everything
   beside it works as usual — `sed -i`, a save by rename. Up to 1,024 keys (a run costs about 0.07 ms more a key,
   measured on Debian 12). Otherwise — no namespaces, past 1,024 keys, or **tarae run as root** (a dev container: the

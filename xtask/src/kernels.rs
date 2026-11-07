@@ -65,7 +65,7 @@ enum Opts {
     /// Docker's profiles, `CAP_SYS_PTRACE` added
     Host,
     /// `--docker-default`
-    Offline,
+    Unserved,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -84,8 +84,8 @@ impl Mode {
         let opts = match base {
             "own" => Opts::Own,
             "host" => Opts::Host,
-            "offline" => Opts::Offline,
-            _ => return Err(format!("{s}: a mode is own, host or offline, `-user` after it as a user")),
+            "unserved" => Opts::Unserved,
+            _ => return Err(format!("{s}: a mode is own, host or unserved, `-user` after it as a user")),
         };
         Ok(Mode { opts, user })
     }
@@ -94,7 +94,7 @@ impl Mode {
         let base = match self.opts {
             Opts::Own => "own",
             Opts::Host => "host",
-            Opts::Offline => "offline",
+            Opts::Unserved => "unserved",
         };
         format!("{base}{}", if self.user { "-user" } else { "" })
     }
@@ -233,8 +233,8 @@ fn kernel(t: &toml::Table) -> Result<Kernel> {
         for (m, tier) in e {
             let mode = Mode::parse(m)?;
             let tier = tier.as_str().unwrap_or_default();
-            if !["own", "host", "offline"].contains(&tier) {
-                return Err(format!("{of}: expect.{m}: own, host or offline"));
+            if !["own", "host", "unserved"].contains(&tier) {
+                return Err(format!("{of}: expect.{m}: own, host or unserved"));
             }
             if !modes.contains(&mode) && mode != whole {
                 return Err(format!("{of}: expect.{m}: not one of its modes"));
@@ -356,12 +356,12 @@ fn shown(w: &str) -> String {
     }
 }
 
-/// The tier `mode` is expected to reach on `k`: the table's, else offline under `--docker-default` (as `cargo xtask
+/// The tier `mode` is expected to reach on `k`: the table's, else unserved under `--docker-default` (as `cargo xtask
 /// linux` expects unless told), else none — said on the command and in the history row alike.
 fn expected(k: &Kernel, mode: Mode) -> Option<&str> {
     match k.expect.get(&mode.name()) {
         Some(t) => Some(t),
-        None => (mode.opts == Opts::Offline).then_some("offline"),
+        None => (mode.opts == Opts::Unserved).then_some("unserved"),
     }
 }
 
@@ -388,7 +388,7 @@ fn suite_cmd(k: &Kernel, mode: Mode, filter: Option<&str>, docker: &Docker) -> C
     match mode.opts {
         Opts::Own => a.push("--userns".into()),
         Opts::Host => {}
-        Opts::Offline => a.push("--docker-default".into()),
+        Opts::Unserved => a.push("--docker-default".into()),
     }
     a.extend(["test".into(), "--kept".into()]);
     if mode.user {
@@ -1702,10 +1702,10 @@ mod tests {
     fn a_table_that_says_wrong_is_refused_with_why() {
         let head = "build = \"tarae-test\"\n[[kernel]]\nname = \"K\"\ncolima = \"p\"\nwhole = \"host\"\n";
         let bad = [
-            ("modes = [\"guest\"]", "own, host or offline"),
+            ("modes = [\"guest\"]", "own, host or unserved"),
             ("modes = []", "no modes"),
             ("modes = [\"host\"]\nexpect = { own = \"own\" }", "not one of its modes"),
-            ("modes = [\"host\"]\nexpect = { host = \"mine\" }", "own, host or offline"),
+            ("modes = [\"host\"]\nexpect = { host = \"mine\" }", "own, host or unserved"),
             ("modes = [\"host\"]\nsysctl = [\"a=b; reboot\"]", "name=value"),
             ("modes = [\"host\"]\nimage = \"debian-12\"", "one of colima"),
             ("modes = [\"host\"]\ndownload = { location = \"https://a/b\" }", "with image, not colima"),
@@ -1764,14 +1764,14 @@ mod tests {
         // (K2: nothing in its table, its ABI in its `env`)
         let k2 = t.kernels.iter().find(|k| k.name == "K2").unwrap();
         let h = Docker::Host("unix:///l/tarae-k2/sock/docker.sock".into());
-        let off = suite_cmd(k2, Mode::parse("offline").unwrap(), None, &h);
+        let off = suite_cmd(k2, Mode::parse("unserved").unwrap(), None, &h);
         assert_eq!(
             off.line(),
             "DOCKER_HOST=unix:///l/tarae-k2/sock/docker.sock xtask linux --env TARAE_EXPECT_LANDLOCK_ABI=1 \
-             --env TARAE_EXPECT_TIER=offline --docker-default test --kept",
-            "offline expected as `--docker-default` expects it, said here as in its history row; the whole suite"
+             --env TARAE_EXPECT_TIER=unserved --docker-default test --kept",
+            "unserved expected as `--docker-default` expects it, said here as in its history row; the whole suite"
         );
-        assert_eq!(expected(k2, Mode::parse("offline-user").unwrap()), Some("offline"));
+        assert_eq!(expected(k2, Mode::parse("unserved-user").unwrap()), Some("unserved"));
         assert_eq!(expected(k2, Mode::parse("host").unwrap()), None, "nothing in the table: read");
         let k1 = t.kernels.iter().find(|k| k.name == "K1").unwrap();
         assert_eq!(expected(k1, Mode::parse("own-user").unwrap()), Some("own"), "its first run's, as found");
@@ -1782,7 +1782,7 @@ mod tests {
         assert!(envs.contains(&("DOCKER_CONTEXT".into(), None)), "one Docker named: {envs:?}");
         assert_eq!(c.get_program(), "/x/xtask");
         let _ = c.stdin(Stdio::null());
-        for m in ["own", "own-user", "host", "host-user", "offline", "offline-user"] {
+        for m in ["own", "own-user", "host", "host-user", "unserved", "unserved-user"] {
             assert_eq!(Mode::parse(m).unwrap().name(), m);
         }
     }

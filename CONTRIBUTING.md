@@ -90,7 +90,7 @@ an aarch64 VM, slow and liable to stall; a Docker on a real x86_64 machine (`DOC
 
 `cargo xtask linux --docker-default test|clippy` runs the container as a dev container usually is, without the
 `CAP_SYS_PTRACE` the checks otherwise add: Docker's default profile refuses `pidfd_getfd`, so the sandbox can't serve
-its runs (tier offline; `TARAE_EXPECT_TIER=offline` is passed unless you give one). It doesn't go with `--userns`.
+its runs (tier unserved, no namespaces: no bridge; `TARAE_EXPECT_TIER=unserved` is passed unless you give one). It doesn't go with `--userns`.
 Killed or interrupted (SIGTERM, SIGINT, SIGHUP), `cargo xtask linux` kills its container before it exits — a
 `timeout` around it ends the run, not just the client.
 
@@ -101,11 +101,14 @@ The sandbox's tiers ([design](docs/design/sandbox-keeper.md#tiers)) are reached 
 | none | Docker's seccomp and AppArmor profiles, `CAP_SYS_PTRACE` added | host |
 | `--userns` | those profiles and the masked paths lifted | own, where the kernel lets a program make user namespaces |
 | `--userns=masked` | the same, `/proc` left masked | own, without a PID namespace |
-| `--docker-default` | as `docker run` makes one: no `CAP_SYS_PTRACE` | offline: `pidfd_getfd` refused |
+| `--docker-default` | as `docker run` makes one: no `CAP_SYS_PTRACE` | unserved: `pidfd_getfd` refused |
 
 The options go in this order: `--no-skip` (no Docker fails rather than skips), then `--env NAME=VALUE`…, then `--userns[=masked]` or `--docker-default`, then
 `--image`, `--platform`, then `clippy` or `test`. An `--env` after `--userns` is an error (`not
---env`). `--env TARAE_EXPECT_TIER=own` makes a test that finds no namespaces fail rather than skip itself.
+--env`). `--env TARAE_EXPECT_TIER=own` makes a test that finds no namespaces fail rather than skip itself, and
+`--env TARAE_EXPECT_BRIDGED=1` one that finds no session's port (tier unserved's bridge; WSL2's condition is
+reproduced by `sandbox::keeper::tests::a_supervisor_above_tarae_leaves_its_runs_bridged` where user namespaces are
+free).
 `test --as-user …` runs the tests as an ordinary user of the container's
 (root's ways differ: it can't map itself into a run's user namespace), and `test --installed …` runs tarae's tests
 from `/usr/bin/tarae`, where an AppArmor profile on the machine attaches by that path.
@@ -122,8 +125,8 @@ goes there), then in it `sudo sysctl -w kernel.yama.ptrace_scope=2` and, for own
 `kernel.apparmor_restrict_unprivileged_userns=0` (neither kept past a restart). Never 3: only a reboot undoes it. Run
 as a user (`--as-user`: root in the container holds `CAP_SYS_PTRACE`, which Yama lets through):
 `DOCKER_CONTEXT=colima-tarae-yama2 cargo xtask linux --env TARAE_EXPECT_TIER=own --env TARAE_EXPECT_YAMA=2 --userns
-test --as-user sandbox::` serves every run; without `--userns` and with `TARAE_EXPECT_TIER=offline` the session is
-offline. `TARAE_EXPECT_YAMA` fails where the scope is another. `colima stop -p tarae-yama2` after.
+test --as-user sandbox::` serves every run; without `--userns` and with `TARAE_EXPECT_TIER=unserved` the session is
+unserved. `TARAE_EXPECT_YAMA` fails where the scope is another. `colima stop -p tarae-yama2` after.
 
 `cargo xtask kernels [kernel …]` runs the sandbox's tests on the set of kernels in `xtask/kernels.toml`: tarae's
 tests built once in colima's `tarae-test` (`test --keep`), then on each kernel that one binary (`test --kept

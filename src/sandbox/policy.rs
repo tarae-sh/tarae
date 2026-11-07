@@ -222,7 +222,7 @@ impl KeyRules {
     }
 
     /// The rule as designed, whatever the system enforces: macOS's profile's (Linux's Landlock only grants, so it
-    /// closes outside the project only what tier own's mounts hide — D-i — and tiers host and offline none) — what
+    /// closes outside the project only what tier own's mounts hide — D-i — and tiers host and unserved none) — what
     /// Claude's reads go by (`reads::key_closed`).
     pub fn designed(self) -> KeyRules {
         KeyRules { supervised: false, ..self }
@@ -367,9 +367,13 @@ pub struct Policy {
     /// supervisor knows the run). Made for the `Here` a policy is made for (`policy_in`), so both systems'
     /// policies pin alike on either (`golden`); `for_project`: this system's.
     pub supervised: bool,
-    /// Linux: why tarae can't serve its runs' calls here (tier offline, `sandbox::unserved`) — None: served, or not
-    /// Linux. Then a run makes no socket that leaves it: no proxy URL (`proxy_url`), no host said to be reached.
-    pub unserved: Option<String>,
+    /// How its run reaches beyond this machine (`sandbox::reach`): served (or not Linux); not served (tier unserved)
+    /// but bridged — through the session's port by its own token (`token`), as served —; or closed, no socket
+    /// leaving it: no proxy URL (`proxy_url`), no host said to be reached.
+    pub reach: super::NetReach,
+    /// Linux, bridged and the network open: its run's token at the session's port (`proxy::RunToken`) — what its
+    /// proxy URL carries, and how the proxy tells it from the session's other runs. Not part of its key.
+    pub token: Option<proxy::RunToken>,
     /// The hosts its network reaches through the proxy, as its rules there hold them (`llm.sandbox-hosts`, and
     /// what the user answered for the project and for this run alone — `tools::with_allowed`). Not part of its key
     /// (`policy_key`): an answer mustn't end what an earlier run left (a daemon) — the proxy's newer answers go
@@ -527,13 +531,15 @@ impl Policy {
     /// Its run's proxy URL — the one thing the packs' proxy lines and the proxy variables hang on (step 5f): a
     /// port and token of the run's own where it has one (`proxy`: macOS), else, where its supervisor hands its
     /// connections over (`supervised`: Linux), that address (`route::PROXY` — no credential: the supervisor
-    /// knows the run). None: the network closed, no way to the proxy was made, or tarae can't serve its runs
-    /// (`unserved`: nothing answers that address — as srt sets no proxy variable without its bridge) — nothing goes
-    /// beyond this machine.
+    /// knows the run); not served but bridged, that address with the run's own token (`token`: the session's port
+    /// answers it there). None: the network closed, no way to the proxy was made, or tarae can't serve its runs and
+    /// there's no bridge (`reach`: nothing answers that address — as srt sets no proxy variable without its
+    /// bridge) — nothing goes beyond this machine.
     pub fn proxy_url(&self) -> Option<proxy::ProxyUrl> {
-        match self.unserved {
-            Some(_) => None,
-            None => self.proxy_url_served(),
+        match (&self.reach, &self.token) {
+            (super::NetReach::Served, _) => self.proxy_url_served(),
+            (super::NetReach::Bridged { .. }, Some(t)) if self.network => Some(t.url()),
+            _ => None,
         }
     }
 
@@ -825,15 +831,37 @@ impl Policy {
     }
 
     /// Linux: how the report says the network where it differs from macOS's words — tarae's supervisor
-    /// serving: routed (`None`: `rules` says it); not serving here: no socket at all,
+    /// serving: routed (`None`: `rules` says it); not serving here but bridged (`reach`, its proxy URL made): the
+    /// network only through tarae's proxy, every other socket refused; not serving and no bridge: no socket at all,
     /// this machine's ports and the project's unix sockets included, and why — and what Landlock can't keep
     /// (`linux.rs`). None elsewhere.
     pub fn linux_said(&self) -> Option<(Option<String>, String)> {
         #[cfg(target_os = "linux")]
         if let Some(Ok(c)) = &self.confine {
             let asked = self.network || self.localhost || !self.ports.is_empty() || !self.sockets.is_empty();
-            let net = c.serve.as_ref().err().map(|why| {
-                format!(
+            let bridged = matches!(self.reach, super::NetReach::Bridged { .. }) && self.proxy_url().is_some();
+            let net = c.serve.as_ref().err().map(|why| match bridged {
+                true => format!(
+                    ", and reach the network beyond this machine only through tarae's proxy (HTTPS_PROXY, set for \
+                     every run, its own token in it) — a tool that ignores it (ssh, a database client, Node's fetch \
+                     without NODE_USE_ENV_PROXY) can't go out; never link-local addresses, the cloud metadata \
+                     servers tarae knows of, multicast or broadcast{} — and make no other socket: not this machine's \
+                     ports, nor a unix socket, not even in the project or its own folder, which macOS allows (tarae \
+                     can't serve them here: {why}){}",
+                    match (self.asks_hosts, self.egress.any) {
+                        (true, _) => "; each host only once the user said yes to it on its card \
+                                      (llm.sandbox-network is off) — a host refused is the user's no",
+                        (false, false) => "; without asking only the hosts llm.sandbox-hosts lists (by default \
+                                            the language packs' package registries), any other once the user said \
+                                            yes to it on its card — a host refused is the user's no",
+                        (false, true) => "",
+                    },
+                    match self.localhost || !self.ports.is_empty() || !self.sockets.is_empty() {
+                        true => " — what llm.sandbox-localhost, -ports or a socket grant open, too",
+                        false => "",
+                    }
+                ),
+                false => format!(
                     ", and make no socket: no network, not even this machine's ports, and no unix socket — not \
                      even in the project or its own folder, which macOS allows (tarae can't serve them here: \
                      {why}){}",
@@ -842,7 +870,7 @@ impl Policy {
                     } else {
                         ""
                     }
-                )
+                ),
             });
             // (Q4: tarae's AppArmor profile would lend its runs what Ubuntu's restriction keeps from programs)
             let userns = match c.no_userns {
@@ -1514,7 +1542,8 @@ impl Policy {
             watch: None,
             trace: None,
             granted: Vec::new(),
-            unserved: None,
+            reach: super::NetReach::Served,
+            token: None,
             sockets: Vec::new(),
             terminals: false,
             keys: Some(Vec::new()),

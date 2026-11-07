@@ -265,13 +265,13 @@ pub fn is_userns(nr: libc::c_long) -> bool {
 enum Attr {
     /// Refused in every mode — inode flags.
     Refused,
-    /// Mode and times: to tarae where served (`supervisor::attrs`), else the run's (offline).
+    /// Mode and times: to tarae where served (`supervisor::attrs`), else the run's (unserved).
     ModeTimes,
     /// Owner and group: to tarae where served, let only where it changes neither (`supervisor::attrs`: `rsync -a`,
-    /// `cp -a` asking for what the file has); refused where not served (offline) — D-h.
+    /// `cp -a` asking for what the file has); refused where not served (unserved) — D-h.
     Owner,
     /// Extended attributes (ACLs too): to tarae where served, let only where the run may write and only in the
-    /// namespaces it serves (`supervisor::attrs`); refused where not served (offline) — D2 B.
+    /// namespaces it serves (`supervisor::attrs`); refused where not served (unserved) — D2 B.
     Xattr,
 }
 
@@ -335,7 +335,7 @@ const FLAG_IOCTLS: [u32; 8] =
 /// docs list `chmod`, `chown`, `setxattr` and `utime` among what it can't restrict — so the filter takes them
 /// (`ATTR_CALLS`, `FLAG_IOCTLS`).
 /// In served tiers (own, host), mode, times and extended attribute calls go to tarae, which lets them only where the
-/// run may write (`writes_allow`), and owner calls too, only where they change nothing. In unserved tiers (offline),
+/// run may write (`writes_allow`), and owner calls too, only where they change nothing. In tier unserved,
 /// mode and times stay the run's, owner and extended attribute calls are refused. Inode flags are refused in every
 /// tier (`EPERM`). Starts and ends on the call's number.
 fn attr_ops(served: bool) -> Vec<Op> {
@@ -471,6 +471,48 @@ impl Filter {
             }
             Err(last)
         }
+    }
+}
+
+/// Tests: a supervisor above tarae, as WSL2's init puts one on every process (`.sb/offline-bridge-plan.md` §4) — a
+/// filter that hands one call nothing makes (`acct`) to a listener and lets every other through. Made before a fork,
+/// put on in its child (`apply`: raw calls only), its listener kept open past the exec: the kernel frees a filter's
+/// notifications as its listener closes, and with them what refuses another listener below it (`EBUSY`).
+#[cfg(test)]
+pub struct Above(Vec<libc::sock_filter>);
+
+#[cfg(test)]
+impl Above {
+    pub fn new() -> io::Result<Above> {
+        let arch = ARCH.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Unsupported, "no seccomp filter for this architecture")
+        })?;
+        let mut ops = native(arch);
+        ops.push(Op::Is(libc::SYS_acct as u32, To::Tarae, To::Next));
+        Ok(Above(assemble(&ops)))
+    }
+
+    /// Puts it on the calling thread (`no_new_privs` first), its listener moved to descriptor `at` without
+    /// close-on-exec — what the thread execs holds it, as WSL's init holds its own. Raw calls only.
+    pub fn apply(&self, at: i32) -> io::Result<()> {
+        let fprog = libc::sock_fprog { len: self.0.len() as u16, filter: self.0.as_ptr().cast_mut() };
+        // SAFETY: the program outlives the call (the kernel copies it); this thread only; descriptors of its own.
+        unsafe {
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let flags = libc::SECCOMP_FILTER_FLAG_NEW_LISTENER;
+            let fd = libc::syscall(libc::SYS_seccomp, libc::SECCOMP_SET_MODE_FILTER, flags, &raw const fprog);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // (`dup2` leaves the copy without close-on-exec)
+            if libc::dup2(fd as i32, at) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            libc::close(fd as i32);
+        }
+        Ok(())
     }
 }
 
@@ -1157,7 +1199,7 @@ mod tests {
         assert!(calls.iter().any(|(name, _)| name == "fchmodat"), "the table was read: {}", calls.len());
     }
 
-    /// Test 2's rows for what's refused where nothing serves it (offline, `Mode::Plain`): each call that changes a
+    /// Test 2's rows for what's refused where nothing serves it (unserved, `Mode::Plain`): each call that changes a
     /// file's owner, extended attributes or flags, raw (no libc fallback), on a file of the test's own — `EPERM` on a
     /// filtered thread; without the filter, whatever the kernel says (done, unsupported, missing), never `EPERM`.
     #[test]

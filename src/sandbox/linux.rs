@@ -109,7 +109,7 @@ pub struct Confine {
     /// probe's rules).
     pub guarantees: Option<super::guarantees::Guarantees>,
     /// The ptys its run may open of this system's `/dev/pts` (3b, `tier::serves_ptys`) — what the supervisor puts
-    /// in place of those the run makes; None: all of it (offline, no namespaces) or the session's own (namespaces).
+    /// in place of those the run makes; None: all of it (unserved, no namespaces) or the session's own (namespaces).
     pub ptys: Option<Arc<super::ptys::Ptys>>,
     pub made: Arc<Made>,
     pub closed: Vec<PathBuf>,
@@ -159,7 +159,7 @@ pub struct Confine {
 }
 
 impl Confine {
-    /// The tier its runs go at (`own`, `host`, `offline`: its guarantees'); empty: no keeper's.
+    /// The tier its runs go at (`own`, `host`, `unserved`: its guarantees'); empty: no keeper's.
     pub fn tier(&self) -> &'static str {
         self.guarantees.as_ref().and_then(|g| g.tier()).map_or("", |t| t.said())
     }
@@ -1693,6 +1693,7 @@ pub fn confine(
             brief: probed.and_then(|p| p.brief.clone()),
             hint: probed.and_then(|p| p.hint.clone()),
             network: p.network,
+            bridged: k.bridge.is_ok(),
         })
         .asking(p.asks_hosts)
         .listing(!p.egress.any)

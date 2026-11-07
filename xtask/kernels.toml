@@ -3,10 +3,10 @@
 # suite among them), then tarae's own tests `repeat` times in `whole`'s mode — every run on the one test binary built
 # in `build`'s colima VM (`cargo xtask linux test --keep`), the same binary on every kernel.
 #
-# modes: `own` (`--userns`), `host` (Docker's profiles, SYS_PTRACE added), `offline` (`--docker-default`), each as
+# modes: `own` (`--userns`), `host` (Docker's profiles, SYS_PTRACE added), `unserved` (`--docker-default`), each as
 # root or as a user (`-user`: `--as-user`). They name how the container runs; `expect` names the tier each reaches
 # (`TARAE_EXPECT_TIER`: the probe and the suite fail rather than skip). A mode not in `expect` runs expecting nothing
-# — the tier it found is said, then written here (`--docker-default` expects offline unless told). A failure is a
+# — the tier it found is said, then written here (`--docker-default` expects unserved unless told). A failure is a
 # tarae bug (fixed, pinned by a test) or the kernel lacking something (said missing in the product, the expectation
 # changed here with why) — never a mode left out to make it pass.
 #
@@ -23,41 +23,41 @@ repeat = 3
 name = "K4"
 says = "6.8, Ubuntu 24.04 GA — colima's own VM: Landlock ABI 4, the user-namespace restriction on"
 colima = "tarae-test"
-modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"]
 whole = "host-user"
 # (own and own-user reach host, read on its first run, 2026-11-02: the restriction is what this kernel is here for —
 # it binds the container's root too, which holds no CAP_SYS_ADMIN where it counts — and the probe says it, with the
 # AppArmor profile that lifts it. Tier own on this kernel and its ABI is Y2's, the restriction lifted there.)
-expect = { own = "host", own-user = "host", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+expect = { own = "host", own-user = "host", host = "host", host-user = "host", unserved = "unserved", unserved-user = "unserved" }
 
 [[kernel]]
 name = "K3"
 says = "6.1, Debian 12: Landlock ABI 2 (partial), user namespaces free"
 image = "debian-12"
 install = "curl -fsSL https://get.docker.com | sh"
-modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"]
 whole = "host-user"
-expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", unserved = "unserved", unserved-user = "unserved" }
 
 [[kernel]]
 name = "K1"
 says = "5.14, AlmaLinux 9 (RHEL 9's kernel): the floor, Landlock as backported, SELinux"
 image = "almalinux-9"
 install = "dnf -y install dnf-plugins-core && dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo && dnf -y install docker-ce docker-ce-cli containerd.io"
-modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"]
 whole = "host-user"
 # (read on its first run, 2026-11-02 on fdfdbcd1, as found: AlmaLinux 9.8's 5.14.0-687 backports Landlock ABI 6 —
 # full, as from 6.12 —, Yama is 0 and nothing restricts user namespaces, so `--userns` reaches own; without it
-# Docker's default seccomp profile refuses new namespaces, host; `--docker-default` offline. Under that profile here
+# Docker's default seccomp profile refuses new namespaces, host; `--docker-default` unserved. Under that profile here
 # a run's `fchmodat2` never reaches tarae: Docker's ENOSYS, whatever the kernel has)
-expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", unserved = "unserved", unserved-user = "unserved" }
 
 [[kernel]]
 name = "K2"
 says = "5.15, Ubuntu 22.04 GA: Landlock ABI 1 — the NoSandbox path said, every test still green"
 image = "ubuntu-22.04"
 install = "curl -fsSL https://get.docker.com | sh"
-# (below ABI 2 no tier is reached: `--docker-default` would expect offline)
+# (below ABI 2 no tier is reached: `--docker-default` would expect unserved)
 modes = ["host", "host-user"]
 whole = "host-user"
 # (its first run, 2026-11-02 on 7df9959a: Ubuntu 22.04.5's 5.15.0-194, aarch64, Landlock ABI 1, Yama 1, nothing
@@ -75,12 +75,12 @@ says = "6.12, Debian 13 with Yama's ptrace_scope 1: Landlock ABI 6 — the first
 image = "debian-13"
 install = "curl -fsSL https://get.docker.com | sh"
 sysctl = ["kernel.yama.ptrace_scope=1"]
-modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"]
 whole = "host-user"
 # (its first run, 2026-11-03 on 6010433f: Debian 13's 6.12.111, aarch64, Landlock ABI 6, every mode the tier
 # expected; its six tables blessed as aarch64's snapshots — x86-64's but row 24's other ABI, not tried here.
-# `--docker-default` makes no namespaces, so offline's is offline's, not offline-ns's)
-expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+# `--docker-default` makes no namespaces, so unserved's is unserved's, not unserved-ns's)
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", unserved = "unserved", unserved-user = "unserved" }
 
 [[kernel]]
 name = "K6"
@@ -94,11 +94,11 @@ download = { location = "https://dl.fedoraproject.org/pub/fedora/linux/releases/
 install = "curl -fsSL https://get.docker.com | sh"
 # (Fedora's own is 0: set to 1, the snapshots' — K6 is the newest kernel's behaviour, held against the tables)
 sysctl = ["kernel.yama.ptrace_scope=1"]
-modes = ["own", "own-user", "host", "host-user", "offline", "offline-user"]
+modes = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"]
 whole = "host-user"
 # (its first run, 2026-11-03 on 6c4faa7f: Fedora 44's 6.19.10, aarch64, Landlock ABI 7, Yama 0 — own and own-user
 # reached own, the rest their tiers; nothing compared at Yama 0)
-expect = { own = "own", own-user = "own", host = "host", host-user = "host", offline = "offline", offline-user = "offline" }
+expect = { own = "own", own-user = "own", host = "host", host-user = "host", unserved = "unserved", unserved-user = "unserved" }
 
 [[kernel]]
 name = "Y2"
@@ -110,4 +110,4 @@ env = ["TARAE_EXPECT_YAMA=2"]
 # (as a user: root in the container holds CAP_SYS_PTRACE, which Yama lets through)
 modes = ["own-user", "host-user"]
 whole = "own-user"
-expect = { own-user = "own", host-user = "offline" }
+expect = { own-user = "own", host-user = "unserved" }

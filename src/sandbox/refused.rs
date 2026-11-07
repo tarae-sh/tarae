@@ -466,7 +466,7 @@ fn in_stand_in_home() {
         run_proxy_row(&exe, &root, &other_root, &here, tcp_unopened_port);
 
     let g = policy.guarantees().expect("sandboxed policy has guarantees");
-    let is_offline = g.tier() == Some(super::guarantees::Tier::Offline);
+    let is_unserved = g.tier() == Some(super::guarantees::Tier::Unserved);
     let report = Guard::In(Box::new(policy.clone())).report(&[]);
     let flat_report = report.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -861,7 +861,7 @@ fn in_stand_in_home() {
     let r16_state = got["r16_state"] == "refused";
     let r16_out = got["r16_outside"] == "refused";
     let r16_tmp = got["r16_tmp"] == "refused";
-    let r16_own_want = if is_offline { "refused" } else { "ok" };
+    let r16_own_want = if is_unserved { "refused" } else { "ok" };
     let r16_own_root = got["r16_own_root"] == r16_own_want;
     let r16_own_run = got["r16_own_run"] == r16_own_want;
     let r16_ok = r16_other && r16_state && r16_out && r16_tmp && r16_own_root && r16_own_run;
@@ -1112,7 +1112,7 @@ fn in_stand_in_home() {
         let mount_said = flat_report.contains("mounting or unmounting — no command in the sandbox does")
             && flat_report.contains("No command of yours mounts or unmounts in the sandbox");
         let r21_said = if r21[2..9].iter().any(|(_, p)| *p == "refused") {
-            if is_offline && policy.watch.is_none() {
+            if is_unserved && policy.watch.is_none() {
                 "unwatched"
             } else if mount_said {
                 "refused"
@@ -1188,7 +1188,7 @@ fn in_stand_in_home() {
             has_userns_words(&flat_userns_report) && (!no_userns || has_userns_words(&flat_report));
         let r22_said = match r22_expected {
             Verdict::System => "system",
-            _ if is_offline && policy.watch.is_none() => "unwatched",
+            _ if is_unserved && policy.watch.is_none() => "unwatched",
             _ if userns_said && (no_userns || mount_said) => "refused",
             _ => "allowed",
         };
@@ -1232,7 +1232,7 @@ fn in_stand_in_home() {
         };
 
         // 23. 1.9 | linux-nested-seccomp-listener — served, tarae's supervisor holds the chain's one listener: a
-        // run's own is refused (EBUSY), and the precedence probe never starts. Offline a run may have its own (as
+        // run's own is refused (EBUSY), and the precedence probe never starts. Unserved a run may have its own (as
         // srt, Docker and Flatpak let it), and tarae's refusal still wins over what that listener's filter says
         // (`precedence`: tarae's EPERM where the baseline got the closed listener's ENOSYS). Plain filters stay
         // allowed. Where the baseline can't get a listener either, nothing here shows tarae's: `system`.
@@ -1249,7 +1249,7 @@ fn in_stand_in_home() {
         let plain = part(base_linux.sys["plain_filter"], sys_run("plain_filter"));
         let r23_shows = base_listener.through() && base_precedence == Probe::Refused(libc::ENOSYS);
         let r23_ok = plain == "allowed"
-            && match is_offline {
+            && match is_unserved {
                 false => listener == "refused" && precedence == "not-tried",
                 true => listener == "allowed" && precedence == "refused",
             };
@@ -1475,9 +1475,9 @@ const UNCOMPARED: &str = "tarae-test: must-be-refused snapshot not compared — 
 /// What a Linux table depends on besides tarae's code (`snapshot_for`).
 #[derive(Clone, Copy)]
 struct Machine<'a> {
-    /// `Policy::tier_said`: own, host or offline, ` partial` below Landlock ABI 3.
+    /// `Policy::tier_said`: own, host or unserved, ` partial` below Landlock ABI 3.
     tier: &'a str,
-    /// The keeper has the session's namespaces (offline has them where user namespaces work).
+    /// The keeper has the session's namespaces (unserved has them where user namespaces work).
     ns: bool,
     arch: &'a str,
     /// The Landlock ABI.
@@ -1492,7 +1492,7 @@ struct Machine<'a> {
 /// The snapshot a Linux table is held against, or why none is: the snapshots are the test VMs' words — x86-64's
 /// and aarch64's apart (row 24 tries another ABI's calls only on x86-64; aarch64's are `cargo xtask kernels`'
 /// Lima VMs on a Mac), Landlock ABI 6 or more (rows 17 and 25: a run's signals scoped), Yama's `ptrace_scope` 1
-/// (row 25's ptrace and `pidfd_getfd`, against a baseline Yama refuses or not) — keyed by tier, offline with
+/// (row 25's ptrace and `pidfd_getfd`, against a baseline Yama refuses or not) — keyed by tier, unserved with
 /// namespaces apart (it has a network of its own), a user's apart (the system refuses some calls first; in own its
 /// names are sealed, B9). Elsewhere the rows' properties still hold, and the table is said, not compared.
 fn snapshot_for(m: &Machine) -> Result<String, String> {
@@ -1511,9 +1511,9 @@ fn snapshot_for(m: &Machine) -> Result<String, String> {
         let had = m.yama.map_or("no Yama".to_string(), |s| format!("Yama's ptrace_scope {s}"));
         return Err(format!("{had}: the snapshots are ptrace_scope 1's"));
     }
-    let ns = if m.tier == "offline" && m.ns { "-ns" } else { "" };
+    let ns = if m.tier == "unserved" && m.ns { "-ns" } else { "" };
     if m.user && !ns.is_empty() {
-        return Err("offline with namespaces as a user: no snapshot of its words yet".into());
+        return Err("unserved with namespaces as a user: no snapshot of its words yet".into());
     }
     let user = if m.user { "-user" } else { "" };
     Ok(format!("refused_linux_{}{ns}{user}{arch}", m.tier))
@@ -1529,22 +1529,22 @@ fn a_linux_table_is_held_against_a_snapshot_only_where_its_words_are_the_snapsho
     for (m, name) in [(own, "refused_linux_own-user"), (vm, "refused_linux_host-user")] {
         assert_eq!(snapshot_for(&Machine { user: true, ..m }).as_deref(), Ok(name));
     }
-    // (offline with namespaces has its own network, other calls refused in other ways: another table)
-    for (ns, name) in [(false, "refused_linux_offline"), (true, "refused_linux_offline-ns")] {
-        let offline = Machine { tier: "offline", ns, ..vm };
-        assert_eq!(snapshot_for(&offline).as_deref(), Ok(name));
+    // (unserved with namespaces has its own network, other calls refused in other ways: another table)
+    for (ns, name) in [(false, "refused_linux_unserved"), (true, "refused_linux_unserved-ns")] {
+        let unserved = Machine { tier: "unserved", ns, ..vm };
+        assert_eq!(snapshot_for(&unserved).as_deref(), Ok(name));
     }
-    let offline_user = Machine { tier: "offline", ns: false, user: true, ..vm };
-    assert_eq!(snapshot_for(&offline_user).as_deref(), Ok("refused_linux_offline-user"));
-    let got = snapshot_for(&Machine { ns: true, ..offline_user });
-    assert!(got.as_ref().is_err_and(|e| e.contains("as a user")), "offline-ns as a user: {got:?}");
+    let unserved_user = Machine { tier: "unserved", ns: false, user: true, ..vm };
+    assert_eq!(snapshot_for(&unserved_user).as_deref(), Ok("refused_linux_unserved-user"));
+    let got = snapshot_for(&Machine { ns: true, ..unserved_user });
+    assert!(got.as_ref().is_err_and(|e| e.contains("as a user")), "unserved-ns as a user: {got:?}");
     // (aarch64's apart, every table of its own: row 24 is x86-64's only — the rest of the rule the same)
     let arm = Machine { arch: "aarch64", ..vm };
     for (m, name) in [
         (arm, "refused_linux_host-aarch64"),
         (Machine { user: true, ..arm }, "refused_linux_host-user-aarch64"),
         (Machine { tier: "own", ns: true, ..arm }, "refused_linux_own-aarch64"),
-        (Machine { tier: "offline", ns: true, ..arm }, "refused_linux_offline-ns-aarch64"),
+        (Machine { tier: "unserved", ns: true, ..arm }, "refused_linux_unserved-ns-aarch64"),
     ] {
         assert_eq!(snapshot_for(&m).as_deref(), Ok(name));
     }
@@ -1604,8 +1604,8 @@ fn an_aarch64_table_with_no_snapshot_yet_is_said_not_failed() {
 }
 
 /// The tier modes `cargo xtask kernels` blesses aarch64's tables of (K5: Debian 13's 6.12, Landlock ABI 6, Yama 1 —
-/// 2026-11-03 on 6010433f). Offline with namespaces has none: no kernel's mode reaches it.
-const AARCH64_BLESSED: [&str; 6] = ["own", "own-user", "host", "host-user", "offline", "offline-user"];
+/// 2026-11-03 on 6010433f). Unserved with namespaces has none: no kernel's mode reaches it.
+const AARCH64_BLESSED: [&str; 6] = ["own", "own-user", "host", "host-user", "unserved", "unserved-user"];
 
 /// K5's six tables, blessed: aarch64's words are x86-64's but row 24's other ABI — i386's `int 0x80` is x86-64's
 /// alone; an arm64 process has no other ABI to call (AArch32's calls come only from a 32-bit program, and the
@@ -2193,9 +2193,9 @@ fn run_proxy_row(
     };
 
     let cfg_file = net_a.run.as_ref().unwrap().path().join("proxy.cfg");
-    let offline = u8::from(!has_proxy);
+    let unserved = u8::from(!has_proxy);
     let cfg_text = format!(
-        "ADDR_A={addr_a}\nTOKEN_A={token_a}\nPORT_B={port_b}\nTOKEN_B={token_b}\nOFFLINE={offline}\n"
+        "ADDR_A={addr_a}\nTOKEN_A={token_a}\nPORT_B={port_b}\nTOKEN_B={token_b}\nPROXYLESS={unserved}\n"
     );
     write_file(&cfg_file, &cfg_text);
 
@@ -2586,10 +2586,10 @@ fn sandbox_proxy(cfg: &HashMap<&str, &str>) {
     let token_a = cfg["TOKEN_A"];
     let port_b: u16 = cfg["PORT_B"].parse().unwrap();
 
-    // 1. Unlisted host `refused.invalid:443` through own proxy port with own token -> 403. Offline (no proxy)
+    // 1. Unlisted host `refused.invalid:443` through own proxy port with own token -> 403. Unserved (no proxy)
     // the socket's own refusal is the answer and nothing connects: were the rule broken, a connect to
     // `route::PROXY` would leave by the default route.
-    let status_unlisted = if cfg["OFFLINE"] == "1" {
+    let status_unlisted = if cfg["PROXYLESS"] == "1" {
         match try_socket(libc::AF_INET, libc::SOCK_STREAM, 0) {
             Ok(()) => "allowed".to_string(),
             Err(e) if matches!(e.raw_os_error(), Some(libc::EPERM | libc::EACCES)) => "refused".to_string(),

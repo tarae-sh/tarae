@@ -79,7 +79,9 @@ use crate::workspace::Here;
 /// 35: `keys.pane` — the docked pane the keys are in, by its id (`pane#5`; onetree S4: the keys are a pane's).
 /// 36: `owed` — every job whose result hasn't landed, the start's or not (#398); `starting` counts the start's work
 /// with no result too while it runs.
-pub const V: u64 = 36;
+/// 37: `sessions[].sandbox.tier` `offline` is `unserved` (offline-bridge piece 3: where its namespaces stand, its runs
+/// reach beyond through tarae's proxy, `network.way` `proxy`).
+pub const V: u64 = 37;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;

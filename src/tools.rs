@@ -1082,25 +1082,28 @@ fn also_network(s: &str) -> Result<AlsoAsk, String> {
 
 /// The network as a session's runs reach it, for `also_host`: open (`llm.sandbox-network`), the hosts they reach
 /// without asking then (`llm::Hosts::rules`; None: any), and the session's `s` hosts (`caps::Basis.hosts`: the
-/// proxy's, not in `Caps`) — and why tarae can't serve the runs' calls (`sandbox::unserved`, tier offline: no
-/// socket leaves a run, none of this is reached).
+/// proxy's, not in `Caps`) — and how the runs reach beyond (`sandbox::reach`: served; tier unserved but bridged,
+/// the hosts as served and no port of this machine's; closed, no socket leaves a run, none of this is reached).
 struct NetNow {
     open: bool,
     rules: Option<Vec<crate::sandbox::proxy::egress::Pattern>>,
     session: Vec<(String, u16)>,
-    unserved: Option<String>,
+    reach: crate::sandbox::NetReach,
 }
 
-/// What Claude hears of `also` for a socket where tarae can't serve its runs (`why`, tier offline, #417): no card
-/// opens one in the sandbox there — only `outside_sandbox`'s.
-fn offline_said(ask: &AlsoAsk, why: &str) -> String {
+/// What Claude hears of `also` for a socket no run reaches where tarae can't serve its runs (tier unserved, #417): a
+/// host where there's no bridge (`bridge`, why not), a port or every port either way (this machine's ports aren't in
+/// the session's network namespace) — no card opens one in the sandbox there, only `outside_sandbox`'s.
+fn unserved_said(ask: &AlsoAsk, unserved: &str, bridge: Option<&str>) -> String {
     let what = match ask {
         AlsoAsk::Network(..) => "no network",
+        _ if bridge.is_none() => "no port of this machine's (the network only through tarae's proxy)",
         _ => "no socket, not even this machine's ports",
     };
+    let no_bridge = bridge.map(|b| format!("; no bridge: {b}")).unwrap_or_default();
     format!(
-        "tier offline: {what} for your commands here (not served: {why}) — no card opens it in the sandbox. If the \
-         command needs it, run it again with outside_sandbox and your reason."
+        "tier unserved: {what} for your commands here (not served: {unserved}{no_bridge}) — no card opens it in the \
+         sandbox. If the command needs it, run it again with outside_sandbox and your reason."
     )
 }
 
@@ -1140,9 +1143,20 @@ fn also_grant(
     };
     let never = never_opened;
     let home = caps.home.as_deref().unwrap_or(Path::new("/"));
-    // (#417: not served, no socket leaves a run — a card would record what no run reaches)
-    if let (Some(why), AlsoAsk::Port(_) | AlsoAsk::Localhost | AlsoAsk::Network(..)) = (&net.unserved, ask) {
-        return Err(offline_said(ask, why));
+    // (#417: not served, a card would record what no run reaches — a host where there's no bridge, this machine's
+    // ports in either form)
+    use crate::sandbox::NetReach;
+    match (&net.reach, ask) {
+        (
+            NetReach::Closed { unserved, bridge },
+            AlsoAsk::Port(_) | AlsoAsk::Localhost | AlsoAsk::Network(..),
+        ) => {
+            return Err(unserved_said(ask, unserved, Some(bridge)));
+        }
+        (NetReach::Bridged { unserved }, AlsoAsk::Port(_) | AlsoAsk::Localhost) => {
+            return Err(unserved_said(ask, unserved, None));
+        }
+        _ => {}
     }
     match ask {
         AlsoAsk::Port(n) => {
@@ -1347,8 +1361,12 @@ fn also_ask(
         let caps = basis.build();
         let open = |n: u16| localhost || ports.contains(&n);
         let here = here.map_or_else(crate::sandbox::Here::now, |h| h());
-        let unserved = crate::sandbox::unserved(&here);
-        let net = NetNow { open: open_net, rules: hosts.rules(), session: basis.hosts.clone(), unserved };
+        let net = NetNow {
+            open: open_net,
+            rules: hosts.rules(),
+            session: basis.hosts.clone(),
+            reach: crate::sandbox::reach(&here),
+        };
         let keys = keys.unwrap_or_else(|| {
             crate::sandbox::key_rules_for(&caps.root, with_allowed(&llm, &caps, None), &here)
         });
@@ -7083,8 +7101,12 @@ mod tests {
         let caps = crate::caps::Caps::at(&home, &root);
         let closed = |_: u16| false;
         let grant = |a: super::AlsoAsk| {
-            let net =
-                super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved: None };
+            let net = super::NetNow {
+                open: false,
+                rules: Some(Vec::new()),
+                session: Vec::new(),
+                reach: Default::default(),
+            };
             super::also_grant(&a, &root, &caps, (&closed, false), None, &net, None)
         };
         let at = |p: &std::path::Path| p.display().to_string();
@@ -7126,7 +7148,12 @@ mod tests {
             ..crate::caps::Caps::granted(&root, &granted, &none, &none)
         };
         let closed = |_: u16| false;
-        let net = super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved: None };
+        let net = super::NetNow {
+            open: false,
+            rules: Some(Vec::new()),
+            session: Vec::new(),
+            reach: Default::default(),
+        };
         let here = crate::sandbox::Here { tmp: None, ..crate::sandbox::Here::now() };
         let w = super::with_allowed(&crate::llm::LlmConfig::default(), &caps, None);
         let keys = crate::sandbox::key_rules_for(&root, w, &here);
@@ -7184,7 +7211,7 @@ mod tests {
     }
 
     /// A system that serves its runs' calls, whatever this one does: the `also` tests' cards are a served session's —
-    /// in tier offline (`--docker-default`) no card opens a socket (#417, `offline_asks_no_host_and_points_at_outside`).
+    /// in tier unserved no card opens a port, nor a host with no bridge (#417, `unserved_asks_as_its_reach_says`).
     fn served(ed: &mut crate::editor::Editor) {
         let here = || crate::sandbox::Here { served: Some(|| Ok(())), ..crate::sandbox::Here::now() };
         ed.sandbox_here = Some(std::sync::Arc::new(here));
@@ -7233,24 +7260,33 @@ mod tests {
         assert!(ed.offer_key(crate::key::Key::plain(crate::key::Code::Char(c))), "{c} taken");
     }
 
-    /// #417: where tarae can't serve its runs' calls (tier offline — `cargo xtask linux --docker-default`, WSL2 at work)
-    /// a run makes no socket that leaves it, so `also {network}` raises no card and records no host: Claude hears the
-    /// tier, why, and the one way that reaches it — `outside_sandbox`'s card. Its runs get no proxy variables (nothing
-    /// answers them there), and a host granted is never said to be reached through tarae's proxy. Where the runs are
-    /// served it skips, saying so; `TARAE_EXPECT_TIER=offline` fails instead.
+    /// #417 and offline-bridge piece 3, this system's own answer where tarae can't serve its runs' calls (tier unserved —
+    /// `cargo xtask linux --docker-default`, WSL2 at work): `also {port}` raises no card and records nothing — Claude
+    /// hears the tier, why, and the one way that reaches it, `outside_sandbox`'s card. A host as the session's reach
+    /// says: closed (no bridge — Docker's default profile), refused the same and no proxy variables, a host granted
+    /// never said reached; bridged (the session's port stands — WSL2), its grant card as served, and the run's proxy URL
+    /// its own token's. Where the runs are served it skips, saying so; `TARAE_EXPECT_TIER=unserved` fails instead, and
+    /// `TARAE_EXPECT_BRIDGED=1` where it isn't bridged.
     #[cfg(target_os = "linux")]
     #[test]
-    fn offline_asks_no_host_and_points_at_outside() {
+    fn unserved_asks_as_its_reach_says() {
         use serde_json::json;
 
         use crate::allow::Grant;
-        let test = "offline_asks_no_host_and_points_at_outside";
-        let Some(why) = crate::sandbox::supervisor::unavailable() else {
-            let offline = std::env::var("TARAE_EXPECT_TIER").is_ok_and(|t| t.trim() == "offline");
-            assert!(!offline, "{test}: tier offline expected, this system's runs are served");
+        use crate::sandbox::NetReach;
+        let test = "unserved_asks_as_its_reach_says";
+        let reach = crate::sandbox::reach(&crate::sandbox::Here::now());
+        let (NetReach::Bridged { unserved: why } | NetReach::Closed { unserved: why, .. }) = reach.clone()
+        else {
+            let unserved = std::env::var("TARAE_EXPECT_TIER").is_ok_and(|t| t.trim() == "unserved");
+            assert!(!unserved, "{test}: tier unserved expected, this system's runs are served");
             return crate::test_results::said_skip(&format!("{test} — this system's runs are served"));
         };
-        let base = crate::scratch::Scratch::new("also-offline");
+        let bridged = matches!(reach, NetReach::Bridged { .. });
+        if std::env::var_os("TARAE_EXPECT_BRIDGED").is_some() {
+            assert!(bridged, "{test}: bridged expected (TARAE_EXPECT_BRIDGED): {reach:?}");
+        }
+        let base = crate::scratch::Scratch::new("also-unserved");
         std::fs::create_dir_all(base.join("home/proj")).unwrap();
         let home = std::fs::canonicalize(base.join("home")).unwrap();
         let root = home.join("proj");
@@ -7258,74 +7294,160 @@ mod tests {
         // (this system's own answer, not `also_chat`'s served stand-in)
         ed.sandbox_here = None;
         ed.caps_home = Some(home.clone());
-        for (n, also) in
-            [json!({ "network": "example.com" }), json!({ "port": 5432 })].into_iter().enumerate()
-        {
+        let refused = |n: u64, also: serde_json::Value, ed: &mut crate::editor::Editor| {
             let args = json!({ "command": "true", "also": also, "reason": "its server" });
-            let said = match also_sent(&mut ed, generation, n as u64 + 1, args) {
+            let said = match also_sent(ed, generation, n, args) {
                 Err(e) => e,
-                Ok(card) => panic!("{also}: no card nor run where nothing is served ({why}) — got {card:?}"),
+                Ok(card) => {
+                    panic!("{also}: no card nor run where it's never reached ({reach:?}) — got {card:?}")
+                }
             };
-            for words in ["tier offline", "not served", why.as_str(), "outside_sandbox"] {
+            for words in ["tier unserved", "not served", why.as_str(), "outside_sandbox"] {
                 assert!(said.contains(words), "{also}: `{words}` in {said}");
+            }
+        };
+        refused(1, json!({ "port": 5432 }), &mut ed);
+        let network = json!({ "network": "example.com" });
+        match bridged {
+            false => refused(2, network, &mut ed),
+            true => {
+                let card = also_sent(
+                    &mut ed,
+                    generation,
+                    2,
+                    json!({ "command": "true", "also": network, "reason": "r" }),
+                );
+                assert!(
+                    matches!(&card, Ok(Some(q)) if q.contains("example.com")),
+                    "bridged: its card — {card:?}"
+                );
             }
         }
         assert!(ed.workspace.claude.hosts.is_empty(), "no host recorded");
-        // (a host the user let through before: a run there neither gets the proxy's variables nor is said to reach it)
+        // (a host the user let through before: closed, a run there neither gets the proxy's variables nor is said to
+        // reach it; bridged, its own token's URL, and said)
         let caps = crate::caps::Caps::at(&home, &root);
         let host = Grant::Host("example.com".into(), 443);
         let w = super::with_allowed(&crate::llm::LlmConfig::default(), &caps, Some(&host));
         let p = crate::sandbox::policy_from(&root, w, &crate::sandbox::Here::now()).unwrap();
-        assert_eq!(p.proxy_url().map(|u| u.url()), None, "no proxy variables where nothing answers them");
+        let url = p.proxy_url();
+        assert_eq!(
+            url.as_ref().map(|u| u.per_run),
+            bridged.then_some(true),
+            "{reach:?}: {:?}",
+            url.map(|u| u.url())
+        );
         let g = crate::sandbox::Guard::In(Box::new(p));
         let (mark, _, words) = g.where_ran();
-        assert!(!mark.contains("hosts") && !words.contains("through tarae's proxy"), "{mark} — {words}");
-        assert!(!g.rules().contains("example.com"), "{}", g.rules());
+        let said = mark.contains("hosts") && words.contains("through tarae's proxy");
+        assert_eq!(said, bridged, "{mark} — {words}");
+        assert_eq!(g.rules().contains("example.com"), bridged, "{}", g.rules());
     }
 
-    /// #417 on any machine, a stand-in Linux that can't serve its runs: `also`'s socket asks — a host, a port, every
-    /// port — are refused with the tier, its why and the way out, never a grant; the runs' policy
-    /// has no proxy URL, keeps a host the user let through out of what it says, and marks no host; served, as before.
+    /// #417 and offline-bridge piece 3 on any machine, a stand-in Linux served, bridged (not served, the session's port
+    /// standing) and closed (not served, no bridge): `also {network}` is a grant card served and bridged, refused with
+    /// the tier, its why, the bridge's and the way out where closed; `also {port}` and every port refused in both
+    /// unserved forms (this machine's ports aren't in the session's namespace), a card served. The runs' policy: served,
+    /// the proxy's address; bridged, its own token's URL in every proxy variable (`per_run`), a host the user let
+    /// through said reached; closed, no proxy URL, a host let through kept out of what it says, no host marked.
     #[test]
-    fn where_runs_arent_served_also_opens_no_socket() {
+    fn the_reach_decides_what_also_opens_and_what_a_run_gets() {
         use super::AlsoAsk;
         use crate::allow::Grant;
-        use crate::sandbox::{Guard, Here, Os};
-        let base = crate::scratch::Scratch::new("also-unserved");
+        use crate::sandbox::{Guard, Here, NetReach, Os};
+        let base = crate::scratch::Scratch::new("also-reach");
         std::fs::create_dir_all(base.join("home/proj")).unwrap();
         let home = std::fs::canonicalize(base.join("home")).unwrap();
         let root = home.join("proj");
         let caps = crate::caps::Caps::at(&home, &root);
-        let closed = |_: u16| false;
-        let why = "pidfd_getfd refused";
-        let grant = |a: &AlsoAsk, unserved: Option<&str>| {
-            let unserved = unserved.map(String::from);
-            let net = super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved };
-            super::also_grant(a, &root, &caps, (&closed, false), None, &net, None)
+        let closed_ports = |_: u16| false;
+        let unserved = || "pidfd_getfd refused".to_string();
+        let (bridged, closed) = (
+            NetReach::Bridged { unserved: unserved() },
+            NetReach::Closed { unserved: unserved(), bridge: "no network namespace of the session's".into() },
+        );
+        let grant = |a: &AlsoAsk, reach: &NetReach| {
+            let net = super::NetNow {
+                open: false,
+                rules: Some(Vec::new()),
+                session: Vec::new(),
+                reach: reach.clone(),
+            };
+            super::also_grant(a, &root, &caps, (&closed_ports, false), None, &net, None)
         };
-        for a in [AlsoAsk::Network("example.com".into(), 443), AlsoAsk::Port(5432), AlsoAsk::Localhost] {
-            let said = grant(&a, Some(why)).unwrap_err();
-            for words in ["tier offline", "not served: pidfd_getfd refused", "outside_sandbox"] {
-                assert!(said.contains(words), "{a:?}: `{words}` in {said}");
+        let network = AlsoAsk::Network("example.com".into(), 443);
+        for a in [&network, &AlsoAsk::Port(5432), &AlsoAsk::Localhost] {
+            assert!(matches!(grant(a, &NetReach::Served), Ok(Some(_))), "{a:?}: served, its card as ever");
+            let said = grant(a, &closed).unwrap_err();
+            for words in [
+                "tier unserved",
+                "not served: pidfd_getfd refused",
+                "no bridge: no network",
+                "outside_sandbox",
+            ] {
+                assert!(said.contains(words), "{a:?} closed: `{words}` in {said}");
             }
-            assert!(matches!(grant(&a, None), Ok(Some(_))), "{a:?}: served, its card as ever");
         }
-        // (the policy: the same stand-in, served or not)
+        assert_eq!(
+            grant(&network, &bridged),
+            Ok(Some(Grant::Host("example.com".into(), 443))),
+            "bridged: its card"
+        );
+        for a in [AlsoAsk::Port(5432), AlsoAsk::Localhost] {
+            let said = grant(&a, &bridged).unwrap_err();
+            for words in [
+                "tier unserved",
+                "no port of this machine's",
+                "not served: pidfd_getfd refused",
+                "outside_sandbox",
+            ] {
+                assert!(said.contains(words), "{a:?} bridged: `{words}` in {said}");
+            }
+            assert!(!said.contains("no bridge"), "{a:?} bridged: {said}");
+        }
+        // (the policy: the same stand-in, served, bridged or closed)
         let host = Grant::Host("example.com".into(), 443);
-        let policy = |served: fn() -> Result<(), String>| {
-            let here = Here { os: Os::Linux, served: Some(served), ..Here::now() };
+        type Says = fn() -> Result<(), String>;
+        let policy = |served: Says, bridged: Says| {
+            let here = Here { os: Os::Linux, served: Some(served), bridged: Some(bridged), ..Here::now() };
             let w = super::with_allowed(&crate::llm::LlmConfig::default(), &caps, Some(&host));
             Guard::In(Box::new(crate::sandbox::policy_from(&root, w, &here).unwrap()))
         };
-        let unserved = policy(|| Err("pidfd_getfd refused".into()));
-        let Guard::In(p) = &unserved else { unreachable!() };
+        let no = || Err("pidfd_getfd refused".to_string());
+        let closed = policy(no, || Err("no network namespace of the session's".into()));
+        let Guard::In(p) = &closed else { unreachable!() };
+        assert!(!p.reach.beyond() && p.token.is_none(), "{:?}", p.reach);
         assert_eq!(p.proxy_url().map(|u| u.url()), None);
-        let (mark, _, words) = unserved.where_ran();
+        let (mark, _, words) = closed.where_ran();
         assert!(!mark.contains("hosts") && !words.contains("through tarae's proxy"), "{mark} — {words}");
-        assert!(!unserved.rules().contains("example.com"), "{}", unserved.rules());
-        let served = policy(|| Ok(()));
+        assert!(!closed.rules().contains("example.com"), "{}", closed.rules());
+        let bridged = policy(no, || Ok(()));
+        let Guard::In(p) = &bridged else { unreachable!() };
+        let url = p.proxy_url().expect("bridged: the proxy's variables");
+        let token = p.token.as_ref().expect("bridged: the run's token");
+        assert_eq!(url, token.url(), "its own token's URL");
+        assert!(url.per_run && url.host == "192.0.2.1" && url.port == 3128, "{}", url.url());
+        assert!(url.url().contains(&format!("run:{}@", token.token())), "the token in the URL");
+        let env: std::collections::HashMap<String, String> = crate::sandbox::command(Some(p), "true", &[])
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .collect();
+        for k in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
+            assert_eq!(env.get(k), Some(&url.url()), "{k}: the run's own token");
+        }
+        assert!(bridged.where_ran().2.contains("let reach example.com:443 through tarae's proxy"));
+        assert!(bridged.rules().contains("example.com"), "{}", bridged.rules());
+        // (its key the served form's: no token in it, the same as another run's of the same policy)
+        let again = policy(no, || Ok(()));
+        let Guard::In(q) = &again else { unreachable!() };
+        assert_ne!(p.token, q.token, "a token a run");
+        assert_eq!(crate::sandbox::policy_key(p), crate::sandbox::policy_key(q));
+        let served = policy(|| Ok(()), || Ok(()));
         let Guard::In(p) = &served else { unreachable!() };
-        assert!(p.proxy_url().is_some(), "served: the proxy's variables");
+        assert!(
+            p.token.is_none() && p.proxy_url().is_some_and(|u| !u.per_run),
+            "served: the proxy's address"
+        );
         assert!(served.where_ran().2.contains("let reach example.com:443 through tarae's proxy"));
     }
 
@@ -8098,8 +8220,12 @@ mod tests {
         let dir = std::path::Path::new("/h/p");
         let closed = |_: u16| false;
         let grant = |a: super::AlsoAsk, localhost: bool, env: Option<&RunEnv>| {
-            let net =
-                super::NetNow { open: false, rules: Some(Vec::new()), session: Vec::new(), unserved: None };
+            let net = super::NetNow {
+                open: false,
+                rules: Some(Vec::new()),
+                session: Vec::new(),
+                reach: Default::default(),
+            };
             super::also_grant(&a, dir, &caps, (&closed, localhost), env, &net, None)
         };
         assert_eq!(grant(super::AlsoAsk::Localhost, false, None), Ok(Some(Grant::Localhost)));

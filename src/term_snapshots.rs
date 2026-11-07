@@ -6843,9 +6843,9 @@ fn blocked_npm_run(s: &mut Shot) {
     s.ed.workspace.task_run = Some(r);
 }
 
-/// Tier offline in a container under Docker's default profile (no user namespaces, `pidfd_getfd` refused, Landlock
+/// Tier unserved in a container under Docker's default profile (no user namespaces, `pidfd_getfd` refused, Landlock
 /// ABI 4): the fallback's why, and how to get the calls served.
-fn offline_docker_default() -> crate::sandbox::guarantees::Guarantees {
+fn unserved_docker_default() -> crate::sandbox::guarantees::Guarantees {
     use crate::sandbox::guarantees::{Found, Guarantees, Ns, PIDFD_REFUSED};
     Guarantees::landlock(Found {
         ns: Ns::NONE,
@@ -6859,6 +6859,7 @@ fn offline_docker_default() -> crate::sandbox::guarantees::Guarantees {
         brief: Some("a seccomp filter blocks namespaces".into()),
         hint: None,
         network: false,
+        bridged: false,
     })
 }
 
@@ -6880,6 +6881,7 @@ fn host_restricted() -> crate::sandbox::guarantees::Guarantees {
         brief: Some("AppArmor blocks user namespaces".into()),
         hint: Some(Hint::of(Tier::Host, &place)),
         network: false,
+        bridged: false,
     })
 }
 
@@ -6901,10 +6903,11 @@ fn snapshot_sandbox_panel_tier() {
         brief: None,
         hint: None,
         network: true,
+        bridged: false,
     });
     for (w, h) in [(120, 30), (60, 24)] {
         let scenes = [
-            ("fallback", Some(offline_docker_default())),
+            ("fallback", Some(unserved_docker_default())),
             ("hint", Some(host_restricted())),
             ("top", Some(top.clone())),
             ("empty", None),
@@ -6945,9 +6948,15 @@ fn the_state_line_folds_its_least_important_part_first() {
         gone.extend(went);
     }
     assert_eq!(gone, ["Landlock", "network", "loopback", "shared"]);
-    // (a long part that doesn't fit doesn't take the less important short ones along: the ABI and the network stay
-    // without the loopback)
-    assert_eq!(keys(100), ["tier", "Landlock", "network", "shared"]);
+    // (a part with no room ends it: never a less important one in its place — the ABI never kept while the network or
+    // the loopback is gone; offline-bridge piece 3, the user's: a longer tier word folded the network for the ABI)
+    for w in 0..200 {
+        let now = keys(w);
+        for (i, k) in Guarantees::FOLD.iter().enumerate() {
+            let above = &Guarantees::FOLD[i + 1..];
+            assert!(!now.contains(k) || above.iter().all(|a| now.contains(a)), "at {w}: {now:?}");
+        }
+    }
     // (what's shared keeps fewer items before it goes — each whole — and what's left fits)
     let at_34 = super::fold_hints(&pairs, Guarantees::FOLD, 34);
     let shared = &at_34.iter().find(|p| p.0 == "shared").expect("shared, fewer").1;

@@ -2507,6 +2507,7 @@ pub(crate) mod tests {
             brief: None,
             hint: None,
             network: false,
+            bridged: false,
         });
         let root = Path::new("/p");
         let said = || "own (user net ipc pid mnt)".to_string();

@@ -89,7 +89,7 @@ impl Fixture {
             let v = v.replace("$BASE", &base.display().to_string());
             vars.insert(k.to_string(), v.into());
         }
-        // (served: the pinned words are a served run's on any machine — tier offline's own, #417, aren't pinned here)
+        // (served: the pinned words are a served run's on any machine — tier unserved's own, #417, aren't pinned here)
         let served = Some((|| Ok(())) as fn() -> Result<(), String>);
         let here = Here { env: vars, tmp: Some(base.join("tmp")), uid: 501, os, served, ..Here::default() };
         // What the toolchain would have said (no cargo or go is run): Go's module cache, the user's Go build
@@ -499,7 +499,7 @@ fn the_report_is_pinned() {
             }),
         ),
         (
-            "offline in the session's namespaces, ABI 6",
+            "unserved in the session's namespaces, bridged, ABI 6",
             Some(tier_found(Ns::session(true, true), false)),
         ),
         (
@@ -512,7 +512,7 @@ fn the_report_is_pinned() {
             }),
         ),
         (
-            "offline, pidfd_getfd refused (Docker's default profile), ABI 11",
+            "unserved, pidfd_getfd refused (Docker's default profile), ABI 11",
             Some(Found {
                 abi: 11,
                 served: Err(super::guarantees::PIDFD_REFUSED.into()),
@@ -525,7 +525,7 @@ fn the_report_is_pinned() {
             }),
         ),
         (
-            "offline without namespaces, ABI 3",
+            "unserved without namespaces, ABI 3",
             Some(Found { abi: 3, short: none, ..tier_found(Ns::NONE, false) }),
         ),
     ];
@@ -542,7 +542,8 @@ fn the_report_is_pinned() {
     pinned("sandbox_report.txt", &f.named(&out, run.as_deref()));
 }
 
-/// A keeper's `Found` at Landlock ABI 6, `served` or not (Yama's 3), the network open; nothing else short.
+/// A keeper's `Found` at Landlock ABI 6, `served` or not (Yama's 3), the network open; nothing else short — not
+/// served, bridged where it has the session's network namespace.
 fn tier_found(ns: super::guarantees::Ns, served: bool) -> super::guarantees::Found {
     let net = ns.run_net(served);
     super::guarantees::Found {
@@ -555,6 +556,7 @@ fn tier_found(ns: super::guarantees::Ns, served: bool) -> super::guarantees::Fou
         brief: None,
         hint: None,
         network: true,
+        bridged: !served && ns.netns(),
     }
 }
 
@@ -566,8 +568,8 @@ fn the_status_is_the_tier_and_the_abi() {
     let status = |f: Found| Guarantees::landlock(f).status();
     assert_eq!(status(Found { abi: 8, ..tier_found(Ns::session(true, true), true) }), "own:8");
     assert_eq!(status(Found { abi: 4, ..tier_found(Ns::NONE, true) }), "host:4", "colima's");
-    assert_eq!(status(Found { abi: 2, ..tier_found(Ns::session(true, false), false) }), "offline:2");
-    assert_eq!(status(Found { abi: 2, ..tier_found(Ns::NONE, false) }), "offline:2");
+    assert_eq!(status(Found { abi: 2, ..tier_found(Ns::session(true, false), false) }), "unserved:2");
+    assert_eq!(status(Found { abi: 2, ..tier_found(Ns::NONE, false) }), "unserved:2");
     assert_eq!(Guarantees::seatbelt(true, true).status(), "seatbelt");
 }
 
@@ -655,14 +657,20 @@ fn the_guarantees_say_each_tier() {
             [&[Files, Processes, Signals], &[Processes, Signals], &[Processes]],
         ),
         (
-            "offline, the session's namespaces",
-            Some(Tier::Offline),
+            "unserved, the session's namespaces, bridged",
+            Some(Tier::Unserved),
             found(Ns::session(true, true), false),
             [&[Files], &[], &[]],
         ),
         (
-            "offline, the session's namespaces without a PID one",
-            Some(Tier::Offline),
+            "unserved, the session's namespaces, no bridge (its lo without an IPv4 address)",
+            Some(Tier::Unserved),
+            Found { lo_missing: vec!["IPv4"], bridged: false, ..found(Ns::session(true, true), false) },
+            [&[Files], &[], &[]],
+        ),
+        (
+            "unserved, the session's namespaces without a PID one, bridged",
+            Some(Tier::Unserved),
             Found {
                 short: no_pid.clone(),
                 brief: no_pid_brief.clone(),
@@ -683,8 +691,8 @@ fn the_guarantees_say_each_tier() {
             [&[Files, Processes, Signals, Ipc, Shm], &[Processes, Signals, Ipc, Shm], &[Processes, Ipc, Shm]],
         ),
         (
-            "offline, no namespaces",
-            Some(Tier::Offline),
+            "unserved, no namespaces",
+            Some(Tier::Unserved),
             Found { short: none.clone(), brief: none_brief.clone(), ..found(Ns::NONE, false) },
             [
                 &[Files, Processes, Signals, Ipc, Shm, Ptys],
@@ -693,8 +701,8 @@ fn the_guarantees_say_each_tier() {
             ],
         ),
         (
-            "offline, no namespaces, Ubuntu's restriction, no profile",
-            Some(Tier::Offline),
+            "unserved, no namespaces, Ubuntu's restriction, no profile",
+            Some(Tier::Unserved),
             ubuntu(false),
             [
                 &[Files, Processes, Signals, Ipc, Shm, Ptys],
@@ -766,8 +774,15 @@ fn the_guarantees_say_each_tier() {
         if said.is_empty() != (want.is_empty() && !below_6) {
             wrong.push(format!("{label}: the report says {said:?} of {want:?}"));
         }
-        // (linmeta B: a file's mode and times served in own and host, open in offline; Seatbelt's where it writes)
-        let open = g.tier() == Some(super::guarantees::Tier::Offline);
+        // (piece 3: the network through tarae's proxy wherever served or bridged; no socket only unserved with no bridge)
+        let closed = g.tier() == Some(super::guarantees::Tier::Unserved) && !label.contains(", bridged");
+        if line.contains(" · network no socket · ") != closed
+            || (g.json()["network"]["way"] == "no-socket") != closed
+        {
+            wrong.push(format!("{label}: its network said {line:?}"));
+        }
+        // (linmeta B: a file's mode and times served in own and host, open in unserved; Seatbelt's where it writes)
+        let open = g.tier() == Some(super::guarantees::Tier::Unserved);
         let served = matches!(g.tier(), Some(super::guarantees::Tier::Own | super::guarantees::Tier::Host));
         let state = g.json()["attributes"]["mode_times"].clone();
         if line.contains(" · attributes mode and times anywhere · ") != open

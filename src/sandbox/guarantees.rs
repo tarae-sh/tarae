@@ -11,7 +11,7 @@
 //! A keeper's namespaces (`Ns`), its tier (`Tier`) and how a run's sockets go (`RunNet`) are here for that — reading
 //! them from a process and making them are `tier.rs`'s.
 
-/// A keeper's namespaces: none (tiers host and offline), or the session's — `user` with its ipc and mount namespaces,
+/// A keeper's namespaces: none (tier host, and unserved without them), or the session's — `user` with its ipc and mount namespaces,
 /// `pid` (and a fresh `/proc`) where it mounts, `net` (only `lo`, up) where the policy opens nothing, and a
 /// `/dev/shm` of its own (`shm`) but where the project or a place it writes is in this system's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,7 +34,9 @@ pub enum RunNet {
     /// sockets aren't the run's).
     Routed,
     /// Not served, in that network namespace, holding only `lo` (`Mode::OwnNetwork`); Landlock leaves TCP and UDP
-    /// to it (`Ruleset::new_own_network`).
+    /// to it (`Ruleset::new_own_network`). Beyond only through the session's port at `route::PROXY` where it stands
+    /// (the bridge: `Found.bridged`), its run known by its token; anything else beyond `lo` unreachable (the
+    /// kernel's `ENETUNREACH`).
     Own,
     /// None (`Mode::Plain`); Landlock handles TCP and UDP.
     Plain,
@@ -65,7 +67,7 @@ impl Ns {
     }
 
     /// Whether a run of a keeper born with these, its sockets going as `net` says, gets only the ptys it makes
-    /// (3b, `sandbox::ptys`): without a `devpts` of the session's own (no `user`) and served — offline runs without
+    /// (3b, `sandbox::ptys`): without a `devpts` of the session's own (no `user`) and served — unserved runs without
     /// namespaces (`Plain`: no supervisor) keep this system's `/dev/pts`, said. One answer for its rules (`linux::confine`)
     /// and its filter (the keeper's run).
     pub fn serves_ptys(self, net: RunNet) -> bool {
@@ -74,7 +76,8 @@ impl Ns {
 }
 
 /// Why tarae can't serve its runs' calls where `pidfd_getfd` is refused (`supervisor::decided`) — the way out said
-/// with it. Then the session is tier offline: no network, no port on this machine, no unix socket.
+/// with it. Then the session is tier unserved: no port on this machine, no unix socket — and with Docker's profile
+/// no namespaces either, so no bridge: no network.
 pub const PIDFD_REFUSED: &str =
     "pidfd_getfd refused (Docker's default profile) — --cap-add SYS_PTRACE serves the calls";
 
@@ -83,7 +86,8 @@ const PIDFD_REFUSED_BRIEF: &str = "not served: pidfd_getfd refused · --cap-add 
 
 /// Why tarae can't serve its runs' calls under Yama's `ptrace_scope` 2 where the session has no namespaces of its own
 /// (`supervisor::served_from`): Yama lets tarae read only the runs in a user namespace it made — the way out said with
-/// it. Then the session is tier offline; with the namespaces, tier own.
+/// it. Then the session is tier unserved, no namespaces: no network, no port of this machine's, no unix socket; with
+/// the namespaces, tier own.
 pub const YAMA_2_WITHOUT_NS: &str = "Yama's ptrace_scope 2 lets tarae read a run's calls only in namespaces it made \
      for the session, and this session has none — with them its runs are served";
 
@@ -99,8 +103,9 @@ pub enum Tier {
     Own,
     /// This machine's namespaces, served.
     Host,
-    /// Not served: a run reaches no network, with the session's namespaces or without.
-    Offline,
+    /// Not served: no port of this machine's, no unix socket — beyond only through tarae's proxy, by the run's token,
+    /// where the session has its namespaces and its port stands (the bridge); no network without.
+    Unserved,
 }
 
 impl Tier {
@@ -109,7 +114,7 @@ impl Tier {
         match (served, ns.user) {
             (true, true) => Tier::Own,
             (true, false) => Tier::Host,
-            (false, _) => Tier::Offline,
+            (false, _) => Tier::Unserved,
         }
     }
 
@@ -118,7 +123,7 @@ impl Tier {
         match self {
             Tier::Own => "own",
             Tier::Host => "host",
-            Tier::Offline => "offline",
+            Tier::Unserved => "unserved",
         }
     }
 
@@ -127,7 +132,7 @@ impl Tier {
         match self {
             Tier::Own => "Own namespaces",
             Tier::Host => "Host namespaces",
-            Tier::Offline => "Offline",
+            Tier::Unserved => "Unserved",
         }
     }
 }
@@ -191,9 +196,10 @@ pub enum By {
 /// How what the policy opens beyond this machine goes (Q5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Way {
-    /// To tarae's proxy, by the variable a run gets (macOS: at its own port).
+    /// To tarae's proxy, by the variable a run gets (macOS: at its own port; tier unserved bridged: at the session's,
+    /// by its token).
     Proxy,
-    /// Nowhere: not served (tier offline), a run makes no socket that leaves its namespace.
+    /// Nowhere: not served and no bridge (tier unserved), a run makes no socket that leaves its namespace.
     NoSocket,
 }
 
@@ -275,6 +281,9 @@ pub struct Found {
     pub hint: Option<Hint>,
     /// The policy opens the network.
     pub network: bool,
+    /// Not served, whether the session's port stands in its network namespace (the bridge: `Keeper.bridge`) — then
+    /// its network goes to tarae's proxy, as served.
+    pub bridged: bool,
 }
 
 /// The loopback of a run served without a network namespace of its own (host): this machine's — another
@@ -318,9 +327,9 @@ const ATTRS_SERVED: &str = " A command changes a file's mode, times and extended
      may write, or through a file it holds open for writing; never a file's owner or flags, nor its security or \
      trusted attributes — in the project neither.";
 
-/// What an unserved Landlock run may change of a file's attributes (tier offline stays a full tier with this said:
+/// What an unserved Landlock run may change of a file's attributes (tier unserved stays a full tier with this said:
 /// user decision 2026-10-18): nothing serves its calls, so mode and times stay the run's.
-const ATTRS_OFFLINE: &str = " Here a command can change the mode and times of any file of the user's it can name — \
+const ATTRS_UNSERVED: &str = " Here a command can change the mode and times of any file of the user's it can name — \
      never what's in it: Landlock has no right for them. Never a file's owner, extended attributes, ACLs or flags — \
      in the project neither.";
 
@@ -375,7 +384,10 @@ impl Guarantees {
             Row::new(Part::Ptys, f.ns.user || pool.is_some(), if pool.is_some() { ONLY_MADE } else { "" }),
             Row { part: Part::Loopback, kept: true, how: loopback },
         ];
+        // (bridged: a direct connect beyond is the kernel's `ENETUNREACH`, unsaid — read from its output, piece 4 — so
+        // the way is the proxy's as served, no third word)
         let way = match net {
+            RunNet::Own if f.bridged => Way::Proxy,
             RunNet::Plain | RunNet::Own => Way::NoSocket,
             RunNet::Routed | RunNet::Served => Way::Proxy,
         };
@@ -634,7 +646,7 @@ impl Guarantees {
 
 impl Guarantees {
     /// The run's `TARAE_SANDBOX_STATUS` (9c, D7; decision 12): `<tier>:<Landlock ABI>` — `own:8`, colima's
-    /// `host:4`; a partial ABI (below 3) is just its number, `offline:2` — and Seatbelt's `seatbelt`. The tier's name
+    /// `host:4`; a partial ABI (below 3) is just its number, `unserved:2` — and Seatbelt's `seatbelt`. The tier's name
     /// only: what it lacks is the state's to say.
     pub fn status(&self) -> String {
         match self.by {
@@ -651,11 +663,11 @@ impl Guarantees {
     }
 
     /// What a run may change of a file's attributes, in the report's words (linmeta B): served (`ATTRS_SERVED`),
-    /// offline (`ATTRS_OFFLINE`); nothing for Seatbelt, whose `file-write-mode`, `-times`, `-owner`, `-flags`,
+    /// unserved (`ATTRS_UNSERVED`); nothing for Seatbelt, whose `file-write-mode`, `-times`, `-owner`, `-flags`,
     /// `-xattr` and `-acl` are `file-write*`'s — where it writes, as its files.
     pub fn attrs_said(&self) -> &'static str {
         match self.by {
-            By::Landlock { tier: Tier::Offline, .. } => ATTRS_OFFLINE,
+            By::Landlock { tier: Tier::Unserved, .. } => ATTRS_UNSERVED,
             By::Landlock { .. } => ATTRS_SERVED,
             By::Seatbelt => "",
         }
@@ -664,7 +676,7 @@ impl Guarantees {
     /// The same on the state line — None for Seatbelt and served, as above.
     fn attrs_brief(&self) -> Option<&'static str> {
         match self.by {
-            By::Landlock { tier: Tier::Offline, .. } => Some("mode and times anywhere"),
+            By::Landlock { tier: Tier::Unserved, .. } => Some("mode and times anywhere"),
             _ => None,
         }
     }
@@ -673,7 +685,7 @@ impl Guarantees {
     /// extended attributes and ACLs (`where-writes`, `never`), and its owner and flags (`where-writes`, `never`).
     pub fn attrs_json(&self) -> serde_json::Value {
         let (mode_times, xattrs, owner_flags) = match self.by {
-            By::Landlock { tier: Tier::Offline, .. } => ("anywhere", "never", "never"),
+            By::Landlock { tier: Tier::Unserved, .. } => ("anywhere", "never", "never"),
             By::Landlock { .. } => ("where-writes", "where-writes", "never"),
             By::Seatbelt => ("where-writes", "where-writes", "where-writes"),
         };
@@ -772,7 +784,7 @@ mod tests {
     use super::*;
 
     /// 9f: a run's hint names the run's own tier — never the probe's, which can differ: a probe served, a run not
-    /// (offline), or the other way (host) — and what the profile would give it: namespaces, never a tier.
+    /// (unserved), or the other way (host) — and what the profile would give it: namespaces, never a tier.
     #[test]
     fn the_hint_names_the_runs_own_tier() {
         let place = super::super::apparmor::Place {
@@ -791,10 +803,11 @@ mod tests {
                 brief: None,
                 hint: Some(Hint::of(probed, &place)),
                 network: false,
+                bridged: false,
             })
         };
         for (served, probed, tier) in
-            [(false, Tier::Host, "offline"), (true, Tier::Offline, "host"), (true, Tier::Host, "host")]
+            [(false, Tier::Host, "unserved"), (true, Tier::Unserved, "host"), (true, Tier::Host, "host")]
         {
             let g = run(served, probed);
             let h = g.hint.as_ref().expect("the hint");
@@ -819,6 +832,7 @@ mod tests {
                 brief: None,
                 hint: None,
                 network: false,
+                bridged: false,
             })
         };
         for (why, brief) in [
@@ -827,7 +841,7 @@ mod tests {
             ("Yama's ptrace_scope 3 keeps tarae from reading its runs' calls", ""),
         ] {
             let g = run(why);
-            assert_eq!(g.tier(), Some(Tier::Offline));
+            assert_eq!(g.tier(), Some(Tier::Unserved));
             assert_eq!(g.why.as_deref(), Some(format!("tarae can't serve its calls: {why}").as_str()));
             let brief = if brief.is_empty() { format!("not served: {why}") } else { brief.into() };
             assert_eq!(g.brief, Some(brief));

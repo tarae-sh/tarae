@@ -4,7 +4,7 @@
 01  ╭─ what the sandbox blocked ─────────────────────────────╮
 02  │ ›                                                  0/0 │
 03  │ ────────────────────────────────────────────────────── │
-04  │  tier offline  shared processes, signals +3            │
+04  │  tier unserved  shared processes, signals +3           │
 05  │  a seccomp filter blocks namespaces                    │
 06  │  not served: pidfd_getfd refused                       │
 07  │  --cap-add SYS_PTRACE serves the calls                 │
@@ -54,7 +54,7 @@
 01  aa TTTT TTT TTTTTTT TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 02  a A                                                  fff a
 03  a ffffffffffffffffffffffffffffffffffffffffffffffffffffff a
-04  a  BBBB fffffff  BBBBBB ffffffffff fffffff ff            a
+04  a  BBBB ffffffff  BBBBBB ffffffffff fffffff ff           a
 05  a  f fffffff ffffff ffffff ffffffffff                    a
 06  a  fff fffffff fffffffffff fffffff                       a
 07  a  fffffffff ffffffffff ffffff fff fffff                 a

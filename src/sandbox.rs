@@ -229,12 +229,12 @@ impl Guard {
                         words.push_str(" — Docker's: as much as outside the sandbox");
                     }
                 }
-                // (#417: not served, nothing goes beyond — the tier in the mark says so)
-                let served = p.unserved.is_none();
-                if served && p.network && !p.asks_hosts {
+                // (#417: not served and no bridge, nothing goes beyond — the tier in the mark says so)
+                let beyond = p.reach.beyond();
+                if beyond && p.network && !p.asks_hosts {
                     mark.push_str(" + network");
                     words.push_str(", the network open (llm.sandbox-network)");
-                } else if served && !p.egress.answered.is_empty() {
+                } else if beyond && !p.egress.answered.is_empty() {
                     // (piece C: the hosts the user let through when it started — a yes since isn't here)
                     let hosts: Vec<String> =
                         p.egress.answered.iter().map(|(h, p)| format!("{h}:{p}")).collect();
@@ -1205,9 +1205,13 @@ pub struct Here {
     pub filesystems: Option<fn(&Path) -> Option<Filesystem>>,
     /// A test's stand-in tree's top: nothing above it is read for a store (`Who.top`). None: `/`.
     pub stand_in: Option<PathBuf>,
-    /// Linux: whether tarae serves its runs' calls here, or why not (`unserved`) — None: as the tier probe and the
+    /// Linux: whether tarae serves its runs' calls here, or why not (`reach`) — None: as the tier probe and the
     /// supervisor say; a test's stand-in gives its own.
     pub served: Option<fn() -> Result<(), String>>,
+    /// Linux, not served: whether the session's port stands in its network namespace, or why not (`reach`, the
+    /// bridge) — None: as the tier probe says (`tier::Probed.bridged`; on another system: no bridge); a test's
+    /// stand-in gives its own.
+    pub bridged: Option<fn() -> Result<(), String>>,
     /// What runs besides this project's may write (real paths): every open session's write places with what's
     /// been granted there, the write grants kept for any project (`Editor::others_write`) — a store in or holding
     /// one isn't told (`DiskStores::written_passed`). Another tarae's sessions aren't seen.
@@ -1247,6 +1251,7 @@ impl Here {
             filesystems: None,
             stand_in: None,
             served: None,
+            bridged: None,
             others_write: Vec::new(),
             windows: crate::winhome::here(),
             #[cfg(target_os = "linux")]
@@ -3749,8 +3754,8 @@ pub fn policy_key(p: &Policy) -> String {
     (q.run, q.tag, q.proxy, q.watch, q.env) = (None, None, None, None, Vec::new());
     // (`supervised` as the proxy URL it gives, below)
     (q.egress, q.run_id, q.trace, q.supervised) = (Default::default(), 0, None, false);
-    // (#417's `unserved` neither: the served form is the key — `proxy_url_served`)
-    q.unserved = None;
+    // (how it reaches neither, nor a bridged run's token: the served form is the key — `proxy_url_served`)
+    (q.reach, q.token) = (NetReach::Served, None);
     // (the kept homes are the project's and the key's — granted by them, not part of what's compared)
     q.write.retain(|w| !p.kept.iter().any(|k| k.home == *w));
     q.kept = Vec::new();
@@ -4999,8 +5004,8 @@ pub fn policy_from(root: &Path, w: crate::tools::Widened, here: &Here) -> Result
     // (what no setting carries goes on before Linux's rules are made from the policy: a file named like a key
     // the user opened is left out of what they close — 7b)
     w.onto(&mut p);
-    // (#417: not served, a host the user let through is reached by no run — never said to be)
-    if p.unserved.is_some() {
+    // (#417: not served and no bridge, a host the user let through is reached by no run — never said to be)
+    if !p.reach.beyond() {
         let hosts: Vec<String> =
             p.egress.answered.iter().map(|(h, n)| crate::allow::Grant::Host(h.clone(), *n).shown()).collect();
         p.granted.retain(|g| !hosts.contains(g));
@@ -5046,9 +5051,15 @@ pub(crate) fn run_policy_with(
     here: &Here,
 ) -> Result<Policy, String> {
     let (mut p, found) = policy_computed(root, llm, reads, folders, here);
-    // (#417: not served, nothing answers the proxy's address — known before its proxy lines are made)
+    // (how its run reaches beyond — known before its proxy lines are made: #417's not served, nothing answers the
+    // proxy's address; bridged, the session's port does, the run known by its own token)
     if p.supervised {
-        p.unserved = unserved(here);
+        p.reach = reach(here);
+        if matches!(p.reach, NetReach::Bridged { .. }) && p.network {
+            p.token = proxy::RunToken::new(p.run_id)
+                .inspect_err(|e| crate::log::line("sandbox", "warning", &format!("a run's proxy token: {e}")))
+                .ok();
+        }
     }
     // (a run without its own folder would have the temp folders, which every run writes, as its `TMPDIR` and
     // tools' homes, and no tag its denials are watched by: it doesn't start)
@@ -5068,21 +5079,61 @@ pub(crate) fn run_policy_with(
     Ok(p)
 }
 
-/// Why tarae can't serve the calls of a session's runs where `here` is (tier offline: `supervisor::served` for the
-/// tier probe's keepers) — None where it can, and on macOS (no supervisor: Seatbelt's proxy port is the run's own).
-/// Then a run makes no socket that leaves it: no network, no port of this machine's, no unix socket. Probes the first
-/// time on Linux: a worker's.
-pub fn unserved(here: &Here) -> Option<String> {
+/// How a session's runs reach beyond this machine (`reach`, `.sb/offline-bridge-plan.md` A) — the one value every
+/// place that says or opens a way out reads: `also`'s host, port and every-port asks, `where_ran`'s `+ network` and
+/// `+ hosts`, the report's "let reach … through tarae's proxy", a host grant kept in what a run's rules say, and the
+/// proxy variables (`Policy::proxy_url`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum NetReach {
+    /// tarae serves its runs' calls (tiers own and host; macOS, whose proxy port is the run's own): every way the
+    /// policy opens.
+    #[default]
+    Served,
+    /// Not served (tier unserved: `unserved` says why), the session's port standing in its network namespace (the
+    /// bridge): beyond only through tarae's proxy, the run known by its own token (`proxy::RunToken`) — the hosts
+    /// as served, asked on cards. No port of this machine's (the namespace's `lo` is the session's: Q2) and no unix
+    /// socket.
+    Bridged { unserved: String },
+    /// Not served, and no bridge (`bridge` says why: no network namespace of the session's — Docker's default
+    /// profile, Ubuntu's restriction —, or its port couldn't be made): no socket leaves a run.
+    Closed { unserved: String, bridge: String },
+}
+
+impl NetReach {
+    /// Whether its runs reach beyond this machine, through tarae's proxy: served, or bridged.
+    pub fn beyond(&self) -> bool {
+        !matches!(self, NetReach::Closed { .. })
+    }
+}
+
+/// How a session's runs reach beyond this machine where `here` is: served where tarae serves their calls
+/// (`supervisor::served` for the tier probe's keepers; always on macOS: no supervisor, Seatbelt's proxy port is the
+/// run's own); else bridged where the tier probe's keeper made the session's port (`tier::Probed.bridged`), closed
+/// where it couldn't. Decided once, by the probe — a stand-in `Here` gives its own. Probes the first time on Linux:
+/// a worker's.
+pub fn reach(here: &Here) -> NetReach {
     if here.os != Os::Linux {
-        return None;
+        return NetReach::Served;
     }
-    if let Some(served) = here.served {
-        return served().err();
+    let served = match here.served {
+        Some(served) => served(),
+        #[cfg(target_os = "linux")]
+        None => linux::served_here(tier::get().ns.user),
+        #[cfg(not(target_os = "linux"))]
+        None => Ok(()),
+    };
+    let Err(unserved) = served else { return NetReach::Served };
+    let bridged = match here.bridged {
+        Some(bridged) => bridged(),
+        #[cfg(target_os = "linux")]
+        None => tier::get().bridged.clone(),
+        #[cfg(not(target_os = "linux"))]
+        None => Err("no network namespace of the session's".to_string()),
+    };
+    match bridged {
+        Ok(()) => NetReach::Bridged { unserved },
+        Err(bridge) => NetReach::Closed { unserved, bridge },
     }
-    #[cfg(target_os = "linux")]
-    return linux::served_here(tier::get().ns.user).err();
-    #[cfg(not(target_os = "linux"))]
-    None
 }
 
 /// `policy` with what `here` says, computed — its Landlock rules not made yet (`confined`), and nothing made
@@ -6030,7 +6081,7 @@ fn output_in(
         closed_policy.ports = Vec::new();
         closed_policy.localhost = false;
         closed_policy.egress = Default::default();
-        closed_policy.proxy = None;
+        (closed_policy.proxy, closed_policy.token) = (None, None);
         let mut c = Command::new(program);
         from_run_env(&mut c, &closed_policy);
         c.args(args).envs(env.iter().copied()).current_dir(&policy.root).env(MARK, "1");
@@ -6051,7 +6102,7 @@ fn output_in(
         let (s, rx) = match started {
             Some(Ok(started)) => started,
             // (a probe only asks a toolchain where its folders are: unserved, its mode and times open — as in tier
-            // offline — rather than no answer)
+            // unserved — rather than no answer)
             failed => {
                 if let Some(Err(e)) = failed {
                     let said = format!("a probe's served start failed, it runs unserved: {e}");
@@ -6210,7 +6261,18 @@ pub fn spawn_as(
                 let serve = std::sync::Arc::new(p.clone());
                 k.start_served(cmd, &comm, c, serve.clone(), told(serve))?
             }
-            _ => k.start_confined(cmd, &comm, c)?,
+            _ => {
+                // (bridged: its token at the session's port before it can connect — the proxy takes messages in order,
+                // so its first connection finds it; gone again if it doesn't start, else with `after_run`)
+                if let Some(t) = &p.token {
+                    t.started(p, program_of(cmd), told(std::sync::Arc::new(p.clone())));
+                }
+                k.start_confined(cmd, &comm, c).inspect_err(|_| {
+                    if let Some(t) = &p.token {
+                        proxy::RunToken::ended(t.run);
+                    }
+                })?
+            }
         };
         let spawned = started.spawned;
         #[cfg(test)]
@@ -6276,8 +6338,8 @@ pub fn spawn(policy: Option<&Policy>, cmd: &Command) -> std::io::Result<crate::s
 }
 
 /// What a sandboxed command runs (`command`'s: the program after `sandbox-exec`'s own arguments), by its file
-/// name — what the proxy's refusals name (macOS: no supervisor knows the process that connected).
-#[cfg(not(target_os = "linux"))]
+/// name — what the proxy's refusals name where no supervisor knows the process that connected (macOS; Linux's
+/// bridged runs).
 fn program_of(cmd: &Command) -> String {
     let mut args = cmd.get_args();
     let program = match cmd.get_program() == SANDBOX_EXEC {
@@ -6297,14 +6359,16 @@ fn program_of(cmd: &Command) -> String {
 
 /// What a run in `policy` needs done once it's over, before its end is told (the run's own thread, after it's
 /// reaped): on Linux, the folders it could remove inside protected ones made again (`linux::Kept`) — the
-/// report says which; on macOS, its port to tarae's proxy closed (`proxy::RunPort::ended`) — what it left
-/// running loses its way out, closed.
+/// report says which — and a bridged run's token gone (`proxy::RunToken::ended`); on macOS, its port to tarae's
+/// proxy closed (`proxy::RunPort::ended`) — what it left running loses its way out, closed.
 pub fn after_run(policy: Option<&Policy>) -> impl FnOnce() -> RunEnd + Send + 'static {
     #[cfg(target_os = "linux")]
     let kept = match policy.map(|p| &p.confine) {
         Some(Some(Ok(c))) => Some(c.kept.clone()),
         _ => None,
     };
+    #[cfg(target_os = "linux")]
+    let tokened = policy.and_then(|p| p.token.as_ref()).map(|t| t.run);
     #[cfg(not(target_os = "linux"))]
     let proxied = policy.and_then(|p| p.proxy.as_ref()).map(|r| r.run);
     #[cfg(not(target_os = "linux"))]
@@ -6316,6 +6380,10 @@ pub fn after_run(policy: Option<&Policy>) -> impl FnOnce() -> RunEnd + Send + 's
         #[cfg(target_os = "linux")]
         if let Some(k) = kept {
             k.restore();
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(run) = tokened {
+            proxy::RunToken::ended(run);
         }
         #[cfg(not(target_os = "linux"))]
         if let Some(run) = proxied {
@@ -12881,7 +12949,8 @@ mod tests {
             tag: None,
             proxy: None,
             supervised: Os::HOST == Os::Linux,
-            unserved: None,
+            reach: NetReach::Served,
+            token: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,
@@ -13487,7 +13556,7 @@ mod tests {
     /// one the walk found and gone before the run starts doesn't keep it from starting — and the report says what
     /// the run's child left, as it said before its exec: a replaced one named as readable, a gone one counted. A
     /// project with no keys nor protected names of its own still has those outside hidden.
-    /// In tiers host and offline nothing closes it outside the project: read, and nothing says it's hidden.
+    /// In tiers host and unserved nothing closes it outside the project: read, and nothing says it's hidden.
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn a_key_made_two_deep_in_a_key_place_after_a_run_is_covered_on_the_next_run() {
@@ -13667,7 +13736,7 @@ mod tests {
             false => {
                 assert!(
                     ok && out.contains("tarae-fake-token"),
-                    "host, offline: nothing closes it: {out} {err}"
+                    "host, unserved: nothing closes it: {out} {err}"
                 );
                 assert!(c.outside == linux::Outside::default() && !said.contains("found before it started"));
                 assert_eq!(next.key_rule(&key), None);
@@ -14880,7 +14949,8 @@ mod tests {
                 tag: None,
                 proxy: None,
                 supervised: Os::HOST == Os::Linux,
-                unserved: None,
+                reach: NetReach::Served,
+                token: None,
                 egress: Default::default(),
                 run_id: 0,
                 session: 0,
@@ -14973,7 +15043,8 @@ mod tests {
             tag: Some(tag.to_string()),
             proxy: None,
             supervised: Os::HOST == Os::Linux,
-            unserved: None,
+            reach: NetReach::Served,
+            token: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,
@@ -15053,7 +15124,8 @@ mod tests {
             tag: None,
             proxy: None,
             supervised: Os::HOST == Os::Linux,
-            unserved: None,
+            reach: NetReach::Served,
+            token: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,
@@ -16627,7 +16699,8 @@ mod tests {
             tag: None,
             proxy: None,
             supervised: Os::HOST == Os::Linux,
-            unserved: None,
+            reach: NetReach::Served,
+            token: None,
             egress: Default::default(),
             run_id: 0,
             session: 0,
@@ -16853,7 +16926,7 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             let (tier, abi) = want.split_once(':').unwrap_or_else(|| panic!("<tier>:<ABI>: {want}"));
-            assert!(["own", "host", "offline"].contains(&tier) && abi.parse::<u32>().is_ok(), "{want}");
+            assert!(["own", "host", "unserved"].contains(&tier) && abi.parse::<u32>().is_ok(), "{want}");
         }
         assert_eq!(run, want, "the run's own tier, not the outer one nor none");
         assert_eq!(user, "outer", "a user's run: only what tarae was started with");
@@ -17023,7 +17096,7 @@ except OSError: print('no')" 2>/dev/null) || net="python3 failed"
     }
 
     /// A probe whose served start fails (confining or serving: a stand-in refuses it) still answers — unserved, its
-    /// mode and times open as in tier offline: it only asks a toolchain where its folders are — and the failure is in
+    /// mode and times open as in tier unserved: it only asks a toolchain where its folders are — and the failure is in
     /// the log, never silent; the toolchain's folders aren't lost.
     #[cfg(target_os = "linux")]
     #[test]

@@ -1366,14 +1366,14 @@ fn fresh_token() -> io::Result<String> {
 /// proxy URL carries as the password, as macOS's `RunPort` — the one way the port tells it from the session's
 /// other runs (what can reach the port but not read the run's environment can't use it; another session can't
 /// reach the port at all: it's in the session's network namespace). Made with the run's policy.
-#[cfg_attr(not(test), allow(dead_code))] // (pieces 2 and 3: the keeper's port, the policy's URL)
+#[derive(Clone, PartialEq, Eq)]
 pub struct RunToken {
     /// The run, as the proxy knows it (`ToProxy::RunToken`, `RunEnded`).
     pub run: u64,
     token: String,
 }
 
-#[allow(dead_code)] // (`started` and `ended` too, tests or not: pieces 2 and 3 start and end its runs)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // (Linux's runs start and end it: `sandbox::spawn_as`)
 impl RunToken {
     /// For run `run` (`Policy.run_id`).
     pub fn new(run: u64) -> io::Result<RunToken> {
@@ -1398,9 +1398,19 @@ impl RunToken {
     }
 
     /// Its run started: the token to the proxy, with what each of its connections gets — the session (its
-    /// project's), its policy's rules, where its refusals are said (`told`), and what they name (`process`).
+    /// project's), its policy's rules and this machine's own addresses as the policy read them (as the supervisor's
+    /// `serve` has them), where its refusals are said (`told`), and what they name (`process`).
     pub fn started(&self, policy: &super::Policy, process: String, told: Sender<Relayed>) {
         let (run, session, token) = (self.run, policy.session, self.token.clone());
+        // (loopback is `route::this_machine`'s: the own addresses are the others — as `RunPort::new` reads them)
+        #[cfg(target_os = "linux")]
+        let own_addresses = policy
+            .own_addresses
+            .as_ref()
+            .map(|a| a.iter().copied().filter(|ip| !ip.to_canonical().is_loopback()).collect());
+        #[cfg(target_os = "linux")]
+        let rules = Arc::new(Egress { own_addresses, ..policy.egress.clone() });
+        #[cfg(not(target_os = "linux"))]
         let rules = Arc::new(policy.egress.clone());
         get().send(ToProxy::RunToken { run, session, process, token, rules, told });
     }

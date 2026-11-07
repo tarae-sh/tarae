@@ -30,7 +30,7 @@
 //! holds every capability in the session's, which it made — so a run in the session's namespaces (tier own) is read
 //! at `ptrace_scope` 1 wherever it went and at 2 too (tried on the tier probe's own run: `reaches`); one in this
 //! system's namespace (tier host) at 1 only while it stays below tarae, at 2 only where tarae holds the capability;
-//! at 3 none. Not served: tier offline.
+//! at 3 none. Not served: tier unserved.
 
 use std::io;
 use std::mem::MaybeUninit;
