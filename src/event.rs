@@ -179,6 +179,8 @@ pub struct Queue {
     chain: std::cell::Cell<Option<Instant>>,
     /// The start's jobs whose results haven't landed.
     starts: Starts,
+    /// Every job whose work is under way or whose result hasn't landed, the start's or not (`owed_out`).
+    owed: Starts,
     /// The simulation it was made in (`sim.rs`): what its senders send goes there.
     #[cfg(test)]
     sim: Option<crate::sim::Handle>,
@@ -196,6 +198,7 @@ impl Default for Queue {
             starting: std::cell::Cell::new(!cfg!(test)),
             chain: Default::default(),
             starts: Starts::default(),
+            owed: Starts::default(),
             #[cfg(test)]
             sim: crate::sim::current(),
         }
@@ -224,7 +227,13 @@ impl Queue {
     }
 
     pub fn jobs(&self) -> Jobs {
-        Jobs { tx: self.sender(), asked: self.asked.get(), writes: self.writes.clone(), start: self.start() }
+        Jobs {
+            tx: self.sender(),
+            asked: self.asked.get(),
+            writes: self.writes.clone(),
+            start: self.start(),
+            owed: self.owed.clone(),
+        }
     }
 
     /// The start's count, for a job made now, with the chain it's out in (`chain`) — None once the start is over.
@@ -257,8 +266,15 @@ impl Queue {
     /// The start's jobs whose results haven't landed, each by the line that spawned it and how long it's been out
     /// (the state's `starting`).
     pub fn starts_out(&self) -> Vec<(&'static Location<'static>, Duration)> {
-        let out = self.starts.0.lock().unwrap_or_else(|p| p.into_inner());
-        out.iter().map(|(site, since)| (*site, crate::clock::since(*since))).collect()
+        self.starts.listed()
+    }
+
+    /// Every job whose work is under way — or done, its result not landed yet — by the line that spawned it and how
+    /// long it's been out (the state's `owed`): the start's or not, but never one whose work waits (`waits`: a timer,
+    /// a watch's round). What an idle check waits out besides the start's (#398: on a loaded Mac a job the chat's
+    /// opening spawned landed in a settled tarae's rest).
+    pub fn owed_out(&self) -> Vec<(&'static Location<'static>, Duration)> {
+        self.owed.listed()
     }
 
     /// The writes under way the process's end waits for.
@@ -274,6 +290,7 @@ impl Queue {
             asked: self.asked.get(),
             writes: self.writes.clone(),
             start: self.start(),
+            owed: self.owed.clone(),
         }
     }
 
@@ -370,6 +387,8 @@ pub struct Jobs {
     /// Made while the start ran (`Queue.starting`): its jobs are the start's, counted until their results land —
     /// out since the chain they're in went out (`Queue.chain`), else since their spawn.
     start: Option<(Starts, Option<Instant>)>,
+    /// Every job's count until its result lands (`Queue.owed`).
+    owed: Starts,
 }
 
 impl Jobs {
@@ -392,12 +411,13 @@ impl Jobs {
         let (tx, asked) = (self.tx.clone(), self.asked);
         // (counted until its result is applied — or dropped unapplied, or its work panics, or waits: `waits`)
         let out = self.start.as_ref().map(|(s, since)| s.out(site, *since));
+        let owed = self.owed.out(site, None);
         run(
             site,
             Box::new(move || {
-                let working = Working::with(out);
+                let working = Working::with(out, owed);
                 let apply = work();
-                let out = working.done();
+                let (out, owed) = working.done();
                 let apply = move |ed: &mut Editor| {
                     let asked = asked.map(|_| ed.events.set_asked(asked));
                     // (what a result of the start's spawns is the start's too, out since this one's chain)
@@ -412,7 +432,7 @@ impl Jobs {
                     if let Some(was) = asked {
                         ed.events.set_asked(was);
                     }
-                    drop(out);
+                    drop((out, owed));
                 };
                 let _ = tx.send_from(Event::Job(Box::new(apply)), site);
             }),
@@ -441,7 +461,7 @@ impl Jobs {
     #[track_caller]
     pub fn background(&self, work: impl FnOnce() + Send + 'static) {
         let writing = self.writes.start();
-        run(
+        self.unanswered(
             Location::caller(),
             Box::new(move || {
                 let _writing = writing;
@@ -454,7 +474,23 @@ impl Jobs {
     /// prunes, a commit's tree removed) — nothing kept is lost with it.
     #[track_caller]
     pub fn detached(&self, work: impl FnOnce() + Send + 'static) {
-        run(Location::caller(), Box::new(work));
+        self.unanswered(Location::caller(), Box::new(work));
+    }
+
+    /// `background`'s and `detached`'s work: the start's while it runs (`Working`) — no result lands to end its count,
+    /// so its work's end does, or its first wait (`waits`: a timer's). #398: the start's prune of the temp folder ran
+    /// on into a settled tarae's rest on a loaded Mac, in no `starting`. One copy for both, as `spawn_boxed` (#365).
+    #[inline(never)]
+    fn unanswered(&self, site: &'static Location<'static>, work: Box<dyn FnOnce() + Send>) {
+        let out = self.start.as_ref().map(|(s, since)| s.out(site, *since));
+        let owed = self.owed.out(site, None);
+        run(
+            site,
+            Box::new(move || {
+                let _working = Working::with(out, owed);
+                work()
+            }),
+        );
     }
 }
 
@@ -526,8 +562,10 @@ impl Drop for Writing {
 
 /// The start's jobs whose results haven't landed, each by the line that spawned it and since when: what tarae
 /// spawned before its first frame (the sessions' restore, recovery's look, the languages' loads, Reduce Motion's read
-/// …) and what their results spawned in turn — but never one whose work waits (`waits`) — the state's `starting`,
-/// which an idle check waits out (#191: on a loaded machine the restore's result landed in a settled tarae's rest).
+/// …) and what their results spawned in turn, and its work with no result while that runs (the prunes —
+/// `background`, `detached`) — but never one whose work waits (`waits`) — the state's `starting`, which an idle check
+/// waits out (#191: on a loaded machine the restore's result landed in a settled tarae's rest; #398: the temp
+/// folder's prune ran on into one).
 #[derive(Clone, Default)]
 pub struct Starts(std::sync::Arc<std::sync::Mutex<Vec<(&'static Location<'static>, Instant)>>>);
 
@@ -545,6 +583,12 @@ impl Starts {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).push((site, since));
         StartOut(self.clone(), site, since)
     }
+
+    /// Each one out, by its site and how long.
+    fn listed(&self) -> Vec<(&'static Location<'static>, Duration)> {
+        let out = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        out.iter().map(|(site, since)| (*site, crate::clock::since(*since))).collect()
+    }
 }
 
 impl Drop for StartOut {
@@ -557,28 +601,30 @@ impl Drop for StartOut {
 }
 
 thread_local! {
-    /// The start's job whose work this thread runs now (`Jobs::spawn`) — until it waits (`waits`).
-    static WORKING: std::cell::RefCell<Option<StartOut>> = const { std::cell::RefCell::new(None) };
+    /// The job whose work this thread runs now (`Jobs::spawn`): its count as the start's, and as owed (`Queue.owed`)
+    /// — until it waits (`waits`).
+    static WORKING: std::cell::RefCell<(Option<StartOut>, Option<StartOut>)> =
+        const { std::cell::RefCell::new((None, None)) };
 }
 
-/// A job's work under way on this thread, holding its count as the start's (`WORKING`) — let go if it panics.
+/// A job's work under way on this thread, holding its counts (`WORKING`) — let go if it panics.
 struct Working;
 
 impl Working {
-    fn with(out: Option<StartOut>) -> Working {
-        WORKING.with(|w| *w.borrow_mut() = out);
+    fn with(out: Option<StartOut>, owed: StartOut) -> Working {
+        WORKING.with(|w| *w.borrow_mut() = (out, Some(owed)));
         Working
     }
 
-    /// The work done: still the start's unless it waited.
-    fn done(self) -> Option<StartOut> {
-        WORKING.with(|w| w.borrow_mut().take())
+    /// The work done: still the start's, and owed, unless it waited.
+    fn done(self) -> (Option<StartOut>, Option<StartOut>) {
+        WORKING.with(|w| std::mem::take(&mut *w.borrow_mut()))
     }
 }
 
 impl Drop for Working {
     fn drop(&mut self) {
-        let _ = WORKING.try_with(|w| w.borrow_mut().take());
+        let _ = WORKING.try_with(|w| std::mem::take(&mut *w.borrow_mut()));
     }
 }
 
@@ -591,7 +637,7 @@ impl Drop for Working {
 /// process), or a poll of `pause`s that goes on (respawning from its own result too: `Queue.chain`), shows in the
 /// state's `starting` once past `START_LATE`.
 pub fn waits() {
-    let _ = WORKING.try_with(|w| drop(w.borrow_mut().take()));
+    let _ = WORKING.try_with(|w| drop(std::mem::take(&mut *w.borrow_mut())));
 }
 
 impl Editor {
@@ -924,6 +970,69 @@ mod tests {
         ed.events.jobs().spawn(|| |_: &mut Editor| {});
         drop(ed.events.recv_timeout(crate::test_results::PATIENCE).expect("a result"));
         assert!(ed.events.starts_out().is_empty(), "dropped unapplied: not left counted");
+    }
+
+    /// The start's work with no result (`background`, `detached` — the prunes) is the start's while it runs, and over
+    /// with its work (#398: the temp folder's prune ran on into a settled tarae's rest); one that waits on time first
+    /// (a timer) lets go at once; after the start, none is.
+    #[test]
+    fn the_start_s_work_with_no_result_is_counted_while_it_runs() {
+        let ed = Editor::new(crate::config::Config::default());
+        for detached in [false, true] {
+            let (go, held) = mpsc::channel::<()>();
+            let (done, ended) = mpsc::channel::<()>();
+            ed.events.set_starting(true);
+            let work = move || {
+                let _ = held.recv_timeout(crate::test_results::PATIENCE);
+                let _ = done.send(());
+            };
+            match detached {
+                true => ed.events.jobs().detached(work),
+                false => ed.events.jobs().background(work),
+            }
+            ed.events.started();
+            assert_eq!(ed.events.starts_out().len(), 1, "out while its work runs (detached {detached})");
+            assert_eq!(ed.events.owed_out().len(), 1, "owed while its work runs (detached {detached})");
+            go.send(()).unwrap();
+            ended.recv_timeout(crate::test_results::PATIENCE).expect("its work ended");
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while !ed.events.owed_out().is_empty() && std::time::Instant::now() < end {
+                std::thread::yield_now();
+            }
+            assert!(ed.events.starts_out().is_empty(), "over with its work (detached {detached})");
+            assert!(ed.events.owed_out().is_empty(), "owed no more (detached {detached})");
+        }
+        // (any job, the start's or not: owed until its result is applied — #398's chat jobs)
+        let mut ed = ed;
+        ed.events.jobs().spawn(|| |_: &mut Editor| {});
+        assert_eq!(ed.events.owed_out().len(), 1, "a job after the start is owed");
+        let Some(Event::Job(apply) | Event::For(_, _, apply)) =
+            ed.events.recv_timeout(crate::test_results::PATIENCE)
+        else {
+            panic!("a result")
+        };
+        assert_eq!(ed.events.owed_out().len(), 1, "its result not applied yet");
+        apply(&mut ed);
+        assert!(ed.events.owed_out().is_empty(), "applied: owed no more");
+        // (a timer: its wait comes first — let go there, its end however far)
+        let (go, held) = mpsc::channel::<()>();
+        let (slept, asleep) = mpsc::channel::<()>();
+        ed.events.set_starting(true);
+        ed.events.jobs().detached(move || {
+            sleep(Duration::from_millis(1));
+            let _ = slept.send(());
+            let _ = held.recv_timeout(crate::test_results::PATIENCE);
+        });
+        ed.events.started();
+        asleep.recv_timeout(crate::test_results::PATIENCE).expect("it slept");
+        assert!(ed.events.starts_out().is_empty(), "a timer isn't the start's");
+        go.send(()).unwrap();
+        let (go, held) = mpsc::channel::<()>();
+        ed.events.jobs().background(move || {
+            let _ = held.recv_timeout(crate::test_results::PATIENCE);
+        });
+        assert!(ed.events.starts_out().is_empty(), "after the start: not the start's");
+        go.send(()).unwrap();
     }
 
     /// Every sleep in the code goes through `event::sleep`: in a simulation the clock moves instead of the thread

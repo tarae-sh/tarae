@@ -1735,6 +1735,8 @@ fn park(ed: &mut Editor, id: crate::event::WorkspaceId, mut o: Offer) {
 
 /// What doesn't stay put from run to run (pid, boot, times) — out of the golden JSON.
 fn steady(mut v: Value) -> Value {
+    // (the jobs still out: the scene's own, landed or not by the time it's read)
+    v.as_object_mut().unwrap().remove("owed");
     v["tarae"]["pid"] = json!(0);
     v["tarae"]["boot"] = json!("-");
     v["tarae"]["version"] = json!("-");

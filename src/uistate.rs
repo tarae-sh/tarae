@@ -77,7 +77,9 @@ use crate::workspace::Here;
 /// `note`, a thread no replies — a note is your comment or the reviewer's finding, a draft until sent, gone from the code
 /// once it is).
 /// 35: `keys.pane` — the docked pane the keys are in, by its id (`pane#5`; onetree S4: the keys are a pane's).
-pub const V: u64 = 35;
+/// 36: `owed` — every job whose result hasn't landed, the start's or not (#398); `starting` counts the start's work
+/// with no result too while it runs.
+pub const V: u64 = 36;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -794,6 +796,10 @@ pub struct UiState {
     /// out past `event::START_LATE`, for how long (`starting_said`) — an idle check waits until there are none: one
     /// landing later is an event in its rest; never Claude's.
     pub starting: Vec<String>,
+    /// Every job whose work is under way or whose result hasn't landed, the start's or not (`event::Queue::owed_out`),
+    /// said as `starting` says one — an idle check waits until there are none (#398: a job the chat's opening spawned
+    /// landed in a settled tarae's rest on a loaded Mac); never Claude's.
+    pub owed: Vec<String>,
     /// When a frame is next wanted with nothing else happening (`Editor::tick_wanted`: the waiting animation's
     /// step, a toast's fade, …), in ms — None: nothing wakes it; never Claude's.
     pub tick_in_ms: Option<u64>,
@@ -1892,6 +1898,7 @@ impl Editor {
             events: self.events_handled,
             events_for: self.events_kept.iter().map(|(n, of)| (*n, of.to_string())).collect(),
             starting: self.events.starts_out().into_iter().map(|(at, out)| starting_said(at, out)).collect(),
+            owed: self.events.owed_out().into_iter().map(|(at, out)| starting_said(at, out)).collect(),
             tick_in_ms: self.tick_wanted().map(|d| d.as_millis() as u64),
             unfocused: self.unfocused,
             pointer: self.ui_pointer(),
@@ -2256,6 +2263,9 @@ impl UiState {
         }
         if !self.starting.is_empty() {
             v["starting"] = json!(self.starting);
+        }
+        if !self.owed.is_empty() {
+            v["owed"] = json!(self.owed);
         }
         if let Some(ms) = self.tick_in_ms {
             v["tick_in_ms"] = json!(ms);

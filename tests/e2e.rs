@@ -2342,22 +2342,18 @@ fn the_quits_unwritten_lines_reach_the_clients_terminal() {
     );
 }
 
-fn connected(sock: &std::path::Path) -> Option<std::process::Child> {
-    let child = std::process::Command::new("/bin/sh")
-        .args(["-c", "exec nc -U \"$0\"", &sock.file_name().unwrap().to_string_lossy()])
-        .current_dir(sock.parent().unwrap())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let mut child = child;
-    // (macOS has `nc -U`: still there = connected, and asking nothing)
-    if cfg!(target_os = "macos") {
-        assert!(matches!(child.try_wait(), Ok(None)), "nc couldn't connect to {}", sock.display());
-    }
-    Some(child)
+/// A driver connected to `sock` (from its folder, as every client: `tarae_sock`), then asking nothing — its one
+/// ask answered first, so its connection's own work (accepted, its peer's credentials and parents read) is over
+/// before a rest begins (#398: `nc` given a fixed 200 ms could connect inside one on a loaded machine).
+fn connected(sock: &std::path::Path) -> std::os::unix::net::UnixStream {
+    use std::io::{BufRead as _, Write as _};
+    let mut s =
+        tarae_sock::connect(sock).unwrap_or_else(|e| panic!("couldn't connect to {}: {e}", sock.display()));
+    writeln!(s, "{}", serde_json::json!({ "get": "state", "after_input": 0 })).expect("its ask");
+    let mut answer = String::new();
+    std::io::BufReader::new(&s).read_line(&mut answer).expect("its answer");
+    assert!(answer.contains("\"keys\""), "answered as a driver: {answer}");
+    s
 }
 
 /// A driver reads where the keys go before sending — the four slips of 2026-10-04 through the real binary
@@ -2371,7 +2367,7 @@ fn a_driver_reads_where_the_keys_go() {
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("one");
     let s = t.state_json(0);
-    assert_eq!(s["v"], 35, "the schema's version (`uistate::V`)");
+    assert_eq!(s["v"], 36, "the schema's version (`uistate::V`)");
     assert_eq!((s["keys"]["region"].as_str(), s["keys"]["takes"].as_str()), (Some("code"), Some("commands")));
     assert_eq!(s["tarae"]["pid"], t.pid());
     let input = s["input"].as_u64().unwrap();

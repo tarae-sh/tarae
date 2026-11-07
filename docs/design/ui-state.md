@@ -241,10 +241,16 @@ side git · 4 rows · in hand git:src/term.rs
   (`event::Starts`), and a watch made then until its first look lands (`Queue::start_out`: the git watch's first
   round, the config watch's look at the plugins folder — #210, the git round in a rest) — never a job once its work waits, on time or on a watch (`event::waits`, from `event::sleep` and
   `fswatch::Watcher::wait`: the usage watch, the disk watch's rounds, a frame's tick), nor what its result spawns
-  (#201: the usage watch, armed by the restore's result, held it open up to an hour). Out past `event::START_LATE`
-  (5 s) an entry says for how long (`job src/usage.rs:1218 out 54m 00s`). An idle check settles only once there are
-  none (e2e `Term::settle`): on a loaded machine the restore's result landed after a settle, an event in the rest.
-  Said only when there are any; not at Claude's level.
+  (#201: the usage watch, armed by the restore's result, held it open up to an hour). The start's work with no result
+  (`background`, `detached`: the prunes) counts while it runs (#398: the temp folder's prune ran on into a rest). Out
+  past `event::START_LATE` (5 s) an entry says for how long (`job src/usage.rs:1218 out 54m 00s`). An idle check
+  settles only once there are none (e2e `Term::settle`): on a loaded machine the restore's result landed after a
+  settle, an event in the rest. Said only when there are any; not at Claude's level.
+- **`owed`** (motion, #398, 2026-11-07) — every job whose work is under way or whose result hasn't landed, the
+  start's or not, said as `starting` says one (`event::Queue::owed_out`), by the same rule: never one whose work
+  waits (a timer, a watch's round). An idle check settles only once there are none too: on a loaded Mac a job the
+  chat's opening spawned (`claudetrust`, `caps`) landed in a settled tarae's rest. Said only when there are any; not
+  at Claude's level.
 - **`tick_in_ms`**, **`unfocused`** (ci, 2026-10-24) — when a frame is next wanted with nothing else happening
   (`Editor::tick_wanted`: the waiting animation's step, a toast's fade, a motion's …; absent: nothing wakes it), and
   (only while true) that the terminal said its focus went elsewhere (`CSI O`, until `CSI I`: the animation rests). A

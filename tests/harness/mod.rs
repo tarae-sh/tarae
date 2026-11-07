@@ -1342,9 +1342,12 @@ pub fn owes(s: &serde_json::Value) -> (u64, bool) {
     (s["frames_written"].as_u64().unwrap_or(0), s.get("redraw_due").is_some())
 }
 
-/// The start's jobs an answer of the state says are still out (`starting`), None when none is (`Term::settle`).
+/// The jobs an answer of the state says are still out — the start's (`starting`) and every other whose result hasn't
+/// landed (`owed`, #398) — None when none is (`Term::settle`).
 pub fn starts_out(s: &serde_json::Value) -> Option<String> {
-    s.get("starting").map(ToString::to_string)
+    let out: Vec<String> =
+        ["starting", "owed"].iter().filter_map(|k| s.get(*k).map(|v| format!("{k} {v}"))).collect();
+    (!out.is_empty()).then(|| out.join(", "))
 }
 
 /// Whether an answer of the state (`written` frames, the resting redraw `due`) leaves nothing owed once `read`
