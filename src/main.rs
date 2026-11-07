@@ -242,6 +242,7 @@ mod view;
 mod viewalign;
 mod virtualdoc;
 mod waits;
+mod warm;
 mod weave;
 mod web;
 mod whole;

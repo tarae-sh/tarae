@@ -908,6 +908,7 @@ fn making(place: &Place) -> crate::worktree::Making {
         big: Vec::new(),
         builds: None,
         build_own: None,
+        warm: None,
         copies: Vec::new(),
         others: Vec::new(),
         billing: Billing::Subscription,

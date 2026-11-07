@@ -389,6 +389,7 @@ fn made(
                 continue;
             }
         };
+        crate::warm::begin(ed, &root);
         let child = ed.workspace_add(root);
         if let Some(l) = ed.workspace_by_id(child) {
             (l.name, l.branch, l.base) = (m.branch.clone(), Some(m.branch.clone()), Some(m.base.clone()));
@@ -1534,6 +1535,7 @@ pub(crate) fn stand_in_card(ed: &Editor, names: &[&str]) -> crate::offer::Offer 
         big: Vec::new(),
         builds: None,
         build_own: None,
+        warm: None,
         copies: Vec::new(),
         others: Vec::new(),
         billing: Default::default(),

@@ -40,6 +40,26 @@ pub struct Tool {
     remove: Option<Remove>,
     keep: Vec<PathBuf>,
     marks: Marks,
+    warm: Option<Warm>,
+}
+
+/// `warm`: how a new checkout's own build folder starts from the home checkout's (`warm.rs`) — one profile's
+/// folders cloned under the tool's lock, the units of the checkout's own packages taken out first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Warm {
+    /// The profile folder in a build folder (`debug`).
+    pub profile: PathBuf,
+    /// The tool's lock in it, held while it builds (`flock`).
+    pub lock: String,
+    /// Its folders cloned, by name.
+    pub folders: Vec<String>,
+    /// The one of them with an entry `<package>-<hash>` a unit: the hash names the unit's entries in every folder.
+    pub units: String,
+    /// The lock file at a checkout's top, its table of packages, the key naming one, and the key a path
+    /// package's entry lacks.
+    pub lock_file: (String, String, String, String),
+    /// The packages the tool's `ask` names (its answer's list, and the key naming one) — the checkout's own.
+    pub members: Option<(String, String)>,
 }
 
 /// How the tool marks a new build folder as it makes it (`cache-tag`, `macos-xattrs`) — what tarae puts on
@@ -92,6 +112,7 @@ pub fn tool_of(v: &toml::Value) -> Result<Tool, String> {
             "keep",
             "cache-tag",
             "macos-xattrs",
+            "warm",
         ],
         "it",
     )?;
@@ -149,6 +170,7 @@ pub fn tool_of(v: &toml::Value) -> Result<Tool, String> {
         .map(|k| plain(k).ok_or(format!("`keep` {k:?} isn't a folder's name in the home")))
         .collect::<Result<_, _>>()?;
     let marks = Marks { cache_tag: cache_tag_of(t)?, macos_xattrs: xattrs_of(t.get("macos-xattrs"))? };
+    let warm = warm_of(t.get("warm"))?;
     Ok(Tool {
         name: need("name")?,
         when,
@@ -161,7 +183,48 @@ pub fn tool_of(v: &toml::Value) -> Result<Tool, String> {
         remove,
         keep,
         marks,
+        warm,
     })
+}
+
+/// `warm`: every name a plain one (no `/`, `.` or `..` but as a name's own part), the folders one to eight with
+/// `units` among them.
+fn warm_of(v: Option<&toml::Value>) -> Result<Option<Warm>, String> {
+    let Some(v) = v else { return Ok(None) };
+    let t = v.as_table().ok_or("`warm` isn't a table")?;
+    known(t, &["profile", "lock", "folders", "units", "lock-file", "members"], "`warm`")?;
+    let name = |s: Option<String>, k: &str| {
+        s.filter(|s| plain(s).is_some() && !s.contains('/')).ok_or(format!("`warm.{k}` isn't one name"))
+    };
+    let profile = name(string(t, "profile")?, "profile")?;
+    let lock = name(string(t, "lock")?, "lock")?;
+    let units = name(string(t, "units")?, "units")?;
+    let folders = strings(t.get("folders"), "warm.folders")?.unwrap_or_default();
+    if !(1..=8).contains(&folders.len()) || !folders.contains(&units) {
+        return Err("`warm.folders` is one to eight names, `units` among them".into());
+    }
+    let folders = folders.into_iter().map(|f| name(Some(f), "folders")).collect::<Result<_, _>>()?;
+    let sub = |k: &str, keys: &[&str]| -> Result<Option<Vec<String>>, String> {
+        let Some(v) = t.get(k) else { return Ok(None) };
+        let v = v.as_table().ok_or(format!("`warm.{k}` isn't a table"))?;
+        known(v, keys, &format!("`warm.{k}`"))?;
+        keys.iter()
+            .map(|key| string(v, key)?.filter(|s| !s.is_empty()).ok_or(format!("`warm.{k}` has no `{key}`")))
+            .collect::<Result<_, _>>()
+            .map(Some)
+    };
+    let lf =
+        sub("lock-file", &["name", "table", "key", "path-without"])?.ok_or("`warm` has no `lock-file`")?;
+    let lock_file_name = name(Some(lf[0].clone()), "lock-file.name")?;
+    let members = sub("members", &["list", "key"])?.map(|m| (m[0].clone(), m[1].clone()));
+    Ok(Some(Warm {
+        profile: PathBuf::from(profile),
+        lock,
+        folders,
+        units,
+        lock_file: (lock_file_name, lf[1].clone(), lf[2].clone(), lf[3].clone()),
+        members,
+    }))
 }
 
 /// `cache-tag`: what follows the tag's signature line — comments only (`# …`, each line ending in a line
@@ -277,6 +340,11 @@ impl Tool {
         &self.marks
     }
 
+    /// How a new checkout's own build folder starts warm — None: it doesn't.
+    pub(crate) fn warm(&self) -> Option<&Warm> {
+        self.warm.as_ref()
+    }
+
     /// The files that set where the checkout at `root` builds: its `when` and `setting.files` there, the
     /// tool's home's `home-files`.
     pub(crate) fn set_by(&self, root: &Path, tool_home: Option<&Path>) -> Vec<PathBuf> {
@@ -353,7 +421,21 @@ impl Tool {
             s += &format!(" · macos xattr {name}={hex}");
         }
         let keep: Vec<String> = self.keep.iter().map(|k| k.display().to_string()).collect();
-        s + &format!(" · keep {}", keep.join(" "))
+        s += &format!(" · keep {}", keep.join(" "));
+        if let Some(w) = &self.warm {
+            let (f, table, key, without) = &w.lock_file;
+            s += &format!(
+                " · warm {} under {} · {} by {} · own: {f} [[{table}]] {key} without {without}",
+                w.profile.display(),
+                w.lock,
+                w.folders.join(" "),
+                w.units
+            );
+            if let Some((list, key)) = &w.members {
+                s += &format!(" + asked {list}[].{key}");
+            }
+        }
+        s
     }
 }
 
@@ -534,6 +616,11 @@ impl Builds {
     /// Where the tool says the checkout at `dir` builds — (target, build folder) as printed, `..` and links and
     /// all — None when it doesn't say within `wait` (or says it failed).
     pub fn ask(&self, tool: &Tool, dir: &Path) -> Option<(PathBuf, PathBuf)> {
+        self.ask_whole(tool, dir).map(|(dirs, _)| dirs)
+    }
+
+    /// `ask`, and its whole answer (`warm.rs` reads the packages it names).
+    pub fn ask_whole(&self, tool: &Tool, dir: &Path) -> Option<((PathBuf, PathBuf), Value)> {
         use std::io::Read as _;
         use std::process::{Command, Stdio};
         let mut cmd = match &self.program {
@@ -553,27 +640,54 @@ impl Builds {
             .spawn()
             .ok()?;
         let mut out = child.stdout.take()?;
-        let reader = crate::event::thread("tarae-build-ask", move || {
+        let (tx, read) = std::sync::mpsc::channel();
+        crate::event::thread("tarae-build-ask", move || {
             let mut s = Vec::new();
             let _ = out.read_to_end(&mut s);
-            s
+            let _ = tx.send(s);
         });
-        let end = Instant::now() + self.wait;
-        loop {
-            match child.try_wait() {
-                Ok(Some(s)) if s.success() => break,
-                Ok(None) if Instant::now() < end => crate::event::pause(Duration::from_millis(20)),
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
+        // Its exit waited for on a thread too, not reaped (`WNOWAIT`, `llm::reap`'s way): only this loop reaps it, so
+        // the pid stays the tool's and a kill past the deadline reaches it or nothing — a tool that closes its output
+        // and then hangs is killed as one that never answers (G13: it's the toolchain the project names).
+        let pid = child.id();
+        let (tx, exited) = std::sync::mpsc::channel();
+        crate::event::thread("tarae-build-end", move || {
+            // SAFETY: a zeroed siginfo_t is a valid one to fill; waitid only waits for our own child, reaping nothing.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let flags = libc::WEXITED | libc::WNOWAIT;
+            // SAFETY: as above.
+            while unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) } != 0
+                && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+            {}
+            let _ = tx.send(());
+        });
+        // (a pause first, then whether its output came whole and it ended: a simulation's yield waits for both
+        // threads, which send as the tool closes its output and exits — one step however fast the tool. A `try_wait`
+        // first raced the tool's exit, and a thread's own end lags its last word (`is_finished`): a step more or less,
+        // and the warm start's simulation ran two ways on a loaded machine — as the deadline did, on the real clock
+        // past a yield.)
+        let end = crate::clock::now() + self.wait;
+        let (mut said, mut ended) = (None, false);
+        let said = loop {
+            crate::event::pause(Duration::from_millis(20));
+            said = said.or_else(|| read.try_recv().ok());
+            ended = ended || exited.try_recv().is_ok();
+            if ended && let Some(s) = said.take() {
+                break s;
             }
+            if crate::clock::now() >= end {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        };
+        if !child.wait().is_ok_and(|s| s.success()) {
+            return None;
         }
-        let v: Value = serde_json::from_slice(&reader.join().ok()?).ok()?;
+        let v: Value = serde_json::from_slice(&said).ok()?;
         let target = PathBuf::from(v[tool.target.as_str()].as_str()?);
-        let build = tool.build.as_ref().and_then(|b| v[b.as_str()].as_str());
-        Some((target.clone(), build.map_or(target, PathBuf::from)))
+        let build = tool.build.as_ref().and_then(|b| v[b.as_str()].as_str()).map(PathBuf::from);
+        Some(((target.clone(), build.unwrap_or(target)), v))
     }
 
     /// The build-folder setting as it stands for `top`, unresolved (its per-checkout markers as written) — the
@@ -1065,6 +1179,33 @@ mod tests {
         std::fs::write(p.root.join(".fake-sleep"), "2").unwrap();
         p.b.wait = Duration::from_millis(300);
         stays(p.end(), "cargo didn't say where it built", &marker);
+    }
+
+    /// Rule 3's deadline holds the tool's exit too: one that prints its answer, closes its output and hangs is
+    /// killed past `wait`, no answer — never a worker waiting on it for good.
+    #[test]
+    fn a_tool_that_closes_its_output_and_hangs_is_killed_past_the_deadline() {
+        let p = place("hangs");
+        let program = p.dir.join("fake-cargo-hangs");
+        let script = "#!/bin/sh\necho $$ > .fake-pid\nprintf '{\"target_directory\":\"%s/target\"}' \"$(pwd -P)\"\n\
+                      exec >&-\nexec sleep 600\n";
+        std::fs::write(&program, script).unwrap();
+        let mut b = Builds::stand_in(&program, &p.home, &p.user);
+        b.wait = Duration::from_millis(300);
+        let root = p.root.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(b.ask(b.tool("rust"), &root));
+        });
+        let answer = rx
+            .recv_timeout(crate::test_results::PATIENCE)
+            .expect("ask never came back — it waited on the tool's exit past its deadline");
+        assert_eq!(answer, None, "a tool killed past the deadline gave no answer");
+        let pid: libc::pid_t =
+            std::fs::read_to_string(p.root.join(".fake-pid")).unwrap().trim().parse().unwrap();
+        // SAFETY: signal 0 only asks whether the pid is there; ask reaped its tool, so ESRCH.
+        let there = unsafe { libc::kill(pid, 0) } == 0;
+        assert!(!there, "the tool is gone (killed and reaped)");
     }
 
     /// Rule 4: A path with `..` in it: `build/ab/..` is two folders below `build/` as spelled — and is `build/`.

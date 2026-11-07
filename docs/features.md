@@ -199,7 +199,11 @@ configs carry over as they are.
   tarae did, and while one holds, the status line says so with a `▲` — nothing otherwise. A run of Claude's that
   fails for space says the disk is full first. The session list (`space W`) shows each session's own build folder
   outside its checkout (`build 12.0 GB`) — one its end would remove — and `x` twice on a session behind with
-  nothing running drops it (its next build starts cold)
+  nothing running drops it (its next build starts cold). A new session's first build starts warm where its build
+  folder is its own (cargo's `target/` inside it, or a per-checkout build-dir): the dependencies the main checkout has
+  built are cloned in as it's made — copy-on-write (APFS, btrfs, XFS), under cargo's lock, never the main checkout's
+  own packages, which build fresh; its card says so, and the log says how it went. A file system that can't clone
+  starts cold, as before
 - **Toasts** — status messages fade in at the top right, a message a row on a slight ground, no frame, the left bar
   colored by kind (info, saved, warning, error) — the look of another session's ask waiting at the bottom right. The
   more serious, the longer they stay ([screenshot](screenshots/ux-toasts-sync.png)); an error stays until a key of

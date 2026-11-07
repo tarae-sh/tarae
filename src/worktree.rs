@@ -404,6 +404,9 @@ pub struct Making {
     /// The tool's build-dir outside the checkout is one per checkout (`Tool::per_checkout` — #111: the card
     /// said shared): this one's size, what the new checkout's first build makes again from cold.
     pub build_own: Option<(u64, bool)>,
+    /// Its first build starts warm from the main checkout's (`warm::planned`): what it shares, None when not measured in
+    /// time. None: it starts cold.
+    pub warm: Option<Option<u64>>,
     /// The instruction files git doesn't have here (`instructions`) — copied into its checkout, so its
     /// Claude starts with the project's rules.
     pub copies: Vec<String>,
@@ -481,6 +484,17 @@ fn copy_instructions(top: &Path, path: &Path, files: &[String]) -> Vec<String> {
     failed
 }
 
+/// A warm first build on the create card: what it starts from, what that clone takes (when measured), what builds —
+/// never "shared": the shared build-dir's word, where sessions reuse one another's builds.
+fn warm_said(size: Option<u64>) -> String {
+    let size = size
+        .map(|s| format!(" ({}, cloned: no extra disk until it changes)", size_text((s, true))))
+        .unwrap_or_default();
+    format!(
+        "its first build starts from the dependencies the main checkout has built{size} — its own packages build fresh."
+    )
+}
+
 impl Making {
     /// `main (a1b2c3d)` · `a1b2c3d` for a commit.
     pub(crate) fn base_said(&self) -> String {
@@ -527,16 +541,21 @@ impl Making {
                     crate::allow::tilde(target)
                 )
             }
-            // (per checkout: its own, beside this one's — from cold, #111)
+            // (per checkout: its own, beside this one's — warm from the home's dependencies, else cold, #111)
             Some((tool, _, build)) if shared(build) && self.build_own.is_some() => {
                 let beside = build.parent().map(crate::allow::tilde).unwrap_or_default();
-                q += &format!(
-                    "\n{tool} builds it in a build-dir of its own in {beside}: its first build starts cold"
-                );
-                match self.build_own {
-                    Some(s) if s.0 > 0 => q += &format!(" — this checkout's is {}.", size_text(s)),
-                    _ => q += ".",
+                q += &format!("\n{tool} builds it in a build-dir of its own in {beside}: ");
+                match (self.warm, self.build_own) {
+                    (Some(size), _) => q += &warm_said(size),
+                    (None, Some(s)) if s.0 > 0 => {
+                        q += &format!("its first build starts cold — this checkout's is {}.", size_text(s))
+                    }
+                    _ => q += "its first build starts cold.",
                 }
+            }
+            // (inside it: its own too)
+            Some((tool, ..)) if self.warm.is_some() => {
+                q += &format!("\n{tool}'s builds in it: {}", warm_said(self.warm.flatten()))
             }
             Some((tool, _, build)) if shared(build) => {
                 q += &format!(
@@ -630,6 +649,8 @@ pub fn making(
         Some((_, _, build)) if own && !build.starts_with(&top) => Some(disk_size(build, until)),
         _ => None,
     };
+    // (and whether it starts from the home checkout's dependencies instead)
+    let warm = tool.and_then(|(b, t)| crate::warm::planned(b, t, &top, &path, until));
     let copies = instructions(&top);
     Ok(Making {
         top,
@@ -641,6 +662,7 @@ pub fn making(
         big,
         builds: said,
         build_own,
+        warm,
         copies,
         others,
         billing: Default::default(),
@@ -1998,6 +2020,7 @@ impl Editor {
             move |ed: &mut Editor| match made {
                 Ok((root, failed)) => {
                     ed.offer_finished(id, Ok(()));
+                    crate::warm::begin(ed, &root);
                     let session = ed.workspace_add(root);
                     if let Some(l) = ed.workspace_by_id(session) {
                         (l.name, l.branch, l.base) =
@@ -7393,7 +7416,7 @@ mod tests {
         );
         assert!(!rust.per_checkout("/b/shared"));
         // The card's words
-        let making = |build_own| Making {
+        let warm_making = |build_own, warm| Making {
             top: top.clone(),
             branch: "fix".into(),
             base: "main".into(),
@@ -7403,12 +7426,14 @@ mod tests {
             big: Vec::new(),
             builds: Some(("Cargo".into(), top.join("target"), home.join("build/1a/2b3c"))),
             build_own,
+            warm,
             copies: Vec::new(),
             others: Vec::new(),
             billing: Default::default(),
             billing_ask: None,
             billing_note: None,
         };
+        let making = |build_own| warm_making(build_own, None);
         let q = making(Some((3 << 30, true)))
             .card(false)
             .question
@@ -7424,6 +7449,29 @@ mod tests {
         assert!(q.contains("its first build starts cold.") && !q.contains("0 B"), "none built here yet: {q}");
         let q = making(None).card(false).question.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(q.contains("build-dir is shared") && !q.contains("cold"), "{q}");
+        // Warm (B6): what it starts from, what that shares, what builds — never cold, never the checkout's size
+        let words = |m: Making| m.card(false).question.split_whitespace().collect::<Vec<_>>().join(" ");
+        let q = words(warm_making(Some((3 << 30, true)), Some(Some(3 << 29))));
+        assert!(
+            q.contains(
+                "its first build starts from the dependencies the main checkout has built (1.5 GB, cloned: no \
+                 extra disk until it changes) — its own packages build fresh."
+            ) && !q.contains("cold")
+                && !q.contains("3.0 GB"),
+            "{q}"
+        );
+        let q = words(warm_making(Some((3 << 30, true)), Some(None)));
+        assert!(
+            q.contains("has built — its own packages build fresh.")
+                && !q.contains("GB,")
+                && !q.contains("shared"),
+            "not measured: {q}"
+        );
+        // (cargo's default: the build folder inside the checkout — its own too)
+        let mut inside = warm_making(None, Some(Some(1 << 30)));
+        inside.builds = Some(("Cargo".into(), top.join("target"), top.join("target")));
+        let q = words(inside);
+        assert!(q.contains("Cargo's builds in it: its first build starts from the dependencies"), "{q}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

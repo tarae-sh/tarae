@@ -2286,6 +2286,7 @@ mod tests {
             ("Fixture", "sandbox/golden.rs"),
             ("Folder", "containers.rs"),
             ("Gate", "claudetrust.rs"),
+            ("Held", "warm.rs"),
             ("HeldBack", "recovery/tests.rs"),
             ("Helper", "sim.rs"),
             ("Hold", "sandbox/keeper.rs"),

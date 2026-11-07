@@ -115,6 +115,21 @@ macos-xattrs = [
     { name = "com.apple.fileprovider.ignore#P", hex = "31" },
 ]
 
+# A new session's checkout starts warm where its build folder is its own (`warm.rs`, gitcrate B6): the home
+# checkout's `debug` profile — the dev and test units both — cloned under cargo's lock (`flock`, as cargo takes
+# it), only what no checkout builds. A unit's hash ends its name in every folder (`libfoo-<hash>.rmeta`,
+# `foo-<hash>/`), and each has a fingerprint folder named `<package>-<hash>`: a path package's — one with no
+# `source` in Cargo.lock (the workspace's own and path dependencies outside it), or a member the ask names —
+# goes from all three, whatever its targets are named. Its freshness rests on file times alone: kept, another
+# checkout's binary would be used unbuilt.
+[builds.warm]
+profile = "debug"
+lock = ".cargo-build-lock"
+folders = ["deps", "build", ".fingerprint"]
+units = ".fingerprint"
+lock-file = { name = "Cargo.lock", table = "package", key = "name", path-without = "source" }
+members = { list = "packages", key = "name" }
+
 [tasks]
 when = ["Cargo.toml"]
 rank = 10

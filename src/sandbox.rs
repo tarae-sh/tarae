@@ -1695,7 +1695,7 @@ fn owners_unreal(fs: Option<&Filesystem>) -> Option<String> {
 }
 
 /// The filesystem `path` is on (`statfs`, followed) — None: it can't be told.
-fn filesystem_of(path: &Path) -> Option<Filesystem> {
+pub(crate) fn filesystem_of(path: &Path) -> Option<Filesystem> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     // SAFETY: a zeroed C struct statfs fills, a C string we own.
@@ -5775,6 +5775,17 @@ impl Unlinked {
 /// made. Blocks (a worker's).
 fn own_build_made(own: &Path, tool: &Builder) -> Result<bool, String> {
     own_build_made_with(own, tool, &|dir| cache_marked(dir, &tool.marks))
+}
+
+/// `own_build_made` for a build folder `own` below `base` (real: the tool's home, or the checkout holding it) —
+/// `warm.rs`'s, before a warm start goes in it.
+pub(crate) fn build_folder_made(
+    own: &Path,
+    base: &Path,
+    marks: &crate::builds::Marks,
+) -> Result<bool, String> {
+    let tool = Builder { home: Some(base.to_path_buf()), marks: marks.clone(), ..Builder::default() };
+    own_build_made(own, &tool)
 }
 
 /// `own_build_made`, the new folder marked by `mark` (tests: one that fails).

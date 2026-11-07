@@ -88,6 +88,7 @@ mod stuckstop;
 mod termview;
 mod toasts;
 mod turnsheld;
+mod warm;
 mod watchers;
 mod weave;
 mod web;
