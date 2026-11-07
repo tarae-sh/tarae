@@ -53,16 +53,21 @@ done"#;
 /// The test's own folder (real path): `project/` (a git repository, the session's checkout), `state/` (where
 /// tarae keeps things), the stand-in helper `helper.sh` beside them — and the key it prints.
 struct Place {
-    dir: PathBuf,
     root: PathBuf,
     state: PathBuf,
     helper: String,
     key: String,
+    /// Its editors' writes under way (a chat's save, the sessions'): waited for before the folder goes.
+    writes: std::cell::RefCell<Vec<crate::event::Writes>>,
+    /// Last: removed once the writes landed (#441: a save landing after the removal made `state/` again, and it was
+    /// left in the temp folder).
+    dir: crate::scratch::Scratch,
 }
 
 impl Place {
     fn new(name: &str) -> Place {
-        let dir = crate::scratch::Scratch::new(&format!("billing-{name}")).into_path();
+        let scratch = crate::scratch::Scratch::new(&format!("billing-{name}"));
+        let dir = scratch.to_path_buf();
         std::fs::create_dir_all(dir.join("project")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         let root = dir.join("project");
@@ -73,7 +78,7 @@ impl Place {
         let key = format!("tarae-fake-key-{:x}{:x}", std::process::id(), nanos);
         std::fs::write(dir.join("helper.sh"), format!("printf {key}\n")).unwrap();
         let helper = format!("sh {}", dir.join("helper.sh").display());
-        Place { state: dir.join("state"), root, dir, helper, key }
+        Place { state: dir.join("state"), root, helper, key, writes: Default::default(), dir: scratch }
     }
 
     /// An editor in the project, its claude the stand-in, its key helper the stand-in's (and found, `query`),
@@ -87,6 +92,7 @@ impl Place {
         ed.chats_dir = Some(self.state.join("chats"));
         ed.workspace_store.dir = Some(self.state.join("sessions"));
         ed.workspace_store.restored = true;
+        self.writes.borrow_mut().push(ed.events.writes().clone());
         ed
     }
 
@@ -106,9 +112,25 @@ impl Place {
 }
 
 impl Drop for Place {
+    /// Its editors are gone by now (each made after it): what they handed a worker lands before the folder goes.
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).ok();
+        for w in self.writes.borrow().iter() {
+            w.wait(crate::test_results::PATIENCE);
+        }
     }
+}
+
+/// #441: these left `state/` in the temp folder every run — a save landing after the folder was removed.
+#[test]
+fn the_places_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(|| {
+        switching_billing_resumes_the_same_conversation();
+        a_switch_says_what_the_next_message_costs_until_it_goes();
+        a_weekly_refusal_asks_once_and_a_reaches_new_sessions_until_the_reset();
+        credits_running_out_offers_the_plan_back();
+        a_session_behind_refused_twice_for_money_has_one_card();
+    });
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 /// A stand-in for the Keychain query (`api_check`): one that finds the key, or one that doesn't — `security`'s
@@ -333,7 +355,7 @@ fn billing_is_kept_with_its_session_and_a_new_one_takes_the_setting() {
     let id = back.workspace_add(other.clone());
     assert_eq!(back.workspaces.iter().find(|l| l.id == id).unwrap().claude.billing, Billing::Subscription);
     back.config.llm.billing = Billing::Api;
-    let id = back.workspace_add(place.dir.clone());
+    let id = back.workspace_add(place.dir.to_path_buf());
     assert_eq!(
         back.workspaces.iter().find(|l| l.id == id).unwrap().claude.billing,
         Billing::Api,

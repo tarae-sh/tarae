@@ -725,19 +725,29 @@ mod tests {
     }
 
     /// An editor with the demo plugin loaded from its own folder, on `text` — its state (`state/`) in that folder.
-    fn setup(name: &str, text: &str) -> (Editor, PathBuf) {
+    fn setup(name: &str, text: &str) -> (crate::scratch::Scratch, Editor, PathBuf) {
         setup_with(name, text, DEMO)
     }
 
-    /// `setup` with the demo's build as `wasm` (patched: `abi::demo_reading`).
-    fn setup_with(name: &str, text: &str, wasm: &[u8]) -> (Editor, PathBuf) {
-        let dir = crate::scratch::Scratch::new(&format!("plugins-{name}")).into_path();
+    /// `setup` with the demo's build as `wasm` (patched: `abi::demo_reading`). The folder goes with the `Scratch`,
+    /// after the editor (#441: an `into_path` the caller was to remove was left in the temp folder each run where it
+    /// didn't).
+    fn setup_with(name: &str, text: &str, wasm: &[u8]) -> (crate::scratch::Scratch, Editor, PathBuf) {
+        let s = crate::scratch::Scratch::new(&format!("plugins-{name}"));
+        let dir = s.to_path_buf();
         std::fs::write(dir.join("demo.wasm"), wasm).unwrap();
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = ropey::Rope::from_str(text);
         ed.plugins_sync_in(&dir.join("state"), host::scan(&dir));
         settle_until(&mut ed, |ed| ed.plugin_command("shout").is_some());
-        (ed, dir)
+        (s, ed, dir)
+    }
+
+    /// #441: it left its folder in the temp folder every run.
+    #[test]
+    fn the_setup_tests_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(a_plugins_tab_opened_mid_listing_drops_a_reveal);
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     fn key(ed: &mut Editor, k: &str) {
@@ -749,7 +759,7 @@ mod tests {
     /// isn't one (`TARAE-DEMO`, its bytes changed in place) doesn't — said, with no command of it registered.
     #[test]
     fn the_plugin_thread_judges_permissions_by_the_editors_rule() {
-        let (ed, dir) = setup("rule", "x\n");
+        let (_s, ed, dir) = setup("rule", "x\n");
         let declared = &ed.plugins.as_ref().unwrap().permissions["demo"];
         assert!(declared.contains(&abi::Permission::Env("TARAE_DEMO".into())), "{declared:?}");
         std::fs::remove_dir_all(dir).ok();
@@ -777,7 +787,7 @@ mod tests {
     /// `space e` (the reviewer's, round 3).
     #[test]
     fn a_plugins_tab_opened_mid_listing_drops_a_reveal() {
-        let (mut ed, dir) = setup("side-reveal", "x\n");
+        let (_s, mut ed, dir) = setup("side-reveal", "x\n");
         let root = std::fs::canonicalize(&dir).unwrap();
         ed.workspace.root = root.clone();
         let files = vec!["src/ui/card.rs".to_string()];
@@ -803,7 +813,7 @@ mod tests {
     /// (`features.rs`).
     #[test]
     fn a_plugin_command_counts_by_its_name() {
-        let (mut ed, dir) = setup("count", "x\n");
+        let (_s, mut ed, dir) = setup("count", "x\n");
         ed.config.features_count = true;
         for c in ":shout zqxmarker".chars() {
             ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
@@ -862,7 +872,7 @@ mod tests {
 
     #[test]
     fn permissions_wait_for_approval_and_hold_to_what_was_asked() {
-        let (mut ed, dir) = setup("perm", "x\n");
+        let (_s, mut ed, dir) = setup("perm", "x\n");
         // Held: the card asks as it loads, and what needs a permission waits for it — done once approved, the
         // plugin going on by itself (#167: it stayed refused until asked again)
         ed.plugin_run("exec", "").unwrap();
@@ -901,7 +911,7 @@ mod tests {
     /// card up a request is refused at once; `:plugin-approve`'s card holds again, and its yes goes on.
     #[test]
     fn not_approving_refuses_what_waited_on_the_card() {
-        let (mut ed, dir) = setup("not-now", "x\n");
+        let (_s, mut ed, dir) = setup("not-now", "x\n");
         let held = |ed: &Editor| ed.plugins.as_ref().map_or(0, |p| p.held.get("demo").map_or(0, Vec::len));
         ed.plugin_run("exec", "").unwrap();
         ed.plugin_run("getenv", "TARAE_DEMO").unwrap();
@@ -933,7 +943,7 @@ mod tests {
         // whose name anyone can guess (and so make first), nor a fixed one another run of the tests shares
         let reads = crate::scratch::Scratch::new("plugins-files-reads");
         let pattern = format!("{}/**", reads.display());
-        let (mut ed, dir) = setup_with("files", "x\n", &abi::demo_reading(&pattern));
+        let (_s, mut ed, dir) = setup_with("files", "x\n", &abi::demo_reading(&pattern));
         let declared = &ed.plugins.as_ref().unwrap().permissions["demo"];
         assert!(declared.contains(&abi::Permission::Read(pattern.clone())), "{declared:?}");
         let base = reads.to_path_buf();
@@ -981,7 +991,7 @@ mod tests {
             // (the listener kept for the second dial: a port let go can be another test's before it's bound again)
             (got, listener)
         });
-        let (mut ed, dir) = setup("socket", "x\n");
+        let (_s, mut ed, dir) = setup("socket", "x\n");
         answer(&mut ed, approval, true);
         ed.plugin_run("dial", &port.to_string()).unwrap();
         // A new host:port: asked about
@@ -1025,7 +1035,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port() as u64;
         let server =
             std::thread::spawn(move || (0..2).map(|_| listener.accept().unwrap().0).collect::<Vec<_>>());
-        let (mut ed, dir) = setup("one-card", "x\n");
+        let (_s, mut ed, dir) = setup("one-card", "x\n");
         answer(&mut ed, approval, true);
         let seen = Seen { doc: ed.docs[0].id, version: ed.docs[0].version(), ranges: Vec::new() };
         let to = |id, port| Action::Connect(abi::Connect { id, host: "127.0.0.1".into(), port });
@@ -1049,7 +1059,7 @@ mod tests {
     /// other than a.b.c.d — fails at once, before any card: no answer of yours would let it go.
     #[test]
     fn a_host_never_reached_fails_with_no_card() {
-        let (mut ed, dir) = setup("never", "x\n");
+        let (_s, mut ed, dir) = setup("never", "x\n");
         answer(&mut ed, approval, true);
         let seen = Seen { doc: ed.docs[0].id, version: ed.docs[0].version(), ranges: Vec::new() };
         let to = |id, host: &str| Action::Connect(abi::Connect { id, host: host.into(), port: 80 });
@@ -1066,7 +1076,7 @@ mod tests {
     /// while it stays.
     #[test]
     fn the_buffer_in_front_is_shown() {
-        let (mut ed, dir) = setup("shown", "x\n");
+        let (_s, mut ed, dir) = setup("shown", "x\n");
         let (a, b) = (dir.join("a.front"), dir.join("b.front"));
         std::fs::write(&a, "a\n").unwrap();
         std::fs::write(&b, "b\n").unwrap();
@@ -1100,7 +1110,7 @@ mod tests {
     /// Markdown.
     #[test]
     fn an_event_s_text_is_for_the_languages_that_asked() {
-        let (mut ed, dir) = setup("shown-text", "x\n");
+        let (_s, mut ed, dir) = setup("shown-text", "x\n");
         let (md, txt) = (dir.join("a.text.md"), dir.join("b.text.log"));
         std::fs::write(&md, "# a\n").unwrap();
         std::fs::write(&txt, "b\n").unwrap();
@@ -1113,7 +1123,7 @@ mod tests {
 
     #[test]
     fn timers_tick_unless_stopped() {
-        let (mut ed, dir) = setup("timer", "x\n");
+        let (_s, mut ed, dir) = setup("timer", "x\n");
         ed.plugin_run("later", "10").unwrap();
         until_said(&mut ed, "tick 30");
         ed.toasts.clear();
@@ -1154,7 +1164,7 @@ mod tests {
     /// connection's bytes) and an answer of only I/O aren't drawn — an answer that says something is.
     #[test]
     fn what_changes_nothing_on_screen_isnt_drawn() {
-        let (mut ed, dir) = setup("quiet", "x\n");
+        let (_s, mut ed, dir) = setup("quiet", "x\n");
         // (what loading sent it answered first — its buffer shown — and quietly)
         assert!(quiet_flags(&mut ed, Duration::from_millis(200)).iter().all(|q| *q));
         ed.plugin_run("quiet", "").unwrap();
@@ -1175,7 +1185,7 @@ mod tests {
 
     #[test]
     fn a_panel_takes_the_keys_until_esc() {
-        let (mut ed, dir) = setup("panel", "x\n");
+        let (_s, mut ed, dir) = setup("panel", "x\n");
         answer(&mut ed, approval, true);
         ed.plugin_run("table", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
@@ -1235,7 +1245,7 @@ mod tests {
 
     /// What the demo's panel hears for `enter` and `-`, each as it says it (`key ret Some(0) …`).
     fn panel_heard() -> Vec<String> {
-        let (mut ed, dir) = setup("panel-keys", "x\n");
+        let (_s, mut ed, dir) = setup("panel-keys", "x\n");
         answer(&mut ed, approval, true);
         ed.plugin_run("table", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
@@ -1275,7 +1285,7 @@ mod tests {
     /// with the selection kept in sight; a letter still comes.
     #[test]
     fn a_panels_moving_keys_are_taraes_never_the_plugins() {
-        let (mut ed, dir) = setup("panel-moves", "x\n");
+        let (_s, mut ed, dir) = setup("panel-moves", "x\n");
         answer(&mut ed, approval, true);
         ed.plugin_run("table", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
@@ -1362,7 +1372,7 @@ mod tests {
 
     #[test]
     fn a_plugins_line_answers_what_was_typed() {
-        let (mut ed, dir) = setup("prompt", "x\n");
+        let (_s, mut ed, dir) = setup("prompt", "x\n");
         ed.plugin_run("question", "").unwrap();
         settle_until(&mut ed, |ed| ed.prompt.is_some());
         assert_eq!(ed.prompt.as_ref().unwrap().label.as_deref(), Some("demo · filter:"), "it says whose");
@@ -1397,7 +1407,7 @@ mod tests {
 
     #[test]
     fn a_plugins_buffer_is_shown_replaced_and_grown() {
-        let (mut ed, dir) = setup("view", "x\n");
+        let (_s, mut ed, dir) = setup("view", "x\n");
         let title = "web-1 · demo";
         let text = |ed: &Editor| {
             ed.docs
@@ -1432,7 +1442,7 @@ mod tests {
 
     #[test]
     fn approvals_are_kept() {
-        let (mut ed, dir) = setup("kept", "x\n");
+        let (_s, mut ed, dir) = setup("kept", "x\n");
         let store = dir.join("state/plugin-permissions.json");
         ed.plugins.as_mut().unwrap().perm_store = Some(store.clone());
         answer(&mut ed, approval, true);
@@ -1448,7 +1458,7 @@ mod tests {
     /// `:plugin-revoke` does — the next load asks again.
     #[test]
     fn granted_lists_a_plugins_approvals_and_d_revokes_them() {
-        let (mut ed, dir) = setup("granted", "x\n");
+        let (_s, mut ed, dir) = setup("granted", "x\n");
         let store = dir.join("state/plugin-permissions.json");
         ed.plugins.as_mut().unwrap().perm_store = Some(store.clone());
         answer(&mut ed, approval, true);
@@ -1475,7 +1485,7 @@ mod tests {
 
     #[test]
     fn commands_run_and_their_edits_are_one_undo_step() {
-        let (mut ed, dir) = setup("run", "hello world\n");
+        let (_s, mut ed, dir) = setup("run", "hello world\n");
         assert_eq!(ed.plugin_command("shout").map(|c| c.plugin.as_str()), Some("demo"));
         assert!(ed.cmd_lists.plugins.iter().any(|(n, _)| n == "shout"), "in `:` completion");
         key(&mut ed, "e"); // select "hello"
@@ -1496,7 +1506,7 @@ mod tests {
 
     #[test]
     fn edits_are_refused_when_the_buffer_changed_meanwhile() {
-        let (mut ed, dir) = setup("stale", "a  \nb \n");
+        let (_s, mut ed, dir) = setup("stale", "a  \nb \n");
         crate::typed::execute(&mut ed, "trim-trailing").unwrap();
         // Typing before the answer arrives
         key(&mut ed, "i");
@@ -1513,7 +1523,7 @@ mod tests {
 
     #[test]
     fn failures_and_bad_answers_are_reported() {
-        let (mut ed, dir) = setup("fail", "text\n");
+        let (_s, mut ed, dir) = setup("fail", "text\n");
         for (cmd, says) in [
             ("boom", "demo: crashed (a panic?)"),
             ("stray", "demo: edit 1099511627776..1099511627776 isn't within the text"),
@@ -1537,7 +1547,7 @@ mod tests {
     /// and never lands in the middle of typing.
     #[test]
     fn answers_land_where_they_were_asked() {
-        let (mut ed, dir) = setup("where", "hello world\n");
+        let (_s, mut ed, dir) = setup("where", "hello world\n");
         // The selection moves on before the answer: the plugin's selections are the ones replaced
         key(&mut ed, "e");
         crate::typed::execute(&mut ed, "shout").unwrap();
@@ -1568,7 +1578,7 @@ mod tests {
 
     #[test]
     fn opening_a_file_at_a_line() {
-        let (mut ed, dir) = setup("goto", "");
+        let (_s, mut ed, dir) = setup("goto", "");
         let path = dir.join("lines.txt");
         std::fs::write(&path, "a\nb\nc\n").unwrap();
         ed.plugin_run("visit", &format!("{}:3", path.display())).unwrap();
@@ -1580,7 +1590,7 @@ mod tests {
 
     #[test]
     fn hints_beside_lines_until_edited_a_card_and_a_pick() {
-        let (mut ed, dir) = setup("beside", "");
+        let (_s, mut ed, dir) = setup("beside", "");
         answer(&mut ed, approval, true);
         // (not .yaml: no language server started by a test)
         let path = dir.join("web.txt");
@@ -1628,7 +1638,7 @@ mod tests {
     #[test]
     fn a_tab_in_the_side_panel_and_a_badge() {
         use crate::sidebar::Mode as SMode;
-        let (mut ed, dir) = setup("side", "");
+        let (_s, mut ed, dir) = setup("side", "");
         answer(&mut ed, approval, true);
         let path = dir.join("web.txt");
         std::fs::write(&path, "kind: Deployment\nreplicas: 3\n").unwrap();
@@ -1710,7 +1720,7 @@ mod tests {
     /// It read them unasked (the DB plugin's `.env` beside its queries).
     #[test]
     fn the_project_permission_leaves_out_files_named_like_keys() {
-        let (mut ed, dir) = setup("project-secrets", "");
+        let (_s, mut ed, dir) = setup("project-secrets", "");
         answer(&mut ed, approval, true);
         let project = dir.join("project");
         std::fs::create_dir_all(project.join("deploy")).unwrap();
@@ -1747,7 +1757,7 @@ mod tests {
 
     #[test]
     fn the_project_s_files_found_and_read_its_own_files_written_tools_offered() {
-        let (mut ed, dir) = setup("project", "");
+        let (_s, mut ed, dir) = setup("project", "");
         answer(&mut ed, approval, true);
         // The project is the folder tarae started in — here a repository of the test's own (git lists its
         // files: never in tarae's own repository): its files found by pattern (what git ignores, not)
@@ -1814,7 +1824,7 @@ mod tests {
 
     #[test]
     fn subscriptions_for_some_languages_hear_only_of_those() {
-        let (mut ed, dir) = setup("langs", "");
+        let (_s, mut ed, dir) = setup("langs", "");
         for s in &mut ed.plugins.as_mut().unwrap().events.subs {
             s.2 = vec!["rust".into()];
         }
@@ -1833,7 +1843,7 @@ mod tests {
     /// status-line text — shown for its own buffer only.
     #[test]
     fn events_reach_their_subscribers() {
-        let (mut ed, dir) = setup("events", "");
+        let (_s, mut ed, dir) = setup("events", "");
         let path = dir.join("notes.txt");
         std::fs::write(&path, "one two\n").unwrap();
         ed.open(&path).unwrap();
@@ -1862,7 +1872,7 @@ mod tests {
     /// one `!`, not one after another for ever.
     #[test]
     fn a_plugins_own_edit_is_not_reported_back() {
-        let (mut ed, dir) = setup("loop", "");
+        let (_s, mut ed, dir) = setup("loop", "");
         let path = dir.join("a.loop");
         std::fs::write(&path, "ab").unwrap();
         ed.open(&path).unwrap();
@@ -1883,7 +1893,7 @@ mod tests {
     /// `before-save` edits (the demo trims `.trim` files) are in the file written, and the buffer is saved.
     #[test]
     fn before_save_edits_go_into_the_file() {
-        let (mut ed, dir) = setup("presave", "");
+        let (_s, mut ed, dir) = setup("presave", "");
         let path = dir.join("a.trim");
         std::fs::write(&path, "x  \ny \n").unwrap();
         ed.open(&path).unwrap();
@@ -1900,7 +1910,7 @@ mod tests {
     /// is dropped.
     #[test]
     fn a_slow_before_save_doesnt_hold_saving() {
-        let (mut ed, dir) = setup("slowsave", "");
+        let (_s, mut ed, dir) = setup("slowsave", "");
         ed.plugins.as_mut().unwrap().events.wait = Duration::from_millis(50);
         let path = dir.join("a.slow");
         std::fs::write(&path, "hi\n").unwrap();
@@ -1920,7 +1930,7 @@ mod tests {
     /// A plugin's `run` reaches movement commands, and nothing else: no `:sh`, no `:w`.
     #[test]
     fn plugins_can_only_move() {
-        let (mut ed, dir) = setup("only-move", "hello world\n");
+        let (_s, mut ed, dir) = setup("only-move", "hello world\n");
         let marker = dir.join("pwned");
         for line in [format!(":sh touch {}", marker.display()), format!(":w {}", marker.display())] {
             crate::typed::execute(&mut ed, &format!("send {line}")).unwrap();
@@ -1947,7 +1957,7 @@ mod tests {
 
     #[test]
     fn reloads_skips_taken_names_and_unloads() {
-        let (mut ed, dir) = setup("reload", "x\n");
+        let (_s, mut ed, dir) = setup("reload", "x\n");
         // A second copy registers the same names: all skipped, the first keeps them
         std::fs::write(dir.join("copy.wasm"), DEMO).unwrap();
         ed.plugins_sync(host::scan(&dir));
@@ -2002,7 +2012,7 @@ mod tests {
     #[test]
     fn running_a_command_costs_the_same_for_any_size() {
         let best = |text: &str, name: &str| {
-            let (mut ed, dir) = setup(name, text);
+            let (_s, mut ed, dir) = setup(name, text);
             let best = (0..5)
                 .map(|_| {
                     let t = Instant::now();

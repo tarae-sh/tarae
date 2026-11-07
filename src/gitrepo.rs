@@ -749,22 +749,13 @@ pub fn env_for(under: &Path, vars: &[(&str, &str)]) {
 #[cfg(test)]
 static GLOBALS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
 
-/// Tests: the stand-in user config for a run in `dir` — a test's own (`global_config_for`), else an empty
-/// file of the test binary's in the temp folder.
+/// Tests: the stand-in user config for a run in `dir` — a test's own (`global_config_for`), else none at all
+/// (`/dev/null`, as git documents: #441, a file per test binary at a guessable temp path was never removed).
 #[cfg(test)]
 fn test_global(dir: &Path) -> PathBuf {
-    static EMPTY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     let own =
         GLOBALS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(u, _)| dir.starts_with(u)).cloned();
-    own.map(|(_, f)| f).unwrap_or_else(|| {
-        EMPTY
-            .get_or_init(|| {
-                let f = std::env::temp_dir().join(format!("tarae-test-gitconfig-{}", std::process::id()));
-                std::fs::write(&f, "").ok();
-                f
-            })
-            .clone()
-    })
+    own.map(|(_, f)| f).unwrap_or_else(|| PathBuf::from("/dev/null"))
 }
 
 #[cfg(test)]

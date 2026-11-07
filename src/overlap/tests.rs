@@ -42,6 +42,8 @@ fn twelve() -> String {
     (1..=12).map(|n| format!("line {n}\n")).collect()
 }
 
+/// Taken apart with `dir` first (#441): bindings go in reverse, so the editor — and the overlap round it has under
+/// way — goes before the folder; `dir` bound last went first and a round landing after made the folder again.
 struct Scene {
     ed: Editor,
     /// The repository's first checkout (the home session's, `main`) and a second (`fix`, a worktree, in front).
@@ -49,6 +51,13 @@ struct Scene {
     fix: PathBuf,
     fix_id: WorkspaceId,
     dir: Scratch,
+}
+
+/// #441: its folder was left in the temp folder every run (dropped before the editor and its round).
+#[test]
+fn the_scenes_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(claude_hears_nothing_of_the_others);
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 /// A repository (`a.rs`, `b.rs`, `server.pem` committed) and a second checkout of it: you in `fix` with its `a.rs`
@@ -273,7 +282,7 @@ fn perf_overlap_round() {
 /// test: your edit and `:w`.)
 #[test]
 fn an_overlap_is_said_once_far_apart_isnt() {
-    let Scene { mut ed, main, fix, fix_id, dir: _dir } = scene("overlap-said");
+    let Scene { dir: _dir, mut ed, main, fix, fix_id } = scene("overlap-said");
     change(&mut ed, &main.join("a.rs"), 3, "three, as main has it");
     change(&mut ed, &main.join("b.rs"), 1, "one, as main has it");
     change(&mut ed, &fix.join("b.rs"), 12, "twelve, as fix has it");
@@ -337,7 +346,7 @@ fn an_overlap_is_said_once_far_apart_isnt() {
 /// merges' objects are in tarae's own folder); that folder goes when the workspace ends.
 #[test]
 fn nothing_lands_in_the_repository_and_the_folder_goes_with_the_workspace() {
-    let Scene { mut ed, main, fix, fix_id, dir: _dir } = scene("overlap-objects");
+    let Scene { dir: _dir, mut ed, main, fix, fix_id } = scene("overlap-objects");
     let before = files(&main.join(".git"));
     change(&mut ed, &main.join("a.rs"), 3, "three, main");
     change(&mut ed, &fix.join("a.rs"), 3, "three, fix");
@@ -360,7 +369,7 @@ fn nothing_lands_in_the_repository_and_the_folder_goes_with_the_workspace() {
 /// changed nothing since they parted.
 #[test]
 fn a_pair_sharing_no_path_is_never_merged() {
-    let Scene { mut ed, main, fix, dir: _dir, .. } = scene("overlap-apart");
+    let Scene { dir: _dir, mut ed, main, fix, .. } = scene("overlap-apart");
     change(&mut ed, &main.join("b.rs"), 3, "three, main");
     change(&mut ed, &fix.join("a.rs"), 3, "three, fix");
     settle(&mut ed, 1);
@@ -376,7 +385,7 @@ fn a_pair_sharing_no_path_is_never_merged() {
 /// in the name of the session whose checkout has that branch; a file named like a key is never named.
 #[test]
 fn the_bases_tip_counts_and_a_key_named_file_is_never_named() {
-    let Scene { mut ed, main, fix, dir: _dir, .. } = scene("overlap-base");
+    let Scene { dir: _dir, mut ed, main, fix, .. } = scene("overlap-base");
     assert!(crate::sandbox::key_named_in(&fix, &fix.join("server.pem")), "the fixture's key-like name");
     change(&mut ed, &main.join("a.rs"), 5, "five, committed on main");
     change(&mut ed, &main.join("server.pem"), 5, "five, committed on main");
@@ -400,7 +409,7 @@ fn the_bases_tip_counts_and_a_key_named_file_is_never_named() {
 /// it came before the home session in the list's order).
 #[test]
 fn the_bases_tip_is_named_by_its_own_repositorys_session() {
-    let Scene { mut ed, main, fix, fix_id, dir } = scene("overlap-two-repos");
+    let Scene { dir, mut ed, main, fix, fix_id } = scene("overlap-two-repos");
     // (another repository, its branch `main` too)
     let site = dir.join("site");
     std::fs::create_dir_all(&site).unwrap();
@@ -490,7 +499,7 @@ fn message(ed: &mut Editor, rx: &std::sync::mpsc::Receiver<String>) -> String {
 /// >`) does: that's the person handing it over.
 #[test]
 fn claude_hears_nothing_of_the_others() {
-    let Scene { mut ed, main, dir: _dir, .. } = scene("overlap-unheard");
+    let Scene { dir: _dir, mut ed, main, .. } = scene("overlap-unheard");
     let rx = chat_in(&mut ed);
     ed.workspace.git_branch = Some("fix".into());
     change(&mut ed, &main.join("a.rs"), 3, "three, main");
@@ -547,6 +556,14 @@ fn claude_hears_nothing_of_the_others() {
     let line = claudes.context_line().map(|l| l.0).unwrap_or_default();
     assert!(!line.contains("conflict"), "{line}");
     assert!(!ed.ui_state().workspaces.iter().all(|l| l.overlaps.is_empty()), "the person's level lists it");
+    // (the round the edit asked for landed before the folder goes — #441: one landing after made `overlap/` again)
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while ed.overlap.waiting || ed.overlap.running {
+        assert!(std::time::Instant::now() < end, "the last round");
+        if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
+            ed.handle_event(ev);
+        }
+    }
 }
 
 /// A theme scope's colour as the frame paints it.
@@ -583,7 +600,7 @@ fn fg_at(p: &vt100::Parser, row: &str, after: &str, word: &str) -> vt100::Color 
 /// panel's foot.
 #[test]
 fn the_strip_the_list_and_the_tree_say_it() {
-    let Scene { mut ed, main, fix, fix_id, dir: _dir } = scene("overlap-shown");
+    let Scene { dir: _dir, mut ed, main, fix, fix_id } = scene("overlap-shown");
     change(&mut ed, &main.join("a.rs"), 3, "three, main");
     change(&mut ed, &fix.join("a.rs"), 3, "three, fix");
     settle(&mut ed, 1);
@@ -684,7 +701,7 @@ fn the_strip_the_list_and_the_tree_say_it() {
 /// still says the overlap. A tarae gone leaves its folder; the next one's first round removes it, never a live one's.
 #[test]
 fn two_taraes_keep_their_own_folders_and_a_gone_ones_is_pruned() {
-    let Scene { ed: mut a, main, fix, dir, .. } = scene("overlap-two");
+    let Scene { dir, ed: mut a, main, fix, .. } = scene("overlap-two");
     let base = dir.join("overlap");
     change(&mut a, &main.join("a.rs"), 3, "three, main");
     change(&mut a, &fix.join("a.rs"), 3, "three, fix");
@@ -764,7 +781,7 @@ fn no_filter_or_merge_driver_runs_and_a_filtered_file_stays_as_its_index_has_it(
         ("a.dat", "pointer\n"),
         ("x.m", "one\ntwo\nthree\n"),
     ];
-    let Scene { mut ed, main, fix, fix_id, dir: _dir } = scene_with("overlap-filters", &more, Some(&user));
+    let Scene { dir: _dir, mut ed, main, fix, fix_id } = scene_with("overlap-filters", &more, Some(&user));
     change(&mut ed, &fix.join("a.dat"), 1, "the large file's text, as the filter would take it");
     // (staged too, and a new one: still as HEAD has them — the pointer, and none)
     std::fs::write(fix.join("new.dat"), "another large file\n").unwrap();
@@ -825,7 +842,7 @@ fn no_fsmonitor_or_renormalizing_merge_runs() {
     );
     let c = twelve();
     let more = [(".gitattributes", "*.dat filter=mark\n"), ("c.dat", c.as_str())];
-    let Scene { mut ed, main, fix, dir: _dir, .. } = scene_with("overlap-fsmonitor", &more, Some(&user));
+    let Scene { dir: _dir, mut ed, main, fix, .. } = scene_with("overlap-fsmonitor", &more, Some(&user));
     // (both sides commit a change of c.dat's line 3 — the test's own git, none of the user's config)
     let commit = |dir: &Path, text: &str| {
         let mut lines: Vec<String> = twelve().lines().map(str::to_string).collect();
@@ -859,7 +876,7 @@ fn no_fsmonitor_or_renormalizing_merge_runs() {
 /// watch calls it) and a run of Claude's that changed files (`tools::run_changes`).
 #[test]
 fn a_head_move_or_a_runs_changes_take_the_tree_again() {
-    let Scene { mut ed, main, fix, dir: _dir, .. } = scene("overlap-moved");
+    let Scene { dir: _dir, mut ed, main, fix, .. } = scene("overlap-moved");
     change(&mut ed, &main.join("a.rs"), 3, "three, main");
     settle(&mut ed, 1);
     assert!(ed.overlap.now.is_empty());
@@ -986,7 +1003,7 @@ fn a_lock_busy_a_moment_is_waited_for() {
 /// no snapshot — a folder no lock marks is one another tarae's prune removes.
 #[test]
 fn a_round_without_its_lock_writes_nothing() {
-    let Scene { mut ed, main, fix, fix_id, dir } = scene("overlap-no-lock");
+    let Scene { dir, mut ed, main, fix, fix_id } = scene("overlap-no-lock");
     let own = own_in(&dir.join("overlap-elsewhere"));
     std::fs::create_dir_all(own.join(LOCK)).unwrap();
     ed.overlap.dir = Some(own.clone());
@@ -1015,7 +1032,7 @@ fn a_round_without_its_lock_writes_nothing() {
 /// change — an idle tarae isn't woken every few seconds.
 #[test]
 fn a_take_that_failed_is_taken_again() {
-    let Scene { mut ed, main, fix, fix_id, dir: _dir } = scene("overlap-retake");
+    let Scene { dir: _dir, mut ed, main, fix, fix_id } = scene("overlap-retake");
     sync(&mut ed);
     let folder = ed.overlap.folder(fix_id).unwrap();
     std::fs::create_dir_all(folder.parent().unwrap()).unwrap();
@@ -1043,7 +1060,7 @@ fn a_take_that_failed_is_taken_again() {
 /// said again; once fix is taken again it's the same overlap, still said once.
 #[test]
 fn an_overlap_stands_through_a_take_and_a_merge_that_failed() {
-    let Scene { mut ed, main, fix, fix_id, dir: _dir } = scene("overlap-stands");
+    let Scene { dir: _dir, mut ed, main, fix, fix_id } = scene("overlap-stands");
     change(&mut ed, &main.join("a.rs"), 3, "three, main");
     change(&mut ed, &fix.join("a.rs"), 3, "three, fix");
     settle(&mut ed, 1);
@@ -1073,7 +1090,7 @@ fn an_overlap_stands_through_a_take_and_a_merge_that_failed() {
 /// holds through it.
 #[test]
 fn a_workspaces_objects_stay_bounded() {
-    let Scene { mut ed, main, fix, fix_id, dir: _dir } = scene("overlap-bounded");
+    let Scene { dir: _dir, mut ed, main, fix, fix_id } = scene("overlap-bounded");
     const MAX: u64 = 96 << 10;
     ed.overlap.objects_max = MAX;
     change(&mut ed, &main.join("a.rs"), 3, "three, main");

@@ -1041,8 +1041,9 @@ mod tests {
         doc.commit_undo(before);
     }
 
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        crate::scratch::Scratch::new(&format!("doc-{name}")).into_path()
+    /// The test's own folder, gone with it (#441: an `into_path` here was left in the temp folder each run).
+    fn temp_dir(name: &str) -> crate::scratch::Scratch {
+        crate::scratch::Scratch::new(&format!("doc-{name}"))
     }
 
     #[test]
@@ -1189,6 +1190,18 @@ mod tests {
         assert_eq!(Document::from_str(1, "").display_name(&dir), "[scratch]");
         assert_eq!(doc.display_name(&dir), "new.txt", "relative to the root");
         assert_eq!(doc.display_name(Path::new("/elsewhere")), dir.join("new.txt").display().to_string());
+    }
+
+    /// #441: the tests with a folder of their own leave none behind.
+    #[test]
+    fn the_tests_with_a_folder_leave_none_behind() {
+        let left = crate::scratch::left_by(|| {
+            modified_means_differs_from_the_saved_version();
+            save_refuses_outside_changes_unless_forced();
+            save_needs_a_path_and_a_finished_load();
+            opening_a_missing_file_gives_an_empty_document();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     #[test]

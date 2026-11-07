@@ -3024,9 +3024,11 @@ mod tests {
     }
 
     /// A temp folder of the test's own (real path): a repository on `main` (`a.txt`, `target/` ignored) and
-    /// a folder for sessions' checkouts beside it.
-    fn place(name: &str) -> (PathBuf, PathBuf) {
-        let dir = crate::scratch::Scratch::new(&format!("sessions-{name}")).into_path();
+    /// a folder for sessions' checkouts beside it — gone with the `Scratch` (#441: an `into_path` the caller was to
+    /// remove was left in the temp folder each run where it didn't).
+    fn place(name: &str) -> (crate::scratch::Scratch, PathBuf, PathBuf) {
+        let s = crate::scratch::Scratch::new(&format!("sessions-{name}"));
+        let dir = s.to_path_buf();
         let repo = dir.join("proj");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join("a.txt"), "one\n").unwrap();
@@ -3041,8 +3043,7 @@ mod tests {
         ] {
             git_in(&repo, args);
         }
-        let dir = std::fs::canonicalize(dir).unwrap();
-        (dir.join("proj"), dir)
+        (s, repo, dir)
     }
 
     /// An editor in `repo` (on main), sessions' checkouts under `dir/wt`, a chat that's a quiet stand-in.
@@ -3073,7 +3074,7 @@ mod tests {
     /// starts with none — and what every checkout of the repository uses stays.
     #[test]
     fn an_ended_sessions_own_kept_answers_go_with_it() {
-        let (repo, dir) = place("forget");
+        let (_s, repo, dir) = place("forget");
         let mut ed = editor(&repo, &dir);
         let store = dir.join("state/sandbox.json");
         ed.allow_path = Some(store.clone());
@@ -3141,7 +3142,7 @@ mod tests {
     /// branch checked out in another worktree) or not a branch name is refused.
     #[test]
     fn a_new_session_is_a_branch_in_its_own_checkout_after_its_card() {
-        let (repo, dir) = place("new");
+        let (_s, repo, dir) = place("new");
         std::fs::create_dir_all(repo.join("target")).unwrap();
         std::fs::write(repo.join("target/build.bin"), vec![7u8; 21 << 20]).unwrap();
         let mut ed = editor(&repo, &dir);
@@ -3193,7 +3194,7 @@ mod tests {
     /// (the checkout has its own), not a big one, never the rest of `.claude/` or `target/`.
     #[test]
     fn a_new_session_gets_the_projects_instruction_files() {
-        let (repo, dir) = place("instructions");
+        let (_s, repo, dir) = place("instructions");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\nCLAUDE.local.md\n.claude/\n").unwrap();
         std::fs::write(repo.join("AGENTS.md"), "as committed\n").unwrap();
         git_in(&repo, &["add", "-A"]);
@@ -3242,7 +3243,7 @@ mod tests {
     /// `C-b` in the prompt: the branches to make it from; picking one goes on to the card, made from it.
     #[test]
     fn another_base_is_picked_from_the_branches() {
-        let (repo, dir) = place("base");
+        let (_s, repo, dir) = place("base");
         git_in(&repo, &["branch", "side"]);
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "on main only"]);
         let mut ed = editor(&repo, &dir);
@@ -3265,7 +3266,7 @@ mod tests {
     /// default — `b` on its card steps to the front session's branch and back, the card saying which.
     #[test]
     fn a_new_session_is_made_from_main_and_b_steps_to_the_front_ones_branch() {
-        let (repo, dir) = place("bases");
+        let (_s, repo, dir) = place("bases");
         let mut ed = editor(&repo, &dir);
         let first = new_session(&mut ed, "first");
         git_in(&first, &["commit", "-q", "--allow-empty", "-m", "on first only"]);
@@ -3310,7 +3311,7 @@ mod tests {
     /// kept, its Claude stopped, its files closed, the checkout tarae started in in front.
     #[test]
     fn a_clean_merged_session_ends_at_once_and_keeps_its_branch() {
-        let (repo, dir) = place("quiet");
+        let (_s, repo, dir) = place("quiet");
         let pid_file = dir.join("claude.pid");
         let mut ed = editor(&repo, &dir);
         ed.config.llm.args =
@@ -3363,7 +3364,7 @@ mod tests {
     /// line names the session it ran for, gone by then.
     #[test]
     fn session_ended_runs_once_a_sessions_checkout_is_gone() {
-        let (repo, dir) = place("ended");
+        let (_s, repo, dir) = place("ended");
         let marks = dir.join("ended-marks");
         let mut ed = editor(&repo, &dir);
         let log = crate::log::capture();
@@ -3408,7 +3409,7 @@ mod tests {
     /// with nowhere to keep it: the card names it, warned — it isn't quiet any more.
     #[test]
     fn an_ended_sessions_kept_folders_go_to_the_main_checkout() {
-        let (repo, dir) = place("keep");
+        let (_s, repo, dir) = place("keep");
         // (as here: CLAUDE.md git-ignored, so a session's own isn't a change)
         std::fs::write(repo.join(".git/info/exclude"), "/CLAUDE.md\n/.sb/\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -3442,7 +3443,7 @@ mod tests {
     #[test]
     fn an_ended_sessions_notes_and_turns_go_with_it() {
         use crate::checkpoint::{Checkpoint, Touched};
-        let (repo, dir) = place("forget");
+        let (_s, repo, dir) = place("forget");
         let store = dir.join("turns");
         let mut ed = editor(&repo, &dir);
         ed.turns_dir = Some(store.clone());
@@ -3621,7 +3622,7 @@ mod tests {
     /// One that can't all be removed is a warning; the session still ends.
     #[test]
     fn a_sessions_own_build_dir_goes_with_it() {
-        let (repo, dir) = place("builddir");
+        let (_s, repo, dir) = place("builddir");
         let cargo = fake_cargo(&repo, &dir);
         let builds = dir.join("cargo-home/build");
         let main_build = builds.join("aa/main");
@@ -3698,7 +3699,7 @@ mod tests {
     /// front (its server builds there), nor one shared with another checkout (`Builds::decide`).
     #[test]
     fn x_in_the_list_drops_an_idle_sessions_own_build_folder() {
-        let (repo, dir) = place("dropbuild");
+        let (_s, repo, dir) = place("dropbuild");
         let cargo = fake_cargo(&repo, &dir);
         let builds = dir.join("cargo-home/build");
         let main_build = builds.join("aa/main");
@@ -3742,7 +3743,7 @@ mod tests {
     /// another session has open stays, and its server.
     #[test]
     fn an_ended_sessions_servers_stop_with_it() {
-        let (repo, dir) = place("servers");
+        let (_s, repo, dir) = place("servers");
         std::fs::write(repo.join(".git/info/exclude"), "notes.md\nCargo.toml\n").unwrap();
         for d in ["elsewhere", "shared"] {
             std::fs::create_dir_all(dir.join(d)).unwrap();
@@ -3888,7 +3889,7 @@ mod tests {
     /// only commits to lose, `y` removes the checkout and keeps the branch; `D` deletes both.
     #[test]
     fn a_session_with_something_to_lose_asks_first() {
-        let (repo, dir) = place("ask");
+        let (_s, repo, dir) = place("ask");
         let mut ed = editor(&repo, &dir);
         let wt = new_session(&mut ed, "wip");
         std::fs::write(wt.join("a.txt"), "one\ntwo\n").unwrap();
@@ -4016,7 +4017,7 @@ mod tests {
     /// taken for one that changed nothing: the card stayed undrawn, never settled, its `y` not taken.
     #[test]
     fn a_bring_card_for_a_session_behind_is_drawn() {
-        let (repo, dir) = place("bring-behind");
+        let (_s, repo, dir) = place("bring-behind");
         let mut ed = editor(&repo, &dir);
         let wt = new_session(&mut ed, "feat");
         std::fs::write(wt.join("a.txt"), "feat\n").unwrap();
@@ -4051,7 +4052,7 @@ mod tests {
     #[test]
     fn a_new_sessions_bring_card_runs_the_projects_quick_set() {
         use crate::config::{Sources, load};
-        let (repo, dir) = place("bring-preflight");
+        let (_s, repo, dir) = place("bring-preflight");
         // (a project the packs know — `Cargo.toml` — so their defaults would show, as a card)
         std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"p\"\nversion = \"0.1.0\"\n").unwrap();
         git_in(&repo, &["add", "-A"]);
@@ -4174,7 +4175,7 @@ mod tests {
     /// checkout has changes in a file it brings; a base no checkout has moves as a ref alone.
     #[test]
     fn a_session_is_brought_into_its_base_fast_forward_only() {
-        let (repo, dir) = place("bring");
+        let (_s, repo, dir) = place("bring");
         let mut ed = editor(&repo, &dir);
         // Fast-forward: main's checkout follows — asked first (#155), `n` leaves it, `b` in the list asks too
         let wt = new_session(&mut ed, "feat");
@@ -4277,7 +4278,7 @@ mod tests {
     /// after; your own draft there stays (your words never go unasked).
     #[test]
     fn a_bring_closes_the_reviewers_unsent_findings_on_what_it_brought() {
-        let (repo, dir) = place("bring-findings");
+        let (_s, repo, dir) = place("bring-findings");
         let mut ed = editor(&repo, &dir);
         let wt = new_session(&mut ed, "feat");
         std::fs::write(wt.join("a.txt"), "feat\n").unwrap();
@@ -4300,7 +4301,7 @@ mod tests {
     /// fast-forward, its card says so) and `y` does; with changes in its checkout it says why it can't.
     #[test]
     fn a_clean_session_behind_its_base_is_moved_up_to_it() {
-        let (repo, dir) = place("behind");
+        let (_s, repo, dir) = place("behind");
         let mut ed = editor(&repo, &dir);
         let wt = new_session(&mut ed, "behind");
         std::fs::write(repo.join("c.txt"), "c\n").unwrap();
@@ -4404,7 +4405,7 @@ mod tests {
     /// end (the user, 2026-11-03).
     #[test]
     fn a_moved_base_is_rebased_onto_then_brought() {
-        let (repo, dir) = place("rebase-clean");
+        let (_s, repo, dir) = place("rebase-clean");
         let mut ed = editor(&repo, &dir);
         // (a preflight that prints four lines, then waits for `go`, so its words are read while it runs)
         let go = dir.join("go");
@@ -4496,7 +4497,7 @@ mod tests {
     /// lands.
     #[test]
     fn a_run_whose_end_is_read_stands_still_and_says_nothing_yet() {
-        let (repo, dir) = place("run-read");
+        let (_s, repo, dir) = place("run-read");
         let mut ed = editor(&repo, &dir);
         let task =
             crate::task::Task { name: "rebase onto main".into(), cmd: "true".into(), cwd: repo.clone() };
@@ -4527,7 +4528,7 @@ mod tests {
     /// card is in the stack, and its `y` lets the bring go on to its preflight and land.
     #[test]
     fn a_bring_waits_on_its_checkouts_trust_card_and_says_so() {
-        let (repo, dir) = place("rebase-trust");
+        let (_s, repo, dir) = place("rebase-trust");
         let mut ed = editor(&repo, &dir);
         let steps = vec![crate::preflight::Step {
             name: "check".into(),
@@ -4582,7 +4583,7 @@ mod tests {
     /// stand-in that would leave a mark), and the bring follows once they pass.
     #[test]
     fn a_rebased_session_is_brought_after_its_quick_preflight() {
-        let (repo, dir) = place("rebase-quick");
+        let (_s, repo, dir) = place("rebase-quick");
         let mut ed = editor(&repo, &dir);
         let mark = dir.join("full-ran");
         let step = |name: &str, cmd: String, full: bool| crate::preflight::Step {
@@ -4628,7 +4629,7 @@ mod tests {
     /// task panel; `:preflight-output` reads the kept one too. Nothing is brought.
     #[test]
     fn a_preflight_step_not_run_is_said_so_on_the_card_and_the_toast() {
-        let (repo, dir) = place("rebase-preflight-not-run");
+        let (_s, repo, dir) = place("rebase-preflight-not-run");
         let mut ed = editor(&repo, &dir);
         // (a stand-in for xtask's room check: what it prints, and its status — never Docker)
         let script = dir.join("clippy-linux.sh");
@@ -4694,7 +4695,7 @@ mod tests {
 
     #[test]
     fn a_failed_preflight_brings_its_card_back_with_its_output() {
-        let (repo, dir) = place("rebase-preflight-fails");
+        let (_s, repo, dir) = place("rebase-preflight-fails");
         let mut ed = editor(&repo, &dir);
         let script = dir.join("tests.sh");
         std::fs::write(
@@ -4816,7 +4817,7 @@ mod tests {
     /// which names it — frictions29 #25). Meanwhile the session's words say `bringing · rebasing 1/2`.
     #[test]
     fn a_bring_through_a_conflict_goes_on_once_it_is_resolved() {
-        let (repo, dir) = place("bring-conflict");
+        let (_s, repo, dir) = place("bring-conflict");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -4853,7 +4854,7 @@ mod tests {
     /// the session's words quiet. Looked at, its `y` runs the preflight and brings.
     #[test]
     fn a_high_risk_change_found_after_the_rebase_stands_its_card() {
-        let (repo, dir) = place("bring-go-high");
+        let (_s, repo, dir) = place("bring-go-high");
         let mut ed = editor(&repo, &dir);
         passing_preflight(&mut ed);
         let wt = new_session(&mut ed, "risky");
@@ -4919,7 +4920,7 @@ mod tests {
     /// says `rebasing 1/2`, and bring, end and `:restart` wait for it. `y` stages it and continues — to the end.
     #[test]
     fn a_conflict_goes_to_the_sessions_claude_and_the_rebase_goes_on() {
-        let (repo, dir) = place("rebase-conflict");
+        let (_s, repo, dir) = place("rebase-conflict");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -5045,7 +5046,7 @@ mod tests {
     /// date; the bring card names no kept message.
     #[test]
     fn a_resolution_that_changes_what_the_commit_says_gets_its_message_written() {
-        let (repo, dir) = place("rebase-message");
+        let (_s, repo, dir) = place("rebase-message");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -5106,7 +5107,7 @@ mod tests {
     /// changes since (and the session's copy then takes those, as an untouched one does).
     #[test]
     fn a_bring_carries_the_sessions_instruction_changes_into_the_main_checkouts() {
-        let (repo, dir) = place("instructions-out");
+        let (_s, repo, dir) = place("instructions-out");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\n").unwrap();
@@ -5148,7 +5149,7 @@ mod tests {
     /// write the main checkout's over it, it asks.
     #[test]
     fn a_session_line_left_out_of_a_carry_out_stays_its_own() {
-        let (repo, dir) = place("instructions-left");
+        let (_s, repo, dir) = place("instructions-left");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\nrule three\n").unwrap();
@@ -5186,7 +5187,7 @@ mod tests {
     /// first waited; the first's going said.
     #[test]
     fn a_carry_out_card_asked_again_from_another_session_takes_the_parked_ones_place() {
-        let (repo, dir) = place("instructions-twice");
+        let (_s, repo, dir) = place("instructions-twice");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule\n").unwrap();
@@ -5280,7 +5281,7 @@ mod tests {
     /// other's place.
     #[test]
     fn two_sessions_carry_out_cards_stay_apart_though_their_titles_match() {
-        let (repo, dir) = place("instructions-two-sessions");
+        let (_s, repo, dir) = place("instructions-two-sessions");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule\n").unwrap();
@@ -5316,7 +5317,7 @@ mod tests {
     /// session's own — its carry-out takes in only what the session wrote, never the main checkout's line out.
     #[test]
     fn a_main_line_a_session_left_out_isnt_carried_out_of_the_main_checkout() {
-        let (repo, dir) = place("instructions-declined");
+        let (_s, repo, dir) = place("instructions-declined");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\n").unwrap();
@@ -5354,7 +5355,7 @@ mod tests {
     /// checkout's.
     #[test]
     fn an_ended_session_carries_its_instruction_changes_into_the_main_checkouts() {
-        let (repo, dir) = place("instructions-end");
+        let (_s, repo, dir) = place("instructions-end");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule one\n").unwrap();
@@ -5413,7 +5414,7 @@ mod tests {
     /// card whose `y` takes the main checkout's changes beside the session's own; one changed only here stays.
     #[test]
     fn a_sessions_instruction_files_follow_the_main_checkouts() {
-        let (repo, dir) = place("instructions");
+        let (_s, repo, dir) = place("instructions");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\nAGENTS.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule one\n").unwrap();
@@ -5523,7 +5524,7 @@ mod tests {
     /// up for it goes as its answer or a look finds so, said calmly; a copy with a line of its own keeps today's card.
     #[test]
     fn a_copy_that_is_the_main_checkouts_asks_nothing_and_is_the_base() {
-        let (repo, dir) = place("instructions-same");
+        let (_s, repo, dir) = place("instructions-same");
         std::fs::write(repo.join(".gitignore"), "target/\nCLAUDE.md\n").unwrap();
         git_in(&repo, &["commit", "-qam", "ignore the instructions"]);
         std::fs::write(repo.join("CLAUDE.md"), "rule one\n").unwrap();
@@ -5623,7 +5624,7 @@ mod tests {
     /// the session in front.
     #[test]
     fn a_stopped_rebase_is_gone_on_with_from_another_session() {
-        let (repo, dir) = place("rebase-elsewhere");
+        let (_s, repo, dir) = place("rebase-elsewhere");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -5666,7 +5667,7 @@ mod tests {
     /// One `C-q` brings its card back with the keys.
     #[test]
     fn a_rebase_taken_up_after_a_restart_waits_from_when_git_stopped() {
-        let (repo, dir) = place("rebase-taken-up");
+        let (_s, repo, dir) = place("rebase-taken-up");
         let mut ed = editor(&repo, &dir);
         let (wt, _) = moved_apart(&mut ed, &repo, false);
         let feat = ed.workspace.id;
@@ -5713,7 +5714,7 @@ mod tests {
     /// with the keys; up again, it's the card the inbox lists.
     #[test]
     fn a_resolved_rebase_put_away_waits_in_the_inbox() {
-        let (repo, dir) = place("rebase-inbox");
+        let (_s, repo, dir) = place("rebase-inbox");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -5761,7 +5762,7 @@ mod tests {
     /// can't start leaves the rebase waiting on you: the inbox lists it.
     #[test]
     fn a_conflict_reaches_a_chat_that_never_had_a_turn() {
-        let (repo, dir) = place("rebase-fresh-chat");
+        let (_s, repo, dir) = place("rebase-fresh-chat");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -5783,7 +5784,7 @@ mod tests {
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
 
-        let (repo, dir) = place("rebase-no-claude");
+        let (_s, repo, dir) = place("rebase-no-claude");
         let mut ed = editor(&repo, &dir);
         ed.claude_settings_gate = true;
         ed.config.llm.command = dir.join("no-claude-here").display().to_string();
@@ -5805,7 +5806,7 @@ mod tests {
     /// the review is named on the card then, and `y` goes on without it, said.
     #[test]
     fn what_else_a_resolution_changed_is_reviewed_and_left_to_you() {
-        let (repo, dir) = place("rebase-also");
+        let (_s, repo, dir) = place("rebase-also");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -5912,7 +5913,7 @@ mod tests {
     /// the card follows the index (its watch), offering `y` with no key pressed and the git tab never opened.
     #[test]
     fn a_file_staged_outside_tarae_frees_the_resolved_cards_y() {
-        let (repo, dir) = place("rebase-staged-outside");
+        let (_s, repo, dir) = place("rebase-staged-outside");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -5969,7 +5970,7 @@ mod tests {
     /// before it began" for main's tip being no ancestor of the branch.
     #[test]
     fn a_base_that_moves_while_a_stop_is_resolved_still_ends_rebased() {
-        let (repo, dir) = place("rebase-moved-again");
+        let (_s, repo, dir) = place("rebase-moved-again");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -6043,7 +6044,7 @@ mod tests {
     /// new file stay untracked; the card names the new file (left to you), never the folder that was there.
     #[test]
     fn a_resolution_stages_only_the_conflicted_files() {
-        let (repo, dir) = place("rebase-untracked");
+        let (_s, repo, dir) = place("rebase-untracked");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -6087,7 +6088,7 @@ mod tests {
     /// untracked as it goes on).
     #[test]
     fn a_file_the_resolution_made_is_staged_by_a() {
-        let (repo, dir) = place("rebase-made");
+        let (_s, repo, dir) = place("rebase-made");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -6131,7 +6132,7 @@ mod tests {
     /// build folder there is neither staged nor named as it goes on.
     #[test]
     fn a_rebase_taken_up_counts_no_untracked_file_as_the_resolutions() {
-        let (repo, dir) = place("rebase-hand-untracked");
+        let (_s, repo, dir) = place("rebase-hand-untracked");
         let mut ed = editor(&repo, &dir);
         let (wt, _) = moved_apart(&mut ed, &repo, false);
         std::fs::create_dir_all(wt.join("build")).unwrap();
@@ -6162,7 +6163,7 @@ mod tests {
     /// go on; saved, that text is what's staged.
     #[test]
     fn a_file_the_replayed_commit_unignores_isnt_staged() {
-        let (repo, dir) = place("rebase-unignored");
+        let (_s, repo, dir) = place("rebase-unignored");
         let log = dir.join("claude.log");
         let mut ed = editor(&repo, &dir);
         claude_does(&mut ed, &log, "");
@@ -6243,7 +6244,7 @@ mod tests {
 
     /// What's off in `a_tracked_file_changed_after_the_card_puts_it_back`, each a line.
     fn card_back_on_going_on(name: &str) -> Vec<String> {
-        let (repo, dir) = place(name);
+        let (_s, repo, dir) = place(name);
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -6335,7 +6336,7 @@ mod tests {
 
     /// What's off in `a_conflicted_name_with_a_star_stages_only_itself`, each a line.
     fn star_named_conflict(name: &str) -> Vec<String> {
-        let (repo, dir) = place(name);
+        let (_s, repo, dir) = place(name);
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         std::fs::write(repo.join("a*.txt"), "one\n").unwrap();
@@ -6408,7 +6409,7 @@ mod tests {
     /// What's off in `a_conflict_resolved_as_a_deletion_goes_on`, each a line — `staged`: the deletion staged by
     /// hand before `y`.
     fn deletion_resolved(name: &str, staged: bool) -> Vec<String> {
-        let (repo, dir) = place(name);
+        let (_s, repo, dir) = place(name);
         let log = dir.join("claude.log");
         std::fs::write(repo.join("d.txt"), "d\n").unwrap();
         git_in(&repo, &["add", "-A"]);
@@ -6491,7 +6492,7 @@ mod tests {
     /// What's off in `a_rebase_ended_by_hand_is_let_go_as_head_moves` (`by_y`: `…_by_y`), each a line — `trapped`: a
     /// trap is set that may leave nothing to wait for (looked at once a while passed with nothing).
     fn ended_by_hand(name: &str, by_y: bool, trapped: bool) -> Vec<String> {
-        let (repo, dir) = place(name);
+        let (_s, repo, dir) = place(name);
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -6561,7 +6562,7 @@ mod tests {
     /// won't either; `:rebase-abort` puts the branch back where it was.
     #[test]
     fn markers_left_are_named_and_abort_goes_back() {
-        let (repo, dir) = place("rebase-abort");
+        let (_s, repo, dir) = place("rebase-abort");
         let log = dir.join("claude.log");
         let mut ed = editor(&repo, &dir);
         claude_does(&mut ed, &log, "");
@@ -6612,7 +6613,7 @@ mod tests {
     /// result there).
     #[test]
     fn a_rebase_step_for_a_session_gone_meanwhile_is_dropped() {
-        let (repo, dir) = place("rebase-gone");
+        let (_s, repo, dir) = place("rebase-gone");
         let mut ed = editor(&repo, &dir);
         claude_does(&mut ed, &dir.join("claude.log"), "");
         let (wt, _) = moved_apart(&mut ed, &repo, false);
@@ -6675,7 +6676,7 @@ mod tests {
     /// --ff-only` in main's checkout), an abort, and the end that deletes the branch too.
     #[test]
     fn hooks_in_the_checkout_never_run_in_taraes_rebase() {
-        let (repo, dir) = place("rebase-hooks");
+        let (_s, repo, dir) = place("rebase-hooks");
         let (log, answer, marks) = (dir.join("claude.log"), dir.join("answer.txt"), dir.join("hooks-ran"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
         let mut ed = editor(&repo, &dir);
@@ -6760,7 +6761,7 @@ mod tests {
     #[test]
     fn the_users_git_asks_before_hooks_a_claude_could_have_written() {
         use std::os::unix::fs::PermissionsExt as _;
-        let (repo, dir) = place("user-hooks");
+        let (_s, repo, dir) = place("user-hooks");
         let marks = dir.join("hooks-ran");
         let hook = |at: &Path, name: &str, says: &str| {
             let p = at.join(".githooks").join(name);
@@ -6872,7 +6873,7 @@ mod tests {
     #[test]
     fn a_pull_asks_about_every_hook_whatever_config_runs() {
         use std::os::unix::fs::PermissionsExt as _;
-        let (repo, dir) = place("pull-hooks");
+        let (_s, repo, dir) = place("pull-hooks");
         let origin = dir.join("origin");
         let out =
             std::process::Command::new("git").args(["clone", "-q"]).arg(&repo).arg(&origin).output().unwrap();
@@ -6931,7 +6932,7 @@ mod tests {
     /// A review against a remote branch fetches it first — tarae's own step, so with no hooks either.
     #[test]
     fn a_reviews_fetch_runs_no_hooks() {
-        let (repo, dir) = place("review-fetch");
+        let (_s, repo, dir) = place("review-fetch");
         let origin = dir.join("origin");
         let out =
             std::process::Command::new("git").args(["clone", "-q"]).arg(&repo).arg(&origin).output().unwrap();
@@ -6960,7 +6961,7 @@ mod tests {
     /// `rebasing` for good with nothing running — and the rebase can still be ended.
     #[test]
     fn the_rebases_git_closed_mid_run_is_read_as_left() {
-        let (repo, dir) = place("rebase-closed");
+        let (_s, repo, dir) = place("rebase-closed");
         let mut ed = editor(&repo, &dir);
         claude_does(&mut ed, &dir.join("claude.log"), "");
         let (wt, tip) = moved_apart(&mut ed, &repo, false);
@@ -6994,7 +6995,7 @@ mod tests {
     /// `y` going on, `X` aborting it.
     #[test]
     fn a_rebase_by_hand_is_taken_up() {
-        let (repo, dir) = place("rebase-hand");
+        let (_s, repo, dir) = place("rebase-hand");
         let mut ed = editor(&repo, &dir);
         let (wt, tip) = moved_apart(&mut ed, &repo, false);
         let out =
@@ -7027,7 +7028,7 @@ mod tests {
     /// on disk). A run in the task panel: the rebase waits its turn behind it.
     #[test]
     fn a_rebase_held_back_says_why_and_offers_what_fits() {
-        let (repo, dir) = place("rebase-held");
+        let (_s, repo, dir) = place("rebase-held");
         let mut ed = editor(&repo, &dir);
         let (wt, _) = moved_apart(&mut ed, &repo, true);
         let held = "Rebase feat: changes in no commit";
@@ -7103,7 +7104,7 @@ mod tests {
     /// changes kept in git's stash as an entry of their own, named and said; nothing left set aside.
     #[test]
     fn a_brings_changes_that_dont_go_back_are_kept_in_the_stash_never_as_markers() {
-        let (repo, dir) = place("rebase-kept");
+        let (_s, repo, dir) = place("rebase-kept");
         std::fs::write(repo.join("d.txt"), "d\n").unwrap();
         git_in(&repo, &["add", "d.txt"]);
         git_in(&repo, &["commit", "-qm", "d"]);
@@ -7153,7 +7154,7 @@ mod tests {
     /// on, as they were, said; held at their ref while it's stopped, nothing left after, nothing in git's stash.
     #[test]
     fn a_brings_changes_set_aside_come_back_when_its_rebase_is_aborted() {
-        let (repo, dir) = place("rebase-aside-abort");
+        let (_s, repo, dir) = place("rebase-aside-abort");
         let mut ed = editor(&repo, &dir);
         claude_does(&mut ed, &dir.join("claude.log"), "");
         let (wt, tip) = moved_apart(&mut ed, &repo, false);
@@ -7179,7 +7180,7 @@ mod tests {
     /// next rebase isn't started — said with where they are — and they stay there, never taken for its own.
     #[test]
     fn a_brings_changes_set_aside_come_back_when_git_never_begins_and_a_leftover_holds_the_next() {
-        let (repo, dir) = place("rebase-aside-failed");
+        let (_s, repo, dir) = place("rebase-aside-failed");
         let mut ed = editor(&repo, &dir);
         let (wt, tip) = moved_apart(&mut ed, &repo, true);
         std::fs::write(wt.join("b.txt"), "b, mine\n").unwrap();
@@ -7227,7 +7228,7 @@ mod tests {
     /// state carries them too, and its files open in the session that was in front.
     #[test]
     fn sessions_come_back_at_startup_and_after_a_restart() {
-        let (repo, dir) = place("kept");
+        let (_s, repo, dir) = place("kept");
         let store = dir.join("sessions");
         let mut ed = editor(&repo, &dir);
         (ed.workspace_store.dir, ed.workspace_store.restored) = (Some(store.clone()), true);
@@ -7349,7 +7350,19 @@ mod tests {
         assert_eq!(gists, ["keep me"], "the removed note stays removed");
         let turns: Vec<&str> = l.claude.checkpoints.list.iter().map(|c| c.question.as_str()).collect();
         assert_eq!(turns, ["a turn"], "once");
-        std::fs::remove_dir_all(&dir).ok();
+        // (the turns' store written before the folder goes — #441: a save landing after made `turns/` again)
+        ed.writes_flush();
+    }
+
+    /// #441: these left their folders in the temp folder every run.
+    #[test]
+    fn the_place_tests_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            an_ended_sessions_own_kept_answers_go_with_it();
+            a_carry_out_card_asked_again_from_another_session_takes_the_parked_ones_place();
+            a_session_opened_again_is_as_it_ended();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     #[test]
@@ -7574,7 +7587,7 @@ mod tests {
     /// review since main), it's brought; a later commit changing that line holds the next bring again.
     #[test]
     fn a_high_risk_change_holds_the_bring_until_looked_at() {
-        let (repo, dir) = place("bring-high");
+        let (_s, repo, dir) = place("bring-high");
         let mut ed = editor(&repo, &dir);
         let wt = new_session(&mut ed, "risky");
         std::fs::write(wt.join("a.rs"), "fn a() {\n    unsafe { b() }\n}\n").unwrap();
@@ -7665,7 +7678,7 @@ mod tests {
     /// fast-forward would refuse.
     #[test]
     fn a_bring_landing_grades_the_others_waiting_again() {
-        let (repo, dir) = place("bring-regrade");
+        let (_s, repo, dir) = place("bring-regrade");
         let mut ed = editor(&repo, &dir);
         let mut made = Vec::new();
         for name in ["one", "two"] {
@@ -7707,7 +7720,7 @@ mod tests {
     #[test]
     fn a_child_brought_is_offered_its_end() {
         for (name, child) in [("kid", true), ("mine", false)] {
-            let (repo, dir) = place(&format!("bring-end-{name}"));
+            let (_s, repo, dir) = place(&format!("bring-end-{name}"));
             let mut ed = editor(&repo, &dir);
             let home = ed.workspace.claude.id;
             let wt = new_session(&mut ed, name);
@@ -7747,7 +7760,7 @@ mod tests {
     /// bring says it'll be once it's idle, and its turn over, the card comes, once.
     #[test]
     fn a_busy_child_brought_is_offered_its_end_once_idle() {
-        let (repo, dir) = place("bring-end-busy");
+        let (_s, repo, dir) = place("bring-end-busy");
         let mut ed = editor(&repo, &dir);
         let home = ed.workspace.claude.id;
         let wt = new_session(&mut ed, "kid");
@@ -7792,7 +7805,7 @@ mod tests {
     /// there and brought. The end says who was brought and who wasn't, and why.
     #[test]
     fn marked_sessions_are_brought_in_turn() {
-        let (repo, dir) = place("bring-queue");
+        let (_s, repo, dir) = place("bring-queue");
         let mut ed = editor(&repo, &dir);
         let ran = dir.join("preflights");
         ed.config.preflight = vec![crate::preflight::Step {
@@ -7881,7 +7894,7 @@ mod tests {
     /// before its turn; `one`, rebased onto main's tip and preflighted, is brought.
     #[test]
     fn the_bring_queue_leaves_out_what_cant_be_brought() {
-        let (repo, dir) = place("bring-queue-out");
+        let (_s, repo, dir) = place("bring-queue-out");
         let mut ed = editor(&repo, &dir);
         ed.config.preflight = vec![crate::preflight::Step {
             name: "check".into(),
@@ -7931,7 +7944,7 @@ mod tests {
     #[test]
     fn a_queued_bring_that_cant_start_is_left_out() {
         use crate::bringqueue::Stage;
-        let (repo, dir) = place("bring-queue-cant");
+        let (_s, repo, dir) = place("bring-queue-cant");
         let mut ed = editor(&repo, &dir);
         ed.bring_queue.stand_in = true;
         let mut ids = Vec::new();
@@ -7974,7 +7987,7 @@ mod tests {
     #[test]
     fn the_bring_queue_goes_on_past_what_happens_under_it() {
         use crate::bringqueue::Stage;
-        let (repo, dir) = place("bring-queue-under");
+        let (_s, repo, dir) = place("bring-queue-under");
         let mut ed = editor(&repo, &dir);
         ed.bring_queue.stand_in = true;
         let (mut ids, mut wts) = (Vec::new(), Vec::new());
@@ -8035,7 +8048,7 @@ mod tests {
     /// and its `y` runs the preflight again — never a bring anyway — which lands what's there now.
     #[test]
     fn a_bring_lands_only_the_commit_its_preflight_tested() {
-        let (repo, dir) = place("bring-tested");
+        let (_s, repo, dir) = place("bring-tested");
         let mut ed = editor(&repo, &dir);
         let script = dir.join("check.sh");
         let mid =
@@ -8125,7 +8138,7 @@ mod tests {
     #[test]
     fn a_bring_asked_while_another_goes_waits_its_turn() {
         use crate::bringqueue::Stage;
-        let (repo, dir) = place("bring-line");
+        let (_s, repo, dir) = place("bring-line");
         let mut ed = editor(&repo, &dir);
         ed.bring_queue.stand_in = true;
         let (a, _) = committed(&mut ed, "a", "a2.txt", "a\n");
@@ -8179,7 +8192,7 @@ mod tests {
     #[test]
     fn the_bring_queue_lands_only_the_commit_its_preflight_tested() {
         use crate::bringqueue::Stage;
-        let (repo, dir) = place("bring-queue-tested");
+        let (_s, repo, dir) = place("bring-queue-tested");
         let mut ed = editor(&repo, &dir);
         ed.bring_queue.stand_in = true;
         let (mut ids, mut wts) = (Vec::new(), Vec::new());
@@ -8227,7 +8240,7 @@ mod tests {
     #[test]
     fn a_tip_moved_twice_under_a_queued_bring_puts_its_card_back() {
         use crate::bringqueue::Stage;
-        let (repo, dir) = place("bring-twice");
+        let (_s, repo, dir) = place("bring-twice");
         let mut ed = editor(&repo, &dir);
         ed.bring_queue.stand_in = true;
         let (a, wa) = committed(&mut ed, "a", "a2.txt", "a\n");
@@ -8265,7 +8278,7 @@ mod tests {
     #[test]
     fn a_queued_bring_with_high_risk_changes_waits_on_its_card() {
         use crate::bringqueue::Stage;
-        let (repo, dir) = place("bring-risky");
+        let (_s, repo, dir) = place("bring-risky");
         let mut ed = editor(&repo, &dir);
         ed.bring_queue.stand_in = true;
         let (risky, _) = committed(&mut ed, "risky", "a.rs", "fn a() {\n    unsafe { b() }\n}\n");
@@ -8294,7 +8307,7 @@ mod tests {
     #[test]
     fn changes_in_no_commit_stop_a_bring() {
         use crate::bringqueue::Stage;
-        let (repo, dir) = place("bring-unclean");
+        let (_s, repo, dir) = place("bring-unclean");
         let mut ed = editor(&repo, &dir);
         ed.bring_queue.stand_in = true;
         let (a, wa) = committed(&mut ed, "a", "a2.txt", "a\n");
@@ -8340,7 +8353,7 @@ mod tests {
     /// itself — `y` and `p` back on it.
     #[test]
     fn one_bring_card_a_session_and_a_look_frees_the_held_one() {
-        let (repo, dir) = place("bring-one");
+        let (_s, repo, dir) = place("bring-one");
         let mut ed = editor(&repo, &dir);
         let wt = new_session(&mut ed, "risky");
         std::fs::write(wt.join("a.rs"), "fn a() {\n    unsafe { b() }\n}\n").unwrap();

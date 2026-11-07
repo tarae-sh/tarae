@@ -588,8 +588,11 @@ mod tests {
 
     /// An editor in a fresh temp folder of its own, its chat at work (a stand-in claude that reads and says
     /// nothing) — `sh …` runs unasked, as an allowed check would — and the chat process's generation.
-    fn at_work(name: &str) -> (Editor, PathBuf, u64) {
-        let dir = crate::scratch::Scratch::new(&format!("queued-{name}")).into_path();
+    /// The folder goes with the `Scratch`, after the editor (#441: an `into_path` the caller was to remove was left
+    /// in the temp folder each run where it didn't).
+    fn at_work(name: &str) -> (crate::scratch::Scratch, Editor, PathBuf, u64) {
+        let s = crate::scratch::Scratch::new(&format!("queued-{name}"));
+        let dir = s.to_path_buf();
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
@@ -600,7 +603,17 @@ mod tests {
         c.state = crate::chat::State::Thinking;
         ed.workspace.viewer.keys_to_code();
         let generation = c.generation();
-        (ed, dir, generation)
+        (s, ed, dir, generation)
+    }
+
+    /// #441: these left their folders in the temp folder every run.
+    #[test]
+    fn the_tests_at_work_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            claudes_run_waits_for_room_on_the_disk_and_the_users_goes();
+            a_stopped_turns_run_is_offered_to_stop();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     /// Claude's `run` of `cmd` as call `id`, the way claude sends it — it waits (no answer now).
@@ -655,7 +668,7 @@ mod tests {
     #[test]
     fn claudes_run_waits_for_room_on_the_disk_and_the_users_goes() {
         const GB: u64 = 1 << 30;
-        let (mut ed, dir, generation) = at_work("disk");
+        let (_s, mut ed, dir, generation) = at_work("disk");
         script(&dir, "one", 0.0);
         let vol =
             |free| vec![crate::procs::Volume { at: PathBuf::from("/Volumes/x"), free, total: 926 * GB }];
@@ -686,7 +699,7 @@ mod tests {
     /// and behind what.
     #[test]
     fn an_unasked_run_waits_its_turn_and_says_so() {
-        let (mut ed, dir, generation) = at_work("unasked");
+        let (_s, mut ed, dir, generation) = at_work("unasked");
         script(&dir, "slow", 0.8);
         script(&dir, "fast", 0.0);
         run(&mut ed, generation, 1, "sh slow.sh");
@@ -727,7 +740,7 @@ mod tests {
     /// starts, `running sh fast.sh`, its time started again (the run's own, not its wait's).
     #[test]
     fn a_run_in_line_is_said_queued_then_running() {
-        let (mut ed, dir, generation) = at_work("now");
+        let (_s, mut ed, dir, generation) = at_work("now");
         script(&dir, "slow", 0.8);
         script(&dir, "fast", 0.0);
         // (the tool_use block first, then its request — as claude sends a call)
@@ -764,7 +777,7 @@ mod tests {
     /// run starts with what's allowed then.
     #[test]
     fn a_take_back_strips_the_grant_riding_with_a_run_in_line() {
-        let (mut ed, dir, generation) = at_work("riding");
+        let (_s, mut ed, dir, generation) = at_work("riding");
         script(&dir, "slow", 0.8);
         script(&dir, "fast", 0.0);
         run(&mut ed, generation, 1, "sh slow.sh");
@@ -787,7 +800,7 @@ mod tests {
     /// reaches every session (piece J — a kept answer may be every checkout's, each conversation's copy goes).
     #[test]
     fn a_take_back_strips_another_sessions_riding_grant() {
-        let (mut ed, dir, generation) = at_work("riding-other");
+        let (_s, mut ed, dir, generation) = at_work("riding-other");
         script(&dir, "slow", 0.8);
         script(&dir, "fast", 0.0);
         run(&mut ed, generation, 1, "sh slow.sh");
@@ -817,7 +830,7 @@ mod tests {
     /// front of the line, not refused, and runs when the panel frees.
     #[test]
     fn a_run_whose_slot_was_taken_meanwhile_goes_back_in_line() {
-        let (mut ed, dir, generation) = at_work("taken");
+        let (_s, mut ed, dir, generation) = at_work("taken");
         script(&dir, "mine", 0.6);
         script(&dir, "claudes", 0.0);
         let call = crate::tools::Call::of(generation, "r1", json!(1));
@@ -855,7 +868,7 @@ mod tests {
     /// and its answer says it waited.
     #[test]
     fn tests_wait_for_the_tests_running() {
-        let (mut ed, dir, generation) = at_work("tests");
+        let (_s, mut ed, dir, generation) = at_work("tests");
         let go = |ed: &mut Editor, id: u64, t: crate::testing::Target| {
             let call = crate::tools::Call::of(generation, &format!("r{id}"), json!(id));
             let job = crate::tools::Job::Tests(Box::new(t));
@@ -883,7 +896,7 @@ mod tests {
     /// its own.
     #[test]
     fn the_same_run_asked_again_is_one_run() {
-        let (mut ed, dir, generation) = at_work("dedupe");
+        let (_s, mut ed, dir, generation) = at_work("dedupe");
         script(&dir, "slow", 0.8);
         script(&dir, "fast", 0.0);
         run(&mut ed, generation, 1, "sh slow.sh");
@@ -925,7 +938,7 @@ mod tests {
     /// (ahead of Claude's next), its row offering to run it now; `enter` in the panel does, stopping Claude's.
     #[test]
     fn the_users_task_waits_first_in_line_and_can_run_now() {
-        let (mut ed, dir, generation) = at_work("users");
+        let (_s, mut ed, dir, generation) = at_work("users");
         script(&dir, "slow", 0.8);
         script(&dir, "fast", 0.0);
         script(&dir, "mine", 0.0);
@@ -977,7 +990,7 @@ mod tests {
     /// nothing runs.
     #[test]
     fn a_run_taken_out_of_line_is_told_it_did_not_run() {
-        let (mut ed, dir, generation) = at_work("leave");
+        let (_s, mut ed, dir, generation) = at_work("leave");
         script(&dir, "slow", 0.5);
         script(&dir, "fast", 0.0);
         run(&mut ed, generation, 1, "sh slow.sh");
@@ -998,7 +1011,7 @@ mod tests {
     /// stops; `y` stops it and the waiting one runs. A card whose run ends by itself goes.
     #[test]
     fn a_stopped_turns_run_is_offered_to_stop() {
-        let (mut ed, dir, generation) = at_work("left");
+        let (_s, mut ed, dir, generation) = at_work("left");
         script(&dir, "slow", 5.0);
         script(&dir, "fast", 0.0);
         run(&mut ed, generation, 1, "sh slow.sh");

@@ -1154,7 +1154,7 @@ mod tests {
 
     #[test]
     fn answers_are_kept_per_file_and_hash() {
-        let dir = std::env::temp_dir().join(format!("tarae-trust-{}", std::process::id()));
+        let dir = crate::scratch::Scratch::new("trust");
         let path = dir.join("trust.json");
         let file = PathBuf::from("/p/.tarae.toml");
         record(path.clone(), Kind::Tarae, file.clone(), v(0xab), true).unwrap();
@@ -1288,7 +1288,7 @@ mod tests {
     /// answer kept by FNV before (one per file, or a version of 16 hex digits) asks again.
     #[test]
     fn answers_are_kept_by_the_items_sha256_and_old_ones_ask_again() {
-        let dir = std::env::temp_dir().join(format!("tarae-trust-sha-{}", std::process::id()));
+        let dir = crate::scratch::Scratch::new("trust-sha");
         let (path, file) = (dir.join("trust.json"), dir.join(".tarae.toml"));
         let items = vec![
             ("editor.restart-build".to_string(), "\"cargo build\"".to_string()),
@@ -1323,7 +1323,6 @@ mod tests {
             assert_eq!(Store::read(Some(&path)).state(&file, hash(&items)), State::Ask, "{text}");
             assert!(Store::read(Some(&path)).answers.is_empty(), "nothing read of it: {text}");
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// #185: every version answered is kept, for the repository — its checkouts (sessions) share what was
@@ -1332,9 +1331,8 @@ mod tests {
     /// test's temp folder — nothing run.)
     #[test]
     fn each_version_answered_is_kept_for_the_repository() {
-        let base = std::fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!("tarae-trust-versions-{}", std::process::id()));
+        let scratch = crate::scratch::Scratch::new("trust-versions");
+        let base = scratch.to_path_buf();
         let (main, wt, other, planted) =
             (base.join("main"), base.join("wt"), base.join("other"), base.join("planted"));
         let link = main.join(".git/worktrees/wt");
@@ -1366,7 +1364,6 @@ mod tests {
         // Answered again: the new answer
         record(path.clone(), Kind::Tarae, toml(&wt), v(0xa), false).unwrap();
         assert_eq!(Store::read(Some(&path)).state(&toml(&main), v(0xa)), State::Ignored);
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// Every `llm.sandbox*` setting changes what Claude's commands may do unasked — where they write, what they
@@ -1407,7 +1404,7 @@ mod tests {
     fn the_card_switches_the_config_and_untrust_takes_it_back() {
         use crate::config::tests::{RISKY_PROJECT, project_file};
         use crate::offer::What;
-        let path = project_file("card", RISKY_PROJECT);
+        let (_dir, path) = project_file("card", RISKY_PROJECT);
         let (c, _) = crate::config::load_from(None, Some(path), &Store::default());
         let mut ed = crate::editor::Editor::new(c);
         assert!(matches!(ed.offers.first().map(|o| &o.what), Some(What::ProjectTrust { .. })));
@@ -1446,7 +1443,7 @@ mod tests {
     fn too_long_to_show_is_never_trusted() {
         use crate::config::tests::project_file;
         let long = "x".repeat(SHOWN_MAX + 1);
-        let path = project_file("long", &format!("[editor]\nrestart-build = \"{long}\"\n"));
+        let (_dir, path) = project_file("long", &format!("[editor]\nrestart-build = \"{long}\"\n"));
         let (c, _) = crate::config::load_from(None, Some(path.clone()), &Store::default());
         let p = c.project.unwrap();
         assert!(question(Path::new("/"), &p).contains("too long to show"));
@@ -1454,6 +1451,18 @@ mod tests {
         store.answer(crate::trust::Kind::Tarae, &path, p.hash, true, 0);
         let (t, _) = crate::config::load_from(None, Some(path), &store);
         assert_eq!(t.editor.restart_build, "");
+    }
+
+    /// #441: the card's tests leave no folder behind (their `project_file`s were left in the temp folder every run;
+    /// the store's own tests, beside them, at a guessable `tarae-trust-<pid>` — now a `Scratch`, and not run again
+    /// here: their answers are about one file, and the store's writer is the process's).
+    #[test]
+    fn the_trust_tests_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            the_card_switches_the_config_and_untrust_takes_it_back();
+            too_long_to_show_is_never_trusted();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     #[test]

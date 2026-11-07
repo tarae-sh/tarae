@@ -6288,7 +6288,7 @@ mod tests {
     #[test]
     fn a_binary_read_landing_after_another_file_was_shown_stays_out_of_sight() {
         let files = [("a.txt", "a\n", "a2\n"), ("b.bin", "\0a", "\0b"), ("c.txt", "c\n", "c2\n")];
-        let (mut ed, dir) = reviewing("binary-late", &files);
+        let (_s, mut ed, dir) = reviewing("binary-late", &files);
         show(&mut ed, 1, false);
         show(&mut ed, 2, false);
         let c = dir.join("c.txt");
@@ -6312,8 +6312,10 @@ mod tests {
 
     /// A repository in the test's own temp folder (`name`): `files` committed as (path, base text), then each
     /// written as its text now — the review is opened on it, on its first file, its diff there.
-    fn reviewing(name: &str, files: &[(&str, &str, &str)]) -> (Editor, PathBuf) {
-        let dir = crate::scratch::Scratch::new(&format!("review-{name}")).into_path();
+    /// The folder goes with the `Scratch`, after the editor (#441).
+    fn reviewing(name: &str, files: &[(&str, &str, &str)]) -> (crate::scratch::Scratch, Editor, PathBuf) {
+        let s = crate::scratch::Scratch::new(&format!("review-{name}"));
+        let dir = s.to_path_buf();
         let run = |args: &[&str]| {
             let id = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
             let ok = std::process::Command::new("git").args(id).args(args).current_dir(&dir).output();
@@ -6331,14 +6333,14 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         start_in(&mut ed, dir.clone(), None);
         settle_until(&mut ed, landed);
-        (ed, dir)
+        (s, ed, dir)
     }
 
     /// `space e` under a review gives the rail the keys — the files tab shown all the same, counted as one
     /// (`features.rs`).
     #[test]
     fn space_e_under_a_review_counts_the_files_tab() {
-        let (mut ed, dir) = reviewing("count-files", &[("a.txt", "one\n", "two\n")]);
+        let (_s, mut ed, dir) = reviewing("count-files", &[("a.txt", "one\n", "two\n")]);
         ed.config.features_count = true;
         ed.workspace.leave(Here::Rail);
         feed(&mut ed, "<space>e");
@@ -6354,7 +6356,7 @@ mod tests {
     #[test]
     fn a_turns_review_grades_a_changed_file_again_against_its_text_before() {
         let files = [("a.txt", "a\n", "a2\n"), ("b.txt", "b\n", "b2\n"), ("c.txt", "c\n", "c2\n")];
-        let (mut ed, dir) = reviewing("turn-regrade", &files);
+        let (_s, mut ed, dir) = reviewing("turn-regrade", &files);
         let touched = |rel: &str, before: &str, after: &str| crate::checkpoint::Touched {
             path: dir.join(rel),
             before: Some(ropey::Rope::from_str(before)),
@@ -6451,7 +6453,17 @@ mod tests {
         let gone = |s: &str| s.contains("isn't kept any more");
         assert!(ed.messages.iter().any(|m| gone(&m.2)), "noted: {:?}", ed.messages);
         assert!(!ed.toasts.iter().any(|t| gone(&t.text)), "no toast: {:?}", ed.toasts);
-        std::fs::remove_dir_all(&dir).ok();
+        // (the turns' store is written on a worker: landed before the folder goes — #441, one landing after the
+        // removal left `turns-kept/` in the temp folder)
+        ed.writes_flush();
+    }
+
+    /// #441: it left its turns' store in the temp folder every run.
+    #[test]
+    fn the_turn_review_tests_leave_no_folder_behind() {
+        let left =
+            crate::scratch::left_by(a_turns_review_grades_a_changed_file_again_against_its_text_before);
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     /// #275: a file past what a run keeps as text (`snapshot::TEXT_MAX` — term.rs, 1.4 MB), first changed this
@@ -6467,7 +6479,7 @@ mod tests {
             }
             big.push_str(&format!("fn f{i}() {{ unsafe {{ g({i}) }} }}\n"));
         }
-        let (mut ed, dir) = reviewing("turn-big", &[("a.txt", "a\n", "a2\n"), ("big.rs", &big, &big)]);
+        let (_s, mut ed, dir) = reviewing("turn-big", &[("a.txt", "a\n", "a2\n"), ("big.rs", &big, &big)]);
         ed.workspace.root = dir.clone();
         // A run changes one line of it: the turn's first touch of the file
         let before = crate::snapshot::Before::take(&dir);
@@ -6581,7 +6593,7 @@ mod tests {
             ("c.txt", "c\n", "c2\n"),
             ("d.txt", "d\n", "d2\n"),
         ];
-        let (mut ed, dir) = reviewing("unviewed", &files);
+        let (_s, mut ed, dir) = reviewing("unviewed", &files);
         let rel = |ed: &Editor| {
             let r = ed.workspace.code_review.as_ref().unwrap();
             r.in_hand(ed).map(|i| r.files[i].rel.clone()).unwrap_or_default()
@@ -6634,7 +6646,7 @@ mod tests {
     #[test]
     fn bracket_u_lands_on_a_file_changed_on_disk_since_its_mark() {
         let files = [("a.txt", "a\n", "a2\n"), ("b.txt", "b\n", "b2\n"), ("c.txt", "c\n", "c2\n")];
-        let (mut ed, dir) = reviewing("unviewed-on-disk", &files);
+        let (_s, mut ed, dir) = reviewing("unviewed-on-disk", &files);
         let rel = |ed: &Editor| {
             let r = ed.workspace.code_review.as_ref().unwrap();
             r.in_hand(ed).map(|i| r.files[i].rel.clone()).unwrap_or_default()
@@ -6688,7 +6700,7 @@ mod tests {
     #[test]
     fn a_mark_waiting_for_its_base_isnt_put_on_a_text_changed_meanwhile() {
         let files = [("0.txt", "0\n", "02\n"), ("a.txt", "a\n", "a2\n"), ("b.txt", "b\n", "b2\n")];
-        let (mut ed, dir) = reviewing("mark-waits", &files);
+        let (_s, mut ed, dir) = reviewing("mark-waits", &files);
         for (i, f) in [(1, "a.txt"), (2, "b.txt")] {
             show(&mut ed, i, false);
             // (its base not in yet: the mark waits)
@@ -6721,7 +6733,7 @@ mod tests {
         });
         let files =
             [("a.txt", "a\n", "a2\n"), ("b.md", base.as_str(), now.as_str()), ("c.txt", "c\n", "c2\n")];
-        let (mut ed, dir) = reviewing("unviewed-closed", &files);
+        let (_s, mut ed, dir) = reviewing("unviewed-closed", &files);
         let rel = |ed: &Editor| {
             let r = ed.workspace.code_review.as_ref().unwrap();
             r.in_hand(ed).map(|i| r.files[i].rel.clone()).unwrap_or_default()
@@ -6781,7 +6793,7 @@ mod tests {
             ("b.txt", base.as_str(), now.as_str()),
             ("c.txt", base.as_str(), now.as_str()),
         ];
-        let (mut ed, dir) = reviewing("marks-fix-turn", &files);
+        let (_s, mut ed, dir) = reviewing("marks-fix-turn", &files);
         for i in 0..3 {
             show(&mut ed, i, false);
             settle_until(&mut ed, |ed| {
@@ -6831,7 +6843,7 @@ mod tests {
     #[test]
     fn commit_from_a_review_all_viewed_stages_and_commits_with_the_file_as_its_message() {
         let files = [("a.txt", "a\n", "a2\n"), ("b.txt", "b\n", "b2\n"), ("c.txt", "c\n", "c\n")];
-        let (mut ed, dir) = reviewing("commit-from", &files);
+        let (_s, mut ed, dir) = reviewing("commit-from", &files);
         // (the session's checkout: where its git runs)
         ed.workspace.root = dir.clone();
         let git = |args: &[&str]| {
@@ -6902,7 +6914,7 @@ mod tests {
     /// its session's reloads as one line — a stage (or a push, a fetch) none.
     #[test]
     fn only_a_git_action_that_rewrites_the_tree_holds_its_reloads() {
-        let (mut ed, dir) = reviewing("git-batch", &[("a.txt", "a\n", "a2\n")]);
+        let (_s, mut ed, dir) = reviewing("git-batch", &[("a.txt", "a\n", "a2\n")]);
         ed.workspace.root = dir.clone();
         close(&mut ed);
         ed.git_refresh();
@@ -6924,7 +6936,7 @@ mod tests {
     #[test]
     fn commit_from_a_review_stages_only_what_was_viewed() {
         let files = [("a.txt", "a\n", "a2\n"), ("msg-b.txt", "b\n", "b2\n")];
-        let (mut ed, dir) = reviewing("commit-viewed", &files);
+        let (_s, mut ed, dir) = reviewing("commit-viewed", &files);
         ed.workspace.root = dir.clone();
         let git = |args: &[&str]| {
             let out = std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap();
@@ -7191,7 +7203,7 @@ mod tests {
         let base = text_of(10, |i| format!("fn f{i}() {{}}"));
         let mut now: Vec<String> = base.lines().map(str::to_string).collect();
         now.splice(5..5, (0..120).map(|i| format!("fn g{i}() {{ unsafe {{ x() }} }}")));
-        let (mut ed, dir) = reviewing("fix", &[("a.rs", &base, &(now.join("\n") + "\n"))]);
+        let (_s, mut ed, dir) = reviewing("fix", &[("a.rs", &base, &(now.join("\n") + "\n"))]);
         let left = |ed: &Editor| ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(ed).len());
         let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 12).unwrap();
@@ -7222,12 +7234,15 @@ mod tests {
 
     /// The review of `files` (as `reviewing`), a frame drawn (the pane's height known) and its document's tree in
     /// — what a tall change's pieces are cut by — and the pane's text rows.
-    fn reviewing_parsed(name: &str, files: &[(&str, &str, &str)]) -> (Editor, PathBuf, usize) {
-        let (mut ed, dir) = reviewing(name, files);
+    fn reviewing_parsed(
+        name: &str,
+        files: &[(&str, &str, &str)],
+    ) -> (crate::scratch::Scratch, Editor, PathBuf, usize) {
+        let (s, mut ed, dir) = reviewing(name, files);
         crate::term::render(&mut ed, &mut Vec::new(), 100, 12).unwrap();
         settle_until(&mut ed, |ed| ed.doc().syntax.as_ref().is_some_and(|s| s.tree.is_some()));
         let rows = ed.viewport.0;
-        (ed, dir, rows)
+        (s, ed, dir, rows)
     }
 
     /// f22 h: a line rewritten near a change's end (`b();` → `bc();` above its `}`) asks for that line and the
@@ -7237,7 +7252,7 @@ mod tests {
     fn a_line_rewritten_at_a_changes_end_moved_nothing() {
         let base = "fn main() {}\n";
         let now = format!("{base}{}", four_line_fns(2));
-        let (mut ed, dir, _) = reviewing_parsed("rewritten-end", &[("a.rs", base, &now)]);
+        let (_s, mut ed, dir, _) = reviewing_parsed("rewritten-end", &[("a.rs", base, &now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         let at = ed.doc().text.line_to_byte(1 + 4 + 2) + "    b".len();
@@ -7257,7 +7272,7 @@ mod tests {
         let base = "fn main() {}\n";
         let a = format!("{base}{}", four_line_fns(6));
         let b = format!("{base}{}", four_line_fns(1));
-        let (mut ed, dir, _) = reviewing_parsed("wrap-back", &[("a.rs", base, &a), ("b.rs", base, &b)]);
+        let (_s, mut ed, dir, _) = reviewing_parsed("wrap-back", &[("a.rs", base, &a), ("b.rs", base, &b)]);
         let status = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         let name =
             |ed: &Editor| ed.doc().path.as_ref().unwrap().file_name().unwrap().to_string_lossy().into_owned();
@@ -7314,7 +7329,7 @@ mod tests {
     fn a_tall_change_is_looked_at_piece_by_piece() {
         let base = "fn main() {}\n";
         let now = format!("{base}{}", four_line_fns(6));
-        let (mut ed, dir, rows) = reviewing_parsed("pieces", &[("a.rs", base, &now)]);
+        let (_s, mut ed, dir, rows) = reviewing_parsed("pieces", &[("a.rs", base, &now)]);
         assert!(rows < 24, "a pane shorter than the change: {rows}");
         let h = highs(&ed);
         assert!(h.len() >= 2, "{h:?}");
@@ -7351,7 +7366,7 @@ mod tests {
         let base = "fn main() {}\n";
         let big: String = (0..38).map(|_| "    unsafe { x() };\n").collect();
         let now = format!("{base}fn big() {{\n{big}}}\n{}", four_line_fns(2));
-        let (mut ed, dir, rows) = reviewing_parsed("alone", &[("a.rs", base, &now)]);
+        let (_s, mut ed, dir, rows) = reviewing_parsed("alone", &[("a.rs", base, &now)]);
         assert!(rows < 40, "{rows}");
         let h = highs(&ed);
         assert_eq!((h[0].at, h[0].lines), (1, 40), "the function whole: {h:?}");
@@ -7370,7 +7385,7 @@ mod tests {
     #[test]
     fn with_no_grammar_a_tall_change_is_cut_every_panes_height() {
         let now = text_of(30, |i| format!("line {i}"));
-        let (mut ed, dir) = reviewing("nogrammar", &[("a.txt", "", &now)]);
+        let (_s, mut ed, dir) = reviewing("nogrammar", &[("a.txt", "", &now)]);
         ed.config.review_risky = vec!["a.txt".into()];
         if let Some(r) = ed.workspace.code_review.as_mut() {
             r.set_rules(crate::risk::Rules::of(&ed.config));
@@ -7389,7 +7404,7 @@ mod tests {
     #[test]
     fn a_language_whose_grammar_cant_load_is_cut_every_panes_height() {
         let now = text_of(30, |i| format!("line {i}"));
-        let (mut ed, dir) = reviewing("grammarless", &[("a.py", "", &now)]);
+        let (_s, mut ed, dir) = reviewing("grammarless", &[("a.py", "", &now)]);
         assert_eq!(crate::risk::lang_of("a.py"), Some("python"));
         // (no grammar here or there: the document has no syntax, and its load landed failed)
         ed.doc_mut().syntax = None;
@@ -7413,7 +7428,7 @@ mod tests {
     fn a_closed_files_tall_change_is_cut_as_its_open_one() {
         let base = "fn main() {}\n";
         let tall = format!("{base}{}", four_line_fns(6));
-        let (mut ed, dir) =
+        let (_s, mut ed, dir) =
             reviewing("closedcut", &[("a.rs", base, "fn main() { x() }\n"), ("b.rs", base, &tall)]);
         crate::term::render(&mut ed, &mut Vec::new(), 100, 12).unwrap();
         assert!(ed.viewport.0 < 24, "a pane shorter than the change: {}", ed.viewport.0);
@@ -7447,7 +7462,7 @@ mod tests {
             fns += "    unsafe { x() };\n    b();\n";
             fns += &if i < 6 { format!("}} fn a{i}() {{\n") } else { "}\n".to_string() };
         }
-        let (ed, dir, rows) = reviewing_parsed("shared", &[("a.rs", base, &format!("{base}{fns}"))]);
+        let (_s, ed, dir, rows) = reviewing_parsed("shared", &[("a.rs", base, &format!("{base}{fns}"))]);
         let n = fns.lines().count();
         assert!(rows < n, "a pane shorter than the change: {rows}");
         let h = highs(&ed);
@@ -7468,7 +7483,7 @@ mod tests {
     #[test]
     fn a_new_files_unchanged_part_stays_looked_at() {
         let now = text_of(30, |i| format!("fn g{i}() {{ unsafe {{ x() }} }}"));
-        let (mut ed, dir) = reviewing("newfile", &[("c.rs", "", &now)]);
+        let (_s, mut ed, dir) = reviewing("newfile", &[("c.rs", "", &now)]);
         let all: Vec<crate::risk::Key> = highs(&ed).iter().flat_map(|g| g.keys.clone()).collect();
         ed.workspace.looked.extend(all);
         let (l3, l20) = (ed.doc().text.line_to_byte(3), ed.doc().text.line_to_byte(20));
@@ -7493,7 +7508,7 @@ mod tests {
     fn a_line_taken_out_of_a_looked_at_change_needs_a_look() {
         let base = "fn main() {\n}\n";
         let now = "fn main() {\n    check_permission();\n    unsafe { go() }\n}\n";
-        let (mut ed, dir) = reviewing("out", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("out", &[("a.rs", base, now)]);
         let left = |ed: &Editor| ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(ed).len());
         let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 12).unwrap();
         frame(&mut ed);
@@ -7531,7 +7546,7 @@ mod tests {
         let rest = "\nfn other() {\n    check();\n}\n\nfn third() {\n    check();\n}\n";
         let base = format!("fn main() {{\n}}\n{rest}");
         let now = format!("fn main() {{\n    check();\n\n    unsafe {{ go() }}\n}}\n{rest}");
-        let (mut ed, dir) = reviewing("ownchange", &[("a.rs", &base, &now)]);
+        let (_s, mut ed, dir) = reviewing("ownchange", &[("a.rs", &base, &now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         let line = |ed: &Editor, l: usize| ed.doc().text.line_to_byte(l);
@@ -7568,7 +7583,7 @@ mod tests {
     fn what_the_base_moved_past_is_let_go() {
         let now = "fn main() {\n    check();\n    unsafe { go() }\n}\n";
         let base = "fn main() {\n}\n";
-        let (mut ed, dir) = reviewing("letgo", &[("a.rs", base, now), ("b.txt", "x\n", "y\n")]);
+        let (_s, mut ed, dir) = reviewing("letgo", &[("a.rs", base, now), ("b.txt", "x\n", "y\n")]);
         look(&mut ed);
         let saved = |ed: &Editor| {
             let mut s = crate::restore::State::from_json(json!({}));
@@ -7625,7 +7640,7 @@ mod tests {
     #[test]
     fn h_selects_a_change_graded_inside_its_hunk() {
         let now = "fn main() {\n    a();\n    unsafe { go() }\n    b();\n}\n";
-        let (mut ed, dir) =
+        let (_s, mut ed, dir) =
             reviewing("inside", &[("a.txt", "x\n", "y\n"), ("b.rs", "fn main() {\n}\n", now)]);
         assert!(ed.doc().path.as_deref() == Some(&dir.join("a.txt")), "b.rs not open");
         // (as the worker graded it: its change a line into the hunk)
@@ -7653,7 +7668,7 @@ mod tests {
             5 | 30 => format!("changed {i}"),
             _ => format!("line {i}"),
         });
-        let (mut ed, dir) = reviewing("viewed", &[("b.txt", &base, &now)]);
+        let (_s, mut ed, dir) = reviewing("viewed", &[("b.txt", &base, &now)]);
         let since = |ed: &Editor| {
             let r = ed.workspace.code_review.as_ref().unwrap();
             r.since(ed, &r.files[0])
@@ -7720,7 +7735,7 @@ mod tests {
     #[test]
     fn a_restart_doesnt_regate_the_review() {
         let now = "fn main() {\n    check();\n    unsafe { go() }\n}\n";
-        let (mut ed, dir) = reviewing("restart", &[("a.rs", "fn main() {\n}\n", now)]);
+        let (_s, mut ed, dir) = reviewing("restart", &[("a.rs", "fn main() {\n}\n", now)]);
         // (the session's checkout: what both are kept under)
         ed.workspace.root = dir.clone();
         look(&mut ed);
@@ -7757,7 +7772,7 @@ mod tests {
     fn a_reopened_review_sees_a_file_changed_meanwhile() {
         let base = text_of(10, |i| format!("line {i}"));
         let now = text_of(10, |i| if i == 5 { "changed 5".into() } else { format!("line {i}") });
-        let (mut ed, dir) = reviewing("reopen", &[("a.txt", &base, &now), ("b.txt", &base, &now)]);
+        let (_s, mut ed, dir) = reviewing("reopen", &[("a.txt", &base, &now), ("b.txt", &base, &now)]);
         feed(&mut ed, "]F");
         settle_until(&mut ed, landed);
         feed(&mut ed, "<space>vm");
@@ -7778,7 +7793,7 @@ mod tests {
     fn a_line_taken_out_of_a_viewed_file_not_open_is_counted() {
         let base = "a\nb\n";
         let now = "a\n    check_permission();\n    go();\nb\n";
-        let (mut ed, dir) = reviewing("outclosed", &[("a.txt", base, "a\nc\n"), ("b.txt", base, now)]);
+        let (_s, mut ed, dir) = reviewing("outclosed", &[("a.txt", base, "a\nc\n"), ("b.txt", base, now)]);
         feed(&mut ed, "]F");
         settle_until(&mut ed, landed);
         feed(&mut ed, "<space>vm");
@@ -7801,7 +7816,7 @@ mod tests {
     fn a_repeated_line_drawn_once_isnt_drawn_everywhere() {
         // (thirty `{}` in one function: nothing in it to cut it at — cardburden 2 — looked at whole)
         let now = format!("fn main() {{\n    unsafe {{ go() }}\n{}}}\n", "    {}\n".repeat(30));
-        let (mut ed, dir) = reviewing("braces", &[("a.rs", "fn main() {\n}\n", &now)]);
+        let (_s, mut ed, dir) = reviewing("braces", &[("a.rs", "fn main() {\n}\n", &now)]);
         let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 12).unwrap();
         frame(&mut ed);
         feed(&mut ed, "]h");
@@ -7829,7 +7844,7 @@ mod tests {
         now[2] = "    let x = 1;".into();
         now.splice(40..40, ["    unsafe { a() }".to_string(), "    unsafe { b() }".to_string()]);
         let base = text_of(60, |i| format!("fn f{i}() {{}}"));
-        let (mut ed, dir) = reviewing("alike", &[("a.rs", &base, &(now.join("\n") + "\n"))]);
+        let (_s, mut ed, dir) = reviewing("alike", &[("a.rs", &base, &(now.join("\n") + "\n"))]);
         let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 12).unwrap();
         look(&mut ed);
         assert_eq!(left(&ed), 0);
@@ -7854,7 +7869,7 @@ mod tests {
     fn a_looked_line_taken_out_beside_a_copy_is_asked() {
         let base = "    check();\nfn main() {\n}\n";
         let now = "    check();\nfn main() {\n    check();\n    unsafe { go() }\n}\n";
-        let (mut ed, dir) = reviewing("copy", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("copy", &[("a.rs", base, now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         let (a, b) = (ed.doc().text.line_to_byte(2), ed.doc().text.line_to_byte(3));
@@ -7874,7 +7889,7 @@ mod tests {
     fn a_line_moved_within_a_looked_at_change_is_asked() {
         let base = "fn main() {\n}\n";
         let now = "fn main() {\n    check();\n    unsafe { go() }\n    done();\n}\n";
-        let (mut ed, dir) = reviewing("moved", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("moved", &[("a.rs", base, now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         // `check();` after the call it guarded
@@ -7907,7 +7922,7 @@ mod tests {
         let body = |order: &[&str]| order.iter().map(|l| format!("    {l}();\n")).collect::<String>();
         let now =
             format!("fn main() {{\n{}    unsafe {{ go() }}\n}}\n", body(&["one", "two", "three", "four"]));
-        let (mut ed, dir) = reviewing("moved-together", &[("a.rs", base, &now)]);
+        let (_s, mut ed, dir) = reviewing("moved-together", &[("a.rs", base, &now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         // (`one();` and `two();` after `five();`)
@@ -7937,7 +7952,7 @@ mod tests {
         let base = "fn main() {}\n";
         let fns =
             text_of(6, |i| format!("fn f{i}() {{\n    unsafe {{ x{i}() }};\n    y{i}();\n    z{i}();\n}}"));
-        let (mut ed, dir) = reviewing("old-look", &[("a.rs", base, &format!("{base}{fns}"))]);
+        let (_s, mut ed, dir) = reviewing("old-look", &[("a.rs", base, &format!("{base}{fns}"))]);
         let frame = |ed: &mut Editor, h: u16| crate::term::render(ed, &mut Vec::new(), 100, h).unwrap();
         let orders = |ed: &Editor| ed.workspace.looked_orders.get("a.rs").map_or(0, Vec::len);
         frame(&mut ed, 60);
@@ -7970,7 +7985,7 @@ mod tests {
             k @ 0..4 => body[k].replace("{}", &(l / 7).to_string()),
             k => tail[k - 4].to_string(),
         });
-        let (mut ed, dir) = reviewing("cut-elsewhere", &[("a.rs", "", &fns)]);
+        let (_s, mut ed, dir) = reviewing("cut-elsewhere", &[("a.rs", "", &fns)]);
         let frame = |ed: &mut Editor, h: u16| crate::term::render(ed, &mut Vec::new(), 100, h).unwrap();
         let asked = |ed: &Editor| -> Vec<String> {
             let r = ed.workspace.code_review.as_ref().unwrap();
@@ -8040,7 +8055,7 @@ mod tests {
                 .map(|g| (g.at, g.why))
                 .collect()
         };
-        let (mut ed, dir) = reviewing("edge", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("edge", &[("a.rs", base, now)]);
         look(&mut ed);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
@@ -8062,7 +8077,7 @@ mod tests {
         assert!(m.iter().any(|m| m.0 >= 6), "the other change's look kept: {m:?}");
         std::fs::remove_dir_all(&dir).ok();
         // Both taken in one look: `a2();` above `a1();` in the first
-        let (mut ed, dir) = reviewing("edge-one-look", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("edge-one-look", &[("a.rs", base, now)]);
         crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vH");
         assert_eq!(left(&ed), 0, "{:?}", ed.status);
@@ -8080,7 +8095,7 @@ mod tests {
         // Taken in one look, the first change sharing most of its lines with the second (`drop(guard);`,
         // `check();`): its look stays all the same — `unsafe { a() }` under its `drop(guard);` since is asked
         let now = "fn main() {\n    unsafe { a() }\n    drop(guard);\n    check();\n    keep();\n    unsafe { b() }\n    drop(guard);\n    check();\n    b1();\n}\nfn other() {\n    keep();\n}\n";
-        let (mut ed, dir) = reviewing("edge-one-look-shared", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("edge-one-look-shared", &[("a.rs", base, now)]);
         crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vH");
         assert_eq!(left(&ed), 0, "{:?}", ed.status);
@@ -8105,7 +8120,7 @@ mod tests {
     fn a_line_moved_within_the_smaller_of_two_merged_changes_is_asked() {
         let base = "fn main() {\n    keep1();\n    keep2();\n}\n";
         let now = "fn main() {\n    unsafe { a() }\n    b1();\n    b2();\n    b3();\n    keep1();\n    unsafe { c() }\n    d1();\n    d2();\n    keep2();\n}\n";
-        let (mut ed, dir) = reviewing("merged", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("merged", &[("a.rs", base, now)]);
         look(&mut ed);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
@@ -8134,7 +8149,7 @@ mod tests {
         let base = "fn main() {}\n";
         let fns =
             text_of(6, |i| format!("fn f{i}() {{\n    unsafe {{ x{i}() }};\n    y{i}();\n    z{i}();\n}}"));
-        let (mut ed, dir) = reviewing("split", &[("a.rs", base, &format!("{base}{fns}"))]);
+        let (_s, mut ed, dir) = reviewing("split", &[("a.rs", base, &format!("{base}{fns}"))]);
         let frame = |ed: &mut Editor, h: u16| crate::term::render(ed, &mut Vec::new(), 100, h).unwrap();
         // (looked at in a pane taller than it: one change, every line drawn)
         frame(&mut ed, 60);
@@ -8788,7 +8803,7 @@ mod tests {
     fn a_brace_moved_across_the_lines_it_closed_is_asked() {
         let base = "fn main() {\n    keep();\n}\n";
         let now = "fn main() {\n    keep();\n    if authorized() {\n        unsafe { delete_all() }\n        log();\n    }\n    done();\n}\n";
-        let (mut ed, dir) = reviewing("brace-crossed", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("brace-crossed", &[("a.rs", base, now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         // `    }` from under `log();` up under `if authorized() {`
@@ -8811,7 +8826,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         // The same move with an innocuous new line in each gap it changed: asked all the same — a gap's new line
         // excuses only brackets that are its own (the review of frictions36)
-        let (mut ed, dir) = reviewing("brace-crossed-beside-new", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("brace-crossed-beside-new", &[("a.rs", base, now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         let (b0, b1, above) = (at(&ed, 5), at(&ed, 6), at(&ed, 3));
@@ -8830,7 +8845,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         // …nor new lines whose brackets are a string's: `x = "{";` and `y = ")";` balance nothing (the review of
         // frictions36: counted as characters, they hid the move)
-        let (mut ed, dir) = reviewing("brace-crossed-beside-strings", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("brace-crossed-beside-strings", &[("a.rs", base, now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         let (b0, b1, above) = (at(&ed, 5), at(&ed, 6), at(&ed, 3));
@@ -8849,7 +8864,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         // …nor a new opener after a `}` moved up: the guard swapped (`if authorized() {` closed at once, `if debug()
         // {` around what it guarded) — they balance, and are asked all the same (the review of frictions36)
-        let (mut ed, dir) = reviewing("brace-reguarded", &[("a.rs", base, now)]);
+        let (_s, mut ed, dir) = reviewing("brace-reguarded", &[("a.rs", base, now)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         let above = at(&ed, 3);
@@ -8863,7 +8878,7 @@ mod tests {
         // The change's own `}` from its end over every line of it to its start: no gap between two lines saying
         // something changed, only the edges — asked all the same
         let closed = "fn main() {\n    keep();\n    if authorized() {\n        unsafe { delete_all() }\n        log();\n    }\n}\n";
-        let (mut ed, dir) = reviewing("brace-over-the-edge", &[("a.rs", base, closed)]);
+        let (_s, mut ed, dir) = reviewing("brace-over-the-edge", &[("a.rs", base, closed)]);
         look(&mut ed);
         assert_eq!(left(&ed), 0);
         assert_eq!(ed.doc().text.line(5).to_string(), "    }\n");
@@ -8890,7 +8905,7 @@ mod tests {
             ("brace-added-before", 2, "    if other() {\n        more();\n    }\n    again();\n"),
             ("brace-added-between", 4, "        if other() {\n            more();\n        }\n"),
         ] {
-            let (mut ed, dir) = reviewing(name, &[("a.rs", base, closed)]);
+            let (_s, mut ed, dir) = reviewing(name, &[("a.rs", base, closed)]);
             look(&mut ed);
             assert_eq!(left(&ed), 0);
             let into = at(&ed, line);
@@ -8907,7 +8922,7 @@ mod tests {
             ("end-crossed", ended, 5, 3, "    end\n"),
             ("dedented", now, 3, 3, "    unsafe { delete_all() }\n"),
         ] {
-            let (mut ed, dir) = reviewing(name, &[("a.rs", base, now)]);
+            let (_s, mut ed, dir) = reviewing(name, &[("a.rs", base, now)]);
             assert_eq!(ed.doc().text.line(from).to_string().trim(), line.trim(), "{name}");
             look(&mut ed);
             assert_eq!(left(&ed), 0);
@@ -8954,7 +8969,8 @@ mod tests {
     fn a_brace_moved_in_a_file_not_open_is_not_asked() {
         let block = "mod abi {\n    pub unsafe fn a() {}\n}\n\nmod b {\n    pub unsafe fn c() {}\n}\n";
         let old = format!("fn main() {{}}\n\n{block}");
-        let (mut ed, dir) = reviewing("flap", &[("old.rs", &old, "fn main() {}\n"), ("new.rs", "", block)]);
+        let (_s, mut ed, dir) =
+            reviewing("flap", &[("old.rs", &old, "fn main() {}\n"), ("new.rs", "", block)]);
         let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 100, 20).unwrap();
         let open = |ed: &mut Editor, rel: &str| open_file(ed, &dir, rel);
         // (what left the old file: looked at before)
@@ -8996,7 +9012,7 @@ mod tests {
     fn a_brace_moved_across_the_lines_it_closed_is_asked_while_its_file_is_closed() {
         let base = "fn main() {\n    keep();\n}\n";
         let now = "fn main() {\n    keep();\n    if authorized() {\n        unsafe { delete_all() }\n        log();\n    }\n    done();\n}\n";
-        let (mut ed, dir) = reviewing(
+        let (_s, mut ed, dir) = reviewing(
             "brace-crossed-closed",
             &[("a.rs", base, now), ("b.rs", "fn b() {}\n", "fn b() { c() }\n")],
         );
@@ -10168,7 +10184,7 @@ mod tests {
         }
         const N: usize = 20_000;
         let now = text_of(N, |i| format!("fn f{i}() {{ unsafe {{ x({i}) }} }}"));
-        let (mut ed, dir) = reviewing("whole-look", &[("a.rs", "", &now)]);
+        let (_s, mut ed, dir) = reviewing("whole-look", &[("a.rs", "", &now)]);
         // (every tenth line taken out since)
         let text = ed.doc().text.clone();
         let changes: Vec<_> = (0..N)

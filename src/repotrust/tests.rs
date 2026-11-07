@@ -8,8 +8,11 @@ use std::time::{Duration, Instant};
 /// `.claude/settings.json` a helper command, its git config `core.fsmonitor` (`fsmonitor` = what it says) — each
 /// a marker in the test's folder, never run (held until trusted). The chat's claude is a stand-in that writes what
 /// it's sent to `stdin` there. The editor up with the project's card; the rest not read yet.
-fn checkout(name: &str, fsmonitor: Option<&str>) -> (Editor, PathBuf) {
-    let dir = crate::scratch::Scratch::new(&format!("repotrust-{name}")).into_path();
+/// The folder goes with the `Scratch`, after the editor (#441: an `into_path` here was left in the temp folder each
+/// run).
+fn checkout(name: &str, fsmonitor: Option<&str>) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("repotrust-{name}"));
+    let dir = s.to_path_buf();
     let root = dir.join("repo");
     std::fs::create_dir_all(root.join(".claude")).unwrap();
     std::fs::write(dir.join("user.gitconfig"), "").unwrap();
@@ -31,7 +34,17 @@ fn checkout(name: &str, fsmonitor: Option<&str>) -> (Editor, PathBuf) {
     let mut ed = Editor::with_root(c, root.clone());
     ed.trust_path = Some(dir.join("trust.json"));
     ed.claude_settings_gate = true;
-    (ed, root)
+    (s, ed, root)
+}
+
+/// #441: these left their checkouts in the temp folder every run.
+#[test]
+fn the_checkout_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(|| {
+        no_holds_each_part_back();
+        a_command_asks_its_part_alone();
+    });
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 /// Plain git in the test's repository (`dir`/repo), with its own user config.
@@ -94,7 +107,7 @@ fn kept(ed: &Editor, file: &Path, hash: crate::trust::Digest) -> State {
 /// The chat's claude started meanwhile, held back, and a message reaches it while the card waits.
 #[test]
 fn the_three_waiting_together_are_one_card_and_the_chat_doesnt_wait() {
-    let (mut ed, root) = checkout("one", None);
+    let (_s, mut ed, root) = checkout("one", None);
     assert_eq!(kinds(&ed), ["project-trust"], "tarae's part up at once");
     all_three(&mut ed, &root);
     assert_eq!(kinds(&ed), ["repo-trust"], "one card");
@@ -143,7 +156,7 @@ fn the_three_waiting_together_are_one_card_and_the_chat_doesnt_wait() {
 /// its own card as ever.
 #[test]
 fn yes_trusts_each_part_in_its_own_store_and_a_change_asks_its_part_alone() {
-    let (mut ed, root) = checkout("yes", None);
+    let (_s, mut ed, root) = checkout("yes", None);
     all_three(&mut ed, &root);
     let What::RepoTrust { parts, .. } = ed.offers[0].what.clone() else { panic!("{:?}", kinds(&ed)) };
     ed.offer_accept();
@@ -190,7 +203,7 @@ fn yes_trusts_each_part_in_its_own_store_and_a_change_asks_its_part_alone() {
 fn granted_takes_each_part_back_and_what_it_let_run_follows() {
     use crate::granted::Taken;
     use crate::trust::Kind;
-    let (mut ed, root) = checkout("granted", None);
+    let (_s, mut ed, root) = checkout("granted", None);
     all_three(&mut ed, &root);
     let What::RepoTrust { parts, .. } = ed.offers[0].what.clone() else { panic!("{:?}", kinds(&ed)) };
     ed.offer_accept();
@@ -263,7 +276,7 @@ fn granted_takes_each_part_back_and_what_it_let_run_follows() {
 /// listed here.
 #[test]
 fn answers_kept_for_another_checkout_are_counted_not_used() {
-    let (mut ed, root) = checkout("elsewhere", None);
+    let (_s, mut ed, root) = checkout("elsewhere", None);
     let dir = root.parent().unwrap().to_path_buf();
     std::fs::write(dir.join("user.gitconfig"), "[user]\nname = t\nemail = t@t\n").unwrap();
     git(&dir, &["commit", "-q", "--allow-empty", "-m", "x"]);
@@ -294,7 +307,7 @@ fn answers_kept_for_another_checkout_are_counted_not_used() {
 /// `n` holds each part back, each kept so; the toast names the commands that ask again.
 #[test]
 fn no_holds_each_part_back() {
-    let (mut ed, root) = checkout("no", None);
+    let (_s, mut ed, root) = checkout("no", None);
     all_three(&mut ed, &root);
     let What::RepoTrust { parts, .. } = ed.offers[0].what.clone() else { panic!("{:?}", kinds(&ed)) };
     ed.offer_dismiss();
@@ -315,7 +328,7 @@ fn no_holds_each_part_back() {
 /// it said isn't an answer to what it says now), and what it said about a key pressed before isn't carried over.
 #[test]
 fn a_part_joining_lets_go_of_the_keys() {
-    let (mut ed, root) = checkout("settle", None);
+    let (_s, mut ed, root) = checkout("settle", None);
     crate::chat::open(&mut ed);
     until(&mut ed, "Claude's part", claude_card);
     let o = &ed.offers[0];
@@ -337,7 +350,7 @@ fn a_part_joining_lets_go_of_the_keys() {
 #[test]
 fn a_git_value_too_long_to_show_is_held_back_on_yes() {
     let long = format!("/bin/{}", "x".repeat(crate::trust::SHOWN_MAX));
-    let (mut ed, root) = checkout("long", Some(&long));
+    let (_s, mut ed, root) = checkout("long", Some(&long));
     all_three(&mut ed, &root);
     let o = &ed.offers[0];
     let lines: Vec<&str> = o.question.split('\n').collect();
@@ -358,7 +371,7 @@ fn a_git_value_too_long_to_show_is_held_back_on_yes() {
 /// A part asked alone by its command leaves the repository's card; the one part left is its own card again.
 #[test]
 fn a_command_asks_its_part_alone() {
-    let (mut ed, root) = checkout("alone", None);
+    let (_s, mut ed, root) = checkout("alone", None);
     all_three(&mut ed, &root);
     crate::typed::execute(&mut ed, "project-trust").unwrap();
     assert_eq!(kinds(&ed), ["repo-trust", "project-trust"]);
@@ -375,7 +388,7 @@ fn a_command_asks_its_part_alone() {
 /// repository's card while it's there.
 #[test]
 fn git_trust_typed_asks_about_the_repository_again() {
-    let (mut ed, root) = checkout("typed", None);
+    let (_s, mut ed, root) = checkout("typed", None);
     all_three(&mut ed, &root);
     ed.offer_dismiss();
     assert!(ed.offers.is_empty());
@@ -384,7 +397,7 @@ fn git_trust_typed_asks_about_the_repository_again() {
     assert_eq!(kinds(&ed), ["git-trust"]);
     assert_eq!(ed.offers[0].title, crate::gittrust::TITLE);
     // Asked while the repository's card is up: it leaves it
-    let (mut ed, root) = checkout("typed-up", None);
+    let (_s, mut ed, root) = checkout("typed-up", None);
     all_three(&mut ed, &root);
     feed(&mut ed, ":git-trust<ret>");
     until(&mut ed, "git's card", |ed| kinds(ed).contains(&"git-trust"));
@@ -395,7 +408,7 @@ fn git_trust_typed_asks_about_the_repository_again() {
 /// A part of another checkout (a submodule's git, say) isn't gathered: its own card beside it.
 #[test]
 fn another_checkouts_part_stays_its_own_card() {
-    let (mut ed, root) = checkout("other", None);
+    let (_s, mut ed, root) = checkout("other", None);
     let r = crate::gitrepo::repo(&root).unwrap();
     let mut ask = crate::gittrust::Ask::of(&r);
     ask.place = root.join("sub");

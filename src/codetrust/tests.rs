@@ -112,6 +112,8 @@ fn code_untrust_stops_them() {
     assert!(has_server(&ed, &toml), "taplo runs nothing of it: it stays");
     assert!(until(&mut ed, |ed| card(ed).is_some()), "asked again, the store read anew");
     assert_eq!(ed.code_untrust().unwrap_err(), "this repository's code isn't trusted here");
+    // (the store written before the folder goes — #441: one landing after it was left in the temp folder)
+    ed.writes_flush();
 }
 
 /// In a repository the trust is the repository's, every server root in it alike: two cargo roots ask once, and
@@ -322,6 +324,17 @@ fn a_card_parked_behind_comes_up_in_front_once_a_file_there_waits() {
     for r in &roots[..2] {
         assert!(has_server(&ed, &r.join("main.rs")), "{} started", r.display());
     }
+    ed.writes_flush();
+}
+
+/// #441: these left the store in the temp folder every run — written as the folder went.
+#[test]
+fn the_trust_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(|| {
+        code_untrust_stops_them();
+        a_card_parked_behind_comes_up_in_front_once_a_file_there_waits();
+    });
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 /// #226: a checkout read after the card was answered takes the answer — its read under way as `y` or `n` is given.

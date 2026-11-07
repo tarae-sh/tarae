@@ -11,6 +11,8 @@ use std::path::{Component, Path, PathBuf};
 thread_local! {
     /// The scratch folders this thread made and hasn't dropped — a test's own (`holds`).
     static MADE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+    /// Every scratch folder this thread made, dropped or not — what `left_by` looks for on disk.
+    static EVER: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Whether `path` is in a scratch folder this thread made and still has (or is one): what a test hands code that
@@ -26,6 +28,15 @@ pub fn holds(path: &Path) -> bool {
 /// check that a run leaves no folder behind compares before and after (#435).
 pub fn made() -> Vec<PathBuf> {
     MADE.with(|m| m.borrow().clone())
+}
+
+/// The scratch folders this thread made while `f` ran that are still on disk once it returned: `into_path`'s
+/// nothing removed, and one written again after its `Scratch` went — a save or a stand-in still at work (#441). By
+/// this thread's own list, so other tests' folders made beside it never count.
+pub fn left_by(f: impl FnOnce()) -> Vec<PathBuf> {
+    let from = EVER.with(|e| e.borrow().len());
+    f();
+    EVER.with(|e| e.borrow()[from..].iter().filter(|p| p.symlink_metadata().is_ok()).cloned().collect())
 }
 
 /// A folder of the test's own under the temp folder, removed (with what's in it) when dropped.
@@ -51,6 +62,7 @@ impl Scratch {
                 Ok(()) => {
                     let path = std::fs::canonicalize(&path).unwrap_or(path);
                     MADE.with(|m| m.borrow_mut().push(path.clone()));
+                    EVER.with(|e| e.borrow_mut().push(path.clone()));
                     return Scratch { path };
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -123,11 +135,21 @@ impl AsRef<Path> for Scratch {
     }
 }
 
+/// Removals tried at most: a stand-in still at work (a server's `cat > log`) may make a file in the folder while it's
+/// removed, and the folder's own removal then fails, not empty — left in the temp folder (#441). Each try takes what
+/// came meanwhile; a writer that never stops isn't waited for.
+const REMOVALS: usize = 10;
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         // (`try_with`: one dropped as the thread ends finds its list gone)
         let _ = MADE.try_with(|m| m.borrow_mut().retain(|p| p != &self.path));
-        std::fs::remove_dir_all(&self.path).ok();
+        for _ in 0..REMOVALS {
+            match std::fs::remove_dir_all(&self.path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => continue,
+                _ => break,
+            }
+        }
     }
 }
 
@@ -160,6 +182,27 @@ mod tests {
         assert!(!a_path.exists() && !b_path.exists(), "gone when dropped");
         assert_eq!(std::fs::read_to_string(theirs.join("keep")).unwrap(), "theirs", "never another's");
         assert!(link.is_symlink());
+    }
+
+    /// `left_by`: what the call made that's still on disk — `into_path`'s, one made again after its `Scratch` went —
+    /// never one dropped, nor one made before the call.
+    #[test]
+    fn left_by_is_what_a_call_made_and_left() {
+        let before = Scratch::new("scratch-left-before");
+        let (mut kept, mut again) = (PathBuf::new(), PathBuf::new());
+        let left = left_by(|| {
+            drop(Scratch::new("scratch-left-dropped"));
+            kept = Scratch::new("scratch-left-kept").into_path();
+            let s = Scratch::new("scratch-left-again");
+            again = s.to_path_buf();
+            drop(s);
+            std::fs::create_dir(&again).unwrap();
+        });
+        assert_eq!(left, [kept.clone(), again.clone()]);
+        for p in [kept, again] {
+            std::fs::remove_dir_all(p).ok();
+        }
+        assert!(before.is_dir());
     }
 
     /// `holds`: in a scratch folder this thread made and still has — not another thread's, not one dropped, not a

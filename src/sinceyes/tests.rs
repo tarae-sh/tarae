@@ -23,16 +23,26 @@ fn git_in(dir: &Path, args: &[&str]) {
 }
 
 /// A repository in the test's temp folder: the project `proj/` in it, and `other.txt` beside it — outside
-/// the project. (repository, project)
-fn repo(name: &str) -> (PathBuf, PathBuf) {
-    let dir = crate::scratch::Scratch::new(&format!("sinceyes-{name}")).into_path();
+/// the project. (its folder, repository, project) — gone with the `Scratch` (#441: an `into_path` the caller was to
+/// remove was left in the temp folder each run where it didn't).
+fn repo(name: &str) -> (crate::scratch::Scratch, PathBuf, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("sinceyes-{name}"));
+    let dir = s.to_path_buf();
     std::fs::create_dir_all(dir.join("proj/src")).unwrap();
     std::fs::write(dir.join("proj/src/lib.rs"), "fn a() {}\nfn b() {}\n").unwrap();
     std::fs::write(dir.join("other.txt"), "outside-marker one\n").unwrap();
     git_in(&dir, &["init", "-q"]);
     git_in(&dir, &["add", "-A"]);
     git_in(&dir, &["commit", "-q", "-m", "base"]);
-    (dir.clone(), dir.join("proj"))
+    let root = dir.join("proj");
+    (s, dir, root)
+}
+
+/// #441: it left its repository in the temp folder every run.
+#[test]
+fn the_repository_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(a_kubectl_runs_context_stays_told_after_a_change_since);
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 fn yes(root: &Path, cmd: &str) -> Answered {
@@ -45,7 +55,7 @@ fn yes(root: &Path, cmd: &str) -> Answered {
 /// show as it is: named only.
 #[test]
 fn the_projects_changes_since_the_yes_and_nothing_outside_it() {
-    let (dir, root) = repo("tree");
+    let (_s, dir, root) = repo("tree");
     let cmd = "cargo test lib_a";
     // (an edit before the yes is part of what was said yes to)
     std::fs::write(root.join("src/lib.rs"), "fn a() {}\nfn b() { 1 }\n").unwrap();
@@ -168,7 +178,7 @@ fn the_same_run_is_what_runs_not_the_filter_after_it() {
 /// a changed script is. A word that's no file, or a file outside the project, isn't kept.
 #[test]
 fn the_files_a_script_names_are_compared_with_it() {
-    let (dir, root) = repo("inputs");
+    let (_s, dir, root) = repo("inputs");
     std::fs::create_dir_all(root.join(".sb")).unwrap();
     std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
     let sb = root.join(".sb");
@@ -208,7 +218,7 @@ fn the_files_a_script_names_are_compared_with_it() {
 /// can't be read then nor now: can't tell, and why.
 #[test]
 fn a_program_git_ignores_is_compared_by_its_bytes() {
-    let (dir, root) = repo("program");
+    let (_s, dir, root) = repo("program");
     std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
     let sb = root.join(".sb");
     std::fs::create_dir_all(&sb).unwrap();
@@ -259,7 +269,7 @@ fn a_program_git_ignores_is_compared_by_its_bytes() {
 /// same bytes, changed (as the docs say).
 #[test]
 fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
-    let (dir, root) = repo("latin1");
+    let (_s, dir, root) = repo("latin1");
     std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
     let sb = root.join(".sb");
     std::fs::create_dir_all(&sb).unwrap();
@@ -306,7 +316,7 @@ fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
 /// said and never shown.
 #[test]
 fn what_a_script_writes_made_or_keeps_secret_is_said_so() {
-    let (dir, root) = repo("inputs-kinds");
+    let (_s, dir, root) = repo("inputs-kinds");
     let sb = root.join(".sb");
     std::fs::create_dir_all(&sb).unwrap();
     std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
@@ -357,7 +367,7 @@ fn what_a_script_writes_made_or_keeps_secret_is_said_so() {
 /// runs nothing of the project: its own diff only, as before.
 #[test]
 fn a_script_that_runs_the_projects_code_shows_the_projects_changes_too() {
-    let (dir, root) = repo("runs");
+    let (_s, dir, root) = repo("runs");
     std::fs::write(root.join("check.sh"), "set -e\nRUST_LOG=1 cargo test lib_a -- --nocapture\n").unwrap();
     std::fs::write(root.join("say.sh"), "# cargo test would run the project\necho hello\n").unwrap();
     let cmd = "sh check.sh one";
@@ -422,7 +432,7 @@ fn a_script_that_runs_the_projects_code_shows_the_projects_changes_too() {
 /// sandbox) still in the warning colour. Another command: a first card, as ever.
 #[test]
 fn the_card_says_what_changed_since_your_y() {
-    let (dir, root) = repo("card");
+    let (_s, dir, root) = repo("card");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = root.clone();
     ed.config.llm.command = "sh".into();
@@ -520,7 +530,7 @@ fn the_card_says_what_changed_since_your_y() {
 /// kubeconfig being where Claude's runs write. (Every answer is `n`: nothing runs.)
 #[test]
 fn a_kubectl_runs_context_stays_told_after_a_change_since() {
-    let (_dir, root) = repo("kube");
+    let (_s, _dir, root) = repo("kube");
     std::fs::write(root.join("kc.yaml"), "apiVersion: v1\ncurrent-context: standin-a\n").unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = root.clone();
@@ -569,7 +579,7 @@ fn a_kubectl_runs_context_stays_told_after_a_change_since() {
 /// for its key. (Every answer here is `n`: nothing runs.)
 #[test]
 fn the_same_run_in_the_sandbox_says_what_changed_in_what_it_runs() {
-    let (dir, root) = repo("insandbox");
+    let (_s, dir, root) = repo("insandbox");
     std::fs::create_dir_all(root.join("xtask/src")).unwrap();
     std::fs::write(root.join("xtask/src/main.rs"), "fn main() {}\n").unwrap();
     std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
@@ -686,7 +696,7 @@ fn the_same_run_in_the_sandbox_says_what_changed_in_what_it_runs() {
 /// change since that answer. (The run: `touch` in the test's own temp folder.)
 #[test]
 fn what_a_run_made_is_a_change_since_its_answer() {
-    let (dir, root) = repo("ranmade");
+    let (_s, dir, root) = repo("ranmade");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     // (today's gate, for its card: in the sandbox it runs — P3)
     ed.config.llm.sandbox = false;
@@ -786,7 +796,7 @@ fn no_to(ed: &mut crate::editor::Editor, n: u64, card: u64) {
 /// only a card asking the same socket is the same. (Every answer `n`: nothing runs, nothing connects.)
 #[test]
 fn a_socket_cards_same_as_shows_the_whole_diff() {
-    let (dir, root) = repo("socket");
+    let (_s, dir, root) = repo("socket");
     let sockets = crate::scratch::Scratch::new("qs");
     std::fs::create_dir_all(sockets.join("c")).unwrap();
     let (docker, other) = (sockets.join("c/docker.sock"), sockets.join("c/other.sock"));
@@ -820,7 +830,7 @@ fn a_socket_cards_same_as_shows_the_whole_diff() {
 /// files' hunks are shown together, under one header; the rest of the project only named.
 #[test]
 fn a_changed_script_and_build_file_are_shown_together() {
-    let (dir, root) = repo("merged");
+    let (_s, dir, root) = repo("merged");
     std::fs::write(root.join("check.sh"), "set -e\ncargo test lib_a\n").unwrap();
     std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
     let cmd = "sh check.sh";
@@ -884,7 +894,7 @@ fn with_runs_never_says_nothing_of_what_it_cant_tell() {
 #[test]
 fn the_answer_kept_is_the_key_pressed() {
     use crate::allow::Scope;
-    let (dir, root) = repo("letters");
+    let (_s, dir, root) = repo("letters");
     let (mut ed, generation) = chat_in(&root);
     for (n, scope, letter) in [(1, Scope::Once, 'y'), (2, Scope::ThisChat, 'a'), (3, Scope::Always, 'A')] {
         let cmd = format!("touch made{n}.txt && echo made");
@@ -908,7 +918,7 @@ fn the_answer_kept_is_the_key_pressed() {
 /// run's card still says which card it's the same as. (Answered `n`: nothing runs.)
 #[test]
 fn an_answer_outlasts_the_conversation() {
-    let (dir, root) = repo("newchat");
+    let (_s, dir, root) = repo("newchat");
     let (mut ed, generation) = chat_in(&root);
     let args = json!({ "command": "make demo" });
     let (first, _) = ask_run(&mut ed, generation, 1, args.clone());

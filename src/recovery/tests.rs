@@ -20,12 +20,32 @@ fn feed(ed: &mut Editor, keys: &str) {
     }
 }
 
-/// A test's own folder: `state` (the copies), `home` (where keys are), `project` (the files).
-fn place(name: &str) -> PathBuf {
-    let dir = crate::scratch::Scratch::new(&format!("recovery-{name}")).into_path();
-    std::fs::create_dir_all(dir.join("project")).unwrap();
-    std::fs::create_dir_all(dir.join("home")).unwrap();
-    dir.canonicalize().unwrap()
+/// A test's own folder: `state` (the copies), `home` (where keys are), `project` (the files) — gone with the
+/// `Scratch` (#441: an `into_path` the caller was to remove was left in the temp folder each run where it didn't).
+fn place(name: &str) -> (crate::scratch::Scratch, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("recovery-{name}"));
+    std::fs::create_dir_all(s.join("project")).unwrap();
+    std::fs::create_dir_all(s.join("home")).unwrap();
+    let dir = s.to_path_buf();
+    (s, dir)
+}
+
+/// What `ed` handed its keeper and its workers is written before the test's folder goes: a conversation's save, a
+/// keeper's copy (#441: one landing after the removal made the folder again, left in the temp folder).
+fn landed(ed: &mut Editor) {
+    ed.writes_flush();
+    recovery(ed).killed();
+}
+
+/// #441: these left their folders in the temp folder every run.
+#[test]
+fn the_place_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(|| {
+        the_restored_chat_is_said_only_where_it_isnt_drawn();
+        every_way_a_conversation_moves_reaches_the_keeper();
+        a_session_brought_back_says_nothing_of_a_restore();
+    });
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 /// An editor keeping its copies in `dir/state`, after a pause of 20 ms, with `dir/home` as home.
@@ -98,7 +118,7 @@ fn cards(ed: &Editor) -> Vec<&Offer> {
 /// file and that the file is as it was.
 #[test]
 fn a_killed_taraes_unsaved_edits_are_offered_at_the_next_start() {
-    let dir = place("offered");
+    let (_s, dir) = place("offered");
     let file = left_behind(&dir);
     let c = read_copy(&copies_in(&dir)[0]).unwrap();
     assert_eq!((c.path.as_path(), c.text.as_str()), (file.as_path(), "TWOne\n"));
@@ -116,7 +136,7 @@ fn a_killed_taraes_unsaved_edits_are_offered_at_the_next_start() {
 /// A tarae still running keeps its copies to itself — its lock is held. Once it's gone, they're offered.
 #[test]
 fn a_running_taraes_copies_are_not_offered() {
-    let dir = place("running");
+    let (_s, dir) = place("running");
     let file = dir.join("project/a.txt");
     std::fs::write(&file, "one\n").unwrap();
     let mut running = editor(&dir);
@@ -134,7 +154,7 @@ fn a_running_taraes_copies_are_not_offered() {
 /// folder go. The file isn't written.
 #[test]
 fn restore_puts_the_text_back() {
-    let dir = place("restore");
+    let (_s, dir) = place("restore");
     let file = left_behind(&dir);
     let copy = copies_in(&dir)[0].clone();
     let mut ed = started(&dir);
@@ -154,7 +174,7 @@ fn restore_puts_the_text_back() {
 /// `y` while the file's buffer has edits of the user's own: refused on the card, which stays.
 #[test]
 fn restore_never_goes_over_edits_of_yours() {
-    let dir = place("over");
+    let (_s, dir) = place("over");
     let file = left_behind(&dir);
     let mut ed = editor(&dir);
     ed.open(&file).unwrap();
@@ -171,7 +191,7 @@ fn restore_never_goes_over_edits_of_yours() {
 /// `D` removes the copy, opens nothing; `n` leaves it — and the next start asks again.
 #[test]
 fn discard_removes_the_copy_and_not_now_keeps_it() {
-    let dir = place("discard");
+    let (_s, dir) = place("discard");
     left_behind(&dir);
     let copy = copies_in(&dir)[0].clone();
     let mut ed = started(&dir);
@@ -192,7 +212,7 @@ fn discard_removes_the_copy_and_not_now_keeps_it() {
 /// `c` shows the copy against the file in a buffer of its own; the card stays, and goes with its answer.
 #[test]
 fn compare_shows_the_copy_against_the_file() {
-    let dir = place("compare");
+    let (_s, dir) = place("compare");
     left_behind(&dir);
     let mut ed = started(&dir);
     crate::recovery::compare(&mut ed);
@@ -210,7 +230,7 @@ fn compare_shows_the_copy_against_the_file() {
 /// what the file is now is no card — it goes.
 #[test]
 fn a_file_changed_on_disk_since_says_so() {
-    let dir = place("changed");
+    let (_s, dir) = place("changed");
     let file = left_behind(&dir);
     std::fs::write(&file, "three\n").unwrap();
     let ed = started(&dir);
@@ -327,7 +347,7 @@ impl Drop for HeldBack {
 /// Saving removes the copy; so does undoing back to the file, and closing the buffer without saving.
 #[test]
 fn saving_or_dropping_the_edits_removes_the_copy() {
-    let dir = place("saved");
+    let (_s, dir) = place("saved");
     let file = dir.join("project/a.txt");
     std::fs::write(&file, "one\n").unwrap();
     let mut ed = editor(&dir);
@@ -350,7 +370,7 @@ fn saving_or_dropping_the_edits_removes_the_copy() {
 /// since the last copy.
 #[test]
 fn a_quit_removes_the_copies_and_a_signal_keeps_them() {
-    let dir = place("quit");
+    let (_s, dir) = place("quit");
     let file = dir.join("project/a.txt");
     std::fs::write(&file, "one\n").unwrap();
     let mut ed = editor(&dir);
@@ -380,7 +400,7 @@ fn a_quit_removes_the_copies_and_a_signal_keeps_them() {
 /// plain file beside them is kept.
 #[test]
 fn nothing_is_written_for_a_keys_file() {
-    let dir = place("keys");
+    let (_s, dir) = place("keys");
     let (home, project) = (dir.join("home"), dir.join("project"));
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
     std::fs::create_dir_all(home.join("notes")).unwrap();
@@ -435,7 +455,7 @@ fn skip_entries_match_names_and_paths() {
 /// being written, and nothing the main loop does waits for it.
 #[test]
 fn the_main_thread_never_waits_on_a_slow_disk() {
-    let dir = place("slow");
+    let (_s, dir) = place("slow");
     let file = dir.join("project/a.txt");
     std::fs::write(&file, "one\n").unwrap();
     let mut ed = editor(&dir);
@@ -467,7 +487,7 @@ fn a_child_forked_while_the_lock_was_open_doesnt_hide_the_copies() {
     use std::io::Read as _;
     use std::os::fd::AsRawFd as _;
     use std::os::unix::process::CommandExt as _;
-    let dir = place("forked");
+    let (_s, dir) = place("forked");
     let file = dir.join("project/a.txt");
     std::fs::write(&file, "one\n").unwrap();
     let mut ed = editor(&dir);
@@ -503,7 +523,7 @@ fn a_child_forked_while_the_lock_was_open_doesnt_hide_the_copies() {
 /// Two gone taraes' copies of one file: the newer is offered, the older goes.
 #[test]
 fn the_newest_copy_of_a_file_is_the_one_offered() {
-    let dir = place("newest");
+    let (_s, dir) = place("newest");
     let file = left_behind(&dir);
     let mut ed = editor(&dir);
     ed.open(&file).unwrap();
@@ -590,7 +610,7 @@ fn kept_ids(folder: &Path) -> Vec<String> {
 /// conversation not begun); a session behind its own; gone with its session, and all of it with `editor.recovery` off.
 #[test]
 fn each_sessions_conversation_is_kept_as_it_changes() {
-    let dir = place("kept-chat");
+    let (_s, dir) = place("kept-chat");
     let mut ed = chatting(&dir);
     crate::chat::open(&mut ed);
     in_conversation(&mut ed, Some("one"));
@@ -628,7 +648,7 @@ fn each_sessions_conversation_is_kept_as_it_changes() {
 /// that conversation, its chat shown, the keys where they were — and the keeper's file and folder go.
 #[test]
 fn a_conversation_with_no_unsaved_edits_is_a_card_of_its_own() {
-    let dir = place("chat-card");
+    let (_s, dir) = place("chat-card");
     let folder = chat_gone(&dir, "gone", &root_of(&dir), "left");
     let mut ed = chatting_started(&dir);
     assert!(ed.workspace.claude.chat.is_none(), "nothing comes back by itself");
@@ -663,7 +683,7 @@ fn a_conversation_with_no_unsaved_edits_is_a_card_of_its_own() {
 #[test]
 fn the_restored_chat_is_said_only_where_it_isnt_drawn() {
     let said = |t: &crate::editor::Toast| t.text.contains("Restored the chat");
-    let dir = place("chat-sight");
+    let (_s, dir) = place("chat-sight");
     let root = root_of(&dir);
     chat_gone(&dir, "wide", &root, "left");
     let mut buf = Vec::new();
@@ -688,7 +708,7 @@ fn the_restored_chat_is_said_only_where_it_isnt_drawn() {
     ed.toasts.clear();
     crate::term::render(&mut ed, &mut buf, 64, 24).unwrap();
     assert!(!ed.toasts.iter().any(said), "once");
-    std::fs::remove_dir_all(dir).ok();
+    landed(&mut ed);
 }
 
 /// Every way a conversation moves reaches the keeper by itself, nothing looking unless one did (`recovery_sync`'s own
@@ -707,7 +727,7 @@ fn every_way_a_conversation_moves_reaches_the_keeper() {
         let generation = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
         crate::chat::stream_event(ed, generation, ev);
     };
-    let dir = place("chat-moves");
+    let (_s, dir) = place("chat-moves");
     let mut ed = chatting(&dir);
     crate::chat::open(&mut ed);
     stream(&mut ed, conversation_is("one"));
@@ -747,7 +767,7 @@ fn every_way_a_conversation_moves_reaches_the_keeper() {
     ed.workspace_close(&kid);
     told(&mut ed);
     assert!(!recovery(&mut ed).rules.roots.contains(&kid), "closed, no chat");
-    std::fs::remove_dir_all(dir).ok();
+    landed(&mut ed);
 }
 
 /// Budget of work: an event touches what changed (#214). With twenty sessions, keys look at none of them; a conversation
@@ -755,7 +775,7 @@ fn every_way_a_conversation_moves_reaches_the_keeper() {
 #[test]
 fn an_event_looks_at_the_sessions_only_when_one_moved() {
     const SESSIONS: usize = 20;
-    let dir = place("chat-work");
+    let (_s, dir) = place("chat-work");
     let mut ed = chatting(&dir);
     for _ in 0..SESSIONS {
         ed.workspace_add(dir.join("project"));
@@ -789,7 +809,7 @@ fn cards_after(dir: &Path) -> Vec<String> {
 /// the folder goes with the last answer.
 #[test]
 fn a_copys_restore_brings_the_conversation_back_with_it() {
-    let dir = place("chat-rides");
+    let (_s, dir) = place("chat-rides");
     let file = left_behind(&dir);
     let folder = copies_in(&dir)[0].parent().unwrap().to_path_buf();
     let root = root_of(&dir);
@@ -827,7 +847,7 @@ fn a_copys_restore_brings_the_conversation_back_with_it() {
 /// `n` leaves the conversation to the next start, nothing back; `D` starts fresh, and it's asked no more.
 #[test]
 fn discard_starts_fresh_and_not_now_asks_again() {
-    let dir = place("chat-discard");
+    let (_s, dir) = place("chat-discard");
     let folder = chat_gone(&dir, "gone", &root_of(&dir), "left");
     let mut ed = chatting_started(&dir);
     ed.offer_dismiss();
@@ -848,7 +868,7 @@ fn discard_starts_fresh_and_not_now_asks_again() {
 /// The same with a copy: `D` on its card takes the copy and starts fresh; `n` keeps both.
 #[test]
 fn a_copys_answers_take_its_conversation_along() {
-    let dir = place("chat-both");
+    let (_s, dir) = place("chat-both");
     left_behind(&dir);
     let copy = copies_in(&dir)[0].clone();
     let folder = copy.parent().unwrap().to_path_buf();
@@ -871,7 +891,7 @@ fn a_copys_answers_take_its_conversation_along() {
 /// The file changed since: the card's warning stays on that line, with a conversation's rows above it.
 #[test]
 fn the_warning_stays_on_its_line_beside_a_conversation() {
-    let dir = place("chat-warn");
+    let (_s, dir) = place("chat-warn");
     let file = left_behind(&dir);
     std::fs::write(&file, "changed\n").unwrap();
     let folder = copies_in(&dir)[0].parent().unwrap().to_path_buf();
@@ -890,7 +910,7 @@ fn the_warning_stays_on_its_line_beside_a_conversation() {
 /// or an error before it, brought none back: the next start offers them. A signal keeps them too, a quit takes them.
 #[test]
 fn a_conversation_restart_brought_back_is_not_offered_and_a_failed_exec_keeps_it() {
-    let dir = place("chat-ends");
+    let (_s, dir) = place("chat-ends");
     let root = root_of(&dir);
     stored(&dir, &root, "left", Duration::from_secs(60));
     let up = |dir: &Path| {
@@ -949,7 +969,7 @@ fn a_conversation_restart_brought_back_is_not_offered_and_a_failed_exec_keeps_it
 /// let go, asked again at the next start.
 #[test]
 fn a_session_not_here_keeps_its_conversation_for_the_next_start() {
-    let dir = place("chat-away");
+    let (_s, dir) = place("chat-away");
     let root = root_of(&dir);
     let kid = dir.join("project");
     stored(&dir, &kid, "left", Duration::from_secs(60));
@@ -971,7 +991,7 @@ fn a_session_not_here_keeps_its_conversation_for_the_next_start() {
 /// it: nothing to do, no refusal — it's back.
 #[test]
 fn a_conversation_gone_since_is_said_and_one_already_there_stays() {
-    let dir = place("chat-since");
+    let (_s, dir) = place("chat-since");
     let root = root_of(&dir);
     chat_gone(&dir, "gone", &root, "left");
     let mut ed = chatting_started(&dir);
@@ -1012,7 +1032,7 @@ fn a_conversation_gone_since_is_said_and_one_already_there_stays() {
 /// `y` takes both.
 #[test]
 fn several_conversations_are_one_card_named_the_starts_first() {
-    let dir = place("chat-several");
+    let (_s, dir) = place("chat-several");
     let (a, z) = (dir.join("project/a"), dir.join("project/z"));
     std::fs::create_dir_all(&a).unwrap();
     std::fs::create_dir_all(&z).unwrap();
@@ -1056,7 +1076,7 @@ fn several_conversations_are_one_card_named_the_starts_first() {
 /// else in it); of two a session left, the newest; another project's stays for a tarae started there.
 #[test]
 fn what_can_be_continued_is_offered_and_another_projects_is_left() {
-    let dir = place("chat-which");
+    let (_s, dir) = place("chat-which");
     let root = root_of(&dir);
     let unknown = dir.join("state/unknown");
     chat_left(&unknown, 1, &root, &root, "no longer kept");
@@ -1129,7 +1149,7 @@ fn the_named_rows_are_those_with_a_name() {
 /// `y` after you began a conversation of your own: yours stays, said, the one it left a key away.
 #[test]
 fn a_restore_answered_late_stays_off_what_you_began() {
-    let dir = place("chat-late");
+    let (_s, dir) = place("chat-late");
     chat_gone(&dir, "gone", &root_of(&dir), "left");
     let mut ed = chatting_started(&dir);
     crate::chat::open(&mut ed);
@@ -1149,7 +1169,7 @@ fn a_restore_answered_late_stays_off_what_you_began() {
 /// start's at that width.)
 #[test]
 fn a_name_at_a_rows_cut_is_in_its_colour_whole_or_not_at_all() {
-    let dir = place("chat-cut");
+    let (_s, dir) = place("chat-cut");
     let mut ed = chatting(&dir);
     let (root, other) = (ed.workspace.root.clone(), dir.join("other"));
     let mut buf = Vec::new();
@@ -1185,7 +1205,7 @@ fn a_name_at_a_rows_cut_is_in_its_colour_whole_or_not_at_all() {
 /// conversation the same —, a session behind its name.
 #[test]
 fn a_conversation_is_kept_under_the_name_the_chrome_calls_its_session() {
-    let dir = place("chat-name");
+    let (_s, dir) = place("chat-name");
     let root = root_of(&dir);
     let kid = dir.join("project");
     let ago = Duration::from_secs(60);
@@ -1256,7 +1276,7 @@ fn session(ed: &Editor, id: WorkspaceId) -> &crate::workspace::Workspace {
 /// loses nothing. A new conversation asked for meanwhile drops it. `D` leaves it to start fresh, never going on by itself.
 #[test]
 fn a_session_behind_continues_by_that_id_or_starts_fresh() {
-    let dir = place("chat-behind");
+    let (_s, dir) = place("chat-behind");
     let root = root_of(&dir);
     let kid = dir.join("project");
     stored(&dir, &kid, "left", Duration::from_secs(7_200));
@@ -1315,7 +1335,7 @@ fn a_session_behind_continues_by_that_id_or_starts_fresh() {
 /// A session the list brought back goes on with no word of a restore: no crash, nothing restored.
 #[test]
 fn a_session_brought_back_says_nothing_of_a_restore() {
-    let dir = place("chat-listed");
+    let (_s, dir) = place("chat-listed");
     let kid = dir.join("project");
     stored(&dir, &kid, "its own", Duration::from_secs(60));
     let mut ed = chatting(&dir);
@@ -1326,14 +1346,14 @@ fn a_session_brought_back_says_nothing_of_a_restore() {
     let chat = session(&ed, id).claude.chat.as_ref().unwrap();
     assert_eq!(chat.conversation.as_deref(), Some("its own"));
     assert!(ed.toasts.iter().all(|t| !t.text.contains("Restored")));
-    std::fs::remove_dir_all(dir).ok();
+    landed(&mut ed);
 }
 
 /// A session behind whose conversation can't come back: what became of it is said once it's known, by that session's
 /// name, and never that it was restored — the store has lost it, or its chat has one of its own.
 #[test]
 fn a_restore_behind_that_cant_come_back_says_so_by_its_name() {
-    let dir = place("chat-behind-not");
+    let (_s, dir) = place("chat-behind-not");
     let root = root_of(&dir);
     let kid = dir.join("project");
     let up = |name: &str| {

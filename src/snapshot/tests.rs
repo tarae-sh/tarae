@@ -23,9 +23,11 @@ fn git_in(dir: &Path, args: &[&str]) {
 }
 
 /// A repository in the test's temp folder: text, a file that isn't text, one to delete, an untracked one,
-/// an ignored build folder and an ignored file of its own.
-fn repo(name: &str) -> PathBuf {
-    let dir = crate::scratch::Scratch::new(&format!("snapshot-{name}")).into_path();
+/// an ignored build folder and an ignored file of its own. Gone with the `Scratch` (#441: an `into_path` the caller
+/// was to remove was left in the temp folder each run where it didn't).
+fn repo(name: &str) -> (crate::scratch::Scratch, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("snapshot-{name}"));
+    let dir = s.to_path_buf();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::create_dir_all(dir.join("build")).unwrap();
     std::fs::write(dir.join("src/a.txt"), "one\ntwo\n").unwrap();
@@ -38,7 +40,17 @@ fn repo(name: &str) -> PathBuf {
     git_in(&dir, &["add", "-A"]);
     git_in(&dir, &["commit", "-q", "-m", "base"]);
     std::fs::write(dir.join("untracked.txt"), "mine\n").unwrap();
-    dir
+    (s, dir)
+}
+
+/// #441: these left their repositories in the temp folder every run.
+#[test]
+fn the_repository_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(|| {
+        a_change_in_the_indexs_own_second_is_in_the_first_tree();
+        putting_a_blob_back_never_goes_through_a_link_swapped_in();
+    });
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 fn file(c: &[Change], dir: &Path, rel: &str) -> Change {
@@ -52,7 +64,7 @@ fn file(c: &[Change], dir: &Path, rel: &str) -> Change {
 /// trusted it, and the review's diff left a changed `.env` out, 2 Linux runs in 7).
 #[test]
 fn a_change_in_the_indexs_own_second_is_in_the_first_tree() {
-    let dir = repo("racy");
+    let (_s, dir) = repo("racy");
     git_in(&dir, &["config", "core.trustctime", "false"]);
     let file = dir.join("src/a.txt");
     let then = std::fs::metadata(&file).unwrap().modified().unwrap();
@@ -72,7 +84,7 @@ fn a_change_in_the_indexs_own_second_is_in_the_first_tree() {
 /// refused. Through no link it's put back and removed as before.
 #[test]
 fn putting_a_blob_back_never_goes_through_a_link_swapped_in() {
-    let dir = std::fs::canonicalize(repo("put-beneath")).unwrap();
+    let (_s, dir) = repo("put-beneath");
     let away = crate::scratch::Scratch::new("snapshot-put-outside");
     let outside = std::fs::canonicalize(away.path()).unwrap();
     let bytes = b"\x00\x01bin-made";
@@ -119,7 +131,7 @@ fn putting_a_blob_back_never_goes_through_a_link_swapped_in() {
 /// isn't the run's.
 #[test]
 fn what_a_run_changed_text_blobs_deleted_new_and_not_ignored_files() {
-    let dir = repo("changes");
+    let (_s, dir) = repo("changes");
     let index = std::fs::read(dir.join(".git/index")).unwrap();
     let before = Before::take(&dir);
     assert!(before.tree.is_ok(), "{:?}", before.tree);
@@ -162,7 +174,7 @@ fn what_a_run_changed_text_blobs_deleted_new_and_not_ignored_files() {
 /// out. Fewer again: kept as ever.
 #[test]
 fn too_many_new_files_at_once_are_left_out_and_said() {
-    let dir = repo("many");
+    let (_s, dir) = repo("many");
     let before = Before::take(&dir);
     std::fs::create_dir_all(dir.join("gen")).unwrap();
     for i in 0..=NEW_MAX {
@@ -185,7 +197,7 @@ fn too_many_new_files_at_once_are_left_out_and_said() {
 /// the snapshot, so never a change of its — the run's own new file beside it is.
 #[test]
 fn a_saves_temp_file_isnt_the_runs() {
-    let dir = repo("temp");
+    let (_s, dir) = repo("temp");
     let before = Before::take(&dir);
     std::fs::write(dir.join("src/.a.txt.tarae-123-0.tmp"), "half").unwrap();
     std::fs::write(dir.join(".untracked.txt.tarae-123-1.tmp"), "half").unwrap();
@@ -201,7 +213,7 @@ fn a_saves_temp_file_isnt_the_runs() {
 /// (A harmless command: it waits for the save's temp file in the test's own repository, then makes a file.)
 #[test]
 fn a_runs_changes_wait_for_a_save_still_being_written() {
-    let dir = repo("saving");
+    let (_s, dir) = repo("saving");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     ed.config.llm.sandbox = false;
@@ -262,8 +274,9 @@ fn a_runs_changes_wait_for_a_save_still_being_written() {
 /// command: it writes a file in the test's own folder.)
 #[test]
 fn a_folder_thats_no_checkout_is_said_once_a_turn() {
-    let dir = std::fs::canonicalize(repo("folder-told")).unwrap();
-    let plain = std::fs::canonicalize(crate::scratch::Scratch::new("folder-told-plain").into_path()).unwrap();
+    let (_s, dir) = repo("folder-told");
+    let plain_s = crate::scratch::Scratch::new("folder-told-plain");
+    let plain = plain_s.to_path_buf();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     let folder = crate::folders::Folder { at: plain.clone(), name: "plain".into(), instructions: Vec::new() };
@@ -313,8 +326,8 @@ fn a_folder_thats_no_checkout_is_said_once_a_turn() {
 /// the save in the test's own folder, then makes a file there.)
 #[test]
 fn a_save_into_a_folder_during_a_run_isnt_the_runs() {
-    let dir = std::fs::canonicalize(repo("folder-save")).unwrap();
-    let infra = std::fs::canonicalize(repo("folder-save-infra")).unwrap();
+    let (_s, dir) = repo("folder-save");
+    let (_s, infra) = repo("folder-save-infra");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     let folder = crate::folders::Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
@@ -377,7 +390,7 @@ fn a_save_into_a_folder_during_a_run_isnt_the_runs() {
 /// inside an ignored folder (that folder is one entry, never walked), and not one the run left.
 #[test]
 fn ignored_files_a_run_deleted_are_named() {
-    let dir = repo("ignored");
+    let (_s, dir) = repo("ignored");
     let before = Before::take(&dir);
     assert_eq!(before.ignored.as_deref(), Some(&[".env.local".to_string(), "build/".to_string()][..]));
     std::fs::remove_file(dir.join("build/out.o")).unwrap();
@@ -401,7 +414,7 @@ fn code_a_run_changed_below_tools_output_is_named() {
     use std::os::unix::fs::PermissionsExt;
     crate::clock::hold();
     crate::clock::advance(Duration::from_secs(60));
-    let dir = repo("output-code");
+    let (_s, dir) = repo("output-code");
     std::fs::write(dir.join(".gitignore"), "build/\n.env.local\nnode_modules/\n.venv/\n").unwrap();
     let put = |rel: &str, exec: bool| {
         let path = dir.join(rel);
@@ -465,7 +478,7 @@ fn code_a_run_changed_below_tools_output_is_named() {
 /// that was there, and not what the editor wrote meanwhile (Claude's reviewed Edit).
 #[test]
 fn protected_names_a_run_made_are_found() {
-    let dir = repo("protected");
+    let (_s, dir) = repo("protected");
     std::fs::write(dir.join(".gitignore"), "build/\n.env.local\n.envrc\n").unwrap();
     let mut before = Before::take(&dir);
     for (rel, text) in [
@@ -496,7 +509,7 @@ fn paths(made: &[Made]) -> Vec<String> {
 /// before the run too, isn't the run's.
 #[test]
 fn past_new_max_the_new_names_are_still_looked_at() {
-    let dir = repo("many-names");
+    let (_s, dir) = repo("many-names");
     std::fs::create_dir_all(dir.join("gen/sub")).unwrap();
     for i in 0..=NEW_MAX {
         std::fs::write(dir.join(format!("gen/f{i}.txt")), "x\n").unwrap();
@@ -517,7 +530,7 @@ fn past_new_max_the_new_names_are_still_looked_at() {
 /// tool's output (`target/`, `node_modules/`), and not a file of another name.
 #[test]
 fn the_names_in_a_new_ignored_folder_are_looked_at() {
-    let dir = repo("ignored-walk");
+    let (_s, dir) = repo("ignored-walk");
     std::fs::write(dir.join(".gitignore"), "build/\n.env.local\nout/\n.cargo/\n").unwrap();
     let before = Before::take(&dir);
     for (rel, text) in [
@@ -544,7 +557,7 @@ fn the_names_in_a_new_ignored_folder_are_looked_at() {
 #[test]
 fn a_made_name_past_the_cap_isnt_read_and_isnt_kept() {
     use std::io::Write as _;
-    let dir = repo("big-hash");
+    let (_s, dir) = repo("big-hash");
     let cap = (1024, 4);
     std::fs::File::create(dir.join("build.rs")).unwrap().set_len(64 << 20).unwrap();
     let hash = made_hash_within(&dir, "build.rs", cap);
@@ -569,7 +582,7 @@ fn a_made_name_past_the_cap_isnt_read_and_isnt_kept() {
 #[test]
 fn a_made_name_that_cant_be_read_isnt_kept() {
     use std::os::unix::fs::PermissionsExt as _;
-    let dir = repo("unreadable");
+    let (_s, dir) = repo("unreadable");
     let fifo = std::ffi::CString::new(dir.join("Makefile").into_os_string().into_encoded_bytes()).unwrap();
     // SAFETY: a NUL-terminated path of the test's own folder, live for the call.
     assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
@@ -594,7 +607,7 @@ fn a_made_name_that_cant_be_read_isnt_kept() {
 /// as it is. One as it was asked about is removed. (Stand-ins in the test's temp folder.)
 #[test]
 fn r_leaves_a_folder_and_a_file_changed_since_it_was_asked() {
-    let dir = repo("remove-refused");
+    let (_s, dir) = repo("remove-refused");
     std::fs::create_dir_all(dir.join(".cargo")).unwrap();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join(".cargo/config.toml"), "[build]\n").unwrap();
@@ -622,9 +635,9 @@ fn r_leaves_a_folder_and_a_file_changed_since_it_was_asked() {
 /// test's own folders.)
 #[test]
 fn a_runs_changes_in_a_folder_are_found_as_the_projects() {
-    let (dir, infra) = (repo("folder-project"), repo("folder-infra"));
-    let plain = crate::scratch::Scratch::new("folder-plain").into_path();
-    let plain = std::fs::canonicalize(&plain).unwrap();
+    let ((_s, dir), (_s2, infra)) = (repo("folder-project"), repo("folder-infra"));
+    let plain_s = crate::scratch::Scratch::new("folder-plain");
+    let plain = plain_s.to_path_buf();
     std::fs::write(infra.join("main.tf"), "a\n").unwrap();
     git_in(&infra, &["add", "-A"]);
     git_in(&infra, &["commit", "-q", "-m", "tf"]);
@@ -663,7 +676,7 @@ fn a_runs_changes_in_a_folder_are_found_as_the_projects() {
 /// first build. Another new folder past the limit is named (the limit holds). (Names only, the test's folder.)
 #[test]
 fn a_new_output_folder_is_neither_walked_nor_named() {
-    let dir = repo("output-walk");
+    let (_s, dir) = repo("output-walk");
     for d in ["target/debug", "out/node_modules/p", "gen"] {
         std::fs::create_dir_all(dir.join(d)).unwrap();
         for i in 0..4 {
@@ -687,7 +700,7 @@ fn a_new_output_folder_is_neither_walked_nor_named() {
 /// a folder below a tool's output.
 #[test]
 fn links_and_repositories_a_run_made_are_looked_at() {
-    let dir = repo("links");
+    let (_s, dir) = repo("links");
     let before = Before::take(&dir);
     std::os::unix::fs::symlink("a.txt", dir.join("src/build.rs")).unwrap();
     std::os::unix::fs::symlink("src", dir.join("docs")).unwrap();
@@ -714,7 +727,7 @@ fn links_and_repositories_a_run_made_are_looked_at() {
 /// (or removed, when there was none); changed since → left as it is, and said.
 #[test]
 fn a_blob_goes_back_only_over_what_the_run_left() {
-    let dir = repo("put");
+    let (_s, dir) = repo("put");
     let before = Before::take(&dir);
     std::fs::write(dir.join("b.bin"), b"\x00\x02bin-after").unwrap();
     std::fs::write(dir.join("made.bin"), b"\x00made").unwrap();
@@ -883,7 +896,7 @@ fn perf_snapshot_around_a_check() {
 /// files.)
 #[test]
 fn a_runs_changes_join_the_turn_and_undo_takes_them_back() {
-    let dir = repo("undo");
+    let (_s, dir) = repo("undo");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
@@ -972,7 +985,7 @@ fn a_runs_changes_join_the_turn_and_undo_takes_them_back() {
 /// from what the move left it: `space u` takes back the run's part, never the move's.
 #[test]
 fn what_came_with_heads_move_isnt_the_turns() {
-    let dir = repo("headmove");
+    let (_s, dir) = repo("headmove");
     // (a branch one commit ahead: a.txt changed, came.txt new)
     git_in(&dir, &["checkout", "-q", "-b", "side"]);
     std::fs::write(dir.join("src/a.txt"), "one\nSIDE\n").unwrap();
@@ -1072,7 +1085,7 @@ fn what_came_with_heads_move_isnt_the_turns() {
 /// stays too, as before #225 — only said. (Plain git in the test's own repository.)
 #[test]
 fn a_commit_the_run_made_keeps_its_files() {
-    let dir = repo("commit");
+    let (_s, dir) = repo("commit");
     // (a branch one commit ahead: came.txt new)
     git_in(&dir, &["checkout", "-q", "-b", "side"]);
     std::fs::write(dir.join("src/came.txt"), "came\n").unwrap();
@@ -1114,7 +1127,7 @@ fn a_commit_the_run_made_keeps_its_files() {
 /// repository.)
 #[test]
 fn a_merge_and_a_move_back_keep_their_files() {
-    let dir = repo("merge");
+    let (_s, dir) = repo("merge");
     // (the other side: a.txt's last line, came.txt new; this side: a.txt's first line — apart: no conflict)
     std::fs::write(dir.join("src/a.txt"), "one\ntwo\n3\n4\nfive\n").unwrap();
     git_in(&dir, &["commit", "-q", "-am", "longer"]);
@@ -1164,7 +1177,7 @@ fn a_merge_and_a_move_back_keep_their_files() {
 /// (The test's own repository, no hooks.)
 #[test]
 fn an_edit_and_its_commit_in_one_run_stay_the_turns() {
-    let dir = repo("editcommit");
+    let (_s, dir) = repo("editcommit");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
@@ -1221,7 +1234,7 @@ fn an_edit_and_its_commit_in_one_run_stay_the_turns() {
 /// sandbox here — `llm.sandbox` off; harmless commands: the test's own files.)
 #[test]
 fn checks_and_tests_are_covered_and_ignored_deletions_said() {
-    let dir = repo("checks");
+    let (_s, dir) = repo("checks");
     std::fs::write(dir.join("del.mk"), "all:\n\trm -f src/gone.txt .env.local\n").unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
@@ -1300,7 +1313,7 @@ fn checks_and_tests_are_covered_and_ignored_deletions_said() {
 /// the one after doesn't ask. (Harmless commands in the test's own repository.)
 #[test]
 fn a_protected_name_a_run_made_is_asked_about_before_the_next_run() {
-    let dir = repo("made");
+    let (_s, dir) = repo("made");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     ed.config.llm.sandbox = false;
@@ -1416,7 +1429,7 @@ fn settled(ed: &mut crate::editor::Editor) {
 /// its turn ending doesn't take it. (Harmless commands: markers in the test's own repository.)
 #[test]
 fn your_task_and_preflight_wait_on_what_claudes_run_made() {
-    let dir = repo("yours");
+    let (_s, dir) = repo("yours");
     let (mut ed, generation) = turn_in(&dir);
     let me = (generation, dir.as_path());
     claude_runs(&mut ed, me, 1, "mkdir sub && printf '[package]\\n' > sub/Cargo.toml");
@@ -1470,7 +1483,7 @@ fn your_task_and_preflight_wait_on_what_claudes_run_made() {
 /// runs nothing, `y` runs them. (A harmless command: a marker in the test's own repository.)
 #[test]
 fn your_tests_wait_on_what_claudes_run_made() {
-    let dir = repo("tests");
+    let (_s, dir) = repo("tests");
     let (mut ed, generation) = turn_in(&dir);
     let me = (generation, dir.as_path());
     claude_runs(&mut ed, me, 1, "mkdir sub && printf '[package]\\n' > sub/Cargo.toml");
@@ -1502,7 +1515,7 @@ fn your_tests_wait_on_what_claudes_run_made() {
 /// the card asked stands in for one `r` refuses; harmless files in the test's repository.)
 #[test]
 fn what_r_couldnt_remove_is_asked_again_before_the_run() {
-    let dir = repo("remove-again");
+    let (_s, dir) = repo("remove-again");
     let (mut ed, generation) = turn_in(&dir);
     let me = (generation, dir.as_path());
     claude_runs(
@@ -1540,7 +1553,7 @@ fn what_r_couldnt_remove_is_asked_again_before_the_run() {
 /// not asked about; holding something else, asked. (Harmless files and commands in the test's repository.)
 #[test]
 fn the_cards_answers_view_remove_and_keep_by_content() {
-    let dir = repo("answers");
+    let (_s, dir) = repo("answers");
     let (mut ed, generation) = turn_in(&dir);
     let me = (generation, dir.as_path());
     claude_runs(&mut ed, me, 1, "mkdir sub && printf '[package]\\n' > sub/Cargo.toml && ln -s ../src sub/up");
@@ -1596,7 +1609,7 @@ fn the_cards_answers_view_remove_and_keep_by_content() {
 /// chat says so — never left in a turn that's over. (Harmless commands: the test's own files, `sleep`.)
 #[test]
 fn a_stopped_run_and_one_past_its_turn_are_kept_too() {
-    let dir = repo("stopped");
+    let (_s, dir) = repo("stopped");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
@@ -1648,8 +1661,8 @@ fn a_stopped_run_and_one_past_its_turn_are_kept_too() {
 
 /// #281: `repo`'s repository with `big.txt` committed, a text past `TEXT_MAX` (a run keeps it by its blobs) — and
 /// an editor on it.
-fn big_repo(name: &str) -> (PathBuf, String, crate::editor::Editor) {
-    let dir = repo(name);
+fn big_repo(name: &str) -> (crate::scratch::Scratch, PathBuf, String, crate::editor::Editor) {
+    let (s, dir) = repo(name);
     let mut big = String::new();
     for i in 0.. {
         if big.len() as u64 > TEXT_MAX {
@@ -1662,7 +1675,7 @@ fn big_repo(name: &str) -> (PathBuf, String, crate::editor::Editor) {
     git_in(&dir, &["commit", "-q", "-m", "big"]);
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
-    (dir, big, ed)
+    (s, dir, big, ed)
 }
 
 /// A run of Claude's that writes `bytes` to `rel`, joining the turn as `tools` has it join.
@@ -1722,7 +1735,7 @@ fn step_ended(ed: &mut crate::editor::Editor, path: &Path) -> (Vec<u8>, String) 
 /// file's); redo brings the turn's last text back with yours. (Not open: the step waits for its buffer to load.)
 #[test]
 fn undo_takes_a_big_file_back_past_a_run_to_the_turns_first_text() {
-    let (dir, big, mut ed) = big_repo("big-edit-run");
+    let (_s, dir, big, mut ed) = big_repo("big-edit-run");
     let path = dir.join("big.txt");
     let edited = big.replacen("line 7\n", "line 7 claude\n", 1);
     claude_writes(&mut ed, &path, &edited);
@@ -1743,7 +1756,7 @@ fn undo_takes_a_big_file_back_past_a_run_to_the_turns_first_text() {
 /// file back to before the run, never "changed since" over Claude's own edit; redo brings the edit back too.
 #[test]
 fn a_big_files_edit_after_a_run_is_the_turns() {
-    let (dir, big, mut ed) = big_repo("big-run-edit");
+    let (_s, dir, big, mut ed) = big_repo("big-run-edit");
     let path = dir.join("big.txt");
     let ran = big.replacen("line 9\n", "line 9 run\n", 1);
     run_writes(&mut ed, &dir, "big.txt", ran.as_bytes());
@@ -1761,7 +1774,7 @@ fn a_big_files_edit_after_a_run_is_the_turns() {
 /// stand-in id): undo says so and leaves the file as it is, never another text written over it.
 #[test]
 fn a_big_file_whose_text_before_is_gone_is_left_and_said() {
-    let (dir, big, mut ed) = big_repo("big-lost");
+    let (_s, dir, big, mut ed) = big_repo("big-lost");
     let path = dir.join("big.txt");
     let ran = big.replacen("line 9\n", "line 9 run\n", 1);
     run_writes(&mut ed, &dir, "big.txt", ran.as_bytes());
@@ -1780,7 +1793,7 @@ fn a_big_file_whose_text_before_is_gone_is_left_and_said() {
 /// to the turn's first text, never to the edit the run found; redo, the run's bytes again.
 #[test]
 fn an_edit_then_a_run_that_leaves_no_text_undoes_to_the_turns_first() {
-    let (dir, _, mut ed) = big_repo("edit-run-bytes");
+    let (_s, dir, _, mut ed) = big_repo("edit-run-bytes");
     let path = dir.join("src/a.txt");
     claude_writes(&mut ed, &path, "one\nTWO\n");
     run_writes(&mut ed, &dir, "src/a.txt", b"\x00bin\n");
@@ -1801,7 +1814,7 @@ fn an_edit_then_a_run_that_leaves_no_text_undoes_to_the_turns_first() {
 /// turn's last one what Claude left: undo puts its bytes back, never "changed since" over Claude's edit; redo, the edit.
 #[test]
 fn a_files_edit_after_a_run_is_the_turns_by_its_blobs_too() {
-    let (dir, _, mut ed) = big_repo("bytes-run-edit");
+    let (_s, dir, _, mut ed) = big_repo("bytes-run-edit");
     let path = dir.join("b.bin");
     run_writes(&mut ed, &dir, "b.bin", b"text\n");
     claude_writes(&mut ed, &path, "text claude\n");
@@ -1819,7 +1832,7 @@ fn a_files_edit_after_a_run_is_the_turns_by_its_blobs_too() {
 /// the loop's way — Claude's, restore's: `open_now`; a file not open the step reads whole first, #375.)
 #[test]
 fn a_step_waits_for_its_big_buffers_and_only_their_failure_stops_it() {
-    let (dir, big, mut ed) = big_repo("big-waits");
+    let (_s, dir, big, mut ed) = big_repo("big-waits");
     let path = dir.join("big.txt");
     let ran = big.replacen("line 9\n", "line 9 run\n", 1);
     run_writes(&mut ed, &dir, "big.txt", ran.as_bytes());

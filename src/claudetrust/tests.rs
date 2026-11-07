@@ -156,7 +156,7 @@ fn the_answer_is_about_values_the_card_doesnt_show() {
 /// too: that file isn't loaded, so yours applies — and stays off the command line.
 #[test]
 fn a_hostile_file_naming_your_variables_gets_them_empty_never_their_value() {
-    let root = temp("baseline");
+    let (_s, root) = temp("baseline");
     let user = root.join("your-settings.json");
     std::fs::write(&user, r#"{"env": {"FROM_YOURS": "yours-zq7"}}"#).unwrap();
     // (stand-in values for tarae's environment — the test's own, nothing of the process's)
@@ -193,7 +193,7 @@ fn a_hostile_file_naming_your_variables_gets_them_empty_never_their_value() {
 /// laid over it, else Claude Code's own default (`CLEANUP_DEFAULT`).
 #[test]
 fn a_projects_cleanup_period_is_held_to_yours() {
-    let root = temp("cleanup");
+    let (_s, root) = temp("cleanup");
     let user = root.join("your-settings.json");
     std::fs::write(root.join(PROJECT), r#"{"cleanupPeriodDays": 0}"#).unwrap();
     let held = |state| {
@@ -296,18 +296,20 @@ fn chat_settings_l6_checks_are_what_tarae_passes() {
     }
 }
 
-/// A temp folder of the test's own.
-fn temp(name: &str) -> PathBuf {
-    let base = crate::scratch::Scratch::new(&format!("claudetrust-{name}")).into_path();
-    std::fs::create_dir_all(base.join(".claude")).unwrap();
-    base
+/// A temp folder of the test's own, gone with the `Scratch` (#441: an `into_path` the caller was to remove was left
+/// in the temp folder each run where it didn't).
+fn temp(name: &str) -> (crate::scratch::Scratch, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("claudetrust-{name}"));
+    std::fs::create_dir_all(s.join(".claude")).unwrap();
+    let base = s.to_path_buf();
+    (s, base)
 }
 
 /// The local file is yours when git says it's untracked and ignored (`config::personal`): not asked about. An
 /// answer kept in the store (`trust.rs`'s) is found for the same content, and only for it.
 #[test]
 fn your_own_local_file_isnt_asked_about_and_answers_are_kept() {
-    let root = temp("look");
+    let (_s, root) = temp("look");
     std::fs::write(root.join(LOCAL), r#"{"apiKeyHelper": "printf mine"}"#).unwrap();
     assert_eq!(look(&root, None, None, |_| true, |_| None).scan, None, "yours: nothing to ask");
     let seen = look(&root, None, None, |_| false, |_| None);
@@ -328,7 +330,7 @@ fn your_own_local_file_isnt_asked_about_and_answers_are_kept() {
 /// subfolder's project file.
 #[test]
 fn the_local_file_is_read_at_the_checkouts_top_where_claude_reads_it() {
-    let top = temp("top");
+    let (_s, top) = temp("top");
     std::fs::create_dir_all(top.join(".git")).unwrap();
     let sub = top.join("services/api");
     std::fs::create_dir_all(sub.join(".claude")).unwrap();
@@ -359,8 +361,8 @@ fn stand_in(ed: &mut Editor) {
 
 /// A project in its own temp folder whose `.claude/settings.json` says `settings`, its chat open with the gate
 /// on and the stand-in claude, the card up — and, with `store`, the answers kept in the folder's `trust.json`.
-fn asked(name: &str, settings: &str, store: bool) -> (Editor, PathBuf) {
-    let root = temp(name);
+fn asked(name: &str, settings: &str, store: bool) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    let (s, root) = temp(name);
     std::fs::write(root.join(PROJECT), settings).unwrap();
     let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
     ed.claude_settings_gate = true;
@@ -370,7 +372,7 @@ fn asked(name: &str, settings: &str, store: bool) -> (Editor, PathBuf) {
     stand_in(&mut ed);
     crate::chat::open(&mut ed);
     until(&mut ed, "the card", |ed| card(ed).is_some());
-    (ed, root)
+    (s, ed, root)
 }
 
 fn pid(ed: &Editor) -> Option<u32> {
@@ -385,7 +387,7 @@ fn noted(ed: &Editor, text: &str) -> bool {
 /// before (kept in the store) — restarts claude with what it now needs, said in the chat, no card.
 #[test]
 fn a_change_answered_before_restarts_claude_without_a_card() {
-    let (mut ed, root) = asked("restart", r#"{"env": {"FIRST_ZQ7": "1"}}"#, true);
+    let (_s, mut ed, root) = asked("restart", r#"{"env": {"FIRST_ZQ7": "1"}}"#, true);
     ed.offer_dismiss();
     until(&mut ed, "the held-back start", |_| arg_after(&root, "--settings").is_some());
     let first = pid(&ed);
@@ -419,7 +421,7 @@ fn a_change_answered_before_restarts_claude_without_a_card() {
 /// claude starts again held back, and the card asks.
 #[test]
 fn settings_made_while_claude_runs_restart_it_held_back_and_ask() {
-    let root = temp("made-later");
+    let (_s, root) = temp("made-later");
     std::fs::remove_dir_all(root.join(".claude")).unwrap();
     let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
     ed.claude_settings_gate = true;
@@ -446,7 +448,7 @@ fn settings_made_while_claude_runs_restart_it_held_back_and_ask() {
 /// conversation going on (`--resume`), said in the chat.
 #[test]
 fn a_yes_restarts_claude_at_idle_with_resume() {
-    let (mut ed, root) = asked("yes-idle", r#"{"env": {"THIRD_ZQ7": "1"}}"#, false);
+    let (_s, mut ed, root) = asked("yes-idle", r#"{"env": {"THIRD_ZQ7": "1"}}"#, false);
     until(&mut ed, "the held-back start", |ed| running(ed) && arg_after(&root, "--settings").is_some());
     let first = pid(&ed);
     let settings: Json = serde_json::from_str(&arg_after(&root, "--settings").unwrap()).unwrap();
@@ -470,7 +472,7 @@ fn a_yes_restarts_claude_at_idle_with_resume() {
 /// held back on the same conversation, the card up again — its exit ending the turn unsaid (the chat said why).
 #[test]
 fn a_change_mid_chat_restarts_it_held_back_at_once() {
-    let (mut ed, root) = asked("change", r#"{"env": {"FOURTH_ZQ7": "1"}}"#, false);
+    let (_s, mut ed, root) = asked("change", r#"{"env": {"FOURTH_ZQ7": "1"}}"#, false);
     until(&mut ed, "the held-back start", |ed| running(ed) && arg_after(&root, "--settings").is_some());
     ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("conv-zq7".into());
     let first = pid(&ed);
@@ -504,8 +506,8 @@ fn a_change_mid_chat_restarts_it_held_back_at_once() {
 /// Another session's chat reading settings that need no card takes away only its own card, never this one.
 #[test]
 fn the_card_stays_with_its_session() {
-    let (mut ed, root) = asked("session-a", r#"{"apiKeyHelper": "printf theirs-zq7"}"#, false);
-    let other = temp("session-b");
+    let (_s, mut ed, root) = asked("session-a", r#"{"apiKeyHelper": "printf theirs-zq7"}"#, false);
+    let (_s, other) = temp("session-b");
     let b = ed.workspace_add(other.clone());
     // (its chat opened behind: its read lands in it — nothing to ask there)
     ed.with_workspace(b, crate::chat::open);
@@ -531,7 +533,7 @@ fn the_card_stays_with_its_session() {
 /// and the warning says so (`claude_settings_skipped`).
 #[test]
 fn a_yes_after_another_taraes_take_back_holds_back_again() {
-    let (mut ed, root) = asked("skipped", r#"{"env": {"SKIP_ZQ7": "1"}}"#, true);
+    let (_s, mut ed, root) = asked("skipped", r#"{"env": {"SKIP_ZQ7": "1"}}"#, true);
     let store = root.join("trust.json");
     until(&mut ed, "the held-back start", |ed| running(ed) && arg_after(&root, "--settings").is_some());
     crate::storewrite::hold(&store, Some(0));
@@ -557,7 +559,7 @@ fn a_yes_after_another_taraes_take_back_holds_back_again() {
 /// whatever the store said as it was read.
 #[test]
 fn a_look_read_before_a_take_back_isnt_trusted() {
-    let root = temp("look-before");
+    let (_s, root) = temp("look-before");
     let store = root.join("trust.json");
     let (v1, v2) = (r#"{"env": {"LOOK_ZQ7": "1"}}"#, r#"{"env": {"LOOK_ZQ7": "2"}}"#);
     let kind = crate::trust::Kind::Claude;
@@ -593,8 +595,8 @@ fn a_look_read_before_a_take_back_isnt_trusted() {
     crate::trust::untake_all(&place);
     assert_eq!(read, State::Trusted, "read before the take-back");
     assert_eq!(now, Some(State::Ask), "trusted as it was read");
-    drop(ed);
-    std::fs::remove_dir_all(&root).ok();
+    // (the write released above lands before the folder goes)
+    ed.writes_flush();
 }
 
 /// Until `done`, handling events as they come (5 s at most).
@@ -648,7 +650,7 @@ fn arg_after(root: &Path, flag: &str) -> Option<String> {
 /// what waits for a turn's end goes at it as ever (one re-read finding nothing new never opens the gate again).
 #[test]
 fn a_re_read_while_claude_runs_holds_no_send() {
-    let root = temp("re-read");
+    let (_s, root) = temp("re-read");
     std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
     let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
     let (tx, rx) = std::sync::mpsc::channel();
@@ -673,7 +675,7 @@ fn a_re_read_while_claude_runs_holds_no_send() {
 /// queued, said — and go once it's up.
 #[test]
 fn a_review_sent_while_claude_starts_waits_for_it() {
-    let root = temp("starting-review");
+    let (_s, root) = temp("starting-review");
     std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
     let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
     ed.claude_settings_gate = true;
@@ -698,7 +700,7 @@ fn a_review_sent_while_claude_starts_waits_for_it() {
 /// keeps the same claude (it runs held back already), and `:claude-settings` puts the card up again.
 #[test]
 fn a_chat_starts_held_back_while_its_card_waits() {
-    let root = temp("chat");
+    let (_s, root) = temp("chat");
     let settings_file = root.join(PROJECT);
     std::fs::write(
         &settings_file,
@@ -769,7 +771,7 @@ fn a_chat_starts_held_back_while_its_card_waits() {
 /// tarae's own — even when `llm.args` leaves the flag out.
 #[test]
 fn the_chat_asks_for_only_tarae_s_own_mcp_servers() {
-    let root = temp("mcp");
+    let (_s, root) = temp("mcp");
     let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
     stand_in(&mut ed);
     assert!(!ed.config.llm.args.iter().any(|a| a == "--strict-mcp-config"), "the args leave it out");
@@ -788,7 +790,7 @@ fn the_chat_asks_for_only_tarae_s_own_mcp_servers() {
 /// denies it as well — so no skill runs in the chat to grant anything.
 #[test]
 fn a_project_skill_cant_pre_approve_tools_in_the_chat() {
-    let root = temp("skill");
+    let (_s, root) = temp("skill");
     let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
     stand_in(&mut ed);
     crate::chat::open(&mut ed);

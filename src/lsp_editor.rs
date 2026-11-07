@@ -3989,13 +3989,16 @@ mod tests {
     }
 
     /// Fake server = `cat` writing everything it receives to a file. Tests feed responses via on_lsp_message.
-    fn setup(name: &str, src: &str) -> (Editor, PathBuf, PathBuf) {
+    fn setup(name: &str, src: &str) -> (crate::scratch::Scratch, Editor, PathBuf, PathBuf) {
         setup_as("fake", name, src)
     }
 
-    /// `setup` with the stand-in named `server` — a name a pack knows gets that pack's traits.
-    fn setup_as(server: &str, name: &str, src: &str) -> (Editor, PathBuf, PathBuf) {
-        let dir = crate::scratch::Scratch::new(&format!("lsp-{name}")).into_path();
+    /// `setup` with the stand-in named `server` — a name a pack knows gets that pack's traits. The folder goes with
+    /// the `Scratch`, after the editor (#441: an `into_path` the caller was to remove was left in the temp folder
+    /// each run where it didn't).
+    fn setup_as(server: &str, name: &str, src: &str) -> (crate::scratch::Scratch, Editor, PathBuf, PathBuf) {
+        let s = crate::scratch::Scratch::new(&format!("lsp-{name}"));
+        let dir = s.to_path_buf();
         let file = dir.join("main.rs");
         std::fs::write(&file, src).unwrap();
         // (a cargo project: rust's server isn't started for a lone .rs)
@@ -4010,7 +4013,17 @@ mod tests {
         let mut ed = Editor::new(config);
         ed.open(&file).unwrap();
         let file = std::fs::canonicalize(&file).unwrap();
-        (ed, file, log)
+        (s, ed, file, log)
+    }
+
+    /// #441: these left their folders in the temp folder every run.
+    #[test]
+    fn the_setup_tests_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            a_narrow_codes_toast_outlasts_the_servers_progress();
+            a_finished_progress_leaves_the_status_line();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     /// compat B9: while protected names a run made wait for their card, the checkout's language servers are paused
@@ -4018,7 +4031,7 @@ mod tests {
     /// back. (A stand-in server; the names only listed, nothing made.)
     #[test]
     fn servers_pause_while_a_runs_protected_names_wait() {
-        let (mut ed, file, _log) = setup("made-hold", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("made-hold", "fn main() {}\n");
         let dir = file.parent().unwrap().to_path_buf();
         ed.workspace.root = dir.clone();
         let first = ready(&mut ed);
@@ -4054,7 +4067,7 @@ mod tests {
     /// would its `y` keep that one's names); back in front, it's up again and answered there.
     #[test]
     fn the_paused_servers_card_goes_with_its_session() {
-        let (mut ed, file, _log) = setup("made-hold-switch", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("made-hold-switch", "fn main() {}\n");
         let dir = file.parent().unwrap().to_path_buf();
         ed.workspace.root = dir.clone();
         ready(&mut ed);
@@ -4083,7 +4096,7 @@ mod tests {
     /// about them took its place and was answered `n`, and after `r` couldn't remove one (a folder there).
     #[test]
     fn the_paused_servers_card_comes_back_while_the_names_wait() {
-        let (mut ed, file, _log) = setup("made-hold-again", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("made-hold-again", "fn main() {}\n");
         let dir = file.parent().unwrap().to_path_buf();
         ed.workspace.root = dir.clone();
         ready(&mut ed);
@@ -4231,7 +4244,7 @@ mod tests {
     /// there, and showed nowhere).
     #[test]
     fn a_narrow_codes_toast_outlasts_the_servers_progress() {
-        let (mut ed, _file, _log) =
+        let (_s, mut ed, _file, _log) =
             setup("toast-narrow", &"let some_value = compute(1, 2, 3, 4);\n".repeat(40));
         let cid = ready(&mut ed);
         let progress = json!({ "method": "$/progress", "params": { "token": "t",
@@ -4281,7 +4294,7 @@ mod tests {
     /// reaped — unless a file of it comes back first; the next file of its project starts it again.
     #[test]
     fn an_unused_server_stops_unless_a_file_comes_back() {
-        let (mut ed, file, _log) = setup("idle", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("idle", "fn main() {}\n");
         let cid = ready(&mut ed);
         let pid = ed.client(cid).and_then(Client::pid).expect("its process");
         // Closed and opened again before the wait ends: it stays
@@ -4315,7 +4328,7 @@ mod tests {
     /// project starts it again. (The test kills its own stand-in server, a `cat`.)
     #[test]
     fn a_server_that_exits_is_reaped_and_started_again_when_needed() {
-        let (mut ed, file, _log) = setup("exits", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("exits", "fn main() {}\n");
         let cid = ready(&mut ed);
         let pid = ed.client(cid).and_then(Client::pid).expect("its process");
         // SAFETY: a signal to the stand-in server this test started.
@@ -4606,7 +4619,7 @@ mod tests {
     /// last — everything before it is in, the writer keeps the order.
     #[test]
     fn a_save_with_a_change_right_after_is_sent_again_once_quiet() {
-        let (mut ed, file, log) = setup("resave", "fn main() {}\n");
+        let (_s, mut ed, file, log) = setup("resave", "fn main() {}\n");
         let cid = ready(&mut ed);
         let id = ed.doc().id;
         TEST_NOW.with(|n| n.set(Some(std::time::Instant::now())));
@@ -4668,7 +4681,7 @@ mod tests {
 
     #[test]
     fn lifecycle_and_incremental_sync() {
-        let (mut ed, file, log) = setup("sync", "fn main() {\n    let 타래 = 1;\n}\n");
+        let (_s, mut ed, file, log) = setup("sync", "fn main() {\n    let 타래 = 1;\n}\n");
         assert!(!ed.lsp.clients[0].ready);
         assert!(!ed.lsp_request(Kind::Hover, "textDocument/hover", json!({})), "no requests before ready");
         // Edits before ready are queued
@@ -4864,7 +4877,7 @@ mod tests {
     /// you type like any other.
     #[test]
     fn an_explicit_list_from_a_server_that_does_not_advertise_completion_filters() {
-        let (mut ed, file, _log) = setup("comp-noad", "fn main() {\n    \n}\n");
+        let (_s, mut ed, file, _log) = setup("comp-noad", "fn main() {\n    \n}\n");
         let cid = ready(&mut ed);
         feed(&mut ed, "jA<C-x>");
         let id = pending_of(&ed, Kind::Completion);
@@ -4938,7 +4951,7 @@ mod tests {
 
     #[test]
     fn diagnostics_follow_edits_and_navigate() {
-        let (mut ed, file, _log) = setup("diag", "fn main() {\n    let x = 1;\n}\n");
+        let (_s, mut ed, file, _log) = setup("diag", "fn main() {\n    let x = 1;\n}\n");
         let cid = ready(&mut ed);
         let diag = json!({ "method": "textDocument/publishDiagnostics", "params": { "uri": lsp::uri(&file), "diagnostics": [
             { "range": { "start": { "line": 1, "character": 8 }, "end": { "line": 1, "character": 9 } }, "severity": 2, "message": "unused variable: `x`" }
@@ -4967,7 +4980,7 @@ mod tests {
 
     #[test]
     fn code_action_rename_format_and_server_edits() {
-        let (mut ed, file, log) = setup("edit", "fn main() {\n    let x = 1;\n}\n");
+        let (_s, mut ed, file, log) = setup("edit", "fn main() {\n    let x = 1;\n}\n");
         let cid = ready(&mut ed);
         let uri = lsp::uri(&file);
         let edit = |line: u64, from: u64, to: u64, text: &str| json!({ "range": { "start": { "line": line, "character": from }, "end": { "line": line, "character": to } }, "newText": text });
@@ -5021,7 +5034,7 @@ mod tests {
 
     #[test]
     fn code_action_preview_resolves_lazily_and_shows_the_diff() {
-        let (mut ed, file, log) = setup("preview", "fn main() {\n    let x = 1;\n}\n");
+        let (_s, mut ed, file, log) = setup("preview", "fn main() {\n    let x = 1;\n}\n");
         let cid = ready(&mut ed);
         let uri = lsp::uri(&file);
         feed(&mut ed, "j8l<space>a");
@@ -5062,7 +5075,7 @@ mod tests {
 
     #[test]
     fn workspace_edit_creates_renames_and_deletes_files() {
-        let (mut ed, file, _log) = setup("fileops", "mod util;\nfn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("fileops", "mod util;\nfn main() {}\n");
         let cid = ready(&mut ed);
         let dir = file.parent().unwrap().to_path_buf();
         std::fs::write(dir.join("util.rs"), "pub fn f() {}\n").unwrap();
@@ -5100,7 +5113,7 @@ mod tests {
 
     #[test]
     fn completion_request_filter_and_accept() {
-        let (mut ed, file, log) = setup("comp", "fn main() {\n    let v = Vec::new();\n    \n}\n");
+        let (_s, mut ed, file, log) = setup("comp", "fn main() {\n    let v = Vec::new();\n    \n}\n");
         let cid = ed.doc().lsp.client.unwrap();
         let caps =
             json!({ "positionEncoding": "utf-8", "completionProvider": { "triggerCharacters": ["."] } });
@@ -5144,7 +5157,7 @@ mod tests {
 
     #[test]
     fn late_resolve_for_an_older_completion_list_is_dropped() {
-        let (mut ed, file, _log) = setup("resolve", "fn main() {\n    \n}\n");
+        let (_s, mut ed, file, _log) = setup("resolve", "fn main() {\n    \n}\n");
         let cid = ed.doc().lsp.client.unwrap();
         let caps = json!({ "positionEncoding": "utf-8", "completionProvider": { "resolveProvider": true } });
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
@@ -5169,7 +5182,7 @@ mod tests {
 
     #[test]
     fn document_symbols_for_a_buffer_no_longer_shown_are_dropped() {
-        let (mut ed, file, _log) = setup("symbols", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("symbols", "fn main() {}\n");
         let cid = ready(&mut ed);
         ed.document_symbols();
         let id = pending_of(&ed, Kind::DocumentSymbols);
@@ -5184,7 +5197,7 @@ mod tests {
 
     #[test]
     fn resolved_code_action_is_dropped_if_the_file_changed() {
-        let (mut ed, file, _log) = setup("stale-action", "fn main() {\n    let x = 1;\n}\n");
+        let (_s, mut ed, file, _log) = setup("stale-action", "fn main() {\n    let x = 1;\n}\n");
         let cid = ready(&mut ed);
         let uri = lsp::uri(&file);
         feed(&mut ed, "j8l<space>a");
@@ -5213,7 +5226,7 @@ mod tests {
 
     #[test]
     fn utf16_server_gets_incremental_changes_from_the_first_edit() {
-        let (mut ed, file, log) = setup("u16", "fn main() {}\n");
+        let (_s, mut ed, file, log) = setup("u16", "fn main() {}\n");
         let cid = ed.doc().lsp.client.unwrap();
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": {} } }));
         assert_eq!(ed.lsp.clients[0].encoding, Encoding::Utf16);
@@ -5225,7 +5238,7 @@ mod tests {
 
     #[test]
     fn server_exit_clears_its_state() {
-        let (mut ed, file, _log) = setup("exit", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("exit", "fn main() {}\n");
         let cid = ready(&mut ed);
         feed(&mut ed, "i<C-x>");
         assert!(!ed.lsp.completion_waiting.is_empty() && !ed.lsp.pending.is_empty());
@@ -5257,7 +5270,7 @@ mod tests {
     fn an_install_card_stands_for_the_exit_toast() {
         let exited = |ed: &Editor| ed.toasts.iter().filter(|t| t.text.contains("exited")).count();
         // The card first, then the exit
-        let (mut ed, file, _log) = setup("exit-offered", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("exit-offered", "fn main() {}\n");
         let cid = ready(&mut ed);
         let name = ed.client(cid).unwrap().name.clone();
         ed.offers.push(install_card(&name));
@@ -5265,7 +5278,7 @@ mod tests {
         assert_eq!(exited(&ed), 0, "{:?}", ed.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
         // The exit first, then the card: its toast goes
-        let (mut ed, file, _log) = setup("exit-then-offer", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("exit-then-offer", "fn main() {}\n");
         let cid = ready(&mut ed);
         let name = ed.client(cid).unwrap().name.clone();
         ed.set_status("something else");
@@ -5276,7 +5289,7 @@ mod tests {
         assert!(ed.toasts.iter().any(|t| t.text == "something else"), "the rest stays");
         assert!(!ed.status.as_ref().is_some_and(|s| s.0.contains("exited")));
         // Another server's card isn't this one's reason
-        let (mut ed, file2, _log) = setup("exit-other", "fn main() {}\n");
+        let (_s, mut ed, file2, _log) = setup("exit-other", "fn main() {}\n");
         let cid = ready(&mut ed);
         ed.offers.push(install_card("gopls"));
         ed.lsp_exited(cid);
@@ -5287,7 +5300,7 @@ mod tests {
 
     #[test]
     fn inlay_hints_request_map_and_draw() {
-        let (mut ed, file, log) = setup("inlay", "fn main() {\n    let x = add(1, 2);\n}\n");
+        let (_s, mut ed, file, log) = setup("inlay", "fn main() {\n    let x = add(1, 2);\n}\n");
         let cid = ed.doc().lsp.client.unwrap();
         let caps = json!({ "positionEncoding": "utf-8", "inlayHintProvider": true });
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
@@ -5352,7 +5365,7 @@ mod tests {
     /// says `inlayHintProvider` itself — and the server's own refresh (#195).
     #[test]
     fn the_client_says_it_takes_inlay_hints_and_their_refresh() {
-        let (ed, file, log) = setup("inlay-caps", "fn main() {}\n");
+        let (_s, ed, file, log) = setup("inlay-caps", "fn main() {}\n");
         let out = sent_until(&log, &["\"method\":\"initialize\""]);
         let body = &out[out.find('{').expect("a message")..];
         let init: Value = serde_json::Deserializer::from_str(body).into_iter().next().unwrap().unwrap();
@@ -5367,7 +5380,7 @@ mod tests {
     /// answer for a version the text has left is dropped, and the text as it is asked for.
     #[test]
     fn inlay_hints_wait_for_a_pause_and_drop_an_old_answer() {
-        let (mut ed, file, _log) = setup("inlay-quiet", "fn main() {\n    add(1, 2);\n}\n");
+        let (_s, mut ed, file, _log) = setup("inlay-quiet", "fn main() {\n    add(1, 2);\n}\n");
         let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
         ed.viewport = (10, 80);
         let asked = |ed: &Editor| {
@@ -5396,7 +5409,7 @@ mod tests {
     #[test]
     fn jdtls_hints_are_drawn_but_not_scrolled_sideways_nor_turned_off() {
         let src = "fn main() {\n    shop.add(\"grace\", 3, 4.0);\n}\n";
-        let (mut ed, file, _log) = setup_as("jdtls", "inlay-jdtls", src);
+        let (_s, mut ed, file, _log) = setup_as("jdtls", "inlay-jdtls", src);
         let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
         ed.viewport = (6, 80);
         let hint = |c: u64, label: &str| json!({ "position": { "line": 1, "character": c }, "label": label, "paddingRight": true });
@@ -5428,7 +5441,7 @@ mod tests {
     /// `$/progress`. Hints it gave aren't asked again when other work ends.
     #[test]
     fn hints_answered_empty_at_work_are_asked_again_when_it_ends() {
-        let (mut ed, file, _log) = setup_as("jdtls", "inlay-work", "fn main() {\n    add(1, 2);\n}\n");
+        let (_s, mut ed, file, _log) = setup_as("jdtls", "inlay-work", "fn main() {\n    add(1, 2);\n}\n");
         let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
         ed.viewport = (10, 80);
         let status = |kind: &str, message: &str| json!({ "jsonrpc": "2.0", "method": "language/status", "params": { "type": kind, "message": message } });
@@ -5461,7 +5474,7 @@ mod tests {
     /// rust-analyzer's check after every save (#195's review).
     #[test]
     fn hints_answered_empty_while_idle_stay_when_work_ends() {
-        let (mut ed, file, _log) = setup_as("rust-analyzer", "inlay-idle", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup_as("rust-analyzer", "inlay-idle", "fn main() {}\n");
         let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
         ed.viewport = (10, 80);
         hints_answered(&mut ed, cid, json!([]));
@@ -5475,7 +5488,7 @@ mod tests {
     /// left to mark the answer by — asked again at once; that answer, idle, is kept (#195's review).
     #[test]
     fn hints_asked_at_work_and_answered_after_it_are_asked_again() {
-        let (mut ed, file, _log) = setup_as("jdtls", "inlay-late", "fn main() {\n    add(1, 2);\n}\n");
+        let (_s, mut ed, file, _log) = setup_as("jdtls", "inlay-late", "fn main() {\n    add(1, 2);\n}\n");
         let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
         ed.viewport = (10, 80);
         let status = |kind: &str| json!({ "jsonrpc": "2.0", "method": "language/status", "params": { "type": kind, "message": kind } });
@@ -5531,7 +5544,7 @@ mod tests {
     #[test]
     fn rust_analyzers_hints_are_drawn_and_its_refresh_asks_again() {
         let src = "fn main() {\n    let v = make(3);\n}\n";
-        let (mut ed, file, log) = setup_as("rust-analyzer", "inlay-ra", src);
+        let (_s, mut ed, file, log) = setup_as("rust-analyzer", "inlay-ra", src);
         let cid = up(&mut ed, json!({ "inlayHintProvider": { "resolveProvider": true } }));
         ed.viewport = (6, 80);
         let place = json!({ "uri": "file:///std/vec.rs", "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } } });
@@ -5554,7 +5567,7 @@ mod tests {
 
     #[test]
     fn signature_help_follows_typing() {
-        let (mut ed, file, log) = setup("sig", "fn main() {\n    \n}\n");
+        let (_s, mut ed, file, log) = setup("sig", "fn main() {\n    \n}\n");
         let cid = ed.doc().lsp.client.unwrap();
         let caps = json!({ "positionEncoding": "utf-8", "signatureHelpProvider": { "triggerCharacters": ["(", ","] } });
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
@@ -5594,7 +5607,7 @@ mod tests {
 
     #[test]
     fn goto_kinds_ask_their_method_and_check_the_server_can() {
-        let (mut ed, file, log) = setup("gotos", "trait T {}\nstruct S;\nimpl T for S {}\n");
+        let (_s, mut ed, file, log) = setup("gotos", "trait T {}\nstruct S;\nimpl T for S {}\n");
         let cid = ed.doc().lsp.client.unwrap();
         let caps = json!({ "positionEncoding": "utf-8", "implementationProvider": true, "typeDefinitionProvider": {} });
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
@@ -5628,7 +5641,7 @@ mod tests {
     /// when that answer comes after the list is up.
     #[test]
     fn references_list_the_code_with_the_declaration_first() {
-        let (mut ed, file, log) = setup("refs-code", "fn b() { a() }\nfn c() { a(); a() }\n");
+        let (_s, mut ed, file, log) = setup("refs-code", "fn b() { a() }\nfn c() { a(); a() }\n");
         let other = file.parent().unwrap().join("other.rs");
         std::fs::write(&other, "// other\nuse crate::a;\n\npub fn a() {}\n").unwrap();
         let cid = ed.doc().lsp.client.unwrap();
@@ -5712,7 +5725,7 @@ mod tests {
     /// file picker has it — after the project's, never sharing it with the one folder in it (`src`).
     #[test]
     fn references_in_a_folders_file_are_under_its_row() {
-        let (mut ed, file, log) = setup("refs-folder", "fn a() {}\nfn b() { a() }\n");
+        let (_s, mut ed, file, log) = setup("refs-folder", "fn a() {}\nfn b() { a() }\n");
         let folder = file.parent().unwrap().to_path_buf();
         let p = crate::scratch::Scratch::new("lsp-refs-folder-project");
         let project = std::fs::canonicalize(&*p).unwrap();
@@ -5763,7 +5776,7 @@ mod tests {
     /// sharing it with the one folder in it (`src`).
     #[test]
     fn text_matches_in_a_folders_file_are_under_its_row() {
-        let (mut ed, file, _log) = setup("texts-folder", "fn a() {}\nfn b() { a() }\n");
+        let (_s, mut ed, file, _log) = setup("texts-folder", "fn a() {}\nfn b() { a() }\n");
         let folder = file.parent().unwrap().to_path_buf();
         // (neither the stand-in's log, which holds the file's text, nor the file asked from searched: every match
         // in `src`, the one folder in it — the row the folder's mustn't share)
@@ -5810,7 +5823,7 @@ mod tests {
     /// (closed) before the answer came, the text matches aren't followed by a list popping up.
     #[test]
     fn references_while_loading_show_text_matches_until_the_answer() {
-        let (mut ed, file, _log) = setup("refs-loading", "fn a() {}\nfn b() { a() }\n// ab, A\n");
+        let (_s, mut ed, file, _log) = setup("refs-loading", "fn a() {}\nfn b() { a() }\n// ab, A\n");
         let dir = file.parent().unwrap().to_path_buf();
         std::fs::write(dir.join("other.rs"), "use a;\nlet ab = 1;\n").unwrap();
         let cid = ready(&mut ed);
@@ -5887,7 +5900,7 @@ mod tests {
     /// text matches flash up before its list.
     #[test]
     fn references_while_the_server_starts_and_a_quick_answer() {
-        let (mut ed, file, log) = setup("refs-starting", "fn a() {}\nfn b() { a() }\n");
+        let (_s, mut ed, file, log) = setup("refs-starting", "fn a() {}\nfn b() { a() }\n");
         let cid = ed.doc().lsp.client.unwrap();
         ed.doc_mut().set_selection(Selection::point(3));
         feed(&mut ed, "gr");
@@ -5952,7 +5965,7 @@ mod tests {
     /// list's lines are unread: no clock involved.)
     #[test]
     fn an_answer_in_time_holds_the_text_matches_while_its_lines_are_read() {
-        let (mut ed, file, _log) = setup("refs-reading", "fn a() {}\nfn b() { a() }\n");
+        let (_s, mut ed, file, _log) = setup("refs-reading", "fn a() {}\nfn b() { a() }\n");
         let cid = ready(&mut ed);
         let progress = json!({ "method": "$/progress", "params": { "token": "t",
             "value": { "kind": "begin", "title": "cargo check" } } });
@@ -5994,7 +6007,7 @@ mod tests {
     /// not open is opened aside, the user's file staying in view.
     #[test]
     fn the_references_tool_asks_the_server_at_the_name() {
-        let (mut ed, file, log) = setup("tool-refs", "fn b() { a() }\nfn c() { a(); a() }\n");
+        let (_s, mut ed, file, log) = setup("tool-refs", "fn b() { a() }\nfn c() { a(); a() }\n");
         let dir = file.parent().unwrap().to_path_buf();
         let other = dir.join("other.rs");
         std::fs::write(&other, "// other\nuse crate::a;\n\npub fn a() {}\n").unwrap();
@@ -6054,7 +6067,7 @@ mod tests {
     /// its references.
     #[test]
     fn the_references_tool_gives_text_matches_while_the_server_cannot() {
-        let (mut ed, file, _log) = setup("tool-refs-loading", "fn a() {}\nfn b() { a() }\n// ab, A\n");
+        let (_s, mut ed, file, _log) = setup("tool-refs-loading", "fn a() {}\nfn b() { a() }\n// ab, A\n");
         let dir = file.parent().unwrap().to_path_buf();
         ed.workspace.root = dir.clone();
         let args = json!({"path": "main.rs", "symbol": "a"});
@@ -6087,7 +6100,7 @@ mod tests {
     /// it's up, the server's document symbols; with a line, what holds it.
     #[test]
     fn the_symbols_tool_asks_the_server_or_gives_the_outline() {
-        let (mut ed, file, log) =
+        let (_s, mut ed, file, log) =
             setup("tool-syms", "struct S;\nimpl S {\n    fn f(&self) {\n        1;\n    }\n}\n");
         let dir = file.parent().unwrap().to_path_buf();
         ed.workspace.root = dir.clone();
@@ -6131,9 +6144,9 @@ mod tests {
 
     /// N6's fixture: `a` used in main.rs and defined in other.rs (its signature over three lines), and a
     /// method `a` of `S` in main.rs.
-    fn def_fixture(name: &str) -> (Editor, PathBuf, PathBuf, PathBuf) {
+    fn def_fixture(name: &str) -> (crate::scratch::Scratch, Editor, PathBuf, PathBuf, PathBuf) {
         let src = "fn b() { a() }\nfn c() { a(); a() }\nstruct S;\nimpl S { fn a(&self) {} }\n";
-        let (mut ed, file, log) = setup(name, src);
+        let (s, mut ed, file, log) = setup(name, src);
         let dir = file.parent().unwrap().to_path_buf();
         let other = dir.join("other.rs");
         std::fs::write(
@@ -6142,7 +6155,7 @@ mod tests {
         )
         .unwrap();
         ed.workspace.root = dir;
-        (ed, file, std::fs::canonicalize(&other).unwrap(), log)
+        (s, ed, file, std::fs::canonicalize(&other).unwrap(), log)
     }
 
     fn tool(
@@ -6180,7 +6193,7 @@ mod tests {
     #[test]
     fn rust_analyzers_extensions_are_its_packs() {
         for (server, theirs) in [("rust-analyzer", true), ("fake", false)] {
-            let (mut ed, file, log) = setup_as(server, &format!("traits-{server}"), "fn a() {}\n");
+            let (_s, mut ed, file, log) = setup_as(server, &format!("traits-{server}"), "fn a() {}\n");
             ed.workspace.root = file.parent().unwrap().to_path_buf();
             let out = sent_until(&log, &["initialize"]);
             assert_eq!(out.contains(r#""serverStatusNotification":true"#), theirs, "{server}: {out}");
@@ -6224,7 +6237,7 @@ mod tests {
     fn jdtls_extensions_are_its_packs() {
         let src = "fn a() {}\n";
         for (server, theirs) in [("jdtls", true), ("fake", false)] {
-            let (mut ed, file, log) = setup_as(server, &format!("jdtls-{server}"), src);
+            let (_s, mut ed, file, log) = setup_as(server, &format!("jdtls-{server}"), src);
             let cid = up(&mut ed, json!({ "definitionProvider": true }));
             let args = ed.client(cid).unwrap().spec.args.clone();
             assert_eq!(args.iter().any(|a| a == "-data"), theirs, "{server}: {args:?}");
@@ -6278,7 +6291,7 @@ mod tests {
 
     #[test]
     fn the_definition_tool_asks_at_the_place_and_by_name() {
-        let (mut ed, file, other, log) = def_fixture("tool-def");
+        let (_s, mut ed, file, other, log) = def_fixture("tool-def");
         let caps = json!({ "definitionProvider": true, "implementationProvider": true,
             "workspaceSymbolProvider": true });
         let cid = up(&mut ed, caps);
@@ -6363,7 +6376,7 @@ mod tests {
     /// `impl`s naming it for implementations), said so; an idle server's nothing is said too.
     #[test]
     fn the_definition_tool_falls_back_to_the_tree() {
-        let (mut ed, file, _other, _log) = def_fixture("tool-def-tree");
+        let (_s, mut ed, file, _other, _log) = def_fixture("tool-def-tree");
         let rust =
             crate::syntax::spec("rust").is_some_and(|s| crate::syntax::Loader::global().load(s).is_ok());
         let def = crate::nav::definition;
@@ -6448,7 +6461,7 @@ mod tests {
     /// said, and nothing changes.
     #[test]
     fn the_rename_tool_lands_the_servers_edit_as_claudes_change() {
-        let (mut ed, file, other, log) = def_fixture("tool-rename");
+        let (_s, mut ed, file, other, log) = def_fixture("tool-rename");
         // (#431: "moments ago" is `refactor::SETTLE` on the clock — held, so a loaded machine's slow steps between
         // the work's end and the prepare's answer never close it; moved on by hand where the test means time passing)
         crate::clock::hold();
@@ -6663,7 +6676,7 @@ mod tests {
     /// the server settles (its check over), or when the wait is up, saying which.
     #[test]
     fn the_diagnostics_tool_tells_clean_from_not_checked() {
-        let (mut ed, file, other, _log) = def_fixture("tool-diags");
+        let (_s, mut ed, file, other, _log) = def_fixture("tool-diags");
         let dir = file.parent().unwrap().to_path_buf();
         std::fs::write(dir.join("third.rs"), "fn t() {}\n").unwrap();
         let diags = crate::nav::diagnostics;
@@ -6765,7 +6778,7 @@ mod tests {
     /// our list and our frame.
     #[test]
     fn a_goto_is_timed_from_its_key_to_its_frame() {
-        let (mut ed, file, _log) = setup("traced", "fn a() {}\nfn b() { a() }\n");
+        let (_s, mut ed, file, _log) = setup("traced", "fn a() {}\nfn b() { a() }\n");
         let cid = ready(&mut ed);
         let progress = |kind: &str| {
             json!({ "method": "$/progress", "params": { "token": "rustAnalyzer/Indexing",
@@ -6819,7 +6832,7 @@ mod tests {
     /// same — leaves the status line once ended.
     #[test]
     fn a_finished_progress_leaves_the_status_line() {
-        let (mut ed, _file, _log) = setup("roots", "fn a() {}\n");
+        let (_s, mut ed, _file, _log) = setup("roots", "fn a() {}\n");
         let cid = ready(&mut ed);
         let said = |kind: &str, message: &str| {
             json!({ "method": "$/progress", "params": { "token": "rustAnalyzer/Roots Scanned",
@@ -6841,7 +6854,7 @@ mod tests {
     /// question goes again by itself when the work ends — unless the cursor has moved on.
     #[test]
     fn goto_while_indexing_asks_again_when_done() {
-        let (mut ed, file, _log) = setup("indexing", "fn a() {}\nfn b() { a() }\n");
+        let (_s, mut ed, file, _log) = setup("indexing", "fn a() {}\nfn b() { a() }\n");
         let cid = ready(&mut ed);
         let progress = |kind: &str| {
             json!({ "method": "$/progress", "params": { "token": "rustAnalyzer/Indexing",
@@ -6918,7 +6931,7 @@ mod tests {
     #[test]
     fn ctrl_click_goes_to_the_definition() {
         use crate::event::{Mouse, MouseKind};
-        let (mut ed, file, _log) = setup("ctrl-click", "fn a() {}\nfn b() { a() }\n");
+        let (_s, mut ed, file, _log) = setup("ctrl-click", "fn a() {}\nfn b() { a() }\n");
         let cid = ready(&mut ed);
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 80, 24).unwrap();
@@ -6973,7 +6986,7 @@ mod tests {
     /// right away.
     #[test]
     fn format_on_save() {
-        let (mut ed, file, log) = setup("fmtsave", "fn main() {\n    let x = 1;\n}\n");
+        let (_s, mut ed, file, log) = setup("fmtsave", "fn main() {\n    let x = 1;\n}\n");
         let cid = ed.doc().lsp.client.unwrap();
         let caps = json!({ "positionEncoding": "utf-8", "documentFormattingProvider": true });
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
@@ -7061,7 +7074,7 @@ mod tests {
     /// answer lands in its own file (measured live: `:wa` used to save unformatted).
     #[test]
     fn write_all_formats_every_file() {
-        let (mut ed, file, _log) = setup("fmtall", "fn main() {\n    let x = 1;\n}\n");
+        let (_s, mut ed, file, _log) = setup("fmtall", "fn main() {\n    let x = 1;\n}\n");
         let other = file.with_file_name("other.rs");
         std::fs::write(&other, "fn o() {\n    let y = 2;\n}\n").unwrap();
         let cid = ed.doc().lsp.client.unwrap();
@@ -7094,7 +7107,7 @@ mod tests {
     /// and unopened files, errors first; `:lsp-stop` detaches, `:lsp-restart` starts a new server.
     #[test]
     fn symbol_uses_workspace_diagnostics_and_restart() {
-        let (mut ed, file, _log) = setup("extras", "fn f(x: u8) {\n    g(x);\n}\n");
+        let (_s, mut ed, file, _log) = setup("extras", "fn f(x: u8) {\n    g(x);\n}\n");
         let cid = ed.doc().lsp.client.unwrap();
         let caps = json!({ "positionEncoding": "utf-8", "documentHighlightProvider": true });
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
@@ -7235,7 +7248,7 @@ mod tests {
     /// The status line's dot: starting until initialize answers, ready after, failed once it exits.
     #[test]
     fn lsp_state_dot() {
-        let (mut ed, file, _log) = setup("dot", "fn main() {}\n");
+        let (_s, mut ed, file, _log) = setup("dot", "fn main() {}\n");
         assert_eq!(ed.lsp_state().map(|s| s.0), Some(LspDot::Starting));
         let cid = ready(&mut ed);
         assert_eq!(ed.lsp_state(), Some((LspDot::Ready, "fake".into())));
@@ -7247,7 +7260,7 @@ mod tests {
 
     #[test]
     fn definition_hover_and_stale_responses() {
-        let (mut ed, file, _log) = setup("def", "fn helper() {}\nfn main() { helper(); }\n");
+        let (_s, mut ed, file, _log) = setup("def", "fn helper() {}\nfn main() { helper(); }\n");
         let cid = ready(&mut ed);
         let pending_id = |ed: &Editor| *ed.lsp.pending.keys().next().map(|(_, id)| id).unwrap();
         // gd → response → jump
@@ -7283,7 +7296,7 @@ mod tests {
     #[test]
     fn the_hovers_frame_is_named_by_the_name_k_asked_of() {
         let text = "fn helper() {}\nfn main() { helper(); }\n";
-        let (mut ed, file, _log) = setup("hover-name", text);
+        let (_s, mut ed, file, _log) = setup("hover-name", text);
         let cid = ready(&mut ed);
         let at = text.rfind("lper").unwrap();
         ed.doc_mut().set_selection(crate::selection::Selection::point(at));
@@ -7322,7 +7335,7 @@ mod tests {
     fn the_pointer_resting_on_a_name_shows_its_hover_there() {
         use crate::event::Event;
         let text = "fn helper() {}\nfn main() { helper(); }\n";
-        let (mut ed, file, _log) = setup("rest", text);
+        let (_s, mut ed, file, _log) = setup("rest", text);
         let cid = ready(&mut ed);
         let rows = rest_frame(&mut ed);
         let (x, y) = cell_of(&rows, "fn main", "helper", 2);
@@ -7448,7 +7461,7 @@ mod tests {
     fn the_wheel_over_the_rest_card_scrolls_it_to_its_last_page() {
         use crate::event::{Event, Mouse, MouseKind};
         let text = "fn helper() {}\nfn main() { helper(); }\n";
-        let (mut ed, file, _log) = setup("rest-wheel", text);
+        let (_s, mut ed, file, _log) = setup("rest-wheel", text);
         let cid = ready(&mut ed);
         let rows = rest_frame(&mut ed);
         let (x, y) = cell_of(&rows, "fn main", "helper", 2);
@@ -7504,7 +7517,7 @@ mod tests {
         use crate::event::Event;
         // (its line the text's last row on screen)
         let text = format!("{}fn main() {{ let x = 1 }}", "\n".repeat(17));
-        let (mut ed, file, _log) = setup("rest-problem", &text);
+        let (_s, mut ed, file, _log) = setup("rest-problem", &text);
         let cid = ready(&mut ed);
         let from = text.rfind(" }").unwrap();
         ed.doc_mut().lsp.diagnostics.push(lsp::Diagnostic {

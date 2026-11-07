@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn a_projects_risky_paths_wait_for_trust() {
         use crate::trust::{State, Store};
-        let path = crate::config::tests::project_file(
+        let (_dir, path) = crate::config::tests::project_file(
             "review-trust",
             "[review]\nrisky = [\"sandbox*\"]\nquiet = [\"src/snapshots/\"]\n",
         );
@@ -662,7 +662,6 @@ mod tests {
         store.answer(crate::trust::Kind::Tarae, &path, p.hash, true, 0);
         let (t, _) = crate::config::load_from(None, Some(path.clone()), &store);
         assert_eq!(t.editor.review_risky, ["sandbox*"], "trusted");
-        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     /// A runtime folder's pack adds to the built-in `[review]` and can't take one of its patterns out

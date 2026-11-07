@@ -884,7 +884,7 @@ mod tests {
     /// message (`place = "last"`).
     #[test]
     fn rules_follow_the_test_a_heading_names() {
-        let d = tmp_with("rules", &["a.x", "b.x"]);
+        let (_s, d) = tmp_with("rules", &["a.x", "b.x"]);
         let rules = "none-ran = [0]\n\
             [[line]]\nmatch = '^(?<name>\\S+) (?<status>ok|bad)$'\nstatus = { ok = 'passed', bad = 'failed' }\n\
             [[line]]\nmatch = '^== (?<name>.+)$'\nbegin = true\nknown = true\nname-replace = { '.' = '::' }\n\
@@ -912,14 +912,27 @@ mod tests {
         cases
     }
 
-    fn tmp_with(tag: &str, files: &[&str]) -> PathBuf {
-        let d = crate::scratch::Scratch::new(&format!("results-{tag}")).into_path();
+    /// A folder of the test's own with `files`, gone with the `Scratch` (#441: an `into_path` the caller was to
+    /// remove was left in the temp folder each run where it didn't).
+    fn tmp_with(tag: &str, files: &[&str]) -> (crate::scratch::Scratch, PathBuf) {
+        let s = crate::scratch::Scratch::new(&format!("results-{tag}"));
+        let d = s.to_path_buf();
         for f in files {
             let p = d.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, "x").unwrap();
         }
-        d
+        (s, d)
+    }
+
+    /// #441: these left their folders in the temp folder every run.
+    #[test]
+    fn the_tests_with_files_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            reads_go_test_v_output();
+            reads_pytest_verbose_short_tracebacks();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     /// Whatever a test run prints, each pack's rules read it line by line without a panic — a place at line 0, a
@@ -973,7 +986,7 @@ mod tests {
 
     #[test]
     fn reads_libtest_output() {
-        let d = tmp_with("rust", &["src/math.rs"]);
+        let (_s, d) = tmp_with("rust", &["src/math.rs"]);
         let out = "running 3 tests\ntest math::tests::adds ... ok\ntest math::tests::divides ... FAILED\ntest math::tests::slow ... ignored, takes long\n\nfailures:\n\n---- math::tests::divides stdout ----\n\nthread 'math::tests::divides' panicked at src/math.rs:21:9:\nassertion `left == right` failed: 7 / 2 rounds down\n  left: 3\n right: 4\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    math::tests::divides\n\ntest result: FAILED. 1 passed; 1 failed; 1 ignored";
         let c = feed(&mut Parser::new(Rules::builtin("rust")), &d, out);
         let st: Vec<_> = c.iter().map(|c| (c.name.as_str(), c.status)).collect();
@@ -995,7 +1008,7 @@ mod tests {
 
     #[test]
     fn reads_go_test_v_output() {
-        let d = tmp_with("go", &["calc_test.go"]);
+        let (_s, d) = tmp_with("go", &["calc_test.go"]);
         let out = "=== RUN   TestAdd\n    calc_test.go:8: Add = 4\n--- FAIL: TestAdd (0.00s)\n=== RUN   TestAddNegative\n--- PASS: TestAddNegative (0.01s)\nFAIL\nexit status 1";
         let c = feed(&mut Parser::new(Rules::builtin("go")), &d, out);
         assert_eq!((c[0].name.as_str(), c[0].status, c[0].secs), ("TestAdd", Status::Failed, Some(0.0)));
@@ -1006,7 +1019,7 @@ mod tests {
 
     #[test]
     fn reads_pytest_verbose_short_tracebacks() {
-        let d = tmp_with("py", &["tests/test_math.py", "tests/check.py"]);
+        let (_s, d) = tmp_with("py", &["tests/test_math.py", "tests/check.py"]);
         let out = "tests/test_math.py::test_add FAILED                                   [ 50%]\ntests/test_math.py::TestDiv::test_half PASSED                        [100%]\n\n=================================== FAILURES ===================================\n___________________________________ test_add ___________________________________\ntests/test_math.py:7: in test_add\n    check(total)\ntests/check.py:3: in check\n    assert total == 6\nE   assert 5 == 6\ntests/test_math.py:1: in nothing\n=========================== short test summary info ============================\nFAILED tests/test_math.py::test_add - assert 5 == 6";
         let c = feed(&mut Parser::new(Rules::builtin("python")), &d, out);
         assert_eq!(
@@ -1067,7 +1080,7 @@ mod tests {
         if crate::test_results::unoptimized("test_results::tests::perf_test_output_lines") {
             return;
         }
-        let d = tmp_with("perf", &["src/m.rs", "t_test.go", "tests/test_m.py"]);
+        let (_s, d) = tmp_with("perf", &["src/m.rs", "t_test.go", "tests/test_m.py"]);
         let outs = outputs();
         let lines: usize = outs.iter().map(|(_, o)| o.lines().count()).sum();
         let mut best = f64::MAX;
@@ -1087,7 +1100,7 @@ mod tests {
 
     #[test]
     fn reads_junit_xml_reports() {
-        let d = tmp_with("junit", &["src/test/java/demo/AppTest.java"]);
+        let (_s, d) = tmp_with("junit", &["src/test/java/demo/AppTest.java"]);
         let reports = d.join("build/test-results/test");
         std::fs::create_dir_all(&reports).unwrap();
         let since = SystemTime::now() - std::time::Duration::from_secs(5);
@@ -1124,7 +1137,7 @@ mod tests {
 
     #[test]
     fn reads_junit_xml_from_vitest_and_pytest() {
-        let d = tmp_with("junit-other", &["src/math.test.ts", "tests/test_x.py", "sum.test.ts"]);
+        let (_s, d) = tmp_with("junit-other", &["src/math.test.ts", "tests/test_x.py", "sum.test.ts"]);
         let reports = d.join("reports");
         std::fs::create_dir_all(&reports).unwrap();
         let since = SystemTime::now() - std::time::Duration::from_secs(5);

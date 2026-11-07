@@ -221,8 +221,7 @@ fn allowed(scopes: &[&[(String, String)]], protocol: &str) -> String {
 /// `file` and git's table as well.
 #[test]
 fn a_held_protocol_is_no_looser_than_none_set() {
-    let none = std::env::temp_dir().join("tarae-no-hooks-here");
-    std::fs::create_dir_all(&none).ok();
+    let none = crate::scratch::Scratch::new("no-hooks-here");
     let users: [&[(&str, &str)]; 4] = [
         &[],
         &[("protocol.allow", "never")],
@@ -311,8 +310,7 @@ fn the_measured_listing_parses() {
     assert_eq!(e[6].value.as_deref(), Some("a\nb"), "a value's own LF");
     // What's found and held: the repository's own (an include's too); git's built-in config is the user's —
     // its credential helper comes back after the list is emptied, with the global one
-    let none = std::env::temp_dir().join("tarae-no-hooks-here");
-    std::fs::create_dir_all(&none).ok();
+    let none = crate::scratch::Scratch::new("no-hooks-here");
     let l = find(&e, &none, &none.join("HEAD"));
     let keys: Vec<&str> = l.found.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys, ["core.fsmonitor", "filter.fi.clean"]);

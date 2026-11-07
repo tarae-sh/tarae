@@ -2115,12 +2115,13 @@ mod tests {
 
     /// The test's own temp folder (real path), holding a repository `repo/`: `a.txt` committed then changed,
     /// `b.txt` new — and beside it `outside.txt`, not the repository's.
-    fn place(name: &str) -> (PathBuf, PathBuf) {
-        let dir = crate::scratch::Scratch::new(&format!("reviewer-{name}")).into_path();
+    /// Gone with the `Scratch` (#441: an `into_path` the caller was to remove was left in the temp folder each run
+    /// where it didn't).
+    fn place(name: &str) -> (crate::scratch::Scratch, PathBuf, PathBuf) {
+        let s = crate::scratch::Scratch::new(&format!("reviewer-{name}"));
+        let dir = s.to_path_buf();
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let dir = std::fs::canonicalize(&dir).unwrap();
-        let repo = dir.join("repo");
         std::fs::write(repo.join("a.txt"), "one\n").unwrap();
         git(&repo, &["init", "-q", "-b", "main"]);
         git(&repo, &["add", "a.txt"]);
@@ -2141,7 +2142,7 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
         std::fs::write(repo.join("b.txt"), "brand new\n").unwrap();
         std::fs::write(dir.join("outside.txt"), "marker\n").unwrap();
-        (dir, repo)
+        (s, dir, repo)
     }
 
     /// A fake claude in `dir`: its arguments to `args.log`, every line it's sent to `stdin.log`; it prints
@@ -2271,7 +2272,7 @@ mod tests {
     /// on the sessions line) and on its tab (`¶ reviewing`), in front and behind; once it's done, nowhere.
     #[test]
     fn a_session_says_its_reviewer_is_reading() {
-        let (dir, repo) = place("state");
+        let (_s, dir, repo) = place("state");
         let mut ed = Editor::new(crate::config::Config::default());
         fake(&mut ed, &dir, &[result("No findings.")]);
         reading(&mut ed, &repo);
@@ -2318,7 +2319,7 @@ mod tests {
     /// inbox — where it's said, and the item and the mark go.
     #[test]
     fn a_reviewer_ending_behind_is_in_the_inbox_and_on_its_tab() {
-        let (dir, repo) = place("behind");
+        let (_s, dir, repo) = place("behind");
         let mut ed = Editor::new(crate::config::Config::default());
         let args = json!({"path": "a.txt", "line": 2, "text": "This line is new; is it tested?"});
         let note = mcp_call("p1", 1, "tools/call", json!({"name": "note", "arguments": args}));
@@ -2363,7 +2364,7 @@ mod tests {
     /// #195: one that stopped behind says why in its inbox item.
     #[test]
     fn a_reviewer_stopping_behind_says_why() {
-        let (dir, repo) = place("stopped");
+        let (_s, dir, repo) = place("stopped");
         let mut ed = Editor::new(crate::config::Config::default());
         let failed = json!({"type": "result", "is_error": true, "result": "Reached the maximum turns (60)"});
         fake(&mut ed, &dir, &[failed]);
@@ -2396,7 +2397,7 @@ mod tests {
     /// review it read (closed, the grades are gone — null, not 0).
     #[test]
     fn a_reviewer_done_is_in_the_state_without_its_review_open() {
-        let (dir, repo) = place("run");
+        let (_s, dir, repo) = place("run");
         let mut ed = Editor::new(crate::config::Config::default());
         assert!(run_of(&ed, 0).is_null(), "no reviewer yet: nothing said");
         one_finding(&mut ed, &dir);
@@ -2439,7 +2440,7 @@ mod tests {
     /// and nothing in between (its reads and findings aren't events of their own).
     #[test]
     fn the_watch_says_when_the_reviewer_ends() {
-        let (dir, repo) = place("watch");
+        let (_s, dir, repo) = place("watch");
         let mut ed = Editor::new(crate::config::Config::default());
         one_finding(&mut ed, &dir);
         let (tx, rx) = std::sync::mpsc::sync_channel(crate::uistate::watch::UNREAD);
@@ -2478,7 +2479,7 @@ mod tests {
     /// its `ui` tool, nor what's attached when you point (both read `text_claude`).
     #[test]
     fn claudes_level_holds_back_the_reviewers_words() {
-        let (dir, repo) = place("claude");
+        let (_s, dir, repo) = place("claude");
         let mut ed = Editor::new(crate::config::Config::default());
         one_finding(&mut ed, &dir);
         reviewed(&mut ed, &repo);
@@ -2510,7 +2511,7 @@ mod tests {
     /// answer: Claude can answer it after the review's message has left its context.
     #[test]
     fn claudes_level_says_a_finding_isnt_sent() {
-        let (dir, repo) = place("sent");
+        let (_s, dir, repo) = place("sent");
         let mut ed = Editor::new(crate::config::Config::default());
         one_finding(&mut ed, &dir);
         reviewed(&mut ed, &repo);
@@ -2539,7 +2540,7 @@ mod tests {
     /// <why>`), and to a watcher, `reading` → `stopped`.
     #[test]
     fn a_stopped_reviewer_says_why() {
-        let (dir, repo) = place("why");
+        let (_s, dir, repo) = place("why");
         let mut ed = Editor::new(crate::config::Config::default());
         let failed = json!({"type": "result", "is_error": true, "result": "Reached the maximum turns (60)"});
         fake(&mut ed, &dir, &[failed]);
@@ -2568,7 +2569,7 @@ mod tests {
     /// never as a reason of its own (it read `stopped after 3s: stopped`); its report and its line alike.
     #[test]
     fn a_reviewer_you_stopped_says_so() {
-        let (dir, repo) = place("byyou");
+        let (_s, dir, repo) = place("byyou");
         let mut ed = Editor::new(crate::config::Config::default());
         // (a fake that reads on and never answers)
         fake(&mut ed, &dir, &[]);
@@ -2595,7 +2596,7 @@ mod tests {
     /// tab's `•` — until the session comes to the front.
     #[test]
     fn a_reviewer_ending_behind_is_news_in_the_state() {
-        let (dir, repo) = place("news");
+        let (_s, dir, repo) = place("news");
         let mut ed = Editor::new(crate::config::Config::default());
         one_finding(&mut ed, &dir);
         reading(&mut ed, &repo);
@@ -2617,7 +2618,7 @@ mod tests {
     /// `a.txt` is in `review.risky`), and said on its line as `▲1`.
     #[test]
     fn findings_on_a_high_risk_change_are_counted() {
-        let (dir, repo) = place("high");
+        let (_s, dir, repo) = place("high");
         let mut config = crate::config::Config::default();
         config.editor.review_risky = vec!["a.txt".into()];
         let mut ed = Editor::new(config);
@@ -2635,7 +2636,7 @@ mod tests {
     /// isn't started, sent, or changed.
     #[test]
     fn the_reviewer_never_gets_the_authors_conversation() {
-        let (dir, repo) = place("apart");
+        let (_s, dir, repo) = place("apart");
         let mut ed = Editor::new(crate::config::Config::default());
         let (args, log) = fake(&mut ed, &dir, &[result("No findings.")]);
         ed.config.llm.args.extend(["--resume".into(), "author-c1".into(), "--continue".into()]);
@@ -2664,7 +2665,7 @@ mod tests {
     /// variables and an exported key (`llm::claude_env`), your settings kept.
     #[test]
     fn the_reviewers_claude_leaves_out_a_parent_sessions_variables() {
-        let (dir, repo) = place("env");
+        let (_s, dir, repo) = place("env");
         let mut ed = Editor::new(crate::config::Config::default());
         fake(&mut ed, &dir, &[result("No findings.")]);
         let names = dir.join("env.names");
@@ -2694,7 +2695,7 @@ mod tests {
             json!({"type": "system", "subtype": "init", "session_id": "reviewer-s1", "apiKeySource": src,
                 "model": "m"})
         };
-        let (dir, repo) = place("billing");
+        let (_s, dir, repo) = place("billing");
         let mut ed = Editor::new(crate::config::Config::default());
         let (args, _) = fake(&mut ed, &dir, &[init("apiKeyHelper"), result("No findings.")]);
         ed.api_key_helper = Some("stand-in-helper".into());
@@ -2729,7 +2730,7 @@ mod tests {
     /// names is the test's own, and stays as it was.)
     #[test]
     fn the_reviewer_cannot_edit_or_run() {
-        let (dir, repo) = place("readonly");
+        let (_s, dir, repo) = place("readonly");
         let marker = dir.join("outside.txt");
         let mut ed = Editor::new(crate::config::Config::default());
         let steps = [
@@ -2792,7 +2793,7 @@ mod tests {
     /// Code's own Read refused by name. No card up.
     #[test]
     fn the_reviewer_reads_the_checkout_only() {
-        let (dir, repo) = place("reads");
+        let (_s, dir, repo) = place("reads");
         let mut ed = Editor::new(crate::config::Config::default());
         let steps = [
             tool_call("p1", 1, "read", json!({"files": [repo.join("a.txt"), "b.txt:1"]})),
@@ -2838,7 +2839,7 @@ mod tests {
     /// path finds what's in the other files and never one of them; a search of one is refused. No card.
     #[test]
     fn the_reviewer_reads_no_key_named_file() {
-        let (dir, repo) = place("keys");
+        let (_s, dir, repo) = place("keys");
         std::fs::create_dir_all(repo.join("deploy")).unwrap();
         let pem = repo.join("deploy/prod.pem");
         std::fs::write(repo.join(".env"), "two\n").unwrap();
@@ -2885,7 +2886,7 @@ mod tests {
     /// `review_ended` (told).
     #[test]
     fn a_review_the_parent_asked_for_is_its_reviewers_to_its_end() {
-        let (dir, repo) = place("parent");
+        let (_s, dir, repo) = place("parent");
         let mut ed = Editor::new(crate::config::Config::default());
         fake(&mut ed, &dir, &[result("Fine.")]);
         reviewed(&mut ed, &repo);
@@ -2916,7 +2917,7 @@ mod tests {
     /// there with your drafts, as the reviewer's, said to be data.
     #[test]
     fn findings_go_to_the_author_only_when_sent() {
-        let (dir, repo) = place("send");
+        let (_s, dir, repo) = place("send");
         let a = repo.join("a.txt");
         let mut ed = Editor::new(crate::config::Config::default());
         let args = json!({"path": "a.txt", "line": 2, "text": "This line is new; is it tested?"});
@@ -2980,7 +2981,7 @@ mod tests {
     /// its cost so far) isn't touched.
     #[test]
     fn the_reviewers_cost_is_its_own() {
-        let (dir, repo) = place("cost");
+        let (_s, dir, repo) = place("cost");
         let mut ed = Editor::new(crate::config::Config::default());
         let record = crate::scratch::Scratch::new("calls-reviewer");
         ed.calls_dir = Some(record.path().to_path_buf());
@@ -3036,7 +3037,8 @@ mod tests {
 
     /// A fake claude for every member of a board in `dir`: each process's arguments in `args.log/<its pid>`,
     /// every line it's sent in `stdin.log/<its pid>` (read whole by `logged`; folders made by the first one —
-    /// none there: no member started). A file each: sh's `printf` writes a long line in parts, and members
+    /// none there: no member started; never with their parents: a member starting after the test's folder went
+    /// made it again, left in the temp folder — #441). A file each: sh's `printf` writes a long line in parts, and members
     /// writing one file at once under load put one's line in the middle of another's (flaky80). The message it's
     /// sent picks its steps — the first role whose
     /// markers (`(angle: tests)`, `(role: skeptic)`, a claim's words) are all in it — printed as `fake`'s are,
@@ -3066,7 +3068,7 @@ mod tests {
         ed.config.llm.args = vec![
             "-c".into(),
             format!(
-                "mkdir -p '{args}' '{log}'; printf '%s\\n' \"$0 $*\" > '{args}/'$$; \
+                "mkdir '{args}' '{log}' 2>/dev/null; printf '%s\\n' \"$0 $*\" > '{args}/'$$; \
                  while read -r line; do printf '%s\\n' \"$line\" >> '{log}/'$$; case \"$line\" in {cases}esac; done",
                 args = args.display(),
                 log = log.display()
@@ -3127,7 +3129,7 @@ mod tests {
     /// design don't on a plain one.
     #[test]
     fn an_angle_that_finds_hands_its_claim_to_a_skeptic_that_confirms_it() {
-        let (dir, repo) = place("board-confirm");
+        let (_s, dir, repo) = place("board-confirm");
         let mut ed = Editor::new(crate::config::Config::default());
         let trace = "a.txt:2 adds the line; nothing reads it";
         let (_, log) = fake_board(
@@ -3202,7 +3204,7 @@ mod tests {
     /// answers a claim refutes it by default.
     #[test]
     fn a_refuted_claim_is_no_note_and_the_report_says_why() {
-        let (dir, repo) = place("board-refute");
+        let (_s, dir, repo) = place("board-refute");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(
             &mut ed,
@@ -3257,7 +3259,7 @@ mod tests {
     /// process printed first.)
     #[test]
     fn two_angles_on_one_place_are_one_note() {
-        let (dir, repo) = place("board-fold");
+        let (_s, dir, repo) = place("board-fold");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.config.review_risky = vec!["a.txt".into()];
         fake_board(
@@ -3324,7 +3326,7 @@ mod tests {
     /// review that opens (`space v v`) starts no board nobody asked for.
     #[test]
     fn a_board_asked_where_nothing_changed_starts_none_later() {
-        let (dir, repo) = place("board-nothing");
+        let (_s, dir, repo) = place("board-nothing");
         let mut ed = Editor::new(crate::config::Config::default());
         let (args, _) = fake_board(&mut ed, &dir, &[(&["(angle:"], vec![result("No findings.")])]);
         let said = |ed: &Editor, what: &str| ed.messages.iter().any(|m| m.2.starts_with(what));
@@ -3367,7 +3369,7 @@ mod tests {
     /// skeptic; the late `note` is refused — never a claim in no group, judged by no one, pinned nowhere.
     #[test]
     fn a_late_note_from_an_angle_that_is_over_is_refused() {
-        let (dir, repo) = place("board-late");
+        let (_s, dir, repo) = place("board-late");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(
             &mut ed,
@@ -3433,7 +3435,7 @@ mod tests {
         // (skeptic 0's first judge, then skeptic 1 ends, then the rest)
         let orders: [&[(u64, u64, Option<u64>)]; 2] = [&[(1, 1, None)], &[(2, 2, Some(1))]];
         for (k, first) in orders.into_iter().enumerate() {
-            let (dir, repo) = place(&format!("board-two-skeptics-{k}"));
+            let (_s, dir, repo) = place(&format!("board-two-skeptics-{k}"));
             let mut ed = Editor::new(crate::config::Config::default());
             ed.config.review_risky = vec!["a.txt".into()];
             fake_board(
@@ -3512,7 +3514,7 @@ mod tests {
     /// made of it and the trace — said to be the board's, and data.
     #[test]
     fn a_board_finding_goes_to_the_author_with_its_trace() {
-        let (dir, repo) = place("board-send");
+        let (_s, dir, repo) = place("board-send");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(
             &mut ed,
@@ -3562,7 +3564,7 @@ mod tests {
     /// Past the skeptics' cap, a claim goes to you unchecked — pinned and marked so, never dropped, and said.
     #[test]
     fn claims_past_the_cap_are_pinned_unchecked_and_said() {
-        let (dir, repo) = place("board-cap");
+        let (_s, dir, repo) = place("board-cap");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.config.review_skeptics_max = 0;
         fake_board(
@@ -3612,7 +3614,7 @@ mod tests {
     /// until the first is over (here stopped from `:procs`); then it starts and the board ends.
     #[test]
     fn the_board_reads_at_most_at_once_and_the_next_waits() {
-        let (dir, repo) = place("board-line");
+        let (_s, dir, repo) = place("board-line");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.config.review_board_at_once = 1;
         fake_board(
@@ -3649,7 +3651,7 @@ mod tests {
     /// nothing ahead of it and room to read — the board reads on, said so everywhere, never `waits · 1st in line`.
     #[test]
     fn the_handover_to_the_skeptics_is_reading_not_waiting() {
-        let (dir, repo) = place("board-handover");
+        let (_s, dir, repo) = place("board-handover");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(
             &mut ed,
@@ -3686,7 +3688,7 @@ mod tests {
     #[test]
     fn memory_pressure_reads_the_board_one_at_a_time() {
         use crate::share::{Pressure, Room};
-        let (dir, repo) = place("board-pressure");
+        let (_s, dir, repo) = place("board-pressure");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.reviewer_room = || Room { pressure: Pressure::Warn, headroom: None };
         fake_board(&mut ed, &dir, &[(&["(angle: correctness)"], vec![]), (&["(angle: tests)"], vec![])]);
@@ -3712,7 +3714,7 @@ mod tests {
     /// member is over.
     #[test]
     fn stopping_the_board_pins_what_wasnt_judged_unchecked() {
-        let (dir, repo) = place("board-stop");
+        let (_s, dir, repo) = place("board-stop");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(
             &mut ed,
@@ -3751,7 +3753,7 @@ mod tests {
     #[test]
     fn every_member_is_the_reviewer_apart() {
         use crate::billing::Billing;
-        let (dir, repo) = place("board-apart");
+        let (_s, dir, repo) = place("board-apart");
         let marker = dir.join("outside.txt");
         let mut ed = Editor::new(crate::config::Config::default());
         let (args, log) = fake_board(
@@ -3820,7 +3822,7 @@ mod tests {
     /// board — and the next board's start says what the last cost (never a guess before there's one).
     #[test]
     fn the_next_board_says_what_the_last_cost() {
-        let (dir, repo) = place("board-cost");
+        let (_s, dir, repo) = place("board-cost");
         let mut ed = Editor::new(crate::config::Config::default());
         let record = crate::scratch::Scratch::new("calls-board");
         ed.calls_dir = Some(record.path().to_path_buf());
@@ -3870,7 +3872,7 @@ mod tests {
     #[test]
     fn space_v_capital_c_asks_then_starts_the_board() {
         use crate::offer::What;
-        let (dir, repo) = place("board-key");
+        let (_s, dir, repo) = place("board-key");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(
             &mut ed,
@@ -3941,8 +3943,8 @@ mod tests {
     /// killed claude's end comes to no reviewer, so nothing else would start the line again.
     #[test]
     fn ending_a_session_lets_the_next_in_line_read() {
-        let (dir, repo) = place("line-end");
-        let (dir2, repo2) = place("line-end-other");
+        let (_s, dir, repo) = place("line-end");
+        let (_s, dir2, repo2) = place("line-end-other");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.config.review_board_at_once = 1;
         fake(&mut ed, &dir, &[]);
@@ -3978,7 +3980,7 @@ mod tests {
         use crate::share::{Pressure, Room};
         use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
         static CRITICAL: AtomicBool = AtomicBool::new(true);
-        let (dir, repo) = place("critical");
+        let (_s, dir, repo) = place("critical");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.reviewer_room = || Room {
             pressure: if CRITICAL.load(Relaxed) { Pressure::Critical } else { Pressure::Normal },
@@ -4029,7 +4031,7 @@ mod tests {
     /// (a `message_start` with its usage) starts them — not its start.
     #[test]
     fn the_other_angles_start_once_the_first_ones_prompt_is_cached() {
-        let (dir, repo) = place("board-stagger");
+        let (_s, dir, repo) = place("board-stagger");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.reviewer_stagger = std::time::Duration::from_secs(60);
         let usage = json!({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_1",
@@ -4062,7 +4064,7 @@ mod tests {
     #[test]
     fn a_wrong_credential_stops_the_whole_board() {
         use crate::billing::Billing;
-        let (dir, repo) = place("board-billing");
+        let (_s, dir, repo) = place("board-billing");
         let mut ed = Editor::new(crate::config::Config::default());
         let init = json!({"type": "system", "subtype": "init", "session_id": "m-1", "apiKeySource": "apiKeyHelper",
             "model": "m"});
@@ -4110,7 +4112,7 @@ mod tests {
     #[test]
     fn a_member_that_cant_start_is_said_once() {
         for board in [false, true] {
-            let (dir, repo) = place(if board { "nostart-board" } else { "nostart-one" });
+            let (_s, dir, repo) = place(if board { "nostart-board" } else { "nostart-one" });
             let mut ed = Editor::new(crate::config::Config::default());
             ed.config.llm.command = dir.join("no-such-claude").display().to_string();
             // (a board said yes to already: no card)
@@ -4133,7 +4135,7 @@ mod tests {
     #[test]
     fn a_boards_members_on_a_key_cache_an_hour_as_their_block_does() {
         use crate::billing::Billing;
-        let (dir, repo) = place("board-api-cache");
+        let (_s, dir, repo) = place("board-api-cache");
         let mut ed = Editor::new(crate::config::Config::default());
         let done = || vec![result("No findings.")];
         let (args, log) =
@@ -4181,7 +4183,7 @@ mod tests {
     /// not kept — never pinned, counted in the report and the state, and the angle told to stop.
     #[test]
     fn claims_past_the_hard_cap_are_counted_never_pinned() {
-        let (dir, repo) = place("board-flood");
+        let (_s, dir, repo) = place("board-flood");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.config.review_skeptics_max = 0;
         let max = crate::board::FINDINGS_MAX + crate::board::PAST_MAX;
@@ -4210,7 +4212,7 @@ mod tests {
     /// one angle done or not: each reads for its own kind of fault.
     #[test]
     fn no_board_has_read_them_until_every_angle_did() {
-        let (dir, repo) = place("board-read");
+        let (_s, dir, repo) = place("board-read");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.config.review_risky = vec!["a.txt".into()];
         fake_board(&mut ed, &dir, &[(&["(angle: correctness)"], vec![]), (&["(angle: security)"], vec![])]);
@@ -4261,6 +4263,17 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #441: these left a board member's logs in the temp folder every run — a member starting after the folder went
+    /// made it again.
+    #[test]
+    fn the_board_tests_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            two_skeptics_at_once_pin_their_own_groups();
+            a_board_short_of_an_angle_says_so_and_keeps_what_it_found();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
+    }
+
     /// A board some of whose angles failed: done, never `stopped` over what it found — the angles it's short of
     /// said on its toast (a warning) and its rail. Every angle failed with a claim a skeptic confirmed: done
     /// too; every angle failed and nothing found: stopped.
@@ -4268,7 +4281,7 @@ mod tests {
     fn a_board_short_of_an_angle_says_so_and_keeps_what_it_found() {
         let confirm = || judged("s1", 1, json!({"claim": 1, "verdict": "confirmed", "trace": "a.txt:2"}));
         let run = |name: &str, claim: bool, tests_fail: bool| {
-            let (dir, repo) = place(name);
+            let (_s, dir, repo) = place(name);
             let mut ed = Editor::new(crate::config::Config::default());
             fake_board(
                 &mut ed,
@@ -4326,7 +4339,7 @@ mod tests {
         use crate::share::{Pressure, Room};
         use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
         static CRITICAL: AtomicBool = AtomicBool::new(true);
-        let (dir, repo) = place("closed-in-line");
+        let (_s, dir, repo) = place("closed-in-line");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.reviewer_room = || Room {
             pressure: if CRITICAL.load(Relaxed) { Pressure::Critical } else { Pressure::Normal },
@@ -4354,7 +4367,7 @@ mod tests {
     /// with the review, their claims coming unchecked).
     #[test]
     fn a_boards_members_read_whatever_becomes_of_the_review() {
-        let (dir, repo) = place("board-closed");
+        let (_s, dir, repo) = place("board-closed");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.config.review_board_at_once = 1;
         fake_board(
@@ -4414,7 +4427,7 @@ mod tests {
         let one = args_for(&given("/x/mine.json"), Role::One).unwrap();
         assert!(one.windows(2).any(|w| w == ["--settings", "/x/mine.json"]), "{one:?}");
         // `space v C` with it: said, and no board begins
-        let (dir, repo) = place("board-settings-file");
+        let (_s, dir, repo) = place("board-settings-file");
         let mut ed = Editor::new(crate::config::Config::default());
         let (args, _) = fake_board(&mut ed, &dir, &[]);
         ed.config.llm.args.extend(given("/x/mine.json"));
@@ -4429,7 +4442,7 @@ mod tests {
     /// angle's mark; waiting, its place in line under the head.
     #[test]
     fn the_boards_rail_folds_the_least_first() {
-        let (dir, repo) = place("board-rail");
+        let (_s, dir, repo) = place("board-rail");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(&mut ed, &dir, &[(&["(angle: correctness)"], vec![]), (&["(angle: tests)"], vec![])]);
         boarding(&mut ed, &repo, |ed| {
@@ -4540,7 +4553,7 @@ mod tests {
     /// last finding is placed from it.
     #[test]
     fn space_v_c_reads_a_snapshot_in_the_background_and_places_findings_on_the_lines_now() {
-        let (dir, repo) = place("bg-place");
+        let (_s, dir, repo) = place("bg-place");
         std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
@@ -4605,7 +4618,7 @@ mod tests {
     /// changed since), `¶ 1 finding · space v r` once it ended with one not sent — until its report is read.
     #[test]
     fn the_status_line_says_a_reviewer_in_the_background() {
-        let (dir, repo) = place("bg-status");
+        let (_s, dir, repo) = place("bg-status");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -4644,7 +4657,7 @@ mod tests {
     /// since its snapshot, a faint `read uncommitted at 14:02 · 1 file changed since` under it.
     #[test]
     fn a_review_opened_later_shows_the_run_and_what_changed_since() {
-        let (dir, repo) = place("bg-rail");
+        let (_s, dir, repo) = place("bg-rail");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -4685,7 +4698,7 @@ mod tests {
     /// finding, on the reading copy before it: let go before the claims were pinned).
     #[test]
     fn a_stopped_boards_claims_are_pinned_in_the_checkout() {
-        let (dir, repo) = place("bg-stop");
+        let (_s, dir, repo) = place("bg-stop");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -4719,7 +4732,7 @@ mod tests {
     #[test]
     fn a_file_left_out_of_the_snapshot_isnt_changed_since() {
         use crate::snapread::{FILE_MAX, Found, Left};
-        let (dir, repo) = place("bg-big");
+        let (_s, dir, repo) = place("bg-big");
         // (sparse: its size without writing it)
         let sized = |n: u64| std::fs::File::create(repo.join("big.txt")).unwrap().set_len(n).unwrap();
         sized(FILE_MAX + 1);
@@ -4757,7 +4770,7 @@ mod tests {
     /// (the review's finding — the tree alone was compared) and, nothing uncommitted left, starts none.
     #[test]
     fn a_commit_while_the_boards_card_is_up_takes_the_snapshot_again() {
-        let (dir, repo) = place("bg-board-commit");
+        let (_s, dir, repo) = place("bg-board-commit");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(&mut ed, &dir, &[(&["(angle:"], vec![result("No findings.")])]);
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
@@ -4791,7 +4804,7 @@ mod tests {
     /// what was open at `y`).
     #[test]
     fn a_boards_retake_keeps_the_cards_base() {
-        let (dir, repo) = place("bg-board-base");
+        let (_s, dir, repo) = place("bg-board-base");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(&mut ed, &dir, &[(&["(angle:"], vec![result("No findings.")])]);
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
@@ -4814,7 +4827,7 @@ mod tests {
     /// findings went into every later review's record).
     #[test]
     fn a_runs_findings_belong_to_the_review_it_read_for() {
-        let (dir, repo) = place("bg-record");
+        let (_s, dir, repo) = place("bg-record");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -4842,7 +4855,7 @@ mod tests {
     /// finding was held back for the next send (the review's finding: left out without a word).
     #[test]
     fn a_send_says_what_it_held_back() {
-        let (dir, repo) = place("bg-send-held");
+        let (_s, dir, repo) = place("bg-send-held");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -4880,7 +4893,7 @@ mod tests {
     /// as the next round begins, said once; `space v s` sends this round's and the earlier ones still on a change.
     #[test]
     fn a_findings_change_landed_since_leaves_before_the_next_round_and_isnt_sent() {
-        let (dir, repo) = place("landed");
+        let (_s, dir, repo) = place("landed");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = repo.clone();
         let steps = [
@@ -4928,7 +4941,7 @@ mod tests {
     /// one whose change went (here undone) leaves, its words saying no more than that.
     #[test]
     fn a_review_since_a_branch_keeps_its_findings_on_the_branchs_commits() {
-        let (dir, repo) = place("landed-since");
+        let (_s, dir, repo) = place("landed-since");
         git(&repo, &["checkout", "-q", "-b", "feat"]);
         git(&repo, &["add", "b.txt"]);
         let who = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
@@ -4976,7 +4989,7 @@ mod tests {
     /// snapshot's lines (the review's finding: sent then, it would never be placed); once placed it goes.
     #[test]
     fn a_finding_still_being_placed_isnt_sent() {
-        let (dir, repo) = place("bg-send");
+        let (_s, dir, repo) = place("bg-send");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -5000,7 +5013,7 @@ mod tests {
     /// changed since) — the worker never waits on the FIFO for a writer.
     #[test]
     fn a_finding_on_a_file_turned_fifo_is_placed_without_waiting() {
-        let (dir, repo) = place("bg-fifo");
+        let (_s, dir, repo) = place("bg-fifo");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -5026,7 +5039,7 @@ mod tests {
     /// never comes back to 0).
     #[test]
     fn a_finding_closed_while_being_placed_is_counted_placed() {
-        let (dir, repo) = place("bg-close");
+        let (_s, dir, repo) = place("bg-close");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -5049,7 +5062,7 @@ mod tests {
     /// turn's plan, never the session's code). No instruction file: the prompt says tarae looked.
     #[test]
     fn a_turns_review_up_doesnt_narrow_what_the_reviewer_reads() {
-        let (dir, repo) = place("bg-turn");
+        let (_s, dir, repo) = place("bg-turn");
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -5112,7 +5125,7 @@ mod tests {
     /// and one of another base, aren't.
     #[test]
     fn a_round_after_its_own_verdict_reads_what_changed_since_first() {
-        let (dir, repo) = place("bg-again");
+        let (_s, dir, repo) = place("bg-again");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = repo.clone();
         ed.reviewer_stand_in = true;
@@ -5157,7 +5170,7 @@ mod tests {
     /// snapshot's listing and search never show it (frictions 55: reviews ran without the project's rules).
     #[test]
     fn the_reviewers_prompt_names_the_checkouts_ignored_rules() {
-        let (dir, repo) = place("bg-rules");
+        let (_s, dir, repo) = place("bg-rules");
         std::fs::write(repo.join(".git/info/exclude"), "CLAUDE.md\n").unwrap();
         std::fs::write(repo.join("CLAUDE.md"), "# rules\nno pos ± 1\n").unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
@@ -5177,7 +5190,7 @@ mod tests {
     /// clock from its start, which counts its start-up too.
     #[test]
     fn the_report_says_how_long_claude_timed_its_turn() {
-        let (dir, repo) = place("timed");
+        let (_s, dir, repo) = place("timed");
         let mut ed = Editor::new(crate::config::Config::default());
         let mut done = result("No findings.");
         done["duration_ms"] = json!(112_400);
@@ -5192,7 +5205,7 @@ mod tests {
     /// its `y` takes the snapshot again and the board reads what's there now.
     #[test]
     fn a_boards_yes_takes_the_snapshot_again() {
-        let (dir, repo) = place("bg-board-again");
+        let (_s, dir, repo) = place("bg-board-again");
         let mut ed = Editor::new(crate::config::Config::default());
         fake_board(&mut ed, &dir, &[(&["(angle:"], vec![result("No findings.")])]);
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
@@ -5214,7 +5227,7 @@ mod tests {
         use crate::share::{Pressure, Room};
         use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
         static CRITICAL: AtomicBool = AtomicBool::new(true);
-        let (dir, repo) = place("bg-snap");
+        let (_s, dir, repo) = place("bg-snap");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.reviewer_room = || Room {
             pressure: if CRITICAL.load(Relaxed) { Pressure::Critical } else { Pressure::Normal },
@@ -5266,7 +5279,7 @@ mod tests {
             ("bg-cut-read", &["big.txt:1-1500", "big.txt:1501-1600"], false),
         ];
         for (name, calls, unread) in cases {
-            let (dir, repo) = place(name);
+            let (_s, dir, repo) = place(name);
             std::fs::write(repo.join("big.txt"), format!("{}\n", "x".repeat(99)).repeat(1_600)).unwrap();
             let mut ed = Editor::new(crate::config::Config::default());
             let mut steps: Vec<Value> = (calls.iter().enumerate())

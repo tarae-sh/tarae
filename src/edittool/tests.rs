@@ -1,27 +1,41 @@
 use super::*;
 
-/// A project in the test's own temp folder with `files` (path, text).
-fn project(name: &str, files: &[(&str, &str)]) -> PathBuf {
-    let dir = crate::scratch::Scratch::new(&format!("edittool-{name}")).into_path();
+/// A project in the test's own temp folder with `files` (path, text) — its real path, gone with the `Scratch` (#441:
+/// an `into_path` the caller was to remove was left in the temp folder each run where it didn't).
+fn project(name: &str, files: &[(&str, &str)]) -> (crate::scratch::Scratch, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("edittool-{name}"));
+    let dir = s.to_path_buf();
     for (p, t) in files {
         let f = dir.join(p);
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(f, t).unwrap();
     }
-    dir
+    (s, dir)
 }
 
 /// Claude's strings copied from an answer that made a frame tag inert (`quote::inert` — this repository's own code holds
 /// `<editor-note>`) match the file as it holds them, and write it so.
 #[test]
 fn an_inert_frame_copied_from_a_read_is_edited_as_written() {
-    let dir = project("inert", &[("a.rs", "let s = \"<editor-note>\";\n")]);
+    let (_s, dir) = project("inert", &[("a.rs", "let s = \"<editor-note>\";\n")]);
     let read = crate::quote::inert("let s = \"<editor-note>\";").into_owned();
     assert!(read.contains(crate::quote::INERT));
     let e = json!({ "file_path": "a.rs", "old_string": read, "new_string": read.replace("s =", "t =") });
     let it = item(0, &e).unwrap();
     let r = resolve(&known(&dir), &[it]).unwrap();
     assert_eq!(r.files[0].after.to_string(), "let t = \"<editor-note>\";\n");
+}
+
+/// #441: these left their projects in the temp folder every run (`into_path`, nothing removed them).
+#[test]
+fn the_project_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(|| {
+        an_inert_frame_copied_from_a_read_is_edited_as_written();
+        one_call_edits_the_project_and_its_folder_as_one_change_set();
+        a_folders_change_lands_on_disk_every_way();
+        claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt();
+    });
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 fn known(dir: &Path) -> Known {
@@ -39,10 +53,9 @@ fn known(dir: &Path) -> Known {
 /// whole, its protected name its own; a file beside the folder refused, and a move from one root to the other.
 #[test]
 fn one_call_edits_the_project_and_its_folder_as_one_change_set() {
-    let dir = project("folder", &[("a.rs", "fn one() {}\n")]);
-    let infra = project("folder-infra", &[("main.tf", "resource {}\n"), ("Makefile", "all:\n")]);
-    let beside = project("folder-beside", &[("b.txt", "b\n")]);
-    let infra = infra.canonicalize().unwrap();
+    let (_s, dir) = project("folder", &[("a.rs", "fn one() {}\n")]);
+    let (_s, infra) = project("folder-infra", &[("main.tf", "resource {}\n"), ("Makefile", "all:\n")]);
+    let (_s, beside) = project("folder-beside", &[("b.txt", "b\n")]);
     let k = Known { roots: crate::folders::Roots::new(dir.clone(), vec![infra.clone()]), ..known(&dir) };
     let tf = infra.join("main.tf").display().to_string();
     let mk = infra.join("Makefile").display().to_string();
@@ -77,7 +90,7 @@ fn change<'r>(r: &'r Resolved, rel: &str) -> &'r FileChange {
 /// change set; one item failing fails them all (nothing comes back to land), and the error names it.
 #[test]
 fn replacements_go_in_order_across_files_or_not_at_all() {
-    let dir = project("order", &[("a.rs", "fn one() {}\nfn two() {}\n"), ("b.rs", "let x = one();\n")]);
+    let (_s, dir) = project("order", &[("a.rs", "fn one() {}\nfn two() {}\n"), ("b.rs", "let x = one();\n")]);
     let k = known(&dir);
     let r = run(
         &k,
@@ -114,7 +127,7 @@ fn replacements_go_in_order_across_files_or_not_at_all() {
 /// An old_string found more than once is refused, naming the lines, unless replace_all (then every one).
 #[test]
 fn a_match_is_one_unless_replace_all() {
-    let dir = project("unique", &[("a.rs", "x = 1;\ny = 2;\nx = 1;\n")]);
+    let (_s, dir) = project("unique", &[("a.rs", "x = 1;\ny = 2;\nx = 1;\n")]);
     let k = known(&dir);
     let one = json!([{"file_path": "a.rs", "old_string": "x = 1;", "new_string": "x = 3;"}]);
     let e = run(&k, one).unwrap_err();
@@ -132,7 +145,7 @@ fn a_match_is_one_unless_replace_all() {
 #[test]
 fn a_miss_shows_the_closest_lines_and_new_string_already_there() {
     let text = "use std::io;\n\nfn parse(input: &str) -> u32 {\n    input.trim().parse().unwrap()\n}\n";
-    let dir = project("miss", &[("a.rs", text)]);
+    let (_s, dir) = project("miss", &[("a.rs", text)]);
     let k = known(&dir);
     let typo = "fn parse(imput: &str) -> u32 {\n    imput.trim().parse().unwrap()";
     let e = run(&k, json!([{"file_path": "a.rs", "old_string": typo, "new_string": "x"}])).unwrap_err();
@@ -155,7 +168,7 @@ fn a_miss_shows_the_closest_lines_and_new_string_already_there() {
 #[test]
 fn loose_tiers_only_after_exact_and_they_are_told() {
     let text = "let a = 1;   \nlet b = “q” – r;\nlet a = 1;\n";
-    let dir = project("tiers", &[("a.rs", text)]);
+    let (_s, dir) = project("tiers", &[("a.rs", text)]);
     let k = known(&dir);
     // Exact: the third line only (the first has trailing blanks)
     let exact = json!([{"file_path": "a.rs", "old_string": "let a = 1;\n", "new_string": "let a = 2;\n"}]);
@@ -183,7 +196,7 @@ fn loose_tiers_only_after_exact_and_they_are_told() {
 /// text; a non-empty old_string in no file says so.
 #[test]
 fn a_new_file_is_an_empty_old_string_where_none_is() {
-    let dir = project("create", &[("a.rs", "x\n")]);
+    let (_s, dir) = project("create", &[("a.rs", "x\n")]);
     let k = known(&dir);
     let r = run(&k, json!([{"file_path": "sub/new.rs", "old_string": "", "new_string": "pub fn n() {}\n"}]))
         .unwrap();
@@ -203,7 +216,8 @@ fn a_new_file_is_an_empty_old_string_where_none_is() {
 /// create; where there's none it makes it; it takes new_string alone, and the same text is said.
 #[test]
 fn a_whole_rewrite_is_one_text_change_never_a_delete() {
-    let dir = project("whole", &[("msg.txt", "Old subject\n\nold body\n"), ("Cargo.toml", "[package]\n")]);
+    let (_s, dir) =
+        project("whole", &[("msg.txt", "Old subject\n\nold body\n"), ("Cargo.toml", "[package]\n")]);
     let k = known(&dir);
     let r = run(&k, json!([{"file_path": "msg.txt", "whole": true, "new_string": "New subject\n"}])).unwrap();
     let f = change(&r, "msg.txt");
@@ -237,7 +251,7 @@ fn a_whole_rewrite_is_one_text_change_never_a_delete() {
 /// delete first would have been one), the answer saying it written.
 #[test]
 fn under_review_at_the_end_a_whole_rewrite_asks_no_card() {
-    let dir = project("whole-at-end", &[("msg.txt", "first draft\n")]);
+    let (_s, dir) = project("whole-at-end", &[("msg.txt", "first draft\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     let args = json!({"edits": [{"file_path": "msg.txt", "whole": true, "new_string": "second draft\n"}]});
@@ -256,7 +270,7 @@ fn under_review_at_the_end_a_whole_rewrite_asks_no_card() {
 /// change set comes back or doesn't.)
 #[test]
 fn moves_and_deletes_only_of_the_projects_own_plain_files() {
-    let dir = project(
+    let (_s, dir) = project(
         "paths",
         &[("a.rs", "a\n"), ("b.rs", "b\n"), ("build.rs", "fn main() {}\n"), (".env", "K=tarae-fake-token\n")],
     );
@@ -301,7 +315,7 @@ fn moves_and_deletes_only_of_the_projects_own_plain_files() {
 /// gone for the rest of the call.
 #[test]
 fn a_moved_file_is_edited_at_its_new_place() {
-    let dir = project("moved", &[("a.rs", "fn a() {}\n")]);
+    let (_s, dir) = project("moved", &[("a.rs", "fn a() {}\n")]);
     let k = known(&dir);
     let r = run(
         &k,
@@ -331,7 +345,7 @@ fn a_moved_file_is_edited_at_its_new_place() {
 /// it has other changes; one as Claude saw it, nothing.
 #[test]
 fn the_buffer_is_matched_and_a_file_changed_since_seen_is_said() {
-    let dir = project("seen", &[("a.rs", "on disk\n")]);
+    let (_s, dir) = project("seen", &[("a.rs", "on disk\n")]);
     let mut k = known(&dir);
     k.open.insert(dir.join("a.rs"), Rope::from_str("in the buffer\n"));
     let edit = json!([{"file_path": "a.rs", "old_string": "buffer", "new_string": "editor"}]);
@@ -378,7 +392,7 @@ fn pump(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 /// makes every change), the next chat's too. (A stand-in claude writes its arguments in the test's own folder.)
 #[test]
 fn the_chat_edits_with_edit_alone() {
-    let dir = project("setting", &[]);
+    let (_s, dir) = project("setting", &[]);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
@@ -415,24 +429,25 @@ fn the_chat_edits_with_edit_alone() {
 fn a_folders_change_lands_on_disk_every_way() {
     let text = "one\ntwo\n";
     let setup = |name: &str| {
-        let dir = std::fs::canonicalize(project(name, &[("a.rs", text)])).unwrap();
-        let infra = std::fs::canonicalize(project(&format!("{name}-infra"), &[("main.tf", text)])).unwrap();
+        let (s, dir) = project(name, &[("a.rs", text)]);
+        let (infra_s, infra) = project(&format!("{name}-infra"), &[("main.tf", text)]);
         let mut ed = chat_for(&dir, &dir.join("stdin.log"));
         let f = crate::folders::Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
         ed.workspace.folders.push(f);
         let tf = infra.join("main.tf");
-        (dir, tf, ed)
+        // (the editor first, then its folders: what it saves as it goes lands before they go)
+        ((s, infra_s), dir, tf, ed)
     };
     let read = |p: &Path| std::fs::read_to_string(p).unwrap();
     let two = |tf: &Path| json!({"edits": [{"file_path": tf, "old_string": "two", "new_string": "TWO"}]});
     // Review at the end: written unseen (`refactor::write`, beneath the folder)
-    let (dir, tf, mut ed) = setup("folder-at-end");
+    let (_s, dir, tf, mut ed) = setup("folder-at-end");
     ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     call(&mut ed, Call::test(71), &two(&tf)).unwrap();
     pump(&mut ed, "the answer", |_| answered(71).is_some());
     assert_eq!(read(&tf), "one\nTWO\n", "{:?}", answered(71));
     // A change set's `y` all (`accept_all`), with a project file
-    let (dir, tf, mut ed) = setup("folder-all");
+    let (_s, dir, tf, mut ed) = setup("folder-all");
     let both = json!({"edits": [
         {"file_path": "a.rs", "old_string": "one", "new_string": "ONE"},
         {"file_path": tf, "old_string": "two", "new_string": "TWO"},
@@ -449,7 +464,7 @@ fn a_folders_change_lands_on_disk_every_way() {
         answered(72)
     );
     // Its own review's `y` (`reviewed`: saved beneath the folder)
-    let (_dir, tf, mut ed) = setup("folder-review");
+    let (_s, _dir, tf, mut ed) = setup("folder-review");
     call(&mut ed, Call::test(73), &two(&tf)).unwrap();
     answer_reviews(&mut ed, 'y', |_| answered(73).is_some());
     pump(&mut ed, "the save", |_| read(&tf) == "one\nTWO\n");
@@ -473,7 +488,7 @@ fn answered(id: u64) -> Option<Result<String, String>> {
 /// test's own, in its temp folder.)
 #[test]
 fn under_review_at_the_end_a_delete_still_waits_on_the_card() {
-    let dir = project("at-end", &[("a.rs", "one\n"), ("b.rs", "gone soon\n")]);
+    let (_s, dir) = project("at-end", &[("a.rs", "one\n"), ("b.rs", "gone soon\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     let args = json!({"edits": [
@@ -512,7 +527,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
     };
     let text = "one\ntwo\nthree\n";
     let two = json!({"edits": [{"file_path": "a.rs", "old_string": "two", "new_string": "TWO"}]});
-    let dir = std::fs::canonicalize(project("wet-at-end", &[("a.rs", text)])).unwrap();
+    let (_s, dir) = project("wet-at-end", &[("a.rs", text)]);
     let mut ed = pinned(chat_for(&dir, &dir.join("stdin.log")));
     ed.open(&dir.join("a.rs")).unwrap();
     ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
@@ -520,7 +535,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
     pump(&mut ed, "the answer", |_| answered(61).is_some());
     assert_eq!(wet(&ed, &dir.join("a.rs")), ["TWO\n"], "written unseen: wet");
     std::fs::remove_dir_all(&dir).ok();
-    let dir = std::fs::canonicalize(project("wet-reviewed", &[("a.rs", text)])).unwrap();
+    let (_s, dir) = project("wet-reviewed", &[("a.rs", text)]);
     let mut ed = pinned(chat_for(&dir, &dir.join("stdin.log")));
     ed.open(&dir.join("a.rs")).unwrap();
     call(&mut ed, Call::test(62), &two).unwrap();
@@ -529,7 +544,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
     assert!(wet(&ed, &dir.join("a.rs")).is_empty(), "your `y` in its review: nothing wet");
     assert!(!ed.motions.iter().any(|m| matches!(m.what, crate::motion::What::Wet(_))));
     std::fs::remove_dir_all(&dir).ok();
-    let dir = std::fs::canonicalize(project("wet-all", &[("a.rs", text), ("b.rs", text)])).unwrap();
+    let (_s, dir) = project("wet-all", &[("a.rs", text), ("b.rs", text)]);
     let mut ed = pinned(chat_for(&dir, &dir.join("stdin.log")));
     ed.open(&dir.join("a.rs")).unwrap();
     ed.open(&dir.join("b.rs")).unwrap();
@@ -551,7 +566,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
 /// `edit a.rs` (that stays the answer's and a card's); with nothing asked yet, the change itself.
 #[test]
 fn the_edit_tools_review_quotes_what_you_asked() {
-    let dir = project("asked", &[("a.rs", "fn hi() {}\n"), ("b.rs", "fn bye() {}\n")]);
+    let (_s, dir) = project("asked", &[("a.rs", "fn hi() {}\n"), ("b.rs", "fn bye() {}\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     let title = |ed: &Editor| ed.workspace.claude.review.as_ref().map(|r| r.instruction.clone());
     let c = ed.workspace.claude.chat.as_mut().unwrap();
@@ -617,7 +632,7 @@ fn an_edit_answered_is_stamped_on_its_knot_with_the_key() {
         c.msgs.iter().find(|m| m.call == "t1").unwrap().stamps.iter().map(|s| s.0).collect()
     };
     for (key, n, args) in [("y", 45, &args), ("n", 46, &args), ("review n", 47, &one)] {
-        let dir = project(&format!("stamped-{n}"), &[("a.rs", "one\n"), ("b.rs", "two\n")]);
+        let (_s, dir) = project(&format!("stamped-{n}"), &[("a.rs", "one\n"), ("b.rs", "two\n")]);
         let mut ed = chat_for(&dir, &dir.join("stdin.log"));
         // (its call, as claude's stream made it: the call waiting, its row)
         let c = ed.workspace.claude.chat.as_mut().unwrap();
@@ -679,7 +694,7 @@ fn a_reviews_keys_go_only_on_the_call_its_for() {
     };
     let edit = json!({"edits": [{"file_path": "a.rs", "old_string": "one", "new_string": "uno"}]});
     // Your own patch, answered `y`, with Claude's edit of the same file waiting
-    let dir = project("own-review", &[("a.rs", "one\n")]);
+    let (_s, dir) = project("own-review", &[("a.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     waiting(&mut ed, "t1", "mcp__tarae__edit", edit.clone());
     let file = crate::refactor::FileChange {
@@ -709,7 +724,7 @@ fn a_reviews_keys_go_only_on_the_call_its_for() {
     assert_eq!(stamps(&ed, "t1"), "", "your answer is no key of Claude's call");
     std::fs::remove_dir_all(&dir).ok();
     // A batch: a rename waiting first, then the edit — the edit's `n` goes on the edit's row
-    let dir = project("mixed-batch", &[("a.rs", "one\n")]);
+    let (_s, dir) = project("mixed-batch", &[("a.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     waiting(&mut ed, "r1", "mcp__tarae__rename", json!({"path": "b.rs", "symbol": "x", "new_name": "y"}));
     waiting(&mut ed, "t1", "mcp__tarae__edit", edit.clone());
@@ -719,7 +734,7 @@ fn a_reviews_keys_go_only_on_the_call_its_for() {
     assert_eq!((stamps(&ed, "r1"), stamps(&ed, "t1")), (String::new(), "n".into()));
     std::fs::remove_dir_all(&dir).ok();
     // An edit no waiting call was made with (its input another): no stamp — not the rename's either
-    let dir = project("unnamed", &[("a.rs", "one\n")]);
+    let (_s, dir) = project("unnamed", &[("a.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     waiting(&mut ed, "r1", "mcp__tarae__rename", json!({"path": "b.rs", "symbol": "x", "new_name": "y"}));
     let elsewhere = json!({"edits": [{"file_path": "other.rs", "old_string": "one", "new_string": "uno"}]});
@@ -735,7 +750,7 @@ fn a_reviews_keys_go_only_on_the_call_its_for() {
 /// request comes — by its tool's full name and the request's id — and takes its review's key.
 #[test]
 fn a_tool_call_claims_its_row_as_it_comes() {
-    let dir = project("through-mcp", &[("a.rs", "one\n")]);
+    let (_s, dir) = project("through-mcp", &[("a.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     let edit = json!({"edits": [{"file_path": "a.rs", "old_string": "one", "new_string": "uno"}]});
     let c = ed.workspace.claude.chat.as_mut().unwrap();
@@ -794,7 +809,7 @@ fn a_cards_key_goes_on_its_own_tools_call() {
         {"file_path": "b.rs", "old_string": "one", "new_string": "uno"},
     ]});
     // A rename's card, an edit of its first file waiting before it
-    let dir = project("rename-card", &[("a.rs", "one\n"), ("b.rs", "one\n")]);
+    let (_s, dir) = project("rename-card", &[("a.rs", "one\n"), ("b.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     waiting(&mut ed, "t1", "mcp__tarae__edit", both.clone());
     let rename = json!({"path": "a.rs", "symbol": "one", "new_name": "uno"});
@@ -811,7 +826,7 @@ fn a_cards_key_goes_on_its_own_tools_call() {
     // Two renames side by side, both waiting (their results after both), the one called second asked first and
     // landing first (parallel calls come in any order; its server answered sooner): each card's key on its own
     // call's row
-    let dir =
+    let (_s, dir) =
         project("two-renames", &[("a.rs", "one\n"), ("b.rs", "one\n"), ("c.rs", "one\n"), ("d.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     let (first, second) = (
@@ -837,7 +852,7 @@ fn a_cards_key_goes_on_its_own_tools_call() {
     assert_eq!((stamps(&ed, "r1"), stamps(&ed, "r2")), ("n".into(), "y".into()));
     std::fs::remove_dir_all(&dir).ok();
     // Every file held for your unsaved edits: the card writes none — their reviews' keys alone
-    let dir = project("held-card", &[("a.rs", "one\n"), ("b.rs", "one\n")]);
+    let (_s, dir) = project("held-card", &[("a.rs", "one\n"), ("b.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     for f in ["a.rs", "b.rs"] {
         ed.open(&dir.join(f)).unwrap();
@@ -855,7 +870,7 @@ fn a_cards_key_goes_on_its_own_tools_call() {
     assert_eq!(stamps(&ed, "t1"), "n", "each file's own review");
     std::fs::remove_dir_all(&dir).ok();
     // Its `y`, the file changed on disk since: not written — the key that decided stays
-    let dir = project("changed-card", &[("a.rs", "one\n"), ("b.rs", "one\n")]);
+    let (_s, dir) = project("changed-card", &[("a.rs", "one\n"), ("b.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     waiting(&mut ed, "t1", "mcp__tarae__edit", both.clone());
     let asked52 = asked(&mut ed, 52, "mcp__tarae__edit", &both);
@@ -874,7 +889,7 @@ fn a_cards_key_goes_on_its_own_tools_call() {
 /// A single delete comes up on the card even under review at the end, and `n` leaves the file.
 #[test]
 fn a_lone_delete_is_never_written_unseen() {
-    let dir = project("lone", &[("b.rs", "kept\n")]);
+    let (_s, dir) = project("lone", &[("b.rs", "kept\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     call(&mut ed, Call::test(42), &json!({"edits": [{"file_path": "b.rs", "delete": true}]})).unwrap();
@@ -893,7 +908,7 @@ fn a_lone_delete_is_never_written_unseen() {
 /// count on it is left unexplained.
 #[test]
 fn a_change_sets_card_names_what_its_call_wrote_unseen() {
-    let dir = project("written", &[("a.rs", "one\n"), ("b.rs", "one\n"), ("c.rs", "gone\n")]);
+    let (_s, dir) = project("written", &[("a.rs", "one\n"), ("b.rs", "one\n"), ("c.rs", "gone\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     let args = json!({"edits": [
@@ -915,7 +930,7 @@ fn a_change_sets_card_names_what_its_call_wrote_unseen() {
 /// is back at its place and gone from the new one (its new folder's file removed); `space U` does them again.
 #[test]
 fn undo_brings_a_deleted_file_back_and_a_moved_one_home() {
-    let dir = project("undo", &[("a.rs", "fn a() {}\n"), ("b.rs", "bye\n")]);
+    let (_s, dir) = project("undo", &[("a.rs", "fn a() {}\n"), ("b.rs", "bye\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     let args = json!({"edits": [
         {"file_path": "a.rs", "move_to": "sub/c.rs"},

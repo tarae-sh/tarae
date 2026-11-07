@@ -937,7 +937,7 @@ pub(crate) mod tests {
         fs::write(&user, "[llm]\nreview-at-end = true\n").unwrap();
         // (however it's written: a table, a dotted key at the top)
         for src in ["[llm]\nreview-at-end = false\n", "\"llm.review-at-end\" = false\n"] {
-            let path = project_file("at-end-above", src);
+            let (_dir, path) = project_file("at-end-above", src);
             let (c, _) = load_from(Some(user.clone()), Some(path.clone()), &Store::default());
             assert!(
                 c.editor.llm.review_at_end && c.editor.at_end_above.is_none(),
@@ -948,7 +948,6 @@ pub(crate) mod tests {
             let (t, _) = load_from(Some(user.clone()), Some(path.clone()), &store);
             assert!(!t.editor.llm.review_at_end, "{src}");
             assert_eq!(t.editor.at_end_above, Some((".tarae.toml".into(), false)), "{src}");
-            fs::remove_dir_all(path.parent().unwrap()).ok();
         }
         // Your own file setting it is no layer above
         let (y, _) = load_from(Some(user), None, &Store::default());
@@ -1032,13 +1031,13 @@ pub(crate) mod tests {
         assert!(w[0].starts_with("config.toml:2:"), "{w:?}");
     }
 
-    /// A project file in a scratch folder of its own (its real path; the folder is the caller's to remove) —
-    /// the values are never run.
-    pub(crate) fn project_file(name: &str, src: &str) -> PathBuf {
-        let dir = crate::scratch::Scratch::new(&format!("config-{name}")).into_path();
+    /// A project file in a scratch folder of its own (its real path; the folder goes as the `Scratch` does —
+    /// #441: one the caller was to remove was left in the temp folder each run) — the values are never run.
+    pub(crate) fn project_file(name: &str, src: &str) -> (crate::scratch::Scratch, PathBuf) {
+        let dir = crate::scratch::Scratch::new(&format!("config-{name}"));
         let path = dir.join(".tarae.toml");
         fs::write(&path, src).unwrap();
-        path
+        (dir, path)
     }
 
     pub(crate) const RISKY_PROJECT: &str = r#"
@@ -1340,7 +1339,7 @@ Z = ["move_line_down", ":sh touch marker"]
     fn a_projects_docker_inert_waits_for_trust_and_frees_nothing_before() {
         use crate::trust::{State, Store};
         let src = "[llm]\ndocker-inert = [\"cargo xtask linux: clippy test --image= --\"]\n";
-        let path = project_file("inert", src);
+        let (_dir, path) = project_file("inert", src);
         let freed = |c: &Config| {
             let inert = crate::tools::Inert::of(&c.editor.llm.docker_inert);
             let a = crate::tools::again("cargo xtask linux test").unwrap().any_arguments(&inert);
@@ -1358,13 +1357,12 @@ Z = ["move_line_down", ":sh touch marker"]
         let (t, _) = load_from(None, Some(path.clone()), &store);
         assert_eq!(t.project.as_ref().unwrap().state, State::Trusted);
         assert!(freed(&t), "trusted: what it names is freed");
-        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 
     #[test]
     fn a_projects_commands_wait_for_trust() {
         use crate::trust::{State, Store};
-        let path = project_file("trust", RISKY_PROJECT);
+        let (_dir, path) = project_file("trust", RISKY_PROJECT);
         let (c, w) = load_from(None, Some(path.clone()), &Store::default());
         assert!(w.is_empty(), "{w:?}");
         // The harmless rest applies
@@ -1433,9 +1431,8 @@ Z = ["move_line_down", ":sh touch marker"]
     fn what_starts_a_language_server_waits_for_trust() {
         use crate::trust::Store;
         let load = |name: &str, src: &str| {
-            let path = project_file(name, src);
+            let (_dir, path) = project_file(name, src);
             let (c, _) = load_from(None, Some(path.clone()), &Store::default());
-            fs::remove_dir_all(path.parent().unwrap()).ok();
             let held: Vec<String> =
                 c.project.map(|p| p.items.into_iter().map(|(k, _)| k).collect()).unwrap_or_default();
             (held, c.editor.lsp)
@@ -1461,7 +1458,7 @@ Z = ["move_line_down", ":sh touch marker"]
     fn a_projects_upstream_setting_waits_for_trust_then_reaches_the_policy() {
         use crate::sandbox::{Here, Os, policy_in};
         use crate::trust::{State, Store};
-        let path = project_file("upstream", "[llm]\nsandbox-upstream = \"none\"\n");
+        let (_dir, path) = project_file("upstream", "[llm]\nsandbox-upstream = \"none\"\n");
         let (c, _) = load_from(None, Some(path.clone()), &Store::default());
         let p = c.project.as_ref().expect("held back");
         assert_eq!(p.state, State::Ask);
@@ -1492,12 +1489,12 @@ Z = ["move_line_down", ":sh touch marker"]
 
     #[test]
     fn the_users_own_file_is_never_held_back() {
-        let user = project_file("user", RISKY_PROJECT);
+        let (_user_dir, user) = project_file("user", RISKY_PROJECT);
         let (c, _) = load_from(Some(user), None, &crate::trust::Store::default());
         assert!(c.project.is_none());
         assert_eq!(c.editor.restart_build, "touch marker");
         // and a project file that sets nothing that runs has nothing to ask
-        let plain = project_file("plain", "[editor]\nscrolloff = 3\n");
+        let (_plain_dir, plain) = project_file("plain", "[editor]\nscrolloff = 3\n");
         let (p, _) = load_from(None, Some(plain), &crate::trust::Store::default());
         assert!(p.project.is_none());
         assert_eq!(p.editor.scrolloff, 3);
@@ -1520,6 +1517,21 @@ Z = ["move_line_down", ":sh touch marker"]
         let (c, _) = load_from(project_layer(&root), None, &crate::trust::Store::default());
         let t = c.editor.tasks.iter().find(|t| t.name == "t").map(|t| t.cwd.clone());
         assert_eq!(t, Some(PathBuf::from("sub")), "as written");
+    }
+
+    /// #441: the tests with a `project_file` leave no folder behind (each left its own in the temp folder every
+    /// run, the caller to remove it and most never did).
+    #[test]
+    fn the_project_file_tests_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            a_trusted_project_setting_review_at_the_end_is_named();
+            a_projects_docker_inert_waits_for_trust_and_frees_nothing_before();
+            a_projects_commands_wait_for_trust();
+            what_starts_a_language_server_waits_for_trust();
+            a_projects_upstream_setting_waits_for_trust_then_reaches_the_policy();
+            the_users_own_file_is_never_held_back();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     /// A `.tarae.toml` that isn't yours is never read as the project's config — the one rule with a project's mark

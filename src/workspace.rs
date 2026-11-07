@@ -1740,7 +1740,7 @@ mod tests {
     #[test]
     fn a_card_your_command_asked_for_comes_in_front_of_claudes() {
         use crate::offer::{Offer, What};
-        let (mut ed, front, _) = two_projects("yours-in-front");
+        let (_s, mut ed, front, _) = two_projects("yours-in-front");
         let claudes = || {
             let what = What::Asks { call: crate::tools::Call::test(1) };
             Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what)
@@ -1835,7 +1835,7 @@ mod tests {
     #[test]
     fn the_card_counts_what_waits_and_c_q_goes_to_it() {
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("waiting-cards");
+        let (_s, mut ed, front, back) = two_projects("waiting-cards");
         let screen_card = |n: u64| {
             let what = What::Asks { call: crate::tools::Call::test(n) };
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
@@ -1879,7 +1879,7 @@ mod tests {
     #[test]
     fn c_q_goes_to_the_card_waiting_longest_and_names_its_session() {
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("longest");
+        let (_s, mut ed, front, back) = two_projects("longest");
         let third = front.with_file_name("third");
         std::fs::create_dir_all(&third).unwrap();
         let card = |n: u64, ago: u64| {
@@ -1925,7 +1925,7 @@ mod tests {
     #[test]
     fn another_sessions_ask_is_a_peek_in_the_stack_and_a_press_goes_there() {
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("peeks");
+        let (_s, mut ed, front, back) = two_projects("peeks");
         let card = |n: u64| {
             let what = What::Asks { call: crate::tools::Call::test(n) };
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
@@ -1957,7 +1957,7 @@ mod tests {
     #[test]
     fn another_sessions_ask_with_none_here_is_its_peek_alone() {
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("peekalone");
+        let (_s, mut ed, front, back) = two_projects("peekalone");
         let back_id = ed.workspace_open(&back).unwrap();
         assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let what = What::Asks { call: crate::tools::Call::test(2) };
@@ -2003,7 +2003,7 @@ mod tests {
     #[test]
     fn the_peeks_alone_stand_in_the_order_c_q_takes_them() {
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("peekorder");
+        let (_s, mut ed, front, back) = two_projects("peekorder");
         let third = front.with_file_name("third");
         std::fs::create_dir_all(&third).unwrap();
         let back_id = ed.workspace_open(&back).unwrap();
@@ -2038,7 +2038,7 @@ mod tests {
     /// too; one naming no session's checkout is nobody's.
     #[test]
     fn the_bring_rebase_and_end_cards_are_about_the_session_whose_checkout_they_name() {
-        let (mut ed, front, back) = two_projects("about");
+        let (_s, mut ed, front, back) = two_projects("about");
         let back_id = ed.workspace_open(&back).unwrap();
         assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let link = front.with_file_name("back-link");
@@ -2103,7 +2103,7 @@ mod tests {
     /// front's on the status line while its chat is hidden — and not once the chat is up, or the input empty.
     #[test]
     fn a_draft_out_of_sight_is_marked_unsent() {
-        let (mut ed, _front, back) = two_projects("unsent");
+        let (_s, mut ed, _front, back) = two_projects("unsent");
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         let id = ed.workspace_open(&back).unwrap();
@@ -2135,7 +2135,7 @@ mod tests {
     #[test]
     fn a_turn_ended_behind_says_done_not_waits() {
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("done");
+        let (_s, mut ed, front, back) = two_projects("done");
         let log = back.join("claude-heard.log");
         claude_calls(&mut ed, &log, &[]);
         let screen_card = |n: u64| {
@@ -2197,7 +2197,7 @@ mod tests {
     fn a_card_waiting_behind_is_named_once_after_a_while() {
         use crate::editor::ToastKind;
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("nudge");
+        let (_s, mut ed, front, back) = two_projects("nudge");
         let id = ed.workspace_open(&back).unwrap();
         assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let park = |ed: &mut Editor, n: u64, ago: Duration| {
@@ -2239,7 +2239,7 @@ mod tests {
     /// answered (it was swept too: its call pending, no card, `C-q` saying none waits).
     #[test]
     fn a_pending_calls_card_stays_when_another_session_ends_its_turn() {
-        let (mut ed, front, back) = two_projects("pending-card");
+        let (_s, mut ed, front, back) = two_projects("pending-card");
         // (today's gate, for the run's card: in the sandbox it runs — P3)
         ed.config.llm.sandbox = false;
         let made = front.join("made");
@@ -2335,7 +2335,7 @@ mod tests {
     /// answers it.
     #[test]
     fn c_q_on_a_card_with_the_keys_never_drops_it() {
-        let (mut ed, front, back) = two_projects("c-q-twice");
+        let (_s, mut ed, front, back) = two_projects("c-q-twice");
         // (today's gate, for the runs' cards: in the sandbox they run — P3)
         ed.config.llm.sandbox = false;
         let (front_log, back_log) = (front.join("claude-heard.log"), back.join("claude-heard.log"));
@@ -2398,7 +2398,7 @@ mod tests {
     /// call waiting unseen: the call is told nothing ran, and the user hears which card it was.
     #[test]
     fn no_call_waits_on_a_card_nobody_can_see() {
-        let (mut ed, front, back) = two_projects("phantom");
+        let (_s, mut ed, front, back) = two_projects("phantom");
         // (today's gate, for the run's card: in the sandbox it runs — P3)
         ed.config.llm.sandbox = false;
         let (front_log, back_log) = (front.join("claude-heard.log"), back.join("claude-heard.log"));
@@ -2466,7 +2466,7 @@ mod tests {
     #[test]
     fn a_review_end_card_ends_only_its_own_review() {
         use crate::codereview::{Base, CodeReview, File};
-        let (mut ed, front, back) = two_projects("review-end");
+        let (_s, mut ed, front, back) = two_projects("review-end");
         let review = |root: &Path| {
             let f = |rel: &str| File {
                 rel: rel.into(),
@@ -2621,14 +2621,16 @@ mod tests {
     /// Two checkouts, `front` and `back`, each a cargo project with a `main.rs` — and an editor whose rust
     /// server is a stand-in (`cat`: the test answers for it, as its reader thread would, in whichever session
     /// is in front).
-    fn two_projects(name: &str) -> (Editor, PathBuf, PathBuf) {
-        let dir = crate::scratch::Scratch::new(&format!("sessions-{name}")).into_path();
+    /// The folder goes with the `Scratch`, after the editor (#441: an `into_path` the caller was to remove was left
+    /// in the temp folder each run where it didn't).
+    fn two_projects(name: &str) -> (crate::scratch::Scratch, Editor, PathBuf, PathBuf) {
+        let s = crate::scratch::Scratch::new(&format!("sessions-{name}"));
+        let dir = s.to_path_buf();
         for p in ["front", "back"] {
             std::fs::create_dir_all(dir.join(p)).unwrap();
             std::fs::write(dir.join(p).join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
             std::fs::write(dir.join(p).join("main.rs"), "fn main() {}\n").unwrap();
         }
-        let dir = std::fs::canonicalize(dir).unwrap();
         let cfg = "[lsp.fake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > /dev/null\"]\n[lang.rust]\nlsp = [\"fake\"]\n";
         let (config, w) = crate::config::parse(cfg);
         assert!(w.is_empty(), "{w:?}");
@@ -2638,7 +2640,17 @@ mod tests {
         let front = dir.join("front/main.rs");
         ed.open(&front).unwrap();
         ready(&mut ed);
-        (ed, dir.join("front"), dir.join("back"))
+        (s, ed, dir.join("front"), dir.join("back"))
+    }
+
+    /// #441: these left their folders in the temp folder every run.
+    #[test]
+    fn the_two_project_tests_leave_no_folder_behind() {
+        let left = crate::scratch::left_by(|| {
+            a_card_your_command_asked_for_comes_in_front_of_claudes();
+            the_card_counts_what_waits_and_c_q_goes_to_it();
+        });
+        assert!(left.is_empty(), "left in the temp folder: {left:?}");
     }
 
     /// The server of the document in view says it's up, with what Claude's tools ask of it.
@@ -2734,7 +2746,7 @@ mod tests {
     /// server's own answer.
     #[test]
     fn a_session_behind_hears_back_from_every_tool() {
-        let (mut ed, front, back) = two_projects("tools");
+        let (_s, mut ed, front, back) = two_projects("tools");
         let log = back.join("claude-heard.log");
         let calls = [
             ("symbols", json!({ "path": "main.rs" })),
@@ -2790,7 +2802,7 @@ mod tests {
     /// doesn't, nor once it's answered.
     #[test]
     fn a_call_silent_too_long_marks_its_session() {
-        let (mut ed, front, back) = two_projects("stuck");
+        let (_s, mut ed, front, back) = two_projects("stuck");
         let log = back.join("claude-heard.log");
         claude_calls(&mut ed, &log, &[("symbols", json!({ "path": "main.rs" }))]);
         let (id, file) = back_at_work(&mut ed, &back);
@@ -2877,7 +2889,7 @@ mod tests {
     /// inside that swap — and isn't dropped: it goes out from the main loop's next turn, in its own session.
     #[test]
     fn an_answer_made_behind_for_another_session_goes_out_next() {
-        let (mut ed, front, back) = two_projects("deferred");
+        let (_s, mut ed, front, back) = two_projects("deferred");
         let log = front.join("claude-heard.log");
         claude_calls(&mut ed, &log, &[("symbols", json!({ "path": "main.rs" }))]);
         let back_id = ed.workspace_open(&back).unwrap();
@@ -2976,7 +2988,7 @@ mod tests {
     fn a_turn_ended_behind_is_said_once_with_its_name() {
         use crate::editor::ToastKind;
         use crate::offer::{Offer, What};
-        let (mut ed, front, back) = two_projects("ended");
+        let (_s, mut ed, front, back) = two_projects("ended");
         let ok = json!({"type": "result", "result": "done"});
         let failed = json!({"type": "result", "is_error": true, "result": "API Error: overloaded\nlater"});
         let stopped = json!({"type": "result", "subtype": "error_during_execution", "result": ""});
@@ -3020,7 +3032,7 @@ mod tests {
     /// piece 3), the status line's `◂ new · space L` while the chat isn't in sight. In sight: neither.
     #[test]
     fn the_fronts_turn_ended_out_of_sight_is_new_on_the_status_line() {
-        let (mut ed, front, _) = two_projects("front-ended");
+        let (_s, mut ed, front, _) = two_projects("front-ended");
         claude_ends(&mut ed, &[json!({"type": "result", "result": "done"})]);
         let said = |ed: &Editor| ed.toasts.iter().filter(|t| t.text.starts_with("Claude's")).count();
         let new = |ed: &mut Editor| {

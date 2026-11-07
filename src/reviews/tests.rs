@@ -67,15 +67,24 @@ fn record(dir: &Path) -> (Vec<Value>, String) {
 }
 
 /// An editor on `file` (its text `text`) in a folder of its own, keeping the record in `<folder>/reviews`.
-fn editor_on(name: &str, file: &str, text: &str) -> (Editor, PathBuf) {
-    let dir = crate::scratch::Scratch::new(&format!("reviews-{name}")).into_path();
-    let dir = std::fs::canonicalize(&dir).unwrap();
+/// The folder goes with the `Scratch`, after the editor (#441: an `into_path` the caller was to remove was left in
+/// the temp folder each run where it didn't).
+fn editor_on(name: &str, file: &str, text: &str) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("reviews-{name}"));
+    let dir = s.to_path_buf();
     std::fs::write(dir.join(file), text).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
     ed.reviews_dir = Some(dir.join(DIR));
     ed.open(&dir.join(file)).unwrap();
-    (ed, dir)
+    (s, ed, dir)
+}
+
+/// #441: it left its folder in the temp folder every run.
+#[test]
+fn the_editor_on_tests_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(the_state_says_the_review_and_a_watch_hears_it);
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 /// A change counts while it's on screen with you there: within `IDLE` after a key and within `IDLE` before
@@ -117,7 +126,7 @@ fn time_counts_only_with_you_there() {
 #[test]
 fn the_record_holds_no_code_text() {
     let text = "fn zebra_secret() {}\nlet kiwi_hidden = 1;\n";
-    let (mut ed, dir) = editor_on("no-code", "lib.rs", text);
+    let (_s, mut ed, dir) = editor_on("no-code", "lib.rs", text);
     let id = ed.doc().id;
     let (one, two) = ("fn zebra_secret() {}\n", "let kiwi_hidden = 1;\n");
     let changes = vec![
@@ -184,7 +193,7 @@ fn the_ids_hmac_is_the_standard_one() {
 /// no id at all; the others' ids are keyed. Nothing of the lines is in the record.
 #[test]
 fn the_record_holds_no_code_text_of_a_high_change() {
-    let (mut ed, dir) = reviewing_texts(
+    let (_s, mut ed, dir) = reviewing_texts(
         "high",
         &[
             (
@@ -225,7 +234,7 @@ fn the_record_holds_no_code_text_of_a_high_change() {
 /// `undone`, the first stays.
 #[test]
 fn changes_alike_in_one_file_are_each_their_own() {
-    let (mut ed, dir) = reviewing_texts("alike", &[("x.txt", "a\ny\nb\ny\nc\n", "a\nx\nb\nx\nc\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("alike", &[("x.txt", "a\ny\nb\ny\nc\n", "a\nx\nb\nx\nc\n")], &[]);
     feed(&mut ed, "jj");
     frame(&mut ed);
     assert_eq!(ed.cursor_line(), 3, "on the second");
@@ -263,7 +272,7 @@ fn review_ids_differ_across_restarts() {
 /// drawn, its times and your answer — then the review's.
 #[test]
 fn an_edit_review_writes_a_line_per_change_and_its_own() {
-    let (mut ed, dir) = editor_on("edit", "a.txt", "one\ntwo\n");
+    let (_s, mut ed, dir) = editor_on("edit", "a.txt", "one\ntwo\n");
     let id = ed.doc().id;
     let changes =
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
@@ -310,7 +319,7 @@ fn landed_on(ed: &Editor, path: &Path) -> bool {
 /// A code review of the uncommitted changes in a repository of `files` (each one line, committed lowercase,
 /// changed to uppercase) — `risky` its `review.risky` — open on the first file, a frame drawn; the record in
 /// `<repo>/state`.
-fn reviewing(name: &str, files: &[&str], risky: &[&str]) -> (Editor, PathBuf) {
+fn reviewing(name: &str, files: &[&str], risky: &[&str]) -> (crate::scratch::Scratch, Editor, PathBuf) {
     let texts: Vec<(String, String, String)> =
         files.iter().map(|f| (f.to_string(), format!("{f} one\n"), format!("{f} ONE\n"))).collect();
     let texts: Vec<(&str, &str, &str)> =
@@ -322,7 +331,7 @@ fn reviewing(name: &str, files: &[&str], risky: &[&str]) -> (Editor, PathBuf) {
 /// `codereview::aside_said`): `C-q`'s twin, `F2`, gives the card the keys again from the rail.
 #[test]
 fn inside_zellij_an_aside_card_from_the_rail_is_the_inboxs() {
-    let (mut ed, dir) = reviewing_texts("zellij-rail", &[("a.txt", "a\n", "b\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("zellij-rail", &[("a.txt", "a\n", "b\n")], &[]);
     ed.interface.zellij = true;
     // (the review opens in the code; `space e` in a review gives its rail the keys — `sidebar_show`)
     for k in ["space", "e"] {
@@ -352,7 +361,7 @@ fn inside_zellij_an_aside_card_from_the_rail_is_the_inboxs() {
 #[test]
 fn inside_zellij_or_not_a_brings_change_in_the_review_says_the_way_back_to_its_card() {
     for zellij in [false, true] {
-        let (mut ed, dir) = reviewing(&format!("zellij-held-{zellij}"), &["a.txt"], &["a.txt"]);
+        let (_s, mut ed, dir) = reviewing(&format!("zellij-held-{zellij}"), &["a.txt"], &["a.txt"]);
         ed.interface.zellij = zellij;
         let r = ed.workspace.code_review.as_ref().expect("the review");
         let graded = r.graded(&ed, &r.files[0]);
@@ -380,10 +389,14 @@ fn inside_zellij_or_not_a_brings_change_in_the_review_says_the_way_back_to_its_c
 }
 
 /// `reviewing` with each file's (name, committed text, text now).
-fn reviewing_texts(name: &str, files: &[(&str, &str, &str)], risky: &[&str]) -> (Editor, PathBuf) {
-    let (mut ed, dir) = repo(name, files, risky);
+fn reviewing_texts(
+    name: &str,
+    files: &[(&str, &str, &str)],
+    risky: &[&str],
+) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    let (s, mut ed, dir) = repo(name, files, risky);
     open_review(&mut ed, &dir, files);
-    (ed, dir)
+    (s, ed, dir)
 }
 
 /// The review of `files` in `dir` opened in the session in front, on the first file, a frame drawn.
@@ -397,9 +410,13 @@ fn open_review(ed: &mut Editor, dir: &Path, files: &[(&str, &str, &str)]) {
 
 /// A repository of `files` (name, committed text, text now) and an editor whose review would grade `risky`,
 /// keeping the record in `<repo>/state` — no review open.
-fn repo(name: &str, files: &[(&str, &str, &str)], risky: &[&str]) -> (Editor, PathBuf) {
-    let dir = crate::scratch::Scratch::new(&format!("reviews-{name}")).into_path();
-    let dir = std::fs::canonicalize(&dir).unwrap();
+fn repo(
+    name: &str,
+    files: &[(&str, &str, &str)],
+    risky: &[&str],
+) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    let s = crate::scratch::Scratch::new(&format!("reviews-{name}"));
+    let dir = s.to_path_buf();
     // (none of the user's git settings — a global ignore leaving `.env` out, its default place too — and no
     // hooks: `test_git`)
     let git = |args: &[&str]| {
@@ -419,7 +436,7 @@ fn repo(name: &str, files: &[(&str, &str, &str)], risky: &[&str]) -> (Editor, Pa
     config.editor.review_risky = risky.iter().map(|r| r.to_string()).collect();
     let mut ed = Editor::new(config);
     ed.reviews_dir = Some(dir.join("state"));
-    (ed, dir)
+    (s, ed, dir)
 }
 
 /// git in `dir` reading none of the user's settings: no global or system config, and no global ignore or
@@ -450,7 +467,7 @@ fn show(ed: &mut Editor, dir: &Path, _i: usize, name: &str) {
 /// marked viewed with `space v m` `viewed`; the review's line counts every change it had.
 #[test]
 fn a_code_review_writes_what_each_change_ended_as() {
-    let (mut ed, dir) = reviewing("code", &["a.txt", "b.txt"], &[]);
+    let (_s, mut ed, dir) = reviewing("code", &["a.txt", "b.txt"], &[]);
     assert_eq!(ed.doc().path.as_deref(), Some(dir.join("a.txt").as_path()));
     let run = Run::of(&ed, &ed.workspace, true).expect("the state has it");
     assert_eq!((run.kind, run.changes), ("uncommitted", 1));
@@ -487,7 +504,7 @@ fn a_code_review_writes_what_each_change_ended_as() {
 /// `--watch review` hears it begin, each change answered, and its end with the outcomes.
 #[test]
 fn the_state_says_the_review_and_a_watch_hears_it() {
-    let (mut ed, dir) = editor_on("state", "a.txt", "one\ntwo\n");
+    let (_s, mut ed, _) = editor_on("state", "a.txt", "one\ntwo\n");
     let (tx, rx) = std::sync::mpsc::sync_channel(crate::uistate::watch::UNREAD);
     let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     ed.ui_watch_add(crate::uistate::watch::Watcher { tx, kinds: vec!["review".into()], overflowed: flag });
@@ -524,7 +541,8 @@ fn the_state_says_the_review_and_a_watch_hears_it() {
         ended[0].contains("review ended (edit) — 2 changes, ")
             && ended[0].ends_with(": 1 accepted · 1 rejected")
     );
-    std::fs::remove_dir_all(&dir).ok();
+    // (the record written before the folder goes — #441: a line landing after made `reviews/` again)
+    ed.writes_flush();
 }
 
 /// The other ends of a code review's change: a change you typed in is `edited`, one you drafted a comment on
@@ -532,7 +550,7 @@ fn the_state_says_the_review_and_a_watch_hears_it() {
 /// finding on a change is that change's `finding` and a line of its own, sent or not, never its words.
 #[test]
 fn a_code_review_writes_edited_commented_looked_and_its_findings() {
-    let (mut ed, dir) = reviewing("ends", &["a.txt", "b.txt", "c.txt", "d.txt"], &["c.txt"]);
+    let (_s, mut ed, dir) = reviewing("ends", &["a.txt", "b.txt", "c.txt", "d.txt"], &["c.txt"]);
     // (a.txt: typed into, on its changed line)
     feed(&mut ed, "iX<esc>");
     ed.git_schedule();
@@ -590,7 +608,7 @@ fn a_code_review_writes_edited_commented_looked_and_its_findings() {
 /// records each change `left` — a `y` before the close never landed.
 #[test]
 fn a_closed_edit_review_records_its_changes_left() {
-    let (mut ed, dir) = editor_on("closed", "a.txt", "one\ntwo\n");
+    let (_s, mut ed, dir) = editor_on("closed", "a.txt", "one\ntwo\n");
     let id = ed.doc().id;
     let changes =
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
@@ -627,7 +645,7 @@ fn time_in_another_session_isnt_counted() {
     assert_eq!(w.changes[a].active, s(12), "2 s before it went, 10 s after it came back");
 
     // In the editor: the session behind has its review paused at the next frame
-    let (mut ed, dir) = editor_on("behind", "a.txt", "one\n");
+    let (_s, mut ed, dir) = editor_on("behind", "a.txt", "one\n");
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
     frame(&mut ed);
@@ -648,7 +666,7 @@ fn time_in_another_session_isnt_counted() {
 /// record's secret).
 #[test]
 fn quitting_keeps_the_reviews_under_way() {
-    let (mut ed, dir) = editor_on("quit", "a.txt", "one\ntwo\n");
+    let (_s, mut ed, dir) = editor_on("quit", "a.txt", "one\ntwo\n");
     let id = ed.doc().id;
     let changes =
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
@@ -698,7 +716,7 @@ fn a_finding_is_a_line_with_its_own_object() {
 /// `review.record` off: nothing is written.
 #[test]
 fn review_record_off_writes_nothing() {
-    let (mut ed, dir) = editor_on("off", "a.txt", "one\n");
+    let (_s, mut ed, dir) = editor_on("off", "a.txt", "one\n");
     ed.config.review_record = false;
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
@@ -724,7 +742,7 @@ fn rediffed(ed: &mut Editor, what: &str) {
 /// `PASS=abc` is too short to look like a token, and a keyed id of it could be tried against candidates.
 #[test]
 fn a_key_named_file_outside_the_checkout_has_no_id() {
-    let (mut ed, dir) = editor_on("outside", "a.txt", "one\n");
+    let (_s, mut ed, dir) = editor_on("outside", "a.txt", "one\n");
     std::fs::create_dir(dir.join("other")).unwrap();
     let env = dir.join("other").join(".env");
     std::fs::write(&env, "PASS=\n").unwrap();
@@ -745,7 +763,7 @@ fn a_key_named_file_outside_the_checkout_has_no_id() {
 /// key made, and the months aren't pruned through it.
 #[test]
 fn a_link_at_the_records_folder_is_refused() {
-    let (mut ed, dir) = editor_on("link", "a.txt", "one\n");
+    let (_s, mut ed, dir) = editor_on("link", "a.txt", "one\n");
     let elsewhere = dir.join("elsewhere");
     std::fs::create_dir(&elsewhere).unwrap();
     std::os::unix::fs::symlink(&elsewhere, dir.join(DIR)).unwrap();
@@ -765,7 +783,7 @@ fn a_link_at_the_records_folder_is_refused() {
 /// into is.
 #[test]
 fn a_change_you_didnt_type_isnt_edited() {
-    let (mut ed, dir) = reviewing("untyped", &["a.txt", "b.txt"], &[]);
+    let (_s, mut ed, dir) = reviewing("untyped", &["a.txt", "b.txt"], &[]);
     let tx = crate::transaction::Transaction::new(vec![crate::transaction::Change {
         from: 0,
         to: 1,
@@ -799,7 +817,7 @@ fn a_change_of_mode_is_a_change_of_its_own() {
         ("b.sh", "one\ntwo\nthree\n", "one\ntwo\nTHREE\n"),
         ("c.sh", "echo one\n", "echo ONE\n"),
     ];
-    let (mut ed, dir) = repo("mode", &files, &[]);
+    let (_s, mut ed, dir) = repo("mode", &files, &[]);
     for f in ["a.sh", "b.sh", "c.sh"] {
         std::fs::set_permissions(dir.join(f), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -845,7 +863,7 @@ fn kept_id(dir: &Path, file: &str, removed: &[&str], added: &[&str], nth: usize)
 fn alike_changes_keep_their_places_when_one_is_taken_back() {
     let block = "1\n2\n3\n4\n5\n6\n";
     let now = format!("a\n{block}b\nc\nd\n{block}e\n");
-    let (mut ed, dir) = reviewing_texts("shift", &[("x.txt", "a\ny\nb\nc\nd\ny\ne\n", &now)], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("shift", &[("x.txt", "a\ny\nb\nc\nd\ny\ne\n", &now)], &[]);
     assert_eq!(ed.cursor_line(), 1, "in the first");
     feed(&mut ed, "<space>vu");
     rediffed(&mut ed, "the diff after the undo");
@@ -868,7 +886,7 @@ fn an_alike_change_off_screen_is_never_taken_for_the_one_taken_back() {
     let line = |l: usize, twin: &str| if l == 1 || l == 90 { twin.to_string() } else { format!("l{l}") };
     let then: String = (0..100).map(|l| line(l, "y") + "\n").collect();
     let now: String = (0..100).map(|l| line(l, "x") + "\n").collect();
-    let (mut ed, dir) = reviewing_texts("twin", &[("t.txt", &then, &now)], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("twin", &[("t.txt", &then, &now)], &[]);
     assert_eq!(ed.cursor_line(), 1, "in the first");
     let w = ed.workspace.reviews.code.as_ref().expect("its watch");
     assert_eq!((w.changes.len(), w.kept().count()), (2, 1), "both followed, the twin off screen");
@@ -886,7 +904,7 @@ fn an_alike_change_off_screen_is_never_taken_for_the_one_taken_back() {
 /// `space v u` then `u`: the change is back, and it's one change — its entry taken again, not `undone`.
 #[test]
 fn a_change_taken_back_and_brought_back_is_one_change() {
-    let (mut ed, dir) = reviewing("back", &["a.txt"], &[]);
+    let (_s, mut ed, dir) = reviewing("back", &["a.txt"], &[]);
     feed(&mut ed, "<space>vu");
     rediffed(&mut ed, "the diff after the undo");
     feed(&mut ed, "u");
@@ -902,7 +920,7 @@ fn a_change_taken_back_and_brought_back_is_one_change() {
 /// A file of the review closed and opened again (another buffer) has the same changes, not new ones.
 #[test]
 fn a_file_opened_again_has_the_same_changes() {
-    let (mut ed, dir) = reviewing("reopen", &["a.txt", "b.txt"], &[]);
+    let (_s, mut ed, dir) = reviewing("reopen", &["a.txt", "b.txt"], &[]);
     let first = ed.doc().id;
     show(&mut ed, &dir, 1, "b.txt");
     ed.close_doc(first);
@@ -916,14 +934,14 @@ fn a_file_opened_again_has_the_same_changes() {
 
 /// A review of high-risk `c.txt` in a session of its own, its change taken back with `space v u` before its
 /// diff is read again.
-fn undone_in_a_session(name: &str) -> (Editor, PathBuf) {
+fn undone_in_a_session(name: &str) -> (crate::scratch::Scratch, Editor, PathBuf) {
     let files = [("c.txt", "c one\n", "c ONE\n")];
-    let (mut ed, dir) = repo(name, &files, &["c.txt"]);
+    let (s, mut ed, dir) = repo(name, &files, &["c.txt"]);
     let other = ed.workspace_add(dir.clone());
     ed.workspace_switch(other);
     open_review(&mut ed, &dir, &files);
     feed(&mut ed, "<space>vu");
-    (ed, dir)
+    (s, ed, dir)
 }
 
 /// The record's line of `c.txt`'s change taken back: `undone`, high by its rule.
@@ -943,7 +961,7 @@ fn assert_undone_graded(dir: &Path) {
 /// it ended.
 #[test]
 fn a_session_ending_keeps_its_review_graded() {
-    let (mut ed, dir) = undone_in_a_session("ending");
+    let (_s, mut ed, dir) = undone_in_a_session("ending");
     ed.workspace_close(&dir).expect("it ends");
     assert_undone_graded(&dir);
     std::fs::remove_dir_all(&dir).ok();
@@ -952,7 +970,7 @@ fn a_session_ending_keeps_its_review_graded() {
 /// Quitting with a session behind keeps its review graded too, as the one in front.
 #[test]
 fn quitting_keeps_a_review_behind_graded() {
-    let (mut ed, dir) = undone_in_a_session("behind-quit");
+    let (_s, mut ed, dir) = undone_in_a_session("behind-quit");
     ed.workspace_switch(crate::event::WorkspaceId::HOME);
     frame(&mut ed);
     ed.reviews_flush();
@@ -964,7 +982,7 @@ fn quitting_keeps_a_review_behind_graded() {
 /// — and is `undone` though the review ends before its diff is read again.
 #[test]
 fn a_change_taken_back_keeps_its_grade_and_rule() {
-    let (mut ed, dir) = reviewing("undo-grade", &["c.txt", "d.txt"], &["c.txt", "d.txt"]);
+    let (_s, mut ed, dir) = reviewing("undo-grade", &["c.txt", "d.txt"], &["c.txt", "d.txt"]);
     assert_eq!(ed.doc().path.as_deref(), Some(dir.join("c.txt").as_path()));
     feed(&mut ed, "<space>vu");
     rediffed(&mut ed, "c.txt's diff after the undo");
@@ -1003,7 +1021,7 @@ fn outcome_of(
 /// `undone`, graded.
 #[test]
 fn a_deletion_taken_back_is_undone() {
-    let (mut ed, dir) = reviewing_texts("deletion", &[("d.txt", "a\nb\nc\n", "a\nc\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("deletion", &[("d.txt", "a\nb\nc\n", "a\nc\n")], &[]);
     feed(&mut ed, "gg");
     frame(&mut ed);
     feed(&mut ed, "<space>vu");
@@ -1022,7 +1040,7 @@ fn a_deletion_taken_back_is_undone() {
 /// in the first's) is the one `undone`.
 #[test]
 fn of_twin_deletions_the_one_taken_back_is_undone() {
-    let (mut ed, dir) = reviewing_texts("twins", &[("t.txt", "a\nx\nb\nx\nc\n", "a\nb\nc\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("twins", &[("t.txt", "a\nx\nb\nx\nc\n", "a\nb\nc\n")], &[]);
     feed(&mut ed, "ggj");
     frame(&mut ed);
     assert_eq!(ed.cursor_line(), 1);
@@ -1041,7 +1059,7 @@ fn of_twin_deletions_the_one_taken_back_is_undone() {
 /// taken back is the one the cursor is on as the key runs, not the one the last frame had in hand.
 #[test]
 fn keys_in_one_batch_take_back_the_change_the_cursor_is_on() {
-    let (mut ed, dir) =
+    let (_s, mut ed, dir) =
         reviewing_texts("batch", &[("b.txt", "a\nb\nc\nd\ne\nf\n", "A\nb\nc\nd\nE\nf\n")], &[]);
     feed(&mut ed, "gg");
     frame(&mut ed);
@@ -1060,7 +1078,7 @@ fn keys_in_one_batch_take_back_the_change_the_cursor_is_on() {
 /// its old lines now.
 #[test]
 fn a_change_gone_by_hand_keeps_its_grade_and_rule() {
-    let (mut ed, dir) = reviewing_texts("by-hand", &[("c.txt", "a\n", "a\nadded\n")], &["c.txt"]);
+    let (_s, mut ed, dir) = reviewing_texts("by-hand", &[("c.txt", "a\n", "a\nadded\n")], &["c.txt"]);
     assert_eq!(ed.cursor_line(), 1, "on the change");
     feed(&mut ed, "xd");
     rediffed(&mut ed, "the diff after the delete");
@@ -1083,7 +1101,7 @@ fn a_change_gone_by_hand_keeps_its_grade_and_rule() {
 /// another in the same file since — the first `edited`, the other not.
 #[test]
 fn a_rewrite_not_yours_beside_your_typing_isnt_edited() {
-    let (mut ed, dir) = reviewing_texts("beside", &[("b.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("beside", &[("b.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
     feed(&mut ed, "ggiX<esc>");
     // (format-on-save's edit, landing as a job's: no key of yours)
     let at = ed.doc().text.line_to_byte(2);
@@ -1102,7 +1120,7 @@ fn a_rewrite_not_yours_beside_your_typing_isnt_edited() {
 /// An edit not yours, then your keys elsewhere in the file: only what the keys changed is yours.
 #[test]
 fn a_rewrite_not_yours_after_your_typing() {
-    let (mut ed, dir) = reviewing_texts("after", &[("b.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("after", &[("b.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
     let at = ed.doc().text.line_to_byte(2);
     let tx = crate::transaction::Transaction::new(vec![crate::transaction::Change::insert(at, "Y")]);
     ed.doc_mut().apply(&tx);
@@ -1168,7 +1186,7 @@ fn edits_on_a_key_not_yours_arent_edited() {
         ("replace", replace, "edited"),
     ];
     for (name, edit, outcome) in cases {
-        let (mut ed, dir) = reviewing_texts(name, &[("b.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
+        let (_s, mut ed, dir) = reviewing_texts(name, &[("b.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
         let path = dir.join("b.txt");
         match name {
             "format" => edit(&mut ed, &path),
@@ -1191,7 +1209,7 @@ fn edits_on_a_key_not_yours_arent_edited() {
 /// An edit of nothing that isn't yours, after yours in the same key, drops nothing of yours.
 #[test]
 fn an_empty_edit_not_yours_keeps_yours() {
-    let (mut ed, dir) = reviewing_texts("empty", &[("e.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("empty", &[("e.txt", "a\nk\nb\n", "A\nk\nB\n")], &[]);
     as_a_key(&mut ed, |ed| {
         feed(ed, "ggiX<esc>");
         ed.apply_text_edits(ed.doc().id, crate::lsp::Encoding::Utf8, &[]).unwrap();
@@ -1207,7 +1225,7 @@ fn an_empty_edit_not_yours_keeps_yours() {
 /// An edit review's `y` on a buffer gone before it lands: nothing applied, so `left`, not `accepted`.
 #[test]
 fn an_accept_that_lands_nowhere_is_left() {
-    let (mut ed, dir) = editor_on("gone", "a.txt", "one\n");
+    let (_s, mut ed, dir) = editor_on("gone", "a.txt", "one\n");
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "upper", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
     frame(&mut ed);
@@ -1225,7 +1243,7 @@ fn an_accept_that_lands_nowhere_is_left() {
 /// The git tab's `d` and the palette's "Undo this change" take a change back as `space v u` does: `undone`.
 #[test]
 fn a_change_reset_another_way_is_undone() {
-    let (mut ed, dir) = reviewing_texts("reset", &[("r.txt", "a\nb\n", "A\nb\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("reset", &[("r.txt", "a\nb\n", "A\nb\n")], &[]);
     feed(&mut ed, "gg");
     ed.git_reset_hunk();
     rediffed(&mut ed, "the diff after the reset");
@@ -1240,7 +1258,7 @@ fn a_change_reset_another_way_is_undone() {
 /// the change taken back stays asked back, and is `undone`.
 #[test]
 fn a_finding_of_a_text_gone_is_never_applied() {
-    let (mut ed, dir) = reviewing_texts("stale", &[("s.txt", "a\nb\n", "A\nb\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("stale", &[("s.txt", "a\nb\n", "A\nb\n")], &[]);
     let (of, at, file, stale) = {
         let (r, w, d) = (
             ed.workspace.code_review.as_ref().unwrap(),
@@ -1265,7 +1283,7 @@ fn a_finding_of_a_text_gone_is_never_applied() {
 /// the edits since — never its twin, though the twin's text no longer is what was found (N17).
 #[test]
 fn a_take_back_after_edits_in_one_batch_hashes_nothing_and_takes_the_right_one() {
-    let (mut ed, dir) = reviewing_texts("macro", &[("m.txt", "a\ny\nb\ny\nc\n", "a\nx\nb\nx\nc\n")], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("macro", &[("m.txt", "a\ny\nb\ny\nc\n", "a\nx\nb\nx\nc\n")], &[]);
     feed(&mut ed, "ggjrzjj<space>vu");
     assert_eq!(FOUND_HERE.with(|n| n.get()), 0, "hashed on the key");
     rediffed(&mut ed, "the diff after the undo");
@@ -1285,7 +1303,7 @@ fn a_take_back_after_edits_in_one_batch_hashes_nothing_and_takes_the_right_one()
 fn past_the_cap_a_files_changes_are_unpaired_not_paired_wrong() {
     let (then, now): (String, String) =
         ((0..300).map(|_| "x\nk\n").collect(), (0..300).map(|_| "y\nk\n").collect());
-    let (mut ed, dir) = reviewing_texts("cap", &[("c.txt", &then, &now)], &[]);
+    let (_s, mut ed, dir) = reviewing_texts("cap", &[("c.txt", &then, &now)], &[]);
     feed(&mut ed, "gg<space>vu");
     rediffed(&mut ed, "the diff after the undo");
     feed(&mut ed, "u");
@@ -1303,7 +1321,7 @@ fn past_the_cap_a_files_changes_are_unpaired_not_paired_wrong() {
 /// `:reload` is your key, not your edit: a change the file on disk rewrote isn't `edited`.
 #[test]
 fn a_reload_isnt_your_edit() {
-    let (mut ed, dir) = reviewing("reload", &["a.txt"], &[]);
+    let (_s, mut ed, dir) = reviewing("reload", &["a.txt"], &[]);
     std::fs::write(dir.join("a.txt"), "A.txt ONE\n").unwrap();
     feed(&mut ed, ":reload<ret>");
     rediffed(&mut ed, "the diff after the reload");
@@ -1320,7 +1338,7 @@ fn a_reload_isnt_your_edit() {
 #[test]
 fn an_accepted_edit_isnt_yours_though_you_typed_since() {
     let files = [("a.txt", "one\ntwo\nthree\nfour\n", "ONE\ntwo\nthree\nfour\n")];
-    let (mut ed, dir) = reviewing_texts("accepted", &files, &[]);
+    let (_s, mut ed, dir) = reviewing_texts("accepted", &files, &[]);
     // (you type on another line, no frame since; then Claude's edit of the change, accepted)
     feed(&mut ed, "ggjjjiZ<esc>");
     let id = ed.doc().id;
@@ -1349,7 +1367,7 @@ fn state_id_line(entries: &[Value], dir: &Path, removed: &[&str], added: &[&str]
 #[test]
 fn a_restart_ends_the_review_under_way_and_the_one_back_is_new() {
     let files = [("a.txt", "a.txt one\n", "a.txt ONE\n")];
-    let (mut ed, dir) = reviewing_texts("restart", &files, &[]);
+    let (_s, mut ed, dir) = reviewing_texts("restart", &files, &[]);
     let id = ed.workspace.reviews.code.as_ref().expect("its watch").id.clone();
     ed.restart = Some(crate::restart::Restart::ready_to(dir.join("tarae")));
     ed.reviews_flush();
@@ -1381,7 +1399,7 @@ fn a_restart_ends_the_review_under_way_and_the_one_back_is_new() {
 /// A link at the record's key is refused, never read: no line keyed under what it points at.
 #[test]
 fn a_link_at_the_key_is_refused() {
-    let (mut ed, dir) = editor_on("key-link", "a.txt", "one\n");
+    let (_s, mut ed, dir) = editor_on("key-link", "a.txt", "one\n");
     let known = dir.join("known");
     std::fs::write(&known, [7u8; 32]).unwrap();
     std::os::unix::fs::symlink(&known, key_path(&dir.join(DIR))).unwrap();
@@ -1425,7 +1443,7 @@ fn first_writes_at_once_share_one_key() {
 /// were found.
 #[test]
 fn a_frame_finds_no_changes_itself() {
-    let (mut ed, dir) = reviewing("off-frame", &["a.txt", "b.txt"], &[]);
+    let (_s, mut ed, dir) = reviewing("off-frame", &["a.txt", "b.txt"], &[]);
     show(&mut ed, &dir, 1, "b.txt");
     assert_eq!(FOUND_HERE.with(|n| n.get()), 0, "found in a frame");
     assert_eq!(ed.workspace.reviews.code.as_ref().map(|w| w.kept().count()), Some(2), "found on a worker");
@@ -1459,7 +1477,7 @@ fn pruning_refuses_a_link_at_the_records_folder() {
 /// home whose `~/.config/git/ignore` lists `.env` leaves it committed.
 #[test]
 fn the_tests_git_reads_no_global_ignore() {
-    let (_, dir) = repo("xdg", &[("a.txt", "a\n", "a\n")], &[]);
+    let (_s, _, dir) = repo("xdg", &[("a.txt", "a\n", "a\n")], &[]);
     let home = dir.join("home");
     std::fs::create_dir_all(home.join(".config/git")).unwrap();
     std::fs::write(home.join(".config/git/ignore"), ".env\n").unwrap();

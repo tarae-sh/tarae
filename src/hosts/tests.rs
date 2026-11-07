@@ -14,13 +14,14 @@ use crate::sandbox::{Env, Guard, Policy};
 const HOST: &str = "static.example.invalid";
 
 /// An editor in `front` with a session for `back` behind it — folders in the test's own temp folder — each with
-/// a sandboxed run of Claude's under way: their policies' run ids.
-fn two(name: &str) -> (Editor, PathBuf, WorkspaceId, u64, u64) {
-    let dir = crate::scratch::Scratch::new(&format!("hosts-{name}")).into_path();
+/// a sandboxed run of Claude's under way: their policies' run ids. The folder goes with the `Scratch`, after the
+/// editor (#441: an `into_path` the caller was to remove was left in the temp folder each run where it didn't).
+fn two(name: &str) -> (crate::scratch::Scratch, Editor, PathBuf, WorkspaceId, u64, u64) {
+    let s = crate::scratch::Scratch::new(&format!("hosts-{name}"));
     for p in ["front", "back"] {
-        std::fs::create_dir_all(dir.join(p)).unwrap();
+        std::fs::create_dir_all(s.join(p)).unwrap();
     }
-    let dir = std::fs::canonicalize(dir).unwrap();
+    let dir = s.to_path_buf();
     let mut ed = Editor::new(crate::config::Config::default());
     // (as their runs' policies: the network open with a host list — the closed network's cards are
     // `the_closed_network_asks_each_host_for_a_session_at_most`'s)
@@ -32,7 +33,14 @@ fn two(name: &str) -> (Editor, PathBuf, WorkspaceId, u64, u64) {
     let front_run = running(&mut ed.workspace, "cargo build");
     let i = ed.workspaces.iter().position(|s| s.id == back).unwrap();
     let back_run = running(&mut ed.workspaces[i], "npm install");
-    (ed, dir, back, front_run, back_run)
+    (s, ed, dir, back, front_run, back_run)
+}
+
+/// #441: it left its folder in the temp folder every run.
+#[test]
+fn the_tests_of_two_sessions_leave_no_folder_behind() {
+    let left = crate::scratch::left_by(a_host_refused_on_its_card_isnt_asked_again_by_also);
+    assert!(left.is_empty(), "left in the temp folder: {left:?}");
 }
 
 /// A run of Claude's under way in `s` (no process), sandboxed with the network open and a list of hosts: its
@@ -91,7 +99,7 @@ fn answered(m: &ToProxy) -> Option<(u64, u64, String, u16, Scope)> {
 /// isn't Claude's.
 #[test]
 fn a_host_refused_on_its_card_isnt_asked_again_by_also() {
-    let (mut ed, dir, _, run, _) = two("also-refused");
+    let (_s, mut ed, dir, _, run, _) = two("also-refused");
     ed.config.llm.sandbox_network = false;
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -121,7 +129,7 @@ fn a_host_refused_on_its_card_isnt_asked_again_by_also() {
 /// registry is no registry. The names are the built-in packs' data: nothing connects.
 #[test]
 fn the_closed_network_asks_each_host_for_a_session_at_most() {
-    let (mut ed, dir, _, run, _) = two("closed");
+    let (_s, mut ed, dir, _, run, _) = two("closed");
     ed.config.llm.sandbox_network = false;
     let front = dir.join("front");
     asked(&mut ed, ask(&front, run, "index.crates.io"));
@@ -176,7 +184,7 @@ fn the_closed_network_asks_each_host_for_a_session_at_most() {
 /// buffer, and the card stays up to answer.
 #[test]
 fn the_closed_cards_details_are_behind_v() {
-    let (mut ed, dir, _, run, _) = two("details");
+    let (_s, mut ed, dir, _, run, _) = two("details");
     ed.config.llm.sandbox_network = false;
     asked(&mut ed, ask(&dir.join("front"), run, "index.crates.io"));
     settled(&mut ed);
@@ -196,7 +204,7 @@ fn the_closed_cards_details_are_behind_v() {
 /// again: each host but one the session's `s` holds too.
 #[test]
 fn a_chat_answer_is_taken_back_when_the_conversation_ends() {
-    let (mut ed, dir, _, run, _) = two("chat");
+    let (_s, mut ed, dir, _, run, _) = two("chat");
     ed.config.llm.sandbox_network = false;
     // (the new conversation's claude a stand-in that reads nothing)
     ed.config.llm.command = "sh".into();
@@ -240,7 +248,7 @@ fn a_chat_answer_is_taken_back_when_the_conversation_ends() {
 /// session in front, whose keys would answer it.
 #[test]
 fn one_card_per_host_in_its_runs_session() {
-    let (mut ed, dir, back, front_run, back_run) = two("one");
+    let (_s, mut ed, dir, back, front_run, back_run) = two("one");
     asked(&mut ed, ask(&dir.join("front"), front_run, HOST));
     asked(&mut ed, ask(&dir.join("front"), front_run, HOST));
     let up = hosts_cards(&ed.offers);
@@ -262,7 +270,7 @@ fn one_card_per_host_in_its_runs_session() {
 /// that no longer does — said anew (its text changed: it settles again).
 #[test]
 fn the_card_moves_to_the_run_asking_now() {
-    let (mut ed, dir, ..) = two("moves");
+    let (_s, mut ed, dir, ..) = two("moves");
     let first = ed.workspace.task_run.as_ref().map(|r| match &r.guard {
         Some(Guard::In(p)) => p.run_id,
         _ => 0,
@@ -292,7 +300,7 @@ fn the_card_moves_to_the_run_asking_now() {
 /// nothing.
 #[test]
 fn a_process_left_by_a_run_thats_over_gets_a_card() {
-    let (mut ed, dir, ..) = two("left");
+    let (_s, mut ed, dir, ..) = two("left");
     asked(&mut ed, ask(&dir.join("front"), 999_999, HOST));
     let up = hosts_cards(&ed.offers);
     assert_eq!((up.len(), up[0].run, up[0].left), (1, 999_999, true));
@@ -365,7 +373,7 @@ fn a_hosts_always_in_a_repository_is_every_checkouts_and_says_so() {
 /// next runs — the network open), `n` refused for the session (no longer listed).
 #[test]
 fn each_answer_reaches_as_far_as_its_key() {
-    let (mut ed, dir, _, run, _) = two("keys");
+    let (_s, mut ed, dir, _, run, _) = two("keys");
     let session = workspace_of(&dir.join("front"));
     let _ = sent();
     let keys = [
@@ -411,7 +419,7 @@ fn each_answer_reaches_as_far_as_its_key() {
 /// the session's (the network closed: `answer`'s cut) still `A`.
 #[test]
 fn a_hosts_answer_records_the_key_that_gave_it() {
-    let (mut ed, dir, _, run, _) = two("keys-recorded");
+    let (_s, mut ed, dir, _, run, _) = two("keys-recorded");
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
     ed.workspace.set_at(crate::workspace::Here::Chat);
     let front = dir.join("front");
@@ -457,7 +465,7 @@ fn a_hosts_answer_records_the_key_that_gave_it() {
 /// there tells the proxy nothing. Brought to the front, the card answers for its own session and run.
 #[test]
 fn a_peer_sessions_key_never_answers_it() {
-    let (mut ed, dir, back, _, back_run) = two("peer");
+    let (_s, mut ed, dir, back, _, back_run) = two("peer");
     let _ = sent();
     asked(&mut ed, ask(&dir.join("back"), back_run, HOST));
     assert!(ed.offers.is_empty(), "nothing in front");
@@ -487,7 +495,7 @@ fn a_peer_sessions_key_never_answers_it() {
 /// session in front's project.
 #[test]
 fn a_grant_from_a_refused_run_reaches_as_far_as_its_key() {
-    let (mut ed, dir, ..) = two("grant");
+    let (_s, mut ed, dir, ..) = two("grant");
     let session = workspace_of(&dir.join("front"));
     let _ = sent();
     granted(&mut ed, HOST, 443, crate::allow::Scope::Once);
@@ -510,7 +518,7 @@ fn a_grant_from_a_refused_run_reaches_as_far_as_its_key() {
 /// and an `A` is kept under the path the next run reads it by.
 #[test]
 fn a_project_opened_through_a_link_is_one_session_to_both() {
-    let (mut ed, dir, ..) = two("link");
+    let (_s, mut ed, dir, ..) = two("link");
     let link = dir.join("link");
     std::os::unix::fs::symlink(dir.join("front"), &link).unwrap();
     ed.workspace.root = link.clone();
@@ -682,7 +690,7 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
 /// drawn, its answers in those words, a column less it isn't — and while it isn't, no key of yours answers it.
 #[test]
 fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
-    let (mut ed, dir, _, run, _) = two("narrow");
+    let (_s, mut ed, dir, _, run, _) = two("narrow");
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
     ed.workspace.set_at(crate::workspace::Here::Chat);
     asked(&mut ed, ask(&dir.join("front"), run, HOST));
@@ -756,7 +764,7 @@ fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
 /// the user's own run goes with the run, as before. Another run's card is untouched.
 #[test]
 fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
-    let (mut ed, dir, _, run, _) = two("ends");
+    let (_s, mut ed, dir, _, run, _) = two("ends");
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
     ed.workspace.set_at(crate::workspace::Here::Chat);
     ed.config.llm.command = "sh".into();

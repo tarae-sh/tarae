@@ -1515,8 +1515,10 @@ mod tests {
     /// A repository `main` and worktrees of it (`.git` files naming their folder, and its `commondir`, as git
     /// makes them — no git run), each a cargo project with `src/main.rs`; the stand-in servers (`cat`) write
     /// what they're sent to `srv-<pid>.log`. `main` is the session's checkout.
-    fn fixture(name: &str, worktrees: &[&str], room: ReadRoom) -> (PathBuf, Editor) {
-        let t = crate::scratch::Scratch::new(&format!("share-{name}")).into_path();
+    /// The folder goes with the `Scratch`, after the editor (#441).
+    fn fixture(name: &str, worktrees: &[&str], room: ReadRoom) -> (crate::scratch::Scratch, PathBuf, Editor) {
+        let s = crate::scratch::Scratch::new(&format!("share-{name}"));
+        let t = s.to_path_buf();
         std::fs::create_dir_all(t.join("main/.git")).unwrap();
         for c in std::iter::once(&"main").chain(worktrees) {
             std::fs::create_dir_all(t.join(c).join("src")).unwrap();
@@ -1539,7 +1541,7 @@ mod tests {
         let mut ed = Editor::new(config);
         ed.workspace.root = t.join("main");
         ed.lsp.share.room = Some(room);
-        (t, ed)
+        (s, t, ed)
     }
 
     /// What `served` keeps is laid out again when who serves what changes in place — a server's folders left, a
@@ -1547,7 +1549,7 @@ mod tests {
     /// it out anew gives (`served_check`, as `served_sync` keeps it) and says the change.
     #[test]
     fn who_serves_what_kept_follows_a_change_in_place() {
-        let (t, mut ed) = fixture("served", &["w1", "w2"], plenty);
+        let (_s, t, mut ed) = fixture("served", &["w1", "w2"], plenty);
         let roots: Vec<PathBuf> = ["main", "w1", "w2"].iter().map(|c| t.join(c)).collect();
         for r in &roots[1..] {
             ed.workspace_add(r.clone());
@@ -1687,7 +1689,7 @@ mod tests {
     /// over; wt1 (behind, its Claude idle) only once it's in front.
     #[test]
     fn a_loaded_server_checks_only_the_folders_someone_looks_at() {
-        let (t, mut ed) = fixture("owed", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("owed", &["wt1"], plenty);
         let (main_file, wt_file) = (t.join("main/src/main.rs"), t.join("wt1/src/main.rs"));
         let (main, a) = open(&mut ed, &main_file);
         let a = a.expect("the repository's server");
@@ -1755,7 +1757,7 @@ mod tests {
     /// stays, B's checks come on, A is shut down — quietly.
     #[test]
     fn a_new_checkout_joins_by_a_swap_and_nobody_waits() {
-        let (t, mut ed) = fixture("swap", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("swap", &["wt1"], plenty);
         let (main_file, wt_file) = (t.join("main/src/main.rs"), t.join("wt1/src/main.rs"));
         let (main, a) = open(&mut ed, &main_file);
         let a = a.expect("the repository's server");
@@ -1842,7 +1844,7 @@ mod tests {
     /// file of it opens; its first file then goes to the new server.
     #[test]
     fn a_session_made_joins_before_its_first_file() {
-        let (t, mut ed) = fixture("session", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("session", &["wt1"], plenty);
         let (_, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -1863,7 +1865,7 @@ mod tests {
     /// the held checkout back in until it's answered; then its files join again.
     #[test]
     fn a_paused_checkout_leaves_the_shared_server_to_the_others() {
-        let (t, mut ed) = fixture("held", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("held", &["wt1"], plenty);
         let main_file = t.join("main/src/main.rs");
         let (main, a) = open(&mut ed, &main_file);
         let a = a.unwrap();
@@ -1906,7 +1908,7 @@ mod tests {
     /// take that checkout in when it lands.
     #[test]
     fn a_change_decided_before_a_pause_leaves_the_paused_checkout_out() {
-        let (t, mut ed) = fixture("held-late", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("held-late", &["wt1"], plenty);
         let (_, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -1932,7 +1934,7 @@ mod tests {
     /// closed, no session for it) leaves by another swap, with the shorter list.
     #[test]
     fn checkouts_close_together_are_one_swap_and_one_that_ends_leaves_by_another() {
-        let (t, mut ed) = fixture("batch", &["wt1", "wt2"], plenty);
+        let (_s, t, mut ed) = fixture("batch", &["wt1", "wt2"], plenty);
         let (_, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -1969,7 +1971,7 @@ mod tests {
     /// take them swaps: the test above.)
     #[test]
     fn a_checkout_that_ends_leaves_by_a_folder_change_when_the_server_takes_them() {
-        let (t, mut ed) = fixture("leave", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("leave", &["wt1"], plenty);
         let takes = |ed: &mut Editor, cid: ClientId| {
             let caps = json!({ "positionEncoding": "utf-8",
                 "workspace": { "workspaceFolders": { "supported": true, "changeNotifications": true } } });
@@ -2008,7 +2010,7 @@ mod tests {
     /// checks off until it's loaded. A server that never finished loading is restarted too.
     #[test]
     fn without_room_for_two_a_restart() {
-        let (t, mut ed) = fixture("tight", &["wt1", "wt2"], tight);
+        let (_s, t, mut ed) = fixture("tight", &["wt1", "wt2"], tight);
         let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -2038,7 +2040,7 @@ mod tests {
     /// its check with it, the newest of a file once, and goes at that scan's end; one during a later scan goes at once.
     #[test]
     fn a_save_during_its_first_roots_scan_waits_for_its_end() {
-        let (t, mut ed) = fixture("scan", &[], plenty);
+        let (_s, t, mut ed) = fixture("scan", &[], plenty);
         let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -2076,7 +2078,7 @@ mod tests {
     /// to an hour. The error comes only once `:procs` holds it (its third exit in a while): then none starts.
     #[test]
     fn a_shared_server_that_exits_is_restarted_for_its_folders() {
-        let (t, mut ed) = fixture("exits", &["wt1"], tight);
+        let (_s, t, mut ed) = fixture("exits", &["wt1"], tight);
         let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -2123,7 +2125,7 @@ mod tests {
 
     #[test]
     fn a_server_still_loading_is_restarted_with_the_new_list() {
-        let (t, mut ed) = fixture("loading", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("loading", &["wt1"], plenty);
         let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -2149,7 +2151,7 @@ mod tests {
     /// at once and A stops — every file B's.
     #[test]
     fn pressure_during_a_swap_ends_it() {
-        let (t, mut ed) = fixture("pressure", &["wt1"], pressure_later);
+        let (_s, t, mut ed) = fixture("pressure", &["wt1"], pressure_later);
         let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -2172,7 +2174,7 @@ mod tests {
     /// server — a swap with the shorter list — and its file gets a server of its own.
     #[test]
     fn a_checkout_whose_toolchain_changes_gets_its_own() {
-        let (t, mut ed) = fixture("toolchain", &["wt1"], plenty);
+        let (_s, t, mut ed) = fixture("toolchain", &["wt1"], plenty);
         let (main, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
@@ -2207,7 +2209,7 @@ mod tests {
     /// `needs-project`); one that isn't waits for a file of its own.
     #[test]
     fn a_new_sessions_checkout_joins_only_as_a_project() {
-        let (t, mut ed) = fixture("session-project", &["wt1", "wt2"], plenty);
+        let (_s, t, mut ed) = fixture("session-project", &["wt1", "wt2"], plenty);
         let (_, a) = open(&mut ed, &t.join("main/src/main.rs"));
         let a = a.unwrap();
         up(&mut ed, a);
