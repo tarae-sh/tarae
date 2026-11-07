@@ -168,30 +168,35 @@ impl Editor {
         }
     }
 
-    /// Jump `j` into a preview closed since (`park_jumps`): its file opened again, as the preview, and every entry
-    /// of it pointing at that buffer — the jump as it is now. None: nothing kept of it, or the file is gone (its
-    /// entries go, said).
-    fn unpark(&mut self, j: Jump) -> Option<Jump> {
-        let p = self.workspace.jumps_parked.remove(&j.doc)?;
-        if let Err(e) = self.open_preview_travel(&p.path) {
-            for v in self.workspace.views.iter_mut() {
-                v.jumps.remove_doc(j.doc);
+    /// Jump `j` into a preview closed since (`park_jumps`): its file opened again, as the preview (read on a worker —
+    /// `open_preview_travel`), and every entry of it pointing at that buffer, then the jump as it is now taken there
+    /// (`goto_jump_at`). Nothing kept of it, or the file is gone: its entries go, said.
+    fn unpark(&mut self, j: Jump, old: DocId) {
+        let Some(p) = self.workspace.jumps_parked.remove(&j.doc) else { return };
+        let Parked { path, marks, .. } = p;
+        self.open_preview_travel(&path, move |ed, r| {
+            let new = match r {
+                Ok(id) => id,
+                Err(e) => {
+                    for v in ed.workspace.views.iter_mut() {
+                        v.jumps.remove_doc(j.doc);
+                    }
+                    return ed.set_status(format!("that jump's file can't be opened again: {e:#}"));
+                }
+            };
+            let d = ed.doc_mut();
+            let map: Vec<(u64, u64)> = marks.into_iter().map(|(m, sel)| (m, d.add_mark(sel))).collect();
+            let to = |m: u64| map.iter().find(|x| x.0 == m).map(|x| x.1);
+            for v in ed.workspace.views.iter_mut() {
+                v.jumps.rebind(j.doc, new, to);
             }
-            self.set_status(format!("that jump's file can't be opened again: {e:#}"));
-            return None;
-        }
-        let new = self.doc().id;
-        let d = self.doc_mut();
-        let map: Vec<(u64, u64)> = p.marks.into_iter().map(|(m, sel)| (m, d.add_mark(sel))).collect();
-        let to = |m: u64| map.iter().find(|x| x.0 == m).map(|x| x.1);
-        for v in self.workspace.views.iter_mut() {
-            v.jumps.rebind(j.doc, new, to);
-        }
-        let mark = to(j.mark);
-        if mark.is_none() {
-            self.set_status("that jump's spot wasn't kept — its file is open again, as the preview");
-        }
-        Some(Jump { doc: new, mark: mark? })
+            match to(j.mark) {
+                Some(mark) => ed.goto_jump_at(Jump { doc: new, mark }, old),
+                None => {
+                    ed.set_status("that jump's spot wasn't kept — its file is open again, as the preview")
+                }
+            }
+        })
     }
 
     /// Documents keep only the marks some pane's list (or a note) still points at — every session's panes: a
@@ -277,19 +282,20 @@ impl Editor {
         let old = self.doc().id;
         // (into a preview the next one took the place of: opened again, as the preview)
         // (one that can't go says so: a jump that does nothing in silence looks like a broken key)
-        let j = match self.docs.iter().any(|d| d.id == j.doc) {
-            true => j,
+        match self.docs.iter().any(|d| d.id == j.doc) {
+            true => self.goto_jump_at(j, old),
             false if !self.workspace.jumps_parked.contains_key(&j.doc) => {
                 for v in self.workspace.views.iter_mut() {
                     v.jumps.remove_doc(j.doc);
                 }
-                return self.set_status("that jump's file was closed — its jumps went with it");
+                self.set_status("that jump's file was closed — its jumps went with it")
             }
-            false => match self.unpark(j) {
-                Some(j) => j,
-                None => return,
-            },
-        };
+            false => self.unpark(j, old),
+        }
+    }
+
+    /// `goto_jump`'s travel to `j` in a buffer there, from document `old`.
+    fn goto_jump_at(&mut self, j: Jump, old: DocId) {
         let Some(di) = self.docs.iter().position(|d| d.id == j.doc) else { return };
         let Some(sel) = self.docs[di].mark(j.mark) else {
             return self.set_status("that jump's spot isn't kept any more");

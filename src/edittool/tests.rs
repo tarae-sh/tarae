@@ -746,6 +746,30 @@ fn a_reviews_keys_go_only_on_the_call_its_for() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #375 step 3 (`.sb/openaside-plan.md` §1.C): Claude's edit review in a file not open opens it as Claude's
+/// (`claudes_only`, `refactor::show`) — its grammar missing is held, never offered mid-turn (#208, as follow's).
+#[test]
+fn an_edit_review_in_a_file_not_open_offers_no_grammar_mid_turn() {
+    let edit = json!({"edits": [{"file_path": "a.txt", "old_string": "one", "new_string": "uno"}]});
+    let (_s, dir) = project("review-grammar", &[("a.txt", "one\n")]);
+    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    let asked50 = asked(&mut ed, 50, "mcp__tarae__edit", &edit);
+    call(&mut ed, asked50, &edit).unwrap();
+    pump(&mut ed, "its review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+    let doc = ed.workspace.claude.review.as_ref().unwrap().doc_id;
+    assert!(ed.docs.iter().any(|d| d.id == doc && d.claudes_only), "opened as Claude's, not yours");
+    // A language whose grammar is never here, loaded as `attach_syntax` loads a file's
+    let mut lang = crate::syntax::spec("lua").expect("lua's pack").clone();
+    (lang.name, lang.grammar) = ("tarae-test-lang".into(), "tarae-test-no-such-grammar".into());
+    let spec: &'static crate::syntax::LangSpec = Box::leak(Box::new(lang));
+    ed.load_language(doc, spec);
+    let settled = |ed: &Editor| ed.grammar_hinted.contains(&spec.grammar);
+    let held = |ed: &Editor| ed.docs.iter().any(|d| d.id == doc && d.grammar_held.is_some());
+    pump(&mut ed, "its load back", |ed| held(ed) || settled(ed));
+    assert!(!settled(&ed), "no grammar offered mid-turn");
+    answer_reviews(&mut ed, 'n', |_| answered(50).is_some());
+}
+
 /// tarae's `edit` sent as claude sends it (`tools/call` through `tools::mcp`): its call's row is claimed as the
 /// request comes — by its tool's full name and the request's id — and takes its review's key.
 #[test]

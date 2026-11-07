@@ -1448,15 +1448,20 @@ fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     {
         return;
     }
-    let line = lines.start;
-    let already = ed.docs.iter().any(|d| d.path.as_deref() == Some(path));
     let left = ed.doc().id;
-    // The open first: one refused as not text (`not_text`) leaves everything as it was — no jump, a replay shown kept
-    match ed.open_for_claude(path) {
-        Ok(()) => {}
-        Err(e) if not_text(&e) => return,
-        Err(e) => return ed.set_error(format!("{e:#}")),
-    }
+    // The open first (a file not open yet read on a worker, there as it lands — nothing if a key of yours came first:
+    // `open_shown`): one refused as not text (`not_text`) leaves everything as it was — no jump, a replay shown kept
+    ed.open_for_claude(path, true, move |ed, r| match r {
+        Ok((_, made)) => led_to(ed, left, lines, !made),
+        Err(e) if not_text(&e) => {}
+        Err(e) => ed.set_error(format!("{e:#}")),
+    })
+}
+
+/// Follow's file in front (`go_range_here`), from document `left`: the view on `lines`, follow's marks set, the previews
+/// it opened before closed; `already`: the file was open before.
+fn led_to(ed: &mut Editor, left: DocId, lines: Range<usize>, already: bool) {
+    let line = lines.start;
     if !ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.jumped) {
         ed.push_jump_from(left);
     }
@@ -1794,20 +1799,23 @@ pub fn replay_at(ed: &mut Editor, at: (usize, usize)) {
         return ed.set_status(if gone { format!("{said} — its file is gone") } else { said });
     };
     let lines = stop.lines.unwrap_or(0..1);
-    match ed.open_for_claude(&path) {
-        Ok(()) => {}
-        // (a picture is no place either — `not_text`)
-        Err(e) if not_text(&e) => return ed.set_status(stop.look.said()),
-        Err(e) => return ed.set_error(format!("{e:#}")),
-    }
-    if ed.doc().loading {
-        ed.goto_after_load = Some((ed.doc().id, lines.start, 0));
-        return;
-    }
-    let doc = ed.doc_mut();
-    let line = lines.start.min(crate::movement::last_line(&doc.text));
-    doc.set_selection(Selection::point(crate::movement::line_start(&doc.text, line)));
-    ed.show_range(lines);
+    let said = stop.look.said();
+    ed.open_for_claude(&path, false, move |ed, r| {
+        match r {
+            Ok(_) => {}
+            // (a picture is no place either — `not_text`)
+            Err(e) if not_text(&e) => return ed.set_status(said),
+            Err(e) => return ed.set_error(format!("{e:#}")),
+        }
+        if ed.doc().loading {
+            ed.goto_after_load = Some((ed.doc().id, lines.start, 0));
+            return;
+        }
+        let doc = ed.doc_mut();
+        let line = lines.start.min(crate::movement::last_line(&doc.text));
+        doc.set_selection(Selection::point(crate::movement::line_start(&doc.text, line)));
+        ed.show_range(lines);
+    })
 }
 
 /// A press on a mark of the strip: that stop's replay, as `]r`/`[r` step to it. False: its stop is gone.
@@ -1868,42 +1876,21 @@ fn show_stop(ed: &mut Editor, at: (usize, usize)) {
         .path
         .clone()
         .filter(|p| p.is_file() && std::fs::canonicalize(p).is_ok_and(|p| p.starts_with(&root)));
-    // (a picture is no place: the card says the stop, the view stays — `not_text`)
-    let opened = match place {
-        Some(path) => match ed.open_for_claude(&path) {
-            Ok(()) => true,
-            Err(e) if not_text(&e) => false,
-            Err(e) => return ed.set_error(format!("{e:#}")),
-        },
-        None => false,
-    };
-    if opened {
-        let lines = stop.lines.clone().unwrap_or(0..1);
-        if !ed.doc().loading {
-            let doc = ed.doc();
-            // Its changes, if the buffer still has them where they were written
-            let same = !stop.hunks.is_empty()
-                && stop.hunks.iter().all(|h| {
-                    h.added.iter().enumerate().all(|(i, l)| {
-                        let at = h.lines.start + i;
-                        at < doc.text.len_lines()
-                            && doc.text.line(at).to_string().trim_end_matches(['\n', '\r']) == l
-                    })
-                });
-            let shown_in = same.then(|| (doc.id, doc.version()));
-            let doc = ed.doc_mut();
-            let line = lines.start.min(crate::movement::last_line(&doc.text));
-            doc.set_selection(Selection::point(crate::movement::line_start(&doc.text, line)));
-            if let Some(g) = follow(ed).and_then(|f| f.replaying.as_mut()) {
-                g.shown_in = shown_in;
-                g.edit = if same { stop.hunks.clone() } else { Vec::new() };
+    // (the newest stop wins: a file an earlier one is still reading goes with it)
+    ed.showing = None;
+    // (a picture is no place: the card says the stop, the view stays — `not_text`; a file not open yet there as it
+    // lands — `open_shown`)
+    if let Some(path) = place {
+        return ed.open_for_claude(&path, false, move |ed, r| {
+            match r {
+                Ok(_) => stop_shown(ed, &stop),
+                Err(e) if not_text(&e) => sync_shown(ed),
+                Err(e) => return ed.set_error(format!("{e:#}")),
             }
-            sync_shown(ed);
-            ed.show_range(lines);
-        } else {
-            ed.goto_after_load = Some((ed.doc().id, lines.start, 0));
-        }
-    } else if let Some(p) = &stop.page {
+            stop_placed(ed)
+        });
+    }
+    if let Some(p) = &stop.page {
         sync_shown(ed);
         match &p.copy {
             Some((url, fetched)) => show_page(ed, url, *fetched, stop.lines.clone().unwrap_or(0..1)),
@@ -1912,6 +1899,39 @@ fn show_stop(ed: &mut Editor, at: (usize, usize)) {
     } else {
         sync_shown(ed);
     }
+    stop_placed(ed)
+}
+
+/// A stop's file in front (`show_stop`): the cursor at its lines, its changes shown where the buffer still has them.
+fn stop_shown(ed: &mut Editor, stop: &crate::replay::Stop) {
+    let lines = stop.lines.clone().unwrap_or(0..1);
+    if ed.doc().loading {
+        ed.goto_after_load = Some((ed.doc().id, lines.start, 0));
+        return;
+    }
+    let doc = ed.doc();
+    // Its changes, if the buffer still has them where they were written
+    let same = !stop.hunks.is_empty()
+        && stop.hunks.iter().all(|h| {
+            h.added.iter().enumerate().all(|(i, l)| {
+                let at = h.lines.start + i;
+                at < doc.text.len_lines() && doc.text.line(at).to_string().trim_end_matches(['\n', '\r']) == l
+            })
+        });
+    let shown_in = same.then(|| (doc.id, doc.version()));
+    let doc = ed.doc_mut();
+    let line = lines.start.min(crate::movement::last_line(&doc.text));
+    doc.set_selection(Selection::point(crate::movement::line_start(&doc.text, line)));
+    if let Some(g) = follow(ed).and_then(|f| f.replaying.as_mut()) {
+        g.shown_in = shown_in;
+        g.edit = if same { stop.hunks.clone() } else { Vec::new() };
+    }
+    sync_shown(ed);
+    ed.show_range(lines);
+}
+
+/// A stop shown (`show_stop`): where the cursor is now is the replay's, follow armed to take over again.
+fn stop_placed(ed: &mut Editor) {
     let now = cursor_key(ed);
     if let Some(f) = follow(ed) {
         f.replay_placed = Some(now);

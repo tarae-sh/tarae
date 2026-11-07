@@ -4303,8 +4303,9 @@ fn end(ed: &mut Editor) {
 // ── Files ─────────────────────────────────────────────────────────────────────
 
 /// Opens file `i` of the review with its base; `at_end` = land on its last change (walking back). The buffer it
-/// opened — None for a binary file (its buffer comes from a worker, the review's own) or one that can't be opened:
-/// what `enter` keeps is this, never whatever is in front.
+/// opened — None for a binary file (its buffer comes from a worker, the review's own), one that can't be opened or one
+/// still being read (`open_preview`: `keep` makes it a buffer of its own as it lands): what `enter` keeps is this,
+/// never whatever is in front.
 pub fn show(ed: &mut Editor, i: usize, at_end: bool) -> Option<DocId> {
     show_at(ed, i, if at_end { Land::Last } else { Land::First })
 }
@@ -4335,30 +4336,47 @@ fn show_at(ed: &mut Editor, i: usize, at: Land) -> Option<DocId> {
         base => From::Git(r.root.clone(), base.rev().unwrap_or("HEAD").to_string()),
     };
     // A binary file has no lines: a buffer says what it is — its size and blob, its bytes (`show_binary`)
+    // (the newest show wins: a text file's read still under way goes with it)
+    ed.showing = None;
     if f.binary {
         show_binary(ed, i, f);
         return None;
     }
     ed.push_jump();
-    let id = if f.gone {
+    if f.gone {
         // Nothing on disk: an empty buffer whose every base line shows as removed
         let title = gone_title(&f);
-        match ed.docs.iter().position(|d| d.title.as_deref() == Some(title.as_str())) {
+        let id = match ed.docs.iter().position(|d| d.title.as_deref() == Some(title.as_str())) {
             Some(k) => {
                 ed.current = k;
                 ed.docs[k].id
             }
             None => ed.open_virtual(&title, ""),
+        };
+        shown(ed, id, at, from, f);
+        return Some(id);
+    }
+    // (one not open yet: read on a worker, the next file shown taking its place; no grammar or server offered for it
+    // while the review reads it — R7; in the session's preview slot — `enter` on its row keeps it)
+    let got = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let put = got.clone();
+    let path = f.path.clone();
+    ed.open_preview(&path, move |ed, r| match r {
+        Ok(id) => {
+            *put.lock().unwrap() = Some(id);
+            // (the review ended while it was read: nothing of it to land)
+            if ed.workspace.code_review.is_some() {
+                shown(ed, id, at, from, f)
+            }
         }
-    } else {
-        // (one not open yet: no grammar or server offered for it while the review reads it — R7; in the session's
-        // preview slot, the next file shown taking its place — `enter` on its row keeps it)
-        if let Err(e) = ed.open_preview(&f.path) {
-            ed.open_failed(e);
-            return None;
-        }
-        ed.doc().id
-    };
+        Err(e) => ed.open_failed(e),
+    });
+    got.lock().unwrap().take()
+}
+
+/// File `f` of the review in front as buffer `id` (`show_at`): one of the review's, landing on `at` — now where its
+/// base is there already, else once it's loaded from `from`.
+fn shown(ed: &mut Editor, id: DocId, at: Land, from: From, f: File) {
     if let Some(r) = &mut ed.workspace.code_review {
         if !r.docs.contains(&id) {
             r.docs.push(id);
@@ -4367,11 +4385,9 @@ fn show_at(ed: &mut Editor, i: usize, at: Land) -> Option<DocId> {
     }
     // Seen before in this review: its base is there already — land now (the diff keeps itself current)
     if ed.docs.iter().any(|d| d.id == id && d.own_base() && d.diff_of.is_none()) {
-        land(ed);
-        return Some(id);
+        return land(ed);
     }
     load_base(ed, id, from, f);
-    Some(id)
 }
 
 /// The buffer of a binary file of the review (`show_binary`): what it is — its size and blob (what its grade's
@@ -5369,8 +5385,9 @@ pub fn rail_key(ed: &mut Editor, key: Key) -> bool {
         (Code::Enter | Code::Char('l') | Code::Right, false) => {
             let i = r.selected;
             ed.workspace.viewer.keys_to_code();
-            if let Some(id) = show(ed, i, false) {
-                ed.preview_keep(id);
+            match show(ed, i, false) {
+                Some(id) => ed.preview_keep(id),
+                None => ed.keep_showing(),
             }
         }
         // (as every list panel's `q`: it closes — the review ends, asked first when files are unviewed)

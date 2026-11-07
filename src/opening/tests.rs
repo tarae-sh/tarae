@@ -7,18 +7,41 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 /// Reads held by a test (the path, read only once its sender sends or goes): `read` waits there before it reads.
 static HELD: Mutex<Vec<(PathBuf, Receiver<()>)>> = Mutex::new(Vec::new());
 
-/// The read of `path` (as asked) waits for the sender: dropped or sent, it goes on.
-fn hold(path: &Path) -> Sender<()> {
+/// The read of `path` (as asked, or its real path) waits for the sender: dropped or sent, it goes on.
+pub(crate) fn hold(path: &Path) -> Sender<()> {
     let (tx, rx) = channel();
     HELD.lock().unwrap().push((path.to_path_buf(), rx));
     tx
 }
 
-/// `read`'s hook: a read a test holds waits until it's let go (at most the shared patience).
+/// Folders whose reads a test counts (`count_reads`), each with the files read under it as they began, real paths.
+static COUNTED: Mutex<Vec<(PathBuf, Vec<PathBuf>)>> = Mutex::new(Vec::new());
+
+/// Every read under `root` from now on counted (`reads_under`).
+pub(crate) fn count_reads(root: &Path) {
+    COUNTED.lock().unwrap().push((real(root), Vec::new()));
+}
+
+/// The files read under `root` since `count_reads`, in the order they began.
+pub(crate) fn reads_under(root: &Path) -> Vec<PathBuf> {
+    let root = real(root);
+    COUNTED.lock().unwrap().iter().find(|c| c.0 == root).map(|c| c.1.clone()).unwrap_or_default()
+}
+
+fn real(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// `read`'s hook: the read counted where a test counts its folder; one a test holds waits until it's let go (at most
+/// the shared patience).
 pub(super) fn held(path: &Path) {
+    let at = real(path);
+    if let Some(c) = COUNTED.lock().unwrap().iter_mut().find(|c| at.starts_with(&c.0)) {
+        c.1.push(at.clone());
+    }
     let rx = {
         let mut h = HELD.lock().unwrap();
-        let Some(i) = h.iter().position(|(p, _)| p == path) else { return };
+        let Some(i) = h.iter().position(|(p, _)| p == path || real(p) == at) else { return };
         h.remove(i).1
     };
     let _ = rx.recv_timeout(crate::test_results::PATIENCE);
@@ -225,4 +248,40 @@ fn a_replace_over_files_not_open_applies_to_each() {
     assert_eq!(text(&b).unwrap().lines().next(), Some("fn gamma() -> u32 {"));
     assert_eq!(text(&d).unwrap(), "// delta gamma\n");
     assert_eq!(front(&ed), "a.rs", "what was in front stays");
+}
+
+/// #375 step 3: follow onto a file not open reads it on a worker — a.rs in front until it lands — and lands at its
+/// lines, Claude's (`claudes_only`: no grammar or server offered), your cursor where it was; a key of yours before the
+/// next one lands and that one lands as nothing (`open_shown`'s `led`).
+#[test]
+fn follow_onto_a_file_not_open_lands_at_its_lines() {
+    let (_s, root, mut ed) = scene("open-follow");
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    crate::chat::open(&mut ed);
+    let read = |ed: &mut Editor, id: &str, path: &Path, line: usize| {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let link = Some(crate::chat::Link { path: path.to_path_buf(), line });
+        let look = crate::chat::Look { verb: "read", what: name, pattern: false, range: String::new(), link };
+        let input = serde_json::json!({"file_path": path, "offset": line + 1, "limit": 2});
+        crate::follow::on_tool(ed, id, "Read", &input, &look);
+    };
+    let b = root.join("b.rs");
+    read(&mut ed, "r1", &b, 2);
+    assert_eq!(front(&ed), "a.rs", "a.rs in front until b.rs lands");
+    assert!(!ed.docs.iter().any(|d| d.path.as_deref() == Some(b.as_path())), "nothing made before its text");
+    until(&mut ed, |ed| front(ed) == "b.rs");
+    assert!(ed.doc().claudes_only, "Claude's, not yours");
+    assert!(ed.doc().syntax.is_some(), "its tree in as it lands");
+    assert_eq!(crate::follow::view_line(&ed), Some(2), "the view at its lines");
+    assert_eq!(ed.cursor_line(), 0, "your cursor never led");
+    // d.rs asked, a key of yours before it lands: it lands as nothing
+    let d = root.join("d.rs");
+    let held = hold(&d);
+    read(&mut ed, "r2", &d, 0);
+    ed.handle_event(crate::event::Event::Key("l".parse().unwrap()));
+    drop(held);
+    until(&mut ed, |ed| ed.showing.is_none() && ed.show_reading.is_none());
+    assert_eq!(front(&ed), "b.rs", "your key came first: follow's open dropped");
+    assert!(!ed.docs.iter().any(|x| x.path.as_deref() == Some(d.as_path())), "d.rs never made");
 }

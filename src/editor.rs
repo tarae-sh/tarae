@@ -1009,6 +1009,11 @@ pub struct Editor {
     pub weaving: Option<crate::weave::Weaving>,
     /// A file of yours being read, not made yet: it comes in front as it lands (`opening.rs`, #375).
     pub opening: Option<crate::opening::Opening>,
+    /// A file being read to be shown for Claude's turn or a review, not made yet: it comes in front as it lands, where
+    /// it was asked (`opening::open_shown`).
+    pub showing: Option<crate::opening::Opening>,
+    /// The shown open whose read is on a worker now (one at a time: the files passed over meanwhile never read).
+    pub show_reading: Option<DocId>,
     /// An open's read runs right where it's asked, not on a worker — on in tests (their `open(…).unwrap()` reads at
     /// once), off where a test or simulation is about the worker's path.
     pub read_inline: bool,
@@ -1571,6 +1576,8 @@ impl Editor {
             change_draft: String::new(),
             weaving: None,
             opening: None,
+            showing: None,
+            show_reading: None,
             read_inline: cfg!(test),
             status: None,
             should_quit: false,
@@ -1985,7 +1992,7 @@ impl Editor {
     }
 
     /// Opens a file of yours reading it right here, on the loop — only where an open can't wait yet: restore, `:restart`'s
-    /// and recovery's files, the command line's, `nav::buffer_for`'s look, `space u`'s buffers (#375's steps 3 and 4 take
+    /// and recovery's files, the command line's, `nav::buffer_for`'s look, `space u`'s buffers (#375's step 4 takes
     /// them); every other open of yours is `open_file` (`opening.rs`). If already open, switches to that buffer.
     pub fn open_now(&mut self, path: &Path) -> Result<()> {
         self.open_as(path, Opener::You)
@@ -2005,46 +2012,86 @@ impl Editor {
         }
     }
 
-    /// `open` for Claude's turn (follow, replay): a file not open yet is `claudes_only` — no grammar or
-    /// server offered for it until the user takes it up (#208).
-    pub fn open_for_claude(&mut self, path: &Path) -> Result<()> {
-        self.open_as(path, Opener::Claude)
+    /// `open` for Claude's turn (follow, replay): a file not open yet is read on a worker and made `claudes_only` — no
+    /// grammar or server offered for it until the user takes it up (#208) —, `then` once it's in front (whether it was
+    /// made now), or with why it couldn't open; `led`: follow's own move, nothing if a key of yours comes first
+    /// (`open_shown`).
+    pub(crate) fn open_for_claude(
+        &mut self,
+        path: &Path,
+        led: bool,
+        then: impl FnOnce(&mut Editor, Result<(DocId, bool)>) + Send + 'static,
+    ) {
+        self.open_shown(path, Opener::Claude, led, then)
+    }
+
+    /// Tests' `open_for_claude`, read right there under `read_inline`: Err what couldn't open.
+    #[cfg(test)]
+    pub fn open_for_claude_now(&mut self, path: &Path) -> Result<()> {
+        let got = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let put = got.clone();
+        self.open_for_claude(path, false, move |_, r| *put.lock().unwrap() = Some(r.map(|_| ())));
+        got.lock().unwrap().take().unwrap_or(Ok(()))
     }
 
     /// `open` for the git tab's or the review rail's look at a file — one not open yet `review_only`: no grammar or
     /// server offered for it until the user takes it up (frictions25 R7) — in the session's one preview slot:
-    /// one open already is only shown (a buffer of its own stays one), else it takes the place of the preview shown
-    /// before, so passing over files doesn't grow the buffer list (`Document::preview`). A preview edited, under
-    /// Claude's review, or with a review's viewed mark waiting for its base (it lands on that buffer) isn't closed:
-    /// it's a buffer of its own from then on.
+    /// one open already is only shown (a buffer of its own stays one), else it's read on a worker (`open_shown`: the
+    /// next pass takes its place, so a file passed over quickly is never read) and, as it lands, takes the place of
+    /// the preview shown before, so passing over files doesn't grow the buffer list (`Document::preview`). A preview
+    /// edited, under Claude's review, or with a review's viewed mark waiting for its base (it lands on that buffer)
+    /// isn't closed: it's a buffer of its own from then on. `then` once it's in front, or with why it couldn't open.
     ///
     /// The one it replaces keeps its place in the jump lists (`park_jumps`: `C-o` back to it opens it again, as the
     /// preview); one another pane shows isn't closed — it's that pane's, a buffer of its own from then on, said.
-    pub fn open_preview(&mut self, path: &Path) -> Result<()> {
-        self.open_preview_as(path, false)
+    pub(crate) fn open_preview(
+        &mut self,
+        path: &Path,
+        then: impl FnOnce(&mut Editor, Result<DocId>) + Send + 'static,
+    ) {
+        self.open_preview_as(path, false, then)
     }
 
     /// `open_preview` for `C-o`/`C-i` travelling to a preview the next one took the place of: no jump recorded (it
     /// would cut the list's forward branch — `goto_jump` sets the pane's document itself).
-    pub(crate) fn open_preview_travel(&mut self, path: &Path) -> Result<()> {
-        self.open_preview_as(path, true)
+    pub(crate) fn open_preview_travel(
+        &mut self,
+        path: &Path,
+        then: impl FnOnce(&mut Editor, Result<DocId>) + Send + 'static,
+    ) {
+        self.open_preview_as(path, true, then)
     }
 
-    fn open_preview_as(&mut self, path: &Path, travel: bool) -> Result<()> {
-        let before = self.buffers().into_iter().map(|i| &self.docs[i]).find(|d| d.preview).map(|d| d.id);
-        let was: Vec<DocId> = self.docs.iter().map(|d| d.id).collect();
-        self.open_as(path, Opener::Review)?;
-        let id = self.doc().id;
+    fn open_preview_as(
+        &mut self,
+        path: &Path,
+        travel: bool,
+        then: impl FnOnce(&mut Editor, Result<DocId>) + Send + 'static,
+    ) {
+        self.open_shown(path, Opener::Review, false, move |ed, r| match r {
+            Ok((id, made)) => {
+                ed.preview_landed(id, made, travel);
+                then(ed, Ok(id))
+            }
+            Err(e) => then(ed, Err(e)),
+        })
+    }
+
+    /// A preview's file in front (`open_preview_as`): the jump left behind, and one made now the preview in the place
+    /// of the one before.
+    fn preview_landed(&mut self, id: DocId, made: bool, travel: bool) {
         // (the spot left behind a jump now, while its buffer is still there to mark — as any switch of file)
         if !travel {
             self.track_doc_switch();
         }
         // (one open already: only shown)
-        if was.contains(&id) {
-            return Ok(());
+        if !made {
+            return;
         }
+        let before =
+            self.buffers().into_iter().map(|i| &self.docs[i]).find(|d| d.preview && d.id != id).map(|d| d.id);
         self.doc_mut().preview = true;
-        let Some(old) = before else { return Ok(()) };
+        let Some(old) = before else { return };
         let reviewed = self.workspace.claude.review.as_ref().is_some_and(|r| r.doc_id == old);
         let waited = |d: &Document| {
             let r = self.workspace.code_review.as_ref();
@@ -2067,7 +2114,6 @@ impl Editor {
             }
             None => {}
         }
-        Ok(())
     }
 
     /// Preview `id` becomes a buffer of its own (upright, kept, restored).
@@ -2094,7 +2140,7 @@ impl Editor {
         again
     }
 
-    fn open_as(&mut self, path: &Path, by: Opener) -> Result<()> {
+    pub(crate) fn open_as(&mut self, path: &Path, by: Opener) -> Result<()> {
         let path = self.path_of(path);
         let path = std::fs::canonicalize(&path).or_else(|_| std::path::absolute(&path))?;
         if let Some(i) = self.docs.iter().position(|d| d.path.as_deref() == Some(path.as_path())) {
@@ -3994,8 +4040,9 @@ impl Editor {
                         let shown = crate::codereview::show(self, i, false);
                         if self.clicked_again("rail", i) {
                             self.workspace.viewer.keys_to_code();
-                            if let Some(id) = shown {
-                                self.preview_keep(id);
+                            match shown {
+                                Some(id) => self.preview_keep(id),
+                                None => self.keep_showing(),
                             }
                         } else {
                             crate::codereview::rail_select(self, i);
@@ -14140,7 +14187,7 @@ mod tests {
         let file = dir.join("a.txt");
         std::fs::write(&file, "x = 1\n").unwrap();
         let mut ed = Editor::new(Config::default());
-        ed.open_for_claude(&file).unwrap();
+        ed.open_for_claude_now(&file).unwrap();
         // A language whose grammar is never here (a real one may be downloaded on this machine), loaded as
         // `attach_syntax` loads a file's
         let mut lang = syntax::spec("lua").expect("lua's pack").clone();
@@ -17727,6 +17774,51 @@ mod tests {
         std::fs::remove_dir_all(&repo).ok();
     }
 
+    /// #375 step 3: the git tab's passes read on a worker, one at a time — `j j j` over b, c, d while b's read hangs
+    /// (a slow disk) reads b and then d only, never c, which was passed over meanwhile; b's read lands as nothing, d
+    /// comes in front, and the preview slot holds one buffer.
+    #[test]
+    fn passing_over_files_in_the_git_tab_reads_only_where_it_rests() {
+        let files = [("a.txt", "a\n"), ("b.txt", "b\n"), ("c.txt", "c\n"), ("d.txt", "d\n")];
+        let repo = git_repo("preview-reads", &files);
+        for f in ["a", "b", "c", "d"] {
+            std::fs::write(repo.join(format!("{f}.txt")), format!("{}\n", f.to_uppercase())).unwrap();
+        }
+        let mut ed = editor("");
+        ed.workspace.root = repo.clone();
+        ed.git_auto = true;
+        feed_events(&mut ed, " g");
+        settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
+        ed.read_inline = false;
+        crate::opening::tests::count_reads(&repo);
+        let b = crate::opening::tests::hold(&repo.join("b.txt"));
+        feed_events(&mut ed, "jjj");
+        let name =
+            |ed: &Editor| ed.doc().path.as_deref().and_then(|p| p.file_name()?.to_str().map(String::from));
+        assert_ne!(name(&ed).as_deref(), Some("d.txt"), "nothing in front before its read lands");
+        drop(b);
+        settle_until(&mut ed, |ed| name(ed).as_deref() == Some("d.txt"));
+        let reads: Vec<String> = crate::opening::tests::reads_under(&repo)
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str().map(String::from))
+            .collect();
+        assert_eq!(reads, ["b.txt", "d.txt"], "c, passed over while b was read, never read");
+        let listed: Vec<(Option<String>, bool)> = ed
+            .buffers()
+            .into_iter()
+            .filter(|&i| ed.docs[i].path.is_some())
+            .map(|i| {
+                (
+                    ed.docs[i].path.as_deref().and_then(|p| p.file_name()?.to_str().map(String::from)),
+                    ed.docs[i].preview,
+                )
+            })
+            .collect();
+        assert_eq!(listed, [(Some("d.txt".to_string()), true)], "one preview, no other buffer");
+        assert!(ed.doc().review_only, "opened by the tab: no grammar or server offered");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
     /// …and with the mouse: a click on a file's row shows it as the preview, the tab taking the keys; the same row
     /// again soon after — a double-click — makes it a buffer of its own.
     #[test]
@@ -17927,7 +18019,7 @@ mod tests {
             crate::chat::open_place(&mut ed, crate::chat::Link { path: fifo.clone(), line: 0 });
             tx.send(("the chat's place", said(&ed), opened(&ed))).unwrap();
             ed.toasts.clear();
-            let e = ed.open_for_claude(&fifo).unwrap_err();
+            let e = ed.open_for_claude_now(&fifo).unwrap_err();
             let refused =
                 e.downcast_ref::<crate::document::NotText>().map(|n| (ToastKind::Info, n.to_string()));
             tx.send(("follow", refused, opened(&ed))).unwrap();

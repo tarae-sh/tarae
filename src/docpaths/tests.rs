@@ -602,7 +602,7 @@ const SEARCHES: &[(&str, usize)] = &[
     ("codereview.rs", 4),
     ("disk.rs", 1),
     ("editor.rs", 1),
-    ("follow.rs", 2),
+    ("follow.rs", 1),
     ("git.rs", 2),
     ("gitpanel.rs", 4),
     ("instructions.rs", 2),

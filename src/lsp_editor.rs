@@ -4146,7 +4146,7 @@ mod tests {
         let (config, w) = crate::config::parse(cfg);
         assert!(w.is_empty(), "{w:?}");
         let mut ed = Editor::new(config);
-        ed.open_for_claude(&file).unwrap();
+        ed.open_for_claude_now(&file).unwrap();
         assert!(ed.doc().claudes_only);
         assert!(!ed.lsp.missing.contains("rust"), "only Claude's turn opened it: nothing said");
         ed.handle_event(crate::event::Event::Key("l".parse().unwrap()));

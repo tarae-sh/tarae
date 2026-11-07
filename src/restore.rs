@@ -433,7 +433,7 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = dir.clone();
         ed.open(&dir.join("kept.txt")).unwrap();
-        ed.open_preview(&dir.join("looked.txt")).unwrap();
+        ed.open_preview(&dir.join("looked.txt"), |_, r| r.map(|_| ()).unwrap());
         assert!(ed.doc().preview);
         ed.restore_record();
         let (files, _) = ed.restore.files(&dir).expect("recorded");

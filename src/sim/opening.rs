@@ -97,6 +97,14 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &Path, w: &mut World) -> String {
             w.asked = (!open).then_some((path, from));
             format!("open {name}{}", if open { " (open already)" } else { "" })
         }
+        arm => other(sim, ed, root, arm),
+    }
+}
+
+/// The steps besides an open (`input`'s arms from 1): a frame, a key, a switch, a file changed or removed.
+fn other(sim: &mut Sim, ed: &mut Editor, root: &Path, arm: usize) -> String {
+    let c = &mut sim.choices;
+    match arm {
         1 => {
             crate::term::render(ed, &mut Vec::new(), SIZE.0, SIZE.1).unwrap();
             "a frame".into()
@@ -146,6 +154,100 @@ fn check(ed: &Editor, w: &mut World) -> Result<(), String> {
             before
         )),
         _ => Err(format!("{} came in front with no open of yours asking it", name(ed))),
+    }
+}
+
+const PASSES: &str = "a_pass_lands_in_front_only_if_newest_and_never_grows_the_buffers";
+
+/// #375 step 3: the git tab's passes over files (`open_preview`, as `git_show_file` asks it), simulated among your own
+/// opens, keys, switches, files changed or removed and frames, the reads landing in any order. At every step: never a
+/// document in front without its text; the front moved by no input only to the newest open or pass asked, from what
+/// was in front then; at most one preview among the buffers; a pass's read never on the loop; only one read at a time.
+#[test]
+fn a_pass_lands_in_front_only_if_newest_and_never_grows_the_buffers() {
+    super::seeds(PASSES, SEEDS, run_passes);
+}
+
+fn run_passes(choices: Choices) -> Vec<String> {
+    let scratch = crate::scratch::Scratch::new("sim-opening-passes");
+    let root = std::fs::canonicalize(scratch.path()).unwrap();
+    std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+    for f in FILES {
+        std::fs::write(root.join(f), text(f, 0)).unwrap();
+    }
+    let world = RefCell::new(World::default());
+    let mut sim = Sim::new(PASSES, choices, LIMIT);
+    sim.frames = Some(SIZE);
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.root = root.clone();
+    ed.open(&root.join("a.rs")).unwrap();
+    ed.read_inline = false;
+    crate::term::render(&mut ed, &mut Vec::new(), SIZE.0, SIZE.1).unwrap();
+    world.borrow_mut().front = Some(ed.doc().id);
+    let check = |ed: &Editor| check_passes(ed, &mut world.borrow_mut());
+    let input = |sim: &mut Sim, ed: &mut Editor| pass_input(sim, ed, &root, &mut world.borrow_mut());
+    sim.walk(&mut ed, INPUTS, input, check, print);
+    let left = ed.opening.is_some() || ed.showing.is_some() || ed.show_reading.is_some();
+    sim.at_end(|| match left {
+        true => Err("an open or a pass still under way once all is quiet".into()),
+        false => Ok(()),
+    });
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    drop(ed);
+    trace
+}
+
+fn pass_input(sim: &mut Sim, ed: &mut Editor, root: &Path, w: &mut World) -> String {
+    // (by arm: a pass 5, an open of yours 1, everything else as the first scenario)
+    match sim.choices.weighted(&[5, 1, 4]) {
+        0 => {
+            w.input = true;
+            let name = *sim.choices.pick(FILES);
+            let path = root.join(name);
+            let open = ed.docs.iter().any(|d| d.path.as_deref() == Some(path.as_path()));
+            let (from, reading) = (ed.doc().id, ed.show_reading);
+            ed.open_preview(&path, |ed, r| {
+                if let Err(e) = r {
+                    ed.open_failed(e)
+                }
+            });
+            if !open && ed.docs.iter().any(|d| d.path.as_deref() == Some(path.as_path())) {
+                w.wrong = Some(format!("{name} was read on the loop as the pass asked it"));
+            }
+            // (one read at a time: one under way stays the one read)
+            if reading.is_some() && ed.show_reading != reading {
+                w.wrong = Some(format!("{name}'s read began while another was under way"));
+            }
+            w.asked = (!open).then_some((path, from));
+            format!("pass over {name}{}", if open { " (open already)" } else { "" })
+        }
+        1 => {
+            w.input = true;
+            let name = *sim.choices.pick(FILES);
+            let path = root.join(name);
+            let open = ed.docs.iter().any(|d| d.path.as_deref() == Some(path.as_path()));
+            let from = ed.doc().id;
+            ed.open_file(&path);
+            w.asked = (!open).then_some((path, from));
+            format!("open {name}{}", if open { " (open already)" } else { "" })
+        }
+        // (a frame, a key, a switch, a file changed or removed — as the first scenario weighs them)
+        _ => {
+            w.input = true;
+            let arm = 1 + sim.choices.weighted(&[2, 2, 2, 1, 1]);
+            other(sim, ed, root, arm)
+        }
+    }
+}
+
+/// `check`, and at most one preview among the buffers.
+fn check_passes(ed: &Editor, w: &mut World) -> Result<(), String> {
+    check(ed, w)?;
+    let previews = ed.buffers().into_iter().filter(|&i| ed.docs[i].preview).count();
+    match previews {
+        0 | 1 => Ok(()),
+        n => Err(format!("{n} previews among the buffers")),
     }
 }
 

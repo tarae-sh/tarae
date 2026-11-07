@@ -732,20 +732,27 @@ impl Editor {
 
     /// The git tab's selection on file `rel`: shown in the code, the tab keeping the keys — in the session's preview
     /// slot (`open_preview`; `enter` on its row makes it a buffer of its own) — at its first change once its diff is there (`land`: a changed file
-    /// the index has, `git_inline_sync`). A deleted one has nothing to show: its row says `D`.
+    /// the index has, `git_inline_sync`). A deleted one has nothing to show: its row says `D`. A file not open yet is
+    /// read on a worker, the next row moved onto taking its place (`open_preview`): `j j j` reads only the last.
     pub(crate) fn git_show_file(&mut self, rel: &str, land: bool) {
         let Some(top) = self.workspace.git_status.as_ref().map(|s| s.top.clone()) else { return };
         let path = top.join(rel);
         if !path.is_file() {
             return;
         }
-        if let Err(e) = self.open_preview(&path) {
-            return self.open_failed(e);
-        }
-        let id = self.doc().id;
+        // (the newest move wins: a landing an earlier row asked for goes with it)
         if let Some(s) = self.workspace.viewer.sidebar.as_mut() {
-            s.land = land.then_some(id);
+            s.land = None;
         }
+        self.open_preview(&path, move |ed, r| {
+            let id = match r {
+                Ok(id) => id,
+                Err(e) => return ed.open_failed(e),
+            };
+            if let Some(s) = ed.workspace.viewer.sidebar.as_mut() {
+                s.land = land.then_some(id);
+            }
+        })
     }
 
     /// Something changed files outside the editor's own saves — Claude's edit, write or command, a turn's

@@ -10,15 +10,22 @@
 //! files) reads every file it needs that isn't open in one job first (`read_then`) and acts as they land — never half
 //! of it with the other half still being read.
 //!
-//! Claude's opens and a review's (`open_for_claude`, `open_preview`) and a few of yours that can't wait yet (restore,
-//! `:restart`'s, the command line's files, `nav::buffer_for`'s look) still read on the loop (`Editor::open_now`) — steps
-//! 3 and 4 of the plan. In tests `Editor.read_inline` runs the job right there, as `offers = false` does.
+//! A file shown for Claude's turn or a review (`open_shown`: follow, the replay, the review rail, the git tab passing
+//! over a file, `C-o` back to a preview) reads the same way in a slot of its own (`Editor.showing`), the next pass
+//! taking its place, one read at a time (`show_next`) — a file passed over while one is read is never read — and lands in front only where it was asked: the same
+//! pane still showing what it showed, and for follow no key of yours since; else it lands as nothing. It never joins
+//! your buffers behind you, nor takes the place of an open of yours (Claude's waits for its next stop; a review's pass
+//! is a key of yours, the newer act). Never said: the follow card or the list says what it shows.
+//!
+//! A few opens of yours that can't wait yet (restore, `:restart`'s, the command line's files, `nav::buffer_for`'s look)
+//! and Claude's edit review in the buffer (`refactor::show`, as Claude's) still read on the loop (`Editor::open_as`) —
+//! step 4 of the plan. In tests `Editor.read_inline` runs the job right there, as `offers = false` does.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::document::{DocId, Document};
-use crate::editor::Editor;
+use crate::editor::{Editor, Opener};
 
 /// How long an open runs unsaid: most land well within it, and a step said for a frame would flash too (#355's).
 pub const SAY_AFTER: Duration = Duration::from_millis(400);
@@ -27,7 +34,8 @@ pub const SAY_AFTER: Duration = Duration::from_millis(400);
 /// nothing made).
 pub type Then = Box<dyn FnOnce(&mut Editor, anyhow::Result<(DocId, bool)>) + Send>;
 
-/// A file being opened for you, not made yet (`Editor.opening`): its document to be, what to do once it's in front.
+/// A file being opened, not made yet — for you (`Editor.opening`) or shown for Claude or a review (`Editor.showing`):
+/// its document to be, what to do once it's in front.
 pub struct Opening {
     /// Its document to be — the open's own id: a landing for another is dropped.
     pub id: DocId,
@@ -42,7 +50,15 @@ pub struct Opening {
     pub since: Instant,
     /// Past `SAY_AFTER`: said on the status line.
     pub said: bool,
+    /// What its `then` is told: for yours, Ok's bool whether it's in front; for a shown one (only ever told in front),
+    /// whether it was made now — not open before.
     then: Option<Then>,
+    /// Who opens it: you, or the kind a shown one is made (`claudes_only`, `review_only`).
+    by: Opener,
+    /// A shown one follow asked: your input count then — a key of yours since and it lands as nothing.
+    input: Option<u64>,
+    /// A shown preview made a buffer of its own as it lands (`keep_showing`: `enter` on a row before it landed).
+    keep: bool,
 }
 
 /// A file read for an open (`read`): its real path, its stamp taken before the read, its text, its language and the tree
@@ -135,8 +151,9 @@ impl Editor {
         then: impl FnOnce(&mut Editor, anyhow::Result<(DocId, bool)>) + Send + 'static,
     ) {
         let path = self.path_of(path);
-        // (the one under way let go: this one is what you asked for now)
+        // (the one under way let go, a shown one too: this one is what you asked for now)
         self.opening = None;
+        self.showing = None;
         if let Some(i) = self.docs.first(&path, |_| true) {
             if jump {
                 self.push_jump();
@@ -149,18 +166,7 @@ impl Editor {
             return then(self, Ok((id, true)));
         }
         let id = self.alloc_id();
-        let from = self.doc().id;
-        self.opening = Some(Opening {
-            id,
-            path: path.clone(),
-            workspace: self.workspace.id,
-            pane: self.workspace.viewer.focus,
-            from,
-            jump,
-            since: crate::clock::now(),
-            said: false,
-            then: Some(Box::new(then)),
-        });
+        self.opening = Some(self.opening_of(id, path.clone(), jump, Box::new(then), Opener::You));
         if self.read_inline {
             let r = read(&path);
             return landed(self, id, r);
@@ -177,6 +183,88 @@ impl Editor {
                 None => ed.unchanged = true,
             }
         });
+    }
+
+    /// Opens `path` shown for Claude's turn or a review (`by`): a buffer open at that path already comes in front now;
+    /// else it's read on a worker, the shown one under way before it let go, and comes in front as it lands, made
+    /// `claudes_only` or `review_only` (no grammar or server offered until you take it up — #208, R7) — only where the
+    /// pane it was asked in still shows what it showed then, and with `led` (follow's own move) no key of yours came
+    /// since; else nothing. `then` once it's in front, with whether it was made now (Ok), or with why it couldn't open.
+    /// Claude's asked while an open of yours is under way is nothing: yours is what you asked for.
+    pub(crate) fn open_shown(
+        &mut self,
+        path: &Path,
+        by: Opener,
+        led: bool,
+        then: impl FnOnce(&mut Editor, anyhow::Result<(DocId, bool)>) + Send + 'static,
+    ) {
+        let path = self.path_of(path);
+        self.showing = None;
+        if self.opening.as_ref().is_some_and(|o| o.workspace == self.workspace.id) {
+            match by {
+                Opener::Claude => return,
+                _ => self.opening = None,
+            }
+        }
+        if let Some(i) = self.docs.first(&path, |_| true) {
+            self.current = i;
+            self.workspace_keeps(self.docs[i].id);
+            let id = self.docs[i].id;
+            return then(self, Ok((id, false)));
+        }
+        let id = self.alloc_id();
+        let mut o = self.opening_of(id, path.clone(), false, Box::new(then), by);
+        o.input = led.then_some(self.input_seq);
+        self.showing = Some(o);
+        if self.read_inline {
+            let r = read(&path);
+            return shown_landed(self, id, r);
+        }
+        self.show_next();
+    }
+
+    /// The shown open asked last read on a worker — unless one is being read now: one read at a time, so on a slow disk
+    /// the files passed over while it reads are never read, only the newest after it (a read under way can't be called
+    /// back; its landing is dropped).
+    fn show_next(&mut self) {
+        if self.show_reading.is_some() {
+            return;
+        }
+        let Some((id, path)) = self.showing.as_ref().map(|o| (o.id, o.path.clone())) else { return };
+        self.show_reading = Some(id);
+        self.events.jobs().spawn(move || {
+            let r = read(&path);
+            move |ed: &mut Editor| {
+                ed.show_reading = None;
+                shown_landed(ed, id, r);
+                ed.show_next()
+            }
+        });
+    }
+
+    /// The shown open under way (a preview's) is made a buffer of its own as it lands — `enter` on its row before then.
+    pub(crate) fn keep_showing(&mut self) {
+        if let Some(o) = self.showing.as_mut() {
+            o.keep = true;
+        }
+    }
+
+    /// An open of `path` asked now, in the pane and workspace in front.
+    fn opening_of(&self, id: DocId, path: PathBuf, jump: bool, then: Then, by: Opener) -> Opening {
+        Opening {
+            id,
+            path,
+            workspace: self.workspace.id,
+            pane: self.workspace.viewer.focus,
+            from: self.doc().id,
+            jump,
+            since: crate::clock::now(),
+            said: false,
+            then: Some(then),
+            by,
+            input: None,
+            keep: false,
+        }
     }
 
     /// Each of `paths` opened in turn (`:open a b`, `gf` over several), each at its (line, column) where it has one: the
@@ -230,13 +318,15 @@ impl Editor {
         Some((self.shown(&o.path).display().to_string(), o.since))
     }
 
-    /// Document `doc` made one of your buffers from a read: in front (`front`, taking the start's blank scratch's place)
-    /// or behind what's there, its tree the read's, then all a file you open has (`opened_setup`).
-    fn make_read(&mut self, id: DocId, r: Read, front: bool) {
+    /// Document `doc` made one of the buffers from a read, opened `by`: in front (`front`, taking the start's blank
+    /// scratch's place) or behind what's there, its tree the read's, then all a file opened has (`opened_setup`).
+    fn make_read(&mut self, id: DocId, r: Read, front: bool, by: Opener) {
         let mut doc = Document::placeholder(id, &r.path);
         (doc.disk, doc.disk_sure) = (r.disk, r.sure);
         doc.text = r.text;
         doc.loading = false;
+        doc.claudes_only = by == Opener::Claude;
+        doc.review_only = by == Opener::Review;
         let unparsed = match r.syntax {
             Some(Ok(syn)) => {
                 doc.syntax = Some(syn);
@@ -252,7 +342,7 @@ impl Editor {
                 self.workspace_keeps(id);
             }
         }
-        // (its grammar missing: offered as any file asks it — its card and all)
+        // (its grammar missing: offered as any file asks it — its card and all; held where Claude or a review opened it)
         if let Some((spec, e)) = unparsed {
             self.language_loaded(id, spec, Err(e));
         }
@@ -305,11 +395,60 @@ fn landed(ed: &mut Editor, id: DocId, r: anyhow::Result<Read>) {
     if here && o.jump {
         ed.push_jump();
     }
-    ed.make_read(id, r, here);
+    ed.make_read(id, r, here, Opener::You);
     if !here {
         ed.set_status(format!("{name} is ready — space b"));
     }
     say(ed, Ok((id, here)));
+}
+
+/// The read of shown open `id` landed: dropped where another took its place, or where it no longer belongs in front —
+/// another workspace, its pane showing something else, a key of yours since follow asked it (nothing said: the next
+/// stop or pass shows its own); else in front in its pane — the buffer open by another way since, or made `by` it —,
+/// then `then`; why it couldn't open told to `then`.
+fn shown_landed(ed: &mut Editor, id: DocId, r: anyhow::Result<Read>) {
+    let Some(mut o) = ed.showing.take_if(|o| o.id == id) else {
+        crate::event::drop_later(r);
+        ed.unchanged = true;
+        return;
+    };
+    let focus = ed.workspace.viewer.focus;
+    let shows = match o.pane == focus {
+        true => Some(ed.doc().id),
+        false => ed.workspace.views.iter().find(|v| v.id == o.pane).map(|v| v.doc),
+    };
+    let moved = o.input.is_some_and(|n| n != ed.input_seq);
+    if ed.workspace.id != o.workspace || shows != Some(o.from) || moved {
+        crate::event::drop_later(r);
+        ed.unchanged = true;
+        return;
+    }
+    let Some(then) = o.then.take() else { return };
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => return then(ed, Err(e)),
+    };
+    let (by, keep) = (o.by, o.keep);
+    ed.in_pane(o.pane, move |ed| {
+        let made = match ed.docs.first(&r.path, |_| true) {
+            // (open already by another way since: that buffer, the read let go)
+            Some(i) => {
+                crate::event::drop_later(r);
+                ed.current = i;
+                ed.workspace_keeps(ed.docs[i].id);
+                false
+            }
+            None => {
+                ed.make_read(id, r, true, by);
+                true
+            }
+        };
+        let id = ed.doc().id;
+        then(ed, Ok((id, made)));
+        if keep {
+            ed.preview_keep(id);
+        }
+    })
 }
 
 /// `read_then`'s reads landed: each made a buffer behind what's in front (one open by another way since left as it is),
@@ -329,7 +468,7 @@ fn read_landed(
             Ok(r) if ed.docs.first(&r.path, |_| true).is_some() => crate::event::drop_later(r),
             Ok(r) => {
                 let id = ed.alloc_id();
-                ed.make_read(id, r, false);
+                ed.make_read(id, r, false, Opener::You);
             }
             Err(e) => failed.push((asked, e)),
         }
@@ -338,4 +477,4 @@ fn read_landed(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -257,7 +257,7 @@ fn project_of(s: &crate::scratch::Scratch, rels: &[&str]) -> Editor {
     }
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = s.to_path_buf();
-    ed.open_for_claude(&s.join("src/a.rs")).unwrap();
+    ed.open_for_claude_now(&s.join("src/a.rs")).unwrap();
     let mut panel = Sidebar::with_files(s.to_path_buf(), rels);
     panel.set_open(["src"], true);
     ed.workspace.viewer.sidebar = Some(panel);
@@ -1194,7 +1194,7 @@ fn a_block_begun_above_says_on_its_first_line_in_sight() {
     let long = s.join("src/long.rs");
     let text: String = (0..120).map(|i| format!("fn line_{i:03}() {{}}\n")).collect();
     std::fs::write(&long, &text).unwrap();
-    ed.open_for_claude(&long).unwrap();
+    ed.open_for_claude_now(&long).unwrap();
     let mut r = Stop { path: Some(long.clone()), ..read("", 0..100) };
     r.map.shown.push(crate::replay::Shown { path: long.clone(), lines: 0..100, old: false });
     add(&mut ed, vec![r]);
