@@ -13,6 +13,8 @@ pub fn now() -> Instant {
         return t;
     }
     #[cfg(test)]
+    gone_on();
+    #[cfg(test)]
     let now = HELD.get().unwrap_or_else(Instant::now) + AHEAD.get();
     #[cfg(not(test))]
     let now = Instant::now();
@@ -27,6 +29,19 @@ thread_local! {
     static HELD: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
     /// The wall clock where `hold` stopped it.
     static HELD_SYSTEM: std::cell::Cell<Option<SystemTime>> = const { std::cell::Cell::new(None) };
+    /// What `hold_until` waits on to let this thread's clock go again.
+    static UNTIL: std::cell::Cell<Option<Box<dyn Fn() -> bool>>> = const { std::cell::Cell::new(None) };
+}
+
+/// `hold_until`'s condition asked at a read: once it holds, the clock goes again.
+#[cfg(test)]
+fn gone_on() {
+    if let Some(go) = UNTIL.take() {
+        match go() {
+            true => release(),
+            false => UNTIL.set(Some(go)),
+        }
+    }
 }
 
 /// Tests outside a simulation: this thread's clock held still from now on (`advance` still moves it), the wall clock
@@ -40,10 +55,20 @@ pub fn hold() -> Instant {
     t
 }
 
+/// Tests outside a simulation: this thread's clock held still until `go` holds (asked at each read here), then going
+/// again from the real now — a deadline that counts only once what it times has started (a stand-in program's
+/// handshake: on a loaded machine its sh can take longer to start than the deadline is long).
+#[cfg(test)]
+pub fn hold_until(go: impl Fn() -> bool + 'static) {
+    hold();
+    UNTIL.set(Some(Box::new(go)));
+}
+
 /// Tests outside a simulation: this thread's clock going again after a `hold` — a frame read at a pinned time in a test
 /// whose runs go on after it.
 #[cfg(test)]
 pub fn release() {
+    UNTIL.take();
     HELD.set(None);
     HELD_SYSTEM.set(None);
 }
@@ -62,6 +87,8 @@ pub fn system() -> SystemTime {
     if let Some(t) = crate::sim::system() {
         return t;
     }
+    #[cfg(test)]
+    gone_on();
     #[cfg(test)]
     if let Some(t) = HELD_SYSTEM.get() {
         return t + AHEAD.get();

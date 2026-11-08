@@ -1182,19 +1182,26 @@ mod tests {
     }
 
     /// Rule 3's deadline holds the tool's exit too: one that prints its answer, closes its output and hangs is
-    /// killed past `wait`, no answer — never a worker waiting on it for good.
+    /// killed past `wait`, no answer — never a worker waiting on it for good. (`ask`'s clock held until the tool
+    /// says it's there, its output closed, its pid written: #454, under load its sh took longer to start than `wait`
+    /// is long, and it was killed before it wrote its pid.)
     #[test]
     fn a_tool_that_closes_its_output_and_hangs_is_killed_past_the_deadline() {
         let p = place("hangs");
         let program = p.dir.join("fake-cargo-hangs");
-        let script = "#!/bin/sh\necho $$ > .fake-pid\nprintf '{\"target_directory\":\"%s/target\"}' \"$(pwd -P)\"\n\
-                      exec >&-\nexec sleep 600\n";
+        let script = "#!/bin/sh\nprintf '{\"target_directory\":\"%s/target\"}' \"$(pwd -P)\"\nexec >&-\n\
+                      echo $$ > .fake-pid\nexec sleep 600\n";
         std::fs::write(&program, script).unwrap();
         let mut b = Builds::stand_in(&program, &p.home, &p.user);
         b.wait = Duration::from_millis(300);
         let root = p.root.clone();
+        let pid_file = p.root.join(".fake-pid");
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            // (its pid written whole — one write, the line's end last)
+            crate::clock::hold_until(move || {
+                std::fs::read_to_string(&pid_file).is_ok_and(|s| s.ends_with('\n'))
+            });
             let _ = tx.send(b.ask(b.tool("rust"), &root));
         });
         let answer = rx
