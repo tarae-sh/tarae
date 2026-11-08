@@ -1212,6 +1212,10 @@ pub fn write_refused_why(
     {
         return Some(format!("it's where keys are or what runs later ({})", tilde(&n)));
     }
+    // (the same rows where `$XDG_CONFIG_HOME` puts them, and tarae's config folder wherever it is)
+    if let Some(why) = later.config_refuses(dir) {
+        return Some(why);
+    }
     if let Some(why) = later.refuses(dir) {
         return Some(why);
     }
@@ -1229,8 +1233,9 @@ pub fn write_refused_why(
 }
 
 /// Whether no card may open folder `dir` (real) to writes: a path that's no text, home or above it, one that holds keys or a place
-/// that runs something later (`NEVER_WRITE`; `later`: the folders of programs the user runs, the shared
-/// caches, a toolchain's home and all in it), one in or holding what's kept from every run (`kept`,
+/// that runs something later (`NEVER_WRITE`, and their `.config/…` rows where `$XDG_CONFIG_HOME` puts them; tarae's
+/// config folder wherever it is — `RunsLater::config_refuses`; `later`: the folders of programs the user runs, the
+/// shared caches, a toolchain's home and all in it), one in or holding what's kept from every run (`kept`,
 /// `sandbox::kept_places`: the user's own Go build cache — a yes there would open nothing), one in (or holding)
 /// the project, or one shallower than `WRITE_DEPTH`.
 fn write_refused(
@@ -2441,6 +2446,65 @@ pub(crate) mod tests {
         let why = write_refused_why(&runs.join("9-0"), &home, &root, &caps.later, &caps.kept);
         assert!(why.as_deref().is_some_and(|w| w.starts_with("it's in tarae's runs folder")), "{why:?}");
         assert_eq!(offer(&home.join(".cache/other/x")).first(), Some(&home.join(".cache/other")));
+    }
+
+    /// With `$XDG_CONFIG_HOME` outside home, a denied write there offers neither tarae's config folder (its settings
+    /// say what a run may do, its `plugins` what tarae runs) nor a `.config/…` row of keys or of what runs later
+    /// (`SECRETS`, `NEVER_WRITE`) where the variable puts it, nor a folder holding one — and says why; a folder beside
+    /// them still is offered. (A made-up home and config folder in the test's temp folder.)
+    #[test]
+    fn a_moved_config_folder_is_judged_where_it_is() {
+        let base = crate::scratch::Scratch::new("xdgchoices");
+        for d in ["home/work/proj", "o/a/conf/tarae/plugins", "o/a/conf/gh", "o/a/conf/git", "o/a/conf/other"]
+        {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let base = std::fs::canonicalize(&*base).unwrap();
+        let (home, conf) = (base.join("home"), base.join("o/a/conf"));
+        let root = home.join("work/proj");
+        let here = crate::sandbox::Here {
+            env: [
+                ("HOME".to_string(), home.clone().into()),
+                ("XDG_CONFIG_HOME".to_string(), conf.clone().into()),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let later = crate::sandbox::RunsLater::new(&home, &crate::sandbox::vars_in(&home, &here), &[]);
+        let at = |t: &str| write_choices(&conf.join(t), &home, &root, &later, &[]);
+        for t in
+            ["tarae/plugins/x.wasm", "tarae/config.toml", "gh/hosts.yml", "git/config", "git/credentials"]
+        {
+            assert!(at(t).is_empty(), "{t}: {:?}", at(t));
+        }
+        assert_eq!(at("other/x"), [conf.join("other")], "beside them — and nothing above, which holds them");
+        let why = |d: &Path| write_refused_why(d, &home, &root, &later, &[]);
+        let taraes = format!(
+            "tarae's config folder ({}) — its settings say what a run may do",
+            tilde(&conf.join("tarae"))
+        );
+        assert_eq!(why(&conf.join("tarae/plugins")), Some(format!("it's in {taraes}")));
+        assert_eq!(why(&conf), Some(format!("it holds {taraes}")));
+        let keys =
+            |p: &str| Some(format!("it's where keys are or what runs later ({})", tilde(&conf.join(p))));
+        assert_eq!(why(&conf.join("gh")), keys("gh"));
+        assert_eq!(why(&conf.join("git")), keys("git"));
+        assert_eq!(why(&conf.join("other")), None);
+        // Its tarae folder not made yet: nothing offered — the nearest folder there holds where tarae would read its
+        // config at its next start
+        let bare = base.join("o/b/conf");
+        std::fs::create_dir_all(&bare).unwrap();
+        let here = crate::sandbox::Here {
+            env: [
+                ("HOME".to_string(), home.clone().into()),
+                ("XDG_CONFIG_HOME".to_string(), bare.clone().into()),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let later = crate::sandbox::RunsLater::new(&home, &crate::sandbox::vars_in(&home, &here), &[]);
+        let got = write_choices(&bare.join("tarae/config.toml"), &home, &root, &later, &[]);
+        assert!(got.is_empty(), "{got:?}");
     }
 
     /// A read refused at a folder (`space m s`) offers that folder first, then those above; named by `also`,

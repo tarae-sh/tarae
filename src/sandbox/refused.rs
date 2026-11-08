@@ -86,11 +86,13 @@ fn must_be_refused() {
     for d in [".config", ".local/state", ".local/share", ".cache"] {
         fs::create_dir_all(home.join(d)).unwrap();
     }
+    // (the config folder outside home: its keys and tarae's own config judged where the variable puts them)
+    fs::create_dir_all(base.join("xdg")).unwrap();
     let exe = std::env::current_exe().unwrap();
     let mut cmd = Command::new(&exe);
     cmd.args(["--exact", "sandbox::refused::in_stand_in_home", "--ignored", "--nocapture"])
         .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CONFIG_HOME", base.join("xdg"))
         .env("XDG_STATE_HOME", home.join(".local/state"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
@@ -203,11 +205,18 @@ fn in_stand_in_home() {
     write_file(&outside.join("existing"), "keep\n");
     write_file(&other_root.join("src/lib.rs"), "pub fn q() {}\n");
     write_file(&other_root.join("src/keep.rs"), "pub fn k() {}\n");
-    write_file(&home.join(".config/tarae/config.toml"), "# user config\n");
+    // (tarae's config and gh's sign-in where the stand-in's `XDG_CONFIG_HOME` puts them: outside home)
+    let xdg = base.join("xdg");
+    let config = crate::config::config_path().expect("the stand-in's XDG_CONFIG_HOME");
+    write_file(&config, "# user config\n");
+    let xdg_gh = xdg.join("gh/hosts.yml");
+    write_file(&xdg_gh, &format!("token: {FAKE_TOKEN}\n"));
     write_file(&home.join(".local/state/tarae/sandbox.json"), &format!("{{\"token\":\"{FAKE_TOKEN}\"}}\n"));
     write_file(&home.join(".local/state/tarae/trust.json"), "{}\n");
     fs::create_dir_all(home.join(".local/share/tarae/grammars")).unwrap();
-    fs::create_dir_all(home.join(".local/share/tarae/plugins")).unwrap();
+    // (where tarae keeps plugins: beside its config, as the stand-in's `XDG_CONFIG_HOME` says)
+    let plugins = crate::plugin::dir().expect("the stand-in's XDG_CONFIG_HOME");
+    fs::create_dir_all(&plugins).unwrap();
     write_file(&home.join(".ssh/id_ed25519"), &format!("{FAKE_TOKEN}\n"));
     write_file(&home.join(".aws/credentials"), &format!("[default]\naws_secret_access_key = {FAKE_TOKEN}\n"));
     write_file(&home.join("notes.txt"), &format!("{FAKE_TOKEN}\n"));
@@ -239,7 +248,7 @@ fn in_stand_in_home() {
 
     // Verify `.tarae.toml` risky settings are held back before project trust
     let sources = crate::config::Sources {
-        user: Some(home.join(".config/tarae/config.toml")),
+        user: Some(config.clone()),
         trust: Some(home.join(".local/state/tarae/trust.json")),
     };
     let (loaded, _) = crate::config::load(&root, &sources);
@@ -253,7 +262,7 @@ fn in_stand_in_home() {
     // Build `Here` with fake secret variables in tarae's environment (must be scrubbed from the run)
     let mut here = Here { tmp: Some(shared_tmp.clone()), runs: Some(runs.clone()), ..Here::now() };
     here.env.insert("HOME".into(), home.clone().into_os_string());
-    here.env.insert("XDG_CONFIG_HOME".into(), home.join(".config").into_os_string());
+    here.env.insert("XDG_CONFIG_HOME".into(), xdg.clone().into_os_string());
     here.env.insert("XDG_STATE_HOME".into(), home.join(".local/state").into_os_string());
     here.env.insert("XDG_DATA_HOME".into(), home.join(".local/share").into_os_string());
     here.env.insert("XDG_CACHE_HOME".into(), home.join(".cache").into_os_string());
@@ -375,6 +384,9 @@ fn in_stand_in_home() {
         ("RUNS", runs.display().to_string()),
         ("OUTSIDE", outside.display().to_string()),
         ("SHARED_TMP", shared_tmp.display().to_string()),
+        ("PLUGINS", plugins.display().to_string()),
+        ("CONFIG", config.display().to_string()),
+        ("XDG_GH", xdg_gh.display().to_string()),
         ("TCP_UNOPENED", tcp_unopened_port.to_string()),
         ("TCP_NON_LOOP", tcp_non_loop_addr.to_string()),
         ("UDP_LOOP", udp_loop_port.to_string()),
@@ -536,7 +548,7 @@ fn in_stand_in_home() {
     let r3_sb = got["r3_sandbox"] == "refused";
     let r3_tr = got["r3_trust"] == "refused";
     let r3_gr = got["r3_grammar"] == "refused" && !home.join(".local/share/tarae/grammars/x.dylib").exists();
-    let r3_pl = got["r3_plugin"] == "refused" && !home.join(".local/share/tarae/plugins/x.wasm").exists();
+    let r3_pl = got["r3_plugin"] == "refused" && !plugins.join("x.wasm").exists();
     let r3_repo = got["r3_repo_cfg"] == "refused";
     let r3_ok = r3_cfg && r3_sb && r3_tr && r3_gr && r3_pl && r3_repo && untrusted_held;
     rows.push(Row {
@@ -699,21 +711,23 @@ fn in_stand_in_home() {
     // 9. 1.3, 1.4 | read-kept
     let r9_ssh = got["r9_ssh"] == "refused";
     let r9_aws = got["r9_aws"] == "refused";
+    let r9_xdg = got["r9_xdg_gh"] == "refused";
     let r9_env = got["r9_dotenv"] == "refused";
     let r9_sb = got["r9_sandbox"] == "refused";
     let r9_home = got["r9_home"] == "refused";
     let r9_git = got["r9_gitconfig"] == "scrubbed";
     let r9_vars = got["r9_vars"] == "scrubbed";
-    let r9_ok = r9_ssh && r9_aws && r9_env && r9_sb && r9_home && r9_git && r9_vars;
+    let r9_ok = r9_ssh && r9_aws && r9_xdg && r9_env && r9_sb && r9_home && r9_git && r9_vars;
     rows.push(Row {
         claim: "1.3, 1.4",
         id: "read-kept",
         expected: Verdict::Refused,
         verdict: if r9_ok { Verdict::Refused } else { Verdict::Allowed },
         witness: format!(
-            "ssh-key={}, aws-creds={}, dot-env={}, sandbox-json={}, home-file={}, gitconfig={}, env={}",
+            "ssh-key={}, aws-creds={}, xdg-gh={}, dot-env={}, sandbox-json={}, home-file={}, gitconfig={}, env={}",
             word(r9_ssh),
             word(r9_aws),
+            word(r9_xdg),
             word(r9_env),
             word(r9_sb),
             word(r9_home),
@@ -2353,6 +2367,9 @@ fn sandbox_main(cfg: &HashMap<&str, &str>) {
     let runs = Path::new(cfg["RUNS"]);
     let outside = Path::new(cfg["OUTSIDE"]);
     let shared_tmp = Path::new(cfg["SHARED_TMP"]);
+    let plugins = Path::new(cfg["PLUGINS"]);
+    let config = Path::new(cfg["CONFIG"]);
+    let xdg_gh = Path::new(cfg["XDG_GH"]);
 
     #[cfg(target_os = "linux")]
     check_linux_rows(
@@ -2391,11 +2408,11 @@ fn sandbox_main(cfg: &HashMap<&str, &str>) {
     record_refused(
         "r3",
         &[
-            ("config", try_append(&home.join(".config/tarae/config.toml"))),
+            ("config", try_append(config)),
             ("sandbox", try_write(&home.join(".local/state/tarae/sandbox.json"))),
             ("trust", try_write(&home.join(".local/state/tarae/trust.json"))),
             ("grammar", try_write(&home.join(".local/share/tarae/grammars/x.dylib"))),
-            ("plugin", try_write(&home.join(".local/share/tarae/plugins/x.wasm"))),
+            ("plugin", try_write(&plugins.join("x.wasm"))),
             ("repo_cfg", try_append(&root.join(".tarae.toml"))),
         ],
     );
@@ -2447,6 +2464,7 @@ fn sandbox_main(cfg: &HashMap<&str, &str>) {
         &[
             ("ssh", fs::read_to_string(home.join(".ssh/id_ed25519")).map(drop)),
             ("aws", fs::read_to_string(home.join(".aws/credentials")).map(drop)),
+            ("xdg_gh", fs::read_to_string(xdg_gh).map(drop)),
             ("dotenv", fs::read_to_string(root.join(".env")).map(drop)),
             ("sandbox", fs::read_to_string(home.join(".local/state/tarae/sandbox.json")).map(drop)),
             ("home", fs::read_to_string(home.join("notes.txt")).map(drop)),

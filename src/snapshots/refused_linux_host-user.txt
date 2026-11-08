@@ -8,7 +8,7 @@
 1.2, 1.4 | hardlink-protected             | refused  | cargo-toml=refused, build-rs=refused, ssh-key=refused, dot-env=refused
 1.2      | move-protected-parent          | refused  | write-after-move=refused, unlink-after-move=refused
 1.2      | move-in-from-temp              | caught   | write-in-root=allowed, snapshot-flagged=crates/x/build.rs
-1.3, 1.4 | read-kept                      | refused  | ssh-key=refused, aws-creds=refused, dot-env=refused, sandbox-json=refused, home-file=refused, gitconfig=scrubbed, env=scrubbed
+1.3, 1.4 | read-kept                      | refused  | ssh-key=refused, aws-creds=refused, xdg-gh=refused, dot-env=refused, sandbox-json=refused, home-file=refused, gitconfig=scrubbed, env=scrubbed
 1.5      | tcp-unopened-port              | refused  | connect=refused, accepted=0
 1.5      | tcp-own-non-loopback           | refused  | connect=refused, accepted=0
 1.5      | udp-sendto                     | refused  | loopback=refused, resolver=refused, port0=refused

@@ -152,6 +152,16 @@ Kept:
   closed, said; only `llm.sandbox-write`, set by hand, goes past it.
   test: `sandbox::tests::what_runs_later_is_never_an_asked_folder` · `allow::tests::which_folders_a_denied_write_may_open`
   · `sandbox::tests::a_kept_write_grant_is_judged_again`
+- tarae's own config folder (`config.toml`, whose settings say what a run may do; `plugins/`, what tarae runs) and
+  the `.config/…` places of keys and of what runs later (git's, fish's, gh's) are judged under home and where
+  `$XDG_CONFIG_HOME` puts them: never offered on a write card nor as an asked folder, nor a folder holding one
+  (2026-11-09; before, a config folder outside home could be offered whole). Those places of keys are kept from
+  every run's reads there too (gh's token, gcloud's sign-in, git's credential store); the rest of that folder is read
+  as ever — tarae's config holds no secret.
+  test: `allow::tests::a_moved_config_folder_is_judged_where_it_is` ·
+  `sandbox::tests::the_config_folders_keys_are_kept_where_xdg_config_home_puts_them` ·
+  `sandbox::refused::must_be_refused` (its stand-in's config folder outside home: write-tarae-own at the config and
+  plugins tarae uses, read-kept's xdg-gh)
 - Claude changes a protected file only through an edit you review, with a warning — even with review at the end.
   test: `edits::tests::review_at_the_end_still_asks_for_a_protected_file_with_its_warning` ·
   `refactor::tests::a_protected_file_in_a_change_set_is_reviewed_with_its_warning`
@@ -225,6 +235,10 @@ Not kept:
   `.pre-commit-config.yaml`) is protected only once a pack lists it or you add it to `llm.sandbox-protect`.
 - **What you accept in a review.** A `build.rs` you accept runs at your next build — and rust-analyzer runs it as
   soon as it loads the project (§3).
+- **A folder you name in `llm.sandbox-write` that holds one of those places** — your config folder's parent, say.
+  Set by hand, it's your choice and isn't judged (as sandbox-runtime leaves its `allowWrite`): a run may then write
+  tarae's `config.toml` or a plugin. Linux couldn't keep them there anyway: Landlock only grants, so nothing inside
+  a folder it allows can be denied.
 
 ### 1.3 Reads in your home folder
 

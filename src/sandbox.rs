@@ -1386,8 +1386,8 @@ pub fn reads_above(root: &Path, home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What a run never reads, whatever is granted: the places that hold keys (`allow::SECRETS`, and git's
-/// credential store where `$XDG_CONFIG_HOME` puts it; on WSL each Windows profile's too — `winhome`), Claude's own (`CLAUDES`), `KEPT_FLOOR`, the packs'
+/// What a run never reads, whatever is granted: the places that hold keys (`allow::SECRETS`, its `.config/…` rows
+/// where `$XDG_CONFIG_HOME` puts them too; on WSL each Windows profile's too — `winhome`), Claude's own (`CLAUDES`), `KEPT_FLOOR`, the packs'
 /// `kept` at both a home's places, their `kept-moved` where the user's variables move them (the cloud CLIs'
 /// sign-in, #182), tarae's state (every session's conversations, turns, cards, what was allowed, its log) and
 /// tarae's cache (other runs' folders, other projects' run homes, the overlaps' snapshots — a run's own opened
@@ -1453,7 +1453,9 @@ fn kept_in(home: &Path, vars: &crate::sandboxpack::Vars, packs: &[String]) -> Ve
     let mut v: Vec<PathBuf> = floor.map(|s| at(home.join(s))).collect();
     v.extend(packs.iter().flat_map(|k| vars.places_both(k)).map(at));
     v.extend(vars.kept_moved.iter().cloned().map(at));
-    v.push(at(vars.xdg_config.join("git/credentials")));
+    // (the `.config/…` keys where `$XDG_CONFIG_HOME` puts them: git's credential store, gh's and gcloud's sign-in)
+    let moved = crate::allow::SECRETS.iter().filter_map(|s| s.strip_prefix(".config/"));
+    v.extend(moved.map(|s| at(vars.xdg_config.join(s))));
     // (WSL: each Windows profile's, outside home — `winhome`)
     v.extend(vars.windows.iter().cloned().map(at));
     crate::sorting::sort(&mut v);
@@ -1531,10 +1533,13 @@ fn never_written(d: &Path, root: &Path, home: Option<&Path>) -> Option<String> {
 /// Whether a folder the packs' `ask` names (Go's module cache — `d`, real) may be written by the project's runs
 /// (a cache: with the network open): it's the tool's own, wherever its settings put it — but never home or
 /// above it, a folder holding the checkout, nor in or around where keys are, Claude's and tarae's own, or what
-/// runs later (`allow::SECRETS`, `KEPT_FLOOR`, `allow::NEVER_WRITE`, `later`: programs' folders, shared caches,
-/// toolchains' homes and what's in them). Err why not.
+/// runs later (`allow::SECRETS`, `KEPT_FLOOR`, `allow::NEVER_WRITE` — their `.config/…` rows where
+/// `$XDG_CONFIG_HOME` puts them too, and tarae's config folder: `RunsLater::config_refuses` —, `later`: programs'
+/// folders, shared caches, toolchains' homes and what's in them). Err why not.
 pub fn ask_dir_verdict(d: &Path, root: &Path, home: Option<&Path>, later: &RunsLater) -> Result<(), String> {
-    if let Some(why) = never_written(d, root, home).or_else(|| later.refuses(d)) {
+    if let Some(why) =
+        never_written(d, root, home).or_else(|| later.refuses(d)).or_else(|| later.config_refuses(d))
+    {
         return Err(why);
     }
     let Some(home) = home else { return Ok(()) };
@@ -2202,6 +2207,12 @@ pub struct RunsLater {
     /// tarae's runs folder (`runs_root`, real): each run's own folder is made there, where no run may write but in
     /// its own (keeper 7e, F1) — a folder in it or holding it opened, every run would be refused (`runs_written`).
     pub runs: Option<PathBuf>,
+    /// tarae's own config folder: `config::config_path`'s, and where the variables put it — its settings say what a
+    /// run may do (`llm.sandbox-hosts`, `sandbox-secrets`), its `plugins` what tarae runs. Real paths.
+    pub config: Vec<PathBuf>,
+    /// The `.config/…` rows of `allow::SECRETS` and `allow::NEVER_WRITE` where `$XDG_CONFIG_HOME` puts them (as git's
+    /// credential store is kept, `kept_in`) — `allow::write_refused_why` judges them under home. Real paths.
+    pub moved: Vec<PathBuf>,
 }
 
 impl RunsLater {
@@ -2222,11 +2233,38 @@ impl RunsLater {
         }
         crate::sorting::sort(&mut caches);
         caches.dedup();
-        let mut r =
-            RunsLater { bins: bins.collect(), caches, homes: homes.collect(), ..RunsLater::default() };
+        let config = std::iter::once(vars.xdg_config.join("tarae"))
+            .chain(crate::config::config_path().and_then(|p| p.parent().map(Path::to_path_buf)));
+        let rows = crate::allow::SECRETS.iter().chain(crate::allow::NEVER_WRITE);
+        let moved = rows.filter_map(|s| s.strip_prefix(".config/")).map(|s| vars.xdg_config.join(s));
+        let mut r = RunsLater {
+            bins: bins.collect(),
+            caches,
+            homes: homes.collect(),
+            config: config.collect(),
+            moved: moved.collect(),
+            ..RunsLater::default()
+        };
         real(&mut r.bins);
         real(&mut r.homes);
+        real(&mut r.config);
+        real(&mut r.moved);
         r
+    }
+
+    /// Why folder `d` (real) is never written for being in or holding tarae's config folder (`config`), or a
+    /// `.config/…` row of keys or of what runs later where `$XDG_CONFIG_HOME` puts it (`moved`) — None: neither.
+    pub fn config_refuses(&self, d: &Path) -> Option<String> {
+        let near = |p: &&PathBuf| p.starts_with(d) || d.starts_with(p);
+        if let Some(c) = self.config.iter().find(near) {
+            let how = if d.starts_with(c) { "it's in" } else { "it holds" };
+            return Some(format!(
+                "{how} tarae's config folder ({}) — its settings say what a run may do",
+                crate::allow::tilde(c)
+            ));
+        }
+        let m = self.moved.iter().find(near)?;
+        Some(format!("it's where keys are or what runs later ({})", crate::allow::tilde(m)))
     }
 
     /// How a cache a toolchain names (its `asked` key) is judged: as any folder, but for that cache's own places
@@ -10724,6 +10762,33 @@ mod tests {
         // Their variables are only kept places: not passed to runs
         let names: Vec<&str> = crate::sandboxpack::get().env_names().collect();
         assert!(env.iter().all(|(k, _)| !names.contains(k)), "{names:?}");
+    }
+
+    /// The `.config/…` places of keys (`allow::SECRETS`: git's credential store, gh's and gcloud's sign-in) are kept
+    /// where `$XDG_CONFIG_HOME` puts them as at home — gh's token outside home too — while the rest there is read:
+    /// git's settings, fish's, tarae's config (no secret in it). (A stand-in environment: nothing of this process's.)
+    #[test]
+    fn the_config_folders_keys_are_kept_where_xdg_config_home_puts_them() {
+        let home = Path::new("/Users/u");
+        let here = Here {
+            env: [("XDG_CONFIG_HOME".to_string(), std::ffi::OsString::from("/opt/conf"))].into(),
+            ..Here::default()
+        };
+        let kept = kept_reads(home, &vars_in(home, &here));
+        let reads =
+            Reads { home: Some(home.into()), allow: vec![home.join(".config")], kept, ..Reads::default() };
+        let policy = Policy::for_project(&Env { root: home.join("proj"), reads, ..Env::default() });
+        for p in [
+            "/opt/conf/gh/hosts.yml",
+            "/opt/conf/gcloud/credentials.db",
+            "/opt/conf/git/credentials",
+            "/Users/u/.config/gh/hosts.yml",
+        ] {
+            assert!(!policy.reads_allow(Path::new(p)), "{p}");
+        }
+        for p in ["/opt/conf/git/config", "/opt/conf/fish/config.fish", "/opt/conf/tarae/config.toml"] {
+            assert!(policy.reads_allow(Path::new(p)), "{p}: no keys there");
+        }
     }
 
     /// Where the sandbox refuses a v4-mapped loopback (macOS below 27), a run's JVMs are IPv4-only: the Java
