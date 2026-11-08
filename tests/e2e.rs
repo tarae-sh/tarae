@@ -240,7 +240,7 @@ fn tarae_state_ends_quietly_when_its_reader_is_gone() {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        let sender = signal_sender(child.id());
+        let sender = exit_reason(child.id());
         let status = child.wait().unwrap();
         let mut said = String::new();
         std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut said).unwrap();
@@ -250,91 +250,16 @@ fn tarae_state_ends_quietly_when_its_reader_is_gone() {
     assert_eq!(fs::read_to_string(&frame).unwrap(), "ab");
 }
 
-/// Whether child `pid` has ended — left unreaped (`WNOWAIT`): `signal_sender` reads it before `wait` does.
-fn ended(pid: u32) -> bool {
-    // SAFETY: a zeroed siginfo_t is one to fill; waitid only looks at our own child, reaping nothing.
-    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
-    // SAFETY: as above.
-    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) };
-    #[cfg(target_os = "macos")]
-    let from = info.si_pid;
-    // SAFETY: filled by waitid (zero while it runs).
-    #[cfg(not(target_os = "macos"))]
-    let from = unsafe { info.si_pid() };
-    r == 0 && from == pid as libc::pid_t
-}
-
-/// Who killed ended child `pid`, said after its status: macOS keeps a signal's sender — its pid and name — in
-/// the exit reason of a process killed by kill(2), read from it until it's reaped (`PROC_PIDEXITREASONINFO`, its
-/// reason's kcdata). Nothing for one that wasn't signalled, or elsewhere.
-fn signal_sender(pid: u32) -> String {
-    #[cfg(target_os = "macos")]
-    {
-        // (XNU's `proc_exitreasoninfo`, packed)
-        #[repr(C, packed)]
-        struct ExitReason {
-            namespace: u32,
-            code: u64,
-            flags: u64,
-            size: u32,
-            buf: u64,
-        }
-        unsafe extern "C" {
-            fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut libc::c_void, size: i32) -> i32;
-        }
-        const PROC_PIDEXITREASONINFO: i32 = 24;
-        const OS_REASON_SIGNAL: u32 = 2;
-        let (kcdata_pid, kcdata_procname) = (0x36, 0x37);
-        let mut kcd = [0u8; 2048];
-        let mut r = ExitReason {
-            namespace: 0,
-            code: 0,
-            flags: 0,
-            size: kcd.len() as u32,
-            buf: kcd.as_mut_ptr() as u64,
-        };
-        let size = std::mem::size_of::<ExitReason>() as i32;
-        // SAFETY: fills one ExitReason and up to `size` bytes of our own buffer it points at.
-        let n = unsafe { proc_pidinfo(pid as i32, PROC_PIDEXITREASONINFO, 0, (&raw mut r).cast(), size) };
-        let (namespace, kcd_size) = (r.namespace, r.size);
-        if n <= 0 || namespace != OS_REASON_SIGNAL {
-            return String::new();
-        }
-        // (kcdata: items of a type, a size and flags — 16 bytes — then their data, that size)
-        let (mut at, len, mut from) = (0, (kcd_size as usize).min(kcd.len()), Vec::new());
-        while at + 16 <= len {
-            let word = |i: usize| u32::from_le_bytes(kcd[i..i + 4].try_into().unwrap());
-            let (kind, size) = (word(at), word(at + 4) as usize);
-            let data = &kcd[at + 16..(at + 16 + size).min(len)];
-            if kind == kcdata_pid && data.len() >= 4 {
-                from.push(format!("pid {}", i32::from_le_bytes(data[..4].try_into().unwrap())));
-            } else if kind == kcdata_procname {
-                from.push(
-                    String::from_utf8_lossy(data.split(|b| *b == 0).next().unwrap_or_default()).into_owned(),
-                );
-            }
-            at += 16 + size;
-        }
-        format!(" — sent by {}", if from.is_empty() { "no one named".to_string() } else { from.join(" ") })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = pid;
-        String::new()
-    }
-}
-
 #[test]
 fn version_and_help_print_without_a_terminal() {
-    let out = Command::new(BIN).arg("--version").output().unwrap();
-    assert!(out.status.success());
+    let (out, why) = output_and_reason(Command::new(BIN).arg("--version"));
+    assert!(out.status.success(), "{}{why}", out.status);
     // (the build stamped: the version, the commit, a `+` where the sources differ from it)
     let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert_eq!(said, format!("tarae {}", tarae_wire::BUILD));
     assert!(said.starts_with(&format!("tarae {} ", env!("CARGO_PKG_VERSION"))), "{said}");
-    let out = Command::new(BIN).arg("--help").output().unwrap();
-    assert!(out.status.success());
+    let (out, why) = output_and_reason(Command::new(BIN).arg("--help"));
+    assert!(out.status.success(), "{}{why}", out.status);
     assert!(String::from_utf8_lossy(&out.stdout).contains("usage: tarae [FILE]"));
 }
 

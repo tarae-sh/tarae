@@ -1127,14 +1127,14 @@ impl Asked<'_> {
     fn state(&self, args: &[&str], again: &AtomicUsize, shown: impl Fn() -> String) -> String {
         let deadline = Instant::now() + self.timeout;
         loop {
-            let out = Command::new(self.bin)
-                .arg("state")
-                .args(["--pid", &self.pid.to_string()])
-                .args(args)
-                .env_clear()
-                .envs(self.env.iter().cloned())
-                .output()
-                .expect("tarae state");
+            let (out, why) = output_and_reason(
+                Command::new(self.bin)
+                    .arg("state")
+                    .args(["--pid", &self.pid.to_string()])
+                    .args(args)
+                    .env_clear()
+                    .envs(self.env.iter().cloned()),
+            );
             let (stdout, stderr) =
                 (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
             if out.status.success() {
@@ -1145,11 +1145,118 @@ impl Asked<'_> {
                 continue;
             }
             panic!(
-                "tarae state FAILED {args:?}, ended with {} — stderr: {stderr:?}, stdout: {stdout:?}\n{}",
+                "tarae state FAILED {args:?}, ended with {}{why} — stderr: {stderr:?}, stdout: {stdout:?}\n{}",
                 out.status,
                 shown()
             );
         }
+    }
+}
+
+/// `cmd`'s output, as `Command::output` — and, when a signal ended it, why (`exit_reason`), read before it's reaped
+/// (#459: `tarae state` ended by a SIGKILL no one in the harness sent).
+pub fn output_and_reason(cmd: &mut Command) -> (std::process::Output, String) {
+    use std::os::unix::process::ExitStatusExt;
+    let mut child =
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
+    let mut err = child.stderr.take().expect("stderr");
+    let errs = thread::spawn(move || {
+        let mut said = Vec::new();
+        let _ = err.read_to_end(&mut said);
+        said
+    });
+    let mut stdout = Vec::new();
+    let _ = child.stdout.take().expect("stdout").read_to_end(&mut stdout);
+    let stderr = errs.join().unwrap_or_default();
+    // (ended, not reaped: its exit reason is still there to read)
+    // SAFETY: a zeroed siginfo_t is one to fill; waitid waits for our own child, reaping nothing.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+    let why = exit_reason(child.id());
+    let status = child.wait().expect("wait");
+    let why = if status.signal().is_some() { why } else { String::new() };
+    (std::process::Output { status, stdout, stderr }, why)
+}
+
+/// Whether child `pid` has ended — left unreaped (`WNOWAIT`): `exit_reason` reads it before `wait` does.
+pub fn ended(pid: u32) -> bool {
+    // SAFETY: a zeroed siginfo_t is one to fill; waitid only looks at our own child, reaping nothing.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+    // SAFETY: as above.
+    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) };
+    #[cfg(target_os = "macos")]
+    let from = info.si_pid;
+    // SAFETY: filled by waitid (zero while it runs).
+    #[cfg(not(target_os = "macos"))]
+    let from = unsafe { info.si_pid() };
+    r == 0 && from == pid as libc::pid_t
+}
+
+/// Why ended child `pid` ended, said after its status: macOS keeps an exit reason until it's reaped
+/// (`PROC_PIDEXITREASONINFO`) — for a kill(2), its sender's pid and name (the reason's kcdata); for one the kernel
+/// ended (code signing, jetsam, exec), its namespace and code. Nothing for one with none, or elsewhere.
+pub fn exit_reason(pid: u32) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        // (XNU's `proc_exitreasoninfo`, packed)
+        #[repr(C, packed)]
+        struct ExitReason {
+            namespace: u32,
+            code: u64,
+            flags: u64,
+            size: u32,
+            buf: u64,
+        }
+        unsafe extern "C" {
+            fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut libc::c_void, size: i32) -> i32;
+        }
+        const PROC_PIDEXITREASONINFO: i32 = 24;
+        // (XNU's sys/reason.h: OS_REASON_JETSAM, _SIGNAL, _CODESIGNING; the rest said by number)
+        const NAMESPACES: [&str; 4] = ["none", "jetsam", "signal", "code signing"];
+        const OS_REASON_SIGNAL: u32 = 2;
+        let (kcdata_pid, kcdata_procname) = (0x36, 0x37);
+        let mut kcd = [0u8; 2048];
+        let mut r = ExitReason {
+            namespace: 0,
+            code: 0,
+            flags: 0,
+            size: kcd.len() as u32,
+            buf: kcd.as_mut_ptr() as u64,
+        };
+        let size = std::mem::size_of::<ExitReason>() as i32;
+        // SAFETY: fills one ExitReason and up to `size` bytes of our own buffer it points at.
+        let n = unsafe { proc_pidinfo(pid as i32, PROC_PIDEXITREASONINFO, 0, (&raw mut r).cast(), size) };
+        let (namespace, code, kcd_size) = (r.namespace, r.code, r.size);
+        if n <= 0 {
+            return format!(" — no exit reason ({})", io::Error::last_os_error());
+        }
+        if namespace != OS_REASON_SIGNAL {
+            let name = NAMESPACES.get(namespace as usize).map_or(namespace.to_string(), |n| n.to_string());
+            return format!(" — ended by the kernel: {name} (namespace {namespace}), code {code:#x}");
+        }
+        // (kcdata: items of a type, a size and flags — 16 bytes — then their data, that size)
+        let (mut at, len, mut from) = (0, (kcd_size as usize).min(kcd.len()), Vec::new());
+        while at + 16 <= len {
+            let word = |i: usize| u32::from_le_bytes(kcd[i..i + 4].try_into().unwrap());
+            let (kind, size) = (word(at), word(at + 4) as usize);
+            let data = &kcd[at + 16..(at + 16 + size).min(len)];
+            if kind == kcdata_pid && data.len() >= 4 {
+                from.push(format!("pid {}", i32::from_le_bytes(data[..4].try_into().unwrap())));
+            } else if kind == kcdata_procname {
+                from.push(
+                    String::from_utf8_lossy(data.split(|b| *b == 0).next().unwrap_or_default()).into_owned(),
+                );
+            }
+            at += 16 + size;
+        }
+        format!(" — sent by {}", if from.is_empty() { "no one named".to_string() } else { from.join(" ") })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        String::new()
     }
 }
 
@@ -1840,6 +1947,23 @@ mod tests {
         seen.extend_from_slice(&second);
         assert_eq!(frames_after(&seen, 7), 1, "its last byte come: started, one frame since");
         assert_eq!(TARAE_START.len(), FRAME_END.len(), "one look back holds both marks");
+    }
+
+    /// A child killed by kill(2) is said with its sender, read before it's reaped (#459) — here a shell that kills
+    /// itself; a clean exit says nothing (nor, off macOS, a kill).
+    #[test]
+    fn a_killed_childs_sender_is_said() {
+        let (out, why) = output_and_reason(Command::new("/bin/sh").args(["-c", "kill -KILL $$"]));
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&out.status), Some(libc::SIGKILL));
+        // (macOS keeps a kill's sender; elsewhere nothing is said)
+        let said = if cfg!(target_os = "macos") {
+            why.contains("sent by pid") && why.contains("sh")
+        } else {
+            why.is_empty()
+        };
+        assert!(said, "{why:?}");
+        let (out, why) = output_and_reason(Command::new("/bin/sh").args(["-c", "echo said"]));
+        assert!(out.status.success() && out.stdout == b"said\n" && why.is_empty(), "{why:?}");
     }
 
     /// A thread that ends inside a rest takes nothing from the others' wakes (#191's third review: on Linux a sum of
