@@ -1,5 +1,6 @@
-//! `cargo xtask cards [PATH …]` — the card record (`src/cards.rs`: `$state/cards/<yyyy-mm>.jsonl`, every
-//! file in a folder given, the state folder's when none is) summed up as cardauto's §4.2 reads it:
+//! `cargo xtask cards [--from DAY] [--to DAY] [--home NAME] [--sessions PATH] [--inert SPEC …] [PATH …]` — the
+//! card record (`src/cards.rs`: `$state/cards/<yyyy-mm>.jsonl`, every file in a folder given, the state folder's
+//! when none is) summed up as cardauto's §4.2 reads it:
 //!
 //! - **the P3 table** — Claude's cards by kind · `why` (its program after `:` folded into the row) × `shadow`:
 //!   how many, their answers, how many stamped (answered within 1.5 s of being drawn), the median drawn →
@@ -8,9 +9,15 @@
 //! - **P3 wrong yes** — `shadow=none` ∧ `n`, each with its command, to be read by hand;
 //! - **the stamp rate** by `why`; dropped and never-drawn cards are left out of stamps and times;
 //! - **refused with no card**, each with its command and what Claude was told;
-//! - **tarae's own cards**, by kind and answer.
+//! - **tarae's own cards**, by kind and answer;
 //!
-//! A line that isn't an entry (a write cut short) is counted and skipped.
+//! and P6's breakdowns (`breakdown`): every card **by session** (the home checkout — `--home`, its branch, `main`
+//! when not given — and each named one, a child marked by its kept record's parent: `--sessions`, the state
+//! folder's `sessions/` when not given), Docker's **socket cards by command** (whether `a` covers it: the project's
+//! `llm.docker-inert`, and `--inert` more), the bring card's **`p`**, the **change sets**.
+//!
+//! `--from`/`--to` (`2026-10-31`, both ends in) keep only the entries of those days. A line that isn't an entry (a
+//! write cut short) is counted and skipped.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,16 +26,81 @@ use serde_json::Value;
 
 use crate::Result;
 
+mod breakdown;
+
 /// Answered within this long of being drawn: a stamp, not a read (cards.md §1.3).
 const STAMP_MS: u64 = 1500;
 
-pub fn run(args: &[String]) -> Result<()> {
-    let paths: Vec<PathBuf> = match args.is_empty() {
-        true => {
-            vec![state_cards().ok_or("neither XDG_STATE_HOME nor HOME is set: give the record's folder")?]
+/// What the report is asked for besides the record.
+#[derive(Debug)]
+struct Opts {
+    /// Only the entries of these days (`2026-10-31`), both ends in.
+    from: Option<String>,
+    to: Option<String>,
+    /// The home checkout's name in the record: its branch.
+    home: String,
+    /// A child session's name → its parent's, from the kept sessions.
+    parents: BTreeMap<String, String>,
+    /// `llm.docker-inert`'s entries, and the packs' entry runs (`cargo xtask`).
+    inert: Vec<breakdown::Inert>,
+    entries: Vec<Vec<String>>,
+}
+
+impl Default for Opts {
+    fn default() -> Opts {
+        Opts {
+            from: None,
+            to: None,
+            home: "main".into(),
+            parents: BTreeMap::new(),
+            inert: Vec::new(),
+            entries: Vec::new(),
         }
-        false => args.iter().map(PathBuf::from).collect(),
-    };
+    }
+}
+
+/// `2026-10-31`, or why not.
+fn day(flag: &str, v: Option<&String>) -> Result<String> {
+    let v = v.ok_or(format!("{flag}: a day, 2026-10-31"))?;
+    let ok = v.len() == 10
+        && v.bytes().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == b'-' } else { c.is_ascii_digit() });
+    ok.then(|| v.clone()).ok_or(format!("{flag} {v}: a day, 2026-10-31"))
+}
+
+pub fn run(args: &[String]) -> Result<()> {
+    let (inert, entries) = breakdown::inert_here(&crate::root());
+    let mut o = Opts { inert, entries, ..Opts::default() };
+    let (mut paths, mut sessions) = (Vec::new(), None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--from" => o.from = Some(day(a, it.next())?),
+            "--to" => o.to = Some(day(a, it.next())?),
+            "--home" => o.home = it.next().ok_or("--home: the home checkout's name in the record")?.clone(),
+            "--sessions" => sessions = Some(PathBuf::from(it.next().ok_or("--sessions: a file or folder")?)),
+            "--inert" => {
+                let spec = it.next().ok_or("--inert: an llm.docker-inert entry")?;
+                o.inert.push(
+                    breakdown::Inert::parse(spec).ok_or(format!(
+                        "--inert {spec:?}: as llm.docker-inert writes one, `run words: args`"
+                    ))?,
+                );
+            }
+            f if f.starts_with("--") => return Err(format!("{f}: not an option cards takes")),
+            p => paths.push(PathBuf::from(p)),
+        }
+    }
+    if paths.is_empty() {
+        let state = state_dir().ok_or("neither XDG_STATE_HOME nor HOME is set: give the record's folder")?;
+        paths.push(state.join("cards"));
+        sessions = sessions.or_else(|| Some(state.join("sessions")).filter(|p| p.is_dir()));
+    }
+    if let Some(p) = &sessions {
+        for f in jsonl_in(p)?.into_iter().chain(json_in(p)?) {
+            let text = std::fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+            o.parents.extend(parents_of(&text, &o.home));
+        }
+    }
     let mut files = Vec::new();
     for p in &paths {
         files.extend(jsonl_in(p)?);
@@ -41,16 +113,50 @@ pub fn run(args: &[String]) -> Result<()> {
         text += &std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
     }
     let names: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
-    print!("{}", report(&names.join(", "), &text));
+    print!("{}", report(&names.join(", "), &text, &o));
     Ok(())
 }
 
-/// `$XDG_STATE_HOME/tarae/cards` (`~/.local/state/tarae/cards`) — as `config::state_dir` finds it.
-fn state_cards() -> Option<PathBuf> {
+/// `$XDG_STATE_HOME/tarae` (`~/.local/state/tarae`) — as `config::state_dir` finds it.
+fn state_dir() -> Option<PathBuf> {
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
-    Some(state.join("tarae").join("cards"))
+    Some(state.join("tarae"))
+}
+
+/// The `.json` files in folder `p` (none when it's a file: `jsonl_in` took it).
+fn json_in(p: &Path) -> Result<Vec<PathBuf>> {
+    if !p.is_dir() {
+        return Ok(Vec::new());
+    }
+    let rd = std::fs::read_dir(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut v: Vec<PathBuf> =
+        rd.flatten().map(|e| e.path()).filter(|f| f.extension().is_some_and(|x| x == "json")).collect();
+    v.sort();
+    Ok(v)
+}
+
+/// A kept sessions file (`worktree::save_judged`: `repo`, `sessions` of `root`, `name`, `parent`) → each child's
+/// name and its parent's — the home checkout (the repository's, beside its `.git`) by `home`, another by its name,
+/// one not kept by its folder's.
+fn parents_of(text: &str, home: &str) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return Vec::new() };
+    let kept = v["sessions"].as_array().cloned().unwrap_or_default();
+    let home_root = Path::new(s(&v, "repo")).parent().map(Path::to_path_buf);
+    let name_at = |root: &str| -> String {
+        if home_root.as_deref() == Some(Path::new(root)) {
+            return home.to_string();
+        }
+        match kept.iter().find(|k| s(k, "root") == root) {
+            Some(k) => s(k, "name").to_string(),
+            None => Path::new(root).file_name().map_or(root.into(), |n| n.to_string_lossy().into_owned()),
+        }
+    };
+    kept.iter()
+        .filter(|k| !s(k, "parent").is_empty())
+        .map(|k| (s(k, "name").to_string(), name_at(s(k, "parent"))))
+        .collect()
 }
 
 /// `p` itself, or the `.jsonl` files in it, oldest month first.
@@ -149,10 +255,16 @@ fn listed(e: &Value) -> String {
     format!("- {} {}{card}{run} · `{}`{cwd}", s(e, "at"), s(e, "session"), s(e, "what"))
 }
 
+/// Whether entry `e`'s day is in `o`'s range.
+fn in_range(e: &Value, o: &Opts) -> bool {
+    let day = s(e, "at").get(..10).unwrap_or("");
+    o.from.as_deref().is_none_or(|f| day >= f) && o.to.as_deref().is_none_or(|t| !day.is_empty() && day <= t)
+}
+
 /// The whole report for the record's `text` (its files named `from`).
-fn report(from: &str, text: &str) -> String {
+fn report(from: &str, text: &str, o: &Opts) -> String {
     let mut broken = 0;
-    let all: Vec<Value> = text
+    let read: Vec<Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| {
@@ -161,7 +273,12 @@ fn report(from: &str, text: &str) -> String {
             v
         })
         .collect();
+    let all: Vec<Value> = read.iter().filter(|e| in_range(e, o)).cloned().collect();
     let mut out = format!("# Cards\n\nFrom {from}: {} entries", all.len());
+    if o.from.is_some() || o.to.is_some() {
+        let (f, t) = (o.from.as_deref().unwrap_or("the first"), o.to.as_deref().unwrap_or("the last"));
+        out += &format!(" from {f} to {t} (of {})", read.len());
+    }
     if let (Some(first), Some(last)) = (all.first(), all.last()) {
         out += &format!(", {} – {}", s(first, "at"), s(last, "at"));
     }
@@ -286,6 +403,11 @@ fn report(from: &str, text: &str) -> String {
             .collect();
         out += &table(&["Kind", "Cards", "Answers", "Median time"], &t);
     }
+
+    out += &breakdown::by_session(&all, o);
+    out += &breakdown::sockets(&all, o);
+    out += &breakdown::preflight_again(&all, o);
+    out += &breakdown::change_sets(&all, o);
     out
 }
 
@@ -299,7 +421,7 @@ mod tests {
     /// line skipped, said.
     #[test]
     fn the_record_reads_as_the_p3_table() {
-        let r = report("cards.jsonl", include_str!("../fixtures/cards.jsonl"));
+        let r = report("cards.jsonl", include_str!("../fixtures/cards.jsonl"), &Opts::default());
         let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
         has(
             "From cards.jsonl: 9 entries, 2026-10-15 09:01:02 – 2026-10-15 10:10:00 (1 line not an entry, skipped).",
@@ -330,5 +452,138 @@ mod tests {
         );
         has("## tarae's own cards: 2");
         has("| rebased     | 1     | 1 p     | 1.2 s       |");
+    }
+
+    /// The options as `run` reads them for the breakdown fixture: its days, the kept sessions' parents, the
+    /// repository's own `llm.docker-inert` and packs' entries.
+    fn breakdown_opts() -> Opts {
+        let (inert, entries) = breakdown::inert_here(&crate::root());
+        let parents = parents_of(include_str!("../fixtures/sessions.json"), "main").into_iter().collect();
+        Opts {
+            from: Some("2026-10-31".into()),
+            to: Some("2026-11-05".into()),
+            parents,
+            inert,
+            entries,
+            ..Opts::default()
+        }
+    }
+
+    /// A table row of `r` with these cells, whatever their padding: its line's index.
+    fn has_row(r: &str, cells: &[&str]) -> usize {
+        let want = format!("| {} |", cells.join(" | "));
+        let squeezed = |l: &str| l.split_whitespace().collect::<Vec<_>>().join(" ");
+        r.lines().position(|l| squeezed(l) == want).unwrap_or_else(|| panic!("{want:?} not in:\n{r}"))
+    }
+
+    /// A kept child's parent is named: the home checkout (beside the repository's `.git`) by its name in the
+    /// record, another kept session by its name, one not kept by its folder's; a session with none isn't listed.
+    #[test]
+    fn the_kept_sessions_name_each_childs_parent() {
+        let mut p = parents_of(include_str!("../fixtures/sessions.json"), "main");
+        p.sort();
+        let p: Vec<(&str, &str)> = p.iter().map(|(c, p)| (c.as_str(), p.as_str())).collect();
+        assert_eq!(p, [("kid", "fix"), ("lost", "gone"), ("solo", "main")]);
+        assert!(parents_of("not json", "main").is_empty());
+    }
+
+    /// `--from`/`--to`: only those days' entries, said with how many were read; then every card by session — the home
+    /// checkout marked, a child with its parent, the refusal in neither table, a dropped card in no median.
+    #[test]
+    fn a_range_of_days_reads_by_session() {
+        let r = report("cards.jsonl", include_str!("../fixtures/cards-breakdown.jsonl"), &breakdown_opts());
+        let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
+        has(
+            "From cards.jsonl: 16 entries from 2026-10-31 to 2026-11-05 (of 18), 2026-10-31 09:00:00 – 2026-11-05 \
+             10:00:00.",
+        );
+        has("### Claude's cards");
+        has_row(&r, &["run · `outside`", "kid (child of fix)", "1", "1 y", "15.0 s", "15.5 s"]);
+        let home = has_row(&r, &["run · `socket`", "main (home)", "3", "2 y · 1 a", "2.0 s", "6.0 s"]);
+        let fix = has_row(&r, &["run · `socket`", "fix", "3", "1 a · 1 n · 1 y", "4.0 s", "5.0 s"]);
+        assert!(home < fix, "the home checkout first:\n{r}");
+        has_row(&r, &["run · `socket`", "kid (child of fix)", "1", "1 y", "1.2 s", "1.3 s"]);
+        has("### tarae's own");
+        has_row(&r, &["change-set", "main (home)", "1", "1 y", "19.0 s", "20.0 s"]);
+        has_row(&r, &["change-set", "kid (child of fix)", "1", "1 dropped", "—", "—"]);
+        has_row(&r, &["rebased", "fix", "4", "3 p · 1 y", "8.0 s", "9.0 s"]);
+        assert!(!r.contains("`script`"), "a refusal is in neither table:\n{r}");
+    }
+
+    /// Socket cards by command: the pinned ones with inert arguments as one row (a time limit, a pipe's filter and a
+    /// `2>&1` aside), one with an argument `a` doesn't cover on its own; asked again after an `a` in its session, split
+    /// by `same`/`changed`; the card out of range left out.
+    #[test]
+    fn socket_cards_read_by_command_and_asked_again() {
+        let r = report("cards.jsonl", include_str!("../fixtures/cards-breakdown.jsonl"), &breakdown_opts());
+        let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
+        has("## Socket cards by command: 7");
+        has_row(&r, &["`cargo xtask linux …`", "yes", "5", "3 y · 2 a", "2", "3.0 s"]);
+        has_row(
+            &r,
+            &[
+                "`cargo xtask linux test --bin tarae other_test -- --nocapture`",
+                "no",
+                "1",
+                "1 n",
+                "1",
+                "6.0 s",
+            ],
+        );
+        has_row(&r, &["`docker ps`", "no", "1", "1 y", "1", "1.2 s"]);
+        has("**Asked again after an `a`** on the same pinned command in its session: 3 of 5 pinned cards.");
+        has("  - 1 the same words with nothing changed since");
+        has("  - 1 with what it runs changed since");
+        has("  - 1 in other words");
+    }
+
+    /// What `a` covers, as tarae reads it: a pack-pinned command's own arguments all inert — names set in front and
+    /// a time limit kept apart; a `--bin=x`, a path, a second command or an option after `--` isn't.
+    #[test]
+    fn pinned_reads_as_docker_inert_does() {
+        let o = Opts {
+            inert: vec![
+                breakdown::Inert::parse("cargo xtask linux: clippy test --userns --bin= --").unwrap(),
+            ],
+            entries: vec![vec!["cargo".into(), "xtask".into()]],
+            ..Opts::default()
+        };
+        let pinned = |c: &str| breakdown::pinned(c, &o);
+        for yes in [
+            "cargo xtask linux clippy",
+            "RUST_LOG=x cargo xtask linux test --bin tarae -- a::b c_d",
+            "timeout 600 cargo xtask linux test --userns a_test 2>&1 | grep -E 'x|y'",
+        ] {
+            assert_eq!(pinned(yes).as_deref(), Some("cargo xtask linux …"), "{yes}");
+        }
+        for no in [
+            "cargo xtask linux test --bin=tarae",
+            "cargo xtask linux test --bin ../x",
+            "cargo xtask linux test -- --nocapture",
+            "cargo fmt && cargo xtask linux clippy",
+            "cargo xtask kernels",
+            "docker ps",
+        ] {
+            assert_eq!(pinned(no), None, "{no}");
+        }
+        let unpinned = Opts { entries: Vec::new(), ..o };
+        assert_eq!(breakdown::pinned("cargo xtask linux clippy", &unpinned), None, "no entry pins its code");
+        assert!(breakdown::Inert::parse("no colon here").is_none());
+    }
+
+    /// The bring card's `p` by session, before and since the commit that made it "preflight again", with the most in
+    /// a row; the change sets listed by time and session.
+    #[test]
+    fn the_bring_cards_p_and_the_change_sets_are_broken_down() {
+        let r = report("cards.jsonl", include_str!("../fixtures/cards-breakdown.jsonl"), &breakdown_opts());
+        let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
+        has("## The bring card's `p`: 4");
+        has_row(&r, &["main (home)", "1", "0", "1", "1"]);
+        has_row(&r, &["fix", "4", "1", "2", "2"]);
+        has_row(&r, &["**Total**", "5", "1", "3", "2"]);
+        has("## Change sets: 2");
+        has("- 2026-11-05 09:00:00 main (home) card#15 · y · 19.0 s\n");
+        has("- 2026-11-05 10:00:00 kid (child of fix) card#16 · dropped\n");
+        assert!(!r.contains("card#17"), "past --to:\n{r}");
     }
 }

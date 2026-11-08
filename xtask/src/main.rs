@@ -28,8 +28,10 @@
 //! - `trace [offcpu|syscalls|pty] [scenario …]`, `trace test` — tarae measured with eBPF on Linux, in a
 //!   container: off-CPU time by stack, the syscall mix, terminal write latency, over perf scenarios (see
 //!   [`trace`]).
-//! - `cards [PATH …]` — the card record (`$state/cards/`) as cardauto's tables: the P3 table, what P3 removes,
-//!   its wrong yeses with their commands, the stamp rate, runs refused with no card (see [`cards`]).
+//! - `cards [--from DAY] [--to DAY] [--home NAME] [--sessions PATH] [--inert SPEC] [PATH …]` — the card record
+//!   (`$state/cards/`) as cardauto's tables: the P3 table, what P3 removes, its wrong yeses with their commands, the
+//!   stamp rate, runs refused with no card; and P6's breakdowns: by session, socket cards by command, the bring
+//!   card's `p`, the change sets (see [`cards`]).
 //! - `reviews [PATH …]` — the review record (`$state/reviews/`) as the review lens measures it: time per change by
 //!   grade and size, what changes ended as, lens on and off, each high-risk rule's marks and what came of them
 //!   (see [`reviews`]).

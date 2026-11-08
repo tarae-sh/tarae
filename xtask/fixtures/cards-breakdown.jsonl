@@ -1,0 +1,18 @@
+{"v":1,"at":"2026-10-30 23:00:00","session":"main","card":1,"run":1,"kind":"run","why":"socket","shadow":"socket","answer":"a","drawn_ms":3000,"up_ms":9000,"what":"cargo xtask linux test --bin tarae foo 2>&1 | grep x"}
+{"v":1,"at":"2026-10-31 09:00:00","session":"main","card":2,"run":2,"kind":"run","why":"socket","shadow":"socket","answer":"a","drawn_ms":2000,"up_ms":4000,"what":"cargo xtask linux clippy"}
+{"v":1,"at":"2026-10-31 10:00:00","session":"main","card":3,"run":3,"kind":"run","why":"socket","shadow":"socket","same":2,"answer":"y","drawn_ms":1000,"up_ms":30000,"what":"cargo xtask linux clippy"}
+{"v":1,"at":"2026-10-31 11:00:00","session":"main","card":4,"run":4,"kind":"run","why":"socket","shadow":"socket","same":3,"changed":true,"answer":"y","drawn_ms":5000,"up_ms":6000,"what":"cargo xtask linux clippy"}
+{"v":1,"at":"2026-11-01 09:00:00","session":"fix","card":5,"run":5,"kind":"run","why":"socket","shadow":"socket","answer":"a","drawn_ms":4000,"up_ms":5000,"what":"timeout 1800 cargo xtask linux test --bin tarae a_test"}
+{"v":1,"at":"2026-11-01 10:00:00","session":"fix","card":6,"run":6,"kind":"run","why":"socket","shadow":"socket","answer":"n","drawn_ms":6000,"up_ms":7000,"what":"cargo xtask linux test --bin tarae other_test -- --nocapture"}
+{"v":1,"at":"2026-11-01 11:00:00","session":"fix","card":7,"run":7,"kind":"run","why":"socket","shadow":"socket","answer":"y","drawn_ms":3000,"up_ms":3500,"what":"cargo xtask linux test --repeat 3 --bin tarae b_test 2>&1 | tail -5"}
+{"v":1,"at":"2026-11-02 09:00:00","session":"kid","card":8,"run":8,"kind":"run","why":"socket","shadow":"socket","answer":"y","drawn_ms":1200,"up_ms":1300,"what":"docker ps"}
+{"v":1,"at":"2026-11-02 10:00:00","session":"kid","card":9,"run":9,"kind":"run","why":"outside","shadow":"outside","answer":"y","drawn_ms":15000,"up_ms":15500,"what":"cargo xtask linux test"}
+{"v":1,"at":"2026-11-02 12:00:00","session":"fix","card":10,"kind":"rebased","why":"own","shadow":"own","answer":"p","drawn_ms":8000,"up_ms":9000}
+{"v":1,"at":"2026-11-03 08:00:00","session":"kid","run":12,"kind":"run","why":"script","shadow":"none","answer":"refused","what":"sh .sb/x.sh","said":"x.sh was written this turn"}
+{"v":1,"at":"2026-11-04 10:00:00","session":"fix","card":11,"kind":"rebased","why":"own","shadow":"own","answer":"y","drawn_ms":9000,"up_ms":9100}
+{"v":1,"at":"2026-11-04 11:00:00","session":"fix","card":12,"kind":"rebased","why":"own","shadow":"own","answer":"p","drawn_ms":7000,"up_ms":7100}
+{"v":1,"at":"2026-11-04 12:00:00","session":"fix","card":13,"kind":"rebased","why":"own","shadow":"own","answer":"p","drawn_ms":5000,"up_ms":5100}
+{"v":1,"at":"2026-11-04 13:00:00","session":"main","card":14,"kind":"rebased","why":"own","shadow":"own","answer":"p","drawn_ms":3000,"up_ms":3000}
+{"v":1,"at":"2026-11-05 09:00:00","session":"main","card":15,"kind":"change-set","why":"own","shadow":"own","answer":"y","drawn_ms":19000,"up_ms":20000}
+{"v":1,"at":"2026-11-05 10:00:00","session":"kid","card":16,"kind":"change-set","why":"own","shadow":"own","answer":"dropped","up_ms":60000}
+{"v":1,"at":"2026-11-06 09:00:00","session":"main","card":17,"kind":"change-set","why":"own","shadow":"own","answer":"y","drawn_ms":1000,"up_ms":1000}

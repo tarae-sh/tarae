@@ -1,0 +1,1 @@
+{"repo":"/w/tarae/.git","front":"/w/tarae","sessions":[{"root":"/w/wt/fix","name":"fix","branch":"fix","base":"main"},{"root":"/w/wt/kid","name":"kid","branch":"kid","base":"main","parent":"/w/wt/fix"},{"root":"/w/wt/solo","name":"solo","parent":"/w/tarae"},{"root":"/w/wt/lost","name":"lost","parent":"/w/wt/gone"}]}
