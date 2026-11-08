@@ -4626,6 +4626,7 @@ impl Editor {
             || (run && slot_drawn)
             || crate::web::page::reading_in_sight(self)
             || self.opening_said().is_some()
+            || self.rebase_exit_said().is_some()
             || self.offer_busy();
         // (the working sign held still where nothing moves on a clock: a frame a second, for the time waited — its timers
         // say whole seconds there, `term::running`)

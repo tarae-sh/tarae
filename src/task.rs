@@ -1157,6 +1157,8 @@ impl Editor {
                 ed.workspace.listing += 1;
                 let session = ed.workspace.log();
                 let Some(r) = ed.workspace.task_run.as_mut().filter(|r| r.generation == generation) else {
+                    // (the rebase's git, closed while it ran: what it left read now it's gone — `rebase::run_dropped`)
+                    crate::rebase::ran(ed, generation);
                     return;
                 };
                 if let Some(w) = r.guard.as_ref().and_then(|g| g.watch()) {

@@ -73,6 +73,7 @@ mod ptybroker;
 mod quota;
 mod quotes;
 mod readself;
+mod rebaseexit;
 mod rebasemsg;
 mod rebaserecheck;
 mod reveal;

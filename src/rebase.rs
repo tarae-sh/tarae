@@ -22,6 +22,9 @@ use crate::offer::{Offer, What};
 
 /// How often the step (n of m) is read while git runs.
 const POLL: Duration = Duration::from_millis(150);
+/// The rebase's git closed while it ran (`run_dropped`): how long its exit is waited for before what it left is read
+/// anyway (#447: a git that doesn't exit after it was stopped — a stalled disk — never leaves it at work in silence).
+const EXIT_WAIT: Duration = Duration::from_secs(10);
 /// Most bytes of each side's diff Claude is sent (it reads the rest itself).
 const SIDE_MAX: usize = 60_000;
 
@@ -417,6 +420,10 @@ pub struct Stop {
     /// never the resolution's (#206: a build folder the series ignores only in a later commit). None: not read
     /// (a rebase tarae took up): no untracked file is counted as the resolution's then.
     pub before: Option<Vec<String>>,
+    /// HEAD on a branch again while git's folder for the rebase is still there (read after an abort, #447): the abort
+    /// moved it back and stopped as it removed that folder (it goes last) — git can't abort it again, only
+    /// `git rebase --quit` lets it go.
+    pub back: bool,
 }
 
 impl Stop {
@@ -460,6 +467,19 @@ pub struct Rebase {
     /// Its checkout's index watched while a tracked file holds a resolved stop's `y` (#245) — only then: gone once
     /// none does or the stage moves on (`rebase_index_watch`), its thread ending with it.
     index: Option<IndexWatch>,
+    /// Its git's run was closed while it ran (`run_dropped`): its end is read once that git exits, or past
+    /// `EXIT_WAIT` (#447).
+    pub stopping: Option<Stopping>,
+    /// Its last abort didn't finish (#447): why, as said — its card says it until git runs for it again.
+    pub abort_failed: Option<String>,
+}
+
+/// A rebase's git closed while it ran, its exit waited for (`Rebase.stopping`).
+#[derive(Clone, Copy, Debug)]
+pub struct Stopping {
+    pub since: std::time::Instant,
+    /// Past `opening::SAY_AFTER`: said on the status line with its timer (`Editor::rebase_exit_said`).
+    pub said: bool,
 }
 
 /// A rebase's index watch (`watch_index`): its thread ends as this goes — told to stop, and woken.
@@ -682,6 +702,7 @@ pub fn under_way(root: &Path) -> Option<Stop> {
             .map(|m| m.trim_end().to_string())
             .filter(|m| !m.is_empty()),
         before: None,
+        back: false,
     })
 }
 
@@ -697,6 +718,9 @@ pub enum Ended {
         moved: usize,
     },
     Aborted,
+    /// An abort that left the rebase under way (#447: a lock another git held, its git stopped half-way): it didn't
+    /// finish — where it stands, as git left it. Never a stop its Claude is asked to resolve.
+    AbortFailed(Box<Stop>),
     /// Nothing under way and not done: git stopped before it began (the panel says why).
     Failed,
 }
@@ -716,6 +740,10 @@ pub enum Aside {
 fn ended(root: &Path, branch: &str, base: &str, onto: Option<&str>, aborting: bool) -> (Ended, Aside) {
     if let Some(mut stop) = under_way(root) {
         stop.before = Some(left_alone(root));
+        if aborting {
+            stop.back = git(root, &["symbolic-ref", "-q", "HEAD"], None).is_ok();
+            return (Ended::AbortFailed(Box::new(stop)), Aside::None);
+        }
         let ask = (!stop.files.is_empty()).then(|| ask(root, branch, base, &stop));
         return (Ended::Stopped(Box::new(stop), ask), Aside::None);
     }
@@ -997,15 +1025,73 @@ fn broken(_: Broken) -> bool {
 // ── The flow ─────────────────────────────────────────────────────────────────
 
 /// The task panel's run is closed or replaced (`space m c`, another task) while it runs: if it's the
-/// rebase's git, what git left is read as at its end — else the session would say `rebasing` for good.
+/// rebase's git, what git left is read once it exits (`ran`, from the run's own end — #447: read as it was told to
+/// stop, an abort under way read as a stop and its Claude asked again) — or past `EXIT_WAIT` if it doesn't, said
+/// meanwhile with its timer (`Editor::rebase_exit_said`). Else the session would say `rebasing` for good.
 pub fn run_dropped(ed: &mut Editor) {
     let Some(t) = ed.workspace.task_run.as_ref().filter(|t| t.state == crate::task::State::Running) else {
         return;
     };
     let generation = t.generation();
-    if ran(ed, generation) {
-        ed.set_warning("the rebase's git was stopped — it's read as git left it");
+    let ours = move |r: &Rebase| matches!(r.stage, Stage::Running { generation: g, .. } if g == generation);
+    let Some(r) = ed.workspace.rebase.as_mut().filter(|r| ours(r)) else { return };
+    r.stopping = Some(Stopping { since: crate::clock::now(), said: false });
+    ed.set_warning("the rebase's git was stopped — it's read as git left it once it exits");
+    let wait = exit_wait();
+    ed.events.jobs().spawn(move || {
+        crate::event::sleep(crate::opening::SAY_AFTER);
+        move |ed: &mut Editor| match ed
+            .workspace
+            .rebase
+            .as_mut()
+            .filter(|r| ours(r))
+            .and_then(|r| r.stopping.as_mut())
+        {
+            Some(s) => s.said = true,
+            None => ed.unchanged = true,
+        }
+    });
+    ed.events.jobs().spawn(move || {
+        crate::event::sleep(wait);
+        move |ed: &mut Editor| exit_waited(ed, generation)
+    });
+}
+
+/// `EXIT_WAIT`, or a test's own (`EXIT_WAIT_FOR_TEST`: a stand-in that doesn't exit is waited for that long).
+fn exit_wait() -> Duration {
+    #[cfg(test)]
+    if let Some(d) = EXIT_WAIT_FOR_TEST.get() {
+        return d;
     }
+    EXIT_WAIT
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static EXIT_WAIT_FOR_TEST: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// `EXIT_WAIT` passed since the rebase's git was closed (`run_dropped`), and it hasn't exited: what it left is read
+/// now, its Claude never asked — an abort under way didn't finish (`Ended::AbortFailed`, "its git didn't exit"), a
+/// stop is the user's to go on from. Its exit later finds nothing waiting for it (`ran`): nothing is undone, and the
+/// next run's end is read as git left it.
+fn exit_waited(ed: &mut Editor, generation: u64) {
+    let Some(r) = ed.workspace.rebase.as_ref().filter(|r| {
+        r.stopping.is_some() && matches!(r.stage, Stage::Running { generation: g, .. } if g == generation)
+    }) else {
+        ed.unchanged = true;
+        return;
+    };
+    let Stage::Running { aborting, .. } = r.stage else { return };
+    let (root, branch, base, onto) =
+        (ed.workspace.root.clone(), r.branch.clone(), r.base.clone(), r.stop.onto.clone());
+    ed.events.jobs().spawn(move || {
+        let (end, aside) = match ended(&root, &branch, &base, onto.as_deref(), aborting) {
+            (Ended::Stopped(stop, _), aside) => (Ended::Stopped(stop, None), aside),
+            e => e,
+        };
+        move |ed: &mut Editor| ed.rebase_ended(generation, end, aside, crate::task::State::Failed(None), true)
+    });
 }
 
 /// A git run of the rebase's ended (`task.rs`) — true if it was one (what's next is decided on a worker).
@@ -1025,7 +1111,7 @@ pub fn ran(ed: &mut Editor, generation: u64) -> bool {
     };
     ed.events.jobs().spawn(move || {
         let (end, aside) = ended(&root, &branch, &base, onto.as_deref(), aborting);
-        move |ed: &mut Editor| ed.rebase_ended(generation, end, aside, exit)
+        move |ed: &mut Editor| ed.rebase_ended(generation, end, aside, exit, false)
     });
     true
 }
@@ -1182,6 +1268,7 @@ impl Editor {
         let generation = self.task_start_git(task, &env).ok_or("git didn't start")?;
         if let Some(r) = self.workspace.rebase.as_mut() {
             r.stage = Stage::Running { generation, aborting };
+            (r.stopping, r.abort_failed) = (None, None);
         }
         self.rebase_index_watch();
         // (its reloads said as one line once it's over — frictions29 #68; this run's, by its generation)
@@ -1307,6 +1394,8 @@ impl Editor {
             messages: Default::default(),
             rechecks: (0, 0),
             index: None,
+            stopping: None,
+            abort_failed: None,
         });
         let base = crate::packs::sh_quote(&m.base);
         let branch = m.branch.clone();
@@ -1359,7 +1448,15 @@ impl Editor {
     }
 
     /// A git run of the rebase ended — `end` as git left it, `exit` as its process did.
-    fn rebase_ended(&mut self, generation: u64, end: Ended, aside: Aside, exit: crate::task::State) {
+    /// `hung`: read past `EXIT_WAIT`, its git closed and not exited (`exit_waited`).
+    fn rebase_ended(
+        &mut self,
+        generation: u64,
+        end: Ended,
+        aside: Aside,
+        exit: crate::task::State,
+        hung: bool,
+    ) {
         use crate::task::State;
         // (this run's reloads, whatever became of the rebase meanwhile: never left holding its session's toasts)
         self.disk_batch_end(generation);
@@ -1386,6 +1483,13 @@ impl Editor {
         // (HEAD moved: its buffers' git bases and the blame, now — not when the watch next looks)
         let root = self.workspace.root.clone();
         self.git_reload_bases_in(&root);
+        // (its git closed while it ran: no panel left to say why — `run_dropped`)
+        let closed = self.workspace.rebase.as_ref().is_some_and(|r| r.stopping.is_some());
+        let unsaid = match (hung, closed) {
+            (true, _) => "its git didn't exit after it was stopped",
+            (false, true) => "its git was stopped before it finished",
+            (false, false) => "the task panel says why",
+        };
         match end {
             Ended::Stopped(stop, ask) => {
                 let at = stop.at();
@@ -1393,12 +1497,13 @@ impl Editor {
                     (r.stage, r.step, r.asked) = (Stage::Stopped, stop.step, false);
                     r.stop = *stop;
                     r.also = Besides::default();
+                    r.stopping = None;
                     (r.messages.proposed, r.messages.editing, r.messages.written) = (None, None, None);
                 }
                 match ask {
                     Some(a) => self.rebase_ask(a),
                     None => self.set_warning(format!(
-                        "the rebase stopped at {at} — the task panel says why; :rebase-continue or :rebase-abort"
+                        "the rebase stopped at {at} — {unsaid}; :rebase-continue or :rebase-abort"
                     )),
                 }
                 // (a conflict stops only this one: its Claude resolves it as for a single bring)
@@ -1488,26 +1593,33 @@ impl Editor {
                 }
                 self.bring_queue_rebased(Err("its rebase was aborted".into()));
             }
+            // (#447: never a stop for its Claude — asked again, its abort would fail again: a loop. Where it stands kept,
+            // as git left it; the way on said — its card's `X` tries the abort again)
+            Ended::AbortFailed(stop) => {
+                self.workspace.bring_go = false;
+                let why = self.rebase_git_said(generation).unwrap_or_else(|| unsaid.to_string());
+                let why = why.trim_end_matches('.').to_string();
+                let next = match stop.back {
+                    true => format!(
+                        "{branch} is back already: git rebase --quit in its terminal lets the rebase go"
+                    ),
+                    false => ":rebase-abort tries again".to_string(),
+                };
+                if let Some(r) = self.workspace.rebase.as_mut() {
+                    (r.stage, r.step, r.asked, r.waiting) = (Stage::Stopped, stop.step, false, None);
+                    r.stop = *stop;
+                    r.also = Besides::default();
+                    (r.stopping, r.abort_failed) = (None, Some(why.clone()));
+                    (r.messages.proposed, r.messages.editing, r.messages.written) = (None, None, None);
+                }
+                self.set_error(format!("rebase {branch}: the abort didn't finish — {why}. {next}"));
+                self.bring_queue_rebased(Err("its rebase's abort didn't finish".into()));
+            }
             // (git's own words, its `error:`/`fatal:` lines — #188: "the task panel says why" sent you looking)
             Ended::Failed => {
                 self.workspace.bring_go = false;
                 let stashed = self.workspace.rebase.take().map(|r| r.stashed).unwrap_or_default();
-                let why: Vec<String> = self
-                    .workspace
-                    .task_run
-                    .as_ref()
-                    .filter(|t| t.generation() == generation)
-                    .map(|t| t.output.iter().map(|(_, l)| l.trim().to_string()).collect())
-                    .unwrap_or_default();
-                let why: Vec<String> = why
-                    .into_iter()
-                    .filter(|l| l.starts_with("error:") || l.starts_with("fatal:"))
-                    .take(2)
-                    .collect();
-                let why = match why.is_empty() {
-                    true => "the task panel says why".to_string(),
-                    false => format!("git said: {}", why.join(" ")),
-                };
+                let why = self.rebase_git_said(generation).unwrap_or_else(|| unsaid.to_string());
                 self.set_error(format!(
                     "rebase {branch}: git stopped before it began — {why}{}",
                     aside_said(&aside, &stashed)
@@ -1515,6 +1627,31 @@ impl Editor {
                 self.bring_queue_rebased(Err("its rebase failed before it began".into()));
             }
         }
+    }
+
+    /// git's own words at run `generation`'s end, `git said: …` — its first `error:`/`fatal:` lines (#188), else its
+    /// `warning:` ones (an abort that can't read git's folder says it so, #447). None: it printed none, or its run is
+    /// gone (closed: `run_dropped`).
+    fn rebase_git_said(&self, generation: u64) -> Option<String> {
+        let run = self.workspace.task_run.as_ref().filter(|t| t.generation() == generation)?;
+        let lines: Vec<String> = run.output.iter().map(|(_, l)| l.trim().to_string()).collect();
+        let of = |kinds: &[&str]| -> Vec<&str> {
+            let said = |l: &&String| kinds.iter().any(|k| l.starts_with(k));
+            lines.iter().filter(said).take(2).map(String::as_str).collect()
+        };
+        let why = match of(&["error:", "fatal:"]) {
+            v if v.is_empty() => of(&["warning:"]),
+            v => v,
+        };
+        (!why.is_empty()).then(|| format!("git said: {}", why.join(" ")))
+    }
+
+    /// The front session's rebase waiting past `opening::SAY_AFTER` for its git to exit (`run_dropped`): its branch,
+    /// and since when — the status line's `rebase feat: waiting for git to exit… 3s`.
+    pub fn rebase_exit_said(&self) -> Option<(String, std::time::Instant)> {
+        let r = self.workspace.rebase.as_ref().filter(|r| !r.stopped())?;
+        let s = r.stopping.filter(|s| s.said)?;
+        Some((r.branch.clone(), s.since))
     }
 
     /// The session's Claude asked to resolve the conflicts (its chat opened if it wasn't) — or, while it's
@@ -1695,7 +1832,22 @@ impl Editor {
                 "m writes the commit's message first — :w there goes on with it.\n\n".to_string()
             }
         };
-        let q = format!("{first}\n\n{said}X aborts the rebase: {branch} goes back as it was.");
+        // (#447: its last abort didn't finish — said first, `X` trying it again; git's folder half removed, only
+        // `git rebase --quit` lets it go)
+        let (first, x) = match &r.abort_failed {
+            Some(why) if stop.back => (
+                format!(
+                    "Aborting the rebase didn't finish — {why}. {branch} is back already: git rebase --quit in its \
+                     terminal lets the rebase go."
+                ),
+                "X tries the abort again",
+            ),
+            Some(why) => {
+                (format!("Aborting the rebase didn't finish — {why}. {first}"), "X tries the abort again")
+            }
+            None => (first, "X aborts the rebase"),
+        };
+        let q = format!("{first}\n\n{said}{x}: {branch} goes back as it was.");
         let x = q.lines().count() - 1;
         let root = self.workspace.root.clone();
         let mut o = Offer::new(
@@ -2299,6 +2451,8 @@ impl Editor {
             messages: Default::default(),
             rechecks: (0, 0),
             index: None,
+            stopping: None,
+            abort_failed: None,
         });
     }
 
@@ -2638,6 +2792,8 @@ pub(crate) fn stopped_for_test(step: (usize, usize), asked: bool) -> Rebase {
         messages: Default::default(),
         rechecks: (0, 0),
         index: None,
+        stopping: None,
+        abort_failed: None,
     }
 }
 
@@ -2659,6 +2815,8 @@ pub(crate) fn ask_for_test(ed: &mut Editor, question: &str) {
         messages: Default::default(),
         rechecks: (0, 0),
         index: None,
+        stopping: None,
+        abort_failed: None,
     });
     let a = Ask { question: question.into(), about: "<conflicts/>".into(), chip: "rebase".into() };
     ed.rebase_ask(a);
@@ -2689,6 +2847,8 @@ pub(crate) fn resolved_for_test(ed: &mut Editor, message: &str, proposed: Option
         messages: Messages { proposed: proposed.map(String::from), ..Messages::default() },
         rechecks: (0, 0),
         index: None,
+        stopping: None,
+        abort_failed: None,
     });
 }
 
@@ -2718,6 +2878,25 @@ pub(crate) fn resolved_at_for_test(ed: &mut Editor, n: usize, files: &[&str]) {
 #[cfg(test)]
 pub(crate) fn index_watch_for_test(ed: &Editor) -> Option<std::sync::Weak<std::sync::atomic::AtomicBool>> {
     ed.workspace.rebase.as_ref()?.index.as_ref().map(|w| std::sync::Arc::downgrade(&w.stop))
+}
+
+/// The front session's rebase aborting — its git run `generation`, as `rebase_run` leaves it once its line starts — for
+/// `sim/rebaseexit.rs`, which runs no process (its run stood in for in the task panel).
+#[cfg(test)]
+pub(crate) fn aborting_for_test(ed: &mut Editor, generation: u64) {
+    ed.rebase_cards_gone();
+    if let Some(r) = ed.workspace.rebase.as_mut() {
+        r.stage = Stage::Running { generation, aborting: true };
+        (r.stopping, r.abort_failed) = (None, None);
+    }
+}
+
+/// The front session's rebase's git as `cmd`, a stand-in, in the task panel as `rebase_git` runs it — `aborting`: as
+/// an abort (#447's test of a git that doesn't exit once stopped).
+#[cfg(test)]
+pub(crate) fn run_for_test(ed: &mut Editor, cmd: &str, aborting: bool) {
+    ed.rebase_cards_gone();
+    ed.rebase_run("rebase --abort", cmd.into(), Vec::new(), aborting).unwrap();
 }
 
 /// The front session's rebase going on — git at work, as `y` leaves it once its line starts (its cards gone) — for
@@ -2806,6 +2985,8 @@ mod tests {
             messages: Default::default(),
             rechecks: (0, 0),
             index: None,
+            stopping: None,
+            abort_failed: None,
         };
         assert_eq!(r.said(), "rebasing 2/5");
         assert_eq!(r.why("feat"), "feat is rebasing 2/5 — :rebase-continue or :rebase-abort first");
@@ -2842,6 +3023,8 @@ mod tests {
             messages: Default::default(),
             rechecks: (0, 0),
             index: None,
+            stopping: None,
+            abort_failed: None,
         };
         ed.with_workspace(a, |ed| ed.workspace.rebase = Some(running("main")));
         let label = |ed: &mut Editor, id| {

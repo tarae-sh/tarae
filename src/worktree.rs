@@ -7008,11 +7008,162 @@ mod tests {
         ed.task_close();
         settle_until(&mut ed, |ed| ed.workspace.rebase.as_ref().is_none_or(|r| r.stopped()));
         assert!(says(&ed, "the rebase's git was stopped — it's read as git left it"), "{}", said(&ed));
+        // (an abort it stopped before it finished: said so, its Claude not asked — #447; the next one ends it)
         if ed.workspace.rebase.is_some() {
+            assert_eq!(unfinished(&ed), 1, "{}", said(&ed));
             feed(&mut ed, ":rebase-abort<ret>");
-            settle_until(&mut ed, |ed| says(ed, "Rebase aborted") || says(ed, "rebase feat:"));
+            settle_until(&mut ed, |ed| says(ed, "Rebase aborted") || unfinished(ed) > 1);
         }
         assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip, "{}", said(&ed));
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The asks the stand-in Claude was sent to resolve the rebase's conflicts (`claude_does`' log).
+    fn rebase_asks(log: &Path) -> usize {
+        std::fs::read_to_string(log).unwrap_or_default().matches("Rebasing feat onto main stopped").count()
+    }
+
+    /// The times an abort was said not to have finished (#447).
+    fn unfinished(ed: &Editor) -> usize {
+        ed.messages.iter().filter(|m| m.2.contains("the abort didn't finish")).count()
+    }
+
+    /// #447: an abort that leaves the rebase under way — here a lock another git holds — didn't finish: said with
+    /// git's own words and the way on, its Claude not asked again (it was: a loop, each abort failing alike). Its card
+    /// says it first; the lock gone, `X` there tries the abort again.
+    #[test]
+    fn an_abort_that_doesnt_finish_is_said_and_claude_isnt_asked_again() {
+        let (_s, repo, dir) = place("rebase-abort-locked");
+        let mut ed = editor(&repo, &dir);
+        let log = dir.join("claude.log");
+        claude_does(&mut ed, &log, "");
+        let (wt, tip) = moved_apart(&mut ed, &repo, false);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| says(ed, "conflict markers still in") || says(ed, "rebase feat:"));
+        assert_eq!(rebase_asks(&log), 1, "{}", said(&ed));
+        let lock = PathBuf::from(git_in(&wt, &["rev-parse", "--absolute-git-dir"])).join("index.lock");
+        std::fs::write(&lock, "").unwrap();
+        feed(&mut ed, ":rebase-abort<ret>");
+        settle_until(&mut ed, |ed| says(ed, "the abort didn't finish") || says(ed, "Rebase aborted"));
+        assert!(says(&ed, "rebase feat: the abort didn't finish — git said: "), "{}", said(&ed));
+        assert!(says(&ed, "index.lock': File exists"), "git's own words: {}", said(&ed));
+        assert!(says(&ed, ":rebase-abort tries again"), "{}", said(&ed));
+        let r = ed.workspace.rebase.as_ref().expect("still under way");
+        assert_eq!((r.stage, r.asked), (crate::rebase::Stage::Stopped, false));
+        assert_eq!(rebase_asks(&log), 1, "Claude asked again: {}", said(&ed));
+        // Its card (as `:workspace-bring` meets it): the abort first, `X` trying it again
+        feed(&mut ed, ":workspace-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "feat: rebasing 1/2").is_some() || says(ed, "bring feat:"));
+        let q = &card(&ed, "feat: rebasing 1/2").unwrap().question;
+        assert!(q.starts_with("Aborting the rebase didn't finish — git said: "), "{q}");
+        assert!(q.ends_with("X tries the abort again: feat goes back as it was."), "{q}");
+        std::fs::remove_file(&lock).unwrap();
+        assert_eq!(card_in_sight(&mut ed), ['y', 'X', 'n']);
+        feed(&mut ed, "X");
+        settle_until(&mut ed, |ed| says(ed, "Rebase aborted") || unfinished(ed) > 1);
+        assert!(says(&ed, "Rebase aborted — feat is back where it was"), "{}", said(&ed));
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip, "{}", said(&ed));
+        assert_eq!(rebase_asks(&log), 1, "{}", said(&ed));
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #447: an abort that moved HEAD back and stopped as it removed git's folder for the rebase (it goes last) — stood
+    /// in for here by doing that much by hand: git can't abort it again, so the way on said is `git rebase --quit`,
+    /// which lets it go.
+    #[test]
+    fn an_abort_stopped_half_way_says_git_rebase_quit() {
+        let (_s, repo, dir) = place("rebase-abort-torn");
+        let mut ed = editor(&repo, &dir);
+        let log = dir.join("claude.log");
+        claude_does(&mut ed, &log, "");
+        let (wt, tip) = moved_apart(&mut ed, &repo, false);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| says(ed, "conflict markers still in") || says(ed, "rebase feat:"));
+        let state = PathBuf::from(git_in(&wt, &["rev-parse", "--absolute-git-dir"])).join("rebase-merge");
+        git_in(&wt, &["symbolic-ref", "HEAD", "refs/heads/feat"]);
+        git_in(&wt, &["reset", "-q", "--hard"]);
+        std::fs::remove_file(state.join("head-name")).unwrap();
+        feed(&mut ed, ":rebase-abort<ret>");
+        settle_until(&mut ed, |ed| says(ed, "the abort didn't finish") || says(ed, "Rebase aborted"));
+        assert!(says(&ed, "rebase feat: the abort didn't finish — git said: "), "{}", said(&ed));
+        assert!(
+            says(&ed, "feat is back already: git rebase --quit in its terminal lets the rebase go"),
+            "{}",
+            said(&ed)
+        );
+        assert_eq!(rebase_asks(&log), 1, "Claude asked again: {}", said(&ed));
+        // (what it says works)
+        git_in(&wt, &["rebase", "--quit"]);
+        assert!(!state.exists());
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip);
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #447: the rebase's git closed (`space m c`) and not exiting — a stand-in that ignores SIGTERM, here as an abort:
+    /// the wait said with its timer, then past the bound read as the abort failing, its Claude not asked again. Its
+    /// exit later undoes nothing; the next abort is read as git left it.
+    #[test]
+    fn a_rebase_git_that_doesnt_exit_once_stopped_is_read_past_its_bound() {
+        let (_s, repo, dir) = place("rebase-unexited");
+        let mut ed = editor(&repo, &dir);
+        let log = dir.join("claude.log");
+        claude_does(&mut ed, &log, "");
+        let (wt, tip) = moved_apart(&mut ed, &repo, false);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| says(ed, "conflict markers still in") || says(ed, "rebase feat:"));
+        assert_eq!(rebase_asks(&log), 1, "{}", said(&ed));
+        // (the stand-in: SIGTERM ignored — its `sleep`s too — until the test's marker, 30 s at most; then the abort it
+        // stood for, and a marker of its end)
+        let (ready, go, over) = (dir.join("ready"), dir.join("go"), dir.join("over"));
+        let cmd = format!(
+            "trap '' TERM; touch '{ready}'; i=0; while [ ! -e '{go}' ] && [ $i -lt 600 ]; do sleep 0.05; \
+             i=$((i+1)); done; git -c core.hooksPath=/dev/null rebase --abort; touch '{over}'",
+            ready = ready.display(),
+            go = go.display(),
+            over = over.display()
+        );
+        crate::rebase::EXIT_WAIT_FOR_TEST.set(Some(std::time::Duration::from_secs(2)));
+        crate::rebase::run_for_test(&mut ed, &cmd, true);
+        // (closed once its trap is set — a SIGTERM before it would end it)
+        settle_until(&mut ed, |_| ready.exists());
+        ed.task_close();
+        assert!(
+            says(&ed, "the rebase's git was stopped — it's read as git left it once it exits"),
+            "{}",
+            said(&ed)
+        );
+        settle_until(&mut ed, |ed| ed.rebase_exit_said().is_some() || says(ed, "the abort didn't finish"));
+        assert_eq!(ed.rebase_exit_said().map(|(b, _)| b), Some("feat".to_string()), "{}", said(&ed));
+        settle_until(&mut ed, |ed| says(ed, "the abort didn't finish"));
+        assert!(
+            says(
+                &ed,
+                "rebase feat: the abort didn't finish — its git didn't exit after it was stopped. :rebase-abort tries \
+                 again"
+            ),
+            "{}",
+            said(&ed)
+        );
+        assert!(ed.rebase_exit_said().is_none(), "the wait is over");
+        let r = ed.workspace.rebase.as_ref().expect("still under way");
+        assert_eq!((r.stage, r.asked), (crate::rebase::Stage::Stopped, false));
+        assert_eq!(rebase_asks(&log), 1, "Claude asked again: {}", said(&ed));
+        // Its git exits later (its end told — `listing` counts every run's): nothing undone
+        let (listing, n) = (ed.workspace.listing, ed.messages.len());
+        std::fs::write(&go, "").unwrap();
+        settle_until(&mut ed, |ed| over.exists() && ed.workspace.listing > listing);
+        let r = ed.workspace.rebase.as_ref().expect("kept as it was read");
+        assert_eq!(r.stage, crate::rebase::Stage::Stopped);
+        assert_eq!(ed.messages.len(), n, "nothing said: {}", said(&ed));
+        // The next abort: read as git left it — the stand-in's own abort ended it
+        feed(&mut ed, ":rebase-abort<ret>");
+        settle_until(&mut ed, |ed| says(ed, "Rebase aborted") || unfinished(ed) > 1);
+        assert!(says(&ed, "Rebase aborted — feat is back where it was"), "{}", said(&ed));
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip, "{}", said(&ed));
+        assert_eq!(rebase_asks(&log), 1, "{}", said(&ed));
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }

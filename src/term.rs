@@ -12071,6 +12071,20 @@ fn draw_statusline(
             keep: OPENING - 1,
         });
     }
+    // The rebase's git closed and not exited past `opening::SAY_AFTER` (#447): what it waits for and how long, faint —
+    // read as git left it by `rebase::EXIT_WAIT` at the latest
+    if let Some((branch, since)) = editor.rebase_exit_said() {
+        let faint = Style { fg: ui.linenr.fg, ..ui.status };
+        let text = format!("  rebase {branch}: waiting for git to exit…");
+        left.push(Seg { cut: None, text, style: faint, keep: OPENING });
+        let time = timer(crate::clock::since(since), !editor.moving());
+        left.push(Seg {
+            cut: None,
+            text: format!(" {}", time.trim_start()),
+            style: faint,
+            keep: OPENING - 1,
+        });
+    }
     // The session's reviewer in the background (bgreview): reading, waiting its turn, or what it found not read
     // yet — in its colour, the counts dim, then the key — while no review rail says it. A click reads its report
     if let Some((head, counts, key)) = crate::reviewer::status_said(editor)
