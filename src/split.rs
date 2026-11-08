@@ -45,7 +45,7 @@ pub trait Room {
     fn share(&self, share: Share, _kid: &Split) -> Share {
         share
     }
-    /// Rows node `node` keeps at its top, over its children.
+    /// Rows node `node` keeps at its top, over its children (a leaf: over itself).
     fn over(&self, _node: &Split) -> usize {
         0
     }
@@ -257,14 +257,15 @@ impl Split {
     }
 
     fn lay(&self, r: Rect, room: &impl Room, out: &mut Vec<(PaneId, Rect)>) {
+        // (a leaf keeps its rows over it too: a code pane alone in its part of the tree, its path bar over it)
+        let over = room.over(self).min(r.h);
+        let r = Rect { y: r.y + over, h: r.h - over, ..r };
         let Split::Node(dir, kids) = self else {
             if let Split::Leaf(v) = self {
                 out.push((*v, r));
             }
             return;
         };
-        let over = room.over(self).min(r.h);
-        let r = Rect { y: r.y + over, h: r.h - over, ..r };
         let total = match dir {
             Dir::Vertical => r.w,
             Dir::Horizontal => r.h,

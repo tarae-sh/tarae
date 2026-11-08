@@ -782,10 +782,18 @@ impl Editor {
         if self.workspace.claude.chat.is_some() && follow_card.is_some_and(|r| inside(r, x, y)) {
             return at(S::FollowCard, links(y).map_or(Part::Blank, |i| Part::Link(Link::Chat(i))));
         }
-        if let Some(cx) = s.chat_x()
+        // (its docked column's cells, wherever it is — onetree S5a: on the left, the code right of it is the code's;
+        // under the code, the rows above it theirs)
+        // (past its right edge with nothing laid there, still the chat's — its column runs to the screen's)
+        let right = |c: crate::split::Rect| {
+            x < c.x + c.w || !s.leaves.iter().any(|l| l.1.w > 0 && l.1.x >= c.x + c.w && l.1.y + l.1.h > c.y)
+        };
+        if let Some(c) = s.rect(crate::pane::Shows::Chat)
             && self.workspace.claude.chat.is_some()
             && s.chat_frame.is_none()
-            && x >= cx
+            && x >= c.x
+            && right(c)
+            && y >= c.y
         {
             return self.chat_under(wheel, x, y);
         }

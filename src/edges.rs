@@ -3,8 +3,9 @@
 //! heads (a press on it gives that one the keys). The mouse reads it (`Editor::border_at`); `Border::Divider` is one of
 //! its lines, whichever two leaves it parts.
 //!
-//! A surface's own line is in its own cells — the chat's left gutter, the side panel's and the rail's right one, the
-//! slot's top line, a docked group's edge toward the code — and sizes and heads that surface. Between two code panes
+//! A surface's own line is in its own cells — on each side of it that meets something (`sides`): the chat's left gutter,
+//! the side panel's and the rail's right one, the slot's top line where they stand today, any side by place (onetree
+//! S5a); a docked group's edge toward the code — and sizes and heads that surface. Between two code panes
 //! the line is the one before the other's (the cell between side by side, the lower one's top line over and under):
 //! it sizes the pane before it (left, above) and heads the one after it.
 //!
@@ -62,6 +63,47 @@ impl Line {
     }
 }
 
+/// The side a surface keeps its own line on where today's layout has it (`sides`): the chat's left, the side panel's
+/// and the rail's right, the slot's top. Its drawer's gutter: there, a line where that side meets something, else the
+/// cell blank; a line on another side is a cell of its own (`Sides::cut`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Home {
+    Left,
+    Right,
+    Top,
+}
+
+/// The sides of a surface that hold its own line (`sides`). Never its bottom: along a row the line is the lower one's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sides {
+    pub left: bool,
+    pub right: bool,
+    pub top: bool,
+}
+
+impl Sides {
+    /// Rect `r` of a surface at `home` less its lines on its other sides, each a cell of its own: what its drawer lays
+    /// its text in (its home's line is its gutter's, inside).
+    pub fn cut(self, home: Home, r: Rect) -> Rect {
+        let left = usize::from(self.left && home != Home::Left);
+        let right = usize::from(self.right && home != Home::Right);
+        Rect { x: r.x + left, w: r.w.saturating_sub(left + right), ..r }
+    }
+}
+
+/// Which sides of the surface at `home` in `r` hold its own line, among `others` laid out with it (each a surface's
+/// home, None for the code: its panes, a group docked in it) in a body `width` wide: a side that meets something,
+/// never the screen's edge. Between a surface and the code the line is the surface's; between two surfaces side by
+/// side the right one's where its home is its left (the chat's), else the left one's; along a row the lower one's.
+pub fn sides(home: Home, r: Rect, others: &[(Option<Home>, Rect)], width: usize) -> Sides {
+    let rows = |o: &Rect| o.y < r.y + r.h && r.y < o.y + o.h;
+    let left = r.x > 0
+        && (others.iter()).any(|(h, o)| o.x + o.w == r.x && rows(o) && (h.is_none() || home == Home::Left));
+    let right = r.x + r.w < width
+        && (others.iter()).any(|(h, o)| o.x == r.x + r.w && rows(o) && *h != Some(Home::Left));
+    Sides { left, right, top: r.y > 0 }
+}
+
 /// What the pass reads of a frame: the leaves laid out with room, each surface's by its kind, the code panes in the
 /// tree's order.
 #[derive(Clone, Debug, Default)]
@@ -71,10 +113,9 @@ pub struct Leaves {
     /// The code's first row (`Screen.text_top`) and one past the slot's last (`Screen::body_end`).
     pub text_top: usize,
     pub body_end: usize,
-    pub chat: Option<(PaneId, Rect)>,
-    /// The side panel, or the rail while a review is up — the left column as drawn.
-    pub side: Option<(PaneId, Rect)>,
-    pub rail: Option<(PaneId, Rect)>,
+    /// The column surfaces as drawn, wherever they are: the chat, the side panel or the rail while a review is up —
+    /// each its leaf, its home and its rect.
+    pub surfaces: Vec<(PaneId, Home, Rect)>,
     /// The groups docked in sight: each one's host, its side and its rect, in the groups' order.
     pub docked: Vec<(PaneId, Side, Rect)>,
     /// The slot as laid (0 high when it's empty) and the column its line ends before (`Screen::slot_end`).
@@ -88,6 +129,28 @@ pub struct Leaves {
     pub middles: Vec<(PaneId, usize)>,
     /// A picker over the editing area: a column panel's line meets nothing beside it, and turns down at the top.
     pub covered: bool,
+}
+
+impl Leaves {
+    /// Which sides of leaf `id` (a column surface or the slot, at `home` in `r`) hold its own line (`sides`), among the
+    /// rest laid out with room: the other surfaces and the slot by their homes, a docked group by its edge (docked right,
+    /// its line on its left), the code panes as the code.
+    pub fn sides_of(&self, id: PaneId, home: Home, r: Rect) -> Sides {
+        let room = |r: &Rect| r.w > 0 && r.h > 0;
+        let edge = |side: Side| match side {
+            Side::Right => Home::Left,
+            Side::Left => Home::Right,
+            Side::Top => Home::Top,
+        };
+        let others: Vec<(Option<Home>, Rect)> = (self.surfaces.iter().map(|s| (s.0, Some(s.1), s.2)))
+            .chain(self.slot.map(|s| (s.0, Some(Home::Top), s.1)))
+            .chain(self.code.iter().map(|c| (c.0, None, c.1)))
+            .chain(self.docked.iter().map(|d| (d.0, Some(edge(d.1)), d.2)))
+            .filter(|o| o.0 != id && room(&o.2))
+            .map(|o| (o.1, o.2))
+            .collect();
+        sides(home, r, &others, self.width)
+    }
 }
 
 /// A divider as drawn between code panes side by side: the column left of pane `pane` with another left of it, from
@@ -121,14 +184,22 @@ impl Edges {
     /// Every line between two of `l`'s leaves.
     pub fn of(l: &Leaves) -> Edges {
         let mut lines = Vec::new();
-        // (the chat's left line, where it doesn't fill the screen; the left column's right one — both the code's and the
-        // slot's height)
-        if let Some((id, c)) = l.chat.filter(|c| c.1.w < l.width) {
-            lines.push(Line::own(Dir::Vertical, c.x, 0..l.body_end, id));
-        }
-        for (id, r) in [l.side, l.rail].into_iter().flatten() {
-            if let Some(x) = (r.x + r.w).checked_sub(1) {
-                lines.push(Line::own(Dir::Vertical, x, 0..l.body_end, id));
+        // (each column surface's lines on its sides that meet something, down its own rows: its home's first — the
+        // chat's left, the side panel's and the rail's right —, then the other side's, each with the side the code is
+        // toward for its joins. Stacked under something, its top line is its own header's, no border yet: nothing
+        // sizes it along a column before S5b)
+        let mut columns: Vec<(usize, Side)> = Vec::new();
+        for &(id, home, r) in &l.surfaces {
+            let s = l.sides_of(id, home, r);
+            let rows = r.y..(r.y + r.h).min(l.body_end);
+            let (left, right) =
+                ((s.left, r.x, Side::Left), (s.right, r.x + r.w.saturating_sub(1), Side::Right));
+            let order = if home == Home::Left { [left, right] } else { [right, left] };
+            for (on, x, toward) in order {
+                if on && r.w > 0 {
+                    columns.push((lines.len(), toward));
+                    lines.push(Line::own(Dir::Vertical, x, rows.clone(), id));
+                }
             }
         }
         // (a docked group's edge: its cell toward the code; over the code, the code's top line under its last row)
@@ -139,11 +210,23 @@ impl Edges {
                 Side::Top => Line::own(Dir::Horizontal, r.y + r.h, r.x..r.x + r.w, id),
             });
         }
-        // (the slot's top line, under the code only — the chat's line its end)
+        // (the slot's top line, under the code only — a column surface's line right of it its end; beside the code, its
+        // line toward it)
         if let Some((id, s)) = l.slot.filter(|s| s.1.h > 0) {
-            let end = l.slot_end.min(l.chat.map_or(l.width, |c| c.1.x));
-            if s.x < end {
+            let rows = |r: &Rect| r.y <= s.y && s.y < r.y + r.h;
+            let past = (l.surfaces.iter()).filter(|c| c.2.x > s.x && rows(&c.2)).map(|c| c.2.x).min();
+            let end = l.slot_end.min(past.unwrap_or(l.width));
+            let sides = l.sides_of(id, Home::Top, s);
+            if s.x < end && sides.top {
                 lines.push(Line::own(Dir::Horizontal, s.y, s.x..end, id));
+            }
+            for (on, x, toward) in
+                [(sides.left, s.x, Side::Left), (sides.right, s.x + s.w.saturating_sub(1), Side::Right)]
+            {
+                if on && s.w > 0 {
+                    columns.push((lines.len(), toward));
+                    lines.push(Line::own(Dir::Vertical, x, s.y..s.y + s.h, id));
+                }
             }
         }
         // (between two code panes side by side: the cell after the left one's last, over the rows they share)
@@ -182,10 +265,8 @@ impl Edges {
         }
         // What the column panels' lines and the docked groups' edges meet, and the code's dividers as drawn
         let column = |lines: &[Line], id: PaneId| lines.iter().position(|ln| own_column(ln, id));
-        for (who, toward) in [(l.side, Side::Right), (l.rail, Side::Right), (l.chat, Side::Left)] {
-            if let Some(i) = who.and_then(|w| column(&lines, w.0)) {
-                meet(l, &mut lines[i], toward);
-            }
+        for (i, toward) in columns {
+            meet(l, &mut lines[i], toward);
         }
         for &(id, side, r) in &l.docked {
             if side != Side::Top
@@ -198,7 +279,7 @@ impl Edges {
     }
 
     /// Surface `id`'s own line down a column (the chat's, the side panel's, the rail's, a group's docked beside the
-    /// code) — None where it has none.
+    /// code) — its home's first (`Leaves::sides_of`) — None where it has none.
     pub fn column(&self, id: PaneId) -> Option<&Line> {
         self.lines.iter().find(|l| own_column(l, id))
     }
@@ -206,6 +287,17 @@ impl Edges {
     /// The columns of the code's dividers that end on the row over `y`: a line along row `y` takes them in (`┴`).
     pub fn ups(&self, y: usize) -> Vec<usize> {
         self.dividers.iter().filter(|d| y > 0 && d.span.end == y).map(|d| d.at).collect()
+    }
+
+    /// The columns of every line down a column that ends on the row over `y` — the code's dividers and the surfaces'
+    /// own: a surface's top line along row `y` (the chat under the code, S5a) takes them in (`┴`).
+    pub fn ends_over(&self, y: usize) -> Vec<usize> {
+        let lines =
+            (self.lines.iter()).filter(|l| l.dir == Dir::Vertical && y > 0 && l.span.end == y).map(|l| l.at);
+        let mut out: Vec<usize> = lines.chain(self.ups(y)).collect();
+        crate::sorting::by_key(&mut out, |&x| x);
+        out.dedup();
+        out
     }
 
     /// The first line on cell (`x`, `y`) that `passed` doesn't pass over (a word on it that isn't the line: a slot's
@@ -254,8 +346,13 @@ fn meet(l: &Leaves, line: &mut Line, toward: Side) {
                 parts.push((row..row + 1, row, id));
             }
         }
+        // (the slot beside this line, its side toward it there — by place, another column may stand between them)
+        let beside = |s: &Rect| match toward {
+            Side::Left => s.x + s.w == edge,
+            _ => s.x == edge,
+        };
         if parts.is_empty()
-            && let Some((id, s)) = l.slot.filter(|s| s.1.h > 0 && s.1.w > 0)
+            && let Some((id, s)) = l.slot.filter(|s| s.1.h > 0 && s.1.w > 0 && beside(&s.1))
         {
             parts.push((s.y..s.y + s.h, s.y, id));
         }
@@ -374,8 +471,7 @@ mod tests {
             width: 120,
             text_top: 1,
             body_end: 33,
-            chat: Some((5, rect(84, 0, 36, 33))),
-            side: Some((2, rect(0, 0, 32, 33))),
+            surfaces: vec![(5, Home::Left, rect(84, 0, 36, 33)), (2, Home::Right, rect(0, 0, 32, 33))],
             slot: Some((4, rect(32, 24, 52, 9))),
             slot_end: 84,
             code: vec![(1, rect(32, 1, 52, 23))],
@@ -394,8 +490,65 @@ mod tests {
         let past = Edges::of(&Leaves { slot_end: 120, ..l.clone() });
         assert_eq!(past.at(90, 24, |_| false), None, "under the chat: no line");
         // (the chat filling the screen has no line)
-        let whole = Leaves { chat: Some((5, rect(0, 0, 120, 33))), ..l };
+        let whole = Leaves { surfaces: vec![(5, Home::Left, rect(0, 0, 120, 33))], ..l };
         assert!(Edges::of(&whole).lines.iter().all(|l| l.heads != 5));
+    }
+
+    /// By place (onetree S5a): a surface's line is on each side that meets something — never the screen's edge —, one
+    /// line between two surfaces (the chat's where its home faces the other, else the left one's), the slot's toward
+    /// the code beside it; a line on a side other than its home's joins what's beside it there, the slot's only where
+    /// the slot is beside it.
+    #[test]
+    fn each_surfaces_line_is_on_the_side_that_meets_something() {
+        // (the chat on the left, the side panel right of it, the code over the slot)
+        let l = Leaves {
+            width: 120,
+            text_top: 1,
+            body_end: 33,
+            surfaces: vec![(5, Home::Left, rect(0, 0, 36, 33)), (2, Home::Right, rect(36, 0, 32, 33))],
+            slot: Some((4, rect(68, 30, 52, 3))),
+            slot_end: 120,
+            code: vec![(1, rect(68, 1, 52, 29))],
+            ..Leaves::default()
+        };
+        assert_eq!(
+            l.sides_of(5, Home::Left, rect(0, 0, 36, 33)),
+            Sides { left: false, right: true, top: false }
+        );
+        assert_eq!(
+            l.sides_of(2, Home::Right, rect(36, 0, 32, 33)),
+            Sides { left: false, right: true, top: false }
+        );
+        let e = Edges::of(&l);
+        let ats: Vec<_> =
+            e.lines.iter().filter(|l| l.dir == Dir::Vertical).map(|l| (l.at, l.heads)).collect();
+        assert_eq!(ats, vec![(35, 5), (67, 2)]);
+        assert_eq!(e.column(5).unwrap().joins, vec![(0, "┬")], "the slot isn't beside the chat's line");
+        assert_eq!(e.column(2).unwrap().joins, vec![(0, "┬"), (30, "├")]);
+        // (the side panel left of the chat: the chat's home faces it — the chat's line, none of the side panel's)
+        let nav = Leaves {
+            surfaces: vec![(5, Home::Left, rect(52, 0, 36, 33)), (2, Home::Right, rect(88, 0, 32, 33))],
+            slot: Some((4, rect(0, 30, 52, 3))),
+            code: vec![(1, rect(0, 1, 52, 29))],
+            ..l.clone()
+        };
+        assert_eq!(nav.sides_of(2, Home::Right, rect(88, 0, 32, 33)), Sides::default());
+        let ats: Vec<_> =
+            Edges::of(&nav).lines.iter().filter(|l| l.dir == Dir::Vertical).map(|l| l.at).collect();
+        assert_eq!(ats, vec![52, 87]);
+        // (the slot beside the code: its line toward it, cut from what it draws)
+        let stack = Leaves {
+            surfaces: vec![(5, Home::Left, rect(84, 0, 36, 33))],
+            slot: Some((4, rect(49, 0, 35, 33))),
+            code: vec![(1, rect(0, 1, 49, 32))],
+            ..l
+        };
+        let s = stack.sides_of(4, Home::Top, rect(49, 0, 35, 33));
+        assert_eq!(s, Sides { left: true, right: false, top: false });
+        assert_eq!(s.cut(Home::Top, rect(49, 0, 35, 33)), rect(50, 0, 34, 33));
+        let e = Edges::of(&stack);
+        assert_eq!(e.at(49, 10, |_| false).map(|l| (l.heads, l.dir)), Some((4, Dir::Vertical)));
+        assert_eq!(e.at(60, 0, |_| false), None, "at the screen's top: no top line of its own");
     }
 
     /// A column panel's line joins what meets it beside it: a code pane's top line below the first row (the side panel's
@@ -407,8 +560,7 @@ mod tests {
             width: 120,
             text_top: 1,
             body_end: 33,
-            chat: Some((5, rect(84, 0, 36, 33))),
-            side: Some((2, rect(0, 0, 32, 33))),
+            surfaces: vec![(5, Home::Left, rect(84, 0, 36, 33)), (2, Home::Right, rect(0, 0, 32, 33))],
             slot: Some((4, rect(32, 24, 52, 9))),
             slot_end: 84,
             code: vec![(1, rect(32, 1, 52, 15)), (3, rect(32, 16, 52, 8))],

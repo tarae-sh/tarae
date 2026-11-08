@@ -61,7 +61,101 @@ const SCENES: &[Scene] = &[
         chat(ed, Here::Chat);
         keys(ed, "<C-w>z", w, h);
     }),
+    // Layouts by place (onetree S5a), each a tree made by hand — no key moves a pane yet (S5c)
+    ("conversation left, side panel and task", |ed, w, h| {
+        moved(ed, w, h, |[code, side, rail, slot, chat]| {
+            v(vec![a(chat), a(side), a(rail), e(column(code, slot))])
+        });
+    }),
+    ("conversation left, with the keys", |ed, w, h| {
+        chat(ed, Here::Chat);
+        place(ed, w, h, |[code, side, rail, slot, chat]| {
+            v(vec![a(chat), a(side), a(rail), e(column(code, slot))])
+        });
+    }),
+    ("conversation below the code, side panel and task", |ed, w, h| {
+        moved(ed, w, h, |[code, side, rail, slot, chat]| {
+            hz(vec![e(v(vec![a(side), a(rail), e(column(code, slot))])), a(chat)])
+        });
+    }),
+    ("conversation below the code, with the keys", |ed, w, h| {
+        chat(ed, Here::Chat);
+        place(ed, w, h, |[code, side, rail, slot, chat]| {
+            hz(vec![e(v(vec![a(side), a(rail), e(column(code, slot))])), a(chat)])
+        });
+    }),
+    ("navigator right, chat and task", |ed, w, h| {
+        moved(ed, w, h, |[code, side, rail, slot, chat]| {
+            v(vec![e(column(code, slot)), a(chat), a(side), a(rail)])
+        });
+    }),
+    ("stack right: side panel, code, task, chat", |ed, w, h| {
+        moved(ed, w, h, |[code, side, rail, slot, chat]| {
+            v(vec![a(side), a(rail), e(Split::Leaf(code)), a(slot), a(chat)])
+        });
+    }),
+    ("two code panes either side of the chat", |ed, w, h| {
+        keys(ed, "<C-w>v", w, h);
+        let other =
+            ed.workspace.views.iter().map(|v| v.id).find(|&id| id != ed.workspace.views[0].id).unwrap();
+        // (the second pane out of the column, right of the chat)
+        moved(ed, w, h, |[code, side, rail, slot, chat]| {
+            v(vec![a(side), a(rail), e(column(code, slot)), a(chat), e(Split::Leaf(other))])
+        });
+    }),
+    ("code zoomed, conversation left", |ed, w, h| {
+        chat(ed, Here::Code);
+        place(ed, w, h, |[code, side, rail, slot, chat]| {
+            v(vec![a(chat), a(side), a(rail), e(column(code, slot))])
+        });
+        keys(ed, "<C-w>z", w, h);
+    }),
 ];
+
+use crate::split::{PaneId, Share, Split};
+
+/// A pane's own size (`Share::Auto`) and the rest's even part, for a tree made by hand.
+fn a(s: PaneId) -> (Share, Split) {
+    (Share::Auto, Split::Leaf(s))
+}
+
+fn e(s: Split) -> (Share, Split) {
+    (Share::Even, s)
+}
+
+/// Side by side, stacked.
+fn v(kids: Vec<(Share, Split)>) -> Split {
+    Split::Node(crate::split::Dir::Vertical, kids)
+}
+
+fn hz(kids: Vec<(Share, Split)>) -> Split {
+    Split::Node(crate::split::Dir::Horizontal, kids)
+}
+
+/// Today's code column: the code over the slot.
+fn column(code: PaneId, slot: PaneId) -> Split {
+    hz(vec![e(Split::Leaf(code)), a(slot)])
+}
+
+/// The session's tree made by hand from its leaves (the first code pane, the side panel, the rail, the slot, the chat),
+/// a frame after.
+fn place(ed: &mut Editor, w: u16, h: u16, tree: impl Fn([PaneId; 5]) -> Split) {
+    use crate::pane::Shows;
+    let ws = &ed.workspace;
+    let leaf = |s: Shows| ws.leaf(s).expect("a surface's leaf");
+    let ids = [ws.views[0].id, leaf(Shows::Side), leaf(Shows::Rail), leaf(Shows::Slot), leaf(Shows::Chat)];
+    ed.workspace.split = tree(ids);
+    frame(ed, w, h);
+}
+
+/// The chat open, the side panel and a task in the slot, the keys on the code, in a tree made by hand.
+fn moved(ed: &mut Editor, w: u16, h: u16, tree: impl Fn([PaneId; 5]) -> Split) {
+    chat(ed, Here::Code);
+    side(ed);
+    task(ed);
+    ed.workspace.viewer.keys_to_code();
+    place(ed, w, h, tree);
+}
 
 /// A fresh editor on 30 lines of plain text, its name pinned (a line that names it lays out the same anywhere) and a
 /// stand-in for claude, never the real one.

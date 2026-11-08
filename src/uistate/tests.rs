@@ -905,7 +905,80 @@ pub(crate) const SCENES: &[Scene] = &[
         chat_view(ed);
         light_card(ed);
     }),
+    // Layouts by place (onetree S5a), each a tree made by hand — no key moves a pane yet (S5c)
+    ("the chat on the screen's left, with the keys", |ed| {
+        chat(ed, "");
+        by_place(ed, |[code, side, rail, slot, chat]| {
+            v(vec![auto(chat), auto(side), auto(rail), even(column(code, slot))])
+        });
+    }),
+    ("the chat under the code, a task, the keys on the code", |ed| {
+        chat(ed, "");
+        task_panel(ed);
+        ed.workspace.viewer.keys_to_code();
+        by_place(ed, |[code, side, rail, slot, chat]| {
+            hz(vec![even(v(vec![auto(side), auto(rail), even(column(code, slot))])), auto(chat)])
+        });
+    }),
+    ("the task panel's output in the slot beside the code, the chat", |ed| {
+        chat(ed, "");
+        task_panel(ed);
+        by_place(ed, |[code, side, rail, slot, chat]| {
+            v(vec![auto(side), auto(rail), even(Split::Leaf(code)), auto(slot), auto(chat)])
+        });
+        ed.bottom_take_keys();
+    }),
+    ("the chat on the screen's left, the keys on the code", |ed| {
+        chat(ed, "");
+        ed.workspace.viewer.keys_to_code();
+        by_place(ed, |[code, side, rail, slot, chat]| {
+            v(vec![auto(chat), auto(side), auto(rail), even(column(code, slot))])
+        });
+    }),
+    ("Claude's edit review, the chat on the left", |ed| {
+        chat(ed, "");
+        ed.workspace.viewer.keys_to_code();
+        by_place(ed, |[code, side, rail, slot, chat]| {
+            v(vec![auto(chat), auto(side), auto(rail), even(column(code, slot))])
+        });
+        edit_review(ed);
+    }),
 ];
+
+use crate::split::{PaneId, Share, Split};
+
+/// A tree made by hand (onetree S5a): a pane's own size, the rest's even part, side by side or stacked, today's code
+/// column (the code over the slot).
+fn auto(id: PaneId) -> (Share, Split) {
+    (Share::Auto, Split::Leaf(id))
+}
+
+fn even(s: Split) -> (Share, Split) {
+    (Share::Even, s)
+}
+
+fn v(kids: Vec<(Share, Split)>) -> Split {
+    Split::Node(crate::split::Dir::Vertical, kids)
+}
+
+fn hz(kids: Vec<(Share, Split)>) -> Split {
+    Split::Node(crate::split::Dir::Horizontal, kids)
+}
+
+fn column(code: PaneId, slot: PaneId) -> Split {
+    hz(vec![even(Split::Leaf(code)), auto(slot)])
+}
+
+/// The session's tree made by hand from its leaves (the code pane, the side panel, the rail, the slot, the chat), a
+/// frame after.
+fn by_place(ed: &mut Editor, tree: impl Fn([PaneId; 5]) -> Split) {
+    use crate::pane::Shows;
+    let ws = &ed.workspace;
+    let leaf = |s: Shows| ws.leaf(s).expect("a surface's leaf");
+    let ids = [ws.views[0].id, leaf(Shows::Side), leaf(Shows::Rail), leaf(Shows::Slot), leaf(Shows::Chat)];
+    ed.workspace.split = tree(ids);
+    frame(ed);
+}
 
 /// The chat's view mode (`esc` from its input, a draft in it) on a question and its answer.
 pub(crate) fn chat_view(ed: &mut Editor) {

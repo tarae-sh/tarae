@@ -897,7 +897,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
             && !editor.pending.is_empty()
             && editor.picker.is_none()
             && lay.text_rows >= 8
-            && lay.code_right() > 0
+            && lay.work_w() > 0
             && editor.offers.first().is_some_and(|o| !o.installing()),
         offer_cut: offer.as_ref().filter(|c| !c.bar).map(|c| c.cut),
         chat_links: Default::default(),
@@ -1238,6 +1238,14 @@ struct Layout {
     x1: usize,
     /// Every leaf laid out with room (wider and taller than 0) that shows something: its kind and rect (`rect`).
     shown: Vec<(crate::pane::Shows, crate::split::Rect)>,
+    /// The columns the code is on the screen's width (onetree S5a, `work_cols`): on its side of a docked chat — what
+    /// floats over the code takes them, an edit review is drawn in them; empty, no code drawn.
+    work: (usize, usize),
+    /// The columns of what's laid out in the code's regions (its panes, the slot, a group docked in it) — None with
+    /// none laid out.
+    code_x: Option<(usize, usize)>,
+    /// Each surface's sides holding its own line, by place (`surface_lines`).
+    lines: Vec<(crate::pane::Shows, crate::edges::Sides)>,
     header: bool,
     /// Rightmost cell of the editing area = scrollbar (only when the doc is taller than the screen).
     scrollbar: bool,
@@ -1320,9 +1328,21 @@ impl Layout {
         self.shown.iter().find(|s| s.0 == kind).map(|s| s.1)
     }
 
-    /// The column beside the code on its left: the side panel's, or the review rail's while it's up (one at a time).
+    /// The navigator's column: the side panel's, or the review rail's while it's up (one at a time) — as drawn
+    /// (`drawn`).
     fn side(&self) -> Option<crate::split::Rect> {
-        self.rect(crate::pane::Shows::Side).or(self.rect(crate::pane::Shows::Rail))
+        self.drawn(crate::pane::Shows::Side).or(self.drawn(crate::pane::Shows::Rail))
+    }
+
+    /// Surface `kind`'s sides holding its own line (`surface_lines`) — none where it isn't laid out.
+    fn sides(&self, kind: crate::pane::Shows) -> crate::edges::Sides {
+        self.lines.iter().find(|l| l.0 == kind).map_or_else(Default::default, |l| l.1)
+    }
+
+    /// Surface `kind`'s rect less its lines on its other sides than its home's (`edges::Sides::cut`): what its drawer
+    /// lays its text and its gutter in.
+    fn drawn(&self, kind: crate::pane::Shows) -> Option<crate::split::Rect> {
+        Some(self.sides(kind).cut(surface_home(kind)?, self.rect(kind)?))
     }
 
     /// The chat's column, docked in the tree (onetree S1d): None where it's closed, floating or has no room.
@@ -1340,32 +1360,39 @@ impl Layout {
                 h: r.h.saturating_sub(1),
                 framed: true,
             }),
-            None => self.chat().map(|r| ChatAt { x: r.x, y: r.y, w: r.w, h: r.h, framed: false }),
+            None => self.drawn(crate::pane::Shows::Chat).map(|r| ChatAt {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+                framed: false,
+            }),
         }
     }
 
-    /// The code's right edge (onetree S1e): the docked chat's left, else the screen's right — a group docked beside
-    /// the code is inside it.
-    fn code_right(&self) -> usize {
-        self.chat().map_or(self.width, |r| r.x)
+    /// The code's columns' width (`work`): the docked chat's side of the code taken out.
+    fn work_w(&self) -> usize {
+        self.work.1.saturating_sub(self.work.0)
     }
 
     /// The columns what floats over the code takes — pickers, toasts, which-key, the asks, the ask stream, the prompt,
-    /// a cut row's card outside its frame: from the screen's left (over the side panel) to the code's right edge.
+    /// a cut row's card outside its frame: the code's (`work`), over the side panel.
     fn float_area(&self) -> (usize, usize) {
         let r = self.float_rect();
         (r.x, r.x + r.w)
     }
 
-    /// …and its rows (onetree S1f): from the screen's first row to the status line, the card's bar row aside.
+    /// …and its rows (onetree S1f): from the screen's first row to the status line, the card's bar row aside — and the
+    /// chat docked in a row under the code (S5a).
     fn float_rect(&self) -> crate::split::Rect {
         let h = self.offer_bar.unwrap_or(self.status_y) as usize;
-        crate::split::Rect { x: 0, y: 0, w: self.code_right(), h }
+        let h = self.chat().filter(|c| c.y > 0).map_or(h, |c| h.min(c.y));
+        crate::split::Rect { x: self.work.0, y: 0, w: self.work_w(), h }
     }
 
     /// No code drawn: something else fills the screen (the chat on a narrow screen too).
     fn code_hidden(&self) -> bool {
-        self.code_right() == 0 || self.zoom_shows.is_some_and(|s| s != crate::pane::Shows::Code)
+        self.work_w() == 0 || self.zoom_shows.is_some_and(|s| s != crate::pane::Shows::Code)
     }
 
     /// The bottom slot's panel.
@@ -1449,7 +1476,8 @@ fn floats(
 fn frame_edges(editor: &Editor, lay: &Layout) -> crate::edges::Edges {
     use crate::pane::{Place, Shows};
     let (s, ws) = (&editor.screen, &editor.workspace);
-    let of = |kind: Shows| Some((ws.leaf(kind)?, s.rect(kind)?));
+    use crate::edges::Home;
+    let of = |kind: Shows, home: Home| Some((ws.leaf(kind)?, home, s.rect(kind)?));
     let mut middles = Vec::new();
     let docked = (ws.groups.iter())
         .filter_map(|g| {
@@ -1469,11 +1497,13 @@ fn frame_edges(editor: &Editor, lay: &Layout) -> crate::edges::Edges {
         width: lay.width,
         text_top: s.text_top,
         body_end: s.body_end(),
-        chat: of(Shows::Chat),
-        side: of(Shows::Side),
-        rail: of(Shows::Rail),
+        surfaces: [of(Shows::Chat, Home::Left), of(Shows::Side, Home::Right), of(Shows::Rail, Home::Right)]
+            .into_iter()
+            .flatten()
+            .collect(),
         docked,
-        slot: ws.leaf(Shows::Slot).map(|id| (id, s.slot())),
+        // (its leaf's rect, its lines' cells in it — the slot as drawn is less those beside the code: S5a)
+        slot: ws.leaf(Shows::Slot).map(|id| (id, lay.rect(Shows::Slot).unwrap_or_else(|| s.slot()))),
         slot_end: s.slot_end(),
         code,
         tops,
@@ -1828,7 +1858,7 @@ impl Layout {
             chat: widths.chat,
             slot,
             over: text_top as usize,
-            column: code_column(&editor.workspace),
+            regions: code_regions(&editor.workspace),
             width: w as usize,
             rows: total,
         };
@@ -1920,35 +1950,56 @@ impl Layout {
             .collect();
         let rect = |s: Shows| shown.iter().find(|l| l.0 == s).map(|l| l.1);
         let rail_w = rect(Shows::Side).or(rect(Shows::Rail)).map_or(0, |r| r.w);
-        // (the code's right edge: the chat's left — `code_right`)
-        let code_r = rect(Shows::Chat).map_or(w as usize, |r| r.x);
+        // (each surface's lines by place, its text in its rect less those on its other sides — `Layout::drawn`)
+        let lines = surface_lines(editor, &shown, w as usize);
+        // The code by place (onetree S5a): the columns of what's laid out in its regions (its panes, the slot, a group
+        // docked in it), and the screen's on its side of a docked chat (`work_cols`)
+        let column_kind = |s: Shows| matches!(s, Shows::Chat | Shows::Side | Shows::Rail);
+        let code: Vec<crate::split::Rect> =
+            (shown.iter()).filter(|l| !column_kind(l.0) && l.1.w > 0).map(|l| l.1).collect();
+        let code_x = code.iter().map(|r| r.x).min().zip(code.iter().map(|r| r.x + r.w).max());
+        let work = work_cols(w as usize, rect(Shows::Chat), code_x);
+        let code_w = code_x.map_or(work.1.saturating_sub(work.0 + rail_w), |c| c.1 - c.0);
         let slot = rect(Shows::Slot);
-        let slot_h = slot.map_or(0, |r| r.h);
+        // (the slot's rows are the code's column's only stacked under it — beside it, it takes none of them)
+        let slot_h = slot.filter(|r| r.y > text_top as usize).map_or(0, |r| r.h);
         // (a group docked over the code: the code's rows start under it)
         let over = path_bar.1;
+        // (the code's column's last row: the body's, or above what's stacked under it — the chat in a row of its own)
+        let bottom = column.iter().map(|r| r.y + r.h).max().unwrap_or(text_top as usize + total);
         let text_rows = match zoom_shows {
             Some(Shows::Slot | Shows::Group(_)) => 0,
-            _ => (total - slot_h).saturating_sub(over).max(1),
+            _ => (bottom.saturating_sub(text_top as usize + slot_h)).saturating_sub(over).max(1),
         };
         let code_top = text_top + over as u16;
+        let slot_drawn = slot.map(|r| {
+            let s = lines.iter().find(|l| l.0 == Shows::Slot).map_or_else(Default::default, |l| l.1);
+            s.cut(crate::edges::Home::Top, r)
+        });
         Self {
             width: w as usize,
             rows: total,
-            x0: 0,
-            x1: code_r,
+            x0: work.0,
+            x1: work.1,
+            work,
+            code_x,
+            lines,
             shown,
             header,
             scrollbar,
             text_top: code_top,
             text_rows,
             gutter,
-            text_cols: code_r.saturating_sub(rail_w + gutter + scrollbar as usize).max(1),
-            // (its first row under the code's, whether the slot has a leaf or not)
-            slot: crate::split::Rect {
-                x: slot.map_or(rail_w, |r| r.x),
-                y: code_top as usize + text_rows,
-                w: slot.map_or(code_r - rail_w, |r| r.w),
-                h: slot_h,
+            text_cols: code_w.saturating_sub(gutter + scrollbar as usize).max(1),
+            // (its first row under the code's, whether the slot has a leaf or not; beside the code, its leaf's)
+            slot: match slot_drawn {
+                Some(r) if slot_h == 0 => r,
+                _ => crate::split::Rect {
+                    x: slot_drawn.map_or(code_x.map_or(rail_w, |c| c.0), |r| r.x),
+                    y: code_top as usize + text_rows,
+                    w: slot_drawn.map_or(code_w, |r| r.w),
+                    h: slot_h,
+                },
             },
             status_y: text_top + all as u16,
             offer_bar: (bar == 1).then_some(text_top + total as u16),
@@ -1971,7 +2022,7 @@ impl Layout {
 
 /// What the tree's layout asks of the surfaces this frame: their own sizes (`Share::Auto`, and a size you set on one —
 /// its `Share::Cells`, clamped by its rule) — the left column's (the side panel's, or the review's rail while it's up),
-/// the chat's width, the slot's height — and the path bar's rows over the code's column.
+/// the chat's width, the slot's height — and the path bar's rows over each of the code's regions.
 struct Surfaces<'a> {
     editor: &'a Editor,
     session: &'a crate::workspace::Workspace,
@@ -1980,7 +2031,7 @@ struct Surfaces<'a> {
     chat: usize,
     slot: usize,
     over: usize,
-    column: Option<&'a crate::split::Split>,
+    regions: Vec<&'a crate::split::Split>,
     /// The screen's width and the rows under the status line's (the code's, the slot's): a docked group's own size
     /// is asked of them (`Editor::dock_auto`).
     width: usize,
@@ -2037,24 +2088,101 @@ impl crate::split::Room for Surfaces<'_> {
     }
 
     fn over(&self, node: &crate::split::Split) -> usize {
-        if self.column.is_some_and(|c| std::ptr::eq(c, node)) { self.over } else { 0 }
+        if self.regions.iter().any(|c| std::ptr::eq(*c, node)) { self.over } else { 0 }
     }
 }
 
-/// The code's column: the smallest node of the tree holding every code pane and the slot — the path bar is over
-/// it (None: one code pane alone, no slot in the tree).
-fn code_column(s: &crate::workspace::Workspace) -> Option<&crate::split::Split> {
+/// Where a surface keeps its line in today's layout (`edges::Home`): the chat's left, the side panel's and the rail's
+/// right, the slot's top — None for the code and the groups.
+fn surface_home(kind: crate::pane::Shows) -> Option<crate::edges::Home> {
+    use crate::edges::Home;
+    use crate::pane::Shows;
+    match kind {
+        Shows::Chat => Some(Home::Left),
+        Shows::Side | Shows::Rail => Some(Home::Right),
+        Shows::Slot => Some(Home::Top),
+        _ => None,
+    }
+}
+
+/// Each surface's sides holding its own line among the leaves laid out with room (`shown`), by place (`edges::sides`,
+/// the pass's rule): a docked group by its edge, the code panes as the code.
+fn surface_lines(
+    editor: &Editor,
+    shown: &[(crate::pane::Shows, crate::split::Rect)],
+    width: usize,
+) -> Vec<(crate::pane::Shows, crate::edges::Sides)> {
+    use crate::edges::Home;
+    use crate::pane::{Place, Shows, Side};
+    let home = |s: Shows| match s {
+        Shows::Group(k) => match editor.workspace.group(k).map(|g| g.place) {
+            Some(Place::Docked(Side::Right)) => Some(Home::Left),
+            Some(Place::Docked(Side::Left)) => Some(Home::Right),
+            Some(Place::Docked(Side::Top)) => Some(Home::Top),
+            _ => None,
+        },
+        s => surface_home(s),
+    };
+    let others: Vec<(Option<Home>, crate::split::Rect)> = shown.iter().map(|l| (home(l.0), l.1)).collect();
+    (shown.iter().enumerate())
+        .filter_map(|(i, &(s, r))| {
+            let h = surface_home(s)?;
+            let rest: Vec<_> = (others.iter().enumerate()).filter(|o| o.0 != i).map(|o| *o.1).collect();
+            Some((s, crate::edges::sides(h, r, &rest, width)))
+        })
+        .collect()
+}
+
+/// The columns the code is on (`Layout.work`): with a chat docked beside it, the screen's on its side of the chat (the
+/// chat on the right: from the screen's left; on the left: to its right), over the side panel; with the code on both
+/// sides of it or a chat under it, the screen's whole width; the chat filling the screen, none.
+fn work_cols(width: usize, chat: Option<crate::split::Rect>, code: Option<(usize, usize)>) -> (usize, usize) {
+    let Some(c) = chat else { return (0, width) };
+    match code {
+        Some((x0, _)) if c.x + c.w <= x0 => (c.x + c.w, width),
+        Some((_, x1)) if x1 <= c.x => (0, c.x),
+        Some(_) => (0, width),
+        // (none: at the screen's left, never past its right edge)
+        None if c.x == 0 && c.w < width => (c.w, width),
+        None if c.x == 0 => (0, 0),
+        None => (0, c.x),
+    }
+}
+
+/// The code's regions (onetree S5a): in each largest part of the tree with a code pane in it and no column surface (the
+/// chat, the side panel, the rail), the smallest node holding its code panes and the slot (a group docked over the code
+/// outside it) — the path bar's row is over each. Today's layout has one, the code over the slot; code on both sides
+/// of the chat is two.
+fn code_regions(s: &crate::workspace::Workspace) -> Vec<&crate::split::Split> {
+    use crate::pane::Shows;
     use crate::split::Split;
-    let mut want: Vec<crate::split::PaneId> = s.views.iter().map(|v| v.id).collect();
-    want.extend(s.leaf(crate::pane::Shows::Slot));
-    let mut at = &s.split;
-    loop {
-        let Split::Node(_, kids) = at else { return None };
-        match kids.iter().find(|k| want.iter().all(|&id| k.1.holds(id))) {
-            Some(k) => at = &k.1,
-            None => return Some(at),
+    fn walk<'a>(s: &crate::workspace::Workspace, at: &'a Split, out: &mut Vec<&'a Split>) {
+        let leaves = at.leaves();
+        let code = leaves.iter().any(|&id| s.views.iter().any(|v| v.id == id));
+        let column =
+            (leaves.iter()).any(|&id| matches!(s.shows(id), Some(Shows::Chat | Shows::Side | Shows::Rail)));
+        match at {
+            _ if !code => {}
+            _ if !column => {
+                let want: Vec<_> = (leaves.iter())
+                    .filter(|&&id| matches!(s.shows(id), Some(Shows::Code | Shows::Slot)))
+                    .copied()
+                    .collect();
+                let mut at = at;
+                while let Split::Node(_, kids) = at
+                    && let Some(k) = kids.iter().find(|k| want.iter().all(|&id| k.1.holds(id)))
+                {
+                    at = &k.1;
+                }
+                out.push(at);
+            }
+            Split::Node(_, kids) => kids.iter().for_each(|k| walk(s, &k.1, out)),
+            Split::Leaf(_) => {}
         }
     }
+    let mut out = Vec::new();
+    walk(s, &s.split, &mut out);
+    out
 }
 
 impl Layout {
@@ -5804,6 +5932,8 @@ fn draw(
         None => chat(out)?,
         Some(_) => None,
     };
+    // (the docked surfaces' lines on their other sides, over what they draw — under what floats)
+    draw_far_lines(editor, ui, lay, out)?;
     // A docked surface's row in hand whole on its card — under what floats, as that surface is (the floating chat's
     // over it, below)
     let hand_under = |out: &mut Vec<u8>| -> io::Result<()> {
@@ -6192,9 +6322,9 @@ pub(crate) fn drawn_style(st: Style) -> Style {
 
 /// The code's area as a whole — the edit review's or the start screen's, in the panes' place.
 fn code_area(lay: &Layout) -> crate::regions::Rect {
-    // (right of the column beside it, when one stands)
-    let x = lay.side().map_or(0, |r| r.x + r.w);
-    (x, 0, lay.code_right().saturating_sub(x), lay.text_top as usize + lay.text_rows)
+    // (the code's own columns: right of the column beside it when one stands, by place — S5a)
+    let x = lay.code_x.map_or_else(|| lay.side().map_or(0, |r| r.x + r.w), |c| c.0);
+    (x, 0, lay.work.1.saturating_sub(x), lay.text_top as usize + lay.text_rows)
 }
 
 /// Whether the follow card drawn at `card` still shows its head — its top line, where it says the step (focus B1) — once
@@ -9139,7 +9269,7 @@ fn draw_folded_row(
 /// The edit review's code column: its width less the gutter — a pane's (the sign column, the numbers, the
 /// change marks).
 fn review_code_w(doc: &crate::document::Document, lay: &Layout) -> usize {
-    lay.code_right().saturating_sub(crate::chrome::SIGNS + num_w(doc))
+    lay.work_w().saturating_sub(crate::chrome::SIGNS + num_w(doc))
 }
 
 /// Every doc comment block of the edit review's document laid out folded for its code column — `cache` while it's
@@ -9536,8 +9666,9 @@ fn draw_review(
     let strong =
         ui.base.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let accent = Style { fg: ui.accent.fg, ..ui.base };
-    let width = lay.code_right();
-    editor.screen.review_area.set(Some((0, lay.text_top as usize, width, lay.text_rows)));
+    // (in the code's columns — the chat docked on the left takes those before them)
+    let (x0, width) = (lay.work.0, lay.work_w());
+    editor.screen.review_area.set(Some((x0, lay.text_top as usize, width, lay.text_rows)));
     let code_w = review_code_w(doc, lay);
     let (warned, reason) = review_heads(editor, ui, &rev.reason, &rev.warnings, width);
     let warn = Style { fg: t.try_get("warning").and_then(|s| s.fg).or(ui.accent.fg), ..ui.base };
@@ -9546,7 +9677,7 @@ fn draw_review(
     // Fixed title
     let n = rev.hunks.len();
     let decided = rev.hunks.iter().filter(|h| h.decision != Decision::Undecided).count();
-    queue!(out, MoveTo(0, lay.text_top))?;
+    queue!(out, MoveTo(x0 as u16, lay.text_top))?;
     apply(out, accent)?;
     queue!(out, Print(" ▎ "))?;
     apply(out, strong)?;
@@ -9560,7 +9691,7 @@ fn draw_review(
     let file =
         crate::whole::fit_left(&review_file(editor, doc), room.saturating_sub(2 + said.width().min(16)));
     let at = |text: &Fit, x: usize, y: u16, st: Style| {
-        crate::whole::at(crate::whole::On::Review, text, (x, y as usize), st, (0, width));
+        crate::whole::at(crate::whole::On::Review, text, (x0 + x, y as usize), st, (x0, x0 + width));
     };
     // (its folders dim, its name as the code is)
     let file_w = if file.is_empty() { 0 } else { 2 + file.width() };
@@ -9583,7 +9714,7 @@ fn draw_review(
     apply(out, faint)?;
     queue!(out, Print(&right))?;
     for (k, line) in warned.iter().enumerate() {
-        queue!(out, MoveTo(0, lay.text_top + 1 + k as u16))?;
+        queue!(out, MoveTo(x0 as u16, lay.text_top + 1 + k as u16))?;
         apply(out, ui.base)?;
         queue!(out, Print("   "))?;
         apply(out, warn)?;
@@ -9591,10 +9722,11 @@ fn draw_review(
         at(line, 3, lay.text_top + 1 + k as u16, warn);
     }
     for (k, row) in reason.iter().enumerate() {
-        queue!(out, MoveTo(0, lay.text_top + 1 + (warned.len() + k) as u16))?;
+        queue!(out, MoveTo(x0 as u16, lay.text_top + 1 + (warned.len() + k) as u16))?;
         apply(out, ui.base)?;
         queue!(out, Print("   "))?;
-        let at = (crate::whole::On::Review, 3, lay.text_top as usize + 1 + warned.len() + k, (0, width));
+        let y = lay.text_top as usize + 1 + warned.len() + k;
+        let at = (crate::whole::On::Review, x0 + 3, y, (x0, x0 + width));
         let used = chat_spans_at(out, row, ui.base, width.saturating_sub(4), at)?;
         apply(out, ui.base)?;
         queue!(out, Spaces(width.saturating_sub(3 + used)))?;
@@ -9651,14 +9783,8 @@ fn draw_review(
     let first = mine.next();
     editor.screen.review_change.set(first.zip(mine.next_back().or(first)));
     *editor.screen.review_rows.borrow_mut() = changes;
-    let body_lay = Layout {
-        x0: 0,
-        text_top: top as u16,
-        text_rows: body,
-        gutter,
-        text_cols: code_w.max(1),
-        ..lay.clone()
-    };
+    let body_lay =
+        Layout { x0, text_top: top as u16, text_rows: body, gutter, text_cols: code_w.max(1), ..lay.clone() };
     let body_lay = Layout { scrollbar: false, ..body_lay };
     let first = view.iter().map(Row::line).min().unwrap_or(0);
     let shows = Shows { marked, ..Shows::edit_review(editor, rev.left) };
@@ -9666,7 +9792,7 @@ fn draw_review(
     // Each change's head, over the row the drawer leaves it
     for (k, row) in view.iter().enumerate() {
         if let Row::Header { hunk, at } = row {
-            queue!(out, MoveTo(0, (top + k) as u16))?;
+            queue!(out, MoveTo(x0 as u16, (top + k) as u16))?;
             draw_review_header(rev, (*hunk, *at), editor, ui, (gutter, width), out)?;
         }
     }
@@ -11226,7 +11352,7 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         let doc = &editor.docs[*idx];
         // (the sessions' strip at the screen's top row's right while no chat column stands there to name them — the
         // flow plan's piece 2: the chat floats by default — on the rule the path's own text leaves: `top_strip`)
-        let up = y == 0 && r.x + r.w == lay.code_right() && lay.chat().is_none();
+        let up = y == 0 && r.x + r.w == lay.work.1 && lay.chat().is_none();
         let mut strip = None;
         let mut beside = |text_w: &dyn Fn(usize) -> usize| {
             strip = top_strip(editor, ui, r.w, text_w);
@@ -16824,7 +16950,7 @@ fn draw_sidebar(
     let gutter = side_gutter((ui, editor, lay), card, dragged);
     for y in 0..col.h {
         let mut given = None;
-        queue!(out, MoveTo(0, y as u16))?;
+        queue!(out, MoveTo(col.x as u16, y as u16))?;
         apply(out, card)?;
         if y == 0 {
             let line = edge_style(ui, card, Region::Side);
@@ -16869,7 +16995,7 @@ fn draw_sidebar(
             queue!(out, Spaces(PAD))?;
         }
         let used = match (y, list) {
-            (1, _) if !behind.is_empty() => hinted_spans(out, &behind, card, w, (PAD, y))?,
+            (1, _) if !behind.is_empty() => hinted_spans(out, &behind, card, w, (col.x + PAD, y))?,
             (_, Some(i)) => match shown.get(i).map(|&r| (r, &lines[r])) {
                 Some((r, l)) => {
                     // (a file another session is in, or whose changes would conflict with yours: each its initial
@@ -16901,7 +17027,7 @@ fn draw_sidebar(
                     let hand = crate::whole::Hand::Beside(col.x + col.w);
                     let at = Some((
                         crate::whole::On::Side,
-                        0,
+                        col.x,
                         y,
                         editor.workspace.is_at(Here::Side).then_some(hand),
                     ));
@@ -16949,11 +17075,11 @@ fn draw_sidebar(
                 let said = crate::whole::fit(&foot, w);
                 queue!(out, Print(said.shown()))?;
                 let st = Style { fg: ui.virt.fg, ..card };
-                crate::whole::at(crate::whole::On::Side, &said, (PAD, y), st, (0, usize::MAX));
+                crate::whole::at(crate::whole::On::Side, &said, (col.x + PAD, y), st, (0, usize::MAX));
                 said.width()
             }
-            _ if y + 2 == col.h => hinted_spans(out, &hints[0], card, w, (PAD, y))?,
-            _ if y + 1 == col.h => hinted_spans(out, &hints[1], card, w, (PAD, y))?,
+            _ if y + 2 == col.h => hinted_spans(out, &hints[0], card, w, (col.x + PAD, y))?,
+            _ if y + 1 == col.h => hinted_spans(out, &hints[1], card, w, (col.x + PAD, y))?,
             _ => 0,
         };
         apply(out, card)?;
@@ -16967,8 +17093,9 @@ fn draw_sidebar(
     Ok(())
 }
 
-/// The gutter right of a left column panel (the side panel, the review's rail) (`chrome::GAP`), row by row: its line in
-/// the frame's edges (`meeting_line`) — with something beside it; filling the screen, the panel takes the cell whole.
+/// The gutter right of the navigator (the side panel, the review's rail) (`chrome::GAP`), row by row: its line in the
+/// frame's edges (`meeting_line`) — with something beside it there; else (filling the screen, at its right edge) the
+/// panel takes the cell whole.
 fn side_gutter<'a>(
     (ui, editor, lay): (&'a Ui, &'a Editor, &Layout),
     card: Style,
@@ -16978,7 +17105,8 @@ fn side_gutter<'a>(
     // (the column as drawn: the side panel, else the rail)
     let kind = [Shows::Side, Shows::Rail].into_iter().find(|&k| lay.rect(k).is_some());
     let line = kind.and_then(|k| editor.workspace.leaf(k)).and_then(|id| editor.screen.edges.column(id));
-    let whole = lay.side().is_some_and(|r| r.w >= lay.width);
+    // (its right side meeting nothing — the screen's edge, a chat that keeps the line between them: S5a)
+    let whole = kind.is_some_and(|k| !lay.sides(k).right);
     move |y| match whole {
         false => meeting_line(ui, editor, line, Region::Side, dragged, y),
         true => (" ", card),
@@ -17016,7 +17144,7 @@ fn meeting_line(
 }
 
 /// The chat's gutter, row by row (`side_gutter`'s rule from the other side): its line in the frame's edges
-/// (`meeting_line`). The chat filling the screen takes the cell whole.
+/// (`meeting_line`). Nothing on its left (filling the screen, at its left edge), it takes the cell whole.
 fn chat_gutter<'a>(
     ui: &'a Ui,
     editor: &'a Editor,
@@ -17025,11 +17153,45 @@ fn chat_gutter<'a>(
 ) -> impl Fn(usize) -> (&'static str, Style) + 'a {
     let line = editor.workspace.leaf(crate::pane::Shows::Chat).and_then(|id| editor.screen.edges.column(id));
     let dragged = grab(editor, |b| editor.border_sizes(b) == Some(crate::pane::Shows::Chat));
-    let whole = lay.chat().is_some_and(|r| r.x == 0);
+    // (nothing on its left: filling the screen, or at the screen's left edge — its line then on its right, S5a)
+    let whole = lay.chat().is_some() && !lay.sides(crate::pane::Shows::Chat).left;
     move |y| match whole {
         false => meeting_line(ui, editor, line, Region::Chat, dragged, y),
         true => (" ", card),
     }
+}
+
+/// Each surface's own line on a side other than its home's (onetree S5a, by place: the chat at the screen's left has its
+/// line on its right, the slot beside the code on its left): a cell of its own beside what its drawer draws
+/// (`Layout::drawn`), down its rows as the frame's edges have it (`meeting_line`).
+fn draw_far_lines(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+    use crate::edges::Home;
+    use crate::pane::Shows;
+    for &(kind, sides) in &lay.lines {
+        let (Some(home), Some(r), Some(id)) =
+            (surface_home(kind), lay.rect(kind), editor.workspace.leaf(kind))
+        else {
+            continue;
+        };
+        let region = match kind {
+            Shows::Chat => Region::Chat,
+            Shows::Slot => Region::Slot,
+            _ => Region::Side,
+        };
+        let dragged = grab(editor, |b| editor.border_sizes(b) == Some(kind));
+        let far =
+            [(sides.left && home != Home::Left, r.x), (sides.right && home != Home::Right, r.x + r.w - 1)];
+        for (_, x) in far.into_iter().filter(|f| f.0) {
+            let line = (editor.screen.edges.lines.iter()).find(|l| {
+                l.dir == crate::split::Dir::Vertical && l.at == x && l.sized == id && l.heads == id
+            });
+            for y in r.y..r.y + r.h {
+                queue!(out, MoveTo(x as u16, y as u16))?;
+                put_gutter(out, meeting_line(ui, editor, line, region, dragged, y))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Draws a gutter's cell (`side_gutter`, `chat_gutter`) — its line unfaded: a line is lit or faint by `edge_style`
@@ -17919,7 +18081,7 @@ fn draw_review_rail(
             crate::whole::cut_at(
                 editor,
                 on,
-                (4 + indent, rows.len()),
+                (col.x + 4 + indent, rows.len()),
                 &fit,
                 name_st,
                 (0, usize::MAX),
@@ -17970,7 +18132,7 @@ fn draw_review_rail(
             put_gutter(out, gutter(y))?;
             continue;
         }
-        queue!(out, MoveTo(0, y as u16))?;
+        queue!(out, MoveTo(col.x as u16, y as u16))?;
         // Brought into sight from a link: the file's row flashes; given or cited: its mark at the right
         let id = file.filter(|_| editor.ui_lit()).map(|i| format!("review:{}", r.files[i].rel));
         let flash = id.as_deref().is_some_and(|id| editor.ui_flashing(id));
@@ -18000,7 +18162,7 @@ fn draw_review_rail(
         };
         apply(out, *bg)?;
         // (a file row's bar is in the padding)
-        let rail = |x: usize| (crate::whole::On::Rail, x, y, (0, usize::MAX));
+        let rail = |x: usize| (crate::whole::On::Rail, col.x + x, y, (0, usize::MAX));
         let used = match file {
             Some(_) => chat_spans_at(out, row, *bg, w + PAD, rail(0))?.saturating_sub(PAD),
             None => {
@@ -20085,7 +20247,15 @@ fn draw_chat(
         kept: Some(&kept),
         ..TopLine::default()
     };
-    let cols = top_line(out, line, card, (lx, y, lw), ends, &[], true, &head)?;
+    // (docked under something, its top line takes in the lines that end over it — `┴`, S5a)
+    let ups: Vec<usize> = match framed || y == 0 {
+        true => Vec::new(),
+        false => {
+            (editor.screen.edges.ends_over(y).into_iter()).filter(|&x| x > lx && x + 1 < lx + lw).collect()
+        }
+    };
+    let ends = if ups.is_empty() { ends } else { (ends.0, ends.1, "┴") };
+    let cols = top_line(out, line, card, (lx, y, lw), ends, &ups, true, &head)?;
     // (its details that do their keys, where they were drawn — those the line had room for, each found by its index in
     // `details`: a piece's part folded shifts the ones after it)
     let laid = &cols[names.len().min(cols.len())..];
