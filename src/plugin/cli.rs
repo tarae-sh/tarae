@@ -167,6 +167,10 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
     }
     let out = plugins_dir()?;
     std::fs::create_dir_all(&out)?;
+    // (where its dev marks go, and the folder they name — #458)
+    let marks =
+        crate::config::state_dir().ok_or_else(|| anyhow!("no state folder (set HOME)"))?.join("plugin-dev");
+    let source = std::fs::canonicalize(dir)?;
     let stamps = || -> Vec<SystemTime> {
         fn walk(p: &Path, out: &mut Vec<SystemTime>) {
             for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
@@ -202,11 +206,7 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
             if build.status.success()
                 && let Some(wasm) = wasm
             {
-                // Through a temporary name, so tarae never reads a half-written file
-                let dest = out.join(format!("{name}.wasm"));
-                let tmp = out.join(format!(".{name}.wasm.tmp"));
-                std::fs::copy(&wasm, &tmp)?;
-                std::fs::rename(&tmp, &dest)?;
+                let dest = install(&wasm, &out, &marks, &name, &source)?;
                 let kb = std::fs::metadata(&dest).map_or(0, |m| m.len().div_ceil(1024));
                 let took = crate::term::run_duration(started.elapsed());
                 println!(
@@ -226,9 +226,57 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// The build `wasm` put in the plugins folder `out` as `<name>.wasm` — through a temporary name, so tarae never reads a
+/// half-written file —, its dev mark (`perm::mark`, in `marks`: these bytes are a build of `source`) written first, so
+/// the load the rename starts finds it: the yes given to a build of `source` holds for this one (#458).
+fn install(
+    wasm: &Path,
+    out: &Path,
+    marks: &Path,
+    name: &str,
+    source: &Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    let dest = out.join(format!("{name}.wasm"));
+    let tmp = out.join(format!(".{name}.wasm.tmp"));
+    std::fs::copy(wasm, &tmp)?;
+    // (the bytes the rename puts in place: the tmp file's, not the build's again — cargo may write it meanwhile)
+    let marked = std::fs::read(&tmp)
+        .and_then(|bytes| super::perm::mark(marks, name, &crate::sha256::hex(&bytes), source))
+        .with_context(|| format!("writing its dev mark in {}", marks.display()));
+    if let Err(e) = marked {
+        std::fs::remove_file(&tmp).ok();
+        return Err(e);
+    }
+    std::fs::rename(&tmp, &dest)?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #458: `install` writes the build's dev mark — its sha256, its folder — before the build lands: a mark it can't
+    /// write lands no build (the load would ask again, as for any new code), and leaves no temporary file.
+    #[test]
+    fn install_writes_the_mark_before_the_plugin() {
+        let s = crate::scratch::Scratch::new("plugin-install");
+        let (out, marks, source) = (s.join("plugins"), s.join("state/plugin-dev"), s.join("src/demo"));
+        std::fs::create_dir_all(&out).unwrap();
+        let wasm = s.join("built.wasm");
+        std::fs::write(&wasm, super::super::abi::DEMO).unwrap();
+        let dest = install(&wasm, &out, &marks, "demo", &source).unwrap();
+        assert_eq!(dest, out.join("demo.wasm"));
+        let sha = crate::sha256::hex(&std::fs::read(&dest).unwrap());
+        assert_eq!(super::super::perm::dev_source(&marks, "demo", &sha), Some(source.clone()));
+        // The mark's folder a file: no mark, so no build either
+        let blocked = s.join("blocked");
+        std::fs::write(&blocked, "").unwrap();
+        std::fs::remove_file(&dest).unwrap();
+        let e = install(&wasm, &out, &blocked.join("plugin-dev"), "demo", &source).unwrap_err();
+        assert!(format!("{e:#}").contains("writing its dev mark"), "{e:#}");
+        let left: Vec<_> = std::fs::read_dir(&out).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert!(left.is_empty(), "{left:?}");
+    }
 
     #[test]
     fn new_writes_a_plugin_crate() {

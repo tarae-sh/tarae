@@ -3,8 +3,10 @@
 //!
 //! - **Approval**: a plugin that asks for any is held until you approve the whole list: a card shows it when
 //!   the plugin loads (once until quit), and what you approved is kept (`plugin-permissions.json` in the
-//!   state folder). If a new version asks for something else, it's asked again. What it asks for while the card
-//!   is up waits on the answer (`plugin_hold`): done on yes, refused on not now.
+//!   state folder). A yes is for that list and that code (#458: the sha256 of the bytes the load read): new code,
+//!   or a new list, is asked again — new code's yes forgets the hosts and files said yes to for the old. A build
+//!   `tarae plugin dev` put in place (its dev mark, `dev_source`) keeps a yes given to a build of its folder. What
+//!   it asks for while the card is up waits on the answer (`plugin_hold`): done on yes, refused on not now.
 //! - **At the moment of use**: a connection to a host:port it hasn't used before is asked about, once; so is
 //!   a file outside its read patterns (a kubeconfig `KUBECONFIG` points elsewhere) — when it asked for some
 //!   reading at all. The answers are kept with the approval.
@@ -24,6 +26,9 @@ use crate::offer::{Offer, What};
 
 /// The most requests held for one plugin while its approval card is up (more are refused at once).
 const HELD_MAX: usize = 256;
+
+/// What a `y` on an approval card for code no longer loaded says (#458).
+const STALE: &str = "its code changed while this card was up — the card for the new code is up";
 
 /// What a plugin asks to do right now.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,14 +58,34 @@ impl Ask {
     }
 }
 
+/// The code a load is (#458): the sha256 of the bytes it read (`Note::Loaded`'s `code`), and the folder `tarae plugin
+/// dev` built it in, when its dev mark names these bytes (`dev_source`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Code {
+    pub(super) sha256: String,
+    pub(super) dev: Option<PathBuf>,
+}
+
 /// One plugin's approvals, as kept.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Approval {
     /// The permissions approved, as `key` writes them.
     pub granted: Vec<String>,
+    /// The code they're approved for (empty: none — an entry from before #458, asked again), and for a yes given
+    /// to a dev build, its folder: that folder's later builds keep the yes. A dev rebuild leaves `sha256` as it was.
+    pub sha256: String,
+    pub dev: Option<PathBuf>,
     /// host:port it may connect to, and files outside its patterns it may read.
     pub hosts: Vec<String>,
     pub files: Vec<String>,
+}
+
+impl Approval {
+    /// Whether it's for `code`: the bytes approved, or a build of the dev folder it was given to.
+    pub(super) fn holds_for(&self, code: &Code) -> bool {
+        (!self.sha256.is_empty() && self.sha256 == code.sha256)
+            || (self.dev.is_some() && self.dev == code.dev)
+    }
 }
 
 /// A permission as it's kept.
@@ -179,28 +204,71 @@ pub(super) fn load(path: Option<&Path>) -> BTreeMap<String, Approval> {
     let Ok(Value::Object(all)) = serde_json::from_str::<Value>(&text) else { return BTreeMap::new() };
     all.into_iter()
         .map(|(plugin, v)| {
-            let a =
-                Approval { granted: strs(&v["granted"]), hosts: strs(&v["hosts"]), files: strs(&v["files"]) };
+            let a = Approval {
+                granted: strs(&v["granted"]),
+                sha256: v["sha256"].as_str().unwrap_or_default().to_string(),
+                dev: v["dev"].as_str().map(PathBuf::from),
+                hosts: strs(&v["hosts"]),
+                files: strs(&v["files"]),
+            };
             (plugin, a)
         })
         .collect()
 }
 
-fn save(path: &Path, all: &BTreeMap<String, Approval>) -> std::io::Result<()> {
+pub(super) fn save(path: &Path, all: &BTreeMap<String, Approval>) -> std::io::Result<()> {
     // Inserted, not collected: a Map's `collect` sorts — a copy of the sort for each (~6 KB)
     let mut v = serde_json::Map::new();
     for (p, a) in all {
-        v.insert(p.clone(), json!({ "granted": a.granted, "hosts": a.hosts, "files": a.files }));
+        let mut e = json!({ "granted": a.granted, "sha256": a.sha256, "hosts": a.hosts, "files": a.files });
+        if let Some(dev) = &a.dev {
+            e["dev"] = json!(dev.to_string_lossy());
+        }
+        v.insert(p.clone(), e);
     }
+    write_whole(path, &Value::Object(v))
+}
+
+/// `v` written to `path` whole, then moved into place: never half a file (and a name of its own: two tareas at once).
+fn write_whole(path: &Path, v: &Value) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Written whole, then moved into place: never half a file (and a name of its own: two tareas at once)
     let nanos =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let tmp = path.with_extension(format!("json.{}.{nanos}.tmp", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_string_pretty(&Value::Object(v)).unwrap_or_default())?;
+    std::fs::write(&tmp, serde_json::to_string_pretty(v).unwrap_or_default())?;
     std::fs::rename(tmp, path)
+}
+
+/// A dev mark's (`mark`): its build's sha256, the build's before it from the same folder, and the folder.
+fn mark_read(path: &Path) -> Option<(String, Option<String>, PathBuf)> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let sha256 = v["sha256"].as_str().filter(|s| !s.is_empty())?.to_string();
+    let previous = v["previous"].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    Some((sha256, previous, PathBuf::from(v["source"].as_str()?)))
+}
+
+/// The dev mark (#458): `tarae plugin dev` writes `<marks>/<plugin>.json` before it renames a build into place — the
+/// build's sha256 and the folder it was built in (`source`, real). It keeps the build's before it too, if it was the
+/// same folder's: between this write and the rename, the plugins folder still holds that build, and a load of it
+/// then (the watcher's, a start) is the same folder's dev build, not new code asking again.
+pub(super) fn mark(marks: &Path, plugin: &str, sha256: &str, source: &Path) -> std::io::Result<()> {
+    let path = marks.join(format!("{plugin}.json"));
+    let previous = match mark_read(&path) {
+        Some((same, previous, s)) if s == source && same == sha256 => previous,
+        Some((before, _, s)) if s == source => Some(before),
+        _ => None,
+    };
+    write_whole(&path, &json!({ "sha256": sha256, "previous": previous, "source": source.to_string_lossy() }))
+}
+
+/// The folder `tarae plugin dev` built the code `sha256` names in, if its mark (`mark`) names it — a `.wasm` put there
+/// any other way (a copy, a download, a sync) isn't a build the mark names: no dev build, judged by its sha256. Reads
+/// the disk: on the plugin thread, as it loads.
+pub(super) fn dev_source(marks: &Path, plugin: &str, sha256: &str) -> Option<PathBuf> {
+    let (last, previous, source) = mark_read(&marks.join(format!("{plugin}.json")))?;
+    (!sha256.is_empty() && (last == sha256 || previous.as_deref() == Some(sha256))).then_some(source)
 }
 
 /// The declared list, as kept (sorted, so the order a plugin gives it in doesn't matter).
@@ -409,7 +477,8 @@ pub(crate) fn approved(path: &Path) -> Vec<(String, String)> {
             if !a.files.is_empty() {
                 what.push(format!("read {} more", n(a.files.len(), "file")));
             }
-            (!what.is_empty()).then(|| (plugin, what.join(", ")))
+            let dev = if a.dev.is_some() { " · dev build" } else { "" };
+            (!what.is_empty()).then(|| (plugin, format!("{}{dev}", what.join(", "))))
         })
         .collect()
 }
@@ -446,12 +515,16 @@ impl Editor {
         }
     }
 
-    /// Its cards (approval, asks) closed: it was revoked, dropped or reloaded — no `y` grants it later.
+    /// Its cards (approval, asks) closed: it was revoked or dropped — no `y` grants it later.
     pub(super) fn plugin_cards_close(&mut self, plugin: &str) {
-        self.offers.retain(|o| match &o.what {
-            What::PluginPermissions { plugin: q, .. } | What::PluginAsk { plugin: q, .. } => q != plugin,
-            _ => true,
-        });
+        self.offers.retain(|o| !matches!(&o.what, What::PluginPermissions { plugin: q, .. } if q == plugin));
+        self.plugin_asks_close(plugin);
+    }
+
+    /// Its asks closed and what waited on its approval refused — a reload's: what the code before asked isn't the
+    /// new code's (its approval card is renewed for the new code, `plugin_card_renew`).
+    pub(super) fn plugin_asks_close(&mut self, plugin: &str) {
+        self.offers.retain(|o| !matches!(&o.what, What::PluginAsk { plugin: q, .. } if q == plugin));
         // (what waited on its approval card: refused — never left unanswered)
         let held = self.plugins.as_mut().and_then(|p| p.held.remove(plugin)).unwrap_or_default();
         let why = format!("its permissions wait for your approval (:plugin-approve {plugin})");
@@ -499,28 +572,113 @@ impl Editor {
         self.plugin_permissions_card(plugin, declared.to_vec());
     }
 
-    fn plugin_permissions_card(&mut self, plugin: &str, declared: Vec<Permission>) {
-        let before = self
-            .plugins
-            .as_ref()
-            .and_then(|p| p.approvals.get(plugin))
-            .is_some_and(|a| !a.granted.is_empty());
-        let list: Vec<String> = declared.iter().map(|p| format!("· {}", describe(p))).collect();
-        let head = if before { "It now asks to:" } else { "It asks to:" };
-        let n = list.len();
-        self.push_offer(
-            Offer::new(
-                format!("Plugin {plugin} asks for permissions"),
-                &format!("{head}\n{}", list.join("\n")),
-                "…",
-                format!("Plugin {plugin}"),
-                What::PluginPermissions { plugin: plugin.to_string(), permissions: declared },
-            )
-            .deciding(1..1 + n),
-        );
+    /// The code a plugin's load is (#458) — none: not loaded.
+    pub(super) fn plugin_code(&self, plugin: &str) -> Code {
+        self.plugins.as_ref().and_then(|p| p.code.get(plugin)).cloned().unwrap_or_default()
     }
 
-    /// Whether what a plugin asks for is what you approved (nothing to approve counts).
+    fn plugin_permissions_card(&mut self, plugin: &str, declared: Vec<Permission>) {
+        let o = self.plugin_permissions_offer(plugin, declared);
+        self.push_offer(o);
+    }
+
+    /// Its approval card up, about code (or a list) no longer loaded — rewritten for what's loaded, `rev` bumped as
+    /// any card that changes is (its focus gone with it: a key meant for what it said isn't an answer to what it says
+    /// now; `keep_focus`: kept, the key that found it stale being the one that renews it), or closed when what's
+    /// loaded needs none. True: rewritten, so the card up is about the code that's loaded (#458).
+    pub(super) fn plugin_card_renew(&mut self, plugin: &str, keep_focus: bool) -> bool {
+        let ours = |o: &Offer| {
+            matches!(&o.what, What::PluginPermissions { plugin: q, .. } if q == plugin) && !o.installing()
+        };
+        let declared = self.plugins.as_ref().and_then(|p| p.permissions.get(plugin)).cloned();
+        let Some(declared) = declared.filter(|d| !d.is_empty() && !self.plugin_approved(plugin)) else {
+            self.offers.retain(|o| !ours(o));
+            for l in std::iter::once(&mut self.workspace).chain(&mut self.workspaces) {
+                l.parked.retain(|o| !ours(o));
+            }
+            return false;
+        };
+        let new = self.plugin_permissions_offer(plugin, declared);
+        let mut renewed = None;
+        let parked =
+            std::iter::once(&mut self.workspace).chain(&mut self.workspaces).flat_map(|l| &mut l.parked);
+        for o in self.offers.iter_mut().chain(parked).filter(|o| ours(o)) {
+            (o.title, o.question, o.decided) = (new.title.clone(), new.question.clone(), new.decided.clone());
+            (o.what, o.warnings) = (new.what.clone(), Vec::new());
+            renewed = Some((o.id, o.rev));
+            o.rev += 1;
+        }
+        let Some((id, rev)) = renewed else { return false };
+        if keep_focus && self.card_focus == Some((id, rev)) {
+            self.card_focus = Some((id, rev + 1));
+        }
+        // (asked: this card is the asking — no second one comes up for the load)
+        if let Some(p) = &mut self.plugins {
+            p.asked.insert(plugin.to_string());
+        }
+        true
+    }
+
+    /// A `y` on the approval card in front when it's about code (or a list) no longer loaded: it approves nothing,
+    /// and that's said on the card, renewed for what's loaded — never a key that did nothing (#458).
+    pub(crate) fn plugin_card_stale(&mut self) -> bool {
+        let Some(What::PluginPermissions { plugin, permissions, code }) =
+            self.offers.first().map(|o| &o.what)
+        else {
+            return false;
+        };
+        let now = self.plugins.as_ref().and_then(|p| p.permissions.get(plugin)).map(|d| keys(d));
+        if now == Some(keys(permissions)) && self.plugin_code(plugin) == *code {
+            return false;
+        }
+        let plugin = plugin.clone();
+        let loaded = now.is_some();
+        if self.plugin_card_renew(&plugin, true) {
+            self.offer_refused(STALE);
+        } else if loaded {
+            self.set_status(format!(
+                "Plugin {plugin}: its code changed while this card was up — the new code needs no yes"
+            ));
+        } else {
+            self.set_status(format!(
+                "Plugin {plugin}: its code changed while this card was up — it isn't loaded now"
+            ));
+        }
+        true
+    }
+
+    /// Its approval card for what's loaded now — the code, the list and what changed since your yes.
+    fn plugin_permissions_offer(&self, plugin: &str, declared: Vec<Permission>) -> Offer {
+        let code = self.plugin_code(plugin);
+        let before =
+            self.plugins.as_ref().and_then(|p| p.approvals.get(plugin)).filter(|a| !a.granted.is_empty());
+        let list_changed = before.is_some_and(|a| a.granted != keys(&declared));
+        let code_changed = before.is_some_and(|a| !a.holds_for(&code));
+        let head = match (before.is_some(), code_changed, list_changed) {
+            (false, ..) => "It asks to:",
+            (true, true, true) => "Its code changed since you approved it, and it now asks to:",
+            (true, true, false) => "Its code changed since you approved it. It asks to:",
+            (true, false, _) => "It now asks to:",
+        };
+        let mut lines: Vec<String> = declared.iter().map(|p| format!("· {}", describe(p))).collect();
+        let n = lines.len();
+        // (after the list: the rows `deciding` names stay the list's)
+        if let Some(dev) = &code.dev {
+            let at = shown(&crate::allow::tilde(dev));
+            lines.push(format!("A dev build from {at} — its rebuilds there keep this answer."));
+        }
+        let dev = if code.dev.is_some() { " · dev build" } else { "" };
+        Offer::new(
+            format!("Plugin {plugin} asks for permissions{dev}"),
+            &format!("{head}\n{}", lines.join("\n")),
+            "…",
+            format!("Plugin {plugin}"),
+            What::PluginPermissions { plugin: plugin.to_string(), permissions: declared, code },
+        )
+        .deciding(1..1 + n)
+    }
+
+    /// Whether what a plugin asks for is what you approved, for this code (#458) — nothing to approve counts.
     pub(super) fn plugin_approved(&self, plugin: &str) -> bool {
         let Some(p) = &self.plugins else { return false };
         // (what the load refuses is never approved either — a kept approval, a card from before)
@@ -528,14 +686,17 @@ impl Editor {
             return false;
         }
         let declared = p.permissions.get(plugin).map(|d| keys(d)).unwrap_or_default();
-        declared.is_empty() || p.approvals.get(plugin).is_some_and(|a| a.granted == declared)
+        let code = self.plugin_code(plugin);
+        declared.is_empty()
+            || p.approvals.get(plugin).is_some_and(|a| a.granted == declared && a.holds_for(&code))
     }
 
-    /// The approval card's answer.
+    /// The approval card's answer — for `declared` and the `code` the card was for.
     pub(crate) fn plugin_permissions_answer(
         &mut self,
         plugin: String,
         declared: Vec<Permission>,
+        code: Code,
         allow: bool,
     ) {
         if let Some(why) = invalid(&declared).filter(|_| allow) {
@@ -548,14 +709,38 @@ impl Editor {
             ));
             return self.plugin_held_go(&plugin);
         }
-        // Still that plugin, still asking for that
-        let now = self.plugins.as_ref().and_then(|p| p.permissions.get(&plugin)).map(|d| keys(d));
-        if now != Some(keys(&declared)) {
-            return;
+        // Still that plugin, still asking for that, still that code (a yes never approves bytes its card didn't show —
+        // a card's own `y` finds that first, `plugin_card_stale`; this, for one given without it: said, and the card
+        // for what's loaded up)
+        let now = self.plugins.as_ref().and_then(|p| p.permissions.get(&plugin)).cloned();
+        if now.as_ref().map(|d| keys(d)) != Some(keys(&declared)) || self.plugin_code(&plugin) != code {
+            if let (Some(now), Some(p)) = (&now, &mut self.plugins) {
+                p.asked.remove(&plugin);
+                self.plugin_permissions_loaded(&plugin, now);
+            }
+            let up = self
+                .offers
+                .iter()
+                .any(|o| matches!(&o.what, What::PluginPermissions { plugin: q, .. } if *q == plugin));
+            let why =
+                if up { STALE } else { "its code changed while its card was up — it approved nothing" };
+            return self.set_status(format!("Plugin {plugin}: {why}"));
         }
         let granted = keys(&declared);
-        let r = self.approvals_change(|all| all.entry(plugin.clone()).or_default().granted = granted);
+        let dev = code.dev.is_some();
+        let r = self.approvals_change(|all| {
+            let a = all.entry(plugin.clone()).or_default();
+            // New code's yes: what was said yes to for the old code's use (hosts, files) isn't this code's
+            if !a.holds_for(&code) {
+                a.hosts.clear();
+                a.files.clear();
+            }
+            (a.granted, a.sha256, a.dev) = (granted, code.sha256, code.dev);
+        });
         match r {
+            Ok(()) if dev => {
+                self.set_success(format!("Plugin {plugin}: approved — a dev build, its rebuilds keep it"))
+            }
             Ok(()) => self.set_success(format!("Plugin {plugin}: approved")),
             Err(e) => self.set_warning(format!("approved until you quit — couldn't keep it: {e}")),
         }
@@ -772,14 +957,24 @@ impl Editor {
         for name in names {
             let declared = &p.permissions[name];
             let a = p.approvals.get(name).cloned().unwrap_or_default();
+            let code = p.code.get(name).cloned().unwrap_or_default();
             let state = if declared.is_empty() {
-                "nothing beyond the buffer"
-            } else if a.granted == keys(declared) {
-                "approved"
+                "nothing beyond the buffer".to_string()
+            } else if a.granted == keys(declared) && a.holds_for(&code) {
+                match &a.dev {
+                    Some(dev) => format!("approved · dev build from {}", shown(&crate::allow::tilde(dev))),
+                    None => "approved".into(),
+                }
+            } else if !a.granted.is_empty() && !a.holds_for(&code) {
+                "waiting for your approval — its code changed".into()
             } else {
-                "waiting for your approval"
+                "waiting for your approval".into()
             };
             out.push_str(&format!("\n## {name} — {state}\n\n"));
+            // (its sha256's first 12 hex: which build this is — `shasum -a 256` says the rest)
+            if let Some(short) = code.sha256.get(..12) {
+                out.push_str(&format!("code `{short}`\n\n"));
+            }
             for d in declared {
                 out.push_str(&format!("- {}\n", describe(d)));
             }
@@ -820,6 +1015,59 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #458: an approval keeps the code it's for, and a dev yes its folder; an entry from before has none, and holds
+    /// for no code.
+    #[test]
+    fn approvals_keep_their_code_and_one_without_holds_for_none() {
+        let s = crate::scratch::Scratch::new("perm-code");
+        let path = s.join("plugin-permissions.json");
+        let dev = Approval {
+            granted: vec!["network".into()],
+            sha256: "ab".repeat(32),
+            dev: Some("/src/a".into()),
+            hosts: vec!["example.com:443".into()],
+            files: Vec::new(),
+        };
+        let plain = Approval { sha256: "cd".repeat(32), dev: None, ..dev.clone() };
+        let all = BTreeMap::from([("dev".to_string(), dev.clone()), ("plain".to_string(), plain.clone())]);
+        save(&path, &all).unwrap();
+        assert_eq!(load(Some(&path)), all);
+        assert!(!disk_text(&path).contains("null"), "no dev, no key");
+        let code = |sha: &str, dev: Option<&str>| Code { sha256: sha.into(), dev: dev.map(PathBuf::from) };
+        assert!(
+            plain.holds_for(&code(&"cd".repeat(32), None)) && !plain.holds_for(&code("ef", Some("/src/a")))
+        );
+        assert!(dev.holds_for(&code("ef", Some("/src/a"))) && !dev.holds_for(&code("ef", Some("/src/b"))));
+        std::fs::write(&path, r#"{"old": {"granted": ["network"], "hosts": [], "files": []}}"#).unwrap();
+        let old = &load(Some(&path))["old"];
+        assert_eq!((old.sha256.as_str(), &old.dev), ("", &None));
+        assert!(!old.holds_for(&Code::default()) && !old.holds_for(&code("ef", None)));
+    }
+
+    fn disk_text(p: &Path) -> String {
+        std::fs::read_to_string(p).unwrap()
+    }
+
+    /// The dev mark names its build and the one before it from the same folder (the rename window), never another
+    /// folder's — and nothing it doesn't name.
+    #[test]
+    fn a_dev_mark_names_its_build_and_the_one_before_from_its_folder() {
+        let s = crate::scratch::Scratch::new("perm-mark");
+        let marks = s.join("plugin-dev");
+        let (a, b) = (Path::new("/src/a"), Path::new("/src/b"));
+        let at = |sha: &str| dev_source(&marks, "demo", sha);
+        assert_eq!(at("h1"), None, "no mark");
+        mark(&marks, "demo", "h1", a).unwrap();
+        assert_eq!((at("h1"), at("h0"), at("")), (Some(a.into()), None, None));
+        mark(&marks, "demo", "h2", a).unwrap();
+        assert_eq!((at("h2"), at("h1")), (Some(a.into()), Some(a.into())));
+        mark(&marks, "demo", "h2", a).unwrap();
+        assert_eq!(at("h1"), Some(a.into()), "the same build again keeps the one before");
+        mark(&marks, "demo", "h3", b).unwrap();
+        assert_eq!((at("h3"), at("h2")), (Some(b.into()), None), "another folder's build before isn't b's");
+        assert_eq!(dev_source(&marks, "other", "h3"), None);
+    }
 
     #[test]
     fn patterns_cover_what_they_say() {

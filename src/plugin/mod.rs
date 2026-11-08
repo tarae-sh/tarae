@@ -55,6 +55,7 @@ use host::{Call, Host, Input, Manifest, Note};
 pub(crate) use io::plugin_process;
 pub use panel::{PanelState as PluginPanelState, key as plugin_panel_key, row_ids as plugin_panel_ids};
 pub use perm::Ask as PluginAsk;
+pub use perm::Code as PluginCode;
 
 use crate::document::DocId;
 use crate::editor::Editor;
@@ -125,6 +126,9 @@ pub struct Plugins {
     permissions: std::collections::HashMap<String, Vec<abi::Permission>>,
     /// Its `read` patterns with their folders resolved, on the plugin thread as it loaded (`perm::roots`, #457).
     roots: std::collections::HashMap<String, Vec<(String, Option<PathBuf>)>>,
+    /// The code each load is (#458): its bytes' sha256 and, for a build its dev mark names, its folder — what an
+    /// approval is held against.
+    code: std::collections::HashMap<String, perm::Code>,
     procs: std::collections::HashMap<(String, u64), io::Proc>,
     /// Its connections (open, and being opened), and its timers — by (plugin, id), with their run's serial.
     socks: std::collections::HashMap<(String, u64), io::Sock>,
@@ -192,6 +196,7 @@ impl Plugins {
         self.events.subs.retain(|(p, ..)| p != plugin);
         self.permissions.remove(plugin);
         self.roots.remove(plugin);
+        self.code.remove(plugin);
         self.held.remove(plugin);
         self.outbox.remove(plugin);
         self.stop_all(plugin);
@@ -248,16 +253,24 @@ impl Editor {
     /// test's stand-in that loads no plugin), nothing loaded yet. false if it couldn't start (said).
     fn plugins_start(&mut self, state: Option<PathBuf>) -> bool {
         let events = self.events.shared_sender();
+        // (`tarae plugin dev`'s marks: `state/plugin-dev/<plugin>.json` — #458)
+        let marks = state.as_ref().map(|s| s.join("plugin-dev"));
         let started = Host::start(
             move |note| {
-                // (its `read` patterns resolved here, on the plugin thread: the gate never waits on the disk — #457)
-                let roots = match &note {
-                    Note::Loaded { manifest: Ok(m), .. } => perm::roots(&m.permissions),
-                    _ => Vec::new(),
+                // (its `read` patterns resolved here, on the plugin thread: the gate never waits on the disk — #457;
+                // and its dev mark read, so an approval is held against memory only — #458)
+                let (roots, dev) = match &note {
+                    Note::Loaded { plugin, manifest: Ok(m), code, .. } => (
+                        perm::roots(&m.permissions),
+                        marks.as_deref().and_then(|d| perm::dev_source(d, plugin, code)),
+                    ),
+                    _ => (Vec::new(), None),
                 };
-                let _ = events.send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note, roots))));
+                let _ = events
+                    .send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note, roots, dev))));
             },
             perm::invalid,
+            crate::sha256::hex,
         );
         let Some(host) = started else {
             self.set_error("plugins: couldn't start their thread");
@@ -270,6 +283,7 @@ impl Editor {
             events: Default::default(),
             permissions: Default::default(),
             roots: Default::default(),
+            code: Default::default(),
             approvals: perm::load(perm::store_path().as_deref()),
             asked: Default::default(),
             held: Default::default(),
@@ -309,6 +323,7 @@ impl Editor {
             events: Default::default(),
             permissions: Default::default(),
             roots: Default::default(),
+            code: Default::default(),
             approvals: Default::default(),
             asked: Default::default(),
             held: Default::default(),
@@ -336,8 +351,9 @@ impl Editor {
         });
     }
 
-    /// What the plugin thread says: a plugin loaded (its `read` patterns' `roots` resolved there), failed or gone.
-    fn plugin_note(&mut self, note: Note, roots: Vec<(String, Option<PathBuf>)>) {
+    /// What the plugin thread says: a plugin loaded (its `read` patterns' `roots` resolved there, and the folder `dev`
+    /// its dev mark names it a build of), failed or gone.
+    fn plugin_note(&mut self, note: Note, roots: Vec<(String, Option<PathBuf>)>, dev: Option<PathBuf>) {
         let Some(p) = &mut self.plugins else { return };
         match note {
             Note::Loaded { plugin, manifest: Err(e), .. } => {
@@ -351,12 +367,14 @@ impl Editor {
                 manifest: Ok(Manifest { commands, subscriptions, permissions }),
                 reload,
                 generation,
+                code,
             } => {
                 p.drop_plugin(&plugin);
                 p.outbox.insert(plugin.clone(), io::Outbox::new(generation));
                 p.asked.remove(&plugin);
                 p.permissions.insert(plugin.clone(), permissions.clone());
                 p.roots.insert(plugin.clone(), roots);
+                p.code.insert(plugin.clone(), perm::Code { sha256: code, dev });
                 events::subscribe(&mut p.events.subs, &plugin, subscriptions);
                 crate::sorting::by(&mut p.events.subs, |a, b| a.0.cmp(&b.0));
                 let mut taken: std::collections::HashSet<String> =
@@ -383,8 +401,10 @@ impl Editor {
                     skipped.push(format!("{too_many} commands past the first {MAX_COMMANDS}"));
                 }
                 self.plugin_commands_changed();
-                // A card from before it loaded again asks about what it asked then
-                self.plugin_cards_close(&plugin);
+                // A card from before it loaded again asks about what it asked then: its asks go, its approval card
+                // is rewritten for this code (or goes) — the card up is always about the code that's loaded (#458)
+                self.plugin_asks_close(&plugin);
+                self.plugin_card_renew(&plugin, false);
                 self.plugin_permissions_loaded(&plugin, &permissions);
                 if !skipped.is_empty() {
                     self.set_warning(format!("plugin {plugin}: skipped {}", skipped.join(", ")));
@@ -1952,6 +1972,209 @@ mod tests {
             kept["demo"].granted,
             ["env TARAE_DEMO", "network", "project", "read /tarae-demo/**", "run true"]
         );
+        assert_eq!(kept["demo"].sha256, crate::sha256::hex(DEMO), "for this code");
+        assert_eq!(kept["demo"].dev, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The demo with a custom section `tag` more: the same permissions, other code (#458).
+    fn build(tag: &str) -> Vec<u8> {
+        let n = u8::try_from(tag.len()).unwrap();
+        [DEMO, &[0, n + 1, n], tag.as_bytes()].concat()
+    }
+
+    /// `bytes` as the demo's new build — a new stamp even for the same bytes —, reloaded.
+    fn rebuild(ed: &mut Editor, dir: &Path, bytes: &[u8]) {
+        let path = dir.join("demo.wasm");
+        let before = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(before + Duration::from_secs(1)).unwrap();
+        ed.toasts.clear();
+        ed.plugins_sync_in(&dir.join("state"), host::scan(dir));
+        until_said(ed, "Plugin demo reloaded");
+    }
+
+    /// `tarae plugin dev`'s mark (`perm::mark`, as `cli::install` writes it): `bytes` a build of `source`.
+    fn marked(dir: &Path, bytes: &[u8], source: &str) {
+        let marks = dir.join("state/plugin-dev");
+        perm::mark(&marks, "demo", &crate::sha256::hex(bytes), Path::new(source)).unwrap();
+    }
+
+    fn card(ed: &Editor) -> Option<(String, String)> {
+        ed.offers.first().filter(|o| approval(&o.what)).map(|o| (o.title.clone(), o.question.clone()))
+    }
+
+    fn held(ed: &Editor) -> bool {
+        ed.plugins.as_ref().is_some_and(|p| p.held.get("demo").is_some_and(|h| h.len() == 1))
+    }
+
+    /// `exec` runs at once — approved, nothing asked.
+    fn runs(ed: &mut Editor) {
+        ed.toasts.clear();
+        ed.plugin_run("exec", "").unwrap();
+        until_said(ed, "exit 1 Some(0) []");
+        assert_eq!(card(ed), None);
+    }
+
+    /// #458: an approval is for the code it was given to — a new build asking for the same list asks again, saying its
+    /// code changed; what needs a permission waits on that card; the yes keeps the new code's hash and forgets the
+    /// hosts and files said yes to for the old.
+    #[test]
+    fn a_card_up_as_new_code_loads_is_rewritten_for_it() {
+        let (_s, mut ed, dir) = setup("card-renewed", "x\n");
+        let (id, rev) = (ed.offers[0].id, ed.offers[0].rev);
+        let v2 = build("v2");
+        rebuild(&mut ed, &dir, &v2);
+        // The same card, changed (`rev`), about the code loaded — one, not a second beside it
+        let cards: Vec<_> = ed.offers.iter().filter(|o| approval(&o.what)).map(|o| (o.id, o.rev)).collect();
+        assert_eq!(cards, [(id, rev + 1)]);
+        answer(&mut ed, approval, true);
+        assert!(ed.plugin_approved("demo"), "{}", toasts(&ed));
+        assert_eq!(ed.plugins.as_ref().unwrap().approvals["demo"].sha256, crate::sha256::hex(&v2));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn new_code_with_the_same_list_asks_again() {
+        let (_s, mut ed, dir) = setup("new-code", "x\n");
+        answer(&mut ed, approval, true);
+        let a = ed.plugins.as_mut().unwrap().approvals.get_mut("demo").unwrap();
+        assert_eq!(a.sha256, crate::sha256::hex(DEMO));
+        a.hosts.push("example.com:443".into());
+        a.files.push("/etc/hosts".into());
+        let v2 = build("v2");
+        rebuild(&mut ed, &dir, &v2);
+        let (title, question) = card(&ed).expect("asked again");
+        assert_eq!(title, "Plugin demo asks for permissions");
+        assert!(
+            question.starts_with("Its code changed since you approved it. It asks to:\n· "),
+            "{question}"
+        );
+        // A yes on a card still about the code before (one the load missed) approves nothing — never bytes its card
+        // didn't show — and says so on the card, now the new code's
+        let before = perm::Code { sha256: crate::sha256::hex(DEMO), dev: None };
+        let what = &mut ed.offers[0].what;
+        let crate::offer::What::PluginPermissions { code, .. } = what else { unreachable!() };
+        *code = before;
+        let (id, rev) = (ed.offers[0].id, ed.offers[0].rev);
+        answer(&mut ed, approval, true);
+        assert!(!ed.plugin_approved("demo") && !toasts(&ed).contains("approved"), "{}", toasts(&ed));
+        assert_eq!(
+            ed.offer_said_now(),
+            Some("its code changed while this card was up — the card for the new code is up")
+        );
+        assert_eq!((ed.offers[0].id, ed.offers[0].rev), (id, rev + 1));
+        assert!(
+            matches!(&ed.offers[0].what, crate::offer::What::PluginPermissions { code, .. }
+                if code.sha256 == crate::sha256::hex(&v2)),
+            "the card for the new code"
+        );
+        ed.plugin_run("exec", "").unwrap();
+        settle_until(&mut ed, held);
+        answer(&mut ed, approval, true);
+        until_said(&mut ed, "exit 1 Some(0) []");
+        let a = &ed.plugins.as_ref().unwrap().approvals["demo"];
+        assert_eq!(a.sha256, crate::sha256::hex(&v2));
+        assert!(a.hosts.is_empty() && a.files.is_empty(), "{a:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The same bytes again (a new stamp: a `touch`, a copy of the same build) reload with their yes.
+    #[test]
+    fn the_same_code_reloaded_keeps_its_yes() {
+        let (_s, mut ed, dir) = setup("same-code", "x\n");
+        answer(&mut ed, approval, true);
+        rebuild(&mut ed, &dir, DEMO);
+        assert_eq!(card(&ed), None);
+        runs(&mut ed);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The demo approved as a dev build of `/src/a` (v1, its mark naming it).
+    fn dev_approved(name: &str) -> (crate::scratch::Scratch, Editor, PathBuf) {
+        let (s, mut ed, dir) = setup(name, "x\n");
+        let v1 = build("v1");
+        marked(&dir, &v1, "/src/a");
+        rebuild(&mut ed, &dir, &v1);
+        let (title, question) = card(&ed).expect("asked");
+        assert_eq!(title, "Plugin demo asks for permissions · dev build");
+        assert!(question.starts_with("It asks to:\n"), "{question}");
+        assert!(
+            question.ends_with("\nA dev build from /src/a — its rebuilds there keep this answer."),
+            "{question}"
+        );
+        answer(&mut ed, approval, true);
+        assert!(
+            toasts(&ed).contains("Plugin demo: approved — a dev build, its rebuilds keep it"),
+            "{}",
+            toasts(&ed)
+        );
+        (s, ed, dir)
+    }
+
+    /// A dev build's yes holds for its folder's next builds, each named by the mark `tarae plugin dev` wrote before it
+    /// put the build in place — and for the build before, loaded between the mark's write and the rename (the
+    /// design session's rename window: the mark keeps the last two).
+    #[test]
+    fn a_dev_build_keeps_its_yes_across_rebuilds() {
+        let (_s, mut ed, dir) = dev_approved("dev");
+        let (v2, v3) = (build("v2"), build("v3"));
+        marked(&dir, &v2, "/src/a");
+        rebuild(&mut ed, &dir, &v2);
+        assert_eq!(card(&ed), None);
+        runs(&mut ed);
+        // v3's mark written, v2 still in place and loaded again: the window
+        marked(&dir, &v3, "/src/a");
+        rebuild(&mut ed, &dir, &v2);
+        assert_eq!(card(&ed), None, "the build before the mark's");
+        rebuild(&mut ed, &dir, &v3);
+        assert_eq!(card(&ed), None);
+        runs(&mut ed);
+        // A dev rebuild writes nothing: the approval stays at the build you said yes to
+        let a = &ed.plugins.as_ref().unwrap().approvals["demo"];
+        assert_eq!(
+            (a.sha256.as_str(), a.dev.as_deref()),
+            (crate::sha256::hex(&build("v1")).as_str(), Some(Path::new("/src/a")))
+        );
+        ed.plugin_permissions_list().unwrap();
+        let listed = ed.doc().text.to_string();
+        assert!(listed.contains("## demo — approved · dev build from /src/a"), "{listed}");
+        assert!(listed.contains(&format!("code `{}`", &crate::sha256::hex(&v3)[..12])), "{listed}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A `.wasm` put in place by anything but `tarae plugin dev` — a copy, a download — isn't a build the mark names:
+    /// no dev build, its code changed, asked again.
+    #[test]
+    fn a_build_not_from_plugin_dev_doesnt_claim_the_mark() {
+        let (_s, mut ed, dir) = dev_approved("not-dev");
+        let v2 = build("v2");
+        marked(&dir, &v2, "/src/a");
+        rebuild(&mut ed, &dir, &v2);
+        assert_eq!(card(&ed), None);
+        rebuild(&mut ed, &dir, &build("v3"));
+        let (title, question) = card(&ed).expect("asked again");
+        assert_eq!(title, "Plugin demo asks for permissions");
+        assert!(question.starts_with("Its code changed since you approved it. It asks to:"), "{question}");
+        assert!(!question.contains("dev build"), "{question}");
+        ed.plugin_permissions_list().unwrap();
+        let listed = ed.doc().text.to_string();
+        assert!(listed.contains("## demo — waiting for your approval — its code changed"), "{listed}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A dev build of another folder (a crate of the same name elsewhere) doesn't take the yes given to `/src/a`'s.
+    #[test]
+    fn a_dev_build_from_another_folder_asks_again() {
+        let (_s, mut ed, dir) = dev_approved("dev-elsewhere");
+        let v2 = build("v2");
+        marked(&dir, &v2, "/src/b");
+        rebuild(&mut ed, &dir, &v2);
+        let (title, question) = card(&ed).expect("asked again");
+        assert_eq!(title, "Plugin demo asks for permissions · dev build");
+        assert!(question.starts_with("Its code changed since you approved it. It asks to:"), "{question}");
+        assert!(question.contains("A dev build from /src/b"), "{question}");
         std::fs::remove_dir_all(dir).ok();
     }
 

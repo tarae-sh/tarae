@@ -315,7 +315,8 @@ fn a_plugin_that_hears_keys_asks_for_nothing_else() {
     assert!(!ed.plugin_approved("demo") && ed.keys_heard_by().is_empty(), "a kept approval");
     let e = ed.plugin_approve("demo").unwrap_err();
     assert!(e.contains("can't be approved") && e.contains("asks for nothing else"), "{e}");
-    ed.plugin_permissions_answer("demo".into(), more, true);
+    let code = ed.plugin_code("demo");
+    ed.plugin_permissions_answer("demo".into(), more, code, true);
     assert!(!ed.plugin_approved("demo") && ed.keys_heard_by().is_empty(), "its card's yes");
     assert!(said(&ed).last().is_some_and(|s| s.contains("can't be approved")), "{:?}", said(&ed));
 }
@@ -443,7 +444,10 @@ fn hearer(ed: &mut Editor) {
     let p = ed.plugins.as_mut().unwrap();
     p.permissions.insert("hearer".into(), vec![abi::Permission::Keys]);
     let granted = vec!["keys".to_string()];
-    p.approvals.insert("hearer".into(), super::super::perm::Approval { granted, ..Default::default() });
+    let sha256 = "stand-in".to_string();
+    p.code.insert("hearer".into(), super::super::perm::Code { sha256: sha256.clone(), dev: None });
+    let approval = super::super::perm::Approval { granted, sha256, ..Default::default() };
+    p.approvals.insert("hearer".into(), approval);
 }
 
 /// No character typed reaches a plugin, on any surface: in every scene of the routing test, each probe judged by the

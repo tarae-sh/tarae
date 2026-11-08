@@ -187,8 +187,12 @@ far it reaches: a program runs with any arguments, as you); until you press `y` 
 (its buffer-only commands still work). What it asks for while the card is up waits for your answer: `y` does it, in
 order, and the plugin goes on by itself; not now comes back as `failed`. The card takes `y` only once you focus it
 (`C-q`, a click on it), so a key meant for the code can't approve it. What you approve is kept, by the plugin's
-name; if a new version asks for something else, the card asks again. Said no? The plugin can't bring the card back —
-`:plugin-approve <plugin>` does (what it asked for since was refused: ask again).
+name, for that list and that code (the sha256 of the `.wasm` it loaded): new code — another build, a copy, a
+download — or a new list, and the card asks again (“Its code changed since you approved it”); new code's `y` forgets
+the hosts and files you allowed the old. A build `tarae plugin dev` put in place is a dev build: its card says
+“dev build” and the folder it was built in, and its `y` holds for that folder's later builds while you work on it —
+anything else put there asks again. Said no? The plugin can't bring the card back — `:plugin-approve <plugin>` does
+(what it asked for since was refused: ask again).
 
 ```rust
 fn permissions() -> Vec<Permission> {
@@ -263,8 +267,8 @@ doesn't stop is killed 2 s later), and nothing meant for it before a reload reac
 What comes back while the plugin is busy waits and goes to it in one call; while 4 MB of output waits, its
 programs and connections aren't read — they wait for it, rather than tarae's memory growing.
 
-`:plugin-permissions` lists each plugin's; `:plugin-revoke <plugin>` takes them back; `:plugin-approve <plugin>`
-shows the card again.
+`:plugin-permissions` lists each plugin's, with its code's first 12 hex characters (`shasum -a 256` says the rest);
+`:plugin-revoke <plugin>` takes them back; `:plugin-approve <plugin>` shows the card again.
 
 ## Beside the code, its tab, its panel, its line, its buffers
 

@@ -1,5 +1,6 @@
-//! SHA-256 (FIPS 180-4) — to check a download against the checksum its site publishes (`fetch.rs`).
-//! Small and rarely run: no dependency for it.
+//! SHA-256 (FIPS 180-4) — to check a download against the checksum its site publishes (`fetch.rs`), and to name the
+//! code a plugin's approval is for (on the plugin thread, as it loads — #458). Small and rarely run: no dependency
+//! for it.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -79,5 +80,26 @@ mod tests {
         assert_eq!(hex(&[b'a'; 55]), "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318");
         assert_eq!(hex(&[b'a'; 56]), "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a");
         assert_eq!(hex(&[b'a'; 64]), "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb");
+    }
+
+    /// A plugin's bytes hashed as it (re)loads (#458), on the plugin thread, never the main one: a 1 MB module. Median
+    /// of 9; reported only.
+    #[test]
+    fn perf_plugin_hash_1mb() {
+        if crate::test_results::unoptimized("sha256::tests::perf_plugin_hash_1mb") {
+            return;
+        }
+        let bytes: Vec<u8> = (0..1u32 << 20).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+        let mut all: Vec<std::time::Duration> = (0..9)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                std::hint::black_box(hex(&bytes));
+                t.elapsed()
+            })
+            .collect();
+        all.sort_unstable();
+        let ms = all[all.len() / 2].as_secs_f64() * 1e3;
+        let line = format!("PERF plugin_hash_1mb_ms {ms:.2} noise=1\n");
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
     }
 }

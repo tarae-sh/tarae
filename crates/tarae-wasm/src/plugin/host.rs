@@ -84,6 +84,9 @@ pub enum Note {
         reload: bool,
         /// Which load this is: what's sent to it (`Call::Events`) says which it was meant for.
         generation: u64,
+        /// The editor's hash (`Hash`) of the bytes this load read — the ones it compiled and keeps for a fresh
+        /// instance (empty: the file couldn't be read). An approval is for these (#458).
+        code: String,
     },
     Removed {
         plugin: String,
@@ -200,6 +203,9 @@ fn budget(p: &Plugin) -> u64 {
 /// over the whole list (one permission may rule out another): a plugin that asks for it doesn't load.
 pub type Invalid = fn(&[Permission]) -> Option<String>;
 
+/// The editor's hash of a plugin's bytes, as text (its sha256 in hex): what its approval is bound to (#458).
+pub type Hash = fn(&[u8]) -> String;
+
 fn load(bytes: &[u8], invalid: Invalid) -> Result<(Plugin, Manifest), String> {
     let mut p = Plugin::new(bytes, Limits::default(), LOAD_FUEL)?;
     let commands = p.commands(LOAD_FUEL)?;
@@ -211,7 +217,7 @@ fn load(bytes: &[u8], invalid: Invalid) -> Result<(Plugin, Manifest), String> {
     Ok((p, Manifest { commands, subscriptions, permissions }))
 }
 
-fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note), invalid: Invalid) {
+fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note), invalid: Invalid, hash: Hash) {
     let mut known: HashMap<String, Stamp> = HashMap::new();
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
     let mut generation = 0;
@@ -226,6 +232,8 @@ fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note), invalid: In
                     loaded.remove(name);
                     generation += 1;
                     let bytes = std::fs::read(path).map_err(|e| format!("can't read it: {e}"));
+                    // (of this read: a second one could see another file, renamed in between)
+                    let code = bytes.as_deref().map(hash).unwrap_or_default();
                     let manifest = bytes.and_then(|bytes| {
                         let (p, manifest) = load(&bytes, invalid)?;
                         loaded.insert(
@@ -234,7 +242,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note), invalid: In
                         );
                         Ok(manifest)
                     });
-                    notify(Note::Loaded { plugin: name.clone(), manifest, reload, generation });
+                    notify(Note::Loaded { plugin: name.clone(), manifest, reload, generation, code });
                 }
                 known.retain(|name, _| {
                     let keep = found.contains_key(name);
@@ -294,13 +302,14 @@ impl Host {
         Host { tx: channel().0 }
     }
 
-    /// Starts the thread; `notify` gets its notes (on that thread), `invalid` judges what a plugin asks for.
-    pub fn start(notify: impl Fn(Note) + Send + 'static, invalid: Invalid) -> Option<Host> {
+    /// Starts the thread; `notify` gets its notes (on that thread), `invalid` judges what a plugin asks for, `hash`
+    /// names the bytes each load read.
+    pub fn start(notify: impl Fn(Note) + Send + 'static, invalid: Invalid, hash: Hash) -> Option<Host> {
         let (tx, rx) = channel();
         std::thread::Builder::new()
             .name("tarae-plugins".into())
             .stack_size(STACK)
-            .spawn(move || worker(rx, notify, invalid))
+            .spawn(move || worker(rx, notify, invalid, hash))
             .ok()?;
         Some(Host { tx })
     }
@@ -336,8 +345,37 @@ mod tests {
 
     fn start_judging(invalid: Invalid) -> (Host, Receiver<Note>) {
         let (tx, rx) = channel();
-        let host = Host::start(move |n| tx.send(n).unwrap(), invalid).unwrap();
+        let host = Host::start(move |n| tx.send(n).unwrap(), invalid, stand_in_hash).unwrap();
         (host, rx)
+    }
+
+    /// A stand-in for the editor's sha256: the length and a checksum — a function of the bytes alone.
+    fn stand_in_hash(b: &[u8]) -> String {
+        let sum = b.iter().fold(0u64, |a, &x| a.wrapping_mul(31).wrapping_add(u64::from(x)));
+        format!("{}:{sum:x}", b.len())
+    }
+
+    /// #458: a load says the hash of the bytes it read — those it loaded —, and a new build a new one; an
+    /// approval bound to it holds for those bytes only.
+    #[test]
+    fn a_load_says_the_hash_of_the_bytes_it_loaded() {
+        let d = dir("hash");
+        std::fs::write(d.join("demo.wasm"), DEMO).unwrap();
+        let (host, notes) = start();
+        host.sync(scan(&d));
+        let Note::Loaded { manifest: Ok(_), code, .. } = notes.recv_timeout(WAIT).unwrap() else {
+            panic!("loaded")
+        };
+        assert_eq!(code, stand_in_hash(DEMO));
+        let v2 = [DEMO, &[0, 3, 2, b'v', b'2']].concat();
+        std::fs::write(d.join("demo.wasm"), &v2).unwrap();
+        host.sync(scan(&d));
+        let Note::Loaded { manifest: Ok(_), reload: true, code, .. } = notes.recv_timeout(WAIT).unwrap()
+        else {
+            panic!("reloaded")
+        };
+        assert_eq!(code, stand_in_hash(&v2));
+        assert_ne!(code, stand_in_hash(DEMO));
     }
 
     /// A stand-in for the editor's rule: no programs.

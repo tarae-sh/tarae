@@ -140,8 +140,12 @@ pub enum What {
     /// A language server a pack has tarae download (`fetch.rs`): `y` fetches `way` into `dir`, then
     /// `then`.
     Fetch { tool: String, way: Box<crate::fetch::Download>, dir: PathBuf, then: crate::install::Then },
-    /// A plugin asks for permissions (when it loads): `y` approves the list, kept.
-    PluginPermissions { plugin: String, permissions: Vec<crate::plugin::PluginPermission> },
+    /// A plugin asks for permissions (when it loads): `y` approves the list for the code the card was for (#458), kept.
+    PluginPermissions {
+        plugin: String,
+        permissions: Vec<crate::plugin::PluginPermission>,
+        code: crate::plugin::PluginCode,
+    },
     /// A plugin asks to connect somewhere new, or read a file outside its patterns: `y` allows it, kept — and
     /// every request waiting on it (all asking the same) goes on.
     PluginAsk { plugin: String, asks: Vec<crate::plugin::PluginAsk> },
@@ -2063,6 +2067,10 @@ impl crate::editor::Editor {
         if self.offer_holds(key) {
             return;
         }
+        // (a plugin's approval card about code no longer loaded: renewed for what is, said on it — #458)
+        if self.plugin_card_stale() {
+            return;
+        }
         // (a kubectl run outside: its context read again first — another since the card came is shown, #182)
         if crate::tools::kube_recheck(self, key) {
             return;
@@ -2083,9 +2091,9 @@ impl crate::editor::Editor {
             }
             What::Fetch { tool, way, dir, then } => self.fetch_start(id, tool, *way, dir, then),
             What::Install { tool, run, cwd, then } => self.install_start(id, tool, run, cwd, then),
-            What::PluginPermissions { plugin, permissions } => {
+            What::PluginPermissions { plugin, permissions, code } => {
                 self.offer_finished(id, Ok(()));
-                self.plugin_permissions_answer(plugin, permissions, true);
+                self.plugin_permissions_answer(plugin, permissions, code, true);
             }
             What::PluginAsk { plugin, asks } => {
                 self.offer_finished(id, Ok(()));
@@ -2854,8 +2862,8 @@ impl crate::editor::Editor {
                     "No colors for {lang} until you quit — :grammar-install {first} anytime"
                 ));
             }
-            What::PluginPermissions { plugin, permissions } => {
-                self.plugin_permissions_answer(plugin, permissions, false)
+            What::PluginPermissions { plugin, permissions, code } => {
+                self.plugin_permissions_answer(plugin, permissions, code, false)
             }
             What::PluginAsk { plugin, asks } => self.plugin_ask_answer(plugin, asks, false),
             What::Install { tool, .. } | What::Fetch { tool, .. } => {
