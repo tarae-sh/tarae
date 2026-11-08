@@ -710,6 +710,15 @@ fn card(l: &Landing) -> crate::offer::Offer {
     );
     o.warnings.extend(warned.into_iter().map(|i| i..i + 1));
     o.ends = ends;
+    // (for the card record: its files by path — a move's both ends —, never what's in them)
+    let paths = files.iter().flat_map(|f| {
+        let to = match &f.op {
+            Op::Move { to_rel, .. } => Some(to_rel.clone()),
+            _ => None,
+        };
+        std::iter::once(f.rel.clone()).chain(to)
+    });
+    o.asked = Some(crate::cards::Asked::own().of_files(paths.collect()));
     o
 }
 

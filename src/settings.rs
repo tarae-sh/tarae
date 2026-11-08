@@ -511,7 +511,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "llm.card-record",
         kind: Kind::Bool,
-        doc: "Keep every card and its answer — with the command it was about — and every run of Claude's refused with no card in cards/<month>.jsonl in tarae's state folder, on this machine only, read by no run (cargo xtask cards sums them up). Only your own config changes it",
+        doc: "Keep every card and its answer — with the command it was about, the conversation that asked, a failed preflight's step and first test, a change set's files (names and ids, never what's in them) — and every run of Claude's refused with no card in cards/<month>.jsonl in tarae's state folder, on this machine only, read by no run (cargo xtask cards sums them up). Only your own config changes it",
         get: |c| Value::from(c.llm.card_record),
         set: |c, v| c.llm.card_record = b(v),
     },
@@ -982,6 +982,10 @@ mode; [keys.chat] — the chat's input, over insert mode's\n\
 # [keys.terminal] — keys taken from the terminal's program (C-\\ = terminal_view); one bound to to_program goes \
 back to it, e.g. \"C-\\\\\" = \"to_program\"\n";
 
+/// What a generated reference's test says when it's out of date, after its path — the card record tells a failed
+/// preflight's stale reference by it (`preflight::failed_stale`).
+pub const GENERATED_STALE: &str = "is out of date — regenerate it with";
+
 /// Generated docs (`docs/reference/*.md`) are compared with a fresh render; `TARAE_BLESS=1` rewrites
 /// the file instead. Shared by the settings and keymap reference tests.
 #[cfg(test)]
@@ -991,7 +995,7 @@ pub(crate) fn check_generated(path: &str, fresh: &str, test: &str) {
         return;
     }
     let on_disk = std::fs::read_to_string(path).unwrap_or_default();
-    assert!(on_disk == fresh, "{path} is out of date — regenerate it with `TARAE_BLESS=1 cargo test {test}`");
+    assert!(on_disk == fresh, "{path} {GENERATED_STALE} `TARAE_BLESS=1 cargo test {test}`");
 }
 
 /// Prose for a Markdown table cell — a `|` would end the cell, and `<n>` would be taken for HTML.

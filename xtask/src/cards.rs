@@ -14,7 +14,8 @@
 //! and P6's breakdowns (`breakdown`): every card **by session** (the home checkout — `--home`, its branch, `main`
 //! when not given — and each named one, a child marked by its kept record's parent: `--sessions`, the state
 //! folder's `sessions/` when not given), Docker's **socket cards by command** (whether `a` covers it: the project's
-//! `llm.docker-inert`, and `--inert` more), the bring card's **`p`**, the **change sets**.
+//! `llm.docker-inert`, and `--inert` more) and by chat, the bring card's **`p`** and its failing step, the **change
+//! sets** with their files (how many only in a folder the project's `[workspace] keep` names).
 //!
 //! `--from`/`--to` (`2026-10-31`, both ends in) keep only the entries of those days. A line that isn't an entry (a
 //! write cut short) is counted and skipped.
@@ -44,6 +45,8 @@ struct Opts {
     /// `llm.docker-inert`'s entries, and the packs' entry runs (`cargo xtask`).
     inert: Vec<breakdown::Inert>,
     entries: Vec<Vec<String>>,
+    /// The folders a workspace keeps, the project's `[workspace] keep` (a change set touching only them).
+    keep: Vec<String>,
 }
 
 impl Default for Opts {
@@ -55,6 +58,7 @@ impl Default for Opts {
             parents: BTreeMap::new(),
             inert: Vec::new(),
             entries: Vec::new(),
+            keep: Vec::new(),
         }
     }
 }
@@ -69,7 +73,8 @@ fn day(flag: &str, v: Option<&String>) -> Result<String> {
 
 pub fn run(args: &[String]) -> Result<()> {
     let (inert, entries) = breakdown::inert_here(&crate::root());
-    let mut o = Opts { inert, entries, ..Opts::default() };
+    let keep = breakdown::keep_in(&crate::root().join(".tarae.toml"));
+    let mut o = Opts { inert, entries, keep, ..Opts::default() };
     let (mut paths, mut sessions) = (Vec::new(), None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -585,5 +590,84 @@ mod tests {
         has("- 2026-11-05 09:00:00 main (home) card#15 · y · 19.0 s\n");
         has("- 2026-11-05 10:00:00 kid (child of fix) card#16 · dropped\n");
         assert!(!r.contains("card#17"), "past --to:\n{r}");
+        // (v1: nothing names a chat, a step or a file — said so)
+        has("and no card here names its chat");
+        has("### By failing step: 0 of 5 cards name theirs");
+        has("- No change set here names its files: the record keeps them from v2 on.");
+    }
+
+    /// The v2 fixture's options: the kept sessions' parents, the repository's own `llm.docker-inert` and packs'
+    /// entries, and the folders kept as `toml`'s `[workspace] keep` says.
+    fn v2_opts(toml: &Path) -> Opts {
+        let (inert, entries) = breakdown::inert_here(&crate::root());
+        let parents = parents_of(include_str!("../fixtures/sessions.json"), "main").into_iter().collect();
+        Opts { parents, inert, entries, keep: breakdown::keep_in(toml), ..Opts::default() }
+    }
+
+    fn v2(toml: &Path) -> String {
+        report("cards.jsonl", include_str!("../fixtures/cards-v2.jsonl"), &v2_opts(toml))
+    }
+
+    /// P6 2b, by chat: a pinned socket card asked again after an `a` on it in the same chat (what `a` covers, but
+    /// for one whose command changed) told from one in a later chat — a v1 entry names none, and isn't counted.
+    #[test]
+    fn by_chat_tells_the_same_chat_from_a_later_one() {
+        let r = v2(&crate::root().join(".tarae.toml"));
+        let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
+        has(
+            "- **By chat:** 4 of 5 cards name their chat (`conversation`, kept from v2 on). Asked again after an `a` on \
+             the same pinned command: 2 in the same chat (1 with what it runs changed since: the card was due; the \
+             rest `a` should have covered), 1 in a later chat of its session.",
+        );
+        has("on the same pinned command in its session: 3 of 5 pinned cards.");
+    }
+
+    /// P6 2b, the `p`'s failing step: the cards back after a failed preflight by step — one refused before it started
+    /// apart — with their answers, the stale references among them and the first tests; a test first to fail in two
+    /// sessions named; the plain card (no step) not counted.
+    #[test]
+    fn the_ps_failing_step_and_first_tests() {
+        let r = v2(&crate::root().join(".tarae.toml"));
+        let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
+        has("### By failing step: 5 of 6 cards name theirs");
+        has_row(
+            &r,
+            &[
+                "`test`",
+                "4",
+                "3 p · 1 y",
+                "1",
+                "`a::b::flaky` ×3 · `keymap::tests::keymap_reference_is_up_to_date` ×1",
+            ],
+        );
+        has_row(&r, &["`clippy linux (not run)`", "1", "1 n", "0", "—"]);
+        has(
+            "- **First to fail in more than one session** (a flake, or the base's own): `a::b::flaky` — fix, kid (child of fix).",
+        );
+    }
+
+    /// P6 2b, a change set's files on its line (8 at most, the rest counted — what the record left out too) with its
+    /// chat; how many touched only a folder the workspace keeps, as the project's `[workspace] keep` names it — not a
+    /// literal `.sb` (decision 17): a config keeping `.notes` counts those, this repository's `.sb` its own.
+    #[test]
+    fn the_change_sets_files_are_listed() {
+        let r = v2(&crate::root().join("xtask/fixtures/cards-keep.toml"));
+        let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
+        has("- 2026-11-09 14:00:00 fix card#12 · y · 9.0 s · chat c1-01234 · .notes/plan.md\n");
+        has("- 2026-11-09 14:10:00 fix card#13 · y · 9.0 s · chat c1-01234 · .notes/a.md, src/a.rs\n");
+        has("src/f6.rs, src/f7.rs … 5 more\n");
+        has("- 2026-11-09 15:00:00 main (home) card#17 · y · 9.0 s\n");
+        has(
+            "- **Only a kept folder** (`.notes`, the project's `[workspace] keep`): 2 of 5 change sets naming their files.",
+        );
+        let r = v2(&crate::root().join(".tarae.toml"));
+        assert!(
+            r.contains(
+                "- **Only a kept folder** (`.sb`, the project's `[workspace] keep`): 1 of 5 change sets"
+            ),
+            "{r}"
+        );
+        let r = v2(&crate::root().join("xtask/fixtures/no-such.toml"));
+        assert!(r.contains("- **Only a kept folder:** the project keeps none (`[workspace] keep`)."), "{r}");
     }
 }

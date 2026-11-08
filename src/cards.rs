@@ -13,8 +13,9 @@
 //!
 //! The log keeps two starts at most, and a busy session's oldest lines go first: so every card is also kept in
 //! **the record** (cardauto piece 1, D2) — `$state/cards/<yyyy-mm>.jsonl`, an entry a line: the card line's
-//! fields, with when, the session and what it was about (a run's command) — and so is every run of Claude's
-//! refused with no card (`refused`). Appended on a worker under the folder's lock; on this machine only, in
+//! fields, with when, the session and what it was about (a run's command; from v2 the conversation that asked, a
+//! failed preflight's step and first test, a change set's files — names and ids, never what's in them) — and so is
+//! every run of Claude's refused with no card (`refused`). Appended on a worker under the folder's lock; on this machine only, in
 //! tarae's state, which no run and no claude reads (`sandbox::kept_reads`); `llm.card-record` (your own config
 //! only) turns it off. `cargo xtask cards` reads it.
 
@@ -401,11 +402,60 @@ pub struct Asked {
     pub what: Option<String>,
     /// Where a run's command runs, from the project's root (None: at it).
     pub cwd: Option<String>,
+    /// The conversation that asked (`Chat.conversation`) — Claude's cards, set as the card goes up
+    /// (`push_offer`); a proposed card's, the parent's that proposed it. None: none known — never a guess.
+    pub conversation: Option<String>,
+    /// How the preflight before it failed — the bring card back after it (`rebase::Moved::failed_card`).
+    pub failing: Option<Failing>,
+    /// A change set's files, from the project's root — a move's both ends (`refactor::card`).
+    pub files: Vec<String>,
 }
+
+/// How a preflight failed, for the record: names only — the step as the project's `[preflight]` names it, the
+/// first failing test — never its output.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Failing {
+    /// The first step that failed, else the first refused before it started (`not_run`).
+    pub step: Option<String>,
+    pub not_run: bool,
+    /// The first test that failed, by name.
+    pub test: Option<String>,
+    /// That test is a generated reference out of date (`settings::GENERATED_STALE`).
+    pub generated: bool,
+}
+
+/// A change set's files the record keeps at most (the rest counted: `files_more`).
+pub const FILES_KEPT: usize = 64;
 
 impl Asked {
     pub fn new(why: Why, request: Request) -> Asked {
-        Asked { why, request, same: None, warn: Vec::new(), run: None, what: None, cwd: None }
+        Asked {
+            why,
+            request,
+            same: None,
+            warn: Vec::new(),
+            run: None,
+            what: None,
+            cwd: None,
+            conversation: None,
+            failing: None,
+            files: Vec::new(),
+        }
+    }
+
+    /// tarae's own question (`Why::Own`), no capability asked for.
+    pub fn own() -> Asked {
+        Asked::new(Why::Own, Request::Own)
+    }
+
+    /// The preflight before it failed so.
+    pub fn failed(self, failing: Failing) -> Asked {
+        Asked { failing: Some(failing), ..self }
+    }
+
+    /// It asks about these files (a change set's, from the root).
+    pub fn of_files(self, files: Vec<String>) -> Asked {
+        Asked { files, ..self }
     }
 
     /// It's about run `run` (`RunTrace::id`), which runs `cmd` in `cwd` (`root`'s: none said).
@@ -490,7 +540,7 @@ pub fn said(
     answer: &str,
     caps: Option<&crate::caps::Caps>,
 ) -> Value {
-    let own = Asked::new(Why::Own, Request::Own);
+    let own = Asked::own();
     let asked = o.asked.as_ref().unwrap_or(&own);
     // (the card's times are on logic's clock: `Offer.since`, `drawn`)
     let now = crate::clock::now();
@@ -502,12 +552,14 @@ pub fn said(
 
 /// The record's folder in tarae's state: a file a month, `2026-10.jsonl`.
 pub const DIR: &str = "cards";
-/// The record's version, in each entry (`v`).
-const RECORD_V: u64 = 1;
+/// The record's version, in each entry (`v`): 2 keeps a Claude card's `conversation`, a failed preflight's
+/// `step` (`not_run`), `test` (`generated`) and a change set's `files` (`files_more`) — what a 1 has none of.
+const RECORD_V: u64 = 2;
 
 /// Card `o`'s entry: the line's fields as JSON, with when (local, to the second), the session, the card's id
-/// and kind, its times in ms (`drawn_ms` absent: never drawn) — and what it was about (`what`, `cwd`), which
-/// the line leaves out. Null and empty fields left out.
+/// and kind, its times in ms (`drawn_ms` absent: never drawn) — and what it was about (`what`, `cwd`, the
+/// conversation, a failed preflight's step and test, a change set's files), which the line leaves out. Null
+/// and empty fields left out.
 pub fn record(
     o: &Offer,
     asked: &Asked,
@@ -547,6 +599,11 @@ fn entry(
     caps: Option<&crate::caps::Caps>,
 ) -> Value {
     let class: Vec<&str> = read_classes(&asked.request).into_iter().map(Class::word).collect();
+    // (names and ids only, never what's in them — a file named like a key is its path; and no token in one)
+    let redacted = |s: &String| crate::tokens::redacted(s);
+    let f = asked.failing.as_ref();
+    let files: Vec<String> = asked.files.iter().take(FILES_KEPT).map(redacted).collect();
+    let more = asked.files.len().saturating_sub(FILES_KEPT);
     json!({
         "v": RECORD_V,
         "at": crate::log::stamp(at),
@@ -562,6 +619,13 @@ fn entry(
         // (a token written into a command isn't kept: the record outlives the log by months)
         "what": asked.what.as_deref().map(crate::tokens::redacted),
         "cwd": asked.cwd,
+        "conversation": asked.conversation,
+        "step": f.and_then(|f| f.step.as_ref()).map(redacted),
+        "not_run": f.is_some_and(|f| f.not_run).then_some(true),
+        "test": f.and_then(|f| f.test.as_ref()).map(redacted),
+        "generated": f.is_some_and(|f| f.generated).then_some(true),
+        "files": files,
+        "files_more": (more > 0).then_some(more),
     })
 }
 
@@ -1092,7 +1156,7 @@ mod tests {
         );
         assert_eq!(
             (&card["what"], &card["cwd"], &card["v"]),
-            (&json!("awk 'NR<3' x"), &json!("src"), &json!(1))
+            (&json!("awk 'NR<3' x"), &json!("src"), &json!(2))
         );
         assert!(card.get("drawn_ms").is_none() && card["up_ms"].is_u64(), "never drawn: no time from drawn");
         assert!(card.get("class").is_none() && card.get("same").is_none(), "nothing empty kept: {card}");
@@ -1164,6 +1228,212 @@ mod tests {
             assert!(dir.join(n).exists(), "{n} kept");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The events of `ed` handled until `done`, at most the shared patience.
+    fn pump(ed: &mut crate::editor::Editor, what: &str, done: impl Fn(&crate::editor::Editor) -> bool) {
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        while !done(ed) {
+            let left = end.saturating_duration_since(Instant::now());
+            let ev = ed.events.recv_timeout(left).unwrap_or_else(|| panic!("{what}: never came"));
+            ed.handle_event(ev);
+        }
+    }
+
+    /// P6 2b: a card of Claude's keeps the conversation that asked it — as it goes up, so a conversation left
+    /// before its answer doesn't rename it — and tarae's own keep none; a run refused with no card keeps its
+    /// conversation too. The record is v2.
+    #[test]
+    fn the_record_keeps_the_conversation_that_asked() {
+        let scratch = crate::scratch::Scratch::new("cards-conversation");
+        let dir = scratch.join(DIR);
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.cards_dir = Some(dir.clone());
+        // (claude a stand-in: what it's sent, never a process)
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ed.claude_lines = Some(tx);
+        crate::chat::open(&mut ed);
+        let conversation = |ed: &mut crate::editor::Editor, id: &str| {
+            ed.workspace.claude.chat.as_mut().unwrap().conversation = Some(id.into());
+        };
+        conversation(&mut ed, "conv-asked");
+        let run = Request::Run { past: Past::No, sandboxed: true, reads: Vec::new(), outward: false };
+        let root = ed.workspace.root.clone();
+        let asked =
+            Asked::new(Why::NotACheck("awk".into()), run.clone()).ran(Some(3), "awk 1 x", &root, &root);
+        let what = What::Asks { call: crate::tools::Call::test(1) };
+        ed.push_offer(Offer::new("t".into(), "q", "", String::new(), what).asked(asked.clone()));
+        // (left before it's answered: the card is still the one that asked it)
+        conversation(&mut ed, "conv-later");
+        ed.offer_dismiss();
+        ed.push_offer(Offer::new(
+            "t".into(),
+            "q",
+            "",
+            String::new(),
+            What::NotesClose { by: None, ids: Vec::new() },
+        ));
+        ed.offer_dismiss();
+        let mut no_card = asked.clone();
+        no_card.conversation = Some("conv-refused".into());
+        ed.cards_record(vec![refused(&no_card, "not run", (None, SystemTime::now()), None)]);
+        ed.cards_flush();
+        let all = read_record(&dir);
+        let of =
+            |kind: &str| all.iter().find(|e| e["kind"] == kind).unwrap_or_else(|| panic!("{kind}: {all:?}"));
+        assert_eq!((&of("asks")["conversation"], &of("asks")["v"]), (&json!("conv-asked"), &json!(2)));
+        assert!(of("notes-close").get("conversation").is_none(), "tarae's own: {}", of("notes-close"));
+        assert_eq!(of("run")["conversation"], json!("conv-refused"));
+    }
+
+    /// P6 2b, the case it's for: a card raised by a session behind — its own event (`Event::For`, swapped in by
+    /// `with_workspace`) while another is in front — keeps that session's conversation, never the front one's.
+    #[test]
+    fn a_card_raised_behind_keeps_its_own_sessions_conversation() {
+        use crate::event::Event;
+        let scratch = crate::scratch::Scratch::new("cards-behind");
+        let dir = scratch.join(DIR);
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.cards_dir = Some(dir.clone());
+        // (claude a stand-in: what it's sent, never a process)
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ed.claude_lines = Some(tx);
+        let open = |ed: &mut crate::editor::Editor, id: &str| {
+            crate::chat::open(ed);
+            ed.workspace.claude.chat.as_mut().unwrap().conversation = Some(id.into());
+        };
+        open(&mut ed, "conv-front");
+        let front = ed.workspace.id;
+        let behind = ed.workspace_add(scratch.path().to_path_buf());
+        ed.with_workspace(behind, |ed| open(ed, "conv-behind"));
+        let ask = |ed: &mut crate::editor::Editor| {
+            let run = Request::Run { past: Past::No, sandboxed: true, reads: Vec::new(), outward: false };
+            let asked = Asked::new(Why::NotACheck("awk".into()), run);
+            let what = What::Asks { call: crate::tools::Call::test(2) };
+            ed.push_offer(Offer::new("t".into(), "q", "", String::new(), what).asked(asked));
+        };
+        let tag = ed.claude_of(behind);
+        ed.handle_event(Event::For(behind, tag, Box::new(ask)));
+        assert_eq!(ed.workspace.id, front, "the other still in front");
+        assert!(ed.offers.is_empty(), "parked behind, not up in front");
+        ed.workspace_switch(behind);
+        pump(&mut ed, "the card behind, in front", |ed| !ed.offers.is_empty());
+        ed.offer_dismiss();
+        ed.cards_flush();
+        let all = read_record(&dir);
+        let e = all.iter().find(|e| e["kind"] == "asks").unwrap_or_else(|| panic!("{all:?}"));
+        assert_eq!(e["conversation"], json!("conv-behind"), "{e}");
+    }
+
+    /// P6 2b: the bring card back after a failed preflight keeps the step it failed at, as the project's
+    /// `[preflight]` names it, and the first test that failed — a generated reference out of date said so, a step
+    /// refused before it started said so — names only, never the output.
+    #[test]
+    fn a_failed_preflights_card_keeps_its_step_and_first_test() {
+        let m = crate::rebase::Moved {
+            root: PathBuf::from("/p/fix"),
+            name: "fix".into(),
+            branch: "fix".into(),
+            base: "main".into(),
+            moved: 0,
+            ahead: 1,
+        };
+        let entry = |o: &Offer| {
+            record(o, o.asked.as_ref().unwrap(), "p", (Instant::now(), SystemTime::now()), Some("fix"), None)
+        };
+        let test = "keymap::tests::keymap_reference_is_up_to_date";
+        let lines: Vec<String> = [
+            format!("test {test} ... FAILED"),
+            String::new(),
+            "failures:".into(),
+            String::new(),
+            format!("---- {test} stdout ----"),
+            "thread 'x' panicked at src/settings.rs:994:5:".into(),
+            format!(
+                "docs/reference/keymap.md {} `TARAE_BLESS=1 cargo test keymap_reference`",
+                crate::settings::GENERATED_STALE
+            ),
+        ]
+        .into();
+        let failed = |name: &str| crate::rebase::Unpassed {
+            failed: true,
+            not_run: Vec::new(),
+            step: Some((name.into(), false)),
+        };
+        let e = entry(&m.failed_card("quick preflight", &failed("test"), Some(("t".into(), lines.clone()))));
+        assert_eq!(
+            (&e["kind"], &e["why"], &e["step"], &e["test"], &e["generated"]),
+            (&json!("rebased"), &json!("own"), &json!("test"), &json!(test), &json!(true))
+        );
+        assert!(e.get("not_run").is_none() && !e.to_string().contains("BLESS"), "{e}");
+        // (a plain failure: not a reference)
+        let plain: Vec<String> =
+            lines[..6].iter().cloned().chain(["assertion failed: x".to_string()]).collect();
+        let e = entry(&m.failed_card("quick preflight", &failed("test"), Some(("t".into(), plain))));
+        assert!(e["test"] == json!(test) && e.get("generated").is_none(), "{e}");
+        // (refused before it started: the step, said so, no test)
+        let how = crate::rebase::Unpassed {
+            failed: false,
+            not_run: vec!["clippy linux not run — Docker isn't running · start it".into()],
+            step: Some(("clippy linux".into(), true)),
+        };
+        let e = entry(&m.failed_card("quick preflight", &how, None));
+        assert_eq!((&e["step"], &e["not_run"]), (&json!("clippy linux"), &json!(true)));
+        assert!(e.get("test").is_none() && !e.to_string().contains("Docker"), "{e}");
+    }
+
+    /// P6 2b: a change set's card keeps its files by path — a move's both ends — and a file named like a key is
+    /// its path, never what's in it.
+    #[test]
+    fn a_change_sets_files_are_kept_by_path_never_their_content() {
+        let scratch = crate::scratch::Scratch::new("cards-change-set");
+        let (root, dir) = (scratch.join("p"), scratch.join(DIR));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        (ed.cards_dir, ed.workspace.root) = (Some(dir.clone()), root.clone());
+        // (a fake one, in two parts: never a provider's format)
+        let token = concat!("tarae-fake-", "token-0123456789");
+        let rope = ropey::Rope::from_str;
+        let files = vec![
+            crate::refactor::FileChange {
+                path: root.join(".env"),
+                rel: ".env".into(),
+                before: rope(""),
+                after: rope(&format!("API_KEY={token}\n")),
+                places: 1,
+                op: crate::refactor::Op::Create,
+                protected: false,
+            },
+            crate::refactor::FileChange {
+                path: root.join("src/a.rs"),
+                rel: "src/a.rs".into(),
+                before: rope("fn a() {}\n"),
+                after: rope("fn a() {}\n"),
+                places: 0,
+                op: crate::refactor::Op::Move { to: root.join("src/b.rs"), to_rel: "src/b.rs".into() },
+                protected: false,
+            },
+        ];
+        crate::refactor::land_yours(
+            &mut ed,
+            "p.patch".into(),
+            "apply p.patch".into(),
+            files,
+            String::new(),
+            String::new(),
+        );
+        pump(&mut ed, "the change set's card", |ed| ed.offers.iter().any(|o| o.change_set().is_some()));
+        ed.offer_dismiss();
+        ed.cards_flush();
+        let all = read_record(&dir);
+        let e = all.iter().find(|e| e["kind"] == "change-set").unwrap_or_else(|| panic!("{all:?}"));
+        assert_eq!((&e["files"], &e["why"]), (&json!([".env", "src/a.rs", "src/b.rs"]), &json!("own")));
+        assert!(!e.to_string().contains(token) && !e.to_string().contains("API_KEY"), "{e}");
+        // (past what's kept: counted)
+        let many = Asked::own().of_files((0..FILES_KEPT + 3).map(|i| format!("f{i}.rs")).collect());
+        let e = entry(&many, "y", (None, SystemTime::now()), None);
+        assert_eq!((e["files"].as_array().map(Vec::len), &e["files_more"]), (Some(FILES_KEPT), &json!(3)));
     }
 
     /// The record lives in tarae's state, which no run reads: a new file there needs no rule of its own — the

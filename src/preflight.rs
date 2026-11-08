@@ -425,6 +425,15 @@ impl Preflight {
         self.steps.iter().any(|s| matches!(s.state, State::Failed(_)))
     }
 
+    /// The step it didn't pass at, by name: the first that failed, else the first refused before it started
+    /// (true) — as `step_for` picks the output to show.
+    pub fn unpassed_at(&self) -> Option<(String, bool)> {
+        let first = |f: fn(&State) -> bool| self.steps.iter().find(|s| f(&s.state)).map(|s| s.name.clone());
+        first(|s| matches!(s, State::Failed(_)))
+            .map(|n| (n, false))
+            .or_else(|| first(|s| matches!(s, State::NotRun(_))).map(|n| (n, true)))
+    }
+
     /// Step `k`'s output in `output` (the run's, as kept): the lines under its heading, up to the next
     /// step's. None: it hasn't printed its heading (or it's gone from what's kept).
     pub fn output_of(&self, k: usize, output: &crate::runout::Output) -> Option<Vec<String>> {
@@ -544,6 +553,13 @@ pub fn failed_test(lines: &[String]) -> Option<(String, Option<String>)> {
         next.split_once(':').is_some_and(|(file, _)| file.ends_with(".go")).then(|| next.to_string())
     });
     Some((test, why))
+}
+
+/// Whether the first test that failed in `lines` is a generated reference out of date (`settings::check_generated`'s
+/// words in its block).
+pub fn failed_stale(lines: &[String]) -> bool {
+    first_failed(lines)
+        .is_some_and(|(_, block)| block.iter().any(|l| l.contains(crate::settings::GENERATED_STALE)))
 }
 
 /// The test a line names as failed: cargo test's `test x ... FAILED` (with `block`, its `---- x stdout ----` too),

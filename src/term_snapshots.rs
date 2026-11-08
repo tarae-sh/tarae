@@ -1212,7 +1212,7 @@ fn f354_frames() {
     s.frames_both("panel");
     // card: the bring card that didn't pass, from that run (as `rebase_bring_failed` makes it)
     let p = s.ed.workspace.preflight.as_ref().unwrap();
-    let how = crate::rebase::Unpassed { failed: p.failed(), not_run: p.not_run() };
+    let how = crate::rebase::Unpassed { failed: p.failed(), not_run: p.not_run(), step: p.unpassed_at() };
     let output = s.ed.workspace.task_run.as_ref().unwrap().output.clone();
     let failed = p.step_text("", None, &output).ok();
     let m = crate::rebase::Moved {

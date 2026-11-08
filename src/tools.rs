@@ -2455,12 +2455,15 @@ fn card(
                     };
                     let asks = warned(ed, on).iter().any(|w| w.asks);
                     let request = run_request(ed, outside.as_ref(), &why, asks);
-                    let asked = crate::cards::Asked::new(why, request).ran(
+                    let mut asked = crate::cards::Asked::new(why, request).ran(
                         c.run_id(),
                         &cmd,
                         &cwd,
                         &ed.workspace.root,
                     );
+                    // (its conversation, as a card's is kept — `push_offer`)
+                    asked.conversation =
+                        ed.workspace.claude.chat.as_ref().and_then(|c| c.conversation.clone());
                     let session = ed.workspace.log();
                     let at = (session.name(), std::time::SystemTime::now());
                     let entry = crate::cards::refused(&asked, &e, at, ed.workspace.claude.caps());

@@ -1,0 +1,3 @@
+# A project's config keeping a folder not named `.sb` (`cargo xtask cards`' change sets: decision 17)
+[workspace]
+keep = ["./.notes/"]

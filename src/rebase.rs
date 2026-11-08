@@ -77,6 +77,9 @@ pub struct Failed {
 pub struct Unpassed {
     pub failed: bool,
     pub not_run: Vec<String>,
+    /// The step it didn't pass at, by name, and whether it was refused before it started
+    /// (`Preflight::unpassed_at`) — for the card record.
+    pub step: Option<(String, bool)>,
 }
 
 /// A session whose base moved since it left it — what the rebase card says (`y` rebases), and once it's
@@ -184,6 +187,13 @@ impl Moved {
     pub fn failed_card(&self, title: &str, how: &Unpassed, failed: Option<(String, Vec<String>)>) -> Offer {
         let (base, them) = (&self.base, if self.ahead == 1 { "it" } else { "them" });
         let first = failed.as_ref().and_then(|(_, lines)| crate::preflight::failed_test(lines));
+        // (for the card record: names only — the step, the first test, whether it's a stale reference)
+        let failing = crate::cards::Failing {
+            step: how.step.as_ref().map(|(name, _)| name.clone()),
+            not_run: how.step.as_ref().is_some_and(|(_, not_run)| *not_run),
+            test: first.as_ref().map(|(test, _)| test.clone()),
+            generated: failed.as_ref().is_some_and(|(_, lines)| crate::preflight::failed_stale(lines)),
+        };
         let mut not_run = how.not_run.iter();
         let lead = match first.is_none() && !how.failed {
             true => not_run.next(),
@@ -221,6 +231,7 @@ impl Moved {
         // (in `warnings`, not `warning`: the held high-risk changes' lines take that — `push_bring_card`)
         card.warnings.push(2..2 + risk.lines().count());
         card.output = failed;
+        card.asked = Some(crate::cards::Asked::own().failed(failing));
         card
     }
 
@@ -2636,7 +2647,9 @@ impl Editor {
     fn rebase_bring_failed(&mut self, m: Moved, title: &str) {
         let p = self.workspace.preflight.as_ref();
         let failed = p.and_then(|p| p.step_text("", None, &p.kept).ok());
-        let how = p.map(|p| Unpassed { failed: p.failed(), not_run: p.not_run() }).unwrap_or_default();
+        let how = p
+            .map(|p| Unpassed { failed: p.failed(), not_run: p.not_run(), step: p.unpassed_at() })
+            .unwrap_or_default();
         let output = failed.clone();
         let head = self.workspace.bring_tested.take();
         let card = m.failed_card(title, &how, failed);

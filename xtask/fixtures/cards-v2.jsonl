@@ -1,0 +1,17 @@
+{"v":1,"at":"2026-11-09 08:00:00","session":"main","card":1,"run":1,"kind":"run","why":"socket","shadow":"socket","answer":"a","drawn_ms":2000,"up_ms":2000,"what":"cargo xtask linux clippy"}
+{"v":2,"at":"2026-11-09 09:00:00","session":"fix","card":2,"run":2,"kind":"run","why":"socket","shadow":"socket","answer":"a","drawn_ms":2000,"up_ms":2000,"what":"cargo xtask linux clippy","conversation":"c1-0123456789"}
+{"v":2,"at":"2026-11-09 09:10:00","session":"fix","card":3,"run":3,"kind":"run","why":"socket","shadow":"socket","same":2,"changed":true,"answer":"y","drawn_ms":2000,"up_ms":2000,"what":"cargo xtask linux test --bin tarae a_test","conversation":"c1-0123456789"}
+{"v":2,"at":"2026-11-09 09:20:00","session":"fix","card":4,"run":4,"kind":"run","why":"socket","shadow":"socket","same":2,"answer":"y","drawn_ms":2000,"up_ms":2000,"what":"cargo xtask linux clippy","conversation":"c1-0123456789"}
+{"v":2,"at":"2026-11-09 10:00:00","session":"fix","card":5,"run":5,"kind":"run","why":"socket","shadow":"socket","same":2,"answer":"y","drawn_ms":2000,"up_ms":2000,"what":"cargo xtask linux clippy","conversation":"c2-abcdef"}
+{"v":2,"at":"2026-11-09 11:00:00","session":"fix","card":6,"kind":"rebased","why":"own","shadow":"own","answer":"p","drawn_ms":5000,"up_ms":5000,"step":"test","test":"a::b::flaky"}
+{"v":2,"at":"2026-11-09 11:30:00","session":"fix","card":7,"kind":"rebased","why":"own","shadow":"own","answer":"p","drawn_ms":5000,"up_ms":5000,"step":"test","test":"a::b::flaky"}
+{"v":2,"at":"2026-11-09 12:00:00","session":"kid","card":8,"kind":"rebased","why":"own","shadow":"own","answer":"p","drawn_ms":5000,"up_ms":5000,"step":"test","test":"a::b::flaky"}
+{"v":2,"at":"2026-11-09 12:30:00","session":"main","card":9,"kind":"rebased","why":"own","shadow":"own","answer":"y","drawn_ms":5000,"up_ms":5000,"step":"test","test":"keymap::tests::keymap_reference_is_up_to_date","generated":true}
+{"v":2,"at":"2026-11-09 13:00:00","session":"main","card":10,"kind":"rebased","why":"own","shadow":"own","answer":"n","drawn_ms":5000,"up_ms":5000,"step":"clippy linux","not_run":true}
+{"v":2,"at":"2026-11-09 13:30:00","session":"fix","card":11,"kind":"rebased","why":"own","shadow":"own","answer":"y","drawn_ms":5000,"up_ms":5000}
+{"v":2,"at":"2026-11-09 14:00:00","session":"fix","card":12,"kind":"change-set","why":"own","shadow":"own","answer":"y","drawn_ms":9000,"up_ms":9000,"conversation":"c1-0123456789","files":[".notes/plan.md"]}
+{"v":2,"at":"2026-11-09 14:10:00","session":"fix","card":13,"kind":"change-set","why":"own","shadow":"own","answer":"y","drawn_ms":9000,"up_ms":9000,"conversation":"c1-0123456789","files":[".notes/a.md","src/a.rs"]}
+{"v":2,"at":"2026-11-09 14:20:00","session":"main","card":14,"kind":"change-set","why":"own","shadow":"own","answer":"n","drawn_ms":9000,"up_ms":9000,"files":[".sb/x.md"]}
+{"v":2,"at":"2026-11-09 14:30:00","session":"main","card":15,"kind":"change-set","why":"own","shadow":"own","answer":"y","drawn_ms":9000,"up_ms":9000,"files":["src/f0.rs","src/f1.rs","src/f2.rs","src/f3.rs","src/f4.rs","src/f5.rs","src/f6.rs","src/f7.rs","src/f8.rs","src/f9.rs"],"files_more":3}
+{"v":2,"at":"2026-11-09 14:40:00","session":"kid","card":16,"kind":"change-set","why":"own","shadow":"own","answer":"y","drawn_ms":9000,"up_ms":9000,"files":[".notes/b.md",".notes/c/d.md"]}
+{"v":1,"at":"2026-11-09 15:00:00","session":"main","card":17,"kind":"change-set","why":"own","shadow":"own","answer":"y","drawn_ms":9000,"up_ms":9000}

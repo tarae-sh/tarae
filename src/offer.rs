@@ -1766,6 +1766,16 @@ impl crate::editor::Editor {
         // (one a parent's Claude proposed is its act's, never your key's — `orchestra::carry`)
         o.yours = o.proposed.is_none() && o.yours_kind() && self.events.asked() == Some(self.input_seq);
         o.about = o.about.or_else(|| self.offer_about(&o));
+        // (Claude's card is the conversation's that asked — raised inside a turn, after its first `init` — kept as it
+        // goes up, so one dropped as its conversation is left still names it; a proposal's, the parent's; none known,
+        // none said. A session behind raises its cards with its workspace in front: `self.workspace` is the card's)
+        if o.claudes() {
+            let conversation = match &o.proposed {
+                Some(p) => p.conversation.clone(),
+                None => self.workspace.claude.chat.as_ref().and_then(|c| c.conversation.clone()),
+            };
+            o.asked.get_or_insert_with(crate::cards::Asked::own).conversation = conversation;
+        }
         // One bring card a session, and one end card: a new one takes the place of the one waiting for that checkout,
         // wherever it waits — a parent's ask parked in its workspace too —, its going said (the gone ring: one card
         // replaced); one whose bring or end is under way stays

@@ -1,9 +1,9 @@
 //! The breakdowns P6's next decisions hang on (`.sb/p6-step1-report.md` §5): every card by session, Docker's socket
 //! cards by command, the bring card's `p`, the change sets.
 //!
-//! The record names no chat (its session, and a run's id counted across tarae), and tarae's own cards keep no
-//! `what` — so a socket card's later chat is told apart only by `same`/`changed`, a `p`'s failing step and a
-//! change set's files aren't there to break down: each section says so.
+//! From v2 on the record keeps a Claude card's `conversation`, a failed preflight's `step` and first `test` on the
+//! bring card back, a change set's `files` (`src/cards.rs`, P6 2b). A v1 entry has none of them: a socket card's
+//! later chat is told apart there only by `same`/`changed`, and each section says how many entries name theirs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -20,6 +20,9 @@ const P_AGAIN_COMMIT: &str = "574212553";
 
 /// The socket table's rows at most — the rest summed in a line.
 const COMMANDS_MAX: usize = 40;
+
+/// A change set's files named on its line at most — the rest counted.
+const SET_FILES_SHOWN: usize = 8;
 
 /// Programs that end what they run after a time: `timeout 1800 cargo xtask …` is still that command
 /// (`tools::pinned_head`'s limits — the tools pack's).
@@ -262,6 +265,20 @@ pub(crate) fn pinned(cmd: &str, o: &Opts) -> Option<String> {
     spec.covers(&words[kept..]).then(|| format!("{} …", spec.run.join(" ")))
 }
 
+/// The folders a workspace keeps — `[workspace] keep` in the project's config, `toml` (its `.tarae.toml`): its plans
+/// and drafts, git-ignored. Read where tarae reads it, never a name assumed (decision 17).
+pub(crate) fn keep_in(toml: &Path) -> Vec<String> {
+    let t = std::fs::read_to_string(toml).ok().and_then(|t| t.parse::<toml::Table>().ok());
+    let keep = t.as_ref().and_then(|t| t.get("workspace")).and_then(|w| w.get("keep"));
+    keep.and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .map(|k| k.trim_start_matches("./").trim_end_matches('/').to_string())
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
 /// Claude's cards asking for a socket (`shadow=socket`) by command: whether `a` covers it (pinned, inert
 /// arguments), and how often a pinned one was asked again in its session after an `a` on it.
 pub(super) fn sockets(all: &[Value], o: &Opts) -> String {
@@ -327,9 +344,40 @@ pub(super) fn sockets(all: &[Value], o: &Opts) -> String {
             allowed.insert(key);
         }
     }
+    // By chat (v2's `conversation`): asked again after an `a` on it in the same chat — what `a` covers, unless what
+    // it runs changed — or in a later chat of its session
+    let (mut named_n, mut same_chat, mut same_changed, mut later) = (0, 0, 0, 0);
+    let mut chats: BTreeMap<(&str, String), BTreeSet<&str>> = BTreeMap::new();
+    for e in socket.iter().filter(|e| e.get("conversation").is_some()) {
+        named_n += 1;
+        let (cmd, true) = named(e) else { continue };
+        let (key, chat) = ((s(e, "session"), cmd), s(e, "conversation"));
+        match chats.get(&key).map(|c| c.contains(chat)) {
+            Some(true) => {
+                same_chat += 1;
+                same_changed += usize::from(e["changed"].as_bool() == Some(true));
+            }
+            Some(false) => later += 1,
+            None => {}
+        }
+        if s(e, "answer") == "a" {
+            chats.entry(key).or_default().insert(chat);
+        }
+    }
+    let by_chat = match named_n {
+        0 => "the record keeps a Claude card's `conversation` from v2 on, and no card here names its chat — \
+              only the session, and a run's id counted across tarae."
+            .to_string(),
+        n => format!(
+            "{n} of {} cards name their chat (`conversation`, kept from v2 on). Asked again after an `a` on the same \
+             pinned command: {same_chat} in the same chat ({same_changed} with what it runs changed since: the card \
+             was due; the rest `a` should have covered), {later} in a later chat of its session.",
+            socket.len()
+        ),
+    };
     let pinned_n: usize = rows.iter().filter(|r| r.0.1).map(|r| r.1.len()).sum();
     out += &format!(
-        "\n- **By chat:** the record names no chat — only the session, and a run's id counted across tarae.\n\
+        "\n- **By chat:** {by_chat}\n\
          - **Asked again after an `a`** on the same pinned command in its session: {again} of {pinned_n} pinned \
          cards.\n  - {unchanged} the same words with nothing changed since (`same`, no `changed`): `a` is the chat's, so a \
          later chat.\n  - {changed} with what it runs changed since (`changed`): the card was due.\n  - {other} in other \
@@ -349,8 +397,8 @@ pub(super) fn preflight_again(all: &[Value], o: &Opts) -> String {
     let mut out = format!(
         "\n## The bring card's `p`: {}\n\nBefore {P_AGAIN_COMMIT} ({}) `p` was the plain card's \"preflight, then \
          bring\"; since, only the card back after a failed preflight has it: \"preflight again\". In a row: `p` on \
-         each `rebased` card of the session in turn, the card back failed each time. The failing step isn't in the \
-         record: tarae's own cards keep no `what`.\n",
+         each `rebased` card of the session in turn, the card back failed each time. The card back names the step it \
+         failed at and the first test that failed from v2 on: by failing step below.\n",
         rebased.iter().filter(p).count(),
         &P_AGAIN_SINCE[..16],
     );
@@ -391,16 +439,80 @@ pub(super) fn preflight_again(all: &[Value], o: &Opts) -> String {
     ]);
     out += "\n";
     out += &table(&["Session", "`rebased` cards", "`p` before", "`p` since", "Most `p` in a row since"], &t);
+    out + &by_step(&rebased, o)
+}
+
+/// The bring cards back after a failed preflight (v2's `step`) by the step they failed at — one refused before it
+/// started apart —, their answers, how many first failed at a generated reference out of date, the first tests that
+/// failed; then a test first to fail in more than one session.
+fn by_step(rebased: &[&Value], o: &Opts) -> String {
+    let failed: Vec<&Value> = rebased.iter().copied().filter(|e| e.get("step").is_some()).collect();
+    let mut out = format!("\n### By failing step: {} of {} cards name theirs\n", failed.len(), rebased.len());
+    if failed.is_empty() {
+        return out + "\nNone here: the record keeps a failed preflight's step from v2 on.\n";
+    }
+    let mut steps: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
+    for e in &failed {
+        let step = match e["not_run"].as_bool() == Some(true) {
+            true => format!("{} (not run)", s(e, "step")),
+            false => s(e, "step").to_string(),
+        };
+        steps.entry(step).or_default().push(e);
+    }
+    let t: Vec<Vec<String>> = steps
+        .iter()
+        .map(|(step, es)| {
+            let mut tests: BTreeMap<&str, usize> = BTreeMap::new();
+            for e in es.iter().filter(|e| !s(e, "test").is_empty()) {
+                *tests.entry(s(e, "test")).or_default() += 1;
+            }
+            let mut tests: Vec<_> = tests.into_iter().collect();
+            tests.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let tests: Vec<String> = tests.iter().map(|(t, n)| format!("`{t}` ×{n}")).collect();
+            let stale = es.iter().filter(|e| e["generated"].as_bool() == Some(true)).count();
+            vec![
+                format!("`{step}`"),
+                es.len().to_string(),
+                answers(es),
+                stale.to_string(),
+                if tests.is_empty() { "—".into() } else { tests.join(" · ") },
+            ]
+        })
+        .collect();
+    out += "\n";
+    out += &table(&["Failing step", "Cards", "Answers", "Stale references", "First tests"], &t);
+    // (a test first to fail in several sessions: a flake, or the base's own failure — not one session's change)
+    let mut where_: BTreeMap<&str, BTreeSet<(bool, String)>> = BTreeMap::new();
+    for e in failed.iter().filter(|e| !s(e, "test").is_empty()) {
+        where_.entry(s(e, "test")).or_default().insert(who_order(e, o));
+    }
+    let across: Vec<String> = where_
+        .iter()
+        .filter(|(_, ws)| ws.len() > 1)
+        .map(|(t, ws)| format!("`{t}` — {}", ws.iter().map(|w| w.1.as_str()).collect::<Vec<_>>().join(", ")))
+        .collect();
+    out += &match across.is_empty() {
+        true => "\n- No test was the first to fail in more than one session.\n".to_string(),
+        false => format!(
+            "\n- **First to fail in more than one session** (a flake, or the base's own): {}.\n",
+            across.join("; ")
+        ),
+    };
     out
 }
 
-/// Every change set's card, listed — its files aren't in the record, so whether they were text in the session's
-/// kept folder is read by its time and session in that session's conversation.
+/// A change set's files, as the record keeps them (v2's `files`).
+fn files_of(e: &Value) -> Vec<&str> {
+    e["files"].as_array().into_iter().flatten().filter_map(Value::as_str).collect()
+}
+
+/// Every change set's card, listed by its time, session and chat (to find in that conversation) with its files
+/// from v2 on; then how many touched only a folder the workspace keeps (`Opts::keep`, the project's own).
 pub(super) fn change_sets(all: &[Value], o: &Opts) -> String {
     let sets: Vec<&Value> = all.iter().filter(|e| own(e) && s(e, "kind") == "change-set").collect();
     let mut out = format!(
-        "\n## Change sets: {}\n\nTheir files aren't in the record (tarae's own cards keep no `what`): each by its time \
-         and session, to find in that session's conversation.\n",
+        "\n## Change sets: {}\n\nEach by its time, session and chat, to find in that conversation; its files from v2 \
+         on.\n",
         sets.len()
     );
     if !sets.is_empty() {
@@ -409,7 +521,39 @@ pub(super) fn change_sets(all: &[Value], o: &Opts) -> String {
     for e in &sets {
         let card = e["card"].as_u64().map(|c| format!(" card#{c}")).unwrap_or_default();
         let took = timed(e).map(|ms| format!(" · {}", secs(ms))).unwrap_or_default();
-        out += &format!("- {} {}{card} · {}{took}\n", s(e, "at"), who(e, o), s(e, "answer"));
+        let chat = s(e, "conversation");
+        let chat =
+            if chat.is_empty() { String::new() } else { format!(" · chat {}", &chat[..chat.len().min(8)]) };
+        let files = files_of(e);
+        let more =
+            files.len().saturating_sub(SET_FILES_SHOWN) + e["files_more"].as_u64().unwrap_or(0) as usize;
+        let files = match files.is_empty() {
+            true => String::new(),
+            false => {
+                let shown = files[..files.len().min(SET_FILES_SHOWN)].join(", ");
+                if more > 0 { format!(" · {shown} … {more} more") } else { format!(" · {shown}") }
+            }
+        };
+        out += &format!("- {} {}{card} · {}{took}{chat}{files}\n", s(e, "at"), who(e, o), s(e, "answer"));
     }
-    out
+    let named: Vec<&&Value> = sets.iter().filter(|e| !files_of(e).is_empty()).collect();
+    if named.is_empty() {
+        return out + "\n- No change set here names its files: the record keeps them from v2 on.\n";
+    }
+    if o.keep.is_empty() {
+        return out + "\n- **Only a kept folder:** the project keeps none (`[workspace] keep`).\n";
+    }
+    let kept = |f: &str| {
+        o.keep.iter().any(|k| f == k || f.strip_prefix(k.as_str()).is_some_and(|r| r.starts_with('/')))
+    };
+    // (one with files past what's kept isn't known to be only there)
+    let only =
+        named.iter().filter(|e| e.get("files_more").is_none() && files_of(e).into_iter().all(kept)).count();
+    let keep: Vec<String> = o.keep.iter().map(|k| format!("`{k}`")).collect();
+    out + &format!(
+        "\n- **Only a kept folder** ({}, the project's `[workspace] keep`): {only} of {} change sets naming their \
+         files.\n",
+        keep.join(", "),
+        named.len()
+    )
 }
