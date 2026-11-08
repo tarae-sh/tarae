@@ -124,6 +124,9 @@ pub struct EditorConfig {
     /// draw the project's screen (its design angle runs on a change there) · its members reading at once,
     /// editor-wide · its skeptics at most.
     pub review_angles: Option<Vec<crate::board::Angle>>,
+    /// Files of the main checkout the reviewer's members read (`review.rules`, your config only): an angle's
+    /// name, or `reviewer` for the one pass → paths from the main checkout's root (`snapread::Named`).
+    pub review_rules: std::collections::BTreeMap<String, Vec<String>>,
     pub review_screen: Vec<String>,
     pub review_board_at_once: usize,
     pub review_skeptics_max: usize,
@@ -186,6 +189,7 @@ impl Default for EditorConfig {
             review_risky: Vec::new(),
             review_quiet: Vec::new(),
             review_angles: None,
+            review_rules: Default::default(),
             review_screen: Vec::new(),
             review_board_at_once: 3,
             review_skeptics_max: 12,
@@ -1181,6 +1185,52 @@ Z = ["move_line_down", ":sh touch marker"]
         let (t, _) = load(&trusted);
         assert!(t.editor.llm.run_allow == ["make"], "trusted");
         assert_eq!(t.editor.llm.sandbox_ca, ["~/corp-root.pem"], "trusted: still refused");
+    }
+
+    /// What the reviewer reads beside its snapshot is yours to say (`review.rules`, `trust::YOURS_ONLY`): a
+    /// project naming files — its `.tarae.toml`, trusted or not, and its `.tarae.local.toml` — would be a read
+    /// capability; refused and said. Your own config's table stays; a path out of the main checkout is refused.
+    #[test]
+    fn a_project_cannot_name_files_for_the_reviewer() {
+        use crate::trust::Store;
+        let scratch = crate::scratch::Scratch::new("config-review-rules");
+        let dir = scratch.to_path_buf();
+        let ok = std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).output().unwrap();
+        assert!(ok.status.success());
+        let (user, project, local) =
+            (dir.join("user.toml"), dir.join(".tarae.toml"), dir.join(".tarae.local.toml"));
+        // (a risky setting beside it, so the project has a trust card to answer)
+        fs::write(&project, "[llm]\nrun-allow = [\"make\"]\n\n[review.rules]\ndesign = [\"notes/lax.md\"]\n")
+            .unwrap();
+        fs::write(&local, "[review.rules]\nreviewer = [\"notes/lax.md\"]\n").unwrap();
+        fs::write(dir.join(".gitignore"), ".tarae.local.toml\n").unwrap();
+        fs::write(&user, "[review.rules]\ndesign = [\".sb/dev/design.md\"]\n").unwrap();
+        let load = |store: &Store| {
+            load_layers(Some(user.clone()), Some(project.clone()), Some((dir.clone(), local.clone())), store)
+        };
+        let mine: std::collections::BTreeMap<String, Vec<String>> =
+            [("design".to_string(), vec![".sb/dev/design.md".to_string()])].into();
+        let (c, w) = load(&Store::default());
+        assert_eq!(c.editor.review_rules, mine, "{w:?}");
+        for said in [
+            ".tarae.toml:4: review.rules is set only in your own config",
+            ".tarae.local.toml:1: review.rules is set only in your own config",
+        ] {
+            assert!(w.iter().any(|w| w.contains(said)), "{said}: {w:?}");
+        }
+        let mut trusted = Store::default();
+        trusted.answer(crate::trust::Kind::Tarae, &project, c.project.as_ref().unwrap().hash, true, 0);
+        let (t, _) = load(&trusted);
+        assert!(t.editor.llm.run_allow == ["make"], "trusted");
+        assert_eq!(t.editor.review_rules, mine, "trusted: still refused");
+        for bad in ["design = [\"/etc/hosts\"]", "design = [\"../x.md\"]", "design = \".sb/x.md\""] {
+            fs::write(&user, format!("[review.rules]\n{bad}\n")).unwrap();
+            let (c, w) = load_layers(Some(user.clone()), None, None, &Store::default());
+            assert!(
+                c.editor.review_rules.is_empty() && w.iter().any(|w| w.contains("review.rules: ")),
+                "{bad}: {w:?}"
+            );
+        }
     }
 
     /// What the board's Claudes are asked is yours to say: a project's `[[review.angles]]` is refused and said,

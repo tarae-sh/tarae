@@ -829,6 +829,16 @@ Kept:
   `reviewer::tests::the_reviewer_reads_the_checkout_only` · `readtool::tests::what_read_would_ask_about_asks` ·
   `media::tests::a_decompression_bomb_is_refused_said` ·
   `readtool::tests::a_key_named_image_asks_first`
+- **What the reviewer reads beside its snapshot** (`review.rules`, `snapread::Named`): files of the repository's
+  main checkout that you name in your own config. A project's `.tarae.toml` or `.tarae.local.toml` naming any is
+  refused and said, trusted or not (`trust::YOURS_ONLY`): it would be a read capability, and a project never gets
+  one. tarae reads them once, as the snapshot is taken, beneath the main checkout through no link, never one named
+  like a key nor one past 8 MB (each said in the prompt as not read). A member's `read` gives only its own
+  angle's (a skeptic's: its claims' angles'), by the path its prompt lists, from the bytes kept; nothing beside them,
+  and `search` doesn't reach them.
+  test: `snapread::tests::a_rules_file_is_read_by_its_angle_and_nothing_beside_it` ·
+  `snapread::tests::a_key_named_linked_or_huge_rules_file_is_said_and_a_missing_one_isnt` ·
+  `config::tests::a_project_cannot_name_files_for_the_reviewer`
 - **`references` and `definition` read a place's line by the opened file's real path**: inside the project, or
   outside where Read would go unasked; else `(outside the project — not read)` — a link in the project leading out
   isn't inside, an open buffer of such a file neither.

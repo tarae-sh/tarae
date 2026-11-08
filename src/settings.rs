@@ -24,6 +24,9 @@ pub enum Kind {
     Hosts,
     /// The board's angles: a list of tables (`[[review.angles]]` — `board::angles_of`).
     Angles,
+    /// `review.rules`: a table of keys (an angle's name, `reviewer`), each a list of paths from the main checkout's
+    /// root — never absolute, never a `..`.
+    Rules,
 }
 
 impl Kind {
@@ -48,6 +51,9 @@ impl Kind {
         }
         if let Kind::Angles = self {
             return crate::board::angles_of(v).map(|_| ());
+        }
+        if let Kind::Rules = self {
+            return rules_of(v).map(|_| ());
         }
         let ok = match (self, v) {
             (Kind::Hosts, Value::String(s)) => ["registries", "*", "any"].contains(&s.as_str()),
@@ -78,8 +84,32 @@ impl Kind {
                     .into()
             }
             Kind::Angles => "list of tables { name, ask, when, paths, languages, findings-max }".into(),
+            Kind::Rules => "table of angle (or reviewer) = list of paths in the main checkout".into(),
         }
     }
+}
+
+/// `review.rules` as written → each key's paths, or what's wrong with it.
+pub fn rules_of(v: &Value) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    let t = v.as_table().ok_or("a table: [review.rules] with design = [\".sb/dev/design.md\"]")?;
+    let mut out = std::collections::BTreeMap::new();
+    for (key, paths) in t {
+        let list = paths.as_array().ok_or_else(|| format!("{key}: a list of paths"))?;
+        let mut rels = Vec::new();
+        for p in list {
+            let p = p.as_str().ok_or_else(|| format!("{key}: a list of paths (strings)"))?;
+            let plain =
+                std::path::Path::new(p).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+            if p.is_empty() || !plain {
+                return Err(format!(
+                    "{key}: \"{p}\" — a path from the main checkout's root, no `..`, not absolute"
+                ));
+            }
+            rels.push(p.to_string());
+        }
+        out.insert(key.clone(), rels);
+    }
+    Ok(out)
 }
 
 pub struct Setting {
@@ -782,6 +812,21 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.review_angles = crate::board::angles_of(v).ok(),
     },
     Setting {
+        path: "review.rules",
+        kind: Kind::Rules,
+        doc: "Files of the repository's main checkout a board's angle reads besides the project's CLAUDE.md or AGENTS.md: [review.rules] design = [\".sb/dev/design.md\"] — keyed by angle name, `reviewer` for space v c. Read once as the review begins; one not there is left out. Only your own config sets it",
+        get: |c| {
+            Value::Table(
+                (c.review_rules.iter())
+                    .map(|(k, ps)| {
+                        (k.clone(), Value::Array(ps.iter().map(|p| Value::from(p.as_str())).collect()))
+                    })
+                    .collect(),
+            )
+        },
+        set: |c, v| c.review_rules = rules_of(v).unwrap_or_default(),
+    },
+    Setting {
         path: "review.board-at-once",
         kind: Kind::Int { min: 1, max: 8 },
         doc: "The board's Claudes reading at once, every session's together (one under memory pressure, none while it's critical). Only your own config sets it",
@@ -999,6 +1044,7 @@ mod tests {
                 Kind::Ports { max } => format!("list of ports (at most {max})"),
                 Kind::Hosts => md_code("\"registries\"") + " · " + &md_code("\"*\"") + " or a list of hosts",
                 Kind::Angles => "list of tables".into(),
+                Kind::Rules => "table of lists of paths".into(),
             };
             let default = match s.kind {
                 // (the built-in angles' asks are paragraphs: named here, whole in `:config-show`)

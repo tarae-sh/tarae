@@ -568,21 +568,32 @@ pub(crate) fn lines_of(
 /// worker's (it reads git).
 #[cfg(test)]
 pub fn read_snapshot(snap: &crate::snapread::Snap, args: &Value) -> Result<String, String> {
-    read_snapshot_seen(snap, args).0
+    read_snapshot_seen(snap, args, &[]).0
 }
 
 /// The lines of a snapshot's files a read gave: each file's path and the ranges it showed (from 1, both ends in).
 pub type Seen = Vec<(String, Vec<(usize, usize)>)>;
 
 /// `read_snapshot`, and the lines it gave (`Seen`) — those shown, never those asked: an outline, a refusal or
-/// what `LINES_MAX` cut isn't read (the reviewer's files left out of its diff count as read by these).
-pub fn read_snapshot_seen(snap: &crate::snapread::Snap, args: &Value) -> (Result<String, String>, Seen) {
+/// what `LINES_MAX` cut isn't read (the reviewer's files left out of its diff count as read by these). `named`:
+/// the `review.rules` keys of the member asking (`Snap::named_text`) — their files answered from the bytes kept,
+/// nothing else of the main checkout.
+pub fn read_snapshot_seen(
+    snap: &crate::snapread::Snap,
+    args: &Value,
+    named: &[String],
+) -> (Result<String, String>, Seen) {
     let mut seen = Seen::new();
-    let r = read_snapshot_into(snap, args, &mut seen);
+    let r = read_snapshot_into(snap, args, named, &mut seen);
     (r, seen)
 }
 
-fn read_snapshot_into(snap: &crate::snapread::Snap, args: &Value, seen: &mut Seen) -> Result<String, String> {
+fn read_snapshot_into(
+    snap: &crate::snapread::Snap,
+    args: &Value,
+    named: &[String],
+    seen: &mut Seen,
+) -> Result<String, String> {
     use crate::snapread::Found;
     let items = items_of(args)?;
     let rels: Vec<Option<String>> = items.iter().map(|it| snap.rel_of(&it.path)).collect();
@@ -594,6 +605,19 @@ fn read_snapshot_into(snap: &crate::snapread::Snap, args: &Value, seen: &mut See
     })?;
     let (mut out, mut left, mut read) = (String::new(), LINES_MAX, 0);
     for (it, rel) in items.iter().zip(&rels) {
+        // (a `review.rules` file of the member's, by the path its prompt lists: as kept when the review began)
+        if let Some((shown, got)) = snap.named_text(&it.path, named) {
+            match got {
+                Ok(bytes) => {
+                    read += 1;
+                    let path = PathBuf::from(&shown);
+                    let outline = |text: &str| crate::outlines::of_text(&path, None, text);
+                    out.push_str(&section_of(&bytes, &outline, &shown, it, &mut left, &mut Vec::new()));
+                }
+                Err(why) => out.push_str(&format!("== {shown}: {why}\n")),
+            }
+            continue;
+        }
         let Some(rel) = rel else {
             out.push_str(&format!(
                 "== {}: outside the checkout — the reviewer reads only its snapshot\n",

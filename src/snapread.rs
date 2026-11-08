@@ -13,6 +13,8 @@
 //!   is in the diff as its target text), submodules, files past `FILE_MAX`.
 //! - A path is the checkout's (from its root, or absolute under it), resolved by its words alone — the snapshot has
 //!   no links to follow; one outside the checkout is refused.
+//! - Beside it, the files `review.rules` names (`Named`): the main checkout's, read once as the snapshot is taken
+//!   and kept — each member reads only its own key's, by the path its prompt lists.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Read, Write};
@@ -78,7 +80,26 @@ pub struct Snap {
     left: BTreeMap<String, Left>,
     kept: Mutex<Kept>,
     outlines: Mutex<HashMap<String, Arc<Vec<crate::nav::Sym>>>>,
+    pub named: Named,
 }
+
+/// What `review.rules` names (your config's only, `trust::YOURS_ONLY`): files of the repository's main checkout a
+/// review's members read beside the snapshot — each key an angle's name or `reviewer`, its paths from the main
+/// checkout's root. Read once, as the snapshot is taken (`Snap::name`), the bytes kept: a run reads one version.
+/// Through no link, never one named like a key, a plain file up to `FILE_MAX`; one not there is neither kept nor
+/// said (one config serves every project).
+#[derive(Default)]
+pub struct Named {
+    /// The main checkout (None: the repository has none — a bare one's — so nothing is read).
+    pub main: Option<PathBuf>,
+    /// The setting as it was when the snapshot was taken.
+    pub keys: BTreeMap<String, Vec<String>>,
+    /// Each path there: its bytes, or why it isn't read.
+    files: BTreeMap<String, NamedRead>,
+}
+
+/// A `review.rules` file's bytes as kept, or why it isn't read.
+pub type NamedRead = Result<Arc<[u8]>, String>;
 
 #[derive(Default)]
 struct Kept {
@@ -99,13 +120,14 @@ impl Drop for Snap {
             std::mem::take(&mut self.left),
             kept,
             outlines,
+            std::mem::take(&mut self.named.files),
         ));
     }
 }
 
 /// An instruction file there for the snapshot's reader (`Snap::rules`): its path, its lines, whether it's the
 /// checkout's (git ignores it) rather than the snapshot's — and why it isn't read when it isn't (a link, past
-/// `FILE_MAX`; its lines then 0).
+/// `FILE_MAX`; its lines then 0). A `review.rules` file's (`Snap::named_rules`): `rel` its absolute path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub rel: String,
@@ -118,6 +140,59 @@ impl std::fmt::Debug for Snap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Snap").field("root", &self.root).field("tree", &self.tree).finish_non_exhaustive()
     }
+}
+
+/// A text's lines, a last one with no line end counted.
+fn lines_in(b: &[u8]) -> usize {
+    b.iter().filter(|&&c| c == b'\n').count() + usize::from(!b.ends_with(b"\n"))
+}
+
+/// File `rel` of the main checkout `main`, for `review.rules` — None: nothing there. Its words for what isn't read
+/// are its own: the snapshot's (`Left::said`) speak of the diff, which has nothing of these. Blocks (a worker's).
+fn named_read(main: &Path, rel: &str) -> Option<NamedRead> {
+    let path = Path::new(rel);
+    if rel.is_empty() || !path.components().all(|c| matches!(c, Component::Normal(_))) {
+        return Some(Err("not a path inside the main checkout — not read".into()));
+    }
+    if crate::sandbox::key_named_in(main, &main.join(rel)) {
+        return Some(Err(Left::Key.said()));
+    }
+    // (a link anywhere on the way said as one, never followed)
+    let mut at = main.to_path_buf();
+    let mut size = 0;
+    for c in path.components() {
+        at.push(c);
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Some(Err("a link — the reviewer follows none, not read".into()));
+            }
+            Ok(m) => size = m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => return Some(Err(format!("not read: {e}"))),
+        }
+    }
+    let big = |n: u64| {
+        format!(
+            "{} KB, past the {} MB a file the reviewer reads — not read",
+            n.div_ceil(1024),
+            FILE_MAX >> 20
+        )
+    };
+    if size > FILE_MAX {
+        return Some(Err(big(size)));
+    }
+    // (read through no link from the main checkout's root, as checked: one swapped in since is refused too)
+    let dir = crate::beneath::Dir::root(main).and_then(|d| match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => d.folder(p, false),
+        _ => Ok(d),
+    });
+    let name = path.file_name().unwrap_or_default();
+    Some(match dir.and_then(|d| d.read_at_most(name, FILE_MAX as usize)) {
+        Ok(Some(bytes)) => Ok(bytes.into()),
+        Ok(None) => return None,
+        Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => Err(big(FILE_MAX + 1)),
+        Err(e) => Err(format!("not read: {e}")),
+    })
 }
 
 /// git on the checkout at `root` for the snapshot: no hooks, and never a fetch for a blob this clone doesn't have.
@@ -180,7 +255,63 @@ impl Snap {
             left,
             kept: Mutex::default(),
             outlines: Mutex::default(),
+            named: Named::default(),
         })
+    }
+
+    /// `review.rules`' files (`keys`: an angle's name or `reviewer` → paths from `main`'s root) read and kept
+    /// (`Named`) — every key's: the angles that run are chosen after. Blocks (a worker's).
+    pub fn name(&mut self, main: Option<PathBuf>, keys: BTreeMap<String, Vec<String>>) {
+        let mut files = BTreeMap::new();
+        if let Some(main) = &main {
+            for rel in keys.values().flatten() {
+                if !files.contains_key(rel)
+                    && let Some(read) = named_read(main, rel)
+                {
+                    files.insert(rel.clone(), read);
+                }
+            }
+        }
+        self.named = Named { main, keys, files };
+    }
+
+    /// The paths `review.rules` gives `keys`' members, in the setting's order, each once.
+    fn named_rels(&self, keys: &[String]) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for rel in keys.iter().filter_map(|k| self.named.keys.get(k)).flatten() {
+            if !out.contains(&rel.as_str()) {
+                out.push(rel);
+            }
+        }
+        out
+    }
+
+    /// `review.rules`' files for the members of `keys`, by absolute path — each with its lines, or why it isn't
+    /// read; one not there left out (as a missing instruction file is).
+    pub fn named_rules(&self, keys: &[String]) -> Vec<Rule> {
+        let Some(main) = &self.named.main else { return Vec::new() };
+        (self.named_rels(keys).into_iter())
+            .filter_map(|rel| {
+                let path = main.join(rel).display().to_string();
+                Some(match self.named.files.get(rel)? {
+                    Ok(b) => Rule { rel: path, lines: lines_in(b), from_checkout: false, unread: None },
+                    Err(why) => Rule { rel: path, lines: 0, from_checkout: false, unread: Some(why.clone()) },
+                })
+            })
+            .collect()
+    }
+
+    /// `given` (a `read` item's path) as one of `review.rules`' files for `keys`' members: its absolute path in
+    /// the main checkout — or its path from there, but only where the snapshot has nothing (a file of the snapshot
+    /// is the snapshot's) — the path to show and its bytes as kept, or why it isn't read. None: not one of them.
+    pub fn named_text(&self, given: &str, keys: &[String]) -> Option<(String, NamedRead)> {
+        let main = self.named.main.as_ref()?;
+        let path = Path::new(given.trim());
+        let rel = self.named_rels(keys).into_iter().find(|rel| match path.is_absolute() {
+            true => path == main.join(rel),
+            false => self.rel_of(given).as_deref() == Some(*rel) && self.found(rel) == Found::Nothing,
+        })?;
+        Some((main.join(rel).display().to_string(), self.named.files.get(rel)?.clone()))
     }
 
     /// How many files it lists that this clone doesn't have (said at the start).
@@ -240,9 +371,8 @@ impl Snap {
     /// listing and search never show an ignored one (frictions 55: it concluded there was none). One there that
     /// isn't read is listed with why — never taken for none. Blocks (a worker's).
     pub fn rules(&self) -> Vec<Rule> {
-        let lines = |b: &[u8]| b.iter().filter(|&&c| c == b'\n').count() + usize::from(!b.ends_with(b"\n"));
         let rule = |rel: &str, read: Result<Vec<u8>, String>, from_checkout| match read {
-            Ok(b) => Rule { rel: rel.to_string(), lines: lines(&b), from_checkout, unread: None },
+            Ok(b) => Rule { rel: rel.to_string(), lines: lines_in(&b), from_checkout, unread: None },
             Err(why) => Rule { rel: rel.to_string(), lines: 0, from_checkout, unread: Some(why) },
         };
         // (the checkout's, git ignoring it: there when its name is, a link too)
@@ -510,6 +640,173 @@ pub(crate) mod tests {
         assert!(got.contains("src/big.rs") && got.contains(&format!("{at}:")), "searched: {got}");
         let got = search(serde_json::json!({ "pattern": "x", "path": "big.txt" })).unwrap_err();
         assert!(got.contains("past the 8 MB"), "the huge one said: {got}");
+    }
+
+    /// `review.rules` over a main checkout `main/` (its `.sb/` ignored, as git ignores it in every checkout of it:
+    /// `.sb/dev/design.md` of 2 lines, `secret.md` beside it, a key-named file, a link, a link on the way, one
+    /// past `FILE_MAX`) and a session's checkout `wt/` of it with its own `.sb/dev/design.md`, `outside.txt`
+    /// beside both: `wt`'s snapshot with `keys`' files read. The scratch, the main checkout (real path), the
+    /// session's, the snapshot.
+    pub(crate) fn rules_fixture(
+        name: &str,
+        keys: &[(&str, &[&str])],
+    ) -> (crate::scratch::Scratch, PathBuf, PathBuf, Snap) {
+        let s = crate::scratch::Scratch::new(name);
+        let dir = crate::paths::real(&s).unwrap();
+        let (main, wt) = (dir.join("main"), dir.join("wt"));
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::write(main.join("a.txt"), "one\n").unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "t"],
+            &["add", "-A"],
+            &["commit", "-q", "-m", "base"],
+            &["worktree", "add", "-q", "../wt", "-b", "side"],
+        ] {
+            git(&main, args);
+        }
+        std::fs::write(main.join(".git/info/exclude"), ".sb/\n").unwrap();
+        let sb = main.join(".sb/dev");
+        std::fs::create_dir_all(&sb).unwrap();
+        std::fs::write(sb.join("design.md"), "## Design (CLAUDE.md)\n- rule one\n").unwrap();
+        std::fs::write(sb.join("secret.md"), "the main checkout's other file\n").unwrap();
+        std::fs::write(sb.join("id_rsa"), "tarae-fake-token\n").unwrap();
+        std::os::unix::fs::symlink("design.md", sb.join("link.md")).unwrap();
+        std::os::unix::fs::symlink("dev", main.join(".sb/linked")).unwrap();
+        std::fs::File::create(sb.join("big.md")).unwrap().set_len(FILE_MAX + 1).unwrap();
+        std::fs::write(dir.join("outside.txt"), "marker\n").unwrap();
+        std::fs::write(wt.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::create_dir_all(wt.join(".sb/dev")).unwrap();
+        std::fs::write(wt.join(".sb/dev/design.md"), "the session's own copy\n").unwrap();
+        let tree = crate::snapshot::snap(&wt).unwrap().id;
+        let mut snap = Snap::list(&wt, &tree).unwrap();
+        let keys = keys.iter().map(|(k, ps)| (k.to_string(), ps.iter().map(|p| p.to_string()).collect()));
+        snap.name(crate::instructions::main_or_self(&wt), keys.collect());
+        (s, main, wt, snap)
+    }
+
+    /// A `read` item's answer from `snap` for a member of `keys`.
+    fn read_as(snap: &Snap, f: &str, keys: &[&str]) -> Result<String, String> {
+        let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        crate::readtool::read_snapshot_seen(snap, &serde_json::json!({ "files": [f] }), &keys).0
+    }
+
+    /// A design-angle member's `read` gives the file `review.rules` names for design, by its absolute path or
+    /// its path from the main checkout (the snapshot has nothing there) — and nothing beside it: a file in the
+    /// same folder, a `../` out of the main checkout, and the file asked by another angle's member are refused
+    /// with the snapshot's words.
+    #[test]
+    fn a_rules_file_is_read_by_its_angle_and_nothing_beside_it() {
+        let (_s, main, _wt, snap) = rules_fixture("snapread-rules", &[("design", &[".sb/dev/design.md"])]);
+        let abs = main.join(".sb/dev/design.md").display().to_string();
+        let got = read_as(&snap, &format!("{abs}:1-2"), &["design"]).unwrap();
+        assert!(
+            got.contains(&format!("== {abs}:1-2 (of 2 lines)\n1: ## Design (CLAUDE.md)\n2: - rule one")),
+            "{got}"
+        );
+        let got = read_as(&snap, ".sb/dev/design.md", &["design"]).unwrap();
+        assert!(got.contains(&format!("== {abs} (of 2 lines)")) && got.contains("2: - rule one"), "{got}");
+        let outside = "outside the checkout — the reviewer reads only its snapshot";
+        for f in [
+            main.join(".sb/dev/secret.md"),
+            main.join(".sb/dev/../../../outside.txt"),
+            main.join("../outside.txt"),
+        ] {
+            let got = read_as(&snap, &f.display().to_string(), &["design"]).unwrap_err();
+            assert!(got.contains(outside), "{}: {got}", f.display());
+        }
+        let got = read_as(&snap, ".sb/dev/secret.md", &["design"]).unwrap_err();
+        assert!(got.contains("no such file in the snapshot"), "{got}");
+        assert!(read_as(&snap, "../outside.txt", &["design"]).unwrap_err().contains(outside));
+        let got = read_as(&snap, &abs, &["tests"]).unwrap_err();
+        assert!(got.contains(outside), "not the tests angle's: {got}");
+    }
+
+    /// A rules file named like a key, a link (or one on the way) and one past `FILE_MAX` are listed as not read,
+    /// each with why, and said so when asked for; one not there isn't listed at all.
+    #[test]
+    fn a_key_named_linked_or_huge_rules_file_is_said_and_a_missing_one_isnt() {
+        let paths: &[&str] = &[
+            ".sb/dev/design.md",
+            ".sb/dev/id_rsa",
+            ".sb/dev/link.md",
+            ".sb/linked/design.md",
+            ".sb/dev/big.md",
+            ".sb/dev/gone.md",
+        ];
+        let (_s, main, _wt, snap) = rules_fixture("snapread-rules-left", &[("design", paths)]);
+        let rules = snap.named_rules(&["design".into()]);
+        let at = |rel: &str| main.join(rel).display().to_string();
+        let got: Vec<(String, usize, Option<String>)> =
+            rules.iter().map(|r| (r.rel.clone(), r.lines, r.unread.clone())).collect();
+        let link = Some("a link — the reviewer follows none, not read".to_string());
+        assert_eq!(
+            got,
+            [
+                (at(".sb/dev/design.md"), 2, None),
+                (at(".sb/dev/id_rsa"), 0, Some(Left::Key.said())),
+                (at(".sb/dev/link.md"), 0, link.clone()),
+                (at(".sb/linked/design.md"), 0, link),
+                (
+                    at(".sb/dev/big.md"),
+                    0,
+                    Some("8193 KB, past the 8 MB a file the reviewer reads — not read".into())
+                ),
+            ]
+        );
+        let got = read_as(&snap, &at(".sb/dev/id_rsa"), &["design"]).unwrap_err();
+        assert_eq!(got, format!("== {}: {}", at(".sb/dev/id_rsa"), Left::Key.said()));
+        let said = crate::reviewer::named_said(Some(&snap), &["design".into()], false);
+        assert!(said.contains(&format!("{} (2 lines)", at(".sb/dev/design.md"))), "{said}");
+        assert!(said.contains("Named in review.rules but not read — say so in your verdict: "), "{said}");
+        assert!(!said.contains("gone.md"), "a missing one isn't listed: {said}");
+    }
+
+    /// A rules file edited — or removed — after the review began reads as it was when it began.
+    #[test]
+    fn a_rules_file_edited_after_the_review_began_reads_as_it_was() {
+        let (_s, main, _wt, snap) =
+            rules_fixture("snapread-rules-edit", &[("design", &[".sb/dev/design.md"])]);
+        let file = main.join(".sb/dev/design.md");
+        std::fs::write(&file, "## Design (CLAUDE.md)\n- rule two, since\n- and a third\n").unwrap();
+        let got = read_as(&snap, &file.display().to_string(), &["design"]).unwrap();
+        assert!(got.contains("2: - rule one") && !got.contains("since"), "as it began: {got}");
+        assert_eq!(snap.named_rules(&["design".into()])[0].lines, 2);
+        std::fs::remove_file(&file).unwrap();
+        assert!(read_as(&snap, &file.display().to_string(), &["design"]).unwrap().contains("2: - rule one"));
+    }
+
+    /// Run from a session's checkout, the files are the main checkout's — never the session's own `.sb/` copy;
+    /// from the main checkout, its own; a bare repository's checkout has no main one: nothing read, said once.
+    #[test]
+    fn from_a_sessions_checkout_the_rules_files_are_the_main_checkouts() {
+        let (s, main, wt, snap) = rules_fixture("snapread-rules-main", &[("design", &[".sb/dev/design.md"])]);
+        assert_eq!(crate::instructions::main_or_self(&wt), Some(main.clone()));
+        assert_eq!(crate::instructions::main_or_self(&main), Some(main.clone()), "the main checkout: itself");
+        assert_eq!(
+            snap.named_rules(&["design".into()])[0].rel,
+            main.join(".sb/dev/design.md").display().to_string()
+        );
+        for f in [".sb/dev/design.md".to_string(), wt.join(".sb/dev/design.md").display().to_string()] {
+            let got = read_as(&snap, &f, &["design"]);
+            assert!(!format!("{got:?}").contains("the session's own copy"), "{f}: {got:?}");
+        }
+        // (a bare repository's worktree)
+        let dir = crate::paths::real(&s).unwrap();
+        git(&dir, &["clone", "-q", "--bare", "main", "b.git"]);
+        git(&dir.join("b.git"), &["worktree", "add", "-q", "../bw", "main"]);
+        let bw = dir.join("bw");
+        assert_eq!(crate::instructions::main_or_self(&bw), None);
+        let tree = crate::snapshot::snap(&bw).unwrap().id;
+        let mut bare = Snap::list(&bw, &tree).unwrap();
+        bare.name(None, [("design".to_string(), vec![".sb/dev/design.md".to_string()])].into());
+        assert!(bare.named_rules(&["design".into()]).is_empty(), "the prompts quiet");
+        assert!(crate::reviewer::named_said(Some(&bare), &["design".into()], false).is_empty());
+        assert_eq!(
+            crate::reviewer::named_aside(Some(&bare), None),
+            ["review.rules: this repository has no main checkout, so its files aren't read"]
+        );
     }
 
     /// A snapshot let go here (the main loop, a card's `n`) frees its listing and texts on a worker.

@@ -2392,7 +2392,10 @@ continued from it, and nothing of the chat goes into what it's sent
   and names each with its changed lines to read itself; one no reader read is said at its end and in the report's
   first line. Its prompt names the project's rules — the checkout's CLAUDE.md, CLAUDE.local.md, AGENTS.md, one git
   ignores read from the checkout (said so; a long one asked whole answers its headings, the prompt saying to read it
-  by their ranges) — or says there are none, tarae having looked. (Listing and grading the changed files is the review's own,
+  by their ranges) — or says there are none, tarae having looked. Beside them, the files your own config's
+  `review.rules` names for `reviewer` (or, on a board, for an angle): paths in the repository's main checkout, read
+  once as the snapshot is taken, listed by absolute path with their lines (one not there is left out; one named like
+  a key, a link or one over 8 MB is listed as not read, with why), and read by that path only. (Listing and grading the changed files is the review's own,
   as `space v v`'s: in a partial clone that may fetch what it needs to count lines; none of it is sent.) No snapshot can be taken: it doesn't start, and says
   why.
 
@@ -2491,6 +2494,16 @@ own kind of fault.
 - **Your own angles.** `review.angles` replaces the built-in ones with your own `[[review.angles]]` tables:
   `name`, `ask`, `when` (`always`, `behaviour`, `high`, `screen`), `paths`, `languages`, `findings-max`. Only
   your own config sets it, because a project's angle could talk its own reviewer into anything.
+- **Rules files an angle reads.** `review.rules` names files of the repository's main checkout an angle reads
+  besides the project's CLAUDE.md or AGENTS.md, keyed by angle name (`reviewer` for `space v c`):
+  ```toml
+  [review.rules]
+  design = [".sb/decisions/design.md", ".sb/dev/design.md"]
+  ```
+  They're listed in that angle's own ask, after the diff's cached block (so the other angles don't pay for them),
+  and in a skeptic's when it judges that angle's claims. Run from a session's checkout, they're the main
+  checkout's. A key that names no angle is said as the board starts; a repository with no main checkout (a bare
+  one's) reads none, said once. Only your own config sets it: a project naming files would be a read capability.
 - **Each angle is a process of its own**, kept apart as the reviewer is: no settings, read-only tools, never
   the author's conversation. Every member is first sent the same diff, as a block of its own marked for the
   prompt cache (its own ask in the block after it), and every member lists the same tools, so the members

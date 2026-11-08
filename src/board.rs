@@ -696,11 +696,12 @@ fn cut(text: &str, max: usize) -> String {
     }
 }
 
-/// What an angle is asked after the diff and the project's rules (`reviewer::prefix`): its own ask, how to pin.
-pub fn angle_ask(a: &Angle) -> String {
+/// What an angle is asked after the diff and the project's rules (`reviewer::prefix`): its own ask, its own
+/// `review.rules` files (`named`: `reviewer::named_said`), how to pin.
+pub fn angle_ask(a: &Angle, named: &str) -> String {
     format!(
         "Read the code around each change where you need to.\n\n\
-         You are one of several readers of these changes, each from its own angle (angle: {}). Yours:\n{}\n\n\
+         You are one of several readers of these changes, each from its own angle (angle: {}). Yours:\n{}{named}\n\n\
          Pin each finding to its exact lines with the note tool — one or two sentences: what's wrong and why it \
          matters. At most {}, the most important first, no style nits: a second reader checks each by tracing \
          it in the code, so say what you saw. Then answer with a short verdict: what you looked at, the worst \
@@ -711,8 +712,8 @@ pub fn angle_ask(a: &Angle) -> String {
 
 /// What a skeptic is asked after the diff: the claims of its group as data in a block of their own (they're
 /// another model's words about files it read — material, never orders), then the job: refute, confirm only
-/// what it can trace.
-pub fn skeptic_ask(root: &Path, board: &Board, g: usize) -> String {
+/// what it can trace — and the `review.rules` files of their angles (`named`: `reviewer::named_said`).
+pub fn skeptic_ask(root: &Path, board: &Board, g: usize, named: &str) -> String {
     let group = board.groups.get(g).map_or(&[][..], |g| &g[..]);
     let mut listed = String::new();
     for (n, &i) in group.iter().enumerate() {
@@ -734,8 +735,20 @@ pub fn skeptic_ask(root: &Path, board: &Board, g: usize) -> String {
          the wrong result. If you can't trace it, or it depends on something you can't see, refute it and say \
          what's missing. Answer every claim with the judge tool: its number, confirmed or refuted, and the \
          trace (or why not). Two claims that are the same failure: confirm the first, then judge the second \
-         with same_as the first. Then answer with one line."
+         with same_as the first. Then answer with one line.{named}"
     )
+}
+
+/// The angles of skeptic `g`'s claims, each once, in its claims' order.
+pub fn skeptic_angles(board: &Board, g: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for &i in board.groups.get(g).map_or(&[][..], |g| &g[..]) {
+        let name = &board.angles[board.claims[i].angle].name;
+        if !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    out
 }
 
 /// The skeptic's tool, as its server lists it (to every member of the board: one prompt prefix for all).

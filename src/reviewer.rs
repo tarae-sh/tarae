@@ -7,7 +7,8 @@
 //!   conversation in what it's sent: the diff and the ask, that's all.
 //! - Read-only, and tarae's tools only ("tarae native", user 2026-10-20): `read` and `search` over the snapshot
 //!   it took (`snapread.rs` — the files as they were when it began, from git's objects: never the checkout you go
-//!   on editing, nothing outside it, no file named like a key) and `note` (a skeptic's `judge`) — tarae's own
+//!   on editing, nothing outside it, no file named like a key; beside it only the main checkout's files
+//!   `review.rules` gives the member, as read when it began) and `note` (a skeptic's `judge`) — tarae's own
 //!   MCP server, those allowed up front. No tool of Claude Code's (`--tools ""`): any it asks for is refused,
 //!   by name and as a second guard (`--disallowedTools`).
 //! - The diff is data: wrapped in a block whose name holds a nonce (the diff can't close it), the ask said
@@ -574,6 +575,76 @@ pub fn rules_said(rules: &[crate::snapread::Rule]) -> String {
     )
 }
 
+/// What a member's ask says of the `review.rules` files of `keys` (`Snap::named_rules`): each by its absolute
+/// path with its lines, to read whole by that range (they have one heading or none, and search doesn't reach
+/// them); one there but not read, with why. Empty: none named, or none there. After a board's cache mark, in its
+/// own ask (the shared prefix can't hold one angle's), or the one pass's beside its instruction files; a
+/// skeptic's are the angles' of its claims. The mark said once for them all, not on each (every member's tokens).
+pub fn named_said(snap: Option<&crate::snapread::Snap>, keys: &[String], skeptic: bool) -> String {
+    let rules = snap.map(|s| s.named_rules(keys)).unwrap_or_default();
+    let read: Vec<String> = (rules.iter())
+        .filter(|r| r.unread.is_none())
+        .map(|r| format!("{} ({})", r.rel, crate::nav::count(r.lines, "line")))
+        .collect();
+    let unread: Vec<String> =
+        (rules.iter()).filter_map(|r| Some(format!("{} ({})", r.rel, r.unread.as_ref()?))).collect();
+    let mut out = String::new();
+    if !read.is_empty() {
+        let how = match skeptic {
+            false => {
+                "Read each whole first, by its line range (`<path>:1-<lines>`), several in one call: they are \
+                      the bar too."
+            }
+            true => {
+                "Where a claim rests on one, read it whole by its line range (`<path>:1-<lines>`), several in \
+                     one call."
+            }
+        };
+        out.push_str(&format!(
+            "\n\nRules the user's config names for this review (review.rules) — files of the main checkout, as they \
+             were when this review began: {}. read gives them by these paths; search doesn't reach them. {how}",
+            read.join(", ")
+        ));
+    }
+    if !unread.is_empty() {
+        let verdict = if skeptic { "" } else { " — say so in your verdict" };
+        out.push_str(&format!("\n\nNamed in review.rules but not read{verdict}: {}.", unread.join(", ")));
+    }
+    out
+}
+
+/// The `review.rules` keys of member `role`: the one pass's `reviewer`, an angle its name, a skeptic the angles
+/// of the claims it judges.
+fn named_keys(r: &Reviewer, role: Role) -> Vec<String> {
+    let b = r.board.as_deref();
+    match role {
+        Role::One => vec!["reviewer".to_string()],
+        Role::Angle(a) => b.and_then(|b| b.angles.get(a)).map(|a| a.name.clone()).into_iter().collect(),
+        Role::Skeptic(g) => b.map_or_else(Vec::new, |b| crate::board::skeptic_angles(b, g)),
+    }
+}
+
+/// What's said once as a review starts of `review.rules` (`aside`): a repository with no main checkout, whose
+/// files aren't read (the prompts quiet, as for a missing file) — and, a board's, the keys that name no angle it
+/// has (`angles`: every angle there is, not only those chosen).
+pub(crate) fn named_aside(snap: Option<&crate::snapread::Snap>, angles: Option<&[String]>) -> Vec<String> {
+    let Some(named) = snap.map(|s| &s.named).filter(|n| !n.keys.is_empty()) else { return Vec::new() };
+    if named.main.is_none() {
+        return vec!["review.rules: this repository has no main checkout, so its files aren't read".into()];
+    }
+    let Some(angles) = angles else { return Vec::new() };
+    let unknown: Vec<&str> =
+        (named.keys.keys()).filter(|k| *k != "reviewer" && !angles.contains(k)).map(String::as_str).collect();
+    match unknown.is_empty() {
+        true => Vec::new(),
+        false => vec![format!(
+            "review.rules names no angle {} (angles: {})",
+            unknown.join(", "),
+            angles.join(", ")
+        )],
+    }
+}
+
 /// What every member's message begins with — the diff as data in its block and the warning before and after
 /// it: the same for each. A board's members get it as a content block of its own, marked for the prompt
 /// cache, their own ask in the block after it (`content`): the members after the first read it from there.
@@ -618,17 +689,29 @@ pub(crate) fn begin(
     let prefix = prefix(&t.label, n, &t.diff, &nonce, &rules);
     // (a round after its own verdict on this change: what changed since, read first — frictions29 #75)
     let again = ed.workspace.reviewer.as_ref().filter(|_| board.is_none()).and_then(|r| again_said(r, &t));
+    let snap = t.snap.as_deref();
     let members = match &board {
-        None => vec![Member::new(
-            Role::One,
-            ask(&t.label, n, &t.diff, &nonce, &rules) + again.as_deref().unwrap_or(""),
-        )],
+        None => {
+            let rules = rules + &named_said(snap, &["reviewer".into()], false);
+            vec![Member::new(
+                Role::One,
+                ask(&t.label, n, &t.diff, &nonce, &rules) + again.as_deref().unwrap_or(""),
+            )]
+        }
         Some(b) => (b.angles.iter().enumerate())
-            .map(|(i, a)| Member::new(Role::Angle(i), crate::board::angle_ask(a)))
+            .map(|(i, a)| {
+                let named = named_said(snap, std::slice::from_ref(&a.name), false);
+                Member::new(Role::Angle(i), crate::board::angle_ask(a, &named))
+            })
             .collect(),
     };
     // (what it doesn't read as it was: the files as they are, new files left out)
     let mut aside: Vec<String> = t.said.iter().cloned().collect();
+    let angles: Option<Vec<String>> = board.as_ref().map(|_| {
+        let all = ed.config.review_angles.clone().unwrap_or_else(crate::board::built_in);
+        all.into_iter().map(|a| a.name).collect()
+    });
+    aside.extend(named_aside(snap, angles.as_deref()));
     if t.left_out > 0 {
         aside.push(format!("{} not read", crate::nav::count(t.left_out, "new file")));
     }
@@ -1130,8 +1213,13 @@ fn after(ed: &mut Editor, i: usize) {
             let angles_over = r.members.iter().all(|m| !matches!(m.role, Role::Angle(_)) || m.over());
             if angles_over {
                 b.group(skeptics_max);
-                let asks: Vec<String> =
-                    (0..b.groups.len()).map(|g| crate::board::skeptic_ask(&r.root, b, g)).collect();
+                let snap = r.snap.as_deref();
+                let asks: Vec<String> = (0..b.groups.len())
+                    .map(|g| {
+                        let named = named_said(snap, &crate::board::skeptic_angles(b, g), true);
+                        crate::board::skeptic_ask(&r.root, b, g, &named)
+                    })
+                    .collect();
                 for (g, ask) in asks.into_iter().enumerate() {
                     r.members.push(Member::new(Role::Skeptic(g), ask));
                 }
@@ -1444,17 +1532,15 @@ fn reading(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> b
         return false;
     }
     let Some(r) = ed.workspace.reviewer.as_ref() else { return false };
-    if r.by_generation(generation).is_none_or(|i| r.members[i].over()) {
-        return false;
-    }
+    let Some(i) = r.by_generation(generation).filter(|&i| !r.members[i].over()) else { return false };
     let (Some(id), Ok(rev)) = (msg.get("id").cloned(), crate::mcp::rev(msg)) else { return false };
-    let snap = r.snap.clone();
+    let (snap, named) = (r.snap.clone(), named_keys(r, r.members[i].role));
     let (args, name, request_id) =
         (msg["params"]["arguments"].clone(), name.to_string(), request_id.to_string());
     ed.events.jobs().spawn(move || {
         let (r, seen) = match &snap {
             None => (Err("there's nothing to read: this review has no snapshot".to_string()), Vec::new()),
-            Some(s) if name == "read" => crate::readtool::read_snapshot_seen(s, &args),
+            Some(s) if name == "read" => crate::readtool::read_snapshot_seen(s, &args, &named),
             Some(s) => (crate::nav::search_snapshot(s, &args), Vec::new()),
         };
         // (its hold on the snapshot let go here: the last one frees its texts off the loop)
@@ -5183,6 +5269,69 @@ mod tests {
         let said = "The project's rules are in CLAUDE.md (2 lines — the checkout's: git ignores it";
         assert!(r.prefix.contains(said), "{}", r.prefix);
         assert!(r.members[0].ask.contains(said), "the one pass's message holds it");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `review.rules`' files are named in their angle's own ask — after the cache mark: never in the prefix every
+    /// member shares, never in another angle's ask — by absolute path with their lines, one mark for them; the
+    /// design member's `read` gives its file, the tests member's doesn't; a key naming no angle is said as the
+    /// board starts; the `reviewer` key reaches the one pass. Run from the main checkout: its own files.
+    #[test]
+    fn the_rules_files_are_named_in_their_angles_ask_and_the_one_passs() {
+        let (_s, dir, repo) = place("rules-asks");
+        std::fs::write(repo.join(".git/info/exclude"), ".sb/\n").unwrap();
+        std::fs::create_dir_all(repo.join(".sb")).unwrap();
+        std::fs::write(repo.join(".sb/design.md"), "## Design (CLAUDE.md)\n- cells, not chars\n").unwrap();
+        std::fs::write(repo.join(".sb/reviewer.md"), "the one pass's rule\n").unwrap();
+        let at = |rel: &str| repo.join(rel).display().to_string();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.config.review_rules =
+            [("design", ".sb/design.md"), ("desgin", ".sb/design.md"), ("reviewer", ".sb/reviewer.md")]
+                .map(|(k, p)| (k.to_string(), vec![p.to_string()]))
+                .into();
+        let always =
+            |a: crate::board::Angle| crate::board::Angle { when: vec![crate::board::When::Always], ..a };
+        let angles = crate::board::built_in().into_iter().filter(|a| a.name == "design" || a.name == "tests");
+        ed.config.review_angles = Some(angles.map(always).collect());
+        let read = |id: &str, rpc| tool_call(id, rpc, "read", json!({"files": [at(".sb/design.md")]}));
+        let (_, log) = fake_board(
+            &mut ed,
+            &dir,
+            &[
+                (&["(angle: design)"], vec![read("d1", 1), result("No findings.")]),
+                (&["(angle: tests)"], vec![read("t1", 2), result("No findings.")]),
+            ],
+        );
+        boarded(&mut ed, &repo);
+        let r = ed.workspace.reviewer.as_ref().unwrap();
+        let ask_of = |name: &str| {
+            let i = (0..r.members.len()).find(|&i| r.member_name(i) == name).unwrap();
+            r.members[i].ask.clone()
+        };
+        let listed = format!(
+            "(review.rules) — files of the main checkout, as they were when this review began: {} (2 lines). \
+             read gives them by these paths",
+            at(".sb/design.md")
+        );
+        assert!(ask_of("design").contains(&listed), "{}", ask_of("design"));
+        assert!(!ask_of("design").contains("reviewer.md"), "the one pass's isn't the angle's");
+        assert!(!ask_of("tests").contains("review.rules"), "{}", ask_of("tests"));
+        assert!(!r.prefix.contains(".sb/design.md"), "not in the shared prefix: {}", r.prefix);
+        let (said, failed) = tool_answer(&log, "d1");
+        assert!(!failed && said.contains("2: - cells, not chars"), "{said}");
+        let (said, failed) = tool_answer(&log, "t1");
+        assert!(failed && said.contains("no such file in the snapshot"), "{said}");
+        let unknown = "review.rules names no angle desgin (angles: tests, design)";
+        assert!(ed.messages.iter().any(|m| m.2.contains(unknown)), "{:?}", ed.messages);
+        // The one pass: the `reviewer` key's, beside the instruction files
+        ask_in(&mut ed, repo.clone(), None, false);
+        settle_until(&mut ed, |ed| {
+            ed.workspace.reviewer.as_ref().is_some_and(|r| r.board.is_none() && r.reading())
+        });
+        let ask = ed.workspace.reviewer.as_ref().unwrap().members[0].ask.clone();
+        assert!(ask.contains(&format!("{} (1 line)", at(".sb/reviewer.md"))), "{ask}");
+        assert!(!ask.contains(".sb/design.md"), "{ask}");
+        stop(&mut ed);
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -410,6 +410,13 @@ fn main_of(root: &Path) -> Option<PathBuf> {
     crate::gitrepo::repo(root).ok().and_then(|r| crate::worktree::main_checkout(&r.common_dir, root))
 }
 
+/// The main checkout of checkout `root`'s repository by its real path — `root` itself when it's that one (its
+/// `.git` a folder); None: the repository has none (a bare one's worktree). Git runs: a worker.
+pub fn main_or_self(root: &Path) -> Option<PathBuf> {
+    let real = crate::paths::real(root).unwrap_or_else(|| root.to_path_buf());
+    main_of(&real).or_else(|| real.join(".git").is_dir().then_some(real))
+}
+
 /// The cards for checkout `root`'s `rel`, either direction, wherever they wait — up, or parked in any session —
 /// gone: the copy is the main checkout's now, nothing to take or carry (#415). Said calmly where any went (true).
 fn same_now(ed: &mut Editor, root: &Path, rel: &str) -> bool {

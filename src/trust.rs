@@ -61,7 +61,7 @@ pub const RISKY: &[&str] = &[
 /// Settings only your own config sets — refused from a project's `.tarae.toml` and `.tarae.local.toml` alike,
 /// trusted or not (said): they decide whose credentials Claude uses and who pays, whether what you use is
 /// counted (`features.count`), whether your cards and your time on reviewed changes are kept (`llm.card-record`,
-/// `review.record`), how much of your turns' history is (`llm.turns-max-mb`), what the board's Claudes are asked (`review.angles`) and how many of them run on your
+/// `review.record`), how much of your turns' history is (`llm.turns-max-mb`), what the board's Claudes are asked and read (`review.angles`, `review.rules`) and how many of them run on your
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
 /// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`), whom Claude's commands
@@ -79,6 +79,8 @@ pub const YOURS_ONLY: &[&str] = &[
     "editor.zellij-keys",
     // (what the board's Claudes are asked: a project's angle could talk its own reviewer into anything)
     "review.angles",
+    // (files the reviewer reads: a project naming them would be a read capability, and a project never has one)
+    "review.rules",
     // (how many of them: each is billed on your reviewer credential, ~200 MB while it reads)
     "review.skeptics-max",
     "review.board-at-once",

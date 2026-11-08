@@ -3924,7 +3924,7 @@ pub(crate) fn taking(
     let open = (ed.workspace.code_review.as_ref())
         .filter(|r| branch.is_none() && !matches!(r.base, Base::Turn { .. }));
     let fixed: Option<(PathBuf, Base)> = open.map(|r| (r.root.clone(), r.base.clone()));
-    take_work(crate::risk::Rules::of(&ed.config), cwd, branch, fixed)
+    take_work(crate::risk::Rules::of(&ed.config), ed.config.review_rules.clone(), cwd, branch, fixed)
 }
 
 /// Snapshot `t` taken again, of the same base whatever is open now (the board card's `y` once the changes moved —
@@ -3935,13 +3935,20 @@ pub(crate) fn retaking(ed: &Editor, t: &Taken) -> impl FnOnce() -> Result<Taken,
         Base::Branch { name, .. } => (Some(name.clone()), None),
         _ => (None, Some((t.root.clone(), t.base.clone()))),
     };
-    take_work(crate::risk::Rules::of(&ed.config), t.root.clone(), branch, fixed)
+    take_work(
+        crate::risk::Rules::of(&ed.config),
+        ed.config.review_rules.clone(),
+        t.root.clone(),
+        branch,
+        fixed,
+    )
 }
 
 /// `taking`'s work: `fixed` the root and base when known (else the checkout around `cwd`, since `branch` or
-/// HEAD).
+/// HEAD); `named`: `review.rules`, its files read from the main checkout with the snapshot (`Snap::name`).
 fn take_work(
     rules: crate::risk::Rules,
+    named: std::collections::BTreeMap<String, Vec<String>>,
     cwd: PathBuf,
     branch: Option<String>,
     fixed: Option<(PathBuf, Base)>,
@@ -3985,7 +3992,10 @@ fn take_work(
         // — its tools read nothing else)
         let tree = crate::snapshot::snap(&root).map_err(|e| format!("no snapshot of the changes ({e})"))?;
         t.left_out = tree.left_out;
-        let snap = crate::snapread::Snap::list(&root, &tree.id)?;
+        let mut snap = crate::snapread::Snap::list(&root, &tree.id)?;
+        if !named.is_empty() {
+            snap.name(crate::instructions::main_or_self(&root), named);
+        }
         t.grades = grade_files(&root, Some(&rev), &t.files, &[], &rules, &Asked::default())?.grades;
         t.rules = snap.rules();
         if snap.missing() > 0 {
@@ -9476,7 +9486,7 @@ mod tests {
     fn a_key_named_files_change_isnt_in_the_diff_since_a_branch() {
         let dir = key_repo("keydiff-branch", &key_changes());
         let rules = crate::risk::Rules::of(&Default::default());
-        let t = take_work(rules, dir.clone(), Some("main".into()), None)().unwrap();
+        let t = take_work(rules, Default::default(), dir.clone(), Some("main".into()), None)().unwrap();
         key_left_out_of(&t.diff);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -9491,7 +9501,7 @@ mod tests {
         std::fs::remove_file(dir.join("+t")).unwrap();
         std::os::unix::fs::symlink("a.txt", dir.join("+t")).unwrap();
         let rules = crate::risk::Rules::of(&Default::default());
-        let t = take_work(rules, dir.clone(), None, None)().unwrap();
+        let t = take_work(rules, Default::default(), dir.clone(), None, None)().unwrap();
         assert_eq!(t.label, "uncommitted");
         key_left_out_of(&t.diff);
         assert!(t.diff.starts_with("diff --git a/+t b/+t") && t.diff.contains("+a.txt"), "{}", t.diff);
@@ -9578,7 +9588,8 @@ mod tests {
         std::fs::write(&marker, "tarae-outside-marker\n").unwrap();
         std::os::unix::fs::symlink(&marker, dir.join("l")).unwrap();
         let rules = crate::risk::Rules::of(&Default::default());
-        let t = take_work(rules, dir.clone(), None, Some((dir.clone(), Base::Head)))().unwrap();
+        let t = take_work(rules, Default::default(), dir.clone(), None, Some((dir.clone(), Base::Head)))()
+            .unwrap();
         assert!(!t.diff.contains("tarae-outside-marker"), "{}", t.diff);
         assert!(t.diff.contains(&format!("+{}", marker.display())), "{}", t.diff);
         assert_eq!(since_work(t.digests)(), Vec::<PathBuf>::new(), "not changed since");

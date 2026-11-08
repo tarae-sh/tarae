@@ -124,6 +124,7 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `review.quiet` | list of strings | `[]` | Code review: files that are tests, docs or snapshots — their changes graded quiet (never over a high-risk one). Names and paths as review.risky |
 | `review.screen` | list of strings | `[]` | Code review: the files that draw the screen — a change in one brings the board's design angle (space v C). Names and paths as review.risky |
 | `review.angles` | list of tables | correctness, security, tests, design | The board's angles (space v C): [[review.angles]] tables of name, ask, when (always, behaviour, high, screen), paths, languages, findings-max — replacing the built-in correctness, security, tests, design. Only your own config sets it |
+| `review.rules` | table of lists of paths | `{}` | Files of the repository's main checkout a board's angle reads besides the project's CLAUDE.md or AGENTS.md: [review.rules] design = [".sb/dev/design.md"] — keyed by angle name, `reviewer` for space v c. Read once as the review begins; one not there is left out. Only your own config sets it |
 | `review.board-at-once` | integer 1–8 | `3` | The board's Claudes reading at once, every session's together (one under memory pressure, none while it's critical). Only your own config sets it |
 | `review.skeptics-max` | integer 0–50 | `12` | The board's skeptics at most — the claims of groups past it go to you unchecked. Only your own config sets it |
 
