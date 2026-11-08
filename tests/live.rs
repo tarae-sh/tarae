@@ -3991,6 +3991,402 @@ fn reviewer_tools_ab() {
     assert!(!rows.is_empty(), "no run");
 }
 
+/// The files `reviewer_rules_ab`'s arm B names for the design angle: the design and UX rules moved out of
+/// CLAUDE.md into main's `.sb/` (≈ 54 KB on 2026-11-08).
+const RULES_FILES: [&str; 4] =
+    [".sb/decisions/design.md", ".sb/dev/design.md", ".sb/decisions/ux.md", ".sb/dev/ux.md"];
+
+/// `AB_BUGS` the slim CLAUDE.md's rules still hold ("One way each, in term.rs": right-align = `pad_left`, cut =
+/// `fit_ellipsis`) — what both arms have the bar for.
+const CLAUDE_MD_BUGS: [&str; 2] = ["pad_left", "fit_ellipsis"];
+
+/// What CLAUDE.md doesn't speak of and `RULES_FILES` do (the corpus's code does too — `reviewer_rules_ab`'s
+/// limit), planted in `TOOLS_CORPUS` beside `CLAUDE_MD_BUGS`: the slot's tabs a cell
+/// nearer its edge than `PAD` (`.sb/dev/design.md`, Panels: text `PAD` (2) from a panel's edge), and the offer
+/// card flush on what's below it (`.sb/dev/ux.md`: a card at the bottom of the code keeps a full row of air), its
+/// comment changed to match so the diff doesn't give it away. Each an edit within lines: `AB_BUGS`' stay put.
+const RULES_BUGS: [AbBug; 2] = [
+    AbBug {
+        name: "panel PAD",
+        file: "src/term.rs",
+        edits: &[(
+            "queue!(out, Spaces(PAD))?;\n    let mut used = PAD;",
+            "queue!(out, Spaces(PAD - 1))?; // (a cell nearer the edge: room for one more tab)\n    let mut used = \
+             PAD - 1;",
+        )],
+        at: &[("term.rs", 1057, 1062)],
+        words: &["PAD - 1"],
+    },
+    AbBug {
+        name: "card air",
+        file: "src/term.rs",
+        edits: &[(
+            "// (its bottom edge is the half row of air over what's below — the slot, the status line)\n        \
+             let y = bottom.checked_sub(h)?.max(top);",
+            "// (its bottom edge on what's below — the slot, the status line — no row of the code given up)\n        \
+             let y = (bottom + 1).checked_sub(h)?.max(top);",
+        )],
+        at: &[("term.rs", 7246, 7251)],
+        words: &["row of air", "bottom + 1"],
+    },
+];
+
+/// `board::built_in`'s design ask as of `review.rules` (5f584222): `review.angles` replaces the built-in angles,
+/// so the one angle is given whole.
+const DESIGN_ASK: &str = "What the user sees. The project's own rules on the screen and its words are the bar \
+     (its CLAUDE.md or AGENTS.md: design, UX, glyphs). Look for: widths counted in characters where the screen \
+     counts cells (CJK, emoji), alignment and padding off, a colour or dim level outside the theme's set, text \
+     cut mid-word or running over, rows that jump when state changes, empty and failure states not said, \
+     glyphs the rules don't list.";
+
+/// One run of `reviewer_rules_ab`: its arm, tokens written (input + cache written), $, claims, those citing a
+/// rules file, the planted bugs found.
+struct RulesRun {
+    arm: &'static str,
+    written: u64,
+    cost: f64,
+    claims: usize,
+    citing: usize,
+    found: Vec<&'static str>,
+}
+
+/// `review.rules`' A/B: the board's design angle alone (no skeptic) on one screen change of `TOOLS_CORPUS` —
+/// `CLAUDE_MD_BUGS`, whose rules the slim CLAUDE.md holds, and `RULES_BUGS`, whose rules moved out of it into
+/// the files — without (A) and with (B) `[review.rules] design` naming `RULES_FILES`. Both arms' checkouts
+/// carry main's CLAUDE.md and the four files in a git-ignored `.sb/`, as a review of tarae does: only the setting
+/// differs. The arms alternate (A B, then B A). Per run: tokens (input + cache written), $, each rules file read
+/// whole or by ranges, the claims that cite a rules file or hit a planted bug. `TARAE_AB_RUNS` (3 a side — the
+/// counts a direction, not a result: said at the end), `TARAE_AB_BUDGET` ($ claude reports, 10: no run starts
+/// that could pass it at the dearest run so far), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_MAIN` (the checkout
+/// CLAUDE.md and `.sb/` come from; the main one), `TARAE_AB_DRY=1` (a stand-in claude, `rules_ab_stand_in`:
+/// the harness and the tallies checked, nothing spent). Rows to `target/live/reviewer-rules-ab.tsv`, streams
+/// beside it in `target/live/reviewer-rules-ab/`.
+///
+/// Its limit: `RULES_BUGS` are stated by the corpus's code too — chrome.rs's module doc says `PAD`, the card's
+/// neighbours say "half row of air", and `room` at term.rs:1041 still subtracts the full `PAD` — so arm A finds
+/// them without the files. On tarae (2026-11-08, 3 a side) every planted bug was found 3/3 in both arms: the files
+/// changed what was cited, not what was found — a direction. A fair test of the files needs a rule no constant,
+/// comment or test states; swap a plant in when the CLAUDE.md condensing pass turns one up. Until then it measures
+/// what the files or the prompt cost and what gets cited when either changes.
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn reviewer_rules_ab() {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let dry = var("TARAE_AB_DRY").is_some();
+    if !have("git") || !dry && !have("claude") {
+        return;
+    }
+    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(3);
+    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(10.0);
+    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let main = var("TARAE_AB_MAIN").map(std::path::PathBuf::from).unwrap_or_else(|| {
+        let common = Command::new("git")
+            .args(["-C", here.to_str().unwrap(), "rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .output()
+            .unwrap();
+        Path::new(String::from_utf8_lossy(&common.stdout).trim()).parent().unwrap().to_path_buf()
+    });
+    let read = |rel: &str| {
+        let p = main.join(rel);
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    };
+    let claude_md = read("CLAUDE.md");
+    let rules: Vec<(&str, String)> = RULES_FILES.iter().map(|r| (*r, read(r))).collect();
+    // The premise: CLAUDE.md holds the bar for `CLAUDE_MD_BUGS` and not for `RULES_BUGS` — the files do
+    assert!(
+        claude_md.contains("pad_left") && claude_md.contains("fit_ellipsis"),
+        "CLAUDE.md's term.rs rules"
+    );
+    assert!(
+        !claude_md.contains("`PAD`") && !claude_md.contains("row of air"),
+        "CLAUDE.md speaks of the planted"
+    );
+    assert!(rules[1].1.contains("`PAD` (2)") && rules[3].1.contains("row of air"), "the files' rules moved");
+    assert!(!DESIGN_ASK.contains(['"', '\\']), "a TOML string as it is");
+    let bugs: Vec<&AbBug> =
+        AB_BUGS.iter().filter(|b| CLAUDE_MD_BUGS.contains(&b.name)).chain(&RULES_BUGS).collect();
+    let arms = [("A", false), ("B", true)];
+    let tsv = here.join("target/live/reviewer-rules-ab.tsv");
+    let kept = tsv.with_file_name("reviewer-rules-ab");
+    std::fs::create_dir_all(&kept).unwrap();
+    let mut rows: Vec<RulesRun> = Vec::new();
+    let (mut spent, mut dearest) = (0.0, 0.0_f64);
+    'runs: for run in 0..runs {
+        for a in if run % 2 == 0 { [0, 1] } else { [1, 0] } {
+            if spent + dearest > budget {
+                eprintln!(
+                    "REVIEWER_RULES_AB budget: ${spent:.2} spent, the dearest run ${dearest:.2} — no more runs"
+                );
+                break 'runs;
+            }
+            let (arm, named) = arms[a];
+            let sb = Sandbox::live(&format!("reviewer-rules-ab-{arm}"));
+            assert!(sb.copy_commit(TOOLS_CORPUS, &TOOLS_CORPUS_PATHS), "commit {TOOLS_CORPUS} in this clone");
+            // (git-ignored, as in tarae: read beside the snapshot — the instructions always, the rules if named —
+            // never part of the change)
+            sb.write(".gitignore", "CLAUDE.md\n/.sb/\n");
+            sb.write("CLAUDE.md", &claude_md);
+            for (rel, text) in &rules {
+                std::fs::create_dir_all(sb.file(rel).parent().unwrap()).unwrap();
+                sb.write(rel, text);
+            }
+            sb.git(&["init", "-q", "-b", "main"]);
+            sb.git(&["add", "-A"]);
+            sb.git(&["commit", "-q", "-m", "base"]);
+            for bug in &bugs {
+                let file = sb.file(bug.file);
+                let mut text = std::fs::read_to_string(&file).unwrap();
+                for (was, now) in bug.edits {
+                    assert!(text.contains(was), "{} at {TOOLS_CORPUS}", bug.name);
+                    text = text.replacen(was, now, 1);
+                }
+                std::fs::write(&file, &text).unwrap();
+            }
+            let mut config = format!(
+                "model = \"{model}\"\n\n[review]\nskeptics-max = 0\n\n[[review.angles]]\nname = \"design\"\nwhen = \
+                 \"always\"\nask = \"{DESIGN_ASK}\"\n"
+            );
+            if named {
+                let list: Vec<String> = RULES_FILES.iter().map(|r| format!("\"{r}\"")).collect();
+                config += &format!("\n[review.rules]\ndesign = [{}]\n", list.join(", "));
+            }
+            let stream = teed(&sb, &config);
+            if dry {
+                // (over `teed`'s script: the stand-in in claude's place, its stream teed the same)
+                let script = sb.outside("claude-tee.sh");
+                std::fs::write(&script, rules_ab_stand_in(&sb.work(), &stream, &sb.outside("asked.log")))
+                    .unwrap();
+            }
+            let mut t = sb.spawn(&["README.md"]);
+            let started = Instant::now();
+            t.send(" vC");
+            // (a new place: its board's cost isn't known yet, so the card asks first)
+            t.wait_for("the board's card", |s| s.contains("Start a board"));
+            t.send("\x11y");
+            let deadline = started + Duration::from_secs(if dry { 120 } else { 20 * 60 });
+            let state = loop {
+                std::thread::sleep(Duration::from_secs(if dry { 1 } else { 3 }));
+                let run = t.state_json(0)["workspaces"][0]["reviewer_run"].clone();
+                if run["board"].is_object() && run["state"] != "reading" {
+                    break run["state"].as_str().unwrap_or_default().to_string();
+                }
+                if Instant::now() > deadline {
+                    eprintln!("REVIEWER_RULES_AB timed out: {run:#}\n{}", t.screen().rows.join("\n"));
+                    break "timed out".into();
+                }
+            };
+            let said = std::fs::read_to_string(&stream).unwrap_or_default();
+            let lines: Vec<serde_json::Value> =
+                said.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+            let n = |v: &serde_json::Value, k: &str| v["usage"][k].as_u64().unwrap_or(0);
+            let (mut written, mut cached, mut out, mut cost) = (0, 0, 0, 0.0);
+            for v in lines.iter().filter(|v| v["type"] == "result") {
+                written += n(v, "input_tokens") + n(v, "cache_creation_input_tokens");
+                cached += n(v, "cache_read_input_tokens");
+                out += n(v, "output_tokens");
+                cost += v["total_cost_usd"].as_f64().unwrap_or(0.0);
+            }
+            spent += cost;
+            dearest = dearest.max(cost);
+            // Its calls, each once (a message's blocks can come on lines of their own)
+            let mut ids: Vec<&str> = Vec::new();
+            let calls: Vec<&serde_json::Value> = lines
+                .iter()
+                .filter(|v| v["type"] == "assistant")
+                .flat_map(|v| v["message"]["content"].as_array().into_iter().flatten())
+                .filter(|c| c["type"] == "tool_use")
+                .filter(|c| {
+                    let id = c["id"].as_str().unwrap_or_default();
+                    let new = !ids.contains(&id);
+                    ids.push(id);
+                    new
+                })
+                .collect();
+            let items: Vec<&str> = (calls.iter())
+                .filter(|c| c["name"] == "mcp__tarae__read")
+                .flat_map(|c| c["input"]["files"].as_array().into_iter().flatten())
+                .filter_map(|f| f.as_str())
+                .collect();
+            let reads: Vec<String> = (rules.iter())
+                .map(|(rel, text)| {
+                    let specs: Vec<Option<&str>> = (items.iter())
+                        .map(|f| match f.rfind(':') {
+                            Some(i) if !f[i..].contains('/') => (&f[..i], Some(&f[i + 1..])),
+                            _ => (*f, None),
+                        })
+                        .filter(|(p, _)| p.ends_with(rel))
+                        .map(|(_, spec)| spec)
+                        .collect();
+                    format!("{} {}", rel.trim_start_matches(".sb/"), read_kind(&specs, text.lines().count()))
+                })
+                .collect();
+            let notes: Vec<&serde_json::Value> =
+                calls.iter().filter(|c| c["name"] == "mcp__tarae__note").map(|c| &c["input"]).collect();
+            let (mut found, mut citing, mut shown) = (Vec::new(), 0, Vec::new());
+            for note in &notes {
+                let (path, line) =
+                    (note["path"].as_str().unwrap_or_default(), note["line"].as_u64().unwrap_or(0));
+                let text = note["text"].as_str().unwrap_or_default();
+                let hits: Vec<&str> = (bugs.iter())
+                    .filter(|b| {
+                        b.at.iter().any(|(f, a, z)| path.ends_with(f) && *a <= line && line <= *z)
+                            || b.words.iter().any(|w| text.contains(w))
+                    })
+                    .map(|b| b.name)
+                    .collect();
+                let cites: Vec<&str> = (RULES_FILES.iter())
+                    .map(|r| r.trim_start_matches(".sb/"))
+                    .chain(["CLAUDE.md"])
+                    .filter(|r| text.contains(r))
+                    .collect();
+                citing += usize::from(cites.iter().any(|c| *c != "CLAUDE.md"));
+                if !hits.is_empty() || !cites.is_empty() {
+                    shown.push(format!(
+                        "{path}:{line} [{} · cites {}] {text}",
+                        hits.join(", "),
+                        cites.join(", ")
+                    ));
+                }
+                for h in hits {
+                    if !found.contains(&h) {
+                        found.push(h);
+                    }
+                }
+            }
+            let said = format!(
+                "REVIEWER_RULES_AB {arm} run {}: {state}, {written} tokens (input + cache written; {cached} read from \
+                 the cache, {out} out), ${cost:.3}\n  reads: {}\n  {} claims, {citing} cite a rules file, found \
+                 {found:?}{}",
+                run + 1,
+                reads.join(" · "),
+                notes.len(),
+                shown.iter().map(|s| format!("\n  {}", s.replace('\n', " ⏎ "))).collect::<String>(),
+            );
+            eprintln!("{said}");
+            let name = format!("{arm}-{}-{}", run + 1, std::process::id());
+            let _ = std::fs::copy(&stream, kept.join(format!("{name}.jsonl")));
+            std::fs::write(kept.join(format!("{name}.txt")), &said).unwrap();
+            let row = format!(
+                "{TOOLS_CORPUS}\t{arm}\t{}\t{state}\t{written}\t{cached}\t{out}\t{cost:.4}\t{}\t{}\t{citing}\t{}\n",
+                run + 1,
+                reads.join("; "),
+                notes.len(),
+                found.join(","),
+            );
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
+            f.write_all(row.as_bytes()).unwrap();
+            if dry {
+                // The tallies, on what the stand-in said: B's reads one by ranges, one whole; its claim a hit
+                assert_eq!(state, "done", "{said}");
+                // and what the member was told: CLAUDE.md in both arms, the files in B's only
+                let asked = std::fs::read_to_string(sb.outside("asked.log")).unwrap_or_default();
+                assert!(asked.contains("CLAUDE.md ("), "{arm}: the instructions named");
+                assert_eq!(asked.contains("(review.rules)"), named, "{arm}: the rules named");
+                assert_eq!(asked.contains(&*sb.file(RULES_FILES[3]).to_string_lossy()), named, "{arm}");
+                assert!(
+                    reads[1].starts_with("dev/design.md ranges (20 of ") && reads[2].ends_with(" whole"),
+                    "{said}"
+                );
+                assert_eq!((found.as_slice(), citing, written), (&["panel PAD"][..], 1, 3412), "{said}");
+            }
+            rows.push(RulesRun { arm, written, cost, claims: notes.len(), citing, found });
+        }
+    }
+    eprintln!(
+        "REVIEWER_RULES_AB median (min–max) — arm n: tokens written · $ · claims · citing a rules file"
+    );
+    for (arm, _) in arms {
+        let of: Vec<&RulesRun> = rows.iter().filter(|r| r.arm == arm).collect();
+        let at = |f: &dyn Fn(&RulesRun) -> f64, p: usize| {
+            let v: Vec<f64> = of.iter().map(|r| f(r)).collect();
+            let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |(l, h), x| (l.min(*x), h.max(*x)));
+            format!("{:.p$} ({lo:.p$}–{hi:.p$})", median(v))
+        };
+        let found: Vec<String> = (bugs.iter())
+            .map(|b| {
+                format!("{} {}/{}", b.name, of.iter().filter(|r| r.found.contains(&b.name)).count(), of.len())
+            })
+            .collect();
+        eprintln!(
+            "REVIEWER_RULES_AB {arm} {}: {} · {} · {} · {}\n  found: {}",
+            of.len(),
+            at(&|r| r.written as f64, 0),
+            at(&|r| r.cost, 3),
+            at(&|r| r.claims as f64, 0),
+            at(&|r| r.citing as f64, 0),
+            found.join(" · "),
+        );
+    }
+    eprintln!(
+        "REVIEWER_RULES_AB {} runs a side: the counts are a direction, not a result — 2 of 3 against 1 of 3 is \
+         what chance gives as often as not; a gain is the planted bugs only the files speak of found by B, with \
+         its claims citing them, run after run. Spent ${spent:.2}",
+        rows.len().div_ceil(2),
+    );
+    assert!(!rows.is_empty(), "no run");
+}
+
+/// How a member read a rules file of `lines` lines, from its `read` items naming it (each one's line spec, None
+/// for the bare path): `whole`, `ranges (n of N lines)`, or `not read`.
+fn read_kind(specs: &[Option<&str>], lines: usize) -> String {
+    if specs.is_empty() {
+        return "not read".into();
+    }
+    if specs.iter().any(Option::is_none) {
+        return "whole".into();
+    }
+    let mut seen = vec![false; lines];
+    for part in specs.iter().flatten().flat_map(|s| s.split(',')) {
+        let num = |s: &str| s.trim().parse::<usize>().ok();
+        let (a, z) = match part.split_once('-') {
+            Some((a, z)) if a.trim().is_empty() => (lines.saturating_sub(num(z).unwrap_or(0)) + 1, lines),
+            Some((a, z)) if z.trim().is_empty() => (num(a).unwrap_or(1), lines),
+            Some((a, z)) => (num(a).unwrap_or(1), num(z).unwrap_or(0)),
+            // (a line alone, or a heading's name: none counted)
+            None => num(part).map_or((1, 0), |n| (n, n)),
+        };
+        for i in a.max(1)..=z.min(lines) {
+            seen[i - 1] = true;
+        }
+    }
+    let n = seen.iter().filter(|s| **s).count();
+    if n == lines { "whole".into() } else { format!("ranges ({n} of {lines} lines)") }
+}
+
+/// `reviewer_rules_ab`'s dry claude: what a member's stream holds — a read of two rules files (one by a range,
+/// one whole), a claim citing one on a planted bug, its result — teed to `stream` once its ask has come; what
+/// it's sent kept in `asked` until it's stopped. It speaks no MCP: tarae gets no call, so the board ends with no finding; the
+/// stream is what's tallied.
+fn rules_ab_stand_in(work: &Path, stream: &Path, asked: &Path) -> String {
+    let w = work.display();
+    let usage = serde_json::json!({
+        "input_tokens": 12, "cache_creation_input_tokens": 3400, "cache_read_input_tokens": 9000, "output_tokens": 300
+    });
+    let read = serde_json::json!({"files": [format!("{w}/.sb/dev/design.md:1-20"), format!("{w}/.sb/decisions/ux.md")]});
+    let note = serde_json::json!({"path": "src/term.rs", "line": 1059, "text": "The tabs start 1 cell in: dev/design.md asks PAD (2)"});
+    let lines = [
+        serde_json::json!({"type": "assistant", "message": {"id": "dry1", "usage": usage, "content": [
+            {"type": "tool_use", "id": "r1", "name": "mcp__tarae__read", "input": read}
+        ]}}),
+        serde_json::json!({"type": "assistant", "message": {"id": "dry2", "usage": usage, "content": [
+            {"type": "tool_use", "id": "n1", "name": "mcp__tarae__note", "input": note}
+        ]}}),
+        serde_json::json!({"type": "result", "subtype": "success", "usage": usage, "total_cost_usd": 0.0, "result": "dry"}),
+    ];
+    let quoted: Vec<String> = lines.iter().map(|l| format!("'{l}'")).collect();
+    assert!(lines.iter().all(|l| !l.to_string().contains('\'')), "sh's quotes");
+    format!(
+        "#!/bin/sh\nwhile read -r line; do printf '%s\\n' \"$line\" >> '{asked}'; case \"$line\" in \
+         '{{\"message\"'*) break;; esac; done\nprintf '%s\\n' {} | tee -a '{}'\nwhile read -r line; do printf \
+         '%s\\n' \"$line\" >> '{asked}'; done\n",
+        quoted.join(" "),
+        stream.display(),
+        asked = asked.display()
+    )
+}
+
 /// `space v C`: one real board over a ~4k-token diff (`security` too: `src/` is high-risk here). Its members
 /// get the diff as a block of its own with a cache breakpoint after it, and list the same tools: each one's
 /// first request after the first angle's reads the diff from the prompt cache instead of writing it again.
