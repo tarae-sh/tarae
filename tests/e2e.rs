@@ -1706,8 +1706,10 @@ fn a_wrong_version_is_refused() {
     };
     let mut out = Vec::new();
     tarae_wire::encode(&tarae_wire::ToHost::Hello(hello.clone()), &mut out).unwrap();
-    s.write_all(&out).unwrap();
+    // (the option before the Hello: the host refuses and closes at once, and on macOS an option set on a socket its
+    // peer has closed is EINVAL — #460)
     s.set_read_timeout(Some(sb.timeout())).unwrap();
+    s.write_all(&out).unwrap();
     let mut got = Vec::new();
     s.read_to_end(&mut got).unwrap();
     let mut dec = tarae_wire::Decoder::<tarae_wire::ToInterface>::new();
@@ -1729,8 +1731,8 @@ fn a_wrong_version_is_refused() {
     out.clear();
     tarae_wire::encode(&tarae_wire::ToHost::Hello(tarae_wire::Hello { v: tarae_wire::V, ..hello }), &mut out)
         .unwrap();
-    s.write_all(&out).unwrap();
     s.set_read_timeout(Some(sb.timeout())).unwrap();
+    s.write_all(&out).unwrap();
     let mut dec = tarae_wire::Decoder::<tarae_wire::ToInterface>::new();
     loop {
         match dec.message() {
@@ -1796,8 +1798,9 @@ fn an_attach_saying_it_runs_in_the_hosts_own_panel_is_refused() {
         };
         let mut out = Vec::new();
         tarae_wire::encode(&tarae_wire::ToHost::Hello(hello), &mut out).unwrap();
-        s.write_all(&out).unwrap();
+        // (before the Hello, as `a_wrong_version_is_refused`'s: a refused one is closed at once — #460)
         s.set_read_timeout(Some(sb.timeout())).unwrap();
+        s.write_all(&out).unwrap();
         let mut dec = tarae_wire::Decoder::<tarae_wire::ToInterface>::new();
         loop {
             match dec.message() {
