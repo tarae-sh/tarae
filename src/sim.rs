@@ -66,6 +66,7 @@ mod overlap;
 mod overlay;
 mod panes;
 mod places;
+mod pluginperm;
 mod presence;
 mod presented;
 #[cfg(not(target_os = "linux"))]

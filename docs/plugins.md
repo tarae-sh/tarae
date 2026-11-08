@@ -268,7 +268,10 @@ What comes back while the plugin is busy waits and goes to it in one call; while
 programs and connections aren't read — they wait for it, rather than tarae's memory growing.
 
 `:plugin-permissions` lists each plugin's, with its code's first 12 hex characters (`shasum -a 256` says the rest);
-`:plugin-revoke <plugin>` takes them back; `:plugin-approve <plugin>` shows the card again.
+`:plugin-revoke <plugin>` takes them back; `:plugin-approve <plugin>` shows the card again. An answer or a revoke counts
+from the plugin's very next request; it's kept in `plugin-permissions.json` behind that, on a worker. A write that
+fails is said and tried again, a quit tries once more and names what it couldn't keep, and `:restart` gives a revoke
+not yet kept again.
 
 ## Beside the code, its tab, its panel, its line, its buffers
 

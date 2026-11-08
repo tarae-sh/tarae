@@ -29,7 +29,6 @@ pub(crate) mod overlay;
 mod panel;
 mod perm;
 // (the plugin API and its thread are the runtime's crate's, crates/tarae-wasm — here, the editor's side)
-pub(crate) use perm::approved;
 use tarae_wasm::plugin::{abi, host};
 
 use std::path::{Path, PathBuf};
@@ -55,6 +54,14 @@ use host::{Call, Host, Input, Manifest, Note};
 pub(crate) use io::plugin_process;
 pub use panel::{PanelState as PluginPanelState, key as plugin_panel_key, row_ids as plugin_panel_ids};
 pub use perm::Ask as PluginAsk;
+#[cfg(test)]
+pub(crate) use perm::kept_files as approvals_kept_files;
+pub use perm::{ApprovalsWatch, QUIT_WAIT};
+
+/// Where the plugins' approvals are kept (none in tests) — what the config thread watches (#461).
+pub fn approvals_store() -> Option<PathBuf> {
+    perm::store_path()
+}
 pub use perm::Code as PluginCode;
 
 use crate::document::DocId;
@@ -142,9 +149,15 @@ pub struct Plugins {
     asked: std::collections::HashSet<String>,
     /// What each plugin asked for while its approval card was up: done once you approve, refused if you don't.
     held: std::collections::HashMap<String, Vec<Action>>,
-    /// Where approvals are kept, and when it was last read.
+    /// Where approvals are kept (#461: written behind memory, on workers) — the changes not written yet, in the order
+    /// given (queued, or failed and to be tried again), the last given's sequence, the store's `served` of the newest
+    /// read or write applied to memory, the failures in a row, and whether a retry's timer is set.
     perm_store: Option<PathBuf>,
-    perm_mtime: Option<std::time::SystemTime>,
+    perm_unwritten: perm::Unwritten,
+    perm_given: u64,
+    perm_served: u64,
+    perm_failed: usize,
+    perm_retrying: bool,
     serial: u64,
     /// The panel a plugin shows below the code (the last one to show one), and the plugin whose answer to
     /// you (to a command, a key in its panel, a line typed) is being applied: its panel takes the keys, and
@@ -219,19 +232,21 @@ impl Plugins {
 impl Editor {
     /// The plugins folder's contents changed (the config watcher noticed): load new and changed plugins, drop
     /// missing ones. The first time there's something, the plugin thread starts.
-    pub fn plugins_sync(&mut self, found: Found) {
-        self.plugins_sync_rooted(found, crate::config::state_dir());
+    /// `kept`: the approvals store as the watch last read it — the start's approvals, read on the config thread with
+    /// the plugins first found (#461: no load reads the store; memory is set from it once, before any answer).
+    pub fn plugins_sync(&mut self, found: Found, kept: Option<perm::Kept>) {
+        self.plugins_sync_rooted(found, crate::config::state_dir(), kept);
     }
 
     /// `plugins_sync` with the plugins' state in a test's own scratch (`state`): their own folders
     /// (`state/plugins/<plugin>`). The host started any other way fails the test (`plugins_sync_rooted`).
     #[cfg(test)]
     pub(crate) fn plugins_sync_in(&mut self, state: &std::path::Path, found: Found) {
-        self.plugins_sync_rooted(found, Some(state.to_path_buf()));
+        self.plugins_sync_rooted(found, Some(state.to_path_buf()), None);
     }
 
     /// `plugins_sync`, the plugin thread started with `state` as the state folder its plugins keep their files in.
-    fn plugins_sync_rooted(&mut self, found: Found, state: Option<PathBuf>) {
+    fn plugins_sync_rooted(&mut self, found: Found, state: Option<PathBuf>, kept: Option<perm::Kept>) {
         if self.plugins.is_none() && !found.is_empty() {
             // A test's plugins write in its own scratch, never the real state folder (a `write-own` let past its
             // gate once reached for `~/.local/state/tarae/plugins/demo`): `plugins_sync_in`
@@ -241,8 +256,12 @@ impl Editor {
                 "the plugin host rooted at {state:?}, outside the test's scratch — start it with `plugins_sync_in`"
             );
         }
-        if self.plugins.is_none() && (found.is_empty() || !self.plugins_start(state)) {
+        let starts = self.plugins.is_none();
+        if starts && (found.is_empty() || !self.plugins_start(state, kept.clone().unwrap_or_default())) {
             return;
+        }
+        if let Some(kept) = kept.filter(|_| !starts) {
+            self.plugin_approvals_read(kept);
         }
         if let Some(p) = &self.plugins {
             p.host.sync(found);
@@ -250,8 +269,9 @@ impl Editor {
     }
 
     /// The plugin thread started with `state` as the state folder its plugins keep their files in (None: none — a
-    /// test's stand-in that loads no plugin), nothing loaded yet. false if it couldn't start (said).
-    fn plugins_start(&mut self, state: Option<PathBuf>) -> bool {
+    /// test's stand-in that loads no plugin), nothing loaded yet, the approvals `kept` in memory. false if it couldn't
+    /// start (said).
+    fn plugins_start(&mut self, state: Option<PathBuf>, kept: perm::Kept) -> bool {
         let events = self.events.shared_sender();
         // (`tarae plugin dev`'s marks: `state/plugin-dev/<plugin>.json` — #458)
         let marks = state.as_ref().map(|s| s.join("plugin-dev"));
@@ -284,11 +304,15 @@ impl Editor {
             permissions: Default::default(),
             roots: Default::default(),
             code: Default::default(),
-            approvals: perm::load(perm::store_path().as_deref()),
+            approvals: kept.all,
             asked: Default::default(),
             held: Default::default(),
             perm_store: perm::store_path(),
-            perm_mtime: None,
+            perm_unwritten: Vec::new(),
+            perm_given: 0,
+            perm_served: kept.served,
+            perm_failed: 0,
+            perm_retrying: false,
             procs: Default::default(),
             socks: Default::default(),
             pending: Default::default(),
@@ -309,6 +333,12 @@ impl Editor {
             #[cfg(test)]
             flushed: Vec::new(),
         });
+        // (`:restart`'s revokes not written before its exec: given again, before any plugin loads)
+        for plugin in std::mem::take(&mut self.plugin_revokes_carried) {
+            if self.plugins.as_ref().is_some_and(|p| p.approvals.contains_key(&plugin)) {
+                self.approvals_change(perm::Change::Revoke { plugin });
+            }
+        }
         true
     }
 
@@ -328,7 +358,11 @@ impl Editor {
             asked: Default::default(),
             held: Default::default(),
             perm_store: None,
-            perm_mtime: None,
+            perm_unwritten: Vec::new(),
+            perm_given: 0,
+            perm_served: 0,
+            perm_failed: 0,
+            perm_retrying: false,
             procs: Default::default(),
             socks: Default::default(),
             pending: Default::default(),
@@ -651,17 +685,7 @@ impl Editor {
                     Ok(())
                 }
                 Action::ReadFile(id, path) => {
-                    match self.plugin_may_read(plugin, path) {
-                        Ok(real) => self.plugin_read_now(plugin, *id, real),
-                        Err(None) => {
-                            let at = perm::expand(path).unwrap_or_default();
-                            self.plugin_ask(
-                                plugin,
-                                perm::Ask::Read(*id, std::fs::canonicalize(&at).unwrap_or(at)),
-                            );
-                        }
-                        Err(Some(why)) => self.plugin_events(plugin, vec![abi::HostEvent::Failed(*id, why)]),
-                    }
+                    self.plugin_read(plugin, *id, path);
                     Ok(())
                 }
                 Action::ReadEnv(id, name) => {
@@ -1961,12 +1985,226 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// The approvals kept in `dir`'s state folder from now on (none in tests otherwise).
+    fn stored(ed: &mut Editor, dir: &Path) -> PathBuf {
+        let store = dir.join("state/plugin-permissions.json");
+        ed.plugins.as_mut().unwrap().perm_store = Some(store.clone());
+        store
+    }
+
+    fn kept_has(store: &Path, plugin: &str) -> bool {
+        perm::load(Some(store)).contains_key(plugin)
+    }
+
+    /// The demo reading by a pattern of `reads` (its `a.txt` there), approved, and that yes in its store.
+    fn approved_kept(name: &str, reads: &Path) -> (crate::scratch::Scratch, Editor, PathBuf, PathBuf) {
+        let (s, mut ed, dir) =
+            setup_with(name, "x\n", &abi::demo_reading(&format!("{}/**", reads.display())));
+        std::fs::write(reads.join("a.txt"), "hello").unwrap();
+        let store = stored(&mut ed, &dir);
+        answer(&mut ed, approval, true);
+        settle_until(&mut ed, |_| kept_has(&store, "demo"));
+        (s, ed, dir, store)
+    }
+
+    /// What needs its permissions is refused at once — a read and a program.
+    fn refused_now(ed: &mut Editor, reads: &Path) {
+        ed.toasts.clear();
+        ed.plugin_run("fetch", &reads.join("a.txt").display().to_string()).unwrap();
+        until_said(ed, "failed 10 its permissions wait for your approval");
+        ed.plugin_run("exec", "").unwrap();
+        until_said(ed, "failed 1 its permissions wait for your approval");
+        assert!(!toasts(ed).contains("file 10") && !toasts(ed).contains("exit 1"), "{}", toasts(ed));
+    }
+
+    /// #461: a revoke holds for the plugin's very next action, while its write is still held — memory is the truth,
+    /// the store is written behind it; let go, the store agrees. Broken once by `plugin_may` reading the store.
+    #[test]
+    fn a_revoke_holds_for_the_next_action_before_its_write_lands() {
+        let reads = crate::scratch::Scratch::new("plugins-revoke-held-reads");
+        let (_s, mut ed, _dir, store) = approved_kept("revoke-held", &reads);
+        crate::storewrite::hold(&store, Some(0));
+        ed.plugin_revoke("demo").unwrap();
+        refused_now(&mut ed, &reads);
+        assert!(kept_has(&store, "demo"), "the write held: the store still says approved");
+        crate::storewrite::release(&store, 1);
+        settle_until(&mut ed, |_| !kept_has(&store, "demo"));
+        crate::storewrite::hold(&store, None);
+    }
+
+    /// …and while its write fails: refused all the same, said, tried again until it lands.
+    #[test]
+    fn a_revoke_holds_while_its_failed_write_is_tried_again() {
+        let reads = crate::scratch::Scratch::new("plugins-revoke-failed-reads");
+        let (_s, mut ed, _dir, store) = approved_kept("revoke-failed", &reads);
+        crate::storewrite::fail_next(&store);
+        ed.plugin_revoke("demo").unwrap();
+        until_said(
+            &mut ed,
+            "plugin demo: permissions taken back — not kept yet: a test's failed write, trying again",
+        );
+        refused_now(&mut ed, &reads);
+        assert!(kept_has(&store, "demo"), "failed: the store still says approved");
+        settle_until(&mut ed, |_| !kept_has(&store, "demo"));
+        assert!(ed.plugins.as_ref().unwrap().perm_unwritten.is_empty());
+    }
+
+    /// #461, at quit: a revoke whose write was held and then failed (its retry not come yet) is written by the quit's
+    /// own try — never approved again at the next start —, and nothing is said.
+    #[test]
+    fn a_revoke_not_written_at_quit_is_written_by_the_quit() {
+        let reads = crate::scratch::Scratch::new("plugins-quit-reads");
+        let (_s, mut ed, _dir, store) = approved_kept("quit", &reads);
+        crate::storewrite::hold(&store, Some(0));
+        ed.plugin_revoke("demo").unwrap();
+        crate::storewrite::fail_next(&store);
+        crate::storewrite::release(&store, 1);
+        until_said(&mut ed, "not kept yet");
+        crate::storewrite::hold(&store, None);
+        assert!(kept_has(&store, "demo"), "its write failed");
+        assert_eq!(ed.plugin_approvals_quit(perm::QUIT_WAIT), Vec::<String>::new());
+        assert!(!kept_has(&store, "demo"), "the quit's write");
+    }
+
+    /// …and a write held for good is named within the quit's bound, the store as it was.
+    #[test]
+    fn a_write_held_at_quit_is_named_within_the_bound() {
+        let reads = crate::scratch::Scratch::new("plugins-quit-held-reads");
+        let (_s, mut ed, _dir, store) = approved_kept("quit-held", &reads);
+        crate::storewrite::hold(&store, Some(0));
+        ed.plugin_revoke("demo").unwrap();
+        let t = Instant::now();
+        let said = ed.plugin_approvals_quit(perm::QUIT_WAIT);
+        let took = t.elapsed();
+        assert_eq!(
+            said,
+            ["tarae: not written before quitting (1.0s waited): plugin demo: permissions taken back"]
+        );
+        // (the bound, and room for a loaded runner to wake — never the test's patience)
+        assert!(took < perm::QUIT_WAIT * 3, "took {took:?}");
+        assert!(kept_has(&store, "demo"));
+        crate::storewrite::hold(&store, None);
+    }
+
+    /// #461: writes land in the order given whichever worker runs first, each on the store as it is at its turn —
+    /// memory right after each, before any lands.
+    #[test]
+    fn approval_writes_land_in_the_order_given() {
+        let reads = crate::scratch::Scratch::new("plugins-order-reads");
+        let (_s, mut ed, _dir, store) = approved_kept("order", &reads);
+        for revoke_last in [false, true] {
+            crate::storewrite::hold(&store, Some(0));
+            ed.plugin_revoke("demo").unwrap();
+            assert!(!ed.plugin_approved("demo"));
+            ed.plugin_approve("demo").unwrap();
+            answer(&mut ed, approval, true);
+            assert!(ed.plugin_approved("demo"));
+            if revoke_last {
+                ed.plugin_revoke("demo").unwrap();
+                assert!(!ed.plugin_approved("demo"));
+            }
+            assert!(kept_has(&store, "demo"), "held: as before");
+            crate::storewrite::hold(&store, None);
+            settle_until(&mut ed, |ed| ed.plugins.as_ref().unwrap().perm_unwritten.is_empty());
+            assert_eq!(kept_has(&store, "demo"), !revoke_last, "revoke last: {revoke_last}");
+            assert_eq!(ed.plugin_approved("demo"), !revoke_last);
+        }
+    }
+
+    /// #461: the store read while a write of ours waits (another tarae's change, our own old state) never undoes it —
+    /// the read, with what isn't written yet on top.
+    #[test]
+    fn a_read_of_the_store_while_a_write_waits_doesnt_undo_it() {
+        let reads = crate::scratch::Scratch::new("plugins-read-waits-reads");
+        let (_s, mut ed, _dir, store) = approved_kept("read-waits", &reads);
+        crate::storewrite::hold(&store, Some(0));
+        ed.plugin_revoke("demo").unwrap();
+        let mut watch = perm::ApprovalsWatch::new(Some(store.clone()));
+        let read = watch.changed().expect("the first read");
+        assert!(read.all.contains_key("demo"), "the store still says approved");
+        ed.plugin_approvals_read(read);
+        assert!(!ed.plugin_approved("demo"), "undone by a read");
+        crate::storewrite::hold(&store, None);
+        settle_until(&mut ed, |_| !kept_has(&store, "demo"));
+    }
+
+    /// #461: a read on its way when its permissions are taken back gives no bytes.
+    #[test]
+    fn a_read_whose_permission_was_taken_back_on_its_way_fails() {
+        let reads = crate::scratch::Scratch::new("plugins-read-revoked-reads");
+        let (_s, mut ed, _dir, _store) = approved_kept("read-revoked", &reads);
+        ed.toasts.clear();
+        // (straight to its worker, then the revoke before the loop applies what it read)
+        ed.plugin_read("demo", 10, &reads.join("a.txt").display().to_string());
+        ed.plugin_revoke("demo").unwrap();
+        until_said(&mut ed, "failed 10 its permissions were taken back");
+        assert!(!toasts(&ed).contains("file 10"), "{}", toasts(&ed));
+    }
+
+    /// #461: `:restart` carries a revoke not written, and the next tarae gives it again as its plugins start — its
+    /// store still saying approved.
+    #[test]
+    fn a_revoke_not_written_is_given_again_after_restart() {
+        let reads = crate::scratch::Scratch::new("plugins-restart-reads");
+        let (_s, mut ed, dir, store) = approved_kept("restart", &reads);
+        crate::storewrite::hold(&store, Some(0));
+        ed.plugin_revoke("demo").unwrap();
+        let carried = crate::restart::snapshot(&mut ed)["store_writes"]["plugins"].clone();
+        assert_eq!(carried, serde_json::json!(["demo"]));
+        drop(ed);
+        crate::storewrite::cut(&store);
+        assert!(kept_has(&store, "demo"));
+        let mut ed = Editor::new(Config::default());
+        ed.plugin_revokes_carried = vec!["demo".into()];
+        let kept = perm::ApprovalsWatch::new(Some(store.clone())).changed();
+        ed.plugins_sync_rooted(host::scan(&dir), Some(dir.join("state")), kept);
+        settle_until(&mut ed, |ed| ed.plugin_command("shout").is_some());
+        assert!(!ed.plugin_approved("demo"), "approved again after the restart");
+    }
+
+    /// #461, beside #457's: the approvals' disk and a `read-file`'s stay off the main thread (`perm::disk` counts by
+    /// thread) — a read inside its pattern, one out through a symlink (its card shows the real path), the card's `y`,
+    /// the approval's `y`, a revoke, and a read of the store the watch made, applied.
+    #[test]
+    fn plugin_disk_stays_off_the_main_thread() {
+        let reads = crate::scratch::Scratch::new("plugins-disk-461-reads");
+        let (_s, mut ed, dir) =
+            setup_with("disk-461", "x\n", &abi::demo_reading(&format!("{}/**", reads.display())));
+        std::fs::write(reads.join("a.txt"), "hello").unwrap();
+        let outside = dir.join("outside.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        std::os::unix::fs::symlink(&outside, reads.join("link")).unwrap();
+        let store = stored(&mut ed, &dir);
+        let here = || perm::disk::HERE.with(|n| n.get());
+        let all = || perm::disk::ALL.load(std::sync::atomic::Ordering::Relaxed);
+        let before = (here(), all());
+        answer(&mut ed, approval, true);
+        settle_until(&mut ed, |_| kept_has(&store, "demo"));
+        ed.plugin_run("fetch", &reads.join("a.txt").display().to_string()).unwrap();
+        until_said(&mut ed, "file 10 5");
+        ed.plugin_run("fetch", &reads.join("link").display().to_string()).unwrap();
+        settle_until(&mut ed, |ed| ed.offers.first().is_some_and(|o| ask(&o.what)));
+        let real = std::fs::canonicalize(&outside).unwrap().display().to_string();
+        assert!(ed.offers[0].question.contains(&real), "{}", ed.offers[0].question);
+        answer(&mut ed, ask, true);
+        until_said(&mut ed, "file 10 6");
+        settle_until(&mut ed, |_| perm::load(Some(&store))["demo"].files == [real.clone()]);
+        ed.plugin_revoke("demo").unwrap();
+        settle_until(&mut ed, |_| !kept_has(&store, "demo"));
+        let at = store.clone();
+        let read = std::thread::spawn(move || perm::ApprovalsWatch::new(Some(at)).changed()).join().unwrap();
+        ed.plugin_approvals_read(read.expect("the watch's first read"));
+        assert!(!ed.plugin_approved("demo"));
+        assert_eq!(here(), before.0, "the approvals' or a read's disk on the main thread");
+        assert!(all() >= before.1 + 6, "the workers' touches counted ({} → {})", before.1, all());
+    }
+
     #[test]
     fn approvals_are_kept() {
         let (_s, mut ed, dir) = setup("kept", "x\n");
-        let store = dir.join("state/plugin-permissions.json");
-        ed.plugins.as_mut().unwrap().perm_store = Some(store.clone());
+        let store = stored(&mut ed, &dir);
         answer(&mut ed, approval, true);
+        settle_until(&mut ed, |_| kept_has(&store, "demo"));
         let kept = perm::load(Some(&store));
         assert_eq!(
             kept["demo"].granted,
@@ -2183,9 +2421,9 @@ mod tests {
     #[test]
     fn granted_lists_a_plugins_approvals_and_d_revokes_them() {
         let (_s, mut ed, dir) = setup("granted", "x\n");
-        let store = dir.join("state/plugin-permissions.json");
-        ed.plugins.as_mut().unwrap().perm_store = Some(store.clone());
+        let store = stored(&mut ed, &dir);
         answer(&mut ed, approval, true);
+        settle_until(&mut ed, |_| kept_has(&store, "demo"));
         ed.granted();
         settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| p.kind == crate::granted::KIND));
         let p = ed.picker.as_mut().unwrap();
@@ -2200,7 +2438,8 @@ mod tests {
             crate::picker::Action::Granted(Some((crate::granted::Taken::Plugin("demo".into()), Some('y'))));
         p.select_where(|a| *a == taken);
         key(&mut ed, "d");
-        assert!(!perm::load(Some(&store)).contains_key("demo"), "revoked");
+        assert!(!ed.plugin_approved("demo"), "revoked");
+        settle_until(&mut ed, |_| !kept_has(&store, "demo"));
         settle_until(&mut ed, |ed| {
             ed.picker.as_ref().is_some_and(|p| !p.items().iter().any(|i| i.label.starts_with("demo: ")))
         });
@@ -2689,16 +2928,16 @@ mod tests {
         let (_s, mut ed, dir) = setup("reload", "x\n");
         // A second copy registers the same names: all skipped, the first keeps them
         std::fs::write(dir.join("copy.wasm"), DEMO).unwrap();
-        ed.plugins_sync(host::scan(&dir));
+        ed.plugins_sync(host::scan(&dir), None);
         settle_until(&mut ed, |ed| toasts(ed).contains("plugin copy: skipped"));
         assert!(toasts(&ed).contains("“shout” is taken"));
         assert_eq!(ed.plugin_command("shout").unwrap().plugin, "demo");
         // A new build of demo: reloaded
         std::fs::write(dir.join("demo.wasm"), [DEMO, &[0, 1, 0]].concat()).unwrap();
-        ed.plugins_sync(host::scan(&dir));
+        ed.plugins_sync(host::scan(&dir), None);
         settle_until(&mut ed, |ed| toasts(ed).contains("Plugin demo reloaded"));
         std::fs::remove_file(dir.join("demo.wasm")).unwrap();
-        ed.plugins_sync(host::scan(&dir));
+        ed.plugins_sync(host::scan(&dir), None);
         settle_until(&mut ed, |ed| ed.plugin_command("shout").is_none());
         assert_eq!(crate::typed::execute(&mut ed, "shout"), Err("no such command: 'shout'".into()));
         std::fs::remove_dir_all(dir).ok();
@@ -2715,7 +2954,7 @@ mod tests {
             let mut ed = Editor::new(Config::default());
             let start = std::panic::AssertUnwindSafe(|| match &state {
                 Some(s) => ed.plugins_sync_in(s, host::scan(&dir)),
-                None => ed.plugins_sync(host::scan(&dir)),
+                None => ed.plugins_sync(host::scan(&dir), None),
             });
             std::panic::catch_unwind(start).map_err(|e| {
                 let said = e.downcast_ref::<String>().cloned().unwrap_or_default();
@@ -2731,7 +2970,7 @@ mod tests {
     #[test]
     fn no_plugins_no_thread() {
         let mut ed = Editor::new(Config::default());
-        ed.plugins_sync(Found::new());
+        ed.plugins_sync(Found::new(), None);
         assert!(ed.plugins.is_none());
     }
 

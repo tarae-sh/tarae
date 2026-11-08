@@ -155,7 +155,7 @@ fn an_overlay_goes_with_its_plugin() {
     let (mut ed, dir) = editor("unloaded", "fn main() {}\n");
     overlay(&mut ed, "text 600000 the stress test passes", |ed| up(ed) == 1);
     std::fs::remove_file(dir.join("demo.wasm")).unwrap();
-    ed.plugins_sync(super::super::host::scan(&dir));
+    ed.plugins_sync(super::super::host::scan(&dir), None);
     settle(&mut ed, |ed| ed.plugin_command("overlay").is_none());
     assert_eq!(up(&ed), 0, "gone with it");
     assert!(!frame(&mut ed).iter().any(|r| r.contains("stress test")), "not drawn");

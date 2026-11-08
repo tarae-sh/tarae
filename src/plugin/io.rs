@@ -512,7 +512,45 @@ impl Editor {
         Ok(())
     }
 
-    /// Reads a file for a plugin (it may — checked), on a worker: its bytes, or why not, come back.
+    /// A plugin's `read-file` (#461): judged on the loop by memory alone (its grant), then made real, judged again and
+    /// read on one worker — outside its grant, the card asks about the real path. Its bytes go to it only if the grant
+    /// still reaches the file as they land: a revoke while the read was on its way gives none.
+    pub(super) fn plugin_read(&mut self, plugin: &str, id: u64, path: &str) {
+        let fail = |ed: &mut Editor, why: String| ed.plugin_events(plugin, vec![HostEvent::Failed(id, why)]);
+        let Some(lexical) = super::perm::expand(path) else {
+            return fail(self, format!("“{}”: an absolute path, or one from ~/", shown(path)));
+        };
+        let reach = match self.plugin_grant(plugin) {
+            Ok(reach) => reach,
+            Err(why) => return fail(self, why),
+        };
+        let Some(generation) = self.plugin_generation(plugin) else { return };
+        let plugin = plugin.to_string();
+        self.events.jobs().spawn(move || {
+            // Resolved too (a symlink out of the pattern is out of it); a missing file is the reader's to say
+            let real = super::perm::disk::real(&lexical);
+            let read = reach.reaches(Some(&lexical), &real).then(|| read_file(&real));
+            move |ed: &mut Editor| {
+                // (for this load of it, not one since)
+                if ed.plugin_generation(&plugin) != Some(generation) {
+                    return;
+                }
+                let grant = ed.plugin_grant(&plugin);
+                let still = grant.as_ref().is_ok_and(|r| r.reaches(Some(&lexical), &real));
+                let ev = match read {
+                    None if grant.is_ok() => return ed.plugin_ask(&plugin, super::perm::Ask::Read(id, real)),
+                    None => HostEvent::Failed(id, "its permissions were taken back".into()),
+                    Some(_) if !still => HostEvent::Failed(id, "its permissions were taken back".into()),
+                    Some(Ok(bytes)) => HostEvent::File(id, bytes),
+                    Some(Err(why)) => HostEvent::Failed(id, why),
+                };
+                ed.plugin_events(&plugin, vec![ev]);
+            }
+        });
+    }
+
+    /// Reads a file for a plugin (it may — checked: the read card's `y`), on a worker: its bytes, or why not, come
+    /// back.
     pub(super) fn plugin_read_now(&mut self, plugin: &str, id: u64, path: PathBuf) {
         let Some(generation) = self.plugin_generation(plugin) else { return };
         let plugin = plugin.to_string();

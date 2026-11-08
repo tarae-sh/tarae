@@ -1067,6 +1067,8 @@ pub struct Editor {
     pub input_seq: u64,
     /// WebAssembly plugins: their thread and the commands they registered (`None` until there are some).
     pub plugins: Option<crate::plugin::Plugins>,
+    /// `:restart`'s plugin revokes not written before its exec (#461): given again as the plugins start.
+    pub plugin_revokes_carried: Vec<String>,
     /// The processes tarae started, their costs and its checks on them (`:procs`, `procs.rs`).
     pub procs: crate::procs::Procs,
     /// The disk's room: its looks, levels and what waits for room (`diskroom.rs`, #168).
@@ -1605,6 +1607,7 @@ impl Editor {
             goto_after_load: None,
             input_seq: 0,
             plugins: None,
+            plugin_revokes_carried: Vec::new(),
             procs: Default::default(),
             disk: Default::default(),
             cmd_lists: Default::default(),

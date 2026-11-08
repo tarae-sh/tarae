@@ -711,6 +711,10 @@ pub fn watch(events: &crate::event::Queue, root: PathBuf, from: Sources) {
         // `plugin::dir`, from `from`'s: none in tests)
         let plugin_dir = from.user.as_deref().and_then(Path::parent).map(|d| d.join("plugins"));
         let mut plugins = crate::plugin::Watch::new(plugin_dir.clone());
+        // …and the plugins' approvals store (#461): read here, never on the loop — its first read is the start's,
+        // carried with the plugins first found
+        let mut approvals = crate::plugin::ApprovalsWatch::new(crate::plugin::approvals_store());
+        let mut first = true;
         loop {
             // Armed before looking, so a change made while we look still ends the wait below
             let mut watcher = crate::fswatch::Watcher::new();
@@ -718,16 +722,27 @@ pub fn watch(events: &crate::event::Queue, root: PathBuf, from: Sources) {
             if let Some(d) = &plugin_dir {
                 watcher.folder(d);
             }
+            if let Some(store) = approvals.store() {
+                watcher.file(store);
+            }
+            let kept = approvals.changed();
             if let Some(found) = plugins.changed() {
-                let start = start.take();
+                let (start, kept) = (start.take(), approvals.last());
                 let sync = move |ed: &mut Editor| {
-                    ed.plugins_sync(found);
+                    ed.plugins_sync(found, Some(kept));
                     drop(start);
                 };
                 if tx.send(Event::Job(Box::new(sync))).is_err() {
                     break;
                 }
+            } else if let Some(kept) = kept.filter(|_| !first) {
+                // (the first read goes only with the plugins first found: before them there's no memory to follow)
+                let read = move |ed: &mut Editor| ed.plugin_approvals_read(kept);
+                if tx.send(Event::Job(Box::new(read))).is_err() {
+                    break;
+                }
             }
+            first = false;
             let now = stamps();
             if now != last {
                 // (only what tarae itself wrote changed: said by whoever set it — `:set!`, `space v a`'s toast)

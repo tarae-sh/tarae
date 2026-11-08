@@ -561,7 +561,10 @@ fn main() -> Result<()> {
     let restarting = editor.restart.as_ref().is_some_and(|r| r.ready().is_some());
     // (a quit says what it didn't write — cut off past the wait, or failed — the screen left by now; `:restart`
     // carries its take-backs and gives them again, and says them only when its exec fails)
-    let unwritten = editor.unwritten(flushed);
+    let mut unwritten = editor.unwritten(flushed);
+    // (a plugin's approval or revoke not written yet: tried once more, a second at most — a revoke lost would be
+    // approved again at the next start; `:restart` gives a revoke not written again — #461)
+    unwritten.extend(editor.plugin_approvals_quit(plugin::QUIT_WAIT));
     if !restarting {
         unwritten.iter().for_each(|said| eprintln!("{said}"));
     }

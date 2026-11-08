@@ -94,6 +94,13 @@ pub struct Ticket {
     n: u64,
 }
 
+impl Ticket {
+    /// Its place in the store's line: once its turn ends, `served` is past it.
+    pub fn number(&self) -> u64 {
+        self.n
+    }
+}
+
 /// The next turn at `path`'s store for a write said `said` (`carry`: what it is; `again`: `:restart` gives it
 /// again) that narrows `over`.
 pub fn ticket(path: &Path, said: String, carry: serde_json::Value, again: bool, over: Vec<String>) -> Ticket {
@@ -404,8 +411,8 @@ pub fn cut(path: &Path) {
     TURNED.notify_all();
 }
 
-/// Tests: how many writes at `path`'s store have taken their turn (landed, failed or cut).
-#[cfg(test)]
+/// How many writes at `path`'s store have taken their turn (landed, failed or cut): a read of the store taken with
+/// it holds every write of this tarae's below it.
 pub fn served(path: &Path) -> u64 {
     stores().get(path).map_or(0, |t| t.serving)
 }

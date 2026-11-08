@@ -67,7 +67,8 @@ struct Look {
     no_sandbox: bool,
     trust: Option<PathBuf>,
     allow: Option<PathBuf>,
-    plugins: Option<PathBuf>,
+    /// The plugins' approvals, as listed (memory's — #461).
+    plugins: Vec<(String, String)>,
     /// The preflight told file, and the steps yours add (None: the project lists its own — no packs' defaults).
     preflight: Option<(PathBuf, Vec<crate::preflight::Step>)>,
 }
@@ -77,7 +78,7 @@ impl More {
     fn look(l: &Look) -> More {
         let common = crate::allow::common_dir(&l.root);
         let trusted = crate::trust::Store::read(l.trust.as_deref()).trusted_in(common.as_deref(), &l.root);
-        let plugins = l.plugins.as_deref().map(crate::plugin::approved).unwrap_or_default();
+        let plugins = l.plugins.clone();
         let preflight = l.preflight.as_ref().map_or_else(Vec::new, |(kept, yours)| {
             let steps = [crate::packs::preflight(&l.root).steps, yours.clone()].concat();
             crate::preflight::told_kept(kept, &l.root, &steps)
@@ -344,7 +345,7 @@ impl Editor {
             no_sandbox: self.workspace.claude.no_sandbox == Some(crate::tools::NoSandbox::Unasked),
             trust: self.trust_path.clone(),
             allow: self.allow_path.clone(),
-            plugins: self.plugin_approvals_store(),
+            plugins: self.plugin_approvals_listed(),
             preflight: (self.config.preflight.is_empty())
                 .then(|| {
                     self.workspace.preflight_kept.clone().map(|k| (k, self.config.preflight_local.clone()))

@@ -362,7 +362,180 @@ pub(super) mod disk {
         touched();
         p.exists()
     }
+
+    /// The approvals store's stamp (#461): when it changed, and its length — None: not there.
+    pub(in crate::plugin) fn stamp(p: &Path) -> Option<(std::time::SystemTime, u64)> {
+        touched();
+        std::fs::metadata(p).ok().map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len()))
+    }
+
+    /// The approvals store read.
+    pub(in crate::plugin) fn read(p: &Path) -> std::collections::BTreeMap<String, super::Approval> {
+        touched();
+        super::load(Some(p))
+    }
+
+    /// The approvals store written whole.
+    pub(in crate::plugin) fn write(
+        p: &Path,
+        all: &std::collections::BTreeMap<String, super::Approval>,
+    ) -> std::io::Result<()> {
+        touched();
+        super::save(p, all)
+    }
 }
+
+/// A change to the approvals (#461): data, so it's applied twice — to memory as it's given, and to the store as it is
+/// at its write's turn — and kept until a write of it lands (`Plugins.perm_unwritten`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Change {
+    /// A yes on the approval card: `granted` for `code`.
+    Approve {
+        plugin: String,
+        granted: Vec<String>,
+        code: Code,
+    },
+    /// A yes about one host:port (`host`) or one file.
+    Allow {
+        plugin: String,
+        host: bool,
+        entry: String,
+    },
+    Revoke {
+        plugin: String,
+    },
+}
+
+impl Change {
+    pub(super) fn plugin(&self) -> &str {
+        match self {
+            Change::Approve { plugin, .. } | Change::Allow { plugin, .. } | Change::Revoke { plugin } => {
+                plugin
+            }
+        }
+    }
+
+    pub(super) fn apply(&self, all: &mut BTreeMap<String, Approval>) {
+        match self {
+            Change::Approve { plugin, granted, code } => {
+                let a = all.entry(plugin.clone()).or_default();
+                // New code's yes: what was said yes to for the old code's use (hosts, files) isn't this code's
+                if !a.holds_for(code) {
+                    a.hosts.clear();
+                    a.files.clear();
+                }
+                (a.granted, a.sha256, a.dev) = (granted.clone(), code.sha256.clone(), code.dev.clone());
+            }
+            Change::Allow { plugin, host, entry } => {
+                let a = all.entry(plugin.clone()).or_default();
+                let list = if *host { &mut a.hosts } else { &mut a.files };
+                // (applied again by each write until one lands: once)
+                if !list.contains(entry) {
+                    list.push(entry.clone());
+                }
+            }
+            Change::Revoke { plugin } => {
+                all.remove(plugin);
+            }
+        }
+    }
+
+    /// As a quit names it.
+    pub(super) fn said(&self) -> String {
+        match self {
+            Change::Approve { plugin, .. } => format!("plugin {plugin}: approved"),
+            Change::Allow { plugin, host: true, entry } => format!("plugin {plugin}: may connect to {entry}"),
+            Change::Allow { plugin, entry, .. } => format!("plugin {plugin}: may read {entry}"),
+            Change::Revoke { plugin } => format!("plugin {plugin}: permissions taken back"),
+        }
+    }
+}
+
+/// The approvals store as read (#461), and how many of this tarae's writes there had ended when it was read
+/// (`storewrite::served`): a read older than a write already applied to memory is dropped, never undoes it.
+#[derive(Clone, Debug, Default)]
+pub struct Kept {
+    pub(super) all: BTreeMap<String, Approval>,
+    pub(super) served: u64,
+}
+
+/// The approvals store watched (#461) — on the config thread, beside the plugins folder: read again when its stamp
+/// changes (another tarae's yes or revoke, renamed over it), so the editor's memory follows it without the disk.
+pub struct ApprovalsWatch {
+    store: Option<PathBuf>,
+    stamp: Option<Option<(std::time::SystemTime, u64)>>,
+    last: Kept,
+}
+
+impl ApprovalsWatch {
+    pub fn new(store: Option<PathBuf>) -> ApprovalsWatch {
+        ApprovalsWatch { store, stamp: None, last: Kept::default() }
+    }
+
+    /// The store, to wake on.
+    pub fn store(&self) -> Option<&Path> {
+        self.store.as_deref()
+    }
+
+    /// The store read again if it changed — the first call always reads (the start's).
+    pub fn changed(&mut self) -> Option<Kept> {
+        let stamp = self.store.as_deref().and_then(disk::stamp);
+        if self.stamp == Some(stamp) {
+            return None;
+        }
+        self.stamp = Some(stamp);
+        let served = self.store.as_deref().map_or(0, crate::storewrite::served);
+        let all = self.store.as_deref().map(disk::read).unwrap_or_default();
+        self.last = Kept { all, served };
+        Some(self.last.clone())
+    }
+
+    /// The store as last read.
+    pub fn last(&self) -> Kept {
+        self.last.clone()
+    }
+}
+
+/// A write of the approvals not yet landed (`Plugins.perm_unwritten`): its sequence, and the change.
+pub(super) type Unwritten = Vec<(u64, Change)>;
+
+/// What a write of the approvals did (#461): the changes it wrote (their sequences), the store as it wrote it, and
+/// the store's `served` once it ended — or why it didn't land.
+pub(super) struct Written {
+    seqs: Vec<u64>,
+    served: u64,
+    landed: Result<BTreeMap<String, Approval>, String>,
+}
+
+/// A worker's (or the quit's): at `ticket`'s turn, the store read as it is now, `changes` applied in the order given,
+/// written whole.
+fn write_changes(path: &Path, ticket: crate::storewrite::Ticket, changes: &Unwritten) -> Written {
+    let seqs = changes.iter().map(|(s, _)| *s).collect();
+    let served = ticket.number() + 1;
+    let Some(turn) = crate::storewrite::turn(ticket) else {
+        return Written { seqs, served, landed: Err("cut off".into()) };
+    };
+    let mut all = disk::read(path);
+    for (_, c) in changes {
+        c.apply(&mut all);
+    }
+    let r = match turn.fails {
+        true => Err("a test's failed write".to_string()),
+        false => disk::write(path, &all).map_err(|e| e.to_string()),
+    };
+    turn.done(r.is_ok(), changes.iter().map(|(_, c)| c.plugin().to_string()).collect());
+    Written { seqs, served, landed: r.map(|()| all) }
+}
+
+/// How long a failed write waits before it's tried again, by how many failed in a row (the last, from then on).
+const RETRY: [std::time::Duration; 3] = [
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(5),
+    std::time::Duration::from_secs(30),
+];
+
+/// How long a quit waits for the approvals' last write (#461).
+pub const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A pattern with the folders before its first wildcard resolved (macOS's /tmp is /private/tmp): what a
 /// resolved path is matched against. Touches the disk: on the plugin thread, as it loads (`roots`).
@@ -464,10 +637,10 @@ pub(super) fn target(c: &Connect) -> String {
     if c.host.contains(':') { format!("[{}]:{}", c.host, c.port) } else { format!("{}:{}", c.host, c.port) }
 }
 
-/// Each plugin's approvals kept at `path`, as `:granted` lists them: (plugin, what it may do).
-pub(crate) fn approved(path: &Path) -> Vec<(String, String)> {
+/// Each plugin's approvals in `all`, as `:granted` lists them: (plugin, what it may do).
+fn approved(all: &BTreeMap<String, Approval>) -> Vec<(String, String)> {
     let n = |n: usize, one: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {one}s") };
-    load(Some(path))
+    all.clone()
         .into_iter()
         .filter_map(|(plugin, a)| {
             let mut what = a.granted;
@@ -484,35 +657,143 @@ pub(crate) fn approved(path: &Path) -> Vec<(String, String)> {
 }
 
 impl Editor {
-    /// Where the plugins' approvals are kept — None: no plugins, or none kept (tests).
-    pub(crate) fn plugin_approvals_store(&self) -> Option<PathBuf> {
-        self.plugins.as_ref()?.perm_store.clone()
+    /// Each plugin's approvals as `:granted` lists them — memory's (#461: a revoke not written yet is gone from it).
+    pub(crate) fn plugin_approvals_listed(&self) -> Vec<(String, String)> {
+        self.plugins.as_ref().map(|p| approved(&p.approvals)).unwrap_or_default()
     }
 
-    /// Changes the approvals: on what's kept now (another tarae may have changed it), then kept.
-    fn approvals_change(&mut self, f: impl FnOnce(&mut BTreeMap<String, Approval>)) -> std::io::Result<()> {
-        let Some(p) = &mut self.plugins else { return Ok(()) };
-        let Some(path) = p.perm_store.clone() else {
-            f(&mut p.approvals);
-            return Ok(());
-        };
-        let mut all = load(Some(&path));
-        f(&mut all);
-        let saved = save(&path, &all);
-        p.perm_mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        p.approvals = all;
-        saved
-    }
-
-    /// The approvals as kept now — another tarae may have changed them (a revoke counts everywhere).
-    fn approvals_fresh(&mut self) {
+    /// Changes the approvals (#461): in memory now — the very next action is judged by it —, then in the store, on a
+    /// worker, onto the store as it is at the write's turn (another tarae may have changed it). Memory is the store
+    /// as last read with every change not written yet applied on top, in the order given: a read can't undo one.
+    pub(super) fn approvals_change(&mut self, c: Change) {
         let Some(p) = &mut self.plugins else { return };
-        let Some(path) = &p.perm_store else { return };
-        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        if mtime != p.perm_mtime {
-            p.approvals = load(Some(path));
-            p.perm_mtime = mtime;
+        c.apply(&mut p.approvals);
+        if p.perm_store.is_none() {
+            return;
         }
+        p.perm_given += 1;
+        p.perm_unwritten.push((p.perm_given, c));
+        self.approvals_write();
+    }
+
+    /// A write of every change not written yet, in the order given — its turn taken now, so writes land in the order
+    /// they were given whichever worker runs first.
+    fn approvals_write(&mut self) {
+        let Some(p) = &mut self.plugins else { return };
+        let Some(path) = p.perm_store.clone().filter(|_| !p.perm_unwritten.is_empty()) else { return };
+        let changes = p.perm_unwritten.clone();
+        let said = changes.iter().map(|(_, c)| c.said()).collect::<Vec<_>>().join(", ");
+        let ticket = crate::storewrite::ticket(&path, said, Value::Null, false, Vec::new());
+        self.events.jobs().spawn(move || {
+            let w = write_changes(&path, ticket, &changes);
+            move |ed: &mut Editor| ed.approvals_written(w)
+        });
+    }
+
+    /// A write's end: landed, its changes leave the unwritten and memory is the store it wrote with those still
+    /// unwritten on top (unless a later write of ours was applied already); failed, memory stays as it is — said,
+    /// and tried again (a timer queues a write of all that's unwritten: 1 s, 5 s, then every 30 s — a write on its way
+    /// may have been given before it, and not carry it).
+    fn approvals_written(&mut self, w: Written) {
+        let Some(p) = &mut self.plugins else { return };
+        match w.landed {
+            Ok(all) => {
+                p.perm_unwritten.retain(|(s, _)| !w.seqs.contains(s));
+                p.perm_failed = 0;
+                if w.served > p.perm_served {
+                    p.perm_served = w.served;
+                    p.approvals = all;
+                    for (_, c) in &p.perm_unwritten {
+                        c.apply(&mut p.approvals);
+                    }
+                }
+            }
+            Err(e) => {
+                // (what a later write carries isn't said twice: only what's still unwritten)
+                let left: Vec<String> = p
+                    .perm_unwritten
+                    .iter()
+                    .filter(|(s, _)| w.seqs.contains(s))
+                    .map(|(_, c)| c.said())
+                    .collect();
+                if left.is_empty() {
+                    return;
+                }
+                let wait = RETRY[p.perm_failed.min(RETRY.len() - 1)];
+                p.perm_failed += 1;
+                let timer = !p.perm_retrying;
+                p.perm_retrying = true;
+                self.set_warning(format!("{} — not kept yet: {e}, trying again", left.join(", ")));
+                if timer {
+                    let tx = self.events.shared_sender();
+                    self.events.jobs().detached(move || {
+                        crate::event::sleep(wait);
+                        let _ = tx
+                            .send(crate::event::Event::Job(Box::new(|ed: &mut Editor| ed.approvals_retry())));
+                    });
+                }
+            }
+        }
+    }
+
+    /// The retry's timer: a write of what's still unwritten.
+    fn approvals_retry(&mut self) {
+        let Some(p) = &mut self.plugins else { return };
+        p.perm_retrying = false;
+        self.approvals_write();
+    }
+
+    /// The approvals store read by the config thread's watch (#461) — another tarae's change, or our own write seen
+    /// there: memory is that with our changes not written yet on top; a read from before a write of ours that's
+    /// been applied already is dropped (the watch reads again on that write's rename).
+    pub(crate) fn plugin_approvals_read(&mut self, kept: Kept) {
+        let Some(p) = &mut self.plugins else { return };
+        if p.perm_store.is_none() || kept.served < p.perm_served {
+            return;
+        }
+        p.perm_served = kept.served;
+        p.approvals = kept.all;
+        for (_, c) in &p.perm_unwritten {
+            c.apply(&mut p.approvals);
+        }
+    }
+
+    /// At quit (#461): the approvals' changes not written yet — a write on its way, or one that failed and waits for
+    /// its retry — written once more, in the order given, waited for `wait` at most (off the key and frame path: the
+    /// loop has ended). What didn't land, as the quit says it once the terminal is back: a revoke not written would
+    /// be approved again at the next start.
+    pub fn plugin_approvals_quit(&mut self, wait: std::time::Duration) -> Vec<String> {
+        let Some(p) = &mut self.plugins else { return Vec::new() };
+        let Some(path) = p.perm_store.clone().filter(|_| !p.perm_unwritten.is_empty()) else {
+            return Vec::new();
+        };
+        let changes = p.perm_unwritten.clone();
+        let said: Vec<String> = changes.iter().map(|(_, c)| c.said()).collect();
+        let ticket = crate::storewrite::ticket(&path, said.join(", "), Value::Null, false, Vec::new());
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::event::thread("tarae-approvals", move || {
+            let _ = tx.send(write_changes(&path, ticket, &changes));
+        });
+        let why = match rx.recv_timeout(wait) {
+            Ok(Written { landed: Ok(_), seqs, .. }) => {
+                p.perm_unwritten.retain(|(s, _)| !seqs.contains(s));
+                return Vec::new();
+            }
+            Ok(Written { landed: Err(e), .. }) => e,
+            Err(_) => format!("{} waited", crate::term::run_duration(wait)),
+        };
+        said.into_iter().map(|s| format!("tarae: not written before quitting ({why}): {s}")).collect()
+    }
+
+    /// The revokes not written yet, as `:restart` carries them (#461) — given again by the next tarae
+    /// (`plugin_revokes_again`); a yes not written is lost, its card asks again.
+    pub fn plugin_revokes_unwritten(&self) -> Vec<String> {
+        let unwritten = self.plugins.as_ref().map(|p| p.perm_unwritten.as_slice()).unwrap_or_default();
+        unwritten
+            .iter()
+            .filter(|(_, c)| matches!(c, Change::Revoke { .. }))
+            .map(|(_, c)| c.plugin().to_string())
+            .collect()
     }
 
     /// Its cards (approval, asks) closed: it was revoked or dropped — no `y` grants it later.
@@ -726,23 +1007,13 @@ impl Editor {
                 if up { STALE } else { "its code changed while its card was up — it approved nothing" };
             return self.set_status(format!("Plugin {plugin}: {why}"));
         }
-        let granted = keys(&declared);
         let dev = code.dev.is_some();
-        let r = self.approvals_change(|all| {
-            let a = all.entry(plugin.clone()).or_default();
-            // New code's yes: what was said yes to for the old code's use (hosts, files) isn't this code's
-            if !a.holds_for(&code) {
-                a.hosts.clear();
-                a.files.clear();
-            }
-            (a.granted, a.sha256, a.dev) = (granted, code.sha256, code.dev);
-        });
-        match r {
-            Ok(()) if dev => {
+        self.approvals_change(Change::Approve { plugin: plugin.clone(), granted: keys(&declared), code });
+        match dev {
+            true => {
                 self.set_success(format!("Plugin {plugin}: approved — a dev build, its rebuilds keep it"))
             }
-            Ok(()) => self.set_success(format!("Plugin {plugin}: approved")),
-            Err(e) => self.set_warning(format!("approved until you quit — couldn't keep it: {e}")),
+            false => self.set_success(format!("Plugin {plugin}: approved")),
         }
         self.plugin_held_go(&plugin);
     }
@@ -765,7 +1036,6 @@ impl Editor {
         if !needs || declared.is_empty() {
             return false;
         }
-        self.approvals_fresh();
         if self.plugin_approved(plugin) {
             return false;
         }
@@ -794,34 +1064,20 @@ impl Editor {
         self.plugin_apply(plugin, &seen, held);
     }
 
-    /// Whether a plugin may, right now, do what needs `need` (declared and approved). Err: why not.
+    /// Whether a plugin may, right now, do what needs `need` (declared and approved — as memory says: #461). Err: why
+    /// not.
     pub(super) fn plugin_may(&mut self, plugin: &str, need: &Permission) -> Result<(), String> {
         let Some(p) = &self.plugins else { return Err("plugins aren't running".into()) };
         let declared = p.permissions.get(plugin).cloned().unwrap_or_default();
         if !declared.contains(need) {
             return Err(format!("it didn't ask to {} (permissions())", describe(need)));
         }
-        self.approvals_fresh();
         if !self.plugin_approved(plugin) {
             // (not asked again on its own — a plugin can't nag; `:plugin-approve` brings the card back)
             self.plugin_permissions_loaded(plugin, &declared);
             return Err(format!("its permissions wait for your approval (:plugin-approve {plugin})"));
         }
         Ok(())
-    }
-
-    /// Whether a plugin may read `path` (Ok: the path, resolved); `Err(None)`: ask you first.
-    pub(super) fn plugin_may_read(&mut self, plugin: &str, path: &str) -> Result<PathBuf, Option<String>> {
-        let Some(lexical) = expand(path) else {
-            return Err(Some(format!("“{}”: an absolute path, or one from ~/", shown(path))));
-        };
-        // Resolved too (a symlink out of the pattern is out of it); a missing file is the reader's to say
-        let real = std::fs::canonicalize(&lexical).unwrap_or(lexical.clone());
-        match self.plugin_grant(plugin) {
-            Ok(reach) if reach.reaches(Some(&lexical), &real) => Ok(real),
-            Ok(_) => Err(None),
-            Err(why) => Err(Some(why)),
-        }
     }
 
     /// #457's rule (a): whether a plugin's own grant covers the file at `real` (resolved; `lexical`, as it was
@@ -923,7 +1179,6 @@ impl Editor {
     pub(crate) fn plugin_ask_answer(&mut self, plugin: String, asks: Vec<Ask>, allow: bool) {
         // Still loaded and approved (a card left from before a revoke grants nothing)
         let loaded = self.plugins.as_ref().is_some_and(|p| p.permissions.contains_key(&plugin));
-        self.approvals_fresh();
         if !loaded || !self.plugin_approved(&plugin) {
             return;
         }
@@ -932,13 +1187,7 @@ impl Editor {
             return self.plugin_events(&plugin, no);
         }
         let Some((host, entry)) = asks.first().map(Ask::subject) else { return };
-        let r = self.approvals_change(|all| {
-            let a = all.entry(plugin.clone()).or_default();
-            if host { a.hosts.push(entry) } else { a.files.push(entry) }
-        });
-        if let Err(e) = r {
-            self.set_warning(format!("allowed until you quit — couldn't keep it: {e}"));
-        }
+        self.approvals_change(Change::Allow { plugin: plugin.clone(), host, entry });
         for ask in asks {
             match ask {
                 Ask::Connect(c) => self.plugin_connect_now(&plugin, c),
@@ -995,21 +1244,57 @@ impl Editor {
     /// `:plugin-revoke <plugin>` — its approvals, hosts and files forgotten; it asks again next time.
     pub fn plugin_revoke(&mut self, plugin: &str) -> Result<(), String> {
         let plugin = plugin.trim();
-        self.approvals_fresh();
         let p = self.plugins.as_mut().ok_or("no plugins are loaded")?;
         if !p.approvals.contains_key(plugin) {
             return Err(format!("{plugin} has nothing approved"));
         }
-        // What it runs stops now, and its cards go
+        // What it runs stops now, and its cards go; memory says it at once, the store once its write lands
         p.stop_all(plugin);
         self.plugin_cards_close(plugin);
-        self.approvals_change(|all| {
-            all.remove(plugin);
-        })
-        .map_err(|e| e.to_string())?;
+        self.approvals_change(Change::Revoke { plugin: plugin.to_string() });
         self.set_success(format!("Plugin {plugin}: permissions taken back"));
         Ok(())
     }
+}
+
+/// What `sim/pluginperm.rs` drives: the plugins' side with no thread (`plugins_detached`), `demo` loaded asking to read
+/// files, its approvals kept at a scratch store.
+#[cfg(test)]
+impl Editor {
+    pub(crate) fn plugins_perm_stand_in(&mut self, store: PathBuf) {
+        self.plugins_detached();
+        let p = self.plugins.as_mut().unwrap();
+        p.permissions.insert("demo".into(), vec![Permission::Read("/tarae-sim/**".into())]);
+        p.code.insert("demo".into(), Code { sha256: "ab".into(), dev: None });
+        p.perm_store = Some(store);
+    }
+
+    /// The stand-in's approval card answered yes.
+    pub(crate) fn plugin_perm_yes(&mut self) {
+        let declared = self.plugins.as_ref().unwrap().permissions["demo"].clone();
+        let code = self.plugin_code("demo");
+        self.plugin_permissions_answer("demo".into(), declared, code, true);
+    }
+
+    /// `demo`'s approval in memory — None: none; else the files it may read beyond its patterns — and the changes
+    /// not written yet.
+    pub(crate) fn plugin_perm_memory(&self) -> (Option<Vec<String>>, usize) {
+        let p = self.plugins.as_ref().unwrap();
+        (p.approvals.get("demo").map(|a| a.files.clone()), p.perm_unwritten.len())
+    }
+
+    /// The changes unwritten, the failures in a row, whether a retry's timer is set — for a trace.
+    pub(crate) fn plugin_perm_writes(&self) -> String {
+        let p = self.plugins.as_ref().unwrap();
+        let seqs: Vec<u64> = p.perm_unwritten.iter().map(|(s, _)| *s).collect();
+        format!("unwritten {seqs:?}, {} failed, retrying {}", p.perm_failed, p.perm_retrying)
+    }
+}
+
+/// `demo`'s approval in the store at `path`, as `plugin_perm_memory` says it.
+#[cfg(test)]
+pub(crate) fn kept_files(path: &Path) -> Option<Vec<String>> {
+    load(Some(path)).get("demo").map(|a| a.files.clone())
 }
 
 #[cfg(test)]
@@ -1067,6 +1352,24 @@ mod tests {
         mark(&marks, "demo", "h3", b).unwrap();
         assert_eq!((at("h3"), at("h2")), (Some(b.into()), None), "another folder's build before isn't b's");
         assert_eq!(dev_source(&marks, "other", "h3"), None);
+    }
+
+    /// #461: the watch reads the store first, then only when it changed — a write renamed over it, or removed.
+    #[test]
+    fn the_approvals_watch_reads_when_the_store_changes() {
+        let s = crate::scratch::Scratch::new("perm-watch");
+        let path = s.join("plugin-permissions.json");
+        let mut w = ApprovalsWatch::new(Some(path.clone()));
+        assert_eq!(w.changed().map(|k| k.all), Some(BTreeMap::new()), "the first read: none there");
+        assert!(w.changed().is_none(), "unchanged");
+        let a = Approval { granted: vec!["network".into()], sha256: "ab".into(), ..Default::default() };
+        let all = BTreeMap::from([("demo".to_string(), a)]);
+        save(&path, &all).unwrap();
+        assert_eq!(w.changed().map(|k| k.all), Some(all.clone()), "renamed over it");
+        assert!(w.changed().is_none(), "unchanged");
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(w.changed().map(|k| k.all), Some(BTreeMap::new()), "removed");
+        assert!(ApprovalsWatch::new(None).changed().is_some_and(|k| k.all.is_empty()), "no store");
     }
 
     #[test]

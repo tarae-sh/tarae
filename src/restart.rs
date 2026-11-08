@@ -1072,6 +1072,7 @@ pub fn snapshot(ed: &mut Editor) -> Value {
                 "trust": ed.trust_path.as_deref().map(crate::storewrite::pending_carried).unwrap_or_default(),
                 "allow": ed.allow_path.as_deref().map(crate::storewrite::pending_carried).unwrap_or_default(),
                 "sessions": ed.workspaces_path().as_deref().map(crate::storewrite::pending_carried).unwrap_or_default(),
+                "plugins": ed.plugin_revokes_unwritten(),
             })),
             ("given_last".into(), json!(crate::storewrite::last())),
             ("sessions".into(), sessions),
@@ -1293,6 +1294,8 @@ fn restore_quietly(ed: &mut Editor, v: &Value) -> Back {
     // The sessions, the one in front in front — and their take-backs not written, written again (F2, F5)
     let gone = crate::worktree::restore(ed, &v["sessions"]);
     crate::worktree::taken_again(ed, &v["store_writes"]["sessions"]);
+    let plugins = v["store_writes"]["plugins"].as_array().into_iter().flatten();
+    ed.plugin_revokes_carried = plugins.filter_map(|p| p.as_str().map(str::to_string)).collect();
     crate::codereview::viewed_restore(ed, &v["viewed"]);
     let mut back = Back::default();
     let blocks: Vec<&Value> =

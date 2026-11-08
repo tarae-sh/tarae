@@ -245,7 +245,10 @@ impl Editor {
     #[cfg(test)]
     pub(crate) fn plugin_panel_stand_in_with(&mut self, rows: usize, keys: &[(&str, &str)]) {
         // (no state folder: no plugin loaded, nothing of one's kept)
-        assert!(self.plugins.is_some() || self.plugins_start(None), "the plugin thread started");
+        assert!(
+            self.plugins.is_some() || self.plugins_start(None, Default::default()),
+            "the plugin thread started"
+        );
         self.plugins.as_mut().unwrap().answering = Some("demo".into());
         let rows = (0..rows).map(|i| vec![format!("row {i}")]).collect();
         let keys = keys.iter().map(|(k, d)| (k.to_string(), d.to_string())).collect();
@@ -490,7 +493,10 @@ impl Editor {
     /// `enter`, `-`) — the plugin thread started, no plugin loaded.
     pub(crate) fn plugin_side_stand_in(&mut self) {
         // (no state folder: no plugin loaded, nothing of one's kept)
-        assert!(self.plugins.is_some() || self.plugins_start(None), "the plugin thread started");
+        assert!(
+            self.plugins.is_some() || self.plugins_start(None, Default::default()),
+            "the plugin thread started"
+        );
         let row = |id: &str| super::abi::SideRow {
             id: id.into(),
             depth: 0,
