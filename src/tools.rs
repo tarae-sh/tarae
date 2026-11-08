@@ -8244,6 +8244,7 @@ mod tests {
             others: vec!["DATABASE_URL".into()],
             replaced: vec!["TARAE_TEST_STOOD_IN".into(), "npm_config_userconfig".into()],
             notes: Vec::new(),
+            masked: Vec::new(),
         };
         let var = |n: &str, e: Option<&RunEnv>| grant(super::AlsoAsk::Env(n.into()), false, e);
         // (one tarae's own stands in for: no card — a yes would change nothing; review note 9)

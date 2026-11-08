@@ -2787,6 +2787,8 @@ impl Denial {
             },
             // (step 5: the egress proxy's own refusals, `host:port: why` — `proxy::tell`)
             "network-proxy" => format!("reaching {t}"),
+            // (P2: masking's, `host:port: why` — the why names the host)
+            proxy::MASKED_OP => t.split_once(": ").map_or(t.to_string(), |(_, why)| why.to_string()),
             // (step 5g: the upstream proxy's failure, not tarae's refusal — `host:port: through …`)
             "network-upstream" => match t.split_once(": ") {
                 Some((at, why)) => format!("reaching {at} — {why}"),
@@ -5123,7 +5125,7 @@ pub(crate) fn run_policy_with(
         log.line("sandbox", "warning", &why);
         format!("The sandbox gives each command a folder of its own, and {why}, then run it again.")
     })?;
-    for_its_run(&mut p, Some(run), reads, here, &found, &llm.sandbox_ca);
+    for_its_run(&mut p, Some(run), reads, here, &found, llm);
     for (own, tool) in &found.own {
         match own_build_made(own, tool) {
             Ok(true) => log.line("sandbox", "info", &format!("made {} for its first build", own.display())),
@@ -5197,7 +5199,7 @@ pub fn reach(here: &Here) -> NetReach {
 #[cfg(test)]
 pub(crate) fn policy_in(root: &Path, llm: &crate::llm::LlmConfig, reads: &[PathBuf], here: &Here) -> Policy {
     let (mut p, found) = policy_computed(root, llm, reads, &[], here);
-    for_its_run(&mut p, None, reads, here, &found, &llm.sandbox_ca);
+    for_its_run(&mut p, None, reads, here, &found, llm);
     p
 }
 
@@ -5289,15 +5291,17 @@ fn run_folder(p: &Policy, here: &Here) -> Result<std::sync::Arc<RunDir>, String>
 }
 
 /// What `p`'s run gets in its own folder `run` (none: a policy only, `policy_in`): its tag, the copies of
-/// settings that hold a token, its kept homes held, its tools' homes and the packs' variables, its proxy files.
+/// settings that hold a token, its kept homes held, its tools' homes and the packs' variables, its proxy files, its
+/// masked variables' sentinels.
 fn for_its_run(
     p: &mut Policy,
     run: Option<std::sync::Arc<RunDir>>,
     reads: &[PathBuf],
     here: &Here,
     found: &Found,
-    ca: &[String],
+    llm: &crate::llm::LlmConfig,
 ) {
+    let ca = &llm.sandbox_ca[..];
     (p.tag, p.run) = (run.as_ref().map(|r| r.tag()), run);
     let real_home = &found.real_home;
     // Settings that hold a token: copies without it in the run's folder (`tokens.rs`) — while reads are
@@ -5357,9 +5361,23 @@ fn for_its_run(
         let homes = &crate::sandboxpack::get().run_homes;
         let notes = homes.iter().filter_map(|h| h.note.as_ref());
         let ours = |when: &[String]| when.iter().any(|f| p.root.join(f).exists());
-        let notes = notes.filter(|(when, _)| ours(when)).map(|(_, say)| say.clone()).collect();
-        p.run_env.notes = notes;
+        let notes: Vec<String> = notes.filter(|(when, _)| ours(when)).map(|(_, say)| say.clone()).collect();
+        // (after what `runenv::of` said: a masked name it left out, and why)
+        p.run_env.notes.retain(|n| n.contains("(llm.sandbox-secrets)"));
+        p.run_env.notes.extend(notes);
     }
+    // Masked variables (P2): each its session's sentinel in the run's environment, the real value only in the
+    // registry its proxy holds (`proxy::masked`)
+    let (masked, said) =
+        proxy::masked::of_session(p.session, &llm.sandbox_secrets, &p.run_env.masked, &here.env);
+    p.run_env.notes.extend(said);
+    if let Some(m) = &masked {
+        let vars =
+            m.sentinels().map(|(k, v)| (k.to_string(), std::ffi::OsString::from(v), runenv::By::Masked));
+        p.run_env.vars.extend(vars);
+        crate::sorting::by(&mut p.run_env.vars, |(a, ..), (b, ..)| a.cmp(b));
+    }
+    p.egress.masked = masked.clone();
     let asks_hosts = p.asks_hosts;
     p.env.extend(vars.as_ref().map(|v| packs_env(v, here, asks_hosts)).unwrap_or_default());
     // A tool's store on the project's filesystem, told to it (`disk_store`)
@@ -5373,7 +5391,8 @@ fn for_its_run(
         if url.is_some() { cabundle::Sources::of(here, ca) } else { cabundle::Sources::default() };
     // The hosts its proxy terminates (P1a): the session's CA at the bundle's head — the hosts in its rules only once
     // the bundle holding it is written (without, every handshake would fail: it stays opaque, said)
-    let terminating = url.as_ref().and_then(|_| terminate_for(p.session, here));
+    let hosts = masked.as_ref().map(|m| m.hosts()).unwrap_or_default();
+    let terminating = url.as_ref().and_then(|_| terminate_for(p.session, here, hosts));
     sources.tarae = terminating.as_ref().map(|(hosts, authority)| (authority.der().to_vec(), hosts.len()));
     let trusted = proxy_made(p.run.as_ref().map(|r| r.path()), url.as_ref(), &mut env, &p.run_env, &sources);
     p.env = env;
@@ -5389,26 +5408,71 @@ fn for_its_run(
         }
         p.egress.terminate = Some(t);
     }
+    // A masked value with nothing to swap it in: the run holds its sentinel all the same (h)
+    if let Some(m) = masked.as_ref().filter(|_| url.is_some()) {
+        let names: Vec<&str> = m.sentinels().map(|(n, _)| n).collect();
+        let names = names.join(", ");
+        let goes = if m.secrets().len() > 1 { "go as their fakes" } else { "goes as its fake" };
+        if p.egress.terminate.is_none() {
+            p.run_env.notes.push(match trusted.as_ref().is_some_and(|t| t.tarae_off) {
+                true => format!("the system's roots couldn't be read, so nothing is swapped: {names} {goes}"),
+                false => format!(
+                    "tarae's CA couldn't be given to your commands, so nothing is swapped: {names} {goes}"
+                ),
+            });
+        }
+        // (a secret's host no rule reaches: its run's request waits on the host's card, or is refused)
+        for s in m.secrets() {
+            let unreached: Vec<String> =
+                s.hosts.iter().filter(|h| !reaches(&p.egress, h)).map(|h| h.to_string()).collect();
+            if !unreached.is_empty() {
+                p.run_env.notes.push(format!(
+                    "{}'s hosts {} aren't among those your commands reach without asking (llm.sandbox-hosts) — a \
+                     request there waits on its card",
+                    s.name,
+                    unreached.join(", ")
+                ));
+            }
+        }
+    }
     // (no bundle made — nothing to put in it — is said only where the system's roots couldn't be read)
     let trusted = trusted.filter(|m| !m.pem.is_empty() || m.system_failed.is_some());
     p.run_env.notes.extend(trusted.map(|m| m.said()));
 }
 
-/// The hosts a run's proxy terminates, and the session's CA (P1a, `proxy::terminate`) — none until P2 names them by a
-/// masked credential's hosts; tests name them (`Here.terminate`). The CA is made here, on the policy's worker (a
-/// P-256 key and a signature: well under a millisecond), so the run's bundle can carry it.
+/// Whether `e`'s rules reach every host `h` names without asking: any host, a rule naming it (or every name under a
+/// domain holding it), or the user's answer when the policy was made.
+fn reaches(e: &proxy::egress::Egress, h: &proxy::egress::Pattern) -> bool {
+    use proxy::egress::Pattern;
+    match h {
+        Pattern::Name(n, port) => {
+            let port = port.unwrap_or(443);
+            e.allows(n, port, 443) || e.answered(n, port)
+        }
+        Pattern::Under(d, port) => {
+            e.any
+                || e.hosts.iter().any(|q| match q {
+                    Pattern::Under(o, at) => at == port && (d == o || d.ends_with(&format!(".{o}"))),
+                    Pattern::Name(..) => false,
+                })
+        }
+    }
+}
+
+/// The hosts a run's proxy terminates, and the session's CA (P1a, `proxy::terminate`): its masked variables' hosts
+/// (`masked`, D1) — and in tests those `Here.terminate` names. The CA is made here, on the policy's worker (a P-256
+/// key and a signature: well under a millisecond), so the run's bundle can carry it.
 fn terminate_for(
     session: u64,
     here: &Here,
+    masked: Vec<proxy::egress::Pattern>,
 ) -> Option<(Vec<proxy::egress::Pattern>, std::sync::Arc<proxy::terminate::Ca>)> {
+    #[allow(unused_mut)]
+    let mut named = masked;
     #[cfg(test)]
-    let named: Vec<proxy::egress::Pattern> =
-        here.terminate.iter().filter_map(|h| proxy::egress::Pattern::parse(h).ok()).collect();
+    named.extend(here.terminate.iter().filter_map(|h| proxy::egress::Pattern::parse(h).ok()));
     #[cfg(not(test))]
-    let named: Vec<proxy::egress::Pattern> = {
-        let _ = here;
-        Vec::new()
-    };
+    let _ = here;
     if named.is_empty() {
         return None;
     }
@@ -6312,7 +6376,8 @@ pub fn run_env_of(here: &Here, llm: &crate::llm::LlmConfig) -> runenv::RunEnv {
     if cfg!(not(target_os = "linux")) {
         set.push("GIT_CONFIG_COUNT");
     }
-    runenv::of(here, &policy, &packs.pass, &llm.sandbox_env, &set)
+    let masked: Vec<&String> = llm.sandbox_secrets.keys().collect();
+    runenv::of(here, &policy, &packs.pass, &llm.sandbox_env, &set, &masked)
 }
 
 /// A sandboxed command's environment: tarae's own isn't inherited — only what `run_env` passes of it. Every
@@ -10961,6 +11026,121 @@ mod tests {
             made.unwrap().said(),
             "TLS: the system's roots couldn't be read (no keychain) — your commands use their own."
         );
+    }
+
+    /// P2: a variable `llm.sandbox-secrets` masks reaches the run as its session's sentinel — never its value, which
+    /// is nowhere in the policy but its proxy's registry — and its hosts are what the run's proxy terminates (D1). The
+    /// next run of the session holds the same sentinel. A host no rule reaches without asking is said; a name tarae's
+    /// environment lacks is said; with the system's roots unread nothing is swapped, said with the fix (h).
+    #[test]
+    fn a_masked_variable_reaches_a_run_as_its_sentinel() {
+        let scratch = crate::scratch::Scratch::new("sb-masked");
+        let root = std::fs::canonicalize(&*scratch).unwrap();
+        let real = concat!("tarae-fake-", "token-0123456789abcdef");
+        let mut here = Here::now();
+        here.env.retain(|k, _| !crate::sandboxpack::get().proxy.trust.contains(k));
+        here.env.insert("TARAE_TEST_MASKED_TOKEN".into(), real.into());
+        here.system_roots = Some(vec![crate::web::fetch::tests::authority("tarae test system root").der]);
+        let secrets = [
+            ("TARAE_TEST_MASKED_TOKEN".to_string(), vec!["api.masked.test".to_string()]),
+            ("TARAE_TEST_MASKED_ABSENT".to_string(), vec!["api.masked.test".to_string()]),
+        ];
+        let llm = crate::llm::LlmConfig {
+            sandbox_network: true,
+            sandbox_hosts: crate::llm::Hosts::List(vec![proxy::egress::Pattern::parse("crates.io").unwrap()]),
+            sandbox_secrets: secrets.into_iter().collect(),
+            ..Default::default()
+        };
+        let policy = |here: &Here| {
+            let w = crate::tools::Widened { llm: llm.clone(), ..Default::default() };
+            policy_from(&root, w, here).unwrap()
+        };
+        let p = policy(&here);
+        if p.proxy_url().is_none() {
+            eprintln!(
+                "a_masked_variable_reaches_a_run_as_its_sentinel: skipped, no way to the proxy: {:?}",
+                p.reach
+            );
+            return;
+        }
+        let session = p.session;
+        let sentinel = p.run_env.var("TARAE_TEST_MASKED_TOKEN").expect("its sentinel");
+        assert!(sentinel.starts_with("fake_value_") && sentinel.len() == real.len(), "{sentinel}");
+        assert!(
+            p.run_env
+                .vars
+                .iter()
+                .any(|(k, _, by)| k == "TARAE_TEST_MASKED_TOKEN" && *by == runenv::By::Masked)
+        );
+        // (nowhere in the policy as a run sees it, nor in its Debug — only in the proxy's registry)
+        let everything = format!("{p:?} {:?} {:?}", p.env, p.run_env.page());
+        assert!(!everything.contains(real), "the real value in the policy");
+        assert!(!p.run_env.vars.iter().any(|(_, v, _)| v.to_string_lossy().contains(real)));
+        assert!(p.egress.masked.is_some());
+        let t = p.egress.terminate.as_ref().expect("its host terminated");
+        assert!(t.names("api.masked.test", 443) && !t.names("crates.io", 443));
+        let notes = p.run_env.notes.join("\n");
+        for said in [
+            "TARAE_TEST_MASKED_ABSENT (llm.sandbox-secrets) isn't in tarae's environment — your commands don't get it",
+            "TARAE_TEST_MASKED_TOKEN's hosts api.masked.test aren't among those your commands reach without asking \
+             (llm.sandbox-hosts) — a request there waits on its card",
+        ] {
+            assert!(notes.contains(said), "{said}: {notes}");
+        }
+        // The session's next run: the same sentinel
+        let again = policy(&here);
+        assert_eq!(again.run_env.var("TARAE_TEST_MASKED_TOKEN").as_deref(), Some(sentinel.as_str()));
+        drop((p, again));
+        // The system's roots unread: no bundle, nothing terminated — the run holds the sentinel all the same, said
+        here.system_fails = Some("no keychain".into());
+        let p = policy(&here);
+        assert_eq!(p.egress.terminate, None);
+        assert_eq!(p.run_env.var("TARAE_TEST_MASKED_TOKEN").as_deref(), Some(sentinel.as_str()));
+        assert!(
+            p.run_env.notes.iter().any(|n| n
+                == "the system's roots couldn't be read, so nothing is swapped: TARAE_TEST_MASKED_TOKEN goes as its \
+                    fake"),
+            "{:?}",
+            p.run_env.notes
+        );
+        drop(p);
+        proxy::terminate::forget(session);
+        proxy::masked::forget(session);
+    }
+
+    /// g: a name moved from its real value (`llm.sandbox-env`, where a card's grant lands) to masked is another policy
+    /// — its key differs, so a daemon started with the real value is never the masked run's.
+    #[test]
+    fn a_masked_name_is_another_policy_than_its_real_value() {
+        let scratch = crate::scratch::Scratch::new("sb-masked-key");
+        let root = std::fs::canonicalize(&*scratch).unwrap();
+        let mut here = Here::now();
+        here.env.insert(
+            "TARAE_TEST_MASKED_TOKEN".into(),
+            concat!("tarae-fake-", "token-0123456789abcdef").into(),
+        );
+        let real = crate::llm::LlmConfig {
+            sandbox_env: vec!["TARAE_TEST_MASKED_TOKEN".into()],
+            ..Default::default()
+        };
+        let hosts = vec!["api.masked.test".to_string()];
+        let masked = crate::llm::LlmConfig {
+            sandbox_secrets: [("TARAE_TEST_MASKED_TOKEN".to_string(), hosts)].into_iter().collect(),
+            ..real.clone()
+        };
+        let (a, b) = (policy_in(&root, &real, &[], &here), policy_in(&root, &masked, &[], &here));
+        assert_eq!(
+            a.run_env.var("TARAE_TEST_MASKED_TOKEN").as_deref(),
+            here.var("TARAE_TEST_MASKED_TOKEN").as_deref()
+        );
+        assert!(b.run_env.var("TARAE_TEST_MASKED_TOKEN").is_some_and(|v| v.starts_with("fake_value_")));
+        assert_ne!(policy_key(&a), policy_key(&b));
+        assert_eq!(
+            policy_key(&b),
+            policy_key(&policy_in(&root, &masked, &[], &here)),
+            "the same policy, the same key"
+        );
+        proxy::masked::forget(b.session);
     }
 
     /// P1a: a run whose bundle can't be made (the system's roots unread) terminates nothing — its rules carry no set,

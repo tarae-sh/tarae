@@ -64,6 +64,12 @@ pub fn body(b: &[u8]) {
     parse::check::body_input(b);
 }
 
+/// A body's payload through masking's scan (`proxy::swap::Scan`, P2): patterns planted (0xff and an index), cut in
+/// pieces with framing between — the first byte says how large.
+pub fn swap(b: &[u8]) {
+    proxy::swap::check::scan_input(b);
+}
+
 /// A server's response, its body a few bytes at a time (`parse::response`, `Body::data`) — the first byte says how many.
 pub fn response(b: &[u8]) {
     parse::check::response_input(b);

@@ -65,7 +65,7 @@ pub const RISKY: &[&str] = &[
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
 /// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`), whom Claude's commands
-/// trust (`llm.sandbox-ca`) — a project never does.
+/// trust (`llm.sandbox-ca`), where a masked secret goes (`llm.sandbox-secrets`) — a project never does.
 pub const YOURS_ONLY: &[&str] = &[
     "llm.card-record",
     // (a project's 1 would take your `space u` history back to its newest turn)
@@ -100,6 +100,9 @@ pub const YOURS_ONLY: &[&str] = &[
     "plugins.keys",
     // (whom Claude's commands trust: a project's root would let whoever holds its key read their TLS — #419)
     "llm.sandbox-ca",
+    // (where a masked secret's real value goes, and which hosts' TLS tarae reads: a project naming its own host would
+    // have your token sent there — a capability, D2)
+    "llm.sandbox-secrets",
 ];
 
 pub fn yours_only(setting: &str) -> bool {
@@ -1389,6 +1392,7 @@ mod tests {
             n += 1;
         }
         assert!(yours_only("llm.sandbox-ca"), "whom runs trust is never a project's");
+        assert!(yours_only("llm.sandbox-secrets"), "where a secret goes is never a project's");
         assert!(n >= 10, "the sandbox's settings found: {n}");
     }
 

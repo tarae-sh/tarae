@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use super::bridge::Out;
 use super::parse;
+use super::swap::Scan;
 
 /// The random a ServerHello carries when it's a HelloRetryRequest (RFC 8446 §4.1.3: SHA-256 of
 /// "HelloRetryRequest").
@@ -48,6 +49,8 @@ pub enum End {
     /// A plain request through an upstream proxy (step 5g) was answered 407 — by that proxy, about tarae's
     /// credentials: none of it went to the client.
     Upstream407(super::upstream::Answer),
+    /// A plain request's body held a masked value (P2, `watch`): its name — the relay closed there.
+    Stray(String),
 }
 
 /// What's held back to be judged.
@@ -69,6 +72,8 @@ enum Look {
 /// what the client sent after its request (one pipelined behind it) is dropped, and said (`End::Dropped`).
 /// `upstream`: the server is an upstream proxy a plain request went to — its answer's head is held until its
 /// status is read, and a 407 (that proxy's, about tarae's credentials) ends the relay with none of it sent on.
+/// `watch`: the plain request's body data watched for a masked value (P2) — found, the relay ends (`End::Stray`).
+#[allow(clippy::too_many_arguments)]
 pub fn relay(
     client: TcpStream,
     server: impl Into<Out>,
@@ -77,12 +82,13 @@ pub fn relay(
     first: &[u8],
     body: Option<parse::Body>,
     upstream: bool,
+    watch: Option<Scan>,
 ) -> End {
     #[cfg(target_os = "linux")]
     let pipes = splice::pipes;
     #[cfg(not(target_os = "linux"))]
     let pipes = || Err(io::Error::from(io::ErrorKind::Unsupported));
-    relay_with(client, server, name, hello_time, first, body, upstream, pipes)
+    relay_with(client, server, name, hello_time, first, body, upstream, watch, pipes)
 }
 
 /// Tests: a relay's client connection by the test's own end of it — that end's address, then its peer's (`ends`).
@@ -181,6 +187,7 @@ pub(super) fn relay_with(
     first: &[u8],
     body: Option<parse::Body>,
     upstream: bool,
+    watch: Option<Scan>,
     pipes: fn() -> io::Result<Pipes>,
 ) -> End {
     // (taken now: a socket shut down both ways has no peer to say by its end — macOS; the test's end of the
@@ -209,7 +216,7 @@ pub(super) fn relay_with(
         (None, false) => Look::Off,
     };
     let plain = body.is_some();
-    let mut f = Flow { look, body, pending: [Vec::new(), Vec::new()], name, hello_time, dropped: 0 };
+    let mut f = Flow { look, body, watch, pending: [Vec::new(), Vec::new()], name, hello_time, dropped: 0 };
     let mut spliced = 0;
     let end = pump(&sides, &mut f, first, pipes, &mut spliced);
     #[cfg(test)]
@@ -408,6 +415,8 @@ fn pump(
 struct Flow<'a> {
     look: Look,
     body: Option<parse::Body>,
+    /// The plain request's body data watched for a masked value (`masked::Masked::watch`).
+    watch: Option<Scan>,
     /// pending[i]: what goes to side i.
     pending: [Vec<u8>; 2],
     name: Option<&'a str>,
@@ -419,7 +428,7 @@ struct Flow<'a> {
 /// Bytes read from side `from` (0 the client, 1 the server; `end`: it read to its end) put where they go — held
 /// while `look` judges them, a client's past its request's `body` dropped. Some: how the relay ends now.
 fn feed(f: &mut Flow, from: usize, bytes: &[u8], end: bool) -> Option<End> {
-    let Flow { look, body, pending, name, hello_time, dropped } = f;
+    let Flow { look, body, watch, pending, name, hello_time, dropped } = f;
     let (name, hello_time) = (*name, *hello_time);
     let closed = |why: String| Some(End::Closed(why));
     let to = 1 - from;
@@ -459,14 +468,26 @@ fn feed(f: &mut Flow, from: usize, bytes: &[u8], end: bool) -> Option<End> {
             }
         }
         _ => {
-            let n = match body.as_mut().filter(|_| from == 0) {
-                Some(b) => match b.take(bytes) {
+            let n = match (body.as_mut().filter(|_| from == 0), watch.as_mut()) {
+                (Some(b), Some(w)) => match super::masked::through(b, w, bytes, &mut pending[to]) {
                     Ok(n) => n,
+                    Err(super::masked::Stopped::Framing(why)) => {
+                        return closed(format!("its request's body: {why}"));
+                    }
+                    Err(super::masked::Stopped::Stray(name)) => return Some(End::Stray(name)),
+                },
+                (Some(b), None) => match b.take(bytes) {
+                    Ok(n) => {
+                        pending[to].extend_from_slice(&bytes[..n]);
+                        n
+                    }
                     Err(why) => return closed(format!("its request's body: {why}")),
                 },
-                None => bytes.len(),
+                (None, _) => {
+                    pending[to].extend_from_slice(bytes);
+                    bytes.len()
+                }
             };
-            pending[to].extend_from_slice(&bytes[..n]);
             *dropped += bytes.len() - n;
             return None;
         }

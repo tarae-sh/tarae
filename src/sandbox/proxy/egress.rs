@@ -105,6 +105,10 @@ pub struct Egress {
     /// The hosts its tunnels are terminated for (P1a, `terminate`), with the session's CA its run's trust bundle
     /// carries — None: every tunnel relayed unread. Its `Debug` gives a count only.
     pub terminate: Option<super::terminate::Terminate>,
+    /// The session's masked variables when the run's policy was made (P2, `masked`): their sentinels refused
+    /// wherever tarae reads plaintext but toward their own hosts' terminated tunnels, where they're swapped. Rides by
+    /// `Arc`, as the CA does; its `Debug` gives names only.
+    pub masked: Option<std::sync::Arc<super::masked::Masked>>,
     /// Test-only: loopback addresses taken for beyond this machine — the test's own listeners stand in for the
     /// outside (as `own_addresses: Some([])` stood in for step 4).
     #[cfg(test)]

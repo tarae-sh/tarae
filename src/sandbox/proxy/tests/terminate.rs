@@ -12,6 +12,9 @@ use crate::web::fetch::tests::{Authority, authority, issued, trusting};
 
 const NAME: &str = "origin.test";
 
+/// P2's masking on loopback, with this module's origins and tunnels.
+mod masked;
+
 /// The session numbers these tests use, apart from every other test's (the CAs are the process's).
 const SESSION: u64 = 0x7e12_b000;
 

@@ -6,3 +6,7 @@ pub mod parse;
 #[allow(dead_code)]
 #[path = "../../../src/sandbox/proxy/issuer.rs"]
 pub mod issuer;
+
+#[allow(dead_code)]
+#[path = "../../../src/sandbox/proxy/swap.rs"]
+pub mod swap;

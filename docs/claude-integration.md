@@ -1425,6 +1425,17 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   depends on the Go it was built with; a JVM reads a truststore, not a PEM file — not set yet. On WSL2 a company
   root installed only in Windows' store isn't in the distro's: name its file in `llm.sandbox-ca`
   ([tarae on WSL2](wsl.md))
+- **Masked variables** (`llm.sandbox-secrets`, only your own config): `[llm.sandbox-secrets] GH_TOKEN =
+  ["api.github.com", "github.com"]` gives the commands a stand-in for `GH_TOKEN` (`fake_value_…`, as long as the real
+  value from 20 bytes on, the same for the session's every command), and tarae's proxy reads those hosts' TLS — its
+  own CA at the head of the commands' trust bundle — to swap the real value in: every request field, a `Basic`
+  credential, the path and query, an unencoded body; `Accept-Encoding: identity` and no `TE` toward them. Answers come
+  back with the real value swapped out again, wherever tarae can read it. Sent anywhere else — another host, plain
+  http, another masked variable's host — the stand-in is refused and the report says so
+  (`a run sent GH_TOKEN's masked value toward api.other.test:443 — it goes only to GH_TOKEN's own hosts — refused
+  403`). A value under 8 bytes, or with a space or a control character, isn't masked (left out, said); under 20
+  bytes, a body holding it goes unswapped (said). The report also says a host no rule reaches unasked, and a name
+  tarae's own environment doesn't have. What's left: [the threat model](threat-model.md) §1.5.
 - Each command gets a folder of its own as `TMPDIR`, in tarae's cache (`~/.cache/tarae/runs/`, or under
   `$XDG_CACHE_HOME`) — not in a temp folder, which every command writes: no other command, this session's or
   another's, can put a file there (tools' homes are in it, Gradle's among them). A tarae that's gone leaves its

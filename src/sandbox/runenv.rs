@@ -11,7 +11,9 @@
 //!   settings' and caches' variables) — a run that saw another `CARGO_HOME` than the policy would look where
 //!   nothing was opened;
 //! - the packs' `pass` (names, `PREFIX*` families) — the toolchains' own variables, said by their packs;
-//! - the user's `llm.sandbox-env` (names, `PREFIX*`).
+//! - the user's `llm.sandbox-env` (names, `PREFIX*`);
+//! - a name `llm.sandbox-secrets` masks (P2, `proxy::masked`): its sentinel, never its value — checked before every
+//!   other path, so neither `llm.sandbox-env` nor a card's real-value grant (which lands there) passes it whole.
 //!
 //! What looks like a token (`tokens::token_like` on `NAME=value`: a name for a secret with a value, a URL with
 //! a password, an option giving one, a known prefix) is left out whole, whatever passed it —
@@ -86,6 +88,8 @@ pub enum By {
     Pack,
     /// `llm.sandbox-env`.
     Yours,
+    /// `llm.sandbox-secrets`: its sentinel (`proxy::masked`), the real value swapped in toward its hosts only.
+    Masked,
 }
 
 impl By {
@@ -95,6 +99,7 @@ impl By {
             By::Policy => "a toolchain's home or settings",
             By::Pack => "a language pack",
             By::Yours => "llm.sandbox-env",
+            By::Masked => "llm.sandbox-secrets (a stand-in value)",
         }
     }
 }
@@ -115,6 +120,9 @@ pub struct RunEnv {
     /// What the packs' run homes give instead of the user's own, in their words (`RunHome::note`) — said once a
     /// conversation.
     pub notes: Vec<String>,
+    /// The names `llm.sandbox-secrets` masks that can be (`masked::maskable`) — each in `vars` as its sentinel once
+    /// the run's policy has the session's (`sandbox::for_its_run`), never its value.
+    pub masked: Vec<String>,
 }
 
 /// Names only: a value never reaches a log through a policy's `Debug`.
@@ -127,6 +135,9 @@ impl std::fmt::Debug for RunEnv {
             .field("others", &self.others)
             .field("replaced", &self.replaced)
             .field("notes", &self.notes.len())
+            // (apart: a name moved from its real value to masked is another policy — a daemon started with the real
+            // value isn't the masked run's, `policy_key`)
+            .field("masked", &self.masked)
             .finish()
     }
 }
@@ -158,8 +169,16 @@ fn token_like(name: &str, value: &OsString) -> bool {
 /// user's `yours` — no token-like one but a name of `yours` written whole. `set`: what tarae sets on top (not
 /// said as left out). One its tool reads in any case (the packs' `any-case`) goes in the packs' spelling alone, its
 /// value `Here::spelled`'s — the user's other spellings `replaced`; a tool's own proxy setting (the packs'
-/// `proxy.out`, any case) never, as `PROXIES`.
-pub fn of(here: &Here, policy: &[&str], pass: &[String], yours: &[String], set: &[&str]) -> RunEnv {
+/// `proxy.out`, any case) never, as `PROXIES`. A name `masked` holds (`llm.sandbox-secrets`) first of all: none of
+/// those paths — `masked` where its value can be (its sentinel comes later), else left out, said why.
+pub fn of(
+    here: &Here,
+    policy: &[&str],
+    pass: &[String],
+    yours: &[String],
+    set: &[&str],
+    masked: &[&String],
+) -> RunEnv {
     let packs = crate::sandboxpack::get();
     let folded = |n: &str| n.to_ascii_lowercase().replace('-', "_");
     let proxies: Vec<String> = packs.proxy.out.iter().map(|n| folded(n)).collect();
@@ -182,6 +201,16 @@ pub fn of(here: &Here, policy: &[&str], pass: &[String], yours: &[String], set: 
     let mut out = RunEnv::default();
     for name in names {
         let value = &here.env[name];
+        if masked.contains(&name) {
+            match super::proxy::masked::maskable(value.as_encoded_bytes()) {
+                Ok(()) => out.masked.push(name.clone()),
+                Err(why) => {
+                    out.tokens.push(name.clone());
+                    out.notes.push(format!("{name} (llm.sandbox-secrets): {why}."));
+                }
+            }
+            continue;
+        }
         let named_whole = yours.contains(&name);
         if proxies.contains(&folded(name)) {
             continue;
@@ -355,6 +384,15 @@ impl RunEnv {
         for k in &self.replaced {
             s.push_str(&format!("{k}\n"));
         }
+        if !self.masked.is_empty() {
+            s.push_str(
+                "\n## Masked — a stand-in value; tarae's proxy swaps the real one in toward its hosts only \
+                 (llm.sandbox-secrets)\n",
+            );
+            for k in &self.masked {
+                s.push_str(&format!("{k}\n"));
+            }
+        }
         s.push_str("\n## Left out — the rest\n");
         for k in &self.others {
             s.push_str(&format!("{k}\n"));
@@ -409,7 +447,7 @@ mod tests {
         ]);
         let pass = vec!["CARGO_*".to_string(), "RUST*".to_string()];
         let yours = vec!["DATABASE_URL".to_string(), "MY_API_KEY".to_string()];
-        let e = of(&h, &["CARGO_HOME"], &pass, &yours, &["NO_COLOR"]);
+        let e = of(&h, &["CARGO_HOME"], &pass, &yours, &["NO_COLOR"], &[]);
         assert_eq!(
             names(&e),
             ["CARGO_HOME", "DATABASE_URL", "HOME", "LC_CTYPE", "MY_API_KEY", "PATH", "RUSTFLAGS"]
@@ -431,7 +469,7 @@ mod tests {
         assert!(!format!("{e:?}").contains(FAKE) && !format!("{e:?}").contains("/usr/bin"), "{e:?}");
         // (the user's proxies never pass: with the network open tarae's own take their place — `run_env_of`)
         // A family of the user's carries no token-like name; a bare `*` is no family
-        let fam = of(&h, &[], &[], &["MY_*".into(), "*".into()], &[]);
+        let fam = of(&h, &[], &[], &["MY_*".into(), "*".into()], &[], &[]);
         assert!(fam.tokens.contains(&"MY_API_KEY".to_string()) && !names(&fam).contains(&"CLAUDE_PID"));
     }
 
@@ -450,7 +488,7 @@ mod tests {
             ("GRADLE_OPTS", "-Xmx2g -Dfile.encoding=UTF-8"),
         ]);
         let pass = ["YARN_*", "JAVA_OPTS", "MAVEN_OPTS", "GRADLE_*"].map(String::from);
-        let e = of(&h, &[], &pass, &[], &[]);
+        let e = of(&h, &[], &pass, &[], &[], &[]);
         assert_eq!(names(&e), ["GIT_AUTHOR_EMAIL", "GIT_AUTHOR_NAME", "GRADLE_OPTS", "YARN_ENABLE_COLORS"]);
         assert_eq!(e.tokens, ["JAVA_OPTS", "MAVEN_OPTS", "YARN_NPM_AUTH_IDENT"]);
         assert!(!format!("{e:?}").contains(FAKE));
@@ -481,13 +519,49 @@ mod tests {
         let h = here(&vars);
         let pass =
             ["npm_config_*", "NPM_CONFIG_*", "YARN_*", "pnpm_config_*", "Npm_Config_*"].map(String::from);
-        let e = of(&h, &[], &pass, &["npm_config_https-proxy".into()], &[]);
+        let e = of(&h, &[], &pass, &["npm_config_https-proxy".into()], &[], &[]);
         assert_eq!(names(&e), ["YARN_ENABLE_COLORS", "npm_config_registry"]);
         assert!(e.left_out().next().is_none(), "{e:?}");
     }
 
     /// The report: token-like names by name, the rest grouped by their first part; a chat hears each name
     /// once — a new one is said, an old one isn't; never a value.
+    /// P2: a name `llm.sandbox-secrets` masks takes none of the other paths — not `llm.sandbox-env`'s whole name (where
+    /// a card's real-value grant lands), not the packs' — and gets no value here: it's `masked`, its sentinel the
+    /// run's policy's. One that can't be (under 8 bytes, m; a byte past visible ASCII, e) is left out, said why.
+    #[test]
+    fn a_masked_name_takes_no_other_path_and_no_value() {
+        let real = concat!("tarae-fake-", "token-0123456789abcdef");
+        let h = here(&[
+            ("GH_TOKEN", real),
+            ("SHORT_TOKEN", "1234567"),
+            ("SPACED_TOKEN", "has a space in it"),
+            ("OTHER_TOKEN", real),
+        ]);
+        let masked: Vec<String> = ["GH_TOKEN", "SHORT_TOKEN", "SPACED_TOKEN"].map(String::from).into();
+        let yours: Vec<String> = ["GH_TOKEN", "SHORT_TOKEN", "OTHER_TOKEN"].map(String::from).into();
+        let e = of(&h, &[], &["GH_*".into()], &yours, &[], &masked.iter().collect::<Vec<_>>());
+        assert_eq!(e.masked, ["GH_TOKEN"]);
+        assert_eq!(e.var("GH_TOKEN"), None, "no value here: its sentinel comes with the run's policy");
+        assert_eq!(
+            e.var("OTHER_TOKEN").as_deref(),
+            Some(real),
+            "llm.sandbox-env's whole name, not masked: as ever"
+        );
+        assert!(
+            e.tokens.contains(&"SHORT_TOKEN".to_string()) && e.tokens.contains(&"SPACED_TOKEN".to_string())
+        );
+        assert_eq!(
+            e.notes,
+            [
+                "SHORT_TOKEN (llm.sandbox-secrets): too short to mask safely — its card can pass the real value.",
+                "SPACED_TOKEN (llm.sandbox-secrets): a byte that isn't visible ASCII (a space, a control character, \
+                 past 0x7E) — it can't go in a header as it is, so it isn't masked.",
+            ]
+        );
+        assert!(!format!("{e:?}").contains(real), "names only");
+    }
+
     #[test]
     fn the_report_names_what_was_left_out_once_a_chat() {
         let e = RunEnv {
@@ -506,6 +580,7 @@ mod tests {
             .into(),
             replaced: Vec::new(),
             notes: Vec::new(),
+            masked: Vec::new(),
         };
         let mut said = Vec::new();
         let first = e.said(&mut said).unwrap();

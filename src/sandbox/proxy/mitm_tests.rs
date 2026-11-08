@@ -62,6 +62,8 @@ pub(crate) struct Company {
     pub root: Arc<Authority>,
     /// The tunnels it was asked for (`host:port`).
     pub asked: Arc<Mutex<Vec<String>>>,
+    /// The request heads the origin behind it got, as they came.
+    pub heads: Arc<Mutex<Vec<Vec<u8>>>>,
     over: Arc<AtomicBool>,
 }
 
@@ -87,7 +89,8 @@ impl Company {
         let public = authority("tarae test public CA");
         let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let origin_at = origin.local_addr().unwrap();
-        serve_origin(origin, over.clone(), issued(&public, &[ORIGIN]));
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        serve_origin(origin, over.clone(), issued(&public, &[ORIGIN]), heads.clone());
         let root = Arc::new(authority("tarae test company CA"));
         let (asked, company) = (Arc::new(Mutex::new(Vec::new())), root.clone());
         let into = asked.clone();
@@ -103,15 +106,22 @@ impl Company {
                 intercept(s, &company, &into, origin_at, &public);
             }
         });
-        Company { at, root, asked, over }
+        Company { at, root, asked, heads, over }
     }
 }
 
-/// An origin on `l` under `served`: each request's head read, `ANSWER` sent, close_notify — until `over`.
-fn serve_origin(l: TcpListener, over: Arc<AtomicBool>, served: Arc<rustls::ServerConfig>) {
+/// An origin on `l` under `served`: each request's head read (kept in `heads`), `ANSWER` sent, close_notify — until
+/// `over`.
+fn serve_origin(
+    l: TcpListener,
+    over: Arc<AtomicBool>,
+    served: Arc<rustls::ServerConfig>,
+    heads: Arc<Mutex<Vec<Vec<u8>>>>,
+) {
     accepting(l, over, move |s| {
         let mut t = rustls::StreamOwned::new(rustls::ServerConnection::new(served.clone()).unwrap(), s);
-        head(&mut t);
+        let got = head(&mut t);
+        heads.lock().unwrap().push(got);
         let answer = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ANSWER}",
             ANSWER.len()
@@ -122,33 +132,34 @@ fn serve_origin(l: TcpListener, over: Arc<AtomicBool>, served: Arc<rustls::Serve
     });
 }
 
-/// The host a direct fetch asks for (P1a's 1d).
+/// The host a direct fetch asks for (P1a's 1d) — P2's secrecy test's its own: two tests at once never share a name.
 pub(crate) const DIRECT: &str = "direct-p1a.example.invalid";
+const DIRECT_P2: &str = "direct-p2.example.invalid";
 
-/// An origin a run reaches with no upstream proxy — most users' case: named `DIRECT` for tarae's proxy
+/// An origin a run reaches with no upstream proxy — most users' case: named `name` for tarae's proxy
 /// (`TEST_NAMES`), on loopback taken for beyond (macOS, `TEST_BEYOND` once the run's root is known) or on this
 /// machine's own address (Linux), under a leaf a "public" CA issued — the root the system's store would hold
 /// (`Here.host_roots` on a terminated host's leg). Stopped and unnamed as it drops.
 pub(crate) struct Direct {
+    pub name: &'static str,
     pub at: SocketAddr,
     pub public: Authority,
+    /// Each request's head, as it came.
+    pub heads: Arc<Mutex<Vec<Vec<u8>>>>,
     over: Arc<AtomicBool>,
 }
 
 impl Drop for Direct {
     fn drop(&mut self) {
         self.over.store(true, Ordering::SeqCst);
-        let at = self.at;
-        super::TEST_NAMES
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|(n, a)| !(n == DIRECT && *a == at));
+        let (name, at) = (self.name, self.at);
+        super::TEST_NAMES.lock().unwrap_or_else(|e| e.into_inner()).retain(|(n, a)| !(n == name && *a == at));
     }
 }
 
 impl Direct {
     /// None: no address of this machine's beyond loopback (Linux).
-    pub(crate) fn start() -> Option<Direct> {
+    pub(crate) fn start(name: &'static str) -> Option<Direct> {
         #[cfg(target_os = "linux")]
         let ip = super::packs_tests::outside_at(Path::new("/"))?;
         #[cfg(not(target_os = "linux"))]
@@ -157,9 +168,10 @@ impl Direct {
         let public = authority("tarae test public CA");
         let l = TcpListener::bind((ip, 0)).unwrap();
         let at = l.local_addr().unwrap();
-        serve_origin(l, over.clone(), issued(&public, &[DIRECT]));
-        super::TEST_NAMES.lock().unwrap().push((DIRECT.into(), at));
-        Some(Direct { at, public, over })
+        let heads = Arc::<Mutex<Vec<Vec<u8>>>>::default();
+        serve_origin(l, over.clone(), issued(&public, &[name]), heads.clone());
+        super::TEST_NAMES.lock().unwrap().push((name.into(), at));
+        Some(Direct { name, at, public, heads, over })
     }
 }
 
@@ -219,6 +231,13 @@ pub(crate) struct Given {
     pub terminate: Vec<&'static str>,
     /// curl's own flags besides `-sS` (`-v`: its certificate's issuer on stderr).
     pub flags: &'static str,
+    /// tarae's environment's other variables (a masked one's real value).
+    pub env: Vec<(&'static str, &'static str)>,
+    /// The run's line in place of the curl one (`{url}`: what it fetches) — `exit=N` its last word all the same.
+    pub script: Option<String>,
+    /// The test's own tarae: the project a folder beside tarae's cache (the runs' folders in it) and state, all three
+    /// in the project's parent; the run's refusals to a watch of its own (`then` reads its report).
+    pub own: bool,
 }
 
 /// The system's roots a test's run starts from (`Here.system_roots`): a stand-in CA's, never the company's — the
@@ -247,7 +266,7 @@ pub(crate) fn fetched_then(
     fetched_by(test, Way::Through(company), given, then)
 }
 
-/// `fetched_then` going out `way`: through the company's proxy, `https://ORIGIN/x`; directly, `https://DIRECT:port/x`
+/// `fetched_then` going out `way`: through the company's proxy, `https://ORIGIN/x`; directly, `https://<its name>:port/x`
 /// (the hosts `given` terminates then at that port).
 pub(crate) fn fetched_by(
     test: &str,
@@ -273,7 +292,14 @@ pub(crate) fn fetched_by(
     let target = std::env::current_dir().unwrap().join("target");
     std::fs::create_dir_all(&target).unwrap();
     let base = crate::scratch::Scratch::in_dir(&target, &format!("419-{short}"));
-    let root = std::fs::canonicalize(&*base).unwrap();
+    let top = std::fs::canonicalize(&*base).unwrap();
+    let root = match given.own {
+        true => {
+            std::fs::create_dir(top.join("p")).unwrap();
+            top.join("p")
+        }
+        false => top.clone(),
+    };
     let mut here = crate::sandbox::Here::now();
     let (host, port) = match way {
         Way::Through(company) => {
@@ -291,7 +317,7 @@ pub(crate) fn fetched_by(
             {
                 here.addresses = Some(Vec::new());
             }
-            (DIRECT, Some(d.at.port()))
+            (d.name, Some(d.at.port()))
         }
     };
     // (the CA variables the test gives alone — a machine's own, the rust image's distro bundle, never: what the
@@ -300,6 +326,14 @@ pub(crate) fn fetched_by(
     for (k, v) in &given.vars {
         here.env.insert(k.to_string(), v.into());
     }
+    for (k, v) in &given.env {
+        here.env.insert(k.to_string(), v.into());
+    }
+    if given.own {
+        here.runs = None;
+        here.env.insert("XDG_CACHE_HOME".into(), top.join("cache").into());
+        here.env.insert("XDG_STATE_HOME".into(), top.join("state").into());
+    }
     here.system_roots = Some(system_roots());
     let at_port = |h: &str| port.map_or(h.to_string(), |p| format!("{h}:{p}"));
     here.terminate = given.terminate.iter().map(|h| at_port(h)).collect();
@@ -307,13 +341,20 @@ pub(crate) fn fetched_by(
     let llm =
         crate::llm::LlmConfig { sandbox_network: true, sandbox_hosts: crate::llm::Hosts::Any, ..given.llm };
     let w = crate::tools::Widened { llm, ..Default::default() };
-    let p = crate::sandbox::policy_from(&root, w, &here).unwrap();
+    let mut p = crate::sandbox::policy_from(&root, w, &here).unwrap();
     if p.proxy_url().is_none() {
         skip(test, &format!("no way to the proxy here: {:?}", p.reach));
         return None;
     }
-    let flags = given.flags;
-    let script = format!("curl -sS {flags} --max-time 15 https://{}/x; echo \" exit=$?\"", at_port(host));
+    if given.own {
+        p.watch = Some(crate::sandbox::Watch::quiet(&format!("{short}.")));
+    }
+    let (flags, url) = (given.flags, format!("https://{}/x", at_port(host)));
+    let line = match &given.script {
+        Some(s) => s.replace("{url}", &url),
+        None => format!("curl -sS {flags} --max-time 15 {url}"),
+    };
+    let script = format!("{line}; echo \" exit=$?\"");
     let mut cmd = crate::sandbox::command(Some(&p), "/bin/sh", &["-c".into(), script]);
     cmd.current_dir(&root);
     let ended = crate::sandbox::after_run(Some(&p));
@@ -375,7 +416,6 @@ fn a_runs_fetch_through_a_company_mitm_trusts_your_ca_setting() {
 
 /// Every file under `dirs` (links not followed, a file read up to 16 MB) holding one of `secrets` — their paths.
 fn holding(dirs: &[PathBuf], secrets: &[Vec<u8>]) -> Vec<PathBuf> {
-    assert!(secrets.len() >= 4 && secrets.iter().all(|s| s.len() >= 32), "the keys and their scalars");
     let (mut found, mut walk) = (Vec::new(), dirs.to_vec());
     while let Some(d) = walk.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else { continue };
@@ -417,7 +457,9 @@ fn a_terminated_fetch_through_a_company_mitm_trusts_your_ca_setting() {
             dirs.extend(run.parent().map(Path::to_path_buf));
             dirs.push(run);
         }
-        found = Some(holding(&dirs, &t.ca().secrets));
+        let secrets = &t.ca().secrets;
+        assert!(secrets.len() >= 4 && secrets.iter().all(|s| s.len() >= 32), "the keys and their scalars");
+        found = Some(holding(&dirs, secrets));
     });
     let Some((said, report)) = fetched else { return };
     assert!(said.starts_with(&format!("{ANSWER} exit=0")), "through tarae's TLS both ways: {said}");
@@ -433,13 +475,96 @@ fn a_terminated_fetch_through_a_company_mitm_trusts_your_ca_setting() {
     assert_eq!(found, Some(Vec::new()), "the CA's keys written somewhere");
 }
 
+/// P2's secrecy, P1a's test 3 the way: a run's own curl with two masked variables, toward the direct host — A's sentinel
+/// swapped there for its real value (the origin's head holds it), B's refused 403 (D5), a body under `Content-Encoding`
+/// said as not searched. Then neither real value's bytes are anywhere a run, Claude or the disk keeps: no file of the
+/// project (where the run wrote its environment), the run's own folder or the runs' folder, tarae's cache and state
+/// for the test; nor the run's environment, its notes, its report (the refusal and the note in it), what it printed,
+/// or a line logged.
+#[test]
+fn a_masked_fetch_leaves_the_real_value_nowhere() {
+    let test = "mitm_tests::a_masked_fetch_leaves_the_real_value_nowhere";
+    let Some(direct) = Direct::start(DIRECT_P2) else {
+        return skip(test, "no address of this machine's beyond loopback");
+    };
+    let (a, b) = ("TARAE_TEST_P2_A", "TARAE_TEST_P2_B");
+    let real_a = concat!("tarae-fake-", "token-0123456789abcdef");
+    let real_b = concat!("tarae-fake-", "other-0123456789ab");
+    let at = format!("{DIRECT_P2}:{}", direct.at.port());
+    let secrets = [(a, at.clone()), (b, "other.example.invalid".to_string())];
+    let llm = crate::llm::LlmConfig {
+        sandbox_secrets: secrets.into_iter().map(|(n, h)| (n.to_string(), vec![h])).collect(),
+        ..Default::default()
+    };
+    let curl = "curl -sS --max-time 15";
+    let script = format!(
+        "env > env.txt; {curl} -H \"X-Key: ${a}\" {{url}}; echo; \
+         {curl} -H 'Content-Encoding: gzip' --data-binary \"${a}\" {{url}}; echo; {curl} -H \"X-Key: ${b}\" {{url}}"
+    );
+    let given = Given {
+        llm,
+        env: vec![(a, real_a), (b, real_b)],
+        script: Some(script),
+        own: true,
+        ..Default::default()
+    };
+    let reals = [real_a.as_bytes().to_vec(), real_b.as_bytes().to_vec()];
+    let log = crate::log::capture();
+    let mut seen = None;
+    let fetched = fetched_by(test, Way::Direct(&direct), given, |p, root| {
+        let w = p.watch.as_ref().expect("the test's watch");
+        // (the refusal and the note, relayed on a thread of their own: waited for)
+        let by = std::time::Instant::now() + crate::test_results::PATIENCE;
+        let masked = || w.blocked().seen.iter().filter(|d| d.op == super::MASKED_OP).count();
+        while masked() < 2 && std::time::Instant::now() < by {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let report =
+            crate::sandbox::Guard::In(Box::new(p.clone())).report_with(&[], Default::default(), false).text;
+        let sentinel = p.run_env.var(a).expect("A's sentinel").into_bytes();
+        let top = vec![root.parent().unwrap().to_path_buf()];
+        let env = format!("{:?} {:?} {:?}", p.run_env.vars, p.env, p.run_env.page());
+        let notes = p.run_env.notes.join("\n");
+        seen = Some((report, holding(&top, &reals), holding(&top, &[sentinel]), env, notes));
+        crate::sandbox::proxy::terminate::forget(p.session);
+        crate::sandbox::proxy::masked::forget(p.session);
+    });
+    let Some((said, _)) = fetched else { return };
+    let (report, found, sentinel_in, env, notes) = seen.expect("the run's policy read");
+    let logged = log.lines().join("\n");
+    assert_eq!(found, Vec::<PathBuf>::new(), "a real value in a file");
+    for (what, text) in
+        [("printed", &said), ("report", &report), ("notes", &notes), ("env", &env), ("log", &logged)]
+    {
+        for real in [real_a, real_b] {
+            assert!(!text.contains(real), "{real} in the run's {what}: {text}");
+        }
+    }
+    // (none of it empty: the swap made — the origin got A's real value —, the walk reading what the run wrote, its
+    // sentinel there, the refusal and the note said)
+    let heads = direct
+        .heads
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|h| String::from_utf8_lossy(h).into_owned())
+        .collect::<Vec<_>>();
+    assert!(heads.iter().any(|h| h.contains(&format!("X-Key: {real_a}\r\n"))), "{heads:?}");
+    assert!(sentinel_in.iter().any(|f| f.ends_with("p/env.txt")), "{sentinel_in:?}");
+    let refused = format!("a run sent {b}'s masked value toward {at} — it goes only to {b}'s own hosts");
+    assert!(said.contains(&refused) && said.contains(" exit=0\n"), "{said}");
+    let noted =
+        "a request body with Content-Encoding: gzip isn't searched — a masked value in it went as its fake";
+    assert!(report.contains(&refused) && report.contains(noted), "{report}");
+}
+
 /// P1a's 1d, most users' case: no upstream proxy — the run's own curl reaches a terminated host directly through
 /// tarae's proxy, its TLS tarae's (curl's `issuer:` the session's CA), the host's leaf verified on tarae's leg against
 /// the CA the system would hold (`Here.host_roots`), nothing in `llm.sandbox-ca`.
 #[test]
 fn a_terminated_fetch_goes_directly_with_no_upstream() {
     let test = "mitm_tests::a_terminated_fetch_goes_directly_with_no_upstream";
-    let Some(direct) = Direct::start() else {
+    let Some(direct) = Direct::start(DIRECT) else {
         return skip(test, "no address of this machine's beyond loopback");
     };
     let given = Given { terminate: vec![DIRECT], flags: "-v", ..Default::default() };

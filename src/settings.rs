@@ -27,6 +27,9 @@ pub enum Kind {
     /// `review.rules`: a table of keys (an angle's name, `reviewer`), each a list of paths from the main checkout's
     /// root — never absolute, never a `..`.
     Rules,
+    /// `llm.sandbox-secrets`: a table of variable names, each a list of host rules (`llm.sandbox-hosts`' —
+    /// `egress::Pattern`) — a whole name each, never a family.
+    Secrets,
 }
 
 impl Kind {
@@ -54,6 +57,9 @@ impl Kind {
         }
         if let Kind::Rules = self {
             return rules_of(v).map(|_| ());
+        }
+        if let Kind::Secrets = self {
+            return secrets_of(v).map(|_| ());
         }
         let ok = match (self, v) {
             (Kind::Hosts, Value::String(s)) => ["registries", "*", "any"].contains(&s.as_str()),
@@ -85,8 +91,38 @@ impl Kind {
             }
             Kind::Angles => "list of tables { name, ask, when, paths, languages, findings-max }".into(),
             Kind::Rules => "table of angle (or reviewer) = list of paths in the main checkout".into(),
+            Kind::Secrets => {
+                "table of variable = list of hosts (\"api.github.com\", \"*.example.com\")".into()
+            }
         }
     }
+}
+
+/// `llm.sandbox-secrets` as written → each variable's host rules, or what's wrong with it: a whole name (a sentinel
+/// is one name's — no `PREFIX*`) that a run's environment may hold (`readonly::env_core`: never `PATH`, `HOME`…), and
+/// at least one host, each a rule `llm.sandbox-hosts` takes.
+pub fn secrets_of(v: &Value) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    let t = v.as_table().ok_or("a table: [llm.sandbox-secrets] with GH_TOKEN = [\"api.github.com\"]")?;
+    let mut out = std::collections::BTreeMap::new();
+    for (name, hosts) in t {
+        if name.ends_with('*') || !crate::sandbox::runenv::entry_ok(name) || !crate::readonly::env_core(name)
+        {
+            return Err(format!("{name}: a variable's whole name, one a run's environment may hold"));
+        }
+        let list = hosts.as_array().ok_or_else(|| format!("{name}: a list of hosts"))?;
+        let mut rules = Vec::new();
+        for h in list {
+            let h = h.as_str().ok_or_else(|| format!("{name}: a list of hosts (strings)"))?;
+            crate::sandbox::proxy::egress::Pattern::parse(h)
+                .map_err(|why| format!("{name}: \"{h}\": {why}"))?;
+            rules.push(h.to_string());
+        }
+        if rules.is_empty() {
+            return Err(format!("{name}: at least one host its real value goes to"));
+        }
+        out.insert(name.clone(), rules);
+    }
+    Ok(out)
 }
 
 /// `review.rules` as written → each key's paths, or what's wrong with it.
@@ -705,6 +741,21 @@ pub static SETTINGS: &[Setting] = &[
         },
     },
     Setting {
+        path: "llm.sandbox-secrets",
+        kind: Kind::Secrets,
+        doc: "Chat, with the network open (only your own config): variables Claude's commands get masked — [llm.sandbox-secrets] GH_TOKEN = [\"api.github.com\", \"github.com\"]: a run holds a stand-in value, and tarae's proxy swaps the real one in only toward those hosts (it reads their TLS to do so); sent anywhere else it's refused. A value under 8 bytes isn't masked",
+        get: |c| {
+            Value::Table(
+                (c.llm.sandbox_secrets.iter())
+                    .map(|(k, hs)| {
+                        (k.clone(), Value::Array(hs.iter().map(|h| Value::from(h.as_str())).collect()))
+                    })
+                    .collect(),
+            )
+        },
+        set: |c, v| c.llm.sandbox_secrets = secrets_of(v).unwrap_or_default(),
+    },
+    Setting {
         path: "llm.sandbox-env",
         kind: Kind::StrList,
         doc: "Chat: more of your environment Claude's commands get (\"DATABASE_URL\", \"MYAPP_*\") — they start with PATH, HOME, the locale and the toolchains' own; a token-like one only by its whole name (:sandbox-env lists them)",
@@ -1056,6 +1107,7 @@ mod tests {
                 Kind::Hosts => md_code("\"registries\"") + " · " + &md_code("\"*\"") + " or a list of hosts",
                 Kind::Angles => "list of tables".into(),
                 Kind::Rules => "table of lists of paths".into(),
+                Kind::Secrets => "table of lists of hosts".into(),
             };
             let default = match s.kind {
                 // (the built-in angles' asks are paragraphs: named here, whole in `:config-show`)
@@ -1090,6 +1142,29 @@ mod tests {
     fn settings_reference_is_up_to_date() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/reference/settings.md");
         check_generated(path, &reference(), "settings_reference");
+    }
+
+    /// `llm.sandbox-secrets`: a whole name a run's environment may hold, each with at least one host rule
+    /// `llm.sandbox-hosts` takes — a family, `PATH`, a bad host or none refused with its words.
+    #[test]
+    fn a_masked_variable_names_one_name_and_its_hosts() {
+        let read = |s: &str| secrets_of(&toml::from_str::<Value>(s).unwrap());
+        let ok = read("GH_TOKEN = [\"api.github.com\", \"*.example.test:8443\"]").unwrap();
+        assert_eq!(ok["GH_TOKEN"], ["api.github.com", "*.example.test:8443"]);
+        for (bad, said) in [
+            ("\"GH_*\" = [\"a.test\"]", "GH_*: a variable's whole name"),
+            ("PATH = [\"a.test\"]", "PATH: a variable's whole name"),
+            ("T = [\"1.2.3.4\"]", "T: \"1.2.3.4\": "),
+            ("T = []", "T: at least one host"),
+            ("T = \"a.test\"", "T: a list of hosts"),
+        ] {
+            let e = read(bad).unwrap_err();
+            assert!(e.starts_with(said), "{bad}: {e}");
+        }
+        let mut cfg = EditorConfig::default();
+        let v: Value = toml::from_str("T = [\"a.test\"]").unwrap();
+        apply(&mut cfg, "llm.sandbox-secrets", &v).unwrap();
+        assert_eq!(cfg.llm.sandbox_secrets["T"], ["a.test"]);
     }
 
     #[test]

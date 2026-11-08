@@ -121,6 +121,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "swap"
+path = "fuzz_targets/swap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "wire_decode"
 path = "fuzz_targets/wire_decode.rs"
 test = false

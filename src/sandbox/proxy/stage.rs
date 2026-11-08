@@ -13,8 +13,10 @@ use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
 use super::bridge::{Ending, Out};
+use super::masked::{self, Stopped, View};
 use super::parse::{self, Body, Framing};
-use super::{Limits, answer_bytes};
+use super::swap::Scan;
+use super::{Limits, MASKED_OP, OP, answer_bytes};
 
 /// What one read takes.
 const CHUNK: usize = 16 * 1024;
@@ -68,6 +70,9 @@ pub(super) enum Stop {
     Failed(String),
     /// A framing that can't be followed part-way through it (some of it went on): the tunnel closes now.
     Cut(String),
+    /// A masked value toward a host it doesn't go to (P2, D5): why — found in a head, refused 403 as `Refused`;
+    /// part-way through a body (`cut`), the tunnel closes now. Said as an attempt (`MASKED_OP`).
+    Masked { why: String, cut: bool },
 }
 
 /// Where an exchange is, for its idle limits.
@@ -96,8 +101,8 @@ struct Asked {
 enum RunSide {
     /// A head, gathered in `Exchange.head`.
     Head,
-    /// A request's body; then the next head, or nothing (`last`).
-    Body { body: Body, last: bool },
+    /// A request's body; then the next head, or nothing (`last`) — its data through `scan` where masking looks at it.
+    Body { body: Body, last: bool, scan: Option<Box<Scan>> },
     /// After the connection's last request: nothing more goes (what comes is dropped and counted).
     Shut,
     /// After a refusal: nothing more goes (what comes is dropped).
@@ -108,16 +113,22 @@ enum RunSide {
 enum HostSide {
     /// An answer's head, gathered in `Exchange.answer`.
     Head,
-    /// An answer's body — `close`: until the host closes.
-    Body { body: Body, close: bool },
+    /// An answer's body — `close`: until the host closes; its data through `scan` where masking scrubs it.
+    Body { body: Body, close: bool, scan: Option<Box<Scan>> },
 }
 
 /// A terminated tunnel's HTTP, both ways, as a pure machine: bytes in from either side, the bytes that go on out —
-/// as they came, so the bytes out are the bytes in (P2 changes that on purpose) — or why it stops.
+/// as they came but for masking's named edits (`View`: the swaps, the scrubs, `Accept-Encoding`, `TE`) — or why it
+/// stops.
 #[derive(Debug)]
 pub(super) struct Exchange {
     name: String,
     port: u16,
+    /// What masking swaps, refuses and scrubs here — None: nothing masked in the session.
+    view: Option<View>,
+    /// What the report says of masking here, each once (`said`).
+    notes: Vec<String>,
+    told: usize,
     run: RunSide,
     head: Vec<u8>,
     host: HostSide,
@@ -134,10 +145,13 @@ pub(super) struct Exchange {
 }
 
 impl Exchange {
-    pub(super) fn new(name: &str, port: u16) -> Exchange {
+    pub(super) fn new(name: &str, port: u16, view: Option<View>) -> Exchange {
         Exchange {
             name: name.into(),
             port,
+            view,
+            notes: Vec::new(),
+            told: 0,
             run: RunSide::Head,
             head: Vec::new(),
             host: HostSide::Head,
@@ -160,12 +174,31 @@ impl Exchange {
                     return Ok(());
                 }
                 RunSide::Refused => return Ok(()),
-                RunSide::Body { body, last } => {
-                    let n = body.take(b).map_err(|why| Stop::Cut(format!("a request's body: {why}")))?;
-                    out.extend_from_slice(&b[..n]);
+                RunSide::Body { body, last, scan } => {
+                    let n = match scan {
+                        Some(scan) => match masked::through(body, scan, b, out) {
+                            Ok(n) => n,
+                            Err(Stopped::Framing(why)) => {
+                                return Err(Stop::Cut(format!("a request's body: {why}")));
+                            }
+                            Err(Stopped::Stray(name)) => {
+                                let why = self.view.as_ref().map(|v| v.refused(&name)).unwrap_or_default();
+                                self.run = RunSide::Refused;
+                                return Err(Stop::Masked { why, cut: true });
+                            }
+                        },
+                        None => {
+                            let n =
+                                body.take(b).map_err(|why| Stop::Cut(format!("a request's body: {why}")))?;
+                            out.extend_from_slice(&b[..n]);
+                            n
+                        }
+                    };
                     b = &b[n..];
                     if body.done() {
+                        let left = scan.as_mut().map(|s| s.left()).unwrap_or_default();
                         self.run = if *last { RunSide::Shut } else { RunSide::Head };
+                        self.left(true, left);
                     }
                 }
                 RunSide::Head => {
@@ -188,14 +221,35 @@ impl Exchange {
                         self.run = RunSide::Refused;
                         return Err(Stop::Refused(status, why));
                     }
-                    out.extend_from_slice(&self.head[..o.len]);
+                    // (masking's edits: a sentinel that doesn't go here refused, a secret's own swapped in)
+                    let mut scan = None;
+                    match self.view.as_ref().map(|v| v.request_head(&self.head[..o.len])) {
+                        None => out.extend_from_slice(&self.head[..o.len]),
+                        Some(Err(why)) => {
+                            self.run = RunSide::Refused;
+                            return Err(Stop::Masked { why, cut: false });
+                        }
+                        Some(Ok(h)) => {
+                            out.extend_from_slice(&h.bytes);
+                            let view = self.view.as_ref().expect("a view");
+                            match h.encoded {
+                                // (an encoded body isn't searched: only toward a secret's host is that said)
+                                Some(c) if view.edits() && o.body != Framing::Empty => self.note(format!(
+                                    "a request body with Content-Encoding: {c} isn't searched — a masked value in \
+                                     it went as its fake"
+                                )),
+                                Some(_) => {}
+                                None => scan = view.request_scan().map(Box::new),
+                            }
+                        }
+                    }
                     b = &b[o.len.saturating_sub(before)..];
                     self.head.clear();
                     self.owed.push_back(Asked { head: o.method == "HEAD", last: o.last });
                     self.taken = true;
                     let body = Body::new(o.body);
                     self.run = match (body.done(), o.last) {
-                        (false, last) => RunSide::Body { body, last },
+                        (false, last) => RunSide::Body { body, last, scan },
                         (true, true) => RunSide::Shut,
                         (true, false) => RunSide::Head,
                     };
@@ -211,12 +265,26 @@ impl Exchange {
     pub(super) fn host_sent(&mut self, mut b: &[u8], out: &mut Vec<u8>) -> Result<(), Stop> {
         while !b.is_empty() && !self.over {
             match &mut self.host {
-                HostSide::Body { body, .. } => {
-                    let n = body.take(b).map_err(|why| Stop::Cut(format!("its answer's body: {why}")))?;
-                    out.extend_from_slice(&b[..n]);
+                HostSide::Body { body, scan, .. } => {
+                    let cut = |why| Stop::Cut(format!("its answer's body: {why}"));
+                    let n = match scan {
+                        Some(scan) => match masked::through(body, scan, b, out) {
+                            Ok(n) => n,
+                            Err(Stopped::Framing(why)) => return Err(cut(why)),
+                            // (an answer's scan has no stray: every pattern is swapped)
+                            Err(Stopped::Stray(_)) => return Err(cut("a value it can't scrub")),
+                        },
+                        None => {
+                            let n = body.take(b).map_err(cut)?;
+                            out.extend_from_slice(&b[..n]);
+                            n
+                        }
+                    };
                     b = &b[n..];
                     if body.done() {
+                        let left = scan.as_mut().map(|s| s.left()).unwrap_or_default();
                         self.answered();
+                        self.left(false, left);
                     }
                 }
                 HostSide::Head => {
@@ -239,7 +307,23 @@ impl Exchange {
                             "it switched protocols (101), which the run never asked".into(),
                         ));
                     }
-                    out.extend_from_slice(&self.answer[..r.len]);
+                    // (masking's scrub: every real value back to its sentinel, the head's and the body's)
+                    let mut scan = None;
+                    match self.view.as_ref().map(|v| v.answer_head(&self.answer[..r.len])) {
+                        None => out.extend_from_slice(&self.answer[..r.len]),
+                        Some(h) => {
+                            out.extend_from_slice(&h.bytes);
+                            let view = self.view.as_ref().expect("a view");
+                            match h.encoded {
+                                Some(c) if r.body != Framing::Empty && !asked.head => self.note(format!(
+                                    "an answer with Content-Encoding: {c} passed unscrubbed — a real value in \
+                                     its body would reach the run"
+                                )),
+                                Some(_) => {}
+                                None => scan = view.answer_scan().map(Box::new),
+                            }
+                        }
+                    }
                     b = &b[r.len.saturating_sub(before)..];
                     let old = self.answer.starts_with(b"HTTP/1.0");
                     self.answer.clear();
@@ -258,7 +342,7 @@ impl Exchange {
                     let body = Body::new(framing);
                     match body.done() {
                         true => self.answered(),
-                        false => self.host = HostSide::Body { body, close: framing == Framing::Close },
+                        false => self.host = HostSide::Body { body, close: framing == Framing::Close, scan },
                     }
                 }
             }
@@ -275,16 +359,24 @@ impl Exchange {
 
     /// The host's side ended — `clean`: its TLS with close_notify: the exchange is over — Ok where that's an end
     /// (between answers: a request still owed sees the close, and its client may try again; an answer that ends with
-    /// the close, only where it ended clean), else why not.
-    pub(super) fn host_ended(&mut self, clean: bool) -> Result<(), Stop> {
+    /// the close, only where it ended clean: what its scrub held goes to `out`), else why not.
+    pub(super) fn host_ended(&mut self, clean: bool, out: &mut Vec<u8>) -> Result<(), Stop> {
         let was = std::mem::replace(&mut self.over, true);
-        match &self.host {
+        match &mut self.host {
             _ if was => Ok(()),
             HostSide::Head if self.answer.is_empty() => Ok(()),
             HostSide::Head => Err(Stop::Failed("it closed part-way through an answer's head".into())),
-            HostSide::Body { close: true, .. } if clean => {
+            HostSide::Body { close: true, scan, .. } if clean => {
+                let left = match scan {
+                    Some(s) => {
+                        let _ = s.end(out);
+                        s.left()
+                    }
+                    None => Vec::new(),
+                };
                 self.owed.pop_front();
                 self.host = HostSide::Head;
+                self.left(false, left);
                 Ok(())
             }
             HostSide::Body { close: true, .. } => Err(Stop::Cut(
@@ -292,6 +384,48 @@ impl Exchange {
             )),
             HostSide::Body { .. } => Err(Stop::Cut("it closed part-way through an answer's body".into())),
         }
+    }
+
+    /// A note of masking's, said once a tunnel.
+    fn note(&mut self, said: String) {
+        if !self.notes.contains(&said) {
+            self.notes.push(said);
+        }
+    }
+
+    /// What a body's scan left as it was — `out`: a request's — noted.
+    fn left(&mut self, out: bool, left: Vec<(super::swap::Does, String)>) {
+        let said: Vec<String> = match &self.view {
+            Some(v) => left.iter().map(|(does, name)| v.left_said(out, *does, name)).collect(),
+            None => Vec::new(),
+        };
+        said.into_iter().for_each(|s| self.note(s));
+    }
+
+    /// What masking noted since the last call, for the report.
+    pub(super) fn said(&mut self) -> Vec<String> {
+        let new = self.notes[self.told..].to_vec();
+        self.told = self.notes.len();
+        new
+    }
+
+    /// Whether a request body's start of what may be a masked value is held.
+    pub(super) fn run_holds(&self) -> bool {
+        matches!(&self.run, RunSide::Body { scan: Some(s), .. } if s.holding())
+    }
+
+    /// A pause: what the request body's scan holds goes to `out` as it is (the fake goes, said where a value went so).
+    /// Err: a stray completed in it, as `run_sent`'s.
+    pub(super) fn release_run(&mut self, out: &mut Vec<u8>) -> Result<(), Stop> {
+        let RunSide::Body { scan: Some(s), .. } = &mut self.run else { return Ok(()) };
+        if let Err(name) = s.release(out) {
+            let why = self.view.as_ref().map(|v| v.refused(&name)).unwrap_or_default();
+            self.run = RunSide::Refused;
+            return Err(Stop::Masked { why, cut: true });
+        }
+        let left = s.left();
+        self.left(true, left);
+        Ok(())
     }
 
     /// Requests sent on, owed their answers.
@@ -349,18 +483,22 @@ fn expired(phase: Phase, due: Option<Instant>, now: Instant, unread: impl FnOnce
 /// — each side's writing shut first (its bridge's close_notify, `close`); else (the host's TLS ended without
 /// close_notify, `ending`; a framing that can't be followed either side; anything that fails part-way) with none
 /// (`Out::abandon`): the run's TLS reads its end as the truncation it is.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     sides: [Out; 2],
     ending: &Ending,
     name: &str,
     port: u16,
+    view: Option<View>,
     limits: &Limits,
-    tell: impl Fn(&str),
+    tell: impl Fn(&str, &str),
 ) {
     if sides.iter().any(|s| s.set_nonblocking(true).is_err()) {
         return;
     }
-    let mut x = Exchange::new(name, port);
+    let mut x = Exchange::new(name, port, view);
+    // (the run's last bytes: a request body's held start goes `hold_pause` after them)
+    let mut run_moved = crate::clock::now();
     // pending[0]: what goes to the run; pending[1]: to the host. eof[i]: side i read to its end; hup[i]: it hung up —
     // left out of `poll` while it's neither read nor written to (as the relay's)
     let mut pending = [Vec::new(), Vec::new()];
@@ -368,11 +506,16 @@ pub(super) fn run(
     let mut buf = vec![0u8; CHUNK];
     let started = crate::clock::now();
     let mut moved = started;
-    // A refusal, held until the answers owed have gone; then how the tunnel closes
-    let mut held: Option<(u16, String)> = None;
+    // A refusal, held until the answers owed have gone (its op: a masked value's is an attempt); then how the tunnel
+    // closes
+    let mut held: Option<(u16, String, &'static str)> = None;
     let mut closing: Option<Closing> = None;
     // (what a close the loop didn't plan says: the one planned's words, never clean)
-    let failed = |c: &Option<Closing>| Closing { why: c.as_ref().and_then(|c| c.why.clone()), clean: false };
+    let failed = |c: &Option<Closing>| Closing {
+        why: c.as_ref().and_then(|c| c.why.clone()),
+        op: c.as_ref().map_or(OP, |c| c.op),
+        clean: false,
+    };
     let c = 'stage: loop {
         // (a clean close once what goes to the run went — not past `stalled`; an unclean one at once)
         if let Some(c) = &closing
@@ -387,6 +530,9 @@ pub(super) fn run(
         };
         let by = match closing {
             Some(_) => Some(moved + limits.stalled),
+            None if x.run_holds() => due(phase, started, moved, limits)
+                .map(|d| d.min(run_moved + limits.hold_pause))
+                .or(Some(run_moved + limits.hold_pause)),
             None => due(phase, started, moved, limits),
         };
         let open = closing.is_none();
@@ -436,23 +582,35 @@ pub(super) fn run(
                 eof[i] = true;
             } else {
                 moved = crate::clock::now();
+                if i == 0 {
+                    run_moved = moved;
+                }
             }
             let bytes = &buf[..got];
             let stop = match (i, got) {
                 (0, 0) => continue,
                 (0, _) => x.run_sent(bytes, &mut pending[1]),
-                (_, 0) => x.host_ended(clean),
+                (_, 0) => x.host_ended(clean, &mut pending[0]),
                 _ => x.host_sent(bytes, &mut pending[0]),
             };
             match stop {
                 Ok(()) if i == 1 && got == 0 => {
-                    let why = held.take().map(|(status, why)| {
-                        format!("{why} — refused {status}, unanswered: the host closed first")
-                    });
-                    closing = Some(Closing { why, clean });
+                    let (why, op) = match held.take() {
+                        Some((status, why, op)) => {
+                            (Some(format!("{why} — refused {status}, unanswered: the host closed first")), op)
+                        }
+                        None => (None, OP),
+                    };
+                    closing = Some(Closing { why, op, clean });
                 }
                 Ok(()) => {}
-                Err(Stop::Refused(status, why)) => held = Some((status, why)),
+                Err(Stop::Refused(status, why)) => held = Some((status, why, OP)),
+                Err(Stop::Masked { why, cut: false }) => held = Some((403, why, MASKED_OP)),
+                Err(Stop::Masked { why, cut: true }) => {
+                    let why =
+                        Some(format!("{why} — found part-way through a request's body: the tunnel closed"));
+                    closing = Some(Closing { why, op: MASKED_OP, clean: false });
+                }
                 Err(Stop::Failed(why)) => {
                     pending[0].extend_from_slice(&answer_bytes(502, &format!("{name}:{port}: {why}"), ""));
                     closing = Some(Closing::clean(format!("the host's side: {why} — answered 502")));
@@ -460,9 +618,21 @@ pub(super) fn run(
                 Err(Stop::Cut(why)) => {
                     let side = if i == 0 { "the run's side" } else { "the host's side" };
                     let why = Some(format!("{side}: {why} — the tunnel closed"));
-                    closing = Some(Closing { why, clean: false });
+                    closing = Some(Closing { why, op: OP, clean: false });
                 }
             }
+        }
+        // (a request body's held start, nothing more of it within the pause: it goes as it is)
+        if closing.is_none()
+            && x.run_holds()
+            && crate::clock::now() >= run_moved + limits.hold_pause
+            && let Err(Stop::Masked { why, .. }) = x.release_run(&mut pending[1])
+        {
+            let why = Some(format!("{why} — found part-way through a request's body: the tunnel closed"));
+            closing = Some(Closing { why, op: MASKED_OP, clean: false });
+        }
+        for said in x.said() {
+            tell(MASKED_OP, &said);
         }
         for i in 0..2 {
             if !write[i] || pending[i].is_empty() {
@@ -483,14 +653,18 @@ pub(super) fn run(
         }
         // The answers owed have gone: the refusal held answered, then the close
         if x.owed() == 0
-            && let Some((status, why)) = held.take()
+            && let Some((status, why, op)) = held.take()
         {
             pending[0].extend_from_slice(&answer_bytes(status, &format!("{name}:{port}: {why}"), ""));
-            closing = Some(Closing::clean(format!("{why} — answered {status}")));
+            let said = match op {
+                MASKED_OP => format!("{why} — refused {status}"),
+                _ => format!("{why} — answered {status}"),
+            };
+            closing = Some(Closing { op, ..Closing::clean(said) });
             continue;
         }
         if x.over() {
-            closing = Some(Closing { why: None, clean: true });
+            closing = Some(Closing { why: None, op: OP, clean: true });
             continue;
         }
         // The run's writing ended: the host's too, once what goes to it went — and with nothing owed, the end
@@ -499,7 +673,7 @@ pub(super) fn run(
             host_shut = true;
         }
         if eof[0] && x.owed() == 0 && pending[1].is_empty() {
-            closing = Some(Closing { why: None, clean: true });
+            closing = Some(Closing { why: None, op: OP, clean: true });
             continue;
         }
         let unread = || matches!(sides[0].peek(&mut [0u8; 1]), Ok(1..));
@@ -515,19 +689,23 @@ pub(super) fn run(
                         "nothing moved for {} s part-way through a request or its answer — the tunnel closed",
                         limits.stalled.as_secs_f32()
                     )),
+                    op: OP,
                     clean: false,
                 },
                 // (the keep-alive's end: a tunnel at rest, closed with close_notify, not said)
-                Phase::Idle | Phase::Waiting => Closing { why: None, clean: true },
+                Phase::Idle | Phase::Waiting => Closing { why: None, op: OP, clean: true },
             });
         }
     };
     // (said first: `close` may wait for a side's own close)
+    for said in x.said() {
+        tell(MASKED_OP, &said);
+    }
     match (c.why, x.dropped) {
         (None, 0) => {}
-        (Some(w), 0) => tell(&w),
-        (None, n) => tell(&format!("{n} bytes sent after its last request were dropped")),
-        (Some(w), n) => tell(&format!("{w} ({n} bytes sent after its last request dropped)")),
+        (Some(w), 0) => tell(c.op, &w),
+        (None, n) => tell(OP, &format!("{n} bytes sent after its last request were dropped")),
+        (Some(w), n) => tell(c.op, &format!("{w} ({n} bytes sent after its last request dropped)")),
     }
     match c.clean {
         true => close(&sides),
@@ -535,17 +713,18 @@ pub(super) fn run(
     }
 }
 
-/// How a tunnel closes: what the report says (None: nothing), and whether cleanly — each side's close_notify — or
-/// not: the run's TLS ends with none, a truncation.
+/// How a tunnel closes: what the report says (None: nothing) and with which op, and whether cleanly — each side's
+/// close_notify — or not: the run's TLS ends with none, a truncation.
 #[derive(Clone, Debug)]
 struct Closing {
     why: Option<String>,
+    op: &'static str,
     clean: bool,
 }
 
 impl Closing {
     fn clean(why: String) -> Closing {
-        Closing { why: Some(why), clean: true }
+        Closing { why: Some(why), op: OP, clean: true }
     }
 }
 

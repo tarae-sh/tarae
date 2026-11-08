@@ -21,9 +21,11 @@ pub mod bridge;
 pub mod cert;
 pub mod egress;
 pub mod issuer;
+pub mod masked;
 pub mod parse;
 pub mod relay;
 mod stage;
+pub mod swap;
 pub mod terminate;
 pub mod upstream;
 
@@ -52,6 +54,10 @@ pub const HOST_OP: &str = "network-host";
 /// The op of the upstream proxy's failure (step 5g: the one tarae itself goes out by — unreachable, its 407, its
 /// refusal): not tarae's, and no answer of the user's would lift it.
 pub const UPSTREAM_OP: &str = "network-upstream";
+
+/// The op of what masking did (P2): a masked value toward a host it doesn't go to, refused (an attempt —
+/// `:sandbox-blocked` never offers to lift it), and what went as its fake or reached the run as it was, said.
+pub const MASKED_OP: &str = "network-masked";
 
 /// A run's connection, as the supervisor hands it (Linux): the proxy's end of the TCP pair whose other end is
 /// in the run's place.
@@ -164,6 +170,9 @@ pub struct Limits {
     pub keep_alive: Duration,
     /// A terminated tunnel part-way through a request or an answer is closed once nothing moved for this long.
     pub stalled: Duration,
+    /// A request body's held bytes — the start of what may be a masked value (P2) — go as they are once nothing more
+    /// came from the run for this long (the fake goes, said): a client may wait on an answer to what it thinks went.
+    pub hold_pause: Duration,
     /// To a tunnel's ClientHello's end (and a second one's after a HelloRetryRequest).
     pub hello_time: Duration,
     /// How long a connection waits on the user's answer.
@@ -185,6 +194,7 @@ impl Default for Limits {
             head_time: Duration::from_secs(10),
             keep_alive: Duration::from_secs(6),
             stalled: Duration::from_secs(300),
+            hold_pause: Duration::from_millis(200),
             hello_time: Duration::from_secs(10),
             // (below cargo's 30 s HTTP timeout and git's low-speed limit: the tool is still waiting)
             hold: Duration::from_secs(20),
@@ -519,6 +529,7 @@ impl State {
                 }
                 In::Msg(ToProxy::WorkspaceEnded { session }) => {
                     terminate::forget(session);
+                    masked::forget(session);
                     self.ports.remove(&session);
                     self.latest.retain(|k, _| k.session != session);
                     self.run_allowed.retain(|(_, k)| k.session != session);
@@ -1094,6 +1105,25 @@ fn serve(inc: Incoming, shared: &Shared) {
         answer(s, 502, &why, "");
         tell_op(&c, UPSTREAM_OP, &why);
     };
+    // (a masked value where tarae reads plaintext outside a terminated tunnel — a CONNECT's target, which its
+    // ClientHello's name must be (`same_host`), a plain request's host and head: refused before anything is asked
+    // or reached, k and D5; no masked value goes in clear)
+    if let Some(m) = &c.rules.masked {
+        let (in_name, in_head) = match &h.request {
+            Request::Plain { head, .. } => (m.sentinel_in(name.as_bytes()), m.sentinel_in(head)),
+            Request::Connect { .. } => (m.sentinel_in(name.as_bytes()), None),
+        };
+        let found = match (in_name, in_head) {
+            (Some(n), _) => Some((n, "in the host it asked for")),
+            (_, Some(n)) => Some((n, "in plain http")),
+            _ => None,
+        };
+        if let Some((n, how)) = found {
+            let why = format!("{name}:{port}: a run sent {n}'s masked value toward {name}:{port} {how}");
+            answer(s, 403, &why, "");
+            return tell_op(&c, MASKED_OP, &format!("{why} — refused 403"));
+        }
+    }
     // (whichever way it'd go: through an upstream, tarae never sees the addresses a name leads to)
     if route::never_named(&name) {
         return refuse(Refused::new(
@@ -1199,7 +1229,9 @@ fn serve(inc: Incoming, shared: &Shared) {
     };
     // (an http upstream's 407 is its own, about tarae's credentials; through SOCKS5 the answer is the host's)
     let plain_through = through.as_ref().is_some_and(|u| u.proto == Proto::Http) && !tunnel;
-    match relay::relay(client, up, sni.as_deref(), limits.hello_time, &first, body, plain_through) {
+    // (a plain request's body watched for a masked value: what went before it is fake, so nothing is held)
+    let watch = c.rules.masked.as_ref().filter(|_| body.is_some()).map(|m| m.watch());
+    match relay::relay(client, up, sni.as_deref(), limits.hello_time, &first, body, plain_through, watch) {
         relay::End::Done => {}
         relay::End::Upstream407(a) => {
             let Some(u) = &through else { return };
@@ -1215,6 +1247,14 @@ fn serve(inc: Incoming, shared: &Shared) {
             ),
         ),
         relay::End::Closed(why) => tell(&c, &format!("{name}:{port}: {why} — the tunnel closed")),
+        relay::End::Stray(n) => tell_op(
+            &c,
+            MASKED_OP,
+            &format!(
+                "{name}:{port}: a run sent {n}'s masked value toward {name}:{port} in plain http — found \
+                 part-way through its body: the connection closed"
+            ),
+        ),
     }
 }
 

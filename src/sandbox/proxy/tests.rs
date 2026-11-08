@@ -31,6 +31,7 @@ fn limits() -> Limits {
         head_time: WAIT,
         keep_alive: WAIT,
         stalled: WAIT,
+        hold_pause: Limits::default().hold_pause,
         hello_time: WAIT,
         hold: HOLD,
         connect: Duration::from_secs(2),
@@ -916,7 +917,7 @@ fn relay_thread(
     pipes: fn() -> io::Result<relay::Pipes>,
 ) -> Bounded<(relay::End, f64)> {
     bounded(move || {
-        let end = relay::relay_with(client, server, None, HOLD, b"", None, false, pipes);
+        let end = relay::relay_with(client, server, None, HOLD, b"", None, false, None, pipes);
         // SAFETY: a timespec of ours, filled for this thread.
         let mut t: libc::timespec = unsafe { std::mem::zeroed() };
         unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };

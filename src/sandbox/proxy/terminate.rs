@@ -605,9 +605,10 @@ pub(super) fn serve(
         (Ok(r), Ok(h)) => (r, h),
         _ => return tell(OP, "no thread for its TLS — the tunnel closed"),
     };
-    // The stage: each request read and decided, each answer followed — never spliced (tarae's plaintext, which P2
-    // swaps in)
-    stage::run([run_plain, host_plain], &ending, name, port, &limits, |why| tell(OP, why));
+    // The stage: each request read and decided, each answer followed — never spliced (tarae's plaintext: masking's
+    // swaps and scrubs, `View`)
+    let view = c.rules.masked.as_ref().map(|m| m.toward(name, port));
+    stage::run([run_plain, host_plain], &ending, name, port, view, &limits, |op, why| tell(op, why));
 }
 
 /// The run's request head read (to its blank line, `parse::HEAD_MAX` at most, by `by`), then a 502 saying `why`

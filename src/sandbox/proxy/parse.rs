@@ -349,6 +349,38 @@ fn fields<'a>(lines: &[&'a [u8]], max: usize, past: Refusal) -> Result<Vec<Field
     Ok(headers)
 }
 
+/// A head `origin` or `response` took, as ranges in it (masking P2's edits): its first line, a request line's target
+/// (its second word), and each field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spans {
+    pub first: std::ops::Range<usize>,
+    pub target: std::ops::Range<usize>,
+    pub fields: Vec<Spanned>,
+}
+
+/// A field's line (to its CR LF's end), its name, and its value without the spaces around it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spanned {
+    pub line: std::ops::Range<usize>,
+    pub name: std::ops::Range<usize>,
+    pub value: std::ops::Range<usize>,
+}
+
+/// `head`'s spans, read as `origin` and `response` read it — None: no whole head there.
+pub fn spans(head: &[u8]) -> Option<Spans> {
+    let (_, lines) = lines(head, RESPONSE_HEAD_MAX, Refusal::AnswerTooLong).ok()??;
+    let fields = fields(&lines[1..], RESPONSE_FIELDS_MAX, Refusal::AnswerFields).ok()?;
+    // (each line, name and value a part of `head` itself: where it starts in it)
+    let at = |s: &[u8]| s.as_ptr() as usize - head.as_ptr() as usize;
+    let span = |s: &[u8]| at(s)..at(s) + s.len();
+    let first = lines[0];
+    let target = first.split(|&c| c == b' ').nth(1).map_or(at(first)..at(first), span);
+    let fields = (lines[1..].iter().zip(&fields))
+        .map(|(l, (n, v))| Spanned { line: at(l)..at(l) + l.len() + 2, name: span(n), value: span(v) })
+        .collect();
+    Some(Spans { first: span(first), target, fields })
+}
+
 /// The values of the fields named `n`, any case.
 fn named<'a>(headers: &[(&[u8], &'a [u8])], n: &str) -> Vec<&'a [u8]> {
     headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case(n.as_bytes())).map(|(_, v)| *v).collect()
@@ -431,13 +463,18 @@ fn framing(lengths: &[&[u8]], codings: &[&[u8]]) -> Result<Framing, Refusal> {
 
 /// `Basic <base64 of user:password>`.
 fn basic(v: &[u8]) -> Option<Auth> {
+    let raw = basic_credential(v)?;
+    let colon = raw.iter().position(|&c| c == b':')?;
+    Some(Auth::Basic { user: raw[..colon].to_vec(), password: raw[colon + 1..].to_vec() })
+}
+
+/// A `Basic` credential's bytes decoded (`user:password`, as sent) — None: another scheme, or not base64.
+pub fn basic_credential(v: &[u8]) -> Option<Vec<u8>> {
     let (scheme, b64) = v.split_at(v.iter().position(|&c| c == b' ')?);
     if !scheme.eq_ignore_ascii_case(b"basic") {
         return None;
     }
-    let raw = unbase64(&b64[1..])?;
-    let colon = raw.iter().position(|&c| c == b':')?;
-    Some(Auth::Basic { user: raw[..colon].to_vec(), password: raw[colon + 1..].to_vec() })
+    unbase64(&b64[1..])
 }
 
 /// Standard base64, padded, nothing else in it.
@@ -863,23 +900,39 @@ impl Body {
     /// `take`, the body's data among them — without its chunks' framing — added to `out`: the same machine, so what
     /// the fetch reads is what the relay would have counted.
     pub fn data(&mut self, b: &[u8], out: &mut Vec<u8>) -> Result<usize, &'static str> {
-        self.feed(b, |d| out.extend_from_slice(d))
+        self.feed(b, |r| out.extend_from_slice(&b[r]))
     }
 
-    fn feed(&mut self, b: &[u8], mut data: impl FnMut(&[u8])) -> Result<usize, &'static str> {
+    /// `take`, where the body's data is in `b` given as ranges, in order — its framing what's between (masking P2
+    /// swaps a value in place, the framing untouched).
+    pub fn ranges(
+        &mut self,
+        b: &[u8],
+        data: impl FnMut(std::ops::Range<usize>),
+    ) -> Result<usize, &'static str> {
+        self.feed(b, data)
+    }
+
+    fn feed(
+        &mut self,
+        b: &[u8],
+        mut data: impl FnMut(std::ops::Range<usize>),
+    ) -> Result<usize, &'static str> {
         use BodyState::*;
         let mut i = 0;
         while i < b.len() {
             self.0 = match self.0 {
                 Done => break,
                 Rest => {
-                    data(&b[i..]);
+                    data(i..b.len());
                     i = b.len();
                     Rest
                 }
                 Left { n, chunk } => {
                     let k = n.min((b.len() - i) as u64);
-                    data(&b[i..i + k as usize]);
+                    if k > 0 {
+                        data(i..i + k as usize);
+                    }
                     i += k as usize;
                     match (n - k, chunk) {
                         (0, true) => DataEnd(0),
