@@ -19,6 +19,35 @@ fn key() -> String {
     format!("-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n")
 }
 
+/// P1a: tarae's own CA heads the bundle, counted and said apart — only beside the system's roots: where they couldn't
+/// be read it's left out with the rest, and the words say its proxy terminates nothing for the run.
+#[test]
+fn taraes_ca_heads_the_bundle_only_beside_the_systems_roots() {
+    let (sys, ours) = (authority("sys"), authority("ours"));
+    let mut s =
+        Sources { tarae: Some((ours.der.clone(), 1)), system: vec![sys.der.clone()], ..Default::default() };
+    let m = made(&s);
+    assert!(m.pem.starts_with(&pem(&ours.der)), "{}", m.pem);
+    assert_eq!((m.tarae, m.system, m.tarae_off), (1, 1, false));
+    assert!(
+        m.said().starts_with(
+            "TLS: your commands trust tarae's own CA (for the 1 host its proxy terminates) + the system's roots — "
+        ),
+        "{}",
+        m.said()
+    );
+    s.system_fails = Some("no keychain".into());
+    let m = made(&s);
+    assert!(m.pem.is_empty() && m.tarae == 0 && m.tarae_off, "{m:?}");
+    assert!(
+        m.said().ends_with(
+            "tarae's proxy terminates TLS for none of their hosts: without the system's roots they couldn't trust its CA."
+        ),
+        "{}",
+        m.said()
+    );
+}
+
 /// The bundle holds the system's roots, then your CA variables' certificates, then `llm.sandbox-ca`'s — each once,
 /// counted for the source that gave it first; what can't be read is said with why, the rest still made.
 #[test]
@@ -28,6 +57,7 @@ fn the_bundle_is_the_systems_then_your_variables_then_your_settings() {
     let var = put(&scratch, "company.pem", &format!("{}{}", pem(&company.der), pem(&sys.der)));
     let yours = put(&scratch, "extra.pem", &format!("{}{}", pem(&extra.der), pem(&company.der)));
     let s = Sources {
+        tarae: None,
         vars: vec![("SSL_CERT_FILE".into(), var)],
         yours: vec![
             Ok(yours),

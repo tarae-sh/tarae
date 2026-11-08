@@ -102,6 +102,9 @@ pub struct Egress {
     /// The proxy tarae itself goes out by, as its environment named it when the run's policy was made (step 5g):
     /// a host not in its `NO_PROXY` goes through it — the address checks then are the upstream's, not tarae's.
     pub upstream: super::upstream::Upstreams,
+    /// The hosts its tunnels are terminated for (P1a, `terminate`), with the session's CA its run's trust bundle
+    /// carries — None: every tunnel relayed unread. Its `Debug` gives a count only.
+    pub terminate: Option<super::terminate::Terminate>,
     /// Test-only: loopback addresses taken for beyond this machine — the test's own listeners stand in for the
     /// outside (as `own_addresses: Some([])` stood in for step 4).
     #[cfg(test)]
@@ -112,6 +115,11 @@ impl Egress {
     /// Whether the setting lets `host:port` go without asking (`default`: the request's own port).
     pub fn allows(&self, host: &str, port: u16, default: u16) -> bool {
         self.any || self.hosts.iter().any(|p| p.matches(host, port, default))
+    }
+
+    /// What terminates a CONNECT to `host:port`, where its rules name it (a plain http request is never terminated).
+    pub fn terminates(&self, host: &str, port: u16) -> Option<&super::terminate::Terminate> {
+        self.terminate.as_ref().filter(|t| t.names(host, port))
     }
 
     /// Whether the user's answers, as the run's policy had them, let `host:port` go — an answer for a registry's
@@ -275,7 +283,8 @@ pub fn reach(
                 }
             }
             let _ = (stream.set_read_timeout(None), stream.set_write_timeout(None));
-            bridge::start(conn, stream).map_err(|e| failed(Failed::Unreachable(e.kind().to_string())))?
+            bridge::start(conn.into(), Out::Tcp(stream))
+                .map_err(|e| failed(Failed::Unreachable(e.kind().to_string())))?
         }
         Proto::Http if tunnel => {
             tunnel_through(&mut &stream, &stream, up, name, port, by, timeout).map_err(failed)?;

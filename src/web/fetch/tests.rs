@@ -13,65 +13,53 @@ use crate::sandbox::proxy::Limits;
 
 const LO: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-// --- A certificate of the test's own ---
+// --- A certificate of the test's own (`proxy::cert`, tarae's own proxy CA's code) ---
 
-fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
-    let n = body.len();
-    let mut out = vec![tag];
-    match n {
-        0..128 => out.push(n as u8),
-        128..256 => out.extend_from_slice(&[0x81, n as u8]),
-        _ => out.extend_from_slice(&[0x82, (n >> 8) as u8, n as u8]),
-    }
-    out.extend_from_slice(body);
-    out
+use crate::sandbox::proxy::cert;
+use ring::signature::{EcdsaKeyPair, KeyPair};
+
+/// A new P-256 key and its PKCS#8 (a test's servers load it).
+fn pair() -> (EcdsaKeyPair, Vec<u8>) {
+    cert::with_new_key(|pkcs8, key| Ok((key, pkcs8.to_vec()))).unwrap()
 }
 
-fn seq(parts: &[&[u8]]) -> Vec<u8> {
-    tlv(0x30, &parts.concat())
-}
-
-const EC_KEY: &[u8] = &[0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
-const P256: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
-const ECDSA_SHA256: &[u8] = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
-const COMMON_NAME: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
-const BASIC_CONSTRAINTS: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x13];
-const ALT_NAMES: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x11];
-const KEY_PURPOSES: &[u8] = &[0x06, 0x03, 0x55, 0x1d, 0x25];
-const SERVER_AUTH: &[u8] = &[0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
-
-fn name(cn: &str) -> Vec<u8> {
-    seq(&[&tlv(0x31, &seq(&[COMMON_NAME, &tlv(0x0c, cn.as_bytes())]))])
-}
-
-fn extension(oid: &[u8], critical: bool, value: &[u8]) -> Vec<u8> {
-    let flag = if critical { tlv(0x01, &[0xff]) } else { Vec::new() };
-    seq(&[oid, &flag, &tlv(0x04, value)])
-}
-
-/// A v3 certificate of `subject` (its public key `public`), issued by `issuer` and signed with `signer`.
+/// A certificate of `subject` (its public key `public`), issued by `issuer` and signed with `signer`, valid from an
+/// hour ago for two days — macOS's verifier refuses a TLS server certificate valid past 825 days (a run's own TLS
+/// and a terminated host's leg check with it).
 fn certificate(
-    serial: u8,
     subject: &str,
     public: &[u8],
     issuer: &str,
-    signer: &ring::signature::EcdsaKeyPair,
-    extensions: &[Vec<u8>],
+    signer: &EcdsaKeyPair,
+    extensions: Vec<Vec<u8>>,
 ) -> Vec<u8> {
-    let spki = seq(&[&seq(&[EC_KEY, P256]), &tlv(0x03, &[&[0][..], public].concat())]);
-    let validity = seq(&[&tlv(0x17, b"200101000000Z"), &tlv(0x17, b"491231235959Z")]);
-    let tbs = seq(&[
-        &tlv(0xa0, &tlv(0x02, &[2])),
-        &tlv(0x02, &[serial]),
-        &seq(&[ECDSA_SHA256]),
-        &name(issuer),
-        &validity,
-        &name(subject),
-        &spki,
-        &tlv(0xa3, &seq(&extensions.iter().map(Vec::as_slice).collect::<Vec<_>>())),
-    ]);
-    let signature = signer.sign(&ring::rand::SystemRandom::new(), &tbs).unwrap();
-    seq(&[&tbs, &seq(&[ECDSA_SHA256]), &tlv(0x03, &[&[0][..], signature.as_ref()].concat())])
+    let spec = cert::Spec {
+        serial: cert::serial().unwrap(),
+        subject: cert::name(subject).unwrap(),
+        issuer: cert::name(issuer).unwrap(),
+        not_before: now() - 3600,
+        not_after: now() + 2 * 86_400,
+        public,
+        extensions,
+    };
+    cert::signed(&spec, signer).unwrap()
+}
+
+/// Seconds since the epoch.
+fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+/// A CA's certificate of its own key, named `name`.
+fn ca_certificate(name: &str, key: &EcdsaKeyPair) -> Vec<u8> {
+    let public = key.public_key().as_ref();
+    certificate(name, public, name, key, cert::ca_extensions(&cert::key_id(public), None).unwrap())
+}
+
+/// A leaf for `names` (its key `public`), issued by `issuer` (its key `by`).
+fn leaf_certificate(names: &[&str], public: &[u8], issuer: &str, by: &EcdsaKeyPair) -> Vec<u8> {
+    let aki = cert::key_id(by.public_key().as_ref());
+    certificate(names[0], public, issuer, by, cert::leaf_extensions(names, &aki, false).unwrap())
 }
 
 struct Made {
@@ -84,25 +72,10 @@ struct Made {
 fn made() -> &'static Made {
     static MADE: OnceLock<Made> = OnceLock::new();
     MADE.get_or_init(|| {
-        use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING as ALG, EcdsaKeyPair, KeyPair};
-        let rng = ring::rand::SystemRandom::new();
-        let pair = || {
-            let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
-            let key = EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap();
-            (key, pkcs8.as_ref().to_vec())
-        };
         let ((ca_key, _), (leaf_key, key)) = (pair(), pair());
-        let ca_ext = [extension(BASIC_CONSTRAINTS, true, &seq(&[&tlv(0x01, &[0xff])]))];
-        let ca =
-            certificate(1, "tarae test CA", ca_key.public_key().as_ref(), "tarae test CA", &ca_key, &ca_ext);
-        let names: Vec<Vec<u8>> =
-            ["page.test", "other.test", "localhost"].map(|n| tlv(0x82, n.as_bytes())).into();
-        let leaf_ext = [
-            extension(ALT_NAMES, false, &seq(&names.iter().map(Vec::as_slice).collect::<Vec<_>>())),
-            extension(KEY_PURPOSES, false, &seq(&[SERVER_AUTH])),
-        ];
-        let leaf =
-            certificate(2, "page.test", leaf_key.public_key().as_ref(), "tarae test CA", &ca_key, &leaf_ext);
+        let ca = ca_certificate("tarae test CA", &ca_key);
+        let names = ["page.test", "other.test", "localhost"];
+        let leaf = leaf_certificate(&names, leaf_key.public_key().as_ref(), "tarae test CA", &ca_key);
         Made { ca, leaf, key }
     })
 }
@@ -157,16 +130,9 @@ pub(crate) fn server_tls() -> Arc<rustls::ServerConfig> {
 
 /// A server's TLS under a certificate for `localhost` that no CA of the test's issued — signed by its own key.
 pub(crate) fn stranger_tls() -> Arc<rustls::ServerConfig> {
-    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING as ALG, EcdsaKeyPair, KeyPair};
-    let rng = ring::rand::SystemRandom::new();
-    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
-    let key = EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap();
-    let ext = [
-        extension(ALT_NAMES, false, &seq(&[&tlv(0x82, b"localhost")])),
-        extension(KEY_PURPOSES, false, &seq(&[SERVER_AUTH])),
-    ];
-    let cert = certificate(3, "localhost", key.public_key().as_ref(), "a stranger", &key, &ext);
-    with_cert(cert, pkcs8.as_ref().to_vec())
+    let (key, pkcs8) = pair();
+    let cert = leaf_certificate(&["localhost"], key.public_key().as_ref(), "a stranger", &key);
+    with_cert(cert, pkcs8)
 }
 
 /// A CA of a test's own besides `made()`'s — a company's that re-signs what it intercepts, a public one an origin's
@@ -175,33 +141,21 @@ pub(crate) struct Authority {
     pub name: String,
     /// Its certificate, DER.
     pub der: Vec<u8>,
-    key: ring::signature::EcdsaKeyPair,
+    key: EcdsaKeyPair,
 }
 
 /// A new CA named `name` (ECDSA P-256, made here, held only by the test).
 pub(crate) fn authority(name: &str) -> Authority {
-    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING as ALG, EcdsaKeyPair, KeyPair};
-    let rng = ring::rand::SystemRandom::new();
-    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
-    let key = EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap();
-    let ext = [extension(BASIC_CONSTRAINTS, true, &seq(&[&tlv(0x01, &[0xff])]))];
-    let der = certificate(1, name, key.public_key().as_ref(), name, &key, &ext);
+    let (key, _) = pair();
+    let der = ca_certificate(name, &key);
     Authority { name: name.to_string(), der, key }
 }
 
 /// A server's TLS under a leaf for `names` that `by` issued (its key a new one).
 pub(crate) fn issued(by: &Authority, names: &[&str]) -> Arc<rustls::ServerConfig> {
-    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING as ALG, EcdsaKeyPair, KeyPair};
-    let rng = ring::rand::SystemRandom::new();
-    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
-    let key = EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap();
-    let alt: Vec<Vec<u8>> = names.iter().map(|n| tlv(0x82, n.as_bytes())).collect();
-    let ext = [
-        extension(ALT_NAMES, false, &seq(&alt.iter().map(Vec::as_slice).collect::<Vec<_>>())),
-        extension(KEY_PURPOSES, false, &seq(&[SERVER_AUTH])),
-    ];
-    let leaf = certificate(2, names[0], key.public_key().as_ref(), &by.name, &by.key, &ext);
-    with_cert(leaf, pkcs8.as_ref().to_vec())
+    let (key, pkcs8) = pair();
+    let leaf = leaf_certificate(names, key.public_key().as_ref(), &by.name, &by.key);
+    with_cert(leaf, pkcs8)
 }
 
 /// A client's TLS trusting `roots` alone (no ALPN).
@@ -385,6 +339,20 @@ fn a_page_comes_through_the_proxy_as_it_was_sent() {
     for never in ["cookie", "authorization", "referer", "frag"] {
         assert!(!head.to_ascii_lowercase().contains(never), "{never}: {head}");
     }
+}
+
+/// tarae's own fetch is never terminated, whatever its rules carry (P1a, `Connection.ours`): with a set naming its
+/// host, as its session's runs' rules would (the session's CA made), the page comes verified as the origin's own —
+/// terminated, its TLS would be tarae's leaf, which the fetch doesn't trust.
+#[test]
+fn taraes_own_fetch_is_never_terminated() {
+    use crate::sandbox::proxy::terminate::{self, Terminate};
+    let (at, _) = server(true, |_| ok("<p>own</p>"));
+    let ca = terminate::of_session(7).unwrap();
+    let t = Terminate::new(vec![egress::Pattern::parse("page.test").unwrap()], ca, Vec::new());
+    let f = fetch("https://page.test/own", &way(at, Egress { terminate: Some(t), ..yours_rules() }));
+    assert_eq!(f.map(|f| f.bytes), Ok(b"<p>own</p>".to_vec()));
+    terminate::forget(7);
 }
 
 /// A chunked body gzipped comes unpacked; the answer after interim heads (a 103, a 100) is read, they go; a

@@ -18,9 +18,12 @@
 //! (`UPSTREAM_OP`). A cloud metadata server's own name is refused whichever way (`route::never_named`).
 
 pub mod bridge;
+pub mod cert;
 pub mod egress;
+pub mod issuer;
 pub mod parse;
 pub mod relay;
+pub mod terminate;
 pub mod upstream;
 
 use std::collections::{HashMap, HashSet};
@@ -60,6 +63,9 @@ pub struct Connection {
     pub process: String,
     pub rules: Arc<Egress>,
     pub told: Sender<Relayed>,
+    /// tarae's own fetch's (`web::fetch`, the one maker of an `Ours`): never terminated, whatever its rules say —
+    /// a run's (the supervisor's) is None, and so is every connection a run's port or a session's takes.
+    pub ours: Option<crate::web::fetch::Ours>,
 }
 
 /// How far an answer of the user's reaches.
@@ -328,16 +334,19 @@ struct Run {
 
 impl Run {
     fn of(&self, run: u64) -> RunOf {
-        RunOf { run, process: self.process.clone(), rules: self.rules.clone(), told: self.told.clone() }
+        let (process, rules, told) = (self.process.clone(), self.rules.clone(), self.told.clone());
+        RunOf { run, process, rules, told, ours: false }
     }
 }
 
-/// A run as each of its connections has it: what the report names, its rules, where its refusals are said.
+/// A run as each of its connections has it: what the report names, its rules, where its refusals are said — and
+/// whether it's tarae's own fetch's (`Connection.ours`: never terminated).
 struct RunOf {
     run: u64,
     process: String,
     rules: Arc<Egress>,
     told: Sender<Relayed>,
+    ours: bool,
 }
 
 /// The dispatcher's own state.
@@ -449,12 +458,13 @@ struct Conn {
     process: String,
     rules: Arc<Egress>,
     told: Sender<Relayed>,
+    ours: bool,
 }
 
 impl RunOf {
     fn conn(self, stream: TcpStream, session: u64) -> Conn {
-        let RunOf { run, process, rules, told } = self;
-        Conn { stream, run, session, process, rules, told }
+        let RunOf { run, process, rules, told, ours } = self;
+        Conn { stream, run, session, process, rules, told, ours }
     }
 }
 
@@ -463,7 +473,8 @@ impl State {
         while let Ok(m) = rx.recv() {
             match m {
                 In::Msg(ToProxy::Connection(c)) => {
-                    let r = RunOf { run: c.run, process: c.process, rules: c.rules, told: c.told };
+                    let ours = c.ours.is_some();
+                    let r = RunOf { run: c.run, process: c.process, rules: c.rules, told: c.told, ours };
                     let stream = TcpStream::from(c.fd);
                     self.admit(Incoming { stream, session: c.session, who: Who::Run(r) });
                 }
@@ -499,6 +510,7 @@ impl State {
                     self.latest.remove(&Key { session, host, port });
                 }
                 In::Msg(ToProxy::WorkspaceEnded { session }) => {
+                    terminate::forget(session);
                     self.ports.remove(&session);
                     self.latest.retain(|k, _| k.session != session);
                     self.run_allowed.retain(|(_, k)| k.session != session);
@@ -601,7 +613,7 @@ impl State {
         let session = c.session;
         let spawned = std::thread::Builder::new()
             .name("tarae-proxy-conn".into())
-            .stack_size(256 << 10)
+            .stack_size(conn_stack())
             .spawn(move || {
                 let tx = shared.tx.clone();
                 serve(c, &shared);
@@ -806,6 +818,20 @@ fn after_accept_error(e: &io::Error) -> Option<Duration> {
     }
 }
 
+/// A connection thread's stack: 256 KiB — a terminated tunnel's two handshakes run on it, the system's verifier
+/// among them (P1a's measure: `terminate`'s tests). Tests: what `CONN_STACK` says, where a measure set it.
+fn conn_stack() -> usize {
+    #[cfg(test)]
+    if let n @ 1.. = CONN_STACK.load(Ordering::Relaxed) {
+        return n;
+    }
+    256 << 10
+}
+
+/// Tests: a connection thread's stack instead of 256 KiB (0: that) — the stack measure's.
+#[cfg(test)]
+pub(crate) static CONN_STACK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// A refusal said on the run's sender, as the supervisor says its own.
 fn tell(c: &Conn, target: &str) {
     tell_op(c, OP, target);
@@ -821,6 +847,11 @@ fn tell_run(r: &RunOf, op: &str, target: &str) {
 
 /// An HTTP answer (`extra`: header lines, each ending CR LF), its body the why; the connection closes after.
 fn answer(mut s: &TcpStream, status: u16, why: &str, extra: &str) {
+    let _ = s.write_all(&answer_bytes(status, why, extra));
+}
+
+/// `answer`'s bytes — a terminated tunnel's refusal writes them inside its TLS (`terminate`).
+fn answer_bytes(status: u16, why: &str, extra: &str) -> Vec<u8> {
     let reason = match status {
         400 => "Bad Request",
         403 => "Forbidden",
@@ -837,7 +868,7 @@ fn answer(mut s: &TcpStream, status: u16, why: &str, extra: &str) {
         "HTTP/1.1 {status} {reason}\r\n{extra}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    let _ = s.write_all(format!("{head}{body}").as_bytes());
+    format!("{head}{body}").into_bytes()
 }
 
 /// Whether two tokens are the same, in time that doesn't depend on where they differ: every byte compared.
@@ -1127,6 +1158,25 @@ fn serve(inc: Incoming, shared: &Shared) {
                 Err(false) => return,
             };
             match said {
+                // (a host its rules terminate — never tarae's own fetch's: tarae's TLS both ways, `terminate`)
+                Ok(_)
+                    if !c.ours
+                        && let Some(t) = c.rules.terminates(&name, port) =>
+                {
+                    let _ = c.stream.set_read_timeout(None);
+                    let Ok(client) = c.stream.try_clone() else { return };
+                    return terminate::serve(
+                        &c,
+                        t,
+                        client,
+                        &hello,
+                        up,
+                        through.as_ref(),
+                        &name,
+                        port,
+                        limits,
+                    );
+                }
                 Ok(n) => (Some(n), hello, None),
                 Err(why) => return tell(&c, &format!("{name}:{port}: {why} — the tunnel closed")),
             }

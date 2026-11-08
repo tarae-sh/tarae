@@ -1246,6 +1246,17 @@ pub struct Here {
     /// the real store (but `cabundle::tests::the_systems_roots_are_read`'s one load).
     #[cfg(test)]
     pub system_roots: Option<Vec<Vec<u8>>>,
+    /// Tests: why the system's roots couldn't be read, standing for a store that fails (`cabundle::Sources`'s).
+    #[cfg(test)]
+    pub system_fails: Option<String>,
+    /// Tests: the roots a terminated host's leg trusts in place of the system's verifier (`Terminate.system`: the
+    /// "public" CA a direct origin's leaf comes from) — None: the system's own.
+    #[cfg(test)]
+    pub host_roots: Option<Vec<Vec<u8>>>,
+    /// Tests: the hosts a run's proxy terminates (P1a, `terminate_for`; rules as `llm.sandbox-hosts` writes them) —
+    /// what P2's masked credentials will name. Empty: none, as every run's until then.
+    #[cfg(test)]
+    pub terminate: Vec<String>,
 }
 
 impl Here {
@@ -1290,6 +1301,12 @@ impl Here {
             judged_runs: None,
             #[cfg(test)]
             system_roots: None,
+            #[cfg(test)]
+            system_fails: None,
+            #[cfg(test)]
+            host_roots: None,
+            #[cfg(test)]
+            terminate: Vec::new(),
         }
     }
 
@@ -5352,12 +5369,60 @@ fn for_its_run(
     // What a run with a proxy URL gets of the packs besides (`[sandbox.proxy]`): its trust bundle among it — what
     // that holds said once a conversation
     let mut env = std::mem::take(&mut p.env);
-    let sources = if url.is_some() { cabundle::Sources::of(here, ca) } else { cabundle::Sources::default() };
+    let mut sources =
+        if url.is_some() { cabundle::Sources::of(here, ca) } else { cabundle::Sources::default() };
+    // The hosts its proxy terminates (P1a): the session's CA at the bundle's head — the hosts in its rules only once
+    // the bundle holding it is written (without, every handshake would fail: it stays opaque, said)
+    let terminating = url.as_ref().and_then(|_| terminate_for(p.session, here));
+    sources.tarae = terminating.as_ref().map(|(hosts, authority)| (authority.der().to_vec(), hosts.len()));
     let trusted = proxy_made(p.run.as_ref().map(|r| r.path()), url.as_ref(), &mut env, &p.run_env, &sources);
     p.env = env;
+    if let Some((hosts, authority)) = terminating
+        && trusted.as_ref().is_some_and(|m| m.tarae > 0 && m.written)
+    {
+        let files = cabundle::yours(here, ca).into_iter().flatten().collect();
+        #[allow(unused_mut)]
+        let mut t = proxy::terminate::Terminate::new(hosts, authority, files);
+        #[cfg(test)]
+        {
+            t.system = here.host_roots.clone();
+        }
+        p.egress.terminate = Some(t);
+    }
     // (no bundle made — nothing to put in it — is said only where the system's roots couldn't be read)
     let trusted = trusted.filter(|m| !m.pem.is_empty() || m.system_failed.is_some());
     p.run_env.notes.extend(trusted.map(|m| m.said()));
+}
+
+/// The hosts a run's proxy terminates, and the session's CA (P1a, `proxy::terminate`) — none until P2 names them by a
+/// masked credential's hosts; tests name them (`Here.terminate`). The CA is made here, on the policy's worker (a
+/// P-256 key and a signature: well under a millisecond), so the run's bundle can carry it.
+fn terminate_for(
+    session: u64,
+    here: &Here,
+) -> Option<(Vec<proxy::egress::Pattern>, std::sync::Arc<proxy::terminate::Ca>)> {
+    #[cfg(test)]
+    let named: Vec<proxy::egress::Pattern> =
+        here.terminate.iter().filter_map(|h| proxy::egress::Pattern::parse(h).ok()).collect();
+    #[cfg(not(test))]
+    let named: Vec<proxy::egress::Pattern> = {
+        let _ = here;
+        Vec::new()
+    };
+    if named.is_empty() {
+        return None;
+    }
+    match proxy::terminate::of_session(session) {
+        Ok(ca) => Some((named, ca)),
+        Err(e) => {
+            crate::log::line(
+                "sandbox",
+                "warning",
+                &format!("the session's proxy CA: {e} — nothing terminated"),
+            );
+            None
+        }
+    }
 }
 
 /// What copies of the settings handed to a run (each tool's variable, `tokens::Copies`) take out of its `env`: each
@@ -5645,7 +5710,7 @@ fn proxy_made(
     let dir = run.ok_or_else(|| "no folder of the run's own".to_string()).and_then(Unlinked::made);
     // (none made — nothing to put in it, or the system's roots unread (`cabundle::made`) — leaves each tool its
     // own roots: then the variables stay unset)
-    let made = cabundle::made(trust);
+    let mut made = cabundle::made(trust);
     let written = dir.as_ref().map_err(Clone::clone).and_then(|d| match made.pem.is_empty() {
         true => Err("nothing in it".to_string()),
         false => d.write_file(cabundle::FILE, made.pem.as_bytes()).map(|()| d.at.join(cabundle::FILE)),
@@ -5654,6 +5719,7 @@ fn proxy_made(
         Ok(at) => {
             env.retain(|(k, _)| !p.trust.contains(k));
             env.extend(p.trust.iter().map(|var| (var.clone(), at.display().to_string())));
+            made.written = true;
         }
         Err(e) if run.is_some() => {
             crate::log::line("sandbox", "warning", &format!("a run's trust bundle: {e}"))
@@ -10895,6 +10961,56 @@ mod tests {
             made.unwrap().said(),
             "TLS: the system's roots couldn't be read (no keychain) — your commands use their own."
         );
+    }
+
+    /// P1a: a run whose bundle can't be made (the system's roots unread) terminates nothing — its rules carry no set,
+    /// whose CA its tools couldn't trust, and its TLS line says so. The same run with the roots read terminates.
+    #[test]
+    fn a_run_without_a_bundle_terminates_nothing() {
+        let scratch = crate::scratch::Scratch::new("sb-terminate-unread");
+        let root = std::fs::canonicalize(&*scratch).unwrap();
+        let mut here = Here::now();
+        here.env.retain(|k, _| !crate::sandboxpack::get().proxy.trust.contains(k));
+        here.system_roots = Some(vec![crate::web::fetch::tests::authority("tarae test system root").der]);
+        here.terminate = vec!["origin.test".into()];
+        let llm = crate::llm::LlmConfig {
+            sandbox_network: true,
+            sandbox_hosts: crate::llm::Hosts::Any,
+            ..Default::default()
+        };
+        let policy = |here: &Here| {
+            let w = crate::tools::Widened { llm: llm.clone(), ..Default::default() };
+            policy_from(&root, w, here).unwrap()
+        };
+        let p = policy(&here);
+        if p.proxy_url().is_none() {
+            eprintln!(
+                "a_run_without_a_bundle_terminates_nothing: skipped, no way to the proxy: {:?}",
+                p.reach
+            );
+            return;
+        }
+        let session = p.session;
+        assert!(p.egress.terminate.is_some(), "the roots read: terminated");
+        let said = p.run_env.notes.join("\n");
+        assert!(
+            said.contains("TLS: your commands trust tarae's own CA (for the 1 host its proxy terminates) + "),
+            "{said}"
+        );
+        drop(p);
+        here.system_fails = Some("no keychain".into());
+        let p = policy(&here);
+        assert_eq!(p.egress.terminate, None, "no bundle: nothing terminated");
+        assert!(
+            p.run_env.notes.iter().any(|n| n
+                == "TLS: the system's roots couldn't be read (no keychain) — your commands use their own. tarae's \
+                    proxy terminates TLS for none of their hosts: without the system's roots they couldn't trust its \
+                    CA."),
+            "{:?}",
+            p.run_env.notes
+        );
+        drop(p);
+        proxy::terminate::forget(session);
     }
 
     fn gradle_kept(home: &Path) -> Kept {

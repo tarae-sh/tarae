@@ -43,6 +43,10 @@ pub const KEEP: Duration = Duration::from_secs(15 * 60);
 const PAGES_MAX: usize = 20;
 const PAGES_BYTES: usize = 64 << 20;
 
+/// The mark of tarae's own fetch on its connection to the proxy (`Connection.ours`): never terminated. Only this
+/// module makes one (its field is private) — a run's connection can't carry it.
+pub struct Ours(());
+
 /// What a fetch goes by.
 #[derive(Clone)]
 pub struct Way {
@@ -562,6 +566,7 @@ fn connect(t: &Target, way: &Way, run: u64, by: Instant) -> Result<Deadline, Str
         process: way.process.clone(),
         rules: way.rules.clone(),
         told,
+        ours: Some(Ours(())),
     };
     if !way.proxy.send(ToProxy::Connection(c)) {
         return Err(format!("{at}: tarae's proxy isn't there"));

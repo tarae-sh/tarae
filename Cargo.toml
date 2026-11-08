@@ -47,6 +47,9 @@ rustls-platform-verifier = "=0.7.1"
 # asks), Linux's distro bundle as openssl-probe finds it. Already built as the verifier's (Linux), its security-framework
 # already built on macOS
 rustls-native-certs = "=0.8.5"
+# TLS terminated at tarae's proxy (P1a, sandbox/proxy/terminate.rs): the session's CA and its leaves, ECDSA P-256 made
+# and signed in tarae's memory (sandbox/proxy/cert.rs) — rustls's own crypto at rustls's version, already built
+ring = "=0.17.14"
 # The WebAssembly runtime and the plugin host (crates/tarae-wasm): the editor's side of plugins is src/plugin/
 tarae-wasm = { path = "crates/tarae-wasm" }
 # The one sort (clippy.toml), shared with the runtime's crate: `crate::sorting` re-exports it
@@ -168,4 +171,3 @@ tarae-web = { path = "crates/tarae-web", features = ["check"] }  # the gzip bodi
 tarae-wire = { path = "crates/tarae-wire", features = ["check"] }  # every message's sample, for the wire's pin
 # tests/live.rs scales a screenshot past the ladder's first step
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-ring = "=0.17.14"  # the fetch's tests make their own certificate (rustls's crypto, already built)

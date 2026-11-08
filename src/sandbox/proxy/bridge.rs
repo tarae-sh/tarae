@@ -36,6 +36,23 @@ impl Out {
         }
     }
 
+    /// Its reads' and writes' time limit (None: none) — for a blocking handshake over it (`terminate`).
+    pub fn set_timeouts(&self, t: Option<std::time::Duration>) -> io::Result<()> {
+        match self {
+            Out::Tcp(s) => s.set_read_timeout(t).and_then(|()| s.set_write_timeout(t)),
+            Out::Bridged(s, _) => s.set_read_timeout(t).and_then(|()| s.set_write_timeout(t)),
+        }
+    }
+
+    /// Tests: a connection's own address (a bridge's end has none).
+    #[cfg(test)]
+    fn local_addr(&self) -> Option<std::net::SocketAddr> {
+        match self {
+            Out::Tcp(s) => s.local_addr().ok(),
+            Out::Bridged(..) => None,
+        }
+    }
+
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         match self {
             Out::Tcp(s) => s.shutdown(how),
@@ -127,10 +144,12 @@ fn pair() -> io::Result<(UnixStream, UnixStream)> {
     Ok((a, b))
 }
 
-/// The bridge for `conn` — TLS to the upstream on `tcp`, its handshake done — started: the relay's end returned,
-/// the thread holding the other until both sides are done, or the relay has let its end go (as the relay itself
-/// lives only as long as its two sides, and srt's tunnel ends one side with the other's close).
-pub fn start(conn: rustls::ClientConnection, tcp: TcpStream) -> io::Result<Out> {
+/// The bridge for `conn` — TLS on `tcp`, its handshake done: to an https:// upstream; or a terminated tunnel's
+/// either leg (`terminate`: the run's as its server, over the run's connection; the host's as its client, over the
+/// way out — itself a bridge's end through an https:// upstream, TLS inside TLS) — started: the relay's end
+/// returned, the thread holding the other until both sides are done, or the relay has let its end go (as the relay
+/// itself lives only as long as its two sides, and srt's tunnel ends one side with the other's close).
+pub fn start(conn: rustls::Connection, tcp: Out) -> io::Result<Out> {
     let (relay, mine) = pair()?;
     let (alive, line) = io::pipe()?;
     std::thread::Builder::new().name("tarae-proxy-tls".into()).spawn(move || run(conn, tcp, mine, alive))?;
@@ -147,8 +166,8 @@ struct Live(Option<std::net::SocketAddr>);
 
 #[cfg(test)]
 impl Live {
-    fn of(tcp: &TcpStream) -> Live {
-        let at = tcp.local_addr().ok();
+    fn of(tcp: &Out) -> Live {
+        let at = tcp.local_addr();
         if let Some(at) = at {
             LIVE.lock().unwrap_or_else(|e| e.into_inner()).push(at);
         }
@@ -185,7 +204,7 @@ pub fn ended(at: std::net::SocketAddr) -> bool {
 /// rustls still holds too — is written. The relay gone (`alive` says its end, never written to) ends both: nobody
 /// reads what the upstream would still send, and an upstream that keeps its side open can't hold the thread.
 /// Anything else that fails ends both: the relay sees its side end. A record that doesn't decrypt is never passed on.
-fn run(mut conn: rustls::ClientConnection, tcp: TcpStream, pair: UnixStream, alive: io::PipeReader) {
+fn run(mut conn: rustls::Connection, tcp: Out, pair: UnixStream, alive: io::PipeReader) {
     if tcp.set_nonblocking(true).is_err() || pair.set_nonblocking(true).is_err() {
         return;
     }

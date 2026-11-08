@@ -49,6 +49,11 @@ pub fn sni(b: &[u8]) {
     parse::check::sni(b);
 }
 
+/// A certificate whose issuer a terminated tunnel's refusal names (`proxy::issuer::of`): its O and CN only, clean.
+pub fn issuer(b: &[u8]) {
+    proxy::issuer::check::issuer(b);
+}
+
 /// A chunked body, given a few bytes at a time (`parse::Body`) — the first byte says how many.
 pub fn body(b: &[u8]) {
     parse::check::body_input(b);

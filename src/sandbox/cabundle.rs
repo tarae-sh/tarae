@@ -3,6 +3,7 @@
 //! unread — so a run's own TLS client must trust that root, as tarae's own fetch does (the platform verifier). Every
 //! run with a proxy URL gets one PEM file in its own folder (`FILE`), every CA variable the packs name
 //! (`[sandbox.proxy] trust`) pointing at it. What it holds, in this order, each certificate once:
+//! 0. tarae's own CA, where the run's rules name hosts its proxy terminates (P1a, `proxy::terminate`) — at its head;
 //! 1. the system's roots (`rustls-native-certs`: macOS's trust settings — the User, Admin and System domains, an
 //!    MDM's company root the Admin one's; reading them never asks —, Linux's distro bundle as openssl-probe finds it;
 //!    on both, where tarae's own environment sets `SSL_CERT_FILE` or `SSL_CERT_DIR`, those instead);
@@ -10,7 +11,7 @@
 //! 3. those of `llm.sandbox-ca`'s files — yours only (`trust::YOURS_ONLY`): it decides whom runs trust.
 //!
 //! CERTIFICATE blocks only — a key beside one in a file is never read into it (srt's rule) — at most `CERTS_MAX`
-//! certificates, a file read up to `FILE_MAX`. P1 puts tarae's own CA at its head: this is the one bundle.
+//! certificates, a file read up to `FILE_MAX`. This is the one bundle: tarae's own CA goes in nowhere else.
 //!
 //! Never narrower than the tools' own defaults: where the system's roots couldn't be read there's no bundle and no
 //! variable set — one of only your files would replace each tool's own store — and the run's report says why; nor
@@ -48,6 +49,8 @@ const SYSTEM_FRESH: Duration = Duration::from_secs(300);
 /// Where a bundle's certificates come from, in its order.
 #[derive(Clone, Debug, Default)]
 pub struct Sources {
+    /// tarae's own CA (DER), and how many hosts the run's rules terminate with it — None: it terminates none.
+    pub tarae: Option<(Vec<u8>, usize)>,
     /// The CA variables in tarae's own environment the packs' `trust` names, each with the file it names.
     pub vars: Vec<(String, PathBuf)>,
     /// `llm.sandbox-ca`'s files (`yours`).
@@ -72,12 +75,13 @@ impl Sources {
             }
         }
         Sources {
+            tarae: None,
             vars,
             yours: yours(here, ca),
             #[cfg(test)]
             system: here.system_roots.clone().unwrap_or_default(),
             #[cfg(test)]
-            system_fails: None,
+            system_fails: here.system_fails.clone(),
         }
     }
 }
@@ -99,6 +103,13 @@ pub fn yours(here: &Here, ca: &[String]) -> Vec<Result<PathBuf, String>> {
 pub struct Made {
     /// Its text: one CERTIFICATE block each.
     pub pem: String,
+    /// The hosts tarae's own CA at its head is for (0: it isn't there).
+    pub tarae: usize,
+    /// tarae's own CA was asked for, and left out with the rest: the system's roots couldn't be read — its proxy
+    /// terminates nothing for the run (`sandbox::for_its_run`).
+    pub tarae_off: bool,
+    /// Written in the run's own folder, its CA variables naming it (`sandbox::proxy_made`).
+    pub written: bool,
     /// How many certificates each source gave that an earlier one hadn't: the system's, your CA variables',
     /// `llm.sandbox-ca`'s.
     pub system: usize,
@@ -117,11 +128,23 @@ impl Made {
     /// certificate's names.
     pub fn said(&self) -> String {
         if let Some(why) = &self.system_failed {
+            let off = match self.tarae_off {
+                true => {
+                    " tarae's proxy terminates TLS for none of their hosts: without the system's roots they couldn't \
+                     trust its CA."
+                }
+                false => "",
+            };
             return format!(
-                "TLS: the system's roots couldn't be read ({why}) — your commands use their own."
+                "TLS: the system's roots couldn't be read ({why}) — your commands use their own.{off}"
             );
         }
-        let mut parts = vec!["the system's roots".to_string()];
+        let mut parts = Vec::new();
+        if self.tarae > 0 {
+            let hosts = if self.tarae == 1 { "host" } else { "hosts" };
+            parts.push(format!("tarae's own CA (for the {} {hosts} its proxy terminates)", self.tarae));
+        }
+        parts.push("the system's roots".to_string());
         if self.vars > 0 {
             parts.push(format!("{} from your CA variables", self.vars));
         }
@@ -166,6 +189,11 @@ pub fn made(s: &Sources) -> Made {
     };
     #[cfg(not(test))]
     let system = system();
+    // (tarae's own CA first — only beside the system's roots: alone with yours it would narrow the tools' own)
+    if let (Some((der, hosts)), Ok(_)) = (&s.tarae, &system) {
+        add(&CertificateDer::from(der.as_slice()), &mut m);
+        m.tarae = *hosts;
+    }
     match system {
         Ok(roots) => {
             for c in roots.iter() {
@@ -174,6 +202,7 @@ pub fn made(s: &Sources) -> Made {
         }
         Err(why) => {
             m.system_failed = Some(why);
+            m.tarae_off = s.tarae.is_some();
             return m;
         }
     }

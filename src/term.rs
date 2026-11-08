@@ -31664,23 +31664,24 @@ mod tests {
     /// said as it's given, not a time that passed; a time still to come; a measurement under a millisecond; a mark
     /// that counts whole seconds, then minutes, and wakes only as that changes; `run_duration` itself.
     const HAND_TIMES: &[(&str, usize)] = &[
-        ("attach.rs", 2),                 // limits as given: an interface's answer waited for
-        ("chat.rs", 1),                   // a tool call's own `wait` argument, as Claude gave it
-        ("client.rs", 2),                 // limits as given: the host's `Welcome` waited for, S-F's window
-        ("client/stats.rs", 1),           // a measurement under a millisecond: a key over a local link
-        ("commands.rs", 1),               // a plural
-        ("limits.rs", 1),                 // the plan's next try, a time to come
-        ("nav.rs", 4),                    // plurals
-        ("plugin/perm.rs", 1),            // a plural
-        ("replay.rs", 1),                 // a plural
-        ("sandbox.rs", 1),                // a run not started within its limit
-        ("sandbox/keeper.rs", 1),         // a run not started within its limit
-        ("sandbox/proxy.rs", 3),          // the proxy's limits, the card's hold
-        ("sandbox/proxy/relay.rs", 1),    // the proxy's limit
-        ("sandbox/proxy/upstream.rs", 1), // the proxy's limit
-        ("sandbox/supervisor.rs", 2),     // its exec limit; its own cost, tenths of a millisecond
-        ("sandbox/tier.rs", 1),           // the probe's limit
-        ("workspace.rs", 2),              // a stuck call's mark (`Doing::said`), seconds then minutes
+        ("attach.rs", 2),                  // limits as given: an interface's answer waited for
+        ("chat.rs", 1),                    // a tool call's own `wait` argument, as Claude gave it
+        ("client.rs", 2),                  // limits as given: the host's `Welcome` waited for, S-F's window
+        ("client/stats.rs", 1),            // a measurement under a millisecond: a key over a local link
+        ("commands.rs", 1),                // a plural
+        ("limits.rs", 1),                  // the plan's next try, a time to come
+        ("nav.rs", 4),                     // plurals
+        ("plugin/perm.rs", 1),             // a plural
+        ("replay.rs", 1),                  // a plural
+        ("sandbox.rs", 1),                 // a run not started within its limit
+        ("sandbox/keeper.rs", 1),          // a run not started within its limit
+        ("sandbox/proxy.rs", 3),           // the proxy's limits, the card's hold
+        ("sandbox/proxy/relay.rs", 1),     // the proxy's limit
+        ("sandbox/proxy/terminate.rs", 2), // the handshake's limit
+        ("sandbox/proxy/upstream.rs", 1),  // the proxy's limit
+        ("sandbox/supervisor.rs", 2),      // its exec limit; its own cost, tenths of a millisecond
+        ("sandbox/tier.rs", 1),            // the probe's limit
+        ("workspace.rs", 2),               // a stuck call's mark (`Doing::said`), seconds then minutes
         ("term.rs", 8), // `run_duration` itself (5); `ago` itself; a `:procs` look's tenths of a ms; its settings
         ("uisocket.rs", 1), // a driver's waits, as it asked them
         ("usage.rs", 1), // the cache's time left, a time to come in whole minutes

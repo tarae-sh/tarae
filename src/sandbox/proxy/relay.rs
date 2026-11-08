@@ -174,7 +174,7 @@ pub fn spliced_now(end: Ends) -> Option<usize> {
 /// `relay`, the pipes to splice through made by `pipes` (an Err: it stays on the pump).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn relay_with(
-    client: TcpStream,
+    client: impl Into<Out>,
     server: impl Into<Out>,
     name: Option<&str>,
     hello_time: Duration,
@@ -185,9 +185,14 @@ pub(super) fn relay_with(
 ) -> End {
     // (taken now: a socket shut down both ways has no peer to say by its end — macOS; the test's end of the
     // connection, `ends`: its address this side's peer, its peer this side)
+    let client = client.into();
     #[cfg(test)]
-    let peer = client.peer_addr().and_then(|p| Ok((p, client.local_addr()?)));
-    let sides = [Out::Tcp(client), server.into()];
+    let peer = match &client {
+        Out::Tcp(s) => s.peer_addr().and_then(|p| Ok((p, s.local_addr()?))),
+        // (a terminated tunnel's stage: a bridge's end, no record of its own)
+        Out::Bridged(..) => Err(io::Error::from(io::ErrorKind::Unsupported)),
+    };
+    let sides = [client, server.into()];
     #[cfg(test)]
     if let Ok(peer) = peer {
         started(peer);

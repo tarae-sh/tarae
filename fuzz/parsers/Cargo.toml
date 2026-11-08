@@ -72,6 +72,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "issuer"
+path = "fuzz_targets/issuer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "body"
 path = "fuzz_targets/body.rs"
 test = false

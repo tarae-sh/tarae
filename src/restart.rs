@@ -2279,6 +2279,7 @@ mod tests {
             ("Company", "sandbox/proxy/mitm_tests.rs"),
             ("CoverTarget", "sandbox/refused.rs"),
             ("Deadline", "sandbox/proxy/packs_tests.rs"),
+            ("Direct", "sandbox/proxy/mitm_tests.rs"),
             ("DirTurn", "grammar.rs"),
             ("Drawing", "codereview.rs"),
             ("ExecMem", "crates/tarae-wasm/src/jit/mod.rs"),

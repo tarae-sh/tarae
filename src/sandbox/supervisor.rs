@@ -1574,6 +1574,7 @@ fn proxied(
         process: c.name(),
         rules: p.egress.clone(),
         told: p.refused.clone(),
+        ours: None,
     };
     // (the proxy gone, the run's end reads its end at once: nothing goes out)
     super::proxy::get().send(super::proxy::ToProxy::Connection(to_proxy));

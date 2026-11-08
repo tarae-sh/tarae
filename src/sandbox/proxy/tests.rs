@@ -12,6 +12,9 @@ use super::*;
 // (step 5g: the proxy chaining to the one tarae itself goes out by — a stand-in upstream on loopback)
 mod upstream;
 
+// (P1a: tunnels terminated at the proxy — its TLS both ways, on loopback)
+mod terminate;
+
 const LO: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 /// How long a test waits for what it expects — the one patience; never a limit of the proxy's own (`HOLD`).
 const WAIT: Duration = crate::test_results::PATIENCE;
@@ -207,8 +210,8 @@ fn connection(p: &Proxy, session: u64, run: u64, rules: Egress) -> (TcpStream, R
     run_end.set_read_timeout(Some(WAIT)).unwrap();
     run_end.set_write_timeout(Some(LIMIT)).unwrap();
     let (told, said) = mpsc::channel();
-    let c =
-        Connection { fd: ours.into(), run, session, process: "curl".into(), rules: Arc::new(rules), told };
+    let rules = Arc::new(rules);
+    let c = Connection { fd: ours.into(), run, session, process: "curl".into(), rules, told, ours: None };
     assert!(p.send(ToProxy::Connection(c)));
     (run_end, said)
 }
@@ -752,7 +755,8 @@ fn a_slow_readers_end_isnt_cut() {
     small(&ours, libc::SO_SNDBUF);
     let (told, _said) = mpsc::channel();
     let rules = Arc::new(rules(&["example.invalid"]));
-    let conn = Connection { fd: ours.into(), run: 1, session: 1, process: "curl".into(), rules, told };
+    let conn =
+        Connection { fd: ours.into(), run: 1, session: 1, process: "curl".into(), rules, told, ours: None };
     assert!(f.proxy.send(ToProxy::Connection(conn)));
     c.set_read_timeout(Some(WAIT)).unwrap();
     let end = relay::ends(&c);

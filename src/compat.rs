@@ -1305,6 +1305,29 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/proxy/upstream.rs", "in fn tls: made", UPSTREAM_TLS),
     ("src/sandbox/proxy/upstream.rs", "in fn tls: made", UPSTREAM_TLS),
     ("src/sandbox.rs", "in fn now: system_roots", SYSTEM_ROOTS),
+    ("src/sandbox.rs", "in fn now: terminate", TERMINATE),
+    ("src/sandbox.rs", "in fn now: system_fails", SYSTEM_ROOTS),
+    ("src/sandbox.rs", "in fn now: host_roots", TERMINATE),
+    ("src/sandbox.rs", "in fn for_its_run: {", TERMINATE),
+    ("src/sandbox/proxy.rs", "in fn conn_stack: if let n @ 1.. = CONN_STACK.load(Ordering::Relaxed", HOOK),
+    ("src/sandbox.rs", "in fn terminate_for: named", TERMINATE),
+    ("src/sandbox.rs", "in fn terminate_for: named", TERMINATE),
+    ("src/sandbox/proxy/terminate.rs", "in fn client_config: kept_ok", TERMINATE),
+    ("src/sandbox/proxy/terminate.rs", "in fn client_config: kept_ok", TERMINATE),
+    ("src/sandbox/proxy/terminate.rs", "in fn new: mut secrets = Vec::new();", CA_SECRETS),
+    ("src/sandbox/proxy/terminate.rs", "in fn new: secrets,", CA_SECRETS),
+    (
+        "src/sandbox/proxy/terminate.rs",
+        "in fn new: secrets.extend([pkcs8.to_vec(), cert::scalar(pkcs8",
+        CA_SECRETS,
+    ),
+    (
+        "src/sandbox/proxy/terminate.rs",
+        "in fn new: secrets.extend([pkcs8.to_vec(), cert::scalar(pkcs8",
+        CA_SECRETS,
+    ),
+    ("src/sandbox/proxy/terminate.rs", "in fn new: system", TERMINATE),
+    ("src/sandbox/proxy/terminate.rs", "in fn verifier: if let Some(system) = &t.system {", TERMINATE),
     ("src/sandbox/cabundle.rs", "in fn made: system", SYSTEM_ROOTS),
     ("src/sandbox/cabundle.rs", "in fn made: system", SYSTEM_ROOTS),
     ("src/sandbox/cabundle.rs", "in fn of: system", SYSTEM_ROOTS),
@@ -1350,6 +1373,10 @@ const NAMES: &str = "names resolved from `TEST_NAMES`/`TEST_RECORDS` only, never
 const BEYOND: &str = "macOS: addresses a test stands for beyond this machine (`TEST_BEYOND`): none";
 const UPSTREAM_TLS: &str = "an https:// upstream's TLS trusts the tests' own CA alone (and llm.sandbox-ca's), made \
                             anew each time: compat names no upstream proxy, so none is spoken to";
+const TERMINATE: &str = "no host is terminated (`Here.terminate` empty, as every run's until P2): compat's tunnels are \
+                         relayed unread, as the shipped build's are";
+const CA_SECRETS: &str =
+    "a copy of the CA's keys kept for the test that looks for them on disk; no CA is made here";
 const SYSTEM_ROOTS: &str = "a run's trust bundle starts from no system roots (`Here.system_roots`: a test never reads \
                             the store): compat's runs get the CA variables' files and llm.sandbox-ca's alone — none \
                             set, no bundle and no CA variable, each tool's own roots as before #419";
