@@ -155,12 +155,10 @@ impl Editor {
         if !self.moving() {
             return;
         }
-        let Some(id) = (self.docs.iter())
-            .find(|d| d.path.as_deref() == Some(path) && !d.loading && d.text == *after)
-            .map(|d| d.id)
-        else {
+        let Some(i) = self.docs.first(path, |d| !d.loading && d.text == *after) else {
             return;
         };
+        let id = self.docs[i].id;
         self.wet(id, before);
     }
 

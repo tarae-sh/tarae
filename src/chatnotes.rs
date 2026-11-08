@@ -401,12 +401,11 @@ pub fn sync(ed: &mut Editor) {
     let at = crate::clock::system().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     for (path, s) in placed {
         // (an open buffer's line; else the store reads it from the file as it keeps them — never a key-named file's)
-        let text = (ed.docs.iter())
-            .find(|d| d.path.as_deref() == Some(path.as_path()))
+        let doc = crate::docpaths::find(ed, &path);
+        let text = doc
             .filter(|d| s.lines.start < d.text.len_lines())
             .filter(|_| !crate::sandbox::key_named(&ed.workspace.root, &path))
             .map(|d| d.text.line(s.lines.start).to_string().trim().to_string());
-        let doc = crate::docpaths::find(ed, &path);
         let check = w.judge.judged(&path, &s.lines, doc);
         // (an asked place's: no name, its line 0 — `Reading`'s answer's first paragraph)
         let said = if s.name.is_empty() { 0 } else { s.lines.start };

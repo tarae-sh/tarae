@@ -497,8 +497,8 @@ fn every_search_of_the_documents_by_path_is_counted() {
 }
 
 /// What `searches` counts and leaves: a find, a position, an any, a for over them with a path compared in its body, a
-/// match on the path (`codereview::doc_of`'s gone branch), a predicate named before it — not a lookup, nor a walk that
-/// compares no path.
+/// match on the path (`codereview::doc_of`'s gone branch), a predicate named before it, a walk in parentheses with its
+/// chain under it (#449: the session fork's second scan got past) — not a lookup, nor a walk that compares no path.
 #[test]
 fn a_search_of_the_documents_by_path_counts() {
     let counted = [
@@ -509,6 +509,9 @@ fn a_search_of_the_documents_by_path_counts() {
         "ed.docs.iter_mut()\n    .filter(|d| same_file(d.path.as_deref(), p))\n    .for_each(|d| d.x = 1);",
         "ed.docs.iter().find(|d| match &d.path { Some(p) => *p == f.path, None => false })",
         "let of_it = |d: &&Document| d.path.as_ref() == Some(p);\nlet Some(d) = ed.docs.iter().find(of_it) else { return };",
+        "let ids: Vec<_> = ed.docs.iter()\n    .filter(|d| d.path.as_ref().is_some_and(|p| p.starts_with(root)))\n    .map(|d| d.id)\n    .collect();",
+        "let ids: Vec<_> = (ed.docs.iter())\n    .filter(|d| d.path.as_ref().is_some_and(|p| p.starts_with(root)))\n    .map(|d| d.id)\n    .collect();",
+        "let Some(id) = (self.docs.iter())\n    .find(|d| d.path.as_deref() == Some(path) && !d.loading)\n    .map(|d| d.id)\nelse { return };",
     ];
     for c in counted {
         assert_eq!(searches(c), 1, "{c}");
@@ -520,6 +523,9 @@ fn a_search_of_the_documents_by_path_counts() {
         "let ids = l.docs.iter().copied().collect::<Vec<_>>(); if path == other {}",
         "let codocs = x.iter().find(|d| d.path == p);",
         "let open = |d: &&Document| d.id == id;\nlet d = ed.docs.iter().find(open); let x = a.path == b;",
+        "(ed.docs.iter())\n    .filter(|d| d.is_modified() && !d.loading)\n    .filter_map(|d| Some((d.path.clone()?, d.text.clone())))\n    .collect()",
+        "let failed: Vec<String> = (docs.into_iter()).filter_map(|d| ed.save(d).err()).collect(); let x = a.path == b;",
+        "let n = count(ed.docs.iter()); if d.path == p {}",
     ];
     for c in left {
         assert_eq!(searches(c), 0, "{c}");
@@ -528,8 +534,8 @@ fn a_search_of_the_documents_by_path_counts() {
 
 /// The searches of the documents by path in `code` (comments out, literals emptied): each walk of a `docs` —
 /// `docs.iter()`, `.iter_mut()`, `.into_iter()` (`docs()` too), `for … in &…docs` — whose statement (a `for`'s body
-/// with it, a predicate it names by its `let`) compares a path: `.path` there, and `==`, `!=`, a `same…` or a
-/// `starts_with`.
+/// with it, a predicate it names by its `let`, a walk in parentheses read from them: `(ed.docs.iter())` and its chain)
+/// compares a path: `.path` there, and `==`, `!=`, a `same…` or a `starts_with`.
 fn searches(code: &str) -> usize {
     let ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut n = 0;
@@ -541,14 +547,20 @@ fn searches(code: &str) -> usize {
         }
         let rest = rest.strip_prefix("()").unwrap_or(rest);
         let walk = rest.trim_start();
-        let iterates = [".iter()", ".iter_mut()", ".into_iter()"].iter().any(|w| walk.starts_with(w));
+        let method = [".iter()", ".iter_mut()", ".into_iter()"].into_iter().find(|w| walk.starts_with(w));
         // (`for d in &ed.docs {`: the statement it's in a `for`'s head)
         let head = &code[code[..at].rfind(['\n', ';', '{', '}']).map_or(0, |i| i + 1)..at];
         let looped = walk.starts_with('{') && head.trim_start().starts_with("for ") && head.contains(" in ");
-        if !iterates && !looped {
+        if method.is_none() && !looped {
             continue;
         }
-        let mut span = statement(&code[at..]).to_string();
+        // (`(ed.docs.iter())` with its chain under it: read from the parenthesis — from `docs` the statement ends at its
+        // close; a call's, `f(ed.docs.iter())`, isn't one)
+        let receiver = code[..at].trim_end_matches(|c: char| ident(c) || c == '.').trim_end();
+        let grouped = method.is_some_and(|m| walk[m.len()..].trim_start().starts_with(')'))
+            && receiver.strip_suffix('(').is_some_and(|r| !r.trim_end().ends_with(ident));
+        let from = if grouped { receiver.len() - 1 } else { at };
+        let mut span = statement(&code[from..]).to_string();
         // (a predicate named before it — `.find(of_review)`: its `let` read with it)
         for (i, _) in span.clone().match_indices('(') {
             let arg = &span[i + 1..];
