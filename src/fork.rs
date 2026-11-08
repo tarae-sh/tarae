@@ -5,8 +5,9 @@
 //!
 //! - **The card** (`card`) says the branch and where its checkout goes, what comes with it (the changes counted, a file
 //!   staged there arriving unstaged, new files past `snapshot`'s cap left out and named), the buffers unsaved there
-//!   (D1: `y` saves them first), the conversation and what its first message costs (another checkout's prompt is
-//!   another prefix: the whole context written again, `switchcost::fork_said`), that none of the source's answers come
+//!   (D1: `y` saves them first), the conversation and what its first message costs (the source's context read from the
+//!   cache, the project's instructions written a second time — measured live: `switchcost::fork_cost`), that none of the
+//!   source's answers come
 //!   (D4), and who pays (the create card's words and `$`, preset to the source's). One card a source: asked again, the
 //!   one up comes to the front.
 //! - **Between turns only** (D2): while the source works (`keepclose::busy_turn`) the card says it waits; a `y` then is
@@ -94,8 +95,10 @@ pub struct Forking {
     /// two siblings bring into one place — and who pays, the create card's way.
     pub making: Making,
     pub files: Files,
-    /// The source's context and model, for what the first message costs.
+    /// The source's context, its first request's cache write (the instructions, where seen) and model, for what the
+    /// first message costs.
     pub tokens: Option<u64>,
+    pub instructions: Option<u64>,
     pub model: String,
     /// Kept current by `sync`: the source's unsaved buffers (relative), what its work under way waits for.
     pub unsaved: Vec<String>,
@@ -182,6 +185,7 @@ fn asked(ed: &mut Editor, source: WorkspaceId, mut making: Making, files: Files)
         making,
         files,
         tokens: usage.context().map(|c| c.0),
+        instructions: usage.conv.as_ref().and_then(|c| c.fixed.as_ref()).and_then(|r| r.counts.write),
         model,
         unsaved,
         holds,
@@ -452,12 +456,15 @@ pub fn card(f: &Forking, weakness: bool) -> Offer {
         None => "Its conversation: none yet — a new one.".to_string(),
         Some(_) => {
             let prices = &crate::sandboxpack::get().price;
-            let cost = crate::switchcost::fork_said(f.tokens, m.billing, &f.model, prices);
-            let cost = cost.unwrap_or_else(|| "its size isn't reported yet".into());
-            format!(
-                "Its conversation: {src}'s, at turn {} — its first message writes it all again, {cost}.",
-                f.from.turn
-            )
+            let cost = crate::switchcost::fork_cost(f.tokens, f.instructions, &f.model, prices);
+            let cost = match cost {
+                Some(c) => crate::switchcost::fork_said(&c, m.billing, src),
+                None => {
+                    "read again, plus the project's instructions a second time; its size isn't reported yet."
+                        .into()
+                }
+            };
+            format!("Its conversation: {src}'s, at turn {} — {cost}", f.from.turn)
         }
     };
     line(&mut q, conversation, false);

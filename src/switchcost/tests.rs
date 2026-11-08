@@ -89,17 +89,63 @@ fn the_price_table_reads_clean_and_a_wrong_row_is_refused() {
     assert_eq!(effort("claude-opus-5-5"), Some(Effort::Unknown));
     assert_eq!(effort("claude-haiku-4-5"), Some(Effort::Rewrites));
     let rows = |s: &str| read(&s.parse::<toml::Table>().unwrap()["price"]);
-    assert!(rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\n").unwrap_err().contains("no `write-1h`"));
     assert!(
-        rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = -2\n")
+        rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nread = 1\n").unwrap_err().contains("no `write-1h`")
+    );
+    assert!(
+        rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = 2\n").unwrap_err().contains("no `read`")
+    );
+    assert!(
+        rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = -2\nread = 1\n")
             .unwrap_err()
             .contains("isn't a price")
     );
     assert!(
-        rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = 2\ncolour = 1\n")
+        rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = 2\nread = 1\ncolour = 1\n")
             .unwrap_err()
             .contains("no key `colour`")
     );
-    assert!(rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = 2\neffort = \"maybe\"\n").is_err());
-    assert_eq!(rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = 2.5\n").unwrap()[0].write_1h, 2.5);
+    assert!(
+        rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = 2\nread = 1\neffort = \"maybe\"\n").is_err()
+    );
+    let row = &rows("[[price]]\nmodel = \"m\"\nwrite-5m = 1\nwrite-1h = 2.5\nread = 0.1\n").unwrap()[0];
+    assert_eq!((row.write_1h, row.read), (2.5, 0.1));
+    assert_eq!(price_of(&t.price, "claude-opus-5-5", 1).map(|p| p.read), Some(0.2), "0.05× its base input");
+}
+
+/// A fork's first request as the live check measured it (2026-11-08, Opus 5.5): it read the source's 106,087 tokens
+/// from the cache and wrote 94,147 again — the project's instructions, about the source's own cold first write — so
+/// its context starts at about 200k, twice the source's. At the table's prices that's $0.0212 read + $0.7532 written.
+/// Not seen here (a continued conversation), the instructions are the measured 95k, said so.
+#[test]
+fn a_forks_first_request_reads_the_context_and_writes_the_instructions_again() {
+    let prices = &crate::sandboxpack::get().price;
+    let c = fork_cost(Some(106_087), Some(94_147), "claude-opus-5-5", prices).unwrap();
+    assert_eq!((c.read, c.write, c.seen, c.starts()), (106_087, 94_147, true, 200_234));
+    let d = c.dollars.unwrap();
+    assert!((d - (106_087.0 * 0.2 + 94_147.0 * 8.0) / 1e6).abs() < 1e-9, "{d}");
+    assert_eq!(
+        fork_said(&c, Billing::Subscription, "main"),
+        "read again, plus the project's instructions a second time (≈ 94k tokens): it starts at ≈ 200k, about \
+         twice main's. Its first message ≈ API $0.77."
+    );
+    assert!(fork_said(&c, Billing::Api, "main").ends_with(" Its first message ≈ $0.77."));
+    // Not seen here: the measured size, said so
+    let guessed = fork_cost(Some(106_087), None, "claude-opus-5-5", prices).unwrap();
+    assert_eq!((guessed.write, guessed.seen), (INSTRUCTIONS_MEASURED, false));
+    assert_eq!(
+        fork_said(&guessed, Billing::Subscription, "main"),
+        "read again, plus the project's instructions a second time (not seen here: ≈ 95k tokens, as once \
+         measured): it starts at ≈ 201k, about twice main's. Its first message ≈ API $0.78."
+    );
+    // A long conversation: the instructions a smaller share; a model the table doesn't price: no dollars
+    let long = fork_cost(Some(300_000), Some(94_147), "opus", prices).unwrap();
+    assert_eq!(long.dollars, None);
+    assert_eq!(
+        fork_said(&long, Billing::Subscription, "main"),
+        "read again, plus the project's instructions a second time (≈ 94k tokens): it starts at ≈ 394k, about \
+         1.3× main's. Its first message counts toward your plan's limits."
+    );
+    assert!(fork_said(&long, Billing::Api, "main").ends_with(" Its first message: no price for this model."));
+    assert_eq!(fork_cost(None, Some(94_147), "claude-opus-5-5", prices), None, "no request reported yet");
 }

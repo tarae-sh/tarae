@@ -617,8 +617,9 @@ your `PATH`.
   unstaged), its unsaved buffers (saved first) and its conversation so far, the two going on apart; none of its
   answers come (runs, reads and hosts ask again), nor its ignored folders, and new files past 5,000 at once are named
   on the card, not carried; forked only between its turns (a `y` while it works waits, and its messages wait from the
-  `y` until the fork's tree is written); the fork's first message writes the whole conversation again — another
-  checkout's prompt is another prefix, warm or not —, its price on the card
+  `y` until the fork's tree is written); the fork's first message reads the conversation from the cache and writes
+  the project's instructions a second time (CLAUDE.md for the fork's folder), so its context starts at about the two
+  together — near twice the source's early on —, its price on the card
   ([several sessions](claude-integration.md#follow-mode))
 - **Another folder** `:folder-add ~/work/infra` — a folder outside the project the workspace works in too (a service
   and its infra, a library and its user): Claude reads, edits and runs there as in the project, its edits reviewed the

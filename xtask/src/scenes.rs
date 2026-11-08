@@ -4982,8 +4982,9 @@ const SCENES: &[Scene] = &[
     },
     // (the chat's foot: a long answer — the transcript's thumb in its outer cell — with the plan's weekly window at
     // 41 % (not on the row) and at 93 % (on it, with its reset); a short one, no thumb)
-    // (a session forked, `fork.rs`: its card on a conversation of 245k tokens — the first message's write priced —, then
-    // asked while main works and `y` given: the card holds, saying it forks once the turn ends)
+    // (a session forked, `fork.rs`: its card on a conversation as the live check of 2026-11-08 measured it — a cold
+    // first request writing 95k of instructions, 106k of context, the fork's first message priced —, then asked while
+    // main works and `y` given: the card holds, saying it forks once the turn ends)
     Scene { name: "fork", claude: "fork", files: MAIN, keys: FORK },
     Scene {
         name: "forkheld",
@@ -7578,7 +7579,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "fork" if line.contains("keep going") => {
                 turn.explain_held(true, true, Some("nots.len());\\n\"}"))?
             }
-            "fork" => turn.big()?,
+            "fork" => turn.measured()?,
             "foot41" => turn.foot(41, true)?,
             "foot93" => turn.foot(93, true)?,
             "footshort" => turn.foot(41, false)?,
@@ -8328,6 +8329,36 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         let cost = 1.8125;
         self.line(
             json!({"type": "result", "result": "ok", "session_id": id, "total_cost_usd": cost, "usage": usage,
+            "modelUsage": model}),
+        )
+    }
+
+    /// A first turn as the fork's live check measured it (2026-11-08): a cold request that read 9.5k tokens and wrote
+    /// 95k (the system prompt, the tools, CLAUDE.md), then one that read 104k and wrote 2k — its context 106k.
+    fn measured(&mut self) -> io::Result<()> {
+        let id = "conv-demo";
+        self.line(
+            json!({"type": "system", "subtype": "init", "session_id": id, "model": "claude-opus-5-5"}),
+        )?;
+        let requests = [(2, 9_532, 95_104, 180), (4, 104_067, 2_020, 64)];
+        for (n, (input, read, write, output)) in requests.into_iter().enumerate() {
+            self.line(json!({"type": "system", "subtype": "status", "status": "requesting"}))?;
+            let usage = json!({"input_tokens": input, "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": write, "cache_creation": {"ephemeral_1h_input_tokens": write},
+                "output_tokens": output});
+            let message =
+                json!({"id": format!("{id}-{}", n + 1), "model": "claude-opus-5-5", "usage": usage});
+            self.line(
+                json!({"type": "stream_event", "event": {"type": "message_start", "message": message}}),
+            )?;
+        }
+        self.words("The map is filled in one pass over the strands; nothing else writes to it.")?;
+        let usage = json!({"input_tokens": 6, "cache_read_input_tokens": 113_599, "cache_creation_input_tokens": 97_124,
+            "cache_creation": {"ephemeral_1h_input_tokens": 97_124}, "output_tokens": 244});
+        let model = json!({"claude-opus-5-5": {"inputTokens": 6, "cacheReadInputTokens": 113_599,
+            "cacheCreationInputTokens": 97_124, "outputTokens": 244, "contextWindow": 400_000}});
+        self.line(
+            json!({"type": "result", "result": "ok", "session_id": id, "total_cost_usd": 0.8, "usage": usage,
             "modelUsage": model}),
         )
     }

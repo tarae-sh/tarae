@@ -209,7 +209,9 @@ fn the_conversation_is_forked_once_then_its_own_across_a_restart() {
     asked(&mut ed);
     let q = &fork_card(&ed).unwrap().question;
     assert!(
-        q.contains("Its conversation: main's, at turn 1 — its first message writes it all again, "),
+        q.contains(
+            "Its conversation: main's, at turn 1 — read again, plus the project's instructions a second time"
+        ),
         "{q}"
     );
     ed.offer_accept();
@@ -417,8 +419,6 @@ fn unsaved_buffers_are_saved_first() {
     assert!(said(&ed).contains("1 file not committed came with it"), "{}", said(&ed));
 }
 
-/// The card's words: new files past the cap named in warning (and told to the fork's Claude), the first message's cost
-/// as the chat's row says money, a source with no conversation, a save that failed.
 /// The making of `fix-2` from `fix`, on the plan, nothing asked.
 fn making() -> Making {
     Making {
@@ -440,6 +440,8 @@ fn making() -> Making {
     }
 }
 
+/// The card's words: new files past the cap named in warning (and told to the fork's Claude), the first message's cost
+/// as the live fork measured it (`switchcost::fork_cost`), a source with no conversation, a save that failed.
 #[test]
 fn the_card_says_what_isnt_carried_and_what_the_first_message_costs() {
     let making = making();
@@ -462,6 +464,7 @@ fn the_card_says_what_isnt_carried_and_what_the_first_message_costs() {
             left_top: vec![("data/".into(), 4000), ("out/".into(), 1210)],
         },
         tokens: None,
+        instructions: None,
         model: "m".into(),
         unsaved: Vec::new(),
         holds: None,
@@ -479,25 +482,22 @@ fn the_card_says_what_isnt_carried_and_what_the_first_message_costs() {
     );
     assert_eq!(o.warnings, vec![left..left + 1], "in warning");
     assert!(o.question.contains("With it: 3 files not committed (1 new) — 2 staged in fix arrive unstaged."));
-    assert!(
-        o.question
-            .contains("at turn 14 — its first message writes it all again, its size isn't reported yet.")
-    );
+    assert!(o.question.contains(
+        "\nIts conversation: fix's, at turn 14 — read again, plus the project's instructions a second time; its size \
+         isn't reported yet.\n"
+    ));
     assert!(told(&f.from, "fix-2").ends_with(" 5210 new files of fix's weren't carried."));
-    // What the write costs: on the key in dollars, else what the API would charge, said so; tokens where no price
-    let prices = [crate::switchcost::Price {
-        model: "m".into(),
-        up_to: None,
-        write_5m: 6.25,
-        write_1h: 7.5,
-        effort: crate::switchcost::Effort::Unknown,
-    }];
-    use crate::billing::Billing::{Api, Subscription};
-    let said = |b, model| crate::switchcost::fork_said(Some(112_000), b, model, &prices);
-    assert_eq!(said(Api, "m").as_deref(), Some("≈ $0.84 (112k tokens)"));
-    assert_eq!(said(Subscription, "m").as_deref(), Some("≈ API $0.84 (112k tokens)"));
-    assert_eq!(said(Subscription, "other").as_deref(), Some("≈ 112k tokens, toward your plan's limits"));
-    assert_eq!(crate::switchcost::fork_said(None, Api, "m", &prices), None);
+    // What the first message costs, priced by the tools pack's table: the live check's numbers (106,087 read, 94,147
+    // written again), on the plan — what the API would charge
+    (f.tokens, f.instructions, f.model) = (Some(106_087), Some(94_147), "claude-opus-5-5".into());
+    assert!(
+        card(&f, false).question.contains(
+            "\nIts conversation: fix's, at turn 14 — read again, plus the project's instructions a second time (≈ \
+             94k tokens): it starts at ≈ 200k, about twice fix's. Its first message ≈ API $0.77.\n"
+        ),
+        "{}",
+        card(&f, false).question
+    );
     // No conversation yet: the files alone
     f.from.conversation = None;
     assert!(card(&f, false).question.contains("\nIts conversation: none yet — a new one.\n"));

@@ -38,6 +38,8 @@ pub struct Price {
     pub up_to: Option<u64>,
     pub write_5m: f64,
     pub write_1h: f64,
+    /// A cache hit (and refresh).
+    pub read: f64,
     pub effort: Effort,
 }
 
@@ -47,7 +49,7 @@ pub fn read(v: &toml::Value) -> Result<Vec<Price>, String> {
     rows.iter()
         .map(|r| {
             let t = r.as_table().ok_or("a `price` row isn't a table")?;
-            let keys = ["model", "up-to", "write-5m", "write-1h", "effort"];
+            let keys = ["model", "up-to", "write-5m", "write-1h", "read", "effort"];
             if let Some(k) = t.keys().find(|k| !keys.contains(&k.as_str())) {
                 return Err(format!("a `price` row: no key `{k}` — {}", keys.join(", ")));
             }
@@ -79,6 +81,7 @@ pub fn read(v: &toml::Value) -> Result<Vec<Price>, String> {
                 up_to,
                 write_5m: dollars("write-5m")?,
                 write_1h: dollars("write-1h")?,
+                read: dollars("read")?,
                 effort,
             })
         })
@@ -101,20 +104,74 @@ pub fn price_of<'a>(prices: &'a [Price], id: &str, tokens: u64) -> Option<&'a Pr
     prices.iter().find(|p| p.model == id && p.up_to.is_none_or(|n| tokens <= n))
 }
 
-/// What a fork's first request costs (`fork.rs`): another checkout's system prompt is another prefix, so it writes the
-/// source's whole context `tokens` again, warm or not — at the hour-long write, an API chat's cache. As the chat's row
-/// says money: `≈ $0.84 (112k tokens)` on the key, `≈ API $0.84 (112k tokens)` where the session isn't on it (what
-/// the API would charge, not what you pay); tokens only for a model the table doesn't price. None: no request reported
-/// yet, its size unknown.
-pub fn fork_said(tokens: Option<u64>, to: Billing, model: &str, prices: &[Price]) -> Option<String> {
-    let tokens = tokens?;
-    let said = crate::usage::tokens(tokens);
-    Some(match price_of(prices, model, tokens).map(|p| tokens as f64 * p.write_1h / 1e6) {
-        Some(d) if to == Billing::Api => format!("≈ {} ({said} tokens)", crate::usage::dollars(d)),
-        Some(d) => format!("≈ API {} ({said} tokens)", crate::usage::dollars(d)),
-        None if to == Billing::Api => format!("≈ {said} tokens (no price for this model)"),
-        None => format!("≈ {said} tokens, toward your plan's limits"),
-    })
+/// The project's instructions a fork writes again when the source's first request wasn't seen here (a conversation
+/// continued): the source's own cold first write in the live check of 2026-11-08, this repository's.
+pub const INSTRUCTIONS_MEASURED: u64 = 95_104;
+
+/// What a fork's first request carries and costs (`fork.rs`), as a live fork measured it (2026-11-08): it reads the
+/// source's whole context from the cache — the system prompt is the same prefix, the other checkout notwithstanding —
+/// and then writes the project's instructions a second time (CLAUDE.md injected again for the fork's folder, about the
+/// size of the source's own first write), so its context starts at about the two together.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ForkCost {
+    /// The source's context, read from the cache.
+    pub read: u64,
+    /// The instructions written again — `seen`: the source's first request's cache write, else `INSTRUCTIONS_MEASURED`.
+    pub write: u64,
+    pub seen: bool,
+    /// The read and the hour-long write (an API chat's cache) at the table's prices — None: a model it doesn't price.
+    pub dollars: Option<f64>,
+}
+
+impl ForkCost {
+    /// The fork's context as its first request leaves it.
+    pub fn starts(&self) -> u64 {
+        self.read + self.write
+    }
+}
+
+/// What a fork of a source whose context is `context` costs — `first_write`: its first request's cache write, where
+/// it was seen. None: no request reported yet, its size unknown.
+pub fn fork_cost(
+    context: Option<u64>,
+    first_write: Option<u64>,
+    model: &str,
+    prices: &[Price],
+) -> Option<ForkCost> {
+    let read = context?;
+    let (write, seen) = first_write.map_or((INSTRUCTIONS_MEASURED, false), |w| (w, true));
+    let dollars = price_of(prices, model, read + write)
+        .map(|p| (read as f64 * p.read + write as f64 * p.write_1h) / 1e6);
+    Some(ForkCost { read, write, seen, dollars })
+}
+
+/// As the fork card says it after `Its conversation: main's, at turn 3 — `: `read again, plus the project's
+/// instructions a second time (≈ 94k tokens): it starts at ≈ 200k, about twice main's. Its first message ≈ API
+/// $0.77.` — money as the chat's row says it: `≈ $0.77` on the key, `≈ API $0.77` where the session isn't on it (what
+/// the API would charge, not what you pay).
+pub fn fork_said(c: &ForkCost, to: Billing, src: &str) -> String {
+    let tokens = crate::usage::tokens;
+    let instructions = match c.seen {
+        true => format!("≈ {} tokens", tokens(c.write)),
+        false => format!("not seen here: ≈ {} tokens, as once measured", tokens(c.write)),
+    };
+    let times = c.starts() as f64 / c.read.max(1) as f64;
+    let times = match times {
+        t if t >= 2.5 => format!(", about {t:.0}× {src}'s"),
+        t if t >= 1.75 => format!(", about twice {src}'s"),
+        t if c.read > 0 && t >= 1.05 => format!(", about {t:.1}× {src}'s"),
+        _ => String::new(),
+    };
+    let first = match c.dollars {
+        Some(d) if to == Billing::Api => format!("Its first message ≈ {}.", crate::usage::dollars(d)),
+        Some(d) => format!("Its first message ≈ API {}.", crate::usage::dollars(d)),
+        None if to == Billing::Api => "Its first message: no price for this model.".into(),
+        None => "Its first message counts toward your plan's limits.".into(),
+    };
+    format!(
+        "read again, plus the project's instructions a second time ({instructions}): it starts at ≈ {}{times}. {first}",
+        tokens(c.starts())
+    )
 }
 
 /// What the next request costs after a switch, against staying.
