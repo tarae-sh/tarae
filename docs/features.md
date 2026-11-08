@@ -620,7 +620,10 @@ your `PATH`.
   `y` until the fork's tree is written); the fork's first message reads the conversation from the cache and writes
   the project's instructions a second time (CLAUDE.md for the fork's folder), so its context starts at about the two
   together — near twice the source's early on —, its price on the card
-  ([several sessions](claude-integration.md#follow-mode))
+  ([several sessions](claude-integration.md#follow-mode)); every session's Claude has the session tools — it starts
+  sessions of its own on your card and steers them (`sessions_start`, `session_send`, `sessions`, `session_act`) —,
+  a child's never, at most `llm.children-max` (3) of one Claude's and `llm.children-total` (6) of all together open at
+  once
 - **Another folder** `:folder-add ~/work/infra` — a folder outside the project the workspace works in too (a service
   and its infra, a library and its user): Claude reads, edits and runs there as in the project, its edits reviewed the
   same way, its paths whole, its commands in the sandbox with the folder's protected names kept as the project's and

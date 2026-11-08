@@ -553,7 +553,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "llm.session-tools",
         kind: Kind::Enum(crate::orchestra::MODES),
-        doc: "Chat: whose Claude can start sessions of its own and steer them — \"home\": the checkout tarae started in; \"any\": any session but a child; \"off\". Only your own config sets it",
+        doc: "Chat: whose Claude can start sessions of its own and steer them — \"any\": every session but a child; \"home\": only the checkout tarae started in; \"off\". Only your own config sets it",
         get: |c| Value::from(c.llm.session_tools.as_str()),
         set: |c, v| c.llm.session_tools = s(v).to_string(),
     },
@@ -563,6 +563,13 @@ pub static SETTINGS: &[Setting] = &[
         doc: "Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",
         get: |c| Value::from(c.llm.children_max as i64),
         set: |c, v| c.llm.children_max = n(v),
+    },
+    Setting {
+        path: "llm.children-total",
+        kind: Kind::Int { min: 0, max: 32 },
+        doc: "Chat: how many sessions all Claudes together may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",
+        get: |c| Value::from(c.llm.children_total as i64),
+        set: |c, v| c.llm.children_total = n(v),
     },
     Setting {
         path: "llm.parent-wakes",

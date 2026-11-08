@@ -1156,8 +1156,8 @@ fn chat_prompt_tokens() {
 }
 
 /// `chat_prompt_tokens` in a session's chat (`:session-new` — not the checkout tarae started in): under
-/// `llm.session-tools = "home"` its tools are a child's, so against `TARAE_BIN` (the build before the session
-/// tools) its first request's prompt must differ by nothing (orchestra P0).
+/// `llm.session-tools = "any"` (the default) it lists the session tools as the home chat does, so against `TARAE_BIN`
+/// (the build before the session tools) its first request's prompt is +696 (orchestra P3's measure).
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "live: run with `cargo live` (uses Claude)"]

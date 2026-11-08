@@ -121,10 +121,10 @@ pub fn start(ed: &mut Editor, call: crate::tools::Call, args: &Value) -> Result<
     if !ed.workspace.claude.starting.is_empty() {
         return Err("a start is under way — its card comes; one set at a time".into());
     }
-    // (how many it may have open at once: yours to say, `llm.children-max` — asked before any card, and again at `y`)
-    let (open, max) = (children(ed, ed.workspace.claude.id).count(), ed.config.llm.children_max);
-    if open + set.len() > max {
-        return Err(over_max(set.len(), open, max));
+    // (how many it may have open at once, and all Claudes together: yours to say, `llm.children-max` and
+    // `llm.children-total` — asked before any card, and again at `y`)
+    if let Some(why) = over_cap(ed, ed.workspace.claude.id, set.len()) {
+        return Err(why);
     }
     ed.workspace.claude.starting.push(call.clone());
     let root = ed.workspace.root.clone();
@@ -160,11 +160,23 @@ pub fn start(ed: &mut Editor, call: crate::tools::Call, args: &Value) -> Result<
     Ok(())
 }
 
-/// The refusal of a set of `n` past `llm.children-max` with `open` children open.
-fn over_max(n: usize, open: usize, max: usize) -> String {
-    format!(
-        "{n} asked with {open} of yours open — llm.children-max is {max} (the user's setting): nothing was made"
-    )
+/// The refusal of a set of `n` asked by `parent`'s Claude: past `llm.children-max` with its children open, else past
+/// `llm.children-total` with every Claude's open; None: it may.
+fn over_cap(ed: &Editor, parent: SessionId, n: usize) -> Option<String> {
+    let (open, max) = (children(ed, parent).count(), ed.config.llm.children_max);
+    if open + n > max {
+        return Some(format!(
+            "{n} asked with {open} of yours open — llm.children-max is {max} (the user's setting; :set \
+             llm.children-max raises it): nothing was made"
+        ));
+    }
+    let (open, total) = (started(ed), ed.config.llm.children_total);
+    (open + n > total).then(|| {
+        format!(
+            "{n} asked with {open} sessions Claude started open, all chats' together — llm.children-total is \
+             {total} (the user's setting; :set llm.children-total raises it): nothing was made"
+        )
+    })
 }
 
 /// `sessions_start`'s call answered, whichever way: no longer a set under way (`Session.starting`).
@@ -347,10 +359,8 @@ pub fn answer(ed: &mut Editor, id: u64, s: Set, yes: bool) {
         return crate::tools::answer(ed, s.call, Ok("the user said no — nothing was made".into()));
     }
     let parent = ed.claude_of(s.parent);
-    // (the cap again: what's open now — the setting lowered, a child linked back since the card came)
-    let (open, max) = (children(ed, parent).count(), ed.config.llm.children_max);
-    if open + s.sessions.len() > max {
-        let why = over_max(s.sessions.len(), open, max);
+    // (the caps again: what's open now — a setting lowered, a child linked back since the card came)
+    if let Some(why) = over_cap(ed, parent, s.sessions.len()) {
         ed.offer_finished(id, Err(why.clone()));
         return crate::tools::answer(ed, s.call, Err(why));
     }
@@ -449,6 +459,12 @@ fn in_workspace(ed: &mut Editor, id: WorkspaceId, f: impl FnOnce(&mut Editor) + 
 /// The open sessions whose parent is `parent`.
 fn children(ed: &Editor, parent: SessionId) -> impl Iterator<Item = &crate::workspace::Workspace> {
     std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(move |l| l.claude.parent == Some(parent))
+}
+
+/// How many open sessions a Claude started, every parent's together (one whose parent didn't come back is the user's
+/// own now, not counted).
+fn started(ed: &Editor) -> usize {
+    std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(|l| l.claude.parent.is_some()).count()
 }
 
 /// What the open children of `parent` cost so far, summed (`usage::totals`) — how many, and their turns; None: none open.
@@ -1104,10 +1120,10 @@ pub fn framed(from: &str, text: &str, first: bool) -> String {
 }
 
 /// `llm.session-tools`' values: whose chat gets the session tools.
-pub const MODES: &[&str] = &["home", "any", "off"];
+pub const MODES: &[&str] = &["any", "home", "off"];
 
-/// Whether the chat of `ed.workspace` may start sessions of its own (`llm.session-tools`): `home` — the checkout
-/// tarae started in (no branch of a session's own); `any` — any session that isn't a child; `off` — none. A child
+/// Whether the chat of `ed.workspace` may start sessions of its own (`llm.session-tools`): `any` — every session that
+/// isn't a child; `home` — only the checkout tarae started in (no branch of a session's own); `off` — none. A child
 /// never: no children of children.
 pub fn may_parent(ed: &Editor) -> bool {
     if ed.workspace.claude.parent.is_some() {

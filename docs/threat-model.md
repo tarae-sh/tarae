@@ -940,7 +940,7 @@ live check runs, is ABI 4.
 
 ### 2.x Sessions Claude starts (orchestra)
 
-The chat of the checkout tarae started in can start sessions of its own (`sessions_start`), put words into them
+Every session's chat but a child's can start sessions of its own (`sessions_start`), put words into them
 (`session_send`) and read back what they answered it (`sessions`) — Claude in one session steering Claude in others.
 The first half is words going into children; the second, what a child's reports carry back to its parent.
 
@@ -950,14 +950,19 @@ Kept:
   their checkouts go and build, who pays. `n` makes nothing; a bad name refuses the whole set before any card.
   test: `orchestra::tests::a_set_is_made_behind_each_brief_its_first_message` ·
   `orchestra::tests::no_on_the_set_card_makes_nothing` · `orchestra::tests::a_bad_name_refuses_the_whole_set`
-- **Who may start them, and how many, is your config's alone**: `llm.session-tools` (`home` by default: the checkout
-  tarae started in; `any`; `off`) and `llm.children-max` (3) are `trust::YOURS_ONLY` — a project can't turn them on or
+- **Who may start them, and how many, is your config's alone**: `llm.session-tools` (`any` by default: every session
+  but a child; `home`: only the checkout tarae started in; `off`), `llm.children-max` (3, one Claude's open at once)
+  and `llm.children-total` (6, every Claude's together) are `trust::YOURS_ONLY` — a project can't turn them on or
   raise them. The tools a chat lists are fixed as its claude starts; a `:set` applies to the next. One set at a time
-  from its call to its answer — a second asked beside it is refused, so two can't both pass the cap — and the cap is
-  asked again at `y`.
+  from its call to its answer — a second asked beside it is refused, so two can't both pass a cap — and both caps are
+  asked before any card and again at `y`, the per-parent one first. A restored child whose parent didn't come back is
+  a session of your own from then on: under `any` its chat gets the tools as any of yours, and it no longer counts
+  toward the total.
   test: `orchestra::tests::the_session_tools_are_fixed_per_chat_process` ·
+  `orchestra::tests::the_session_tools_reach_every_session_by_default` ·
   `orchestra::tests::children_max_is_asked_before_any_card` · `orchestra::tests::two_starts_side_by_side_pass_no_cap` ·
-  `orchestra::tests::the_cap_is_asked_again_at_yes`
+  `orchestra::tests::the_cap_is_asked_again_at_yes` · `orchestra::tests::children_total_is_asked_before_any_card` ·
+  `orchestra::tests::children_total_is_asked_again_at_yes` · `sim::orchestra::children_and_their_sends`
 - **No children of children**: a child's chat lists no session tool, and a call naming one is refused there — one
   level, so what a parent may reach is one step from a chat you read.
   test: `orchestra::tests::a_childs_chat_lists_no_session_tool` · `orchestra::tests::a_child_is_never_a_parent`
@@ -1006,7 +1011,8 @@ Not kept:
 - **A brief is the parent Claude's words, and its Claude takes them as instructions**, as it takes yours. What the
   parent read — a file, a page, someone else's words — can reach a child that way; the child can do with them what the
   parent's own Claude could in its session, now in another checkout, and every act still asks. A misled parent can
-  spend up to `llm.children-max` sessions once you say `y` on the card.
+  spend up to `llm.children-max` sessions once you say `y` on the card, and every session's Claude together up to
+  `llm.children-total`.
 - **A report carries what a child read.** A child's Claude reads the repository, its dependencies, test output, the
   pages a run fetched, and what you let it read outside the project; any of it may be a prompt injection, and its
   report can pass it on word for word. The frame tells the parent's Claude whose words they are; it doesn't make the

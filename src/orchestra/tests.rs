@@ -267,6 +267,44 @@ fn the_cap_is_asked_again_at_yes() {
     assert!(!git_in(&p.repo, &["rev-parse", "--verify", "-q", "refs/heads/one"]));
 }
 
+/// `llm.children-total` is asked before any card: with a session of the user's already holding children, a set that
+/// would pass the total — though not its own parent's cap — is refused at once.
+#[test]
+fn children_total_is_asked_before_any_card() {
+    let mut p = place("total");
+    p.ed.config.llm.children_total = 2;
+    let base = p.repo.parent().unwrap().to_path_buf();
+    let mut add = |name: &str| {
+        std::fs::create_dir_all(base.join(name)).unwrap();
+        p.ed.workspace_add(base.join(name))
+    };
+    let (theirs, a, b) = (add("theirs"), add("a"), add("b"));
+    let parent = p.ed.workspace_by_id(theirs).map(|l| l.claude.id).unwrap();
+    for id in [a, b] {
+        p.ed.workspace_by_id(id).unwrap().claude.parent = Some(parent);
+    }
+    let r = call(&mut p.ed, 26, "sessions_start", json!({ "sessions": { "one": "Brief." } }));
+    let r = r.expect("answered at once");
+    assert!(r.contains("llm.children-total is 2") && r.contains("2 sessions Claude started open"), "{r}");
+    assert!(p.ed.offers.is_empty() && p.ed.workspaces.len() == 3);
+}
+
+/// `llm.children-total` asked again at the card's `y`: lowered while the card waited, the set is refused — nothing
+/// made, the call told, the card saying why.
+#[test]
+fn children_total_is_asked_again_at_yes() {
+    let mut p = place("total-again");
+    assert!(call(&mut p.ed, 27, "sessions_start", json!({ "sessions": { "one": "Brief." } })).is_none());
+    settle_until(&mut p.ed, set_card);
+    p.ed.config.llm.children_total = 0;
+    p.ed.offer_accept();
+    settle_until(&mut p.ed, |_| answered(27).is_some());
+    let e = answered(27).unwrap().unwrap_err();
+    assert!(e.contains("llm.children-total is 0") && e.contains("nothing was made"), "{e}");
+    assert!(p.ed.workspaces.is_empty());
+    assert!(!git_in(&p.repo, &["rev-parse", "--verify", "-q", "refs/heads/one"]));
+}
+
 /// A parent hears only what its own acts came to (orchestra's R2): a child waiting on a card is said as working,
 /// never named — its answer holds no card.
 #[test]
@@ -1151,6 +1189,29 @@ fn a_child_is_never_a_parent() {
     std::fs::create_dir_all(&theirs).unwrap();
     let other = p.ed.workspace_add(theirs);
     p.ed.with_workspace(other, |ed| assert!(super::may_parent(ed)));
+    // (and under `home`, not even a session of the user's on a branch of its own: only the checkout tarae started in)
+    p.ed.workspace_by_id(other).unwrap().branch = Some("theirs".into());
+    p.ed.config.llm.session_tools = "home".into();
+    p.ed.with_workspace(other, |ed| assert!(!super::may_parent(ed)));
+    assert!(super::may_parent(&p.ed));
+}
+
+/// With no setting, every session's chat lists the session tools — one `:session-new` made, not only the checkout
+/// tarae started in — and a child's doesn't.
+#[test]
+fn the_session_tools_reach_every_session_by_default() {
+    let mut p = place("default");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], |ed| assert!(!super::lists(ed)));
+    let theirs = p.repo.parent().unwrap().join("theirs");
+    std::fs::create_dir_all(&theirs).unwrap();
+    let other = p.ed.workspace_add(theirs);
+    // (a branch of its own, as `:session-new`'s: not the checkout tarae started in)
+    p.ed.workspace_by_id(other).unwrap().branch = Some("theirs".into());
+    p.ed.with_workspace(other, |ed| {
+        crate::chat::open(ed);
+        assert!(super::lists(ed), "a session of the user's lists them");
+    });
 }
 
 /// The session tools a chat lists are fixed as its claude starts: `:set llm.session-tools off` mid-process leaves its

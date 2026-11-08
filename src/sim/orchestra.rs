@@ -16,7 +16,8 @@
 //! half the time; a card of Claude's comes in the parent or a child, the user answers one by its key; an hour passes;
 //! the user ends a child. And: a card goes only by the user's key, none of a child's words reach the parent's claude; a
 //! wake's news names a turn that asked, never comes while the parent's own card waits, never past `llm.parent-wakes`
-//! in an hour.
+//! in an hour. P6: the parent asks for a set, and while its card waits the user lowers `llm.children-total` to what's
+//! open: their `y` makes nothing, the card and the call say why.
 
 use std::collections::HashMap;
 
@@ -101,6 +102,9 @@ struct World {
     /// P3: the parent's cards its Claude proposed (`Offer.proposed`), by card id: the token its news names (in the
     /// proposal's child name) and the conversation that proposed it — answered by your key, news once.
     proposed: HashMap<u64, (String, usize)>,
+    /// P6: each set the parent asked for whose card's `y` came with `llm.children-total` lowered to what was open —
+    /// its call's id and that total: answered past the total, nothing made.
+    sets: Vec<(u64, usize)>,
 }
 
 /// `llm.parent-wakes` here: small, so the walk meets it.
@@ -173,6 +177,7 @@ fn run(choices: super::Choices) -> Vec<String> {
         wakers: Vec::new(),
         woke_at: Vec::new(),
         proposed: HashMap::new(),
+        sets: Vec::new(),
     });
     sim.walk(
         &mut ed,
@@ -250,7 +255,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
     // parent's chat anew 1)
     // (P2: a card up in the parent or a child 2, the user answers one 2, an hour passes 1, the user ends a child 1)
     // (P3: a review the parent started in a child ends 1 — and half the parent's cards its Claude's proposals)
-    match c.weighted(&[4, 3, 4, 2, 1, 1, 2, 2, 2, 1, 2, 2, 1, 1, 1]) {
+    // (P6: a set's card in the parent, `llm.children-total` lowered while it waits, then `y` 1)
+    match c.weighted(&[4, 3, 4, 2, 1, 1, 2, 2, 2, 1, 2, 2, 1, 1, 1, 1]) {
         0 => {
             w.n += 1;
             let token = format!("[p{}]", w.n);
@@ -581,6 +587,34 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             });
             format!("a review the parent started in {name} stops ({token})")
         }
+        15 => {
+            // (P6: the parent's Claude asks for one more session — within its own `llm.children-max` —, and while its
+            // card waits the user lowers `llm.children-total` to what's open: their `y` makes nothing, the card and the
+            // call say why)
+            w.n += 1;
+            let n = 3_000_000 + w.n as u64;
+            let home = w.home;
+            w.front = home;
+            drop(w);
+            ed.workspace_switch(home);
+            if !ed.offers.is_empty() {
+                return "a set asked for: a card waits in the parent already — asked later".into();
+            }
+            let mut o = crate::orchestra::stand_in_card(ed, &["three"]);
+            if let crate::offer::What::SessionSet(s) = &mut o.what {
+                s.call = crate::tools::Call::test(n);
+            }
+            ed.push_offer(o);
+            let open = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+            let open = open.filter(|l| l.claude.parent.is_some()).count();
+            let total = ed.config.llm.children_total;
+            ed.config.llm.children_total = open;
+            ed.card_focus_front();
+            ed.offer_accept();
+            ed.config.llm.children_total = total;
+            world.borrow_mut().sets.push((n, open));
+            format!("a set asked for, llm.children-total lowered to {open} while its card waits, then y")
+        }
         _ => unreachable!("one arm a weight"),
     }
 }
@@ -802,6 +836,26 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
                 ));
             }
         }
+    }
+    // P6: a set's `y` past `llm.children-total` makes nothing, its card saying why (or gone) and its call told why
+    let all = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
+    for (n, open) in &w.sets {
+        let answer = crate::tools::ANSWERED
+            .with(|a| a.borrow().iter().find(|(id, _)| *id == serde_json::json!(n)).map(|x| x.1.clone()));
+        match answer {
+            Some(Err(e)) if e.contains(&format!("llm.children-total is {open}")) => {}
+            other => return Err(format!("a set past llm.children-total {open} answered {other:?}")),
+        }
+    }
+    let asks = |o: &crate::offer::Offer| {
+        matches!(o.what, crate::offer::What::SessionSet(_))
+            && !matches!(o.state, crate::offer::OfferState::Failed(_))
+    };
+    if !w.sets.is_empty() && (ed.offers.iter().any(asks) || all().flat_map(|l| &l.parked).any(asks)) {
+        return Err("a set's card still asks after its y".into());
+    }
+    if let Some(l) = all().find(|l| l.branch.as_deref() == Some("three")) {
+        return Err(format!("a set past llm.children-total made {}", l.label()));
     }
     Ok(())
 }

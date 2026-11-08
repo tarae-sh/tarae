@@ -190,10 +190,12 @@ pub struct LlmConfig {
     /// outside its processes — with no time limit of its own: minutes before that card (cardburden 5; 0 = as
     /// `stuck_after`).
     pub stuck_after_outside: u64,
-    /// Whose chat gets the session tools (`orchestra.rs`): `home` · `any` · `off`.
+    /// Whose chat gets the session tools (`orchestra.rs`): `any` · `home` · `off`.
     pub session_tools: String,
     /// How many sessions one parent's Claude may have open at once (`orchestra.rs`).
     pub children_max: usize,
+    /// How many sessions every Claude together may have started and open at once (`orchestra.rs`).
+    pub children_total: usize,
     /// How many turns of its own a parent's Claude may be woken for in an hour (`orchestra::wake`: a turn it started in
     /// a child, asked with `wake`, ended).
     pub parent_wakes: usize,
@@ -232,8 +234,9 @@ impl Default for LlmConfig {
             screen_terminal: true,
             stuck_after: 10,
             stuck_after_outside: 30,
-            session_tools: "home".into(),
+            session_tools: "any".into(),
             children_max: 3,
+            children_total: 6,
             parent_wakes: 6,
         }
     }

@@ -94,6 +94,7 @@ pub const YOURS_ONLY: &[&str] = &[
     // (whether your Claude may start sessions that spend your plan or key, how many, and how often it's woken by them)
     "llm.session-tools",
     "llm.children-max",
+    "llm.children-total",
     "llm.parent-wakes",
     // (whether a plugin hears the keys you press: a project's would turn a keylogger on)
     "plugins.keys",
