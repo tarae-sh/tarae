@@ -2,11 +2,20 @@
 //! can guess, and a test that cleared it first (`remove_dir_all`) would delete what another user, another run or
 //! a planted link put there. `Scratch::new` makes a folder that's new — `mkdir`, never `create_dir_all` over
 //! what's there: 0700, and the next number when its name is taken (`EEXIST`, a link too) — so it removes only
-//! what it made, when it's dropped.
+//! what it made, when it's dropped. A path it gave is never given again in the process, gone or not (#446).
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+
+/// Every path `in_dir` gave in this process, as written. A dropped folder's number isn't taken again (#446): tarae's
+/// process-wide memory goes by place — `gitrepo`'s answers since tarae started, its repositories kept by real path —
+/// so a test landing where an earlier one was found what that one answered (`repotrust`'s `n`: the next checkout's
+/// git asked nothing); and `left_by`, which judges by path, counted a twin test on another thread holding the number
+/// just freed as left behind (`reviewer`'s board).
+static GIVEN: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
 thread_local! {
     /// The scratch folders this thread made and hasn't dropped — a test's own (`holds`).
@@ -45,21 +54,32 @@ pub struct Scratch {
     path: PathBuf,
 }
 
-/// Names tried at most before giving up (each taken one is another's).
+/// Names found taken at most before giving up (each one another's — never counting the ones this process gave).
 const TRIES: usize = 1000;
 
 impl Scratch {
-    /// `tarae-<name>-<pid>-<n>` made new in the temp folder, by its real path (macOS: `/private/var/…`).
+    /// `tarae-<name>-<pid>-<n>` made new in the temp folder, by its real path (macOS: `/private/var/…`) — `n` one
+    /// this process hasn't given before.
     pub fn new(name: &str) -> Scratch {
         Scratch::in_dir(&std::env::temp_dir(), name)
     }
 
     /// `new` in `dir` (a test's own temp folder or a stand-in for one).
     pub fn in_dir(dir: &Path, name: &str) -> Scratch {
-        for n in 0..TRIES {
+        let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
+        let mut taken = 0;
+        for n in 0.. {
             let path = dir.join(format!("tarae-{name}-{}-{n}", std::process::id()));
+            if given.contains(&path) {
+                continue;
+            }
+            if taken == TRIES {
+                break;
+            }
+            taken += 1;
             match std::fs::DirBuilder::new().mode(0o700).create(&path) {
                 Ok(()) => {
+                    given.insert(path.clone());
                     let path = std::fs::canonicalize(&path).unwrap_or(path);
                     MADE.with(|m| m.borrow_mut().push(path.clone()));
                     EVER.with(|e| e.borrow_mut().push(path.clone()));
@@ -203,6 +223,24 @@ mod tests {
             std::fs::remove_dir_all(p).ok();
         }
         assert!(before.is_dir());
+    }
+
+    /// #446: a number dropped isn't given again in the process — not to this thread, not to another: so another
+    /// thread's new folder is never at a path `left_by` made and dropped (the board's twin test, made after its
+    /// first loop went).
+    #[test]
+    fn a_path_given_is_never_given_again_in_the_process() {
+        let outer = Scratch::new("scratch-again-outer");
+        let pid = std::process::id();
+        let mut theirs = None;
+        let left = left_by(|| {
+            drop(Scratch::in_dir(&outer, "t"));
+            let other = std::thread::scope(|s| s.spawn(|| Scratch::in_dir(&outer, "t")).join().unwrap());
+            theirs = Some(other);
+        });
+        assert!(left.is_empty(), "another thread's isn't this call's: {left:?}");
+        assert_eq!(theirs.unwrap().path(), outer.join(format!("tarae-t-{pid}-1")), "0 was given");
+        assert_eq!(Scratch::in_dir(&outer, "t").path(), outer.join(format!("tarae-t-{pid}-2")));
     }
 
     /// `holds`: in a scratch folder this thread made and still has — not another thread's, not one dropped, not a
