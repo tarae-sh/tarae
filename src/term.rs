@@ -31691,6 +31691,7 @@ mod tests {
         ("sandbox/keeper.rs", 1),          // a run not started within its limit
         ("sandbox/proxy.rs", 3),           // the proxy's limits, the card's hold
         ("sandbox/proxy/relay.rs", 1),     // the proxy's limit
+        ("sandbox/proxy/stage.rs", 2),     // a terminated tunnel's idle limits
         ("sandbox/proxy/terminate.rs", 2), // the handshake's limit
         ("sandbox/proxy/upstream.rs", 1),  // the proxy's limit
         ("sandbox/supervisor.rs", 2),      // its exec limit; its own cost, tenths of a millisecond

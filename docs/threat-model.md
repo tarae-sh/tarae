@@ -458,7 +458,20 @@ Kept:
   mark only its code can make). Where the host's certificate fails, the run reads a 502 inside its TLS and the report
   says why with the issuer's O and CN as the certificate's own words (printable ASCII, ≤ 64 characters, quoted,
   read by a bounded walk that's fuzzed) — never other text of its. Where the bundle can't be made (the system's
-  roots unread) nothing is terminated for that run, said.
+  roots unread) nothing is terminated for that run, said. Between the legs (P1b) every request is read in origin
+  form and decided on the CONNECT target, never its own words: a `Host` naming another host or port is 421; TRACE
+  and TRACK are 405 (they echo the request back, credentials too); a method outside plain http's seven and CONNECT
+  405; an Upgrade 501; the absolute form 400. A head a reader could frame two ways (a bare CR or LF, a folded line, a
+  space before a colon, a Content-Length but one field of digits, a Transfer-Encoding but one `chunked`, both) is
+  400, and a chunked body that can't be followed closes the tunnel — nothing of it, nor anything the run sent behind
+  a refused request, reaches the host, so no request hides inside a body past these rules (or P2's swap). Each answer
+  is followed by what was asked (a HEAD's, a 204's, a 304's has no body; neither length nor chunks: until the host
+  closes); one unasked, framed two ways or a 101 closes the tunnel, a 502 where none of it went. The bytes go on as
+  they came. A truncation on the host's leg reaches the run as one: an answer that runs to the host's close is whole
+  only by the host's close_notify, and wherever an answer is cut (no close_notify, a length or chunks unfinished, a
+  stall part-way) the run's TLS ends with no close_notify of tarae's — close_notify only at a clean end. Keep-alive on
+  one host connection, closed after srt's idle limits (10 s to a first head, 6 s at rest, 300 s stalled; never while a
+  request waits).
   test: `sandbox::proxy::tests::terminate::a_listed_hosts_tunnel_is_terminated_each_way_a_run_comes` ·
   `sandbox::proxy::tests::terminate::the_hosts_leg_failing_is_a_502_inside_tls_naming_its_issuer` ·
   `sandbox::proxy::tests::terminate::a_terminated_tunnel_goes_through_taraes_upstream` ·
@@ -466,7 +479,20 @@ Kept:
   `web::fetch::tests::taraes_own_fetch_is_never_terminated` ·
   `sandbox::proxy::mitm_tests::a_terminated_fetch_through_a_company_mitm_trusts_your_ca_setting` ·
   `sandbox::proxy::terminate::tests::the_leaf_passes_the_strict_checkers` ·
-  `sandbox::proxy::issuer::tests::the_issuer_walk_never_panics`
+  `sandbox::proxy::issuer::tests::the_issuer_walk_never_panics` ·
+  `sandbox::proxy::tests::terminate::a_host_naming_another_host_is_421` ·
+  `sandbox::proxy::tests::terminate::trace_is_405_and_nothing_behind_it_reaches_the_origin` ·
+  `sandbox::proxy::tests::terminate::an_upgrade_is_501_with_words` ·
+  `sandbox::proxy::tests::terminate::what_a_reader_could_frame_two_ways_never_reaches_the_origin` ·
+  `sandbox::proxy::tests::terminate::a_chunked_upload_and_a_length_download_pass_byte_for_byte` ·
+  `sandbox::proxy::tests::terminate::a_terminated_tunnel_keeps_its_connection_for_the_next_request` ·
+  `sandbox::proxy::tests::terminate::the_idle_limits_close_a_terminated_tunnel` ·
+  `sandbox::proxy::tests::terminate::a_truncation_on_the_hosts_leg_reaches_the_run_as_one` ·
+  `sandbox::proxy::tests::terminate::a_truncation_on_the_hosts_leg_fails_the_runs_curl` ·
+  `sandbox::proxy::stage::tests::a_refused_request_and_what_follows_it_never_go_on` ·
+  `sandbox::proxy::stage::tests::an_answer_with_neither_length_nor_chunks_ends_with_the_close` ·
+  `sandbox::proxy::stage::tests::a_204_or_304_has_no_body_whatever_it_says` ·
+  `sandbox::proxy::parse::tests::an_origin_form_head_is_refused_in_words`
 - Each session's host rules are its own.
   test: `sandbox::proxy::tests::two_sessions_rules_stay_apart`
 - **A plugin's connection** (not a run's: its own card a host:port, [plugins](plugins.md)) keeps the proxy's address
@@ -1019,7 +1045,7 @@ Not Claude's, but a hostile repository reaches them:
 | G9 | Linux without namespaces: processes, SysV IPC, `/dev/shm` shared; without a PID namespace: processes | no namespaces there | said; the AppArmor profile gives own namespaces |
 | G10 | Linux: a new protected name in a folder without one | Landlock only grants | caught after the run, asked before anything runs it — Claude's next run, your task, your tests, your preflight, `:restart`'s build (§1.2) |
 | G11 | Linux ABI 2: truncation | kernel | every run asks |
-| G12 | The supervisor and proxy parse hostile input inside tarae | threads (D19) | fuzzing; a confined process (D21); a review — 2026-11-03: what tarae sends on a run's `sendmsg` held to Linux's `CMSG_*` macros, and the kernel the oracle for whole fuzzed messages (tests: `sandbox::supervisor::wire::tests::what_tarae_sends_is_held_to_linuxs_macros`, `sandbox::supervisor::wire::tests::kernel::the_kernel_takes_what_tarae_sends` (Linux)); every value of the send path read once (Q2) |
+| G12 | The supervisor and proxy parse hostile input inside tarae | threads (D19) | fuzzing; a confined process (D21); P1b: inside a tunnel tarae terminates, a TLS server (rustls) and the plaintext HTTP both ways — the origin-form parser held to its property (what it takes, a strict reader frames alike) in-tree and by its fuzz target `origin`, the stage's machine fed both sides at every split, a truncation on the host's leg reaching the run as one (tests: `sandbox::proxy::parse::tests::the_origin_parser_never_panics`, `sandbox::proxy::stage::tests::a_chunked_upload_and_a_length_download_go_on_byte_for_byte`, `sandbox::proxy::tests::terminate::a_truncation_on_the_hosts_leg_reaches_the_run_as_one`); a review — 2026-11-03: what tarae sends on a run's `sendmsg` held to Linux's `CMSG_*` macros, and the kernel the oracle for whole fuzzed messages (tests: `sandbox::supervisor::wire::tests::what_tarae_sends_is_held_to_linuxs_macros`, `sandbox::supervisor::wire::tests::kernel::the_kernel_takes_what_tarae_sends` (Linux)); every value of the send path read once (Q2) |
 | G13 | rust-analyzer runs `build.rs`/proc macros untrusted — and even `cargo metadata` runs the toolchain `rust-toolchain.toml` names and `.cargo/config`'s `rustc-wrapper`; jdtls runs the Gradle build, zls `build.zig`, tsserver `tsconfig.json`'s plugins | a language server runs the project's code as you, outside the sandbox | narrowed (2026-10-28, as Claude Code's workspace trust and VS Code's rust-analyzer in restricted mode — srt has neither): a server its pack marks (`runs-project-code`) waits for the repository's trust, asked once on a card and shared by its checkouts (kept in `trust.json`), `:code-untrust` takes it back; a project can't turn servers on or add one untrusted (§3) (tests: `codetrust::tests::a_server_that_runs_the_projects_code_waits_for_its_trust`, `codetrust::tests::code_untrust_stops_them`, `sim::codetrust::servers_wait_for_the_codes_trust`); an agent its pack loads into one (jdtls's Lombok, #228) is that trust's too — looked for only once it's given, taken only where it's yours and no sandboxed run writes (`lspagent::tests::a_jar_a_run_could_have_put_there_is_never_loaded`); left: once trusted, what a run of Claude's plants for it is §1.2's (the paused servers), and the servers aren't sandboxed (srt's way — later, measured first) |
 | G14 | The temp folders are shared | D16 | said |
 | G15 | Apple Events/LaunchServices denials are pinned, not shown | no behaviour test | the must-be-refused suite; the keychain's and the clipboard's are tried (`sandbox::tests::what_the_default_refuses_and_the_base_lets_through`) |

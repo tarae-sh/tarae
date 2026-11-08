@@ -19,6 +19,7 @@ tarae and the plugin fuzzer in `../` keep the pinned stable.
 | `netlink` | `wire::netlink_reads` | `netlink`: taken ⇒ the kernel's model finds no change | a batch |
 | `msghdr` | `wire::read_msg` | `message`: the kernel's model's memory, errno, data, descriptors | a run's memory (below) |
 | `head` | `parse::head` | `head` | what a client sends the proxy |
+| `origin` | `parse::origin`, then `parse::Body` (inside a tunnel tarae terminates, P1b) | `origin`: as `head`'s, and what it takes every reader frames alike — its head read apart (`framed`: no bare CR or LF, folded line, space before a colon, Content-Length but one field of digits, Transfer-Encoding but one `chunked`) framed the same, its body ended where a strict reader ends it (`chunks`) | a request's head, its body after it |
 | `sni` | `parse::server_name` | `sni` | a tunnel's first bytes |
 | `body` | `parse::Body` (chunked) | `body` | first byte: bytes given at a time (1 + 2n), then the body |
 | `web` | `tarae_web::read` (a page's bytes) | `tarae_web::check::page_input`: no panic, the limits, links and anchors in the text | first byte: which part read, the type given; then the page |
@@ -56,7 +57,7 @@ cargo +nightly-2026-10-14 fuzz run --fuzz-dir fuzz/parsers $t fuzz/parsers/corpu
 The first folder is the corpus libFuzzer grows (git-ignored, kept between runs). The second holds the seeds,
 which are read and never written. Builds are optimized with debug assertions and overflow checks on, as in
 tarae's test profile, so an overflow the release build would wrap is a crash here too. `-max_len` matters
-for targets whose limits are past libFuzzer's default of 4096 bytes: `head` 12288 (past `HEAD_MAX`),
+for targets whose limits are past libFuzzer's default of 4096 bytes: `head` and `origin` 12288 (past `HEAD_MAX`),
 `sni` 40000 (past `HELLO_MAX` in records), `msghdr` 20000 (a full iovec array), `web` and `facts` 65536 (a page's
 pieces: the parser is fed 8 KB at a time).
 

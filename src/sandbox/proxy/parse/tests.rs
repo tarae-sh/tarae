@@ -596,7 +596,7 @@ fn the_response_parser_never_panics() {
 
 /// The fuzz targets' seeds (`fuzz/parsers/seeds/`): `head` the captured heads, `sni` the captured ClientHellos whole and in three records, `body` chunked bodies (`check::body_input`'s first
 /// byte: 1, 3, 255, 511 bytes at a time), `response` responses of each framing (`check::response_input`'s first byte
-/// likewise).
+/// likewise), `origin` the requests clients send inside a terminated tunnel, their bodies after them.
 #[test]
 #[ignore = "writes fuzz/parsers/seeds: by hand"]
 fn writes_fuzz_seeds() {
@@ -622,6 +622,8 @@ fn writes_fuzz_seeds() {
         .collect();
     assert!(responses.iter().all(|(_, b)| check::response_input(b) == "read"), "each a whole response");
     fuzz_seeds("response", responses);
+    assert!(ORIGIN_REQUESTS.iter().all(|(_, b, _)| check::origin(b) == "request"), "each a whole request");
+    fuzz_seeds("origin", ORIGIN_REQUESTS.iter().map(|(who, b, _)| (who.to_string(), b.to_vec())));
 }
 
 /// Each refusal is answered with its status (too long 431, a method 405, the rest 400) and said in words that
@@ -739,6 +741,226 @@ fn base64_reads_back_as_it_was_written() {
     for _ in 0..2000 {
         let b: Vec<u8> = (0..rng.below(40) + 1).map(|_| rng.next() as u8).collect();
         assert_eq!(unbase64(base64(&b).as_bytes()), Some(b.clone()), "{b:?}");
+    }
+}
+
+/// Requests as clients send them inside a tunnel tarae terminates, in origin form, their bodies after them: curl's
+/// GET, git's chunked POST (`git push` past its post buffer) and its fetch's Content-Length one, cargo's index GET,
+/// a HEAD, `OPTIONS *`, an HTTP/1.0 GET without a Host, a PUT waiting for its 100. (name, bytes, its head's framing)
+const ORIGIN_REQUESTS: [(&str, &[u8], Framing); 8] = [
+    ("curl", b"GET /x HTTP/1.1\r\nHost: origin.test\r\nUser-Agent: curl/8.7.1\r\nAccept: */*\r\n\r\n", Framing::Empty),
+    (
+        "git-push",
+        b"POST /r.git/git-receive-pack HTTP/1.1\r\nHost: origin.test\r\nUser-Agent: git/2.54\r\nAccept-Encoding: deflate, gzip\r\nContent-Type: application/x-git-receive-pack-request\r\nTransfer-Encoding: chunked\r\n\r\n9\r\n0000PACK\n\r\n4;x=1\r\nabcd\r\n0\r\n\r\n",
+        Framing::Chunked,
+    ),
+    (
+        "git-fetch",
+        b"POST /r.git/git-upload-pack HTTP/1.1\r\nHost: origin.test\r\nGit-Protocol: version=2\r\nContent-Length: 14\r\n\r\n0014command=ls",
+        Framing::Length(14),
+    ),
+    ("cargo", b"GET /config.json HTTP/1.1\r\nHost: index.crates.io\r\nAccept: */*\r\nUser-Agent: cargo/1.99.0\r\n\r\n", Framing::Empty),
+    ("head", b"HEAD /big?v=2 HTTP/1.1\r\nhost: origin.test:443\r\nConnection: keep-alive\r\n\r\n", Framing::Empty),
+    ("options", b"OPTIONS * HTTP/1.1\r\nHost: origin.test\r\n\r\n", Framing::Empty),
+    ("http-1-0", b"GET / HTTP/1.0\r\nUser-Agent: python-urllib/3.14\r\n\r\n", Framing::Empty),
+    (
+        "expect",
+        b"PUT /f HTTP/1.1\r\nHost: origin.test\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\nhello",
+        Framing::Length(5),
+    ),
+];
+
+/// Each request a client sends inside a terminated tunnel is read as sent — its method, its `Host` and port, its
+/// framing, whether it's the connection's last or asks an upgrade — its body after it untouched; cut short anywhere
+/// before its blank line, it's "more", never a refusal.
+#[test]
+fn an_origin_form_request_is_read_as_sent() {
+    for (who, raw, framing) in ORIGIN_REQUESTS {
+        let o = origin(raw).unwrap().unwrap_or_else(|| panic!("{who}: a whole head"));
+        assert_eq!(o.body, framing, "{who}");
+        assert_eq!(check::origin(raw), "request", "{who}");
+        for cut in 0..o.len {
+            assert_eq!(origin(&raw[..cut]), Ok(None), "{who}: cut at {cut}");
+        }
+    }
+    let o = |raw: &[u8]| origin(raw).unwrap().unwrap();
+    let name = |n: &str| Some((Host::Name(n.into()), None));
+    let curl = o(ORIGIN_REQUESTS[0].1);
+    assert_eq!(
+        (curl.method.as_str(), &curl.host, curl.last, curl.upgrade),
+        ("GET", &name("origin.test"), false, false)
+    );
+    let head = o(ORIGIN_REQUESTS[4].1);
+    assert_eq!(
+        (head.method.as_str(), head.host),
+        ("HEAD", Some((Host::Name("origin.test".into()), Some(443))))
+    );
+    let old = o(ORIGIN_REQUESTS[6].1);
+    assert_eq!((old.host, old.last), (None, true), "1.0: no Host, its last without keep-alive");
+    assert!(!o(b"GET / HTTP/1.0\r\nConnection: Keep-Alive\r\n\r\n").last);
+    assert!(o(b"GET / HTTP/1.1\r\nHost: a.test\r\nConnection: keep-alive, Close\r\n\r\n").last);
+    assert!(o(b"GET / HTTP/1.1\r\nHost: a.test\r\nUpgrade: websocket\r\n\r\n").upgrade);
+    assert!(o(b"GET / HTTP/1.1\r\nHost: a.test\r\nConnection: upgrade\r\n\r\n").upgrade);
+    let v6 = o(b"GET / HTTP/1.1\r\nHost: [::1]:8443\r\n\r\n");
+    assert_eq!(v6.host, Some((Host::Addr("::1".parse().unwrap()), Some(8443))));
+    assert_eq!(
+        o(b"get / HTTP/1.1\r\nHost: a.test\r\n\r\n").method,
+        "get",
+        "a token as sent (`decide` takes it or not)"
+    );
+}
+
+/// An origin-form head is refused, with its status and its words, where a reader could take it two ways or it
+/// isn't one a host is sent: request smuggling's vectors first — a space before a colon, a folded line, a bare CR or
+/// LF, a Content-Length that isn't one field of digits (a sign, a list, the same twice), a Transfer-Encoding that
+/// isn't one `chunked`, both, a Transfer-Encoding in 1.0, `Connection` naming the framing — then two Hosts or none
+/// in 1.1, a Host that isn't a host, the absolute and authority forms, `*` but for OPTIONS, a fragment, a target
+/// that isn't ASCII, a method that isn't a token, a version but 1.0 and 1.1, a head past its limit.
+#[test]
+fn an_origin_form_head_is_refused_in_words() {
+    let h = "Host: origin.test\r\n";
+    let refused =
+        |raw: &str| origin(raw.as_bytes()).map(|o| o.map(|o| o.len)).map_err(|r| (r.status(), r.inside()));
+    let cases = [
+        ("GET / HTTP/1.1\r\nHost : origin.test\r\n\r\n".to_string(), "a header's name"),
+        (format!("GET / HTTP/1.1\r\n{h}Content-Length\t: 3\r\n\r\nabc"), "a header's name"),
+        (format!("GET / HTTP/1.1\r\n{h}X-A: 1\r\n Content-Length: 3\r\n\r\n"), "a folded header line"),
+        (format!("GET / HTTP/1.1\r\n{h}X-A: 1\r\n\tx\r\n\r\n"), "a folded header line"),
+        (format!("GET / HTTP/1.1\r\n{h}X-A: 1\rContent-Length: 3\r\n\r\n"), "a control character in a line"),
+        (format!("GET / HTTP/1.1\r\n{h}X-A: 1\nContent-Length: 3\r\n\r\n"), "a control character in a line"),
+        ("GET / HTTP/1.1\nHost: origin.test\r\n\r\n".to_string(), "a control character in a line"),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Content-Length: +3\r\n\r\n"),
+            "a Content-Length that isn't one number",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Content-Length: 3, 3\r\n\r\n"),
+            "a Content-Length that isn't one number",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Content-Length: 3\r\ncontent-length: 3\r\n\r\n"),
+            "a Content-Length that isn't one number",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Content-Length: 0x3\r\n\r\n"),
+            "a Content-Length that isn't one number",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Content-Length: 12345678901234567890\r\n\r\n"),
+            "a Content-Length that isn't one number",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: gzip\r\n\r\n"),
+            "a Transfer-Encoding that isn't one `chunked`",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: gzip, chunked\r\n\r\n"),
+            "a Transfer-Encoding that isn't one `chunked`",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: chunked, chunked\r\n\r\n"),
+            "a Transfer-Encoding that isn't one `chunked`",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n"),
+            "a Transfer-Encoding that isn't one `chunked`",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: xchunked\r\n\r\n"),
+            "a Transfer-Encoding that isn't one `chunked`",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Content-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n"),
+            "both Content-Length and Transfer-Encoding",
+        ),
+        (
+            "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n".to_string(),
+            "Transfer-Encoding in an HTTP/1.0 request",
+        ),
+        (
+            format!("POST / HTTP/1.1\r\n{h}Content-Length: 3\r\nConnection: Content-Length\r\n\r\n"),
+            "`Connection` naming the body's framing",
+        ),
+        (format!("GET / HTTP/1.1\r\n{h}{h}\r\n"), "two Host fields"),
+        ("GET / HTTP/1.1\r\nAccept: */*\r\n\r\n".to_string(), "an HTTP/1.1 request without a Host"),
+        ("GET / HTTP/1.1\r\nHost: 127.1\r\n\r\n".to_string(), "its Host: a name whose last label"),
+        ("GET / HTTP/1.1\r\nHost: user@origin.test\r\n\r\n".to_string(), "its Host: a name's label"),
+        ("GET / HTTP/1.1\r\nHost: origin.test:0\r\n\r\n".to_string(), "its Host: a port that isn't 1–65535"),
+        (format!("GET https://origin.test/x HTTP/1.1\r\n{h}\r\n"), "an absolute-form target inside a tunnel"),
+        (format!("CONNECT origin.test:443 HTTP/1.1\r\n{h}\r\n"), "a target that isn't a path"),
+        (format!("GET * HTTP/1.1\r\n{h}\r\n"), "`*` as the target of a method other than OPTIONS"),
+        (format!("GET /x#y HTTP/1.1\r\n{h}\r\n"), "a fragment in the target"),
+        (format!("GET /é HTTP/1.1\r\n{h}\r\n"), "a target that isn't ASCII"),
+        (format!("G(T / HTTP/1.1\r\n{h}\r\n"), "a method that isn't a token"),
+        (format!("GET / HTTP/2.0\r\n{h}\r\n"), "not HTTP/1.0 or 1.1"),
+        (format!("GET /  HTTP/1.1\r\n{h}\r\n"), "a request line that isn't three words"),
+    ];
+    for (raw, words) in &cases {
+        match refused(raw) {
+            Err((400, why)) if why.starts_with(words) => {}
+            r => panic!("{raw:?}: {r:?}, not 400 {words}"),
+        }
+    }
+    let long = format!("GET / HTTP/1.1\r\n{h}X-A: {}\r\n\r\n", "a".repeat(HEAD_MAX));
+    assert_eq!(refused(&long).unwrap_err().0, 431);
+    let many = format!("GET / HTTP/1.1\r\n{h}{}\r\n", "X-A: 1\r\n".repeat(HEADERS_MAX));
+    assert_eq!(refused(&many).unwrap_err().0, 431);
+    assert_eq!(
+        refused(&format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: Chunked\r\n\r\n")).map(|l| l.is_some()),
+        Ok(true),
+        "any case"
+    );
+}
+
+/// Whatever a run sends inside a terminated tunnel, the origin-form parser answers as `check::origin` has it — what
+/// it takes framed as a strict reader frames it, its body ended where one ends it: the requests clients send mutated
+/// 100,000 times, some grown past `HEAD_MAX`.
+#[test]
+fn the_origin_parser_never_panics() {
+    let mut rng = Rng(0x0e1c_e5ee_d1ce_0001);
+    let (mut requests, mut more, mut refusals, mut past) = (0, 0, 0, 0);
+    for _ in 0..100_000 {
+        let mut b = ORIGIN_REQUESTS[rng.below(ORIGIN_REQUESTS.len())].1.to_vec();
+        mutate(&mut rng, &mut b, HEAD_MAX);
+        past += usize::from(b.len() > HEAD_MAX);
+        match check::origin(&b) {
+            "request" => requests += 1,
+            "more" => more += 1,
+            _ => refusals += 1,
+        }
+    }
+    assert!(requests > 5000 && more > 1000 && refusals > 10_000, "{requests} / {more} / {refusals}");
+    assert!(past > 2000, "grown past the limit: {past}");
+}
+
+/// A strict reader's own refusals (`check::framed`, `check::chunks`): each vector the parser refuses, the reader the
+/// property holds it to refuses too — else a property that passed would say nothing.
+#[test]
+fn the_strict_readers_refuse_the_vectors_themselves() {
+    let head = |fields: &str| format!("POST / HTTP/1.1\r\nHost: a.test\r\n{fields}");
+    assert_eq!(check::framed(head("Content-Length: 3").as_bytes()), Some(Framing::Length(3)));
+    assert_eq!(check::framed(head("transfer-encoding: CHUNKED").as_bytes()), Some(Framing::Chunked));
+    for bad in [
+        "Content-Length : 3",
+        "X: 1\r\n Content-Length: 3",
+        "X: 1\rContent-Length: 3",
+        "X: 1\nContent-Length: 3",
+        "Content-Length: +3",
+        "Content-Length: 3, 3",
+        "Content-Length: 3\r\nContent-Length: 3",
+        "Transfer-Encoding: chunked, chunked",
+        "Transfer-Encoding: gzip",
+        "Content-Length: 3\r\nTransfer-Encoding: chunked",
+    ] {
+        assert_eq!(check::framed(head(bad).as_bytes()), None, "{bad:?}");
+    }
+    assert_eq!(check::framed(b"POST / HTTP/1.0\r\nTransfer-Encoding: chunked"), None);
+    assert_eq!(check::chunks(b"3;e=1\r\nabc\r\n0\r\nT: 1\r\n\r\nNEXT"), Some(23));
+    let long_ext = [&b"1;"[..], &vec![b'e'; CHUNK_LINE_MAX], b"\r\na\r\n0\r\n\r\n"].concat();
+    for bad in
+        [&b"zz\r\n"[..], b"11111111111111111\r\n", b"3\nabc\r\n0\r\n\r\n", b"3\r\nabc\n0\r\n\r\n", &long_ext]
+    {
+        assert_eq!(check::chunks(bad), None, "{:?}", String::from_utf8_lossy(bad));
     }
 }
 

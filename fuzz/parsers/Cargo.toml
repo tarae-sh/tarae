@@ -65,6 +65,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "origin"
+path = "fuzz_targets/origin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "sni"
 path = "fuzz_targets/sni.rs"
 test = false

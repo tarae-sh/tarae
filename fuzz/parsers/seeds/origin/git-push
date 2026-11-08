@@ -1,0 +1,14 @@
+POST /r.git/git-receive-pack HTTP/1.1
+Host: origin.test
+User-Agent: git/2.54
+Accept-Encoding: deflate, gzip
+Content-Type: application/x-git-receive-pack-request
+Transfer-Encoding: chunked
+
+9
+0000PACK
+
+4;x=1
+abcd
+0
+

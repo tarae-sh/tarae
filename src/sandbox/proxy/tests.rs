@@ -29,6 +29,8 @@ const HOLD: Duration = Duration::from_secs(5);
 fn limits() -> Limits {
     Limits {
         head_time: WAIT,
+        keep_alive: WAIT,
+        stalled: WAIT,
         hello_time: WAIT,
         hold: HOLD,
         connect: Duration::from_secs(2),

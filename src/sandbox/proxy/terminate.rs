@@ -2,8 +2,8 @@
 //! session answered it, 2026-11-08): for a host a run's rules name (`Egress.terminate`, CONNECT only), tarae's proxy
 //! is the TLS server the run talks to — under a leaf its own CA minted for the CONNECT target — and the TLS client
 //! of the host, verified as the system verifies (and `llm.sandbox-ca`'s roots), through the upstream proxy where
-//! tarae itself goes out by one. Between the two legs a stage on the connection's thread: in P1a bytes copied as
-//! they are (P1b puts the HTTP layer there).
+//! tarae itself goes out by one. Between the two legs the stage on the connection's thread (`stage`, P1b): each
+//! request read and decided, each answer followed, the bytes as they came.
 //!
 //! The CA: one per session (`of_session`), ECDSA P-256, made in tarae's memory when a run's policy names a host to
 //! terminate — its certificate at the head of that run's trust bundle (`cabundle`), and of every later one's. Its key
@@ -30,7 +30,7 @@ use rustls::sign::{CertifiedKey, SigningKey};
 use super::bridge::{self, Out};
 use super::egress::Pattern;
 use super::upstream::{self, Upstream};
-use super::{Conn, Limits, OP, UPSTREAM_OP, cert, issuer, parse, relay, tell_op};
+use super::{Conn, Limits, OP, UPSTREAM_OP, cert, issuer, parse, stage, tell_op};
 
 /// A handshake's most time, either leg (srt's).
 pub const HANDSHAKE: Duration = Duration::from_secs(10);
@@ -536,7 +536,7 @@ fn run_leg_said(e: &Shake) -> String {
 
 /// A terminated tunnel, after its `200` and its ClientHello (`hello`, its name the CONNECT target's): the host's leg
 /// first over `up` (the run's ClientHello waits), then the run's under tarae's leaf for `name`; both up, a bridge
-/// each and the stage between them (P1a: bytes copied). The host's leg failed: the run's handshake still finishes,
+/// each and the stage between them (`stage::run`). The host's leg failed: the run's handshake still finishes,
 /// its request head is read and answered 502 inside TLS with why — the report says the same.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn serve(
@@ -599,17 +599,15 @@ pub(super) fn serve(
             return tell(op, &format!("{why} — answered 502"));
         }
     };
-    let (run_plain, host_plain) = match (bridge::start(sc, run), bridge::start(host, up)) {
+    // (the host's end with or without close_notify told apart — a close-delimited answer is whole only by it; the
+    // run's requests are always framed, `parse::origin`: its end is its close either way)
+    let (run_plain, (host_plain, ending)) = match (bridge::start(sc, run), bridge::start_leg(host, up)) {
         (Ok(r), Ok(h)) => (r, h),
         _ => return tell(OP, "no thread for its TLS — the tunnel closed"),
     };
-    // The stage: P1a copies bytes as they are — never spliced (they're tarae's plaintext, which P1b reads)
-    let no_pipes = || Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
-    if let relay::End::Closed(why) =
-        relay::relay_with(run_plain, host_plain, None, limits.hello_time, &[], None, false, no_pipes)
-    {
-        tell(OP, &format!("{why} — the tunnel closed"));
-    }
+    // The stage: each request read and decided, each answer followed — never spliced (tarae's plaintext, which P2
+    // swaps in)
+    stage::run([run_plain, host_plain], &ending, name, port, &limits, |why| tell(OP, why));
 }
 
 /// The run's request head read (to its blank line, `parse::HEAD_MAX` at most, by `by`), then a 502 saying `why`

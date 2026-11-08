@@ -23,6 +23,7 @@ pub mod egress;
 pub mod issuer;
 pub mod parse;
 pub mod relay;
+mod stage;
 pub mod terminate;
 pub mod upstream;
 
@@ -156,8 +157,13 @@ enum Latest {
 /// The proxy's limits.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// To a request head's end.
+    /// To a request head's end — inside a terminated tunnel, to its first one's, from the run's handshake.
     pub head_time: Duration,
+    /// A terminated tunnel at rest — every answer whole, nothing more asked — is closed past this (srt's 5 s and its
+    /// second of margin).
+    pub keep_alive: Duration,
+    /// A terminated tunnel part-way through a request or an answer is closed once nothing moved for this long.
+    pub stalled: Duration,
     /// To a tunnel's ClientHello's end (and a second one's after a HelloRetryRequest).
     pub hello_time: Duration,
     /// How long a connection waits on the user's answer.
@@ -177,6 +183,8 @@ impl Default for Limits {
     fn default() -> Limits {
         Limits {
             head_time: Duration::from_secs(10),
+            keep_alive: Duration::from_secs(6),
+            stalled: Duration::from_secs(300),
             hello_time: Duration::from_secs(10),
             // (below cargo's 30 s HTTP timeout and git's low-speed limit: the tool is still waiting)
             hold: Duration::from_secs(20),
@@ -858,7 +866,9 @@ fn answer_bytes(status: u16, why: &str, extra: &str) -> Vec<u8> {
         405 => "Method Not Allowed",
         407 => "Proxy Authentication Required",
         408 => "Request Timeout",
+        421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
+        501 => "Not Implemented",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         _ => "Error",

@@ -368,6 +368,538 @@ fn a_non_tls_connect_to_a_listed_host_is_refused_as_ever() {
     terminate::forget(SESSION + 4);
 }
 
+// --- P1b: the stage between the legs — requests decided, answers followed, keep-alive and its limits ---
+
+/// The bytes `/download` answers with.
+const DOWNLOAD: usize = 100 << 10;
+
+/// A kept origin's answer to `request` (its head and body): `/download` `DOWNLOAD` seeded bytes, else `ANSWER` — each
+/// with its length.
+fn answer_to(request: &[u8]) -> Vec<u8> {
+    let body = match request.starts_with(b"GET /download ") {
+        true => seeded(0xd0d0, DOWNLOAD),
+        false => ANSWER.as_bytes().to_vec(),
+    };
+    [format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(), &body].concat()
+}
+
+/// A request's body read from `t` after its head (in `request`), added to it: its Content-Length's count, or a
+/// chunked body to its end as a strict reader ends it (`check::chunks`) — false where the connection ended first.
+fn read_body(t: &mut impl Read, request: &mut Vec<u8>) -> bool {
+    let head = String::from_utf8_lossy(request).to_ascii_lowercase();
+    let length =
+        head.split("\r\n").find_map(|l| l.strip_prefix("content-length:")?.trim().parse::<usize>().ok());
+    let chunked = head.contains("\r\ntransfer-encoding: chunked\r\n");
+    let (start, mut b) = (request.len(), [0u8; 1]);
+    let more = |request: &Vec<u8>| match length {
+        Some(n) => request.len() - start < n,
+        None => chunked && super::super::parse::check::chunks(&request[start..]).is_none(),
+    };
+    while more(request) {
+        match t.read(&mut b) {
+            Ok(1) => request.push(b[0]),
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// An origin on loopback (`origin`'s leaf) that keeps each connection for as many requests as come: each request
+/// whole — its head and its body, as they came — sent on `got` (what came of one cut short too), then an empty one
+/// when its connection ends; answered `answer_to` it — `/slow` only once `go` says.
+struct Kept {
+    at: SocketAddr,
+    public: Authority,
+    accepts: Arc<std::sync::atomic::AtomicUsize>,
+    got: Receiver<Vec<u8>>,
+    go: Sender<()>,
+}
+
+fn kept() -> Kept {
+    let public = authority("tarae test public CA");
+    let config = issued(&public, &[NAME]);
+    let l = TcpListener::bind((LO, 0)).unwrap();
+    let at = l.local_addr().unwrap();
+    let (tx, got) = mpsc::channel();
+    let (go, gate) = mpsc::channel::<()>();
+    let gate = Arc::new(std::sync::Mutex::new(gate));
+    let accepts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let n = accepts.clone();
+    crate::event::thread("tarae-p1b-test", move || {
+        for s in l.incoming() {
+            let (Ok(s), config, tx, gate) = (s, config.clone(), tx.clone(), gate.clone()) else { break };
+            n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::event::thread("tarae-p1b-test", move || {
+                let _ = s.set_read_timeout(Some(WAIT));
+                let mut t = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), s);
+                loop {
+                    let mut request = read_head(&mut t);
+                    let whole = request.ends_with(b"\r\n\r\n") && read_body(&mut t, &mut request);
+                    if !request.is_empty() {
+                        let _ = tx.send(request.clone());
+                    }
+                    if !whole {
+                        let _ = tx.send(Vec::new());
+                        return;
+                    }
+                    if request.starts_with(b"GET /slow ") {
+                        let _ = gate.lock().unwrap().recv_timeout(WAIT);
+                    }
+                    if t.write_all(&answer_to(&request)).and_then(|()| t.flush()).is_err() {
+                        let _ = tx.send(Vec::new());
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    Kept { at, public, accepts, got, go }
+}
+
+type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
+
+/// A proxy whose run's rules terminate `NAME` (reached at `o`) with session `session`'s CA, under `limits` — and the
+/// CA's certificate.
+fn terminating_kept(o: &Kept, session: u64, limits: Limits) -> (Fixture, Egress, Vec<u8>) {
+    terminating_to(o.at, &o.public, session, limits)
+}
+
+/// `terminating_kept` for an origin at `at` under a leaf `public` issued.
+fn terminating_to(
+    at: SocketAddr,
+    public: &Authority,
+    session: u64,
+    limits: Limits,
+) -> (Fixture, Egress, Vec<u8>) {
+    let (resolve, _) = resolver(vec![(NAME, vec![vec![at]])]);
+    let (rules, ca) = terminating(session, vec![public.der.clone()], Vec::new());
+    (start(resolve, limits), rules, ca.der().to_vec())
+}
+
+/// An origin on loopback (`origin`'s leaf) answering each request's head with `answer`, then ending — with
+/// close_notify where `notify`, else its TCP shut with none (as a connection cut on the way cuts it).
+fn ending(answer: &'static [u8], notify: bool) -> (SocketAddr, Authority) {
+    let public = authority("tarae test public CA");
+    let config = issued(&public, &[NAME]);
+    let l = TcpListener::bind((LO, 0)).unwrap();
+    let at = l.local_addr().unwrap();
+    crate::event::thread("tarae-p1b-test", move || {
+        for s in l.incoming() {
+            let (Ok(s), config) = (s, config.clone()) else { break };
+            crate::event::thread("tarae-p1b-test", move || {
+                let _ = s.set_read_timeout(Some(WAIT));
+                let mut t = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), s);
+                if read_head(&mut t).is_empty() {
+                    return;
+                }
+                let _ = t.write_all(answer);
+                if notify {
+                    t.conn.send_close_notify();
+                }
+                let _ = t.flush();
+                let _ = t.sock.shutdown(std::net::Shutdown::Both);
+            });
+        }
+    });
+    (at, public)
+}
+
+/// A tunnel to `NAME:443` on run `run`'s connection, the run's TLS over it (trusting `ca` alone) with its handshake
+/// done — and the run's refusals.
+fn tunnel_tls(f: &Fixture, session: u64, run: u64, rules: &Egress, ca: &[u8]) -> (Tls, Receiver<Relayed>) {
+    let (c, d) = connection(&f.proxy, session, run, rules.clone());
+    let c = opened(c, &connect_head(&format!("{NAME}:443")));
+    let server = rustls::pki_types::ServerName::try_from(NAME).unwrap();
+    let mut t = rustls::StreamOwned::new(rustls::ClientConnection::new(trusting(&[ca]), server).unwrap(), c);
+    while t.conn.is_handshaking() {
+        t.conn.complete_io(&mut t.sock).unwrap();
+    }
+    (t, d)
+}
+
+/// An answer read from `t`: its head (to its blank line), and its body by its Content-Length.
+fn answer_of(t: &mut impl Read) -> (String, Vec<u8>) {
+    let head = String::from_utf8(read_head(t)).unwrap();
+    let low = head.to_ascii_lowercase();
+    let n =
+        low.split("\r\n").find_map(|l| l.strip_prefix("content-length:")?.trim().parse().ok()).unwrap_or(0);
+    let mut body = vec![0; n];
+    t.read_exact(&mut body).unwrap_or_else(|e| panic!("{head:?}: its body ({e})"));
+    (head, body)
+}
+
+/// Whether `t` ends with close_notify — nothing more read before it (within the wait).
+fn closed(t: &mut Tls) -> bool {
+    matches!(t.read(&mut [0u8; 1]), Ok(0))
+}
+
+/// Whether `t` ends with no close_notify — its TCP's end alone, which its TLS reads as a truncation (`UnexpectedEof`),
+/// within the wait.
+fn cut(t: &mut Tls) -> bool {
+    matches!(t.read_to_end(&mut Vec::new()), Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof)
+}
+
+/// What the origin got on one connection, to its end (the empty one), within the wait.
+fn to_end(o: &Kept) -> Vec<Vec<u8>> {
+    let mut all = Vec::new();
+    loop {
+        match o.got.recv_timeout(WAIT).expect("the origin's connection ended") {
+            r if r.is_empty() => return all,
+            r => all.push(r),
+        }
+    }
+}
+
+/// A terminated tunnel is kept for the next request: two GETs one after the other, each answered, one connection
+/// at the origin — each request reaching it as the run sent it.
+#[test]
+fn a_terminated_tunnel_keeps_its_connection_for_the_next_request() {
+    let o = kept();
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 10, limits());
+    let (mut t, _d) = tunnel_tls(&f, SESSION + 10, 1, &rules, &ca);
+    let asks = [
+        format!("GET /a HTTP/1.1\r\nHost: {NAME}\r\n\r\n"),
+        format!("GET /b HTTP/1.1\r\nHost: {NAME}\r\nConnection: close\r\n\r\n"),
+    ];
+    for ask in &asks {
+        t.write_all(ask.as_bytes()).unwrap();
+        let (head, body) = answer_of(&mut t);
+        assert!(head.starts_with("HTTP/1.1 200 ") && body == ANSWER.as_bytes(), "{head}");
+    }
+    assert!(closed(&mut t), "closed after the last, with close_notify");
+    let got: Vec<String> = to_end(&o).into_iter().map(|r| String::from_utf8(r).unwrap()).collect();
+    assert_eq!(got, asks);
+    assert_eq!(o.accepts.load(std::sync::atomic::Ordering::SeqCst), 1, "one connection for both");
+    terminate::forget(SESSION + 10);
+}
+
+/// A chunked upload reaches the origin byte for byte as the run sent it (extensions, trailers), and a Content-Length
+/// download reaches the run byte for byte as the origin sent it.
+#[test]
+fn a_chunked_upload_and_a_length_download_pass_byte_for_byte() {
+    let o = kept();
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 11, limits());
+    let (mut t, _d) = tunnel_tls(&f, SESSION + 11, 1, &rules, &ca);
+    let data = seeded(0x0b0d, 40_000);
+    let mut up =
+        format!("POST /up HTTP/1.1\r\nHost: {NAME}\r\nTransfer-Encoding: chunked\r\n\r\n").into_bytes();
+    for (k, piece) in data.chunks(7000).enumerate() {
+        up.extend_from_slice(format!("{:x}{}\r\n", piece.len(), if k == 1 { ";n=v" } else { "" }).as_bytes());
+        up.extend_from_slice(piece);
+        up.extend_from_slice(b"\r\n");
+    }
+    up.extend_from_slice(b"0\r\nX-Sum: 1\r\n\r\n");
+    t.write_all(&up).unwrap();
+    let (head, _) = answer_of(&mut t);
+    assert!(head.starts_with("HTTP/1.1 200 "), "{head}");
+    assert!(o.got.recv_timeout(WAIT).unwrap() == up, "the upload as sent");
+    let down = format!("GET /download HTTP/1.1\r\nHost: {NAME}\r\n\r\n");
+    t.write_all(down.as_bytes()).unwrap();
+    let want = answer_to(down.as_bytes());
+    let mut came = vec![0; want.len()];
+    t.read_exact(&mut came).unwrap();
+    assert!(came == want, "the download as the origin sent it");
+    terminate::forget(SESSION + 11);
+}
+
+/// A request whose `Host` names another host — or the tunnel's host on another port — is answered 421 inside the
+/// run's TLS, said, and nothing of it reaches the origin.
+#[test]
+fn a_host_naming_another_host_is_421() {
+    let o = kept();
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 12, limits());
+    for (k, host) in ["other.test", "origin.test:8443"].into_iter().enumerate() {
+        let (mut t, d) = tunnel_tls(&f, SESSION + 12, 1 + k as u64, &rules, &ca);
+        t.write_all(format!("GET /x HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes()).unwrap();
+        let (head, body) = answer_of(&mut t);
+        let why = format!("origin.test:443: a request's Host names {host}");
+        assert!(head.starts_with("HTTP/1.1 421 Misdirected Request\r\n"), "{head}");
+        assert_eq!(String::from_utf8(body).unwrap(), format!("tarae's proxy: {why}\n"));
+        assert!(closed(&mut t));
+        assert_eq!(said(&d), format!("{why} — answered 421"));
+        assert!(to_end(&o).is_empty(), "{host}: nothing reached the origin");
+    }
+    terminate::forget(SESSION + 12);
+}
+
+/// TRACE is 405, said as an echo, and nothing behind it reaches the origin: a GET, a TRACE and a GET pipelined in
+/// one write — the first GET answered, then the 405, then the close; the second GET never arrives. TRACK the same,
+/// its run half-closed (its close_notify) right after the write: the answer owed and the 405 still come.
+#[test]
+fn trace_is_405_and_nothing_behind_it_reaches_the_origin() {
+    let o = kept();
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 13, limits());
+    for (k, m) in ["TRACE", "TRACK"].into_iter().enumerate() {
+        let (mut t, d) = tunnel_tls(&f, SESSION + 13, 1 + k as u64, &rules, &ca);
+        let first = format!("GET /a HTTP/1.1\r\nHost: {NAME}\r\n\r\n");
+        let all = format!(
+            "{first}{m} / HTTP/1.1\r\nHost: {NAME}\r\n\r\nGET /behind HTTP/1.1\r\nHost: {NAME}\r\n\r\n"
+        );
+        t.write_all(all.as_bytes()).unwrap();
+        if m == "TRACK" {
+            t.conn.send_close_notify();
+            t.flush().unwrap();
+        }
+        let (head, body) = answer_of(&mut t);
+        assert!(
+            head.starts_with("HTTP/1.1 200 ") && body == ANSWER.as_bytes(),
+            "the GET before it first: {head}"
+        );
+        let (head, body) = answer_of(&mut t);
+        let why = format!(
+            "origin.test:443: a {m} request — refused on a host tarae terminates: it echoes the request back"
+        );
+        assert!(head.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"), "{head}");
+        assert_eq!(String::from_utf8(body).unwrap(), format!("tarae's proxy: {why}\n"));
+        assert!(closed(&mut t), "{m}");
+        assert_eq!(said(&d), format!("{why} — answered 405"));
+        assert_eq!(to_end(&o), [first.into_bytes()], "{m}: only the GET before it reached the origin");
+    }
+    terminate::forget(SESSION + 13);
+}
+
+/// An `Upgrade` (WebSocket's) is 501 with words, and goes nowhere.
+#[test]
+fn an_upgrade_is_501_with_words() {
+    let o = kept();
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 14, limits());
+    let (mut t, d) = tunnel_tls(&f, SESSION + 14, 1, &rules, &ca);
+    let ask =
+        format!("GET /ws HTTP/1.1\r\nHost: {NAME}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+    t.write_all(ask.as_bytes()).unwrap();
+    let (head, body) = answer_of(&mut t);
+    assert!(head.starts_with("HTTP/1.1 501 Not Implemented\r\n"), "{head}");
+    let why = "origin.test:443: an Upgrade — WebSocket and other upgrades aren't taken on a host tarae terminates (yet)";
+    assert_eq!(String::from_utf8(body).unwrap(), format!("tarae's proxy: {why}\n"));
+    assert_eq!(said(&d), format!("{why} — answered 501"));
+    assert!(to_end(&o).is_empty(), "nothing reached the origin");
+    terminate::forget(SESSION + 14);
+}
+
+/// Request smuggling's vectors inside a terminated tunnel: a head a reader could frame two ways is answered 400 and
+/// nothing of it reaches the origin — a space before a colon, a folded line, a bare CR, a bare LF, a signed length, a
+/// list, the same length twice, a coding other than one `chunked`, `chunked` twice, both framings, chunks in 1.0;
+/// a chunked body that can't be followed — a size that isn't hex, one past 16 digits, extensions past their limit, a
+/// size line ended by a bare LF — closes the tunnel with no close_notify, said, and the request hidden behind it never
+/// reaches the origin.
+#[test]
+fn what_a_reader_could_frame_two_ways_never_reaches_the_origin() {
+    let o = kept();
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 15, limits());
+    let h = format!("Host: {NAME}\r\n");
+    let hidden = format!("GET /hidden HTTP/1.1\r\n{h}\r\n");
+    let heads = [
+        format!("POST / HTTP/1.1\r\n{h}Content-Length : 3\r\n\r\nabc"),
+        format!("POST / HTTP/1.1\r\n{h}X-A: 1\r\n Content-Length: 3\r\n\r\nabc"),
+        format!("POST / HTTP/1.1\r\n{h}X-A: 1\rContent-Length: 3\r\n\r\nabc"),
+        format!("POST / HTTP/1.1\r\n{h}X-A: 1\nContent-Length: 3\r\n\r\nabc"),
+        format!("POST / HTTP/1.1\r\n{h}Content-Length: +3\r\n\r\nabc"),
+        format!("POST / HTTP/1.1\r\n{h}Content-Length: 3, 3\r\n\r\nabc"),
+        format!("POST / HTTP/1.1\r\n{h}Content-Length: 3\r\nContent-Length: 3\r\n\r\nabc"),
+        format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: gzip\r\n\r\n0\r\n\r\n"),
+        format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: chunked, chunked\r\n\r\n0\r\n\r\n"),
+        format!("POST / HTTP/1.1\r\n{h}Content-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"),
+        format!("POST / HTTP/1.0\r\n{h}Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"),
+    ];
+    let mut run = 0;
+    for head in &heads {
+        run += 1;
+        let (mut t, d) = tunnel_tls(&f, SESSION + 15, run, &rules, &ca);
+        t.write_all(format!("{head}{hidden}").as_bytes()).unwrap();
+        let (status, _) = answer_of(&mut t);
+        assert!(status.starts_with("HTTP/1.1 400 "), "{head:?}: {status}");
+        assert!(closed(&mut t), "{head:?}");
+        assert!(said(&d).ends_with(" — answered 400"), "{head:?}");
+        assert!(to_end(&o).is_empty(), "{head:?}: nothing reached the origin");
+    }
+    let chunked = format!("POST / HTTP/1.1\r\n{h}Transfer-Encoding: chunked\r\n\r\n");
+    let long_ext = format!("1;{}\r\na\r\n0\r\n\r\n", "e".repeat(parse::CHUNK_LINE_MAX));
+    for (body, why) in [
+        ("zz\r\n", "a chunk size that isn't 1–16 hex digits"),
+        ("11111111111111111\r\n", "a chunk size that isn't 1–16 hex digits"),
+        (long_ext.as_str(), "a chunk-size line past its limit"),
+        ("3\nabc\r\n0\r\n\r\n", "a chunk-size line not ended by CR LF"),
+    ] {
+        run += 1;
+        let (mut t, d) = tunnel_tls(&f, SESSION + 15, run, &rules, &ca);
+        t.write_all(format!("{chunked}{body}{hidden}").as_bytes()).unwrap();
+        assert!(cut(&mut t), "{why}");
+        assert_eq!(
+            said(&d),
+            format!("origin.test:443: the run's side: a request's body: {why} — the tunnel closed")
+        );
+        for r in to_end(&o) {
+            assert!(
+                chunked.as_bytes().starts_with(&r) || r == chunked.as_bytes(),
+                "{why}: only the head: {r:?}"
+            );
+        }
+    }
+    terminate::forget(SESSION + 15);
+}
+
+/// The idle limits close a terminated tunnel: no whole first head within `head_time` of the handshake (said);
+/// nothing asked within `keep_alive` of an answer (close_notify, not said); nothing moved part-way through a body
+/// within `stalled` (said, no close_notify) — but never while a whole request waits for its answer, however long past
+/// both.
+#[test]
+fn the_idle_limits_close_a_terminated_tunnel() {
+    let o = kept();
+    let short = Duration::from_millis(300);
+    let first = Duration::from_secs(1);
+    let limits = Limits { head_time: first, keep_alive: short, stalled: short, ..limits() };
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 16, limits);
+    // No head
+    let (mut t, d) = tunnel_tls(&f, SESSION + 16, 1, &rules, &ca);
+    let since = Instant::now();
+    assert!(closed(&mut t), "closed without a head");
+    assert!(since.elapsed() >= first / 2, "not before its limit: {:?}", since.elapsed());
+    assert_eq!(
+        said(&d),
+        "origin.test:443: no whole request head within 1 s of its TLS handshake — the tunnel closed"
+    );
+    // A whole request waiting past both limits is answered; then the keep-alive's end
+    let (mut t, _d) = tunnel_tls(&f, SESSION + 16, 2, &rules, &ca);
+    t.write_all(format!("GET /slow HTTP/1.1\r\nHost: {NAME}\r\n\r\n").as_bytes()).unwrap();
+    std::thread::sleep(short * 4);
+    o.go.send(()).unwrap();
+    let (head, _) = answer_of(&mut t);
+    assert!(head.starts_with("HTTP/1.1 200 "), "{head}");
+    let since = Instant::now();
+    assert!(closed(&mut t), "closed at rest");
+    assert!(since.elapsed() >= short / 2, "not before its limit: {:?}", since.elapsed());
+    // Part-way through a body
+    let (mut t, d) = tunnel_tls(&f, SESSION + 16, 3, &rules, &ca);
+    t.write_all(format!("POST /p HTTP/1.1\r\nHost: {NAME}\r\nContent-Length: 10\r\n\r\nabc").as_bytes())
+        .unwrap();
+    assert!(cut(&mut t), "closed part-way, with no close_notify");
+    let why = "origin.test:443: nothing moved for 0.3 s part-way through a request or its answer — the tunnel closed";
+    assert_eq!(said(&d), why);
+    terminate::forget(SESSION + 16);
+}
+
+/// A `Host` naming the tunnel's host in other case, or with DNS's trailing dot, names that host (`parse::name`:
+/// lowercase, the dot off): each goes on as sent and is answered — no 421.
+#[test]
+fn a_host_in_other_case_or_with_its_trailing_dot_goes() {
+    let o = kept();
+    let (f, rules, ca) = terminating_kept(&o, SESSION + 17, limits());
+    let (mut t, _d) = tunnel_tls(&f, SESSION + 17, 1, &rules, &ca);
+    let asks = [
+        "GET /a HTTP/1.1\r\nHost: ORIGIN.TEST\r\n\r\n",
+        "GET /b HTTP/1.1\r\nHost: origin.test.\r\nConnection: close\r\n\r\n",
+    ];
+    for ask in asks {
+        t.write_all(ask.as_bytes()).unwrap();
+        let (head, body) = answer_of(&mut t);
+        assert!(head.starts_with("HTTP/1.1 200 ") && body == ANSWER.as_bytes(), "{ask:?}: {head}");
+    }
+    assert!(closed(&mut t));
+    let got: Vec<String> = to_end(&o).into_iter().map(|r| String::from_utf8(r).unwrap()).collect();
+    assert_eq!(got, asks);
+    terminate::forget(SESSION + 17);
+}
+
+/// An answer that runs to the host's close (neither length nor chunks).
+const OPEN: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nall of this, until the close";
+
+/// A truncation on the host's leg reaches the run as one: an answer that runs to the host's close is whole only by the
+/// host's close_notify — ended with one, the run reads it whole, then tarae's close_notify; ended by the host's TCP
+/// with none, the run's TLS reads an end without close_notify (`UnexpectedEof`), never a clean end; an answer shorter
+/// than its Content-Length, though the host ended it with close_notify, the same — each truncation said.
+#[test]
+fn a_truncation_on_the_hosts_leg_reaches_the_run_as_one() {
+    let short: &'static [u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly some of it";
+    let unclean =
+        "its TLS ended without close_notify in an answer that runs to its close (it may be cut short)";
+    for (k, (answer, notify, why)) in [
+        (OPEN, true, None),
+        (OPEN, false, Some(unclean)),
+        (short, true, Some("it closed part-way through an answer's body")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let session = SESSION + 20 + k as u64;
+        let (at, public) = ending(answer, notify);
+        let (f, rules, ca) = terminating_to(at, &public, session, limits());
+        let (mut t, d) = tunnel_tls(&f, session, 1, &rules, &ca);
+        t.write_all(format!("GET /x HTTP/1.1\r\nHost: {NAME}\r\n\r\n").as_bytes()).unwrap();
+        let mut got = Vec::new();
+        let end = t.read_to_end(&mut got).map_err(|e| e.kind());
+        let came = String::from_utf8_lossy(&got).into_owned();
+        match why {
+            None => assert!(end.is_ok() && got == answer, "{k}: {end:?} {came:?}"),
+            Some(why) => {
+                assert_eq!(end, Err(std::io::ErrorKind::UnexpectedEof), "{k}: no close_notify ({came:?})");
+                assert!(answer.starts_with(&got), "{k}: {came:?}");
+                assert_eq!(said(&d), format!("{NAME}:443: the host's side: {why} — the tunnel closed"));
+            }
+        }
+        terminate::forget(session);
+    }
+}
+
+/// The same truncation as the run's own curl reads it, through a session's port with its token: the answer that runs
+/// to the host's close ended with its close_notify, exit 0 and the body whole; with none, curl fails (OpenSSL 3's
+/// "unexpected eof while reading", exit 56; an empty reply where none of it went yet) — where curl's TLS tells the two
+/// apart: LibreSSL's and OpenSSL 1's curl take an end without close_notify for the end (curl's choice, for old
+/// servers), said, the clean end checked alone.
+#[test]
+fn a_truncation_on_the_hosts_leg_fails_the_runs_curl() {
+    let test = "tests::terminate::a_truncation_on_the_hosts_leg_fails_the_runs_curl";
+    let Some(curl) = super::super::packs_tests::on_path("curl") else {
+        return super::super::packs_tests::skip(test, "no curl on PATH");
+    };
+    let version = std::process::Command::new(&curl).arg("--version").output().unwrap();
+    let first = String::from_utf8_lossy(&version.stdout).lines().next().unwrap_or_default().to_string();
+    // (curl's TLS: the one not in parentheses, a multi-SSL build's others are)
+    let tells = first.contains(" OpenSSL/3");
+    let body = &OPEN[OPEN.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..];
+    let scratch = crate::scratch::Scratch::new("p1b-curl");
+    for (k, notify) in [true, false].into_iter().enumerate() {
+        let session = SESSION + 23 + k as u64;
+        let (at, public) = ending(OPEN, notify);
+        let (f, rules, ca) = terminating_to(at, &public, session, limits());
+        let port = session_port(&f.proxy, session);
+        let (token, _d) = token_run(&f.proxy, session, 1, rules);
+        let file = scratch.join(format!("ca-{k}.pem"));
+        std::fs::write(&file, crate::sandbox::cabundle::pem(&ca)).unwrap();
+        let out = std::process::Command::new(&curl)
+            .args(["-q", "-sS", "--max-time", "15", "--cacert"])
+            .arg(&file)
+            .args([
+                "-x",
+                &format!("http://127.0.0.1:{port}"),
+                "--proxy-user",
+                &format!("run:{}", token.token()),
+            ])
+            .arg(format!("https://{NAME}/x"))
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .output()
+            .unwrap();
+        let said = format!(
+            "{first}\n{:?}: {}{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        match notify {
+            true => assert!(out.status.success() && out.stdout == body, "with close_notify: {said}"),
+            false if tells => assert!(!out.status.success(), "without close_notify: {said}"),
+            false => super::super::packs_tests::skip(
+                test,
+                &format!(
+                    "this curl's TLS takes an end without close_notify for the end (exit {:?}; {first})",
+                    out.status.code()
+                ),
+            ),
+        }
+        terminate::forget(session);
+    }
+}
+
 /// A run whose TLS client doesn't trust tarae's CA (one that doesn't read the run's trust bundle) refuses tarae's
 /// leaf — said in words that point at the bundle.
 #[test]

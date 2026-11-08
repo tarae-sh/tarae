@@ -37,6 +37,140 @@ pub(crate) fn head(b: &[u8]) -> &'static str {
     }
 }
 
+/// Whatever a run sends inside a tunnel tarae terminates, the origin-form parser answers a request, "more", or a
+/// refusal — never a panic, never a byte past `HEAD_MAX`: a request's head ends at its first blank line, its host is a
+/// name as `name` makes it (or an address) with a port 1–65535 where it names one, its framing never `Close` — and
+/// what it takes, every reader frames alike: its head read apart (`framed`) has none of request smuggling's vectors
+/// and the same framing; its body, where it ends in what follows, ends where a strict reader ends it (`chunks`, a
+/// length's own count). "more" only while no blank line is in the first `HEAD_MAX` bytes.
+pub(crate) fn origin(b: &[u8]) -> &'static str {
+    let blank = find(&b[..b.len().min(HEAD_MAX)], b"\r\n\r\n");
+    match super::origin(b) {
+        Ok(Some(o)) => {
+            assert!(o.len <= HEAD_MAX && Some(o.len - 4) == blank, "ends at its first blank line");
+            if let Some((host, port)) = &o.host {
+                assert_ne!(*port, Some(0));
+                if let Host::Name(n) = host {
+                    assert_eq!(name(n).as_ref(), Ok(n), "a name as `name` makes it");
+                }
+            }
+            assert_eq!(framed(&b[..o.len - 4]), Some(o.body), "framed as a strict reader frames it");
+            let rest = &b[o.len..];
+            let mut body = Body::new(o.body);
+            if let Ok(k) = body.take(rest)
+                && body.done()
+            {
+                match o.body {
+                    Framing::Chunked => {
+                        assert_eq!(chunks(&rest[..k]), Some(k), "a chunked body's end, read apart")
+                    }
+                    Framing::Length(n) => assert_eq!(k as u64, n),
+                    _ => assert_eq!(k, 0),
+                }
+            }
+            "request"
+        }
+        Ok(None) => {
+            assert!(blank.is_none() && b.len() < HEAD_MAX, "more only while no blank line came");
+            "more"
+        }
+        Err(_) => "refused",
+    }
+}
+
+/// A request's head (to its blank line, not that) read apart from the parser, strictly: its framing — None where a
+/// reader could frame it another way: a bare CR or LF, a control character (but a tab), a folded line, a field name
+/// with a space or tab before its colon (or none), a `Content-Length` that isn't one field of 1–19 digits alone, a
+/// `Transfer-Encoding` that isn't one field saying `chunked` (any case), both, or a `Transfer-Encoding` in HTTP/1.0.
+pub(crate) fn framed(head: &[u8]) -> Option<Framing> {
+    let (mut lines, mut rest) = (Vec::new(), head);
+    while let Some(i) = find(rest, b"\r\n") {
+        lines.push(&rest[..i]);
+        rest = &rest[i + 2..];
+    }
+    lines.push(rest);
+    let first = lines[0];
+    let (mut lengths, mut codings) = (Vec::new(), Vec::new());
+    // (a CR or LF left in a line is a bare one)
+    let clean = |l: &[u8]| l.iter().all(|&c| c == b'\t' || (c >= 0x20 && c != 0x7f));
+    if !clean(first) {
+        return None;
+    }
+    for &l in &lines[1..] {
+        if !clean(l) || l.first().is_none_or(|&c| c == b' ' || c == b'\t') {
+            return None;
+        }
+        let colon = l.iter().position(|&c| c == b':')?;
+        let (name, value) = (&l[..colon], &l[colon + 1..]);
+        if name.is_empty() || name.iter().any(|&c| c == b' ' || c == b'\t') {
+            return None;
+        }
+        let value = value.trim_ascii();
+        if name.eq_ignore_ascii_case(b"content-length") {
+            lengths.push(value);
+        } else if name.eq_ignore_ascii_case(b"transfer-encoding") {
+            codings.push(value);
+        }
+    }
+    match (&lengths[..], &codings[..]) {
+        ([], []) => Some(Framing::Empty),
+        ([n], []) if (1..=19).contains(&n.len()) && n.iter().all(u8::is_ascii_digit) => {
+            Some(Framing::Length(std::str::from_utf8(n).ok()?.parse().ok()?))
+        }
+        ([], [c]) if c.eq_ignore_ascii_case(b"chunked") && !first.ends_with(b" HTTP/1.0") => {
+            Some(Framing::Chunked)
+        }
+        _ => None,
+    }
+}
+
+/// A chunked body read apart from the parser, strictly (RFC 9112 §7.1): its length to the trailers' blank line — None
+/// where it isn't one whole: a size line that isn't 1–16 hex digits and maybe `;` and extensions (no control
+/// character but a tab), within `CHUNK_LINE_MAX` with its CR; any line not ended by CR LF, a bare CR or LF in it;
+/// a chunk's data not followed by CR LF; trailers past `HEAD_MAX`.
+pub(crate) fn chunks(b: &[u8]) -> Option<usize> {
+    // (one line from `at`: what's before its CR LF, and where the next starts — no bare CR or LF before it)
+    let line = |at: usize| {
+        let eol = at + find(b.get(at..)?, b"\r\n")?;
+        let l = &b[at..eol];
+        (!l.contains(&b'\r') && !l.contains(&b'\n')).then_some((l, eol + 2))
+    };
+    let mut at = 0;
+    loop {
+        let (l, next) = line(at)?;
+        if l.len() + 1 > CHUNK_LINE_MAX {
+            return None;
+        }
+        let digits = l.iter().take_while(|c| c.is_ascii_hexdigit()).count();
+        let ext = &l[digits..];
+        let ext_ok =
+            ext.is_empty() || (ext[0] == b';' && ext.iter().all(|&c| c == b'\t' || (c >= 0x20 && c != 0x7f)));
+        if !(1..=16).contains(&digits) || !ext_ok {
+            return None;
+        }
+        let size = u64::from_str_radix(std::str::from_utf8(&l[..digits]).ok()?, 16).ok()?;
+        at = next;
+        if size == 0 {
+            let start = at;
+            loop {
+                let (l, next) = line(at)?;
+                if next - start > HEAD_MAX {
+                    return None;
+                }
+                at = next;
+                if l.is_empty() {
+                    return Some(at);
+                }
+            }
+        }
+        at = at.checked_add(usize::try_from(size).ok()?)?;
+        if b.get(at..at.checked_add(2)?)? != b"\r\n" {
+            return None;
+        }
+        at += 2;
+    }
+}
+
 /// What a tunnel's first bytes claim, read apart from the parser: the handshake's length and how many records it
 /// took to come whole — None where they don't hold one.
 pub(crate) fn claimed(b: &[u8]) -> Option<(usize, usize)> {

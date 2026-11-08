@@ -44,6 +44,11 @@ pub fn head(b: &[u8]) {
     parse::check::head(b);
 }
 
+/// A request inside a terminated tunnel, its body after it (`parse::origin`, then `parse::Body`).
+pub fn origin(b: &[u8]) {
+    parse::check::origin(b);
+}
+
 /// A tunnel's first bytes: TLS records holding a ClientHello (`parse::server_name`).
 pub fn sni(b: &[u8]) {
     parse::check::sni(b);

@@ -8,6 +8,8 @@ use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What one read takes, either way.
 const CHUNK: usize = 16 * 1024;
@@ -57,6 +59,29 @@ impl Out {
         match self {
             Out::Tcp(s) => s.shutdown(how),
             Out::Bridged(s, _) => s.shutdown(how),
+        }
+    }
+
+    /// A bridge's end: its life line's writing end — `poll` on it with no events says (`POLLHUP`, `POLLERR`) once the
+    /// bridge's thread is over, its reading end gone with it. None: a connection.
+    pub fn life_line(&self) -> Option<RawFd> {
+        match self {
+            Out::Tcp(_) => None,
+            Out::Bridged(_, line) => Some(line.as_raw_fd()),
+        }
+    }
+
+    /// Let go with no end said: a bridge's life line first — its thread then ends both sides with no close_notify, the
+    /// TLS's reader seeing a truncation — before the pair, whose end alone would read as the relay's close.
+    pub fn abandon(self) {
+        match self {
+            Out::Tcp(s) => {
+                let _ = s.shutdown(Shutdown::Both);
+            }
+            Out::Bridged(s, line) => {
+                drop(line);
+                drop(s);
+            }
         }
     }
 
@@ -150,9 +175,35 @@ fn pair() -> io::Result<(UnixStream, UnixStream)> {
 /// returned, the thread holding the other until both sides are done, or the relay has let its end go (as the relay
 /// itself lives only as long as its two sides, and srt's tunnel ends one side with the other's close).
 pub fn start(conn: rustls::Connection, tcp: Out) -> io::Result<Out> {
+    started(conn, tcp, None)
+}
+
+/// How a terminated leg's TLS ended, as its stage reads it once its end of the pair reads to its end: with
+/// close_notify — or not (no close_notify, a record that doesn't decrypt, a socket that failed: a truncation). Set by
+/// the bridge before it shuts the stage's reading end.
+#[derive(Clone, Debug, Default)]
+pub struct Ending(Arc<AtomicBool>);
+
+impl Ending {
+    /// Its TLS ended with close_notify: what came is all there is.
+    pub fn clean(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// `start` for a terminated tunnel's leg (`terminate`), whose inside is plaintext HTTP: a TLS end without
+/// close_notify is no end there — a close-delimited answer is whole only by it — so how it ended goes with it.
+pub fn start_leg(conn: rustls::Connection, tcp: Out) -> io::Result<(Out, Ending)> {
+    let ending = Ending::default();
+    Ok((started(conn, tcp, Some(ending.clone()))?, ending))
+}
+
+fn started(conn: rustls::Connection, tcp: Out, ending: Option<Ending>) -> io::Result<Out> {
     let (relay, mine) = pair()?;
     let (alive, line) = io::pipe()?;
-    std::thread::Builder::new().name("tarae-proxy-tls".into()).spawn(move || run(conn, tcp, mine, alive))?;
+    std::thread::Builder::new()
+        .name("tarae-proxy-tls".into())
+        .spawn(move || run(conn, tcp, mine, alive, ending))?;
     Ok(Out::Bridged(relay, line))
 }
 
@@ -204,7 +255,14 @@ pub fn ended(at: std::net::SocketAddr) -> bool {
 /// rustls still holds too — is written. The relay gone (`alive` says its end, never written to) ends both: nobody
 /// reads what the upstream would still send, and an upstream that keeps its side open can't hold the thread.
 /// Anything else that fails ends both: the relay sees its side end. A record that doesn't decrypt is never passed on.
-fn run(mut conn: rustls::Connection, tcp: Out, pair: UnixStream, alive: io::PipeReader) {
+/// `ending` (a terminated leg's): set clean at the upstream's close_notify alone.
+fn run(
+    mut conn: rustls::Connection,
+    tcp: Out,
+    pair: UnixStream,
+    alive: io::PipeReader,
+    ending: Option<Ending>,
+) {
     if tcp.set_nonblocking(true).is_err() || pair.set_nonblocking(true).is_err() {
         return;
     }
@@ -233,10 +291,17 @@ fn run(mut conn: rustls::Connection, tcp: Out, pair: UnixStream, alive: io::Pipe
                 break;
             }
             match conn.reader().read(&mut buf) {
-                Ok(0) => tls_done = true,
+                Ok(0) => {
+                    tls_done = true;
+                    // (before the pair's shutdown below: the stage reads it once its read says the end)
+                    if let Some(e) = &ending {
+                        e.0.store(true, Ordering::Release);
+                    }
+                }
                 Ok(n) => out.extend_from_slice(&buf[..n]),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                // (its end with no close_notify: what came is all there is — the tunnel inside is TLS of its own)
+                // (its end with no close_notify: through an https:// upstream what came is all there is — the tunnel
+                // inside is TLS of its own; a terminated leg's `ending` stays unclean)
                 Err(_) => tls_done = true,
             }
         }

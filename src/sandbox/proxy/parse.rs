@@ -1,6 +1,6 @@
 //! The egress proxy's two parsers (`docs/design/sandbox-keeper.md` §The egress proxy, `.sb/step5-plan.md`):
 //! a request's head — `CONNECT host:port`, or a plain-http request in absolute form — and the server name a TLS
-//! ClientHello carries. Beside them the fetch's (`web/fetch.rs`, `.sb/web-fetch-plan.md` §2.2): a response's
+//! ClientHello carries. Inside a tunnel tarae terminates (P1b), a request's head in origin form (`origin`). Beside them the fetch's (`web/fetch.rs`, `.sb/web-fetch-plan.md` §2.2): a response's
 //! head (`response`), and a body's data without its framing (`Body::data`, the relay's machine). Pure: bytes in, an answer out, no I/O; the proxy reads, times and relays. Each is bounded —
 //! nothing read past its limit, nothing allocated by a claimed length before what it claims is there — and
 //! answers every input with what it found, "more bytes" (None), or a refusal: never a panic (a panic aborts
@@ -44,7 +44,7 @@ pub enum Host {
 
 impl Host {
     /// As a `Host` header says it, with `port` unless it's `default`.
-    fn header(&self, port: u16, default: u16) -> String {
+    pub fn header(&self, port: u16, default: u16) -> String {
         let host = match self {
             Host::Name(n) => n.clone(),
             Host::Addr(IpAddr::V6(a)) => format!("[{a}]"),
@@ -138,6 +138,15 @@ impl Refusal {
             Refusal::AnswerFields => format!("a head of more than {RESPONSE_FIELDS_MAX} fields"),
         }
     }
+
+    /// In a report's words inside a tunnel tarae terminates (`origin`, and the host's answers there): the why alone.
+    pub fn inside(self) -> String {
+        match self {
+            Refusal::Malformed(why) => why.into(),
+            Refusal::Host(why) => format!("its Host: {why}"),
+            r => r.said(),
+        }
+    }
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -188,6 +197,104 @@ pub fn head(buf: &[u8]) -> Result<Option<Head>, Refusal> {
         plain(method, target, version, &headers, body)?
     };
     Ok(Some(Head { request, auth, len: end + 4 }))
+}
+
+/// A request's head inside a tunnel tarae terminates (P1b): in origin form, as a client sends it to the host itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    /// Its method, a token as sent (`stage::decide` takes the standard ones).
+    pub method: String,
+    /// The one `Host` field's host, and its port where it names one — None: an HTTP/1.0 request without one.
+    pub host: Option<(Host, Option<u16>)>,
+    /// How its body ends: never `Close`.
+    pub body: Framing,
+    /// It asks for another protocol: an `Upgrade` field, or `Connection` naming it.
+    pub upgrade: bool,
+    /// The connection's last request: `Connection: close`, or HTTP/1.0 without `keep-alive`.
+    pub last: bool,
+    /// Its length in what was read, the blank line's too: what follows is its body's.
+    pub len: usize,
+}
+
+/// A request's head inside a terminated tunnel in `buf` — what the run's client sent so far: the request, None while
+/// its blank line hasn't come (and `HEAD_MAX` isn't reached), or why it's refused. Its target a path (`*` for
+/// OPTIONS), never the absolute or the authority form; one `Host` (none only in HTTP/1.0); its body framed one way
+/// only (`framing` — and no `Transfer-Encoding` in 1.0, nor `Connection` naming either: a reader that drops what
+/// `Connection` names would read another end); every line as `fields` and `line` take them — no bare CR or LF, no
+/// space before a colon, no folded line.
+pub fn origin(buf: &[u8]) -> Result<Option<Origin>, Refusal> {
+    let Some((end, lines)) = lines(buf, HEAD_MAX, Refusal::TooLong)? else { return Ok(None) };
+    let first = lines[0];
+    line(first)?;
+    let mut parts = first.split(|&c| c == b' ');
+    let (Some(method), Some(target), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(Refusal::Malformed("a request line that isn't three words"));
+    };
+    if !token(method) {
+        return Err(Refusal::Malformed("a method that isn't a token"));
+    }
+    let old = match version {
+        b"HTTP/1.1" => false,
+        b"HTTP/1.0" => true,
+        _ => return Err(Refusal::Malformed("not HTTP/1.0 or 1.1")),
+    };
+    origin_target(method, target)?;
+    let headers = fields(&lines[1..], HEADERS_MAX, Refusal::TooLong)?;
+    let named = |n: &'static str| named(&headers, n);
+    let host = match named("host")[..] {
+        [] if old => None,
+        [] => return Err(Refusal::Malformed("an HTTP/1.1 request without a Host")),
+        // (0 stands for no port: `port_of` takes 1–65535 only)
+        [h] => Some(authority(h, Some(0)).map(|(h, p)| (h, (p > 0).then_some(p)))?),
+        _ => return Err(Refusal::Malformed("two Host fields")),
+    };
+    let codings = named("transfer-encoding");
+    if old && !codings.is_empty() {
+        return Err(Refusal::Malformed("Transfer-Encoding in an HTTP/1.0 request"));
+    }
+    let body = framing(&named("content-length"), &codings)?;
+    let tokens: Vec<Vec<u8>> = named("connection")
+        .iter()
+        .flat_map(|v| v.split(|&c| c == b',').map(|t| t.trim_ascii().to_ascii_lowercase()))
+        .collect();
+    let has = |t: &[u8]| tokens.iter().any(|x| x == t);
+    if has(b"content-length") || has(b"transfer-encoding") {
+        return Err(Refusal::Malformed("`Connection` naming the body's framing"));
+    }
+    Ok(Some(Origin {
+        method: String::from_utf8_lossy(method).into_owned(),
+        host,
+        body,
+        upgrade: !named("upgrade").is_empty() || has(b"upgrade"),
+        last: has(b"close") || (old && !has(b"keep-alive")),
+        len: end + 4,
+    }))
+}
+
+/// An origin-form target: a path, its query after it (`*` alone for OPTIONS) — printable ASCII (`line` took the
+/// rest), no fragment.
+fn origin_target(method: &[u8], target: &[u8]) -> Result<(), Refusal> {
+    if target == b"*" {
+        return match method {
+            b"OPTIONS" => Ok(()),
+            _ => Err(Refusal::Malformed("`*` as the target of a method other than OPTIONS")),
+        };
+    }
+    if !target.starts_with(b"/") {
+        return Err(Refusal::Malformed(match find(target, b"://") {
+            Some(_) => "an absolute-form target inside a tunnel — a path is what goes to a host",
+            None => "a target that isn't a path",
+        }));
+    }
+    if !target.is_ascii() {
+        return Err(Refusal::Malformed("a target that isn't ASCII"));
+    }
+    if target.contains(&b'#') {
+        return Err(Refusal::Malformed("a fragment in the target"));
+    }
+    Ok(())
 }
 
 /// A head's lines: where its blank line starts, and the lines before it.
