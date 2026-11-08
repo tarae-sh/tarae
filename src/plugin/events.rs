@@ -102,15 +102,22 @@ fn either(a: &[String], b: &[String]) -> Vec<String> {
 }
 
 impl Editor {
-    /// The plugins that want `e` about buffer `doc` (its language one they asked for, if they did).
-    fn subscribers(&self, e: Event, doc: DocId) -> VecDeque<String> {
+    /// The plugins that want `e` about buffer `doc` (its language one they asked for, if they did) — only those
+    /// whose grant covers it (#457). A buffer one can't reach is `shown` to it all the same, sent as nothing
+    /// (`plugin_input`), whatever languages it asked for: a "this file" tab clears, and nothing is told of it.
+    pub(super) fn subscribers(&self, e: Event, doc: DocId) -> VecDeque<String> {
         let Some(p) = &self.plugins else { return VecDeque::new() };
-        let lang = self.docs.iter().find(|d| d.id == doc).and_then(|d| d.lang_name());
+        let Some(d) = self.docs.iter().find(|d| d.id == doc) else { return VecDeque::new() };
+        let lang = d.lang_name();
         p.events
             .subs
             .iter()
-            .filter(|(_, s, langs)| {
-                *s == e && (langs.is_empty() || lang.is_some_and(|l| langs.iter().any(|x| x == l)))
+            .filter(|(plugin, s, langs)| {
+                *s == e
+                    && match self.plugin_covers_doc(plugin, d) {
+                        true => langs.is_empty() || lang.is_some_and(|l| langs.iter().any(|x| x == l)),
+                        false => e == Event::Shown,
+                    }
             })
             .map(|(plugin, ..)| plugin.clone())
             .collect()
@@ -154,7 +161,7 @@ impl Editor {
             }
             return;
         };
-        let Some((input, seen)) = self.plugin_input(doc, "") else {
+        let Some((input, seen)) = self.plugin_input(&plugin, doc, "", false) else {
             // The buffer is gone: nothing more to tell
             if let Some(then) = then {
                 then(self);
@@ -217,10 +224,10 @@ impl Editor {
             ev.by_plugin.remove(&doc);
             ev.out.remove(&doc);
         }
-        let Some((input, seen)) = self.plugin_input(doc, "") else { return };
         for plugin in subs {
+            let Some((input, seen)) = self.plugin_input(&plugin, doc, "", false) else { return };
             let events = self.events.shared_sender();
-            let (who, seen) = (plugin.clone(), seen.clone());
+            let who = plugin.clone();
             let reply = Box::new(move |result: Result<Vec<super::Action>, String>| {
                 let apply = move |ed: &mut Editor| match result {
                     Ok(actions) => ed.plugin_apply(&who, &seen, actions),
@@ -229,7 +236,7 @@ impl Editor {
                 let _ = events.send(crate::event::Event::Job(Box::new(apply)));
             });
             if let Some(p) = &self.plugins {
-                let _ = p.host.call(&plugin, Call::Event(Event::Closed), input.clone(), reply);
+                let _ = p.host.call(&plugin, Call::Event(Event::Closed), input, reply);
             }
         }
     }

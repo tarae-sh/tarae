@@ -430,6 +430,10 @@ pub struct Document {
     /// Display name of an unnamed buffer (tutorial etc.) · disposable (quit isn't blocked as "unsaved").
     pub title: Option<String>,
     pub throwaway: bool,
+    /// A buffer with no file that's yours (`:new`, the blank one a workspace opens with): a plugin is given it when
+    /// you run its command on it (#457). Every other buffer with no file is tarae's own surface (an output, a
+    /// message, a quote whole, a web page — never a plugin's) or a plugin's own view.
+    pub scratch: bool,
     /// Colours painted over a document with no language (`tutor.rs`: its headings and keys, the marks that
     /// said so taken out of the text) — byte spans and global capture ids, following its edits.
     pub paint: Vec<(usize, usize, u32)>,
@@ -602,6 +606,7 @@ impl Document {
             wet: None,
             title: None,
             throwaway: false,
+            scratch: false,
             paint: Vec::new(),
             wrap: None,
             virtual_uri: None,

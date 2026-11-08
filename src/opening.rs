@@ -175,7 +175,11 @@ impl Editor {
             let r = read(&path);
             move |ed: &mut Editor| landed(ed, id, r)
         });
-        // (said only past `SAY_AFTER`: a file that lands sooner shows nothing but itself)
+        self.say_after(id);
+    }
+
+    /// Open `id` said on the status line past `SAY_AFTER`: a file that lands sooner shows nothing but itself.
+    fn say_after(&mut self, id: DocId) {
         self.events.shared_jobs().spawn(move || {
             crate::event::sleep(SAY_AFTER);
             move |ed: &mut Editor| match ed.opening.as_mut().filter(|o| o.id == id) {
@@ -183,6 +187,38 @@ impl Editor {
                 None => ed.unchanged = true,
             }
         });
+    }
+
+    /// Opens for you a file `pick` names, on the worker before the read: given the path as asked (from the root), the
+    /// file and a line to put the cursor on (from 0, a jump left behind) — or why it isn't opened (Err: nothing read,
+    /// `then` told). A plugin's `open` (#457): which file `path:line` is and whether its grant covers it are the disk's
+    /// to say, and so the worker's. Else as `open_file_then`, the path asked not open yet.
+    pub(crate) fn open_file_picked(
+        &mut self,
+        path: &Path,
+        pick: impl FnOnce(&Path) -> anyhow::Result<(PathBuf, Option<usize>)> + Send + 'static,
+        then: impl FnOnce(&mut Editor, anyhow::Result<DocId>) + Send + 'static,
+    ) {
+        let path = self.path_of(path);
+        self.opening = None;
+        self.showing = None;
+        let id = self.alloc_id();
+        let then = move |ed: &mut Editor, r: anyhow::Result<(DocId, bool)>| match r {
+            Ok((id, true)) => then(ed, Ok(id)),
+            Ok((_, false)) => {}
+            Err(e) => then(ed, Err(e)),
+        };
+        self.opening = Some(self.opening_of(id, path.clone(), false, Box::new(then), Opener::You));
+        let work = move || pick(&path).and_then(|(file, line)| Ok((read(&file)?, file, line)));
+        if self.read_inline {
+            let r = work();
+            return picked_landed(self, id, r);
+        }
+        self.events.jobs().spawn(move || {
+            let r = work();
+            move |ed: &mut Editor| picked_landed(ed, id, r)
+        });
+        self.say_after(id);
     }
 
     /// Opens `path` shown for Claude's turn or a review (`by`): a buffer open at that path already comes in front now;
@@ -348,6 +384,30 @@ impl Editor {
         }
         self.opened_setup(id, &r.path, false);
     }
+}
+
+/// The read of a picked open (`open_file_picked`) landed: the open is of the file picked, at its line — then as any.
+fn picked_landed(ed: &mut Editor, id: DocId, r: anyhow::Result<(Read, PathBuf, Option<usize>)>) {
+    let r = r.map(|(r, file, line)| {
+        if let Some(o) = ed.opening.as_mut().filter(|o| o.id == id) {
+            o.path = file;
+            if let Some(line) = line {
+                o.jump = true;
+                let then = o.then.take();
+                o.then = Some(Box::new(move |ed: &mut Editor, r: anyhow::Result<(DocId, bool)>| {
+                    if let Ok((_, true)) = r {
+                        crate::editor::place_cursor(ed.doc_mut(), line, 0);
+                        ed.jumped();
+                    }
+                    if let Some(then) = then {
+                        then(ed, r)
+                    }
+                }));
+            }
+        }
+        r
+    });
+    landed(ed, id, r)
 }
 
 /// The read of open `id` landed: dropped where another open took its place; failed, why — nothing made; the file open

@@ -1479,7 +1479,9 @@ impl Editor {
         let view = self.next_pane;
         self.next_pane += crate::pane::IDS;
         let doc = self.alloc_id();
-        self.docs.push(Document::from_str(doc, ""));
+        let mut scratch = Document::from_str(doc, "");
+        scratch.scratch = true;
+        self.docs.push(scratch);
         let mut ws = Workspace::new(id, root.clone(), view);
         ws.claude.billing = self.new_session_billing();
         // (its Claude's colour: the lowest no open session has — they repeat only past `COLOURS` at once)

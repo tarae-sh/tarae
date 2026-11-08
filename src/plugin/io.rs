@@ -80,6 +80,10 @@ pub(super) struct Outbox {
     flow: Arc<Flow>,
     /// It hears keys and answered with what it may not (`keys::refused`): said once a load.
     pub(super) keys_refused: bool,
+    /// An answer in `queued` to a line or pick your command on this buffer asked for (`plugin_prompt_done`): the call
+    /// that carries it is an answer to that command if the buffer is in front as it goes — as it's answered, unless a
+    /// call was in flight then.
+    pub(super) chained: Option<super::DocId>,
 }
 
 impl Outbox {
@@ -91,6 +95,7 @@ impl Outbox {
             weight: 0,
             flow: Arc::default(),
             keys_refused: false,
+            chained: None,
         }
     }
 }
@@ -852,12 +857,17 @@ impl Editor {
     /// What waits for a plugin, in one call — unless one is in flight.
     fn plugin_flush(&mut self, plugin: &str) {
         let doc = self.doc().id;
-        let Some(o) = self.plugins.as_ref().and_then(|p| p.outbox.get(plugin)) else { return };
+        let Some(o) = self.plugins.as_mut().and_then(|p| p.outbox.get_mut(plugin)) else { return };
         if o.busy || o.queued.is_empty() {
             return;
         }
-        let Some((input, seen)) = self.plugin_input(doc, "") else { return };
+        // What it asked for coming back, a timer, a key in its panel (its own surface): on its own, not a command you
+        // ran on the buffer — but an answer to a line or pick your command asked for, that buffer still in front (#457)
+        let chained = o.chained.take() == Some(doc);
+        let Some((input, seen)) = self.plugin_input(plugin, doc, "", chained) else { return };
         let Some(p) = &mut self.plugins else { return };
+        #[cfg(test)]
+        p.flushed.push((input.path.clone(), seen.yours));
         let Some(o) = p.outbox.get_mut(plugin) else { return };
         let events = std::mem::take(&mut o.queued);
         // A key in its panel, a line you typed: what it answers is an answer to you

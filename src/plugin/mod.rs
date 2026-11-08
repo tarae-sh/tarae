@@ -15,6 +15,11 @@
 //! - **Nothing a plugin says is trusted**: `run` takes only movement commands (so a plugin can't reach
 //!   `:sh`, `:w` or anything else with effects outside the buffer), text is shown without control
 //!   characters (no terminal escapes) and capped, and names are checked.
+//! - **What a buffer gives a plugin** (#457): on its own (events, what it asked for coming back) only a buffer its
+//!   grant covers (`plugin_covers`: its `read` patterns or `project`, approved; its own views) — any other is sent as
+//!   nothing, and has no events but an empty `shown`. A command you run gets the buffer in front, and its answer's
+//!   edits and moves apply there; never a file named like a key, nor a surface of tarae's own (`plugin_never`: the
+//!   command is refused, said). It opens only a file its grant covers.
 
 mod cli;
 mod events;
@@ -118,6 +123,8 @@ pub struct Plugins {
     events: events::Events,
     /// What each plugin may do beyond the buffer (as it says), and the programs it runs, by (plugin, id).
     permissions: std::collections::HashMap<String, Vec<abi::Permission>>,
+    /// Its `read` patterns with their folders resolved, on the plugin thread as it loaded (`perm::roots`, #457).
+    roots: std::collections::HashMap<String, Vec<(String, Option<PathBuf>)>>,
     procs: std::collections::HashMap<(String, u64), io::Proc>,
     /// Its connections (open, and being opened), and its timers — by (plugin, id), with their run's serial.
     socks: std::collections::HashMap<(String, u64), io::Sock>,
@@ -140,8 +147,9 @@ pub struct Plugins {
     /// it may ask for a line.
     pub panel: Option<panel::PanelState>,
     answering: Option<String>,
-    /// Its lines being typed at (by token), and the buffers it shows (by its id).
-    prompts: std::collections::HashMap<u64, (String, u64)>,
+    /// Its lines being typed at and its picks (by token) — with the buffer your command ran on, if one asked for it in
+    /// its answer (#457: an answer there is yours, once) —, and the buffers it shows (by its id).
+    prompts: std::collections::HashMap<u64, (String, u64, Option<DocId>)>,
     views: std::collections::HashMap<(String, u64), DocId>,
     /// What plugins write beside buffers' lines, by (plugin, path): the version they're for, and the hints.
     hints: std::collections::HashMap<(String, String), (u64, Vec<abi::Hint>)>,
@@ -155,6 +163,10 @@ pub struct Plugins {
     /// Where each plugin's own folder is (`<this>/<plugin>`): the state folder's `plugins` (a test's scratch's).
     /// Approvals' `perm_store` stays apart: none in tests unless a test sets one.
     own_root: Option<PathBuf>,
+    /// What each call from `plugin_flush` gave it of the buffer in front: its path, and whether its answer counts as
+    /// yours (#457's tests).
+    #[cfg(test)]
+    flushed: Vec<(Option<String>, bool)>,
 }
 
 impl Plugins {
@@ -179,13 +191,14 @@ impl Plugins {
         self.status.retain(|(p, _), _| p != plugin);
         self.events.subs.retain(|(p, ..)| p != plugin);
         self.permissions.remove(plugin);
+        self.roots.remove(plugin);
         self.held.remove(plugin);
         self.outbox.remove(plugin);
         self.stop_all(plugin);
         if self.panel.as_ref().is_some_and(|s| s.plugin == plugin) {
             self.panel = None;
         }
-        self.prompts.retain(|_, (p, _)| p != plugin);
+        self.prompts.retain(|_, (p, ..)| p != plugin);
         self.views.retain(|(p, _), _| p != plugin);
         self.hints.retain(|(p, _), _| p != plugin);
         if self.side.as_ref().is_some_and(|(p, _)| p == plugin) {
@@ -237,7 +250,12 @@ impl Editor {
         let events = self.events.shared_sender();
         let started = Host::start(
             move |note| {
-                let _ = events.send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note))));
+                // (its `read` patterns resolved here, on the plugin thread: the gate never waits on the disk — #457)
+                let roots = match &note {
+                    Note::Loaded { manifest: Ok(m), .. } => perm::roots(&m.permissions),
+                    _ => Vec::new(),
+                };
+                let _ = events.send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note, roots))));
             },
             perm::invalid,
         );
@@ -251,6 +269,7 @@ impl Editor {
             status: Default::default(),
             events: Default::default(),
             permissions: Default::default(),
+            roots: Default::default(),
             approvals: perm::load(perm::store_path().as_deref()),
             asked: Default::default(),
             held: Default::default(),
@@ -273,6 +292,8 @@ impl Editor {
             overlays: Default::default(),
             offered: Default::default(),
             own_root: state.map(|s| s.join("plugins")),
+            #[cfg(test)]
+            flushed: Vec::new(),
         });
         true
     }
@@ -287,6 +308,7 @@ impl Editor {
             status: Default::default(),
             events: Default::default(),
             permissions: Default::default(),
+            roots: Default::default(),
             approvals: Default::default(),
             asked: Default::default(),
             held: Default::default(),
@@ -309,10 +331,13 @@ impl Editor {
             overlays: Default::default(),
             offered: Default::default(),
             own_root: None,
+            #[cfg(test)]
+            flushed: Vec::new(),
         });
     }
 
-    fn plugin_note(&mut self, note: Note) {
+    /// What the plugin thread says: a plugin loaded (its `read` patterns' `roots` resolved there), failed or gone.
+    fn plugin_note(&mut self, note: Note, roots: Vec<(String, Option<PathBuf>)>) {
         let Some(p) = &mut self.plugins else { return };
         match note {
             Note::Loaded { plugin, manifest: Err(e), .. } => {
@@ -331,6 +356,7 @@ impl Editor {
                 p.outbox.insert(plugin.clone(), io::Outbox::new(generation));
                 p.asked.remove(&plugin);
                 p.permissions.insert(plugin.clone(), permissions.clone());
+                p.roots.insert(plugin.clone(), roots);
                 events::subscribe(&mut p.events.subs, &plugin, subscriptions);
                 crate::sorting::by(&mut p.events.subs, |a, b| a.0.cmp(&b.0));
                 let mut taken: std::collections::HashSet<String> =
@@ -391,7 +417,14 @@ impl Editor {
     /// copied — the plugin thread does the rest, and the answer comes back as an event.
     pub fn plugin_run(&mut self, name: &str, args: &str) -> Result<(), String> {
         let cmd = self.plugin_command(name).cloned().ok_or_else(|| format!("no such command: '{name}'"))?;
-        let (input, seen) = self.plugin_input(self.doc().id, args).expect("the current buffer is open");
+        if let Some(why) = self.plugin_never(&cmd.plugin, self.doc()) {
+            return Err(format!(
+                ":{name} isn't given {}: {why}",
+                self.doc().display_name(&self.workspace.root)
+            ));
+        }
+        let (input, seen) =
+            self.plugin_input(&cmd.plugin, self.doc().id, args, true).expect("the current buffer is open");
         let events = self.events.shared_sender();
         let plugin = cmd.plugin.clone();
         let reply = Box::new(move |result: Result<Vec<Action>, String>| {
@@ -414,10 +447,31 @@ impl Editor {
         p.host.call(&cmd.plugin, Call::Command(name.to_string()), input, reply)
     }
 
-    /// What a plugin is given about buffer `doc`, and what its answer applies to. Only the rope is cloned
-    /// (O(1)) and the selections copied: the plugin thread makes the strings.
-    fn plugin_input(&self, doc: DocId, args: &str) -> Option<(Input, Seen)> {
+    /// What `plugin` is given about buffer `doc`, and what its answer applies to — `yours`: a command you ran on it
+    /// (`plugin_run`, which refuses what's never given); else the buffer only if its grant covers it, an empty one
+    /// otherwise (no path, name, text or selections). Only the rope is cloned (O(1)) and the selections copied: the
+    /// plugin thread makes the strings.
+    fn plugin_input(&self, plugin: &str, doc: DocId, args: &str, yours: bool) -> Option<(Input, Seen)> {
         let doc = self.docs.iter().find(|d| d.id == doc)?;
+        let given =
+            self.plugin_covers_doc(plugin, doc) || (yours && self.plugin_never(plugin, doc).is_none());
+        if !given {
+            let input = Input {
+                args: args.to_string(),
+                text: ropey::Rope::new(),
+                ranges: Vec::new(),
+                primary: 0,
+                path: None,
+                name: String::new(),
+                language: None,
+                version: 0,
+                modified: false,
+            };
+            return Some((
+                input,
+                Seen { doc: doc.id, version: doc.version(), ranges: Vec::new(), yours: false },
+            ));
+        }
         let sel = doc.selection();
         let input = Input {
             args: args.to_string(),
@@ -430,7 +484,86 @@ impl Editor {
             version: doc.version(),
             modified: doc.is_modified(),
         };
-        Some((input, Seen { doc: doc.id, version: doc.version(), ranges: sel.ranges().to_vec() }))
+        Some((input, Seen { doc: doc.id, version: doc.version(), ranges: sel.ranges().to_vec(), yours }))
+    }
+
+    /// Whether a plugin's own grant covers buffer `doc` (#457's rule (a)): its file, or a view of the plugin's.
+    pub(super) fn plugin_covers_doc(&self, plugin: &str, doc: &crate::document::Document) -> bool {
+        match &*doc.path {
+            Some(path) => self.plugin_covers(plugin, None, path),
+            None => self
+                .plugins
+                .as_ref()
+                .is_some_and(|p| p.views.iter().any(|((q, _), d)| q == plugin && *d == doc.id)),
+        }
+    }
+
+    /// Why buffer `doc` is never given to a plugin, even when you run its command on it (#457): a file named like a
+    /// key, or a surface of tarae's own — a buffer with no file that's neither yours (`Document::scratch`) nor the
+    /// plugin's view: a run's output, a message, a quote whole, a web page.
+    fn plugin_never(&self, plugin: &str, doc: &crate::document::Document) -> Option<&'static str> {
+        match &*doc.path {
+            Some(path) if crate::secretnames::named_secret(path) => Some("a file named like a key"),
+            Some(_) => None,
+            None if doc.scratch || self.plugin_covers_doc(plugin, doc) => None,
+            None => Some("one of tarae's own views"),
+        }
+    }
+
+    /// Opens for a plugin `asked` (as it wrote it, from the root if relative; `path:line`, from 1, where the whole
+    /// isn't a file) — or at `line` (from 0: a side-tab row's place) —, then `then` once it's in front. Only a file
+    /// its grant covers (#457): else your next key on a command of its would hand it the text. Refused and said at once
+    /// when it reads no file at all, and for a buffer open at that path (its path made real as it opened); else which
+    /// file, its real path and the grant are decided on the open's worker (no disk on the loop), and a refusal is the
+    /// open's own failure, said the same.
+    pub(crate) fn plugin_open(
+        &mut self,
+        plugin: &str,
+        asked: &str,
+        line: Option<usize>,
+        then: impl FnOnce(&mut Editor) + Send + 'static,
+    ) -> Result<(), String> {
+        let refused =
+            |path: &str| format!("it may not open “{}”: not a file it may read (permissions())", shown(path));
+        let reach = self.plugin_grant(plugin).map_err(|_| refused(asked))?;
+        let whole = self.path_of(Path::new(asked));
+        if let Some(i) = self.docs.first(&whole, |_| true) {
+            if !self.plugin_covers_doc(plugin, &self.docs[i]) {
+                return Err(refused(asked));
+            }
+            match line {
+                Some(line) => self.open_at_then(&whole, line, 0, then),
+                None => self.open_file_then(&whole, false, move |ed, r| match r {
+                    Ok(_) => then(ed),
+                    Err(e) => ed.open_failed(e),
+                }),
+            }
+            return Ok(());
+        }
+        // (`path:line`: the file before the colon, if the whole isn't one — the worker's to see)
+        let split = asked
+            .rsplit_once(':')
+            .filter(|_| line.is_none())
+            .and_then(|(file, l)| {
+                Some((file.to_string(), self.path_of(Path::new(file)), l.parse::<usize>().ok()?))
+            })
+            .filter(|(.., l)| *l > 0);
+        let (as_asked, who) = (asked.to_string(), plugin.to_string());
+        let pick = move |whole: &Path| {
+            let (written, file, line) = match split {
+                Some((written, file, l)) if !perm::disk::exists(whole) => (written, file, Some(l - 1)),
+                _ => (as_asked, whole.to_path_buf(), line),
+            };
+            match reach.covers(Some(&file), &perm::disk::real(&file)) {
+                true => Ok((file, line)),
+                false => Err(anyhow::anyhow!(refused(&written))),
+            }
+        };
+        self.open_file_picked(&whole, pick, move |ed, r| match r {
+            Ok(_) => then(ed),
+            Err(e) => ed.set_error(format!("{who}: {e}")),
+        });
+        Ok(())
     }
 
     fn plugin_apply(&mut self, plugin: &str, seen: &Seen, actions: Vec<Action>) {
@@ -473,11 +606,17 @@ impl Editor {
                     }
                     Ok(())
                 }
-                // Movement only: anything else could reach past the buffer (`:sh`, `:w`, …)
+                // Movement only: anything else could reach past the buffer (`:sh`, `:w`, …) — and only in a
+                // buffer its grant covers, or the one your command ran on: where the cursor lands tells the text
                 Action::Run(name) => match crate::commands::find(name) {
                     Some(c) if c.motion => {
-                        self.run_command_by_name(name);
-                        Ok(())
+                        let doc = self.doc();
+                        if (seen.yours && doc.id == seen.doc) || self.plugin_covers_doc(plugin, doc) {
+                            self.run_command_by_name(name);
+                            Ok(())
+                        } else {
+                            Err("it moves only in a file it may read, or in answer to your command".into())
+                        }
                     }
                     _ => Err(format!("plugins can run movement commands only, not “{}”", shown(name))),
                 },
@@ -485,24 +624,7 @@ impl Editor {
                     Err("a path with control characters".into())
                 }
                 // `path:line` (from 1): there, if `path` alone is the file
-                Action::Open(path) => match path.rsplit_once(':') {
-                    Some((file, line))
-                        if !self.path_of(Path::new(path)).exists()
-                            && line.parse::<usize>().is_ok_and(|l| l > 0) =>
-                    {
-                        let line = line.parse::<usize>().expect("checked") - 1;
-                        self.run_picker_action(crate::picker::Action::Goto {
-                            path: file.into(),
-                            line,
-                            col: 0,
-                        });
-                        Ok(())
-                    }
-                    _ => {
-                        self.open_file(Path::new(path));
-                        Ok(())
-                    }
-                },
+                Action::Open(path) => self.plugin_open(plugin, path, None, |_| {}),
                 Action::Spawn(sp) => self.plugin_spawn(plugin, sp.clone()),
                 Action::Stop(id) => {
                     self.plugin_stop(plugin, *id);
@@ -547,7 +669,7 @@ impl Editor {
                     Ok(())
                 }
                 Action::Prompt(id, label) => {
-                    self.plugin_prompt(plugin, *id, label);
+                    self.plugin_prompt(plugin, *id, label, seen.yours.then_some(seen.doc));
                     Ok(())
                 }
                 Action::Show(view) => {
@@ -580,7 +702,7 @@ impl Editor {
                     Ok(())
                 }
                 Action::Pick(p) => {
-                    self.plugin_pick(plugin, p.clone());
+                    self.plugin_pick(plugin, p.clone(), seen.yours.then_some(seen.doc));
                     Ok(())
                 }
                 Action::Overlay(o) => {
@@ -595,7 +717,7 @@ impl Editor {
                 _ if edited => Ok(()),
                 _ => {
                     edited = true;
-                    self.plugin_edit(seen, actions.iter().filter(|a| edits(a)))
+                    self.plugin_edit(plugin, seen, actions.iter().filter(|a| edits(a)))
                 }
             };
             if let Err(e) = r {
@@ -604,14 +726,22 @@ impl Editor {
         }
     }
 
-    /// One answer's edits as one undo step, if the buffer is as the plugin saw it. The buffer in front stays
+    /// One answer's edits as one undo step, if the buffer is as the plugin saw it — and its grant covers it, or the
+    /// answer is to your command (#457: else a selection's place would tell the text). The buffer in front stays
     /// in front.
     fn plugin_edit<'a>(
         &mut self,
+        plugin: &str,
         seen: &Seen,
         actions: impl Iterator<Item = &'a Action>,
     ) -> Result<(), String> {
         let i = self.docs.iter().position(|d| d.id == seen.doc).ok_or("the buffer was closed")?;
+        if !seen.yours && !self.plugin_covers_doc(plugin, &self.docs[i]) {
+            return Err(
+                "it edits only a file it may read, or in answer to your command — its edits weren't applied"
+                    .into(),
+            );
+        }
         if self.docs[i].version() != seen.version {
             return Err("the buffer changed while the plugin ran — its edits weren't applied".into());
         }
@@ -696,12 +826,14 @@ impl Editor {
     }
 }
 
-/// What a command's answer applies to: the buffer and selections as they were when it was asked.
+/// What a command's answer applies to: the buffer and selections as they were when it was asked — and whether you
+/// asked (a command you ran: its answer edits and moves in that buffer whether the plugin's grant covers it or not).
 #[derive(Clone)]
 struct Seen {
     doc: DocId,
     version: u64,
     ranges: Vec<Range>,
+    yours: bool,
 }
 
 #[cfg(test)]
@@ -862,6 +994,13 @@ mod tests {
         if yes { ed.offer_accept() } else { ed.offer_dismiss() }
     }
 
+    /// The demo's permissions approved, and `dir` the project: its files are what the demo's `project` covers —
+    /// what it's told of on its own and may open (#457).
+    fn granted(ed: &mut Editor, dir: &Path) {
+        answer(ed, approval, true);
+        ed.workspace.root = std::fs::canonicalize(dir).unwrap();
+    }
+
     fn approval(w: &crate::offer::What) -> bool {
         matches!(w, crate::offer::What::PluginPermissions { plugin, .. } if plugin == "demo")
     }
@@ -978,6 +1117,364 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// #457 (it was the confirming test, check 2): a plugin granted no read can't open a file outside its patterns and
+    /// the project — either form of `open`, said — and that file opened by you is told to it as nothing: no `opened`,
+    /// a `shown` with no name or text (the demo says `shown with text: …` for a `.text.` name).
+    #[test]
+    fn a_plugin_with_no_read_opens_no_file_and_hears_nothing_of_one() {
+        let (_s, mut ed, dir) = setup("no-read", "x\n");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        ed.workspace.root = std::fs::canonicalize(&project).unwrap();
+        let elsewhere = crate::scratch::Scratch::new("plugins-no-read-elsewhere");
+        let marker = elsewhere.join("notes.text.md");
+        std::fs::write(&marker, "key = tarae-fake-token-457\n").unwrap();
+        let marker = marker.display().to_string();
+        // Nothing granted: its read is refused
+        answer(&mut ed, approval, false);
+        ed.plugin_run("fetch", &marker).unwrap();
+        until_said(&mut ed, "failed 10 its permissions wait for your approval");
+        // …and so is `open`, said — the file and the file at a line
+        for at in [marker.clone(), format!("{marker}:1")] {
+            ed.toasts.clear();
+            ed.plugin_run("visit", &at).unwrap();
+            until_said(&mut ed, "demo: it may not open “");
+            assert!(ed.doc().path.is_none(), "{at}: opened");
+        }
+        // You open it: nothing of it reaches the plugin on its own
+        ed.toasts.clear();
+        ed.open(Path::new(&marker)).unwrap();
+        let doc = ed.doc().id;
+        for e in [abi::Event::Opened, abi::Event::Changed, abi::Event::Saved, abi::Event::BeforeSave] {
+            assert!(ed.subscribers(e, doc).is_empty(), "{e:?}");
+        }
+        ed.plugin_run("echo", "").unwrap();
+        until_said(&mut ed, "args=");
+        assert!(
+            !toasts(&ed).contains("opened ") && !toasts(&ed).contains("shown with text"),
+            "{}",
+            toasts(&ed)
+        );
+    }
+
+    /// The demo approved, the project `dir/project`, and in front `name` in a scratch of its own: a file no grant of
+    /// the demo's covers (#457). Its path as the buffer has it.
+    fn uncovered(ed: &mut Editor, dir: &Path, name: &str) -> (crate::scratch::Scratch, String) {
+        answer(ed, approval, true);
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        ed.workspace.root = std::fs::canonicalize(&project).unwrap();
+        let elsewhere = crate::scratch::Scratch::new("plugins-uncovered");
+        std::fs::write(elsewhere.join(name), "key = tarae-fake-token-457\n").unwrap();
+        ed.open(&elsewhere.join(name)).unwrap();
+        let path = ed.doc().path.as_ref().unwrap().display().to_string();
+        (elsewhere, path)
+    }
+
+    /// What `plugin_flush`'s calls gave the demo since the last look: (path, its answer yours) each.
+    fn flushed(ed: &mut Editor) -> Vec<(Option<String>, bool)> {
+        std::mem::take(&mut ed.plugins.as_mut().unwrap().flushed)
+    }
+
+    /// #457, the carrier step 1 missed: what comes back to a plugin on its own — a timer's tick, a program's output
+    /// line and its end, a key in its panel — with a file it can't read in front carries an empty buffer, and an
+    /// answer that isn't yours; with one it can, the buffer.
+    #[test]
+    fn what_comes_back_on_its_own_carries_no_buffer_it_cant_read() {
+        let (_s, mut ed, dir) = setup("flush-carriers", "");
+        let (_elsewhere, _) = uncovered(&mut ed, &dir, "notes.md");
+        ed.plugin_run("table", "").unwrap();
+        settle_until(&mut ed, |ed| panel(ed).is_some());
+        flushed(&mut ed);
+        let each = |ed: &mut Editor, what: &str, act: &dyn Fn(&mut Editor), said: &str| {
+            ed.toasts.clear();
+            act(ed);
+            until_said(ed, said);
+            let given = flushed(ed);
+            assert!(!given.is_empty() && given.iter().all(|g| *g == (None, false)), "{what}: {given:?}");
+        };
+        each(&mut ed, "a key in its panel", &|ed| key(ed, "ret"), "key ret");
+        key(&mut ed, "esc");
+        each(&mut ed, "a tick", &|ed| ed.plugin_run("later", "1").unwrap(), "tick 30");
+        each(&mut ed, "a program's end", &|ed| ed.plugin_run("exec", "").unwrap(), "exit 1");
+        let line =
+            |ed: &mut Editor| ed.plugin_queue("demo", vec![abi::HostEvent::Lines(1, vec!["out".into()])], 0);
+        each(&mut ed, "a program's output line", &line, "lines 1");
+        // A file it may read (the project's): given
+        let mine = ed.workspace.root.join("a.rs");
+        std::fs::write(&mine, "fn a() {}\n").unwrap();
+        ed.open(&mine).unwrap();
+        ed.toasts.clear();
+        ed.plugin_run("later", "1").unwrap();
+        until_said(&mut ed, "tick 30");
+        let given = flushed(&mut ed);
+        assert!(given.iter().any(|(p, _)| p.as_deref().is_some_and(|p| p.ends_with("a.rs"))), "{given:?}");
+    }
+
+    /// #457: a line or a pick your command asked for, answered with the buffer it ran on in front, is an answer to that
+    /// command there — that buffer given, once; asked for by a key in its panel, or answered with another buffer in
+    /// front, never.
+    #[test]
+    fn a_line_or_pick_your_command_asked_for_is_yours_on_its_buffer_once() {
+        let (_s, mut ed, dir) = setup("chained", "");
+        let (_elsewhere, path) = uncovered(&mut ed, &dir, "notes.md");
+        let answered = |ed: &mut Editor, keys: &[&str]| {
+            ed.toasts.clear();
+            flushed(ed);
+            for k in keys {
+                key(ed, k);
+            }
+            until_said(ed, "answer ");
+            flushed(ed)
+        };
+        let yours = vec![(Some(path.clone()), true)];
+        // Your command's line, and its pick
+        ed.plugin_run("question", "").unwrap();
+        settle_until(&mut ed, |ed| ed.prompt.is_some());
+        assert_eq!(answered(&mut ed, &["a", "ret"]), yours, "a line");
+        ed.plugin_run("choose", "").unwrap();
+        settle_until(&mut ed, |ed| ed.picker.is_some());
+        assert_eq!(answered(&mut ed, &["ret"]), yours, "a pick");
+        // …once: what comes after on its own isn't
+        ed.plugin_run("later", "1").unwrap();
+        until_said(&mut ed, "tick 30");
+        assert_eq!(flushed(&mut ed), [(None, false)], "after");
+        // Another buffer in front as it's answered (one it may read: the project's)
+        ed.plugin_run("question", "").unwrap();
+        settle_until(&mut ed, |ed| ed.prompt.is_some());
+        let other = ed.workspace.root.join("other.txt");
+        std::fs::write(&other, "x\n").unwrap();
+        ed.open(&other).unwrap();
+        assert!(answered(&mut ed, &["a", "ret"]).iter().all(|(_, yours)| !yours), "another buffer");
+        // A key in its panel asked for it: its own surface, never yours
+        ed.open(Path::new(&path)).unwrap();
+        ed.plugin_run("table", "").unwrap();
+        settle_until(&mut ed, |ed| panel(ed).is_some());
+        key(&mut ed, "/");
+        settle_until(&mut ed, |ed| ed.prompt.is_some());
+        assert_eq!(answered(&mut ed, &["a", "ret"]), [(None, false)], "a key in its panel");
+    }
+
+    /// #457: holding a buffer against a plugin's grant — every event's, every call's — and a plugin's `open` touch no
+    /// disk on the main thread (`perm::disk` counts by thread): the patterns resolved on the plugin thread as it
+    /// loaded, an open's file made real and judged on the open's worker.
+    #[test]
+    fn the_gate_touches_no_disk_on_the_main_thread() {
+        let reads = crate::scratch::Scratch::new("plugins-disk-reads");
+        let (_s, mut ed, dir) =
+            setup_with("disk", "", &abi::demo_reading(&format!("{}/**", reads.display())));
+        answer(&mut ed, approval, true);
+        std::fs::create_dir_all(dir.join("project")).unwrap();
+        ed.workspace.root = std::fs::canonicalize(dir.join("project")).unwrap();
+        for f in ["a.txt", "b.txt"] {
+            std::fs::write(reads.join(f), "x\n").unwrap();
+        }
+        std::fs::write(dir.join("out.txt"), "x\n").unwrap();
+        // (out.txt opened by you: its `visit` later is judged by the buffer's path)
+        ed.open(&dir.join("out.txt")).unwrap();
+        let here = || perm::disk::HERE.with(|n| n.get());
+        let before = (here(), perm::disk::ALL.load(std::sync::atomic::Ordering::Relaxed));
+        // A buffer its pattern covers: told of it on every event, given it on a call
+        ed.open(&reads.join("a.txt")).unwrap();
+        assert!(ed.plugin_covers_doc("demo", ed.doc()), "covered: the check ran");
+        for k in ["i", "y", "esc"] {
+            press(&mut ed, k);
+        }
+        ed.plugin_run("echo", "").unwrap();
+        until_said(&mut ed, "args=");
+        ed.plugin_run("later", "1").unwrap();
+        until_said(&mut ed, "tick 30");
+        assert_eq!(here(), before.0, "the events' and calls' gate touched the disk on the main thread");
+        // Its `open`: on the worker, for a file it may read and one it may not
+        ed.read_inline = false;
+        ed.plugin_run("visit", &reads.join("b.txt").display().to_string()).unwrap();
+        settle_until(&mut ed, |ed| ed.doc().path.as_ref().is_some_and(|p| p.ends_with("b.txt")));
+        ed.toasts.clear();
+        // (as the buffer has it: the plain one found open)
+        let out = std::fs::canonicalize(dir.join("out.txt")).unwrap().display().to_string();
+        for at in [format!("{out}:1"), out] {
+            ed.toasts.clear();
+            ed.plugin_run("visit", &at).unwrap();
+            until_said(&mut ed, "demo: it may not open “");
+            assert!(ed.doc().path.as_ref().is_some_and(|p| p.ends_with("b.txt")), "{at}: opened");
+        }
+        assert_eq!(here(), before.0, "the open's gate touched the disk on the main thread");
+        let all = perm::disk::ALL.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(all >= before.1 + 2, "the worker's touches counted ({} → {all})", before.1);
+    }
+
+    /// #457, check 1: what a plugin's own grant covers — its `read` patterns and the project, once approved — never
+    /// a file named like a key, not even one its pattern names (a read of one is asked about on a card instead).
+    #[test]
+    fn a_plugins_grant_covers_its_patterns_and_the_project_never_a_key() {
+        let read = crate::scratch::Scratch::new("plugins-covers-read");
+        let (_s, mut ed, dir) =
+            setup_with("covers", "", &abi::demo_reading(&format!("{}/*", read.display())));
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        ed.workspace.root = std::fs::canonicalize(&project).unwrap();
+        // (no file made: a key's name is enough, and nothing reads one)
+        let covers = |ed: &Editor, p: &Path| {
+            let real = std::fs::canonicalize(p.parent().unwrap()).unwrap().join(p.file_name().unwrap());
+            ed.plugin_covers("demo", Some(p), &real)
+        };
+        assert!(!covers(&ed, &read.join("notes.txt")), "not approved yet");
+        answer(&mut ed, approval, true);
+        assert!(covers(&ed, &read.join("notes.txt")), "its pattern");
+        assert!(covers(&ed, &project.join("a.rs")), "the project");
+        assert!(!covers(&ed, &dir.join("notes.txt")), "neither");
+        assert!(!covers(&ed, &read.join("id_ed25519")), "a key its pattern names");
+        assert!(!covers(&ed, &project.join(".env")), "a key in the project");
+    }
+
+    /// #457, check 3: a row of its side tab that places a file it may not read opens nothing — said — though the row
+    /// came from a command you ran on that file.
+    #[test]
+    fn a_side_rows_place_opens_only_a_file_it_may_read() {
+        let (_s, mut ed, dir) = setup("side-place", "");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        granted(&mut ed, &project);
+        let outside = dir.join("web.txt");
+        std::fs::write(&outside, "kind: Deployment\n").unwrap();
+        ed.open(&outside).unwrap();
+        ed.plugin_run("side", "").unwrap();
+        settle_until(&mut ed, |ed| ed.plugins.as_ref().is_some_and(|p| p.side.is_some()));
+        crate::typed::execute(&mut ed, "new").unwrap();
+        ed.workspace.set_at(crate::workspace::Here::Side);
+        ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 0;
+        key(&mut ed, "ret");
+        assert!(toasts(&ed).contains("demo: it may not open “"), "{}", toasts(&ed));
+        assert!(ed.doc().path.is_none(), "not brought back to the front");
+    }
+
+    /// #457, check 4: on its own (an event, what it asked for coming back) a plugin is given a buffer its grant covers
+    /// and nothing of one it doesn't — no path, name, text or selections; a command you run gets the one in front.
+    #[test]
+    fn an_uncovered_buffer_is_given_only_to_your_command() {
+        let (_s, mut ed, dir) = setup("given", "");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        granted(&mut ed, &project);
+        let (inside, outside) = (project.join("a.txt"), dir.join("b.txt"));
+        for f in [&inside, &outside] {
+            std::fs::write(f, "key = tarae-fake-token-457\n").unwrap();
+        }
+        ed.open(&inside).unwrap();
+        let a = ed.doc().id;
+        ed.open(&outside).unwrap();
+        let b = ed.doc().id;
+        let given = |ed: &Editor, doc, yours| {
+            let (i, seen) = ed.plugin_input("demo", doc, "", yours).unwrap();
+            (i.path.is_some(), i.name.is_empty(), i.text.len_bytes(), i.ranges.len(), seen.yours)
+        };
+        assert_eq!(given(&ed, a, false), (true, false, 27, 1, false), "covered");
+        assert_eq!(given(&ed, b, false), (false, true, 0, 0, false), "not covered: nothing");
+        assert_eq!(given(&ed, b, true), (true, false, 27, 1, true), "your command's");
+    }
+
+    /// #457, check 5: a buffer its grant doesn't cover has no `opened`, `changed`, `saved`, `before-save` or `closed`
+    /// — the demo trims a `.trim` file before it's saved, and says it opened and closed one — only an empty `shown`.
+    #[test]
+    fn an_uncovered_buffer_has_no_events_but_an_empty_shown() {
+        let (_s, mut ed, dir) = setup("no-events", "");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        granted(&mut ed, &project);
+        let path = dir.join("a.trim");
+        std::fs::write(&path, "x  \n").unwrap();
+        ed.open(&path).unwrap();
+        let doc = ed.doc().id;
+        assert_eq!(ed.subscribers(abi::Event::Shown, doc), ["demo"], "shown, as nothing");
+        for k in ["i", "y", "esc"] {
+            press(&mut ed, k);
+        }
+        crate::typed::execute(&mut ed, "w").unwrap();
+        settle_until(&mut ed, |ed| said(ed, "Saved ", "a.trim"));
+        crate::typed::execute(&mut ed, "bc").unwrap();
+        settle_for(&mut ed, Duration::from_millis(500));
+        assert_eq!(disk(&path), "yx  \n", "no before-save");
+        let told = toasts(&ed);
+        assert!(!told.contains("opened ") && !told.contains("closed "), "{told}");
+        assert!(ed.plugin_status().is_empty());
+    }
+
+    /// #457, check 6: an answer's edits and moves land in a buffer its grant doesn't cover only when it answers your
+    /// command — else where a selection or the cursor lands would tell it the text.
+    #[test]
+    fn edits_and_moves_in_an_uncovered_buffer_only_answer_you() {
+        let (_s, mut ed, dir) = setup("edit-gate", "");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        granted(&mut ed, &project);
+        let path = dir.join("b.txt");
+        std::fs::write(&path, "hello world\n").unwrap();
+        ed.open(&path).unwrap();
+        let (doc, version) = (ed.doc().id, ed.doc().version());
+        let head = |ed: &Editor| ed.doc().selection().primary().head;
+        let its_own = Seen { doc, version, ranges: Vec::new(), yours: false };
+        ed.plugin_apply("demo", &its_own, vec![Action::Select(vec![(6, 11)])]);
+        assert!(toasts(&ed).contains("it edits only a file it may read"), "{}", toasts(&ed));
+        ed.plugin_apply("demo", &its_own, vec![Action::Run("move_next_word_start".into())]);
+        assert!(toasts(&ed).contains("it moves only in a file it may read"), "{}", toasts(&ed));
+        assert_eq!(head(&ed), 0, "neither applied");
+        let yours = Seen { yours: true, ..its_own };
+        ed.plugin_apply("demo", &yours, vec![Action::Select(vec![(0, 1)])]);
+        assert_eq!(head(&ed), 1, "selected");
+        ed.plugin_apply("demo", &yours, vec![Action::Run("move_next_word_start".into())]);
+        assert_ne!(head(&ed), 1, "moved");
+    }
+
+    /// #457, Q2: a buffer with no file — its own view is the plugin's, on its own too; your scratch is given to a
+    /// command you run on it; a surface of tarae's own never is, the command refused and said. The chat's transcript
+    /// is a pane of its own, never the buffer a command runs on: with the chat's keys it runs on the code behind.
+    #[test]
+    fn buffers_with_no_file_its_view_your_scratch_never_taraes_own() {
+        let (_s, mut ed, _dir) = setup("no-file", "scratch words\n");
+        // Your scratch, on your command
+        ed.plugin_run("echo", "").unwrap();
+        until_said(&mut ed, r#"name=[scratch]"#);
+        // Its own view: covered, on its own as well
+        ed.plugin_run("view", "").unwrap();
+        settle_until(&mut ed, |ed| ed.doc().title.as_deref() == Some("web-1 · demo"));
+        let (input, _) = ed.plugin_input("demo", ed.doc().id, "", false).unwrap();
+        assert_eq!(input.text.to_string(), "kind: Pod\n");
+        // tarae's own: a message shown whole
+        let message = ed.open_virtual("message #3", "tarae-fake-token-457\n");
+        let refused = ed.plugin_run("echo", "").unwrap_err();
+        assert_eq!(refused, ":echo isn't given message #3: one of tarae's own views");
+        let (input, _) = ed.plugin_input("demo", message, "", false).unwrap();
+        assert_eq!(input.text.len_bytes(), 0, "nor on its own");
+        ed.close_doc(message);
+        // The chat's transcript: never in front for a command
+        let mut c = crate::chat::Chat::new();
+        c.msgs = vec![crate::chat::Msg::new(crate::chat::Role::Assistant, "tarae-fake-token-chat", "")];
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.set_at(crate::workspace::Here::Chat);
+        crate::term::render(&mut ed, &mut Vec::new(), 120, 30).unwrap();
+        ed.toasts.clear();
+        ed.plugin_run("echo", "").unwrap();
+        until_said(&mut ed, "args=");
+        assert!(!toasts(&ed).contains("tarae-fake-token-chat"), "{}", toasts(&ed));
+    }
+
+    /// #457, Q3: a command you run with a file named like a key in front is refused, saying why — never run on an
+    /// empty buffer (a change you'd not see); and nothing of it reaches the plugin on its own, the project's though it is.
+    #[test]
+    fn a_command_on_a_file_named_like_a_key_is_refused_saying_why() {
+        let (_s, mut ed, dir) = setup("key-front", "API_TOKEN=tarae-fake-token-457\n");
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        granted(&mut ed, &project);
+        // (named, never written or read: a run can't read a key's file)
+        ed.docs[0].path.set(Some(ed.workspace.root.join(".env")));
+        let refused = ed.plugin_run("shout", "").unwrap_err();
+        assert_eq!(refused, ":shout isn't given .env: a file named like a key");
+        assert_eq!(ed.doc().text.to_string(), "API_TOKEN=tarae-fake-token-457\n");
+        let (input, _) = ed.plugin_input("demo", ed.doc().id, "", false).unwrap();
+        assert!(input.path.is_none() && input.text.len_bytes() == 0);
+    }
+
     #[test]
     fn connections_are_asked_about_then_carry_bytes_both_ways() {
         use std::io::{Read, Write};
@@ -1037,7 +1534,8 @@ mod tests {
             std::thread::spawn(move || (0..2).map(|_| listener.accept().unwrap().0).collect::<Vec<_>>());
         let (_s, mut ed, dir) = setup("one-card", "x\n");
         answer(&mut ed, approval, true);
-        let seen = Seen { doc: ed.docs[0].id, version: ed.docs[0].version(), ranges: Vec::new() };
+        let seen =
+            Seen { doc: ed.docs[0].id, version: ed.docs[0].version(), ranges: Vec::new(), yours: false };
         let to = |id, port| Action::Connect(abi::Connect { id, host: "127.0.0.1".into(), port });
         ed.plugin_apply("demo", &seen, vec![to(20, port), to(21, port), to(22, 1)]);
         let asking: Vec<String> =
@@ -1061,7 +1559,8 @@ mod tests {
     fn a_host_never_reached_fails_with_no_card() {
         let (_s, mut ed, dir) = setup("never", "x\n");
         answer(&mut ed, approval, true);
-        let seen = Seen { doc: ed.docs[0].id, version: ed.docs[0].version(), ranges: Vec::new() };
+        let seen =
+            Seen { doc: ed.docs[0].id, version: ed.docs[0].version(), ranges: Vec::new(), yours: false };
         let to = |id, host: &str| Action::Connect(abi::Connect { id, host: host.into(), port: 80 });
         let hosts = vec![to(23, "169.254.169.254"), to(24, "metadata.google.internal"), to(25, "2852039166")];
         ed.plugin_apply("demo", &seen, hosts);
@@ -1077,6 +1576,7 @@ mod tests {
     #[test]
     fn the_buffer_in_front_is_shown() {
         let (_s, mut ed, dir) = setup("shown", "x\n");
+        granted(&mut ed, &dir);
         let (a, b) = (dir.join("a.front"), dir.join("b.front"));
         std::fs::write(&a, "a\n").unwrap();
         std::fs::write(&b, "b\n").unwrap();
@@ -1111,6 +1611,7 @@ mod tests {
     #[test]
     fn an_event_s_text_is_for_the_languages_that_asked() {
         let (_s, mut ed, dir) = setup("shown-text", "x\n");
+        granted(&mut ed, &dir);
         let (md, txt) = (dir.join("a.text.md"), dir.join("b.text.log"));
         std::fs::write(&md, "# a\n").unwrap();
         std::fs::write(&txt, "b\n").unwrap();
@@ -1579,6 +2080,7 @@ mod tests {
     #[test]
     fn opening_a_file_at_a_line() {
         let (_s, mut ed, dir) = setup("goto", "");
+        granted(&mut ed, &dir);
         let path = dir.join("lines.txt");
         std::fs::write(&path, "a\nb\nc\n").unwrap();
         ed.plugin_run("visit", &format!("{}:3", path.display())).unwrap();
@@ -1639,7 +2141,7 @@ mod tests {
     fn a_tab_in_the_side_panel_and_a_badge() {
         use crate::sidebar::Mode as SMode;
         let (_s, mut ed, dir) = setup("side", "");
-        answer(&mut ed, approval, true);
+        granted(&mut ed, &dir);
         let path = dir.join("web.txt");
         std::fs::write(&path, "kind: Deployment\nreplicas: 3\n").unwrap();
         ed.open(&path).unwrap();
@@ -1825,6 +2327,7 @@ mod tests {
     #[test]
     fn subscriptions_for_some_languages_hear_only_of_those() {
         let (_s, mut ed, dir) = setup("langs", "");
+        granted(&mut ed, &dir);
         for s in &mut ed.plugins.as_mut().unwrap().events.subs {
             s.2 = vec!["rust".into()];
         }
@@ -1844,10 +2347,10 @@ mod tests {
     #[test]
     fn events_reach_their_subscribers() {
         let (_s, mut ed, dir) = setup("events", "");
+        granted(&mut ed, &dir);
         let path = dir.join("notes.txt");
         std::fs::write(&path, "one two\n").unwrap();
         ed.open(&path).unwrap();
-        // (the buffer's name is its path here: it's outside the working folder)
         settle_until(&mut ed, |ed| said(ed, "opened ", "notes.txt"));
         assert!(ed.plugin_status().is_empty(), "nothing changed yet");
         for k in ["i", "x", "space", "esc"] {
@@ -1873,6 +2376,7 @@ mod tests {
     #[test]
     fn a_plugins_own_edit_is_not_reported_back() {
         let (_s, mut ed, dir) = setup("loop", "");
+        granted(&mut ed, &dir);
         let path = dir.join("a.loop");
         std::fs::write(&path, "ab").unwrap();
         ed.open(&path).unwrap();
@@ -1894,6 +2398,7 @@ mod tests {
     #[test]
     fn before_save_edits_go_into_the_file() {
         let (_s, mut ed, dir) = setup("presave", "");
+        granted(&mut ed, &dir);
         let path = dir.join("a.trim");
         std::fs::write(&path, "x  \ny \n").unwrap();
         ed.open(&path).unwrap();
@@ -1911,6 +2416,7 @@ mod tests {
     #[test]
     fn a_slow_before_save_doesnt_hold_saving() {
         let (_s, mut ed, dir) = setup("slowsave", "");
+        granted(&mut ed, &dir);
         ed.plugins.as_mut().unwrap().events.wait = Duration::from_millis(50);
         let path = dir.join("a.slow");
         std::fs::write(&path, "hi\n").unwrap();

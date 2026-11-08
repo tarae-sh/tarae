@@ -1073,13 +1073,14 @@ impl Editor {
                     .plugins
                     .as_ref()
                     .and_then(|p| p.side.as_ref())
-                    .and_then(|(_, side)| side.rows.get(i)?.at.clone());
+                    .and_then(|(plugin, side)| Some((plugin.clone(), side.rows.get(i)?.at.clone()?)));
                 match at {
-                    Some((path, line, _)) => {
-                        self.workspace.leave(Here::Side);
-                        let goto =
-                            crate::picker::Action::Goto { path: path.into(), line: line as usize, col: 0 };
-                        self.run_picker_action(goto);
+                    // (a place only in a file it may read, as its `open`: #457 — the keys leave the tab once it's there)
+                    Some((plugin, (path, line, _))) => {
+                        let there = |ed: &mut Editor| ed.workspace.leave(Here::Side);
+                        if let Err(why) = self.plugin_open(&plugin, &path, Some(line as usize), there) {
+                            self.set_error(format!("{plugin}: {why}"));
+                        }
                     }
                     None => self.plugin_side_key("ret", i),
                 }

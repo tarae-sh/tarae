@@ -253,8 +253,8 @@ impl Editor {
     }
 
     /// A plugin's `prompt`: the command line with its name and label — if it's answering you, and no line
-    /// is being typed (else it fails).
-    pub(super) fn plugin_prompt(&mut self, plugin: &str, id: u64, label: &str) {
+    /// is being typed (else it fails). `chain`: the buffer your command ran on, if it's that command's answer.
+    pub(super) fn plugin_prompt(&mut self, plugin: &str, id: u64, label: &str, chain: Option<super::DocId>) {
         let Some(p) = &mut self.plugins else { return };
         let why = if p.answering.as_deref() != Some(plugin) {
             Some("a line is asked for only in answer to you (a command, a key in its panel, a line typed)")
@@ -268,7 +268,7 @@ impl Editor {
         }
         p.serial += 1;
         let token = p.serial;
-        p.prompts.insert(token, (plugin.to_string(), id));
+        p.prompts.insert(token, (plugin.to_string(), id, chain));
         let label: String = shown(label).replace('\n', " ").chars().take(40).collect();
         self.open_prompt(PromptKind::Plugin(token), "");
         if let Some(pr) = self.prompt.as_mut() {
@@ -276,9 +276,19 @@ impl Editor {
         }
     }
 
-    /// What was typed at a plugin's line (None: esc).
+    /// What was typed at a plugin's line, or picked (None: esc). Asked for in the answer to your command, and answered
+    /// with the buffer it ran on still in front: an answer to that command there, once (#457 — `Outbox::chained`); one
+    /// asked for on its own (a key in its panel, an event, a timer) never is, so no "press enter to go on" over a file
+    /// it can't read hands it that file.
     pub(crate) fn plugin_prompt_done(&mut self, token: u64, text: Option<String>) {
-        let Some((plugin, id)) = self.plugins.as_mut().and_then(|p| p.prompts.remove(&token)) else { return };
+        let Some((plugin, id, chain)) = self.plugins.as_mut().and_then(|p| p.prompts.remove(&token)) else {
+            return;
+        };
+        if let Some(o) = self.plugins.as_mut().and_then(|p| p.outbox.get_mut(&plugin))
+            && text.is_some()
+        {
+            o.chained = chain;
+        }
         self.plugin_events(&plugin, vec![HostEvent::Answer(id, text)]);
     }
 
@@ -380,8 +390,9 @@ impl Editor {
         }
     }
 
-    /// A plugin's `pick`: tarae's picker with its items — if it's answering you, and nothing else asks.
-    pub(super) fn plugin_pick(&mut self, plugin: &str, pick: Pick) {
+    /// A plugin's `pick`: tarae's picker with its items — if it's answering you, and nothing else asks. `chain`: as
+    /// `plugin_prompt`'s.
+    pub(super) fn plugin_pick(&mut self, plugin: &str, pick: Pick, chain: Option<super::DocId>) {
         let Some(p) = &mut self.plugins else { return };
         let why = if p.answering.as_deref() != Some(plugin) {
             Some("a pick is offered only in answer to you (a command, a key, a click)")
@@ -395,7 +406,7 @@ impl Editor {
         }
         p.serial += 1;
         let token = p.serial;
-        p.prompts.insert(token, (plugin.to_string(), pick.id));
+        p.prompts.insert(token, (plugin.to_string(), pick.id, chain));
         let items = pick
             .items
             .into_iter()

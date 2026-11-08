@@ -94,6 +94,40 @@ export!(Plugin);
 
 Positions are byte offsets into the buffer.
 
+## Which buffers it's given
+
+A command you run gets the buffer in front, and its answer's edits and moves land there: any file you opened, or a
+scratch buffer of yours. On its own (events, and the context that comes with what it asked for: a timer, a program's
+output, a key in its panel) a plugin is given only a buffer its own grant covers. That's a file its `read` patterns
+or `project` reach once you've approved them, or a buffer it shows itself. Any other buffer is sent as nothing (no
+path, name, text or selections). It has no events but `shown`, which comes empty so a "this file" view can clear,
+and an answer's edits and moves there are refused.
+
+A line or a pick your command's answer asks for (`prompt`, `pick`) counts as part of that command: answered with the
+buffer the command ran on still in front, the plugin gets that buffer with your answer, once. One asked for by a key
+in its panel never counts, and a plugin can't ask for one on its own (an event, a timer): so it can't put up "press
+enter to go on" over a file it can't read and get the file.
+
+It can `open` (and place a side-tab row in) only a file its grant covers. Which file, and whether the grant covers it
+once links are followed, is worked out where the file is read, off the main thread. A refusal is said like any open
+that failed: `kube: it may not open “/etc/hosts”: not a file it may read (permissions())`.
+
+Two kinds of buffer are never given, even to your command, which is then refused and says why:
+- a file named like a key (`.env`, `*.pem`, `id_rsa` …, the list in `runtime/secret-names.txt`): `:fmt isn't given
+  .env: a file named like a key`;
+- tarae's own views (a run's output, a message or a quote shown whole, a web page): `…: one of tarae's own views`.
+  The chat's transcript is never the buffer a command runs on.
+
+`open`, and a place on a row of its side tab, open only a file the plugin may read. Otherwise, a plugin could put any
+file in front of you and wait for your next key on one of its commands.
+
+What that costs, and how to get it back with a `read` pattern:
+- A formatter on `before-save` doesn't reach a file outside its grant. Run its command by hand there, or declare
+  where it should work on its own: `Permission::Read("~/notes/**".into())`.
+- The Kubernetes plugin's live status beside a manifest's lines comes for the project's files (`project`). For
+  manifests kept elsewhere, add their folder (`Permission::Read("~/infra/**".into())`). Its commands work on any
+  file you run them on.
+
 ## What it can do
 
 `run` answers with a list of actions, which tarae carries out in order:
@@ -105,7 +139,7 @@ Positions are byte offsets into the buffer.
 | `edits` | `(from, to, insert)` changes anywhere in the buffer |
 | `select` | new selections, as `(anchor, head)` in the buffer after the answer's edits; the first is the primary one |
 | `run` | a tarae movement command (`move_next_word_start`, `goto_file_start`): only commands that move the cursor or selections run |
-| `open` | a file |
+| `open` | a file it may read (`read`, `project`): any other is refused, said |
 | `status-bar` | a short text in the status line, for this buffer while it's in front, until replaced; `""` clears it |
 
 An answer's edits (`replace-selections`, `edits`, `select`) are **one undo step**, applied where the first of them is
@@ -116,7 +150,8 @@ too) isn't on a character boundary.
 ## Events
 
 A plugin that answers `subscriptions()` with some of these gets `on(event, context)` when they happen. The context is
-about the buffer it happened to, and the answer is carried out like a command's.
+about the buffer it happened to, and the answer is carried out like a command's. Only buffers its grant covers have
+events ([above](#which-buffers-its-given)); any other gets just an empty `shown`.
 
 | Event | When |
 |---|---|
@@ -410,3 +445,6 @@ for `keys` alone, so it hears nothing until your own config turns `plugins.keys`
 | “plugin … hears keys: … refused” / `failed`: “…: a plugin that hears keys shows what it hears in its overlay only” | a key-hearing plugin answers with its overlay and timers only: drop the rest |
 | `failed`: “it didn't ask to …” | add it to `permissions()` (then you approve it again) |
 | `failed`: “its permissions wait for your approval” | you said not now: `:plugin-approve <plugin>`, `y`, then ask again |
+| “:name isn't given …: a file named like a key” / “…: one of tarae's own views” | by design: run it on another buffer |
+| “it may not open “…”: not a file it may read” | add a `read` pattern for it, or `project` |
+| “it edits only a file it may read, or in answer to your command” / “it moves only …” | the same: a `read` pattern for files it works on by itself |

@@ -257,8 +257,47 @@ fn name_matches(pat: &str, name: &str) -> bool {
     p[i..].iter().all(|&c| c == '*')
 }
 
+/// The disk the gate needs (#457): a pattern's folders resolved, a path made real, whether a file is there — only ever
+/// off the main thread (the plugin thread at load, an open's worker). Through here so a test counts them by thread
+/// (`the_gate_touches_no_disk_on_the_main_thread`).
+pub(super) mod disk {
+    use std::path::{Path, PathBuf};
+
+    #[cfg(test)]
+    thread_local! {
+        /// The gate's disk touches on this thread.
+        pub(in crate::plugin) static HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+    /// …and on every thread.
+    #[cfg(test)]
+    pub(in crate::plugin) static ALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn touched() {
+        #[cfg(test)]
+        {
+            HERE.with(|n| n.set(n.get() + 1));
+            ALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub(in crate::plugin) fn canonical(p: &Path) -> std::io::Result<PathBuf> {
+        touched();
+        std::fs::canonicalize(p)
+    }
+
+    /// `p` made real — as it is where nothing's there (a file to make).
+    pub(in crate::plugin) fn real(p: &Path) -> PathBuf {
+        canonical(p).unwrap_or_else(|_| p.to_path_buf())
+    }
+
+    pub(in crate::plugin) fn exists(p: &Path) -> bool {
+        touched();
+        p.exists()
+    }
+}
+
 /// A pattern with the folders before its first wildcard resolved (macOS's /tmp is /private/tmp): what a
-/// resolved path is matched against.
+/// resolved path is matched against. Touches the disk: on the plugin thread, as it loads (`roots`).
 fn resolved_pattern(pattern: &str) -> Option<PathBuf> {
     let pat = expand(pattern)?;
     let wild = |c: &Component| c.as_os_str().to_string_lossy().contains(['*', '?']);
@@ -267,23 +306,31 @@ fn resolved_pattern(pattern: &str) -> Option<PathBuf> {
     // (the longest part of it that exists)
     let mut base = fixed.clone();
     let mut tail = Vec::new();
-    while !base.exists() {
+    while !disk::exists(&base) {
         tail.push(base.file_name()?.to_owned());
         base.pop();
     }
-    let mut out = std::fs::canonicalize(&base).ok()?;
+    let mut out = disk::canonical(&base).ok()?;
     out.extend(tail.iter().rev());
     Some(out.join(rest))
+}
+
+/// Each `read` pattern a plugin declared, with its folders resolved (None: they don't resolve — it covers nothing
+/// resolved). Made on the plugin thread as it loads and reloads (`plugins_start`'s note), so holding a buffer
+/// against a pattern on every event waits on no disk; a pattern's folder swapped for a link later covers nothing
+/// through it — the real path no longer matches —, which fails safe.
+pub(super) fn roots(declared: &[Permission]) -> Vec<(String, Option<PathBuf>)> {
+    declared
+        .iter()
+        .filter_map(|p| {
+            if let Permission::Read(pat) = p { Some((pat.clone(), resolved_pattern(pat))) } else { None }
+        })
+        .collect()
 }
 
 /// Whether `path` is one `pattern` covers (`**`: any folders, none too).
 pub(super) fn path_matches(pattern: &str, path: &Path) -> bool {
     expand(pattern).is_some_and(|pat| path_matches_in(&pat, path))
-}
-
-/// Whether a resolved `path` is one `pattern` covers, resolved too.
-fn real_path_matches(pattern: &str, path: &Path) -> bool {
-    resolved_pattern(pattern).is_some_and(|pat| path_matches_in(&pat, path))
 }
 
 fn path_matches_in(pat: &Path, path: &Path) -> bool {
@@ -299,6 +346,49 @@ fn path_matches_in(pat: &Path, path: &Path) -> bool {
         }
     }
     go(&names(pat), &names(path))
+}
+
+/// What a plugin's grant reaches (`plugin_grant`), taken from the editor to be held against a path with no disk
+/// touched — on the loop, or on the worker an open of its goes to: its `read` patterns, as written and with their
+/// folders resolved (`roots`), the project (a real path), the files allowed on its read card. A path's own real form
+/// comes from where it was made real: a buffer's as it opened, an `open`'s on its worker.
+#[derive(Clone)]
+pub(super) struct Reach {
+    patterns: Vec<(String, Option<PathBuf>)>,
+    project: Option<PathBuf>,
+    files: Vec<String>,
+}
+
+impl Reach {
+    /// Whether it reaches `real` — and `lexical` as written, if there is one (a buffer's path was made real as it
+    /// opened: `real` is all there is).
+    pub(super) fn reaches(&self, lexical: Option<&Path>, real: &Path) -> bool {
+        let covered = |at: &Path| self.patterns.iter().any(|(pat, _)| path_matches(pat, at));
+        // (a pattern whose folders didn't resolve covers nothing resolved)
+        let covered_real =
+            |at: &Path| self.patterns.iter().any(|(_, r)| r.as_ref().is_some_and(|r| path_matches_in(r, at)));
+        // The project's files, if it may read them — where they are, and where they lead; not ones named like
+        // keys and tokens (`.env`, `*.pem` — `secretnames`): those are asked about like any file outside it
+        let secret =
+            lexical.is_some_and(crate::secretnames::named_secret) || crate::secretnames::named_secret(real);
+        let in_project = !secret
+            && self
+                .project
+                .as_ref()
+                .is_some_and(|root| lexical.is_none_or(|l| l.starts_with(root)) && real.starts_with(root));
+        let allowed_before = self.files.iter().any(|f| Path::new(f) == real);
+        (lexical.is_none_or(covered) && covered_real(real)) || in_project || allowed_before
+    }
+
+    /// #457's rule (a): what it reaches, never a file named like a key, whatever its patterns say.
+    ///
+    /// The rule is `secretnames::named_secret` itself, on purpose stricter than the runs' `sandbox::key_named`: that
+    /// one's exceptions (a toolchain's installs and packages, tools' output folders) are there so a run can work inside
+    /// a package or a build's output; a plugin is handed a buffer, and needs none of that. Don't unify them.
+    pub(super) fn covers(&self, lexical: Option<&Path>, real: &Path) -> bool {
+        let secret = |p: &Path| crate::secretnames::named_secret(p);
+        !lexical.is_some_and(secret) && !secret(real) && self.reaches(lexical, real)
+    }
 }
 
 /// A connection's host:port, as approvals keep it (an IPv6 address in brackets).
@@ -515,7 +605,7 @@ impl Editor {
             return;
         }
         let doc = self.doc();
-        let seen = super::Seen { doc: doc.id, version: doc.version(), ranges: Vec::new() };
+        let seen = super::Seen { doc: doc.id, version: doc.version(), ranges: Vec::new(), yours: false };
         self.plugin_apply(plugin, &seen, held);
     }
 
@@ -540,39 +630,41 @@ impl Editor {
         let Some(lexical) = expand(path) else {
             return Err(Some(format!("“{}”: an absolute path, or one from ~/", shown(path))));
         };
-        let Some(p) = &self.plugins else { return Err(Some("plugins aren't running".into())) };
-        let declared = p.permissions.get(plugin).cloned().unwrap_or_default();
-        let patterns: Vec<String> = declared
+        // Resolved too (a symlink out of the pattern is out of it); a missing file is the reader's to say
+        let real = std::fs::canonicalize(&lexical).unwrap_or(lexical.clone());
+        match self.plugin_grant(plugin) {
+            Ok(reach) if reach.reaches(Some(&lexical), &real) => Ok(real),
+            Ok(_) => Err(None),
+            Err(why) => Err(Some(why)),
+        }
+    }
+
+    /// #457's rule (a): whether a plugin's own grant covers the file at `real` (resolved; `lexical`, as it was
+    /// written) — `Reach::covers`. What a plugin opens, and the buffers it's told of on its own, are only these.
+    pub(super) fn plugin_covers(&self, plugin: &str, lexical: Option<&Path>, real: &Path) -> bool {
+        self.plugin_grant(plugin).is_ok_and(|reach| reach.covers(lexical, real))
+    }
+
+    /// What a plugin's grant reaches: its `read` patterns (their folders resolved as it loaded — `roots`) or
+    /// `project`, approved, and the files allowed on its read card. Err: why it reads no file at all. Touches no disk.
+    pub(super) fn plugin_grant(&self, plugin: &str) -> Result<Reach, String> {
+        let Some(p) = &self.plugins else { return Err("plugins aren't running".into()) };
+        let declared = p.permissions.get(plugin).map(Vec::as_slice).unwrap_or_default();
+        let roots = p.roots.get(plugin).map(Vec::as_slice).unwrap_or_default();
+        let patterns: Vec<(String, Option<PathBuf>)> = declared
             .iter()
-            .filter_map(|p| if let Permission::Read(pat) = p { Some(pat.clone()) } else { None })
+            .filter_map(|d| if let Permission::Read(pat) = d { Some(pat) } else { None })
+            .map(|pat| (pat.clone(), roots.iter().find(|(q, _)| q == pat).and_then(|(_, r)| r.clone())))
             .collect();
         let project = declared.contains(&Permission::Project).then(|| self.workspace.root.clone());
         if patterns.is_empty() && project.is_none() {
-            return Err(Some("it didn't ask to read files (permissions())".into()));
+            return Err("it didn't ask to read files (permissions())".into());
         }
         if !self.plugin_approved(plugin) {
-            return Err(Some("its permissions wait for your approval".into()));
+            return Err("its permissions wait for your approval".into());
         }
-        // Resolved too (a symlink out of the pattern is out of it); a missing file is the reader's to say
-        let real = std::fs::canonicalize(&lexical).unwrap_or(lexical.clone());
-        let covered = |at: &Path| patterns.iter().any(|pat| path_matches(pat, at));
-        let covered_real = |at: &Path| patterns.iter().any(|pat| real_path_matches(pat, at));
-        let allowed_before = |at: &Path| {
-            self.plugins
-                .as_ref()
-                .and_then(|p| p.approvals.get(plugin))
-                .is_some_and(|a| a.files.iter().any(|f| Path::new(f) == at))
-        };
-        // The project's files, if it may read them — where they are, and where they lead; not ones named like
-        // keys and tokens (`.env`, `*.pem` — `secretnames`): those are asked about like any file outside it
-        let secret = crate::secretnames::named_secret(&lexical) || crate::secretnames::named_secret(&real);
-        let in_project =
-            !secret && project.is_some_and(|root| lexical.starts_with(&root) && real.starts_with(&root));
-        if (covered(&lexical) && covered_real(&real)) || in_project || allowed_before(&real) {
-            Ok(real)
-        } else {
-            Err(None)
-        }
+        let files = p.approvals.get(plugin).map(|a| a.files.clone()).unwrap_or_default();
+        Ok(Reach { patterns, project, files })
     }
 
     /// Whether a plugin may connect to host:port; `Err(None)`: ask you first.
@@ -748,20 +840,20 @@ mod tests {
 
     #[test]
     fn a_symlink_out_of_a_pattern_is_out_of_it() {
-        let d = std::env::temp_dir().join(format!("tarae-perm-{}", std::process::id()));
+        let s = crate::scratch::Scratch::new("perm-symlink");
+        let d = s.to_path_buf();
         std::fs::create_dir_all(d.join("allowed")).unwrap();
         std::fs::write(d.join("allowed/plain"), "x").unwrap();
         std::fs::write(d.join("secret"), "x").unwrap();
         let link = d.join("allowed/link");
-        let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(d.join("secret"), &link).unwrap();
         let pattern = format!("{}/allowed/**", d.display());
         assert!(path_matches(&pattern, &link), "as written, it's in");
+        let resolved = roots(&[Permission::Read(pattern.clone())]).remove(0).1.unwrap();
         let real = std::fs::canonicalize(&link).unwrap();
-        assert!(!real_path_matches(&pattern, &real), "resolved, it isn't");
+        assert!(!path_matches_in(&resolved, &real), "resolved, it isn't");
         // …while a plain file in it stays in, though the temp folder itself is a symlink on macOS
         let plain = std::fs::canonicalize(d.join("allowed/plain")).unwrap();
-        assert!(real_path_matches(&pattern, &plain));
-        std::fs::remove_dir_all(&d).ok();
+        assert!(path_matches_in(&resolved, &plain));
     }
 }

@@ -1929,7 +1929,9 @@ impl Editor {
 
     pub fn new_scratch(&mut self) {
         let id = self.alloc_id();
-        self.docs.push(Document::from_str(id, ""));
+        let mut doc = Document::from_str(id, "");
+        doc.scratch = true;
+        self.docs.push(doc);
         self.current = self.docs.len() - 1;
         self.workspace_keeps(id);
     }
