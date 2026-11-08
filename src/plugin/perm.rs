@@ -464,12 +464,14 @@ pub struct Kept {
 pub struct ApprovalsWatch {
     store: Option<PathBuf>,
     stamp: Option<Option<(std::time::SystemTime, u64)>>,
+    /// The stamp held tells every later write apart (`disk::sure`).
+    sure: bool,
     last: Kept,
 }
 
 impl ApprovalsWatch {
     pub fn new(store: Option<PathBuf>) -> ApprovalsWatch {
-        ApprovalsWatch { store, stamp: None, last: Kept::default() }
+        ApprovalsWatch { store, stamp: None, sure: false, last: Kept::default() }
     }
 
     /// The store, to wake on.
@@ -477,15 +479,24 @@ impl ApprovalsWatch {
         self.store.as_deref()
     }
 
-    /// The store read again if it changed — the first call always reads (the start's).
+    /// The store read again if it changed — the first call always reads (the start's). A stamp held that isn't sure
+    /// is read again too: a write of the same size within the filesystem clock's tick keeps it (Linux's coarse clock —
+    /// `/tmp/a` allowed for `/tmp/b`), and any write to the store wakes the next look. That read is said only when it
+    /// differs from the last said (an idle tarae isn't woken by each look in the stamp's first `RACY`).
     pub fn changed(&mut self) -> Option<Kept> {
+        let taken = crate::clock::system();
         let stamp = self.store.as_deref().and_then(disk::stamp);
-        if self.stamp == Some(stamp) {
+        let again = self.stamp == Some(stamp);
+        if again && self.sure {
             return None;
         }
         self.stamp = Some(stamp);
+        self.sure = stamp.is_none_or(|s| crate::disk::sure(&s, taken));
         let served = self.store.as_deref().map_or(0, crate::storewrite::served);
         let all = self.store.as_deref().map(disk::read).unwrap_or_default();
+        if again && all == self.last.all && served == self.last.served {
+            return None;
+        }
         self.last = Kept { all, served };
         Some(self.last.clone())
     }
@@ -1366,10 +1377,62 @@ mod tests {
         let all = BTreeMap::from([("demo".to_string(), a)]);
         save(&path, &all).unwrap();
         assert_eq!(w.changed().map(|k| k.all), Some(all.clone()), "renamed over it");
-        assert!(w.changed().is_none(), "unchanged");
+        assert!(w.changed().is_none(), "its stamp not sure yet, read again: the same, nothing said");
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(crate::clock::system() - crate::disk::RACY * 2).unwrap();
+        assert_eq!(w.changed().map(|k| k.all), Some(all.clone()), "its stamp moved");
+        assert!(w.changed().is_none(), "unchanged, its stamp sure");
         std::fs::remove_file(&path).unwrap();
         assert_eq!(w.changed().map(|k| k.all), Some(BTreeMap::new()), "removed");
         assert!(ApprovalsWatch::new(None).changed().is_some_and(|k| k.all.is_empty()), "no store");
+    }
+
+    /// A write of the same size in the filesystem clock's tick keeps the store's stamp (Linux's coarse clock: the
+    /// simulation's "isn't deterministic" on Linux) — the watch reads it all the same.
+    #[test]
+    fn the_approvals_watch_sees_a_write_that_keeps_the_stamp() {
+        let s = crate::scratch::Scratch::new("perm-watch-tick");
+        let path = s.join("plugin-permissions.json");
+        let one = |sha: &str| {
+            let a = Approval { granted: vec!["network".into()], sha256: sha.into(), ..Default::default() };
+            BTreeMap::from([("demo".to_string(), a)])
+        };
+        save(&path, &one("aa")).unwrap();
+        let held = disk::stamp(&path).unwrap();
+        let mut w = ApprovalsWatch::new(Some(path.clone()));
+        assert_eq!(w.changed().map(|k| k.all), Some(one("aa")), "the first read");
+        assert!(w.changed().is_none(), "its stamp not sure, its text as last said: nothing said");
+        save(&path, &one("bb")).unwrap();
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(held.0).unwrap();
+        assert_eq!(disk::stamp(&path), Some(held), "the very stamp");
+        assert_eq!(w.changed().map(|k| k.all), Some(one("bb")), "another text under the same stamp");
+        assert!(w.changed().is_none(), "and once said, not again");
+    }
+
+    /// A stamp read again with its text unchanged is judged again too: once past `RACY` it's sure, and the watch stops
+    /// reading it (a later write has a later mtime) — not a read every round for good.
+    #[test]
+    fn the_approvals_watch_trusts_a_stamp_once_its_past_racy() {
+        let s = crate::scratch::Scratch::new("perm-watch-aged");
+        let path = s.join("plugin-permissions.json");
+        let one = |sha: &str| {
+            let a = Approval { granted: vec!["network".into()], sha256: sha.into(), ..Default::default() };
+            BTreeMap::from([("demo".to_string(), a)])
+        };
+        save(&path, &one("aa")).unwrap();
+        let held = disk::stamp(&path).unwrap();
+        let mut w = ApprovalsWatch::new(Some(path.clone()));
+        assert_eq!(w.changed().map(|k| k.all), Some(one("aa")), "the first read");
+        crate::clock::hold();
+        crate::clock::advance(crate::disk::RACY * 2);
+        assert!(w.changed().is_none(), "read again past RACY: the same, nothing said — and sure now");
+        // (a stand-in for what can't happen past RACY: another text under the very stamp — not looked at)
+        save(&path, &one("bb")).unwrap();
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(held.0).unwrap();
+        assert!(w.changed().is_none(), "a sure stamp isn't read again");
+        crate::clock::release();
     }
 
     #[test]
