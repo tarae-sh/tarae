@@ -90,6 +90,8 @@ pub enum By {
     Yours,
     /// `llm.sandbox-secrets`: its sentinel (`proxy::masked`), the real value swapped in toward its hosts only.
     Masked,
+    /// Masked by its card's `y` (`Grant::Masked`, P2b): its sentinel, the real value in the sign-in header only.
+    MaskedCard,
 }
 
 impl By {
@@ -100,6 +102,7 @@ impl By {
             By::Pack => "a language pack",
             By::Yours => "llm.sandbox-env",
             By::Masked => "llm.sandbox-secrets (a stand-in value)",
+            By::MaskedCard => "masked on its card, until you quit (a stand-in value)",
         }
     }
 }
@@ -386,11 +389,13 @@ impl RunEnv {
         }
         if !self.masked.is_empty() {
             s.push_str(
-                "\n## Masked — a stand-in value; tarae's proxy swaps the real one in toward its hosts only \
-                 (llm.sandbox-secrets)\n",
+                "\n## Masked — a stand-in value; tarae's proxy swaps the real one in toward its hosts only\n",
             );
+            // (each by where it's from: your setting, or its card — P2b: no line of yours for a card's)
             for k in &self.masked {
-                s.push_str(&format!("{k}\n"));
+                let card = self.vars.iter().any(|(n, _, by)| n == k && *by == By::MaskedCard);
+                let from = if card { "masked on its card, until you quit" } else { "llm.sandbox-secrets" };
+                s.push_str(&format!("{k} ({from})\n"));
             }
         }
         s.push_str("\n## Left out — the rest\n");
@@ -529,6 +534,24 @@ mod tests {
     /// P2: a name `llm.sandbox-secrets` masks takes none of the other paths — not `llm.sandbox-env`'s whole name (where
     /// a card's real-value grant lands), not the packs' — and gets no value here: it's `masked`, its sentinel the
     /// run's policy's. One that can't be (under 8 bytes, m; a byte past visible ASCII, e) is left out, said why.
+    /// P2b: the report says where each masked name is from — a card's as its card's, never the setting (there's no
+    /// line of yours to look for), a setting's as `llm.sandbox-secrets`.
+    #[test]
+    fn a_cards_mask_is_said_as_its_cards() {
+        let env = RunEnv {
+            vars: vec![
+                ("A_TOKEN".into(), "fake_value_a".into(), By::MaskedCard),
+                ("B_KEY".into(), "fake_value_b".into(), By::Masked),
+            ],
+            masked: vec!["A_TOKEN".into(), "B_KEY".into()],
+            ..Default::default()
+        };
+        let page = env.page();
+        assert!(page.contains("A_TOKEN (masked on its card, until you quit)\n"), "{page}");
+        assert!(page.contains("B_KEY (llm.sandbox-secrets)\n"), "{page}");
+        assert!(!page.contains("A_TOKEN (llm.sandbox-secrets)"), "{page}");
+    }
+
     #[test]
     fn a_masked_name_takes_no_other_path_and_no_value() {
         let real = concat!("tarae-fake-", "token-0123456789abcdef");

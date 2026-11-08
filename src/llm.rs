@@ -169,6 +169,10 @@ pub struct LlmConfig {
     /// Variables a run gets masked (`llm.sandbox-secrets`, P2 — `sandbox::proxy::masked`): name → the host rules its
     /// real value goes to. Only your own config sets it (`trust::YOURS_ONLY`): where a secret goes is a capability.
     pub sandbox_secrets: std::collections::BTreeMap<String, Vec<String>>,
+    /// Of `sandbox_secrets`, the names a card's masked yes put there for a run (`Grant::Masked` — `tools::with_allowed`,
+    /// P2b), never a setting the user writes: swapped in only in an `Authorization` header (`proxy::masked`), said as
+    /// its card's in the run's report.
+    pub sandbox_secrets_card: std::collections::BTreeSet<String>,
     /// Paths in the project the sandbox keeps as they are, besides the names it always keeps
     /// (`sandbox::protected_names`).
     pub sandbox_protect: Vec<String>,
@@ -230,6 +234,7 @@ impl Default for LlmConfig {
             sandbox_write: Vec::new(),
             sandbox_ca: Vec::new(),
             sandbox_secrets: Default::default(),
+            sandbox_secrets_card: Default::default(),
             sandbox_protect: Vec::new(),
             sandbox_ports: Vec::new(),
             sandbox_localhost: false,

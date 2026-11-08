@@ -518,6 +518,73 @@ proxy = { file = "t.properties", lines = ["port={proxy.port}", "url={proxy.url}"
     assert_eq!((t.proxy.env.len(), t.registries.len()), (1, 1), "{:?}", t.problems);
 }
 
+/// P2b: where a token goes (`[sandbox.proxy] secrets`) — tarae's own: GitHub's forms to its hosts (the tools pack,
+/// git's and gh's), npm's, PyPI's; a value matched whole by tarae's one token rule (`tokens::token_prefix`), the
+/// longest prefix winning, 16 characters at least after it. An entry naming a prefix tarae's rule doesn't know, one
+/// named twice, a host that isn't a rule, a key it doesn't have: left out, said; a runtime folder's: refused.
+#[test]
+fn a_tokens_hosts_come_from_the_built_in_packs_by_its_form() {
+    let t = ours();
+    let of = |v: &str| {
+        t.secret_form(v)
+            .map(|(f, p)| (f.pack.clone(), p, f.hosts.iter().map(ToString::to_string).collect::<Vec<_>>()))
+    };
+    let gh = ["api.github.com", "github.com", "uploads.github.com"].map(String::from).to_vec();
+    // (stand-ins, each in two parts: never a whole provider-format literal)
+    for (v, prefix) in [
+        (concat!("gho_", "tarae0fake0stand0in0abc"), "gho_"),
+        (concat!("ghp_", "tarae0fake0stand0in0abc"), "ghp_"),
+        (concat!("ghu_", "tarae0fake0stand0in0abc"), "ghu_"),
+        (concat!("ghs_", "tarae0fake0stand0in0abc"), "ghs_"),
+        (concat!("github_pat_", "tarae0fake0stand0in0abc"), "github_pat_"),
+    ] {
+        assert_eq!(of(v), Some(("tools".into(), prefix, gh.clone())), "{v}");
+    }
+    let npm = of(concat!("npm_", "tarae0fake0stand0in0abc"));
+    assert_eq!(npm, Some(("javascript".into(), "npm_", vec!["registry.npmjs.org".to_string()])));
+    let pypi = of(concat!("pypi-Ag", "tarae0fake0stand0in0abc"));
+    assert_eq!(pypi, Some(("python".into(), "pypi-Ag", vec!["upload.pypi.org".to_string()])));
+    for none in [
+        "ghp_short",
+        concat!("pypi-", "xtarae0fake0stand0in0abc"),
+        concat!("ghp_", "tarae0fake0stand0in0abc with more"),
+        concat!("x", "ghp_tarae0fake0stand0in0abc"),
+        concat!("glpat-", "tarae0fake0stand0in0abc"),
+    ] {
+        assert_eq!(of(none), None, "{none}");
+    }
+    let cases = [
+        (
+            "[sandbox.proxy]\nsecrets = [{ starts = [\"tok_\"], hosts = [\"a.example.invalid\"] }]\n",
+            "`tok_` isn't a prefix tarae knows",
+        ),
+        (
+            "[sandbox.proxy]\nsecrets = [{ starts = [\"ghp_\", \"ghp_\"], hosts = [\"a.example.invalid\"] }]\n",
+            "`ghp_` is named twice",
+        ),
+        ("[sandbox.proxy]\nsecrets = [{ starts = [\"ghp_\"], hosts = [\"*\"] }]\n", "`*` "),
+        ("[sandbox.proxy]\nsecrets = [{ starts = [\"ghp_\"], hosts = [] }]\n", "no `hosts`"),
+        (
+            "[sandbox.proxy]\nsecrets = [{ starts = [\"ghp_\"], hosts = [\"a.example.invalid\"], to = 1 }]\n",
+            "has no `to`",
+        ),
+        ("[sandbox.proxy]\nsecrets = \"ghp_\"\n", "isn't a list"),
+    ];
+    for (text, said) in cases {
+        let t = table(&[("x", text)], &[]);
+        assert!(t.problems.iter().any(|p| p.contains(said)), "{text}: {:?}", t.problems);
+        assert!(t.secrets.is_empty(), "{text}");
+    }
+    // (two packs naming one prefix: the second left out)
+    let one = "[sandbox.proxy]\nsecrets = [{ starts = [\"npm_\"], hosts = [\"a.example.invalid\"] }]\n";
+    let t = table(&[("x", one), ("y", one)], &[]);
+    assert_eq!(t.secrets.len(), 1, "{:?}", t.problems);
+    assert!(t.problems.iter().any(|p| p.contains("`npm_` is named twice")), "{:?}", t.problems);
+    // (a runtime folder's pack can't say where a token goes)
+    let t = table(&[], &[("y", one)]);
+    assert!(t.secrets.is_empty() && !t.problems.is_empty(), "{:?}", t.problems);
+}
+
 /// Only tarae's own packs tell a run with a proxy URL anything (step 5f: built-in packs only may widen runs —
 /// these carry the run's password into files and set variables its tools obey): a runtime folder's
 /// `[sandbox.proxy]`, a run home's `proxy` and `registries` (the card's words) are left out, and said.

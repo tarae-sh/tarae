@@ -325,6 +325,7 @@ impl Editor {
                     Grant::Key(k) => format!("allow reading {} — that file only", crate::allow::tilde(k)),
                     Grant::Localhost => "allow every port on this machine — the risky ones too".into(),
                     Grant::Env(n) => format!("allow passing your variable {n}"),
+                    Grant::Masked(n, _) => format!("allow passing your variable {n} masked"),
                 },
                 action: Action::Grant(i.to_string()),
                 hint: c.hint.clone(),
@@ -407,6 +408,24 @@ impl Editor {
                     n.parse::<usize>().ok().and_then(|i| list.get(i).cloned()).ok_or("no such row")?;
                 // A read: its card says first what looks like a token there — looked through on a worker
                 let closed = !self.config.llm.sandbox_network;
+                // A variable: what its card says of passing it masked, its value read on a worker — only the match
+                // comes back (P2b: a habitual `y` here never hands out the real value either)
+                if let Grant::Env(n) = &grant {
+                    let (n, here) = (n.clone(), self.sandbox_here.clone());
+                    self.events.jobs().spawn(move || {
+                        let here = here.map_or_else(crate::sandbox::Here::now, |h| h());
+                        let masking = here.env.get(&n).map(|v| Masking::of(v)).filter(|m| {
+                            m.hosts().is_some() || crate::tokens::secret_name(&n)
+                        });
+                        move |ed: &mut Editor| {
+                            let then = then_said(ed, &run);
+                            let masking = masking.map(|m| crate::tools::masking_still(ed, m));
+                            let card = grant_card_with(grant, &why, &cmd, run, None, (then, closed, masking));
+                            ed.push_offer(card)
+                        }
+                    });
+                    return Ok(());
+                }
                 let Grant::Read(place) = &grant else {
                     self.push_offer(grant_card(grant, &why, &cmd, run, None, (then, closed)));
                     return Ok(());
@@ -438,14 +457,38 @@ fn grant_card(
     tokens: Option<String>,
     (then, closed): (&str, bool),
 ) -> crate::offer::Offer {
+    grant_card_with(grant, why, cmd, run, tokens, (then, closed, None))
+}
+
+/// `grant_card`, a variable's with what `masking` says of passing it masked (P2b — offered: `y masked · r real
+/// value · n no`, as Claude's `also` card).
+fn grant_card_with(
+    grant: Grant,
+    why: &str,
+    cmd: &str,
+    run: Box<BlockedRun>,
+    tokens: Option<String>,
+    (then, closed, masking): (&str, bool, Option<Masking>),
+) -> crate::offer::Offer {
     use crate::cards::{Asked, Request, Why};
     // (every port for what picks its ports: the pack's words, as on the card Claude's turn held — `loopback_card`)
     let said = match (&grant, crate::tools::loopback_of(&run.denials)) {
         (Grant::Localhost, Some(card)) => loopback_said(&card, cmd, Some(then)),
         _ => format!("{why}, in `{cmd}` — which runs again now with it open, whichever you choose. {then}"),
     };
-    let asked = Asked::new(Why::Blocked, Request::Grant(grant.clone())).about(cmd);
-    grant_offer(grant, said, asked, run, tokens, Vec::new(), closed)
+    let mut asked = Asked::new(Why::Blocked, Request::Grant(grant.clone())).about(cmd);
+    if let Some(said) = masked_said(&grant, masking.as_ref()) {
+        asked = asked.masked(said);
+    }
+    grant_offer(grant, said, asked, run, tokens.into_iter().collect(), (masking, closed))
+}
+
+/// The record's `masked` for a card offering `grant` masked: its name and hosts, never the value — None: not offered.
+fn masked_said(grant: &Grant, masking: Option<&Masking>) -> Option<String> {
+    match (grant, masking) {
+        (Grant::Env(n), Some(Masking::Offered { hosts, .. })) => Some(format!("{n} → {}", hosts.join(", "))),
+        _ => None,
+    }
 }
 
 /// The card for what Claude's `also` asks (cardauto P3): `grant` for `cmd`, Claude's `reason` — its call waits on
@@ -455,7 +498,7 @@ fn grant_card(
 pub fn also_card(
     grant: Grant,
     reason: &str,
-    cmd: &str,
+    (cmd, masking): (&str, Option<Masking>),
     run: Box<BlockedRun>,
     tokens: Option<String>,
     asks: Vec<crate::cardwarn::Warned>,
@@ -464,9 +507,101 @@ pub fn also_card(
     use crate::cards::{Asked, Request, Why};
     let said = format!("Claude asks, for `{cmd}`: {reason}\n\nIt runs with it open, whichever you choose.");
     let ids = asks.iter().map(|w| w.id.clone()).collect();
-    let asked = Asked::new(Why::Also, Request::Grant(grant.clone())).about(cmd).warned(ids);
-    let lines = asks.iter().map(|w| format!("▲ {}", w.line())).collect();
-    grant_offer(grant, said, asked, run, tokens, lines, closed)
+    let mut asked = Asked::new(Why::Also, Request::Grant(grant.clone())).about(cmd).warned(ids);
+    // (the record: the name and the hosts offered, never the value)
+    if let Some(said) = masked_said(&grant, masking.as_ref()) {
+        asked = asked.masked(said);
+    }
+    let lines = asks.iter().map(|w| format!("▲ {}", w.line()));
+    let warned = tokens.into_iter().chain(lines).collect();
+    grant_offer(grant, said, asked, run, warned, (masking, closed))
+}
+
+/// What the card passing a token-like variable says of passing it masked (P2b, `.sb/masking-p2b-step1.md`) —
+/// worked out on the also's worker from its value (`of`), which never leaves it: only the match comes to the card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Masking {
+    /// A pack knows where a token of its form goes (`Packs::secret_form`): `y` passes it masked toward `hosts`,
+    /// until you quit — `still`: those of them the proxy asks on their own cards (Q3: not opened by it), `closed`
+    /// why: the network is, else they're not on your host list (`tools::masking_still`).
+    Offered { pack: String, prefix: &'static str, hosts: Vec<String>, still: Vec<String>, closed: bool },
+    /// `masked::maskable` refused it: why, in P2a's words.
+    Refused(&'static str),
+    /// Maskable, but no pack knows its form: no host is guessed (D2) — the card names the setting.
+    Unknown,
+}
+
+impl Masking {
+    /// For a variable whose value is `value` — refused first (`maskable`), then a pack's form. A worker's.
+    pub fn of(value: &std::ffi::OsStr) -> Masking {
+        let bytes = value.as_encoded_bytes();
+        if let Err(why) = crate::sandbox::proxy::masked::maskable(bytes) {
+            return Masking::Refused(why);
+        }
+        // (maskable: visible ASCII — text)
+        let value = std::str::from_utf8(bytes).unwrap_or_default();
+        match crate::sandboxpack::get().secret_form(value) {
+            Some((f, prefix)) => Masking::Offered {
+                pack: f.pack.clone(),
+                prefix,
+                hosts: f.hosts.iter().map(ToString::to_string).collect(),
+                still: Vec::new(),
+                closed: false,
+            },
+            None => Masking::Unknown,
+        }
+    }
+
+    /// The hosts a `y` passes it masked toward — None: no `y masked` on the card.
+    pub fn hosts(&self) -> Option<&[String]> {
+        match self {
+            Masking::Offered { hosts, .. } => Some(hosts),
+            _ => None,
+        }
+    }
+}
+
+/// `[llm.sandbox-secrets] N = ["h", …]`, as a config writes it.
+fn secrets_line(n: &str, hosts: &[&str]) -> String {
+    let hosts: Vec<String> = hosts.iter().map(|h| format!("\"{h}\"")).collect();
+    format!("[llm.sandbox-secrets] {n} = [{}]", hosts.join(", "))
+}
+
+/// The masked card's lines for variable `n` (P2b), and which of them fold where the card would be cut, least
+/// important first (`Offer::folding`: the config line, then the pack aside — so `y masked` answers at once at 80
+/// columns). Offered: what `y` and `r` do — what masked means, so whoever's tool needs the real value on this machine
+/// knows to press `r` — the hosts the proxy still asks for and why, whose suggestion the hosts are, the setting that
+/// would keep it. A refused or unknown form: the line that says why there's no `y masked`, or how to have one.
+fn masking_lines(n: &str, m: &Masking) -> (Vec<String>, Vec<usize>) {
+    let Masking::Offered { pack, prefix, hosts, still, closed } = m else {
+        let line = match m {
+            Masking::Refused(why) => format!("No masked answer: {why}."),
+            _ => format!(
+                "To pass it masked, name the hosts it may go to in your config: {}",
+                secrets_line(n, &["<host>"])
+            ),
+        };
+        return (vec![line], Vec::new());
+    };
+    let mut lines = vec![
+        format!(
+            "y masked: your commands see a stand-in; tarae puts the real value in only in the sign-in header toward \
+             {}, until you quit.",
+            hosts.join(", ")
+        ),
+        "r real value: this run, for a tool that needs it here.".to_string(),
+    ];
+    let why = if *closed { "The network is closed" } else { "Not on your host list" };
+    match still.len() {
+        0 => {}
+        k if k == hosts.len() => lines.push(format!("{why}: they still need their own yes.")),
+        _ => lines.push(format!("{why}: {} still need their own yes.", still.join(", "))),
+    }
+    lines.push(format!("The hosts are the {pack} pack's, for a token starting {prefix}."));
+    let hosts: Vec<&str> = hosts.iter().map(String::as_str).collect();
+    lines.push(format!("To keep it masked, in your config: {}", secrets_line(n, &hosts)));
+    let last = lines.len() - 1;
+    (lines, vec![last, last - 1])
 }
 
 /// Gradle's loopback (piece D2): Claude's `cmd` failed because a program the packs say picks its ports as it
@@ -478,7 +613,7 @@ pub fn loopback_card(card: &str, cmd: &str, run: Box<BlockedRun>) -> crate::offe
     let said = loopback_said(card, cmd, None);
     let asked = Asked::new(Why::Blocked, Request::Grant(Grant::Localhost)).about(cmd);
     // (no host: the network's state says nothing on it)
-    grant_offer(Grant::Localhost, said, asked, run, None, Vec::new(), false)
+    grant_offer(Grant::Localhost, said, asked, run, Vec::new(), (None, false))
 }
 
 /// Gradle's loopback card's words, Claude's turn holding it or not: the pack's `card`, then what failed and runs
@@ -494,16 +629,17 @@ fn loopback_said(card: &str, cmd: &str, then: Option<&str>) -> String {
 }
 
 /// A grant's card: what it lets, `said` (why, and what runs), how long it lasts, what it warns of (the grant's
-/// risk, `tokens`, then the command's own: `warned`). A host's: its pack's registry and what a yes lets in with
-/// it, and what's read can go there (the caches too, the network `closed` — `hosts::grant_said`).
+/// risk, then `warned`: what looks like a token where it reads, the command's own). A host's: its pack's registry
+/// and what a yes lets in with it, and what's read can go there (the caches too, the network `closed` —
+/// `hosts::grant_said`). A token-like variable's: what `masking` says of passing it masked — offered, its
+/// answers are `y masked · r real value · n no`, its risk `r`'s.
 fn grant_offer(
     grant: Grant,
     said: String,
     asked: crate::cards::Asked,
     run: Box<BlockedRun>,
-    tokens: Option<String>,
     warned: Vec<String>,
-    closed: bool,
+    (masking, closed): (Option<Masking>, bool),
 ) -> crate::offer::Offer {
     let (registry, host_risk) = match &grant {
         Grant::Host(h, p) => {
@@ -517,27 +653,51 @@ fn grant_offer(
     let lasts = match (&grant, crate::caps::Caps::storable(&grant)) {
         (Grant::Host(..), _) => "This chat lasts until the conversation ends, this session until you quit.",
         (_, Scope::Always) => "s lasts until this session ends, A until :granted takes it back.",
-        (_, Scope::Session) => "s lasts until this session ends — a name for a secret is never kept.",
+        (_, Scope::Session) => {
+            "This chat lasts until the conversation ends, this session until you quit — a name for a secret is never \
+             written."
+        }
         (_, Scope::ThisChat) => {
             "Everything else stays in the sandbox; it's never kept past this conversation."
         }
         (_, Scope::Once) => "Everything else stays in the sandbox; it's never kept past this run.",
     };
     let registry = registry.map(|r| format!("\n{r}")).unwrap_or_default();
-    let mut question = format!("Let Claude's commands {}{registry}\n\n{said} {lasts}", grant.shown());
+    let masked = masking.as_ref().and_then(|m| m.hosts().map(<[String]>::to_vec));
+    let mut folds = Vec::new();
+    let mut question = match (&grant, &masking) {
+        // (offered: Claude's reason first, as on every grant card, then its answers — each says how long it lasts;
+        // its least important lines fold where the card would be cut)
+        (Grant::Env(n), Some(m)) if masked.is_some() => {
+            let mut q = format!("Let Claude's commands {}\n\n{said}\n\n", grant.shown());
+            let at = q.split('\n').count() - 1;
+            let (lines, fold) = masking_lines(n, m);
+            q.push_str(&lines.join("\n"));
+            folds = fold.into_iter().map(|i| at + i..at + i + 1).collect();
+            q
+        }
+        (Grant::Env(n), Some(m)) => {
+            let line = masking_lines(n, m).0.join("\n");
+            format!("Let Claude's commands {}\n\n{said} {lasts}\n{line}", grant.shown())
+        }
+        _ => format!("Let Claude's commands {}{registry}\n\n{said} {lasts}", grant.shown()),
+    };
     if let Some(from) = &run.from {
         question.push_str(&format!("\n\nWhat it refused was read {from}."));
     }
-    let risk = grant.risk().into_iter().chain(host_risk);
-    let warn: Vec<String> = risk.chain(tokens).chain(warned).collect();
+    let risk = match masked {
+        Some(_) => Some("With r its commands read its value, and what they print reaches Claude.".into()),
+        None => grant.risk(),
+    };
+    let warn: Vec<String> = risk.into_iter().chain(host_risk).chain(warned).collect();
     let warning = (!warn.is_empty()).then(|| {
         question.push_str("\n\n");
         let at = question.split('\n').count() - 1;
         question.push_str(&warn.join("\n"));
         at..at + warn.len()
     });
-    let what = crate::offer::What::Grant { grant, run };
-    let o = crate::offer::Offer::new(GRANT_TITLE.into(), &question, "", String::new(), what);
+    let what = crate::offer::What::Grant { grant, run, masked };
+    let o = crate::offer::Offer::new(GRANT_TITLE.into(), &question, "", String::new(), what).folding(folds);
     match warning {
         Some(lines) => o.warning(lines).asked(asked),
         None => o.asked(asked),
@@ -600,6 +760,8 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
         match &grant {
             // (C2: a host is the proxy's to let through — as the user's own choice below)
             Grant::Host(h, p) => crate::hosts::granted(ed, h, *p, scope),
+            // (the masked card's `y`: its stamp the key that gave it)
+            Grant::Masked(..) => crate::allow::grant_by(ed, &grant, scope, 'y'),
             _ => crate::allow::grant(ed, &grant, scope),
         }
         // (a yes on the terminals: asked again this turn, it takes no more of the turn's `also` cards — frictions29
@@ -618,6 +780,8 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
     match &grant {
         // (a host is the proxy's to let through — and the session's, not the conversation's)
         Grant::Host(h, p) => crate::hosts::granted(ed, h, *p, scope),
+        // (the panel's masked `y`, as Claude's card's)
+        Grant::Masked(..) => crate::allow::grant_by(ed, &grant, scope, 'y'),
         _ => crate::allow::grant(ed, &grant, scope),
     }
     let head = format!(
@@ -924,7 +1088,7 @@ mod tests {
         let card = grant_card(c.grant, &c.why, "psql", Box::new(run), None, (NEXT_MESSAGE, true));
         let text = card.question.clone();
         assert!(text.contains("MY_API_TOKEN") && !text.contains(value), "{text}");
-        assert!(text.contains("s lasts until this session ends") && !text.contains("A until"), "{text}");
+        assert!(text.contains("this session until you quit") && !text.contains("A until"), "{text}");
     }
 
     /// A mount refused (Linux, Landlock: `MOUNT_OP`) offers nothing — no grant opens a mount, so the panel offers no

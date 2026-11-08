@@ -126,7 +126,8 @@ pub struct Kept {
     pub base: Option<String>,
     /// None: kept by a build before billing (it takes `llm.billing`, as a new one).
     pub billing: Option<crate::billing::Billing>,
-    /// What the user let its Claude do for the session (`Session.allowed`).
+    /// What the user let its Claude do for the session (`Session.allowed`), but what's never written
+    /// (`Grant::written`).
     pub allowed: crate::allow::Allowed,
     /// The folders added to it (`Workspace.folders`, and those still being judged as they came back —
     /// `folders_judging`).
@@ -150,7 +151,8 @@ impl Kept {
             branch: l.branch.clone(),
             base: l.base.clone(),
             billing: Some(l.claude.billing),
-            allowed: l.claude.allowed.clone(),
+            // (never a masked variable nor a name for a secret: until you quit — P2b)
+            allowed: l.claude.allowed.written(),
             folders: l.folders.iter().chain(&l.folders_judging).cloned().collect(),
             parent: None,
             mark: l.claude.mark.clone(),
@@ -172,7 +174,7 @@ impl Kept {
 
     /// As kept — a path that's no text null, a session or a parent `from_json` then doesn't find (a lossy one could be
     /// another checkout).
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         let mut v = json!({ "root": self.root.to_str(), "name": self.name, "branch": self.branch, "base": self.base,
             "billing": self.billing.map(crate::billing::Billing::name) });
         let allowed = self.allowed.entries("session");
@@ -7683,7 +7685,8 @@ mod tests {
 
     /// cardauto 6: what the user let a session's Claude do for the session (`s`) is kept with it — each answer
     /// with its scope and time, in its file and `:restart`'s state — and comes back onto it, beside what was
-    /// answered there before the list came back; a session kept by an earlier build has none.
+    /// answered there before the list came back; a session kept by an earlier build has none. A name for a secret
+    /// and a masked variable aren't (P2b: until you quit, never written).
     #[test]
     fn a_sessions_grants_are_kept_with_it_and_come_back() {
         let scratch = crate::scratch::Scratch::new("kept-grants");
@@ -7693,11 +7696,18 @@ mod tests {
         ed.workspace.root = state.clone();
         ed.workspace.claude.allowed.add(&crate::allow::Grant::Write("/t/w".into()));
         ed.workspace.claude.allowed.add(&crate::allow::Grant::Port(5432));
-        // (an `A` on a token-like variable, cut to the session's: its key kept with it — 글타래 P5)
-        let token = crate::allow::Grant::Env("GITHUB_TOKEN".into());
+        // (an answer's key kept with it — 글타래 P5)
+        let token = crate::allow::Grant::Env("DATABASE_URL".into());
         ed.workspace.claude.allowed.give(&token, 'A');
+        // (never written: a name for a secret, a masked variable — P2b)
+        ed.workspace.claude.allowed.give(&crate::allow::Grant::Env("GITHUB_TOKEN".into()), 's');
+        let masked = crate::allow::Grant::Masked("NPM_TOKEN".into(), vec!["registry.npmjs.org".into()]);
+        ed.workspace.claude.allowed.give(&masked, 'y');
         let k = Kept::of(&ed.workspace);
         let v = k.json();
+        let text = v.to_string();
+        assert!(!text.contains("GITHUB_TOKEN") && !text.contains("NPM_TOKEN"), "{text}");
+        assert!(!k.allowed.grants().contains(&masked), "nor in :restart's state");
         assert!(
             v["allowed"].as_array().unwrap().iter().all(|e| e["scope"] == "session" && e["granted"].is_u64())
         );
@@ -7731,14 +7741,13 @@ mod tests {
     }
 
     /// 글타래 P5: a session restored, each answer the latest of the two — an `s` given since it was kept stays `s`
-    /// over the kept `A` (a token-like variable's, cut to the session's); one given before it was kept takes the kept
-    /// `A`. The key goes with its time.
+    /// over the kept `A`; one given before it was kept takes the kept `A`. The key goes with its time.
     #[test]
     fn a_restored_sessions_answer_keeps_the_latest_key() {
         let scratch = crate::scratch::Scratch::new("kept-latest");
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = scratch.to_path_buf();
-        let token = crate::allow::Grant::Env("GITHUB_TOKEN".into());
+        let token = crate::allow::Grant::Env("DATABASE_URL".into());
         let mut k = Kept::of(&ed.workspace);
         k.allowed.give(&token, 'A');
         k.allowed.granted.insert(token.clone(), 1_000);

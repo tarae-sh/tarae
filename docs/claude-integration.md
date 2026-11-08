@@ -1436,6 +1436,20 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   403`). A value under 8 bytes, or with a space or a control character, isn't masked (left out, said); under 20
   bytes, a body holding it goes unswapped (said). The report also says a host no rule reaches unasked, and a name
   tarae's own environment doesn't have. What's left: [the threat model](threat-model.md) §1.5.
+- **The masked card**: when Claude's `also {"env": NAME}` asks for a token-like variable whose value a language pack
+  knows the form of (`gho_…`, `ghp_…`, `github_pat_…` the tools pack's, toward `api.github.com`, `github.com`,
+  `uploads.github.com`; `npm_…` toward `registry.npmjs.org`; `pypi-Ag…` toward `upload.pypi.org`), its card offers
+  `y masked · r real value · n no` — and so does the `:sandbox-blocked` panel's card for it: `y` passes it masked
+  toward those hosts until you quit (never written — the next start asks again), `r` the real value for this run. A
+  card's mask goes **only in the sign-in header** (`Authorization`, Basic decoded): in the URL, another field or a body
+  it goes as its fake, said — so a run can't have a code host publish the token in a gist or a comment. Your own
+  `llm.sandbox-secrets` entry goes everywhere toward its hosts (some services need a body). The card says what masked
+  means, the hosts the proxy still asks for on their own cards and why (the network closed, or not on your host list —
+  a masked yes opens none), whose suggestion the hosts are and the `[llm.sandbox-secrets]` line that would keep it —
+  those two fold first on a narrow screen. A value that can't be masked says why; one of a form no pack knows names the
+  setting with `<host>` — no host is guessed, none taken from Claude's reason or a project. `:granted` lists it, a run's
+  report says "masked on its card", `:sandbox-disallow env NAME` takes it back. A name for a secret's `s` (the real
+  value, this session) lasts until you quit too, never written.
 - Each command gets a folder of its own as `TMPDIR`, in tarae's cache (`~/.cache/tarae/runs/`, or under
   `$XDG_CACHE_HOME`) — not in a temp folder, which every command writes: no other command, this session's or
   another's, can put a file there (tools' homes are in it, Gradle's among them). A tarae that's gone leaves its

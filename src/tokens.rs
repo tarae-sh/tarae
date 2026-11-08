@@ -159,6 +159,22 @@ pub fn secret_name(name: &str) -> bool {
     key_secret(&format!("{}=value", name.to_ascii_lowercase()))
 }
 
+/// Whether `p` is one of the prefixes a token is known by (`PREFIXES`) — what the packs' `secrets` may name
+/// (`sandboxpack`): one rule says what a token looks like.
+pub fn known_prefix(p: &str) -> bool {
+    PREFIXES.contains(&p)
+}
+
+/// The known prefix `value` is a token by, whole: it starts with that prefix and the rest is a token's tail of at
+/// least 16 characters, nothing after it — the longest prefix where two match. None: not one.
+pub fn token_prefix(value: &str) -> Option<&'static str> {
+    let whole = |p: &str| {
+        let rest = &value[p.len()..];
+        token_tail(rest) >= 16 && token_tail(rest) == rest.chars().count()
+    };
+    PREFIXES.iter().copied().filter(|p| value.starts_with(p) && whole(p)).max_by_key(|p| p.len())
+}
+
 /// A token by its known prefix, with at least 16 characters after it.
 fn prefixed(s: &str) -> bool {
     PREFIXES.iter().any(|p| s.match_indices(p).any(|(i, _)| token_tail(&s[i + p.len()..]) >= 16))

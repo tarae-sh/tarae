@@ -48,12 +48,13 @@
 //!   (`sandbox::Policy::proxy_url`) and removed for one without — `{proxy.<value>}` in its lines
 //!   (`proxy::URL_VALUES`; a line whose value is empty for the run is left out). A run whose URL is its own
 //!   alone (a port and token of its own) gets the run's own home, never a kept one (step 5f).
-//! - `proxy = { env, append, files, out, trust }`: what a run with a proxy URL gets besides the core's proxy variables —
+//! - `proxy = { env, append, files, out, trust, secrets }`: what a run with a proxy URL gets besides the core's proxy variables —
 //!   variables set and appended to the run's own (no `{proxy.…}`: a variable may end up on a command line), and
 //!   `files."<name>" = { lines, append }`: a file in the run's own folder, `{proxy.<value>}` in its lines, `{file}`
 //!   (its path) in its `append`; `out`: the tools' own proxy settings, never a run's; `trust`: the tools' CA
 //!   variables, each set to the run's trust bundle (`sandbox::cabundle`, #419) — and read in tarae's own
-//!   environment for the files they name.
+//!   environment for the files they name; `secrets = [{ starts, hosts }]`: where a token starting so goes — the
+//!   prefixes tarae's token rule knows (`tokens.rs`), words on the card that passes a variable masked, never a grant.
 //! - `registries`: the hosts the pack's tools fetch from, as `llm.sandbox-hosts` writes them — words only, never
 //!   a grant: the host card names them (Q6).
 //! - `env`: variables in every run's environment (`{run}`: the run's own folder) — or `{ value, on }`: only where
@@ -415,6 +416,17 @@ pub struct Proxy {
     pub trust: Vec<String>,
 }
 
+/// Where a token of a form goes (`[sandbox.proxy] secrets`): suggested on the card that passes a variable masked
+/// (`blocked::Masking`), never a grant — the user's yes on the card, or `llm.sandbox-secrets` (D2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretForm {
+    /// The pack it's of — the card names it.
+    pub pack: String,
+    /// The known prefixes (`tokens::known_prefix`) its tokens start with.
+    pub starts: Vec<String>,
+    pub hosts: Vec<crate::sandbox::proxy::egress::Pattern>,
+}
+
 /// What a home a daemon lives from gets besides (`run-home`'s `daemon`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Daemon {
@@ -558,6 +570,8 @@ pub struct Packs {
     pub proxy: Proxy,
     /// The hosts each pack's tools fetch from: (pack, the hosts) — words on the host card, never a grant.
     pub registries: Vec<(String, crate::sandbox::proxy::egress::Pattern)>,
+    /// Where each form of token goes (`[sandbox.proxy] secrets`) — words on the masked card, never a grant.
+    pub secrets: Vec<SecretForm>,
     pub run_allow: Vec<String>,
     pub code_trees: Vec<String>,
     pub expand: Vec<Expand>,
@@ -596,6 +610,13 @@ pub struct Packs {
 }
 
 impl Packs {
+    /// The form a token `value` is of, whole (`tokens::token_prefix`: the one rule of what a token looks like), and
+    /// the pack's entry for that prefix — None: no pack knows where it goes.
+    pub fn secret_form(&self, value: &str) -> Option<(&SecretForm, &'static str)> {
+        let prefix = crate::tokens::token_prefix(value)?;
+        self.secrets.iter().find(|f| f.starts.iter().any(|s| s == prefix)).map(|f| (f, prefix))
+    }
+
     /// The variables the packs set or read for a run: their homes', their run homes' (and what those set and
     /// append to), their `env` (and their `proxy`'s), their settings', their caches' `var`, their disk stores'
     /// (the home's, those naming a store — the user's own reaches the run; the settings files a variable names are
@@ -994,7 +1015,16 @@ fn read_key_of(
         }
         ("sandbox", "proxy") => {
             let p = tab(v)?;
-            known(&p, &["env", "append", "files", "out", "trust"], "`proxy`")?;
+            known(&p, &["env", "append", "files", "out", "trust", "secrets"], "`proxy`")?;
+            for s in p.get("secrets").map_or(&[][..], |s| s.as_array().map_or(&[][..], Vec::as_slice)) {
+                match secret_form(pack, s, &out.secrets) {
+                    Ok(f) => out.secrets.push(f),
+                    Err(e) => wrong.push(format!("`proxy.secrets`: {e}")),
+                }
+            }
+            if p.get("secrets").is_some_and(|s| !s.is_array()) {
+                wrong.push("`proxy.secrets` isn't a list".into());
+            }
             for n in list_in(&p, "trust")? {
                 match check_proxy_var(&n) {
                     Ok(()) if !out.proxy.trust.contains(&n) => out.proxy.trust.push(n),
@@ -1276,6 +1306,31 @@ fn proxy_lines(lines: &[String], what: &str) -> Result<Vec<String>, String> {
         check_braces(l, &allowed, what)?;
     }
     Ok(lines.to_vec())
+}
+
+/// One of `[sandbox.proxy] secrets` of `pack`: `{ starts, hosts }` — each prefix one tarae's token rule knows
+/// (`tokens::known_prefix`: no second list of what a token looks like) and named by no other entry (`before`), each
+/// host a rule as `llm.sandbox-hosts` writes one (never every host: `Pattern` has no bare `*`).
+fn secret_form(pack: &str, v: &Value, before: &[SecretForm]) -> Result<SecretForm, String> {
+    let t = v.as_table().ok_or("an entry isn't a table")?;
+    known(t, &["starts", "hosts"], "an entry")?;
+    let (starts, hosts) = (list_in(t, "starts")?, list_in(t, "hosts")?);
+    if starts.is_empty() || hosts.is_empty() {
+        return Err("an entry names no `starts` or no `hosts`".into());
+    }
+    for s in &starts {
+        if !crate::tokens::known_prefix(s) {
+            return Err(format!("`{s}` isn't a prefix tarae knows a token by (tokens.rs)"));
+        }
+        if before.iter().any(|f| f.starts.contains(s)) || starts.iter().filter(|o| *o == s).count() > 1 {
+            return Err(format!("`{s}` is named twice"));
+        }
+    }
+    let hosts = hosts
+        .iter()
+        .map(|h| crate::sandbox::proxy::egress::Pattern::parse(h).map_err(|e| format!("`{h}` {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SecretForm { pack: pack.into(), starts, hosts })
 }
 
 /// `[sandbox.proxy.files."<name>"]`: a file in the run's own folder.

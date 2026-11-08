@@ -1459,7 +1459,7 @@ fn a_focusing_press_moves_no_answer() {
         ed.push_offer(crate::blocked::also_card(
             grant,
             reason,
-            "npm test",
+            ("npm test", None),
             Box::new(run),
             None,
             Vec::new(),

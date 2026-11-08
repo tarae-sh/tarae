@@ -58,6 +58,7 @@ mod jumps;
 mod keepclose;
 mod kubecard;
 mod landed;
+mod masked;
 mod motion;
 mod now;
 mod opening;

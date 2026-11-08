@@ -28,7 +28,7 @@ fn sentinels_are_as_long_as_their_values_and_kept_with_the_session() {
     let short = "short-v8";
     let names: Vec<String> = ["A", "S", "T"].map(String::from).to_vec();
     let vars = env(&[("A", REAL_A), ("S", short), ("T", &"t".repeat(20))]);
-    let (m, said) = of_session(SESSION + 1, &table(&["A", "S", "T", "GONE"]), &names, &vars);
+    let (m, said) = of_config(SESSION + 1, &table(&["A", "S", "T", "GONE"]), &names, &vars);
     let m = m.unwrap();
     assert_eq!(
         said,
@@ -44,19 +44,19 @@ fn sentinels_are_as_long_as_their_values_and_kept_with_the_session() {
     assert_eq!(uuid, [8, 4, 4, 4, 12], "{s}");
     assert_eq!(&s[25..26], "4", "a version 4 UUID: {s}");
     // The next run of the session: the same; another session: its own
-    let again = of_session(SESSION + 1, &table(&["A", "S"]), &names, &vars).0.unwrap();
+    let again = of_config(SESSION + 1, &table(&["A", "S"]), &names, &vars).0.unwrap();
     assert_eq!((of(&again, "A"), of(&again, "S")), (a.clone(), s.clone()));
-    let other = of_session(SESSION + 2, &table(&["A"]), &names, &vars).0.unwrap();
+    let other = of_config(SESSION + 2, &table(&["A"]), &names, &vars).0.unwrap();
     assert_ne!(of(&other, "A"), a);
     // A value whose length changed: a sentinel as long as it
     let longer = format!("{REAL_A}xyz");
-    let changed = of_session(SESSION + 1, &table(&["A"]), &names, &env(&[("A", &longer)])).0.unwrap();
+    let changed = of_config(SESSION + 1, &table(&["A"]), &names, &env(&[("A", &longer)])).0.unwrap();
     assert_eq!(of(&changed, "A").len(), longer.len());
     // Not maskable (`names` left it out, said where the environment was made): nothing
-    assert!(of_session(SESSION + 1, &table(&["S"]), &[], &vars).0.is_none());
+    assert!(of_config(SESSION + 1, &table(&["S"]), &[], &vars).0.is_none());
     // The session ended: new ones
     forget(SESSION + 1);
-    let after = of_session(SESSION + 1, &table(&["S"]), &names, &vars).0.unwrap();
+    let after = of_config(SESSION + 1, &table(&["S"]), &names, &vars).0.unwrap();
     assert_ne!(of(&after, "S"), s);
     forget(SESSION + 1);
     forget(SESSION + 2);
@@ -69,7 +69,7 @@ fn sentinels_are_unique_and_none_inside_another() {
     let vars: HashMap<String, OsString> =
         names.iter().enumerate().map(|(k, n)| (n.clone(), OsString::from("v".repeat(20 + k % 3)))).collect();
     let t: BTreeMap<String, Vec<String>> = names.iter().map(|n| (n.clone(), vec!["a.test".into()])).collect();
-    let m = of_session(SESSION + 3, &t, &names, &vars).0.unwrap();
+    let m = of_config(SESSION + 3, &t, &names, &vars).0.unwrap();
     let all: Vec<&str> = m.sentinels().map(|(_, s)| s).collect();
     for (i, a) in all.iter().enumerate() {
         for (j, b) in all.iter().enumerate() {
@@ -193,6 +193,66 @@ fn another_secrets_sentinel_is_refused_in_a_head() {
     let head = format!("GET / HTTP/1.1\r\nHost: api.a.test\r\nAuthorization: Bearer {a}\r\n\r\n");
     let got = String::from_utf8(own.request_head(head.as_bytes()).unwrap().bytes).unwrap();
     assert!(got.contains(&format!("Bearer {REAL_A}\r\n")), "{got}");
+}
+
+/// P2b: a card's mask goes only in the sign-in header — toward its host its sentinel is swapped in `Authorization`
+/// (Bearer, and a `Basic` credential decoded), never in the target, another field or the body: left as its fake
+/// there, each said. Your own `llm.sandbox-secrets` entry beside it still goes everywhere (P2a).
+#[test]
+fn a_cards_mask_is_swapped_only_in_the_sign_in_header() {
+    // (each as long as its value: a body's swap keeps its length)
+    let (a, b) = ("fake_value_0000000000000000000000", "fake_value_1111111111111111");
+    let m = Masked::of(&[
+        ("A_TOKEN", a, REAL_A, &["api.a.test"]),
+        // (a config entry toward the same host: P2a's every-field swap)
+        ("B_KEY", b, REAL_B, &["api.a.test"]),
+    ])
+    .card_marked(&["A_TOKEN"]);
+    let v = m.toward("api.a.test", 443);
+    // Authorization: swapped, Bearer and Basic
+    let bearer = format!("GET / HTTP/1.1\r\nHost: api.a.test\r\nAuthorization: Bearer {a}\r\n\r\n");
+    let h = v.request_head(bearer.as_bytes()).unwrap();
+    let got = String::from_utf8(h.bytes).unwrap();
+    assert!(got.contains(&format!("Bearer {REAL_A}\r\n")) && h.left.is_empty(), "{got}");
+    let basic = parse::base64(format!("x-access-token:{a}").as_bytes());
+    let head = format!("GET / HTTP/1.1\r\nHost: api.a.test\r\nauthorization: Basic {basic}\r\n\r\n");
+    let got = String::from_utf8(v.request_head(head.as_bytes()).unwrap().bytes).unwrap();
+    let real = parse::base64(format!("x-access-token:{REAL_A}").as_bytes());
+    assert!(got.contains(&format!("Basic {real}\r\n")), "{got}");
+    // The target and another field: left as its fake, said — the config entry's swapped there all the same
+    let head =
+        format!("GET /gists?t={a}&k={b} HTTP/1.1\r\nHost: api.a.test\r\nX-Token: {a}\r\nX-Key: {b}\r\n\r\n");
+    let h = v.request_head(head.as_bytes()).unwrap();
+    let got = String::from_utf8(h.bytes).unwrap();
+    assert!(got.contains(&format!("t={a}&")) && got.contains(&format!("X-Token: {a}\r\n")), "{got}");
+    assert!(!got.contains(REAL_A), "{got}");
+    assert!(
+        got.contains("k=tarae-fake-key%2B%2F%3D0123456789 ") && got.contains(&format!("X-Key: {REAL_B}\r\n"))
+    );
+    assert_eq!(h.left.len(), 2, "{:?}", h.left);
+    assert!(
+        h.left[0].starts_with("A_TOKEN's masked value in the request's target went as its fake"),
+        "{:?}",
+        h.left
+    );
+    assert!(h.left[1].contains("goes only in the Authorization header"), "{:?}", h.left);
+    // The body: left as its fake, said; the config entry's swapped
+    let mut scan = v.request_scan().expect("a scan");
+    let mut out = Vec::new();
+    scan.data(format!("{{\"content\":\"{a}\",\"key\":\"{b}\"}}").as_bytes(), &mut out).unwrap();
+    scan.end(&mut out).unwrap();
+    let body = String::from_utf8(out).unwrap();
+    assert_eq!(body, format!("{{\"content\":\"{a}\",\"key\":\"{REAL_B}\"}}"));
+    let left = scan.left();
+    assert_eq!(left.len(), 1, "{left:?}");
+    let said = v.left_said(true, left[0].0, &left[0].1);
+    assert!(said.starts_with("A_TOKEN's masked value in a request body went as its fake"), "{said}");
+    // The same name as your own entry: everywhere
+    let mine = Masked::of(&[("A_TOKEN", a, REAL_A, &["api.a.test"])]);
+    let h = mine.toward("api.a.test", 443).request_head(head.as_bytes()).unwrap();
+    assert!(
+        String::from_utf8(h.bytes).unwrap().contains(&format!("X-Token: {REAL_A}\r\n")) && h.left.is_empty()
+    );
 }
 
 /// D3: an answer's head scrubbed of every real value — its status line, `Location`, any field — but its framing's fields;

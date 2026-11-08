@@ -261,9 +261,16 @@ Kept:
 - **A masked variable** (`llm.sandbox-secrets`, your own config only — P2): the run holds a sentinel (`fake_value_…`,
   as long as the real value from 20 bytes on), never the value — not through `llm.sandbox-env` nor a card's real-value
   grant, which a masked name never takes. The real value is only in tarae's memory, the session's registry its proxy
-  holds; tarae's proxy swaps it in toward the hosts you named with it (§1.5). A value under 8 bytes, or with a byte
-  past visible ASCII, isn't masked: left out, said.
-  test: `sandbox::tests::a_masked_variable_reaches_a_run_as_its_sentinel` ·
+  holds; tarae's proxy swaps it in toward the hosts you named with it (§1.5) — or a built-in pack's suggestion for
+  its value's form you said `y` to on its card (P2b: until you quit, never written; never Claude's nor a project's
+  hosts, D2). A value under 8 bytes, or with a byte past visible ASCII, isn't masked: left out, said. A name for a
+  secret's real value is never written either (`s`: until you quit).
+  test: `tools::tests::a_token_whose_form_a_pack_knows_is_offered_masked` ·
+  `tools::tests::a_token_no_pack_knows_or_unmaskable_names_why_and_the_setting` ·
+  `tools::tests::the_panels_card_offers_a_token_masked_too` ·
+  `granted::tests::a_secret_names_s_lasts_until_you_quit_never_written` ·
+  `sim::masked::the_masked_card_through_its_answers` ·
+  `sandbox::tests::a_masked_variable_reaches_a_run_as_its_sentinel` ·
   `sandbox::runenv::tests::a_masked_name_takes_no_other_path_and_no_value` ·
   `sandbox::tests::a_masked_name_is_another_policy_than_its_real_value` ·
   `sandbox::proxy::masked::tests::sentinels_are_as_long_as_their_values_and_kept_with_the_session` ·
@@ -544,6 +551,11 @@ Kept:
 Not kept:
 - **A host you said yes to is a channel**: what the run read can be sent there (a registry takes uploads; a code
   host takes anything) — every host card says so.
+- **Toward a configured masked value's hosts, a run can write the real value into what it sends** (`llm.sandbox-secrets`:
+  every field, the target, a body — P2a), and a code host can publish it (a gist, an issue comment). **A card's mask is
+  header-only** (P2b): swapped in only in an `Authorization` field; found in the target, another field or a body it
+  goes as its fake, said.
+  test: `sandbox::proxy::masked::tests::a_cards_mask_is_swapped_only_in_the_sign_in_header`
 - **Under a yes for a pack's registry, G4 is open for those runs**: a build script can put code in the toolchain's
   caches (`~/.cargo/registry/src`) that your own builds then run — the card says so (Rust and Go: tarae's own fetch,
   piece C3, is the way that keeps them closed).

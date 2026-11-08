@@ -180,8 +180,9 @@ pub enum What {
     Read { pending: Box<crate::reads::Pending>, keep: bool, folder: Option<PathBuf> },
     /// The user opens the sandbox for what it blocked in `run` (`blocked.rs`): `y` once (it runs again with
     /// it), `a` this chat, `s` this session, `A` always — as far as `Caps::storable` lets it last — and runs
-    /// again — `n` no.
-    Grant { grant: crate::allow::Grant, run: Box<crate::blocked::BlockedRun> },
+    /// again — `n` no. `masked` (a token-like variable whose form a pack knows, P2b): the hosts `y` passes it masked
+    /// toward, until you quit — then `r` is the real value, once, and there's no `a` or `s`.
+    Grant { grant: crate::allow::Grant, run: Box<crate::blocked::BlockedRun>, masked: Option<Vec<String>> },
     /// The user runs `run` again outside the sandbox, once (`blocked.rs`): `y` · `n`.
     Outside { run: Box<crate::blocked::BlockedRun> },
     /// The project's `.tarae.toml` sets what runs commands (`trust.rs`): `y` trusts it, `n` ignores that
@@ -547,6 +548,7 @@ fn plain(k: char, says: &'static str) -> Answer {
 /// The short words of answers whose first word wouldn't say them (`Offer::answers_short`).
 const SHORT: &[(&str, &str)] = &[
     ("Not now", "not now"),
+    ("Real value", "real value"),
     ("This chat", "chat"),
     ("This session", "session"),
     ("Always here", "always"),
@@ -866,6 +868,8 @@ impl Offer {
     pub fn top(&self) -> Option<crate::allow::Scope> {
         use crate::allow::Scope;
         match &self.what {
+            // (masked offered: two yeses that differ in what, not in how long — no `a`, `s` or `A`)
+            What::Grant { masked: Some(_), .. } => Some(Scope::Once),
             What::Grant { grant, .. } => Some(crate::caps::Caps::storable(grant)),
             // (tarae's log: this chat at most — #292)
             What::Read { pending, keep: true, .. } if pending.log => Some(Scope::ThisChat),
@@ -946,7 +950,8 @@ impl Offer {
             // (its letters a weighty card takes while it's cut — `offer_key`'s weighty part)
             || (self.weighty() && self.weighty_answer(c))
             || (c == 'N' && matches!(self.what, What::Install { .. } | What::Fetch { .. }))
-            || (c == 'r' && (self.change_set().is_some() || self.made()))
+            || (c == 'r' && (self.change_set().is_some() || self.made() || self.masks()))
+            || (c == 's' && self.masks())
             || (c == 'R' && self.end_dirty())
             || (c == 'c' && (self.commits_first() || self.compares() || self.moves_mixed()))
             || (c == 'D' && (self.recovers() || self.both()))
@@ -987,7 +992,7 @@ impl Offer {
     pub fn weighty_answer(&self, c: char) -> bool {
         matches!(c, 'y' | 'a' | 'A' | 'D' | 'R' | 'c')
             || (c == 'Y' && !self.like.is_empty())
-            || (c == 'r' && self.made())
+            || (c == 'r' && (self.made() || self.masks()))
             || (c == 's' && (self.stashes() || self.for_workspace()))
             || (c == 'p' && self.preflights())
             || (c == 'X' && self.aborts())
@@ -1041,7 +1046,8 @@ impl Offer {
             'v' if matches!(self.what, What::ClaudeSettings { .. } | What::RepoTrust { .. }) => A::View,
             'v' if self.host_details().is_some() || self.read_details().is_some() => A::View,
             'v' if matches!(self.what, What::Instructions(_)) => A::View,
-            'r' if self.made() => A::AcceptBy('r'),
+            'r' if self.made() || self.masks() => A::AcceptBy('r'),
+            'a' | 'A' | 's' if self.masks() => A::Say("this card asks y, r or n"),
             'n' => A::Dismiss,
             'N' if matches!(self.what, What::Install { .. } | What::Fetch { .. }) => A::Never,
             'a' if self.limit_all() => A::LimitAll,
@@ -1179,6 +1185,11 @@ impl Offer {
     /// Whether it's the protected-made card (`r` removes them, `v` shows them).
     pub fn made(&self) -> bool {
         matches!(self.what, What::ProtectedMade { .. })
+    }
+
+    /// Whether it offers a variable masked (`y` masked, `r` the real value — P2b).
+    pub fn masks(&self) -> bool {
+        matches!(self.what, What::Grant { masked: Some(_), .. })
     }
 
     /// Whether it parks with its session when another comes to the front: Claude's, and a review's end
@@ -1396,6 +1407,11 @@ impl Offer {
                 v.push(plain('n', "No"));
                 v
             }
+            // (a token-like variable whose form a pack knows: masked first — a habitual `y` never hands out the real
+            // value — the real value its own letter, P2b Q1)
+            W::Grant { masked: Some(_), .. } => {
+                vec![lasts('y', "Masked"), lasts('r', "Real value"), plain('n', "No")]
+            }
             // (as the host's own card, the network closed: never kept past a session)
             W::Grant { grant: crate::allow::Grant::Host(..), .. } => {
                 vec![
@@ -1412,6 +1428,13 @@ impl Offer {
                     lasts('a', "This chat"),
                     lasts('s', "This session"),
                     lasts('A', "Always here"),
+                    plain('n', "No"),
+                ],
+                // (a name for a secret: until you quit at most, never written — as a host's)
+                Some(crate::allow::Scope::Session) => vec![
+                    plain('y', "Once"),
+                    lasts('a', "This chat"),
+                    lasts('s', "This session"),
                     plain('n', "No"),
                 ],
                 Some(crate::allow::Scope::ThisChat) => {
@@ -2126,7 +2149,12 @@ impl crate::editor::Editor {
             What::Read { pending, keep, folder } => {
                 crate::reads::answer(self, id, *pending, Some(crate::allow::Scope::Once), keep, folder)
             }
-            What::Grant { grant, run } => {
+            // (a token-like variable offered masked: `y` passes it so until you quit, `r` the real value this run)
+            What::Grant { grant: crate::allow::Grant::Env(n), run, masked: Some(hosts) } if key != 'r' => {
+                let masked = crate::allow::Grant::Masked(n, hosts);
+                crate::blocked::grant_answer(self, id, masked, *run, Some(crate::allow::Scope::Session))
+            }
+            What::Grant { grant, run, .. } => {
                 crate::blocked::grant_answer(self, id, grant, *run, Some(crate::allow::Scope::Once))
             }
             What::Outside { run } => crate::blocked::outside_answer(self, id, *run, true),
@@ -2271,7 +2299,7 @@ impl crate::editor::Editor {
         match o.what {
             What::Host(a) => crate::hosts::answer(self, o.id, *a, crate::sandbox::proxy::Scope::Session),
             What::WebRead(a) => crate::web::tool::answer(self, o.id, *a, session),
-            What::Grant { grant, run } => crate::blocked::grant_answer(self, o.id, grant, *run, session),
+            What::Grant { grant, run, .. } => crate::blocked::grant_answer(self, o.id, grant, *run, session),
             What::Read { pending, keep, folder } => {
                 crate::reads::answer(self, o.id, *pending, session, keep, folder)
             }
@@ -2801,7 +2829,9 @@ impl crate::editor::Editor {
                 crate::reads::answer(self, o.id, *pending, Some(scope), keep, folder)
             }
             What::Run(card) => crate::tools::run_answer(self, o.id, *card, Some(scope)),
-            What::Grant { grant, run } => crate::blocked::grant_answer(self, o.id, grant, *run, Some(scope)),
+            What::Grant { grant, run, .. } => {
+                crate::blocked::grant_answer(self, o.id, grant, *run, Some(scope))
+            }
             #[cfg(test)]
             What::Asks { call } => {
                 self.offer_finished(o.id, Ok(()));
@@ -2888,7 +2918,7 @@ impl crate::editor::Editor {
             What::Read { pending, keep, folder } => {
                 crate::reads::answer(self, o.id, *pending, None, keep, folder)
             }
-            What::Grant { grant, run } => crate::blocked::grant_answer(self, o.id, grant, *run, None),
+            What::Grant { grant, run, .. } => crate::blocked::grant_answer(self, o.id, grant, *run, None),
             What::Outside { run } => crate::blocked::outside_answer(self, o.id, *run, false),
             #[cfg(test)]
             What::Asks { call } => {

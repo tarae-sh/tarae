@@ -39,6 +39,9 @@ pub struct Allowed {
     /// Variables of the user's passed to Claude's commands, each by its whole name (`Grant::Env` — as an
     /// `llm.sandbox-env` entry).
     pub env: Vec<String>,
+    /// Variables of the user's passed masked, each by name with its hosts (`Grant::Masked` — as an
+    /// `llm.sandbox-secrets` entry): this session's only, never written.
+    pub masked: Vec<(String, Vec<String>)>,
     /// When each was answered (seconds since the epoch) — what `:granted` says. One kept before times were (an
     /// old `sandbox.json`) has its file's time.
     pub granted: BTreeMap<Grant, u64>,
@@ -123,7 +126,34 @@ impl Allowed {
                     self.stamp(g.clone());
                 }
             }
+            // (one name's hosts are the latest answer's)
+            Grant::Masked(n, hosts) => {
+                if !self.masked.iter().any(|(m, h)| m == n && h == hosts) {
+                    self.take_masked(n);
+                    self.masked.push((n.clone(), hosts.clone()));
+                    self.stamp(g.clone());
+                }
+            }
         }
+    }
+
+    /// Takes back `n` passed masked, whichever its hosts, and its time.
+    fn take_masked(&mut self, n: &str) {
+        let gone: Vec<Grant> = (self.masked.iter().filter(|(m, _)| m == n))
+            .map(|(m, h)| Grant::Masked(m.clone(), h.clone()))
+            .collect();
+        self.masked.retain(|(m, _)| m != n);
+        for g in gone {
+            self.granted.remove(&g);
+            self.given.remove(&g);
+        }
+    }
+
+    /// Only what's ever written (`Grant::written`) — a session's answers as `$state/sessions` keeps them.
+    pub fn written(&self) -> Allowed {
+        let mut a = self.clone();
+        self.grants().iter().filter(|g| !g.written()).for_each(|g| a.take(g));
+        a
     }
 
     /// Whether `g` is in it already (a place in one there, too).
@@ -159,6 +189,7 @@ impl Allowed {
         out.extend(self.keys.iter().cloned().map(Grant::Key));
         out.extend(self.localhost.then_some(Grant::Localhost));
         out.extend(self.env.iter().cloned().map(Grant::Env));
+        out.extend(self.masked.iter().cloned().map(|(n, h)| Grant::Masked(n, h)));
         out
     }
 
@@ -248,6 +279,7 @@ impl Allowed {
             Grant::Key(k) => self.keys.retain(|x| x != k),
             Grant::Localhost => self.localhost = false,
             Grant::Env(n) => self.env.retain(|x| x != n),
+            Grant::Masked(n, h) => self.masked.retain(|(x, y)| x != n || y != h),
         }
         self.granted.remove(g);
         self.given.remove(g);
@@ -268,8 +300,10 @@ impl Allowed {
         if what == LOCALHOST_LISTED {
             self.localhost = false;
         }
+        // (`env NAME`: passed whole or masked)
         if let Some(n) = what.strip_prefix("env ") {
             self.env.retain(|e| e != n);
+            self.masked.retain(|(m, _)| m != n);
         }
         let at = Path::new(what);
         self.read.retain(|p| p != at);
@@ -296,6 +330,7 @@ impl Allowed {
             && self.keys.is_empty()
             && !self.localhost
             && self.env.is_empty()
+            && self.masked.is_empty()
     }
 }
 
@@ -348,6 +383,10 @@ pub enum Grant {
     /// Pass the user's variable of that name, whole (as one `llm.sandbox-env` entry) — never a name
     /// `readonly::env_allowed` keeps off; its value is on no card and in no record.
     Env(String),
+    /// Pass the user's variable of that name masked, toward those hosts (as one `llm.sandbox-secrets` entry, P2b):
+    /// a stand-in in the run, the real value put in by tarae's proxy toward the hosts only — until you quit, never
+    /// written; the hosts a pack's suggestion the user said yes to on the card (D2).
+    Masked(String, Vec<String>),
 }
 
 impl Grant {
@@ -363,7 +402,18 @@ impl Grant {
             Grant::Key(k) => format!("read {}, named like a key — that one file", tilde(k)),
             Grant::Localhost => "connect to every port on this machine".into(),
             Grant::Env(n) => format!("have your variable {n} (its value is never shown)"),
+            Grant::Masked(n, hosts) => format!(
+                "have your variable {n} masked — a stand-in value, the real one put in only toward {}; sent \
+                 anywhere else it's refused",
+                hosts.join(", ")
+            ),
         }
+    }
+
+    /// Whether an answer of it is ever written — `$state/sessions` or the project's store: never a socket, a masked
+    /// variable, nor a name for a secret (its value is a token's: until you quit at most).
+    pub fn written(&self) -> bool {
+        self.entry().is_some()
     }
 
     /// Whether it can be kept for the project (`A`) — `Caps::storable`'s rule.
@@ -383,7 +433,9 @@ impl Grant {
             Grant::Terminals => ("terminals", None),
             Grant::Key(k) => ("key", s(k)),
             Grant::Localhost => ("localhost", None),
+            Grant::Env(n) if crate::tokens::secret_name(n) => return None,
             Grant::Env(n) => ("env", Some(n.clone())),
+            Grant::Masked(..) => return None,
         })
     }
 
@@ -398,7 +450,9 @@ impl Grant {
             "terminals" => Grant::Terminals,
             "key" => Grant::Key(path()?),
             "localhost" => Grant::Localhost,
-            "env" => Some(what?).filter(|n| crate::readonly::env_allowed(n)).map(|n| Grant::Env(n.into()))?,
+            "env" => Some(what?)
+                .filter(|n| crate::readonly::env_allowed(n) && !crate::tokens::secret_name(n))
+                .map(|n| Grant::Env(n.into()))?,
             _ => return None,
         })
     }
@@ -473,7 +527,8 @@ pub enum Scope {
     Once,
     ThisChat,
     /// This tarae session: kept with it (`Session.allowed`, `$state/sessions`) until it ends or the answer is
-    /// taken back — a host's until you quit (`hosts.rs`).
+    /// taken back — a host's, a masked variable's and a secret name's until you quit (`hosts.rs`,
+    /// `Grant::written`).
     Session,
     Always,
 }
@@ -610,7 +665,12 @@ impl Where {
             Grant::Read(_) | Grant::Write(_) if self.main_unknown => false,
             Grant::Read(p) | Grant::Write(p) => self.names(p).is_none(),
             Grant::Key(_) | Grant::Socket(_) => false,
-            Grant::Port(_) | Grant::Host(..) | Grant::Terminals | Grant::Localhost | Grant::Env(_) => true,
+            Grant::Port(_)
+            | Grant::Host(..)
+            | Grant::Terminals
+            | Grant::Localhost
+            | Grant::Env(_)
+            | Grant::Masked(..) => true,
         }
     }
 
@@ -1617,6 +1677,10 @@ pub(crate) fn lasting(ed: &crate::editor::Editor, scope: Scope, grants: &[Grant]
                 " in this project — :granted lists it".into(),
             ),
         },
+        // (a masked variable, a name for a secret: never written — gone when tarae quits)
+        Scope::Session if grants.iter().any(|g| !g.written()) => {
+            ("until they quit tarae or take it back".into(), " until you quit — :granted lists it".into())
+        }
         Scope::Session => (
             "in this session, until it ends or they take it back".into(),
             " in this session — :granted lists it".into(),
@@ -1666,9 +1730,13 @@ pub fn grant_keys(ed: &mut crate::editor::Editor, keys: &[PathBuf], scope: Scope
 /// `a`/`s`/`A` on a card about what the sandbox blocked: Claude's commands may do `g` for the rest of this
 /// conversation, this session, or always in this project — and Claude hears it with the next message.
 pub fn grant(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope) {
+    grant_by(ed, g, scope, scope.key())
+}
+
+/// `grant`, given by the card's `key` — the masked card's `y` lasts until you quit (P2b), its stamp the `y`.
+pub fn grant_by(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope, key: char) {
     // (no longer than it may be kept: Docker's socket is as much as the sandbox off — never past one run, #193;
     // another socket this conversation's at most — given by the card's key all the same)
-    let key = scope.key();
     let scope = scope.min(crate::caps::Caps::storable(g));
     if scope == Scope::Once {
         return;

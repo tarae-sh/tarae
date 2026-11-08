@@ -231,6 +231,7 @@ impl Exchange {
                         }
                         Some(Ok(h)) => {
                             out.extend_from_slice(&h.bytes);
+                            h.left.into_iter().for_each(|said| self.note(said));
                             let view = self.view.as_ref().expect("a view");
                             match h.encoded {
                                 // (an encoded body isn't searched: only toward a secret's host is that said)

@@ -36,6 +36,12 @@ kept-moved = [
 # Security.framework), curl's, git's, the AWS CLI's and SDKs', gcloud's
 [sandbox.proxy]
 trust = ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "AWS_CA_BUNDLE", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE"]
+# Where a GitHub token goes (git's and gh's): suggested on the card that passes the variable masked, never a grant
+# (D2: the user's yes on the card, or llm.sandbox-secrets) — `gho_` what `gh auth token` prints, `ghs_` Actions'
+# GITHUB_TOKEN; `uploads.github.com` for `gh release upload`
+secrets = [
+    { starts = ["ghp_", "gho_", "ghu_", "ghs_", "github_pat_"], hosts = ["api.github.com", "github.com", "uploads.github.com"] },
+]
 
 # What a run card of Claude's warns of (`cardwarn.rs`, cardburden 4) — the tools no one language has. Each is a
 # line in the warning colour under what the card asks, said as this pack's; `asks = true`: `a` on an earlier card

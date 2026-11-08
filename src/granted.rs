@@ -116,6 +116,7 @@ fn label(g: &Grant) -> String {
         Grant::Key(k) => format!("read {}, named like a key", t(k)),
         Grant::Localhost => "connect to every port here, the risky ones too".into(),
         Grant::Env(n) => format!("have your variable {n}"),
+        Grant::Masked(n, hosts) => format!("have your variable {n} masked → {}", hosts.join(", ")),
     }
 }
 
@@ -128,7 +129,7 @@ pub(crate) fn taken_as(g: &Grant) -> String {
         Grant::Host(h, p) => crate::hosts::listed(h, *p),
         Grant::Terminals => crate::allow::TERMINALS_LISTED.into(),
         Grant::Localhost => crate::allow::LOCALHOST_LISTED.into(),
-        Grant::Env(n) => format!("env {n}"),
+        Grant::Env(n) | Grant::Masked(n, _) => format!("env {n}"),
     }
 }
 
@@ -216,7 +217,12 @@ pub fn items(
             }
             let at = a.granted.get(&g).copied();
             let key = a.given.get(&g).copied();
-            rows.push((at.unwrap_or(0), answer(label(&g), when(at, now), Taken::Grant(taken_as(&g)), key)));
+            // (never written — a masked variable, a name for a secret: gone when tarae quits, as a host's `s`)
+            let hint = match g.written() || title != "this session" {
+                true => when(at, now),
+                false => "you · until you quit".into(),
+            };
+            rows.push((at.unwrap_or(0), answer(label(&g), hint, Taken::Grant(taken_as(&g)), key)));
             seen.push(g);
         }
         if title == "this session" {
@@ -812,6 +818,63 @@ mod tests {
         });
         let w = next_run(&ed);
         assert!(!w.llm.sandbox_localhost && !w.llm.sandbox_env.iter().any(|e| e == "DATABASE_URL"));
+    }
+
+    /// Bug 4 of P2b's step 1: a name for a secret's card offers the `s` its text names, and that `s` lasts until you
+    /// quit — never written to `$state/sessions` (nor read back from a file that holds one), as a host's `s` and a
+    /// masked variable; `:granted` lists both so, and `:sandbox-disallow env NAME` takes the masked one back too.
+    #[test]
+    fn a_secret_names_s_lasts_until_you_quit_never_written() {
+        let s = crate::scratch::Scratch::new("granted-secret-s");
+        let (mut ed, root, _) = editor(&s);
+        // The card: `s` among its answers, its text what `s` lasts
+        let run =
+            Box::new(crate::blocked::BlockedRun::of(crate::tools::Job::Command("gh pr list".into(), root)));
+        let card = crate::blocked::also_card(
+            Grant::Env("GH_TOKEN".into()),
+            "gh reads it",
+            ("gh pr list", None),
+            run,
+            None,
+            Vec::new(),
+            false,
+        );
+        assert_eq!(
+            card.answers(false),
+            [('y', "Once"), ('a', "This chat"), ('s', "This session"), ('n', "No")]
+        );
+        let q = card.question.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(q.contains("this session until you quit — a name for a secret is never written"), "{q}");
+        // `s`: the session's, never written
+        crate::allow::grant(&mut ed, &Grant::Env("GH_TOKEN".into()), Scope::Session);
+        crate::allow::grant(&mut ed, &Grant::Env("DATABASE_URL".into()), Scope::Session);
+        let masked = Grant::Masked("NPM_TOKEN".into(), vec!["registry.npmjs.org".into()]);
+        crate::allow::grant(&mut ed, &masked, Scope::Session);
+        let kept = crate::worktree::Kept::of(&ed.workspace).json().to_string();
+        assert!(kept.contains("DATABASE_URL"), "another name is kept with the session: {kept}");
+        assert!(!kept.contains("GH_TOKEN") && !kept.contains("NPM_TOKEN"), "{kept}");
+        let written = serde_json::json!([{ "kind": "env", "what": "GH_TOKEN", "scope": "session" }]);
+        assert!(crate::allow::Allowed::from_entries(&written, 0).is_empty(), "never read back");
+        let told = ed.workspace.claude.checkpoints.tell.join("\n");
+        assert!(
+            told.contains("have your variable GH_TOKEN (its value is never shown) — until they quit"),
+            "{told}"
+        );
+        open(&mut ed);
+        let rows = rows(&ed);
+        for (label, hint) in [
+            ("have your variable GH_TOKEN", "you · until you quit"),
+            ("have your variable NPM_TOKEN masked → registry.npmjs.org", "you · until you quit"),
+        ] {
+            assert!(rows.iter().any(|r| r.0 == label && r.1 == hint), "{label}: {rows:?}");
+        }
+        assert!(
+            rows.iter().any(|r| r.0 == "have your variable DATABASE_URL" && r.1 != "you · until you quit")
+        );
+        ed.picker = None;
+        ed.sandbox_disallow("env NPM_TOKEN").unwrap();
+        assert!(ed.workspace.claude.allowed.masked.is_empty());
+        assert!(next_run(&ed).llm.sandbox_secrets.is_empty(), "the next run's settings without it");
     }
 
     /// The defaults come first, each saying why; the answers under the longest they last, each once (an `A` is

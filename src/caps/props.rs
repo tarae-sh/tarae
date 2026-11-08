@@ -216,6 +216,8 @@ fn plus(b: &Reach, after: &Reach, e: &Effect) -> Reach {
             r.hosts.extend(crate::hosts::with_suggested(h, *p).into_iter().map(|h| (h, *p)))
         }
         Effect::Grant(Grant::Terminals) => r.terminals = true,
+        // (a stand-in only: nothing more is reached — its hosts are each asked on their own card, P2b Q3)
+        Effect::Grant(Grant::Masked(..)) => {}
         Effect::Grant(Grant::Key(k)) => {
             r.keys.push(k.clone());
             r.open_keys.push(k.clone());

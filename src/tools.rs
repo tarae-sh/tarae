@@ -1279,7 +1279,7 @@ fn also_env(
              set for your commands. If the command needs it, tell the user"
         ));
     }
-    if caps.env.iter().any(|e| e.what == n) {
+    if caps.env.iter().any(|e| e.what == n) || caps.masked.iter().any(|e| e.what.0 == n) {
         return Ok(None);
     }
     let env = env.ok_or(
@@ -1376,6 +1376,13 @@ fn also_ask(
             Ok(Some(crate::allow::Grant::Read(p))) => crate::tokens::found_in(p).said(p),
             _ => None,
         };
+        // (a token-like variable: what its card says of passing it masked — the value read here, never sent on, P2b)
+        let masking = match &grant {
+            Ok(Some(crate::allow::Grant::Env(n))) if env.as_ref().is_some_and(|e| e.tokens.contains(n)) => {
+                here.env.get(n).map(|v| crate::blocked::Masking::of(v))
+            }
+            _ => None,
+        };
         // (open already: `in_sandbox` reads these itself)
         let card = matches!(grant, Ok(Some(_)));
         let scripts = match card && reach {
@@ -1429,10 +1436,39 @@ fn also_ask(
             let job = Job::Command(cmd.clone(), cwd);
             let run = crate::blocked::BlockedRun { claude: Some(call), ..crate::blocked::BlockedRun::of(job) };
             let closed = !ed.config.llm.sandbox_network;
-            ed.push_offer(crate::blocked::also_card(g, &reason, &cmd, Box::new(run), tokens, asks, closed));
+            let masking = masking.map(|m| masking_still(ed, m));
+            let card = crate::blocked::also_card(g, &reason, (&cmd, masking), Box::new(run), tokens, asks, closed);
+            ed.push_offer(card);
         }
     });
     Ok(())
+}
+
+/// `m` with the hosts its masked yes goes toward that the proxy still asks for on their own cards (Q3: a masked yes
+/// opens none of them), by its own rule: the network closed, only what this session or this chat let through; open,
+/// those too and what `llm.sandbox-hosts` reaches unasked (its list — the packs' registries by default — or `*`).
+pub(crate) fn masking_still(ed: &Editor, mut m: crate::blocked::Masking) -> crate::blocked::Masking {
+    use crate::sandbox::proxy::egress::Pattern;
+    if let crate::blocked::Masking::Offered { hosts, still, closed, .. } = &mut m {
+        *closed = !ed.config.llm.sandbox_network;
+        // (None: every host — the network open with `*`)
+        let rules = match *closed {
+            true => Some(Vec::new()),
+            false => ed.config.llm.sandbox_hosts.rules(),
+        };
+        let chat = ed.workspace.claude.chat.as_ref().map_or(&[][..], |c| &c.allowed.hosts[..]);
+        let answered: Vec<&(String, u16)> = ed.workspace.claude.hosts.iter().chain(chat).collect();
+        let reached = |h: &str| match Pattern::parse(h) {
+            Ok(Pattern::Name(name, port)) => {
+                let port = port.unwrap_or(443);
+                let listed = rules.as_ref().is_none_or(|r| r.iter().any(|r| r.matches(&name, port, 443)));
+                listed || answered.iter().any(|(a, p)| *a == name && *p == port)
+            }
+            _ => false,
+        };
+        *still = hosts.iter().filter(|h| !reached(h)).cloned().collect();
+    }
+    m
 }
 
 /// Git's read-only commands, which run without asking (git is tarae's own).
@@ -3628,7 +3664,19 @@ pub fn with_allowed(
             Grant::Localhost => w.llm.sandbox_localhost = true,
             // (a whole name: passed even when it looks like a token — `runenv::of`)
             Grant::Env(n) if !w.llm.sandbox_env.contains(n) => w.llm.sandbox_env.push(n.clone()),
-            Grant::Read(_) | Grant::Socket(_) | Grant::Host(..) | Grant::Key(_) | Grant::Env(_) => {}
+            // (as an `llm.sandbox-secrets` entry — the user's own config's for the name wins; from there P2a's path:
+            // `run_env_of` masks it, the proxy terminates its hosts)
+            Grant::Masked(n, hosts) if !w.llm.sandbox_secrets.contains_key(n) => {
+                w.llm.sandbox_secrets.insert(n.clone(), hosts.clone());
+                // (marked: header only, its card's — never your own entry's every-field swap)
+                w.llm.sandbox_secrets_card.insert(n.clone());
+            }
+            Grant::Read(_)
+            | Grant::Socket(_)
+            | Grant::Host(..)
+            | Grant::Key(_)
+            | Grant::Env(_)
+            | Grant::Masked(..) => {}
         }
         let said = g.shown();
         if !w.granted.contains(&said) {
@@ -7198,6 +7246,255 @@ mod tests {
         ed.workspace.task_run = None;
     }
 
+    /// A run of Claude's over in the sandbox in `root`, its environment leaving `name` out as token-like — what
+    /// `also {env}` is judged by (no process).
+    fn ran_leaving_out(root: &std::path::Path, name: &str) -> crate::task::Run {
+        let env = crate::sandbox::Env { root: root.to_path_buf(), ..Default::default() };
+        let mut p = crate::sandbox::Policy::for_project(&env);
+        p.run_env = crate::sandbox::runenv::RunEnv { tokens: vec![name.into()], ..Default::default() };
+        let task =
+            crate::task::Task { name: "gh pr list".into(), cmd: "gh pr list".into(), cwd: root.into() };
+        let mut r = crate::task::Run::for_test(task);
+        (r.by_claude, r.state) = (true, crate::task::State::Failed(Some(1)));
+        r.guard = Some(crate::sandbox::Guard::In(Box::new(p)));
+        r
+    }
+
+    /// The masked tests' variable: named for a secret, set in tarae's environment as the test's `Here` says.
+    const MASKED_NAME: &str = "TARAE_TEST_GH_TOKEN";
+
+    /// A served system whose environment holds `MASKED_NAME` as `value` (a stand-in, never a real token).
+    fn holding(ed: &mut crate::editor::Editor, value: &'static str) {
+        let here = move || {
+            let mut h = crate::sandbox::Here { served: Some(|| Ok(())), ..crate::sandbox::Here::now() };
+            h.env.insert(MASKED_NAME.into(), value.into());
+            h
+        };
+        ed.sandbox_here = Some(std::sync::Arc::new(here));
+    }
+
+    /// A GitHub-form stand-in (`gho_` and 25 characters — not a real token's length), in two parts: never a whole
+    /// provider-format literal in the source.
+    const GH_STAND_IN: &str = concat!("gho_", "tarae0fake0token0stand0in");
+
+    /// P2b: a token-like variable whose form a pack knows gets the masked card — what masked means and where the real
+    /// value goes (the tools pack's hosts), `y masked · r real value · n no`, `r`'s risk, the hosts the closed network
+    /// still asks for, the setting that would keep it — and never its value, on the card or in its record (the name
+    /// and the hosts only). `y`: this run and the session's later ones get it masked (`Grant::Masked`, merged into
+    /// `llm.sandbox-secrets` — the user's own entry wins), until you quit: never in `$state/sessions`; asked again it
+    /// just runs; `:sandbox-disallow env NAME` takes it back. `r`: the real value, this run, nothing kept. `n`: sticks
+    /// for the chat. (Stand-ins: `true`, a fake value.)
+    #[test]
+    fn a_token_whose_form_a_pack_knows_is_offered_masked() {
+        use serde_json::json;
+
+        use crate::allow::Grant;
+        let base = crate::scratch::Scratch::new("also-masked");
+        let root = std::fs::canonicalize(base.path()).unwrap();
+        let (mut ed, generation) = also_chat(&root);
+        holding(&mut ed, GH_STAND_IN);
+        let hosts: Vec<String> =
+            ["api.github.com", "github.com", "uploads.github.com"].map(String::from).into();
+        let args = json!({ "command": "true", "also": { "env": MASKED_NAME }, "reason": "gh reads it" });
+        let send = |ed: &mut crate::editor::Editor, n: u64| {
+            also_sent_after(ed, (generation, n), args.clone(), Some(ran_leaving_out(&root, MASKED_NAME)))
+        };
+        let q = send(&mut ed, 1).unwrap().expect("its card");
+        let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
+        // (in this order: what it lets, Claude's reason, the answers, the hosts still asked, whose hosts, the setting)
+        let mut from = 0;
+        for said in [
+            "Let Claude's commands have your variable TARAE_TEST_GH_TOKEN",
+            "Claude asks, for `true`: gh reads it",
+            "y masked: your commands see a stand-in; tarae puts the real value in only in the sign-in header toward \
+             api.github.com, github.com, uploads.github.com, until you quit.",
+            "r real value: this run, for a tool that needs it here.",
+            "The network is closed: they still need their own yes.",
+            "The hosts are the tools pack's, for a token starting gho_.",
+            "To keep it masked, in your config: [llm.sandbox-secrets] TARAE_TEST_GH_TOKEN = [\"api.github.com\", \
+             \"github.com\", \"uploads.github.com\"]",
+            "With r its commands read its value, and what they print reaches Claude.",
+        ] {
+            let at = flat[from..].find(said).unwrap_or_else(|| panic!("{said} after {from}: {flat}"));
+            from += at + said.len();
+        }
+        // (where it would be cut, the setting's line folds first, then whose hosts — `y masked` answers at once at 80)
+        let o = &ed.offers[0];
+        let lines: Vec<&str> = o.question.split('\n').collect();
+        let folded: Vec<&str> = o.folds.iter().map(|r| lines[r.start]).collect();
+        assert_eq!(folded.len(), 2, "{:?}", o.folds);
+        assert!(
+            folded[0].starts_with("To keep it masked") && folded[1].starts_with("The hosts are"),
+            "{folded:?}"
+        );
+        let mut frame = Vec::new();
+        crate::term::render(&mut ed, &mut frame, 80, 24).unwrap();
+        let mut screen = vt100::Parser::new(24, 80, 0);
+        screen.process(&frame);
+        let rows: Vec<String> = screen.screen().rows(0, 80).collect();
+        assert!(ed.offer_seen_whole(), "whole at 80×24: no `v` before `y`:\n{}", rows.join("\n"));
+        let o = &ed.offers[0];
+        assert_eq!(o.answers(false), [('y', "Masked"), ('r', "Real value"), ('n', "No")]);
+        assert!(o.lasting('y') && o.lasting('r'), "never a bare letter on the bottom line");
+        let short: Vec<String> =
+            o.answers_short(false).into_iter().map(|(k, s)| format!("{k} {s}")).collect();
+        assert_eq!(short, ["y masked", "r real value", "n no"]);
+        // (the value nowhere on the card, nor in its record: the name and the hosts)
+        let card = format!("{:?} {} {:?}", o.what, o.question, o.asked);
+        assert!(!card.contains(GH_STAND_IN) && !card.contains("tarae0fake"), "{card}");
+        let at = (std::time::Instant::now(), std::time::SystemTime::now());
+        let record = crate::cards::record(o, o.asked.as_ref().unwrap(), "y", at, None, None).to_string();
+        assert!(
+            record.contains("TARAE_TEST_GH_TOKEN → api.github.com, github.com, uploads.github.com"),
+            "{record}"
+        );
+        assert!(!record.contains("tarae0fake"), "{record}");
+        // (no `a` or `s`: two yeses that differ in what — said, never the code's)
+        let settled = crate::offer::Stands { drawn: true, whole: true };
+        for k in ['a', 's', 'A'] {
+            assert_eq!(o.act(k, settled), Some(crate::offer::Act::Say("this card asks y, r or n")), "{k}");
+        }
+        // `y`: masked toward the pack's hosts, this run and the session's later ones — never written
+        also_key(&mut ed, 'y');
+        let extra = super::ADMITTED.with(|a| a.borrow().last().map(|(_, e)| e.grant.clone()));
+        let masked = Grant::Masked(MASKED_NAME.into(), hosts.clone());
+        assert_eq!(extra, Some(Some(masked.clone())), "this run's grant: masked");
+        assert!(ed.workspace.claude.allowed.grants().contains(&masked), "the session's");
+        assert_eq!(ed.workspace.claude.allowed.given.get(&masked), Some(&'y'), "stamped with the card's key");
+        let kept = crate::worktree::Kept::of(&ed.workspace).json().to_string();
+        assert!(!kept.contains(MASKED_NAME), "never in $state/sessions: {kept}");
+        let told = ed.workspace.claude.checkpoints.tell.join("\n");
+        assert!(told.contains("masked") && told.contains("until they quit tarae"), "{told}");
+        let caps = ed.caps_basis().build();
+        let w = super::with_allowed(&ed.config.llm, &caps, None);
+        assert_eq!(w.llm.sandbox_secrets.get(MASKED_NAME), Some(&hosts), "as an llm.sandbox-secrets entry");
+        assert!(w.llm.sandbox_secrets_card.contains(MASKED_NAME), "marked its card's: header only");
+        let mut own = ed.config.llm.clone();
+        own.sandbox_secrets.insert(MASKED_NAME.into(), vec!["api.github.com".into()]);
+        let w = super::with_allowed(&own, &caps, None);
+        assert_eq!(w.llm.sandbox_secrets[MASKED_NAME], ["api.github.com"], "your own entry wins");
+        assert!(w.llm.sandbox_secrets_card.is_empty(), "your own entry: everywhere, never marked");
+        // Asked again: passed masked already — it runs, no card
+        assert_eq!(send(&mut ed, 2), Ok(None));
+        // `:sandbox-disallow env NAME` takes it back: asked again, its card
+        ed.sandbox_disallow(&format!("env {MASKED_NAME}")).unwrap();
+        assert!(ed.workspace.claude.allowed.masked.is_empty());
+        // `r`: the real value, this run only
+        assert!(send(&mut ed, 3).unwrap().is_some());
+        also_key(&mut ed, 'r');
+        let extra = super::ADMITTED.with(|a| a.borrow().last().map(|(_, e)| e.grant.clone()));
+        assert_eq!(extra, Some(Some(Grant::Env(MASKED_NAME.into()))), "the real value, once");
+        assert!(ed.workspace.claude.allowed.is_empty(), "nothing kept");
+        // One host let through this session: the others still to answer, named
+        ed.workspace.claude.hosts.push(("github.com".into(), 443));
+        let q = send(&mut ed, 31).unwrap().expect("its card");
+        let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("closed: api.github.com, uploads.github.com still need their own yes."),
+            "{flat}"
+        );
+        ed.offers.clear();
+        crate::reads::turn_over(&mut ed);
+        // The network open at its default (the packs' registries unasked): the proxy still asks for them, said why
+        ed.workspace.claude.hosts.clear();
+        ed.config.llm.sandbox_network = true;
+        let q = send(&mut ed, 4).unwrap().expect("its card");
+        let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Not on your host list: they still need their own yes."), "{flat}");
+        ed.offers.clear();
+        // …and with every host unasked (`*`): nothing left to answer
+        ed.config.llm.sandbox_hosts = crate::llm::Hosts::Any;
+        let q = send(&mut ed, 41).unwrap().expect("its card");
+        assert!(!q.contains("still need their own yes"), "{q}");
+        // `n`: told, and it sticks for the chat — masked or not (asked again in the next turn: three cards a turn)
+        ed.offer_dismiss();
+        crate::reads::turn_over(&mut ed);
+        let again = send(&mut ed, 5);
+        assert!(again.as_ref().is_err_and(|e| e.contains("don't ask for it again")), "{again:?}");
+        ed.offers.clear();
+        ed.workspace.task_run = None;
+    }
+
+    /// P2b, a token-like variable no `y masked` is offered for: a value `maskable` refuses (a space) says why, its card
+    /// as before; a maskable value of a form no pack knows names the setting with `<host>` — no host guessed, none
+    /// from Claude's reason (D2). Both as a name for a secret's card: `y` once, `a` this chat, `s` until you quit.
+    #[test]
+    fn a_token_no_pack_knows_or_unmaskable_names_why_and_the_setting() {
+        use serde_json::json;
+        let base = crate::scratch::Scratch::new("also-unmasked");
+        let root = std::fs::canonicalize(base.path()).unwrap();
+        for (n, value, said) in [
+            (1, "tarae fake token with spaces", "No masked answer: a byte that isn't visible ASCII"),
+            (
+                2,
+                concat!("tarae-fake-", "token-0123456789abcdef"),
+                "To pass it masked, name the hosts it may go to in your config: [llm.sandbox-secrets] \
+                 TARAE_TEST_GH_TOKEN = [\"<host>\"]",
+            ),
+            // (a known prefix too short to be a token: no suggestion)
+            (3, "ghp_short", "To pass it masked"),
+        ] {
+            let (mut ed, generation) = also_chat(&root);
+            holding(&mut ed, value);
+            let reason = "gh reads it from api.github.com";
+            let args = json!({ "command": "true", "also": { "env": MASKED_NAME }, "reason": reason });
+            let run = Some(ran_leaving_out(&root, MASKED_NAME));
+            let q = also_sent_after(&mut ed, (generation, n), args, run).unwrap().expect("its card");
+            let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains(said), "{said}: {flat}");
+            assert!(!flat.contains("y masked") && !flat.contains(value), "{flat}");
+            let o = &ed.offers[0];
+            assert!(!o.masks());
+            assert_eq!(
+                o.answers(false),
+                [('y', "Once"), ('a', "This chat"), ('s', "This session"), ('n', "No")]
+            );
+            ed.offers.clear();
+            ed.workspace.task_run = None;
+        }
+    }
+
+    /// P2b, review 4: the `:sandbox-blocked` panel's card for the same variable offers it masked too — its value read on
+    /// a worker, only the match on the card — so a habitual `y` there never hands out the real value: `y` passes it
+    /// masked (the user's run again, stamped `y`), and the record holds the name and the hosts.
+    #[test]
+    fn the_panels_card_offers_a_token_masked_too() {
+        let base = crate::scratch::Scratch::new("panel-masked");
+        let root = std::fs::canonicalize(base.path()).unwrap();
+        let (mut ed, _) = also_chat(&root);
+        holding(&mut ed, GH_STAND_IN);
+        let run = crate::blocked::BlockedRun::of(super::Job::Command("gh pr list".into(), root.clone()));
+        let choice = crate::blocked::Choice {
+            grant: crate::allow::Grant::Env(MASKED_NAME.into()),
+            hint: String::new(),
+            why: format!("{MASKED_NAME} was left out"),
+        };
+        ed.workspace.blocked = Some((run, vec![choice]));
+        ed.sandbox_grant("0").unwrap();
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while ed.offers.is_empty() {
+            assert!(std::time::Instant::now() < end, "its card");
+            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+        let o = &ed.offers[0];
+        assert!(o.masks(), "{}", o.question);
+        assert_eq!(o.answers(false), [('y', "Masked"), ('r', "Real value"), ('n', "No")]);
+        assert!(!format!("{:?} {}", o.what, o.question).contains("tarae0fake"));
+        let record = o.asked.as_ref().and_then(|a| a.masked.clone()).unwrap_or_default();
+        assert_eq!(record, "TARAE_TEST_GH_TOKEN → api.github.com, github.com, uploads.github.com");
+        also_key(&mut ed, 'y');
+        let hosts: Vec<String> =
+            ["api.github.com", "github.com", "uploads.github.com"].map(String::from).into();
+        let masked = crate::allow::Grant::Masked(MASKED_NAME.into(), hosts);
+        let extra = super::USER_ADMITTED.with(|a| a.borrow().last().map(|(_, e)| e.grant.clone()));
+        assert_eq!(extra, Some(Some(masked.clone())), "the user's run again: masked");
+        assert_eq!(ed.workspace.claude.allowed.given.get(&masked), Some(&'y'));
+        ed.offers.clear();
+        ed.workspace.task_run = None;
+    }
+
     /// An editor whose chat is at work (`sh` reading nothing stands in for claude) in the project at `dir`, and its
     /// chat's generation — C2's `also` tests.
     fn also_chat(dir: &std::path::Path) -> (crate::editor::Editor, u64) {
@@ -7228,9 +7525,19 @@ mod tests {
         n: u64,
         args: serde_json::Value,
     ) -> Result<Option<String>, String> {
+        also_sent_after(ed, (generation, n), args, None)
+    }
+
+    /// `also_sent`, the session's last run `run` — its environment what `also {env}` is judged by.
+    fn also_sent_after(
+        ed: &mut crate::editor::Editor,
+        (generation, n): (u64, u64),
+        args: serde_json::Value,
+        run: Option<crate::task::Run>,
+    ) -> Result<Option<String>, String> {
         use serde_json::json;
         ed.offers.clear();
-        ed.workspace.task_run = None;
+        ed.workspace.task_run = run;
         let before = super::ADMITTED.with(|a| a.borrow().len());
         let answered = || {
             super::ANSWERED
@@ -8417,6 +8724,7 @@ mod tests {
             crate::offer::What::Grant {
                 grant: g,
                 run: Box::new(crate::blocked::BlockedRun::of(super::Job::Command(first.into(), dir.clone()))),
+                masked: None,
             },
         );
         assert_eq!(card.answers(false), [('y', "Once"), ('n', "No")]);

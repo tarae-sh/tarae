@@ -5368,12 +5368,20 @@ fn for_its_run(
     }
     // Masked variables (P2): each its session's sentinel in the run's environment, the real value only in the
     // registry its proxy holds (`proxy::masked`)
-    let (masked, said) =
-        proxy::masked::of_session(p.session, &llm.sandbox_secrets, &p.run_env.masked, &here.env);
+    let (masked, said) = proxy::masked::of_session(
+        p.session,
+        (&llm.sandbox_secrets, &llm.sandbox_secrets_card),
+        &p.run_env.masked,
+        &here.env,
+    );
     p.run_env.notes.extend(said);
     if let Some(m) = &masked {
-        let vars =
-            m.sentinels().map(|(k, v)| (k.to_string(), std::ffi::OsString::from(v), runenv::By::Masked));
+        // (a card's mask said as its card's, never the setting's: there's no line of yours to look for — P2b)
+        let by = |k: &str| match llm.sandbox_secrets_card.contains(k) {
+            true => runenv::By::MaskedCard,
+            false => runenv::By::Masked,
+        };
+        let vars = m.sentinels().map(|(k, v)| (k.to_string(), std::ffi::OsString::from(v), by(k)));
         p.run_env.vars.extend(vars);
         crate::sorting::by(&mut p.run_env.vars, |(a, ..), (b, ..)| a.cmp(b));
     }
@@ -11102,6 +11110,21 @@ mod tests {
                     fake"),
             "{:?}",
             p.run_env.notes
+        );
+        drop(p);
+        // P2b: a card's mask (`with_allowed` marks it) reaches the registry header only, said as its card's
+        here.system_fails = None;
+        let mut card = crate::tools::Widened { llm: llm.clone(), ..Default::default() };
+        card.llm.sandbox_secrets_card.insert("TARAE_TEST_MASKED_TOKEN".into());
+        let p = policy_from(&root, card, &here).unwrap();
+        let m = p.egress.masked.as_ref().expect("masked");
+        let s = m.secrets().iter().find(|s| s.name == "TARAE_TEST_MASKED_TOKEN").expect("its secret");
+        assert!(s.header_only, "header only");
+        assert!(
+            p.run_env
+                .vars
+                .iter()
+                .any(|(k, _, by)| k == "TARAE_TEST_MASKED_TOKEN" && *by == runenv::By::MaskedCard)
         );
         drop(p);
         proxy::terminate::forget(session);

@@ -360,7 +360,9 @@ pub fn decide(r: &Request, caps: &crate::caps::Caps) -> Decision {
         Request::Grant(crate::allow::Grant::Port(_)) => Decision::Grant(Verb::Port),
         Request::Grant(crate::allow::Grant::Terminals) => Decision::Grant(Verb::Terminals),
         Request::Grant(crate::allow::Grant::Localhost) => Decision::Grant(Verb::Localhost),
-        Request::Grant(crate::allow::Grant::Env(_)) => Decision::Grant(Verb::Env),
+        Request::Grant(crate::allow::Grant::Env(_) | crate::allow::Grant::Masked(..)) => {
+            Decision::Grant(Verb::Env)
+        }
         Request::Grant(crate::allow::Grant::Socket(_)) => Decision::Socket,
         Request::Grant(crate::allow::Grant::Host(..)) => Decision::Host,
         Request::Host(_) => Decision::Host,
@@ -409,6 +411,9 @@ pub struct Asked {
     pub failing: Option<Failing>,
     /// A change set's files, from the project's root — a move's both ends (`refactor::card`).
     pub files: Vec<String>,
+    /// A variable the card offered to pass masked, and its hosts: `GH_TOKEN → api.github.com, github.com` — never
+    /// its value (`blocked::also_card`).
+    pub masked: Option<String>,
 }
 
 /// How a preflight failed, for the record: names only — the step as the project's `[preflight]` names it, the
@@ -440,7 +445,13 @@ impl Asked {
             conversation: None,
             failing: None,
             files: Vec::new(),
+            masked: None,
         }
+    }
+
+    /// It offered to pass a variable masked: its name and hosts (`masked`).
+    pub fn masked(self, said: String) -> Asked {
+        Asked { masked: Some(said), ..self }
     }
 
     /// tarae's own question (`Why::Own`), no capability asked for.
@@ -626,6 +637,7 @@ fn entry(
         "generated": f.is_some_and(|f| f.generated).then_some(true),
         "files": files,
         "files_more": (more > 0).then_some(more),
+        "masked": asked.masked.as_deref().map(crate::tokens::redacted),
     })
 }
 

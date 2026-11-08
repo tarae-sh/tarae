@@ -500,3 +500,34 @@ fn a_held_request_body_goes_on_a_pause() {
     x.release_run(&mut out).unwrap();
     assert!(String::from_utf8_lossy(&out).ends_with("stream fake_val") && !x.run_holds());
 }
+
+/// P2b: a card's mask in the target or a field but `Authorization` goes as its fake, and the head's notes
+/// (`Head.left`) reach the report — each once a tunnel, at any split; `Authorization`'s swapped.
+#[test]
+fn a_cards_mask_left_in_a_head_reaches_the_report() {
+    let m = Masked::of(&[("A_TOKEN", SENT_A, REAL_A, &[NAME])]).card_marked(&["A_TOKEN"]);
+    let up = format!(
+        "GET /gists?t={SENT_A} HTTP/1.1\r\nHost: origin.test\r\nAuthorization: Bearer {SENT_A}\r\n\
+         X-Token: {SENT_A}\r\n\r\n"
+    );
+    let left = |within: &str| {
+        format!(
+            "A_TOKEN's masked value in {within} went as its fake: a mask from its card goes only in the \
+             Authorization header (a value named in llm.sandbox-secrets goes everywhere toward its hosts)"
+        )
+    };
+    let said = [left("the request's target"), left("a header field but Authorization")];
+    let script: Script = &[(0, up.as_bytes()), (1, OK_2), (0, up.as_bytes()), (1, OK_2)];
+    let mut whole = at_any_split_in(script, Some(&m), |_, f, at| {
+        assert_eq!(f.stop, Ok(()), "{at}");
+        let went = String::from_utf8_lossy(&f.out[1]);
+        assert!(
+            went.contains(&format!("t={SENT_A} ")) && went.contains(&format!("X-Token: {SENT_A}\r\n")),
+            "{at}: {went}"
+        );
+        assert!(went.contains(&format!("Bearer {REAL_A}\r\n")), "{at}: {went}");
+        assert_eq!(f.x.notes, said, "{at}");
+    });
+    assert_eq!(whole.x.said(), said);
+    assert_eq!(whole.x.said(), Vec::<String>::new(), "said once");
+}

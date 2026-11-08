@@ -8178,7 +8178,15 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         ),
         (
             "grant",
-            crate::blocked::also_card(grant, reason, "npm test", Box::new(run), None, Vec::new(), false),
+            crate::blocked::also_card(
+                grant,
+                reason,
+                ("npm test", None),
+                Box::new(run),
+                None,
+                Vec::new(),
+                false,
+            ),
             "╰─ C-q answer · y once · a chat · s session · A always · n ─╯",
         ),
         (

@@ -173,6 +173,9 @@ kept = ["{uv}"]
 # requests' roots and pip's: the run's trust bundle (#419 — srt's)
 [sandbox.proxy]
 trust = ["REQUESTS_CA_BUNDLE", "PIP_CERT"]
+# Where a PyPI token goes (twine's, uv's publish): suggested on the card that passes the variable masked, never a
+# grant (D2)
+secrets = [{ starts = ["pypi-Ag"], hosts = ["upload.pypi.org"] }]
 
 [sandbox.homes]
 uv = { env = "UV_CACHE_DIR", else = "~/.cache/uv" }

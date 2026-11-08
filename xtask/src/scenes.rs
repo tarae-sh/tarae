@@ -77,6 +77,27 @@ pub(crate) fn sh_waits_by_time<S: AsRef<str>>(keys: &[S]) -> Vec<String> {
 }
 
 const MAIN: &[&str] = &["src/main.rs"];
+
+/// P2b's masked scenes' keys: the chat asked, the code zoomed (at 80 the chat beside it would cut the card), the card
+/// up and focused.
+const MASKED_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "pass the token to the release script",
+    "\r",
+    "@1",
+    "\x1b",
+    "@1",
+    " ",
+    "w",
+    "z",
+    "@20?Open the sandbox a little",
+    "@1",
+    "\x11",
+    "@1",
+];
 const WIDE: &[&str] = &["src/wide.rs"];
 /// Focus A1c's file (`SPOOL_RS`).
 const SPOOL: &[&str] = &["src/spool.rs"];
@@ -4084,6 +4105,46 @@ const SCENES: &[Scene] = &[
             "@1",
         ],
     },
+    // (P2b's masked card: Claude's `also {env}` for a token-like variable, the card focused — `masked` the network open,
+    // `masked-closed` with the hosts still to answer, `masked-unmaskable` a value `maskable` refuses, `masked-unknown` a
+    // form no pack knows; `masked-granted` its `y`, then `:granted`. The code zoomed first, as `granted`'s. The runs
+    // need the sandbox: run outside one)
+    Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
+    Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
+    Scene { name: "masked-unmaskable", claude: "masked", files: MAIN, keys: MASKED_KEYS },
+    Scene { name: "masked-unknown", claude: "maskedother", files: MAIN, keys: MASKED_KEYS },
+    Scene {
+        name: "masked-granted",
+        claude: "maskedopen",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "pass the token to the release script",
+            "\r",
+            "@1",
+            "\x1b",
+            "@1",
+            " ",
+            "w",
+            "z",
+            "@20?Open the sandbox a little",
+            "@1",
+            "\x11",
+            "@1",
+            "y",
+            "@20?It's there now",
+            "@1",
+            ":",
+            "granted",
+            "\r",
+            "@1",
+            "G",
+            "@1",
+        ],
+    },
     // (the demo repository's settings trusted on their card — its `.tarae.toml` and a git command of its own — then
     // the list)
     Scene {
@@ -6679,10 +6740,26 @@ fn prepare(
             false => Vec::new(),
         }
         .into_iter()
+        .chain(masked_env(scene.name))
         .chain(shot::shot_env(std::env::var_os("TARAE_SHOT_ZELLIJ")))
         .chain(commits_env())
         .collect(),
     })
+}
+
+/// P2b's masked scenes' variable in tarae's environment — stand-ins, each in two parts (never a whole
+/// provider-format literal): a GitHub-form one (masked offered), one with spaces (`maskable` refuses), one of a form
+/// no pack knows.
+fn masked_env(scene: &str) -> Vec<(&'static str, Option<&'static str>)> {
+    const GH: &str = concat!("gho_", "tarae0fake0stand0in0shot0x");
+    match scene {
+        "masked-unmaskable" => vec![("GH_TOKEN", Some("tarae fake token with spaces"))],
+        "masked-unknown" => {
+            vec![("MY_SERVICE_TOKEN", Some(concat!("tarae-fake-", "token-0123456789abcdef")))]
+        }
+        s if s.starts_with("masked") => vec![("GH_TOKEN", Some(GH))],
+        _ => Vec::new(),
+    }
 }
 
 /// When a scene's commits are, whenever the shots are taken (`git`'s `@<seconds> +0000`): the demo crate's first a day
@@ -6756,6 +6833,8 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
         "sixfollow" => "review-at-end = true\nfollow = true\n",
         // (V4's: the edits land unseen, so the turn runs through to its replay)
         "v4" => "review-at-end = true\n",
+        // (P2b's masked card with the network open: no host left to answer on its own card)
+        "maskedopen" => "sandbox-network = true\n",
         // (V1's: main's edit lands unseen, so fix's — waiting on it — lands too, and the two meet)
         s if s.contains("=v1-main") => "review-at-end = true\n",
         // (V6's: fix's and main's edits land unseen and meet, the turns going on; the project's docs ask first, so docs'
@@ -7413,6 +7492,9 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "searchcard",
     "volumecard",
     "grants",
+    "masked",
+    "maskedopen",
+    "maskedother",
     "big",
     "fork",
     "foot41",
@@ -7574,6 +7656,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "searchcard" => turn.search_outside()?,
             "volumecard" => turn.read_volume()?,
             "grants" => turn.grants()?,
+            "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
+            "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
             "big" => turn.big()?,
             // (the fork's scenes: a big conversation, then a turn still going — its edit held mid-line)
             "fork" if line.contains("keep going") => {
@@ -8541,6 +8625,20 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(3, "run", also)?;
         self.permission(4, "Read", json!({"file_path": format!("{home}/Sites/skein/knots.css")}))?;
         self.words("Read them: nothing in the project needs to change.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// P2b's masked card: a run first (the sandbox looked at, the variable left out as token-like — what `also {env}`
+    /// is judged by; `ls`, one that runs without a card), then `also {env: name}` for `printenv` — nothing reached
+    /// beyond this machine.
+    fn masked(&mut self, name: &str) -> io::Result<()> {
+        self.words("The release script reads the token from the environment.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "ls"}))?;
+        let also = json!({"command": format!("printenv {name}"), "also": {"env": name},
+            "reason": "the release script reads it to call GitHub's API"});
+        self.call(2, "run", also)?;
+        self.words("It's there now.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

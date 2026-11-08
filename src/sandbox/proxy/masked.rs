@@ -55,6 +55,9 @@ pub struct Secret {
     pub sentinel: String,
     real: Vec<u8>,
     pub hosts: Vec<Pattern>,
+    /// A card's mask (`Grant::Masked`, P2b): swapped in only in an `Authorization` field — never the target nor a body,
+    /// where the run could have a host publish it. Your own `llm.sandbox-secrets` entry: everywhere (P2a).
+    pub header_only: bool,
 }
 
 /// Its name and its hosts' count — never a value.
@@ -146,6 +149,7 @@ impl Masked {
                 .collect(),
             strays: others.iter().map(|s| (s.name.clone(), s.sentinel.clone().into_bytes())).collect(),
             reals,
+            header_only: own.iter().filter(|s| s.header_only).map(|s| s.name.clone()).collect(),
         }
     }
 
@@ -159,10 +163,18 @@ impl Masked {
                 sentinel: sentinel.to_string(),
                 real: real.as_bytes().to_vec(),
                 hosts: hosts.iter().map(|h| Pattern::parse(h).unwrap()).collect(),
+                header_only: false,
             })
             .collect();
         secrets.sort_by(|a, b| a.name.cmp(&b.name));
         Masked { secrets }
+    }
+
+    /// Tests: these made a card's masks (header only).
+    #[cfg(test)]
+    pub fn card_marked(mut self, names: &[&str]) -> Masked {
+        self.secrets.iter_mut().for_each(|s| s.header_only = names.contains(&s.name.as_str()));
+        self
     }
 }
 
@@ -171,11 +183,12 @@ static SENTINELS: Mutex<Vec<(u64, String, String)>> = Mutex::new(Vec::new());
 
 /// Session `session`'s masked variables for a run: each of `table`'s (`llm.sandbox-secrets`: name → host rules) that
 /// `names` holds (`RunEnv.masked`: in tarae's environment, `maskable`), its real value `env`'s, its sentinel the
-/// session's (minted the first time, again where the value's length calls for another) — None: none. What the
-/// report says besides: a name `env` lacks, a sentinel that couldn't be made. A worker's.
+/// session's (minted the first time, again where the value's length calls for another), header only when `card`
+/// holds it (a card's mask — P2b) — None: none. What the report says besides: a name `env` lacks, a sentinel that
+/// couldn't be made. A worker's.
 pub fn of_session(
     session: u64,
-    table: &BTreeMap<String, Vec<String>>,
+    (table, card): (&BTreeMap<String, Vec<String>>, &std::collections::BTreeSet<String>),
     names: &[String],
     env: &HashMap<String, OsString>,
 ) -> (Option<Arc<Masked>>, Vec<String>) {
@@ -225,10 +238,21 @@ pub fn of_session(
         };
         kept.retain(|(s, k, _)| !(*s == session && k == name));
         kept.push((session, name.clone(), sentinel.clone()));
-        secrets.push(Secret { name: name.clone(), sentinel, real, hosts });
+        secrets.push(Secret { name: name.clone(), sentinel, real, hosts, header_only: card.contains(name) });
     }
     let masked = (!secrets.is_empty()).then(|| Arc::new(Masked { secrets }));
     (masked, said)
+}
+
+/// (Tests: `of_session` with no card's mask — your own config's entries only.)
+#[cfg(test)]
+pub fn of_config(
+    session: u64,
+    table: &BTreeMap<String, Vec<String>>,
+    names: &[String],
+    env: &HashMap<String, OsString>,
+) -> (Option<Arc<Masked>>, Vec<String>) {
+    of_session(session, (table, &Default::default()), names, env)
 }
 
 /// The session ended: its sentinels go (runs still holding them keep theirs).
@@ -275,6 +299,8 @@ pub struct View {
     strays: Vec<(String, Vec<u8>)>,
     /// Every real value once, longest first, with the sentinel it's scrubbed back to and that one's name (l).
     reals: Vec<(Vec<u8>, Vec<u8>, String)>,
+    /// Of `own`, the card's masks (P2b): swapped in only in an `Authorization` field.
+    header_only: Vec<String>,
 }
 
 /// Names only.
@@ -291,6 +317,8 @@ impl std::fmt::Debug for View {
 pub struct Head {
     pub bytes: Vec<u8>,
     pub encoded: Option<String>,
+    /// What the report says of a card's mask left as its fake in it — the target, a field but `Authorization`.
+    pub left: Vec<String>,
 }
 
 /// How a body's scan stopped (`through`).
@@ -313,13 +341,19 @@ impl View {
         format!("a run sent {name}'s masked value toward {} — it goes only to {name}'s own hosts", self.at)
     }
 
-    /// A request body's scan: its own sentinels swapped in, the others' stopping it — None: nothing to look for.
+    /// A request body's scan: its own sentinels swapped in — a card's mask left as its fake, said (P2b) — the
+    /// others' stopping it. None: nothing to look for.
     pub fn request_scan(&self) -> Option<Scan> {
-        let own = self.own.iter().map(|(name, sentinel, real)| swap::Pattern {
-            from: sentinel.clone(),
-            to: real.clone(),
-            does: Does::Swap,
-            name: name.clone(),
+        let own = self.own.iter().map(|(name, sentinel, real)| match self.header_only.contains(name) {
+            true => {
+                swap::Pattern { from: sentinel.clone(), to: Vec::new(), does: Does::Note, name: name.clone() }
+            }
+            false => swap::Pattern {
+                from: sentinel.clone(),
+                to: real.clone(),
+                does: Does::Swap,
+                name: name.clone(),
+            },
         });
         let strays = self.strays.iter().map(|(name, sentinel)| swap::Pattern {
             from: sentinel.clone(),
@@ -346,6 +380,9 @@ impl View {
 
     /// What the report says of a value left in a body as it was (`Scan::left`) — `out`: a request's, else an answer's.
     pub fn left_said(&self, out: bool, does: Does, name: &str) -> String {
+        if out && self.header_only.iter().any(|n| n == name) {
+            return header_only_said(name, "a request body");
+        }
         match (out, does) {
             (true, Does::Note) => format!(
                 "{name}'s masked value in a request body went as its fake: the value is under {SAME_LENGTH} bytes, \
@@ -368,7 +405,9 @@ impl View {
     /// `identity` in the first one's place (U2: none sent, one added), `TE` dropped (n: `gzip, chunked` back is a
     /// framing no reader takes) — nothing else changes, not a space.
     pub fn request_head(&self, head: &[u8]) -> Result<Head, String> {
-        let Some(s) = parse::spans(head) else { return Ok(Head { bytes: head.to_vec(), encoded: None }) };
+        let Some(s) = parse::spans(head) else {
+            return Ok(Head { bytes: head.to_vec(), encoded: None, left: Vec::new() });
+        };
         let named = |f: &parse::Spanned, n: &str| head[f.name.clone()].eq_ignore_ascii_case(n.as_bytes());
         let basic = |f: &parse::Spanned| match named(f, "authorization") {
             true => parse::basic_credential(&head[f.value.clone()]),
@@ -385,30 +424,51 @@ impl View {
             s.fields.iter().filter(|f| named(f, "content-encoding")).map(|f| &head[f.value.clone()]),
         );
         if self.own.is_empty() {
-            return Ok(Head { bytes: head.to_vec(), encoded });
+            return Ok(Head { bytes: head.to_vec(), encoded, left: Vec::new() });
         }
+        // (a card's mask only in `Authorization`, your own entries everywhere — P2b)
+        let everywhere = |name: &String| !self.header_only.contains(name);
         let swaps: Vec<(&[u8], &[u8])> = self.own.iter().map(|(_, s, r)| (&s[..], &r[..])).collect();
+        let elsewhere: Vec<(&[u8], &[u8])> =
+            self.own.iter().filter(|(n, ..)| everywhere(n)).map(|(_, s, r)| (&s[..], &r[..])).collect();
         let encoded_reals: Vec<Vec<u8>> = self.own.iter().map(|(.., r)| percent(r)).collect();
-        let in_target: Vec<(&[u8], &[u8])> =
-            self.own.iter().zip(&encoded_reals).map(|((_, s, _), r)| (&s[..], &r[..])).collect();
+        let in_target: Vec<(&[u8], &[u8])> = (self.own.iter().zip(&encoded_reals))
+            .filter(|((n, ..), _)| everywhere(n))
+            .map(|((_, s, _), r)| (&s[..], &r[..]))
+            .collect();
         let mut edits: Vec<(Range<usize>, Vec<u8>)> = Vec::new();
         if let Some(t) = swap::replaced(&head[s.target.clone()], &in_target) {
             edits.push((s.target.clone(), t));
         }
+        // (a card's mask where it doesn't go: left as its fake, said)
+        let mut left: Vec<String> = Vec::new();
+        let mut leave = |within: &[u8], what: &str| {
+            for (name, sentinel, _) in self.own.iter().filter(|(n, ..)| !everywhere(n)) {
+                if swap::find(within, sentinel, 0).is_some() {
+                    left.push(header_only_said(name, what));
+                }
+            }
+        };
+        leave(&head[s.target.clone()], "the request's target");
         let mut accept = false;
         for f in &s.fields {
             let value = &head[f.value.clone()];
+            let auth = named(f, "authorization");
+            if !auth {
+                leave(value, "a header field but Authorization");
+            }
+            let these = if auth { &swaps } else { &elsewhere };
             if named(f, "accept-encoding") && !accept {
                 accept = true;
                 edits.push((f.value.clone(), b"identity".to_vec()));
             } else if named(f, "accept-encoding") || named(f, "te") {
                 edits.push((f.line.clone(), Vec::new()));
             } else if let Some(raw) = basic(f)
-                && let Some(swapped) = swap::replaced(&raw, &swaps)
+                && let Some(swapped) = swap::replaced(&raw, these)
             {
                 let scheme = &value[..value.iter().position(|&c| c == b' ').unwrap_or(0)];
                 edits.push((f.value.clone(), [scheme, b" ", parse::base64(&swapped).as_bytes()].concat()));
-            } else if let Some(v) = swap::replaced(value, &swaps) {
+            } else if let Some(v) = swap::replaced(value, these) {
                 edits.push((f.value.clone(), v));
             }
         }
@@ -416,13 +476,15 @@ impl View {
             let end = head.len() - 2;
             edits.push((end..end, b"Accept-Encoding: identity\r\n".to_vec()));
         }
-        Ok(Head { bytes: edited(head, edits), encoded })
+        Ok(Head { bytes: edited(head, edits), encoded, left })
     }
 
     /// An answer's head as it goes to the run: every real value back to its sentinel — in its status line and every
     /// field's value (`Location` among them) but its framing's, which the stage read already.
     pub fn answer_head(&self, head: &[u8]) -> Head {
-        let Some(s) = parse::spans(head) else { return Head { bytes: head.to_vec(), encoded: None } };
+        let Some(s) = parse::spans(head) else {
+            return Head { bytes: head.to_vec(), encoded: None, left: Vec::new() };
+        };
         let named = |f: &parse::Spanned, n: &str| head[f.name.clone()].eq_ignore_ascii_case(n.as_bytes());
         let encoded = encoding(
             s.fields.iter().filter(|f| named(f, "content-encoding")).map(|f| &head[f.value.clone()]),
@@ -437,8 +499,16 @@ impl View {
                 edits.push((f.value.clone(), v));
             }
         }
-        Head { bytes: edited(head, edits), encoded }
+        Head { bytes: edited(head, edits), encoded, left: Vec::new() }
     }
+}
+
+/// What the report says of a card's mask found `within` a request where it doesn't go (P2b): left as its fake.
+fn header_only_said(name: &str, within: &str) -> String {
+    format!(
+        "{name}'s masked value in {within} went as its fake: a mask from its card goes only in the Authorization \
+         header (a value named in llm.sandbox-secrets goes everywhere toward its hosts)"
+    )
 }
 
 /// A body's codings as its `Content-Encoding` fields say them, but `identity` — None: none.
