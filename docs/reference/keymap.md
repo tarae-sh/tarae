@@ -692,6 +692,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:session-new` |  | New session: a branch in its own checkout |
 | `:session-fork` |  | Fork this session: its files and conversation |
 | `:workspace-end` |  | End a workspace (its checkout goes) |
+| `:workspace-restore` |  | Bring back an ended workspace |
 | `:workspace-bring` |  | Move a workspace's base up to it (rebase first if it moved) |
 | `:workspace-apply` |  | Bring a patch in as one reviewed change set ([--base &lt;rev>] &lt;patch>) |
 | `:session-billing` |  | Who pays for this session's Claude: api (your API key) or subscription — the conversation goes on |

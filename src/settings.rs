@@ -826,6 +826,20 @@ pub static SETTINGS: &[Setting] = &[
         },
     },
     Setting {
+        path: "workspace.restore-count",
+        kind: Kind::Int { min: 0, max: 1000 },
+        doc: "How many of the newest ended workspaces' saves stay (what its end took away — :workspace-restore brings one back) whatever their age; workspace.restore-days keeps younger ones too, whichever keeps more",
+        get: |c| Value::from(c.workspace_restore_count as i64),
+        set: |c, v| c.workspace_restore_count = n(v),
+    },
+    Setting {
+        path: "workspace.restore-days",
+        kind: Kind::Int { min: 1, max: 3650 },
+        doc: "How many days an ended workspace's save stays at least (:workspace-restore brings it back); workspace.restore-count keeps the newest ones longer",
+        get: |c| Value::from(c.workspace_restore_days as i64),
+        set: |c, v| c.workspace_restore_days = n(v) as u64,
+    },
+    Setting {
         path: "review.risky",
         kind: Kind::StrList,
         doc: "Code review: files whose every change is high-risk — looked at by you (space v h) before the review ends or the session is brought. A name matches anywhere, in any case, one * per part (\"sandbox*\"); a path from the project root (\".github/\"). The language packs' patterns (unsafe, spawning…) and the protected names count too. Read from the checkout tarae started in",

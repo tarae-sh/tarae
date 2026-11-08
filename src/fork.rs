@@ -241,8 +241,9 @@ fn head_of(top: &Path) -> Result<String, String> {
 }
 
 /// The source's working tree as a tree (`snapshot::snap`: its own index, never the real one) at the HEAD it sits on —
-/// HEAD read before and after; moved meanwhile, taken again once.
-fn take(top: &Path) -> Result<(String, crate::snapshot::Tree), String> {
+/// HEAD read before and after; moved meanwhile, taken again once. An ended workspace's save takes it the same way
+/// (`endsave::keep`).
+pub(crate) fn take(top: &Path) -> Result<(String, crate::snapshot::Tree), String> {
     for _ in 0..2 {
         let before = head_of(top)?;
         let tree = crate::snapshot::snap(top)?;
@@ -250,14 +251,17 @@ fn take(top: &Path) -> Result<(String, crate::snapshot::Tree), String> {
             return Ok((before, tree));
         }
     }
-    Err("its HEAD moved while its files were taken, twice — nothing forked; try again".into())
+    Err("its HEAD moved while its files were taken, twice — try again".into())
 }
 
-/// What `tree` carries against `head`, and what the source's index has staged — plumbing only (nothing refreshed).
-fn counts(top: &Path, head: &str, tree: &crate::snapshot::Tree) -> Result<Files, String> {
-    let git = |args: &[&str]| crate::gitrepo::git(top, args, None);
-    let diff = git(&["diff-tree", "-r", "-z", "--no-renames", "--name-status", head, &tree.id])?;
-    let mut f = Files { left_out: tree.left_out, ..Files::default() };
+/// What tree `tree` carries against commit `head`: files changed, new and deleted — plumbing only.
+pub(crate) fn changes(top: &Path, head: &str, tree: &str) -> Result<Files, String> {
+    let diff = crate::gitrepo::git(
+        top,
+        &["diff-tree", "-r", "-z", "--no-renames", "--name-status", head, tree],
+        None,
+    )?;
+    let mut f = Files::default();
     let mut parts = diff.split('\0');
     while let (Some(status), Some(_)) = (parts.next(), parts.next()) {
         match status {
@@ -267,6 +271,13 @@ fn counts(top: &Path, head: &str, tree: &crate::snapshot::Tree) -> Result<Files,
             _ => f.changed += 1,
         }
     }
+    Ok(f)
+}
+
+/// What `tree` carries against `head`, and what the source's index has staged — plumbing only (nothing refreshed).
+pub(crate) fn counts(top: &Path, head: &str, tree: &crate::snapshot::Tree) -> Result<Files, String> {
+    let git = |args: &[&str]| crate::gitrepo::git(top, args, None);
+    let mut f = Files { left_out: tree.left_out, ..changes(top, head, &tree.id)? };
     let staged = git(&["diff-index", "--cached", "--name-only", "-z", head])?;
     f.staged = staged.split('\0').filter(|p| !p.is_empty()).count();
     if f.left_out > 0 {
@@ -315,32 +326,55 @@ pub(crate) struct Made {
     pub head: String,
 }
 
-/// The fork's checkout (on a worker): the source's tree taken now, a branch at its HEAD in a checkout of its own, the
-/// tree written there, the instruction files after it with the source's bases. Past the checkout's making, a failure
-/// takes it and its branch away again — nothing left half made.
+/// The fork's checkout (on a worker): the source's tree taken now, then laid as a checkout of its own at its HEAD
+/// (`lay`).
 pub(crate) fn make(m: &Making) -> Result<Made, String> {
     let (head, tree) = take(&m.top)?;
     let files = counts(&m.top, &head, &tree)?;
     let m = Making { base_sha: head.clone(), ..m.clone() };
-    crate::worktree::add(&m)?;
-    if let Err(e) = write_tree(&m.path, &head, &tree.id) {
-        undo(&m);
-        return Err(format!("its files couldn't be written ({e}) — its checkout and branch were taken back"));
+    let (root, failed) = lay(&m, &tree.id, true)?;
+    Ok(Made { root, failed, files, head })
+}
+
+/// The one way a checkout is made from a tree (on a worker — a fork's, an ended workspace's brought back,
+/// `endsave::restore`): `m.branch` at `m.base_sha` in a checkout of its own — a new branch (`fresh`), else the one there
+/// — `tree` written there (`write_tree`), the instruction files after it with `m.top`'s bases. Past the checkout's
+/// making, a failure takes it away again, and a branch it made — nothing left half made. Its real path, and the
+/// instruction files that couldn't be copied.
+pub(crate) fn lay(m: &Making, tree: &str, fresh: bool) -> Result<(PathBuf, Vec<String>), String> {
+    match fresh {
+        true => crate::worktree::add(m)?,
+        false => {
+            crate::worktree::add_on(m)?;
+            // (a branch there moved since the card: its tree laid on the new tip would stage the undoing of its commits)
+            if crate::worktree::sha(&m.path, "HEAD").ok().as_deref() != Some(m.base_sha.as_str()) {
+                undo(m, false);
+                return Err("its branch moved since the card was shown — nothing made".into());
+            }
+        }
+    }
+    if let Err(e) = write_tree(&m.path, &m.base_sha, tree) {
+        undo(m, fresh);
+        let what = if fresh { "its checkout and branch were" } else { "its checkout was" };
+        return Err(format!("its files couldn't be written ({e}) — {what} taken back"));
     }
     let failed = crate::worktree::copy_instructions(&m.top, &m.path, &m.copies);
     crate::instructions::keep_bases_from(&m.top, &m.path, &m.copies);
     let root = std::fs::canonicalize(&m.path).unwrap_or_else(|_| m.path.clone());
-    Ok(Made { root, failed, files, head })
+    Ok((root, failed))
 }
 
-/// A checkout `make` began, and its branch, taken away (no hooks, the repository's git folder named).
-fn undo(m: &Making) {
+/// A checkout `lay` began taken away, and its branch when it made it (`fresh`) — no hooks, the repository's git folder
+/// named.
+fn undo(m: &Making, fresh: bool) {
     let Ok(common) = crate::worktree::common_dir(&m.top) else { return };
     let repo = crate::gitrepo::Repo::git_folder(&common);
     if let Some(p) = m.path.to_str() {
         let _ = repo.run_no_hooks(&["worktree", "remove", "--force", p]);
     }
-    let _ = repo.run_no_hooks(&["branch", "-D", "--", &m.branch]);
+    if fresh {
+        let _ = repo.run_no_hooks(&["branch", "-D", "--", &m.branch]);
+    }
 }
 
 /// What holds a fork of `l` now (`keepclose::busy_turn`), its unsaved buffers (relative, and their ids) and its saves

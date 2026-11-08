@@ -2065,6 +2065,7 @@ mod tests {
             lost: Vec::new(),
             entries: Vec::new(),
             brought: None,
+            days: 30,
             keep: crate::workspacekeep::Plan {
                 folders: Vec::new(),
                 differ: Vec::new(),

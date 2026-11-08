@@ -198,6 +198,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["session-new"], Arg::None, "New session: a branch in its own checkout"),
     c(&["session-fork"], Arg::None, "Fork this session: its files and conversation"),
     c(&["workspace-end"], Arg::None, "End a workspace (its checkout goes)"),
+    c(&["workspace-restore"], Arg::None, "Bring back an ended workspace"),
     c(&["workspace-bring"], Arg::None, "Move a workspace's base up to it (rebase first if it moved)"),
     c(
         &["workspace-apply"],

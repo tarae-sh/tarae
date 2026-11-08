@@ -116,6 +116,8 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `workspace.worktrees` | string | `""` | Where workspaces' checkouts go, a folder per repository ("" = $XDG_DATA_HOME/tarae/worktrees) |
 | `workspace.ended` | list of strings | `[]` | A command, its words, run once a workspace's checkout is removed (:workspace-end) — in the checkout tarae started in, outside the sandbox, TARAE_ENDED_CHECKOUT naming the one removed; stopped after 2 minutes; how it ended goes to the log (e.g. ["cargo", "xtask", "linux", "prune"]; [] = none) |
 | `workspace.keep` | list of strings | `[]` | Folders of a workspace's checkout (".sb") moved into the main checkout's &lt;folder>/sessions/&lt;name>/ when the workspace ends — only where git ignores that there, 64 MB at most, no links or protected names; the end card says what goes |
+| `workspace.restore-count` | integer 0–1000 | `20` | How many of the newest ended workspaces' saves stay (what its end took away — :workspace-restore brings one back) whatever their age; workspace.restore-days keeps younger ones too, whichever keeps more |
+| `workspace.restore-days` | integer 1–3650 | `30` | How many days an ended workspace's save stays at least (:workspace-restore brings it back); workspace.restore-count keeps the newest ones longer |
 
 ## `[review]`
 

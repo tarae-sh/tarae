@@ -350,7 +350,7 @@ fn local_branch(dir: &Path, b: &str) -> Result<String, String> {
 }
 
 /// The base a session compares with: its own, else the branch of the checkout tarae started in.
-fn base_or_start(base: Option<String>, start: &Path) -> Result<String, String> {
+pub(crate) fn base_or_start(base: Option<String>, start: &Path) -> Result<String, String> {
     base.or_else(|| current_branch(start))
         .ok_or_else(|| "no base to compare with — the checkout tarae started in is on no branch".into())
 }
@@ -787,6 +787,45 @@ pub(crate) fn add(m: &Making) -> Result<(), String> {
     git_no_hooks(&m.top, &["worktree", "add", "-q", "-b", &m.branch, path, &m.base_sha]).map(|_| ())
 }
 
+/// `add` on the branch `m.branch` there already (an ended workspace's, brought back at its tip — `named_again`).
+pub(crate) fn add_on(m: &Making) -> Result<(), String> {
+    if m.path.exists() {
+        return Err(format!("{} is there already", crate::allow::tilde(&m.path)));
+    }
+    if let Some(parent) = m.path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", crate::allow::tilde(parent)))?;
+    }
+    let path = m.path.to_str().ok_or("a checkout path that isn't UTF-8")?;
+    git_no_hooks(&m.top, &["worktree", "add", "-q", path, &m.branch]).map(|_| ())
+}
+
+/// The branch an ended workspace `name` comes back on, saved at `parent`, and where its checkout goes: `name` itself
+/// when that branch is there, checked out nowhere and still at `parent` (true: reused), else the first free of `name`,
+/// `name-2`, … (`named`: new). On a worker.
+pub(crate) fn named_again(
+    top: &Path,
+    name: &str,
+    parent: &str,
+    setting: &str,
+) -> Result<(String, PathBuf, bool), String> {
+    if let Ok(branch) = branch_name(top, name.trim())
+        && sha(top, &format!("refs/heads/{branch}")).is_ok_and(|s| s == parent)
+    {
+        let list = git(top, &["worktree", "list", "--porcelain"], None).unwrap_or_default();
+        let held =
+            crate::gitpanel::parse_worktrees(&list).into_iter().any(|(_, b)| b.as_deref() == Some(&branch));
+        let path = worktrees_dir(setting, &common_dir(top)?)?.join(branch.replace('/', "-"));
+        if !held && !path.exists() {
+            return Ok((branch, path, true));
+        }
+    }
+    std::iter::once(name.trim().to_string())
+        .chain((2..100).map(|k| format!("{}-{k}", name.trim())))
+        .find_map(|n| named(top, &n, setting).ok())
+        .map(|(branch, path)| (branch, path, false))
+        .ok_or_else(|| format!("no free name {name}-N for its branch"))
+}
+
 // ── Ending one ───────────────────────────────────────────────────────────────
 
 /// What the checks found about a session to end.
@@ -810,6 +849,8 @@ pub struct Ending {
     pub keep: crate::workspacekeep::Plan,
     /// Asked as its bring landed (a child's — orchestra §7): the base it's in now, which the card's title says.
     pub brought: Option<String>,
+    /// How long what goes is saved at least (`workspace.restore-days`, `endsave.rs`) — the card says it.
+    pub days: u64,
 }
 
 impl Ending {
@@ -822,6 +863,19 @@ impl Ending {
     /// committing first (`c`, on a branch) leads, removing takes `R`/`D`.
     pub fn dirty(&self) -> bool {
         !self.changed.is_empty()
+    }
+
+    /// Something goes with its checkout that its save keeps (`endsave::keep`) — `both`: its branch goes too. Its changes,
+    /// the commits only its branch has when that goes, or those of a checkout on no branch; never the ignored files
+    /// `workspace.keep` would lose (no save has them) nor commits on a branch that stays.
+    pub fn goes(&self, both: bool) -> bool {
+        let lost = both && self.branch.is_some() && !self.lost.is_empty();
+        self.dirty() || lost || (self.branch.is_none() && !self.ahead.is_empty())
+    }
+
+    /// New files git lists here (`??` rows) — at most what its save would add: some may be in tarae's index already.
+    fn new_files(&self) -> usize {
+        self.changed.iter().filter(|r| r.starts_with("??")).count()
     }
 
     pub fn card(&self) -> crate::offer::Offer {
@@ -862,13 +916,25 @@ impl Ending {
             lines.push(String::new());
         }
         lines.extend(kept);
-        // What committing first does, then what removing loses — in the warning color where it's for good
+        // What committing first does, then what removing takes away — in the warning color only where it's for good (new
+        // files past what a save takes, what `workspace.keep` loses): a save keeps the rest
         let mut tail: Vec<(String, bool)> = Vec::new();
         if let (true, Some(b)) = (self.dirty(), &self.branch) {
             tail.push((format!("Committing first: Claude drafts it, :w commits on {b}."), false));
         }
         if self.dirty() {
-            tail.push(("Removing throws them away — no reflog keeps them.".into(), true));
+            tail.push(("Removing takes them out of the checkout.".into(), false));
+        }
+        // (past what a save adds at once, some new files aren't saved: warned, never refused — the count an upper bound)
+        let new = self.new_files();
+        if new > crate::snapshot::NEW_MAX {
+            tail.push((
+                format!(
+                    "Up to {new} new files: a save takes {} at once, so some may not be saved.",
+                    crate::snapshot::NEW_MAX
+                ),
+                true,
+            ));
         }
         let lost_from = tail.len();
         tail.extend(keep.into_iter().filter(|k| k.1));
@@ -877,21 +943,29 @@ impl Ending {
             (Some(b), 0) => tail
                 .push((format!("Removing both deletes {b} too — its commits are on other branches."), false)),
             (Some(b), lost) => tail.push((
-                format!(
-                    "Removing both deletes {b} too, and {} on no other branch with it — git's reflog keeps \
-                     them a while.",
-                    commits(lost)
-                ),
-                true,
+                format!("Removing both deletes {b} too, and {} on no other branch with it.", commits(lost)),
+                false,
             )),
             (None, _) if !self.ahead.is_empty() => {
-                tail.push(("Its checkout is on no branch: those commits go with it.".into(), true))
+                tail.push(("Its checkout is on no branch: those commits go with it.".into(), false))
             }
             (None, _) => {}
         }
         // (what goes with the checkout is a block of its own: air under it when more follows)
         if lost_to > lost_from && tail.len() > lost_to {
             tail.insert(lost_to, (String::new(), false));
+        }
+        // (the way back, a block of its own after it, where something would go: removing saves it first)
+        if self.goes(true) || self.goes(false) {
+            tail.push((String::new(), false));
+            tail.push((
+                format!(
+                    "What goes is saved for {} — :workspace-restore {} brings it back.",
+                    if self.days == 1 { "1 day".to_string() } else { format!("{} days", self.days) },
+                    self.name
+                ),
+                false,
+            ));
         }
         if !tail.is_empty() {
             lines.push(String::new());
@@ -958,7 +1032,7 @@ fn keep_plan(name: &str, root: &Path, common: &Path, entries: &[PathBuf]) -> cra
 
 /// The checks before ending (on a worker): what's changed, what's not in the base, what only its branch has,
 /// what it keeps (`entries`: `workspace.keep`'s).
-fn ending(
+pub(crate) fn ending(
     name: String,
     root: &Path,
     base: Option<String>,
@@ -1000,6 +1074,7 @@ fn ending(
         entries,
         keep,
         brought: None,
+        days: 0,
     })
 }
 
@@ -1038,39 +1113,74 @@ fn keep_first(e: &Ending) -> Result<crate::workspacekeep::Kept, String> {
         .map_err(|why| format!("what it keeps couldn't be kept — {why}; nothing removed"))
 }
 
-/// Its checkout removed (and its branch, `both`, if it's still where the checks saw it) — what it keeps moved
-/// out first (`keep_first`), what that freed, and then its build dir when nothing else builds there
-/// (`build_dir_fate`; `builds`: how to ask).
-fn remove(
+/// What `remove` did: what it freed, its build dir's fate, what it kept in the main checkout, and its save with what
+/// that took (`endsave::keep` — None: nothing went).
+pub(crate) type Removed =
+    ((u64, bool), BuildDir, crate::workspacekeep::Kept, Option<(crate::endsave::Saved, crate::fork::Files)>);
+
+/// Its checkout removed (and its branch, `both`, if it's still where the checks saw it) — what goes saved first
+/// (`endsave::keep`, its files taken by `take` at `now`: a save that fails removes nothing), what it keeps moved out
+/// (`keep_first`), what that freed, and then its build dir when nothing else builds there (`build_dir_fate`; `builds`:
+/// how to ask). A removal that fails before git is asked to remove the checkout takes its save back; once git ran, the
+/// save stays, said — `worktree remove --force` can stop half way (a read-only folder, an immutable file), and what's
+/// left of the checkout is no way back.
+pub(crate) fn remove(
     e: &Ending,
     both: bool,
     builds: Option<&Builds>,
-) -> Result<((u64, bool), BuildDir, crate::workspacekeep::Kept), String> {
+    take: crate::endsave::Take,
+    now: std::time::SystemTime,
+) -> Result<Removed, String> {
     let branch = e.branch.as_deref().filter(|_| both);
-    // (the repository's git folder, named: what runs here outlives the checkout)
-    let common = Repo::git_folder(&e.common);
-    let tip = |b: &str| common.run(&["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")], None);
+    let tip = |b: &str| {
+        Repo::git_folder(&e.common).run(&["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")], None)
+    };
     if let Some(b) = branch
         && tip(b).ok().as_deref().map(str::trim) != Some(e.tip.as_str())
     {
         return Err(format!("{b} moved since the card was shown — nothing removed"));
     }
-    let kept = keep_first(e)?;
+    let saved = crate::endsave::keep(e, both, now, take)?;
+    match (remove_saved(e, branch, builds), saved) {
+        (Ok((freed, build, kept)), saved) => Ok((freed, build, kept, saved)),
+        // (nothing of the checkout touched yet: it's the way to its work, the save a second one)
+        (Err((why, false)), Some((s, _))) => {
+            crate::endsave::forget(&e.common, &s);
+            Err(why)
+        }
+        (Err((why, true)), Some((s, _))) => Err(format!("{why} — saved at {} anyway", s.at)),
+        (Err((why, _)), None) => Err(why),
+    }
+}
+
+/// What `remove_saved` did: what it freed, its build dir's fate, what it kept in the main checkout.
+type Unsaved = ((u64, bool), BuildDir, crate::workspacekeep::Kept);
+
+/// `remove` past its save: what it keeps moved out, its checkout removed, then `branch` and its build dir. Err: why,
+/// and whether git was asked to remove the checkout by then.
+fn remove_saved(
+    e: &Ending,
+    branch: Option<&str>,
+    builds: Option<&Builds>,
+) -> Result<Unsaved, (String, bool)> {
+    // (the repository's git folder, named: what runs here outlives the checkout)
+    let common = Repo::git_folder(&e.common);
+    let kept = keep_first(e).map_err(|why| (why, false))?;
     let fate = build_dir_fate(e, builds);
     // (what goes, measured before it does: its checkout, and its build folder with it — a file linked from both
     // freed only by the two)
     let doomed = fate.as_ref().ok().map(|d| d.path());
     let (alone, with_build) = freed_size(&e.root, doomed.as_deref(), Instant::now() + MEASURE_FOR);
-    let root = e.root.to_str().ok_or("a checkout path that isn't UTF-8")?;
+    let root = e.root.to_str().ok_or(("a checkout path that isn't UTF-8".to_string(), false))?;
     // (with changes, git asks for --force — the card said they go; without, a change made since stops it)
     let mut args = vec!["worktree", "remove"];
     if !e.changed.is_empty() {
         args.push("--force");
     }
     args.push(root);
-    common.run_no_hooks(&args)?;
+    common.run_no_hooks(&args).map_err(|why| (why, true))?;
     if let Some(b) = branch {
-        common.run_no_hooks(&["branch", "-D", "--", b])?;
+        common.run_no_hooks(&["branch", "-D", "--", b]).map_err(|why| (why, true))?;
     }
     let build = match fate {
         Ok(doomed) => remove_build(&doomed),
@@ -1812,6 +1922,14 @@ impl Editor {
             return;
         };
         let start = self.start_root();
+        // (the repository's ended workspaces' saves past what's kept go — nothing to bring back, said in the log)
+        let (at, saves) =
+            (start.clone(), (self.config.workspace_restore_count, self.config.workspace_restore_days));
+        self.events.jobs().background(move || {
+            if let Ok(common) = common_dir(&at) {
+                crate::endsave::prune(&common, saves.0, saves.1, crate::clock::system());
+            }
+        });
         self.events.shared_jobs().spawn(move || {
             // (and git's own word on the checkout's top, beside `project::of`'s look at the files: said only where the
             // project holds a `.git` and git takes another top — a `.git` that's no repository's, git climbing past it.
@@ -2113,7 +2231,10 @@ impl Editor {
         let work = move || ending(n, &root, base, &start, entries);
         self.step(self.events.shared_jobs(), "session", said, work, move |ed, found| match found {
             Ok(e) if e.quiet() && !always => ed.session_remove(e, false, None),
-            Ok(e) => ed.push_offer(crate::orchestra::carry(Ending { brought, ..e }.card(), proposed)),
+            Ok(e) => {
+                let e = Ending { brought, days: ed.config.workspace_restore_days, ..e };
+                ed.push_offer(crate::orchestra::carry(e.card(), proposed))
+            }
             Err(e) => {
                 if let Some(p) = proposed {
                     crate::orchestra::no_card(ed, p, e.clone());
@@ -2185,13 +2306,19 @@ impl Editor {
         }
         let builds = self.workspace_store.builds.clone();
         let allow = self.allow_path.clone();
+        let saves = (self.config.workspace_restore_count, self.config.workspace_restore_days);
         self.events.shared_jobs().spawn(move || {
             // (where its own kept answers are, while its checkout is there to say)
             let here = crate::allow::Where::of(&e.root);
             // (its changes to the instruction files, read before its checkout goes — asked for the main checkout's
             // once it's gone: the card carries what it read, frictions29 #79)
             let out = crate::instructions::look_out_of(&e.root);
-            let result = remove(&e, both, builds.as_ref());
+            let now = crate::clock::system();
+            let result = remove(&e, both, builds.as_ref(), crate::fork::take, now);
+            // (the saves past what's kept go, this one counted among them)
+            if result.is_ok() {
+                crate::endsave::prune(&e.common, saves.0, saves.1, now);
+            }
             // (the checkout's own kept answers go with it — one made at its path later starts with none; what
             // every checkout of the repository uses stays)
             if let (Ok(_), Some(store)) = (&result, allow.as_deref())
@@ -2202,7 +2329,7 @@ impl Editor {
             move |ed: &mut Editor| {
                 ed.step_done("session");
                 match result {
-                    Ok((freed, build, kept)) => {
+                    Ok((freed, build, kept, saved)) => {
                         if let Some(id) = card {
                             ed.offer_finished(id, Ok(()));
                         }
@@ -2236,12 +2363,19 @@ impl Editor {
                             BuildDir::Left(why) => format!(" · {why}"),
                             BuildDir::Freed(_) | BuildDir::Nothing | BuildDir::Failed(_) => String::new(),
                         };
+                        let at = match &saved {
+                            Some((s, _)) => format!(" · saved at {}", s.at),
+                            None => String::new(),
+                        };
                         ed.set_success(format!(
-                            "Ended {} — {} freed{branch}{left}{}",
+                            "Ended {} — {} freed{branch}{left}{}{at}",
                             e.name,
                             size_text(freed),
                             kept.said(&e.keep)
                         ));
+                        if let Some(left) = saved.as_ref().and_then(|(_, f)| crate::endsave::left_said(f)) {
+                            ed.set_warning(left);
+                        }
                         if let BuildDir::Failed(why) = build {
                             ed.set_warning(format!("{}'s build dir isn't all removed — {why}", e.name));
                         }
@@ -3933,13 +4067,14 @@ mod tests {
             "1 commit not in main:\n  ",
             " half done\nA squash merge on a forge looks unmerged here.",
             "Committing first: Claude drafts it, :w commits on wip.",
-            "Removing throws them away — no reflog keeps them.",
-            "Removing both deletes wip too, and 1 commit on no other branch with it",
+            "Removing takes them out of the checkout.",
+            "Removing both deletes wip too, and 1 commit on no other branch with it.",
+            "What goes is saved for 30 days — :workspace-restore wip brings it back.",
         ] {
             assert!(o.question.contains(part), "{part:?} in {}", o.question);
         }
         assert_eq!(o.decided_lines(), 1..4, "the file and the commits are what's decided");
-        assert_eq!(o.warning, Some(7..9), "what removing loses, in the warning color");
+        assert_eq!(o.warning, None, "what removing takes away is saved: nothing in the warning color");
         assert_eq!(card_in_sight(&mut ed), ['c', 'R', 'D', 'n'], "no y");
         // A reflex y: nothing goes
         feed(&mut ed, "y");

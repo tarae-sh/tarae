@@ -227,6 +227,9 @@ pub enum What {
     /// Ending a session that has something to lose (`worktree.rs`): `y` removes its checkout and keeps its
     /// branch, `D` deletes the branch too, `n` keeps it all.
     WorkspaceEnd(Box<crate::worktree::Ending>),
+    /// Bringing back an ended workspace's save (`endsave.rs`): `y` makes its checkout and lays the saved tree there;
+    /// `$` as a new session's; `n` keeps it saved.
+    WorkspaceRestore(Box<crate::endsave::Restoring>),
     /// Closing a buffer whose change is under review (#54): `y` declines the change and closes it, `n` keeps
     /// both. Not `force`d, unsaved edits of yours keep it open still.
     CloseReviewed { doc: crate::document::DocId, force: bool },
@@ -346,6 +349,7 @@ pub const KINDS: &[&str] = &[
     "session-fork",
     "session-set",
     "workspace-end",
+    "workspace-restore",
     "close-reviewed",
     "change-set",
     "review-end",
@@ -470,6 +474,8 @@ impl What {
             | What::CloseReviewed { .. }
             | What::ReviewEnd { .. }
             | What::SessionNew(_)
+            // (the saves stay: `:workspace-restore` asks afresh)
+            | What::WorkspaceRestore(_)
             // (its source's turn and buffers as they were: `:session-fork` asks afresh)
             | What::SessionFork(_)
             | What::RebaseResolved { .. }
@@ -686,6 +692,7 @@ impl Offer {
                     | What::SessionNew(_)
                     | What::SessionFork(_)
                     | What::WorkspaceEnd(_)
+                    | What::WorkspaceRestore(_)
                     | What::CloseReviewed { .. }
                     | What::ReviewEnd { .. }
                     | What::Rebase(_)
@@ -783,6 +790,8 @@ impl Offer {
                 // (its yes spends: a Claude and a cold build a session)
                 | What::SessionSet(_)
                 | What::WorkspaceEnd(_)
+                // (its yes starts a Claude, as a new session's)
+                | What::WorkspaceRestore(_)
                 | What::ChangeSet { .. }
                 | What::Rebase(_)
                 | What::RebaseHeld(_)
@@ -825,6 +834,7 @@ impl Offer {
         match &self.what {
             What::SessionNew(m) => Some(m),
             What::SessionFork(f) => Some(&f.making),
+            What::WorkspaceRestore(r) => Some(&r.making),
             What::SessionSet(s) => s.sessions.first().map(|(m, _)| m),
             _ => None,
         }
@@ -1504,6 +1514,15 @@ impl Offer {
                 vec![lasts('y', "Remove checkout"), lasts('D', "Remove both"), plain('n', "Cancel")]
             }
             W::WorkspaceEnd(_) => vec![lasts('y', "Remove it"), plain('n', "Cancel")],
+            W::WorkspaceRestore(r) => {
+                let mut v = vec![plain('y', "Bring back")];
+                if self.bills() {
+                    let api = r.making.billing == crate::billing::Billing::Api;
+                    v.push(lasts('$', if api { "Bill plan" } else { "Bill API" }));
+                }
+                v.push(plain('n', "Cancel"));
+                v
+            }
             // (it fell to the download's row once: `y Install` on a card whose `y` declines Claude's change)
             W::CloseReviewed { .. } => vec![lasts('y', "Decline and close"), plain('n', "Keep both")],
             #[cfg(test)]
@@ -1678,6 +1697,7 @@ impl Offer {
             W::SessionFork(_) => "session-fork",
             W::SessionSet(_) => "session-set",
             W::WorkspaceEnd(_) => "workspace-end",
+            W::WorkspaceRestore(_) => "workspace-restore",
             W::CloseReviewed { .. } => "close-reviewed",
             W::ChangeSet { .. } => "change-set",
             W::ReviewEnd { .. } => "review-end",
@@ -2171,6 +2191,7 @@ impl crate::editor::Editor {
             What::SessionFork(f) => crate::fork::start(self, id, *f),
             What::SessionSet(s) => crate::orchestra::answer(self, id, *s, true),
             What::WorkspaceEnd(e) => self.session_remove(*e, false, Some(id)),
+            What::WorkspaceRestore(r) => crate::endsave::start(self, id, *r),
             What::CloseReviewed { doc, force } => {
                 self.offer_finished(id, Ok(()));
                 self.close_reviewed(doc, force);
@@ -2270,6 +2291,19 @@ impl crate::editor::Editor {
                 let o = &mut self.offers[0];
                 (o.question, o.what, o.warning, o.warnings) =
                     (card.question, card.what, card.warning, card.warnings);
+                o.rev += 1;
+                if self.card_focus.is_some_and(|c| c.0 == id) {
+                    self.card_focus = Some((id, self.offers[0].rev));
+                }
+                return;
+            }
+            // (said in place, as a fork's)
+            Some(What::WorkspaceRestore(mut r)) => {
+                r.making.billing = other(r.making.billing);
+                let id = self.offers[0].id;
+                let card = crate::endsave::card(&r, self.weakness_due());
+                let o = &mut self.offers[0];
+                (o.question, o.what, o.warning) = (card.question, card.what, card.warning);
                 o.rev += 1;
                 if self.card_focus.is_some_and(|c| c.0 == id) {
                     self.card_focus = Some((id, self.offers[0].rev));
@@ -2937,6 +2971,9 @@ impl crate::editor::Editor {
             }
             What::SessionSet(s) => crate::orchestra::answer(self, o.id, *s, false),
             What::WorkspaceEnd(e) => self.set_status(format!("Kept {} as it is", e.name)),
+            What::WorkspaceRestore(r) => {
+                self.set_status(format!("Not brought back — {} stays saved", r.saved.name))
+            }
             What::CloseReviewed { .. } => {
                 self.set_status("kept open — Claude's change still waits for y or n")
             }

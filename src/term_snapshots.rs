@@ -2806,6 +2806,7 @@ fn snapshot_session_end_keeps_its_notes() {
         lost: Vec::new(),
         entries: vec![".sb".into()],
         brought: None,
+        days: 30,
         keep,
     };
     let folder = Folder { rel: ".sb".into(), files: 14, bytes: 220 << 10, to: to.clone() };
@@ -8126,6 +8127,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         lost: Vec::new(),
         entries: Vec::new(),
         brought: None,
+        days: 30,
         keep: crate::workspacekeep::Plan {
             folders: Vec::new(),
             differ: Vec::new(),

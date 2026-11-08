@@ -1034,6 +1034,7 @@ fn every_act_that_takes_a_workspace_to_the_front_puts_itself_off_whole() {
             lost: Vec::new(),
             entries: Vec::new(),
             brought: None,
+            days: 30,
             keep: Default::default(),
         }
     }

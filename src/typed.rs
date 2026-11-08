@@ -196,6 +196,14 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             Ok(())
         }
         "workspace-end" => editor.workspace_end(rest),
+        "workspace-restore" => {
+            match rest.split_whitespace().collect::<Vec<_>>()[..] {
+                [] => crate::endsave::picker(editor),
+                [which] => crate::endsave::ask(editor, which),
+                _ => return Err("usage: :workspace-restore [<name>]".into()),
+            }
+            Ok(())
+        }
         "workspace-bring" => editor.workspace_bring(rest),
         "workspace-apply" => editor.workspace_apply(rest),
         "session-billing" => editor.session_billing(rest),

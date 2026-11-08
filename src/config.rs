@@ -103,6 +103,10 @@ pub struct EditorConfig {
     pub workspace_ended: Vec<String>,
     /// Folders of a session's checkout kept in the main checkout when it ends (`workspacekeep.rs`).
     pub workspace_keep: Vec<String>,
+    /// An ended workspace's save stays while it's among the newest this many, or younger than these days
+    /// (`endsave.rs`).
+    pub workspace_restore_count: usize,
+    pub workspace_restore_days: u64,
     pub theme: String,
     pub llm: LlmConfig,
     pub lsp: crate::lsp::LspConfig,
@@ -179,6 +183,8 @@ impl Default for EditorConfig {
             review_record: true,
             workspace_ended: Vec::new(),
             workspace_keep: Vec::new(),
+            workspace_restore_count: 20,
+            workspace_restore_days: 30,
             theme: "default".into(),
             llm: LlmConfig::default(),
             lsp: crate::lsp::LspConfig { enabled: true, ..Default::default() },

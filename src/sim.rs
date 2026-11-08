@@ -78,6 +78,7 @@ mod readself;
 mod rebaseexit;
 mod rebasemsg;
 mod rebaserecheck;
+mod restore;
 mod reveal;
 mod reviews;
 mod rundoc;

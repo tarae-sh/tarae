@@ -174,6 +174,7 @@ pub const PICKERS: &[&str] = &[
     "text-matches",
     "themes",
     "workspace-diagnostics",
+    "workspace-restore",
     "workspace-symbols",
 ];
 

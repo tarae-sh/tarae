@@ -24927,7 +24927,8 @@ fn picker_enter(kind: &str) -> Option<&'static str> {
         | "places"
         | "jumps"
         | "text-matches" => "go to it",
-        "themes" | "model" | "effort" | "session-base" | "rebase-session" | "blocked" | "plugin" => "choose",
+        "themes" | "model" | "effort" | "session-base" | "rebase-session" | "blocked" | "plugin"
+        | "workspace-restore" => "choose",
         "code-actions" => "apply",
         _ => return None,
     })
