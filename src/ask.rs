@@ -538,7 +538,7 @@ fn buffer_lines(ed: &mut Editor, generation: u64, specs: &[&str]) -> Result<Stri
     let n = if text.len_bytes() == 0 { 0 } else { text.len_lines() - usize::from(ends) };
     let line = |l: usize| text.line(l - 1).to_string().trim_end_matches(['\n', '\r']).to_string();
     let name = d.display_name(Path::new("/"));
-    let mut left = crate::readtool::LINES_MAX;
+    let mut left = crate::readtool::Left::answer();
     let mut out = format!("({id} is {name}, a buffer of the editor — no file)\n");
     for spec in specs {
         let it = crate::readtool::item(spec);
@@ -548,7 +548,8 @@ fn buffer_lines(ed: &mut Editor, generation: u64, specs: &[&str]) -> Result<Stri
             ));
             continue;
         };
-        out.push_str(&crate::readtool::lines_of(ranges, n, &line, &id, &mut left, &mut Vec::new()));
+        let whole = it.want != crate::readtool::Want::Whole;
+        out.push_str(&crate::readtool::lines_of(ranges, n, &line, &id, whole, &mut left, &mut Vec::new()));
     }
     Ok(out)
 }

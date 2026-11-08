@@ -1991,6 +1991,11 @@ Claude reads and searches through tarae itself — no process, no sandbox to sta
   lines), `src/a.rs:run_search` or `src/a.rs:Editor::open` (a function, type or module by name, from its syntax
   tree), or a file whole. A file over 16 KB asked whole comes as its outline with line numbers — a markdown file's
   its headings, each with its section's lines (`## Rules  1300–1400`) —, and says how to ask for its text.
+  A line past 500 characters is cut there in a file asked whole (a minified file's), and the cut is said after
+  it with the way to the rest: ``… line 52 cut at 500 of 6,865 characters — `path:52` gives it whole``. A range,
+  a file's end or a symbol gives its lines whole up to 16,384 characters each, as long as the answer's room for
+  such lines (16,384 characters, shared) lasts; a longer one is cut too, said so (`longer than read gives whole`).
+  The reviewer's members read their snapshot, and the `review.rules` files, by the same rule.
   - **An image** (PNG, JPEG, GIF, WebP, told by its bytes, not its name) comes as a picture Claude sees. One
     within 2000×2000 and 3.75 MB goes as it is; a bigger one is scaled to fit and, past 3.75 MB still, written
     smaller step by step, as Claude Code's own Read does (a PNG compressed hardest, then JPEG at quality 80, 60,

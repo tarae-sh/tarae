@@ -20,9 +20,17 @@ use crate::tools::{Call, Part, answer};
 /// A file asked whole bigger than this (bytes) comes as its outline.
 const WHOLE_MAX: usize = 16 * 1024;
 
-/// Lines in one answer at most, and a line's characters.
-pub(crate) const LINES_MAX: usize = 1500;
+/// Lines in one answer at most, and a line's characters where its whole wasn't asked for (a file whole, an
+/// outline's first lines — minified files): the cut said, with the way to the line whole.
+const LINES_MAX: usize = 1500;
 const LINE_MAX: usize = 500;
+
+/// A range's, an end's or a symbol's line comes whole up to this many characters, while its answer's room for
+/// such lines (as many again) lasts; past either, cut at `LINE_MAX` as well, said so (#450).
+const LONG_MAX: usize = 16 * 1024;
+
+/// The cut lines one note names at most.
+const CUT_NAMED: usize = 5;
 
 /// Files and ranges one call asks for at most · symbols one name reads at most · outline rows shown.
 const ITEMS_MAX: usize = 30;
@@ -320,7 +328,8 @@ fn read_between(
     }
     between();
     let (mut out, mut parts, mut shown) = (String::new(), Vec::new(), Vec::new());
-    let (mut left, mut images) = (LINES_MAX, Room { pictures: IMAGES_MAX, bytes: crate::media::ANSWER_MAX });
+    let (mut left, mut images) =
+        (Left::answer(), Room { pictures: IMAGES_MAX, bytes: crate::media::ANSWER_MAX });
     let mut dirty = Vec::new();
     for (it, f) in items.iter().zip(found) {
         let o = match f {
@@ -366,19 +375,33 @@ fn read_between(
     Ok(Ok((parts, shown)))
 }
 
+/// What's left of an answer's room for text: its lines (`LINES_MAX`), and characters of long lines given whole
+/// (`LONG_MAX`).
+pub(crate) struct Left {
+    lines: usize,
+    long: usize,
+}
+
+impl Left {
+    /// A new answer's.
+    pub(crate) fn answer() -> Left {
+        Left { lines: LINES_MAX, long: LONG_MAX }
+    }
+}
+
 /// What's left of an answer's room for pictures: how many, and their bytes as sent (`media::ANSWER_MAX`).
 struct Room {
     pictures: usize,
     bytes: usize,
 }
 
-/// One item's part of the answer, read from its opened file, at most `left` lines of text and what's left of
-/// `room` for pictures (taken from them) — the lines it gives in `seen`.
+/// One item's part of the answer, read from its opened file, within what's `left` of text and of `room` for
+/// pictures (taken from them) — the lines it gives in `seen`.
 fn section(
     mut o: crate::paths::Opened,
     shown: &str,
     it: &Item,
-    left: &mut usize,
+    left: &mut Left,
     room: &mut Room,
     seen: &mut Vec<(usize, usize)>,
 ) -> Vec<Part> {
@@ -466,7 +489,7 @@ fn section_of(
     outline_of: &dyn Fn(&str) -> Outline,
     shown: &str,
     it: &Item,
-    left: &mut usize,
+    left: &mut Left,
     seen: &mut Vec<(usize, usize)>,
 ) -> String {
     if bytes.contains(&0) {
@@ -503,7 +526,8 @@ fn section_of(
             }
         },
     };
-    lines_of(ranges, n, &|l| lines[l - 1].to_string(), shown, left, seen)
+    let whole = it.want != Want::Whole;
+    lines_of(ranges, n, &|l| lines[l - 1].to_string(), shown, whole, left, seen)
 }
 
 /// `of 12 lines`.
@@ -528,14 +552,16 @@ pub(crate) fn ranges(want: &Want, n: usize, shown: &str) -> Option<Vec<(usize, u
     })
 }
 
-/// `ranges`' lines of a text of `n` (`line(l)`: line `l`, from 1), numbered under their headings — at most `left`
-/// lines in all (taken from it), the lines given in `seen`.
+/// `ranges`' lines of a text of `n` (`line(l)`: line `l`, from 1), numbered under their headings, within what's
+/// `left` (taken from it) — long lines whole if `whole` (a range's, not a file's asked whole: `numbered`), each
+/// range's cut ones said after it — the lines given in `seen`.
 pub(crate) fn lines_of(
     ranges: Vec<(usize, usize, String)>,
     n: usize,
     line: &dyn Fn(usize) -> String,
     shown: &str,
-    left: &mut usize,
+    whole: bool,
+    left: &mut Left,
     seen: &mut Vec<(usize, usize)>,
 ) -> String {
     let mut out = String::new();
@@ -546,20 +572,79 @@ pub(crate) fn lines_of(
             out.push_str(&format!("  (past its end — it has {n} lines)\n"));
             continue;
         }
-        let take = (b - a + 1).min(*left);
+        let (take, mut cut) = ((b - a + 1).min(left.lines), Vec::new());
         for l in a..a + take {
-            out.push_str(&format!("{l}: {}\n", crate::nav::clip(&line(l), LINE_MAX)));
+            out.push_str(&numbered(l, &line(l), whole, left, &mut cut));
         }
+        out.push_str(&cut_said(&cut, shown));
         if take > 0 {
             seen.push((a, a + take - 1));
         }
-        *left -= take;
+        left.lines -= take;
         if take < b - a + 1 {
             let from = a + take;
             out.push_str(&format!("… cut at {LINES_MAX} lines an answer — `{shown}:{from}-{b}` reads on\n"));
         }
     }
     out
+}
+
+/// Line `l`'s numbered row, its `text` whole up to `LINE_MAX` characters — past that whole only if `whole` lets
+/// it, it's within `LONG_MAX` and `left` has room for it (taken), else cut at `LINE_MAX`, its line and characters
+/// kept in `cut`.
+fn numbered(l: usize, text: &str, whole: bool, left: &mut Left, cut: &mut Vec<(usize, usize)>) -> String {
+    if text.len() <= LINE_MAX || text.char_indices().nth(LINE_MAX).is_none() {
+        return format!("{l}: {text}\n");
+    }
+    let chars = text.chars().count();
+    if whole && chars <= LONG_MAX.min(left.long) {
+        left.long -= chars;
+        return format!("{l}: {text}\n");
+    }
+    cut.push((l, chars));
+    format!("{l}: {}\n", crate::nav::clip(text, LINE_MAX))
+}
+
+/// What `numbered` cut of one range (its lines and their characters), said with the way to them whole — `path:52`
+/// while within `LONG_MAX`, those that fit together named in one; past it, that a read doesn't give them whole.
+fn cut_said(cut: &[(usize, usize)], shown: &str) -> String {
+    let (fit, long): (Vec<_>, Vec<_>) = cut.iter().partition(|c| c.1 <= LONG_MAX);
+    let mut out = String::new();
+    if !fit.is_empty() {
+        let (mut sum, mut ask) = (0, Vec::new());
+        for &(l, chars) in fit.iter().take(CUT_NAMED) {
+            sum += chars;
+            if !ask.is_empty() && sum > LONG_MAX {
+                break;
+            }
+            ask.push(l.to_string());
+        }
+        let them = if ask.len() == 1 { "it" } else { "them" };
+        out.push_str(&format!("… {} — `{shown}:{}` gives {them} whole\n", cut_lines(&fit), ask.join(",")));
+    }
+    if !long.is_empty() {
+        let max = crate::features::thousands(LONG_MAX as u64);
+        out.push_str(&format!("… {} — longer than read gives whole ({max})\n", cut_lines(&long)));
+    }
+    out
+}
+
+/// `line 52 cut at 500 of 6,865 characters`, `lines 52, 60 cut at 500 characters (of 6,865, 1,204)`, past
+/// `CUT_NAMED` `1,498 lines cut at 500 characters (52, 60, 71, 80, 91, …)`.
+fn cut_lines(cut: &[(usize, usize)]) -> String {
+    let n = |c: usize| crate::features::thousands(c as u64);
+    match cut {
+        [(l, chars)] => format!("line {l} cut at {LINE_MAX} of {} characters", n(*chars)),
+        _ if cut.len() <= CUT_NAMED => {
+            let ls: Vec<String> = cut.iter().map(|c| c.0.to_string()).collect();
+            let of: Vec<String> = cut.iter().map(|c| n(c.1)).collect();
+            format!("lines {} cut at {LINE_MAX} characters (of {})", ls.join(", "), of.join(", "))
+        }
+        _ => {
+            let ls: Vec<String> = cut.iter().take(CUT_NAMED).map(|c| c.0.to_string()).collect();
+            format!("{} lines cut at {LINE_MAX} characters ({}, …)", n(cut.len()), ls.join(", "))
+        }
+    }
 }
 
 /// The reviewer's `read` (bgreview): the items of `args` read from snapshot `snap` (`snapread.rs`) — the texts as
@@ -603,7 +688,7 @@ fn read_snapshot_into(
         texts.insert(rel.to_string(), t);
         true
     })?;
-    let (mut out, mut left, mut read) = (String::new(), LINES_MAX, 0);
+    let (mut out, mut left, mut read) = (String::new(), Left::answer(), 0);
     for (it, rel) in items.iter().zip(&rels) {
         // (a `review.rules` file of the member's, by the path its prompt lists: as kept when the review began)
         if let Some((shown, got)) = snap.named_text(&it.path, named) {
@@ -676,7 +761,7 @@ fn outline(
     shown: &str,
     lines: &[&str],
     bytes: usize,
-    left: &mut usize,
+    left: &mut Left,
     seen: &mut Vec<(usize, usize)>,
 ) -> String {
     let n = lines.len();
@@ -702,15 +787,16 @@ fn outline(
             out
         }
         _ => {
-            let take = HEAD_LINES.min(n).min(*left);
-            *left -= take;
+            let (take, mut cut) = (HEAD_LINES.min(n).min(left.lines), Vec::new());
+            left.lines -= take;
             if take > 0 {
                 seen.push((1, take));
             }
             let mut out = format!("== {shown}:1-{take} (of {n} lines, {kb} KB — no outline for it). {ask}\n");
             for (i, l) in lines[..take].iter().enumerate() {
-                out.push_str(&format!("{}: {}\n", i + 1, crate::nav::clip(l, LINE_MAX)));
+                out.push_str(&numbered(i + 1, l, false, left, &mut cut));
             }
+            out.push_str(&cut_said(&cut, shown));
             out
         }
     }
@@ -924,6 +1010,60 @@ mod tests {
         assert!(t.contains("its outline. The text isn't here — ask for `src/big.rs:a-b` line ranges or `src/big.rs:name` symbols"), "{t}");
         assert!(t.contains("\nfn f10  31–33\n"), "with its line numbers: {t}");
         assert!(!t.contains("let x"), "no text: {t}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// #450: a minified-style line past `LINE_MAX` is cut in a file read whole, said with the way to it whole;
+    /// `path:N` and a range give it whole up to `LONG_MAX`, one past that is cut there too and said so; an
+    /// answer's room for long lines is shared, the line past it cut and said.
+    #[test]
+    fn a_long_line_is_cut_said_and_given_whole_when_asked() {
+        let (dir, _, base) = places("long-line");
+        let gate = crate::reads::Gate::for_test(&dir);
+        let long = |n: usize| format!("{}LINE_END", "x".repeat(n - 8));
+        std::fs::write(dir.join("min.js"), format!("// head\n{}\ntail\n", long(6865))).unwrap();
+        let t = text(read(&dir, &items(&["min.js"]), &gate, &[]));
+        let first = format!("2: {}…\n3: tail\n", "x".repeat(LINE_MAX));
+        assert!(t.contains(&first) && !t.contains("LINE_END"), "a file read whole keeps the cap: {t}");
+        assert!(
+            t.ends_with("\n… line 2 cut at 500 of 6,865 characters — `min.js:2` gives it whole"),
+            "the cut said, with the way: {t}"
+        );
+        for spec in ["min.js:2", "min.js:1-3", "min.js:-2"] {
+            let t = text(read(&dir, &items(&[spec]), &gate, &[]));
+            assert!(t.contains(&format!("2: {}", long(6865))) && !t.contains("cut at"), "{spec}: {t}");
+        }
+        let t = text(read(&dir, &items(&["min.js:2", "min.js:2", "min.js:2"]), &gate, &[]));
+        assert_eq!(t.matches("LINE_END").count(), 2, "the answer's room for long lines: {t}");
+        assert!(t.ends_with("\n… line 2 cut at 500 of 6,865 characters — `min.js:2` gives it whole"), "{t}");
+        // (one line past `LONG_MAX`: a file past `WHOLE_MAX` with no outline, its first lines; asked alone too)
+        std::fs::write(dir.join("huge.txt"), format!("{}\n", long(LONG_MAX + 1))).unwrap();
+        let past = "\n… line 1 cut at 500 of 16,385 characters — longer than read gives whole (16,384)";
+        for spec in ["huge.txt", "huge.txt:1"] {
+            let t = text(read(&dir, &items(&[spec]), &gate, &[]));
+            assert!(t.contains(&format!("1: {}…\n", "x".repeat(LINE_MAX))), "{spec}: {t}");
+            assert!(t.ends_with(past) && !t.contains("LINE_END"), "{spec}: {t}");
+        }
+        std::fs::write(dir.join("huge.txt"), format!("{}\n", long(LONG_MAX))).unwrap();
+        let t = text(read(&dir, &items(&["huge.txt:1"]), &gate, &[]));
+        assert!(t.contains("LINE_END") && !t.contains("cut at"), "up to the bound whole: {t}");
+        // (several cut in one range: named in one note, those that fit together in one ask)
+        std::fs::write(dir.join("many.txt"), format!("{}\n", long(600)).repeat(7)).unwrap();
+        let t = text(read(&dir, &items(&["many.txt"]), &gate, &[]));
+        assert!(
+            t.ends_with(
+                "\n… 7 lines cut at 500 characters (1, 2, 3, 4, 5, …) — `many.txt:1,2,3,4,5` gives them whole"
+            ),
+            "{t}"
+        );
+        std::fs::write(dir.join("many.txt"), format!("{}\n", long(600)).repeat(2)).unwrap();
+        let t = text(read(&dir, &items(&["many.txt"]), &gate, &[]));
+        assert!(
+            t.ends_with(
+                "\n… lines 1, 2 cut at 500 characters (of 600, 600) — `many.txt:1,2` gives them whole"
+            ),
+            "{t}"
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 

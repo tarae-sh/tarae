@@ -723,6 +723,28 @@ pub(crate) mod tests {
         assert!(got.contains(outside), "not the tests angle's: {got}");
     }
 
+    /// #450: the reviewer's `read` takes the chat's rule on long lines — a snapshot's file and a `review.rules`
+    /// file read whole cut a line past 500 characters, said with the way to it, and `path:N` gives it whole.
+    #[test]
+    fn the_reviewers_read_cuts_a_long_line_says_it_and_gives_it_whole_when_asked() {
+        let (_s, main, wt, _) = rules_fixture("snapread-long", &[]);
+        let long = format!("{}LINE_END", "x".repeat(6857));
+        std::fs::write(main.join(".sb/dev/long.md"), format!("# Rules\n{long}\n")).unwrap();
+        std::fs::write(wt.join("long.txt"), format!("one\n{long}\n")).unwrap();
+        let tree = crate::snapshot::snap(&wt).unwrap().id;
+        let mut snap = Snap::list(&wt, &tree).unwrap();
+        let keys = [("design".to_string(), vec![".sb/dev/long.md".to_string()])];
+        snap.name(crate::instructions::main_or_self(&wt), keys.into_iter().collect());
+        let rules = main.join(".sb/dev/long.md").display().to_string();
+        for shown in ["long.txt", rules.as_str()] {
+            let got = read_as(&snap, shown, &["design"]).unwrap();
+            let cut = format!("… line 2 cut at 500 of 6,865 characters — `{shown}:2` gives it whole");
+            assert!(got.ends_with(&cut) && !got.contains("LINE_END"), "{shown} whole: {got}");
+            let got = read_as(&snap, &format!("{shown}:2"), &["design"]).unwrap();
+            assert!(got.contains(&format!("2: {long}")) && !got.contains("cut at"), "{shown}:2: {got}");
+        }
+    }
+
     /// A rules file named like a key, a link (or one on the way) and one past `FILE_MAX` are listed as not read,
     /// each with why, and said so when asked for; one not there isn't listed at all.
     #[test]
