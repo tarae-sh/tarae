@@ -1,16 +1,17 @@
-//! Sizes you set (U1): the chat's, the side panel's and the review rail's widths and the bottom slot's height. Global, not per
-//! project: kept as columns and rows in `$state/sizes.json`, read at startup (so across `:restart` too). A
-//! screen too small for a kept size shows less of it — clamped here, never written back — and a bigger one
-//! gets it again. Unset, each is automatic: the chat 2/5 of the screen (36–96 columns — U3), the side panel
-//! 32 and more on a wide screen, the bottom slot what its panel wants (a task's output — U2). The layout reads them
-//! from the tree: each fed into its surface's leaf as a `Share::Cells` (`Editor::sizes_feed`, onetree S2c), which its
-//! rule here clamps (`split::Room::share`) — `sizes.json` stays their home, global, until panes move (S5).
+//! Sizes you set (U1): every pane's, a share in its workspace's tree (onetree S5b) — the chat's, the side panel's and
+//! the review rail's widths and the slot's height beside or under the code their leaf's `Share::Cells`, which its rule
+//! here clamps (`split::Room::share`), a code pane's its child's in its split. Kept per workspace with its layout
+//! (`layouts.json`, the restart's file); `$state/sizes.json` keeps only what floats or docks as a group (the floating
+//! frames, the follow card, the docked groups' widths). A screen too small for a kept size shows less of it — clamped
+//! here, never written back — and a bigger one gets it again. Unset, each is automatic: the chat 2/5 of the screen
+//! (36–96 columns — U3), the side panel 32 and more on a wide screen, the bottom slot what its panel wants (a task's
+//! output — U2).
 //!
-//! `C-w <`/`>` narrow/widen the focused one (the chat, the side panel, the review rail; from the code: the chat if
-//! it's open, else the side panel), `C-w -`/`+` the bottom slot, `C-w =` makes them all automatic again. A split of the
-//! code's you made sizes its panes instead (panes P2b, §5.4): from a code pane with another beside it that way,
-//! `C-w < > - +` and a drag of the divider between them set that pane's share in the tree (`Share::Cells` — the
-//! session's, not these global three); `C-w =` makes them even again.
+//! `C-w < > + -` grow and shrink the pane in hand (D7, the user 2026-11-04 — Vim's, zellij's and tmux's one meaning):
+//! `>` wider, `<` narrower, `+` taller, `-` shorter, its edge toward the side with a pane that way moving (the right
+//! edge first, else the left; the bottom first, else the top), the pane across it giving or taking the room
+//! (`Editor::size_pane`). A drag of a line sizes the pane whose line it is the same way. `C-w =` makes them all
+//! automatic again (a split of the code's even).
 //!
 //! Beside each other (140 columns: side panel 32 + chat 56 left the code 52): an automatic chat narrows to
 //! leave the code `CODE_ROOM` (down to `CHAT_MIN`); if the code would still have less than `CODE_MIN`, the side
@@ -65,14 +66,9 @@ const SIZE_TAIL: &str = " · C-w = automatic";
 pub const STEP_COLS: usize = 4;
 pub const STEP_ROWS: usize = 2;
 
-/// What you set (None: automatic).
+/// What you set of what floats or docks as a group (None: automatic) — the tree's panes keep theirs in the tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sizes {
-    pub chat: Option<u16>,
-    pub side: Option<u16>,
-    /// The code review's rail.
-    pub rail: Option<u16>,
-    pub bottom: Option<u16>,
     /// A docked group's, per kind (`GroupKind::dock_index`): its width beside the code, its rows above it.
     pub docked: [Option<u16>; crate::pane::DOCKABLE],
     /// The session list's frame (`sessionpane.rs`) — where you put it, the viewer's (None: centred).
@@ -128,10 +124,6 @@ impl Sizes {
         let (sessions, messages) =
             (crate::pane::Frame::of_json(&v["sessions"]), crate::pane::Frame::of_json(&v["messages"]));
         Sizes {
-            chat: n(&v["chat"]),
-            side: n(&v["side"]),
-            rail: n(&v["rail"]),
-            bottom: n(&v["bottom"]),
             docked,
             sessions,
             messages,
@@ -152,8 +144,7 @@ impl Sizes {
         let dock = self.sessions_dock.map(crate::pane::Side::name);
         let folders = self.folders.map(crate::pane::Frame::json);
         let follow = json!({ "w": self.follow_w, "h": self.follow_h });
-        json!({ "chat": self.chat, "side": self.side, "rail": self.rail, "bottom": self.bottom, "docked": docked,
-                "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock,
+        json!({ "docked": docked, "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock,
                 "follow": follow })
         .to_string()
     }
@@ -188,7 +179,10 @@ pub fn save(path: &Path, sizes: Sizes, seq: u64) {
 /// 3. an automatic conversation narrows to leave the code `CODE_ROOM` beside the side panel, `REVIEW_CODE_ROOM` beside
 ///    the review's rail (frictions25 R6: reading the code is what a review is for), down to `CHAT_MIN`;
 /// 4. below `CHAT_FULL_CODE` beside it the conversation takes the whole width (`Editor::chat_panel`: only while it has
-///    the keys).
+///    the keys);
+/// 5. the slot moved beside the code (onetree S5) takes 2/5 of what the columns leave, as much as leaves the code
+///    `CODE_MIN` — yours too —, down to `SIDE_MIN`; its least counts as the code's in rows 2 and 3 (the navigator goes
+///    before the code is squeezed for it).
 ///
 /// Down the screen, the slot's height (`bottom`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +193,17 @@ pub struct Wants {
     /// None: no column.
     pub chat: Option<Option<u16>>,
     pub nav: Nav,
+    /// The slot beside the code, shown (`Editor::slot_beside`); None: not beside it.
+    pub slot: Option<Beside>,
+}
+
+/// The slot moved beside the code: the width you set there (None: automatic), and whether the conversation and the
+/// navigator stand beside it — side by side, not stacked over or under everything (`C-w J` from the chat).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Beside {
+    pub kept: Option<u16>,
+    pub chat: bool,
+    pub nav: bool,
 }
 
 /// The navigator beside the code.
@@ -215,23 +220,40 @@ pub enum Nav {
     },
 }
 
-/// What the table gives each: the conversation's width and the navigator's (0: none, or given way).
+/// What the table gives each: the conversation's width, the navigator's (0: none, or given way) and the slot's beside
+/// the code (0: not beside it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Given {
     pub chat: usize,
     pub nav: usize,
+    pub slot: usize,
 }
 
 /// The table's widths (above) for what `w` wants.
 pub fn give_way(w: Wants) -> Given {
-    let Wants { total, chat, nav } = w;
+    let Given { chat, nav, .. } = columns(w);
+    // (row 5: the slot in what the columns beside it leave, the code keeping `CODE_MIN` first)
+    let slot = w.slot.map_or(0, |b| {
+        let area = w.total.saturating_sub(if b.chat { chat } else { 0 } + if b.nav { nav } else { 0 });
+        let want = b.kept.map_or(area * 2 / 5, |k| k as usize);
+        want.min(area.saturating_sub(CODE_MIN)).max(SIDE_MIN).min(area)
+    });
+    Given { chat, nav, slot }
+}
+
+/// Rows 2–4: the conversation's and the navigator's widths, the slot's least beside the code counted as the code's.
+fn columns(w: Wants) -> Given {
+    let Wants { total, chat, nav, slot } = w;
+    let least = if slot.is_some() { SIDE_MIN } else { 0 };
+    let (code_min, code_room, review_room) = (CODE_MIN + least, CODE_ROOM + least, REVIEW_CODE_ROOM + least);
     let alone = chat.map_or(0, |kept| chat_alone(total, kept));
+    let given = |chat, nav| Given { chat, nav, slot: 0 };
     match nav {
-        Nav::None => Given { chat: alone, nav: 0 },
+        Nav::None => given(alone, 0),
         Nav::Side(kept_side) => {
             // (row 4: the conversation takes it all, no navigator beside it)
             if chat.is_some() && alone >= total {
-                return Given { chat: total, nav: 0 };
+                return given(total, 0);
             }
             let auto_side =
                 |edit: usize| SIDE_AUTO + (edit.saturating_sub(SIDE_AUTO + 100) / 2).min(SIDE_MORE);
@@ -241,15 +263,15 @@ pub fn give_way(w: Wants) -> Given {
             };
             let (mut c, mut side) = (alone, side_of(alone));
             // (row 3: an automatic conversation makes room for the code beside the panel)
-            if chat == Some(None) && total < c + side + CODE_ROOM {
-                c = total.saturating_sub(side + CODE_ROOM).max(CHAT_MIN).min(c);
+            if chat == Some(None) && total < c + side + code_room {
+                c = total.saturating_sub(side + code_room).max(CHAT_MIN).min(c);
                 side = side_of(c);
             }
             // (row 2: at its width it would leave the code less than `CODE_MIN` — it gives way, not squeezed, the
             // conversation as it would be without it)
-            match total < c + side + CODE_MIN {
-                true => Given { chat: alone, nav: 0 },
-                false => Given { chat: c, nav: side },
+            match total < c + side + code_min {
+                true => given(alone, 0),
+                false => given(c, side),
             }
         }
         Nav::Rail { natural, focus } => {
@@ -257,8 +279,8 @@ pub fn give_way(w: Wants) -> Given {
             // conversation as it was — frictions25: at 120 the chat lost 12 columns for a rail that didn't come)
             let c = match chat {
                 Some(None) if alone < total => {
-                    let beside = total.saturating_sub(natural + REVIEW_CODE_ROOM).max(CHAT_MIN).min(alone);
-                    match rail_code_min(total.saturating_sub(beside), focus) {
+                    let beside = total.saturating_sub(natural + review_room).max(CHAT_MIN).min(alone);
+                    match rail_code_min(total.saturating_sub(beside + least), focus) {
                         Some(_) => beside,
                         None => alone,
                     }
@@ -266,9 +288,9 @@ pub fn give_way(w: Wants) -> Given {
                 _ => alone,
             };
             // (row 2: the rail drawn only where the code keeps its room beside it)
-            let area = total - c;
+            let area = (total - c).saturating_sub(least);
             let nav = rail_code_min(area, focus).map_or(0, |min| natural.min(area.saturating_sub(min)));
-            Given { chat: c, nav }
+            given(c, nav)
         }
     }
 }
@@ -325,17 +347,28 @@ pub enum Across {
     Chat,
     /// The navigator over or under it, `rows` its list's.
     Nav { rows: usize },
-    /// The slot beside it.
-    Slot,
 }
 
-/// Its natural size along that split, of `avail` cells: the conversation a third of the rows, at least
-/// `CHAT_ROWS_MIN`; the navigator its rows, up to a third; the slot 2/5 of the columns.
-pub fn across(kind: Across, avail: usize) -> usize {
+/// Its size along that split, of `avail` cells: the one you set (`kept`, onetree S5b), clamped to `across_limits`; else
+/// its natural one — the conversation a third of the rows, at least `CHAT_ROWS_MIN`; the navigator its rows, up to a
+/// third. (The slot beside the code is the gives-way table's, row 5.)
+pub fn across(kind: Across, avail: usize, kept: Option<u16>) -> usize {
+    if let Some(k) = kept {
+        let (min, max) = across_limits(kind, avail);
+        return (k as usize).clamp(min.min(max), max);
+    }
     match kind {
         Across::Chat => (avail / 3).max(CHAT_ROWS_MIN).min(avail),
         Across::Nav { rows } => (rows + NAV_ROWS_MORE).min(avail / 3),
-        Across::Slot => avail * 2 / 5,
+    }
+}
+
+/// A size you set on a kind sitting the other way, in `avail` rows: at least the conversation's `CHAT_ROWS_MIN`, the
+/// navigator's `BOTTOM_MIN`; at most what leaves the code beside it its least (`BOTTOM_CODE`).
+pub fn across_limits(kind: Across, avail: usize) -> (usize, usize) {
+    match kind {
+        Across::Chat => (CHAT_ROWS_MIN, avail.saturating_sub(BOTTOM_CODE)),
+        Across::Nav { .. } => (BOTTOM_MIN, avail.saturating_sub(BOTTOM_CODE)),
     }
 }
 
@@ -360,12 +393,22 @@ pub enum Border {
 pub const PANE_MIN_COLS: usize = 12;
 pub const PANE_MIN_ROWS: usize = 3;
 
-/// What `C-w <`/`>` sizes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Which {
-    Chat,
-    Side,
-    Rail,
+/// What a size says a pane is (`say_size`).
+fn size_name(shows: Option<Shows>) -> &'static str {
+    match shows {
+        Some(Shows::Chat) => "chat",
+        Some(Shows::Side) => "side panel",
+        Some(Shows::Rail) => "review rail",
+        Some(Shows::Slot) => "bottom panel",
+        _ => "pane",
+    }
+}
+
+fn unit(dir: crate::split::Dir) -> &'static str {
+    match dir {
+        crate::split::Dir::Vertical => "columns",
+        crate::split::Dir::Horizontal => "rows",
+    }
 }
 
 /// What `C-w z` fills the screen with: a pane — a code pane alone, the bottom slot, the chat, the side panel.
@@ -448,9 +491,9 @@ impl crate::editor::Editor {
     /// `C-w q`: what has the keys closes, as its own `q` closes it — the side panel (a plugin's tab in it too:
     /// its `q` is tarae's, the side panel goes and the tab stays the plugin's), the review's rail (the review
     /// ends, asked first), `:procs`, the test, task and terminal panels. False: the code has them (its pane
-    /// closes). Not the chat (closing it ends its conversation's process: a slip of two keys mustn't cut a turn
-    /// off — `:chat-close` does it, `space L` hides it) nor a plugin's bottom panel (its `q` is the plugin's, and only the plugin closes
-    /// it — tarae has no event to tell it so): said.
+    /// closes). The chat hides, as `space L` hides it (onetree S5c, `q` per kind; `chat::hide`): closing it ends its conversation's
+    /// process, and a slip of two keys mustn't cut a turn off — `:chat-close` does that. Not a plugin's bottom panel
+    /// (its `q` is the plugin's, and only the plugin closes it — tarae has no event to tell it so): said.
     pub fn close_focused(&mut self) -> bool {
         use crate::uistate::Region;
         match self.keys_to().region {
@@ -462,7 +505,8 @@ impl crate::editor::Editor {
             Region::View(crate::view::Surface::Terminal) => self.slot_close(Slot::Terminal),
             Region::Output(r) => self.slot_close(r.slot()),
             Region::Chat | Region::View(crate::view::Surface::Chat) => {
-                self.set_status("C-w q closes panels — space L hides the chat, :chat-close ends it")
+                // (nothing said, as `space L` says nothing — the user, 2026-11-03: it's gone from sight)
+                crate::chat::hide(self);
             }
             _ => return false,
         }
@@ -471,25 +515,6 @@ impl crate::editor::Editor {
 }
 
 impl crate::editor::Editor {
-    /// What `C-w <`/`>` acts on: the chat or the side panel, whichever has the keys — from the code, the
-    /// chat if it's shown as a panel, else the side panel.
-    fn sized(&self) -> Option<Which> {
-        let chat = self.screen.drawn_w(Shows::Chat) > 0
-            && self.workspace.claude.chat.as_ref().is_some_and(|c| !c.hidden);
-        let side = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
-        // (the review's rail with its keys: its own width)
-        if self.screen.drawn_w(Shows::Rail) > 0 && self.review_rail_up() && self.workspace.is_at(Here::Rail) {
-            return Some(Which::Rail);
-        }
-        if chat && self.workspace.is_at(Here::Chat) {
-            return Some(Which::Chat);
-        }
-        if side && self.workspace.is_at(Here::Side) {
-            return Some(Which::Side);
-        }
-        if chat { Some(Which::Chat) } else { side.then_some(Which::Side) }
-    }
-
     /// How wide the chat can be on this screen: beside the side panel no wider than leaves the code
     /// `CODE_MIN` (else the panel would go), alone what leaves it `CHAT_FULL_CODE`.
     fn chat_max(&self, total: usize) -> usize {
@@ -507,6 +532,52 @@ impl crate::editor::Editor {
     /// How wide the review's rail can be: what leaves the code beside it `RAIL_CODE`, `RAIL_MAX` at most.
     fn rail_max(&self, total: usize) -> usize {
         total.saturating_sub(self.screen.drawn_w(Shows::Chat) + RAIL_CODE).min(RAIL_MAX)
+    }
+
+    /// How wide the slot beside the code can be: what leaves the code `CODE_MIN` beside the columns standing beside it
+    /// (`give_way`'s row 5), `SIDE_MIN` at least.
+    fn slot_max(&self, total: usize) -> usize {
+        let s = &self.screen;
+        let columns: usize = [Shows::Chat, Shows::Side, Shows::Rail]
+            .into_iter()
+            .filter(|&k| self.side_by_side(k))
+            .map(|k| s.drawn_w(k))
+            .sum();
+        total.saturating_sub(columns + CODE_MIN).max(SIDE_MIN)
+    }
+
+    /// Whether surface `kind`'s leaf sits side by side (its home's way), not stacked over or under.
+    fn side_by_side(&self, kind: Shows) -> bool {
+        let ws = &self.workspace;
+        ws.leaf(kind).is_some_and(|id| ws.split.parent_dir(id) == Some(crate::split::Dir::Vertical))
+    }
+
+    /// The slot moved beside the code (its column, `Workspace::slot_column` — a code pane over or under it in it too)
+    /// with a panel to show: the width you set there and the columns beside it — `give_way`'s row 5; None: under the
+    /// code, or nothing in it.
+    pub fn slot_beside(&self) -> Option<Beside> {
+        self.slot_beside_if(|| self.slot_shown().is_some())
+    }
+
+    /// `slot_beside` as the docked groups' widths ask it (`dock_widths`): a group docked right or left is out of the
+    /// slot wherever its leaf is (`docked_beside`) — whether it gets a column is what they work out, and asking
+    /// `docked_in_sight` there asked them again, without end. With the slot taking no room for it, it gets one where
+    /// any is.
+    pub fn slot_beside_unlaid(&self) -> Option<Beside> {
+        let out = |s: &Slot| self.kind_of(*s).is_some_and(|k| self.docked_beside(k) || self.out_of_slot(k));
+        self.slot_beside_if(|| self.slot_shown_by(|s| !out(s)).is_some())
+    }
+
+    /// `slot_beside`, `shows` saying whether the slot has a panel to show.
+    fn slot_beside_if(&self, shows: impl FnOnce() -> bool) -> Option<Beside> {
+        let (share, _) = self.workspace.slot_column()?;
+        let kept = match share {
+            crate::split::Share::Cells(n) => Some(n),
+            _ => None,
+        };
+        let chat = self.side_by_side(Shows::Chat);
+        let nav = self.side_by_side(Shows::Side) || self.side_by_side(Shows::Rail);
+        shows().then_some(Beside { kept, chat, nav })
     }
 
     /// How tall the bottom slot can be: the code keeps `BOTTOM_CODE`.
@@ -568,7 +639,8 @@ impl crate::editor::Editor {
         let word = || s.session_spots.borrow().iter().any(|l| l.0 == y && (l.1..l.2).contains(&x));
         let passed = |l: &crate::edges::Line| match self.workspace.shows(l.heads) {
             Some(Shows::Slot) => tab(),
-            Some(Shows::Code) => l.dir == crate::split::Dir::Horizontal && word(),
+            // (a code pane's or the stacked chat's top line: a name on it is its own)
+            Some(Shows::Code | Shows::Chat) => l.dir == crate::split::Dir::Horizontal && word(),
             _ => false,
         };
         let l = s.edges.at(x, y, passed)?;
@@ -669,46 +741,206 @@ impl crate::editor::Editor {
         n
     }
 
-    /// `C-w < > - +` from a code pane with another beside it that way: that pane `STEP_COLS`/`STEP_ROWS` bigger or
-    /// smaller. False: no split of yours that way — the surfaces' sizes are the keys'.
-    fn size_own(&mut self, dir: crate::split::Dir, more: bool) -> bool {
-        let id = self.workspace.viewer.focus;
-        if !self.workspace.is_at(Here::Code) {
-            return false;
+    /// The cells `kid` takes along `dir` as the last frame laid it out: from its first leaf with room to its last's end
+    /// (0: none with room).
+    fn laid_along(&self, kid: &crate::split::Split, dir: crate::split::Dir) -> usize {
+        // (the slot's height is its panel's as drawn, the header's line with it — what a size of it sets, `sizes::bottom`)
+        if let crate::split::Split::Leaf(id) = kid
+            && dir == crate::split::Dir::Horizontal
+            && self.workspace.shows(*id) == Some(Shows::Slot)
+            && self.screen.slot().h > 0
+        {
+            return self.screen.slot().h;
         }
-        let Some((_, now, room)) = self.own_split(id, dir) else { return false };
-        let step = if dir == crate::split::Dir::Vertical { STEP_COLS } else { STEP_ROWS };
-        let to = if more { now + step } else { now.saturating_sub(step) };
-        let n = self.pane_size(id, dir, to, room);
-        let unit = if dir == crate::split::Dir::Vertical { "columns" } else { "rows" };
-        self.say_size(format!("pane {n} {unit}"));
-        true
+        // (a group's members are laid in its host's place: theirs are its)
+        let held = |id: crate::split::PaneId| {
+            kid.holds(id)
+                || (self.workspace.groups.iter()).any(|g| g.member(id).is_some() && kid.holds(g.host))
+        };
+        let rects = || {
+            (self.screen.leaves.iter()).filter(|l| l.1.w > 0 && l.1.h > 0 && held(l.0)).map(|l| match dir {
+                crate::split::Dir::Vertical => (l.1.x, l.1.x + l.1.w),
+                crate::split::Dir::Horizontal => (l.1.y, l.1.y + l.1.h),
+            })
+        };
+        match (rects().map(|r| r.0).min(), rects().map(|r| r.1).max()) {
+            (Some(from), Some(to)) => to - from,
+            _ => 0,
+        }
+    }
+
+    /// The least and the most `kid` can be along `dir` on this screen, `room` what it and the pane across its edge hold
+    /// less that one's least: a surface by its rule (the chat 36 columns up to what leaves the code its room …; sitting
+    /// the other way, `across_limits`'), a code pane or a node `PANE_MIN_*`.
+    fn size_limits(&self, kid: &crate::split::Split, dir: crate::split::Dir, room: usize) -> (usize, usize) {
+        use crate::split::{Dir, Split};
+        let total = self.screen.width.unwrap_or(0);
+        let shows = match kid {
+            Split::Leaf(id) if self.workspace.own_sized(kid) => self.workspace.shows(*id),
+            _ => None,
+        };
+        let (min, max) = match (shows, dir) {
+            (Some(Shows::Chat), Dir::Vertical) => (CHAT_MIN, self.chat_max(total)),
+            (Some(Shows::Side), Dir::Vertical) => (SIDE_MIN, self.side_max(total)),
+            (Some(Shows::Rail), Dir::Vertical) => (RAIL_MIN, self.rail_max(total)),
+            (Some(Shows::Slot), Dir::Horizontal) => (BOTTOM_MIN, self.bottom_max()),
+            (Some(Shows::Chat), Dir::Horizontal) => (CHAT_ROWS_MIN, room),
+            (Some(Shows::Slot), Dir::Vertical) => (SIDE_MIN, self.slot_max(total)),
+            (Some(_), Dir::Horizontal) => (BOTTOM_MIN, room),
+            _ => (Self::pane_min(dir), room),
+        };
+        (min, max.min(room).max(min))
+    }
+
+    /// `C-w < > + -` on the pane in hand (D7, onetree §2.4): it `STEP_COLS` wider or narrower, `STEP_ROWS` taller or
+    /// shorter. The edge that moves is toward the side with a pane that way — the nearest split along `dir` with one
+    /// with room after the child holding it, else before (the right or bottom edge first: from the right one of two code
+    /// panes `C-w >` takes from the chat right of them, as Vim's does) — and the pane across it gives or takes the room.
+    /// What's set is a `Share::Cells` in the workspace's tree: the pane across's where it's a surface or one you set (its
+    /// own size), else the child holding this one's — and in each split along `dir` under that one, the child holding
+    /// it, so the room is this pane's alone. Said; nothing that way is said too.
+    fn size_pane(&mut self, dir: crate::split::Dir, more: bool) {
+        use crate::split::{Dir, Share, Split};
+        // (a group's member: its host's leaf — the slot's, or its own docked)
+        let host = |p: crate::split::PaneId| {
+            self.workspace.groups.iter().find(|g| g.member(p).is_some()).map_or(p, |g| g.host)
+        };
+        let Some(id) = self.at_pane().map(host) else { return };
+        let way = match dir {
+            Dir::Vertical => "beside it — C-w v splits it",
+            Dir::Horizontal => "over or under it — C-w s splits it",
+        };
+        if self.zoomed().is_some() {
+            return self.set_status("it fills the screen — C-w z gives the others back to size it against");
+        }
+        let tree = &self.workspace.split;
+        let Some(path) = tree.path(id) else { return };
+        let edge = |after: bool| {
+            (0..path.len()).rev().find_map(|depth| {
+                let Some(Split::Node(d, kids)) = tree.at(&path[..depth]) else { return None };
+                let i = path[depth];
+                let mut others: Vec<usize> =
+                    if after { (i + 1..kids.len()).collect() } else { (0..i).rev().collect() };
+                others.retain(|&j| self.laid_along(&kids[j].1, dir) > 0);
+                (*d == dir).then(|| others.first().map(|&j| (depth, i, j))).flatten()
+            })
+        };
+        let Some((depth, i, j)) = edge(true).or_else(|| edge(false)) else {
+            return self.set_status(format!("nothing {way}"));
+        };
+        let Some(Split::Node(_, kids)) = tree.at(&path[..depth]) else { return };
+        let ((mine, kid), (theirs, other)) = (&kids[i], &kids[j]);
+        let (now_i, now_j) = (self.laid_along(kid, dir), self.laid_along(other, dir));
+        let room = (now_i + now_j).saturating_sub(Self::pane_min(dir));
+        let (lim_i, lim_j) = (self.size_limits(kid, dir, room), self.size_limits(other, dir, room));
+        // (from the size you set, as much of it as this screen shows — two presses before a frame count twice —, else
+        // from what's on screen)
+        let from = |s: &Share, now: usize, (min, max): (usize, usize)| match s {
+            Share::Cells(k) => (*k as usize).clamp(min, max),
+            _ => now,
+        };
+        let (from_i, from_j) = (from(mine, now_i, lim_i), from(theirs, now_j, lim_j));
+        let step = if dir == Dir::Vertical { STEP_COLS } else { STEP_ROWS };
+        let grown = |n: usize, by_more: bool| if by_more { n + step } else { n.saturating_sub(step) };
+        let own = |k: &Split| self.workspace.own_sized(k);
+        let set = |s: &Share| own(other) || matches!(s, Share::Cells(_));
+        // (which side's share holds it: this pane's own where it's a surface, else the one across where that's its own
+        // size, else this side's child)
+        let (n_i, n_j) = match (own(kid), set(theirs)) {
+            (false, true) => (None, Some(grown(from_j, !more).clamp(lim_j.0, lim_j.1))),
+            (true, _) | (false, false) => {
+                let n = grown(from_i, more).clamp(lim_i.0, lim_i.1);
+                let back = |m: usize| (from_j + from_i).saturating_sub(m).clamp(lim_j.0, lim_j.1);
+                (Some(n), set(theirs).then(|| back(n)))
+            }
+        };
+        // (what it changes from what's laid out — two presses before a frame, both)
+        let delta = match (n_i, n_j) {
+            (Some(n), _) => n as isize - now_i as isize,
+            (None, Some(m)) => now_j as isize - m as isize,
+            _ => 0,
+        };
+        // (each split along `dir` under that one: the child holding this pane its size and the room)
+        let inner: Vec<(usize, usize)> = (depth + 1..path.len())
+            .filter_map(|d| match tree.at(&path[..d]) {
+                Some(Split::Node(nd, ks)) if *nd == dir => {
+                    let now = self.laid_along(&ks[path[d]].1, dir) as isize;
+                    Some((d, (now + delta).max(Self::pane_min(dir) as isize) as usize))
+                }
+                _ => None,
+            })
+            .collect();
+        let said = match tree.at(&path).map(|leaf| self.laid_along(leaf, dir)) {
+            _ if depth + 1 == path.len() && n_i.is_some() => n_i.unwrap_or(0),
+            Some(now) => (now as isize + delta).max(0) as usize,
+            None => 0,
+        };
+        let what = size_name(self.workspace.shows(id));
+        let split = &mut self.workspace.split;
+        if let Some(Split::Node(_, kids)) = split.at_mut(&path[..depth]) {
+            if let Some(n) = n_i {
+                kids[i].0 = Share::Cells(n as u16);
+            }
+            if let Some(m) = n_j {
+                kids[j].0 = Share::Cells(m as u16);
+            }
+        }
+        if delta != 0 {
+            for (d, n) in inner {
+                if let Some(Split::Node(_, ks)) = split.at_mut(&path[..d]) {
+                    ks[path[d]].0 = Share::Cells(n as u16);
+                }
+            }
+        }
+        self.say_size(format!("{what} {said} {}", unit(dir)));
     }
 
     /// A border dragged to (`x`, `y`): the size it makes, within what this screen allows (kept when the
     /// press is let go — `border_done`).
     pub fn border_drag(&mut self, b: Border, x: usize, y: usize) {
-        let Some(total) = self.screen.width else { return };
+        if self.screen.width.is_none() {
+            return;
+        }
         let s = &self.screen;
         // (nothing said while it moves — the edge, in the accent, is there to see; letting go says it — each kind of leaf
         // sized by its own rule)
         use crate::pane::Shows;
         match (b, self.border_sizes(b)) {
-            (_, Some(Shows::Chat)) => {
-                let cols = total.saturating_sub(x).clamp(CHAT_MIN, self.chat_max(total).max(CHAT_MIN));
-                self.sizes.chat = Some(cols as u16);
-            }
-            (_, Some(Shows::Side)) => {
-                let cols = (x + 1).clamp(SIDE_MIN, self.side_max(total).max(SIDE_MIN));
-                self.sizes.side = Some(cols as u16);
-            }
-            (_, Some(Shows::Rail)) => {
-                let cols = (x + 1).clamp(RAIL_MIN, self.rail_max(total).max(RAIL_MIN));
-                self.sizes.rail = Some(cols as u16);
-            }
-            (_, Some(Shows::Slot)) => {
-                let rows = s.body_end().saturating_sub(y).clamp(BOTTOM_MIN, self.bottom_max());
-                self.sizes.bottom = Some(rows as u16);
+            // (a surface's own line, on whichever side of it it is — the far side of it stays; along its split's way, its
+            // size there: the stacked chat's top line its height, the slot's line beside the code its width)
+            (
+                Border::Divider { sized, dir, .. },
+                Some(Shows::Chat | Shows::Side | Shows::Rail | Shows::Slot),
+            ) => {
+                // (the slot's members laid in its place: its rect as drawn)
+                let r = match s.leaves.iter().find(|l| l.0 == sized) {
+                    Some(l) => l.1,
+                    None if self.workspace.shows(sized) == Some(Shows::Slot) => s.slot(),
+                    None => return,
+                };
+                let (at, from, len) = match dir {
+                    crate::split::Dir::Vertical => (x, r.x, r.w),
+                    crate::split::Dir::Horizontal => (y, r.y, r.h),
+                };
+                // (its line nearest the pointer: the one held follows it)
+                let line = (s.edges.lines.iter())
+                    .filter(|l| l.dir == dir && l.sized == sized && l.heads == sized)
+                    .min_by_key(|l| l.at.abs_diff(at));
+                let first =
+                    line.is_none_or(|l| l.at.abs_diff(from) <= l.at.abs_diff(from + len.saturating_sub(1)));
+                let n = if first { (from + len).saturating_sub(at) } else { (at + 1).saturating_sub(from) };
+                let leaf = crate::split::Split::Leaf(sized);
+                let (min, max) = self.size_limits(&leaf, dir, self.size_room(sized, dir).unwrap_or(n));
+                let n = crate::split::Share::Cells(n.clamp(min, max) as u16);
+                // (the slot's width beside the code: its column's — a code pane over or under it there too)
+                match (self.workspace.shows(sized), self.workspace.split.parent_along(sized, dir)) {
+                    (Some(Shows::Slot), Some((kids, i))) if dir == crate::split::Dir::Vertical => {
+                        kids[i].0 = n
+                    }
+                    _ => {
+                        self.workspace.split.set_share(sized, n);
+                    }
+                }
             }
             // (a docked group's edge: the far side of it stays)
             (_, Some(Shows::Group(kind))) => {
@@ -754,7 +986,21 @@ impl crate::editor::Editor {
             // (a leaf no rule sizes: the line stays)
             (Border::Divider { .. }, _) => {}
         }
-        self.sizes_feed();
+    }
+
+    /// What surface leaf `id`'s split along `dir` holds as last laid out, less a code pane's least: the most a drag of
+    /// its line gives it — the nearest split that way around it (the slot's column beside the code: the one it sits in
+    /// side by side, not the code pane's over it).
+    fn size_room(&self, id: crate::split::PaneId, dir: crate::split::Dir) -> Option<usize> {
+        use crate::split::Split;
+        let tree = &self.workspace.split;
+        let path = tree.path(id)?;
+        let along = (0..path.len()).rev().find_map(|d| match tree.at(&path[..d]) {
+            Some(node @ Split::Node(nd, _)) if *nd == dir => Some(node),
+            _ => None,
+        });
+        let parent = along.or_else(|| tree.at(&path[..path.len().checked_sub(1)?]))?;
+        Some(self.laid_along(parent, dir).saturating_sub(Self::pane_min(dir)))
     }
 
     /// The press let go: what it set is kept, and said.
@@ -762,10 +1008,16 @@ impl crate::editor::Editor {
         self.sizes_keep();
         use crate::pane::Shows;
         let (what, n, unit) = match (b, self.border_sizes(b)) {
-            (_, Some(Shows::Chat)) => ("chat", self.sizes.chat, "columns"),
-            (_, Some(Shows::Side)) => ("side panel", self.sizes.side, "columns"),
-            (_, Some(Shows::Rail)) => ("review rail", self.sizes.rail, "columns"),
-            (_, Some(Shows::Slot)) => ("bottom panel", self.sizes.bottom, "rows"),
+            (
+                Border::Divider { sized, dir, .. },
+                Some(s @ (Shows::Chat | Shows::Side | Shows::Rail | Shows::Slot)),
+            ) => {
+                let n = match self.workspace.split.share(sized) {
+                    Some(crate::split::Share::Cells(n)) => Some(n),
+                    _ => None,
+                };
+                (size_name(Some(s)), n, unit(dir))
+            }
             (_, Some(Shows::Group(kind))) => {
                 let unit = match self.workspace.group(kind).map(|g| g.place) {
                     Some(crate::pane::Place::Docked(crate::pane::Side::Top)) => "rows",
@@ -845,77 +1097,22 @@ impl crate::editor::Editor {
         self.set_status(format!("{msg}{SIZE_TAIL}"));
     }
 
-    /// `C-w >` / `C-w <` — the chat or the side panel `STEP_COLS` wider/narrower, from its width on screen;
-    /// as far as leaves the code its room. Kept (global) — `C-w =` makes it automatic again.
+    /// `C-w >` / `C-w <` — the pane in hand wider / narrower (D7): the follow card in hand, a floating pane, a docked
+    /// group, else the pane in the tree (`size_pane`). Kept with the workspace's layout — `C-w =` automatic again.
     pub fn size_width(&mut self, wider: bool) {
-        if self.follow_size(crate::split::Dir::Vertical, wider)
-            || self.float_size(crate::split::Dir::Vertical, wider)
-            || self.size_own(crate::split::Dir::Vertical, wider)
-            || self.size_dock(crate::split::Dir::Vertical, wider)
-        {
-            return;
-        }
-        let Some(total) = self.screen.width else { return };
-        let Some(which) = self.sized() else {
-            return self.set_status("nothing to widen — the chat (space l) and the side panel (space e) are");
-        };
-        let (chat, side) = (self.screen.drawn_w(Shows::Chat), self.screen.drawn_w(Shows::Side));
-        let step = |now: usize, min: usize, max: usize| {
-            let to = if wider { now + STEP_COLS } else { now.saturating_sub(STEP_COLS) };
-            to.clamp(min, max.max(min))
-        };
-        // From the size you set (as much of it as this screen shows — two presses before a frame count twice),
-        // else from what's on screen
-        let from =
-            |kept: Option<u16>, shown: usize, max: usize| kept.map_or(shown, |k| (k as usize).min(max));
-        let (what, cols) = match which {
-            Which::Chat => {
-                let max = self.chat_max(total);
-                let cols = step(from(self.sizes.chat, chat, max), CHAT_MIN, max);
-                self.sizes.chat = Some(cols as u16);
-                ("chat", cols)
-            }
-            Which::Side => {
-                // (folded away: from the size it would have)
-                let max = self.side_max(total);
-                let shown = if side > 0 { side } else { SIDE_AUTO };
-                let cols = step(from(self.sizes.side, shown, max), SIDE_MIN, max);
-                self.sizes.side = Some(cols as u16);
-                ("side panel", cols)
-            }
-            Which::Rail => {
-                let max = self.rail_max(total);
-                let cols = step(from(self.sizes.rail, self.screen.drawn_w(Shows::Rail), max), RAIL_MIN, max);
-                self.sizes.rail = Some(cols as u16);
-                ("review rail", cols)
-            }
-        };
-        self.sizes_feed();
-        self.sizes_keep();
-        self.say_size(format!("{what} {cols} columns"));
+        self.size_key(crate::split::Dir::Vertical, wider);
     }
 
-    /// `C-w +` / `C-w -` — the bottom slot `STEP_ROWS` taller/shorter (the code keeping `BOTTOM_CODE`).
+    /// `C-w +` / `C-w -` — the pane in hand taller / shorter, as `size_width`.
     pub fn size_height(&mut self, taller: bool) {
-        if self.follow_size(crate::split::Dir::Horizontal, taller)
-            || self.float_size(crate::split::Dir::Horizontal, taller)
-            || self.size_own(crate::split::Dir::Horizontal, taller)
-            || self.size_dock(crate::split::Dir::Horizontal, taller)
-        {
+        self.size_key(crate::split::Dir::Horizontal, taller);
+    }
+
+    fn size_key(&mut self, dir: crate::split::Dir, more: bool) {
+        if self.follow_size(dir, more) || self.float_size(dir, more) || self.size_dock(dir, more) {
             return;
         }
-        let now = self.screen.slot().h;
-        if now == 0 {
-            return self.set_status("no panel at the bottom — tests, tasks and the terminal show there");
-        }
-        let max = self.bottom_max();
-        let now = self.sizes.bottom.map_or(now, |k| (k as usize).min(max));
-        let rows =
-            if taller { now + STEP_ROWS } else { now.saturating_sub(STEP_ROWS) }.clamp(BOTTOM_MIN, max);
-        self.sizes.bottom = Some(rows as u16);
-        self.sizes_feed();
-        self.sizes_keep();
-        self.say_size(format!("bottom panel {rows} rows"));
+        self.size_pane(dir, more);
     }
 
     /// The side panel is open but folded away: on this screen (as last drawn) it would leave the code too
@@ -926,7 +1123,13 @@ impl crate::editor::Editor {
         let chat = chat_open.then_some(self.workspace.kept(Shows::Chat));
         self.workspace.viewer.sidebar.is_some()
             && !self.review_rail_up()
-            && give_way(Wants { total, chat, nav: Nav::Side(self.workspace.kept(Shows::Side)) }).nav == 0
+            && give_way(Wants {
+                total,
+                chat,
+                nav: Nav::Side(self.workspace.kept(Shows::Side)),
+                slot: self.slot_beside(),
+            })
+            .nav == 0
     }
 
     /// The chat is a panel on a screen `total` wide: open, not minimized — and where it would take the whole
@@ -941,7 +1144,13 @@ impl crate::editor::Editor {
             return false;
         }
         self.workspace.is_at(Here::Chat)
-            || give_way(Wants { total, chat: Some(self.workspace.kept(Shows::Chat)), nav: Nav::None }).chat
+            || give_way(Wants {
+                total,
+                chat: Some(self.workspace.kept(Shows::Chat)),
+                nav: Nav::None,
+                slot: None,
+            })
+            .chat
                 < total
     }
 
@@ -993,7 +1202,6 @@ impl crate::editor::Editor {
         let mut split = self.workspace.split.clone();
         split.even(&|k| self.workspace.own_sized(k));
         self.workspace.split = split;
-        self.sizes_feed();
         for g in &mut self.workspace.groups {
             g.laid = crate::pane::Laid::Auto;
         }
@@ -1021,8 +1229,12 @@ impl crate::editor::Editor {
     /// opened), else the first there of `:procs`, the terminal, a plugin's panel, the test run
     /// or task started last — never one whose group is docked in sight (P3 §3.1: it's a pane of its own).
     pub fn slot_shown(&self) -> Option<Slot> {
-        let free = |s: &Slot| !self.slot_docked(*s);
-        if let Some(s) = self.slot_front().filter(free) {
+        self.slot_shown_by(|s| !self.slot_docked(*s))
+    }
+
+    /// `slot_shown`, `free` saying which panels the slot keeps (not out of it).
+    fn slot_shown_by(&self, free: impl Fn(&Slot) -> bool) -> Option<Slot> {
+        if let Some(s) = self.slot_front().filter(&free) {
             return Some(s);
         }
         if self.procs_up() && free(&Slot::Procs) {
@@ -1191,24 +1403,6 @@ impl crate::editor::Editor {
         self.float_sync();
     }
 
-    /// The sizes you set (`Sizes`: global, `sizes.json`, through onetree S0–S4) fed into every workspace's tree — the
-    /// side panel's, the review rail's, the slot's and the chat's leaf a `Share::Cells` of yours, else `Auto` — the
-    /// shares the layout reads (`Workspace::kept`). At each size set and each frame (a tree new or brought back takes
-    /// them there). A docked group's stays `Sizes.docked`: two stacked on one side share one share in the tree.
-    pub fn sizes_feed(&mut self) {
-        use crate::split::Share;
-        let s = self.sizes;
-        let kept =
-            [(Shows::Side, s.side), (Shows::Rail, s.rail), (Shows::Slot, s.bottom), (Shows::Chat, s.chat)];
-        for w in std::iter::once(&mut self.workspace).chain(self.workspaces.iter_mut()) {
-            for (shows, n) in kept {
-                if let Some(id) = w.leaf(shows) {
-                    w.split.set_share(id, n.map_or(Share::Auto, Share::Cells));
-                }
-            }
-        }
-    }
-
     /// Writes the sizes (worker — the newest write wins).
     pub fn sizes_keep(&mut self) {
         let Some(path) = self.sizes_path.clone() else { return };
@@ -1301,21 +1495,25 @@ mod tests {
     /// 60; narrower still, the panel gives way; a narrow screen is all chat.
     #[test]
     fn automatic_widths() {
-        let given = |total, chat, nav| give_way(Wants { total, chat, nav });
+        let given = |total, chat, nav| give_way(Wants { total, chat, nav, slot: None });
         let (chat, side) = (Some(None), Nav::Side(None));
-        assert_eq!(given(140, chat, Nav::None), Given { chat: 56, nav: 0 });
-        assert_eq!(given(200, chat, Nav::None), Given { chat: 80, nav: 0 });
-        assert_eq!(given(300, chat, Nav::None), Given { chat: 96, nav: 0 }, "the cap: 96");
+        assert_eq!(given(140, chat, Nav::None), Given { chat: 56, nav: 0, slot: 0 });
+        assert_eq!(given(200, chat, Nav::None), Given { chat: 80, nav: 0, slot: 0 });
+        assert_eq!(given(300, chat, Nav::None), Given { chat: 96, nav: 0, slot: 0 }, "the cap: 96");
         // 140, both: the chat gives 4 columns so the code keeps 60 (it had 52)
         let w = given(140, chat, side);
-        assert_eq!(w, Given { chat: 48, nav: 32 });
+        assert_eq!(w, Given { chat: 48, nav: 32, slot: 0 });
         assert_eq!(140 - w.chat - w.nav, CODE_ROOM);
         // 120: the chat at its least, the code 52 — the panel stays (48 is its line)
-        assert_eq!(given(120, chat, side), Given { chat: 36, nav: 32 });
+        assert_eq!(given(120, chat, side), Given { chat: 36, nav: 32, slot: 0 });
         // 110: the code would have 42 — the panel gives way
-        assert_eq!(given(110, chat, side), Given { chat: 44, nav: 0 });
-        assert_eq!(given(70, chat, side), Given { chat: 70, nav: 0 }, "narrow: the chat takes it all");
-        assert_eq!(given(200, None, side), Given { chat: 0, nav: 32 + 12 });
+        assert_eq!(given(110, chat, side), Given { chat: 44, nav: 0, slot: 0 });
+        assert_eq!(
+            given(70, chat, side),
+            Given { chat: 70, nav: 0, slot: 0 },
+            "narrow: the chat takes it all"
+        );
+        assert_eq!(given(200, None, side), Given { chat: 0, nav: 32 + 12, slot: 0 });
     }
 
     /// frictions25 R6: beside the review's rail (36 columns here) an automatic chat narrows to leave the code a
@@ -1324,8 +1522,8 @@ mod tests {
     #[test]
     fn beside_the_review_rail_the_chat_leaves_the_code_its_room() {
         let rail = Nav::Rail { natural: 36, focus: false };
-        let chat = |total, kept| give_way(Wants { total, chat: Some(kept), nav: rail }).chat;
-        let alone = give_way(Wants { total: 160, chat: Some(None), nav: Nav::None }).chat;
+        let chat = |total, kept| give_way(Wants { total, chat: Some(kept), nav: rail, slot: None }).chat;
+        let alone = give_way(Wants { total: 160, chat: Some(None), nav: Nav::None, slot: None }).chat;
         assert_eq!(alone, 64, "as it was beside the rail");
         assert_eq!(chat(160, None), CHAT_MIN, "160: the code 88");
         assert_eq!(chat(140, None), CHAT_MIN);
@@ -1334,9 +1532,10 @@ mod tests {
         assert_eq!(chat(160, Some(70)), 70, "yours stays");
         assert_eq!(chat(70, None), 70, "narrow: the chat takes it all, as without the rail");
         // (the rail itself: what its rows need beside the code's 60 — none where the code can't keep its room)
-        assert_eq!(give_way(Wants { total: 160, chat: Some(None), nav: rail }).nav, 36);
-        assert_eq!(give_way(Wants { total: 70, chat: Some(None), nav: rail }).nav, 0);
-        let narrow = |focus| give_way(Wants { total: 80, chat: None, nav: Nav::Rail { natural: 36, focus } });
+        assert_eq!(give_way(Wants { total: 160, chat: Some(None), nav: rail, slot: None }).nav, 36);
+        assert_eq!(give_way(Wants { total: 70, chat: Some(None), nav: rail, slot: None }).nav, 0);
+        let rail = |focus| Nav::Rail { natural: 36, focus };
+        let narrow = |focus| give_way(Wants { total: 80, chat: None, nav: rail(focus), slot: None });
         assert_eq!(narrow(false).nav, 0, "80: under 90, not drawn");
         assert_eq!(narrow(true).nav, 32, "with the keys: in the side panel's room, the code 48");
     }
@@ -1345,17 +1544,20 @@ mod tests {
     /// touched (it's the caller's, unchanged), so a bigger screen gets it whole again.
     #[test]
     fn kept_widths_are_clamped_not_changed() {
-        let kept = Wants { total: 200, chat: Some(Some(90)), nav: Nav::Side(Some(40)) };
-        assert_eq!(give_way(kept), Given { chat: 90, nav: 40 });
+        let kept = Wants { total: 200, chat: Some(Some(90)), nav: Nav::Side(Some(40)), slot: None };
+        assert_eq!(give_way(kept), Given { chat: 90, nav: 40, slot: 0 });
         // 150: the chat keeps its 90; the panel's 40 would leave the code 20 — it gives way
-        assert_eq!(give_way(Wants { total: 150, ..kept }), Given { chat: 90, nav: 0 });
+        assert_eq!(give_way(Wants { total: 150, ..kept }), Given { chat: 90, nav: 0, slot: 0 });
         // 120: the chat as wide as leaves the code 40
-        assert_eq!(give_way(Wants { total: 120, nav: Nav::None, ..kept }), Given { chat: 80, nav: 0 });
+        assert_eq!(
+            give_way(Wants { total: 120, nav: Nav::None, ..kept }),
+            Given { chat: 80, nav: 0, slot: 0 }
+        );
         assert_eq!(kept.chat, Some(Some(90)), "kept as it was");
-        assert_eq!(give_way(kept), Given { chat: 90, nav: 40 }, "the bigger screen: whole again");
+        assert_eq!(give_way(kept), Given { chat: 90, nav: 40, slot: 0 }, "the bigger screen: whole again");
         // Out of bounds kept values (an edited file): within them
-        let odd = Wants { total: 240, chat: Some(Some(5)), nav: Nav::Side(Some(500)) };
-        assert_eq!(give_way(odd), Given { chat: CHAT_MIN, nav: SIDE_MAX });
+        let odd = Wants { total: 240, chat: Some(Some(5)), nav: Nav::Side(Some(500)), slot: None };
+        assert_eq!(give_way(odd), Given { chat: CHAT_MIN, nav: SIDE_MAX, slot: 0 });
     }
 
     /// Row 1: a group beside the code — automatic 2/5 leaving the code its room, yours leaving it `CODE_MIN`, at least
@@ -1381,12 +1583,46 @@ mod tests {
 
     #[test]
     fn across_its_homes_direction() {
-        assert_eq!(across(Across::Chat, 48), 16, "a third of the rows");
-        assert_eq!(across(Across::Chat, 30), CHAT_ROWS_MIN, "at least 12");
-        assert_eq!(across(Across::Chat, 8), 8, "never past the room");
-        assert_eq!(across(Across::Nav { rows: 3 }, 48), 5, "its rows, its top line and foot");
-        assert_eq!(across(Across::Nav { rows: 40 }, 48), 16, "up to a third");
-        assert_eq!(across(Across::Slot, 200), 80, "2/5 of the columns");
+        assert_eq!(across(Across::Chat, 48, None), 16, "a third of the rows");
+        assert_eq!(across(Across::Chat, 30, None), CHAT_ROWS_MIN, "at least 12");
+        assert_eq!(across(Across::Chat, 8, None), 8, "never past the room");
+        assert_eq!(across(Across::Nav { rows: 3 }, 48, None), 5, "its rows, its top line and foot");
+        assert_eq!(across(Across::Nav { rows: 40 }, 48, None), 16, "up to a third");
+        // (a size you set: clamped, never written back)
+        assert_eq!(across(Across::Chat, 48, Some(20)), 20, "yours");
+        assert_eq!(across(Across::Chat, 48, Some(4)), CHAT_ROWS_MIN, "at least its least");
+        assert_eq!(across(Across::Chat, 48, Some(60)), 48 - BOTTOM_CODE, "the code keeps its rows");
+    }
+
+    /// Row 5 (onetree S5, stack right): the slot beside the code takes 2/5 of what the columns leave, as much as leaves
+    /// the code `CODE_MIN`, down to `SIDE_MIN`; its least counts as the code's, so the side panel goes before the code
+    /// is squeezed for it (at 120 the code had 17 columns beside a 35-column slot).
+    #[test]
+    fn the_slot_beside_the_code_leaves_it_its_room() {
+        let to = |kept| Some(Beside { kept, chat: true, nav: true });
+        let beside = |total, slot| give_way(Wants { total, chat: Some(None), nav: Nav::Side(None), slot });
+        let code = |total, g: Given| total - g.chat - g.nav - g.slot;
+        // 200: the columns as without it, the slot its 2/5 of the rest
+        let g = beside(200, to(None));
+        assert_eq!(g, Given { chat: 80, nav: 32, slot: 35 });
+        assert_eq!(code(200, g), 53);
+        // 120: the side panel gives way (beside the chat and the slot's least the code would keep 32), the chat as
+        // without it, the slot as much as leaves the code its least
+        let g = beside(120, to(None));
+        assert_eq!(g, Given { chat: 48, nav: 0, slot: 24 });
+        assert_eq!(code(120, g), CODE_MIN);
+        assert_eq!(beside(120, None).nav, 32, "under the code, the panel stays");
+        // 80: no room for the code's least beside the chat at all — the slot at its own, the code the rest
+        let g = beside(80, to(None));
+        assert_eq!(g, Given { chat: 36, nav: 0, slot: SIDE_MIN });
+        assert_eq!(code(80, g), 24);
+        // yours: as much as leaves the code its least, never under the slot's
+        assert_eq!(beside(200, to(Some(70))).slot, 40);
+        assert_eq!(beside(200, to(Some(30))).slot, 30);
+        assert_eq!(beside(200, to(Some(5))).slot, SIDE_MIN);
+        // the conversation stacked under everything (`C-w J`): its width isn't taken off the slot's room
+        let under = Some(Beside { kept: Some(150), chat: false, nav: true });
+        assert_eq!(beside(200, under).slot, 200 - 32 - CODE_MIN);
     }
 
     /// Kept across runs: read back as written; missing or odd files are automatic.
@@ -1396,11 +1632,7 @@ mod tests {
         let path = dir.join("sizes.json");
         assert_eq!(Sizes::read(Some(&path)), Sizes::default(), "missing: automatic");
         let s = Sizes {
-            chat: Some(70),
-            side: None,
-            rail: Some(30),
-            bottom: Some(12),
-            docked: [None; crate::pane::DOCKABLE],
+            docked: [Some(30), None, None, None, None],
             sessions: None,
             messages: None,
             folders: None,

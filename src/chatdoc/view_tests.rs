@@ -717,10 +717,10 @@ fn z_k_carries_the_cursor_at_the_edge() {
     assert_eq!(view(&ed).top_row(), top, "and back down");
 }
 
-/// `C-w q` in the chat's view mode closes nothing — as from its input, it's said (`space L` hides the chat); the
-/// code's panes stay.
+/// `C-w q` in the chat's view mode hides the chat, as `space L` does (onetree S5c, `q` per kind) — its conversation
+/// goes on; the code's panes stay, the keys the code's.
 #[test]
-fn ctrl_w_q_in_the_chats_view_is_said_and_closes_no_pane() {
+fn ctrl_w_q_in_the_chats_view_hides_it_and_closes_no_pane() {
     let mut ed = editor();
     ed.workspace.leave(crate::workspace::Here::Chat);
     feed(&mut ed, "<C-w>v");
@@ -729,11 +729,10 @@ fn ctrl_w_q_in_the_chats_view_is_said_and_closes_no_pane() {
     ed.workspace.set_at(crate::workspace::Here::Chat);
     feed(&mut ed, "<esc><C-w>q");
     assert_eq!(ed.workspace.views.len(), panes, "no pane closed");
-    assert_eq!(
-        ed.status.as_ref().map(|s| s.0.as_str()),
-        Some("C-w q closes panels — space L hides the chat, :chat-close ends it")
-    );
-    assert_eq!(region(&ed), "view:chat");
+    let c = ed.workspace.claude.chat.as_ref().expect("the conversation goes on");
+    assert!(c.hidden, "hidden");
+    ed.focus_sync();
+    assert_eq!(region(&ed), "code");
 }
 
 /// Frictions #176: `space L` in the chat's view mode killed tarae — its key ran `chat_close` with the conversation's

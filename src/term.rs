@@ -805,8 +805,6 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     let _drawing = crate::codereview::Drawing::on();
     // (a frame drawn again: nothing of the last one's reading kept — `light_rows`)
     editor.drawn.take();
-    // (the sizes you set, global in `sizes.json`, fed into the trees' shares the layout reads — onetree S2c)
-    editor.sizes_feed();
     // (this frame's width first: what's docked beside the code and what folds into the slot are judged by it,
     // here and in the editor alike — `Editor::docked_in_sight`)
     editor.screen.width = Some(w as usize);
@@ -923,16 +921,21 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         width: Some(lay.width),
         over_folded: editor.screen.over_folded,
         text_top: lay.text_top as usize,
+        code_end: lay.code_end,
         terminal_rows: (lay.slot.h > 0 && terminal_shown).then(|| (lay.slot.y, lay.slot.y + lay.slot.h - 1)),
         slot_tabs: Default::default(),
         member_names: Default::default(),
-        // (the terminal's rows: its panel's — the size you set, or its own — under the header)
+        // (the terminal's rows: its panel's — the size you set, or its own; beside the code its column's — under the
+        // header)
         terminal_size: std::cell::Cell::new(Some((
-            crate::sizes::bottom(
-                lay.text_rows + lay.slot.h,
-                editor.workspace.kept(crate::pane::Shows::Slot),
-                terminal_panel_h(lay.text_rows + lay.slot.h, lay.slot_panel().head),
-            )
+            match lay.slot_under {
+                _ if lay.slot.h > 0 && editor.workspace.slot_column().is_some() => lay.slot.h,
+                under => crate::sizes::bottom(
+                    lay.text_rows + under,
+                    editor.workspace.kept(crate::pane::Shows::Slot),
+                    terminal_panel_h(lay.text_rows + under, lay.slot_panel().head),
+                ),
+            }
             .saturating_sub(lay.slot_panel().head)
             .max(2) as u16,
             terminal_cols(&lay.slot_panel()) as u16,
@@ -1257,6 +1260,10 @@ struct Layout {
     /// The bottom slot's rect, its first row its top line (0 high when it's empty) — just below the code (text_rows),
     /// under the code only, the side panel and the chat running on beside it (`slot_panel`).
     slot: crate::split::Rect,
+    /// Its rows under the code's column — 0 beside the code, in a column of its own (a code pane over it there or not).
+    slot_under: usize,
+    /// One past the code's column's last row, the slot's under it too (`Screen::body_end`).
+    code_end: usize,
     /// The status line — the screen's last row.
     status_y: u16,
     /// The row a card stepped aside to while its text is read (U8) — over the status line.
@@ -1505,6 +1512,10 @@ fn frame_edges(editor: &Editor, lay: &Layout) -> crate::edges::Edges {
         // (its leaf's rect, its lines' cells in it — the slot as drawn is less those beside the code: S5a)
         slot: ws.leaf(Shows::Slot).map(|id| (id, lay.rect(Shows::Slot).unwrap_or_else(|| s.slot()))),
         slot_end: s.slot_end(),
+        column: match ws.slot_column() {
+            Some((_, c @ crate::split::Split::Node(..))) => c.leaves(),
+            _ => Vec::new(),
+        },
         code,
         tops,
         middles,
@@ -1840,12 +1851,16 @@ impl Layout {
             _ => Nav::None,
         };
         let chat = chat_open.then_some(editor.workspace.kept(crate::pane::Shows::Chat));
+        let none = Given { chat: 0, nav: 0, slot: 0 };
         let widths = match zoom_shows {
-            None if wide => Given { chat: 0, nav: 0 },
-            None => crate::sizes::give_way(crate::sizes::Wants { total: w as usize, chat, nav }),
-            Some(Shows::Chat) => Given { chat: w as usize, nav: 0 },
-            Some(Shows::Side) => Given { chat: 0, nav: w as usize },
-            Some(_) => Given { chat: 0, nav: 0 },
+            None if wide => none,
+            None => {
+                let slot = editor.slot_beside();
+                crate::sizes::give_way(crate::sizes::Wants { total: w as usize, chat, nav, slot })
+            }
+            Some(Shows::Chat) => Given { chat: w as usize, ..none },
+            Some(Shows::Side) => Given { nav: w as usize, ..none },
+            Some(_) => none,
         };
         let rail_w = widths.nav;
         // The session's tree laid out in the frame (panes P2b): each surface its own size (`Share::Auto` — the
@@ -1857,6 +1872,8 @@ impl Layout {
             rail: editor.review_rail_up() && zoom_shows != Some(Shows::Side),
             chat: widths.chat,
             slot,
+            beside: widths.slot,
+            column: editor.workspace.slot_column().map(|c| c.1),
             over: text_top as usize,
             regions: code_regions(&editor.workspace),
             width: w as usize,
@@ -1926,6 +1943,7 @@ impl Layout {
                 leaves = Vec::new();
             }
         }
+        column_edges(editor, &mut leaves, w as usize);
         // The code's column, as laid out: the path bar over it, its first row under that (a group docked over it
         // takes the rows above)
         let column: Vec<crate::split::Rect> = leaves
@@ -2001,6 +2019,8 @@ impl Layout {
                     h: slot_h,
                 },
             },
+            slot_under: slot_h,
+            code_end: bottom,
             status_y: text_top + all as u16,
             offer_bar: (bar == 1).then_some(text_top + total as u16),
             zoom,
@@ -2020,6 +2040,38 @@ impl Layout {
     }
 }
 
+/// The slot's column beside the code with a code pane in it (`C-w s` from the slot there) carries its own edge, as the
+/// slot alone does (an `Auto` child, no divider kept for it): on each side where the slot's rule puts its line
+/// (`edges::sides`), a code pane at that edge gives the cell to the line — the code's divider there, in line with the
+/// slot's own under it.
+fn column_edges(editor: &Editor, leaves: &mut [(crate::split::PaneId, crate::split::Rect)], width: usize) {
+    let Some((_, col @ crate::split::Split::Node(..))) = editor.workspace.slot_column() else { return };
+    let ids = col.leaves();
+    let inside: Vec<crate::split::Rect> =
+        (leaves.iter()).filter(|l| ids.contains(&l.0) && l.1.w > 0 && l.1.h > 0).map(|l| l.1).collect();
+    let (Some(x0), Some(x1)) = (inside.iter().map(|r| r.x).min(), inside.iter().map(|r| r.x + r.w).max())
+    else {
+        return;
+    };
+    let (y0, y1) =
+        (inside.iter().map(|r| r.y).min().unwrap_or(0), inside.iter().map(|r| r.y + r.h).max().unwrap_or(0));
+    let rect = crate::split::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    let others: Vec<(Option<crate::edges::Home>, crate::split::Rect)> = (leaves.iter())
+        .filter(|l| !ids.contains(&l.0) && l.1.w > 0 && l.1.h > 0)
+        .map(|l| (editor.workspace.shows(l.0).and_then(surface_home), l.1))
+        .collect();
+    let sides = crate::edges::sides(crate::edges::Home::Top, rect, &others, width);
+    let code = |id| editor.workspace.views.iter().any(|v| v.id == id);
+    for (_, r) in leaves.iter_mut().filter(|l| ids.contains(&l.0) && code(l.0) && l.1.w > 1) {
+        if sides.left && r.x == x0 {
+            (r.x, r.w) = (r.x + 1, r.w - 1);
+        }
+        if sides.right && r.x + r.w == x1 && r.w > 1 {
+            r.w -= 1;
+        }
+    }
+}
+
 /// What the tree's layout asks of the surfaces this frame: their own sizes (`Share::Auto`, and a size you set on one —
 /// its `Share::Cells`, clamped by its rule) — the left column's (the side panel's, or the review's rail while it's up),
 /// the chat's width, the slot's height — and the path bar's rows over each of the code's regions.
@@ -2030,6 +2082,9 @@ struct Surfaces<'a> {
     rail: bool,
     chat: usize,
     slot: usize,
+    /// The slot's width beside the code (`sizes::give_way`'s row 5), and its column there (`Workspace::slot_column`).
+    beside: usize,
+    column: Option<&'a crate::split::Split>,
     over: usize,
     regions: Vec<&'a crate::split::Split>,
     /// The screen's width and the rows under the status line's (the code's, the slot's): a docked group's own size
@@ -2042,7 +2097,7 @@ impl crate::split::Room for Surfaces<'_> {
     fn auto(&self, kid: &crate::split::Split, dir: crate::split::Dir, avail: usize) -> usize {
         use crate::pane::Shows;
         use crate::sizes::Across;
-        use crate::split::Dir::{Horizontal, Vertical};
+        use crate::split::Dir::Vertical;
         let id = match kid {
             crate::split::Split::Leaf(id) => *id,
             // (two groups docked on one side, stacked in a node of their own: the wider one's)
@@ -2060,7 +2115,7 @@ impl crate::split::Room for Surfaces<'_> {
         let along = |n: usize, home: crate::split::Dir, other: &dyn Fn() -> Across| match n {
             0 => 0,
             _ if dir == home => n,
-            _ => crate::sizes::across(other(), avail),
+            _ => crate::sizes::across(other(), avail, self.session.kept_across(id)),
         };
         let v = &self.session.viewer;
         match self.session.shows(id) {
@@ -2071,7 +2126,9 @@ impl crate::split::Room for Surfaces<'_> {
                 rows: self.session.code_review.as_ref().map_or(0, |r| r.files.len()),
             }),
             Some(Shows::Chat) => along(self.chat, Vertical, &|| Across::Chat),
-            Some(Shows::Slot) => along(self.slot, Horizontal, &|| Across::Slot),
+            // (beside the code: the table's width, the code keeping its least first)
+            Some(Shows::Slot) if dir == Vertical && self.slot > 0 => self.beside.min(avail),
+            Some(Shows::Slot) => self.slot,
             // (by direction already: `Editor::dock_auto`)
             Some(Shows::Group(k)) => self.editor.dock_auto(k, dir, self.width, self.rows, self.slot),
             _ => 0,
@@ -2080,9 +2137,11 @@ impl crate::split::Room for Surfaces<'_> {
 
     fn share(&self, share: crate::split::Share, kid: &crate::split::Split) -> crate::split::Share {
         use crate::split::Share;
-        // (a size you set on a surface is its own rule's to clamp — `sizes::give_way`, `sizes::bottom`: read above)
+        // (a size you set on a surface is its own rule's to clamp — `sizes::give_way`, `sizes::bottom`: read above —, the
+        // slot's column's too)
+        let column = self.column.is_some_and(|c| std::ptr::eq(c, kid));
         match share {
-            Share::Cells(_) if self.session.own_sized(kid) => Share::Auto,
+            Share::Cells(_) if self.session.own_sized(kid) || column => Share::Auto,
             s => s,
         }
     }
@@ -2151,12 +2210,12 @@ fn work_cols(width: usize, chat: Option<crate::split::Rect>, code: Option<(usize
 
 /// The code's regions (onetree S5a): in each largest part of the tree with a code pane in it and no column surface (the
 /// chat, the side panel, the rail), the smallest node holding its code panes and the slot (a group docked over the code
-/// outside it) — the path bar's row is over each. Today's layout has one, the code over the slot; code on both sides
-/// of the chat is two.
+/// outside it; the slot in its column beside the code isn't the code's: its header is its own top line) — the path
+/// bar's row is over each. Today's layout has one, the code over the slot; code on both sides of the chat is two.
 fn code_regions(s: &crate::workspace::Workspace) -> Vec<&crate::split::Split> {
     use crate::pane::Shows;
     use crate::split::Split;
-    fn walk<'a>(s: &crate::workspace::Workspace, at: &'a Split, out: &mut Vec<&'a Split>) {
+    fn walk<'a>(s: &crate::workspace::Workspace, beside: bool, at: &'a Split, out: &mut Vec<&'a Split>) {
         let leaves = at.leaves();
         let code = leaves.iter().any(|&id| s.views.iter().any(|v| v.id == id));
         let column =
@@ -2165,7 +2224,11 @@ fn code_regions(s: &crate::workspace::Workspace) -> Vec<&crate::split::Split> {
             _ if !code => {}
             _ if !column => {
                 let want: Vec<_> = (leaves.iter())
-                    .filter(|&&id| matches!(s.shows(id), Some(Shows::Code | Shows::Slot)))
+                    .filter(|&&id| match s.shows(id) {
+                        Some(Shows::Code) => true,
+                        Some(Shows::Slot) => !beside,
+                        _ => false,
+                    })
                     .copied()
                     .collect();
                 let mut at = at;
@@ -2176,12 +2239,12 @@ fn code_regions(s: &crate::workspace::Workspace) -> Vec<&crate::split::Split> {
                 }
                 out.push(at);
             }
-            Split::Node(_, kids) => kids.iter().for_each(|k| walk(s, &k.1, out)),
+            Split::Node(_, kids) => kids.iter().for_each(|k| walk(s, beside, &k.1, out)),
             Split::Leaf(_) => {}
         }
     }
     let mut out = Vec::new();
-    walk(s, &s.split, &mut out);
+    walk(s, s.slot_column().is_some(), &s.split, &mut out);
     out
 }
 
@@ -6935,12 +6998,31 @@ fn dock_edge(
     // (over the code its bottom is the code's top line: no column line of its own)
     let Some(line) = editor.screen.edges.column(host) else { return Ok(()) };
     for y in line.span.clone() {
-        let beside = region_of(editor, line.beside_at(y));
+        let beside = beside_region(editor, line, y, mine);
         let style = grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), g);
         queue!(out, MoveTo(line.at as u16, y as u16))?;
         put_line(out, style, line.glyph(y))?;
     }
     Ok(())
+}
+
+/// What lights a surface's line at cell `i` along it from its other side (`line_side`): the slot, a docked group, the
+/// code — the code only where the pane beside it there is the one in hand (two code panes either side of the chat: the
+/// line beside the other one is the chat's alone, the one lit line the pane in hand's); else `mine`.
+fn beside_region(editor: &Editor, line: &crate::edges::Line, i: usize, mine: Region) -> Region {
+    use crate::split::Dir;
+    let ws = &editor.workspace;
+    let code = |id| ws.views.iter().any(|v| v.id == id);
+    let pane = (editor.screen.leaves.iter()).filter(|l| code(l.0) && l.1.w > 0 && l.1.h > 0).find(
+        |(_, r)| match line.dir {
+            Dir::Vertical => (r.y..r.y + r.h).contains(&i) && (r.x + r.w == line.at || r.x == line.at + 1),
+            Dir::Horizontal => (r.x..r.x + r.w).contains(&i) && (r.y + r.h == line.at || r.y == line.at + 1),
+        },
+    );
+    match region_of(editor, line.beside_at(i)) {
+        Region::Code if pane.is_some_and(|p| p.0 != ws.viewer.focus) => mine,
+        r => r,
+    }
 }
 
 /// What lights a line beside a leaf with its own (`line_side`): the slot, a docked group, else the code.
@@ -14101,7 +14183,7 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     };
     let chat = |w: usize| {
         let chat = editor.chat_panel(w).then_some(editor.workspace.kept(crate::pane::Shows::Chat));
-        crate::sizes::give_way(crate::sizes::Wants { total: w, chat, nav }).chat
+        crate::sizes::give_way(crate::sizes::Wants { total: w, chat, nav, slot: editor.slot_beside() }).chat
     };
     // (over the chat's foot or a docked list's: its own width, whatever the column's (#177); the rows from its top line
     // down to the input's line)
@@ -17138,7 +17220,7 @@ fn meeting_line(
     dragged: Grab,
     y: usize,
 ) -> (&'static str, Style) {
-    let beside = region_of(editor, line.and_then(|l| l.beside_at(y)));
+    let beside = line.map_or(Region::Code, |l| beside_region(editor, l, y, mine));
     let style = grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), dragged);
     (line.map_or("│", |l| l.glyph(y)), style)
 }
@@ -20061,6 +20143,16 @@ fn draw_chat(
     // each in its colour, its state after it (the chat is the front one's spine: `session_tabs`) — else `claude`;
     // what it's in and what's on after them, folded from the last; the model or the turn's time at its right end
     let line = if framed { frame_line } else { edge_style(ui, card, Region::Chat) };
+    // (stacked under something, its top line is its border along a row: lit held or under the pointer — onetree S5b)
+    let chat_id = editor.workspace.leaf(crate::pane::Shows::Chat);
+    let line = grab_style(
+        ui,
+        line,
+        grab(editor, |b| {
+            matches!(b, crate::sizes::Border::Divider { sized, dir: crate::split::Dir::Horizontal, .. }
+                if Some(sized) == chat_id)
+        }),
+    );
     // (against the screen's edge — the chat filling it — the line takes the gutter's cell too; floating, its frame's top
     // line, corner to corner)
     let ((lx, lw), ends) = match x0 {
@@ -25796,8 +25888,12 @@ mod tests {
         };
         // (the screen widths that give the chat each of its widths, widest first: narrow, the chat takes the whole screen)
         let chat_w = |w: u16| {
-            let alone =
-                crate::sizes::Wants { total: w as usize, chat: Some(None), nav: crate::sizes::Nav::None };
+            let alone = crate::sizes::Wants {
+                total: w as usize,
+                chat: Some(None),
+                nav: crate::sizes::Nav::None,
+                slot: None,
+            };
             crate::sizes::give_way(alone).chat
         };
         let mut widths: Vec<u16> = (20..=240).collect();
@@ -26200,7 +26296,8 @@ mod tests {
                 // (the card's place doesn't follow the chat's width, #177: where it stands, then the chat's edge set by it)
                 frame(&mut ed);
                 let x = ed.screen.offer_card.expect("drawn").0;
-                ed.sizes.chat = Some((w as usize - (x - n - GAP - PAD)) as u16);
+                ed.workspace
+                    .set_kept(crate::pane::Shows::Chat, Some((w as usize - (x - n - GAP - PAD)) as u16));
             }
             if focused {
                 ed.card_focus = ed.offers.first().map(|o| (o.id, o.rev));
@@ -26298,7 +26395,7 @@ mod tests {
         let mut p = vt100::Parser::new(40, 140, 0);
         p.process(&bytes);
         let s = p.screen().contents();
-        assert!(s.lines().any(|l| l.contains("-    Shorter: the bottom panel")), "drawn:\n{s}");
+        assert!(s.lines().any(|l| l.contains("-    Shorter: the pane in hand")), "drawn:\n{s}");
         assert!(!s.contains("minus") && !s.contains('…'), "drawn:\n{s}");
     }
 

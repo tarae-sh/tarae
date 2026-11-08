@@ -719,7 +719,7 @@ fn only_named_hints_are_words() {
     let mut ed = editor();
     chat(&mut ed, "");
     // (wide enough for the foot's every pair)
-    ed.sizes.chat = Some(96);
+    ed.workspace.set_kept(crate::pane::Shows::Chat, Some(96));
     frame(&mut ed);
     let on_chat = |ed: &Editor, k: &str| {
         ed.screen

@@ -163,6 +163,7 @@ pub const PICKERS: &[&str] = &[
     "log",
     "model",
     "notes",
+    "panes",
     "places",
     "plugin",
     "rebase-session",

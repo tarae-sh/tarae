@@ -206,6 +206,7 @@ minus = "bottom_shorter"
 "=" = "sizes_auto"
 z = "zoom_toggle"
 t = "transpose_view"
+p = "show_here"
 
 [normal.space.w]
 v = "vsplit"
@@ -231,6 +232,7 @@ minus = "bottom_shorter"
 "=" = "sizes_auto"
 z = "zoom_toggle"
 t = "transpose_view"
+p = "show_here"
 
 [normal.space]
 e = "file_explorer"

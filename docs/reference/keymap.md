@@ -233,22 +233,23 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 
 | Key | Command | Description |
 |---|---|---|
-| `C-w +` | `bottom_taller` | Taller: the bottom panel |
-| `C-w -` | `bottom_shorter` | Shorter: the bottom panel |
-| `C-w <` | `panel_narrower` | Narrower: chat or side panel |
+| `C-w +` | `bottom_taller` | Taller: the pane in hand |
+| `C-w -` | `bottom_shorter` | Shorter: the pane in hand |
+| `C-w <` | `panel_narrower` | Narrower: the pane in hand |
 | `C-w =` | `sizes_auto` | Sizes back to automatic |
-| `C-w >` | `panel_wider` | Wider: chat or side panel |
+| `C-w >` | `panel_wider` | Wider: the pane in hand |
 | `C-w e` | `float_toggle` | Float or dock the pane |
 | `C-w h` | `jump_view_left` | Window to the left |
-| `C-w H` | `swap_view_left` | Swap left · dock a group |
+| `C-w H` | `swap_view_left` | Move the pane left |
 | `C-w j` | `jump_view_down` | Window below |
-| `C-w J` | `swap_view_down` | Swap down · group to the slot |
+| `C-w J` | `swap_view_down` | Move the pane down |
 | `C-w k` | `jump_view_up` | Window above |
-| `C-w K` | `swap_view_up` | Swap up · dock a group on top |
+| `C-w K` | `swap_view_up` | Move the pane up |
 | `C-w l` | `jump_view_right` | Window to the right |
-| `C-w L` | `swap_view_right` | Swap right · dock a group |
+| `C-w L` | `swap_view_right` | Move the pane right |
 | `C-w m` | `float_move` | Move a floating pane |
 | `C-w o` | `wonly` | Close all other windows |
+| `C-w p` | `show_here` | Show a kind of pane here |
 | `C-w q` | `wclose` | Close this window or panel |
 | `C-w s` | `hsplit` | Split the window top / bottom |
 | `C-w t` | `transpose_view` | Turn the split around |
@@ -337,22 +338,23 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 
 | Key | Command | Description |
 |---|---|---|
-| `space w +` | `bottom_taller` | Taller: the bottom panel |
-| `space w -` | `bottom_shorter` | Shorter: the bottom panel |
-| `space w <` | `panel_narrower` | Narrower: chat or side panel |
+| `space w +` | `bottom_taller` | Taller: the pane in hand |
+| `space w -` | `bottom_shorter` | Shorter: the pane in hand |
+| `space w <` | `panel_narrower` | Narrower: the pane in hand |
 | `space w =` | `sizes_auto` | Sizes back to automatic |
-| `space w >` | `panel_wider` | Wider: chat or side panel |
+| `space w >` | `panel_wider` | Wider: the pane in hand |
 | `space w e` | `float_toggle` | Float or dock the pane |
 | `space w h` | `jump_view_left` | Window to the left |
-| `space w H` | `swap_view_left` | Swap left · dock a group |
+| `space w H` | `swap_view_left` | Move the pane left |
 | `space w j` | `jump_view_down` | Window below |
-| `space w J` | `swap_view_down` | Swap down · group to the slot |
+| `space w J` | `swap_view_down` | Move the pane down |
 | `space w k` | `jump_view_up` | Window above |
-| `space w K` | `swap_view_up` | Swap up · dock a group on top |
+| `space w K` | `swap_view_up` | Move the pane up |
 | `space w l` | `jump_view_right` | Window to the right |
-| `space w L` | `swap_view_right` | Swap right · dock a group |
+| `space w L` | `swap_view_right` | Move the pane right |
 | `space w m` | `float_move` | Move a floating pane |
 | `space w o` | `wonly` | Close all other windows |
+| `space w p` | `show_here` | Show a kind of pane here |
 | `space w q` | `wclose` | Close this window or panel |
 | `space w s` | `hsplit` | Split the window top / bottom |
 | `space w t` | `transpose_view` | Turn the split around |
@@ -598,6 +600,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:hsplit` | `:hs` `:sp` `:split` | Split top and bottom (optionally open a file there) |
 | `:only` |  | Close every other window |
 | `:close` |  | Close this window |
+| `:show-here` |  | Show a pane here: chat, side, bottom, code (none: a picker) |
 | `:theme` |  | Switch theme (no name = picker with live preview) |
 | `:set` |  | Change a setting until you quit (no value = show it) |
 | `:set!` |  | Change a setting and save it to your config |

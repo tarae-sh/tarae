@@ -374,12 +374,19 @@ configs carry over as they are.
   the status line shows `/pattern  8/13`. `esc` in normal mode clears the highlight
   ([screenshot](screenshots/ux-search.png))
 - **Split windows** — every surface is a pane (the code's, the side panel, the review's rail, the bottom slot, the
-  chat): `C-w v` side by side · `C-w s` stacked (from the chat or a panel it's the code pane last focused that splits;
-  the terminal says a second one comes with the terminal work) · `C-w h j k l` to the pane that way, any kind · `C-w
-  w` the next pane, every kind · `C-w H J K L` swap this code pane with the one that way — from a group (the tests',
+  chat): `C-w v` side by side · `C-w s` stacked (from the chat or a panel a code pane of the file last focused opens
+  beside it; the terminal says a second one comes with the terminal work) · `C-w h j k l` to the pane that way, any
+  kind · `C-w w` the next pane, every kind · `C-w H J K L` move the pane in hand that way, any kind: in its split it
+  trades places with the next pane, at its end it leaves for the split that way above, with none it goes to that edge
+  of the screen (`C-w H` twice from the chat puts it left of everything, `C-w J` makes it a full-width row under
+  everything; the side panel and the review's rail move as one, the slot whole) — kept per workspace, through
+  `:restart` · `C-w < > + -` grow and shrink the pane in hand (Vim's way: its right or bottom edge moves, else its
+  left or top; from the code `C-w >` widens the code and the chat beside it narrows) · `C-w p` a picker of kinds —
+  the chat, the side panel, the bottom panel, a code pane — the pick shown beside the pane in hand · `C-w q` on the
+  chat hides it, as `space L` does — from a group (the tests',
   a task's, a preflight's, `:procs`) they dock it beside the code instead: `C-w L` right of it, `C-w H` left of it,
   `C-w K` over it, `C-w J` back to the bottom slot; a docked group is a pane of its own, the whole height, its name in
-  its top line, its keys the ones it has in the slot; its size its kind's own (`C-w < >`, `C-w - +` over the code, a
+  its top line, its keys the ones it has in the slot; its size its kind's own (`C-w < >`, `C-w + -` over the code, a
   drag of its line, `C-w =`); closed, the code takes the room and its next run lands there again; too narrow for the
   code beside it (or, over it, too short for the code and the slot under it), it folds back into the slot's tabs until
   there's room · `C-w e` floats a group in a frame of its own over everything docked (the whole screen its frame:

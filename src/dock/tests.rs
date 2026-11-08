@@ -256,6 +256,29 @@ fn c_w_l_docks_the_tests_group_and_c_w_j_brings_it_back() {
     assert!(ed.toasts.iter().any(|t| t.text.starts_with("tests is in the slot")), "said");
 }
 
+/// onetree S5, Linux's check before landing (the panes simulation overflowed its stack): a group docked right while the
+/// slot stands beside the code with nothing else to show — the docked widths asked whether the slot shows a panel, that
+/// asked whether the group is docked in sight, and that asked the widths again. The slot leaves it out, takes no room
+/// for it, and the group gets its column.
+#[test]
+fn a_group_docked_beside_with_the_slot_beside_the_code_gets_its_column() {
+    use crate::split::{Dir, Share, Split};
+    let (_dir, mut ed) = tests_and_a_task();
+    feed(&mut ed, "<C-w>L");
+    assert_eq!(tests(&ed).place, Place::Docked(Side::Right));
+    ed.workspace.task_run = None;
+    let slot = ed.workspace.leaf(Shows::Slot).unwrap();
+    assert!(ed.workspace.split.remove(slot));
+    let rest = std::mem::replace(&mut ed.workspace.split, Split::Leaf(0));
+    ed.workspace.split =
+        Split::Node(Dir::Vertical, vec![(Share::Even, rest), (Share::Auto, Split::Leaf(slot))]);
+    assert!(ed.workspace.slot_column().is_some(), "the slot beside the code: {:?}", ed.workspace.split);
+    frame(&mut ed, W);
+    assert!(ed.docked_in_sight(GroupKind::Tests), "docked in sight");
+    assert!(ed.dock_widths(W as usize)[GroupKind::Tests.dock_index()] > 0, "its column");
+    assert_eq!((ed.slot_shown(), ed.slot_beside()), (None, None), "the slot shows nothing, takes no room");
+}
+
 /// `C-w H` docks left of the code (right of the side panel), `C-w K` over it in its column — the path bar under it;
 /// from the code `C-w H J K L` still trade the code's panes; the terminal stays in the slot, said.
 #[test]
@@ -297,11 +320,17 @@ fn c_w_h_and_k_dock_left_and_over_the_code() {
     assert_eq!(ed.workspace.group(GroupKind::Task).map(|g| g.place), Some(Place::Docked(Side::Right)));
     assert!(ed.docked_in_sight(GroupKind::Task) && ed.docked_in_sight(GroupKind::Tests), "both docked");
     assert_eq!(ed.slot_shown(), None, "the slot has nothing left to show");
+    // (the terminal in it: the slot moves whole, beside the code — onetree S5c)
     let _sent = crate::terminal::stand_in(&mut ed, 10, 80, 100);
     frame(&mut ed, W);
     ed.bottom_take_keys();
     feed(&mut ed, "<C-w>L");
-    assert!(ed.toasts.iter().any(|t| t.text.starts_with("the terminal stays in the slot")), "said");
+    let slot = ed.workspace.leaf(crate::pane::Shows::Slot).unwrap();
+    assert_eq!(
+        ed.workspace.split.parent_dir(slot),
+        Some(crate::split::Dir::Vertical),
+        "the slot beside the code"
+    );
 }
 
 /// §3.4: closed, a docked group's leaf goes (the code takes the room) and its place is kept — the next run of its kind
@@ -474,10 +503,10 @@ fn a_group_docked_over_the_code_folds_on_a_short_screen() {
     );
     assert!(ed.dock_rect(GroupKind::Tests).is_some_and(|d| d.1.h >= crate::dock::DOCK_MIN_ROWS));
     // (a slot size of yours that leaves it too few)
-    ed.sizes.bottom = Some(H - 6);
+    ed.workspace.set_kept(crate::pane::Shows::Slot, Some(H - 6));
     frame(&mut ed, W);
     assert!(!ed.docked_in_sight(GroupKind::Tests), "a tall slot: folded");
-    ed.sizes.bottom = None;
+    ed.workspace.set_kept(crate::pane::Shows::Slot, None);
     frame(&mut ed, W);
     assert!(ed.docked_in_sight(GroupKind::Tests), "back");
 }

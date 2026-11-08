@@ -12,9 +12,9 @@
 //! over it. After every step a floating group's own pane is out of the tree, once, while it floats; drawn, its frame is
 //! on the screen whole; the slot's tabs never list it while it floats in sight; `C-w m` moves only a pane there.
 //!
-//! onetree S2c: sizes set (`C-w < > - +`) and a restart as the layout has it — the tree read back from its file with
-//! the surfaces' shares as a file from before any size held them, the sizes from `sizes.json`'s text: the next frame
-//! lays every pane in the same rect.
+//! onetree S2c, S5b–c: sizes set (`C-w < > - +`, the pane in hand's), panes moved (`C-w H J K L` from the code, the
+//! chat, the side panel and the slot) and a restart as the layout has it — the tree read back from its file, the shares
+//! in it (sizes are the workspace's, onetree S5b): the next frame lays every pane in the same rect.
 //!
 //! Polish landing 1 and #299: Claude at work in follow mode the whole run — neither a card that came on its own nor the
 //! follow card covers a floating pane's frame.
@@ -132,8 +132,8 @@ fn tests() -> crate::testing::TestRun {
 
 fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
     // (by arm: a window key 6, another file in the pane 2, a frame 2, time passing 1, a docking or floating key from the
-    // tests' list 3, the run ending or a new one 2, a card coming 1, a restart 1)
-    match sim.choices.weighted(&[6, 2, 2, 1, 3, 2, 1, 1]) {
+    // tests' list 3, the run ending or a new one 2, a card coming 1, a restart 1, a move from a surface 2)
+    match sim.choices.weighted(&[6, 2, 2, 1, 3, 2, 1, 1, 2]) {
         0 => {
             let k = *sim.choices.pick(&[
                 "<C-w>v",
@@ -142,6 +142,8 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
                 "<C-w>o",
                 "<C-w>H",
                 "<C-w>L",
+                "<C-w>J",
+                "<C-w>K",
                 "<C-w>t",
                 "<C-w>w",
                 "<C-w>>",
@@ -215,32 +217,37 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
             }
             "a card".into()
         }
-        // (a restart as the layout has it: the tree from its file, the surfaces' shares as before any size was set, the
-        // sizes from `sizes.json`'s text — then a frame at the same width)
+        // (a restart as the layout has it: the tree — every pane where it was moved, each share as set — read back from
+        // its text, then a frame at the same width)
         7 => {
             use crate::pane::Shows;
             let w = *sim.choices.pick(&[60, 100, 160]);
             crate::term::render(ed, &mut Vec::new(), w, 40).unwrap();
             let before = ed.screen.leaves.clone();
-            let file = ed.workspace.root.join("sizes.json");
-            std::fs::write(&file, ed.sizes.to_json()).unwrap();
             let json = crate::restart::split_json(&ed.workspace.split);
-            let mut tree = crate::restart::split_of(&json).expect("the tree read back");
-            for s in [Shows::Side, Shows::Rail, Shows::Slot, Shows::Chat] {
-                if let Some(id) = ed.workspace.leaf(s) {
-                    tree.set_share(id, crate::split::Share::Auto);
-                }
-            }
-            ed.workspace.split = tree;
-            ed.sizes = crate::sizes::Sizes::read(Some(&file));
+            ed.workspace.split = crate::restart::split_of(&json).expect("the tree read back");
             crate::term::render(ed, &mut Vec::new(), w, 40).unwrap();
             if ed.screen.leaves != before {
-                let said =
-                    format!("a restart laid {:?} where {before:?} were ({:?})", ed.screen.leaves, ed.sizes);
+                let said = format!("a restart laid {:?} where {before:?} were ({json})", ed.screen.leaves);
                 *world.moved.borrow_mut() = Some(said);
             }
-            let s = ed.sizes;
-            format!("a restart, {w} columns, side {:?} slot {:?}", s.side, s.bottom)
+            let ws = &ed.workspace;
+            format!("a restart, {w} columns, side {:?} slot {:?}", ws.kept(Shows::Side), ws.kept(Shows::Slot))
+        }
+        // (a move from the side panel or the chat — shown for it, its keys there —, onetree S5c)
+        8 => {
+            let (at, name) = *sim.choices.pick(&[
+                (crate::workspace::Here::Side, "the side panel"),
+                (crate::workspace::Here::Chat, "the chat"),
+            ]);
+            let k = *sim.choices.pick(&["<C-w>H", "<C-w>J", "<C-w>K", "<C-w>L", "<C-w>>", "<C-w>+"]);
+            if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| at == crate::workspace::Here::Chat)
+            {
+                c.hidden = false;
+            }
+            ed.workspace.set_at(at);
+            keys(sim, ed, world, key, k);
+            format!("{name}: {k}")
         }
         _ => {
             let ms = *sim.choices.pick(&[100, 3000]);

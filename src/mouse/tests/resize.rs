@@ -125,7 +125,7 @@ fn the_review_rails_edge_drags_and_its_keys_size_it() {
     assert_eq!(ed.keys_to().region, Region::Rail, "a press there: the rail's keys");
     drag(&mut ed, (w0 - 1, 5), (w0 + 5, 5));
     assert_eq!(
-        (ed.screen.drawn_w(crate::pane::Shows::Rail), ed.sizes.rail),
+        (ed.screen.drawn_w(crate::pane::Shows::Rail), ed.workspace.kept(crate::pane::Shows::Rail)),
         (w0 + 6, Some(w0 as u16 + 6)),
         "follows the mouse, yours"
     );
@@ -138,13 +138,17 @@ fn the_review_rails_edge_drags_and_its_keys_size_it() {
     );
     feed(&mut ed, "<C-w><lt>");
     assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Rail), w0 + 6);
-    // From the code, `C-w >` isn't the rail's
+    // From the code, `C-w >` widens the code (D7): nothing right of it, its left edge moves — the rail narrower
     ed.workspace.viewer.keys_to_code();
     feed(&mut ed, "<C-w>>");
-    assert_eq!(ed.screen.drawn_w(crate::pane::Shows::Rail), w0 + 6, "the code's keys: not the rail's size");
+    assert_eq!(
+        ed.screen.drawn_w(crate::pane::Shows::Rail),
+        w0 + 6 - crate::sizes::STEP_COLS,
+        "the code's keys: the code wider"
+    );
     feed(&mut ed, "<C-w>=");
     assert_eq!(
-        (ed.screen.drawn_w(crate::pane::Shows::Rail), ed.sizes.rail),
+        (ed.screen.drawn_w(crate::pane::Shows::Rail), ed.workspace.kept(crate::pane::Shows::Rail)),
         (w0, None),
         "its rows' need again"
     );
@@ -186,9 +190,17 @@ fn a_press_on_a_panels_line_gives_it_the_keys_and_a_name_there_drags_the_line() 
     let h = ed.screen.slot().h;
     mouse(&mut ed, K::Down, tab, y);
     mouse(&mut ed, K::Up, tab, y);
-    assert_eq!((ed.screen.slot().h, ed.sizes.bottom, ed.dragging), (h, None, None), "a press is the tab's");
+    assert_eq!(
+        (ed.screen.slot().h, ed.workspace.kept(crate::pane::Shows::Slot), ed.dragging),
+        (h, None, None),
+        "a press is the tab's"
+    );
     drag(&mut ed, (tab, y), (tab, y - 3));
-    assert_eq!((ed.screen.slot().h, ed.sizes.bottom), (h + 3, Some(h as u16 + 3)), "dragged from its name");
+    assert_eq!(
+        (ed.screen.slot().h, ed.workspace.kept(crate::pane::Shows::Slot)),
+        (h + 3, Some(h as u16 + 3)),
+        "dragged from its name"
+    );
 }
 
 /// A tab pressed on the slot's line (#216, `Editor::slot_press`): the one in front already gives the slot the keys, as
@@ -260,7 +272,11 @@ fn a_press_after_a_lost_release_is_its_own() {
     press(&mut ed, x, y);
     assert_eq!((ed.keys_to().region, ed.cursor_line()), (Region::Code, 4), "the press is the code's");
     assert_eq!(
-        (ed.dragging, ed.sizes.chat, ed.screen.drawn_w(crate::pane::Shows::Chat)),
+        (
+            ed.dragging,
+            ed.workspace.kept(crate::pane::Shows::Chat),
+            ed.screen.drawn_w(crate::pane::Shows::Chat)
+        ),
         (None, None, w),
         "let go, unkept"
     );
@@ -281,7 +297,11 @@ fn the_wheel_lets_go_of_a_held_line() {
     assert_eq!(ed.dragging, None, "let go");
     mouse(&mut ed, K::Drag, chat - 6, 10);
     mouse(&mut ed, K::Up, chat - 6, 10);
-    assert_eq!((ed.sizes.chat, ed.screen.drawn_w(crate::pane::Shows::Chat)), (None, w), "nothing sized");
+    assert_eq!(
+        (ed.workspace.kept(crate::pane::Shows::Chat), ed.screen.drawn_w(crate::pane::Shows::Chat)),
+        (None, w),
+        "nothing sized"
+    );
 }
 
 /// A drag from a name on a line that drags nothing says why, once: a docked group's line (its edge sizes it), the
@@ -321,7 +341,7 @@ fn a_drag_from_a_name_on_a_line_nothing_drags_says_why_once() {
     drag_name(&mut ed, tab);
     assert_eq!(times(&ed, crate::editor::NAME_ZOOMED), 1, "said, once");
     assert_eq!(times(&ed, crate::editor::NAME_DOCKED), 0);
-    assert_eq!((ed.sizes.bottom, ed.screen.slot().h), (None, h), "nothing sized");
+    assert_eq!((ed.workspace.kept(crate::pane::Shows::Slot), ed.screen.slot().h), (None, h), "nothing sized");
 }
 
 /// A name on a floating frame's top line moves the frame — the topmost first: over the slot's line it's the float's, not
@@ -336,7 +356,7 @@ fn a_name_on_a_floats_top_line_moves_the_float_over_what_is_under_it() {
     frame(&mut ed);
     ed.float(GroupKind::Tests);
     // (the slot tall enough that a whole float fits under its line)
-    ed.sizes.bottom = Some(15);
+    ed.workspace.set_kept(crate::pane::Shows::Slot, Some(15));
     frame(&mut ed);
     let float =
         |ed: &Editor| ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Tests).map(|f| f.1);
@@ -358,7 +378,11 @@ fn a_name_on_a_floats_top_line_moves_the_float_over_what_is_under_it() {
     let (h, (x, y)) = (ed.screen.slot().h, name_on(&ed, r));
     drag(&mut ed, (x, y), (x, y - 3));
     assert_eq!(float(&ed).map(|f| f.y), Some(line - 3), "the float moved");
-    assert_eq!((ed.screen.slot().h, ed.sizes.bottom), (h, Some(15)), "the slot untouched");
+    assert_eq!(
+        (ed.screen.slot().h, ed.workspace.kept(crate::pane::Shows::Slot)),
+        (h, Some(15)),
+        "the slot untouched"
+    );
     // The float filling the screen: its zoom's reason, said once, nothing moved
     ed.float_focus(GroupKind::Tests);
     feed(&mut ed, "<C-w>z");

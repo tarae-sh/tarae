@@ -637,12 +637,55 @@ impl Workspace {
         }
     }
 
-    /// The size you set for surface `shows` (the side panel, the review's rail, the slot, the chat): its leaf's
-    /// `Share::Cells` in the tree — fed from `Sizes` (`Editor::sizes_feed`, onetree S2c). None: automatic.
+    /// The size you set for surface `shows` (the side panel, the review's rail, the slot, the chat) along its home's
+    /// way — a width beside the code, the slot's height under it: its leaf's `Share::Cells` in this workspace's tree
+    /// (onetree S5b: kept per workspace, with its layout). None: automatic, or it sits the other way (`kept_across`).
     pub fn kept(&self, shows: crate::pane::Shows) -> Option<u16> {
-        match self.split.share(self.leaf(shows)?)? {
+        use crate::split::Dir;
+        let id = self.leaf(shows)?;
+        let home = if shows == crate::pane::Shows::Slot { Dir::Horizontal } else { Dir::Vertical };
+        (self.split.parent_dir(id) == Some(home)).then(|| self.cells(id)).flatten()
+    }
+
+    /// The size you set for leaf `id` sitting in a split the other way than its home's (the conversation over or
+    /// under the code, the slot beside it): its `Share::Cells` there (`sizes::across`'s).
+    pub fn kept_across(&self, id: crate::split::PaneId) -> Option<u16> {
+        use crate::split::Dir;
+        let home = match self.shows(id)? {
+            crate::pane::Shows::Slot => Dir::Horizontal,
+            _ => Dir::Vertical,
+        };
+        (self.split.parent_dir(id).is_some_and(|d| d != home)).then(|| self.cells(id)).flatten()
+    }
+
+    /// The slot's column beside the code (onetree S5): the child holding the slot in the nearest split side by side
+    /// around it, where that child has the slot's own share (`Auto`, or a width you set — carried up when `C-w s` split
+    /// it with a code pane) — never the code's region it sits under (`Even`). Its share and the leaf or node.
+    pub fn slot_column(&self) -> Option<(crate::split::Share, &crate::split::Split)> {
+        use crate::split::{Dir, Share, Split};
+        let id = self.leaf(crate::pane::Shows::Slot)?;
+        let path = self.split.path(id)?;
+        let child = (0..path.len()).rev().find_map(|depth| match self.split.at(&path[..depth]) {
+            Some(Split::Node(Dir::Vertical, kids)) => Some(kids.get(path[depth])),
+            _ => None,
+        });
+        child.flatten().filter(|k| k.0 != Share::Even).map(|k| (k.0, &k.1))
+    }
+
+    /// Leaf `id`'s `Share::Cells` (None: any other share).
+    fn cells(&self, id: crate::split::PaneId) -> Option<u16> {
+        match self.split.share(id)? {
             crate::split::Share::Cells(n) => Some(n),
             _ => None,
+        }
+    }
+
+    /// Surface `shows`'s leaf set to `n` cells along its split (None: automatic again) — a size set, as a key or a drag
+    /// sets it (tests: a size set by hand).
+    #[cfg(test)]
+    pub fn set_kept(&mut self, shows: crate::pane::Shows, n: Option<u16>) {
+        if let Some(id) = self.leaf(shows) {
+            self.split.set_share(id, n.map_or(crate::split::Share::Auto, crate::split::Share::Cells));
         }
     }
 

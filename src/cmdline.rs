@@ -71,6 +71,7 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["hsplit", "hs", "sp", "split"], Arg::File, "Split top and bottom (optionally open a file there)"),
     c(&["only"], Arg::None, "Close every other window"),
     c(&["close"], Arg::None, "Close this window"),
+    c(&["show-here"], Arg::None, "Show a pane here: chat, side, bottom, code (none: a picker)"),
     c(&["theme"], Arg::Theme, "Switch theme (no name = picker with live preview)"),
     c(&["set"], Arg::Setting, "Change a setting until you quit (no value = show it)"),
     c(&["set!"], Arg::Setting, "Change a setting and save it to your config"),

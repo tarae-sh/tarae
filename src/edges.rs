@@ -121,6 +121,9 @@ pub struct Leaves {
     /// The slot as laid (0 high when it's empty) and the column its line ends before (`Screen::slot_end`).
     pub slot: Option<(PaneId, Rect)>,
     pub slot_end: usize,
+    /// The slot's column beside the code with a code pane in it (`Workspace::slot_column`): its leaves — the line
+    /// between a code pane in it and one outside sizes the column, as the slot's own line does.
+    pub column: Vec<PaneId>,
     pub code: Vec<(PaneId, Rect)>,
     /// The code panes' top lines as drawn (`term::code_lines`), left to right: each pane, the row its line is on (over
     /// it at the code's first row, else its own first row) and its rect — none with no code drawn.
@@ -186,11 +189,14 @@ impl Edges {
         let mut lines = Vec::new();
         // (each column surface's lines on its sides that meet something, down its own rows: its home's first — the
         // chat's left, the side panel's and the rail's right —, then the other side's, each with the side the code is
-        // toward for its joins. Stacked under something, its top line is its own header's, no border yet: nothing
-        // sizes it along a column before S5b)
+        // toward for its joins. Stacked under something, its top line — its own header's row — is its line along a row:
+        // a drag of it sizes its height, onetree S5b)
         let mut columns: Vec<(usize, Side)> = Vec::new();
         for &(id, home, r) in &l.surfaces {
             let s = l.sides_of(id, home, r);
+            if s.top && r.w > 0 && r.h > 0 {
+                lines.push(Line::own(Dir::Horizontal, r.y, r.x..r.x + r.w, id));
+            }
             let rows = r.y..(r.y + r.h).min(l.body_end);
             let (left, right) =
                 ((s.left, r.x, Side::Left), (s.right, r.x + r.w.saturating_sub(1), Side::Right));
@@ -229,16 +235,22 @@ impl Edges {
                 }
             }
         }
-        // (between two code panes side by side: the cell after the left one's last, over the rows they share)
+        // (between two code panes side by side: the cell after the left one's last, over the rows they share — into the
+        // slot's column or out of it, the column's edge: the slot sizes it)
+        let column = |id: PaneId| l.column.contains(&id);
         for &(a, ra) in &l.code {
             for &(b, rb) in l.code.iter().filter(|c| c.1.x == ra.x + ra.w + 1) {
                 let rows = ra.y.max(rb.y)..(ra.y + ra.h).min(rb.y + rb.h);
+                let sized = match l.slot {
+                    Some((slot, _)) if column(a) != column(b) => slot,
+                    _ => a,
+                };
                 if !rows.is_empty() {
                     lines.push(Line {
                         dir: Dir::Vertical,
                         at: ra.x + ra.w,
                         span: rows,
-                        sized: a,
+                        sized,
                         heads: b,
                         joins: Vec::new(),
                         beside: Vec::new(),

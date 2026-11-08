@@ -65,6 +65,13 @@ impl Editor {
         }
     }
 
+    /// Kind `kind`'s group is docked right or left with something to show and its leaf in the tree — in sight unless
+    /// `dock_widths` leaves it no column.
+    pub fn docked_beside(&self, kind: GroupKind) -> bool {
+        let Some(g) = self.workspace.group(kind) else { return false };
+        matches!(g.place, Place::Docked(side) if side.beside()) && self.kind_there(kind) && self.dock_leaf(&g)
+    }
+
     /// Slot panel `slot`'s group is docked in sight — the slot leaves it out (`slot_shown`, `slot_tabs`).
     pub fn slot_docked(&self, slot: Slot) -> bool {
         self.kind_of(slot).is_some_and(|k| self.out_of_slot(k))
@@ -89,9 +96,9 @@ impl Editor {
         use crate::sizes::{Nav, Wants};
         let chat = self.chat_panel(total).then_some(self.workspace.kept(Shows::Chat));
         let nav = if side_open { Nav::Side(self.workspace.kept(Shows::Side)) } else { Nav::None };
-        let w = crate::sizes::give_way(Wants { total, chat, nav });
+        let w = crate::sizes::give_way(Wants { total, chat, nav, slot: self.slot_beside_unlaid() });
         let rail = if self.review_rail_up() { self.screen.drawn_w(Shows::Rail) } else { 0 };
-        let mut left = total.saturating_sub(w.chat + w.nav + rail);
+        let mut left = total.saturating_sub(w.chat + w.nav + w.slot + rail);
         if w.chat >= total {
             return out;
         }
@@ -321,20 +328,8 @@ impl Editor {
             self.set_status(format!("sessions docked {} — C-w e floats it", side.name()));
             return true;
         }
-        let Some(kind) = self.group_in_hand() else {
-            // (the slot's other panels stay in it: said)
-            if self.bottom_has_keys() || self.workspace.is_at(Here::Program) {
-                let what = match self.slot() {
-                    Some(Slot::Terminal) => {
-                        "the terminal stays in the slot — a terminal pane comes with the terminal work"
-                    }
-                    _ => "this panel stays in the slot — the tests, a task, a preflight and :procs dock",
-                };
-                self.set_status(what);
-                return true;
-            }
-            return false;
-        };
+        // (the slot's other panels — the terminal, a plugin's — move with the slot, whole: `swap_view`, onetree S5c)
+        let Some(kind) = self.group_in_hand() else { return false };
         let side = match (dx, dy) {
             (-1, _) => Side::Left,
             (1, _) => Side::Right,
@@ -521,17 +516,35 @@ fn place(
     s: &crate::workspace::Workspace,
 ) -> bool {
     let leaf = |shows: Shows| s.leaf(shows);
+    // (its anchor moved out of a side-by-side split — the chat stacked under the code, onetree S5c: at that edge of the
+    // screen, until groups move as panes do, S6)
     match side {
         Side::Right => {
             let chat = leaf(Shows::Chat);
-            beside(split, host, &|id| Some(id) == chat, false, docked)
+            beside(split, host, &|id| Some(id) == chat, false, docked) || at_edge(split, host, false)
         }
         Side::Left => {
             let (a, b) = (leaf(Shows::Side), leaf(Shows::Rail));
             beside(split, host, &|id| Some(id) == a || Some(id) == b, true, docked)
+                || at_edge(split, host, true)
         }
         Side::Top => over_column(split, host, s, docked),
     }
+}
+
+/// `host` at the screen's left edge (`first`) or right one: the first or last child of a side-by-side root, else the
+/// root and it side by side.
+fn at_edge(split: &mut Split, host: PaneId, first: bool) -> bool {
+    let kid = (Share::Auto, Split::Leaf(host));
+    match split {
+        Split::Node(Dir::Vertical, kids) if first => kids.insert(0, kid),
+        Split::Node(Dir::Vertical, kids) => kids.push(kid),
+        root => {
+            let rest = (Share::Even, std::mem::replace(root, Split::Leaf(0)));
+            *root = Split::Node(Dir::Vertical, if first { vec![kid, rest] } else { vec![rest, kid] });
+        }
+    }
+    true
 }
 
 /// `host` into the side-by-side node holding a leaf `anchor` says: before the first such (`after` false — the chat),

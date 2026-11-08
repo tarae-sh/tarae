@@ -507,6 +507,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
                 Ok(())
             }
         },
+        "show-here" => editor.show_here(rest.trim()),
         "effort" => match rest.split_whitespace().next() {
             Some(l) => crate::models::set_effort(editor, l),
             None => {

@@ -307,7 +307,7 @@ fn a_turn_reads_as_a_map_and_a_press_is_its_stop() {
     let s = crate::scratch::Scratch::new("turnmap-keys");
     let mut ed = project(&s);
     // (room beside the tabs for the turn: `the_tabs_stay_whole_and_the_turn_folds_first`)
-    ed.sizes.side = Some(38);
+    ed.workspace.set_kept(crate::pane::Shows::Side, Some(38));
     let in_s = |st: Stop, rel: &str| Stop { path: Some(s.join(rel)), ..st };
     add(
         &mut ed,
@@ -773,7 +773,7 @@ fn a_mark_cut_short_stays_a_button_on_its_glyph() {
     add(&mut ed, (0..10).map(|l| Stop { path: Some(s.join(deep)), ..read("", l..l + 1) }).collect());
     let mut cut = 0;
     for side in crate::sizes::SIDE_MIN..=crate::sizes::SIDE_MAX {
-        ed.sizes.side = Some(side as u16);
+        ed.workspace.set_kept(crate::pane::Shows::Side, Some(side as u16));
         let rows = frame(&mut ed, 120);
         let Some((y, _)) = rows.iter().enumerate().find(|(_, r)| r.contains("◦ 9…")) else { continue };
         cut += 1;
@@ -794,7 +794,7 @@ fn a_mark_cut_short_stays_a_button_on_its_glyph() {
     }
     assert!(cut > 0, "no width cut it inside its count");
     // (wide, its count is part of it)
-    ed.sizes.side = Some(crate::sizes::SIDE_MAX as u16);
+    ed.workspace.set_kept(crate::pane::Shows::Side, Some(crate::sizes::SIDE_MAX as u16));
     let rows = frame(&mut ed, 240);
     let y = rows.iter().position(|r| r.contains("◦ 9+")).unwrap();
     let spots = ed.screen.word_spots.borrow();
@@ -815,11 +815,11 @@ fn the_tabs_stay_whole_and_the_turn_folds_first() {
         spots.iter().any(|c| matches!(&c.3, crate::whole::Cut::Text(w) if w.text.contains("why does")))
     };
     sync(&mut ed);
-    ed.sizes.side = Some(crate::sizes::SIDE_MAX as u16);
+    ed.workspace.set_kept(crate::pane::Shows::Side, Some(crate::sizes::SIDE_MAX as u16));
     frame(&mut ed, 240);
     assert!(ed.turnmap.asked.is_some() && !asked(&ed), "no stop yet: nothing of the turn on the line");
     let top = |ed: &mut Editor, side: usize| {
-        ed.sizes.side = Some(side as u16);
+        ed.workspace.set_kept(crate::pane::Shows::Side, Some(side as u16));
         // (wide enough for the panel at every width it takes, with the chat open)
         let line = frame(ed, 240).swap_remove(0);
         line.chars().take(side - 1).collect::<String>()

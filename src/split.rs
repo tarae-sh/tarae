@@ -204,6 +204,44 @@ impl Split {
         kids.iter().find(|k| k.1.holds(id)).is_some_and(|k| *d == dir || k.1.has_parent_along(id, dir))
     }
 
+    /// The child indices from the root down to leaf `id` (empty: the root is that leaf; None: not in the tree).
+    pub fn path(&self, id: PaneId) -> Option<Vec<usize>> {
+        match self {
+            Split::Leaf(v) => (*v == id).then(Vec::new),
+            Split::Node(_, kids) => kids.iter().enumerate().find_map(|(i, k)| {
+                let mut p = k.1.path(id)?;
+                p.insert(0, i);
+                Some(p)
+            }),
+        }
+    }
+
+    /// The node or leaf `path` leads to (`path`'s).
+    pub fn at(&self, path: &[usize]) -> Option<&Split> {
+        match (self, path.split_first()) {
+            (s, None) => Some(s),
+            (Split::Node(_, kids), Some((&i, rest))) => kids.get(i)?.1.at(rest),
+            _ => None,
+        }
+    }
+
+    pub fn at_mut(&mut self, path: &[usize]) -> Option<&mut Split> {
+        match (self, path.split_first()) {
+            (s, None) => Some(s),
+            (Split::Node(_, kids), Some((&i, rest))) => kids.get_mut(i)?.1.at_mut(rest),
+            _ => None,
+        }
+    }
+
+    /// The direction of the node holding leaf `id` (None: the root is that leaf, or it isn't in the tree).
+    pub fn parent_dir(&self, id: PaneId) -> Option<Dir> {
+        let path = self.path(id)?;
+        match self.at(&path[..path.len().checked_sub(1)?])? {
+            Split::Node(d, _) => Some(*d),
+            Split::Leaf(_) => None,
+        }
+    }
+
     /// Every share you set back to `Even` — a surface's (`own`: the chat's, the side panel's …) to `Auto` — `C-w =`.
     pub fn even(&mut self, own: &impl Fn(&Split) -> bool) {
         if let Split::Node(_, kids) = self {
@@ -338,6 +376,178 @@ impl Split {
             };
             kid.lay(sub, room, out);
             at += size;
+        }
+    }
+}
+
+/// What `Split::step` asks of the tree's children: which have room on screen, which are a surface's own leaf, which go
+/// as one (the navigator's side panel and rail), which are code panes.
+#[derive(Clone, Copy)]
+pub struct Kinds<'a> {
+    pub shown: &'a dyn Fn(&Split) -> bool,
+    pub own: &'a dyn Fn(&Split) -> bool,
+    pub one: &'a dyn Fn(&Split) -> bool,
+    pub code: &'a dyn Fn(&Split) -> bool,
+}
+
+/// What `C-w H J K L` did to the tree (`Split::step`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// It traded places, or left its split for the next one that way, or went to that edge of the screen.
+    Moved,
+    /// It's at that edge of the screen already: nothing changed.
+    Edge,
+}
+
+impl Split {
+    /// `C-w H J K L` (onetree S5c, the move rule): leaf `id` a step toward `dir`'s end (`after`: right or down) — with
+    /// the leaves `one` says go with it (the navigator's side panel and rail, side by side: one piece), each a run of
+    /// siblings. In its own split going that way it trades places with the next sibling `shown` has room for (a run of
+    /// `one`'s as one); two code panes (`code`) trade their places' shares too, as Helix's swap does, anything else
+    /// takes its own along. At the end of its split, or in one going the other way, it leaves for the nearest split
+    /// that way above and lands just beside the child it was in — its share there its own size (`own`'s `Auto`, else
+    /// `Even`); with none, it goes to that edge of the screen, the rest one child of a new root. A node it leaves with
+    /// one child folds into it, a surface's leaf then its own size again.
+    pub fn step(&mut self, id: PaneId, dir: Dir, after: bool, kinds: &Kinds) -> Step {
+        let Kinds { shown, own, one, code } = *kinds;
+        let Some(path) = self.path(id) else { return Step::Edge };
+        let Some((&i, up)) = path.split_last() else { return Step::Edge };
+        // (the run of siblings around `i` that go as one, when it's one of `one`'s)
+        let run = |kids: &[(Share, Split)], i: usize| {
+            if !one(&kids[i].1) {
+                return (i, i);
+            }
+            let mut r = (i, i);
+            while r.0 > 0 && one(&kids[r.0 - 1].1) {
+                r.0 -= 1;
+            }
+            while r.1 + 1 < kids.len() && one(&kids[r.1 + 1].1) {
+                r.1 += 1;
+            }
+            r
+        };
+        // In its own split going that way: the next sibling with room, traded places with
+        if let Some(Split::Node(d, kids)) = self.at_mut(up)
+            && *d == dir
+        {
+            let (a, b) = run(kids, i);
+            let mut toward: Vec<usize> =
+                if after { (b + 1..kids.len()).collect() } else { (0..a).rev().collect() };
+            toward.retain(|&j| shown(&kids[j].1));
+            if let Some(&j) = toward.first() {
+                let (n0, n1) = run(kids, j);
+                if a == b && n0 == n1 && code(&kids[a].1) && code(&kids[j].1) {
+                    let (Split::Leaf(x), Split::Leaf(y)) = (&kids[a].1, &kids[j].1) else {
+                        return Step::Edge;
+                    };
+                    let (x, y) = (*x, *y);
+                    self.swap(x, y);
+                    return Step::Moved;
+                }
+                let mut all: Vec<(Share, Split)> = std::mem::take(kids);
+                let (lo, hi) = if after { ((a, b), (n0, n1)) } else { ((n0, n1), (a, b)) };
+                let tail = all.split_off(hi.1 + 1);
+                let second: Vec<_> = all.drain(hi.0..).collect();
+                let middle: Vec<_> = all.drain(lo.1 + 1..).collect();
+                let first: Vec<_> = all.drain(lo.0..).collect();
+                all.extend(second);
+                all.extend(middle);
+                all.extend(first);
+                all.extend(tail);
+                *kids = all;
+                return Step::Moved;
+            }
+        }
+        // Out of its split: beside the child it was in, in the nearest split that way above — else to the screen's edge
+        let above = (0..up.len())
+            .rev()
+            .find(|&k| matches!(self.at(&path[..k]), Some(Split::Node(d, _)) if *d == dir));
+        if above.is_none() && matches!(self.at(up), Some(Split::Node(d, _)) if *d == dir) {
+            return Step::Edge;
+        }
+        let Some(Split::Node(_, kids)) = self.at_mut(up) else { return Step::Edge };
+        let (a, b) = run(kids, i);
+        if b - a + 1 == kids.len() {
+            return Step::Edge;
+        }
+        let mut unit: Vec<(Share, Split)> = kids.drain(a..=b).collect();
+        for (share, kid) in &mut unit {
+            *share = if own(kid) { Share::Auto } else { Share::Even };
+        }
+        // (a node left with one child folds into it, taking its share — a surface's leaf its own size again)
+        if kids.len() == 1
+            && let Some(node) = self.at_mut(up)
+        {
+            let Split::Node(_, kids) = node else { return Step::Edge };
+            let (_, only) = kids.pop().expect("one child");
+            *node = only;
+            if !up.is_empty() {
+                let (&last, parent) = up.split_last().expect("a parent");
+                if let Some(Split::Node(_, ks)) = self.at_mut(parent) {
+                    let (share, kid) = &mut ks[last];
+                    *share = match (*share, own(kid)) {
+                        (Share::Even, true) => Share::Auto,
+                        (Share::Auto, false) => Share::Even,
+                        (s, _) => s,
+                    };
+                }
+            }
+        }
+        match above {
+            Some(k) => {
+                let Some(Split::Node(_, kids)) = self.at_mut(&path[..k]) else { return Step::Edge };
+                let at = if after { path[k] + 1 } else { path[k] };
+                for (n, e) in unit.into_iter().enumerate() {
+                    kids.insert(at + n, e);
+                }
+            }
+            // (the rest one child of a new root that way — its own children where it goes that way already)
+            None => {
+                let rest = match std::mem::replace(self, Split::Leaf(0)) {
+                    Split::Node(d, ks) if d == dir => ks,
+                    other => vec![(Share::Even, other)],
+                };
+                let kids = match after {
+                    true => rest.into_iter().chain(unit).collect(),
+                    false => unit.into_iter().chain(rest).collect(),
+                };
+                *self = Split::Node(dir, kids);
+            }
+        }
+        Step::Moved
+    }
+
+    /// Leaf `id` out of the tree (`remove`), a node it leaves with one child folded into it — then each leaf's share its
+    /// kind's: a surface's (`own`) its own size where it was given an even part, a code pane's an even part where it was
+    /// given the surface's own (`C-w p`'s, onetree S5d).
+    pub fn take_out(&mut self, id: PaneId, own: &impl Fn(&Split) -> bool) -> bool {
+        fn kinds(s: &mut Split, own: &impl Fn(&Split) -> bool) {
+            let Split::Node(_, kids) = s else { return };
+            for (share, kid) in kids.iter_mut() {
+                if matches!(kid, Split::Leaf(_)) {
+                    *share = match (*share, own(kid)) {
+                        (Share::Even, true) => Share::Auto,
+                        (Share::Auto, false) => Share::Even,
+                        (s, _) => s,
+                    };
+                }
+                kinds(kid, own);
+            }
+        }
+        let gone = self.remove(id);
+        kinds(self, own);
+        gone
+    }
+
+    /// Whether every node has a child that takes the rest of its room — one not `own` (a code pane, a node) — and the
+    /// root isn't one of `own`'s alone: a move that would leave cells nothing draws in is refused.
+    pub fn holds_the_rest(&self, own: &impl Fn(&Split) -> bool) -> bool {
+        match self {
+            Split::Leaf(_) => !own(self),
+            Split::Node(_, kids) => {
+                kids.iter().any(|k| !own(&k.1))
+                    && kids.iter().all(|k| matches!(k.1, Split::Leaf(_)) || k.1.holds_the_rest(own))
+            }
         }
     }
 }

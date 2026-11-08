@@ -256,10 +256,10 @@ commands! {
         task_sandbox => "What the sandbox blocked",
         hsplit => "Split the window top / bottom",
         rotate_view => "Next window",
-        swap_view_left => "Swap left · dock a group",
-        swap_view_right => "Swap right · dock a group",
-        swap_view_up => "Swap up · dock a group on top",
-        swap_view_down => "Swap down · group to the slot",
+        swap_view_left => "Move the pane left",
+        swap_view_right => "Move the pane right",
+        swap_view_up => "Move the pane up",
+        swap_view_down => "Move the pane down",
         transpose_view => "Turn the split around",
         jump_view_left => "Window to the left",
         focus_side_panel => "To the side panel and back",
@@ -270,12 +270,13 @@ commands! {
         jump_view_down => "Window below",
         wclose => "Close this window or panel",
         wonly => "Close all other windows",
-        panel_wider => "Wider: chat or side panel",
-        panel_narrower => "Narrower: chat or side panel",
-        bottom_taller => "Taller: the bottom panel",
-        bottom_shorter => "Shorter: the bottom panel",
+        panel_wider => "Wider: the pane in hand",
+        panel_narrower => "Narrower: the pane in hand",
+        bottom_taller => "Taller: the pane in hand",
+        bottom_shorter => "Shorter: the pane in hand",
         sizes_auto => "Sizes back to automatic",
         zoom_toggle => "Full screen: on / off",
+        show_here => "Show a kind of pane here",
         slot_next => "Next tab of the bottom panel",
         slot_prev => "Previous bottom panel tab",
         workspace_symbol_picker => "Symbols in the workspace",
@@ -2293,6 +2294,11 @@ fn wclose(cx: &mut Context) {
     if !cx.editor.close_view() {
         cx.editor.set_status("the code keeps one pane — C-w z fills the screen with this one");
     }
+}
+
+/// `C-w p`: a picker of the kinds of pane, the pick shown beside the pane in hand.
+fn show_here(cx: &mut Context) {
+    cx.editor.show_here_picker();
 }
 
 fn panel_wider(cx: &mut Context) {

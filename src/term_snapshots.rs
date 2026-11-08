@@ -2103,7 +2103,10 @@ fn the_chats_prose_fills_a_width_you_set() {
         (widest.unwrap_or(0), text_w)
     };
     let (auto, text_w) = prose(&mut s);
-    assert!(s.ed.sizes.chat.is_none() && text_w > MEASURE + 8, "the automatic width, wider than the measure");
+    assert!(
+        s.ed.workspace.kept(crate::pane::Shows::Chat).is_none() && text_w > MEASURE + 8,
+        "the automatic width, wider than the measure"
+    );
     assert!(auto <= MEASURE && auto > MEASURE - 12, "automatic: the measure — {auto}");
     // (set at the automatic width itself, no frame between — a drag ending where it began: the panel as it was, its
     // rows laid out again all the same, the prose its whole width)
@@ -2111,7 +2114,11 @@ fn the_chats_prose_fills_a_width_you_set() {
         s.ed.handle_event(Event::Key(k.parse().unwrap()));
     }
     let (same, same_w) = prose(&mut s);
-    assert_eq!((s.ed.sizes.chat.is_some(), same_w), (true, text_w), "set, at the same width");
+    assert_eq!(
+        (s.ed.workspace.kept(crate::pane::Shows::Chat).is_some(), same_w),
+        (true, text_w),
+        "set, at the same width"
+    );
     assert!(same > MEASURE + 8 && same <= same_w, "set: the prose fills it — {same} of {same_w}");
     s.keys("<C-w>><C-w>><C-w>>");
     let (wide, wide_w) = prose(&mut s);
@@ -2121,7 +2128,10 @@ fn the_chats_prose_fills_a_width_you_set() {
     );
     s.keys("<C-w>=");
     let (back, _) = prose(&mut s);
-    assert!(s.ed.sizes.chat.is_none() && back <= MEASURE, "automatic again: the measure — {back}");
+    assert!(
+        s.ed.workspace.kept(crate::pane::Shows::Chat).is_none() && back <= MEASURE,
+        "automatic again: the measure — {back}"
+    );
 }
 
 /// A command Claude wants to run outside the sandbox, asked while it works in follow mode, the chat out of sight: the
@@ -6126,7 +6136,8 @@ fn the_chat_narrows_for_the_review_rail_only_where_the_rail_is_drawn() {
             crate::sizes::give_way(crate::sizes::Wants {
                 total: w as usize,
                 chat: Some(None),
-                nav: crate::sizes::Nav::None
+                nav: crate::sizes::Nav::None,
+                slot: None,
             })
             .chat
         );
@@ -6578,7 +6589,7 @@ fn the_draft_card_stays_in_the_codes_room() {
                 s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
             }
             Some(k) => {
-                s.ed.sizes.side = Some(k);
+                s.ed.workspace.set_kept(crate::pane::Shows::Side, Some(k));
                 s.in_project();
                 s.keys("<space>e");
                 s.keys("<C-w>l");
@@ -8967,6 +8978,45 @@ fn a_line_that_drags_lights_under_the_pointer() {
     assert_eq!(cell(&mut s, x, slot).1, wash, "let go");
 }
 
+/// onetree S5 (the driver's look at shot 5): two code panes either side of the chat — of the chat's two lines only the one
+/// beside the code pane in hand is lit, the one lit line the pane in hand's; the other pane's is the wash.
+#[test]
+fn of_two_code_panes_either_side_of_the_chat_only_the_one_in_hands_line_is_lit() {
+    let (w, h) = (200u16, 50u16);
+    let mut s = Shot::new(w, h);
+    s.file("src/demo.rs", DEMO_RS);
+    let left = s.ed.workspace.viewer.focus;
+    // (as the shot: `space L` shows the chat with the keys, `esc esc` back to the code — a stand-in for claude)
+    s.ed.config.llm.command = "sh".into();
+    s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    s.keys(" L<esc><esc><C-w>v<C-w>L<C-w>L");
+    let right = s.ed.workspace.viewer.focus;
+    let (_, _, accent) = chrome_colors(&s.ed);
+    let rect = |s: &Shot, id| s.ed.screen.leaves.iter().find(|l| l.0 == id).unwrap().1;
+    let chat = s.ed.screen.rect(crate::pane::Shows::Chat).expect("the chat docked");
+    let (l, r) = (rect(&s, left), rect(&s, right));
+    assert!(l.x + l.w == chat.x && chat.x + chat.w == r.x, "either side of the chat: {l:?} {chat:?} {r:?}");
+    let fg = |s: &mut Shot, x: usize| {
+        let c = cells(&s.frame(), w, h).screen().cell(10, x as u16).unwrap().clone();
+        assert_eq!(c.contents(), "│", "a line at {x}");
+        c.fgcolor()
+    };
+    let (at_left, at_right) = (chat.x, chat.x + chat.w - 1);
+    assert_ne!(
+        fg(&mut s, at_left),
+        accent,
+        "the right pane in hand: the line beside the left one in the wash"
+    );
+    assert_eq!(fg(&mut s, at_right), accent, "the right pane in hand: its line lit");
+    s.ed.focus_view(left);
+    assert_eq!(fg(&mut s, at_left), accent, "the left pane in hand: its line lit");
+    assert_ne!(
+        fg(&mut s, at_right),
+        accent,
+        "the left pane in hand: the line beside the right one in the wash"
+    );
+}
+
 /// The surface under the pointer lights its lines half, as zellij's `mouse_hover_effects` (user, 2026-10-27): the chat's
 /// top line under the pointer is the accent half over its wash while the code has the keys, the code's line staying the
 /// one full-accent line; the keys and the pointer on one surface, full; a move within it draws nothing; the bottom
@@ -9949,7 +9999,9 @@ fn every_panes_top_is_one_line() {
 fn a_split_starts_at_a_join() {
     let (w, h) = (120u16, 30u16);
     let mut s = three_columns(w, h);
-    s.keys(" l<C-w>v");
+    // (from the code: from the chat a new pane opens beside the chat — onetree S5c)
+    s.ed.workspace.viewer.keys_to_code();
+    s.keys("<C-w>v");
     let (rows, at) = frame_text(&mut s, w, h);
     let side = s.ed.screen.drawn_w(crate::pane::Shows::Side);
     let divider = (side + 1..w as usize).find(|&x| at(5, x) == "│").expect("a divider");

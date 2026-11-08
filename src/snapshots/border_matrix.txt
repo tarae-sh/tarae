@@ -1141,93 +1141,126 @@
 
 ## 80x20 · conversation below the code, side panel and task
   ─ sizes slot#4 heads slot#4  4:0-1,9-79
+  ─ sizes chat#5 heads chat#5  7:0-79
 
 ## 80x34 · conversation below the code, side panel and task
   ─ sizes slot#4 heads slot#4  18:0-1,9-79
+  ─ sizes chat#5 heads chat#5  21:0-79
 
 ## 80x50 · conversation below the code, side panel and task
   ─ sizes slot#4 heads slot#4  30:0-1,9-79
+  ─ sizes chat#5 heads chat#5  33:0-79
 
 ## 100x20 · conversation below the code, side panel and task
   ─ sizes slot#4 heads slot#4  4:0-1,9-99
+  ─ sizes chat#5 heads chat#5  7:0-99
 
 ## 100x34 · conversation below the code, side panel and task
   ─ sizes slot#4 heads slot#4  18:0-1,9-99
+  ─ sizes chat#5 heads chat#5  21:0-99
 
 ## 100x50 · conversation below the code, side panel and task
   ─ sizes slot#4 heads slot#4  30:0-1,9-99
+  ─ sizes chat#5 heads chat#5  33:0-99
 
 ## 120x20 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-6
   ─ sizes slot#4 heads slot#4  4:32-33,41-119
+  ─ sizes chat#5 heads chat#5  7:0-119
 
 ## 120x34 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-20
   ─ sizes slot#4 heads slot#4  18:32-33,41-119
+  ─ sizes chat#5 heads chat#5  21:0-119
 
 ## 120x50 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-32
   ─ sizes slot#4 heads slot#4  30:32-33,41-119
+  ─ sizes chat#5 heads chat#5  33:0-119
 
 ## 160x20 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-6
   ─ sizes slot#4 heads slot#4  4:32-33,41-159
+  ─ sizes chat#5 heads chat#5  7:0-159
 
 ## 160x34 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-20
   ─ sizes slot#4 heads slot#4  18:32-33,41-159
+  ─ sizes chat#5 heads chat#5  21:0-159
 
 ## 160x50 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-32
   ─ sizes slot#4 heads slot#4  30:32-33,41-159
+  ─ sizes chat#5 heads chat#5  33:0-159
 
 ## 200x20 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-6
   ─ sizes slot#4 heads slot#4  4:32-33,41-199
+  ─ sizes chat#5 heads chat#5  7:0-199
 
 ## 200x34 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-20
   ─ sizes slot#4 heads slot#4  18:32-33,41-199
+  ─ sizes chat#5 heads chat#5  21:0-199
 
 ## 200x50 · conversation below the code, side panel and task
   │ sizes side#2 heads side#2  31:0-32
   ─ sizes slot#4 heads slot#4  30:32-33,41-199
+  ─ sizes chat#5 heads chat#5  33:0-199
 
 ## 54x20 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  7:0-53
 
 ## 54x34 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  21:0-53
 
 ## 54x50 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  33:0-53
 
 ## 80x20 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  7:0-79
 
 ## 80x34 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  21:0-79
 
 ## 80x50 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  33:0-79
 
 ## 100x20 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  7:0-99
 
 ## 100x34 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  21:0-99
 
 ## 100x50 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  33:0-99
 
 ## 120x20 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  7:0-119
 
 ## 120x34 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  21:0-119
 
 ## 120x50 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  33:0-119
 
 ## 160x20 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  7:0-159
 
 ## 160x34 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  21:0-159
 
 ## 160x50 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  33:0-159
 
 ## 200x20 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  7:0-199
 
 ## 200x34 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  21:0-199
 
 ## 200x50 · conversation below the code, with the keys
+  ─ sizes chat#5 heads chat#5  33:0-199
 
 ## 54x20 · navigator right, chat and task
   ─ sizes slot#4 heads slot#4  16:0-1,9-53
@@ -1298,83 +1331,191 @@
   │ sizes chat#5 heads chat#5  88:0-48 167:0-48
   ─ sizes slot#4 heads slot#4  46:0-1,9-87
 
-## 54x20 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  33:0-18
+## 54x20 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  34:0-18
 
-## 54x34 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  33:0-32
+## 54x34 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  34:0-32
 
-## 54x50 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  33:0-48
+## 54x50 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  34:0-48
 
-## 80x20 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  12:0-18
+## 80x20 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  24:0-18
   │ sizes chat#5 heads chat#5  44:0-18
 
-## 80x34 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  12:0-32
+## 80x34 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  24:0-32
   │ sizes chat#5 heads chat#5  44:0-32
 
-## 80x50 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  12:0-48
+## 80x50 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  24:0-48
   │ sizes chat#5 heads chat#5  44:0-48
 
-## 100x20 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  20:0-18
+## 100x20 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  40:0-18
   │ sizes chat#5 heads chat#5  60:0-18
 
-## 100x34 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  20:0-32
+## 100x34 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  40:0-32
   │ sizes chat#5 heads chat#5  60:0-32
 
-## 100x50 · stack right: side panel, code, task, chat
-  │ sizes slot#4 heads slot#4  20:0-48
+## 100x50 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  40:0-48
   │ sizes chat#5 heads chat#5  60:0-48
 
-## 120x20 · stack right: side panel, code, task, chat
-  │ sizes side#2 heads side#2  31:0-18
-  │ sizes slot#4 heads slot#4  49:0-18
-  │ sizes chat#5 heads chat#5  84:0-18
+## 120x20 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  48:0-18
+  │ sizes chat#5 heads chat#5  72:0-18
 
-## 120x34 · stack right: side panel, code, task, chat
+## 120x34 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  48:0-32
+  │ sizes chat#5 heads chat#5  72:0-32
+
+## 120x50 · stack right: side panel, code, terminal, chat
+  │ sizes slot#4 heads slot#4  48:0-48
+  │ sizes chat#5 heads chat#5  72:0-48
+
+## 160x20 · stack right: side panel, code, terminal, chat
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes slot#4 heads slot#4  80:0-18
+  │ sizes chat#5 heads chat#5  112:0-18
+
+## 160x34 · stack right: side panel, code, terminal, chat
   │ sizes side#2 heads side#2  31:0-32
-  │ sizes slot#4 heads slot#4  49:0-32
-  │ sizes chat#5 heads chat#5  84:0-32
+  │ sizes slot#4 heads slot#4  80:0-32
+  │ sizes chat#5 heads chat#5  112:0-32
 
-## 120x50 · stack right: side panel, code, task, chat
+## 160x50 · stack right: side panel, code, terminal, chat
   │ sizes side#2 heads side#2  31:0-48
-  │ sizes slot#4 heads slot#4  49:0-48
-  │ sizes chat#5 heads chat#5  84:0-48
+  │ sizes slot#4 heads slot#4  80:0-48
+  │ sizes chat#5 heads chat#5  112:0-48
 
-## 160x20 · stack right: side panel, code, task, chat
+## 200x20 · stack right: side panel, code, terminal, chat
   │ sizes side#2 heads side#2  31:0-18
-  │ sizes slot#4 heads slot#4  45:0-18
-  │ sizes chat#5 heads chat#5  96:0-18
-
-## 160x34 · stack right: side panel, code, task, chat
-  │ sizes side#2 heads side#2  31:0-32
-  │ sizes slot#4 heads slot#4  45:0-32
-  │ sizes chat#5 heads chat#5  96:0-32
-
-## 160x50 · stack right: side panel, code, task, chat
-  │ sizes side#2 heads side#2  31:0-48
-  │ sizes slot#4 heads slot#4  45:0-48
-  │ sizes chat#5 heads chat#5  96:0-48
-
-## 200x20 · stack right: side panel, code, task, chat
-  │ sizes side#2 heads side#2  31:0-18
-  │ sizes slot#4 heads slot#4  53:0-18
+  │ sizes slot#4 heads slot#4  85:0-18
   │ sizes chat#5 heads chat#5  120:0-18
 
-## 200x34 · stack right: side panel, code, task, chat
+## 200x34 · stack right: side panel, code, terminal, chat
   │ sizes side#2 heads side#2  31:0-32
-  │ sizes slot#4 heads slot#4  53:0-32
+  │ sizes slot#4 heads slot#4  85:0-32
   │ sizes chat#5 heads chat#5  120:0-32
 
-## 200x50 · stack right: side panel, code, task, chat
+## 200x50 · stack right: side panel, code, terminal, chat
   │ sizes side#2 heads side#2  31:0-48
-  │ sizes slot#4 heads slot#4  53:0-48
+  │ sizes slot#4 heads slot#4  85:0-48
   │ sizes chat#5 heads chat#5  120:0-48
+
+## 54x20 · slot split over and under: code over a task, beside the code
+  │ sizes slot#4 heads code#12  34:1-15
+  ─ sizes slot#4 heads slot#4  16:34-36,41-43,51-53
+  │ sizes slot#4 heads slot#4  34:17-18
+
+## 54x34 · slot split over and under: code over a task, beside the code
+  │ sizes slot#4 heads code#12  34:1-29
+  ─ sizes slot#4 heads slot#4  30:34-36,41-43,51-53
+  │ sizes slot#4 heads slot#4  34:31-32
+
+## 54x50 · slot split over and under: code over a task, beside the code
+  │ sizes slot#4 heads code#12  34:1-45
+  ─ sizes slot#4 heads slot#4  46:34-36,41-43,51-53
+  │ sizes slot#4 heads slot#4  34:47-48
+
+## 80x20 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  44:0-18
+  │ sizes slot#4 heads code#12  24:1-15
+  ─ sizes slot#4 heads slot#4  16:24-26,31-33,41-43
+  │ sizes slot#4 heads slot#4  24:17-18
+
+## 80x34 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  44:0-32
+  │ sizes slot#4 heads code#12  24:1-29
+  ─ sizes slot#4 heads slot#4  30:24-26,31-33,41-43
+  │ sizes slot#4 heads slot#4  24:31-32
+
+## 80x50 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  44:0-48
+  │ sizes slot#4 heads code#12  24:1-45
+  ─ sizes slot#4 heads slot#4  46:24-26,31-33,41-43
+  │ sizes slot#4 heads slot#4  24:47-48
+
+## 100x20 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  60:0-18
+  │ sizes slot#4 heads code#12  40:1-15
+  ─ sizes slot#4 heads slot#4  16:40-42,47-49,57-59
+  │ sizes slot#4 heads slot#4  40:17-18
+
+## 100x34 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  60:0-32
+  │ sizes slot#4 heads code#12  40:1-29
+  ─ sizes slot#4 heads slot#4  30:40-42,47-49,57-59
+  │ sizes slot#4 heads slot#4  40:31-32
+
+## 100x50 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  60:0-48
+  │ sizes slot#4 heads code#12  40:1-45
+  ─ sizes slot#4 heads slot#4  46:40-42,47-49,57-59
+  │ sizes slot#4 heads slot#4  40:47-48
+
+## 120x20 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  72:0-18
+  │ sizes slot#4 heads code#12  48:1-15
+  ─ sizes slot#4 heads slot#4  16:48-50,59-61,69-71
+  │ sizes slot#4 heads slot#4  48:17-18
+
+## 120x34 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  72:0-32
+  │ sizes slot#4 heads code#12  48:1-29
+  ─ sizes slot#4 heads slot#4  30:48-50,59-61,69-71
+  │ sizes slot#4 heads slot#4  48:31-32
+
+## 120x50 · slot split over and under: code over a task, beside the code
+  │ sizes chat#5 heads chat#5  72:0-48
+  │ sizes slot#4 heads code#12  48:1-45
+  ─ sizes slot#4 heads slot#4  46:48-50,59-61,69-71
+  │ sizes slot#4 heads slot#4  48:47-48
+
+## 160x20 · slot split over and under: code over a task, beside the code
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  112:0-18
+  │ sizes slot#4 heads code#12  80:1-15
+  ─ sizes slot#4 heads slot#4  16:80-82,91-93,101-111
+  │ sizes slot#4 heads slot#4  80:17-18
+
+## 160x34 · slot split over and under: code over a task, beside the code
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  112:0-32
+  │ sizes slot#4 heads code#12  80:1-29
+  ─ sizes slot#4 heads slot#4  30:80-82,91-93,101-111
+  │ sizes slot#4 heads slot#4  80:31-32
+
+## 160x50 · slot split over and under: code over a task, beside the code
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  112:0-48
+  │ sizes slot#4 heads code#12  80:1-45
+  ─ sizes slot#4 heads slot#4  46:80-82,91-93,101-111
+  │ sizes slot#4 heads slot#4  80:47-48
+
+## 200x20 · slot split over and under: code over a task, beside the code
+  │ sizes side#2 heads side#2  31:0-18
+  │ sizes chat#5 heads chat#5  120:0-18
+  │ sizes slot#4 heads code#12  85:1-15
+  ─ sizes slot#4 heads slot#4  16:85-87,96-98,106-119
+  │ sizes slot#4 heads slot#4  85:17-18
+
+## 200x34 · slot split over and under: code over a task, beside the code
+  │ sizes side#2 heads side#2  31:0-32
+  │ sizes chat#5 heads chat#5  120:0-32
+  │ sizes slot#4 heads code#12  85:1-29
+  ─ sizes slot#4 heads slot#4  30:85-87,96-98,106-119
+  │ sizes slot#4 heads slot#4  85:31-32
+
+## 200x50 · slot split over and under: code over a task, beside the code
+  │ sizes side#2 heads side#2  31:0-48
+  │ sizes chat#5 heads chat#5  120:0-48
+  │ sizes slot#4 heads code#12  85:1-45
+  ─ sizes slot#4 heads slot#4  46:85-87,96-98,106-119
+  │ sizes slot#4 heads slot#4  85:47-48
 
 ## 54x20 · two code panes either side of the chat
   │ sizes code#1 heads code#9  27:1-15
