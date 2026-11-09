@@ -99,6 +99,14 @@ pub struct Session {
     /// The user's `y`s on read cards: the call each was for and the host its pages may reach — tarae's side, never
     /// in Claude's arguments; gone as that read lands or the turn ends.
     pub web_once: Vec<(crate::tools::Call, (String, u16))>,
+    /// Claude's web searches under way: each one's helper (`web::search`) — the turn's end stops those whose list
+    /// hasn't come.
+    pub searches: Vec<crate::web::search::Search>,
+    /// Searches past `web::search::RUNNING_MAX`, waiting their turn in the order asked (each helper is its own
+    /// `claude -p`).
+    pub searches_queued: std::collections::VecDeque<crate::web::search::Ask>,
+    /// `s` on a web search's card: its Claude searches unasked until you quit — the searches' answer alone.
+    pub searches_ok: bool,
     /// What its Claude may do past the defaults by the user's `s` on a card (this session — every grant but a
     /// host's, `hosts`), kept with its workspace in `$state/sessions` until it ends or `:sandbox-disallow` takes it
     /// back — but a masked variable and a name for a secret, never written: until you quit (`Grant::written`).
@@ -178,6 +186,9 @@ impl Session {
             web_hosts: Vec::new(),
             web_reads: Vec::new(),
             web_once: Vec::new(),
+            searches: Vec::new(),
+            searches_queued: Default::default(),
+            searches_ok: false,
             allowed: Default::default(),
             parent: None,
             starting: Vec::new(),

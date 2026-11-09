@@ -375,8 +375,8 @@ fn every_tool_claude_has_is_counted_by_name() {
     let list = crate::tools::mcp(&mut ed, 0, "r1", &msg).expect("answered");
     let tools = list["result"]["tools"].as_array().expect("a list");
     assert!(tools.len() > 10, "{list}");
-    // (and a parent's chat's — its list with the session tools: `orchestra.rs`)
-    let parents = crate::tools::list(true, true);
+    // (and a parent's chat's — its list with the session tools: `orchestra.rs` — and `web_search`, `llm.web-search`'s)
+    let parents = crate::tools::list(true, true, true);
     for t in tools.iter().chain(parents["tools"].as_array().expect("a list")) {
         let name = t["name"].as_str().unwrap();
         assert_eq!(claude_tool(&format!("mcp__tarae__{name}")), name, "{name} isn't in CLAUDE_TOOLS");

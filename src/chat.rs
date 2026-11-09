@@ -115,11 +115,13 @@ const TOOLS: &str = "";
 /// named like a key before Claude was let read it — `reads::Keys`; `ui` the screen's structure at Claude's level
 /// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `sessions_start` asks on its
 /// own card, `session_send` and `sessions` reach only the chat's own children, and only a parent's chat lists them —
-/// `orchestra.rs`)
+/// `orchestra.rs`; `web_search` asks on its own card, a chat's first — `web/search.rs` — and is listed only with
+/// `llm.web-search` on)
 const ALLOWED: &str = "mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
 mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
-mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act";
+mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act,\
+mcp__tarae__web_search";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
@@ -686,6 +688,9 @@ pub struct Chat {
     /// and those the user said no to (`n`: refused with no card) — reads' answers, never a run's (`web::tool`).
     pub web_hosts: Vec<(String, u16)>,
     pub web_refused: Vec<(String, u16)>,
+    /// The answer on this conversation's web search card (`web::search`): Some(true) its searches go unasked, Some(false)
+    /// refused with no card — None: the next asks.
+    pub searches: Option<bool>,
     /// The user said yes to the terminals on an `also` card this turn: asked again, they take none of its
     /// `ALSO_MAX` (frictions29 23: each e2e or scenes run asked, and the turn ran out of cards).
     pub also_yes: bool,
@@ -728,6 +733,9 @@ pub struct Chat {
     /// Whether its process has the compound answers (`llm.compound` as it was spawned): fixed for its life, as
     /// `session_tools` — its tools' schemas (`tools::list`) and what a failed run's report adds (`tools::pointed`).
     pub compound: bool,
+    /// Whether its process lists `web_search` (`llm.web-search` as it was spawned): fixed for its life, as
+    /// `session_tools`.
+    pub web_search: bool,
     /// The line that says who a parent's message is from went in this conversation (`orchestra::FRAMING`): once.
     pub framed: bool,
     /// The turn under way is a wake (`orchestra::wake`): the children it was woken for, and how many turns its usage had
@@ -1153,6 +1161,7 @@ impl Chat {
         self.hosts_next.clear();
         self.web_hosts.clear();
         self.web_refused.clear();
+        self.searches = None;
         self.framed = false;
         self.said_at = None;
     }
@@ -1197,6 +1206,7 @@ impl Chat {
             also_asked: 0,
             web_hosts: Vec::new(),
             web_refused: Vec::new(),
+            searches: None,
             also_yes: false,
             run_scripts: Vec::new(),
             queued: None,
@@ -1222,6 +1232,7 @@ impl Chat {
             sends: Vec::new(),
             session_tools: false,
             compound: false,
+            web_search: false,
             framed: false,
             waking: None,
             queued_laid: RefCell::new(None),
@@ -2475,6 +2486,7 @@ fn ensure_proc(ed: &mut Editor) {
     let tx = ed.events.sender();
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
+    let web_search = ed.config.llm.web_search;
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
@@ -2562,7 +2574,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.generation = crate::tools::generation();
     let generation = c.generation;
     c.proc = Some(Proc { stdin, pid: child.id() });
-    (c.session_tools, c.compound) = (parent, compound);
+    (c.session_tools, c.compound, c.web_search) = (parent, compound, web_search);
     llm::pump(child, false, tx, move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
@@ -2762,6 +2774,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         }
         StreamEv::Answered(model) => c.model = model,
         StreamEv::Compaction(e) => crate::compaction::on_event(ed, e),
+        // (the web search's helper's alone: the chat has no WebSearch)
+        StreamEv::Searched(_) => {}
         StreamEv::Limits(report) => {
             // (its own claude's `rate_limit_event`: sent to plan users only — `limits::on_plan`)
             if report.readings.iter().any(|r| r.from == crate::limits::Source::Event) {
@@ -4501,6 +4515,15 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             let place = if input["glob"].is_string() { s("glob") } else { s("path") };
             Look { verb: "search", what: s("pattern"), pattern: true, range: within(place), link: None }
         }
+        // (its words, where: the web or the sites it names — its stop shows the list it got: `web::search::landed`)
+        "mcp__tarae__web_search" => {
+            let what = s("query").split_whitespace().collect::<Vec<_>>().join(" ");
+            let range = match s("sites").split_whitespace().collect::<Vec<_>>() {
+                sites if sites.is_empty() => "the web".to_string(),
+                sites => format!("on {}", sites.join(" ")),
+            };
+            Look { verb: "web", what, pattern: true, range, link: None }
+        }
         // (its first file, where its first range starts; the rest counted)
         "mcp__tarae__read" => {
             let files: Vec<&str> = input["files"]
@@ -4693,6 +4716,7 @@ const WORDS: &[(&str, &str, &str)] = &[
     ("search", "search", "searching"),
     ("grep", "search", "searching"),
     ("glob", "search", "searching"),
+    ("web", "search", "searching"),
     ("references", "look up", "looking up"),
     ("definition", "look up", "looking up"),
     ("symbols", "look up", "looking up"),
@@ -7849,6 +7873,19 @@ mod tests {
         assert!(!read.contains("Before an Edit") && !read.contains("own read"), "{read}");
         assert_eq!(TOOLS, "", "no tool of Claude Code's");
         assert!(ALLOWED.split(',').any(|t| t == "mcp__tarae__edit"));
+    }
+
+    /// Every tool tarae lists is allowed up front: a real claude asks `can_use_tool` for one that isn't, and
+    /// `edits::request` refuses it — the stand-ins answer below claude's permission layer and never see it (the
+    /// review of web search step 2: `web_search` missed it). Each gates itself (`ALLOWED`'s doc).
+    #[test]
+    fn every_listed_tool_is_allowed() {
+        let listed = crate::tools::list(true, true, true);
+        let allowed: Vec<&str> = ALLOWED.split(',').collect();
+        for t in listed["tools"].as_array().unwrap() {
+            let name = format!("mcp__tarae__{}", t["name"].as_str().unwrap());
+            assert!(allowed.contains(&name.as_str()), "{name} isn't in chat::ALLOWED");
+        }
     }
 
     /// The system prompt sends "where is X defined" to the language server by name (never a grep for `fn X`

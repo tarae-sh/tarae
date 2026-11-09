@@ -93,6 +93,21 @@ the copy it read, at the lines it read, its line saying `the copy Claude read 2m
 said. This is the one place follow goes outside the project — a page fetched through the gate you answered, opening no
 file and running nothing.
 
+## Claude searches the web
+
+With `llm.web-search = true` in your own config (off by default; a project's file never sets it), a chat started
+after it has a `web_search` tool. Claude gives it words (and, if it likes, sites: `docs.rs github.com`); tarae starts a
+small `claude -p` beside the chat on `llm.web-search-model` (`haiku`), told only those words, in an empty folder of its
+own, with Claude Code's WebSearch its one tool. What comes back to the chat is a list, not a summary: up to ten pages,
+title and address, framed as someone else's words (no dates: the search engine gives none). Claude reads a page of it
+with `read`, whose host card is as it was.
+
+A chat's first search asks on a card that shows its words, since they leave the machine for Anthropic's search engine:
+`y` this chat · `s` this session · `n` no, for the chat. After an answer that chat's searches ask nothing. A query that
+looks like it holds a key is refused before anything starts. What a search cost is an entry of its own in `:usage`
+(`web-search`), billed as the chat is, never part of a chat turn's cost. Each search is a replay stop: follow and `]r`
+show the list Claude got, as a page whose links `gd` follows. The turn's end stops a search still under way.
+
 ## Limits
 
 Read on a worker by memory-safe code, within limits — 8 MB of page, 512 levels of nesting, 2 MB of text, each said

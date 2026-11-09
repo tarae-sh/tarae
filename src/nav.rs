@@ -3296,7 +3296,7 @@ mod tests {
         let tool = |list: &Value, name: &str| -> Value {
             list["tools"].as_array().unwrap().iter().find(|t| t["name"] == name).unwrap().clone()
         };
-        let (off, on) = (crate::tools::list(false, false), crate::tools::list(false, true));
+        let (off, on) = (crate::tools::list(false, false, false), crate::tools::list(false, true, false));
         assert!(tool(&off, "search")["inputSchema"]["properties"]["show"].is_null());
         assert!(!tool(&off, "search")["description"].as_str().unwrap().contains("show"));
         assert_eq!(tool(&off, "search"), crate::tools::annotated(search_schema()));

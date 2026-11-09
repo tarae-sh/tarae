@@ -209,6 +209,9 @@ pub enum What {
     /// Claude's `read` of a page at a host not let through (`web::tool`, P4): `y` this read, `a` this chat, `s`
     /// this session (reads only — never a run), `n` no, for the chat.
     WebRead(Box<crate::web::tool::Ask>),
+    /// A chat's first web search (`web::search`), its words shown: `y` this chat, `s` this session (searches only —
+    /// never a run), `n` no, for the chat.
+    WebSearch(Box<crate::web::search::Ask>),
     /// `:preflight`'s first run in a project with the packs' default steps (`preflight.rs`): `y` runs those
     /// of `set`.
     Preflight { root: PathBuf, steps: Vec<crate::preflight::Step>, set: crate::preflight::Set },
@@ -342,6 +345,7 @@ pub const KINDS: &[&str] = &[
     "repo-trust",
     "code-trust",
     "web-read",
+    "web-search",
     "preflight",
     "branch-delete",
     "force-push",
@@ -493,6 +497,7 @@ impl What {
             | What::Read { .. }
             // (Claude's call ends with the turn)
             | What::WebRead(_)
+            | What::WebSearch(_)
             | What::ChangeSet { .. }
             | What::NotesClose { .. }
             // (its runs end with the restart)
@@ -587,6 +592,7 @@ impl Offer {
             #[cfg(test)]
             What::Asks { call } => Some(Asker::Tool(call.clone())),
             What::WebRead(a) => Some(Asker::Tool(a.call.clone())),
+            What::WebSearch(a) => Some(Asker::Tool(a.call.clone())),
             What::SessionSet(s) => Some(Asker::Tool(s.call.clone())),
             // (one `also` raised: Claude's call waits on it — `tools::also_ask`)
             What::Grant { run, .. } if run.claude.is_some() => run.claude.clone().map(Asker::Tool),
@@ -806,8 +812,9 @@ impl Offer {
                 | What::Recover(_)
                 | What::RecoverChats(_)
                 | What::Host(_)
-                // (what Claude read can go there in the address it asks for)
+                // (what Claude read can go there in the address it asks for — or out in the words it searches for)
                 | What::WebRead(_)
+                | What::WebSearch(_)
                 | What::Containers(_)
                 // (its yes spends your credits)
                 | What::BillingSwitch { .. }
@@ -868,7 +875,7 @@ impl Offer {
     /// long (`top`).
     pub fn for_workspace(&self) -> bool {
         self.host().is_some()
-            || matches!(self.what, What::WebRead(_))
+            || matches!(self.what, What::WebRead(_) | What::WebSearch(_))
             || self.top() >= Some(crate::allow::Scope::Session)
             || matches!(self.what, What::NoSandbox { .. })
     }
@@ -1535,6 +1542,8 @@ impl Offer {
                     plain('n', "No"),
                 ]
             }
+            // (the first search's yes is the chat's — none asks after it: the user's choice, 2026-11-09)
+            W::WebSearch(_) => vec![lasts('y', "This chat"), lasts('s', "This session"), plain('n', "No")],
             W::ReviewEnd { .. } => vec![plain('y', "End it"), plain('n', "Keep reviewing")],
             // (one bring card: `y` rebases, runs the preflight and brings — polish landing 4)
             W::Rebase(_) => vec![plain('y', "Bring"), plain('n', "Not now")],
@@ -1690,6 +1699,7 @@ impl Offer {
             #[cfg(test)]
             W::Asks { .. } => ASKS,
             W::WebRead(_) => "web-read",
+            W::WebSearch(_) => "web-search",
             W::Preflight { .. } => "preflight",
             W::BranchDelete { .. } => "branch-delete",
             W::ForcePush(_) => "force-push",
@@ -2184,6 +2194,9 @@ impl crate::editor::Editor {
                 crate::tools::answer(self, call, Ok("yes".into()));
             }
             What::WebRead(a) => crate::web::tool::answer(self, id, *a, Some(crate::allow::Scope::Once)),
+            What::WebSearch(a) => {
+                crate::web::search::answer(self, id, *a, Some(crate::allow::Scope::ThisChat))
+            }
             What::Preflight { root, steps, set } => self.preflight_answer(id, root, (steps, set), true),
             What::BranchDelete { top, branch, tip } => self.git_branch_delete_answer(id, top, branch, tip),
             What::ForcePush(f) => self.git_force_push(id, *f),
@@ -2333,6 +2346,7 @@ impl crate::editor::Editor {
         match o.what {
             What::Host(a) => crate::hosts::answer(self, o.id, *a, crate::sandbox::proxy::Scope::Session),
             What::WebRead(a) => crate::web::tool::answer(self, o.id, *a, session),
+            What::WebSearch(a) => crate::web::search::answer(self, o.id, *a, session),
             What::Grant { grant, run, .. } => crate::blocked::grant_answer(self, o.id, grant, *run, session),
             What::Read { pending, keep, folder } => {
                 crate::reads::answer(self, o.id, *pending, session, keep, folder)
@@ -2960,6 +2974,7 @@ impl crate::editor::Editor {
                 crate::tools::answer(self, call, Err("the user said no".into()));
             }
             What::WebRead(a) => crate::web::tool::answer(self, o.id, *a, None),
+            What::WebSearch(a) => crate::web::search::answer(self, o.id, *a, None),
             What::Preflight { root, steps, set } => self.preflight_answer(o.id, root, (steps, set), false),
             What::BranchDelete { branch, .. } => self.set_status(format!("Kept {branch}")),
             What::ForcePush(f) => self.set_status(format!("Not pushed — {} as it was", f.upstream())),

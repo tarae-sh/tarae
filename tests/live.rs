@@ -2309,6 +2309,11 @@ fn requests_so_far(stream: &Path) -> usize {
 /// need none) and counted. The stream's result ends the turn — once the chat says so too, or 15 s after (under
 /// review at the end the turn's review takes the screen, and the chat its focus).
 fn ab_turn(t: &mut Term, ask: &str, stream: &Path) -> (usize, bool) {
+    ab_turn_yes(t, ask, stream, &[])
+}
+
+/// `ab_turn`, a card of the `yes` kinds answered `y` (the web search A/B's: its search card), the rest `n`.
+fn ab_turn_yes(t: &mut Term, ask: &str, stream: &Path, yes: &[&str]) -> (usize, bool) {
     chat_focus(t);
     t.send(&format!("{ask}\r"));
     let _ = t.poll_for(Duration::from_secs(15), |s| s.contains("C-c stop"));
@@ -2337,12 +2342,13 @@ fn ab_turn(t: &mut Term, ask: &str, stream: &Path) -> (usize, bool) {
             .as_array()
             .into_iter()
             .flatten()
-            .any(|c| c["state"] == "asking" && c["up"] == "front");
-        if asking {
+            .find(|c| c["state"] == "asking" && c["up"] == "front")
+            .map(|c| c["kind"].as_str().unwrap_or_default().to_string());
+        if let Some(kind) = asking {
             tries += 1;
             // (the card has the keys — lent by the chat — or `C-q` hands them to it first)
             if st["keys"]["region"].as_str().is_some_and(|r| r.contains("card")) {
-                t.send("n");
+                t.send(if yes.contains(&kind.as_str()) { "y" } else { "n" });
                 cards += 1;
             } else {
                 t.send("\x11");
@@ -5048,6 +5054,368 @@ fn arm_webfetch(sb: &Sandbox, stream: &Path) {
         stream.display()
     );
     std::fs::write(&script, body).unwrap();
+}
+
+/// The web search A/B's question (`chat_search_ab`): its key read on its host on `checked` — "" not yet: the run refuses
+/// it until the driver reads it there — and whether it needs the web at all.
+struct Dated {
+    q: Question,
+    checked: &'static str,
+    source: &'static str,
+    web: bool,
+}
+
+/// The tree the web search A/B runs in: this repository at step 1's commit (the no-web keys were read there).
+const SEARCH_CORPUS: &str = "76965fa6";
+
+/// The web search A/B's questions (the web checkout's `.sb/web-search-step1.md` §4, three of its six Rust ones swapped
+/// for Python, Go and ruff): ten whose answers are past the model's cutoff, none naming an address, across ecosystems
+/// and hosts; three that need no web (`QUESTIONS`' asks, their keys as the code at `SEARCH_CORPUS` has them) — does
+/// the tool's presence start a needless search? Every key is read again on its host before each run.
+const SEARCH_QUESTIONS: [Dated; 13] = [
+    Dated {
+        q: Question {
+            name: "rust-1-99-profile",
+            ask: "Which new built-in Cargo profile came with Rust 1.99, and when was 1.99 released?",
+            key: &[&["debug"], &["2026-10-01", "October 1"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/rust-lang/rust releases: 1.99.0, 2026-10-01",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "vec-from-parts",
+            ask: "On stable Rust, can I rebuild a Vec from a NonNull pointer, length and capacity now? Which \
+                  function, since which version?",
+            key: &[&["from_parts"], &["1.99"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/rust-lang/rust releases: 1.99.0, Stabilized APIs",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "cargo-warnings",
+            ask: "Is there a stable Cargo config now to fail on warnings without RUSTFLAGS=-Dwarnings? Its key and \
+                  the Rust version that stabilized it?",
+            key: &[&["build.warnings"], &["1.97"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/rust-lang/rust releases: 1.97.0 Cargo, 2026-07-09",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "tokio-set-times",
+            ask: "Which tokio release added File::set_times, and what MSRV does that release need?",
+            key: &[&["1.54"], &["1.85"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/tokio-rs/tokio releases: tokio-1.54.0, 2026-10-19",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "ts-latest",
+            ask: "What's the latest stable TypeScript, and is 7.1 out yet?",
+            // (drifts: 7.1's final, or a 7.0.3, changes it — read again before each run)
+            key: &[&["7.0.2"], &["beta"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/microsoft/TypeScript releases: 7.0.2 2026-08-20, 7.1 Beta 2026-10-20",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "node-26-lts",
+            ask: "Has Node.js 26 entered LTS? Its codename, and until when is it supported?",
+            key: &[&["Lithium"], &["2029"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/nodejs/node releases: 26.13.0, 2026-10-28",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "node-27-v8",
+            ask: "Which V8 version does the first Node.js 27 alpha ship?",
+            key: &[&["15.6"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/nodejs/node releases: 27.0.0-alpha.0, 2026-10-29",
+        web: true,
+    },
+    // (the three swapped in: each a new host, its key read there before the pilot — none written from memory)
+    Dated {
+        q: Question {
+            name: "python-3-15",
+            ask: "Is Python 3.15 out as a final release? When did 3.15.0 come out, and what's its newest point \
+                  release?",
+            // (drifts: a 3.15.3 changes it)
+            key: &[&["2026-10-09", "October 9", "Oct. 9"], &["3.15.2"]],
+        },
+        checked: "2026-11-09",
+        source: "python.org/downloads: 3.15.0 2026-10-09, 3.15.2 2026-10-25",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "go-1-27",
+            ask: "Which Go release is the newest now, and when did Go 1.27 come out?",
+            // (drifts: a 1.27.4 changes it)
+            key: &[&["1.27.3"], &["2026-08-19", "August 19"]],
+        },
+        checked: "2026-11-09",
+        source: "go.dev/doc/devel/release: go1.27.0 2026-08-19, go1.27.3 2026-10-19",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "ruff-latest",
+            ask: "What's ruff's newest release, and the newest Python version its target-version setting takes?",
+            // (drifts: a 0.17.5 changes it)
+            key: &[&["0.17.4"], &["py315", "3.15"]],
+        },
+        checked: "2026-11-09",
+        source: "github.com/astral-sh/ruff releases: 0.17.4 2026-11-05; 0.17.0 (2026-10-09) made 3.15 the latest Python",
+        web: true,
+    },
+    Dated {
+        q: Question {
+            name: "setsid",
+            ask: QUESTIONS[0].ask,
+            key: &[
+                &["ended.rs"],
+                &["macos_measure"],
+                &["stall.rs", "stack_here"],
+                &["page.rs", "opened_by"],
+                &["Original", "started with"],
+            ],
+        },
+        checked: "2026-11-09",
+        source: "the code at 76965fa6 (setsid_as is gone)",
+        web: false,
+    },
+    Dated {
+        q: Question {
+            name: "card-front",
+            ask: QUESTIONS[1].ask,
+            key: &[&["push_offer"], &["offer_place"], &["rank"], &["card_key", "C-q"]],
+        },
+        checked: "2026-11-09",
+        source: "the code at 76965fa6 (chat_lent is gone)",
+        web: false,
+    },
+    Dated {
+        q: Question { name: "awk-tests", ask: QUESTIONS[2].ask, key: QUESTIONS[2].key },
+        checked: "2026-11-09",
+        source: "the code at 76965fa6",
+        web: false,
+    },
+];
+
+/// The web search A/B's arms, rotated run to run: `0` today (no search), `1` search — a list, `2` a list and the
+/// search's own model's words (`TARAE_WEB_SEARCH_SUMMARY=1`), `R` Claude Code's own WebSearch and WebFetch in the chat.
+const SEARCH_ARMS: [&str; 4] = ["0", "1", "2", "R"];
+
+/// The web search A/B's tee script: the chat's stream to `stream`, the search's helper's (its `--tools WebSearch`) to
+/// `helper`; for arm R the chat armed with Claude Code's WebSearch and WebFetch (`--tools` and `--allowedTools`, as
+/// `arm_webfetch` arms WebFetch).
+fn search_teed(sb: &Sandbox, llm: &str, arm: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (stream, helper) = (sb.outside("stream.jsonl"), sb.outside("helper.jsonl"));
+    let script = sb.outside("claude-tee.sh");
+    let rewrite = match arm {
+        "R" => "    --tools) a=WebSearch,WebFetch ;;\n    --allowedTools) a=\"$a,WebSearch,WebFetch\" ;;\n",
+        _ => "",
+    };
+    let body = format!(
+        "#!/bin/sh\np=\nfor a in \"$@\"; do\n  [ \"$p\" = --tools ] && [ \"$a\" = WebSearch ] && helper=1\n  p=$a\ndone\n\
+         if [ -n \"$helper\" ]; then\n  claude \"$@\" | tee -a '{}'\n  exit\nfi\n\
+         p=\nfor a in \"$@\"; do\n  shift\n  o=$a\n  case \"$p\" in\n{rewrite}  esac\n  set -- \"$@\" \"$a\"\n  p=$o\ndone\n\
+         claude \"$@\" | tee -a '{}'\n",
+        helper.display(),
+        stream.display()
+    );
+    std::fs::write(&script, body).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let billing = live_billing().map(|b| format!("billing = \"{b}\"\n")).unwrap_or_default();
+    sb.write_config(&format!(
+        "{LIVE_CONFIG}lsp = false\n[llm]\ncommand = \"{}\"\n{billing}{llm}",
+        script.display()
+    ));
+    (stream, helper)
+}
+
+/// What a run's helpers did, from their stream: how many ended with a result, and their `total_cost_usd` summed (each
+/// helper its own process: its result's total is its cost).
+fn helpers_spent(helper: &str) -> (usize, f64) {
+    let results: Vec<serde_json::Value> = (helper.lines())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "result")
+        .collect();
+    (results.len(), results.iter().filter_map(|r| r["total_cost_usd"].as_f64()).sum())
+}
+
+/// The chat's searches (tarae's `web_search`, or Claude Code's WebSearch) and its reads of pages (tarae's `read` of a
+/// URL, or WebFetch), from its stream.
+fn searches_and_reads(stream: &str) -> (usize, usize) {
+    let calls: Vec<serde_json::Value> = (stream.lines())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "assistant")
+        .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+        .filter(|c| c["type"] == "tool_use")
+        .collect();
+    let name = |c: &serde_json::Value| c["name"].as_str().unwrap_or_default().to_string();
+    let searches =
+        calls.iter().filter(|c| matches!(name(c).as_str(), "mcp__tarae__web_search" | "WebSearch")).count();
+    let page = |c: &serde_json::Value| match name(c).as_str() {
+        "WebFetch" => true,
+        "mcp__tarae__read" => (c["input"]["files"].as_array().into_iter().flatten())
+            .any(|f| f.as_str().is_some_and(|f| f.trim_start().starts_with("http"))),
+        _ => false,
+    };
+    (searches, calls.iter().filter(|c| page(c)).count())
+}
+
+/// The web search plan's A/B (the web checkout's `.sb/web-search-plan.md`): does a small model's search, its list
+/// framed for the chat, get keys today's chat can't, for less than Claude Code's own WebSearch and WebFetch? Each of
+/// `SEARCH_QUESTIONS` in each of `SEARCH_ARMS`, one turn each in tarae's chat over `SEARCH_CORPUS`, opus pinned: the
+/// network open with no host list in every arm (a page read is never carded) and the search card answered `y`, so the
+/// arms differ only in search. Per run: right (against the key), searches, pages read, the chat's input and output
+/// tokens (every model's), the chat's $, the helpers' $ (their own stream), $ in all, wall time; per arm: right, $ in
+/// all and $ for each right answer, and the no-web questions' $ apart. Arms rotate question to question and run to run.
+///
+/// It spends: a pilot (`TARAE_AB_RUNS=1`, four questions in `TARAE_AB_QUESTIONS`) ~$6; the run (13 × 4 × 2) ~$30 —
+/// so it starts only with `TARAE_AB_GO=1`, the user's go for that spend, and `TARAE_AB_KEYS_CHECKED=<date>`, the day
+/// the driver read every key on its host again (a question whose key was never read there is refused). `TARAE_AB_RUNS`
+/// (2), `TARAE_AB_QUESTIONS`, `TARAE_AB_BUDGET` ($, 40: no run starts past it), `TARAE_AB_MODEL` ("opus"). Rows to
+/// `target/live/search-ab.tsv`, streams to `target/live/search-ab/`. It reaches the network: by hand, outside tarae's
+/// sandbox — `TARAE_AB_GO=1 TARAE_AB_KEYS_CHECKED=2026-11-10 cargo live chat_search_ab --nocapture`.
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude and the network; spends — TARAE_AB_GO=1)"]
+fn chat_search_ab() {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if var("TARAE_AB_GO").as_deref() != Some("1") {
+        skip("spends model tokens (pilot ~$6, run ~$30): TARAE_AB_GO=1 once the user said yes");
+        return;
+    }
+    let Some(checked) = var("TARAE_AB_KEYS_CHECKED") else {
+        skip("TARAE_AB_KEYS_CHECKED=<date>: the day every key was read again on its host (ts-latest drifts)");
+        return;
+    };
+    if !have("claude") {
+        return;
+    }
+    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(2);
+    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(40.0);
+    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
+    let only = var("TARAE_AB_QUESTIONS");
+    let questions: Vec<&Dated> = (SEARCH_QUESTIONS.iter())
+        .filter(|d| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == d.q.name)))
+        .collect();
+    let unread: Vec<&str> =
+        questions.iter().filter(|d| d.q.key.is_empty() || d.checked.is_empty()).map(|d| d.q.name).collect();
+    assert!(
+        unread.is_empty(),
+        "keys never read on their hosts — read them there and write them first: {unread:?}"
+    );
+    for d in &questions {
+        eprintln!("SEARCH_AB key {} — written {}, read again {checked}: {}", d.q.name, d.checked, d.source);
+    }
+    let tsv = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/search-ab.tsv");
+    let kept = tsv.with_file_name("search-ab");
+    std::fs::create_dir_all(&kept).unwrap();
+    struct Row {
+        q: &'static str,
+        web: bool,
+        arm: &'static str,
+        right: f64,
+        total: f64,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    let mut spent = 0.0;
+    'runs: for run in 0..runs {
+        for (i, d) in questions.iter().enumerate() {
+            let turn = (run * questions.len() + i) % SEARCH_ARMS.len();
+            for k in 0..SEARCH_ARMS.len() {
+                let arm = SEARCH_ARMS[(turn + k) % SEARCH_ARMS.len()];
+                if spent > budget {
+                    eprintln!("SEARCH_AB budget: ${spent:.2} spent, past ${budget} — no more runs");
+                    break 'runs;
+                }
+                let mut sb = Sandbox::live(&format!("search-ab-{}-{arm}", d.q.name));
+                assert!(
+                    sb.copy_commit(SEARCH_CORPUS, &TOOLS_CORPUS_PATHS),
+                    "commit {SEARCH_CORPUS} in this clone"
+                );
+                let search = if matches!(arm, "1" | "2") { "web-search = true\n" } else { "" };
+                if arm == "2" {
+                    sb = sb.with_env("TARAE_WEB_SEARCH_SUMMARY", "1");
+                }
+                let llm =
+                    format!("model = \"{model}\"\nsandbox-network = true\nsandbox-hosts = \"*\"\n{search}");
+                let (stream, helper) = search_teed(&sb, &llm, arm);
+                let mut t = sb.spawn(&["README.md"]);
+                let started = Instant::now();
+                let (cards, capped) = ab_turn_yes(&mut t, d.q.ask, &stream, &["web-search"]);
+                let wall_ms = started.elapsed().as_millis() as u64;
+                // (a helper still running at the turn's end: its result is a few ms behind its list)
+                std::thread::sleep(Duration::from_secs(2));
+                let text = std::fs::read_to_string(&stream).unwrap_or_default();
+                let helped = std::fs::read_to_string(&helper).unwrap_or_default();
+                let m = measure(&text, sb.work().to_str().unwrap());
+                let right = web_right(&d.q, &m.answer);
+                let io = models_usage(&text);
+                let (helpers, helper_cost) = helpers_spent(&helped);
+                let (searches, pages) = searches_and_reads(&text);
+                let total = m.cost + helper_cost;
+                spent += total;
+                let said = format!(
+                    "SEARCH_AB {} {arm} run {}: right {right:.2} · searches {searches} (helpers {helpers}) · pages read \
+                     {pages} · input {} · output {} · chat ${:.3} · helpers ${helper_cost:.3} · ${total:.3} · {wall_ms} ms · \
+                     requests {} · cards {cards} · capped {capped}\n  answer: {}",
+                    d.q.name,
+                    run + 1,
+                    io.0,
+                    io.1,
+                    m.cost,
+                    m.requests,
+                    m.answer.replace('\n', " ⏎ "),
+                );
+                eprintln!("{said}");
+                let name = format!("{}-{arm}-{}-{}", d.q.name, run + 1, std::process::id());
+                let _ = std::fs::copy(&stream, kept.join(format!("{name}.jsonl")));
+                let _ = std::fs::copy(&helper, kept.join(format!("{name}.helper.jsonl")));
+                std::fs::write(kept.join(format!("{name}.txt")), &said).unwrap();
+                let row = format!(
+                    "{}\t{arm}\t{}\t{right:.2}\t{searches}\t{helpers}\t{pages}\t{}\t{}\t{:.4}\t{helper_cost:.4}\t{total:.4}\t\
+                     {wall_ms}\t{cards}\t{capped}\t{checked}\n",
+                    d.q.name,
+                    run + 1,
+                    io.0,
+                    io.1,
+                    m.cost,
+                );
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
+                f.write_all(row.as_bytes()).unwrap();
+                rows.push(Row { q: d.q.name, web: d.web, arm, right, total });
+            }
+        }
+    }
+    eprintln!("SEARCH_AB sums — arm: runs · right · $ · $ a right answer · no-web $");
+    for arm in SEARCH_ARMS {
+        let of: Vec<&Row> = rows.iter().filter(|r| r.arm == arm).collect();
+        let right: f64 = of.iter().map(|r| r.right).sum();
+        let cost: f64 = of.iter().map(|r| r.total).sum();
+        let no_web: f64 = of.iter().filter(|r| !r.web).map(|r| r.total).sum();
+        let each = if right > 0.0 { format!("${:.3}", cost / right) } else { "—".into() };
+        eprintln!("SEARCH_AB {arm}: {} · {right:.1} · ${cost:.3} · {each} · ${no_web:.3}", of.len());
+    }
+    let asked: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.q).collect();
+    eprintln!("SEARCH_AB spent ${spent:.2} on {} questions", asked.len());
+    assert!(!rows.is_empty(), "no run");
 }
 
 /// web-plan P0: the exact tokens of a page read each way (§3's columns) — each file of `TARAE_WEB_TOKENS`'s folder

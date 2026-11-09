@@ -48,6 +48,9 @@ pub const RISKY: &[&str] = &[
     "llm.sandbox-env",
     // (a project turning it back on when the user turned it off)
     "llm.screen-terminal",
+    // (what Claude read could leave the machine as a search's words — and on whose model, billed to you)
+    "llm.web-search",
+    "llm.web-search-model",
     // (where a checkout of the project's files is written — a launch agents folder would run them)
     "workspace.worktrees",
     // (a command run outside the sandbox at every session's end)
@@ -100,6 +103,9 @@ pub const YOURS_ONLY: &[&str] = &[
     "plugins.keys",
     // (whom Claude's commands trust: a project's root would let whoever holds its key read their TLS — #419)
     "llm.sandbox-ca",
+    // (whether what Claude read may leave the machine as a web search's words, and the model it bills you for)
+    "llm.web-search",
+    "llm.web-search-model",
     // (where a masked secret's real value goes, and which hosts' TLS tarae reads: a project naming its own host would
     // have your token sent there — a capability, D2)
     "llm.sandbox-secrets",

@@ -119,7 +119,11 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     let result = match method {
         "tools/list" => {
             sandbox_look(ed);
-            Ok(list(crate::orchestra::lists(ed), crate::orchestra::compound(ed)))
+            Ok(list(
+                crate::orchestra::lists(ed),
+                crate::orchestra::compound(ed),
+                crate::web::search::lists(ed),
+            ))
         }
         "tools/call" => {
             // (side by side with another call still unanswered? — `calls.rs`; `sized` sees it answered)
@@ -148,6 +152,13 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     Ok(()) => return None,
                     Err(e) => Err(e),
                 },
+                // (only a chat that lists it — `llm.web-search` as its process started)
+                Some("web_search") if crate::web::search::lists(ed) => {
+                    match crate::web::search::call(ed, call(), args) {
+                        Ok(()) => return None,
+                        Err(e) => Err(e),
+                    }
+                }
                 // (only a chat that lists them — a child's has no such tools; an answer now carries the parent's news,
                 // one later gets it as it's delivered)
                 Some(name @ ("sessions_start" | "session_send" | "sessions" | "session_act"))
@@ -226,8 +237,9 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
 
 /// `tools/list`'s answer — the same to the byte every time (the tools come first in the cache's prefix): a chat
 /// that may start sessions (`orchestra::may_parent`) has the session tools after the rest, a second fixed list;
-/// `compound` (`llm.compound`) adds `search`'s `show` and `run`'s word on `&&` — off, today's list to the byte.
-pub fn list(parent: bool, compound: bool) -> Value {
+/// `compound` (`llm.compound`) adds `search`'s `show` and `run`'s word on `&&`; one with `llm.web-search` on as it
+/// started has `web_search` after those (`web`) — each off, today's list to the byte.
+pub fn list(parent: bool, compound: bool, web: bool) -> Value {
     let mut tools = vec![
         run_tests_schema(),
         run_schema_of(compound),
@@ -251,6 +263,9 @@ pub fn list(parent: bool, compound: bool) -> Value {
             crate::orchestra::sessions_schema(),
             crate::orchestra::act_schema(),
         ]);
+    }
+    if web {
+        tools.push(crate::web::search::schema());
     }
     json!({ "tools": tools.into_iter().map(annotated).collect::<Vec<_>>() })
 }
@@ -277,11 +292,16 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
         "session_send" => ("Message a session", None),
         "session_act" => ("Act on a session", None),
         "sessions" => ("Your sessions", Some("readOnlyHint")),
+        "web_search" => ("Search the web", Some("readOnlyHint")),
         _ => return schema,
     };
     let mut a = json!({ "title": title });
     if let Some(hint) = hint {
         a[hint] = json!(true);
+    }
+    // (beyond the machine: its words go to the search engine)
+    if schema["name"] == "web_search" {
+        a["openWorldHint"] = json!(true);
     }
     schema["annotations"] = a;
     schema
@@ -798,13 +818,14 @@ pub fn turn_over(ed: &mut Editor) -> Vec<Left> {
             || matches!(w, What::ProtectedMade { then, .. } if then.call().is_some())
             // (one `also` raised: Claude's call waited on it)
             || matches!(w, What::Grant { run, .. } if run.claude.is_some())
-            // (a read of a page waited on it)
-            || matches!(w, What::WebRead(_))
+            // (a read of a page or a web search waited on it)
+            || matches!(w, What::WebRead(_) | What::WebSearch(_))
     });
     // (the tests' stand-in goes with its turn, as the screen card did)
     #[cfg(test)]
     ed.drop_cards(|w| matches!(w, crate::offer::What::Asks { .. }));
     crate::web::tool::turn_over(ed);
+    crate::web::search::turn_over(ed);
     crate::refactor::turn_over(ed);
     // (its edits and runs may have changed what the session's reviewer read)
     crate::reviewer::since_sync_shown(ed);

@@ -84,6 +84,7 @@ pub enum Role {
     Chat,
     Reviewer,
     Ask,
+    WebSearch,
 }
 
 impl Role {
@@ -92,6 +93,7 @@ impl Role {
             Role::Chat => "the chat's claude",
             Role::Reviewer => "the reviewer's claude",
             Role::Ask => "the ask's claude",
+            Role::WebSearch => "the web search's claude",
         }
     }
 }

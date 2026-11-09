@@ -897,6 +897,15 @@ Kept:
   makes every change), no Read (tarae's `read` reads images too), no Bash, no WebFetch or WebSearch, no Grep or
   Glob, no Task.
   test: `chat::tests::the_chat_edits_with_tarae_s_edit_alone`
+- **The web search's helper** (`web::search`, only with `llm.web-search` on, your config's alone): a `claude -p` with
+  WebSearch as its one tool and the rest disallowed, no MCP, no settings, no memory, no session kept, one request, in
+  an empty 0700 folder of its own, told only the query. That query leaves the machine for Anthropic's search engine,
+  so it can carry what Claude read: a chat's first search shows it on a card, and a key-shaped one is refused before
+  anything starts. Its answers are the searches' alone, never a run's or the proxy's. The list goes to the chat
+  framed as someone else's words.
+  test: `web::search::tests::its_args_are_websearch_alone_on_the_settings_model` ·
+  `web::search::tests::the_first_search_asks_and_its_answer_holds_for_the_chat` ·
+  `web::search::tests::a_key_shaped_query_is_refused_before_anything_starts`
 - **Only tarae's MCP server** (`--strict-mcp-config`: a project's `.mcp.json` doesn't connect); `Skill` denied;
   hooks off (`disableAllHooks`).
   test: `claudetrust::tests::the_chat_asks_for_only_tarae_s_own_mcp_servers` ·

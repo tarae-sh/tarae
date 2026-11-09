@@ -16,14 +16,14 @@ use crate::reviewer::{Reviewer, State};
 #[test]
 fn a_childs_chat_lists_no_session_tool() {
     let names = |parent| -> Vec<String> {
-        let l = crate::tools::list(parent, false);
+        let l = crate::tools::list(parent, false, false);
         l["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
     };
     let (child, parent) = (names(false), names(true));
     assert!(!child.iter().any(|n| n.starts_with("session")), "{child:?}");
     assert_eq!(parent[..child.len()], child[..]);
     assert_eq!(parent[child.len()..], ["sessions_start", "session_send", "sessions", "session_act"]);
-    let all = crate::tools::list(true, true);
+    let all = crate::tools::list(true, true, true);
     assert!(all["tools"].as_array().unwrap().iter().all(|t| t["annotations"]["title"].is_string()));
 }
 

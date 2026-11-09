@@ -2290,6 +2290,8 @@ mod tests {
             ("Fixture", "gitrepo/held/tests.rs"),
             ("Fixture", "sandbox/golden.rs"),
             ("Folder", "containers.rs"),
+            // (the web search's helper's, in its `Session`: never in a document, a turn, an output or a transcript)
+            ("Folder", "web/search.rs"),
             ("Gate", "claudetrust.rs"),
             ("Held", "warm.rs"),
             ("HeldBack", "recovery/tests.rs"),

@@ -50,7 +50,7 @@ const SETTINGS: [(&str, Way); 13] = [
 
 /// The `trust::RISKY` settings that aren't what a session's Claude may do, each with why — with `SETTINGS`, every
 /// one of them (`every_risky_setting_is_in_reach_or_said_elsewhere`).
-const ELSEWHERE: [(&str, &str); 11] = [
+const ELSEWHERE: [(&str, &str); 13] = [
     ("editor.lsp", "language servers, run as you"),
     ("editor.restart-build", "`:restart`'s build, run as you"),
     ("editor.restart-binary", "what `:restart` starts, as you"),
@@ -58,6 +58,8 @@ const ELSEWHERE: [(&str, &str); 11] = [
     ("llm.args", "the claude process itself"),
     ("llm.chat-settings", "what claude loads, not what its tools may do"),
     ("llm.screen-terminal", "what the screen you send shows"),
+    ("llm.web-search", "whether Claude's words leave as a web search, not what its runs may do"),
+    ("llm.web-search-model", "the model a web search runs on"),
     ("workspace.worktrees", "where checkouts are made"),
     ("workspace.ended", "a command at a session's end, as you"),
     ("workspace.keep", "files moved at a session's end"),
