@@ -17,7 +17,8 @@
 //! right edge taken), everything else inside `SAFE`, the margins YouTube's own buttons and title cover: the window from
 //! the safe area's top down to its captions' band (`SHORT_BAND`, under the screen's last row — in a zoom too, under the
 //! window's) — its captions (`@note:<words> → <target>`, `captions.rs`) a phrase at a time centred in
-//! the band, never over the picture, fading in and out. **The hook first, the brand last** (CLAUDE.md's Shorts
+//! the band, never over the picture, fading in and out — one at a time over the whole video (`band`), drawn over the
+//! frame after its crossing. **The hook first, the brand last** (CLAUDE.md's Shorts
 //! bullet): a `@hook` opens it on `HOOK_MS` of the take from there, on the whole (`hooked`), with its hook line (the
 //! Short's title) as its one caption, then the take from its start — nothing before the hook, no title card; its end card the brush swing (10-27's,
 //! its frames made once — `intro_dir` —, `t a r a e` under it, the title said as the caption; `BRAND_MS`). Where a
@@ -866,7 +867,7 @@ struct Noted {
 
 /// A Short's captions from the take, each `@note:<words> → <target>` in mark order: in from the first screen at or after
 /// its mark that draws its target (within `FIND_MS`), out at the first after that which doesn't — or as the next comes
-/// (`captions::spans`: the next crossing it). A mark that isn't `<words> → <target>`, words past `captions::WORDS_MAX`,
+/// (`captions::spans`: gone before the next comes in). A mark that isn't `<words> → <target>`, words past `captions::WORDS_MAX`,
 /// a target never found and one the next came on before it could stand are said.
 fn noted(rec: &Recorded) -> (Vec<Noted>, Vec<String>) {
     let s = |t: u64| t as f64 / 1000.0;
@@ -1385,9 +1386,46 @@ fn part(t: u64, hook: Option<u64>, lead: u64, shown: u64) -> Part {
 
 /// The take as a Short's hook shows it (CLAUDE.md's Shorts bullet: "one a stranger reads in a second — the whole
 /// screen's activity"): on the whole whatever the camera does there — no zoom, no news read's toast —, the beat's own
-/// caption and the take's phrases left out for the hook line.
+/// caption left out (the hook line its caption: `band`).
 fn hooked(take: Take, screen: (u16, u16)) -> Take {
-    Take { region: Region::all(screen), news: None, came: 255, captions: [None; 2], ..take }
+    Take { region: Region::all(screen), news: None, came: 255, ..take }
+}
+
+/// A Short's caption by what it says: the hook line, the take's `@note` (its index), the end card's title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Said {
+    Hook,
+    Note(usize),
+    Title,
+}
+
+/// The captions a Short's frame `t` ms into the video draws, each with how drawn (0–1), by its part (`part`): the hook
+/// line over the hook, whole from the first frame and gone as the take comes in (`captions::going`); the take's phrases
+/// as they stand (`spans`, `captions::standing`), the last gone as the take ends; the end card's title from the brush's
+/// tap (`TITLE_FROM`), if it has one. One at a time (showcase's "it flows, nothing pops"): each eases out before the next
+/// eases in, never two phrases over each other in the band — a part's crossing too, the frame's caption drawn over it.
+fn band(
+    t: u64,
+    hook: Option<u64>,
+    lead: u64,
+    shown: u64,
+    spans: &[Option<captions::Span>],
+    title: bool,
+) -> Vec<(Said, f32)> {
+    let on = match part(t, hook, lead, shown) {
+        Part::Hook(_) => vec![(Said::Hook, captions::going(lead, t))],
+        Part::Title => Vec::new(),
+        Part::Take(ms) => {
+            let ended: Vec<_> =
+                spans.iter().map(|s| s.map(|s| captions::Span { to: s.to.min(shown), ..s })).collect();
+            captions::standing(&ended, ms).into_iter().map(|(k, a)| (Said::Note(k), a)).collect()
+        }
+        Part::End(ms) if title => {
+            vec![(Said::Title, captions::drawn(captions::Span { from: TITLE_FROM, to: u64::MAX }, ms))]
+        }
+        Part::End(_) => Vec::new(),
+    };
+    on.into_iter().filter(|s| s.1 > 0.0).collect()
 }
 
 /// Where a Short's parts begin past its first (ms in the video): the take after its hook, the end card after the take —
@@ -1427,17 +1465,18 @@ enum Shows {
     End,
 }
 
-/// A frame: what it shows, and — where a Short's part has just begun — what it crosses from, drawn over that by (of 255).
+/// A frame: what it shows, and — where a Short's part has just begun — what it crosses from, drawn over that by (of 255);
+/// and a Short's caption over both (`band`): which, how drawn (of 255) and how many characters of its phrase.
 #[derive(Clone, Copy, PartialEq)]
 struct Framed {
     shows: Shows,
     from: Option<(Shows, u8)>,
+    caption: Option<(Said, u8, usize)>,
 }
 
 /// The take as one frame shows it: the screen in force, and the one it crosses from with how far the screen in force is
 /// drawn over it (of 255); the beat whose caption a wide video says and how far that has come in (of 255); the camera's
-/// region; the news read whose toast is laid over the window; and a Short's captions standing — one, or two crossing,
-/// the one going first: each which, how drawn (of 255) and how many characters of its phrase.
+/// region; and the news read whose toast is laid over the window.
 #[derive(Clone, Copy, PartialEq)]
 struct Take {
     i: usize,
@@ -1446,7 +1485,6 @@ struct Take {
     came: u8,
     region: Region,
     news: Option<usize>,
-    captions: [Option<(usize, u8, usize)>; 2],
 }
 
 /// How the camera's region maps the screen onto a Short's window: the screen drawn at `px` (its cells `cell` px), and
@@ -1727,42 +1765,47 @@ impl Video<'_> {
     }
 
     /// The take as it stands at its `ms`, screen `i` in force: the beat (and how far its caption has come in), and a
-    /// Short's camera there, the screen it crosses from, the news read and the captions standing.
+    /// Short's camera there, the screen it crosses from and the news read.
     fn take_at(&self, ms: u64, i: usize) -> Take {
         let beat =
             self.rec.beats.iter().rposition(|b| b.0 <= ms).filter(|&i| !self.rec.beats[i].1.is_empty());
         let came = beat.map_or(255, |i| ((ms - self.rec.beats[i].0) * 255 / FADE_MS).min(255) as u8);
-        let mut take = Take {
-            i,
-            cross: None,
-            beat,
-            came,
-            region: Region::all(self.screen),
-            news: None,
-            captions: [None; 2],
-        };
+        let mut take = Take { i, cross: None, beat, came, region: Region::all(self.screen), news: None };
         if self.form == Form::Short {
             take.region = self.path.at(ms);
             take.news = self.news.iter().position(|n| n.0 <= ms && ms < n.1);
             take.cross = camera::crossing(&self.times, &self.fades, ms)
                 .map(|(from, a)| (from, (a * 255.0).round() as u8))
                 .filter(|c| c.1 < 255 && c.0 != i);
-            take.captions = self.standing(ms);
         }
         take
     }
 
-    /// The captions standing `ms` into the take (`captions::standing`, the last two): which, how drawn (of 255) and how
-    /// much of its phrase.
-    fn standing(&self, ms: u64) -> [Option<(usize, u8, usize)>; 2] {
-        let spans: Vec<Option<captions::Span>> = self.notes.iter().map(|n| n.span).collect();
-        let on = captions::standing(&spans, ms);
-        let mut out = [None; 2];
-        for (slot, (k, a)) in out.iter_mut().zip(&on[on.len().saturating_sub(2)..]) {
-            *slot =
-                Some((*k, (a * 255.0).round().max(1.0) as u8, captions::shown(&self.notes[*k].phrase, ms)));
+    /// A Short's caption `t` ms into the video (`band`: one at most): which, how drawn (of 255) and how many characters
+    /// of its phrase.
+    fn caption(&self, t: u64) -> Option<(Said, u8, usize)> {
+        if self.form != Form::Short {
+            return None;
         }
-        out
+        let spans: Vec<Option<captions::Span>> = self.notes.iter().map(|n| n.span).collect();
+        let (said, a) = band(t, self.hook, self.lead, self.shown_ms, &spans, self.brand.is_some()).pop()?;
+        let shown = match said {
+            Said::Hook => self.hook_line.chars().count(),
+            Said::Note(k) => captions::shown(&self.notes[k].phrase, t - self.lead),
+            Said::Title => {
+                self.brand.as_ref().map_or(0, |b| captions::shown(&b.title, t - self.lead - self.shown_ms))
+            }
+        };
+        (shown > 0).then_some((said, (a * 255.0).round().max(1.0) as u8, shown))
+    }
+
+    /// What a caption says at its fullest.
+    fn fullest(&self, said: Said) -> &str {
+        match said {
+            Said::Hook => &self.hook_line,
+            Said::Note(k) => self.notes[k].phrase.fullest(),
+            Said::Title => self.brand.as_ref().map_or("", |b| b.title.fullest()),
+        }
     }
 
     /// The camera's `region` as this video draws it (`view`).
@@ -1886,36 +1929,36 @@ impl Video<'_> {
         let from = part_crossing(&starts, Self::ms(k))
             .filter(|c| c.1 < 255)
             .map(|(b, a)| (self.shows((b * FPS).div_ceil(1000) - 1), a));
-        Framed { shows, from }
+        Framed { shows, from, caption: self.caption(Self::ms(k)) }
     }
 
-    /// `framed` drawn: what it shows over what it crosses from, by its part.
+    /// `framed` drawn: what it shows over what it crosses from, by its part, and its caption over both.
     fn crossed(&self, f: Framed, drawn: &mut Drawn, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
-        let to = self.frame(f.shows, drawn, pics);
-        let Some((from, a)) = f.from else { return to };
-        let mut under = self.frame(from, drawn, pics);
-        for (u, n) in under.as_chunks_mut::<3>().0.iter_mut().zip(to.as_chunks::<3>().0) {
-            mix(u, *n, a);
+        let mut out = self.frame(f.shows, drawn, pics);
+        if let Some((from, a)) = f.from {
+            let mut under = self.frame(from, drawn, pics);
+            for (u, n) in under.as_chunks_mut::<3>().0.iter_mut().zip(out.as_chunks::<3>().0) {
+                mix(u, *n, a);
+            }
+            out = under;
         }
-        under
+        if let Some((said, a, shown)) = f.caption {
+            self.caption_drawn(&mut out, self.fullest(said), shown, f32::from(a) / 255.0, pics);
+        }
+        out
     }
 
-    /// The frame `shows` says, its screens drawn into `drawn` when they aren't there and its words' pictures (a
-    /// caption's) kept in `pics`.
+    /// The frame `shows` says, its screens drawn into `drawn` when they aren't there and its words' pictures (a wide
+    /// video's beat) kept in `pics` — a Short's caption apart (`crossed`).
     fn frame(&self, shows: Shows, drawn: &mut Drawn, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
         let take = match shows {
             Shows::Title => return self.cards.0.clone(),
-            Shows::Brand(ms) => return self.brand_frame(ms, pics),
+            Shows::Brand(ms) => return self.brand_frame(ms),
             Shows::End => return self.cards.1.clone(),
-            Shows::Hook(take) => {
-                let mut out = self.short_frame(take, drawn, pics);
-                self.caption_drawn(&mut out, &self.hook_line, self.hook_line.chars().count(), 1.0, pics);
-                return out;
-            }
-            Shows::Screen(take) => take,
+            Shows::Hook(take) | Shows::Screen(take) => take,
         };
         if self.form == Form::Short {
-            return self.short_frame(take, drawn, pics);
+            return self.short_frame(take, drawn);
         }
         let screen = self.picture(take.i, self.px, drawn);
         let mut px = self.look.ground.repeat(W * H);
@@ -1944,9 +1987,8 @@ impl Video<'_> {
     }
 
     /// A Short's end card `ms` in: the swing's frame then (the last held) over the ground, the name rising in under it
-    /// (`NAME_RISE`: eased, `INTRO_RISE_PX` up), and the title said as the caption, from the brush's tap (`TITLE_FROM`),
-    /// eased in.
-    fn brand_frame(&self, ms: u64, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
+    /// (`NAME_RISE`: eased, `INTRO_RISE_PX` up) — its title the caption's (`band`).
+    fn brand_frame(&self, ms: u64) -> Vec<u8> {
         let Some(intro) = &self.brand else { return self.cards.0.clone() };
         let mut out = self.look.ground.repeat(SHORT.0 * SHORT.1);
         let laid = intro_laid(intro);
@@ -1977,18 +2019,13 @@ impl Video<'_> {
                 (up * 255.0) as u8,
             );
         }
-        let shown = captions::shown(&intro.title, ms);
-        if shown > 0 {
-            let a = camera::ease_in_out(ms.saturating_sub(TITLE_FROM) as f32 / captions::FADE_MS as f32);
-            self.caption_drawn(&mut out, intro.title.fullest(), shown, a, pics);
-        }
         out
     }
 
     /// A Short's frame: the screen in force drawn through the camera's region (`view`, `resample`) — over the one it
     /// crosses from, where it crosses (`camera::crossing`) —, a news read's toast laid over the window's top (`callout`),
-    /// and the captions standing over it all (`caption_drawn`).
-    fn short_frame(&self, take: Take, drawn: &mut Drawn, pics: &mut HashMap<String, Picture>) -> Vec<u8> {
+    /// its caption apart (`crossed`).
+    fn short_frame(&self, take: Take, drawn: &mut Drawn) -> Vec<u8> {
         let view = self.view(take.region);
         let mut out = self.look.ground.repeat(SHORT.0 * SHORT.1);
         self.screen_drawn(&mut out, take.i, take.news, &view, drawn);
@@ -1999,9 +2036,6 @@ impl Video<'_> {
                 mix(b, *n, a);
             }
             out = before;
-        }
-        for (k, a, shown) in take.captions.into_iter().flatten() {
-            self.caption_drawn(&mut out, self.notes[k].phrase.fullest(), shown, f32::from(a) / 255.0, pics);
         }
         out
     }
@@ -2221,7 +2255,7 @@ mod tests {
         assert_eq!(part(0, None, 0, shown), Part::Take(0), "no hook: the take at once");
         assert_eq!(part(0, None, TITLE_MS, shown), Part::Title, "the wide video's title card");
         assert_eq!(part(TITLE_MS + 5, None, TITLE_MS, shown), Part::Take(5));
-        // (the hook on the whole, whatever the camera does there: no zoom, no news toast, the hook line its one caption)
+        // (the hook on the whole, whatever the camera does there: no zoom, no news toast)
         let screen = (80, 43);
         let zoomed = Take {
             i: 4,
@@ -2230,10 +2264,9 @@ mod tests {
             came: 40,
             region: Region { x: 10.0, y: 20.0, w: 40.0, h: 20.0 },
             news: Some(0),
-            captions: [Some((2, 255, 7)), None],
         };
         let hook = hooked(zoomed, screen);
-        assert_eq!((hook.region, hook.news, hook.captions), (Region::all(screen), None, [None; 2]));
+        assert_eq!((hook.region, hook.news), (Region::all(screen), None));
         assert_eq!((hook.i, hook.cross, hook.came), (4, Some((3, 100)), 255), "the take's screen there");
     }
 
@@ -2265,6 +2298,37 @@ mod tests {
             [] as [usize; 0],
             "no frame before, or none after"
         );
+    }
+
+    /// A caption is gone before the next shows (showcase's "it flows, nothing pops"; Short 4's take of 2026-11-09 had
+    /// "nothing left the machine" and "it needs your token" over each other at 14.9 s): no frame of a Short draws two —
+    /// the hook line into the take's first phrase across the parts' crossing, a phrase as its target goes, a later mark
+    /// whose target came first, two back to back, the last into the end card's title —, and each is drawn on a frame.
+    #[test]
+    fn no_frame_draws_two_captions_at_once() {
+        let (hook, lead, shown) = (Some(7_000), HOOK_MS, 20_000);
+        let spans = captions::spans(&[
+            (0, Some(2_000)),
+            (2_000, None),
+            (9_000, None),
+            (5_000, None),
+            (14_900, None),
+            (19_000, None),
+        ]);
+        assert!(spans.iter().all(Option::is_some), "{spans:?}");
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for k in 0..((lead + shown + BRAND_MS) * FPS).div_ceil(1000) {
+            let t = Video::ms(k);
+            let on = band(t, hook, lead, shown, &spans, true);
+            assert!(on.len() <= 1, "frame {k} ({t} ms) draws {on:?}");
+            seen.extend(on.iter().map(|s| s.0));
+        }
+        let all: HashSet<Said> =
+            [Said::Hook, Said::Title].into_iter().chain((0..6).map(Said::Note)).collect();
+        assert_eq!(seen, all, "each drawn");
+        assert_eq!(band(lead, hook, lead, shown, &spans, true), [], "out, then in");
+        assert_eq!(band(lead - 1, hook, lead, shown, &spans, true).len(), 1, "the hook line still going");
     }
 
     fn rows(text: &[&str]) -> Vec<Option<String>> {

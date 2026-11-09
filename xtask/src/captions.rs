@@ -4,10 +4,11 @@
 //! a time, whole as it comes (`phrase`: never a word at a time), its `{}` the target's text as it changes — the ask
 //! line's question following the typing inside the phrase, laid out at its fullest so nothing moves (`shown`). A
 //! caption stands from when its target is first on the screen at or after its mark until the target leaves it or the
-//! next caption comes (`spans`), eased in and out over `FADE_MS` — the next easing in as the one before eases out, the
-//! two crossing. Nothing is drawn round its target: the camera points (`camera.rs`). Pure: the drawing is `video.rs`'s.
+//! next caption comes (`spans`), eased in and out over `FADE_MS` — out before the next comes, then the next in: one at a
+//! time, never two words over each other in the one place (`drawn`). Nothing is drawn round its target: the camera
+//! points (`camera.rs`). Pure: the drawing is `video.rs`'s.
 
-/// A caption eases in and out this long (CLAUDE.md: ~0.2 s), and two cross this long.
+/// A caption eases in this long (CLAUDE.md: ~0.2 s), and out as long before the next comes.
 pub(crate) const FADE_MS: u64 = 200;
 const _: () = assert!(FADE_MS <= 300);
 /// A caption's written words at most (its `{}` apart): past them it's said — a caption says a few.
@@ -109,12 +110,16 @@ pub(crate) struct Span {
 }
 
 /// When each caption stands, from when its target is first found and when it leaves the screen (`None`: it stays to
-/// the end), in mark order: until its target goes or the next caption comes, whichever is first — the next easing in
-/// as it eases out. One that would stand less than `FADE_MS` is none.
+/// the end), in mark order: until its target goes or the next caption comes, whichever is first — the next to come
+/// whatever its mark (a later one, or one as early marked after it): no two stand at once. One that would stand less
+/// than `FADE_MS` is none.
 pub(crate) fn spans(found: &[(u64, Option<u64>)]) -> Vec<Option<Span>> {
     (found.iter().enumerate())
         .map(|(k, &(from, gone))| {
-            let next = found[k + 1..].iter().map(|f| f.0).filter(|&t| t >= from).min();
+            let next = (found.iter().enumerate())
+                .filter(|&(j, f)| f.0 > from || (f.0 == from && j > k))
+                .map(|(_, f)| f.0)
+                .min();
             let to = gone.unwrap_or(u64::MAX).min(next.unwrap_or(u64::MAX));
             (to >= from + FADE_MS).then_some(Span { from, to })
         })
@@ -141,18 +146,25 @@ pub(crate) fn tail(spans: &[Option<Span>], end: u64) -> Option<(usize, u64)> {
     Some((k, stands(s, end)))
 }
 
-/// How drawn a caption is `ms` into the take (0 none, 1 whole): eased in and out (`camera::ease_in_out`) over `FADE_MS`
-/// from its start, and out over as long from its end.
+/// How drawn a caption is `ms` into the take (0 none, 1 whole): eased in (`camera::ease_in_out`) over `FADE_MS` from
+/// its start, and out (`going`) over as long before its end — gone as the next comes in.
 pub(crate) fn drawn(s: Span, ms: u64) -> f32 {
-    if ms < s.from || ms >= s.to.saturating_add(FADE_MS) {
+    if ms < s.from {
         return 0.0;
     }
-    let ease = |t: u64| crate::camera::ease_in_out(t as f32 / FADE_MS as f32);
-    let came = ease(ms - s.from);
-    if ms < s.to { came } else { ease(s.to - s.from).min(came) * (1.0 - ease(ms - s.to)) }
+    crate::camera::ease_in_out((ms - s.from) as f32 / FADE_MS as f32).min(going(s.to, ms))
 }
 
-/// The captions drawn `ms` in and how much (one standing, or two crossing — the one going first).
+/// How drawn a caption going at `to` is `ms` in: whole until `FADE_MS` before, eased out to none at `to` (a Short's
+/// hook line, whole from the first frame, goes so).
+pub(crate) fn going(to: u64, ms: u64) -> f32 {
+    if ms >= to {
+        return 0.0;
+    }
+    crate::camera::ease_in_out((to - ms) as f32 / FADE_MS as f32)
+}
+
+/// The captions drawn `ms` in and how much: one at most (`spans` never two at once, `drawn` each gone at its end).
 pub(crate) fn standing(spans: &[Option<Span>], ms: u64) -> Vec<(usize, f32)> {
     (spans.iter().enumerate())
         .filter_map(|(k, s)| Some((k, drawn((*s)?, ms))))
@@ -235,10 +247,10 @@ mod tests {
         );
     }
 
-    /// A caption stands until its target goes or the next comes; the next eases in as it eases out, the two crossing
-    /// over `FADE_MS` and never more than two drawn; one that would stand less than `FADE_MS` is none.
+    /// A caption stands until its target goes or the next comes — the next to come, whatever its mark —; it eases out
+    /// before the next eases in, never two drawn; one that would stand less than `FADE_MS` is none.
     #[test]
-    fn the_next_caption_crosses_the_one_before() {
+    fn a_caption_is_gone_before_the_next_comes() {
         let laid = spans(&[(1_000, Some(5_000)), (2_000, Some(2_500)), (4_000, None), (4_100, None)]);
         assert_eq!(
             laid,
@@ -249,14 +261,24 @@ mod tests {
                 Some(Span { from: 4_100, to: u64::MAX }),
             ]
         );
-        for ms in (0..6_000).step_by(10) {
+        for ms in 0..6_000 {
             let n = standing(&laid, ms).len();
-            assert!(n <= 2, "{n} drawn at {ms} ms");
+            assert!(n <= 1, "{n} drawn at {ms} ms");
         }
-        let crossing = standing(&laid, 2_000 + FADE_MS / 2);
-        assert_eq!(crossing.iter().map(|s| s.0).collect::<Vec<_>>(), [0, 1], "the one going first");
-        assert!((crossing[0].1 + crossing[1].1 - 1.0).abs() < 0.01, "crossing: {crossing:?}");
-        assert_eq!(standing(&laid, 2_000 + FADE_MS), [(1, 1.0)], "crossed");
+        let going = standing(&laid, 2_000 - FADE_MS / 2);
+        assert!(going.len() == 1 && going[0].0 == 0 && (going[0].1 - 0.5).abs() < 0.01, "going: {going:?}");
+        assert_eq!(standing(&laid, 2_000), [], "out, then in");
+        let coming = standing(&laid, 2_000 + FADE_MS / 2);
+        assert!(
+            coming.len() == 1 && coming[0].0 == 1 && (coming[0].1 - 0.5).abs() < 0.01,
+            "coming: {coming:?}"
+        );
+        assert_eq!(standing(&laid, 2_000 + FADE_MS), [(1, 1.0)], "come");
+        // (a later mark whose target came first: it goes as the earlier mark's comes)
+        assert_eq!(
+            spans(&[(3_000, None), (1_000, None)]),
+            [Some(Span { from: 3_000, to: u64::MAX }), Some(Span { from: 1_000, to: 3_000 })]
+        );
     }
 
     /// A phrase stands `STAND_MIN_MS` at least — till the next comes, its target goes or the take ends —; one shorter
@@ -282,7 +304,8 @@ mod tests {
         assert_eq!(tail(&[None], 5_000), None);
     }
 
-    /// A caption eases in and out over `FADE_MS`, gently at both ends, whole between, nothing outside.
+    /// A caption eases in over `FADE_MS` and out over as long before its end, gently at both ends, whole between,
+    /// nothing outside.
     #[test]
     fn a_caption_eases_in_and_out() {
         let s = Span { from: 1_000, to: 3_000 };
@@ -290,11 +313,16 @@ mod tests {
         assert!(drawn(s, 1_000 + FADE_MS / 10) < 0.05, "eased in, not popped: {}", drawn(s, 1_020));
         assert!((drawn(s, 1_000 + FADE_MS / 2) - 0.5).abs() < 0.01);
         assert_eq!(drawn(s, 2_000), 1.0);
-        assert!((drawn(s, 3_000 + FADE_MS / 2) - 0.5).abs() < 0.01, "easing out");
-        assert!(drawn(s, 3_000 + FADE_MS - FADE_MS / 10) < 0.05);
-        assert_eq!(drawn(s, 3_000 + FADE_MS), 0.0);
+        assert!((drawn(s, 3_000 - FADE_MS / 2) - 0.5).abs() < 0.01, "easing out");
+        assert!(drawn(s, 3_000 - FADE_MS / 10) < 0.05, "eased out, not popped");
+        assert_eq!(drawn(s, 3_000), 0.0, "gone at its end");
         let short = Span { from: 1_000, to: 1_100 };
-        assert!(drawn(short, 1_150) < drawn(short, 1_100), "out from where it had come to");
+        assert!(
+            drawn(short, 1_050) < 0.5 && drawn(short, 1_090) < drawn(short, 1_050),
+            "part way in, then out"
+        );
+        assert_eq!(drawn(Span { from: 0, to: u64::MAX }, 9_000), 1.0, "to the end: never going");
+        assert_eq!((going(3_000, 0), going(3_000, 3_000)), (1.0, 0.0), "a hook line: whole, then gone");
     }
 
     /// The caption stands in one place, the band: centred across it and down it whatever its width; one taller than the
