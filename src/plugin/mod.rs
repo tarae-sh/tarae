@@ -23,11 +23,14 @@
 
 mod cli;
 mod events;
+mod examples;
+mod install;
 mod io;
 pub(crate) mod keys;
 pub(crate) mod overlay;
 mod panel;
 mod perm;
+mod reference;
 // (the plugin API and its thread are the runtime's crate's, crates/tarae-wasm — here, the editor's side)
 use tarae_wasm::plugin::{abi, host};
 
@@ -35,8 +38,19 @@ use std::path::{Path, PathBuf};
 
 pub use cli::cli;
 #[cfg(test)]
+pub(crate) use install::stand_in as install_stand_in;
+pub use install::{Install as PluginInstall, New as PluginNew};
+pub(crate) use install::{accept_install, accept_new, decline_install, decline_new};
+pub(crate) use install::{schema as tool_schema, tool_call};
+/// (the simulation's builds: the demo asking for a set — `abi::demo_asking`)
+#[cfg(test)]
+pub(crate) fn demo_asking_for_sim(set: u8) -> Vec<u8> {
+    abi::demo_asking(set)
+}
+#[cfg(test)]
 pub use host::scan;
 pub use host::{Found, Watch};
+pub(crate) use perm::Change as PluginChange;
 
 use abi::Action;
 pub use abi::Event as PluginEvent;
@@ -317,13 +331,21 @@ impl Editor {
             #[cfg(test)]
             flushed: Vec::new(),
         });
-        // (`:restart`'s revokes not written before its exec: given again, before any plugin loads)
+        self.plugins_given();
+        true
+    }
+
+    /// As the plugins' side starts, before any plugin loads: `:restart`'s revokes not written before its exec given
+    /// again, and an install's yes given before it started (the first plugin's, `install.rs`).
+    fn plugins_given(&mut self) {
         for plugin in std::mem::take(&mut self.plugin_revokes_carried) {
             if self.plugins.as_ref().is_some_and(|p| p.approvals.contains_key(&plugin)) {
                 self.approvals_change(perm::Change::Revoke { plugin });
             }
         }
-        true
+        for c in std::mem::take(&mut self.plugin_early) {
+            self.approvals_change(c);
+        }
     }
 
     /// The plugins' side with no plugin thread (`Host::detached`): what a simulation drives by hand — an overlay shown
@@ -367,6 +389,7 @@ impl Editor {
             #[cfg(test)]
             flushed: Vec::new(),
         });
+        self.plugins_given();
     }
 
     /// What the plugin thread says: a plugin loaded (its `read` patterns' `roots` resolved there, and the folder `dev`
@@ -2322,7 +2345,9 @@ mod tests {
         assert_eq!(title, "Plugin demo asks for permissions · dev build");
         assert!(question.starts_with("It asks to:\n"), "{question}");
         assert!(
-            question.ends_with("\nA dev build from /src/a — its rebuilds there keep this answer."),
+            question.ends_with(
+                "\nA dev build from /src/a, for a folder you build yourself — its rebuilds there keep this answer."
+            ),
             "{question}"
         );
         answer(&mut ed, approval, true);

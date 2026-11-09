@@ -67,6 +67,7 @@ mod overlap;
 mod overlay;
 mod panes;
 mod places;
+mod plugininstall;
 mod pluginperm;
 mod pointed;
 mod presence;

@@ -431,6 +431,10 @@ pub const AUTO: &[(&str, Auto)] = &[
     ("fetch", Auto::Own),
     ("plugin-permissions", Auto::Own),
     ("plugin-ask", Auto::Own),
+    // (Claude's `plugin`: code tarae will run, approved by its hash; a crate's Cargo.toml and .cargo, names a run
+    // can't write — never a verdict's)
+    ("plugin-install", Auto::Never),
+    ("plugin-new", Auto::Never),
     ("install", Auto::Own),
     ("run", Auto::ByRequest),
     ("no-sandbox", Auto::Never),

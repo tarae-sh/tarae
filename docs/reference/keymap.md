@@ -637,6 +637,8 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:plugin-permissions` |  | What each plugin may do beyond the buffer |
 | `:plugin-revoke` |  | Take back a plugin's permissions: :plugin-revoke &lt;plugin> |
 | `:plugin-approve` |  | A plugin's approval card again: :plugin-approve &lt;plugin> |
+| `:plugin-new` |  | Start a plugin crate: :plugin-new &lt;dir> [--from &lt;example>] |
+| `:plugin-install` |  | Install a plugin build, on a card: :plugin-install &lt;wasm> |
 | `:lsp-stop` |  | Stop this file's language server |
 | `:format` | `:fmt` | Format the file (language server) |
 | `:set-language` | `:lang` | Set this buffer's language |

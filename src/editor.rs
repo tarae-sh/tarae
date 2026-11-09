@@ -1071,6 +1071,9 @@ pub struct Editor {
     pub plugins: Option<crate::plugin::Plugins>,
     /// `:restart`'s plugin revokes not written before its exec (#461): given again as the plugins start.
     pub plugin_revokes_carried: Vec<String>,
+    /// Approvals an install's card gave before the plugin thread started (nothing installed yet, `install.rs`): given
+    /// as it starts, before any plugin loads.
+    pub plugin_early: Vec<crate::plugin::PluginChange>,
     /// The processes tarae started, their costs and its checks on them (`:procs`, `procs.rs`).
     pub procs: crate::procs::Procs,
     /// The disk's room: its looks, levels and what waits for room (`diskroom.rs`, #168).
@@ -1613,6 +1616,7 @@ impl Editor {
             input_seq: 0,
             plugins: None,
             plugin_revokes_carried: Vec::new(),
+            plugin_early: Vec::new(),
             procs: Default::default(),
             disk: Default::default(),
             cmd_lists: Default::default(),

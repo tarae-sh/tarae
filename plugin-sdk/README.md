@@ -3,6 +3,8 @@
 - [`wit/tarae.wit`](wit/tarae.wit): the plugin API — what a plugin sees and what it can answer
 - [`template/`](template): what `tarae plugin new` writes — with a test through the mock host, a
   `.cargo/config.toml` for `wasm32-unknown-unknown`, and the SDK, the rules and the WIT vendored in its `tarae/`
+- [`examples/`](examples): whole plugins, one idea each — `tarae plugin example <name>` prints one, `tarae plugin
+  new <dir> --from <name>` starts a crate from it
 - [`demo/`](demo): a plugin with a command for every action, and some that misbehave on purpose. Its build,
   [`demo.wasm`](demo.wasm), is what tarae's tests load — a fixture with bindings of its own ([its README](demo/README.md))
 - [`sdk/`](sdk): `tarae-plugin`, the SDK — the WIT's bindings (it owns them: `Guest`, `export!`, the types), the time

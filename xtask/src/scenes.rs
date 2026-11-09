@@ -7486,6 +7486,8 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "asktouching",
     "card",
     "cardlong",
+    "plugininstall",
+    "pluginnew",
     "changelater",
     "manager",
     "samebinary",
@@ -7554,6 +7556,9 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "v6-fix",
     "v6-docs",
 ];
+
+/// Where `plugininstall`'s project holds the build it asks to install (a crate's `target/`, as cargo puts it).
+const PLUGIN_WASM: &str = "plug/wordcount/target/wasm32-unknown-unknown/release/wordcount.wasm";
 
 /// Whether the stand-in plays `spec`: a script it knows, or a specification by checkout whose every script it
 /// knows (`script_for`).
@@ -7654,6 +7659,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "card" => turn.ask_outside()?,
             // (#244: prose enough to reach the ask's rows in the chat, then the same card)
             "cardlong" => turn.ask_outside_long()?,
+            // (PD1's H2: Claude's `plugin` — a build to install, a crate to start — each the user's card; the project
+            // holds the build at `PLUGIN_WASM`)
+            "plugininstall" => turn.plugin(json!({ "wasm": PLUGIN_WASM }))?,
+            "pluginnew" => turn.plugin(json!({ "new": "plugins/word-tally", "from": "word-tally" }))?,
             // (`waits-60s`: a change of two files, its card a moment after you float your tests)
             "changelater" => turn.change_later()?,
             // (the session list's scene: a run asked for where the tests are asked, else an edit held mid-line)
@@ -8754,6 +8763,17 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.text("\n")?;
         self.call(1, "web_search", json!({"query": "tokio latest release MSRV", "sites": ""}))?;
         self.words("The list names Tokio 1.54 on its blog; its README says which Rust it needs.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Claude's `plugin` call, waiting on the user's card.
+    fn plugin(&mut self, args: Value) -> io::Result<()> {
+        self.words(match args.get("wasm") {
+            Some(_) => "It builds and its tests pass, so I will ask you to install it.",
+            None => "I will start the plugin's crate from the word-tally example.",
+        })?;
+        self.text("\n")?;
+        self.call(1, "plugin", args)?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

@@ -109,7 +109,7 @@ pub(super) fn key(p: &Permission) -> String {
 }
 
 /// A permission in words, for the card — what it amounts to, broad reading said so.
-fn describe(p: &Permission) -> String {
+pub(super) fn describe(p: &Permission) -> String {
     rules::describe(perm(p))
 }
 
@@ -210,7 +210,7 @@ pub(super) fn dev_source(marks: &Path, plugin: &str, sha256: &str) -> Option<Pat
 }
 
 /// The declared list, as kept (sorted, so the order a plugin gives it in doesn't matter).
-fn keys(declared: &[Permission]) -> Vec<String> {
+pub(super) fn keys(declared: &[Permission]) -> Vec<String> {
     let mut k: Vec<String> = declared.iter().map(key).collect();
     crate::sorting::sort(&mut k);
     k.dedup();
@@ -801,7 +801,9 @@ impl Editor {
         // (after the list: the rows `deciding` names stay the list's)
         if let Some(dev) = &code.dev {
             let at = shown(&crate::allow::tilde(dev));
-            lines.push(format!("A dev build from {at} — its rebuilds there keep this answer."));
+            lines.push(format!(
+                "A dev build from {at}, for a folder you build yourself — its rebuilds there keep this answer."
+            ));
         }
         let dev = if code.dev.is_some() { " · dev build" } else { "" };
         Offer::new(

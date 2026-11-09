@@ -1,0 +1,23 @@
+# tarae's plugin examples, one idea each (README.md): built and tested as one workspace. An example copied out on
+# its own needs `[workspace]` in its Cargo.toml — `tarae plugin new <dir> --from <example>` writes it so.
+[workspace]
+resolver = "3"
+members = [
+    "sort-lines",
+    "yaml-tabs",
+    "todo-hints",
+    "word-tally",
+    "md-outline",
+    "read-notes",
+    "git-branch",
+    "http-status",
+    "final-newline",
+    "stamps",
+]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

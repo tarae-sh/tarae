@@ -1531,6 +1531,8 @@ mod tests {
     /// stands for no line of CI's of its own — but the container runs exactly CI's clippy lines (`--locked`, `-D
     /// warnings` as CI's `RUSTFLAGS` gives them), read in xtask's script.
     /// A step with an `if:` names its command on the line after (`run: …`).
+    /// An ignored test a step runs by name is CI's network job's too — but this Mac's own (`THIS_MACS`, each with its
+    /// reason): CI has no macOS job, so a test only macOS runs is `:preflight-full`'s alone.
     #[test]
     fn the_checks_are_the_same_here_in_contributing_and_in_ci() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1591,13 +1593,26 @@ mod tests {
         }
         let mut expected = ours.clone();
         expected.remove("cargo perf");
-        // (on purpose: the plugins' step runs network tests by name — each of them CI's network job's too)
+        // (on purpose: the plugins' step runs network tests by name — each of them CI's network job's too — but
+        // this Mac's own)
+        const THIS_MACS: &[(&str, &str)] = &[(
+            "plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run",
+            "macOS's sandbox and cargo's cache warm: no macOS job in CI",
+        )];
         let network = ci.lines().find(|l| l.contains("-- --ignored")).expect("the network job");
+        let mut named = Vec::new();
         for step in ours.iter().filter(|c| c.contains("-- --ignored --exact ")) {
             for name in step.split(" --exact ").nth(1).unwrap().split_whitespace() {
+                named.push(name);
+                if THIS_MACS.iter().any(|(n, _)| *n == name) {
+                    continue;
+                }
                 assert!(network.split_whitespace().any(|w| w == name), "{name}: in CI's network job too");
             }
             expected.remove(step);
+        }
+        for (name, why) in THIS_MACS {
+            assert!(named.contains(name), "{name} ({why}): run by a step here");
         }
         assert!(
             expected.remove("cargo xtask linux --no-skip clippy"),

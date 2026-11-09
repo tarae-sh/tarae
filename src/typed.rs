@@ -365,6 +365,8 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "plugin-permissions" => editor.plugin_permissions_list(),
         "plugin-revoke" => editor.plugin_revoke(rest),
         "plugin-approve" => editor.plugin_approve(rest),
+        "plugin-new" => editor.plugin_new_typed(rest),
+        "plugin-install" => editor.plugin_install_typed(rest),
         "lsp-stop" => {
             let name = editor.lsp_stop()?;
             editor.set_status(format!("{name} stopped"));

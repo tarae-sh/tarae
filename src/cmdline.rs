@@ -124,6 +124,8 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["plugin-permissions"], Arg::None, "What each plugin may do beyond the buffer"),
     c(&["plugin-revoke"], Arg::None, "Take back a plugin's permissions: :plugin-revoke <plugin>"),
     c(&["plugin-approve"], Arg::None, "A plugin's approval card again: :plugin-approve <plugin>"),
+    c(&["plugin-new"], Arg::File, "Start a plugin crate: :plugin-new <dir> [--from <example>]"),
+    c(&["plugin-install"], Arg::File, "Install a plugin build, on a card: :plugin-install <wasm>"),
     c(&["lsp-stop"], Arg::None, "Stop this file's language server"),
     c(&["format", "fmt"], Arg::None, "Format the file (language server)"),
     c(&["set-language", "lang"], Arg::Lang, "Set this buffer's language"),

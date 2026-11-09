@@ -7,6 +7,7 @@ file, the network — it has to ask for, and only gets once you approve.
 
 - [Installing](#installing)
 - [Writing one](#writing-one)
+- [Asking Claude for a plugin](#asking-claude-for-a-plugin)
 - [What a plugin sees](#what-a-plugin-sees)
 - [What it can do](#what-it-can-do)
 - [Events](#events)
@@ -45,6 +46,10 @@ cd my-plugin && tarae plugin dev # builds it on every save; your running tarae r
 tarae plugin test                # its tests, then its wasm built and loaded as tarae loads it
 ```
 
+Or start from one of the [examples](../plugin-sdk/examples), each a whole plugin with one idea: `tarae plugin example`
+lists them, `tarae plugin example <name>` prints one, and `tarae plugin new my-plugin --from <name>` starts a crate
+from it. `:plugin-new <dir> [--from <name>]` does the same from inside tarae, in the project.
+
 A complete plugin (the template, with only its `:words`):
 
 ```rust
@@ -74,12 +79,16 @@ tarae_plugin::export!(Plugin);
 
 - **The API** is [`wit/tarae.wit`](../plugin-sdk/wit/tarae.wit) — in your crate, `tarae/wit/tarae.wit`. The SDK
   (`tarae-plugin`) turns it into the Rust types above, once: you implement its `Guest` and call its `export!`.
+  **[The reference](plugins-reference.md)** has every type, action, event and permission with its doc, generated from
+  the WIT; a new crate has it too, as `REFERENCE.md`, ending with the examples' index.
 - **The SDK is vendored**: `tarae plugin new` writes it into your crate's `tarae/` — the SDK, the rules tarae holds a
   plugin to (`tarae-plugin-rules`) and the WIT, as the tarae you run has them, MIT OR Apache-2.0, so your plugin can
   take any licence. Don't edit it: `tarae plugin test` fails while it differs from your tarae's, or while cargo
   takes the SDK from anywhere else (a path elsewhere, a `[patch]`, a `[replace]` — checked before and after its
   build, which runs build scripts), and `tarae plugin vendor` writes your tarae's copy again (after you update
   tarae, too).
+- **Its `.cargo/config.toml`** builds for `wasm32-unknown-unknown` and keeps cargo's build files in the crate
+  (`build-dir = "target/build"`), so a sandboxed run can build it.
 - **Rust is what's supported**, with the `wit-bindgen` version the SDK pins. Other languages that produce the
   same kind of module may work, but only Rust is tested.
 - `commands()`, `subscriptions()` and `permissions()` are called when the plugin loads (and again if it's restarted
@@ -138,6 +147,33 @@ mod tests {
 and loads it as tarae loads it — the API version, the exports, the permissions' forms. It says each failure in one
 line, then each folder's totals, and exits non-zero when anything failed.
 
+## Asking Claude for a plugin
+
+Ask in the chat ("a plugin that lists this file's TODOs in a panel"). Claude starts the crate, writes the code, builds
+it and asks you to install it, each step on your screen:
+
+1. **The crate.** `Cargo.toml` and `.cargo` are names a run can't write in the project, so Claude asks tarae to start
+   it: a card lists the files, the template's or an example's, and `y` has tarae write them. You can type it yourself
+   instead: `:plugin-new plugins/todo --from word-tally`. Claude reads the API in the crate's `REFERENCE.md`, inside
+   your project.
+2. **The code and the build.** Claude edits `src/lib.rs` (its edits reviewed, as always) and builds in its run:
+   `cargo build --release` in the crate. The run is sandboxed like any of its runs, and cargo's build files stay in
+   the crate.
+3. **The install: one card.** It says where the `.wasm` was found and the crate it's in, the commands and events it
+   registers, what it may do beyond the buffer in the load card's words ("Nothing beyond the buffer" for most), and
+   whether it replaces a plugin installed now. Its last line is the binding: **For this build only — any change asks
+   again.** `y` approves exactly those bytes, the ones the card read, then puts them in the plugins folder. A rebuild
+   since the card isn't what lands, and no load card follows. `n` leaves nothing. `:plugin-install <wasm>` raises the
+   same card for a build of your own.
+
+What Claude can't do:
+- **Answer a card.** The crate's card and the install's are yours. No tool of Claude's reaches a card's answer.
+- **Write the plugins folder.** A run is refused there, wherever `XDG_CONFIG_HOME` puts it.
+- **Keep a yes across rebuilds.** Unlike `tarae plugin dev`'s yes to a folder you build yourself, the install's is
+  bound to the build's hash: every change Claude makes asks again.
+
+To remove it, delete its `.wasm` from the plugins folder. `:plugin-revoke <name>` takes back its approval.
+
 ## What a plugin sees
 
 `run` gets the command's name and a `context`:
@@ -145,7 +181,7 @@ line, then each folder's totals, and exits non-zero when anything failed.
 | | |
 |---|---|
 | `args` | what followed the command: `:grab foo` → `"foo"` |
-| `buffer` | `path`, `name`, `language`, `version`, `modified`, and `text` — the whole buffer, but only for commands registered with `text: true` |
+| `buffer` | `path`, `name`, `language`, `version`, `modified`, and `text` — the whole buffer, only for commands registered with `text: true` (and events subscribed with it, on a buffer [it's given](#which-buffers-its-given)) |
 | `selections` | each with `anchor`, `head`, `from`, `to`, its `text`, and the `line` its head is on |
 | `primary` | which selection is the primary one |
 | `now` | the time (`millis` since 1970) and 32 random bytes — a plugin has neither of its own; hand them to the [SDK](#the-sdk) |

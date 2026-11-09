@@ -12,7 +12,7 @@ interface types {
     record command {
         name: string,
         doc: string,
-        /// Whether it needs the buffer's text (`buffer.text`). Most commands only need the selections.
+        /// Whether it needs the buffer's whole text (`buffer.text`). Most commands only need the selections.
         text: bool,
     }
 
@@ -29,12 +29,14 @@ interface types {
         /// About to be written by `:w` (not auto-save): edits in the answer go into the saved file. Saving
         /// waits for the answer, up to 2 seconds.
         before-save,
-        /// Now the buffer in front (switched to, its window focused, opened) — for a view of "this file".
+        /// Now the buffer in front (switched to, its window focused, opened) — for a view of "this file". The
+        /// one event a buffer it isn't given has: it comes with an empty buffer, so the view can clear.
         shown,
     }
 
-    /// An event to be told about: `text` as for commands; only about buffers in these languages ("yaml", …;
-    /// none: every buffer).
+    /// An event to be told about: `text` hands the buffer's whole text with it (`buffer.text`); only about
+    /// buffers in these languages ("yaml", …; none: every buffer). Only buffers its grant covers have events
+    /// (`buffer`).
     record subscription {
         event: event,
         text: bool,
@@ -47,14 +49,16 @@ interface types {
         /// Start this program (`spawn`).
         run(string),
         /// Read files matching this pattern (`read-file`): `~` is your home folder, `*` any name, `**` any
-        /// folders.
+        /// folders. Buffers of those files are given to it on its own too (`buffer`). Never a file named like a
+        /// key (`.env`, `*.pem`, `id_rsa`, …), whatever the pattern says.
         read(string),
         /// Read this environment variable (`read-env`).
         env(string),
         /// Connect over TCP (`connect`); each new host:port is asked about the first time.
         network,
         /// Read the files of the project you opened (the folder tarae started in): `read-file` there
-        /// without asking, and `find`.
+        /// without asking, `find`, and their buffers given to it on its own (`buffer`) — never one named like
+        /// a key.
         project,
         /// Hear the keys you press as commands (`keys` events) — only while your own config's `plugins.keys` is
         /// on, said on the status line while it hears. Never a character typed. A plugin that asks for it asks
@@ -74,11 +78,17 @@ interface types {
         line: u64,
     }
 
+    /// The buffer a call is about. A command you run gets the one in front, whatever file it is. On its own (an
+    /// event, what came back from what it asked for) a plugin gets only a buffer its grant covers — a file its
+    /// `read` patterns or `project` reach once you've approved them, or a view it shows itself; any other comes
+    /// as nothing (no path, name, text or selections), and edits and moves there are refused. Never given, even to
+    /// your command (then refused, said): a file named like a key, or one of tarae's own views.
     record buffer {
         path: option<string>,
         name: string,
         language: option<string>,
-        /// Only for commands registered with `text: true`.
+        /// The whole text — for a command registered with `text: true`, or an event subscribed with it, on a
+        /// buffer it's given; none otherwise.
         text: option<string>,
         version: u64,
         modified: bool,
@@ -183,8 +193,9 @@ interface types {
         /// Dim, at the right.
         detail: string,
         tone: tone,
-        /// Where it's defined: (path, first line, last line), from 0. `enter` goes there, and while the
-        /// cursor is there it's the row marked. None: `enter` comes to the plugin (`key`).
+        /// Where it's defined: (path, first line, last line), from 0. `enter` goes there — only to a file it may
+        /// read (`read`, `project`) —, and while the cursor is there it's the row marked. None: `enter` comes to
+        /// the plugin (`key`).
         at: option<tuple<string, u64, u64>>,
         /// A line of text under the row above it (why that one isn't fine): in its tone's color, with no
         /// glyph, not a row to select.
@@ -279,7 +290,8 @@ interface types {
         /// A tarae movement command (`move_next_word_start`, `goto_file_start`, …). Nothing else runs: not
         /// typed commands, not other commands.
         run(string),
-        /// Opens a file — at a line, as `path:line` (from 1).
+        /// Opens a file — at a line, as `path:line` (from 1) — only one it may read (`read`, `project`): any
+        /// other is refused, said.
         open(string),
         /// A short text in the status line, for this buffer (while it's in front), until replaced; an
         /// empty one clears it.
@@ -377,6 +389,7 @@ world plugin {
     export subscriptions: func() -> list<subscription>;
     /// Called when the plugin loads: what it may do beyond the buffer (none is fine — most plugins).
     export permissions: func() -> list<permission>;
+    /// One of its commands, run by you: its name, and the buffer in front (`buffer`).
     export run: func(name: string, cx: context) -> list<action>;
     /// An event it subscribed to, about the buffer in `cx`.
     export on: func(event: event, cx: context) -> list<action>;

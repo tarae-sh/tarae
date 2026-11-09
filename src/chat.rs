@@ -115,12 +115,12 @@ const TOOLS: &str = "";
 /// named like a key before Claude was let read it — `reads::Keys`; `ui` the screen's structure at Claude's level
 /// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `sessions_start` asks on its
 /// own card, `session_send` and `sessions` reach only the chat's own children, and only a parent's chat lists them —
-/// `orchestra.rs`; `web_search` asks on its own card, a chat's first — `web/search.rs` — and is listed only with
-/// `llm.web-search` on)
+/// `orchestra.rs`; `plugin` asks on its own card — `plugin/install.rs`; `web_search` asks on its own card, a chat's
+/// first — `web/search.rs` — and is listed only with `llm.web-search` on)
 const ALLOWED: &str = "mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
 mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
-mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act,\
+mcp__tarae__plugin,mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act,\
 mcp__tarae__web_search";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
@@ -4700,6 +4700,17 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             let wakes = if input["wake"].as_bool() == Some(true) { crate::orchestra::WAKES_ME } else { "" };
             Look { verb, what: what + wakes, pattern: false, range: s("why"), link: None }
         }
+        // (a build to install: the path asked, its name on the card — the package's, which the row can't read; or a crate
+        // to start, its folder — the example it starts from on its card, the row's room the path's)
+        "mcp__tarae__plugin" => {
+            let new = s("new");
+            if new.trim().is_empty() {
+                let what = format!("plugin from {}", shown(&resolve(&s("wasm"))));
+                return Look { verb: "install", what, pattern: false, range: String::new(), link: None };
+            }
+            let what = format!("plugin crate {}", shown(&resolve(new.trim())));
+            Look { verb: "start", what, pattern: false, range: String::new(), link: None }
+        }
         other => {
             Look { verb: "use", what: other.to_string(), pattern: false, range: String::new(), link: None }
         }
@@ -4731,6 +4742,7 @@ const WORDS: &[(&str, &str, &str)] = &[
     ("replace", "replace", "replacing"),
     ("plan", "plan", "planning"),
     ("start", "start", "starting"),
+    ("install", "install", "installing"),
     ("send", "send", "sending"),
     ("review", "review", "reviewing"),
     ("ask", "ask", "asking"),
@@ -7831,6 +7843,15 @@ mod tests {
                 {"file_path": "src/b.rs"}]}),
         );
         assert_eq!((e.verb, e.what.as_str(), e.range.as_str()), ("edit", "src/a.rs", "+1 more"));
+        // The plugin tool: its act in words, never its raw name
+        let i = look(cwd, "mcp__tarae__plugin", &serde_json::json!({"wasm": "plugin-sdk/word_tally.wasm"}));
+        assert_eq!(i.said(), "install plugin from plugin-sdk/word_tally.wasm");
+        assert_eq!(doing(i.verb), "installing");
+        let n = look(cwd, "mcp__tarae__plugin", &serde_json::json!({"new": "plugins/word-tally"}));
+        assert_eq!(n.said(), "start plugin crate plugins/word-tally");
+        let from = serde_json::json!({"new": "/proj/plugins/word-tally", "from": "word-tally"});
+        let f = look(cwd, "mcp__tarae__plugin", &from);
+        assert_eq!(f.said(), "start plugin crate plugins/word-tally");
         // Orchestra's: each verb in the rows' six cells (`{:<6}`) — a fresh send's `anew` in its words
         let at = |tool: &str, input: serde_json::Value| look(cwd, tool, &input);
         let start = at("mcp__tarae__sessions_start", serde_json::json!({"sessions": {"knot-count": "b"}}));

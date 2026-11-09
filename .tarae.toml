@@ -50,6 +50,8 @@ steps = [
   { name = "perf", cmd = "cargo perf", note = "SLOWER", full = true },
   # The bundled plugins' own suites under `tarae plugin test`, the SDK's mock host's, and a new plugin's (CI's network job runs the same)
   { name = "plugins", cmd = "cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_plugins_pass_their_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin", full = true },
+  # (a new plugin crate builds in a sandboxed run, cargo's build files inside it — PD1's H2; cargo's cache warm)
+  { name = "plugin sandboxed", cmd = "cargo test --bin tarae -- --ignored --exact plugin::install::tests::a_new_plugin_builds_in_a_sandboxed_run", full = true },
 ]
 
 # What a card for one of Claude's commands warns of besides the packs' (`cardwarn.rs`): `cargo xtask linux` runs

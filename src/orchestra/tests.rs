@@ -1275,8 +1275,8 @@ fn a_cut_brief_doesnt_hold_the_set_cards_yes() {
 }
 
 /// No session tool answers a card (the cards stay yours — R4): with a card of Claude's up and focused in the parent
-/// and one waiting in each child, `session_send` to an idle child and a working one and `sessions_start` leave every
-/// card unanswered where it was, the set's own too, and the keys where they were.
+/// and one waiting in each child, `session_send` to an idle child and a working one, `sessions_start` and `plugin` leave
+/// every card unanswered where it was — the set's own, and a plugin install's (PD1's H2) —, and the keys where they were.
 #[test]
 fn no_session_tool_answers_a_card() {
     let mut p = place("cards");
@@ -1284,6 +1284,21 @@ fn no_session_tool_answers_a_card() {
     p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
     let what = What::Asks { call: crate::tools::Call::test(51) };
     p.ed.push_offer(crate::offer::Offer::new("Claude asks".into(), "?", "", String::new(), what));
+    let install = crate::plugin::PluginInstall {
+        call: Some(crate::tools::Call::test(57)),
+        name: "todo".into(),
+        from: "todo.wasm".into(),
+        crate_dir: None,
+        bytes: std::sync::Arc::from(&b""[..]),
+        sha256: String::new(),
+        permissions: Vec::new(),
+        commands: Vec::new(),
+        events: Vec::new(),
+        replaces: false,
+        dir: p.ed.workspace.root.join("never"),
+    };
+    let what = What::PluginInstall(Box::new(install));
+    p.ed.push_offer(crate::offer::Offer::new("Claude asks to install".into(), "?", "", String::new(), what));
     p.ed.card_focus_front();
     p.ed.focus_sync();
     let parked = [park_card(&mut p.ed, kids[0], 52), park_card(&mut p.ed, kids[1], 53)];
@@ -1299,7 +1314,10 @@ fn no_session_tool_answers_a_card() {
     assert!(r.0.starts_with("sent") && r.1.starts_with("queued"), "{r:?}");
     assert!(call(&mut p.ed, 56, "sessions_start", json!({ "sessions": { "three": "Brief." } })).is_none());
     settle_until(&mut p.ed, |ed| ed.offers.iter().any(|o| matches!(o.what, What::SessionSet(_))));
-    for n in [51, 52, 53, 56] {
+    // (`plugin`: a build that isn't there — refused, no card of its own)
+    let refused = call(&mut p.ed, 58, "plugin", json!({ "wasm": "gone.wasm" }));
+    assert!(refused.as_ref().is_some_and(|r| r.contains("isError")), "{refused:?}");
+    for n in [51, 52, 53, 56, 57] {
         assert_eq!(answered(n), None, "call {n} waits on its card, unanswered");
     }
     let now: Vec<u64> = p.ed.offers.iter().map(|o| o.id).collect();

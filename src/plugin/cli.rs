@@ -1,5 +1,5 @@
-//! `tarae plugin new|dev|test|vendor|list` — starting a plugin, building it while it's worked on, testing it, and
-//! seeing what's installed.
+//! `tarae plugin new|dev|test|vendor|list|example` — starting a plugin, building it while it's worked on, testing it,
+//! seeing what's installed, and the examples.
 //!
 //! A plugin out of this repository builds against the SDK and the rules as *this* tarae has them: `new` vendors them
 //! into its `tarae/` (from the sources embedded at build time, `VENDOR`), and `test` fails while that copy differs,
@@ -18,6 +18,8 @@ use tarae_wasm::Limits;
 const WIT: &str = include_str!("../../plugin-sdk/wit/tarae.wit");
 const CARGO_TOML: &str = include_str!("../../plugin-sdk/template/Cargo.toml");
 const LIB_RS: &str = include_str!("../../plugin-sdk/template/src/lib.rs");
+/// wasm32, and cargo's build files inside the crate (`target/build`): a sandboxed run can build it (PD1's H2).
+const CARGO_CONFIG: &str = include_str!("../../plugin-sdk/template/.cargo/config.toml");
 const TARGET: &str = "wasm32-unknown-unknown";
 /// Fuel for each call `loads` makes.
 const FUEL: u64 = 100_000_000;
@@ -62,10 +64,19 @@ fn paint(code: &str, s: &str) -> String {
 pub fn cli(args: &[String]) -> anyhow::Result<()> {
     match args.first().map(String::as_str) {
         Some("new") => {
-            let dir = args.get(1).ok_or_else(|| anyhow!("usage: tarae plugin new <name>"))?;
-            new(Path::new(dir))?;
+            let usage = "usage: tarae plugin new <dir> [--from <example>]";
+            let (dir, from) = match &args[1..] {
+                [dir] => (dir, None),
+                [dir, flag, example] if flag == "--from" => (dir, Some(example.as_str())),
+                _ => bail!(usage),
+            };
+            new(Path::new(dir), from)?;
             println!("{} {}", paint("1;32", "✓"), paint("1", &format!("created {dir}")));
-            println!("  {}  :words and :title — edit src/lib.rs", paint("2", "·"));
+            match from {
+                Some(e) => println!("  {}  from the example {e} — edit src/lib.rs", paint("2", "·")),
+                None => println!("  {}  :words and :title — edit src/lib.rs", paint("2", "·")),
+            }
+            println!("  {}  the API: REFERENCE.md", paint("2", "·"));
             println!("\n  cd {dir} && tarae plugin dev");
             println!("  {}", paint("2", "(builds on every save; your running tarae reloads it)"));
             if !target_installed() {
@@ -92,11 +103,23 @@ pub fn cli(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         Some("list") | None => list(),
-        Some(other) => {
-            bail!(
-                "unknown plugin command '{other}' — new <name> · dev [dir] · test [dir…] · vendor [dir] · list"
-            )
-        }
+        // (to stdout as it is: a file to read, or to pipe)
+        Some("example") => match args.get(1) {
+            Some(name) => {
+                print!("{}", super::examples::find(name).map_err(|e| anyhow!(e))?.lib);
+                Ok(())
+            }
+            None => {
+                for e in super::examples::EXAMPLES {
+                    println!("{:<14} {}", e.name, e.idea);
+                }
+                Ok(())
+            }
+        },
+        Some(other) => bail!(
+            "unknown plugin command '{other}' — new <dir> [--from <example>] · dev [dir] · test [dir…] · vendor [dir] · \
+             list · example [name]"
+        ),
     }
 }
 
@@ -309,34 +332,71 @@ fn sdk_crates_in(m: &serde_json::Value) -> Vec<SdkCrate> {
     ids.into_iter().map(|(i, id)| (SDK_CRATES[i].0, SDK_CRATES[i].2, from(id))).collect()
 }
 
-/// A plugin crate from the template, in `dir` (its last component is the name).
-fn new(dir: &Path) -> anyhow::Result<()> {
+/// A plugin crate from the template (or example `from`'s code), in `dir` (its last component is the name).
+fn new(dir: &Path, from: Option<&str>) -> anyhow::Result<()> {
     let name =
         dir.file_name().and_then(|n| n.to_str()).ok_or_else(|| anyhow!("no name in {}", dir.display()))?;
-    // What cargo takes as a package name
+    let files = crate_files(name, from).map_err(|e| anyhow!(e))?;
+    // (the folders above it are yours, typed in your terminal: made as they are)
+    let above = dir.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(above).map_err(|e| anyhow!("{}: {e}", above.display()))?;
+    write_crate(above, Path::new(name), &files).map_err(|e| anyhow!(e))
+}
+
+/// Why `name` can't name a plugin (a package cargo takes, and the plugin's file), if it can't.
+pub(super) fn name_ok(name: &str) -> Result<(), String> {
     if !name.starts_with(|c: char| c.is_ascii_alphabetic())
         || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        bail!("a plugin's name starts with a letter, then letters, digits, - and _");
+        return Err("a plugin's name starts with a letter, then letters, digits, - and _".into());
     }
     if KEYWORDS.contains(&name) {
-        bail!("“{name}” is a Rust keyword — cargo won't take it as a name");
+        return Err(format!("“{name}” is a Rust keyword — cargo won't take it as a name"));
     }
-    if dir.exists() {
-        bail!("{} already exists", dir.display());
-    }
-    // (its build's own files stay in its folder, not in a shared build-dir a sandboxed run can't write)
-    let config = format!("[build]\ntarget = \"{TARGET}\"\nbuild-dir = \"target/build\"\n");
-    let files = [
+    Ok(())
+}
+
+/// A new plugin crate's files, by path in it: `Cargo.toml` named `name`, the template's code (its test loading the
+/// plugin by `name`) or example `from`'s, `REFERENCE.md` (the reference generated from the WIT, ending with the
+/// examples' index), `.cargo/config.toml`, `.gitignore`, and this tarae's SDK vendored in `tarae/` (`vendored`, the
+/// WIT with it) — what `tarae plugin new`, `:plugin-new` and Claude's ask (`install.rs`) write alike.
+pub(super) fn crate_files(name: &str, from: Option<&str>) -> Result<Vec<(&'static str, String)>, String> {
+    name_ok(name)?;
+    let lib = match from {
+        Some(e) => super::examples::find(e)?.lib,
+        None => LIB_RS,
+    };
+    let mut files = vec![
         ("Cargo.toml", CARGO_TOML.replacen("\"NAME\"", &format!("\"{name}\""), 1)),
-        ("src/lib.rs", LIB_RS.replace("\"NAME\"", &format!("\"{name}\""))),
-        (".cargo/config.toml", config),
+        ("src/lib.rs", lib.replace("\"NAME\"", &format!("\"{name}\""))),
+        ("REFERENCE.md", super::reference::for_crate(WIT)?),
+        // (its build's own files stay in its folder, not in a shared build-dir a sandboxed run can't write)
+        (".cargo/config.toml", CARGO_CONFIG.to_string()),
         (".gitignore", "/target\n".to_string()),
     ];
-    for (path, text) in files.into_iter().chain(vendored()) {
-        let path = dir.join(path);
-        std::fs::create_dir_all(path.parent().expect("in the plugin folder"))?;
-        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    files.extend(vendored());
+    Ok(files)
+}
+
+/// `files` written into folder `rel` below `root` (plain names only), a folder made for them — through no link
+/// (`beneath.rs`, as Claude's edits are written): a card's look judged the folder, and a run that writes the project
+/// may swap a folder on the way for a link to outside before its `y` — a link is refused, never gone through. The
+/// crate's folder is made here (`mkdirat`: one there already is refused), each file new in it (`O_EXCL`).
+pub(super) fn write_crate(root: &Path, rel: &Path, files: &[(&str, String)]) -> Result<(), String> {
+    let (Some(above), Some(name)) = (rel.parent(), rel.file_name()) else {
+        return Err(format!("{}: no folder's name", rel.display()));
+    };
+    let shown = |e: std::io::Error| e.to_string();
+    let top = crate::beneath::Dir::root(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let dir = top.folder(above, true).map_err(shown)?.make(name).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("{} already exists", root.join(rel).display()),
+        _ => e.to_string(),
+    })?;
+    for (path, text) in files {
+        let path = Path::new(path);
+        let into = dir.folder(path.parent().unwrap_or(Path::new("")), true).map_err(shown)?;
+        let file = path.file_name().expect("a file's name");
+        into.create(file, text.as_bytes()).map_err(shown)?;
     }
     Ok(())
 }
@@ -621,7 +681,7 @@ fn diagnostics(json: &str) -> Vec<String> {
 }
 
 /// The package name in a plugin's Cargo.toml.
-fn package_name(manifest: &str) -> Option<String> {
+pub(super) fn package_name(manifest: &str) -> Option<String> {
     let t: toml::Table = toml::from_str(manifest).ok()?;
     Some(t.get("package")?.get("name")?.as_str()?.to_string())
 }
@@ -772,7 +832,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("plugin-new");
         let root = scratch.to_path_buf();
         let dir = root.join("my-plugin");
-        new(&dir).unwrap();
+        new(&dir, None).unwrap();
         let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         assert_eq!(package_name(&manifest).as_deref(), Some("my-plugin"));
         assert!(
@@ -781,17 +841,28 @@ mod tests {
                 .contains(&format!("package tarae:plugin@{}.", super::super::abi::API))
         );
         let config = std::fs::read_to_string(dir.join(".cargo/config.toml")).unwrap();
-        assert!(config.contains(TARGET) && config.contains("build-dir = \"target/build\""), "{config}");
+        assert!(config.contains(TARGET), "{config}");
+        // (cargo's build files inside the crate, where a sandboxed run writes)
+        assert!(config.contains("build-dir = \"target/build\""), "{config}");
+        assert!(std::fs::read_to_string(dir.join("REFERENCE.md")).unwrap().contains("### permission"));
         assert!(std::fs::read_to_string(dir.join("src/lib.rs")).unwrap().contains("load(\"my-plugin\""));
         // (the SDK vendored whole, as this tarae has it — its manifest without a workspace of its own)
         assert_eq!(vendored_stale(&dir), Vec::<String>::new());
         let sdk = std::fs::read_to_string(dir.join("tarae/sdk/Cargo.toml")).unwrap();
         assert!(sdk.contains("name = \"tarae-plugin\"") && !sdk.contains("[workspace]"), "{sdk}");
-        assert!(new(&dir).is_err(), "not over an existing folder");
-        assert!(new(&root.join("bad name")).is_err());
-        assert!(new(&root.join("2fa")).is_err(), "cargo refuses a leading digit");
-        assert!(new(&root.join("fn")).is_err(), "and keywords");
-        std::fs::remove_dir_all(root).ok();
+        assert!(new(&dir, None).is_err(), "not over an existing folder");
+        assert!(new(&root.join("bad name"), None).is_err());
+        assert!(new(&root.join("2fa"), None).is_err(), "cargo refuses a leading digit");
+        assert!(new(&root.join("fn"), None).is_err(), "and keywords");
+        // From an example: its code, the rest as the template's
+        let from = root.join("tally");
+        new(&from, Some("word-tally")).unwrap();
+        let lib = std::fs::read_to_string(from.join("src/lib.rs")).unwrap();
+        assert_eq!(lib, super::super::examples::find("word-tally").unwrap().lib);
+        assert!(from.join("REFERENCE.md").is_file() && from.join(".cargo/config.toml").is_file());
+        assert_eq!(vendored_stale(&from), Vec::<String>::new());
+        let e = new(&root.join("other"), Some("nope")).unwrap_err().to_string();
+        assert!(e.contains("no example nope") && !root.join("other").exists(), "{e}");
     }
 
     /// `test`, of `dirs`: what it said, and whether it passed.
@@ -809,7 +880,7 @@ mod tests {
     fn a_new_plugin_passes_its_own_test() {
         let scratch = crate::scratch::Scratch::new("plugin-passes");
         let dir = scratch.join("hello");
-        new(&dir).unwrap();
+        new(&dir, None).unwrap();
         let (said, ok) = tested(&[&dir]);
         assert!(ok, "{said}");
         assert!(said.contains("— 1 passed, 0 failed, 0 ignored · hello.wasm loads (2 commands)"), "{said}");
@@ -822,7 +893,7 @@ mod tests {
     fn a_plugin_built_for_another_api_fails_its_test() {
         let scratch = crate::scratch::Scratch::new("plugin-other-api");
         let dir = scratch.join("old");
-        new(&dir).unwrap();
+        new(&dir, None).unwrap();
         let wit = dir.join("tarae/wit/tarae.wit");
         let text = std::fs::read_to_string(&wit).unwrap();
         let api = format!("package tarae:plugin@{}.", super::super::abi::API);
@@ -846,7 +917,7 @@ mod tests {
     fn plugin_dev_builds_marks_and_installs_a_new_plugin() {
         let scratch = crate::scratch::Scratch::new("plugin-dev-round");
         let dir = scratch.join("devved");
-        new(&dir).unwrap();
+        new(&dir, None).unwrap();
         let (out, marks) = (scratch.join("plugins"), scratch.join("state/plugin-dev"));
         std::fs::create_dir_all(&out).unwrap();
         let source = std::fs::canonicalize(&dir).unwrap();
@@ -918,7 +989,7 @@ mod tests {
     fn a_vendored_sdk_that_differs_is_said_and_vendor_mends_it() {
         let scratch = crate::scratch::Scratch::new("plugin-vendored");
         let dir = scratch.join("mine");
-        new(&dir).unwrap();
+        new(&dir, None).unwrap();
         let rules = dir.join("tarae/rules/src/lib.rs");
         let text = std::fs::read_to_string(&rules).unwrap();
         std::fs::write(&rules, text.replace("prog.len() > 64", "prog.len() > 640")).unwrap();

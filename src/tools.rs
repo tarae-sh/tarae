@@ -152,6 +152,11 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     Ok(()) => return None,
                     Err(e) => Err(e),
                 },
+                // (its card's answer is the user's: no tool reaches it)
+                Some("plugin") => match crate::plugin::tool_call(ed, call(), args) {
+                    Ok(()) => return None,
+                    Err(e) => Err(e),
+                },
                 // (only a chat that lists it — `llm.web-search` as its process started)
                 Some("web_search") if crate::web::search::lists(ed) => {
                     match crate::web::search::call(ed, call(), args) {
@@ -255,6 +260,7 @@ pub fn list(parent: bool, compound: bool, web: bool) -> Value {
         crate::uistate::claude::tool_schema(),
         crate::gittool::schema(),
         crate::edittool::schema(),
+        crate::plugin::tool_schema(),
     ];
     if parent {
         tools.extend([
@@ -288,6 +294,7 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
         "edit" => ("Edit files", Some("destructiveHint")),
         "ui" => ("What's on screen, by id", Some("readOnlyHint")),
         "git" => ("Read the repository", Some("readOnlyHint")),
+        "plugin" => ("Install a plugin", None),
         "sessions_start" => ("Start sessions", None),
         "session_send" => ("Message a session", None),
         "session_act" => ("Act on a session", None),

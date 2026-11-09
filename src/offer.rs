@@ -149,6 +149,12 @@ pub enum What {
     /// A plugin asks to connect somewhere new, or read a file outside its patterns: `y` allows it, kept — and
     /// every request waiting on it (all asking the same) goes on.
     PluginAsk { plugin: String, asks: Vec<crate::plugin::PluginAsk> },
+    /// A plugin build to install (Claude's `plugin` tool, or `:plugin-install`): `y` approves the bytes the card holds
+    /// (hash-bound, never a dev approval) and puts them in the plugins folder — no load card follows; `n` nothing.
+    PluginInstall(Box<crate::plugin::PluginInstall>),
+    /// A plugin crate Claude asks to start (the `plugin` tool's `new`): `y` has tarae write it, `Cargo.toml` and
+    /// `.cargo` too; `n` nothing.
+    PluginNew(Box<crate::plugin::PluginNew>),
     /// A language server — `run` in the task panel (in `cwd`), then `then`.
     Install { tool: String, run: Vec<String>, cwd: PathBuf, then: crate::install::Then },
     /// A command Claude wants to run (`tools.rs`): `y` runs it in the task panel, `n` tells Claude no.
@@ -331,6 +337,8 @@ pub const KINDS: &[&str] = &[
     "fetch",
     "plugin-permissions",
     "plugin-ask",
+    "plugin-install",
+    "plugin-new",
     "install",
     "run",
     "no-sandbox",
@@ -458,6 +466,9 @@ impl What {
             | What::Install { .. }
             | What::PluginPermissions { .. }
             | What::PluginAsk { .. }
+            // (Claude's call ends with the restart; yours is typed again)
+            | What::PluginInstall(_)
+            | What::PluginNew(_)
             | What::ProjectTrust { .. }
             // (the chat reads the settings again when it opens)
             | What::ClaudeSettings { .. }
@@ -594,6 +605,8 @@ impl Offer {
             What::WebRead(a) => Some(Asker::Tool(a.call.clone())),
             What::WebSearch(a) => Some(Asker::Tool(a.call.clone())),
             What::SessionSet(s) => Some(Asker::Tool(s.call.clone())),
+            What::PluginInstall(i) => i.call.clone().map(Asker::Tool),
+            What::PluginNew(n) => Some(Asker::Tool(n.call.clone())),
             // (one `also` raised: Claude's call waits on it — `tools::also_ask`)
             What::Grant { run, .. } if run.claude.is_some() => run.claude.clone().map(Asker::Tool),
             What::ProtectedMade { then, .. } => then.call().map(|c| Asker::Tool(c.clone())),
@@ -689,6 +702,8 @@ impl Offer {
             What::Grammars { then, .. } => then.is_some(),
             // (one `also` raised is Claude's)
             What::Grant { run, .. } => run.claude.is_none(),
+            // (`:plugin-install`'s; Claude's holds its call)
+            What::PluginInstall(i) => i.call.is_none(),
             w => matches!(
                 w,
                 What::Outside { .. }
@@ -775,6 +790,8 @@ impl Offer {
                 | What::Fetch { .. }
                 | What::PluginPermissions { .. }
                 | What::PluginAsk { .. }
+                | What::PluginInstall(_)
+                | What::PluginNew(_)
                 | What::Run(_)
                 | What::NoSandbox { .. }
                 | What::ProtectedMade { .. }
@@ -1357,6 +1374,8 @@ impl Offer {
             }
             W::PluginPermissions { .. } => vec![lasts('y', "Allow"), plain('n', "Not now")],
             W::PluginAsk { .. } => vec![plain('y', "Allow"), plain('n', "No")],
+            W::PluginInstall(_) => vec![plain('y', "Install"), plain('n', "Not now")],
+            W::PluginNew(_) => vec![plain('y', "Make it"), plain('n', "Not now")],
             // (one socket past the sandbox — #119; `a` is the socket's, for any command — #182; Docker's,
             // this command's with it, never the socket's — #193)
             W::Run(r) if r.socket.is_some() && self.lasts() => match r.again.is_some() {
@@ -1682,6 +1701,8 @@ impl Offer {
             W::Fetch { .. } => "fetch",
             W::PluginPermissions { .. } => "plugin-permissions",
             W::PluginAsk { .. } => "plugin-ask",
+            W::PluginInstall(_) => "plugin-install",
+            W::PluginNew(_) => "plugin-new",
             W::Install { .. } => "install",
             W::Run(_) => "run",
             W::NoSandbox { .. } => "no-sandbox",
@@ -2148,6 +2169,8 @@ impl crate::editor::Editor {
                 self.offer_finished(id, Ok(()));
                 self.plugin_permissions_answer(plugin, permissions, code, true);
             }
+            What::PluginInstall(i) => crate::plugin::accept_install(self, id, *i),
+            What::PluginNew(n) => crate::plugin::accept_new(self, id, *n),
             What::PluginAsk { plugin, asks } => {
                 self.offer_finished(id, Ok(()));
                 self.plugin_ask_answer(plugin, asks, true);
@@ -2944,6 +2967,8 @@ impl crate::editor::Editor {
                 self.plugin_permissions_answer(plugin, permissions, code, false)
             }
             What::PluginAsk { plugin, asks } => self.plugin_ask_answer(plugin, asks, false),
+            What::PluginInstall(i) => crate::plugin::decline_install(self, *i),
+            What::PluginNew(n) => crate::plugin::decline_new(self, *n),
             What::Install { tool, .. } | What::Fetch { tool, .. } => {
                 self.set_status(format!("Not installing {tool} for now (N on its card: never ask)"))
             }
