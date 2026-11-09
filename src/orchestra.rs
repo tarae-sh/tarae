@@ -1142,6 +1142,12 @@ pub fn lists(ed: &Editor) -> bool {
     ed.workspace.claude.chat.as_ref().is_some_and(|c| c.session_tools)
 }
 
+/// Whether the chat of `ed.workspace` has the compound answers (`llm.compound`): as its process started
+/// (`Chat.compound`), for the same reason.
+pub fn compound(ed: &Editor) -> bool {
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.compound)
+}
+
 pub fn start_schema() -> Value {
     json!({
         "name": "sessions_start",

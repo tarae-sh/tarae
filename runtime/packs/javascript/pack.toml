@@ -14,6 +14,19 @@ config-files = { json = ["package.json"] }
 # What checks and builds: the places Claude's run of one prints go to your list (]q)
 checks = ["npm test", "npm run", "pnpm test", "pnpm run", "yarn test", "eslint"]
 
+# A V8 stack frame (Node, Jest, Vitest): `at f (src/a.test.ts:12:5)`, `at src/a.js:12:5`, an ES module's
+# `file:///…` — the project's own files only: node_modules' frames and Node's own are no place of yours
+[[places]]
+match = '^at (?:.*? \()?(?:file://)?(?<path>[^\s(]\S*?):(?<line>\d+):(?<col>\d+)\)?$'
+message = "note: stack frame"
+own = true
+
+# Vitest's frame under a failure: `❯ src/a.test.ts:12:5`
+[[places]]
+match = '^❯ (?:file://)?(?<place>\S+:\d+:\d+)$'
+message = "note: stack frame"
+own = true
+
 # `__tests__`: Jest's folder
 [language.javascript]
 extensions = ["js", "mjs", "cjs"]

@@ -1,5 +1,9 @@
 # Kotlin.
 
+# kotlinc's: `e: /abs/a.kt:12:5 Unresolved reference 'x'.`, `w: …` — the place maybe a `file://` URL
+[[places]]
+match = '^(?<severity>e|w): (?:file://)?(?<place>\S+:\d+:\d+):? (?<message>.*)$'
+
 [language.kotlin]
 extensions = ["kt", "kts"]
 comment-token = "//"

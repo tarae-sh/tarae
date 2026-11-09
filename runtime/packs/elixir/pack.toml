@@ -1,5 +1,12 @@
 # Elixir.
 
+# A stack frame: `(my_app 0.1.0) lib/a.ex:12: MyApp.f/1` — the project's own files only: a dependency's frames or
+# Elixir's own are no place of yours
+[[places]]
+match = '^\(\S+ [^)]*\) (?<path>\S+?):(?<line>\d+):'
+message = "note: stack frame"
+own = true
+
 [language.elixir]
 extensions = ["ex", "exs"]
 comment-token = "#"

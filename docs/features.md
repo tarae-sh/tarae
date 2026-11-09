@@ -334,7 +334,9 @@ configs carry over as they are.
   `build`, `go build`/`vet`, `tsc`, every `npm run` script, `ruff`/`mypy`, `make`, as the language packs say — and from `[task.<name>] cmd =
   "…"` (optional `cwd`) in the config. It runs in the background with its output below the code; every
   `file:line:col: message` it prints (rustc, gcc/clang, go, eslint, ruff, mypy — and the forms the packs add with
-  `[[places]]`: rustc's long one, tsc's, Python tracebacks) goes into the list as it comes, so `]q` walks the errors.
+  `[[places]]`: rustc's long one and a panic, tsc's, Maven's, kotlinc's, sbt's, PHP's, Python tracebacks, and the
+  frames of a stack trace in the project's own files — Rust's, V8's, the JVM's, Elixir's) goes into the list as it
+  comes, so `]q` walks the errors.
   Modified files are saved first
 - **Terminal** `space T` — your shell in a panel below the code, with the keys: everything you type goes to it
   (colors, full-screen programs, the lot — `esc` too). `C-\` goes round: from the code to the program, from the

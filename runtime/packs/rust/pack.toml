@@ -25,6 +25,18 @@ config-files = { toml = [
 match = '^(?<severity>error|warning)(?:\[[^\]]*\])?: ?(?<message>.*)$'
 then = '^--> (?<place>.+)$'
 
+# A panic: `thread 'tests::t' panicked at src/a.rs:12:5:`, its message on the next line (before 1.73:
+# `panicked at 'why', src/a.rs:12:5`)
+[[places]]
+match = '^(?<message>thread .* panicked) at (?:.*, )?(?<place>[^\s,]+:\d+:\d+):?$'
+
+# A backtrace's frame (`RUST_BACKTRACE=1`): `at ./src/a.rs:12:5`, under its function's line — the project's own
+# files only: a crate's frames or the standard library's are no place of yours
+[[places]]
+match = '^at (?<place>\S+:\d+:\d+)$'
+message = "note: stack frame"
+own = true
+
 # No '' pair: a lifetime's quote
 [language.rust]
 extensions = ["rs"]

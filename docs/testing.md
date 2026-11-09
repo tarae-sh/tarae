@@ -269,8 +269,10 @@ report = "cargo's {what} lock"        # Claude's report (`for` unless set)
 
 A task's places come the same way. Every tool's `path:line[:col]: [severity] message` is tarae's own; a form one
 tool has beyond it is its pack's `[[places]]` — `match` with groups `path`, `line`, `col` (or `place`, a
-`path:line:col` text), `severity`, `message`; `then` when the place comes on a later line; `message = "…"` for one
-of its own. A rule whose place isn't a file lets the next try. A path is looked for from the run's folder and the folders above
+`path:line:col` text), `severity` (read by its first letter: `E`, `warn`, `WARNING`), `message`; `then` when the place
+comes on a later line; `message = "…"` for one of its own; `own = true` for a stack frame's form, whose places count
+only in the project's own files (the file picker's list: what git ignores is left out — `node_modules`, a crate's
+source, the runtime's). A rule whose place isn't a file (or, `own`, not one of the project's) lets the next try. A path is looked for from the run's folder and the folders above
 it, then, given alone (`TestDevice.java:12`), as the project's one file that ends with it (the project's and the
 workspace's folders' files, listed once a run, the first time a name isn't found as written) — several such files, and
 the line is no place. `checks` names the commands whose places a run of

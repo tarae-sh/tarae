@@ -93,6 +93,17 @@ impl Files {
         });
         listed.get(file).map_or(&[], Vec::as_slice)
     }
+
+    /// Whether `path` (a real path) is one of the roots' own files: in their listing — the file picker's, which leaves
+    /// out what git ignores (or, outside a repository, what the walk skips: hidden folders, tools' output). None to
+    /// look in: none is. Listed once, as for a name.
+    pub fn owns(&mut self, path: &Path) -> bool {
+        let Some(name) = path.file_name().map(OsStr::to_os_string) else { return false };
+        if self.roots.is_empty() {
+            return false;
+        }
+        self.named(&name).iter().any(|f| f == path || std::fs::canonicalize(f).is_ok_and(|c| c == path))
+    }
 }
 
 /// `paths` by their file name, each name's in their order.

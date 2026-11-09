@@ -636,6 +636,54 @@ mod tests {
         assert_eq!(t.end(&[], None, 0).sums.parallel, 2);
     }
 
+    /// Code mode (a)'s yardstick: the call-order record counts a turn's requests as they come, so the same work with
+    /// and without the compound answers (`llm.compound`) says what they save — a search and the read of what it
+    /// found, a failed run and the read of the lines it named: one request each.
+    #[test]
+    fn the_record_counts_what_the_compound_answers_save() {
+        let tool = |name: &str, input: Value| (format!("mcp__tarae__{name}"), input);
+        let turn = |steps: Vec<Vec<(String, Value)>>| {
+            let mut t = Tally::default();
+            for (i, step) in steps.into_iter().enumerate() {
+                t.request();
+                for (k, (name, input)) in step.into_iter().enumerate() {
+                    let id = format!("{i}-{k}");
+                    call(&mut t, &id, &name, input, 0);
+                    t.answered(&id, false, 0);
+                }
+            }
+            let steps = t.take_steps();
+            (steps.clone(), t.end(&vec![100; steps.len()], None, 0).sums)
+        };
+        let (search, read) = (json!({ "pattern": "fn x" }), json!({ "files": ["src/a.rs:x"] }));
+        let (edit, run) = (json!({ "edits": [] }), json!({ "command": "cargo test" }));
+        let without = vec![
+            vec![tool("search", search.clone())],
+            vec![tool("read", read.clone())],
+            vec![tool("edit", edit.clone())],
+            vec![tool("run", run.clone())],
+            vec![tool("read", read)],
+            vec![tool("edit", edit.clone())],
+            vec![tool("run", run.clone())],
+        ];
+        let with = vec![
+            vec![tool("search", json!({ "pattern": "fn x", "show": "symbol" }))],
+            vec![tool("edit", edit.clone())],
+            vec![tool("run", run.clone())],
+            vec![tool("edit", edit)],
+            vec![tool("run", run)],
+        ];
+        let ((off, a), (on, b)) = (turn(without), turn(with));
+        assert_eq!(off, [["search"], ["read"], ["edit"], ["run"], ["read"], ["edit"], ["run"]]);
+        assert_eq!(on, [["search"], ["edit"], ["run"], ["edit"], ["run"]]);
+        assert_eq!((a.requests, a.calls, a.context), (7, 7, 700));
+        assert_eq!(
+            (b.requests, b.calls, b.context),
+            (5, 5, 500),
+            "two requests, and what they carried, fewer"
+        );
+    }
+
     /// Kept with the conversation and read back the same; a turn kept before calls were counted has none.
     #[test]
     fn calls_are_kept_and_read_back() {

@@ -13,6 +13,17 @@ protect = [
 # What a first build makes beside those names: Gradle's builds and its project cache, Maven's builds
 first-made = [".gradle/", "build/", "target/"]
 
+# A JVM stack frame: `at com.x.FooTest.t(FooTest.java:12)` — its file by name alone (the project's one file of that
+# name), the project's own files only: the JDK's frames or a library's are no place of yours
+[[places]]
+match = '^at \S+\((?<path>[^():\s]+):(?<line>\d+)\)$'
+message = "note: stack frame"
+own = true
+
+# Maven's compiler: `[ERROR] /abs/Foo.java:[12,5] cannot find symbol`
+[[places]]
+match = '^\[(?<severity>ERROR|WARNING)\] (?<path>.+?):\[(?<line>\d+),(?<col>\d+)\] ?(?<message>.*)$'
+
 # The project is the topmost build file's folder: one jdtls for a multi-module build (parent pom,
 # settings.gradle), not one per module — each is hundreds of MB
 [language.java]

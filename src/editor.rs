@@ -21930,6 +21930,52 @@ q = \"delete_selection\"\n",
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A panic's place and its backtrace's frame in the project fill the list (the rust pack's `[[places]]`); a frame
+    /// in a dependency's folder or outside the project isn't a place (`own = true`) — `]q` goes past none.
+    #[test]
+    fn a_panics_frames_reach_the_list_only_in_the_projects_own_files() {
+        let scratch = crate::scratch::Scratch::new("task-frames");
+        let dir = std::fs::canonicalize(&scratch).unwrap();
+        let outside = crate::scratch::Scratch::new("task-frames-outside");
+        std::fs::write(outside.join("dep.rs"), "x\n").unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/dep")).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+        std::fs::write(dir.join("node_modules/dep/index.js"), "x\n").unwrap();
+        let printed = [
+            "thread 'tests::t' panicked at src/lib.rs:3:5:".to_string(),
+            "boom".into(),
+            "   0: dep::f".into(),
+            format!("             at {}:1:1", outside.join("dep.rs").display()),
+            "   1: lib::b".into(),
+            "             at ./src/lib.rs:2:9".into(),
+            format!("    at f ({}:1:1)", dir.join("node_modules/dep/index.js").display()),
+        ];
+        std::fs::write(dir.join("out.txt"), printed.join("\n") + "\n").unwrap();
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        let cmd = "cat out.txt; exit 101".to_string();
+        ed.task_start(crate::task::Task { name: "test".into(), cmd, cwd: dir.clone() });
+        settle_until(&mut ed, |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+        let r = ed.workspace.task_run.as_ref().unwrap();
+        let places: Vec<_> =
+            r.places.iter().map(|p| (p.path.ends_with("src/lib.rs"), p.line, p.severity)).collect();
+        assert_eq!(places, [(true, 2, 1), (true, 1, 3)], "the panic, then its frame in the project");
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert_eq!(said, "test: 1 error — ]q goes to the first");
+        feed(&mut ed, "]q");
+        assert_eq!((ed.doc().display_name_short(), ed.cursor_line()), ("lib.rs".to_string(), 2));
+        feed(&mut ed, "]q");
+        assert_eq!(ed.cursor_line(), 1);
+        // A trace's frames alone (Jest's, notes): said as places, not as nothing to point at
+        std::fs::write(dir.join("out.txt"), "  at Object.<anonymous> (src/lib.rs:3:1)\n").unwrap();
+        let cmd = "cat out.txt; exit 1".to_string();
+        ed.task_start(crate::task::Task { name: "test".into(), cmd, cwd: dir.clone() });
+        settle_until(&mut ed, |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert_eq!(said, "test failed: 1 place — ]q goes to the first");
+    }
+
     /// Enter, `o`, `O` indent from the syntax tree (`indents.scm`, the tree reparsed on the spot since the
     /// keys came faster than the background parse): between brackets the closer gets its own line, `o` in
     /// a block stays in it, `O` over a closer goes in, `o` after a block comes back out; a whitespace-only

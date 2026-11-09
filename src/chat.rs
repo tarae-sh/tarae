@@ -725,6 +725,9 @@ pub struct Chat {
     /// Whether its process lists the session tools (`orchestra::may_parent` as it was spawned): fixed for the
     /// process's life — the tools are the cache's prefix, the same to the byte while it runs; `:set` changes the next.
     pub session_tools: bool,
+    /// Whether its process has the compound answers (`llm.compound` as it was spawned): fixed for its life, as
+    /// `session_tools` — its tools' schemas (`tools::list`) and what a failed run's report adds (`tools::pointed`).
+    pub compound: bool,
     /// The line that says who a parent's message is from went in this conversation (`orchestra::FRAMING`): once.
     pub framed: bool,
     /// The turn under way is a wake (`orchestra::wake`): the children it was woken for, and how many turns its usage had
@@ -1218,6 +1221,7 @@ impl Chat {
             transcript: None,
             sends: Vec::new(),
             session_tools: false,
+            compound: false,
             framed: false,
             waking: None,
             queued_laid: RefCell::new(None),
@@ -2466,6 +2470,8 @@ fn ensure_proc(ed: &mut Editor) {
     // (a key passed on until the session ends — the key card's `y`, `envkey.rs`)
     // (the session's own model and effort, else your default — `models::of`)
     let cfg = llm::LlmConfig { keep_env_key: llm::keeps_key(ed), ..crate::models::config(ed) };
+    // (whether it has the compound answers: as it starts, for its life — `Chat.compound`)
+    let compound = cfg.compound;
     let tx = ed.events.sender();
     // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
     let parent = crate::orchestra::may_parent(ed);
@@ -2495,7 +2501,7 @@ fn ensure_proc(ed: &mut Editor) {
         // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
         c.generation = crate::tools::generation();
         c.proc = Some(Proc { stdin: llm::Lines::to(tx), pid: 0 });
-        c.session_tools = parent;
+        (c.session_tools, c.compound) = (parent, compound);
         return;
     }
     let mut args = llm::with_tools(&cfg.args, TOOLS, ALLOWED);
@@ -2556,7 +2562,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.generation = crate::tools::generation();
     let generation = c.generation;
     c.proc = Some(Proc { stdin, pid: child.id() });
-    c.session_tools = parent;
+    (c.session_tools, c.compound) = (parent, compound);
     llm::pump(child, false, tx, move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });

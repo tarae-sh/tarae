@@ -60,19 +60,23 @@ pub(crate) fn color_off(cmd: &mut std::process::Command) {
 ///   says it, as in the shared form (`error TS2304: …`); `message = "…"`: one of its own.
 /// - `then`: the place comes on a later line, matching this (rustc's `error[E0308]: …` + ` --> src/a.rs:3:5`):
 ///   the line is a message waiting for it, the `then` line's groups its place.
+/// - `own = true`: a place counts only in the project's own files (`places::Files::owns`) — a stack frame's form,
+///   whose frames in a dependency or the runtime are no place of the project's.
 ///
-/// A rule whose place isn't a file lets the next rule, then the shared form, try the line.
+/// A `severity` group is read by its first letter (`E`, `warn`, `WARNING`). A rule whose place isn't a file (or not
+/// one of the project's own, `own`) lets the next rule, then the shared form, try the line.
 #[derive(Clone, Debug)]
 pub struct PlaceRule {
     re: regex::Regex,
     then: Option<regex::Regex>,
     message: Option<String>,
+    own: bool,
 }
 
 impl PlaceRule {
     /// One `[[places]]` entry.
     pub(crate) fn read(t: &toml::Table) -> Result<PlaceRule, String> {
-        crate::packs::known(t, &["match", "then", "message"], "[[places]]")?;
+        crate::packs::known(t, &["match", "then", "message", "own"], "[[places]]")?;
         let re = |k: &str| -> Result<Option<regex::Regex>, String> {
             let Some(p) = crate::packs::string(t, k)? else { return Ok(None) };
             let re = regex::Regex::new(&p).map_err(|e| format!("`{k}`: {e}"))?;
@@ -86,6 +90,10 @@ impl PlaceRule {
             re: re("match")?.ok_or("an entry has no `match`")?,
             then: re("then")?,
             message: None,
+            own: match t.get("own") {
+                None => false,
+                Some(v) => v.as_bool().ok_or("`own` isn't true or false")?,
+            },
         };
         let placed = |r: &regex::Regex| {
             let g: Vec<&str> = r.capture_names().flatten().collect();
@@ -108,6 +116,9 @@ impl PlaceRule {
         if let Some(m) = &self.message {
             s += &format!(" says {m:?}");
         }
+        if self.own {
+            s += " (own files)";
+        }
         s
     }
 
@@ -118,14 +129,14 @@ impl PlaceRule {
         if self.then.is_some() {
             return Some(Read::Waits(sev, msg));
         }
-        Some(Read::Place(placed(cwd, &caps, sev, msg, files)))
+        Some(Read::Place(placed(cwd, &caps, sev, msg, files, self.own)))
     }
 
     /// The severity and message a line says.
     fn said(&self, caps: &regex::Captures) -> (u8, String) {
         let msg = self.message.clone().or_else(|| caps.name("message").map(|m| m.as_str().to_string()));
         match (caps.name("severity"), msg) {
-            (Some(s), m) => (severity(s.as_str()).0, m.unwrap_or_default()),
+            (Some(s), m) => (severity_named(s.as_str()), m.unwrap_or_default()),
             (None, m) => severity(m.as_deref().unwrap_or_default()),
         }
     }
@@ -136,20 +147,26 @@ enum Read {
     Waits(u8, String),
 }
 
-/// The place `caps` names — `place`, else `path`, `line`, `col` — if it's a file.
+/// The place `caps` names — `place`, else `path`, `line`, `col` — if it's a file (`own`: one of the project's own).
 fn placed(
     cwd: &Path,
     caps: &regex::Captures,
     sev: u8,
     msg: String,
     files: &mut crate::places::Files,
+    own: bool,
 ) -> Option<Item> {
-    if let Some(p) = caps.name("place") {
-        let (path, l, c, _) = split_place(p.as_str())?;
-        return item(cwd, (path, l, c), sev, msg, files);
-    }
-    let n = |k: &str| caps.name(k).and_then(|m| m.as_str().parse::<usize>().ok());
-    item(cwd, (caps.name("path")?.as_str(), n("line")?, n("col").unwrap_or(1)), sev, msg, files)
+    let it = match caps.name("place") {
+        Some(p) => {
+            let (path, l, c, _) = split_place(p.as_str())?;
+            item(cwd, (path, l, c), sev, msg, files)?
+        }
+        None => {
+            let n = |k: &str| caps.name(k).and_then(|m| m.as_str().parse::<usize>().ok());
+            item(cwd, (caps.name("path")?.as_str(), n("line")?, n("col").unwrap_or(1)), sev, msg, files)?
+        }
+    };
+    (!own || files.owns(&it.path)).then_some(it)
 }
 
 /// Reads places out of a task's output, a line at a time: the forms the packs say (`[[places]]` — tsc's,
@@ -208,9 +225,10 @@ impl Matcher {
     pub fn line(&mut self, cwd: &Path, line: &str) -> Option<Item> {
         let trimmed = line.trim();
         if let Some((i, sev, msg)) = self.pending.take() {
-            let then = self.rules[i].then.as_ref().expect("a waiting rule has a `then`");
+            let rule = &self.rules[i];
+            let then = rule.then.as_ref().expect("a waiting rule has a `then`");
             match then.captures(trimmed) {
-                Some(caps) => return placed(cwd, &caps, sev, msg, &mut self.files),
+                Some(caps) => return placed(cwd, &caps, sev, msg, &mut self.files, rule.own),
                 None => self.pending = Some((i, sev, msg)),
             }
         }
@@ -266,6 +284,16 @@ fn severity(rest: &str) -> (u8, String) {
         }
     }
     (1, rest.to_string())
+}
+
+/// A `severity` group's word, by its first letter in any case (`error`, `E`, `warn`, `WARNING`, `note`, `info`,
+/// `help`); any other an error.
+fn severity_named(word: &str) -> u8 {
+    match word.chars().next().map(|c| c.to_ascii_lowercase()) {
+        Some('w') => 2,
+        Some('n' | 'i' | 'h') => 3,
+        _ => 1,
+    }
 }
 
 fn item(
@@ -1198,14 +1226,24 @@ impl Editor {
                     return crate::tools::run_done(ed);
                 }
                 let (name, state, (errors, warnings)) = (r.task.name.clone(), r.state.clone(), r.found);
-                let found = errors + warnings;
+                let (found, places) = (errors + warnings, r.places.len());
+                let n = |k: usize, one: &str, many: &str| match k {
+                    0 => String::new(),
+                    1 => format!("1 {one} "),
+                    _ => format!("{k} {many} "),
+                };
                 match (state, found) {
                     (State::Passed, 0) => ed.set_success(format!("{name} — all good")),
                     (State::NotRun(why), _) => ed.set_error(format!("{name} not run — {why}")),
+                    // (notes alone: a stack trace's frames in the project)
+                    (_, 0) if places > 0 => ed.set_warning(format!(
+                        "{name} failed: {}— ]q goes to the first",
+                        n(places, "place", "places")
+                    )),
                     (_, 0) => ed.set_error(format!("{name} failed — nothing to point at; the panel has why")),
                     _ => {
-                        let n = |k: usize, w: &str| if k == 0 { String::new() } else { format!("{k} {w} ") };
-                        let what = format!("{}{}", n(errors, "errors"), n(warnings, "warnings"));
+                        let what =
+                            format!("{}{}", n(errors, "error", "errors"), n(warnings, "warning", "warnings"));
                         ed.set_warning(format!("{name}: {what}— ]q goes to the first"));
                     }
                 }
@@ -1443,18 +1481,20 @@ mod tests {
         assert!(r.output.len() <= OUTPUT_KEPT, "{}", r.output.len());
     }
 
-    fn dir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("tarae-task-{}", std::process::id()));
+    fn dir(name: &str) -> (crate::scratch::Scratch, PathBuf) {
+        let s = crate::scratch::Scratch::new(name);
+        let d = std::fs::canonicalize(&s).unwrap();
         std::fs::create_dir_all(d.join("src")).unwrap();
         std::fs::write(d.join("src/main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(d.join("a.py"), "x\n").unwrap();
-        std::fs::canonicalize(d).unwrap()
+        (s, d)
     }
 
     #[test]
     fn places_from_common_formats() {
-        let d = dir();
-        let mut m = Matcher::builtin();
+        let (_s, d) = dir("task-places");
+        // (the project's own files: a stack frame's form counts only those — `own`)
+        let mut m = Matcher::builtin().with_files(vec![d.clone()]);
         let mut one = |l: &str| {
             m.line(&d, l).map(|i| {
                 (
@@ -1505,7 +1545,80 @@ mod tests {
         std::fs::create_dir_all(d.join("member")).unwrap();
         let got = m.line(&d.join("member"), "src/main.rs:1:1: error: from the workspace root");
         assert_eq!(got.map(|i| i.path.ends_with("src/main.rs")), Some(true));
-        std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// The forms the packs add for code mode's a6 and `]q` (2026-11-09): a row each — a stack frame's (`own`) only
+    /// in the project's own files, never a dependency's folder (one the walk skips) or a file outside the project.
+    #[test]
+    fn places_from_panics_frames_and_more_tools() {
+        let (_s, d) = dir("task-forms");
+        let outside = crate::scratch::Scratch::new("task-forms-outside");
+        std::fs::write(outside.join("dep.rs"), "x\n").unwrap();
+        for f in [
+            "src/a.test.ts",
+            "node_modules/dep/index.js",
+            "src/main/java/x/FooTest.java",
+            "src/a.kt",
+            "src/A.scala",
+            "lib/a.ex",
+            "a.php",
+            "a.lua",
+        ] {
+            std::fs::create_dir_all(d.join(f).parent().unwrap()).unwrap();
+            std::fs::write(d.join(f), "x\n").unwrap();
+        }
+        let mut m = Matcher::builtin().with_files(vec![d.clone()]);
+        let mut one = |l: &str| {
+            let l =
+                l.replace("{d}", &d.display().to_string()).replace("{out}", &outside.display().to_string());
+            m.line(&d, &l).map(|i| {
+                (
+                    i.path.file_name().unwrap().to_string_lossy().into_owned(),
+                    i.line,
+                    i.col,
+                    i.severity,
+                    i.message,
+                )
+            })
+        };
+        let at = |f: &str, l, c, s, msg: &str| Some((f.to_string(), l, c, s, msg.to_string()));
+        // Rust: a panic (and before 1.73), a backtrace's frame — the project's own only
+        let panic = "thread 'tests::t' panicked";
+        assert_eq!(one("thread 'tests::t' panicked at src/main.rs:3:5:"), at("main.rs", 2, 4, 1, panic));
+        let old = one("thread 'main' panicked at 'boom, now', src/main.rs:2:1");
+        assert_eq!(old, at("main.rs", 1, 0, 1, "thread 'main' panicked"));
+        assert_eq!(one("at ./src/main.rs:3:9"), at("main.rs", 2, 8, 3, "stack frame"));
+        assert_eq!(one("at {out}/dep.rs:1:1"), None, "a crate's frame, outside the project");
+        // V8 (Jest, Node, an ES module) and Vitest's `❯`
+        let frame = |l, c| at("a.test.ts", l, c, 3, "stack frame");
+        assert_eq!(one("at Object.<anonymous> (src/a.test.ts:12:5)"), frame(11, 4));
+        assert_eq!(one("at async f (file://{d}/src/a.test.ts:2:3)"), frame(1, 2));
+        assert_eq!(one("❯ src/a.test.ts:7:1"), frame(6, 0));
+        assert_eq!(one("at f ({d}/node_modules/dep/index.js:1:1)"), None, "node_modules' frame");
+        assert_eq!(one("at node:internal/modules/cjs/loader:1:1"), None, "Node's own");
+        // The JVM's frame (its file by name alone) and Maven's compiler
+        assert_eq!(one("at x.FooTest.t(FooTest.java:12)"), at("FooTest.java", 11, 0, 3, "stack frame"));
+        assert_eq!(one("at java.base/java.lang.Thread.run(Thread.java:833)"), None, "the JDK's");
+        let maven = "[ERROR] {d}/src/main/java/x/FooTest.java:[12,5] cannot find symbol";
+        assert_eq!(one(maven), at("FooTest.java", 11, 4, 1, "cannot find symbol"));
+        let maven = "[WARNING] {d}/src/main/java/x/FooTest.java:[3,1] unchecked";
+        assert_eq!(one(maven).map(|x| x.3), Some(2));
+        // kotlinc's (its `file://` place too), sbt's
+        let kt = one("e: file://{d}/src/a.kt:3:7 Unresolved reference 'x'.");
+        assert_eq!(kt, at("a.kt", 2, 6, 1, "Unresolved reference 'x'."));
+        assert_eq!(one("w: {d}/src/a.kt:1:1 Variable 'y' is never used").map(|x| x.3), Some(2));
+        assert_eq!(
+            one("[error] {d}/src/A.scala:4:9: not found: value x"),
+            at("A.scala", 3, 8, 1, "not found: value x")
+        );
+        assert_eq!(one("[warn] {d}/src/A.scala:1:1: unused").map(|x| x.3), Some(2));
+        // Elixir's frame, PHP's `on line N`, Lua's interpreter
+        assert_eq!(one("(my_app 0.1.0) lib/a.ex:12: MyApp.f/1"), at("a.ex", 11, 0, 3, "stack frame"));
+        let php = one("PHP Fatal error:  Uncaught Exception: boom in {d}/a.php on line 3");
+        assert_eq!(php, at("a.php", 2, 0, 1, "Uncaught Exception: boom"));
+        assert_eq!(one("Warning: Undefined variable $x in {d}/a.php on line 5").map(|x| x.3), Some(2));
+        let lua = one("lua: a.lua:12: attempt to call a nil value (global 'f')");
+        assert_eq!(lua, at("a.lua", 11, 0, 1, "attempt to call a nil value (global 'f')"));
     }
 
     /// A task's or a test run's output is read, not a terminal's: colours off — `NO_COLOR`, and the packs'
@@ -1531,7 +1644,7 @@ mod tests {
         if crate::test_results::unoptimized("task::tests::perf_task_places_lines") {
             return;
         }
-        let d = dir();
+        let (_s, d) = dir("task-places-perf");
         let mut out = Vec::new();
         for i in 0..1_000 {
             let n = i % 40 + 1;

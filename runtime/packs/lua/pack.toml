@@ -1,5 +1,10 @@
 # Lua: lua-language-server.
 
+# The interpreter's error: `lua: a.lua:12: attempt to call a nil value` (its traceback's lines are the form every
+# tool shares)
+[[places]]
+match = '^(?:lua|luajit|lua5\.\d): (?<place>[^:\s]+:\d+): ?(?<message>.*)$'
+
 # Its files that are code: a token-like line there is code, not a token (`tokens::not_settings`)
 [sandbox]
 not-settings = ["lua"]

@@ -1,5 +1,9 @@
 # Scala.
 
+# sbt's: `[error] /abs/A.scala:12:5: not found: value x`, `[warn] …`
+[[places]]
+match = '^\[(?<severity>error|warn)\] (?<place>.+?:\d+:\d+): ?(?<message>.*)$'
+
 # Its files that are code: a token-like line there is code, not a token (`tokens::not_settings`)
 [sandbox]
 not-settings = ["scala"]

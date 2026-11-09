@@ -119,7 +119,7 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     let result = match method {
         "tools/list" => {
             sandbox_look(ed);
-            Ok(list(crate::orchestra::lists(ed)))
+            Ok(list(crate::orchestra::lists(ed), crate::orchestra::compound(ed)))
         }
         "tools/call" => {
             // (side by side with another call still unanswered? — `calls.rs`; `sized` sees it answered)
@@ -225,14 +225,15 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
 }
 
 /// `tools/list`'s answer — the same to the byte every time (the tools come first in the cache's prefix): a chat
-/// that may start sessions (`orchestra::may_parent`) has the session tools after the rest, a second fixed list.
-pub fn list(parent: bool) -> Value {
+/// that may start sessions (`orchestra::may_parent`) has the session tools after the rest, a second fixed list;
+/// `compound` (`llm.compound`) adds `search`'s `show` and `run`'s word on `&&` — off, today's list to the byte.
+pub fn list(parent: bool, compound: bool) -> Value {
     let mut tools = vec![
         run_tests_schema(),
-        run_schema(),
+        run_schema_of(compound),
         crate::plan::tool_schema(),
         crate::nav::references_schema(),
-        crate::nav::search_schema(),
+        crate::nav::search_schema_of(compound),
         crate::readtool::schema(),
         crate::nav::symbols_schema(),
         crate::nav::definition_schema(),
@@ -954,17 +955,26 @@ pub fn tests_dropped(ed: &mut Editor, why: &str) {
 
 // ── run ─────────────────────────────────────────────────────────────────────
 
+/// `run`'s schema as the off arm has it (the pinned words, `sandbox::golden`).
+#[cfg(test)]
 pub(crate) fn run_schema() -> Value {
+    run_schema_of(false)
+}
+
+/// `run`'s schema — `compound` (`llm.compound`): with its word on `&&` (code mode (a): a build then its tests in one
+/// call, which runs as one already).
+fn run_schema_of(compound: bool) -> Value {
     // (the packs' code folders, by rank: Rust's sources and crates)
     let code: String = packs_said(|s| s.code.as_deref());
     let code = if code.is_empty() { code } else { format!(", {code}") };
+    let chain = if compound { " A build then its tests: one run with &&." } else { "" };
     json!({
         "name": "run",
         "description": format!("Run a shell command in the project, in the user's editor, and get how it ended and \
     its output — build, lint, format, test suites, git. Not for reading or searching files: read and search do \
     that in the editor, with no process and no card. The user watches it in their task panel. Both output \
     streams come back whole (long output: its start and end), so don't redirect or pipe to head/tail for \
-    that. For git's reads the git tool is better (no card, no process). Any command runs at once in a sandbox: \
+    that.{chain} For git's reads the git tool is better (no card, no process). Any command runs at once in a sandbox: \
     it reads the project, the repository's other checkouts, the temp folders{code} and outside home; writes the \
     project (but its build files and .git: change those with edit), temp and the toolchain's own folders; \
     reaches this machine's open ports, and other hosts only through tarae's proxy: one it isn't let reach waits \
@@ -4809,6 +4819,10 @@ pub fn run_done(ed: &mut Editor) {
         .task_run
         .as_ref()
         .is_some_and(|r| matches!(r.state, State::Failed(_) | State::Stopped(_) | State::NotRun(_)));
+    // (code mode's a6, `llm.compound`: a run that failed — not one refused before it started — brings the lines its
+    // places point at, `pointed.rs`; the chat's keys judge them)
+    let not_run = ed.workspace.task_run.as_ref().is_some_and(|r| matches!(r.state, State::NotRun(_)));
+    let pointing = (failed && !not_run && crate::orchestra::compound(ed)).then(|| crate::reads::Keys::of(ed));
     let known = rules_known(ed, failed);
     let Some(r) = ed.workspace.task_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
@@ -4839,9 +4853,16 @@ pub fn run_done(ed: &mut Editor) {
     // (its own places — the user's list has them only when it was a check, #28)
     if let Some(head) = r.tell.take() {
         let r = &*r;
-        let text = run_report(&ed.workspace.root, r, &r.places, Waited::No) + &guard;
+        let text = run_report(&ed.workspace.root, r, &r.places, Waited::No);
+        let wanted = pointing.as_ref().map(|_| crate::pointed::wanted(&r.places)).unwrap_or_default();
         rules_told(ed, said.as_ref());
-        return told(ed, head, text);
+        // (the same lines as a call's report: one report wherever it lands — what the chat's process saw)
+        return crate::pointed::then(ed, pointing, wanted, move |ed, pointed| {
+            if let Some(generation) = ed.workspace.claude.chat.as_ref().map(|c| c.generation()) {
+                pointed.showed.seen(ed, generation, &[]);
+            }
+            told(ed, head, format!("{text}{}{guard}", pointed.text))
+        });
     }
     let joined = std::mem::take(&mut r.joined);
     // (on a commit's tree: said first, and the tree goes — its build folder stays for the next; the run keeps
@@ -4866,17 +4887,17 @@ pub fn run_done(ed: &mut Editor) {
     let items = &r.places;
     let on = base.map(|b| format!("On {}'s tree — a copy apart from the project, removed now:\n", b.said()));
     let text = on.unwrap_or_default()
-        + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None))
-        + &guard;
+        + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None));
     // (each call that joined it: the same run, its own wait)
     let others: Vec<(Call, String)> = joined
         .into_iter()
         .map(|j| {
             let how = Waited::of(r.started, r.queued.as_ref(), Some((j.asked, j.running)));
             let call = Call { output: Some(r.output_bytes), ..j.call };
-            (call, run_report(&ed.workspace.root, r, items, how) + &guard)
+            (call, run_report(&ed.workspace.root, r, items, how))
         })
         .collect();
+    let wanted = pointing.as_ref().map(|_| crate::pointed::wanted(items)).unwrap_or_default();
     let first =
         items.iter().find(|i| i.severity == 1).filter(|_| r.state != crate::task::State::Passed).cloned();
     let (label, cmd) = (r.task.name.clone(), r.task.cmd.clone());
@@ -4889,13 +4910,19 @@ pub fn run_done(ed: &mut Editor) {
     }
     rules_told(ed, said.as_ref());
     crate::reads::run_ended(ed);
-    let text = format!("{text}{}", env_left_out(ed, env));
+    let left_out = env_left_out(ed, env);
     let generation = call.generation;
     if failed {
         failed_in_turn(ed, key);
     }
-    let told = move |ed: &mut Editor, changed: String| {
-        let report = format!("{text}{changed}");
+    // (the lines it points at before the sandbox's report, in every report of it)
+    let told = move |ed: &mut Editor, pointed: crate::pointed::Pointed, changed: String| {
+        let report = format!("{text}{}{guard}{left_out}{changed}", pointed.text);
+        let rows: Vec<String> = std::iter::once(&call)
+            .chain(others.iter().map(|o| &o.0))
+            .filter_map(|c| crate::chat::row_of(ed, c))
+            .collect();
+        pointed.showed.seen(ed, generation, &rows);
         let held = match loopback {
             Some(card) => loopback_card(ed, &card, job, call, report.clone()),
             None => Err(call),
@@ -4904,29 +4931,29 @@ pub fn run_done(ed: &mut Editor) {
             answer(ed, call, Ok(report));
         }
         for (c, text) in others {
-            answer(ed, c, Ok(format!("{text}{changed}")));
+            answer(ed, c, Ok(format!("{text}{}{guard}{changed}", pointed.text)));
         }
         if let Some(it) = first {
             crate::follow::point(ed, "failed", label, &it.path, it.line..it.line + 1, Some(it.message));
         }
     };
     // (what `also` could open of it: said on a worker — a grant's choices look at the disk — by `Caps` made there)
-    let told = move |ed: &mut Editor, changed: String| {
+    let told = move |ed: &mut Editor, pointed: crate::pointed::Pointed, changed: String| {
         if candidates.is_empty() {
-            return told(ed, changed);
+            return told(ed, pointed, changed);
         }
         let basis = ed.caps_basis();
         let (localhost, ports) = (ed.config.llm.sandbox_localhost, ed.config.llm.sandbox_ports.clone());
         ed.events.jobs().spawn(move || {
             let open = |n: u16| localhost || ports.contains(&n);
             let line = also_line(&candidates, keys.as_ref(), &basis.build(), &open);
-            move |ed: &mut Editor| told(ed, format!("{line}{changed}"))
+            move |ed: &mut Editor| told(ed, pointed, format!("{line}{changed}"))
         });
     };
-    match snap {
-        Some(snap) => run_changes(ed, snap, generation, cmd, told),
-        None => told(ed, String::new()),
-    }
+    crate::pointed::then(ed, pointing, wanted, move |ed, pointed| match snap {
+        Some(snap) => run_changes(ed, snap, generation, cmd, move |ed, changed| told(ed, pointed, changed)),
+        None => told(ed, pointed, String::new()),
+    });
 }
 
 /// The denials of Claude's run that `also` could open (cardauto P3, §8.4) — only when it failed: one that
@@ -5407,6 +5434,10 @@ fn run_report(root: &Path, r: &crate::task::Run, places: &[crate::quickfix::Item
     // other run's (a grep's `path:line:` hits) are only in its output — not the user's, not errors
     if errors + warnings > 0 && !places.is_empty() && r.feeds {
         out.push_str(&format!("\n{errors} errors, {warnings} warnings in the user's list (]q):\n"));
+    } else if !places.is_empty() && r.feeds {
+        // (notes only — a stack trace's frames)
+        let n = places.len();
+        out.push_str(&format!("\n{n} place{} in the user's list (]q):\n", if n == 1 { "" } else { "s" }));
     } else if !places.is_empty() {
         let n = places.len();
         out.push_str(&format!(
@@ -5414,7 +5445,7 @@ fn run_report(root: &Path, r: &crate::task::Run, places: &[crate::quickfix::Item
             if n == 1 { "" } else { "s" }
         ));
     }
-    if !places.is_empty() && (errors + warnings > 0 || !r.feeds) {
+    if !places.is_empty() {
         for it in places.iter().take(PLACES_MAX) {
             let kind = match it.severity {
                 _ if !r.feeds => "",
@@ -8248,6 +8279,107 @@ mod tests {
         ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         assert!(super::loopback_card(&mut ed, &card, job, call(5), "R".into()).is_err(), "its turn over");
         assert!(ed.offers.is_empty());
+    }
+
+    /// A check whose places are notes only (a stack trace's frames, `own = true`) lists them under the user's list,
+    /// as one with errors does — never a heading with nothing under it.
+    #[test]
+    fn a_checks_notes_alone_are_listed_in_its_report() {
+        let scratch = crate::scratch::Scratch::new("notes-report");
+        let dir = std::fs::canonicalize(&scratch).unwrap();
+        let task = crate::task::Task { name: "test".into(), cmd: "npm test".into(), cwd: dir.clone() };
+        let mut r = crate::task::Run::for_test(task);
+        r.state = crate::task::State::Failed(Some(1));
+        let path = dir.join("a.test.ts");
+        r.places = vec![crate::quickfix::Item {
+            path,
+            line: 2,
+            col: 4,
+            message: "stack frame".into(),
+            severity: 3,
+            mark: None,
+        }];
+        let report = super::run_report(&dir, &r, &r.places, super::Waited::No);
+        assert!(
+            report.contains("\n1 place in the user's list (]q):\n  a.test.ts:3:5 note: stack frame\n"),
+            "{report}"
+        );
+    }
+
+    /// Code mode's a6 (`llm.compound`, as the chat's process started): a failed run's report brings the lines its
+    /// places point at — the call's, a joined call's and a late report's alike, the file seen as `read` sees it; a run
+    /// that passed, one refused before it started, or the setting off brings none.
+    #[test]
+    fn a_failed_runs_report_brings_the_lines_it_points_at() {
+        use crate::task::State;
+        use serde_json::json;
+        let scratch = crate::scratch::Scratch::new("pointed-run");
+        let dir = std::fs::canonicalize(&scratch).unwrap();
+        let a = dir.join("a.rs");
+        std::fs::write(&a, (1..=20).map(|i| format!("line {i}\n")).collect::<String>()).unwrap();
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
+        let place = crate::quickfix::Item {
+            path: a.clone(),
+            line: 9,
+            col: 0,
+            message: "boom".into(),
+            severity: 1,
+            mark: None,
+        };
+        let said = |n: u64| {
+            super::ANSWERED
+                .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(n)).map(|(_, r)| r.clone()))
+        };
+        // (run `n` ended as `state`, with its place, answering call `n` — and `joined`, a call that joined it)
+        let ended =
+            |ed: &mut crate::editor::Editor, n: u64, state: State, compound: bool, joined: Option<u64>| {
+                ed.workspace.claude.chat.as_mut().unwrap().compound = compound;
+                let task =
+                    crate::task::Task { name: "check".into(), cmd: "make check".into(), cwd: dir.clone() };
+                let mut r = crate::task::Run::for_test(task);
+                (r.state, r.places, r.chat) =
+                    (state, vec![place.clone()], Some(super::Call::of(generation, "", json!(n))));
+                r.joined = (joined.into_iter())
+                    .map(|j| crate::queued::Joined {
+                        call: super::Call::of(generation, "", json!(j)),
+                        asked: std::time::Instant::now(),
+                        running: None,
+                    })
+                    .collect();
+                ed.workspace.task_run = Some(r);
+                super::run_done(ed);
+                crate::test_results::settle_until(ed, |_| {
+                    said(n).is_some() && joined.is_none_or(|j| said(j).is_some())
+                });
+                said(n).unwrap().unwrap()
+            };
+        let lines = "\nLines it points at:\na.rs\n   7- line 7\n   8- line 8\n   9- line 9\n  10: line 10\n";
+        let report = ended(&mut ed, 1, State::Failed(Some(2)), true, Some(2));
+        assert!(report.contains(lines), "{report}");
+        assert!(said(2).unwrap().unwrap().contains(lines), "the joined call's too");
+        let seen = ed.workspace.claude.chat.as_ref().unwrap().edits.seen.get(&a).copied();
+        assert_eq!(seen, crate::disk::stamp(&a), "seen as it was read");
+        for (n, state, compound) in [
+            (3, State::Passed, true),
+            (4, State::NotRun("no room".into()), true),
+            (5, State::Failed(Some(2)), false),
+        ] {
+            let report = ended(&mut ed, n, state, compound, None);
+            assert!(!report.contains("Lines it points at"), "{n}: {report}");
+        }
+        // A late report — the user's run of Claude's again — brings them too
+        ed.workspace.claude.chat.as_mut().unwrap().compound = true;
+        let task = crate::task::Task { name: "check".into(), cmd: "make check".into(), cwd: dir.clone() };
+        let mut r = crate::task::Run::for_test(task);
+        (r.state, r.places, r.tell) = (State::Failed(Some(2)), vec![place], Some("Ran again:".into()));
+        ed.workspace.task_run = Some(r);
+        super::run_done(&mut ed);
+        crate::test_results::settle_until(&mut ed, |ed| !ed.workspace.claude.checkpoints.tell.is_empty());
+        let told = ed.workspace.claude.checkpoints.tell.join("\n");
+        assert!(told.starts_with("Ran again:") && told.contains(lines), "{told}");
     }
 
     /// A rerun from what the sandbox blocked (piece D3, the user's Q2): when it ran again Claude's last turn's

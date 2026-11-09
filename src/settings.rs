@@ -594,6 +594,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.session_tools = s(v).to_string(),
     },
     Setting {
+        path: "llm.compound",
+        kind: Kind::Bool,
+        doc: "Chat: tarae's tools answer more in one call — search's show: \"symbol\" brings each hit's function, a failed run brings the lines its output points at. From Claude's next start",
+        get: |c| Value::from(c.llm.compound),
+        set: |c, v| c.llm.compound = b(v),
+    },
+    Setting {
         path: "llm.children-max",
         kind: Kind::Int { min: 0, max: 16 },
         doc: "Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",

@@ -67,6 +67,7 @@
   extensions: ex exs
   comments: #
   installs: elixir comment
+  places: ^\(\S+ [^)]*\) (?<path>\S+?):(?<line>\d+): says "note: stack frame" (own files)
 [fish] Fish
   grammar: fish
   extensions: fish
@@ -149,6 +150,8 @@
   lsp: jdtls (jdtls)
   installs: java comment
   test output: junit reports · vars java-root java-module-dir java-module java-build package
+  places: ^at \S+\((?<path>[^():\s]+):(?<line>\d+)\)$ says "note: stack frame" (own files)
+  places: ^\[(?<severity>ERROR|WARNING)\] (?<path>.+?):\[(?<line>\d+),(?<col>\d+)\] ?(?<message>.*)$
 [javascript] JavaScript
   grammar: javascript
   extensions: js mjs cjs
@@ -158,6 +161,8 @@
   roots: package.json tsconfig.json jsconfig.json
   lsp: typescript-language-server (typescript-language-server --stdio)
   installs: javascript comment
+  places: ^at (?:.*? \()?(?:file://)?(?<path>[^\s(]\S*?):(?<line>\d+):(?<col>\d+)\)?$ says "note: stack frame" (own files)
+  places: ^❯ (?:file://)?(?<place>\S+:\d+:\d+)$ says "note: stack frame" (own files)
 [json] JSON
   grammar: json
   extensions: json jsonc json5
@@ -191,12 +196,14 @@
   flags: doc-comments
   docs: /** */
   installs: kotlin comment
+  places: ^(?<severity>e|w): (?:file://)?(?<place>\S+:\d+:\d+):? (?<message>.*)$
 [lua] Lua
   grammar: lua
   extensions: lua
   comments: -- --[[ ]]
   lsp: lua-language-server (lua-language-server)
   installs: lua comment
+  places: ^(?:lua|luajit|lua5\.\d): (?<place>[^:\s]+:\d+): ?(?<message>.*)$
 [make] Make
   grammar: make
   extensions: mk
@@ -238,6 +245,7 @@
   flags: doc-comments
   docs: /** */
   installs: php comment
+  places: ^(?:PHP )?(?:(?<severity>Fatal error|Parse error|Warning|Notice): +)?(?<message>.*?) in (?<path>\S+\.php) on line (?<line>\d+)$
 [protobuf] Protobuf
   grammar: proto
   extensions: proto
@@ -273,6 +281,8 @@
   installs: rust comment
   test output: 7 line rules · groups file line message name status · none ran at exit 0
   places: ^(?<severity>error|warning)(?:\[[^\]]*\])?: ?(?<message>.*)$ then ^--> (?<place>.+)$
+  places: ^(?<message>thread .* panicked) at (?:.*, )?(?<place>[^\s,]+:\d+:\d+):?$
+  places: ^at (?<place>\S+:\d+:\d+)$ says "note: stack frame" (own files)
 [scala] Scala
   grammar: scala
   extensions: scala sc
@@ -280,6 +290,7 @@
   flags: doc-comments
   docs: /** */
   installs: scala comment
+  places: ^\[(?<severity>error|warn)\] (?<place>.+?:\d+:\d+): ?(?<message>.*)$
 [scss] SCSS
   grammar: scss
   extensions: scss

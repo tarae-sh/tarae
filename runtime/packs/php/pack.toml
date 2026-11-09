@@ -3,6 +3,11 @@
 # Read by Composer as soon as it's on disk
 config-files = { json = ["composer.json"] }
 
+# PHP's: `PHP Fatal error:  Uncaught Exception: x …`, `Parse error: …`, a trace's `thrown` — each `in /abs/a.php on
+# line 12`
+[[places]]
+match = '^(?:PHP )?(?:(?<severity>Fatal error|Parse error|Warning|Notice): +)?(?<message>.*?) in (?<path>\S+\.php) on line (?<line>\d+)$'
+
 # Its files that are code: a token-like line there is code, not a token (`tokens::not_settings`)
 [sandbox]
 not-settings = ["php"]

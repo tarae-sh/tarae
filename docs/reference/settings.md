@@ -77,6 +77,7 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `llm.reviewer-billing` | `"same"` · `"subscription"` · `"api"` | `"same"` | Who pays for the reviewer's Claude (space v c) — "same": as its session. Only your own config sets it |
 | `llm.screen-terminal` | bool | `true` | Chat: the terminal panel's contents go with the screen you send (C-s) and can be quoted — off: its rows go blank |
 | `llm.session-tools` | `"any"` · `"home"` · `"off"` | `"any"` | Chat: whose Claude can start sessions of its own and steer them — "any": every session but a child; "home": only the checkout tarae started in; "off". Only your own config sets it |
+| `llm.compound` | bool | `false` | Chat: tarae's tools answer more in one call — search's show: "symbol" brings each hit's function, a failed run brings the lines its output points at. From Claude's next start |
 | `llm.children-max` | integer 0–16 | `3` | Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it |
 | `llm.children-total` | integer 0–32 | `6` | Chat: how many sessions all Claudes together may have started and open at once (each its own checkout, build and Claude). Only your own config sets it |
 | `llm.parent-wakes` | integer 0–60 | `6` | Chat: how many turns of its own a Claude that started sessions may be woken for in an hour, each as a turn it asked to be woken for ends there (0 = never). Only your own config sets it |

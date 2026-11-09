@@ -52,7 +52,14 @@ const CONTEXT_MAX: u64 = 10;
 const LIMIT_MAX: usize = 1000;
 
 /// A line's text in an answer, at most (chars).
-const LINE_MAX: usize = 240;
+pub(crate) const LINE_MAX: usize = 240;
+
+/// `search`'s `show: "symbol"` (code mode (a)'s a1, `llm.compound`): the item a hit is in comes whole up to
+/// `SHOW_WHOLE` lines — a bigger one as its first line and `SHOW_AROUND` lines each side of its hits, merged; the
+/// items' lines in one answer at most `SHOW_MAX` (past them an item's hits come as lines, its name said).
+const SHOW_WHOLE: usize = 40;
+const SHOW_AROUND: usize = 5;
+const SHOW_MAX: usize = 300;
 
 /// Files named in the "more not shown" line, at most.
 const MORE_NAMED: usize = 12;
@@ -1874,7 +1881,12 @@ fn diags_text(ed: &Editor, w: &DiagWait, settled: Option<bool>) -> String {
 // ── search ──────────────────────────────────────────────────────────────────
 
 pub fn search_schema() -> Value {
-    json!({
+    search_schema_of(false)
+}
+
+/// `search`'s schema — `compound` (`llm.compound`): with `show` (the reviewer's has none: its own A/B).
+pub fn search_schema_of(compound: bool) -> Value {
+    let mut s = json!({
         "name": "search",
         "description": "Search files for a regex — the editor's own search (ripgrep's engine, in the editor: \
     no process, and no card inside the project). Use it rather than grep/rg in run. Hits come by file \
@@ -1903,7 +1915,46 @@ pub fn search_schema() -> Value {
             },
             "required": []
         }
-    })
+    });
+    if compound {
+        let d = s["description"].as_str().unwrap_or_default().to_string();
+        s["description"] = Value::from(format!(
+            "{d} With show: \"symbol\" each hit comes inside the function or type it's in — no read after."
+        ));
+        s["inputSchema"]["properties"]["show"] = json!({
+            "type": "string", "enum": ["symbol"],
+            "description": "symbol: each hit inside the function or type it's in — whole up to 40 lines, else its first line and the lines round its hits (output lines only)"
+        });
+    }
+    s
+}
+
+/// What an answer showed Claude of files beyond its hits (`search`'s `show`, a failed run's lines — `pointed.rs`):
+/// the lines, and each file's stamp as it was read (taken before).
+#[derive(Debug, Default)]
+pub(crate) struct Showed {
+    pub(crate) lines: Vec<crate::replay::Shown>,
+    pub(crate) stamps: Vec<(PathBuf, Option<crate::disk::Stamp>)>,
+}
+
+impl Showed {
+    /// Seen by claude process `generation` as `read`'s answer is: each file by its stamp (`edittool::saw`), the lines
+    /// on the stops of calls `rows` (`follow::shown`).
+    pub(crate) fn seen(self, ed: &mut Editor, generation: u64, rows: &[String]) {
+        if self.stamps.is_empty() {
+            return;
+        }
+        let went: Vec<PathBuf> = (self.stamps.iter())
+            .filter(|(p, s)| crate::edittool::went(ed, generation, p, *s))
+            .map(|(p, _)| p.clone())
+            .collect();
+        for (p, s) in self.stamps {
+            crate::edittool::saw(ed, generation, &p, s);
+        }
+        for row in rows {
+            crate::follow::shown(ed, row, self.lines.clone(), &went);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1933,6 +1984,8 @@ struct Query {
     limit: usize,
     /// Hits in test code included (listed last) or left out.
     tests: bool,
+    /// Each shown hit's item comes too (`show: "symbol"`, output lines only).
+    show: bool,
 }
 
 /// What `search`'s arguments ask — a typo answered at once.
@@ -1957,6 +2010,12 @@ fn query_of(args: &Value) -> Result<Query, String> {
         Some("insensitive") => Case::Insensitive,
         Some(c) => return Err(format!("case is smart, sensitive or insensitive — not {c}")),
     };
+    let show = match s("show").as_deref() {
+        None => false,
+        Some("symbol") if output == Output::Lines => true,
+        Some("symbol") => return Err("show is for output lines — the hits' lines".into()),
+        Some(v) => return Err(format!("show is symbol — not {v}")),
+    };
     let default_limit = if output == Output::Lines { HITS_SHOWN } else { FILES_SHOWN };
     let q = Query {
         pattern,
@@ -1972,6 +2031,7 @@ fn query_of(args: &Value) -> Result<Query, String> {
         offset: args["offset"].as_u64().unwrap_or(0) as usize,
         limit: args["limit"].as_u64().map_or(default_limit, |l| (l as usize).clamp(1, LIMIT_MAX)),
         tests: args["tests"].as_bool().unwrap_or(true),
+        show,
     };
     let not_regex = |what: &str, e: regex::Error| {
         format!("{what}: {}", e.to_string().lines().last().unwrap_or("invalid").trim())
@@ -2022,7 +2082,12 @@ fn go_search(ed: &mut Editor, call: Call, q: Query, args: Value, granted: Vec<Pa
             trace.step("main loop");
             crate::log::line("tarae", "timing", &trace.line());
             match r {
-                Ok(Ok(text)) => answer(ed, call, text),
+                Ok(Ok(Ok((text, showed)))) => {
+                    let rows: Vec<String> = crate::chat::row_of(ed, &call).into_iter().collect();
+                    showed.seen(ed, call.generation(), &rows);
+                    answer(ed, call, Ok(text))
+                }
+                Ok(Ok(Err(e))) => answer(ed, call, Err(e)),
                 Ok(Err(ask)) => {
                     let then = crate::reads::Then { call, tool: "search", args, granted };
                     crate::reads::tool_ask(ed, then, *ask)
@@ -2101,6 +2166,18 @@ fn run_search(
     unsaved: &[PathBuf],
     keys: &crate::reads::Keys,
 ) -> Result<String, String> {
+    run_search_showing(root, path, q, unsaved, keys).map(|(text, _)| text)
+}
+
+/// `run_search`, with what it showed of files beyond its hits (tests).
+#[cfg(test)]
+fn run_search_showing(
+    root: &Path,
+    path: Option<&str>,
+    q: &Query,
+    unsaved: &[PathBuf],
+    keys: &crate::reads::Keys,
+) -> Result<(String, Showed), String> {
     let paths: Vec<String> = path.map(|p| vec![p.to_string()]).unwrap_or_default();
     let gate = crate::reads::Gate::for_test(root);
     match scopes(root, &paths, keys, &gate)? {
@@ -2109,7 +2186,8 @@ fn run_search(
     }
 }
 
-/// The search of `scopes` (real paths `scopes` judged), its steps said in `trace`.
+/// The search of `scopes` (real paths `scopes` judged), its steps said in `trace` — and what it showed of files
+/// beyond its hits (`show`).
 fn run_search_traced(
     root: &Path,
     scopes: &[PathBuf],
@@ -2117,7 +2195,7 @@ fn run_search_traced(
     unsaved: &[PathBuf],
     keys: &crate::reads::Keys,
     trace: &mut crate::trace::Trace,
-) -> Result<String, String> {
+) -> Result<(String, Showed), String> {
     let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
     let shut = |f: &crate::grep::File| keys.shut(&root.join(&f.rel));
     let query = grep_query(q, true);
@@ -2132,8 +2210,14 @@ fn run_search_traced(
             format!("\n(unsaved edits in {} aren't searched — what's here is from disk)", unsaved.join(", "))
         }
     };
-    let mut told = OnDisk { t: crate::testcode::Tests::new(&root), root: root.clone() };
-    Ok(answer_of(q, &mut search, &mut told, trace)? + &note)
+    let mut told = OnDisk { t: crate::testcode::Tests::new(&root), root: root.clone(), read: Vec::new() };
+    let (text, shown) = answer_of(q, &mut search, &mut told, trace)?;
+    let lines: Vec<crate::replay::Shown> = (shown.into_iter())
+        .map(|(rel, lines)| crate::replay::Shown { path: root.join(rel), lines, old: false })
+        .collect();
+    // (a file read for an item no answer showed — past the cap — isn't one Claude saw)
+    let stamps = told.read.into_iter().filter(|(p, _)| lines.iter().any(|l| l.path == *p)).collect();
+    Ok((text + &note, Showed { lines, stamps }))
 }
 
 /// `q` as grep.rs takes it — `judged`: each file read only where it really is in its scope (`grep::Query`).
@@ -2168,6 +2252,8 @@ trait Told {
     /// All of `rel` is.
     fn test_whole(&mut self, rel: &str) -> bool;
     fn outline(&mut self, rel: &str) -> Option<std::sync::Arc<Vec<Sym>>>;
+    /// `rel`'s text up to its first `lines` lines at least (`show`'s items).
+    fn file_text(&mut self, rel: &str, lines: usize) -> Option<String>;
     /// What it parsed, for the trace.
     fn parsed(&self) -> String;
 }
@@ -2175,6 +2261,8 @@ trait Told {
 struct OnDisk {
     root: PathBuf,
     t: crate::testcode::Tests,
+    /// The files `file_text` read, each with its stamp taken before.
+    read: Vec<(PathBuf, Option<crate::disk::Stamp>)>,
 }
 
 impl Told for OnDisk {
@@ -2189,6 +2277,14 @@ impl Told for OnDisk {
     }
     fn outline(&mut self, rel: &str) -> Option<std::sync::Arc<Vec<Sym>>> {
         crate::outlines::of(&self.root.join(rel)).ok()
+    }
+    fn file_text(&mut self, rel: &str, lines: usize) -> Option<String> {
+        let path = self.root.join(rel);
+        // (taken before it's read: a change while it reads counts as one since)
+        let stamp = crate::disk::stamp(&path);
+        let text = crate::pointed::text_of(&path, lines)?;
+        self.read.push((path, stamp));
+        Some(text)
     }
     fn parsed(&self) -> String {
         format!("{} parsed, {} KB", self.t.parsed, self.t.parsed_bytes / 1024)
@@ -2238,6 +2334,9 @@ impl Told for InSnapshot<'_> {
         let text = self.text(rel)?;
         self.snap.outline(rel, &text).ok()
     }
+    fn file_text(&mut self, rel: &str, _lines: usize) -> Option<String> {
+        self.text(rel)
+    }
     fn parsed(&self) -> String {
         format!("{} of the snapshot's Rust files parsed", self.tests.len())
     }
@@ -2247,14 +2346,18 @@ impl Told for InSnapshot<'_> {
 type Searched<'a> =
     dyn FnMut(&mut dyn FnMut(crate::grep::File) -> bool) -> Result<Option<String>, String> + 'a;
 
+/// The lines of the items an answer showed (`show`; from 0), by file.
+type ItemLines = Vec<(String, std::ops::Range<usize>)>;
+
 /// The answer to `q` from what `search` finds (Ok: the first thing it couldn't read, if any), told apart and
-/// enclosed by `told`, its steps said in `trace`.
+/// enclosed by `told`, its steps said in `trace` — and the lines of items it showed.
 fn answer_of(
     q: &Query,
     search: &mut Searched,
     told: &mut dyn Told,
     trace: &mut crate::trace::Trace,
-) -> Result<String, String> {
+) -> Result<(String, ItemLines), String> {
+    let none = |text: String| (text, Vec::new());
     Ok(match q.output {
         Output::Lines => {
             let mut files: BTreeMap<String, Vec<Row>> = BTreeMap::new();
@@ -2271,14 +2374,15 @@ fn answer_of(
             })?;
             trace.step(format!("walked ({} files hit)", files.len()));
             if files.is_empty() {
-                return no_hits(warn, q);
+                return no_hits(warn, q).map(none);
             }
             told.prefetch(&files.keys().map(String::as_str).collect::<Vec<_>>());
             let mut entries = entries(files, &mut |path, line| told.test_at(path, line - 1));
             trace.step(format!("test code told ({})", told.parsed()));
-            let outlined = enclose(&mut entries, told, q.tests, q.offset, q.limit);
+            let outlined = enclose(&mut entries, told, q.tests, q.offset, q.limit, q.show);
             trace.step(format!("symbols ({outlined} outlines)"));
-            lines_text(entries, q.tests, hits >= HITS_MAX, q.offset, q.limit) + &warned(warn)
+            let (text, shown) = lines_answer(entries, q.tests, hits >= HITS_MAX, q.offset, q.limit);
+            (text + &warned(warn), shown)
         }
         Output::Files | Output::Count | Output::Names => {
             let mut rows: Vec<String> = Vec::new();
@@ -2289,7 +2393,7 @@ fn answer_of(
             })?;
             trace.step(format!("walked ({} files hit)", rows.len()));
             if rows.is_empty() {
-                return no_hits(warn, q);
+                return no_hits(warn, q).map(none);
             }
             // A file all test code goes last (one with some tests in it is counted with the rest)
             let mut rows: Vec<(String, bool)> = rows
@@ -2302,7 +2406,7 @@ fn answer_of(
                 .collect();
             trace.step(format!("test code told ({})", told.parsed()));
             crate::sorting::by(&mut rows, |a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
-            files_text(rows, q.tests, q.output, q.offset, q.limit) + &warned(warn)
+            none(files_text(rows, q.tests, q.output, q.offset, q.limit) + &warned(warn))
         }
     })
 }
@@ -2347,7 +2451,7 @@ pub fn search_snapshot(snap: &crate::snapread::Snap, args: &Value) -> Result<Str
         Ok(None)
     };
     let mut told = InSnapshot { snap, texts: HashMap::new(), tests: HashMap::new() };
-    answer_of(&q, &mut search, &mut told, &mut crate::trace::Trace::new(""))
+    answer_of(&q, &mut search, &mut told, &mut crate::trace::Trace::new("")).map(|(text, _)| text)
 }
 
 fn no_hits(warn: Option<String>, q: &Query) -> Result<String, String> {
@@ -2372,6 +2476,43 @@ struct Entry {
     /// By run, by row: the symbol a hit row is in (`Sym::said`, and its first line from 1) — none known:
     /// shorter or empty.
     within: Vec<Vec<Option<(String, usize)>>>,
+    /// The items its hits are in, read (`show`).
+    items: Vec<Item>,
+}
+
+/// An item a hit is in (`search`'s `show`): as said, its name, its first and last line (from 1), its lines.
+struct Item {
+    said: String,
+    name: String,
+    lines: (usize, usize),
+    text: Vec<String>,
+}
+
+/// A run's rows, each with the symbol it's in (`Entry.within`'s).
+type Run = (Vec<Row>, Vec<Option<(String, usize)>>);
+
+/// What a file's part of a `search` answer shows: a run of lines, or an item with the spans of it shown (lines from
+/// 1, inclusive) and the hits in it.
+enum Block<'a> {
+    Run(Run),
+    Item(&'a Item, Vec<(usize, usize)>, Vec<usize>),
+}
+
+impl Block<'_> {
+    fn first(&self) -> usize {
+        match self {
+            Block::Run((rows, _)) => rows.first().map_or(0, |r| r.line),
+            Block::Item(it, ..) => it.lines.0,
+        }
+    }
+
+    /// Its last line number shown.
+    fn last(&self) -> usize {
+        match self {
+            Block::Run((rows, _)) => rows.last().map_or(0, |r| r.line),
+            Block::Item(_, spans, _) => spans.last().map_or(0, |s| s.1),
+        }
+    }
 }
 
 impl Entry {
@@ -2403,10 +2544,16 @@ fn entries(files: BTreeMap<String, Vec<Row>>, is_test: &mut dyn FnMut(&str, usiz
             if is_test(&path, at) { t.push(run) } else { c.push(run) }
         }
         if !c.is_empty() {
-            code.push(Entry { path: path.clone(), runs: c, test: false, within: Vec::new() });
+            code.push(Entry {
+                path: path.clone(),
+                runs: c,
+                test: false,
+                within: Vec::new(),
+                items: Vec::new(),
+            });
         }
         if !t.is_empty() {
-            tests.push(Entry { path, runs: t, test: true, within: Vec::new() });
+            tests.push(Entry { path, runs: t, test: true, within: Vec::new(), items: Vec::new() });
         }
     }
     code.extend(tests);
@@ -2415,8 +2562,16 @@ fn entries(files: BTreeMap<String, Vec<Row>>, is_test: &mut dyn FnMut(&str, usiz
 
 /// The symbol each hit `lines_text` will show is in (`Entry.within`), from the files' outlines
 /// (`outlines.rs`, kept while unchanged) — the entries up to hit `offset + limit` (the shown ones; a few
-/// past, test code being listed last). The files whose outline was read.
-fn enclose(entries: &mut [Entry], told: &mut dyn Told, tests: bool, offset: usize, limit: usize) -> usize {
+/// past, test code being listed last) — `show`: and the items they're in, read (`Entry.items`). The files whose
+/// outline was read.
+fn enclose(
+    entries: &mut [Entry],
+    told: &mut dyn Told,
+    tests: bool,
+    offset: usize,
+    limit: usize,
+    show: bool,
+) -> usize {
     let mut seen = 0;
     let mut read = 0;
     for e in entries.iter_mut().filter(|e| tests || !e.test) {
@@ -2431,20 +2586,154 @@ fn enclose(entries: &mut [Entry], told: &mut dyn Told, tests: bool, offset: usiz
             Some((s.said(), s.lines.0 + 1))
         };
         e.within = e.runs.iter().map(|run| run.iter().map(of).collect()).collect();
+        if show {
+            e.items = items_of(&syms, &e.runs, told, &e.path);
+        }
     }
     read
+}
+
+/// The items `runs`' hits are in (the innermost definition holding each), once each — their lines read from
+/// `told`'s `rel`.
+fn items_of(syms: &[Sym], runs: &[Vec<Row>], told: &mut dyn Told, rel: &str) -> Vec<Item> {
+    let mut held: Vec<&Sym> = Vec::new();
+    for r in runs.iter().flatten().filter(|r| r.hit) {
+        if let Some(s) = crate::outlines::holding(syms, r.line.saturating_sub(1))
+            && !held.contains(&s)
+        {
+            held.push(s);
+        }
+    }
+    if held.is_empty() {
+        return Vec::new();
+    }
+    // (read up to the last item's end, no further)
+    let end = held.iter().map(|s| s.lines.1 + 1).max().unwrap_or(0);
+    let Some(text) = told.file_text(rel, end) else { return Vec::new() };
+    let lines: Vec<&str> = text.lines().collect();
+    // (an item past the file's end: it changed since its outline was kept)
+    (held.into_iter().filter(|s| s.lines.0 < lines.len()))
+        .map(|s| {
+            let (a, b) = (s.lines.0, s.lines.1.min(lines.len() - 1));
+            Item {
+                said: s.said(),
+                name: s.name.clone(),
+                lines: (a + 1, b + 1),
+                text: lines[a..=b].iter().map(|l| clip(l, LINE_MAX)).collect(),
+            }
+        })
+        .collect()
+}
+
+/// A file's shown runs as blocks (`show`): each item a hit is in once — whole, or its first line and the lines round
+/// its hits (`SHOW_WHOLE`, `SHOW_AROUND`) — while `room` (lines) holds it, else its name in `left`; the runs without
+/// the lines of the items shown, a run with no hit left gone; in their lines' order.
+fn blocks<'a>(
+    shown: Vec<Run>,
+    items: &'a [Item],
+    room: &mut usize,
+    left: &mut Vec<&'a Item>,
+) -> Vec<Block<'a>> {
+    if items.is_empty() {
+        return shown.into_iter().map(Block::Run).collect();
+    }
+    let inner = |line: usize| {
+        (items.iter().enumerate())
+            .filter(|(_, it)| it.lines.0 <= line && line <= it.lines.1)
+            .max_by_key(|(_, it)| it.lines.0)
+            .map(|(i, _)| i)
+    };
+    let mut hits: Vec<(usize, Vec<usize>)> = Vec::new();
+    for r in shown.iter().flat_map(|s| &s.0).filter(|r| r.hit) {
+        let Some(i) = inner(r.line) else { continue };
+        match hits.iter_mut().find(|h| h.0 == i) {
+            Some(h) => h.1.push(r.line),
+            None => hits.push((i, vec![r.line])),
+        }
+    }
+    let mut out = Vec::new();
+    let mut taken: Vec<(usize, usize)> = Vec::new();
+    for (i, hit) in hits {
+        let it = &items[i];
+        let spans = spans_of(it.lines, &hit);
+        let n: usize = spans.iter().map(|(a, b)| b - a + 1).sum();
+        if n > *room {
+            left.push(it);
+            continue;
+        }
+        *room -= n;
+        taken.push(it.lines);
+        out.push(Block::Item(it, spans, hit));
+    }
+    for (run, within) in shown {
+        let known = !within.is_empty();
+        let mut within = within.into_iter();
+        let mut cur: Run = (Vec::new(), Vec::new());
+        let push = |cur: &mut Run, out: &mut Vec<Block>| {
+            let cur = std::mem::take(cur);
+            if cur.0.iter().any(|r| r.hit) {
+                out.push(Block::Run(cur));
+            }
+        };
+        for r in run {
+            let w = within.next().flatten();
+            if taken.iter().any(|&(a, b)| a <= r.line && r.line <= b) {
+                push(&mut cur, &mut out);
+                continue;
+            }
+            cur.0.push(r);
+            if known {
+                cur.1.push(w);
+            }
+        }
+        push(&mut cur, &mut out);
+    }
+    crate::sorting::by_key(&mut out, Block::first);
+    out
+}
+
+/// The spans of an item of `lines` (from 1, inclusive) shown for its `hits`: all of it up to `SHOW_WHOLE` lines,
+/// else its first line and `SHOW_AROUND` lines each side of each hit, merged.
+fn spans_of((a, b): (usize, usize), hits: &[usize]) -> Vec<(usize, usize)> {
+    if b - a < SHOW_WHOLE {
+        return vec![(a, b)];
+    }
+    let mut hits = hits.to_vec();
+    crate::sorting::sort(&mut hits);
+    let mut spans = vec![(a, a)];
+    for h in hits {
+        let (x, y) = (h.saturating_sub(SHOW_AROUND).max(a), (h + SHOW_AROUND).min(b));
+        match spans.last_mut() {
+            Some(last) if x <= last.1 + 1 => last.1 = last.1.max(y),
+            _ => spans.push((x, y)),
+        }
+    }
+    spans
 }
 
 /// Hits by file, each run of lines together (`--` between runs), hit lines `12:`, context `13-` (as rg
 /// prints them), over a hit the symbol it's in when that changes (`in fn x (12–40)`; not over the symbol's
 /// own first line, which says it; `at the top level` after one), test code last under its heading (or left out, `tests` false); from hit `offset` on, at most `limit` hits and
 /// twice as many rows (`ROWS_SHOWN` at least).
+#[cfg(test)]
 fn lines_text(entries: Vec<Entry>, tests: bool, stopped: bool, offset: usize, limit: usize) -> String {
+    lines_answer(entries, tests, stopped, offset, limit).0
+}
+
+/// `lines_text`, the items of `show` among the runs (`blocks`: `── fn x (12–40)` over its lines, hits `14:`, the
+/// rest `13-`) — and the lines of the items shown (from 0), by file.
+fn lines_answer(
+    entries: Vec<Entry>,
+    tests: bool,
+    stopped: bool,
+    offset: usize,
+    limit: usize,
+) -> (String, ItemLines) {
     let rows_max = ROWS_SHOWN.max(2 * limit);
     let in_tests: usize = entries.iter().filter(|e| e.test).map(Entry::hits).sum();
     let entries: Vec<Entry> = entries.into_iter().filter(|e| tests || !e.test).collect();
     if entries.is_empty() {
-        return format!("no matches outside test code{}", tests_said(in_tests, false));
+        return (format!("no matches outside test code{}", tests_said(in_tests, false)), Vec::new());
     }
     let total: usize = entries.iter().map(Entry::hits).sum();
     let files_n = entries.iter().map(|e| &e.path).collect::<std::collections::HashSet<_>>().len();
@@ -2454,7 +2743,8 @@ fn lines_text(entries: Vec<Entry>, tests: bool, stopped: bool, offset: usize, li
     let mut rest: Vec<(String, usize)> = Vec::new();
     let mut last_shown = 0;
     let mut in_heading = false;
-    for Entry { path, runs, test, mut within } in entries {
+    let (mut room, mut left_items, mut shown_items) = (SHOW_MAX, Vec::new(), Vec::new());
+    for Entry { path, runs, test, mut within, items } in entries {
         let mut shown_here = Vec::new();
         let mut left = 0;
         within.resize(runs.len(), Vec::new());
@@ -2482,14 +2772,38 @@ fn lines_text(entries: Vec<Entry>, tests: bool, stopped: bool, offset: usize, li
                 in_heading = true;
                 out.push_str(TESTS_HEADING);
             }
-            let w = shown_here.iter().flat_map(|r| &r.0).map(|r| r.line).max().unwrap_or(1).to_string().len();
+            let mut left = Vec::new();
+            let blocks = blocks(shown_here, &items, &mut room, &mut left);
+            left_items.extend(left.iter().map(|it| format!("{path}:{}", it.name)));
+            let w = blocks.iter().map(Block::last).max().unwrap_or(1).to_string().len();
             out.push_str(&path);
             out.push('\n');
             let mut said: Option<&String> = None;
-            for (k, (run, within)) in shown_here.iter().enumerate() {
+            for (k, block) in blocks.iter().enumerate() {
                 if k > 0 {
                     out.push_str("  --\n");
                 }
+                let (run, within) = match block {
+                    Block::Run((run, within)) => (run, within),
+                    Block::Item(it, spans, hits) => {
+                        out.push_str(&format!("  ── {}\n", it.said));
+                        for (s, &(a, b)) in spans.iter().enumerate() {
+                            if s > 0 {
+                                out.push_str("  …\n");
+                            }
+                            for line in a..=b {
+                                let sep = if hits.contains(&line) { ':' } else { '-' };
+                                out.push_str(&format!("  {line:>w$}{sep} {}\n", it.text[line - it.lines.0]));
+                            }
+                            shown_items.push((path.clone(), a - 1..b));
+                        }
+                        if spans.iter().map(|(a, b)| b - a + 1).sum::<usize>() < it.lines.1 - it.lines.0 + 1 {
+                            out.push_str(&format!("  … the rest: read {path}:{}\n", it.name));
+                        }
+                        said = Some(&it.said);
+                        continue;
+                    }
+                };
                 for (i, r) in run.iter().enumerate() {
                     let sym = within.get(i).and_then(Option::as_ref);
                     if r.hit && sym.map(|s| &s.0) != said {
@@ -2514,7 +2828,7 @@ fn lines_text(entries: Vec<Entry>, tests: bool, stopped: bool, offset: usize, li
     let lines = count(total, "matching line").replacen(' ', &format!("{plus} "), 1);
     let mut head = format!("{lines} in {}{}", count(files_n, "file"), tests_said(in_tests, tests));
     if hits == 0 {
-        return format!("{head}; none past offset {offset}");
+        return (format!("{head}; none past offset {offset}"), Vec::new());
     }
     if offset > 0 || !rest.is_empty() {
         head.push_str(&format!(" — {}–{last_shown} below", offset + 1));
@@ -2523,8 +2837,14 @@ fn lines_text(entries: Vec<Entry>, tests: bool, stopped: bool, offset: usize, li
     if !rest.is_empty() {
         text.push_str(&more(&rest, "matching line", &format!(" — offset: {last_shown} for the next ones")));
     }
+    if !left_items.is_empty() {
+        text.push_str(&format!(
+            "… past {SHOW_MAX} lines of items, these hits came as lines: read {}\n",
+            left_items.join(", ")
+        ));
+    }
     text.truncate(text.trim_end().len());
-    text
+    (text, shown_items)
 }
 
 /// `--files-with-matches` / `--count` lines, each with whether its file is all test code — sorted, those
@@ -2894,6 +3214,128 @@ mod tests {
         );
     }
 
+    /// A project with `a.rs`: `fn small` (1–5) with three hits, `fn big` (7–68) with one at 38, and one at the top
+    /// level (70) — hits of `needle`.
+    fn showing_project(name: &str) -> (crate::scratch::Scratch, PathBuf) {
+        let scratch = crate::scratch::Scratch::new(name);
+        let dir = std::fs::canonicalize(&scratch).unwrap();
+        let mut src =
+            String::from("fn small() {\n    let needle = 1;\n    let b = needle + 1;\n    needle + b\n}\n\n");
+        src.push_str("fn big() {\n");
+        for i in 0..60 {
+            src.push_str(&if i == 30 { "    needle();\n".to_string() } else { format!("    step({i});\n") });
+        }
+        src.push_str("}\n\n// a needle at the top\n");
+        std::fs::write(dir.join("a.rs"), src).unwrap();
+        (scratch, dir)
+    }
+
+    /// Code mode's a1: with `show`, an item with hits comes once, whole, its hits marked and not repeated as lines;
+    /// a big one its first line and the lines round its hit, the rest said; a hit in no item stays a line. What it
+    /// showed: those lines, and the file's stamp as it was read.
+    #[test]
+    fn show_brings_each_hits_item_once() {
+        let (_scratch, dir) = showing_project("nav-show");
+        let q = query_of(&json!({ "pattern": "needle", "literal": true, "show": "symbol" })).unwrap();
+        let keys = crate::reads::Keys::none_opened(&dir);
+        let (text, showed) = run_search_showing(&dir, None, &q, &[], &keys).unwrap();
+        let mut want = String::from("5 matching lines in 1 file:\na.rs\n  ── fn small (1–5)\n");
+        want.push_str("   1- fn small() {\n   2:     let needle = 1;\n   3:     let b = needle + 1;\n");
+        want.push_str("   4:     needle + b\n   5- }\n  --\n  ── fn big (7–68)\n   7- fn big() {\n  …\n");
+        for line in 33..=43 {
+            match line {
+                38 => want.push_str("  38:     needle();\n"),
+                _ => want.push_str(&format!("  {line}-     step({});\n", line - 8)),
+            }
+        }
+        want.push_str("  … the rest: read a.rs:big\n  --\n  at the top level\n  70: // a needle at the top");
+        assert_eq!(text, want);
+        let a = dir.join("a.rs");
+        let lines: Vec<_> = showed.lines.iter().map(|l| (l.path.clone(), l.lines.clone())).collect();
+        assert_eq!(lines, [(a.clone(), 0..5), (a.clone(), 6..7), (a.clone(), 32..43)]);
+        assert_eq!(showed.stamps, [(a.clone(), crate::disk::stamp(&a))]);
+        // Without it: today's answer, nothing shown beyond the hits
+        let q = query_of(&json!({ "pattern": "needle", "literal": true })).unwrap();
+        let (text, showed) = run_search_showing(&dir, None, &q, &[], &keys).unwrap();
+        assert!(
+            text.contains("  in fn small (1–5)\n   2:     let needle = 1;") && !text.contains("──"),
+            "{text}"
+        );
+        assert!(showed.lines.is_empty() && showed.stamps.is_empty());
+    }
+
+    /// The items' lines in one answer stop at `SHOW_MAX`: the items past it come as their hits' lines, named after.
+    #[test]
+    fn show_holds_its_cap_and_says_what_it_left() {
+        let entry = |i: usize| Entry {
+            path: format!("f{i:02}.rs"),
+            runs: vec![rows(&[(2, true)])],
+            test: false,
+            within: vec![vec![Some(("fn f (1–30)".to_string(), 1))]],
+            items: vec![Item {
+                said: "fn f (1–30)".into(),
+                name: "f".into(),
+                lines: (1, 30),
+                text: (1..=30).map(|l| format!("t{l}")).collect(),
+            }],
+        };
+        let (text, shown) = lines_answer((0..12).map(entry).collect(), true, false, 0, HITS_SHOWN);
+        assert_eq!(shown.len(), SHOW_MAX / 30);
+        assert_eq!(text.matches("  ── fn f (1–30)\n").count(), SHOW_MAX / 30);
+        assert!(text.contains("f10.rs\n  in fn f (1–30)\n  2: t2\n"), "a hit past the cap: its line\n{text}");
+        assert!(
+            text.ends_with("… past 300 lines of items, these hits came as lines: read f10.rs:f, f11.rs:f"),
+            "{text}"
+        );
+    }
+
+    /// `show` is the chat's with `llm.compound` on, `run`'s word on `&&` too — off, the schemas are today's; the
+    /// reviewer's never has it. It's for the hits' lines only.
+    #[test]
+    fn show_is_in_the_schema_only_when_on() {
+        let tool = |list: &Value, name: &str| -> Value {
+            list["tools"].as_array().unwrap().iter().find(|t| t["name"] == name).unwrap().clone()
+        };
+        let (off, on) = (crate::tools::list(false, false), crate::tools::list(false, true));
+        assert!(tool(&off, "search")["inputSchema"]["properties"]["show"].is_null());
+        assert!(!tool(&off, "search")["description"].as_str().unwrap().contains("show"));
+        assert_eq!(tool(&off, "search"), crate::tools::annotated(search_schema()));
+        assert_eq!(tool(&on, "search")["inputSchema"]["properties"]["show"]["enum"], json!(["symbol"]));
+        let and = "A build then its tests: one run with &&.";
+        assert!(!tool(&off, "run")["description"].as_str().unwrap().contains(and));
+        assert!(tool(&on, "run")["description"].as_str().unwrap().contains(and));
+        assert_eq!(off["tools"].as_array().unwrap().len(), on["tools"].as_array().unwrap().len());
+        let e = query_of(&json!({ "pattern": "x", "output": "files", "show": "symbol" })).unwrap_err();
+        assert!(e.starts_with("show is for output lines"), "{e}");
+        assert!(query_of(&json!({ "pattern": "x", "show": "body" })).is_err());
+    }
+
+    /// Code mode's a1: what `show` brought is seen as `read`'s lines are — the file by its stamp (`edittool::saw`),
+    /// the items' lines on the call's stop (`follow::shown`).
+    #[test]
+    fn a_shown_item_is_seen_as_a_read_is() {
+        use crate::chat::{Called, claim_for, look};
+        let (_scratch, dir) = showing_project("nav-show-seen");
+        let a = dir.join("a.rs");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        let chat = ed.workspace.claude.chat.as_ref().unwrap().generation();
+        let (tool, input) = ("mcp__tarae__search", json!({ "pattern": "needle", "show": "symbol" }));
+        let called = Called { id: "s".to_string(), name: tool.to_string(), input: input.clone() };
+        ed.workspace.claude.chat.as_mut().unwrap().calls.push(called);
+        crate::follow::on_tool(&mut ed, "s", tool, &input, &look(&dir, tool, &input));
+        claim_for(&mut ed, tool, &input, &json!(916));
+        search(&mut ed, Call::of(chat, "", json!(916)), &input).unwrap();
+        let answered = || crate::tools::ANSWERED.with(|a| a.borrow().iter().any(|(k, _)| *k == json!(916)));
+        crate::test_results::settle_until(&mut ed, |_| answered());
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!(c.edits.seen.get(&a).copied(), crate::disk::stamp(&a));
+        let stop = c.follow.replay.turns().iter().flat_map(|t| &t.stops).find(|s| s.call == "s");
+        let shown: Vec<_> = stop.expect("its stop").map.shown.iter().map(|x| x.lines.clone()).collect();
+        assert_eq!(shown, [0..5, 6..7, 32..43]);
+    }
+
     #[test]
     fn files_and_counts_page_too() {
         let rows: Vec<(String, bool)> = (0..5).map(|i| (format!("f{i}:{}", i + 1), false)).collect();
@@ -3002,6 +3444,7 @@ mod tests {
             output,
             offset: 0,
             tests: true,
+            show: false,
             paths: Vec::new(),
             types: Vec::new(),
             multiline: false,
@@ -3099,6 +3542,7 @@ mod tests {
             output: Output::Lines,
             offset: 0,
             tests: true,
+            show: false,
             paths: Vec::new(),
             types: Vec::new(),
             multiline: false,
@@ -3271,6 +3715,7 @@ mod tests {
             output: Output::Lines,
             offset: 0,
             tests: true,
+            show: false,
             paths: Vec::new(),
             types: Vec::new(),
             multiline: false,
@@ -3286,7 +3731,7 @@ mod tests {
             let t0 = std::time::Instant::now();
             let mut trace = crate::trace::Trace::new("search");
             let scopes = [std::fs::canonicalize(root).unwrap()];
-            let text = run_search_traced(root, &scopes, &q, &[], &keys, &mut trace).unwrap();
+            let (text, _) = run_search_traced(root, &scopes, &q, &[], &keys, &mut trace).unwrap();
             took.push(t0.elapsed().as_secs_f64() * 1000.0);
             assert!(
                 text.contains("in test code, listed last"),
@@ -3318,6 +3763,7 @@ mod tests {
             output: Output::Lines,
             offset: 0,
             tests: true,
+            show: false,
             paths: Vec::new(),
             types: Vec::new(),
             multiline: false,
