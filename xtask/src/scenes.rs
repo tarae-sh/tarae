@@ -172,6 +172,80 @@ const REST_REVIEW_KEYS: &[&str] = &[
 /// text, not the buffer's).
 const REST_REMOVED_KEYS: &[&str] = &["@1", " ", "v", "v", "@?/// 실타래", "@1", "@hover+6?/// 실타래", "@2"];
 
+/// Short 4, "tarae's own sandbox" (`--video --shorts sandbox-runtime`; main's `.sb/short4-sandbox-brief.md`): the
+/// release script open, its key, upload and token lines in view; Claude asked to ship it, its three runs each answered
+/// as tarae answers them — the key's read refused by the sandbox, the upload's host held by the proxy as it connects
+/// (the network closed: no card before it runs) and refused, the token passed masked and printed as its stand-in;
+/// the turn's end opens its chat by itself, the three runs there each with its mark — the payoff, last. Claude goes
+/// on to its next run only once the keys reach it (`@touch:`, `Turn::next_beat`): a card never lands inside a read.
+/// The hook is the refusal itself, on the whole. One read: the stand-in value, what must be read — the refusal has
+/// none, the follow card standing from column 40 beside its line of 43 columns: no window holds the line with the card
+/// wholly in or out short of the whole screen. Each card answered within ~2 s of landing; no beat waits to be read
+/// (CLAUDE.md's Shorts bullet).
+const SANDBOX_RUNTIME: &[&str] = &[
+    "@1",
+    "@rec",
+    "@beat:You ask Claude to ship the release.",
+    "@0.6",
+    // (one key, as V4's: `space` sent apart stands long enough for which-key)
+    " l",
+    "@type:s",
+    "@note:you ask Claude → card:ask claude",
+    "@type:hip the release",
+    "\r",
+    // (beat 1, files: the key's read refused, leading its run's panel — the hook, on the whole)
+    "@20?sandbox blocked reading",
+    "@hook",
+    "@beat:Claude reached for your SSH key. The sandbox said no.",
+    "@note:Claude wants your key → cat ~/.ssh/id_ed25519 ▲",
+    "@1.5",
+    "@note:the sandbox says no → sandbox blocked reading",
+    "@1.8",
+    // (beat 2, network: the upload runs, and the proxy holds it as it connects — its host's card, `n`)
+    "@beat:It ran the upload. The proxy asked before it connected.",
+    "@touch:.s4-upload",
+    "@20?command reach",
+    "@note:it asks before connecting → card:command reach",
+    "@1.2",
+    "\x11",
+    "@0.6",
+    "@sound:stamp",
+    "n",
+    // (tarae's words for the no: the run's panel leads with it — `sandbox blocked reaching … — you said no`, whole at 80
+    // (#484a: the panel's own keys fold first) —, curl's lookup of the network's settings only counted under it)
+    "@20?reaching uploads",
+    "@note:nothing left the machine → reaching uploads",
+    "@1.6",
+    // (beat 3, secrets: the token asked for, offered masked — the real value only toward GitHub's hosts —, `y`; the
+    // run prints its stand-in: the read that must be read)
+    "@beat:It needs your GitHub token.",
+    "@touch:.s4-token",
+    "@20?Open the sandbox a little",
+    "@note:it needs your token → card:Open the sandbox",
+    "@1.2",
+    "\x11",
+    "@0.6",
+    "@sound:stamp",
+    "y",
+    "@20?fake_value_",
+    "@beat:It gets a fake one.",
+    "@zoom:fake_value_",
+    "@note:it gets a fake → fake_value_",
+    "@1.3",
+    // (the masked toast names the hosts the real one goes to; the read holds till the payoff's beat)
+    "@note:real one: GitHub only → GH_TOKEN masked",
+    "@2",
+    // (the payoff on the whole: the turn's end opens its chat, the three runs there each with its mark)
+    "@20?replay its 3 stops",
+    "@beat:Everything it needed. Nothing else.",
+    "@note:only what it needed → replay its 3 stops",
+    "@1.8",
+    "@note:tarae's own sandbox → Ask about release.sh",
+    "@1.4",
+    "@note:enforced by the OS → Ask about release.sh",
+    "@2.4",
+];
+
 /// P2b's masked scenes' keys: the chat asked, the code zoomed (at 80 the chat beside it would cut the card), the card
 /// up and focused.
 const MASKED_KEYS: &[&str] = &[
@@ -4238,6 +4312,7 @@ const SCENES: &[Scene] = &[
     // shows removed)
     Scene { name: "rest-review", claude: "full", files: MAIN, keys: REST_REVIEW_KEYS },
     Scene { name: "rest-removed", claude: "idle", files: MAIN, keys: REST_REMOVED_KEYS },
+    Scene { name: "sandbox-runtime", claude: "runtime", files: &["release.sh"], keys: SANDBOX_RUNTIME },
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },
@@ -6109,7 +6184,7 @@ pub fn run(args: &[String]) -> Result<()> {
         Some(b) if b.is_absolute() && b.is_file() => b,
         Some(b) => return Err(format!("--bin {}: an absolute path to a tarae", b.display())),
         // (a recording's homes are its own: the grammars bundled, as the homepage's — else a scene with no Rust grammar
-        // asks to download it, a card no one with it sees; so are #474's and #481's scenes')
+        // asks to download it, a card no one with it sees; so are #474's, #481's and Short 4's scenes')
         None if recording || scenes.iter().any(|s| own_home(s.name)) => {
             shot::build(&root(), "shot-docs", &["bundled-grammars"])?
         }
@@ -6294,8 +6369,8 @@ fn one(
 ) -> Result<()> {
     let dir = Fresh::new("tarae-scene")?;
     let keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
-    // (#474's and #481's: a home of the scene's own, as the docs' shots — the key #474's reads is the scene's, and no
-    // grammar, server or path of yours is in it or on screen)
+    // (#474's, #481's and Short 4's: a home of the scene's own, as the docs' shots — the key #474's and Short 4's read
+    // is the scene's, and no grammar, server or path of yours is in it or on screen)
     if own_home(scene.name) {
         let homes = homes(&dir.0, &|k| std::env::var_os(k))?;
         let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("home/tarae-demo"))?;
@@ -6305,9 +6380,10 @@ fn one(
     shot::take(&setup, &keys, size, &dir.0.join("state"), out)
 }
 
-/// Whether scene `name` is shot in a home of its own, the grammars bundled (#474's `refused-`, #481's `rest-`).
+/// Whether scene `name` is shot in a home of its own, the grammars bundled (#474's `refused-`, #481's `rest-`, Short
+/// 4's `sandbox-runtime`).
 fn own_home(name: &str) -> bool {
-    name.starts_with("refused-") || name.starts_with("rest-")
+    name.starts_with("refused-") || name.starts_with("rest-") || name == "sandbox-runtime"
 }
 
 /// `scene` measured for the polish plan's "cells tinted in the code" (`--tint`): driven as `one` drives it, its regions
@@ -6855,6 +6931,7 @@ fn video_title(scene: &str) -> &'static str {
         "follow-replay" => "Watch it work: follow and replay",
         "three-claudes" => "Three Claudes. One file.",
         "managers-view" => "The manager's view",
+        "sandbox-runtime" => "Only what you allowed.",
         _ => "",
     }
 }
@@ -6880,8 +6957,8 @@ fn prepare(
     demo: &Path,
 ) -> Result<Setup> {
     demo_crate_at(demo, scene.name == "trusted", &run_files(scene.name), Some(&dates().0))?;
-    // (#474's: a key file in the scene's own home — a stand-in, in two parts)
-    if scene.name.starts_with("refused-key") {
+    // (#474's and Short 4's: a key file in the scene's own home — a stand-in, in two parts)
+    if scene.name.starts_with("refused-key") || scene.name == "sandbox-runtime" {
         write(&dir.join("home/.ssh/id_ed25519"), concat!("tarae-fake-", "ssh-key-stand-in\n"))?;
     }
     // (#481's rest-removed: main.rs's doc comment taken out since the commit — a removed row right above `fn main`)
@@ -6954,7 +7031,7 @@ fn masked_env(scene: &str) -> Vec<(&'static str, Option<&'static str>)> {
         "masked-unknown" => {
             vec![("MY_SERVICE_TOKEN", Some(concat!("tarae-fake-", "token-0123456789abcdef")))]
         }
-        s if s.starts_with("masked") => vec![("GH_TOKEN", Some(GH))],
+        s if s.starts_with("masked") || s == "sandbox-runtime" => vec![("GH_TOKEN", Some(GH))],
         _ => Vec::new(),
     }
 }
@@ -7523,6 +7600,22 @@ echo "warning: \`tarae-demo\` (bin \"tarae-demo\") generated 2 warnings" >&2
 echo '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.42s'
 "#;
 
+const RELEASE_SH: &str = r#"#!/bin/sh
+# Tags the release, uploads the build, publishes it on GitHub.
+set -e
+
+# the tag, signed with the SSH key
+key=$(cat ~/.ssh/id_ed25519)
+git tag -s v0.4.0 -m "skein 0.4.0"
+
+# the build, uploaded
+curl -sS -T skein.tar.gz https://uploads.skein.invalid/
+
+# the release, published
+curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+  https://api.github.com/repos/demo/skein/releases -d @notes.json
+"#;
+
 /// The run scenes' own files: a task (`output-task`), a preflight of three steps (`output-preflight`) — both in
 /// a `.tarae.toml` trusted on its card — or a failing test (`output-tests`, its build in the demo's own folder,
 /// never cargo's shared one).
@@ -7538,6 +7631,9 @@ pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
             let tasks: String = (1..=40).map(|i| format!("[task.step{i}]\ncmd = \"sh step{i}.sh\"\n")).collect();
             vec![(".tarae.toml", tasks)]
         }
+        // (Short 4's release script: its key, upload and token lines — what Claude's runs reach for; the host a made-up
+        // name, the repository the demo's)
+        "sandbox-runtime" => vec![("release.sh", RELEASE_SH.into())],
         "output-task" | "panes-task-places" | "group-task-detail" | "group-task-stacked" => vec![
             (".tarae.toml", "[task.check]\ncmd = \"sh check.sh\"\n".into()),
             ("check.sh", CHECK_SH.into()),
@@ -7697,6 +7793,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "masked",
     "maskedopen",
     "maskedother",
+    "runtime",
     "big",
     "fork",
     "foot41",
@@ -7879,6 +7976,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "refusedhost" => turn.refused_host()?,
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
+            "runtime" => turn.runtime()?,
             "big" => turn.big()?,
             // (the fork's scenes: a big conversation, then a turn still going — its edit held mid-line)
             "fork" if line.contains("keep going") => {
@@ -8925,6 +9023,36 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
+    /// Short 4's turn, the release script a line at a time: the key read (the sandbox refuses it), the upload's host
+    /// reached (the proxy holds it as it connects — nothing in the command says where before it runs), then
+    /// `also {env}` for the token — each as tarae answers it.
+    fn runtime(&mut self) -> io::Result<()> {
+        self.words("The script signs the tag with your SSH key. Let me read it.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "cat ~/.ssh/id_ed25519"}))?;
+        self.next_beat(S4_UPLOAD)?;
+        self.words("The key is kept out. Next, the upload host.")?;
+        self.text("\n")?;
+        self.call(2, "run", json!({"command": "curl -sS -I https://uploads.skein.invalid/"}))?;
+        self.next_beat(S4_TOKEN)?;
+        self.words("Refused. Publishing needs your GitHub token.")?;
+        self.text("\n")?;
+        let also = json!({"command": "printenv GH_TOKEN", "also": {"env": "GH_TOKEN"},
+            "reason": "the release script reads it to call GitHub's API"});
+        self.call(3, "run", also)?;
+        self.words("It holds a stand-in; the real value goes only toward GitHub.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Short 4's Claude held until the scene's keys reach its next beat (`@touch:`) — the last one's caption and read
+    /// had their time, and no card comes in the middle of them. Unpaced (the tests'), at once.
+    fn next_beat(&self, at: &str) -> io::Result<()> {
+        match self.pause.is_zero() {
+            true => Ok(()),
+            false => wait_file(Path::new(at), Duration::from_secs(120)),
+        }
+    }
+
     fn ask_outside_long(&mut self) -> io::Result<()> {
         for n in 1..=10 {
             // (a paragraph at a time: ten of them word by word would outlast the scene's wait)
@@ -9792,6 +9920,9 @@ const LENGTH_DOC: &str = "    /// The strand's length: the sum of the gaps betwe
 /// Where V2's Claude waits for you to float your tests (made by the scene's `@touch:`), and how long after it asks.
 const V2_FLOATED: &str = "../.v2-floated";
 const V2_ASKS_MS: u64 = 600;
+/// Where Short 4's Claude waits for the scene's keys before its upload and its token (`Turn::next_beat`).
+const S4_UPLOAD: &str = "../.s4-upload";
+const S4_TOKEN: &str = "../.s4-token";
 /// V2's Claude's words once its change is in, and when (a turn's pace): the take ends before them.
 const V2_SAYS: &str = "Both say a sum now.";
 const V2_SAYS_MS: u64 = 1500;
