@@ -119,6 +119,18 @@ fn until(t: &mut Term, keys: &str, what: &str, done: impl Fn(&Screen) -> bool) -
     }
 }
 
+/// rust-analyzer runs the project's code, so it waits for the repository's code trust — a live sandbox's home of
+/// its own has never given it: the card waited for, focused (`C-q`) and answered `y` until it's gone.
+fn code_trusted(t: &mut Term) {
+    let card = "Trust this repository's code";
+    t.wait_for("the code-trust card", |s| s.contains(card));
+    t.send("\x11");
+    while t.screen().contains(card) {
+        t.send("y");
+        let _ = t.poll_for(Duration::from_millis(500), |s| !s.contains(card));
+    }
+}
+
 fn raw_text(t: &Term) -> String {
     String::from_utf8_lossy(&t.raw()).into_owned()
 }
@@ -134,6 +146,7 @@ fn rust_analyzer_diagnoses_completes_and_jumps() {
     let sb = Sandbox::live("ra");
     cargo_project(&sb);
     let mut t = sb.spawn(&["src/lib.rs"]);
+    code_trusted(&mut t);
     t.wait_text("rust-analyzer ready");
 
     // A type error, saved → cargo check's diagnostic at the line end
@@ -803,14 +816,8 @@ fn base_move_checks(name: &str, adds: bool) {
     let mut t = Term::spawn_in(&sb, &main, &["src/lib.rs"], 160, 40);
     let tarae = t.pid();
     scratch.group = Some(tarae as i32);
-    // (rust-analyzer runs the project's code: the repository's code trust first, every checkout's answer)
-    let card = "Trust this repository's code";
-    t.wait_for("the code-trust card", |s| s.contains(card));
-    t.send("\x11");
-    while t.screen().contains(card) {
-        t.send("y");
-        let _ = t.poll_for(Duration::from_millis(500), |s| !s.contains(card));
-    }
+    // (the repository's code trust first, every checkout's answer)
+    code_trusted(&mut t);
     let _ = t.poll_for(Duration::from_secs(20), |s| s.contains("rust-analyzer:"));
     quiet(&mut t, 5);
     for n in 1..=SESSIONS {
@@ -967,6 +974,7 @@ fn rust_analyzer_code_action_rename_and_format() {
     std::fs::write(&lib, format!("{text}\npub fn pick(x: Option<i32>) -> i32 {{\n    match x {{}}\n}}\n\npub fn ugly( )->i32{{1}}\n"))
         .unwrap();
     let mut t = sb.spawn(&["src/lib.rs"]);
+    code_trusted(&mut t);
     t.wait_text("rust-analyzer ready");
 
     // A code action: fill the empty match
@@ -2441,6 +2449,7 @@ fn tools_ab(questions: &[Question], name: &str, lsp: bool) {
                 let stream = teed_lsp(&sb, &llm, lsp);
                 let mut t = sb.spawn(&[if lsp { "src/main.rs" } else { "README.md" }]);
                 let loading = lsp && {
+                    code_trusted(&mut t);
                     t.wait_text("rust-analyzer ready");
                     !quiet(&mut t, 10)
                 };
@@ -5834,6 +5843,7 @@ fn compound_ab() {
                 );
                 let stream = teed_lsp(&sb, &llm, true);
                 let mut t = sb.spawn(&["src/main.rs"]);
+                code_trusted(&mut t);
                 t.wait_text("rust-analyzer ready");
                 let loading = !quiet(&mut t, 10);
                 let started = Instant::now();
