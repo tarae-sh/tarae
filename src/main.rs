@@ -49,6 +49,7 @@ mod completion;
 mod config;
 mod conflict;
 mod containers;
+mod crash;
 mod cut;
 mod diffview;
 mod disk;
@@ -445,6 +446,15 @@ fn main() -> Result<()> {
     editor.recent = recent::load();
     editor.palette_ran = palette::load();
     editor.restore = restore::State::load();
+    // The last run here crashed: said, the pane it was drawing held (`crash.rs`) — read before the first frame, as the
+    // restore file is; a panic from now on leaves its marker
+    if let Some(state) = config::state_dir() {
+        let marker = crash::file(&state, &editor.workspace.root);
+        if let Some(c) = crash::take(&marker) {
+            crash::start(&mut editor, c);
+        }
+        crash::begin(marker);
+    }
     for f in &files {
         if let Err(e) = editor.open_now(f) {
             editor.open_failed(e);
@@ -558,6 +568,8 @@ fn main() -> Result<()> {
     uisocket::remove();
     attach::remove();
     editor.save_restore();
+    // (a pane a crash held, not shown: held again at the next start, a `:restart`'s too — `crash.rs`)
+    crash::keep(&editor);
     // The last saves' undo history, an answer just kept (`sandbox.json`, the sessions' store) may still be being
     // written on workers — exiting or exec'ing cuts them off
     let flushed = editor.writes_flush();

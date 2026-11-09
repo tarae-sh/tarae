@@ -1176,6 +1176,8 @@ pub struct Editor {
     pub palette_ran: Vec<String>,
     /// The restore file (last position per file, open files per folder — `restore.rs`).
     pub restore: crate::restore::State,
+    /// A pane a crash held at the start, and one shown since (`crash.rs`).
+    pub crash: crate::crash::Hold,
     /// Theme before the theme preview (Esc restores it).
     theme_before: Option<crate::theme::Theme>,
     /// The notification card: messages that came while it was up (a burst is one card, newest on top) —
@@ -1837,6 +1839,7 @@ impl Editor {
             recent: Vec::new(),
             palette_ran: Vec::new(),
             restore: crate::restore::State::default(),
+            crash: crate::crash::Hold::default(),
             theme_before: None,
             screen: Screen::default(),
             mouse_anchor: None,
@@ -6494,6 +6497,10 @@ impl Editor {
         // A note's card between the lines: `enter` on its line opens it, `q`/`esc` close it (`notes.rs`, focus A1b)
         if crate::notes::card_key(self, key) {
             return took(Handler::NoteCard);
+        }
+        // A file a crash held at the start (`crash.rs`): `enter` shows it
+        if crate::crash::code_key(self, key) {
+            return;
         }
         // A web page's `C-c` while it's read: stops the read (`web/page.rs`)
         if crate::web::page::key(self, key) {

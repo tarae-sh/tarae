@@ -2307,6 +2307,7 @@ mod tests {
             ("Mac", "sound/mac.rs"),
             ("Made", "sandbox/linux.rs"),
             ("Member", "reviewer.rs"),
+            ("Note", "crash.rs"), // a frame's, gone when its pane is drawn
             ("Outbox", "plugin/io.rs"),
             ("Place", "billing/tests.rs"),
             ("Proc", "plugin/io.rs"),

@@ -1004,7 +1004,12 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     if let Some(at) = lay.chat_at()
         && let Some(c) = editor.workspace.claude.chat.as_ref()
     {
-        let laid = chat_laid(c, editor, &ui, at.w);
+        // (which pane a crash here was drawing — `crash.rs`; one a crash held: its row alone)
+        let _drawing = crate::crash::drawing(editor, crate::crash::Pane::Chat);
+        let laid = match crate::crash::holds(editor, &crate::crash::Pane::Chat) {
+            Some(h) => held_laid(h, editor, &ui, at.w),
+            None => chat_laid(c, editor, &ui, at.w),
+        };
         crate::chatdoc::sync(editor, &laid);
         *editor.screen.chat_laid.borrow_mut() = laid;
     }
@@ -1153,7 +1158,12 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     let followed = crate::follow::pane(editor);
     for (id, r, pl, idx, top, left, focused) in panes(editor, &lay) {
         let doc = &editor.docs[idx];
-        let view = rows_pane(editor, doc, top, &Shows::pane(editor, id, doc, focused, left), &pl);
+        let pane = crash_pane(doc);
+        let _drawing = crate::crash::drawing(editor, pane.clone());
+        let view = match crate::crash::holds(editor, &pane) {
+            Some(_) => Vec::new(),
+            None => rows_pane(editor, doc, top, &Shows::pane(editor, id, doc, focused, left), &pl),
+        };
         screen_panes.push((id, r, pl.gutter, view.iter().map(|v| v.origin(left)).collect()));
         pane_docs.push(editor.docs[idx].id);
         editor.screen.pane_sizes.push((id, (pl.text_rows, pl.text_cols)));
@@ -5066,6 +5076,99 @@ fn short_names<'a>(names: impl Iterator<Item = &'a str> + Clone) -> Vec<String> 
 
 /// Draws the panes (one if single window), and the dividers between side-by-side ones.
 /// Returns the focused pane's cursor position.
+/// A code pane's surface as a crash names it (`crash.rs`): its file.
+fn crash_pane(doc: &crate::document::Document) -> crate::crash::Pane {
+    crate::crash::Pane::Code(doc.path.as_deref().map(std::path::Path::to_path_buf).unwrap_or_default())
+}
+
+/// A pane a crash held's rows in `w` cells (`crash.rs`): its words faint, wrapped whole, `enter show` after them — on
+/// a row of its own when it doesn't fit; no hint of its own: the first row is the press's spot
+/// (`wordspot::Press::Show`), a hint's `enter` would be typed where the keys are (the chat's send) —; the same build
+/// said under them, in the warning's colour.
+fn crash_held_rows(
+    h: &crate::crash::Held,
+    editor: &Editor,
+    ui: &Ui,
+    card: Style,
+    w: usize,
+) -> Vec<Vec<crate::markdown::Span>> {
+    use crate::markdown::Span;
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let key = Style { bold: true, fg: ui.virt.fg, ..card };
+    // (the chat's as its view mode binds it — a remap moves it; a code pane's is `crash::code_key`'s)
+    let enter = match h.pane {
+        crate::crash::Pane::Chat => {
+            crate::view::bound(editor, crate::view::Surface::Chat, "view_take", "enter")
+        }
+        crate::crash::Pane::Code(_) => None,
+    };
+    // (the same build's a warning, as a card's warning lines are)
+    let warn = Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..card };
+    let sp = |text: String| Span { cut: None, hint: false, text, style: faint };
+    // (two cells in, each row whole)
+    let words = |text: &str, style: Style| -> Vec<Vec<Span>> {
+        let rows = crate::cut::fit_in_hand(text, w.saturating_sub(2), false, true).into_iter();
+        rows.map(|r| vec![Span { style, ..sp(format!("  {}", r.text)) }]).collect()
+    };
+    let pairs = [(enter.as_deref().unwrap_or("enter"), "show")];
+    let hint: Vec<Span> =
+        hint_spans(ui, &pairs, key, faint).into_iter().map(|s| Span { hint: false, ..s }).collect();
+    let width = |spans: &[Span]| spans.iter().map(|s| s.text.width()).sum::<usize>();
+    let mut rows = words(crate::crash::HELD, faint);
+    match rows.last_mut() {
+        Some(last) if width(last) + 2 + width(&hint) <= w => {
+            last.push(sp("  ".into()));
+            last.extend(hint);
+        }
+        _ => rows.push(std::iter::once(sp("  ".into())).chain(hint).collect()),
+    }
+    if h.same_build() {
+        rows.extend(words(crate::crash::SAME, warn));
+    }
+    rows
+}
+
+/// The chat's transcript a crash held, laid out: its row alone, the frame's own — none of the conversation's.
+fn held_laid(h: &crate::crash::Held, editor: &Editor, ui: &Ui, chat_w: usize) -> crate::chatdoc::Laid {
+    let (w, _) = chat_widths(chat_w, editor.workspace.kept(crate::pane::Shows::Chat).is_some());
+    let rows = crash_held_rows(h, editor, ui, panel_style(ui, editor), w).into_iter();
+    let rows: Vec<_> = rows.map(|spans| crate::chat::ChatRow { spans, ..Default::default() }).collect();
+    vec![(crate::chatdoc::Of::Own, std::sync::Arc::from(rows))]
+}
+
+/// A code pane a crash held, drawn by its own frame: its rows blank, its row on the first — a press on it shows it.
+fn draw_held_pane(
+    h: &crate::crash::Held,
+    id: crate::split::PaneId,
+    editor: &Editor,
+    ui: &Ui,
+    pl: &Layout,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let w = pl.x1.saturating_sub(pl.x0);
+    for y in 0..pl.text_rows {
+        queue!(out, MoveTo(pl.x0 as u16, (pl.text_top as usize + y) as u16))?;
+        apply(out, ui.base)?;
+        queue!(out, Print(" ".repeat(w)))?;
+    }
+    let x = pl.x0 + pl.gutter;
+    let text_w = w.saturating_sub(pl.gutter);
+    let mut rows = crash_held_rows(h, editor, ui, ui.base, text_w);
+    for (y, spans) in rows.iter().enumerate().take(pl.text_rows) {
+        queue!(out, MoveTo(x as u16, pl.text_top + y as u16))?;
+        chat_spans(out, spans, ui.base, text_w)?;
+    }
+    let spans = rows.swap_remove(0).into_iter().map(|s| (s.text, s.style)).collect();
+    let spot = word_spot(
+        crate::mouse::Surface::Code(id),
+        crate::wordspot::Press::Show,
+        (x, pl.text_top as usize),
+        spans,
+    );
+    editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
+    Ok(())
+}
+
 fn draw_panes(
     editor: &Editor,
     ui: &Ui,
@@ -5078,6 +5181,12 @@ fn draw_panes(
     for (id, _, pl, idx, top, left, focused) in &ps {
         let _fade = Fade::unless(keys.code() && *focused, ui);
         let doc = &editor.docs[*idx];
+        let pane = crash_pane(doc);
+        let _drawing = crate::crash::drawing(editor, pane.clone());
+        if let Some(h) = crate::crash::holds(editor, &pane) {
+            draw_held_pane(h, *id, editor, ui, pl, out)?;
+            continue;
+        }
         let shows = Shows::pane(editor, *id, doc, *focused, *left);
         let own;
         let view = if *focused {
@@ -5978,8 +6087,21 @@ fn draw(
         let (Some(c), Some(at)) = (&editor.workspace.claude.chat, lay.chat_at()) else { return Ok(None) };
         let cursor = {
             let _fade = Fade::unless(keys.chat(), ui);
+            let _drawing = crate::crash::drawing(editor, crate::crash::Pane::Chat);
             draw_chat(c, editor, ui, lay, out)?
         };
+        // (held by a crash: its row — the transcript's first — a press shows it)
+        if crate::crash::holds(editor, &crate::crash::Pane::Chat).is_some()
+            && let (Some((y, ..)), Some(x)) = (editor.screen.chat_view.get(), editor.screen.chat_x())
+            && let Some(first) =
+                editor.screen.chat_laid.borrow().first().and_then(|(_, rows)| rows.first().cloned())
+        {
+            let x = x + crate::chrome::GAP + crate::chrome::PAD;
+            let spans = first.spans.into_iter().map(|s| (s.text, s.style)).collect();
+            let spot =
+                word_spot(crate::mouse::Surface::Transcript, crate::wordspot::Press::Show, (x, y), spans);
+            editor.screen.word_spots.borrow_mut().push(spot.home(Here::Chat));
+        }
         if let Some((y, _, rows, _)) = editor.screen.chat_view.get() {
             let below = (at.y + at.h).saturating_sub(y + rows);
             drew(editor, Kind::ChatTop, Some((at.x, at.y, at.w, y - at.y)));
@@ -6059,12 +6181,16 @@ fn draw(
         && (editor.workspace.claude.review.is_none() || c.hidden)
         && !lay.code_hidden()
         && !editor.welcome()
+        && crate::crash::holds(editor, &crate::crash::Pane::Chat).is_none()
     {
         // (it came on its own too: never over a floating pane you opened — landing 1's rule, #299)
         let opened = opened_floats(editor, lay);
         let avoid: Vec<Rect4> =
             [note_rect, offer_rect].into_iter().flatten().chain(opened).map(kept_apart).collect();
-        let drawn = draw_follow_card(c, editor, ui, lay, &avoid, out)?;
+        let drawn = {
+            let _drawing = crate::crash::drawing(editor, crate::crash::Pane::Chat);
+            draw_follow_card(c, editor, ui, lay, &avoid, out)?
+        };
         (follow_rect, follow_says) = (drawn.map(|d| d.0), drawn.is_some_and(|d| d.1));
         drew(editor, Kind::Follow, follow_rect);
     }
@@ -11773,9 +11899,11 @@ fn code_line(
             }
         }
     }
-    // (each definition's segments — separator, glyph, name — by their `keep`: they go together)
+    // (each definition's segments — separator, glyph, name — by their `keep`: they go together; none for a pane a
+    // crash held, whose content isn't shown — `crash.rs`)
     let mut scope: Vec<(u8, usize)> = Vec::new();
-    if let Some(syn) = doc.syntax.as_ref().filter(|_| focused) {
+    let held = crate::crash::holds(editor, &crash_pane(doc)).is_some();
+    if let Some(syn) = doc.syntax.as_ref().filter(|_| focused && !held) {
         let head = doc.selection().primary().cursor(&doc.text);
         let path = syntax::scope_path(syn, &doc.text, head);
         let n = path.len();
@@ -18734,6 +18862,8 @@ fn session_tabs_in(
 /// (`chatdoc::Laid`). `render_frame` lays it out before drawing, the transcript's document follows it
 /// (`chatdoc::sync`), `draw_chat` adds the rows of its own after it (`thinking…`, the empty chat's words).
 fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> crate::chatdoc::Laid {
+    #[cfg(test)]
+    crate::crash::stand_in();
     use crate::chat::{Role, State};
     use crate::chatdoc::Of;
     use crate::markdown::{self as md, Span};
@@ -20021,8 +20151,11 @@ fn draw_chat(
             (Style { bold: true, ..warn_fg }, strong, dim, Style { bold: true, ..dim }, faint),
         ));
     }
-    // Empty chat: guidance + example questions in the middle
-    else if c.msgs.is_empty() && !c.busy() {
+    // Empty chat: guidance + example questions in the middle (not under a crash's held row — `crash.rs`)
+    else if c.msgs.is_empty()
+        && !c.busy()
+        && crate::crash::holds(editor, &crate::crash::Pane::Chat).is_none()
+    {
         let reads = match editor.front_file().map(|d| d.display_name_short()) {
             Some(name) => vec!["It reads the whole project,".to_string(), format!("starting from {name}.")],
             None => vec!["It reads the whole project.".to_string()],
@@ -20709,8 +20842,11 @@ fn draw_chat(
     // (`enter` quotes what's selected — said while something is)
     let quotes = crate::view::quotes(editor);
     // (the ways back to typing and out first, the last to fold — the status line doesn't say them too)
+    // (a transcript a crash held: `enter` shows it — `crash.rs`)
+    let held = crate::crash::holds(editor, &crate::crash::Pane::Chat).is_some();
     let viewing = [
-        (bound("view_take", "enter").filter(|_| quotes), "quote"),
+        (bound("view_take", "enter").filter(|_| held), "show"),
+        (bound("view_take", "enter").filter(|_| quotes && !held), "quote"),
         (bound("view_input", "i"), "type"),
         (bound("view_leave", "esc"), "code"),
         (bound("view_copy", "y"), "copy"),

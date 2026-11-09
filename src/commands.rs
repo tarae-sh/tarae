@@ -2495,6 +2495,10 @@ fn view_input(cx: &mut Context) {
 /// selected, the surface's own — the chat's input, the terminal's program (`view_input`); on a run panel's output,
 /// your run waiting behind there, else the chat's input.
 fn view_take(cx: &mut Context) {
+    // (the chat's transcript a crash held: shown — `crash.rs`)
+    if crate::crash::chat_key(cx.editor) {
+        return;
+    }
     let take = crate::docpane::wide(cx.editor.doc());
     if crate::docpane::swapped(cx.editor).is_some() {
         use crate::docpane::After;

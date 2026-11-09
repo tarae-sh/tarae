@@ -48,6 +48,8 @@ pub enum Press {
     Flag(u64),
     /// A mark of the turn's map (`turnmap.rs`): its stop, as `]r`/`[r` step to it.
     Stop((usize, usize)),
+    /// A pane a crash held's row (`crash.rs`): shown, as `enter` on it shows it.
+    Show,
 }
 
 /// A word where it's drawn: its row, its columns, the surface it's on as `mouse_under` names it, what a press does,
@@ -243,6 +245,9 @@ pub fn press(ed: &mut Editor, i: usize) {
         Press::Note(id) => crate::notes::pressed(ed, id),
         Press::Flag(id) => crate::flags::to_paragraph(ed, id),
         Press::Stop(at) => crate::follow::replay_at(ed, at),
+        Press::Show => {
+            crate::crash::show(ed);
+        }
     }
 }
 
