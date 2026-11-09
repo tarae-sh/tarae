@@ -20,6 +20,7 @@ mod bringqueue;
 mod builds;
 mod calls;
 mod caps;
+mod cardreview;
 mod cards;
 mod cardwarn;
 mod chat;

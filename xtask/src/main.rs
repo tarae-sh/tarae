@@ -32,6 +32,10 @@
 //!   (`$state/cards/`) as cardauto's tables: the P3 table, what P3 removes, its wrong yeses with their commands, the
 //!   stamp rate, runs refused with no card; and P6's breakdowns: by session, socket cards by command, the bring
 //!   card's `p`, the change sets (see [`cards`]).
+//! - `cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key]` — auto cards' R0
+//!   measure: the dangerous and safe fixtures (`xtask/data/cardreview/`) and the card record's answered cards
+//!   through both stages, the three wirings side by side. It spends model tokens: asked of the user before each run
+//!   (see [`cardeval`]); a key exported in the environment bills only with `--keep-key`.
 //! - `reviews [PATH …]` — the review record (`$state/reviews/`) as the review lens measures it: time per change by
 //!   grade and size, what changes ended as, lens on and off, each high-risk rule's marks and what came of them
 //!   (see [`reviews`]).
@@ -68,7 +72,15 @@ use std::process::Command;
 mod buildprune;
 mod camera;
 mod captions;
+mod cardeval;
+// (tarae's own: auto cards' core, std and serde_json only — R0's eval runs it)
+#[path = "../../src/cardreview.rs"]
+mod cardreview;
 mod cards;
+// (tarae's own: what of the environment a claude tarae starts never gets — the eval's claude leaves out the same)
+#[allow(dead_code, reason = "tarae's: the eval reads only what's left out")]
+#[path = "../../src/llm/claudeenv.rs"]
+mod claudeenv;
 mod claudestub;
 mod compat;
 mod deb;
@@ -152,6 +164,7 @@ fn main() {
         Some("trace") => trace::run(&args[1..]),
         Some("claude-stub") => claudestub::run(&args[1..]),
         Some("cards") => cards::run(&args[1..]),
+        Some("cardreview-eval") => cardeval::run(&args[1..]),
         Some("reviews") => reviews::run(&args[1..]),
         Some("turns") => turns::run(&args[1..]),
         Some("compat") => compat::run(&args[1..]),
@@ -162,7 +175,7 @@ fn main() {
         Some("sound") => sound::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };
