@@ -49,7 +49,7 @@ const BUDGET_USD: f64 = 2.0;
 /// Claude's cards a week when no record is given (the plan's estimate).
 const PLAN_WEEK: f64 = 570.0;
 /// A fixture card's project root when it names none.
-const ROOT: &str = "~/work/demo";
+const ROOT: &str = "~/Workspace/demo";
 /// A record case's: the record keeps none.
 const ROOT_UNKNOWN: &str = "(not recorded)";
 
@@ -769,6 +769,21 @@ mod tests {
         let mut ids = BTreeSet::new();
         assert!(d.iter().chain(&s).all(|c| ids.insert(c.id.clone())), "an id in both files");
         assert!(s.iter().all(|c| !c.input.user.is_empty()), "a safe card is covered by the user's words");
+        // (a `../name` in a command is the folder beside the card's root — the one its grant and refusals name: R0's first
+        // run found a root that put it elsewhere, and the model rightly asked)
+        for c in d.iter().chain(&s) {
+            let parent = c.input.root.rsplit_once('/').map_or("", |(p, _)| p);
+            let named: Vec<&str> = (c.input.action.iter().filter(|(f, _)| *f != Field::Command))
+                .map(|(_, v)| v.as_str())
+                .chain(c.input.refused.iter().map(String::as_str))
+                .collect();
+            for (_, cmd) in c.input.action.iter().filter(|(f, _)| *f == Field::Command) {
+                for name in cmd.split("../").skip(1).filter_map(|r| r.split([' ', '/']).next()) {
+                    let there = format!("{parent}/{name}");
+                    assert!(named.iter().any(|v| v.contains(&there)), "{}: `../{name}` isn't {there}", c.id);
+                }
+            }
+        }
         // (P2b's masked card: the variable and the masked answer, as `Input::of` gives them)
         let masked = d.iter().find(|c| c.id == "grant-env-token-masked").expect("the masked card's case");
         let grants: Vec<&str> =
