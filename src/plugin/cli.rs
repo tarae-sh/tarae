@@ -359,7 +359,7 @@ pub(super) fn name_ok(name: &str) -> Result<(), String> {
 /// A new plugin crate's files, by path in it: `Cargo.toml` named `name`, the template's code (its test loading the
 /// plugin by `name`) or example `from`'s, `REFERENCE.md` (the reference generated from the WIT, ending with the
 /// examples' index), `.cargo/config.toml`, `.gitignore`, and this tarae's SDK vendored in `tarae/` (`vendored`, the
-/// WIT with it) — what `tarae plugin new`, `:plugin-new` and Claude's ask (`install.rs`) write alike.
+/// WIT with it) — what `tarae plugin new` and `:plugin-new` (`install.rs`) write alike.
 pub(super) fn crate_files(name: &str, from: Option<&str>) -> Result<Vec<(&'static str, String)>, String> {
     name_ok(name)?;
     let lib = match from {
@@ -379,8 +379,8 @@ pub(super) fn crate_files(name: &str, from: Option<&str>) -> Result<Vec<(&'stati
 }
 
 /// `files` written into folder `rel` below `root` (plain names only), a folder made for them — through no link
-/// (`beneath.rs`, as Claude's edits are written): a card's look judged the folder, and a run that writes the project
-/// may swap a folder on the way for a link to outside before its `y` — a link is refused, never gone through. The
+/// (`beneath.rs`, as Claude's edits are written): a run that writes the project may have swapped a folder on the way
+/// for a link to outside — a link is refused, never gone through. The
 /// crate's folder is made here (`mkdirat`: one there already is refused), each file new in it (`O_EXCL`).
 pub(super) fn write_crate(root: &Path, rel: &Path, files: &[(&str, String)]) -> Result<(), String> {
     let (Some(above), Some(name)) = (rel.parent(), rel.file_name()) else {

@@ -2060,8 +2060,8 @@ counts the runs that only read text, by program.
 has a `web_search` tool besides: a small model's search beside the chat, told only the words, a list of pages back,
 a chat's first search asked on a card showing its words ([Claude searches the web](web.md#claude-searches-the-web)).
 
-**A plugin of yours.** Asked for a plugin, Claude asks tarae to start its crate (a card: `Cargo.toml` and `.cargo`
-are names a run can't write), reads the API in the crate's `REFERENCE.md`, edits and builds in its run, and asks to
+**A plugin of yours.** Asked for a plugin, Claude asks you to type `:plugin-new <dir>` (`Cargo.toml` and `.cargo` are
+names a run can't write), reads the API in the crate's `REFERENCE.md`, edits and builds in its run, and asks to
 install the build on one card whose `y` approves those bytes alone. The crate starts with a test on the SDK's mock
 host; `tarae plugin test` runs its tests, then loads its wasm as tarae does
 ([asking Claude for a plugin](plugins.md#asking-claude-for-a-plugin), [testing](plugins.md#testing)).

@@ -37,10 +37,10 @@ use tarae_wasm::plugin::{abi, host};
 use std::path::{Path, PathBuf};
 
 pub use cli::cli;
+pub use install::Install as PluginInstall;
 #[cfg(test)]
 pub(crate) use install::stand_in as install_stand_in;
-pub use install::{Install as PluginInstall, New as PluginNew};
-pub(crate) use install::{accept_install, accept_new, decline_install, decline_new};
+pub(crate) use install::{accept_install, decline_install};
 pub(crate) use install::{schema as tool_schema, tool_call};
 /// (the simulation's builds: the demo asking for a set — `abi::demo_asking`)
 #[cfg(test)]

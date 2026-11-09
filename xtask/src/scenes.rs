@@ -7780,7 +7780,6 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "card",
     "cardlong",
     "plugininstall",
-    "pluginnew",
     "changelater",
     "manager",
     "samebinary",
@@ -7955,10 +7954,9 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "card" => turn.ask_outside()?,
             // (#244: prose enough to reach the ask's rows in the chat, then the same card)
             "cardlong" => turn.ask_outside_long()?,
-            // (PD1's H2: Claude's `plugin` — a build to install, a crate to start — each the user's card; the project
-            // holds the build at `PLUGIN_WASM`)
+            // (PD1's H2: Claude's `plugin` — a build to install, the user's card; the project holds the build at
+            // `PLUGIN_WASM`)
             "plugininstall" => turn.plugin(json!({ "wasm": PLUGIN_WASM }))?,
-            "pluginnew" => turn.plugin(json!({ "new": "plugins/word-tally", "from": "word-tally" }))?,
             // (`waits-60s`: a change of two files, its card a moment after you float your tests)
             "changelater" => turn.change_later()?,
             // (the session list's scene: a run asked for where the tests are asked, else an edit held mid-line)

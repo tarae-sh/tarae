@@ -1,4 +1,4 @@
-//! The install as the user's card, and a crate started (PD1's H2).
+//! The install as the user's card, and a crate started by the typed way (PD1's H2).
 
 use super::*;
 use crate::scratch::Scratch;
@@ -172,7 +172,7 @@ fn a_failed_write_takes_the_approval_back() {
 }
 
 /// What can't be installed is refused before any card, Claude told why: outside the project, not a `.wasm`, not a
-/// plugin tarae loads — and a call asking both acts, or neither.
+/// plugin tarae loads — and a call naming no build.
 #[test]
 fn what_cant_be_installed_has_no_card() {
     let (mut ed, s) = project("install-refused");
@@ -212,78 +212,22 @@ fn what_cant_be_installed_has_no_card() {
     let o = ed.offers.remove(0);
     assert_eq!(o.title, "Claude asks to install plugin echo");
     assert!(o.question.starts_with("From plug/echo.wasm\n"), "{}", o.question);
-    for args in [json!({ "wasm": WASM, "new": "x" }), json!({})] {
+    for args in [json!({ "new": "x" }), json!({})] {
         let r = ask(&mut ed, 9, args).unwrap().to_string();
-        assert!(r.contains("one of wasm") && r.contains("isError"), "{r}");
+        assert!(r.contains("which build?") && r.contains("isError"), "{r}");
     }
     assert!(ed.offers.is_empty());
 }
 
-/// Claude's `new`: a card listing what tarae writes; its `y` writes the crate — `Cargo.toml` and `.cargo`, which a run
-/// can't — from the example asked for. A folder there already, or outside the project, has no card.
+/// The tool asks only for a build: a crate is started by the typed way alone, which its description names — a field
+/// for it cost every chat's prompt +129 tokens.
 #[test]
-fn claudes_new_is_a_card_and_its_yes_writes_the_crate() {
-    let (mut ed, _s) = project("install-new");
-    let root = ed.workspace.root.clone();
-    assert!(ask(&mut ed, 1, json!({ "new": "plugins/todo", "from": "stamps" })).is_none());
-    settle(&mut ed, |ed| ed.offers.first().is_some_and(|o| o.kind() == "plugin-new"));
-    let o = &ed.offers[0];
-    assert_eq!((o.title.as_str(), o.claudes()), ("Claude asks to start plugin crate todo", true));
-    assert!(
-        o.question.starts_with("In plugins/todo, from the example stamps:\nCargo.toml · src/lib.rs"),
-        "{}",
-        o.question
-    );
-    assert!(o.question.contains(".cargo/config.toml") && o.question.contains("REFERENCE.md"));
-    assert!(
-        o.question.contains("tarae/ (this tarae's SDK)") && !o.question.contains("tarae/sdk"),
-        "{}",
-        o.question
-    );
-    ed.offer_accept();
-    settle(&mut ed, |_| answered(1).is_some());
-    assert!(answered(1).unwrap().unwrap().starts_with("the user said yes — plugins/todo is made"));
-    let lib = std::fs::read_to_string(root.join("plugins/todo/src/lib.rs")).unwrap();
-    assert_eq!(lib, super::super::examples::find("stamps").unwrap().lib);
-    let config = std::fs::read_to_string(root.join("plugins/todo/.cargo/config.toml")).unwrap();
-    assert!(config.contains("build-dir = \"target/build\""), "{config}");
-    assert!(
-        std::fs::read_to_string(root.join("plugins/todo/Cargo.toml")).unwrap().contains("name = \"todo\"")
-    );
-    for (n, args, says) in [
-        (2, json!({ "new": "plugins/todo" }), "plugins/todo is there already"),
-        (3, json!({ "new": "../away" }), "../away is outside the project"),
-        (4, json!({ "new": "x", "from": "nope" }), "no example nope"),
-    ] {
-        assert!(ask(&mut ed, n, args).is_none());
-        settle(&mut ed, |_| answered(n).is_some());
-        let e = answered(n).unwrap().unwrap_err();
-        assert!(e.starts_with(says), "{e}");
-    }
-    // (`n`: nothing made)
-    assert!(ask(&mut ed, 5, json!({ "new": "plugins/other" })).is_none());
-    settle(&mut ed, |ed| !ed.offers.is_empty());
-    ed.offer_dismiss();
-    assert_eq!(answered(5), Some(Ok("the user said no — nothing was made".into())));
-    assert!(!root.join("plugins/other").exists());
-}
-
-/// Between Claude's `new` card and its `y`, a run (which writes the project) puts a link to a folder outside where the
-/// look found nothing — the crate's parent: tarae's write refuses the link, nothing lands outside, and Claude is told.
-#[test]
-fn a_link_put_on_the_way_before_the_yes_is_never_gone_through() {
-    let (mut ed, s) = project("install-new-link");
-    let root = ed.workspace.root.clone();
-    let away = s.join("away");
-    std::fs::create_dir_all(&away).unwrap();
-    assert!(ask(&mut ed, 1, json!({ "new": "plugins/foo" })).is_none());
-    settle(&mut ed, |ed| ed.offers.first().is_some_and(|o| o.kind() == "plugin-new"));
-    std::os::unix::fs::symlink(&away, root.join("plugins")).unwrap();
-    ed.offer_accept();
-    settle(&mut ed, |_| answered(1).is_some());
-    let e = answered(1).unwrap().unwrap_err();
-    assert!(e.ends_with("plugins is a link — not gone through"), "{e}");
-    assert_eq!(std::fs::read_dir(&away).unwrap().count(), 0, "nothing written outside");
+fn the_tool_asks_only_for_a_build() {
+    let s = schema();
+    let fields: Vec<&String> = s["inputSchema"]["properties"].as_object().unwrap().keys().collect();
+    assert_eq!(fields, ["wasm"]);
+    let about = s["description"].as_str().unwrap();
+    assert!(about.ends_with("To start a crate: ask the user to type `:plugin-new <dir>`."), "{about}");
 }
 
 /// The look's read stops past the limit: a file that grows after its size was taken (here a reader longer than the
@@ -327,7 +271,9 @@ fn a_new_plugin_builds_in_a_sandboxed_run() {
     assert!(dir.join("target/wasm32-unknown-unknown/release/hello.wasm").is_file(), "{text}");
 }
 
-/// `:plugin-new` writes the crate at once — your act — and opens its code.
+/// `:plugin-new` writes the crate at once — your act: `Cargo.toml` and `.cargo`, which a run can't — from the example
+/// asked for, and opens its code. A folder there already, an example that isn't, a link on the way or a `..` out:
+/// nothing written.
 #[test]
 fn the_typed_new_writes_at_once() {
     let (mut ed, s) = project("install-new-typed");
@@ -336,15 +282,19 @@ fn the_typed_new_writes_at_once() {
         assert_eq!(ed.plugin_new_typed(bad).unwrap_err(), "usage: :plugin-new <dir> [--from <example>]");
     }
     assert!(ed.plugin_new_typed("tools/2fa").unwrap_err().contains("starts with a letter"));
-    ed.plugin_new_typed("tools/hello --from sort-lines").unwrap();
+    assert!(ed.plugin_new_typed("tools/x --from nope").unwrap_err().starts_with("no example nope"));
+    ed.plugin_new_typed("tools/hello --from stamps").unwrap();
     settle(&mut ed, |ed| said(ed).iter().any(|m| m.starts_with("Started plugin hello")));
-    assert!(
-        root.join("tools/hello/REFERENCE.md").is_file()
-            && root.join("tools/hello/.cargo/config.toml").is_file()
-    );
+    let lib = std::fs::read_to_string(root.join("tools/hello/src/lib.rs")).unwrap();
+    assert_eq!(lib, super::super::examples::find("stamps").unwrap().lib);
+    let config = std::fs::read_to_string(root.join("tools/hello/.cargo/config.toml")).unwrap();
+    assert!(config.contains("build-dir = \"target/build\""), "{config}");
+    let manifest = std::fs::read_to_string(root.join("tools/hello/Cargo.toml")).unwrap();
+    assert!(manifest.contains("name = \"hello\""), "{manifest}");
+    assert!(root.join("tools/hello/REFERENCE.md").is_file() && root.join("tools/hello/tarae").is_dir());
     ed.plugin_new_typed("tools/hello").unwrap();
     settle(&mut ed, |ed| said(ed).iter().any(|m| m.ends_with("tools/hello already exists")));
-    // (the same writer as Claude's: a link on the way is never gone through, nor a `..` out)
+    // (a link on the way is never gone through, nor a `..` out)
     let away = s.join("away");
     std::fs::create_dir_all(&away).unwrap();
     std::os::unix::fs::symlink(&away, root.join("out")).unwrap();

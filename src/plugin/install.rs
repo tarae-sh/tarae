@@ -1,13 +1,13 @@
-//! PD1's H2: what Claude's `plugin` tool asks, and the typed commands beside it — one path each, two ways in.
-//! - **A crate started** (`new`, or `:plugin-new <dir> [--from <example>]`): the template or an example, the WIT,
-//!   `REFERENCE.md` generated from it, `Cargo.toml` and `.cargo` — written by tarae, never a run (those are names a
-//!   run can't write in the project). Claude's raises a card (`plugin-new`) whose `y` writes it; yours writes it at once.
-//! - **A build installed** (`wasm`, or `:plugin-install <wasm>`): one card, `plugin-install`, showing what it may do in
-//!   the load card's words. Its `y` approves exactly the bytes the card holds — hash-bound, never a dev approval: a
+//! PD1's H2: what Claude's `plugin` tool asks, and the typed commands beside it.
+//! - **A crate started** (`:plugin-new <dir> [--from <example>]`, typed only — the tool's description points Claude at
+//!   it): the template or an example, the WIT, `REFERENCE.md` generated from it, `Cargo.toml` and `.cargo` — written by
+//!   tarae at once, never a run (those are names a run can't write in the project).
+//! - **A build installed** (`wasm`, or `:plugin-install <wasm>`), two ways in: one card, `plugin-install`, showing what
+//!   it may do in the load card's words. Its `y` approves exactly the bytes the card holds — hash-bound, never a dev approval: a
 //!   folder Claude edits never keeps a yes across rebuilds (#458) — before they're renamed into the plugins folder, so
 //!   the load that follows finds them approved and no load card comes. A rebuild since the card isn't what lands.
 //!
-//! Claude never answers either card: no tool reaches `offer_accept_by` (`orchestra.rs`). The plugins folder is never a
+//! Claude never answers the card: no tool reaches `offer_accept_by` (`orchestra.rs`). The plugins folder is never a
 //! run's to write (`allow::NEVER_WRITE`).
 
 use std::path::{Path, PathBuf};
@@ -48,18 +48,6 @@ pub struct Install {
     pub dir: PathBuf,
 }
 
-/// A crate Claude asked to start, as its card shows it.
-#[derive(Clone, Debug)]
-pub struct New {
-    pub call: Call,
-    /// The project's root, and where in it by real names (walked again through no link at `y`); as shown.
-    pub root: PathBuf,
-    pub rel: PathBuf,
-    pub shown: String,
-    pub from: Option<String>,
-    pub files: Vec<(&'static str, String)>,
-}
-
 /// The plugins folder an install writes to — in tests, only a scratch one a test named (`stand_in`): never yours.
 fn plugins_dir() -> Option<PathBuf> {
     #[cfg(test)]
@@ -79,20 +67,18 @@ pub(crate) fn stand_in(dir: &Path) {
     STAND_IN.with(|s| *s.borrow_mut() = Some(dir.to_path_buf()));
 }
 
-/// The tool's schema: one tool, `wasm` its install, `new` (and `from`) its start of a crate.
+/// The tool's schema: one tool, `wasm` its install. A crate is started only by the typed way (`:plugin-new`): a field
+/// for it cost every chat's prompt +129 tokens (2026-11-10), for an act most chats never use.
 pub(crate) fn schema() -> Value {
-    let names: Vec<&str> = super::examples::EXAMPLES.iter().map(|e| e.name).collect();
     json!({
         "name": "plugin",
         "description": "Install a tarae plugin you built: the user's card shows what it may do, and their yes installs \
-            and approves those bytes only (a run can't write the plugins folder). Its API: the crate's REFERENCE.md.",
+            and approves those bytes only (a run can't write the plugins folder). Its API: the crate's REFERENCE.md. \
+            To start a crate: ask the user to type `:plugin-new <dir>`.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "wasm": { "type": "string", "description": "The built .wasm, in the project" },
-                "new": { "type": "string", "description": "Instead: a folder to start a plugin crate in, on the user's \
-                    yes (Cargo.toml, .cargo, REFERENCE.md)" },
-                "from": { "type": "string", "description": format!("With new: an example — {}", names.join(" ")) }
+                "wasm": { "type": "string", "description": "The built .wasm, in the project" }
             }
         }
     })
@@ -102,39 +88,20 @@ pub(crate) fn schema() -> Value {
 pub(crate) fn tool_call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     let text = |k: &str| args[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let root = ed.workspace.root.clone();
-    match (text("wasm"), text("new")) {
-        (Some(wasm), None) => {
-            let dir = plugins_dir().ok_or("no plugins folder here (set HOME or XDG_CONFIG_HOME)")?;
-            ed.events.jobs().spawn(move || {
-                let r = look(&root, &wasm, &dir);
-                move |ed: &mut Editor| match r.and_then(|i| one_at_a_time(ed, i)) {
-                    Ok(mut i) => {
-                        i.call = Some(call);
-                        let o = install_card(&i);
-                        ed.push_offer(o);
-                    }
-                    Err(e) => crate::tools::answer(ed, call, Err(e)),
-                }
-            });
-            Ok(())
+    let wasm = text("wasm").ok_or("which build? wasm: the built .wasm, in the project")?;
+    let dir = plugins_dir().ok_or("no plugins folder here (set HOME or XDG_CONFIG_HOME)")?;
+    ed.events.jobs().spawn(move || {
+        let r = look(&root, &wasm, &dir);
+        move |ed: &mut Editor| match r.and_then(|i| one_at_a_time(ed, i)) {
+            Ok(mut i) => {
+                i.call = Some(call);
+                let o = install_card(&i);
+                ed.push_offer(o);
+            }
+            Err(e) => crate::tools::answer(ed, call, Err(e)),
         }
-        (None, Some(dir)) => {
-            let from = text("from");
-            ed.events.jobs().spawn(move || {
-                let r = new_look(&root, &dir, from.as_deref());
-                move |ed: &mut Editor| match r {
-                    Ok((rel, shown, files)) => {
-                        let n = New { call, root, rel, shown, from, files };
-                        let o = new_card(&n);
-                        ed.push_offer(o);
-                    }
-                    Err(e) => crate::tools::answer(ed, call, Err(e)),
-                }
-            });
-            Ok(())
-        }
-        _ => Err("one of wasm (a build to install) or new (a folder to start a crate in)".into()),
-    }
+    });
+    Ok(())
 }
 
 /// One install of a name at a time, from its card to its bytes landing: two in flight could land out of order, the
@@ -225,25 +192,6 @@ fn at_most(r: impl std::io::Read, max: u64) -> std::io::Result<Option<Vec<u8>>> 
     Ok((bytes.len() as u64 <= max).then_some(bytes))
 }
 
-/// The look at a crate to start (on a worker): its folder in the project and not there yet — from the root, by real
-/// names — as shown, its files. (Judged again as it's written, `cli::write_crate`: a link put on the way since is
-/// refused.)
-type Starting = (PathBuf, String, Vec<(&'static str, String)>);
-
-fn new_look(root: &Path, dir: &str, from: Option<&str>) -> Result<Starting, String> {
-    let path = root.join(dir);
-    let outside = || format!("{dir} is outside the project");
-    let real = crate::paths::inside(root, &path).ok_or_else(outside)?;
-    if real.exists() {
-        return Err(format!("{dir} is there already"));
-    }
-    let top = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
-    let rel = real.strip_prefix(&top).map_err(|_| outside())?.to_path_buf();
-    let name = real.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    let files = super::cli::crate_files(name, from)?;
-    Ok((rel, shown_in(root, &real), files))
-}
-
 /// The install's card: where it was found, what it registers, what it may do in the load card's words, what it
 /// replaces, and what the yes binds — never its hash (#458: nobody compares hex).
 fn install_card(i: &Install) -> Offer {
@@ -291,30 +239,6 @@ fn install_card(i: &Install) -> Offer {
     o
 }
 
-fn new_card(n: &New) -> Offer {
-    // (the vendored SDK one entry: its files are this tarae's, the same in every crate)
-    let mut paths: Vec<&str> = n.files.iter().map(|(p, _)| *p).filter(|p| !p.starts_with("tarae/")).collect();
-    if n.files.iter().any(|(p, _)| p.starts_with("tarae/")) {
-        paths.push("tarae/ (this tarae's SDK)");
-    }
-    let from = n.from.as_ref().map(|e| format!(", from the example {e}")).unwrap_or_default();
-    let q = format!(
-        "In {}{from}:\n{}\nWritten by tarae — Cargo.toml and .cargo are names a run can't write.",
-        n.shown,
-        paths.join(" · ")
-    );
-    // (the title the act and the crate's name, the body where: the folder said once)
-    let name = n.rel.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-    Offer::new(
-        format!("Claude asks to start plugin crate {name}"),
-        &q,
-        "Writing…",
-        format!("Couldn't start {}", n.shown),
-        What::PluginNew(Box::new(n.clone())),
-    )
-    .deciding(0..2)
-}
-
 /// How an install's approval is taken back when its bytes didn't land: the name, the bytes it approved and what was
 /// approved before for that name, or none; or the early change, if the plugin thread hasn't started yet.
 enum TakeBack {
@@ -342,7 +266,7 @@ impl Editor {
     }
 
     /// `:plugin-new <dir> [--from <example>]` — the crate written at once (your act: `Cargo.toml` and `.cargo` are yours
-    /// to write), in the project, through no link as Claude's is; its `src/lib.rs` opened.
+    /// to write), in the project, through no link; its `src/lib.rs` opened.
     pub fn plugin_new_typed(&mut self, rest: &str) -> Result<(), String> {
         let usage = "usage: :plugin-new <dir> [--from <example>]";
         let words: Vec<&str> = rest.split_whitespace().collect();
@@ -486,36 +410,6 @@ pub(crate) fn decline_install(ed: &mut Editor, i: Install) {
     if let Some(call) = i.call {
         crate::tools::answer(ed, call, Ok("the user said no — nothing was installed".into()));
     }
-}
-
-/// The crate card's `y`: its files written on a worker, through no link.
-pub(crate) fn accept_new(ed: &mut Editor, id: u64, n: New) {
-    let (root, rel, files) = (n.root.clone(), n.rel.clone(), n.files.clone());
-    ed.events.jobs().spawn(move || {
-        let r = super::cli::write_crate(&root, &rel, &files);
-        move |ed: &mut Editor| {
-            ed.offer_finished(id, Ok(()));
-            let answer = match r {
-                Ok(()) => {
-                    ed.set_success(format!("Started plugin crate {} — the API is its REFERENCE.md", n.shown));
-                    Ok(format!(
-                        "the user said yes — {} is made; build it with `cargo build --release` there",
-                        n.shown
-                    ))
-                }
-                Err(e) => {
-                    ed.set_error(format!("Couldn't start {}: {e}", n.shown));
-                    Err(e)
-                }
-            };
-            crate::tools::answer(ed, n.call, answer);
-        }
-    });
-}
-
-pub(crate) fn decline_new(ed: &mut Editor, n: New) {
-    ed.set_status(format!("No crate made in {}", n.shown));
-    crate::tools::answer(ed, n.call, Ok("the user said no — nothing was made".into()));
 }
 
 #[cfg(test)]

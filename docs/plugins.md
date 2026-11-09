@@ -149,13 +149,12 @@ line, then each folder's totals, and exits non-zero when anything failed.
 
 ## Asking Claude for a plugin
 
-Ask in the chat ("a plugin that lists this file's TODOs in a panel"). Claude starts the crate, writes the code, builds
-it and asks you to install it, each step on your screen:
+Ask in the chat ("a plugin that lists this file's TODOs in a panel"). You start the crate, Claude writes the code,
+builds it and asks you to install it, each step on your screen:
 
-1. **The crate.** `Cargo.toml` and `.cargo` are names a run can't write in the project, so Claude asks tarae to start
-   it: a card lists the files, the template's or an example's, and `y` has tarae write them. You can type it yourself
-   instead: `:plugin-new plugins/todo --from word-tally`. Claude reads the API in the crate's `REFERENCE.md`, inside
-   your project.
+1. **The crate.** `Cargo.toml` and `.cargo` are names a run can't write in the project, so Claude asks you to start
+   it: type `:plugin-new plugins/todo` (or `--from word-tally`, an example's code) and tarae writes the template's
+   files at once. Claude reads the API in the crate's `REFERENCE.md`, inside your project.
 2. **The code and the build.** Claude edits `src/lib.rs` (its edits reviewed, as always) and builds in its run:
    `cargo build --release` in the crate. The run is sandboxed like any of its runs, and cargo's build files stay in
    the crate.
@@ -167,7 +166,8 @@ it and asks you to install it, each step on your screen:
    same card for a build of your own.
 
 What Claude can't do:
-- **Answer a card.** The crate's card and the install's are yours. No tool of Claude's reaches a card's answer.
+- **Start a crate.** Only `:plugin-new`, typed by you, writes one.
+- **Answer a card.** The install's is yours. No tool of Claude's reaches a card's answer.
 - **Write the plugins folder.** A run is refused there, wherever `XDG_CONFIG_HOME` puts it.
 - **Keep a yes across rebuilds.** Unlike `tarae plugin dev`'s yes to a folder you build yourself, the install's is
   bound to the build's hash: every change Claude makes asks again.

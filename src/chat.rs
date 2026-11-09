@@ -4730,16 +4730,10 @@ pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             let wakes = if input["wake"].as_bool() == Some(true) { crate::orchestra::WAKES_ME } else { "" };
             Look { verb, what: what + wakes, pattern: false, range: s("why"), link: None }
         }
-        // (a build to install: the path asked, its name on the card — the package's, which the row can't read; or a crate
-        // to start, its folder — the example it starts from on its card, the row's room the path's)
+        // (a build to install: the path asked, its name on the card — the package's, which the row can't read)
         "mcp__tarae__plugin" => {
-            let new = s("new");
-            if new.trim().is_empty() {
-                let what = format!("plugin from {}", shown(&resolve(&s("wasm"))));
-                return Look { verb: "install", what, pattern: false, range: String::new(), link: None };
-            }
-            let what = format!("plugin crate {}", shown(&resolve(new.trim())));
-            Look { verb: "start", what, pattern: false, range: String::new(), link: None }
+            let what = format!("plugin from {}", shown(&resolve(&s("wasm"))));
+            Look { verb: "install", what, pattern: false, range: String::new(), link: None }
         }
         other => {
             Look { verb: "use", what: other.to_string(), pattern: false, range: String::new(), link: None }
@@ -7877,11 +7871,6 @@ mod tests {
         let i = look(cwd, "mcp__tarae__plugin", &serde_json::json!({"wasm": "plugin-sdk/word_tally.wasm"}));
         assert_eq!(i.said(), "install plugin from plugin-sdk/word_tally.wasm");
         assert_eq!(doing(i.verb), "installing");
-        let n = look(cwd, "mcp__tarae__plugin", &serde_json::json!({"new": "plugins/word-tally"}));
-        assert_eq!(n.said(), "start plugin crate plugins/word-tally");
-        let from = serde_json::json!({"new": "/proj/plugins/word-tally", "from": "word-tally"});
-        let f = look(cwd, "mcp__tarae__plugin", &from);
-        assert_eq!(f.said(), "start plugin crate plugins/word-tally");
         // Orchestra's: each verb in the rows' six cells (`{:<6}`) — a fresh send's `anew` in its words
         let at = |tool: &str, input: serde_json::Value| look(cwd, tool, &input);
         let start = at("mcp__tarae__sessions_start", serde_json::json!({"sessions": {"knot-count": "b"}}));

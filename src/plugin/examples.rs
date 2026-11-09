@@ -1,5 +1,5 @@
 //! The plugin examples (`plugin-sdk/examples/`, PD1's H2), in the binary: `tarae plugin example <name>` prints one, and
-//! `tarae plugin new <dir> --from <name>` (`:plugin-new`, the `new` of Claude's `plugin` tool) starts a crate from one.
+//! `tarae plugin new <dir> --from <name>` (or `:plugin-new`) starts a crate from one.
 //! So Claude reads them where it works — the user's project —, never only in tarae's repository.
 
 /// An example: its name (its folder), its idea in a few words, its `src/lib.rs`.
