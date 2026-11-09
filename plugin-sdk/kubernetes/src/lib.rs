@@ -24,7 +24,7 @@
 //! A file Kustomize or Helm makes objects of is read as they make them: a base through the build of each
 //! root (`kustomize build`) that takes it in, a chart's template through `helm template` for each release
 //! of the chart the cluster has (found by the labels Helm puts on what it installs — whoever installed it).
-wit_bindgen::generate!({ path: "../wit", world: "plugin", additional_derives: [PartialEq] });
+use tarae_plugin::{Action, Command, Context, Event, Guest, HostEvent, Now, Permission, Subscription};
 
 mod cause;
 mod fields;
@@ -43,7 +43,7 @@ use kube_core::discovery::ApiResource;
 use kube_core::params::{GetParams, ListParams, WatchParams};
 use kube_core::{DynamicObject, Resource, WatchEvent};
 use serde_json::Value;
-use tarae::plugin::types::{Connect, Hint, Hints, Pick, Side, SideRow, Spawn, Tone, View};
+use tarae_plugin::{Connect, Hint, Hints, Pick, Side, SideRow, Spawn, Tone, View};
 use tarae_plugin::http::{Lines, Response};
 use tarae_plugin::tls::{self, Tls};
 
@@ -2819,7 +2819,7 @@ impl State {
     }
 }
 
-export!(Plugin);
+tarae_plugin::export!(Plugin);
 
 #[cfg(test)]
 mod tests {

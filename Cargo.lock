@@ -1290,6 +1290,7 @@ dependencies = [
  "serde_json",
  "streaming-iterator",
  "tar",
+ "tarae-plugin-rules",
  "tarae-sock",
  "tarae-sorting",
  "tarae-testkit",
@@ -1304,6 +1305,10 @@ dependencies = [
  "unicode-width",
  "vt100",
 ]
+
+[[package]]
+name = "tarae-plugin-rules"
+version = "0.3.0"
 
 [[package]]
 name = "tarae-sock"

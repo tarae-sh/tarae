@@ -9,10 +9,10 @@
 //! refuses anything else a plugin that hears keys answers with. It's shown for the core's reading time and fades;
 //! after a pause the row starts again. Hidden while an ask stands in the corner or which-key is up — tarae's doing.
 //! `:keycast-off` stops it, `:keycast` starts it again; a press on it puts it away until the next key.
-wit_bindgen::generate!({ path: "../wit", world: "plugin", additional_derives: [PartialEq] });
+use tarae_plugin::{Action, Command, Context, Event, Guest, HostEvent, Now, Permission, Subscription};
 
 use std::cell::RefCell;
-use tarae::plugin::types::{KeyEvent, Mode, Overlay, Role, Span};
+use tarae_plugin::{KeyEvent, Mode, Overlay, Role, Span};
 
 /// The bindings in the row at most.
 const BINDINGS: usize = 4;
@@ -216,7 +216,7 @@ impl Guest for Keycast {
     }
 }
 
-export!(Keycast);
+tarae_plugin::export!(Keycast);
 
 #[cfg(test)]
 mod tests;

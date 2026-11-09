@@ -1591,6 +1591,14 @@ mod tests {
         }
         let mut expected = ours.clone();
         expected.remove("cargo perf");
+        // (on purpose: the plugins' step runs network tests by name — each of them CI's network job's too)
+        let network = ci.lines().find(|l| l.contains("-- --ignored")).expect("the network job");
+        for step in ours.iter().filter(|c| c.contains("-- --ignored --exact ")) {
+            for name in step.split(" --exact ").nth(1).unwrap().split_whitespace() {
+                assert!(network.split_whitespace().any(|w| w == name), "{name}: in CI's network job too");
+            }
+            expected.remove(step);
+        }
         assert!(
             expected.remove("cargo xtask linux --no-skip clippy"),
             "Linux's clippy at every landing: {ours:?}"

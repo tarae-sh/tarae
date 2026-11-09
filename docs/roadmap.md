@@ -95,7 +95,7 @@ from each other. Daemons such as Gradle's stay warm between runs.
    Linux in every tier and on macOS, and the fixes they found: a run's folder no other run can write, on macOS no
    signal or terminal outside a run's own. The keepers' memory with many sessions, measured; tarae's log names each
    session. A run asks before it reads a file named like a key inside the project (`.env`, `*.pem`, `id_*` — the
-   names in runtime/secret-names.txt).
+   names in plugin-sdk/rules/src/secret-names.txt).
 8. **The loopback rule** — done. Where sessions share one loopback (tiers without a network namespace), a
    session reaches only its own listeners and binds onto none of the others' ports.
 9. **Showing the tier** — done. What a run's sandbox keeps apart and shares, said in Claude's result, the sandbox

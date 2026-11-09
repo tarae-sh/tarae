@@ -19,6 +19,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use tarae_plugin_rules as rules;
+
 use super::abi::{Action, Connect, HostEvent, Permission};
 use super::shown;
 use crate::editor::Editor;
@@ -88,102 +90,38 @@ impl Approval {
     }
 }
 
+/// A permission as the shared rules read it (`tarae_plugin_rules`: the SDK's mock host holds a plugin's tests to
+/// the same rules, in the same words).
+fn perm(p: &Permission) -> rules::Perm<'_> {
+    match p {
+        Permission::Run(prog) => rules::Perm::Run(prog),
+        Permission::Read(pat) => rules::Perm::Read(pat),
+        Permission::Env(name) => rules::Perm::Env(name),
+        Permission::Network => rules::Perm::Network,
+        Permission::Project => rules::Perm::Project,
+        Permission::Keys => rules::Perm::Keys,
+    }
+}
+
 /// A permission as it's kept.
 pub(super) fn key(p: &Permission) -> String {
-    match p {
-        Permission::Run(prog) => format!("run {prog}"),
-        Permission::Read(pat) => format!("read {pat}"),
-        Permission::Env(name) => format!("env {name}"),
-        Permission::Network => "network".into(),
-        Permission::Project => "project".into(),
-        Permission::Keys => "keys".into(),
-    }
+    rules::key(perm(p))
 }
 
 /// A permission in words, for the card — what it amounts to, broad reading said so.
 fn describe(p: &Permission) -> String {
-    match p {
-        Permission::Run(prog) => format!("run the program {} (with any arguments, as you)", shown(prog)),
-        Permission::Read(pat) => {
-            let fixed: String =
-                pat.split('/').take_while(|c| !c.contains(['*', '?'])).collect::<Vec<_>>().join("/");
-            let warn = match fixed.as_str() {
-                "" => " ⚠ every file on this computer",
-                "~" => " ⚠ every file in your home folder",
-                _ => "",
-            };
-            format!("read files at {}{warn}", shown(pat))
-        }
-        Permission::Env(name) => format!("read the environment variable {}", shown(name)),
-        Permission::Network => "connect over the network (each new host is asked)".into(),
-        Permission::Project => {
-            "read the files of the project you opened, and find them by name — not ones named like keys \
-             (.env, *.pem …): those it asks for"
-                .into()
-        }
-        Permission::Keys => {
-            "hear the keys you press as commands, never a character typed — only while your own config's \
-             plugins.keys is on, said on the status line while it hears; it shows them in its overlay only, \
-             never edits, says, opens, keeps, reads, connects to or runs anything"
-                .into()
-        }
-    }
+    rules::describe(perm(p))
 }
 
-/// Why what a plugin declares isn't what tarae takes, if it isn't: each permission as written (`invalid_one`), and
-/// a plugin that hears keys asking for nothing else (overlays plan §7 1: a keylogger needs a way out, a keycast
-/// none) — no `network`, no `run`, and no reads either: a path it picks is a lookup the filesystem makes, and on a
-/// network mount even a missing file's lookup reaches a server. What needs no permission — an edit, a message, a
-/// panel, its own file — is refused as it's answered (`keys::refused`), and its card says so (`describe`).
+/// Why what a plugin declares isn't what tarae takes, if it isn't (`rules::invalid`: each permission as written,
+/// and a plugin that hears keys asking for nothing else).
 pub(super) fn invalid(declared: &[Permission]) -> Option<String> {
-    if let Some(why) = declared.iter().find_map(invalid_one) {
-        return Some(why);
-    }
-    let other = declared.iter().find(|p| **p != Permission::Keys);
-    match (declared.contains(&Permission::Keys), other) {
-        (true, Some(p)) => Some(format!(
-            "it asks to hear keys and for “{}” — a plugin that hears keys asks for nothing else: it reads, \
-             connects to and runs nothing (what it hears stays in tarae)",
-            shown(&key(p))
-        )),
-        _ => None,
-    }
+    rules::invalid(&declared.iter().map(perm).collect::<Vec<_>>())
 }
 
 /// Whether a plugin that declared `declared` hears keys (`keys`) — and so writes nothing of its own.
 pub(super) fn hears_keys(declared: &[Permission]) -> bool {
     declared.contains(&Permission::Keys)
-}
-
-/// Why a declared permission isn't one tarae takes, if it isn't: a program is a plain name, a variable a
-/// plain name, a pattern absolute (or from `~/`) with no `.` or `..` in it — so what the card shows is what
-/// it covers.
-fn invalid_one(p: &Permission) -> Option<String> {
-    let plain = |s: &str, extra: &str| {
-        !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
-    };
-    let why = match p {
-        Permission::Run(prog) if prog.len() > 64 || !plain(prog, "._+-") || prog.starts_with('.') => {
-            "a program is a plain name (no path)"
-        }
-        Permission::Env(name)
-            if name.len() > 128 || !plain(name, "_") || name.starts_with(|c: char| c.is_ascii_digit()) =>
-        {
-            "an environment variable's name"
-        }
-        Permission::Read(pat) if pat.len() > 200 => "a pattern up to 200 characters",
-        Permission::Read(pat) if !(pat.starts_with('/') || pat.starts_with("~/")) => {
-            "a pattern starts at / or ~/"
-        }
-        Permission::Read(pat) if pat.chars().any(|c| c.is_control() || super::bidi(c)) => {
-            "no control characters"
-        }
-        Permission::Read(pat) if pat.split('/').skip(1).any(|c| matches!(c, "" | "." | "..")) => {
-            "no `.`, `..` or empty parts in a pattern"
-        }
-        _ => return None,
-    };
-    Some(format!("its permission “{}” isn't valid: {why}", shown(&key(p))))
 }
 
 /// Where approvals are kept (none in tests, unless a test says).
@@ -279,50 +217,9 @@ fn keys(declared: &[Permission]) -> Vec<String> {
     k
 }
 
-/// `~/x` → home/x; `..` and `.` taken out, lexically. None if it isn't absolute after that.
+/// `~/x` → home/x (`HOME`'s); `..` and `.` taken out, lexically. None if it isn't absolute after that.
 pub(super) fn expand(path: &str) -> Option<PathBuf> {
-    let p = match path.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
-        None if path == "~" => PathBuf::from(std::env::var_os("HOME")?),
-        None => PathBuf::from(path),
-    };
-    if !p.is_absolute() {
-        return None;
-    }
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir => {}
-            c => out.push(c),
-        }
-    }
-    Some(out)
-}
-
-/// `*` and `?` in one name.
-fn name_matches(pat: &str, name: &str) -> bool {
-    let (p, n): (Vec<char>, Vec<char>) = (pat.chars().collect(), name.chars().collect());
-    // (a star's last place, and where in the name it had got to)
-    let (mut i, mut j, mut star) = (0, 0, None::<(usize, usize)>);
-    while j < n.len() {
-        if i < p.len() && (p[i] == '?' || p[i] == n[j]) {
-            i += 1;
-            j += 1;
-        } else if i < p.len() && p[i] == '*' {
-            star = Some((i, j));
-            i += 1;
-        } else if let Some((si, sj)) = star {
-            i = si + 1;
-            j = sj + 1;
-            star = Some((si, sj + 1));
-        } else {
-            return false;
-        }
-    }
-    p[i..].iter().all(|&c| c == '*')
+    rules::expand(path, std::env::var_os("HOME").map(PathBuf::from).as_deref())
 }
 
 /// The disk the gate needs (#457): a pattern's folders resolved, a path made real, whether a file is there — only ever
@@ -582,70 +479,17 @@ pub(super) fn roots(declared: &[Permission]) -> Vec<(String, Option<PathBuf>)> {
 
 /// Whether `path` is one `pattern` covers (`**`: any folders, none too).
 pub(super) fn path_matches(pattern: &str, path: &Path) -> bool {
-    expand(pattern).is_some_and(|pat| path_matches_in(&pat, path))
-}
-
-fn path_matches_in(pat: &Path, path: &Path) -> bool {
-    let names =
-        |p: &Path| p.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>();
-    fn go(p: &[String], n: &[String]) -> bool {
-        match p.split_first() {
-            None => n.is_empty(),
-            Some((first, rest)) if first == "**" => (0..=n.len()).any(|k| go(rest, &n[k..])),
-            Some((first, rest)) => {
-                n.split_first().is_some_and(|(name, more)| name_matches(first, name) && go(rest, more))
-            }
-        }
-    }
-    go(&names(pat), &names(path))
+    expand(pattern).is_some_and(|pat| rules::path_matches_in(&pat, path))
 }
 
 /// What a plugin's grant reaches (`plugin_grant`), taken from the editor to be held against a path with no disk
-/// touched — on the loop, or on the worker an open of its goes to: its `read` patterns, as written and with their
-/// folders resolved (`roots`), the project (a real path), the files allowed on its read card. A path's own real form
-/// comes from where it was made real: a buffer's as it opened, an `open`'s on its worker.
-#[derive(Clone)]
-pub(super) struct Reach {
-    patterns: Vec<(String, Option<PathBuf>)>,
-    project: Option<PathBuf>,
-    files: Vec<String>,
-}
-
-impl Reach {
-    /// Whether it reaches `real` — and `lexical` as written, if there is one (a buffer's path was made real as it
-    /// opened: `real` is all there is).
-    pub(super) fn reaches(&self, lexical: Option<&Path>, real: &Path) -> bool {
-        let covered = |at: &Path| self.patterns.iter().any(|(pat, _)| path_matches(pat, at));
-        // (a pattern whose folders didn't resolve covers nothing resolved)
-        let covered_real =
-            |at: &Path| self.patterns.iter().any(|(_, r)| r.as_ref().is_some_and(|r| path_matches_in(r, at)));
-        // The project's files, if it may read them — where they are, and where they lead; not ones named like
-        // keys and tokens (`.env`, `*.pem` — `secretnames`): those are asked about like any file outside it
-        let secret =
-            lexical.is_some_and(crate::secretnames::named_secret) || crate::secretnames::named_secret(real);
-        let in_project = !secret
-            && self
-                .project
-                .as_ref()
-                .is_some_and(|root| lexical.is_none_or(|l| l.starts_with(root)) && real.starts_with(root));
-        let allowed_before = self.files.iter().any(|f| Path::new(f) == real);
-        (lexical.is_none_or(covered) && covered_real(real)) || in_project || allowed_before
-    }
-
-    /// #457's rule (a): what it reaches, never a file named like a key, whatever its patterns say.
-    ///
-    /// The rule is `secretnames::named_secret` itself, on purpose stricter than the runs' `sandbox::key_named`: that
-    /// one's exceptions (a toolchain's installs and packages, tools' output folders) are there so a run can work inside
-    /// a package or a build's output; a plugin is handed a buffer, and needs none of that. Don't unify them.
-    pub(super) fn covers(&self, lexical: Option<&Path>, real: &Path) -> bool {
-        let secret = |p: &Path| crate::secretnames::named_secret(p);
-        !lexical.is_some_and(secret) && !secret(real) && self.reaches(lexical, real)
-    }
-}
+/// touched — on the loop, or on the worker an open of its goes to (`rules::Reach`: reaches, and #457's covers). A
+/// path's own real form comes from where it was made real: a buffer's as it opened, an `open`'s on its worker.
+pub(super) use rules::Reach;
 
 /// A connection's host:port, as approvals keep it (an IPv6 address in brackets).
 pub(super) fn target(c: &Connect) -> String {
-    if c.host.contains(':') { format!("[{}]:{}", c.host, c.port) } else { format!("{}:{}", c.host, c.port) }
+    rules::target(&c.host, c.port)
 }
 
 /// Each plugin's approvals in `all`, as `:granted` lists them: (plugin, what it may do).
@@ -1081,7 +925,7 @@ impl Editor {
         let Some(p) = &self.plugins else { return Err("plugins aren't running".into()) };
         let declared = p.permissions.get(plugin).cloned().unwrap_or_default();
         if !declared.contains(need) {
-            return Err(format!("it didn't ask to {} (permissions())", describe(need)));
+            return Err(rules::not_asked(perm(need)));
         }
         if !self.plugin_approved(plugin) {
             // (not asked again on its own — a plugin can't nag; `:plugin-approve` brings the card back)
@@ -1103,14 +947,15 @@ impl Editor {
         let Some(p) = &self.plugins else { return Err("plugins aren't running".into()) };
         let declared = p.permissions.get(plugin).map(Vec::as_slice).unwrap_or_default();
         let roots = p.roots.get(plugin).map(Vec::as_slice).unwrap_or_default();
-        let patterns: Vec<(String, Option<PathBuf>)> = declared
+        // (each pattern as written — expanded — and with its folders resolved)
+        let patterns: Vec<(Option<PathBuf>, Option<PathBuf>)> = declared
             .iter()
             .filter_map(|d| if let Permission::Read(pat) = d { Some(pat) } else { None })
-            .map(|pat| (pat.clone(), roots.iter().find(|(q, _)| q == pat).and_then(|(_, r)| r.clone())))
+            .map(|pat| (expand(pat), roots.iter().find(|(q, _)| q == pat).and_then(|(_, r)| r.clone())))
             .collect();
         let project = declared.contains(&Permission::Project).then(|| self.workspace.root.clone());
         if patterns.is_empty() && project.is_none() {
-            return Err("it didn't ask to read files (permissions())".into());
+            return Err(rules::NO_READS.into());
         }
         if !self.plugin_approved(plugin) {
             return Err("its permissions wait for your approval".into());
@@ -1122,13 +967,8 @@ impl Editor {
     /// Whether a plugin may connect to host:port; `Err(None)`: ask you first.
     pub(super) fn plugin_may_connect(&mut self, plugin: &str, c: &Connect) -> Result<(), Option<String>> {
         self.plugin_may(plugin, &Permission::Network).map_err(Some)?;
-        let ok = |ch: char| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ':');
-        if c.host.is_empty()
-            || c.host.len() > 253
-            || !c.host.chars().all(ok)
-            || !(1..=65535).contains(&c.port)
-        {
-            return Err(Some(format!("“{}” port {} isn't a host to connect to", shown(&c.host), c.port)));
+        if let Some(why) = rules::connect_form(&c.host, c.port) {
+            return Err(Some(why));
         }
         // (never reached whatever you'd answer: no card for it)
         if let Some(why) = super::io::never_reached(&c.host) {
@@ -1160,17 +1000,8 @@ impl Editor {
             return;
         }
         let (title, question) = match &ask {
-            Ask::Connect(c) => (
-                format!("Plugin {plugin} wants to connect"),
-                format!("to {}\nAllow it, from now on?", target(c)),
-            ),
-            Ask::Read(_, path) => (
-                format!("Plugin {plugin} wants to read a file"),
-                format!(
-                    "{}\n(outside the files it asked for) Allow it, from now on?",
-                    shown(&path.display().to_string())
-                ),
-            ),
+            Ask::Connect(c) => rules::ask_connect(plugin, &target(c)),
+            Ask::Read(_, path) => rules::ask_read(plugin, path),
         };
         // (what's decided: the host, the file — not the question after it)
         self.push_offer(
@@ -1445,11 +1276,46 @@ mod tests {
         assert!(path_matches("~/.kube/*.yaml", &p("~/.kube/dev.yaml")));
         assert!(!path_matches("~/.kube/*.yaml", &p("~/.kube/a/dev.yaml")), "* stays in one folder");
         assert!(path_matches("/etc/k8s/admin.conf", Path::new("/etc/k8s/admin.conf")));
-        assert!(name_matches("k?b*.conf", "kube-admin.conf") && !name_matches("*.conf", "x.yaml"));
+        assert!(
+            rules::name_matches("k?b*.conf", "kube-admin.conf") && !rules::name_matches("*.conf", "x.yaml")
+        );
         // `..` doesn't climb out
         assert_eq!(expand("~/.kube/../.ssh/id_rsa"), Some(p("~/.ssh/id_rsa")));
         assert!(!path_matches("~/.kube/**", &expand("~/.kube/../.ssh/id_rsa").unwrap()));
         assert_eq!(expand("relative/path"), None);
+    }
+
+    /// The shared rules (`plugin-sdk/rules`, MIT OR Apache-2.0) read no environment and no disk: where home is and
+    /// what a path resolves to, tarae says — so a plugin's test in the mock host and tarae judge alike, and the rules
+    /// stay strings and paths in, words out. They're a code root, so this sees each file of theirs.
+    #[test]
+    fn the_plugin_rules_read_no_env_and_no_disk() {
+        // (`Path`'s own reads of the disk too)
+        let reads = [
+            "std::env",
+            "std::fs",
+            "env::",
+            "fs::",
+            "std::{",
+            "std::process",
+            "std::net",
+            "std::os",
+            ".exists(",
+            ".try_exists(",
+            ".is_file(",
+            ".is_dir(",
+            ".is_symlink(",
+            ".metadata(",
+            ".canonicalize(",
+            ".read_dir(",
+            ".read_link(",
+        ];
+        let n = crate::sim::lint::counts(&reads, &[]);
+        let ours = |k: &str| k.starts_with("plugin-sdk/rules/");
+        let files = crate::sim::lint::code_files();
+        assert!(files.iter().filter(|(k, _)| ours(k)).count() >= 2, "the rules are a code root");
+        let reading: Vec<_> = n.iter().filter(|(k, n)| ours(k) && **n > 0).collect();
+        assert!(reading.is_empty(), "the plugin rules read the environment or the disk: {reading:?}");
     }
 
     #[test]
@@ -1465,9 +1331,9 @@ mod tests {
         assert!(path_matches(&pattern, &link), "as written, it's in");
         let resolved = roots(&[Permission::Read(pattern.clone())]).remove(0).1.unwrap();
         let real = std::fs::canonicalize(&link).unwrap();
-        assert!(!path_matches_in(&resolved, &real), "resolved, it isn't");
+        assert!(!rules::path_matches_in(&resolved, &real), "resolved, it isn't");
         // …while a plain file in it stays in, though the temp folder itself is a symlink on macOS
         let plain = std::fs::canonicalize(d.join("allowed/plain")).unwrap();
-        assert!(path_matches_in(&resolved, &plain));
+        assert!(rules::path_matches_in(&resolved, &plain));
     }
 }

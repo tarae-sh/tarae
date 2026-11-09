@@ -40,14 +40,15 @@ You need Rust and its WebAssembly target:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-tarae plugin new my-plugin       # a crate from the template: :words and :title
+tarae plugin new my-plugin       # a crate from the template: :words and :title, and a test
 cd my-plugin && tarae plugin dev # builds it on every save; your running tarae reloads it
+tarae plugin test                # its tests, then its wasm built and loaded as tarae loads it
 ```
 
 A complete plugin (the template, with only its `:words`):
 
 ```rust
-wit_bindgen::generate!({ path: "wit", world: "plugin" });
+use tarae_plugin::{Action, Command, Context, Event, Guest, HostEvent, Now, Permission, Subscription};
 
 struct Plugin;
 
@@ -68,17 +69,74 @@ impl Guest for Plugin {
     fn on_events(_: Vec<HostEvent>, _: Now) -> Vec<Action> { vec![] }
 }
 
-export!(Plugin);
+tarae_plugin::export!(Plugin);
 ```
 
-- **The API** is [`wit/tarae.wit`](../plugin-sdk/wit/tarae.wit) in your crate. `wit-bindgen` turns it into the Rust
-  types above.
-- **Rust is what's supported**, with the `wit-bindgen` version the template pins. Other languages that produce the
+- **The API** is [`wit/tarae.wit`](../plugin-sdk/wit/tarae.wit) — in your crate, `tarae/wit/tarae.wit`. The SDK
+  (`tarae-plugin`) turns it into the Rust types above, once: you implement its `Guest` and call its `export!`.
+- **The SDK is vendored**: `tarae plugin new` writes it into your crate's `tarae/` — the SDK, the rules tarae holds a
+  plugin to (`tarae-plugin-rules`) and the WIT, as the tarae you run has them, MIT OR Apache-2.0, so your plugin can
+  take any licence. Don't edit it: `tarae plugin test` fails while it differs from your tarae's, or while cargo
+  takes the SDK from anywhere else (a path elsewhere, a `[patch]`, a `[replace]` — checked before and after its
+  build, which runs build scripts), and `tarae plugin vendor` writes your tarae's copy again (after you update
+  tarae, too).
+- **Rust is what's supported**, with the `wit-bindgen` version the SDK pins. Other languages that produce the
   same kind of module may work, but only Rust is tested.
 - `commands()`, `subscriptions()` and `permissions()` are called when the plugin loads (and again if it's restarted
   after a failure). `run()` is called for each command, `on()` for each [event](#events) it subscribed to, and
   `on-events()` with what came back from what it asked for ([beyond the buffer](#beyond-the-buffer)).
 - A plugin keeps its state between calls, until it fails or is reloaded.
+
+## Testing
+
+A plugin's tests run on your machine, through the SDK's mock host (`tarae_plugin::test`, the `test` feature of its
+dev-dependency — the template has it). The host drives the plugin as tarae does and holds it to its declared
+permissions with tarae's own rules and words:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tarae_plugin::test::{Host, Project, Script};
+
+    #[test]
+    fn words_are_counted() {
+        let project = Project::new("/p")
+            .file("notes.md", "one two three")             // a virtual project: nothing on disk
+            .program("git", Script::lines(["main"]));       // a program's scripted run
+        let mut h = Host::<Plugin>::load("my-plugin", project);
+        h.open("notes.md");
+        h.select(&[(0, 13)]);
+        h.run(":words");
+        assert_eq!(h.status(), Some("3 words"));
+    }
+}
+```
+
+- **The project** is virtual: files (`~/` ones under its home), environment variables (`env`), programs
+  (`program`, with `Script`), hosts that listen (`host`, with `Replies`), files whose card you answered yes
+  (`allowed`), and the time and random bytes every call gets (`now`). Nothing touches your disk, environment or
+  network, so a test gives the same result every run.
+- **You** open files, select, edit, save, run its commands, press keys in its panel or side tab, answer its prompt or
+  pick, and let time pass (`advance`: its timers go off). **It** shows: `text`, `status`, `status_bar`, `panel`,
+  `side`, `hints`, `overlay`, `badge`, `view`, `written_own`.
+- **Each answer's actions are applied as tarae applies them**: `read-file` gets the file, `spawn` the script's lines and
+  exit, `connect` the host's replies, `find` what a pattern matches (never a file named like a key), edits change the
+  buffer. What comes back goes to `on-events` one call a round, in the order the actions came, until nothing is
+  pending. tarae's own order is asynchronous: rely only on each request's events coming in order.
+- **What tarae refuses fails the test**, and the plugin gets what tarae would send (the same `failed`, the same
+  words), so its handling is tested too: an undeclared program, variable or `network`; a read with no read
+  permission; a file it may not open; an edit where it may not. So does a card tarae would raise (a file outside its
+  read patterns, a host the project doesn't have): nothing comes back, as while a card waits. Expected? Say so:
+  `h.expect_refused("it didn't ask to run the program git")`. A test that's already failing isn't failed twice.
+- **Not in the mock**: approvals (the load card is taken as answered yes), the hosts tarae never reaches (cloud
+  metadata servers, link-local addresses — a mock connection reaches only a host you scripted), and tarae's commands
+  (a `run` action is kept: `ran`).
+- Keep a plugin's state in a `thread_local!`: each test runs on its own thread, so each starts fresh.
+
+`tarae plugin test [dir…]` runs a crate's tests (or a workspace's, once) on your machine, then builds each `.wasm`
+and loads it as tarae loads it — the API version, the exports, the permissions' forms. It says each failure in one
+line, then each folder's totals, and exits non-zero when anything failed.
 
 ## What a plugin sees
 
@@ -113,7 +171,7 @@ once links are followed, is worked out where the file is read, off the main thre
 that failed: `kube: it may not open “/etc/hosts”: not a file it may read (permissions())`.
 
 Two kinds of buffer are never given, even to your command, which is then refused and says why:
-- a file named like a key (`.env`, `*.pem`, `id_rsa` …, the list in `runtime/secret-names.txt`): `:fmt isn't given
+- a file named like a key (`.env`, `*.pem`, `id_rsa` …, the list in `plugin-sdk/rules/src/secret-names.txt`): `:fmt isn't given
   .env: a file named like a key`;
 - tarae's own views (a run's output, a message or a quote shown whole, a web page): `…: one of tarae's own views`.
   The chat's transcript is never the buffer a command runs on.
@@ -210,7 +268,7 @@ fn permissions() -> Vec<Permission> {
 | `read(pattern)` | `read-file` what the pattern covers (up to 16 MB) | a file outside the patterns, once — `..` and symlinks don't lead out |
 | `env(name)` | `read-env` that variable | — |
 | `network` | `connect` over TCP — never to a cloud metadata server, link-local, multicast or broadcast; this machine only by its own names (below) | each new host:port, once |
-| `project` | `read-file` in the project tarae started in, and `find` there (`"**/kustomization.yaml"`: absolute paths back, as the file picker lists them) — not files named like keys and tokens (`.env`, `*.pem`, `id_rsa` …, the list in `runtime/secret-names.txt`): `find` leaves them out | reading one of those, once |
+| `project` | `read-file` in the project tarae started in, and `find` there (`"**/kustomization.yaml"`: absolute paths back, as the file picker lists them) — not files named like keys and tokens (`.env`, `*.pem`, `id_rsa` …, the list in `plugin-sdk/rules/src/secret-names.txt`): `find` leaves them out | reading one of those, once |
 | `keys` | hear the keys you press, as `keys` events — commands only (below); only while your own config's `plugins.keys` is on (off as it comes; a project's `.tarae.toml` can't turn it on), the status line saying `keys → <plugin>` while one hears. It's asked alone: with any other permission — `network`, `run`, `read`, `env`, `project` — the plugin doesn't load nor is it approved (said, and `tarae plugin list` says why), so it reads, connects to and runs nothing; what it hears stays in tarae: it shows it in its overlay only (below) | — |
 
 A `keys` event is a list of key events, each the sequence so far in the names tarae's hints use (`["space", "f"]`,
@@ -442,8 +500,11 @@ for `keys` alone, so it hears nothing until your own config turns `plugins.keys`
 |---|---|
 | “imports something — plugins get no imports” | build for `wasm32-unknown-unknown`, not `wasip1`/`wasip2`, and don't use crates that need the OS |
 | “uses SIMD” | build without `-C target-feature=+simd128` |
-| “built for tarae plugin API 0.N, this tarae speaks 0.M” | rebuild against this tarae's `wit/tarae.wit` (`tarae plugin new` has it). Until 1.0 every 0.x breaks plugins |
-| “has no `…` export” / “doesn't match tarae's plugin API” | build it from the template, with the `wit-bindgen` version it pins |
+| “built for tarae plugin API 0.N, this tarae speaks 0.M” | rebuild with this tarae's SDK (`tarae plugin vendor`, then build). Until 1.0 every 0.x breaks plugins |
+| “it carries no plugin API version” | build it with the SDK: its bindings record the version |
+| “has no `…` export” / “doesn't match tarae's plugin API” | build it from the template, with the SDK's bindings |
+| “its vendored SDK isn't this tarae's (…)” / “no vendored SDK” (`test`) | `tarae plugin vendor` writes this tarae's copy again; change your plugin, not the SDK |
+| “it takes tarae-plugin from …, not its vendored tarae/sdk” (`test`) | depend on `tarae/sdk` by path, with no `[patch]` or `[replace]` of the SDK or the rules |
 | “ran too long and was stopped” | a loop that never ends, or too much work for one call |
 | “plugins can run movement commands only” | `run` named something that isn't a movement command |
 | “its answer is too big” | over 64 MB of text and lists in one answer |

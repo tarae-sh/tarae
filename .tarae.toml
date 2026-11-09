@@ -48,6 +48,8 @@ steps = [
   { name = "test", cmd = "cargo test --workspace" },
   { name = "test bundled", cmd = "cargo test --workspace --features bundled-grammars", full = true },
   { name = "perf", cmd = "cargo perf", note = "SLOWER", full = true },
+  # The bundled plugins' own suites under `tarae plugin test`, the SDK's mock host's, and a new plugin's (CI's network job runs the same)
+  { name = "plugins", cmd = "cargo test --bin tarae -- --ignored --exact plugin::cli::tests::the_bundled_plugins_pass_their_own_tests plugin::cli::tests::a_new_plugin_passes_its_own_test plugin::cli::tests::a_plugin_built_for_another_api_fails_its_test plugin::cli::tests::plugin_dev_builds_marks_and_installs_a_new_plugin", full = true },
 ]
 
 # What a card for one of Claude's commands warns of besides the packs' (`cardwarn.rs`): `cargo xtask linux` runs

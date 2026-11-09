@@ -63,35 +63,46 @@ fn act(key: Key) -> bool {
     matches!(key.code, Code::Enter | Code::Esc) && !key.ctrl && !key.alt
 }
 
-/// What a plugin that hears keys may not answer with — the kind, in words; None: it may (§7 1, (c)). Only what shows
-/// on your screen and nowhere else is let through: its overlay (Claude's level never holds one), its timers and a
-/// stop (of nothing: it runs no program). The rest would put what it heard where it's read again: your text (saved,
-/// sent to other plugins, read by Claude), the cursor (Claude's context, the next plugin's input), a message (the
-/// log, Claude's `ui`), status text, a panel, a side tab, a badge, hints, a buffer, a pick, a prompt, a path opened
-/// (recent files, Claude's open files), a read (the path it picks is the filesystem's lookup, a server's on a network
-/// mount — the load refuses its patterns too: `perm::invalid`), a program, a connection, a file of its own, an
-/// install. A new action is decided here (the match is whole).
+/// What a plugin that hears keys may not answer with — the kind, in words; None: it may (§7 1, (c)): the shared
+/// rule, `tarae_plugin_rules::keys_refused`, which says why each kind is or isn't let through.
 pub(super) fn refused(a: &Action) -> Option<&'static str> {
-    Some(match a {
-        Action::Overlay(_) | Action::Timer(..) | Action::Stop(_) => return None,
-        Action::ReadFile(..) | Action::ReadEnv(..) | Action::Find(..) => "a read",
-        Action::ReplaceSelections(_) | Action::Edits(_) => "an edit",
-        Action::Select(_) | Action::Run(_) => "a move",
-        Action::Status(_) | Action::Success(_) | Action::Warning(_) | Action::Error(_) => "a message",
-        Action::StatusBar(_) => "status text",
-        Action::Open(_) => "a file opened",
-        Action::Spawn(_) => "a program",
-        Action::Connect(_) | Action::Send(..) => "a connection",
-        Action::Panel(_) => "a panel",
-        Action::Prompt(..) => "a prompt",
-        Action::Show(_) | Action::Append(..) => "a buffer",
-        Action::Hints(_) => "hints",
-        Action::Side(_) => "a side tab",
-        Action::Pick(_) => "a pick",
-        Action::Badge(_) => "a badge",
-        Action::WriteOwn(..) => "a file of its own",
-        Action::OfferInstall(..) => "an install",
-    })
+    tarae_plugin_rules::keys_refused(kind(a))
+}
+
+/// An action's kind, for the shared rules (the match is whole: a new action is one more `Act`).
+fn kind(a: &Action) -> tarae_plugin_rules::Act {
+    use tarae_plugin_rules::Act;
+    match a {
+        Action::Status(_) => Act::Status,
+        Action::Success(_) => Act::Success,
+        Action::Warning(_) => Act::Warning,
+        Action::Error(_) => Act::Error,
+        Action::ReplaceSelections(_) => Act::ReplaceSelections,
+        Action::Edits(_) => Act::Edits,
+        Action::Select(_) => Act::Select,
+        Action::Run(_) => Act::Run,
+        Action::Open(_) => Act::Open,
+        Action::StatusBar(_) => Act::StatusBar,
+        Action::Spawn(_) => Act::Spawn,
+        Action::Connect(_) => Act::Connect,
+        Action::Send(..) => Act::Send,
+        Action::Stop(_) => Act::Stop,
+        Action::ReadFile(..) => Act::ReadFile,
+        Action::ReadEnv(..) => Act::ReadEnv,
+        Action::Timer(..) => Act::Timer,
+        Action::Panel(_) => Act::Panel,
+        Action::Prompt(..) => Act::Prompt,
+        Action::Show(_) => Act::Show,
+        Action::Append(..) => Act::Append,
+        Action::Hints(_) => Act::Hints,
+        Action::Side(_) => Act::Side,
+        Action::Pick(_) => Act::Pick,
+        Action::Badge(_) => Act::Badge,
+        Action::Find(..) => Act::Find,
+        Action::WriteOwn(..) => Act::WriteOwn,
+        Action::OfferInstall(..) => Act::OfferInstall,
+        Action::Overlay(_) => Act::Overlay,
+    }
 }
 
 /// What a plugin hears of `key`, from how it was taken (`b`) and where things are after it (`pending`, `mode`) —
@@ -178,7 +189,7 @@ impl Editor {
     /// `a`, from a plugin that hears keys, refused (`refused`: `what`): a request it waits on fails, and you're told
     /// once a load — in tarae's words, nothing of what it answered.
     pub(super) fn plugin_keys_refuse(&mut self, plugin: &str, a: &Action, what: &str) {
-        let why = format!("{what}: a plugin that hears keys shows what it hears in its overlay only");
+        let why = tarae_plugin_rules::keys_refusal(what);
         let id = match a {
             Action::Spawn(s) => Some(s.id),
             Action::Connect(c) => Some(c.id),

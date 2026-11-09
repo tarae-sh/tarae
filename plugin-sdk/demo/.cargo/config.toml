@@ -1,2 +1,4 @@
 [build]
 target = "wasm32-unknown-unknown"
+# (its build's own files in its folder, as a new plugin's: `tarae plugin test` runs in Claude's sandbox too)
+build-dir = "target/build"

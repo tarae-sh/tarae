@@ -1,0 +1,9 @@
+# The rules a tarae plugin is held to, and the words tarae says them in: one source for tarae and for the SDK's
+# mock host (`tarae_plugin::test`). A member of tarae's workspace (its lints and checks cover it), reached by the SDK
+# as `../rules` — so no `.workspace = true` keys: a plugin's vendored copy builds without tarae's workspace.
+[package]
+name = "tarae-plugin-rules"
+version = "0.3.0"
+edition = "2024"
+description = "The rules a tarae plugin is held to, and the words tarae says them in"
+license = "MIT OR Apache-2.0"

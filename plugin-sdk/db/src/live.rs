@@ -14,8 +14,8 @@ use tarae_plugin::tls::{self, Config};
 use crate::conn::{Connection, Password, TlsMode, is_loopback};
 use crate::driver::wire::{Event, Params, Session};
 use crate::secret::Secret;
-use crate::tarae::plugin::types::Connect;
 use crate::{Action, HostEvent};
+use tarae_plugin::Connect;
 
 /// A connection's id: this plus its attempt's number (an old attempt's late bytes are told apart).
 pub const CONNECT: u64 = 1_000_000;

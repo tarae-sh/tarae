@@ -1,5 +1,7 @@
 [build]
 target = "wasm32-unknown-unknown"
+# (its build's own files in its folder, as a new plugin's: `tarae plugin test` runs in Claude's sandbox too)
+build-dir = "target/build"
 
 # getrandom 0.3/0.4 (postgres-protocol's SCRAM) from the SDK's `getrandom04` (docs/plugins.md, "The SDK")
 [target.wasm32-unknown-unknown]

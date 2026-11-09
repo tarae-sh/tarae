@@ -1,0 +1,3 @@
+# The SDK's own tests (`cargo test --features test`): its build's files in its folder, as a plugin's
+[build]
+build-dir = "target/build"

@@ -12816,7 +12816,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// 7c: Claude's Read of a file in the project named like a key (`runtime/secret-names.txt`) asks on the
+    /// 7c: Claude's Read of a file in the project named like a key (`plugin-sdk/rules/src/secret-names.txt`) asks on the
     /// read card, as a run can't read it either (7a/7b); an exception (`!.env.example`) is read unasked. A key is
     /// read once at a time (cardauto 6, `Caps::storable`): the card offers `y` and `n` only, `a` and `A` are
     /// refused on it, and the run's panel opens one for its run only — the same file asks again. A Grep over a

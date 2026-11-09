@@ -922,16 +922,17 @@ fn trapped(t: Trap) -> String {
 }
 
 /// The plugin API version wit-bindgen recorded (its `component-type:…` section names the package). Until
-/// 1.0, major.minor must match.
-fn check_api(m: &Module) -> Result<(), String> {
-    let Some(world) = m.customs().find_map(|n| n.strip_prefix("component-type:")) else { return Ok(()) };
+/// 1.0, major.minor must match. `Ok(false)`: it records none — refused too, but after `exports` (`Plugin::new`): a
+/// module that isn't a plugin at all is said so first.
+fn check_api(m: &Module) -> Result<bool, String> {
+    let Some(world) = m.customs().find_map(|n| n.strip_prefix("component-type:")) else { return Ok(false) };
     let Some(v) = world.split("tarae:plugin@").nth(1) else {
         return Err("it's built for some other WIT world, not tarae's plugin API".into());
     };
     let version = v.split(|c: char| !(c.is_ascii_digit() || c == '.')).next().unwrap_or(v);
     let major_minor: String = version.split('.').take(2).collect::<Vec<_>>().join(".");
     if major_minor == API {
-        return Ok(());
+        return Ok(true);
     }
     Err(format!(
         "it's built for tarae plugin API {version}, this tarae speaks {API} — rebuild it with this tarae's SDK"
@@ -983,8 +984,14 @@ impl Plugin {
     /// Decodes, checks and starts a plugin (`fuel` for its start function).
     pub fn new(bytes: &[u8], limits: Limits, fuel: u64) -> Result<Plugin, String> {
         let m = Module::new(bytes).map_err(rejected)?;
-        check_api(&m)?;
+        let versioned = check_api(&m)?;
         let x = exports(&m)?;
+        if !versioned {
+            return Err(format!(
+                "it carries no plugin API version (wit-bindgen's component-type section) — rebuild it with this \
+                 tarae's SDK (wit-bindgen {WIT_BINDGEN})"
+            ));
+        }
         let inst = Instance::new(m, limits, fuel).map_err(|t| format!("failed to start: {}", trapped(t)))?;
         Ok(Plugin { inst, x })
     }
@@ -1361,5 +1368,15 @@ mod tests {
             Err(e) => e,
         };
         assert!(e.contains("API 0.4.0, this tarae speaks 0.3"), "{e}");
+        // Built with no version recorded (no wit-bindgen section): refused too, wherever tarae loads it
+        let mark = b"component-type:";
+        let mut none = DEMO.to_vec();
+        let at = none.windows(mark.len()).position(|w| w == mark).unwrap();
+        none[at..at + mark.len()].copy_from_slice(b"component-typo:");
+        let e = match Plugin::new(&none, Limits::default(), FUEL) {
+            Ok(_) => panic!("loaded a plugin with no API version"),
+            Err(e) => e,
+        };
+        assert!(e.starts_with("it carries no plugin API version"), "{e}");
     }
 }

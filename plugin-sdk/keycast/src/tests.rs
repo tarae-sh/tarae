@@ -1,5 +1,5 @@
 use super::*;
-use tarae::plugin::types::Buffer;
+use tarae_plugin::Buffer;
 
 fn ev(keys: &[&str], done: bool, mode: Mode) -> KeyEvent {
     KeyEvent { keys: keys.iter().map(|k| k.to_string()).collect(), done, mode }
@@ -11,6 +11,20 @@ fn done(keys: &[&str]) -> KeyEvent {
 
 fn under_way(keys: &[&str]) -> KeyEvent {
     ev(keys, false, Mode::Normal)
+}
+
+/// Through the SDK's mock host, as tarae loads and drives it: tarae takes its permissions (`keys` alone), the keys
+/// it hears come back as its overlay — nothing tarae would refuse a plugin that hears keys — and `:keycast-off`
+/// puts it away.
+#[test]
+fn in_the_mock_host_keys_show_in_its_overlay_alone() {
+    use tarae_plugin::test::{Host, Project};
+    let mut h = Host::<Keycast>::load("keycast", Project::new("/p"));
+    h.keys(vec![done(&["w"]), done(&["w"])]);
+    let row: String = h.overlay().expect("its overlay").rows[0].iter().map(|s| s.text.as_str()).collect();
+    assert!(row.contains('w') && row.contains("×2"), "{row}");
+    h.run(":keycast-off");
+    assert_eq!(h.overlay(), None);
 }
 
 /// The row as text: a keycap `[k]`, a faint span `{f}`, the rest as it is. None: no overlay.

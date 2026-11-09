@@ -10250,7 +10250,7 @@ mod tests {
     /// frictions29, second review: a nested worktree's main checkout (`app/.claude/worktrees/feat` — another
     /// checkout, holding the project) closes `app/.env`; a folder opened for writing (`llm.sandbox-write`, a write
     /// grant — readable too) closes the keys in it; in a granted toolchain install a CA bundle reads by its name
-    /// (`cacert.pem` — runtime/secret-names.txt's exception) or below its packages (grpc's `roots.pem`), a private
+    /// (`cacert.pem` — plugin-sdk/rules/src/secret-names.txt's exception) or below its packages (grpc's `roots.pem`), a private
     /// key beside them doesn't, nor a `cert.pem` (a certificate and its key in one file as often — review N9).
     #[test]
     fn keys_close_in_a_main_checkout_above_and_a_folder_opened_for_writing_ca_bundles_read() {

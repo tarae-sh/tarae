@@ -1,6 +1,7 @@
-//! A tarae plugin. `tarae plugin dev` builds it on every save, and your running tarae reloads it.
-//! What a plugin can see and do: `wit/tarae.wit`.
-wit_bindgen::generate!({ path: "wit", world: "plugin" });
+//! A tarae plugin. `tarae plugin dev` builds it on every save, and your running tarae reloads it;
+//! `tarae plugin test` runs its tests, then builds it and loads it as tarae does.
+//! What a plugin can see and do: `tarae/wit/tarae.wit`.
+use tarae_plugin::{Action, Command, Context, Event, Guest, HostEvent, Now, Permission, Subscription};
 
 struct Plugin;
 
@@ -66,4 +67,22 @@ fn title_case(s: &str) -> String {
         .collect()
 }
 
-export!(Plugin);
+tarae_plugin::export!(Plugin);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tarae_plugin::test::{Host, Project};
+
+    /// Driven as tarae drives it: a file opened, a selection, the command run.
+    #[test]
+    fn words_are_counted_and_titled() {
+        let mut h = Host::<Plugin>::load("NAME", Project::new("/p").file("notes.md", "one TWO three"));
+        h.open("notes.md");
+        h.select(&[(0, 13)]);
+        h.run(":words");
+        assert_eq!(h.status(), Some("3 words"));
+        h.run(":title");
+        assert_eq!(h.text(), "One Two Three");
+    }
+}

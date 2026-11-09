@@ -18,7 +18,7 @@ use kube_core::DynamicObject;
 use serde_json::Value;
 
 use crate::fields::{Field, Seg};
-use crate::tarae::plugin::types::Tone;
+use tarae_plugin::Tone;
 
 /// A cause, on its line.
 #[derive(Clone, Debug, PartialEq)]

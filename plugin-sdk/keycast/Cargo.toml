@@ -1,7 +1,7 @@
 # The keys you press, in the corner where tarae's asks stand — for a recording of tarae at work. It asks for `keys`
 # alone: it reads, connects to and runs nothing, and shows what it hears in its overlay only.
 #   cargo build --release && cp target/wasm32-unknown-unknown/release/keycast.wasm ~/.config/tarae/plugins/
-#   cargo test --target aarch64-apple-darwin      (the tests run on your machine, not in wasm)
+#   tarae plugin test      (its tests on your machine, then its wasm built and loaded as tarae loads it)
 [package]
 name = "keycast"
 version = "0.1.0"
@@ -12,7 +12,10 @@ license = "MIT OR Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "=0.62.0"
+tarae-plugin = { path = "../sdk" }
+
+[dev-dependencies]
+tarae-plugin = { path = "../sdk", features = ["test"] }
 
 [profile.release]
 opt-level = "s"

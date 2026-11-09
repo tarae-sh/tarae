@@ -316,8 +316,10 @@ docs/
 xtask/               dev tasks (cargo xtask — not part of the tarae binary): vendor-grammars, and
                      shot — the real screen as a PNG, drawn from a virtual terminal (docs/screenshots)
 plugin-sdk/          wit/tarae.wit the plugin API · template/ what `tarae plugin new` writes · demo/ the plugin
-                     the tests load (demo.wasm, its build) · sdk/ tarae-plugin, the Rust helpers ·
-                     kubernetes/ the cluster in the code: state beside manifests, pure Rust
+                     the tests load (demo.wasm, its build) · sdk/ tarae-plugin, the bindings, the helpers
+                     and the mock host · rules/ tarae-plugin-rules, what tarae and the mock judge by (a
+                     workspace member, MIT OR Apache-2.0) · kubernetes/ the cluster in the code: state
+                     beside manifests, pure Rust
 fuzz/                dev tools for crates/tarae-wasm, outside the workspace (own lockfile, the runtime a
                      dependency): the differential fuzzer and the spec test runner
 ```

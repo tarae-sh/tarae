@@ -12,7 +12,6 @@ license = "MIT OR Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "=0.62.0"
 tarae-plugin = { path = "../sdk", features = ["tls"] }
 kube-core = { version = "4.2.0", default-features = false }
 k8s-openapi = { version = "0.28.0", default-features = false, features = ["latest"] }

@@ -52,6 +52,8 @@ rustls-native-certs = "=0.8.5"
 ring = "=0.17.14"
 # The WebAssembly runtime and the plugin host (crates/tarae-wasm): the editor's side of plugins is src/plugin/
 tarae-wasm = { path = "crates/tarae-wasm" }
+# The rules a plugin is held to and their words, shared with the SDK's mock host (MIT OR Apache-2.0, like the SDK)
+tarae-plugin-rules = { path = "plugin-sdk/rules" }
 # The one sort (clippy.toml), shared with the runtime's crate: `crate::sorting` re-exports it
 tarae-sorting = { path = "crates/tarae-sorting" }
 # The attach protocol (crates/tarae-wire): a host and the interface showing it — src/attach.rs, src/client.rs
@@ -148,8 +150,8 @@ toml = "1.1.6"
 # them here); the dev task crate (cargo xtask — .cargo/config.toml) a member only. None affects
 # `cargo install --path .`
 [workspace]
-members = ["xtask", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire", "crates/tarae-sock"]
-default-members = [".", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire", "crates/tarae-sock"]
+members = ["xtask", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire", "crates/tarae-sock", "plugin-sdk/rules"]
+default-members = [".", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit", "crates/tarae-wire", "crates/tarae-sock", "plugin-sdk/rules"]
 
 [workspace.package]
 edition = "2024"

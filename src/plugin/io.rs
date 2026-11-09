@@ -500,8 +500,8 @@ impl Editor {
     /// A plugin's `spawn`, if it may (else its failure goes back to it).
     pub(super) fn plugin_spawn(&mut self, plugin: &str, sp: Spawn) -> Result<(), String> {
         let id = sp.id;
-        let r = if sp.program.contains('/') || sp.program.chars().any(char::is_control) {
-            Err(format!("“{}” isn't a program name", shown(&sp.program)))
+        let r = if let Some(why) = tarae_plugin_rules::not_a_program(&sp.program) {
+            Err(why)
         } else {
             self.plugin_may(plugin, &Permission::Run(sp.program.clone()))
                 .and_then(|()| self.plugin_spawn_now(plugin, sp))
@@ -518,7 +518,7 @@ impl Editor {
     pub(super) fn plugin_read(&mut self, plugin: &str, id: u64, path: &str) {
         let fail = |ed: &mut Editor, why: String| ed.plugin_events(plugin, vec![HostEvent::Failed(id, why)]);
         let Some(lexical) = super::perm::expand(path) else {
-            return fail(self, format!("“{}”: an absolute path, or one from ~/", shown(path)));
+            return fail(self, tarae_plugin_rules::not_absolute(path));
         };
         let reach = match self.plugin_grant(plugin) {
             Ok(reach) => reach,
@@ -962,14 +962,7 @@ impl Editor {
     pub(super) fn plugin_find(&mut self, plugin: &str, id: u64, pattern: &str) {
         let why = match self.plugin_may(plugin, &Permission::Project) {
             Err(why) => Some(why),
-            Ok(())
-                if pattern.starts_with('/')
-                    || pattern.split('/').any(|c| c == "..")
-                    || pattern.len() > 200 =>
-            {
-                Some(format!("“{}”: a pattern from the project's folder", shown(pattern)))
-            }
-            Ok(()) => None,
+            Ok(()) => tarae_plugin_rules::find_pattern(pattern),
         };
         // (the project's folder — the editor's root — is what the `project` permission reads)
         if let Some(why) = why {
@@ -999,18 +992,11 @@ impl Editor {
     /// relative name, up to 1 MB.
     /// (One that hears keys never gets here: `keys::refused`.)
     pub(super) fn plugin_write_own(&mut self, plugin: &str, id: u64, name: &str, bytes: &[u8]) {
-        let plain = !name.is_empty()
-            && name.len() <= 200
-            && std::path::Path::new(name).components().all(|c| matches!(c, std::path::Component::Normal(_)))
-            && !name.chars().any(|c| c.is_control() || super::bidi(c));
         let own = self.plugins.as_ref().and_then(|p| p.own_root.clone());
-        let ev = match (own, plain, bytes.len() <= 1 << 20) {
-            (None, ..) => HostEvent::Failed(id, "no state folder to keep it in".into()),
-            (_, false, _) => {
-                HostEvent::Failed(id, format!("“{}” isn't a plain name in its folder", shown(name)))
-            }
-            (_, _, false) => HostEvent::Failed(id, "over 1 MB".into()),
-            (Some(own), true, true) => {
+        let ev = match (own, tarae_plugin_rules::own_file(name, bytes.len())) {
+            (None, _) => HostEvent::Failed(id, "no state folder to keep it in".into()),
+            (_, Err(why)) => HostEvent::Failed(id, why),
+            (Some(own), Ok(())) => {
                 let path = own.join(plugin).join(name);
                 // (the plugin's alone: what it keeps there may be its secrets — a release's values, say)
                 use std::os::unix::fs::PermissionsExt;

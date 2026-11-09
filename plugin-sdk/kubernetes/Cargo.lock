@@ -598,7 +598,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tarae-plugin",
- "wit-bindgen",
 ]
 
 [[package]]
@@ -1206,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "tarae-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom",
  "httparse",
@@ -1214,6 +1213,7 @@ dependencies = [
  "rand_core",
  "rustls",
  "rustls-rustcrypto",
+ "wit-bindgen",
 ]
 
 [[package]]

@@ -1,10 +1,11 @@
-# Helpers for tarae plugins, beside the WIT bindings: the time and randomness tarae hands over, TLS over a
-# plugin's connections, HTTP/1.1 read as it comes.
+# The SDK for tarae plugins: the WIT's bindings (the SDK owns them: `Guest`, `export!`, the types), the time and
+# randomness tarae hands over, TLS over a plugin's connections, HTTP/1.1 read as it comes, and the mock host a
+# plugin's tests drive it through (feature `test`).
 [package]
 name = "tarae-plugin"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
-description = "Helpers for tarae plugins: time, randomness, TLS and HTTP over tarae's connections"
+description = "The SDK for tarae plugins: bindings, time, randomness, TLS and HTTP, and a mock host for tests"
 license = "MIT OR Apache-2.0"
 
 [features]
@@ -14,8 +15,13 @@ public-roots = ["tls", "dep:webpki-roots"]
 # getrandom 0.3 and 0.4's custom backend too (rand 0.9 and later — postgres-protocol's SCRAM, for one). The
 # plugin's build then needs `--cfg getrandom_backend="custom"` for wasm32 (rustflags in its .cargo/config.toml)
 getrandom04 = ["dep:getrandom04"]
+# The mock host (`tarae_plugin::test`), with tarae's own rules: a plugin's dev-dependency turns it on — its wasm
+# build never compiles it
+test = ["dep:tarae-plugin-rules"]
 
 [dependencies]
+wit-bindgen = "=0.62.0"  # the version tarae checks its plugin API with
+tarae-plugin-rules = { path = "../rules", optional = true }
 getrandom = { version = "0.2", features = ["custom"] }
 getrandom04 = { package = "getrandom", version = "0.4", optional = true }
 rand_chacha = "0.3"

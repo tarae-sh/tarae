@@ -1,18 +1,51 @@
-//! `tarae plugin new|dev|list` — starting a plugin, building it while it's worked on, and seeing what's
-//! installed.
+//! `tarae plugin new|dev|test|vendor|list` — starting a plugin, building it while it's worked on, testing it, and
+//! seeing what's installed.
+//!
+//! A plugin out of this repository builds against the SDK and the rules as *this* tarae has them: `new` vendors them
+//! into its `tarae/` (from the sources embedded at build time, `VENDOR`), and `test` fails while that copy differs,
+//! or while cargo takes the SDK from anywhere else (`held`) — a test can't be made green by editing the rules it's
+//! held to. `vendor` writes this tarae's copy again.
 
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, anyhow, bail};
 
-use super::abi::{Plugin, WIT_BINDGEN};
+use super::abi::{Command, Plugin, Subscription};
 use tarae_wasm::Limits;
 
 const WIT: &str = include_str!("../../plugin-sdk/wit/tarae.wit");
 const CARGO_TOML: &str = include_str!("../../plugin-sdk/template/Cargo.toml");
 const LIB_RS: &str = include_str!("../../plugin-sdk/template/src/lib.rs");
 const TARGET: &str = "wasm32-unknown-unknown";
+/// Fuel for each call `loads` makes.
+const FUEL: u64 = 100_000_000;
+
+/// The SDK and the rules as this tarae was built with them: each file's place in a plugin's folder, and its text —
+/// what `new` and `vendor` write (`vendored`) and `test` holds a vendored copy to. Every file of `plugin-sdk/sdk`
+/// and `plugin-sdk/rules` (`the_vendored_sdk_is_the_whole_sdk`).
+const VENDOR: &[(&str, &str)] = &[
+    ("tarae/sdk/Cargo.toml", include_str!("../../plugin-sdk/sdk/Cargo.toml")),
+    ("tarae/sdk/src/lib.rs", include_str!("../../plugin-sdk/sdk/src/lib.rs")),
+    ("tarae/sdk/src/http.rs", include_str!("../../plugin-sdk/sdk/src/http.rs")),
+    ("tarae/sdk/src/now.rs", include_str!("../../plugin-sdk/sdk/src/now.rs")),
+    ("tarae/sdk/src/tls.rs", include_str!("../../plugin-sdk/sdk/src/tls.rs")),
+    ("tarae/sdk/src/test.rs", include_str!("../../plugin-sdk/sdk/src/test.rs")),
+    ("tarae/sdk/src/test/tests.rs", include_str!("../../plugin-sdk/sdk/src/test/tests.rs")),
+    ("tarae/rules/Cargo.toml", include_str!("../../plugin-sdk/rules/Cargo.toml")),
+    ("tarae/rules/src/lib.rs", include_str!("../../plugin-sdk/rules/src/lib.rs")),
+    ("tarae/rules/src/secretnames.rs", include_str!("../../plugin-sdk/rules/src/secretnames.rs")),
+    ("tarae/rules/src/secret-names.txt", include_str!("../../plugin-sdk/rules/src/secret-names.txt")),
+    ("tarae/wit/tarae.wit", WIT),
+    ("tarae/LICENSE-MIT", include_str!("../../plugin-sdk/LICENSE-MIT")),
+    ("tarae/LICENSE-APACHE", include_str!("../../plugin-sdk/LICENSE-APACHE")),
+];
+/// Where the vendored copy goes in a plugin's folder.
+const VENDORED: &str = "tarae";
+/// The SDK's manifest's last lines in this repository: its own `[workspace]`, cut from the vendored copy — inside
+/// the plugin's workspace a second root is refused.
+const SDK_OWN_WORKSPACE: &str = "\n# Not part of tarae's workspace";
 /// Rust's keywords, which cargo refuses as package names.
 const KEYWORDS: &[&str] = &[
     "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate", "do", "dyn",
@@ -41,9 +74,239 @@ pub fn cli(args: &[String]) -> anyhow::Result<()> {
             Ok(())
         }
         Some("dev") => dev(Path::new(args.get(1).map_or(".", String::as_str))),
+        Some("test") => {
+            let dirs: Vec<&Path> = match &args[1..] {
+                [] => vec![Path::new(".")],
+                more => more.iter().map(Path::new).collect(),
+            };
+            test(&dirs, &mut std::io::stdout().lock())
+        }
+        Some("vendor") => {
+            let dir = Path::new(args.get(1).map_or(".", String::as_str));
+            vendor(dir)?;
+            println!(
+                "{} {}",
+                paint("1;32", "✓"),
+                paint("1", &format!("this tarae's SDK in {}", dir.join(VENDORED).display()))
+            );
+            Ok(())
+        }
         Some("list") | None => list(),
-        Some(other) => bail!("unknown plugin command '{other}' — new <name> · dev [dir] · list"),
+        Some(other) => {
+            bail!(
+                "unknown plugin command '{other}' — new <name> · dev [dir] · test [dir…] · vendor [dir] · list"
+            )
+        }
     }
+}
+
+/// The vendored copy as a plugin holds it: `VENDOR`, the SDK's manifest without its own `[workspace]`, and a README
+/// saying what the folder is.
+fn vendored() -> Vec<(&'static str, String)> {
+    let mut files: Vec<(&str, String)> = VENDOR
+        .iter()
+        .map(|&(path, text)| match path {
+            "tarae/sdk/Cargo.toml" => {
+                (path, format!("{}\n", text.split(SDK_OWN_WORKSPACE).next().unwrap_or(text).trim_end()))
+            }
+            _ => (path, text.to_string()),
+        })
+        .collect();
+    let readme = format!(
+        "# tarae's SDK, vendored\n\nThe SDK (`sdk/`), the rules tarae holds a plugin to (`rules/`) and the plugin API \
+         (`wit/tarae.wit`), as tarae {} has them — MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`), so your plugin \
+         can take any licence.\n\nDon't edit them: `tarae plugin test` fails while this folder differs from the tarae \
+         you run, and `tarae plugin vendor` writes that tarae's copy again.\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    files.push(("tarae/README.md", readme));
+    files
+}
+
+/// Writes this tarae's vendored copy into the plugin in `dir` (`vendored`), and takes out of its `tarae/` what isn't
+/// part of it.
+fn vendor(dir: &Path) -> anyhow::Result<()> {
+    if !dir.join("Cargo.toml").is_file() {
+        bail!("no Cargo.toml in {} — tarae plugin new <name> starts one", dir.display());
+    }
+    let files = vendored();
+    for extra in vendored_files(dir).into_iter().filter(|p| !files.iter().any(|(f, _)| f == p)) {
+        std::fs::remove_file(dir.join(&extra)).with_context(|| format!("removing {extra}"))?;
+    }
+    for (path, text) in files {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().expect("in the plugin folder"))?;
+        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The files under the plugin's `tarae/` (but a `target/`), as paths from its folder, sorted.
+fn vendored_files(dir: &Path) -> Vec<String> {
+    fn walk(at: &Path, rel: &str, out: &mut Vec<String>) {
+        for e in std::fs::read_dir(at).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let rel = format!("{rel}/{name}");
+            match e.file_type() {
+                Ok(t) if t.is_dir() && name != "target" => walk(&e.path(), &rel, out),
+                Ok(t) if !t.is_dir() => out.push(rel),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&dir.join(VENDORED), VENDORED, &mut out);
+    crate::sorting::sort(&mut out);
+    out
+}
+
+/// What of the plugin's vendored copy isn't this tarae's — a file changed, missing or added; none when it holds no
+/// vendored copy (`held` says whether it must).
+fn vendored_stale(dir: &Path) -> Vec<String> {
+    if !dir.join(VENDORED).is_dir() {
+        return Vec::new();
+    }
+    let files = vendored();
+    let mut stale: Vec<String> = (files.iter())
+        .filter(|(path, text)| std::fs::read(dir.join(path)).ok().as_deref() != Some(text.as_bytes()))
+        .map(|(path, _)| path.to_string())
+        .collect();
+    stale.extend(vendored_files(dir).into_iter().filter(|p| !files.iter().any(|(f, _)| f == p)));
+    stale
+}
+
+/// The SDK's two crates: the package, the crate name a dependency gives it, its folder in `tarae/` and `plugin-sdk/`.
+const SDK_CRATES: [(&str, &str, &str); 2] =
+    [("tarae-plugin", "tarae_plugin", "sdk"), ("tarae-plugin-rules", "tarae_plugin_rules", "rules")];
+
+/// What keeps the plugin in `dir` from being held to this tarae's rules, one sentence each: the SDK and the rules
+/// come from its vendored `tarae/`, as this tarae has them — or, a plugin inside tarae's repository, from that
+/// repository's `plugin-sdk/`, as this tarae has it — and from nowhere else, as cargo resolves them (`sdk_crates`:
+/// a path elsewhere, a `[patch]`, a `[replace]`, a renamed crate). `test` asks before and after cargo runs (a build
+/// script runs before the SDK compiles). `host`: the tests' target, beside wasm32.
+fn held(dir: &Path, host: &str) -> Vec<String> {
+    let fix = format!("`tarae plugin vendor {}` writes this tarae's", dir.display());
+    let mut wrong = Vec::new();
+    let repository = tarae_repository(dir);
+    let vendored = std::fs::canonicalize(dir.join(VENDORED)).ok().filter(|v| v.is_dir());
+    if vendored.is_some() {
+        let stale = vendored_stale(dir);
+        if !stale.is_empty() {
+            wrong.push(format!("its vendored SDK isn't this tarae's ({}) — {fix}", stale.join(", ")));
+        }
+    } else if repository.is_none() {
+        wrong.push(format!("no vendored SDK ({VENDORED}/) — {fix}"));
+    }
+    let crates = match sdk_crates(dir, host) {
+        Ok(crates) => crates,
+        Err(why) => {
+            wrong.push(format!("where its SDK comes from isn't known (cargo metadata): {why}"));
+            return wrong;
+        }
+    };
+    let mut from_repository = false;
+    for (package, folder, from) in crates {
+        let at = match from {
+            Ok(at) => std::fs::canonicalize(&at).unwrap_or(at),
+            Err(source) => PathBuf::from(source),
+        };
+        if vendored.as_ref().is_some_and(|v| at == v.join(folder)) {
+            continue;
+        }
+        if repository.as_ref().is_some_and(|r| at == r.join("plugin-sdk").join(folder)) {
+            from_repository = true;
+            continue;
+        }
+        wrong.push(format!(
+            "it takes {package} from {}, not its vendored {VENDORED}/{folder} — a path elsewhere, a [patch] or a \
+             [replace] steps around the rules it's held to; {fix}",
+            at.display()
+        ));
+    }
+    if let Some(r) = repository.filter(|_| from_repository) {
+        let stale = repository_stale(&r);
+        if !stale.is_empty() {
+            wrong.push(format!(
+                "tarae's plugin-sdk/ in {} isn't this tarae's ({}) — run the tarae built from it",
+                r.display(),
+                stale.join(", ")
+            ));
+        }
+    }
+    wrong
+}
+
+/// The tarae repository the plugin in `dir` sits in: the nearest folder above it whose manifest is tarae's and which
+/// holds `plugin-sdk/`.
+fn tarae_repository(dir: &Path) -> Option<PathBuf> {
+    let dir = std::fs::canonicalize(dir).ok()?;
+    let is_tarae = |a: &Path| {
+        a.join("plugin-sdk/sdk/Cargo.toml").is_file()
+            && (std::fs::read_to_string(a.join("Cargo.toml")).ok())
+                .and_then(|m| package_name(&m))
+                .is_some_and(|n| n == "tarae")
+    };
+    dir.ancestors().skip(1).find(|a| is_tarae(a)).map(Path::to_path_buf)
+}
+
+/// What of a tarae repository's `plugin-sdk/` isn't this tarae's (`VENDOR`, each file where the repository has it).
+fn repository_stale(repository: &Path) -> Vec<String> {
+    (VENDOR.iter())
+        .map(|(path, text)| (format!("plugin-sdk/{}", path.strip_prefix("tarae/").unwrap_or(path)), text))
+        .filter(|(path, text)| std::fs::read(repository.join(path)).ok().as_deref() != Some(text.as_bytes()))
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// The SDK's crates the plugin in `dir` builds with, as cargo resolves them (`cargo metadata`): each package named
+/// as one, and each dependency giving a crate one's name (a renamed package) — with its package name, its folder in
+/// `SDK_CRATES`, and where it comes from: its manifest's folder, or the source it names (a registry, git). Only what
+/// `test` builds for, `host` and wasm32 (else cargo fetches every platform's crates).
+fn sdk_crates(dir: &Path, host: &str) -> Result<Vec<SdkCrate>, String> {
+    let out = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--filter-platform", host, "--filter-platform", TARGET])
+        .current_dir(dir)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .map_err(|e| format!("running cargo metadata: {e}"))?;
+    if !out.status.success() {
+        let said = errors(&String::from_utf8_lossy(&out.stderr));
+        return Err(said.into_iter().next().unwrap_or_else(|| format!("it failed ({})", out.status)));
+    }
+    let m: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+    Ok(sdk_crates_in(&m))
+}
+
+/// One of the SDK's crates as cargo resolves it: its package name and folder in `SDK_CRATES`, and its manifest's
+/// folder or the source it names.
+type SdkCrate = (&'static str, &'static str, Result<PathBuf, String>);
+
+/// `sdk_crates`, from `cargo metadata`'s JSON.
+fn sdk_crates_in(m: &serde_json::Value) -> Vec<SdkCrate> {
+    let packages = m["packages"].as_array().map_or(&[][..], Vec::as_slice);
+    let nodes = m["resolve"]["nodes"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut ids: Vec<(usize, &str)> = Vec::new();
+    for (i, &(package, krate, _)) in SDK_CRATES.iter().enumerate() {
+        let named = packages.iter().filter(|p| p["name"] == package).filter_map(|p| p["id"].as_str());
+        let deps = nodes.iter().flat_map(|n| n["deps"].as_array().map_or(&[][..], Vec::as_slice));
+        let renamed = deps.filter(|d| d["name"] == krate).filter_map(|d| d["pkg"].as_str());
+        for id in named.chain(renamed) {
+            if !ids.contains(&(i, id)) {
+                ids.push((i, id));
+            }
+        }
+    }
+    let from = |id: &str| {
+        let p = packages.iter().find(|p| p["id"] == id);
+        match p.and_then(|p| p["source"].as_str()) {
+            Some(source) => Err(source.to_string()),
+            None => Ok(p
+                .and_then(|p| p["manifest_path"].as_str())
+                .and_then(|m| Path::new(m).parent())
+                .map_or_else(|| PathBuf::from(id), Path::to_path_buf)),
+        }
+    };
+    ids.into_iter().map(|(i, id)| (SDK_CRATES[i].0, SDK_CRATES[i].2, from(id))).collect()
 }
 
 /// A plugin crate from the template, in `dir` (its last component is the name).
@@ -62,13 +325,15 @@ fn new(dir: &Path) -> anyhow::Result<()> {
     if dir.exists() {
         bail!("{} already exists", dir.display());
     }
-    for (path, text) in [
+    // (its build's own files stay in its folder, not in a shared build-dir a sandboxed run can't write)
+    let config = format!("[build]\ntarget = \"{TARGET}\"\nbuild-dir = \"target/build\"\n");
+    let files = [
         ("Cargo.toml", CARGO_TOML.replacen("\"NAME\"", &format!("\"{name}\""), 1)),
-        ("src/lib.rs", LIB_RS.to_string()),
-        ("wit/tarae.wit", WIT.to_string()),
-        (".cargo/config.toml", format!("[build]\ntarget = \"{TARGET}\"\n")),
+        ("src/lib.rs", LIB_RS.replace("\"NAME\"", &format!("\"{name}\""))),
+        (".cargo/config.toml", config),
         (".gitignore", "/target\n".to_string()),
-    ] {
+    ];
+    for (path, text) in files.into_iter().chain(vendored()) {
         let path = dir.join(path);
         std::fs::create_dir_all(path.parent().expect("in the plugin folder"))?;
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
@@ -105,16 +370,7 @@ fn list_in(dir: &std::path::Path, out: &mut impl std::io::Write) -> anyhow::Resu
             paint("1", &name),
             paint("2", &format!("{} KB · {}", len.div_ceil(1024), path.display()))
         )?;
-        let loaded = std::fs::read(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|b| Plugin::new(&b, Limits::default(), 100_000_000))
-            .and_then(|mut p| {
-                // (what the editor refuses at load, said here too: `keys` beside `network` or `run`)
-                if let Some(why) = super::perm::invalid(&p.permissions(100_000_000)?) {
-                    return Err(why);
-                }
-                Ok((p.commands(100_000_000)?, p.subscriptions(100_000_000)?))
-            });
+        let loaded = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| loads(&b));
         match loaded {
             Ok((commands, subscriptions)) => {
                 for c in commands {
@@ -131,14 +387,228 @@ fn list_in(dir: &std::path::Path, out: &mut impl std::io::Write) -> anyhow::Resu
     Ok(())
 }
 
+/// Whether a plugin loads as tarae loads it — `list` and `test` say the same: it decodes and starts, carries this
+/// plugin API version (wit-bindgen's section), declares what the editor takes (`perm::invalid`: `keys` beside
+/// `network` or `run`, a pattern's form), and answers its commands and subscriptions. Err: why not, in the editor's
+/// words.
+fn loads(bytes: &[u8]) -> Result<(Vec<Command>, Vec<Subscription>), String> {
+    let mut p = Plugin::new(bytes, Limits::default(), FUEL)?;
+    if let Some(why) = super::perm::invalid(&p.permissions(FUEL)?) {
+        return Err(why);
+    }
+    Ok((p.commands(FUEL)?, p.subscriptions(FUEL)?))
+}
+
 /// The `.wasm` a `cargo build --message-format json…` built.
-fn artifact(json: &str) -> Option<std::path::PathBuf> {
+fn artifact(json: &str) -> Option<PathBuf> {
+    artifacts(json).into_iter().next()
+}
+
+/// Each `.wasm` a `cargo build --message-format json…` built (a workspace's: one a member).
+fn artifacts(json: &str) -> Vec<PathBuf> {
     json.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|m| m["reason"] == "compiler-artifact")
         .flat_map(|m| m["filenames"].as_array().cloned().unwrap_or_default())
-        .filter_map(|f| f.as_str().map(std::path::PathBuf::from))
-        .find(|f| f.extension().is_some_and(|e| e == "wasm"))
+        .filter_map(|f| f.as_str().map(PathBuf::from))
+        .filter(|f| f.extension().is_some_and(|e| e == "wasm"))
+        .collect()
+}
+
+/// This machine's target (`rustc -vV`'s host): a plugin's tests run there — its `.cargo/config.toml` names wasm32.
+fn host() -> anyhow::Result<String> {
+    let out = std::process::Command::new("rustc").arg("-vV").output().context("running rustc")?;
+    let out = String::from_utf8_lossy(&out.stdout);
+    out.lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("no host in rustc -vV"))
+}
+
+/// What a `cargo test` said: each failure in one line (the test, its panic's first line and place — in a workspace,
+/// its crate first), and the totals.
+#[derive(Debug, Default, PartialEq)]
+struct Tests {
+    failures: Vec<String>,
+    passed: usize,
+    failed: usize,
+    ignored: usize,
+}
+
+/// Reads libtest's text (stable libtest has no JSON), stdout and stderr as one stream: `Running … (…/deps/<crate>-<hash>)`
+/// says whose tests follow.
+fn read_tests(out: &str) -> Tests {
+    let mut t = Tests::default();
+    let lines: Vec<&str> = out.lines().collect();
+    let mut krate = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        let l = l.trim_end();
+        if let Some(bin) = l.trim_start().strip_prefix("Running ").and_then(|r| r.rsplit_once('(')) {
+            let stem =
+                Path::new(bin.1.trim_end_matches(')')).file_name().map(|n| n.to_string_lossy().into_owned());
+            krate = stem.and_then(|s| s.rsplit_once('-').map(|(c, _)| c.to_string())).unwrap_or_default();
+        } else if let Some(name) = l.strip_prefix("---- ").and_then(|r| r.strip_suffix(" stdout ----")) {
+            let rest = lines[i + 1..].iter().take_while(|l| !l.starts_with("---- "));
+            let mut said = rest.skip_while(|l| !l.starts_with("thread '"));
+            let at = said
+                .next()
+                .and_then(|l| l.split_once("' panicked at "))
+                .map(|(_, at)| at.trim_end_matches(':'));
+            let first = said.next().map_or("", |l| l.trim());
+            let whose = if krate.is_empty() { String::new() } else { format!("{krate}: ") };
+            let at = at.map(|a| format!(" ({a})")).unwrap_or_default();
+            t.failures.push(format!("{whose}{name} — {first}{at}"));
+        } else if let Some(r) = l.strip_prefix("test result: ") {
+            // (`FAILED. 1 passed`, `1 failed`, `2 ignored`, …)
+            for part in r.split("; ") {
+                let Some((before, word)) = part.rsplit_once(' ') else { continue };
+                let n: usize = before.rsplit(' ').next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                match word {
+                    "passed" => t.passed += n,
+                    "failed" => t.failed += n,
+                    "ignored" => t.ignored += n,
+                    _ => {}
+                }
+            }
+        }
+    }
+    t
+}
+
+/// The compiler's errors in cargo's text output, one line each (with its place).
+fn errors(out: &str) -> Vec<String> {
+    let lines: Vec<&str> = out.lines().collect();
+    let mut found = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if !l.starts_with("error")
+            || l.starts_with("error: could not compile")
+            || l.starts_with("error: test failed")
+        {
+            continue;
+        }
+        let at = lines.get(i + 1).and_then(|n| n.trim().strip_prefix("--> "));
+        found.push(at.map_or_else(|| l.to_string(), |at| format!("{l} ({at})")));
+    }
+    found
+}
+
+/// `tarae plugin test`: in each folder (a plugin, or a workspace of them), the vendored SDK held to this tarae's, the
+/// tests run once on this machine, then each `.wasm` built and loaded as tarae loads it (`loads`). One line a failure,
+/// then each folder's totals; Err when anything failed.
+fn test(dirs: &[&Path], out: &mut impl Write) -> anyhow::Result<()> {
+    let host = host()?;
+    let mut failed = 0;
+    for dir in dirs {
+        failed += test_in(dir, &host, out)?;
+    }
+    match failed {
+        0 => Ok(()),
+        1 => bail!("1 failure"),
+        n => bail!("{n} failures"),
+    }
+}
+
+/// `test`, of the plugin or workspace in `dir`, on `host`: how many failures, each said in `out` — first what keeps
+/// it from being held to this tarae's rules (`held`), and that again after cargo ran.
+fn test_in(dir: &Path, host: &str, out: &mut impl Write) -> anyhow::Result<usize> {
+    if !dir.join("Cargo.toml").is_file() {
+        bail!("no Cargo.toml in {} — tarae plugin new <name> starts one", dir.display());
+    }
+    let mut failures = 0;
+    let wrong = held(dir, host);
+    for w in &wrong {
+        writeln!(out, "× {}: {w}", dir.display())?;
+    }
+    failures += wrong.len();
+    // The tests, once for the workspace — stdout and stderr as one stream: whose tests follow is said on stderr
+    let (read, write) = std::io::pipe()?;
+    let mut cargo = std::process::Command::new("cargo");
+    cargo.args(["test", "--workspace", "--no-fail-fast", "--target", host]).current_dir(dir);
+    cargo.env("CARGO_TERM_COLOR", "never").stdout(write.try_clone()?).stderr(write);
+    let mut child = cargo.spawn().context("running cargo test")?;
+    drop(cargo);
+    let text = std::io::read_to_string(read)?;
+    let ran = child.wait()?;
+    let tests = read_tests(&text);
+    for f in &tests.failures {
+        writeln!(out, "× {}", super::shown(f))?;
+    }
+    failures += tests.failures.len();
+    if !ran.success() && tests.failures.is_empty() {
+        let errors = errors(&text);
+        for e in &errors {
+            writeln!(out, "× {e}")?;
+        }
+        if errors.is_empty() {
+            writeln!(out, "× cargo test failed ({ran})")?;
+        }
+        failures += errors.len().max(1);
+    }
+    // Then each plugin as tarae loads it
+    let build = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "--workspace",
+            "--target",
+            TARGET,
+            "--message-format",
+            "json-diagnostic-short",
+        ])
+        .current_dir(dir)
+        .env("CARGO_TERM_COLOR", "never")
+        .output()
+        .context("running cargo build")?;
+    let json = String::from_utf8_lossy(&build.stdout);
+    if !build.status.success() {
+        // (the compiler's errors; else cargo's own — a manifest, a lock, a dependency)
+        let mut said: Vec<String> = diagnostics(&json)
+            .into_iter()
+            .filter(|d| d.contains("error"))
+            .map(|d| d.trim_end().to_string())
+            .collect();
+        if said.is_empty() {
+            said = errors(&String::from_utf8_lossy(&build.stderr));
+        }
+        if said.is_empty() {
+            said.push(format!("cargo build failed ({})", build.status));
+        }
+        for d in &said {
+            writeln!(out, "× {d}")?;
+        }
+        failures += 1;
+    }
+    let mut loaded = Vec::new();
+    let built = artifacts(&json);
+    for wasm in &built {
+        let name = wasm.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        match std::fs::read(wasm).map_err(|e| e.to_string()).and_then(|b| loads(&b)) {
+            Ok((commands, _)) => loaded.push(format!("{name} loads ({} commands)", commands.len())),
+            Err(why) => {
+                writeln!(out, "× {name} can't load: {}", super::shown(&why))?;
+                failures += 1;
+            }
+        }
+    }
+    if build.status.success() && built.is_empty() {
+        writeln!(out, "× {}: no .wasm built — a plugin's [lib] is crate-type = [\"cdylib\"]", dir.display())?;
+        failures += 1;
+    }
+    // (again: a build script ran before the SDK compiled, and could change it or the manifest)
+    for w in held(dir, host).into_iter().filter(|w| !wrong.contains(w)) {
+        writeln!(out, "× {}: after cargo ran, {w}", dir.display())?;
+        failures += 1;
+    }
+    let loads = if loaded.is_empty() { "none loads".to_string() } else { loaded.join(", ") };
+    writeln!(
+        out,
+        "{} — {} passed, {} failed, {} ignored · {loads}",
+        dir.display(),
+        tests.passed,
+        tests.failed,
+        tests.ignored
+    )?;
+    Ok(failures)
 }
 
 /// The compiler's messages in that output, as it rendered them.
@@ -162,8 +632,8 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
     let manifest = std::fs::read_to_string(dir.join("Cargo.toml"))
         .map_err(|_| anyhow!("no Cargo.toml in {} — tarae plugin new <name> starts one", dir.display()))?;
     let name = package_name(&manifest).ok_or_else(|| anyhow!("no [package] name in Cargo.toml"))?;
-    if !manifest.contains(&format!("wit-bindgen = \"={WIT_BINDGEN}")) {
-        println!("{} this tarae checks plugins built with wit-bindgen {WIT_BINDGEN}", paint("33", "note:"));
+    for w in held(dir, &host()?) {
+        println!("{} {w}", paint("33", "note:"));
     }
     let out = plugins_dir()?;
     std::fs::create_dir_all(&out)?;
@@ -185,6 +655,7 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
         let mut v = Vec::new();
         walk(&dir.join("src"), &mut v);
         walk(&dir.join("wit"), &mut v);
+        walk(&dir.join(VENDORED), &mut v);
         v.extend(std::fs::metadata(dir.join("Cargo.toml")).and_then(|m| m.modified()));
         v
     };
@@ -195,34 +666,52 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
         if now != last {
             last = now;
             let started = std::time::Instant::now();
-            let build = std::process::Command::new("cargo")
-                .args(["build", "--release", "--target", TARGET, "--color", "always"])
-                .args(["--message-format", "json-diagnostic-rendered-ansi"])
-                .current_dir(dir)
-                .output()
-                .context("running cargo")?;
-            // Where cargo put it (a target dir or lib name of the plugin's own included)
-            let wasm = artifact(&String::from_utf8_lossy(&build.stdout));
-            if build.status.success()
-                && let Some(wasm) = wasm
-            {
-                let dest = install(&wasm, &out, &marks, &name, &source)?;
-                let kb = std::fs::metadata(&dest).map_or(0, |m| m.len().div_ceil(1024));
-                let took = crate::term::run_duration(started.elapsed());
-                println!(
-                    "{} built in {took} · {kb} KB  {}",
-                    paint("1;32", "✓"),
-                    paint("2", "— reloading in tarae")
-                );
-            } else {
-                println!("{} build failed", paint("1;31", "✗"));
-                for d in diagnostics(&String::from_utf8_lossy(&build.stdout)) {
-                    eprint!("{d}");
+            match dev_round(dir, &out, &marks, &name, &source)? {
+                Ok(dest) => {
+                    let kb = std::fs::metadata(&dest).map_or(0, |m| m.len().div_ceil(1024));
+                    let took = crate::term::run_duration(started.elapsed());
+                    println!(
+                        "{} built in {took} · {kb} KB  {}",
+                        paint("1;32", "✓"),
+                        paint("2", "— reloading in tarae")
+                    );
                 }
-                std::io::Write::write_all(&mut std::io::stderr(), &build.stderr)?;
+                Err((said, stderr)) => {
+                    println!("{} build failed", paint("1;31", "✗"));
+                    for d in said {
+                        eprint!("{d}");
+                    }
+                    Write::write_all(&mut std::io::stderr(), &stderr)?;
+                }
             }
         }
         crate::event::pause(Duration::from_millis(300));
+    }
+}
+
+/// A failed build: the compiler's messages, and cargo's stderr.
+type Failed = (Vec<String>, Vec<u8>);
+
+/// One round of `dev`: the plugin in `dir` built, and put in `out` with its dev mark (`install`). Ok(Err): the build
+/// failed.
+fn dev_round(
+    dir: &Path,
+    out: &Path,
+    marks: &Path,
+    name: &str,
+    source: &Path,
+) -> anyhow::Result<Result<PathBuf, Failed>> {
+    let build = std::process::Command::new("cargo")
+        .args(["build", "--release", "--target", TARGET, "--color", "always"])
+        .args(["--message-format", "json-diagnostic-rendered-ansi"])
+        .current_dir(dir)
+        .output()
+        .context("running cargo")?;
+    // Where cargo put it (a target dir or lib name of the plugin's own included)
+    let json = String::from_utf8_lossy(&build.stdout);
+    match artifact(&json).filter(|_| build.status.success()) {
+        Some(wasm) => Ok(Ok(install(&wasm, out, marks, name, source)?)),
+        None => Ok(Err((diagnostics(&json), build.stderr))),
     }
 }
 
@@ -287,11 +776,17 @@ mod tests {
         let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         assert_eq!(package_name(&manifest).as_deref(), Some("my-plugin"));
         assert!(
-            std::fs::read_to_string(dir.join("wit/tarae.wit"))
+            std::fs::read_to_string(dir.join("tarae/wit/tarae.wit"))
                 .unwrap()
                 .contains(&format!("package tarae:plugin@{}.", super::super::abi::API))
         );
-        assert!(std::fs::read_to_string(dir.join(".cargo/config.toml")).unwrap().contains(TARGET));
+        let config = std::fs::read_to_string(dir.join(".cargo/config.toml")).unwrap();
+        assert!(config.contains(TARGET) && config.contains("build-dir = \"target/build\""), "{config}");
+        assert!(std::fs::read_to_string(dir.join("src/lib.rs")).unwrap().contains("load(\"my-plugin\""));
+        // (the SDK vendored whole, as this tarae has it — its manifest without a workspace of its own)
+        assert_eq!(vendored_stale(&dir), Vec::<String>::new());
+        let sdk = std::fs::read_to_string(dir.join("tarae/sdk/Cargo.toml")).unwrap();
+        assert!(sdk.contains("name = \"tarae-plugin\"") && !sdk.contains("[workspace]"), "{sdk}");
         assert!(new(&dir).is_err(), "not over an existing folder");
         assert!(new(&root.join("bad name")).is_err());
         assert!(new(&root.join("2fa")).is_err(), "cargo refuses a leading digit");
@@ -299,27 +794,329 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// A plugin `tarae plugin new` starts builds as it is — the template keeps up with the WIT. (Ignored: it
-    /// fetches the SDK's crates; CI's network job runs it.)
+    /// `test`, of `dirs`: what it said, and whether it passed.
+    fn tested(dirs: &[&Path]) -> (String, bool) {
+        let mut out = Vec::new();
+        let r = test(dirs, &mut out);
+        (String::from_utf8(out).unwrap(), r.is_ok())
+    }
+
+    /// A plugin `tarae plugin new` starts passes `tarae plugin test` as it is: its own test, through the mock host,
+    /// and its wasm built and loaded as tarae loads it — the template keeps up with the WIT and the SDK. (Ignored:
+    /// it fetches the SDK's crates; CI's network job runs it.)
     #[test]
     #[ignore = "network: CI's network job runs it"]
-    fn a_new_plugin_builds() {
-        let scratch = crate::scratch::Scratch::new("plugin-builds");
-        let root = scratch.to_path_buf();
-        let dir = root.join("hello");
+    fn a_new_plugin_passes_its_own_test() {
+        let scratch = crate::scratch::Scratch::new("plugin-passes");
+        let dir = scratch.join("hello");
         new(&dir).unwrap();
-        // (for this machine: the wasm target may not be installed — the bindings and the code are the same)
-        let host = String::from_utf8(std::process::Command::new("rustc").arg("-vV").output().unwrap().stdout)
-            .unwrap();
-        let host = host.lines().find_map(|l| l.strip_prefix("host: ")).unwrap().to_string();
-        let out = std::process::Command::new("cargo")
-            .args(["check", "--quiet", "--target", &host])
-            .current_dir(&dir)
-            .env("CARGO_TARGET_DIR", root.join("target"))
+        let (said, ok) = tested(&[&dir]);
+        assert!(ok, "{said}");
+        assert!(said.contains("— 1 passed, 0 failed, 0 ignored · hello.wasm loads (2 commands)"), "{said}");
+    }
+
+    /// A plugin whose own tests pass but whose wasm is built for another API version fails `tarae plugin test`, in
+    /// the words the load uses — and its vendored WIT, changed, is said too. (Ignored: it fetches crates.)
+    #[test]
+    #[ignore = "network: CI's network job runs it"]
+    fn a_plugin_built_for_another_api_fails_its_test() {
+        let scratch = crate::scratch::Scratch::new("plugin-other-api");
+        let dir = scratch.join("old");
+        new(&dir).unwrap();
+        let wit = dir.join("tarae/wit/tarae.wit");
+        let text = std::fs::read_to_string(&wit).unwrap();
+        let api = format!("package tarae:plugin@{}.", super::super::abi::API);
+        std::fs::write(&wit, text.replace(&api, "package tarae:plugin@0.1.")).unwrap();
+        let (said, ok) = tested(&[&dir]);
+        assert!(!ok, "{said}");
+        assert!(said.contains("1 passed, 0 failed"), "its own tests pass: {said}");
+        let why = format!(
+            "× old.wasm can't load: it's built for tarae plugin API 0.1.0, this tarae speaks {}",
+            super::super::abi::API
+        );
+        assert!(said.contains(&why), "{said}");
+        assert!(said.contains("its vendored SDK isn't this tarae's (tarae/wit/tarae.wit)"), "{said}");
+    }
+
+    /// `tarae plugin dev`'s round on a new plugin (#458): it builds, writes the dev mark naming its folder before the
+    /// build lands, and puts it in place — a build the plugin thread's load counts as a dev build (`dev_source`), and
+    /// one that loads. (Ignored: it fetches crates.)
+    #[test]
+    #[ignore = "network: CI's network job runs it"]
+    fn plugin_dev_builds_marks_and_installs_a_new_plugin() {
+        let scratch = crate::scratch::Scratch::new("plugin-dev-round");
+        let dir = scratch.join("devved");
+        new(&dir).unwrap();
+        let (out, marks) = (scratch.join("plugins"), scratch.join("state/plugin-dev"));
+        std::fs::create_dir_all(&out).unwrap();
+        let source = std::fs::canonicalize(&dir).unwrap();
+        let dest = match dev_round(&dir, &out, &marks, "devved", &source).unwrap() {
+            Ok(dest) => dest,
+            Err((said, stderr)) => panic!("{said:?} {}", String::from_utf8_lossy(&stderr)),
+        };
+        assert_eq!(dest, out.join("devved.wasm"));
+        let bytes = std::fs::read(&dest).unwrap();
+        let sha = crate::sha256::hex(&bytes);
+        assert_eq!(super::super::perm::dev_source(&marks, "devved", &sha), Some(source));
+        assert!(loads(&bytes).is_ok());
+    }
+
+    /// The bundled plugins pass their own suites under `tarae plugin test` — tests, wasm built, loaded as tarae loads
+    /// it —, and the SDK's mock host its own (`:preflight-full` runs this, and CI's network job). (Ignored: it fetches
+    /// crates.)
+    #[test]
+    #[ignore = "network: CI's network job runs it"]
+    fn the_bundled_plugins_pass_their_own_tests() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin-sdk");
+        let sdk = std::process::Command::new("cargo")
+            .args(["test", "--features", "test", "--target", &host().unwrap()])
+            .current_dir(root.join("sdk"))
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        std::fs::remove_dir_all(root).ok();
+        let said = String::from_utf8_lossy(&sdk.stdout);
+        assert!(sdk.status.success(), "the SDK's tests: {said}{}", String::from_utf8_lossy(&sdk.stderr));
+        let dirs: Vec<PathBuf> =
+            ["db", "keycast", "kubernetes", "demo"].iter().map(|p| root.join(p)).collect();
+        let (said, ok) = tested(&dirs.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+        assert!(ok, "{said}");
+    }
+
+    /// Every file of the SDK and the rules is vendored (but the repository's own: a lock, a `.gitignore`, its
+    /// `.cargo`): a file added to either reaches a new plugin.
+    #[test]
+    fn the_vendored_sdk_is_the_whole_sdk() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin-sdk");
+        let mut there = Vec::new();
+        for part in ["sdk", "rules"] {
+            fn walk(at: &Path, rel: &str, out: &mut Vec<String>) {
+                for e in std::fs::read_dir(at).unwrap().flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if e.file_type().unwrap().is_dir() {
+                        if name != "target" && !name.starts_with('.') {
+                            walk(&e.path(), &format!("{rel}/{name}"), out);
+                        }
+                    } else if name != "Cargo.lock" && !name.starts_with('.') {
+                        out.push(format!("{rel}/{name}"));
+                    }
+                }
+            }
+            walk(&root.join(part), &format!("tarae/{part}"), &mut there);
+        }
+        let mut listed: Vec<String> = VENDOR
+            .iter()
+            .map(|(p, _)| p.to_string())
+            .filter(|p| !p.starts_with("tarae/LICENSE") && !p.starts_with("tarae/wit/"))
+            .collect();
+        crate::sorting::sort(&mut there);
+        crate::sorting::sort(&mut listed);
+        assert_eq!(listed, there, "VENDOR and plugin-sdk/sdk, plugin-sdk/rules");
+    }
+
+    /// A vendored copy changed, or with a file of its own, is said as not this tarae's — each file named — and
+    /// `vendor` writes this tarae's again.
+    #[test]
+    fn a_vendored_sdk_that_differs_is_said_and_vendor_mends_it() {
+        let scratch = crate::scratch::Scratch::new("plugin-vendored");
+        let dir = scratch.join("mine");
+        new(&dir).unwrap();
+        let rules = dir.join("tarae/rules/src/lib.rs");
+        let text = std::fs::read_to_string(&rules).unwrap();
+        std::fs::write(&rules, text.replace("prog.len() > 64", "prog.len() > 640")).unwrap();
+        std::fs::write(dir.join("tarae/rules/src/extra.rs"), "").unwrap();
+        std::fs::remove_file(dir.join("tarae/LICENSE-MIT")).unwrap();
+        let stale = vendored_stale(&dir);
+        assert_eq!(stale, ["tarae/rules/src/lib.rs", "tarae/LICENSE-MIT", "tarae/rules/src/extra.rs"]);
+        vendor(&dir).unwrap();
+        assert_eq!(vendored_stale(&dir), Vec::<String>::new());
+        assert!(vendor(&scratch.join("nothing")).is_err(), "only into a plugin's folder");
+    }
+
+    /// A crate in `dir`: its manifest (`name`, then `more`) and an empty lib.rs.
+    fn krate(dir: &Path, name: &str, more: &str) {
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let manifest =
+            format!("[package]\nname = \"{name}\"\nversion = \"0.3.0\"\nedition = \"2024\"\n{more}");
+        std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+        std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+    }
+
+    /// The cargo config of a plugin in `dir` the tests build: offline (its crates are paths), its build in its folder,
+    /// and `more`.
+    fn offline(dir: &Path, more: &str) {
+        std::fs::create_dir_all(dir.join(".cargo")).unwrap();
+        let config = format!("[build]\nbuild-dir = \"target/build\"\n[net]\noffline = true\n{more}");
+        std::fs::write(dir.join(".cargo/config.toml"), config).unwrap();
+    }
+
+    /// The SDK and the rules come from the plugin's vendored `tarae/` and nowhere else, as cargo resolves them: a
+    /// path elsewhere, a `[patch]` (in the manifest or in `.cargo`), a renamed crate, a `[replace]` (which needs a
+    /// registry to resolve at all) and no `tarae/` each fail, `tarae plugin vendor` named. (Stand-in crates, so cargo
+    /// needs no network: the copy itself isn't this tarae's, said apart.)
+    #[test]
+    fn the_sdk_comes_from_its_vendored_copy_and_nowhere_else() {
+        let s = crate::scratch::Scratch::new("plugin-held");
+        let p = s.join("p");
+        let rules = "[dependencies]\ntarae-plugin-rules = { path = \"../rules\" }\n";
+        krate(&p.join("tarae/sdk"), "tarae-plugin", rules);
+        krate(&p.join("tarae/rules"), "tarae-plugin-rules", "");
+        krate(&s.join("mine"), "tarae-plugin", "");
+        krate(&s.join("fake"), "my-fake", "");
+        offline(&p, "");
+        let held_with = |deps: &str| {
+            krate(&p, "p", &format!("{deps}\n[workspace]\nexclude = [\"tarae\"]\n"));
+            std::fs::remove_file(p.join("Cargo.lock")).ok();
+            held(&p, &host().unwrap())
+        };
+        // (the stand-in copy said, then the rest)
+        let elsewhere = |w: Vec<String>| -> Vec<String> {
+            assert!(w[0].starts_with("its vendored SDK isn't this tarae's (tarae/sdk/Cargo.toml, "), "{w:?}");
+            w[1..].to_vec()
+        };
+        let fix = format!("`tarae plugin vendor {}` writes this tarae's", p.display());
+        let takes = |from: &str| {
+            let from = std::fs::canonicalize(s.join(from)).unwrap();
+            vec![format!(
+                "it takes tarae-plugin from {}, not its vendored tarae/sdk — a path elsewhere, a [patch] or a [replace] \
+                 steps around the rules it's held to; {fix}",
+                from.display()
+            )]
+        };
+        let vendored = "[dependencies]\ntarae-plugin = { path = \"tarae/sdk\" }";
+        assert_eq!(elsewhere(held_with(vendored)), Vec::<String>::new());
+        let path = "[dependencies]\ntarae-plugin = { path = \"../mine\" }";
+        assert_eq!(elsewhere(held_with(path)), takes("mine"), "a path elsewhere");
+        let patch = concat!(
+            "[dependencies]\ntarae-plugin = \"0.3\"\n",
+            "[patch.crates-io]\ntarae-plugin = { path = \"../mine\" }"
+        );
+        assert_eq!(elsewhere(held_with(patch)), takes("mine"), "a [patch]");
+        offline(&p, "[patch.crates-io]\ntarae-plugin = { path = \"../mine\" }\n");
+        let registry = "[dependencies]\ntarae-plugin = \"0.3\"";
+        assert_eq!(elsewhere(held_with(registry)), takes("mine"), "a [patch] in .cargo");
+        offline(&p, "");
+        let renamed = "[dependencies]\ntarae-plugin = { package = \"my-fake\", path = \"../fake\" }";
+        assert_eq!(elsewhere(held_with(renamed)), takes("fake"), "a renamed crate");
+        let replace = concat!(
+            "[dependencies]\ntarae-plugin = \"0.3\"\n",
+            "[replace]\n\"tarae-plugin:0.3.0\" = { path = \"../mine\" }"
+        );
+        let w = elsewhere(held_with(replace));
+        assert!(
+            w.len() == 1 && w[0].starts_with("where its SDK comes from isn't known (cargo metadata): "),
+            "{w:?}"
+        );
+        // No vendored copy, out of tarae's repository
+        std::fs::remove_dir_all(p.join("tarae")).unwrap();
+        let w = held_with(vendored);
+        assert_eq!(w[0], format!("no vendored SDK (tarae/) — {fix}"), "{w:?}");
+    }
+
+    /// A plugin inside tarae's repository takes the SDK from its `plugin-sdk/` — held to this tarae's too, so a
+    /// folder dressed as tarae's repository steps around nothing; this repository's is this tarae's.
+    #[test]
+    fn a_plugin_in_taraes_repository_takes_its_sdk_as_this_tarae_has_it() {
+        let here = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR")).unwrap();
+        assert_eq!(tarae_repository(&here.join("plugin-sdk/db")), Some(here.clone()));
+        assert_eq!(repository_stale(&here), Vec::<String>::new());
+        let s = crate::scratch::Scratch::new("plugin-in-repository");
+        let r = std::fs::canonicalize(&*s).unwrap().join("r");
+        krate(&r, "tarae", "[workspace]\nexclude = [\"plugin-sdk\"]\n");
+        let rules = "[dependencies]\ntarae-plugin-rules = { path = \"../rules\" }\n";
+        krate(&r.join("plugin-sdk/sdk"), "tarae-plugin", rules);
+        krate(&r.join("plugin-sdk/rules"), "tarae-plugin-rules", "");
+        let mine = r.join("plugin-sdk/mine");
+        krate(&mine, "mine", "[dependencies]\ntarae-plugin = { path = \"../sdk\" }\n[workspace]\n");
+        offline(&mine, "");
+        assert_eq!(tarae_repository(&mine), Some(r.clone()));
+        let w = held(&mine, &host().unwrap());
+        let not =
+            format!("tarae's plugin-sdk/ in {} isn't this tarae's (plugin-sdk/sdk/Cargo.toml, ", r.display());
+        assert!(w.len() == 1 && w[0].starts_with(&not), "{w:?}");
+    }
+
+    /// A build script runs before the SDK compiles: one that changes the vendored copy fails the test, said after
+    /// cargo ran — the copy was this tarae's before. (A plugin with no dependencies, so cargo needs no network.)
+    #[test]
+    fn a_build_script_that_changes_the_sdk_fails_the_test() {
+        let s = crate::scratch::Scratch::new("plugin-build-script");
+        let p = s.join("p");
+        krate(&p, "p", "[workspace]\nexclude = [\"tarae\"]\n");
+        offline(&p, "");
+        vendor(&p).unwrap();
+        let build = "fn main() {
+    let f = \"tarae/rules/src/lib.rs\";
+    let text = std::fs::read_to_string(f).unwrap();
+    std::fs::write(f, text + \"\\n// a build script was here\\n\").unwrap();
+}
+";
+        std::fs::write(p.join("build.rs"), build).unwrap();
+        let host = host().unwrap();
+        assert_eq!(held(&p, &host), Vec::<String>::new());
+        let mut out = Vec::new();
+        let failures = test_in(&p, &host, &mut out).unwrap();
+        let said = String::from_utf8(out).unwrap();
+        let after = format!(
+            "× {}: after cargo ran, its vendored SDK isn't this tarae's (tarae/rules/src/lib.rs)",
+            p.display()
+        );
+        assert!(failures >= 1 && said.contains(&after), "{said}");
+        assert!(!said.contains(&format!("× {}: its vendored", p.display())), "{said}");
+    }
+
+    /// libtest's text read as one line a failure — its crate, the test, its panic's first line and place — and the
+    /// totals over every test binary; the compiler's errors one line each.
+    #[test]
+    fn a_tests_output_is_one_line_a_failure() {
+        let out = "     Running unittests src/lib.rs (target/build/aarch64-apple-darwin/debug/deps/my_plugin-0a1b2c)
+
+running 2 tests
+test tests::a ... ok
+test tests::b ... FAILED
+
+failures:
+
+---- tests::b stdout ----
+
+thread 'tests::b' panicked at src/lib.rs:80:9:
+assertion `left == right` failed
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    tests::b
+
+test result: FAILED. 1 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests my_plugin
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+";
+        let t = read_tests(out);
+        let line = "my_plugin: tests::b — assertion `left == right` failed (src/lib.rs:80:9)";
+        assert_eq!(t, Tests { failures: vec![line.into()], passed: 4, failed: 1, ignored: 2 });
+        let built = "error[E0425]: cannot find value `x` in this scope\n  --> src/lib.rs:3:5\n   |\nerror: could not compile `p`";
+        assert_eq!(errors(built), ["error[E0425]: cannot find value `x` in this scope (src/lib.rs:3:5)"]);
+    }
+
+    /// A module that carries no plugin API version (wit-bindgen's `component-type` section) is refused by the load
+    /// `list` and `test` share, in `list`'s words, as by the editor's (`what_isnt_a_plugin_is_refused_with_a_reason`);
+    /// the demo carries one, as built.
+    #[test]
+    fn a_plugin_with_no_api_version_doesnt_load() {
+        let demo = super::super::abi::DEMO;
+        assert!(loads(demo).is_ok());
+        let mark = b"component-type:";
+        let mut bytes = demo.to_vec();
+        let at = bytes.windows(mark.len()).position(|w| w == mark).expect("the demo's version section");
+        bytes[at..at + mark.len()].copy_from_slice(b"component-typo:");
+        let why = loads(&bytes).err().unwrap();
+        assert!(why.starts_with("it carries no plugin API version"), "{why}");
+        let dir = crate::scratch::Scratch::new("plugin-list-api");
+        std::fs::write(dir.join("demo.wasm"), &bytes).unwrap();
+        let mut out = Vec::new();
+        list_in(&dir, &mut out).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("can't load:\x1b[0m it carries no plugin API version"), "{out}");
     }
 
     /// `tarae plugin list` says why a plugin the editor refuses at load can't load — `keys` beside the network, a
@@ -352,16 +1149,39 @@ mod tests {
         assert!(out.contains(":echo") && !out.contains("can't load"), "{out}");
     }
 
-    /// The template, the demo, tarae's own plugins and the version tarae names in its messages agree, and match the
-    /// WIT's major.
+    /// The SDK (whose bindings every plugin uses), the demo (a fixture with its own) and the version tarae names in its
+    /// messages agree, and match the WIT's major; the template and tarae's own plugins run no wit-bindgen of their
+    /// own — the SDK's bindings, one `generate!`.
     #[test]
     fn the_sdk_pins_one_wit_bindgen() {
-        let pin = format!("wit-bindgen = \"={WIT_BINDGEN}.");
-        assert!(CARGO_TOML.contains(&pin), "template: {pin}");
+        let pin = format!("wit-bindgen = \"={}.", super::super::abi::WIT_BINDGEN);
+        assert!(include_str!("../../plugin-sdk/sdk/Cargo.toml").contains(&pin), "sdk: {pin}");
         assert!(include_str!("../../plugin-sdk/demo/Cargo.toml").contains(&pin), "demo: {pin}");
-        assert!(include_str!("../../plugin-sdk/kubernetes/Cargo.toml").contains(&pin), "kubernetes: {pin}");
-        assert!(include_str!("../../plugin-sdk/db/Cargo.toml").contains(&pin), "db: {pin}");
-        assert!(include_str!("../../plugin-sdk/keycast/Cargo.toml").contains(&pin), "keycast: {pin}");
+        let sdk = "tarae_plugin::export!(";
+        for (name, manifest, lib) in [
+            ("template", CARGO_TOML, LIB_RS),
+            (
+                "db",
+                include_str!("../../plugin-sdk/db/Cargo.toml"),
+                include_str!("../../plugin-sdk/db/src/lib.rs"),
+            ),
+            (
+                "keycast",
+                include_str!("../../plugin-sdk/keycast/Cargo.toml"),
+                include_str!("../../plugin-sdk/keycast/src/lib.rs"),
+            ),
+            (
+                "kubernetes",
+                include_str!("../../plugin-sdk/kubernetes/Cargo.toml"),
+                include_str!("../../plugin-sdk/kubernetes/src/lib.rs"),
+            ),
+        ] {
+            assert!(
+                !manifest.contains("wit-bindgen") && !lib.contains("generate!"),
+                "{name}: the SDK's bindings"
+            );
+            assert!(lib.contains(sdk), "{name}: {sdk}");
+        }
         assert!(WIT.contains(&format!("package tarae:plugin@{}.", super::super::abi::API)));
     }
 }

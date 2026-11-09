@@ -3,7 +3,7 @@
 //!
 //! - `tarae_wasm::plugin`: `cabi` the canonical ABI's values in a plugin's memory, `abi` the API's types and
 //!   loading and calling one plugin, `host` the plugin thread (judging permissions by `perm::invalid`, passed to
-//!   it). `cli.rs`: `tarae plugin new|dev|list`. Here: the editor's side — commands and answers.
+//!   it). `cli.rs`: `tarae plugin new|dev|test|vendor|list`. Here: the editor's side — commands and answers.
 //! - **Nothing when unused**: the config watcher looks at the plugins folder (`host::Watch`), and the plugin
 //!   thread starts the first time there's something in it.
 //! - **Commands**: each plugin's commands become `:name args`, `":name"` in a keymap, and palette entries.
@@ -83,27 +83,11 @@ pub struct PluginCommand {
 
 /// The most commands one plugin registers.
 const MAX_COMMANDS: usize = 256;
-/// The longest message or description shown from a plugin (in characters).
-const MAX_TEXT: usize = 2000;
-
-/// A character that reorders text around it (so what's shown isn't what's there).
-pub(crate) fn bidi(c: char) -> bool {
-    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}')
-}
-
-/// Plugin text fit for the screen: control and reordering characters (terminal escapes among them)
-/// replaced, and capped.
-pub(crate) fn shown(s: &str) -> String {
-    let mut out: String = s
-        .chars()
-        .take(MAX_TEXT)
-        .map(|c| if (c.is_control() && c != '\n') || bidi(c) { '\u{FFFD}' } else { c })
-        .collect();
-    if s.chars().nth(MAX_TEXT).is_some() {
-        out.push('…');
-    }
-    out
-}
+#[cfg(test)]
+use tarae_plugin_rules::MAX_TEXT;
+/// Plugin text fit for the screen (control and reordering characters replaced, and capped) — the shared rules',
+/// which the SDK's mock host says its words with too.
+pub(crate) use tarae_plugin_rules::shown;
 
 /// Why a plugin's command name can't be registered, if it can't.
 fn bad_name(name: &str) -> Option<&'static str> {
@@ -577,8 +561,7 @@ impl Editor {
         line: Option<usize>,
         then: impl FnOnce(&mut Editor) + Send + 'static,
     ) -> Result<(), String> {
-        let refused =
-            |path: &str| format!("it may not open “{}”: not a file it may read (permissions())", shown(path));
+        let refused = tarae_plugin_rules::may_not_open;
         let reach = self.plugin_grant(plugin).map_err(|_| refused(asked))?;
         let whole = self.path_of(Path::new(asked));
         if let Some(i) = self.docs.first(&whole, |_| true) {

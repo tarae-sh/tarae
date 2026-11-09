@@ -6592,7 +6592,7 @@ mod tests {
         (dir, env, example, plain)
     }
 
-    /// 7c′: the message's context names a file in the project named like a key (`runtime/secret-names.txt`)
+    /// 7c′: the message's context names a file in the project named like a key (`plugin-sdk/rules/src/secret-names.txt`)
     /// but carries none of its text — not the file, its selection, its diagnostics (a message can quote a
     /// line), nor its unsaved buffer behind another file — as Claude's Read asks for it (7c) and a run can't
     /// read it (7a/7b). An exception (`!.env.example`) goes as any file does; so does one opened: for this

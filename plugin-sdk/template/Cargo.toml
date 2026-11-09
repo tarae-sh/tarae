@@ -8,7 +8,12 @@ license = "MIT OR Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "=0.62.0"  # the version tarae checks its plugin API with
+# tarae's SDK, as this tarae vendored it (`tarae plugin vendor` writes it again): the bindings, and helpers
+tarae-plugin = { path = "tarae/sdk" }
+
+[dev-dependencies]
+# The mock host your tests drive the plugin through (`tarae_plugin::test`) — never in the wasm
+tarae-plugin = { path = "tarae/sdk", features = ["test"] }
 
 [profile.release]
 opt-level = "s"
@@ -17,5 +22,7 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# Builds on its own, even inside another workspace
+# Builds on its own, even inside another workspace — tarae's vendored SDK (`tarae/`) a dependency, not a member (its
+# tests aren't yours)
 [workspace]
+exclude = ["tarae"]

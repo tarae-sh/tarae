@@ -6,7 +6,7 @@
 //!
 //! `:db` turns it on (the tab opens the first time) and, once on, asks which to use when there are several;
 //! `:db-off` turns it off. A connection whose `paths` cover the file in front is that file's.
-wit_bindgen::generate!({ path: "../wit", world: "plugin", additional_derives: [PartialEq] });
+use tarae_plugin::{Action, Command, Context, Event, Guest, HostEvent, Now, Permission, Subscription};
 
 mod compose;
 mod config;
@@ -22,7 +22,7 @@ mod url;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use tarae::plugin::types::{Pick, Side, SideRow, Tone};
+use tarae_plugin::{Pick, Side, SideRow, Tone};
 
 use conn::Connection;
 use live::{Live, Status};
@@ -599,7 +599,7 @@ impl State {
     }
 }
 
-export!(Plugin);
+tarae_plugin::export!(Plugin);
 
 #[cfg(test)]
 mod tests;

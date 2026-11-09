@@ -279,6 +279,8 @@ usage: tarae [FILE]...
        tarae grammar list                    which grammars are installed
        tarae plugin new NAME                 start a plugin (Rust → WebAssembly) from the template
        tarae plugin dev [DIR]                build it on every save; a running tarae reloads it
+       tarae plugin test [DIR...]            its tests, then its wasm built and loaded as tarae loads it
+       tarae plugin vendor [DIR]             write this tarae's SDK into it again (its tarae/)
        tarae plugin list                     installed plugins and their commands
                                              (~/.config/tarae/plugins)
        tarae state [--json] [--pid PID]      a running tarae's UI state: where the keys go, its

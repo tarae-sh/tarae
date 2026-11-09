@@ -4,7 +4,7 @@
 use kube_core::DynamicObject;
 use serde_json::Value;
 
-use crate::tarae::plugin::types::Tone;
+use tarae_plugin::Tone;
 
 /// A duration as kubectl says it (`HumanDuration`): `90s`, `5m12s`, `47m`, `3h25m`, `20h`, `3d4h`, `12d`,
 /// `2y30d`.
