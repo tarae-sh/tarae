@@ -21622,11 +21622,8 @@ fn tool_rows(
     let words_at =
         look.what.len() + (text.len() - look.what.len() - text[look.what.len()..].trim_start().len());
     let mut rows: Vec<ChatRow> = Vec::new();
-    let mut pos = 0;
-    for (k, part) in crate::cut::fit_in_hand(&text, room, false, true).into_iter().enumerate() {
-        pos += usize::from(k > 0 && part.space);
-        let (a, b) = (pos, pos + part.text.len());
-        pos = b;
+    for (k, (a, part)) in crate::cut::fit_in_hand_at(&text, room).into_iter().enumerate() {
+        let b = a + part.text.len();
         let mut spans = match k {
             0 => vec![knot.clone(), sp(head.clone(), st.faint)],
             _ => vec![sp(" ".repeat(hang), st.faint)],

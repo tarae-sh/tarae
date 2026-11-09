@@ -141,12 +141,47 @@ pub fn fit_in_hand(s: &str, width: usize, keep_end: bool, whole: bool) -> Vec<Wr
     rows
 }
 
+/// `fit_in_hand`'s rows of `s` in hand (`whole`), each with the byte where its text starts in `s` — found, never
+/// added up: a break isn't always one byte (a `\r\n`, a blank line left out), and an offset added up from the rows'
+/// lengths lands inside a character.
+pub fn fit_in_hand_at(s: &str, width: usize) -> Vec<(usize, Wrapped)> {
+    let mut pos = 0;
+    (fit_in_hand(s, width, false, true).into_iter())
+        .map(|row| {
+            let at = s[pos..].find(&row.text).map_or(pos, |k| pos + k);
+            pos = at + row.text.len();
+            (at, row)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn texts(rows: &[Wrapped]) -> Vec<(&str, bool)> {
         rows.iter().map(|r| (r.text.as_str(), r.space)).collect()
+    }
+
+    /// Each row's place is where its text is in what was wrapped, on a character's boundary, at every width — with
+    /// breaks that aren't one byte: a blank line, a `\r\n`, a line of spaces, a run of spaces, `—` beside each (a tool
+    /// row's words with a blank line put an added-up offset inside a `—`, and drawing the chat panicked).
+    #[test]
+    fn a_wrapped_rows_place_is_where_its_text_is() {
+        let texts =
+            ["one — two\n\nthree — four", "a\r\nb — c — d", "x   —   y — z", "line\n   \n— end —", "———"];
+        for s in texts {
+            for width in 1..14 {
+                for (at, row) in fit_in_hand_at(s, width) {
+                    let end = at + row.text.len();
+                    assert!(
+                        s.is_char_boundary(at) && s.is_char_boundary(end),
+                        "{s:?} at {width}: {at}..{end}"
+                    );
+                    assert_eq!(&s[at..end], row.text, "{s:?} at {width}");
+                }
+            }
+        }
     }
 
     #[test]
