@@ -686,7 +686,7 @@ pub fn sync(ed: &mut Editor) {
                     f.bound = Some((id, version));
                 }
                 // (as much of it as is shown: whole once all of it is)
-                let shown = &it.new.s[..it.pace.shown.min(it.new.s.len())];
+                let shown = crate::cut::slice(&it.new.s, ..it.pace.shown.min(it.new.s.len()));
                 let whole = it.new.closed && shown.len() == it.new.s.len();
                 let key = (version, shown.len(), whole);
                 let b = match &it.drawn {

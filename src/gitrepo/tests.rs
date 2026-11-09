@@ -12,6 +12,16 @@ fn git_in(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// A commit is said by its first 7 characters, a shorter one whole — never cut inside a character (#479).
+#[test]
+fn a_short_sha_is_said_whole() {
+    assert_eq!(short_sha("0123456789abcdef0123456789abcdef01234567"), "0123456");
+    assert_eq!((short_sha("abc"), short_sha(""), short_sha("0123456")), ("abc", "", "0123456"));
+    assert_eq!(short_sha("실타래"), "실타래", "7 bytes end inside 래: whole");
+    assert_eq!(short_sha("ab👍🏽cdef"), "ab👍🏽cdef", "inside the emoji: whole");
+    assert_eq!(short_sha("실abcd타래"), "실abcd", "on a boundary: its first 7 bytes");
+}
+
 /// A repository's folders as given, nothing of its own found (no git run).
 fn plain(git_dir: PathBuf, work_tree: Option<PathBuf>, dir: PathBuf) -> Repo {
     Repo {

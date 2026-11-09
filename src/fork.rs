@@ -710,7 +710,11 @@ fn landed(
             None => format!(" · {} came with it", with_said(&made.files)),
         },
     };
-    ed.set_success(format!("Session {} — forked from {src} at {}{with}", m.branch, &made.head[..7]));
+    ed.set_success(format!(
+        "Session {} — forked from {src} at {}{with}",
+        m.branch,
+        crate::gitrepo::short_sha(&made.head)
+    ));
     if let Some(left) = left_said(&made.files, src) {
         ed.set_warning(left);
     }

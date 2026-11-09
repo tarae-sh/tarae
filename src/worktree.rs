@@ -20,7 +20,7 @@ use crate::builds::{BuildDir, Builds, Doomed, remove_build};
 use crate::editor::Editor;
 use crate::event::WorkspaceId;
 use crate::gitpanel::{branch_name, commit_rows, current_branch, only_on, parse_log, top_of};
-use crate::gitrepo::{Repo, git, git_no_hooks};
+use crate::gitrepo::{Repo, git, git_no_hooks, short_sha};
 
 /// How long sizes on disk are measured for, at most (then the card says "over").
 pub(crate) const MEASURE_FOR: Duration = Duration::from_millis(1500);
@@ -508,8 +508,8 @@ impl Making {
     /// `main (a1b2c3d)` · `a1b2c3d` for a commit.
     pub(crate) fn base_said(&self) -> String {
         match self.base == self.base_sha {
-            true => self.base_sha[..7].to_string(),
-            false => format!("{} ({})", self.base, &self.base_sha[..7]),
+            true => short_sha(&self.base_sha).to_string(),
+            false => format!("{} ({})", self.base, short_sha(&self.base_sha)),
         }
     }
 
@@ -579,7 +579,7 @@ impl Making {
         }
         let warn = self.billing_said(&mut q, weakness);
         if let Some((b, s)) = self.others.first() {
-            let said = if b == s { s[..7].to_string() } else { format!("{b} ({})", &s[..7]) };
+            let said = if b == s { short_sha(s).to_string() } else { format!("{b} ({})", short_sha(s)) };
             q += &format!("\n\nb — from {said} instead");
         }
         let o = crate::offer::Offer::new(
@@ -1376,7 +1376,7 @@ fn bring(
             git_no_hooks(root, &["update-ref", "-m", &msg, &format!("refs/heads/{base}"), &tip, &base_tip])?;
         }
     }
-    Ok(Brought { branch, base, count: n, tip: tip[..7].to_string() })
+    Ok(Brought { branch, base, count: n, tip: short_sha(&tip).to_string() })
 }
 
 // ── The list ─────────────────────────────────────────────────────────────────
@@ -2352,7 +2352,7 @@ impl Editor {
                             (Some(b), true) => {
                                 format!(
                                     " · branch {b} deleted — `git branch {b} {}` brings it back",
-                                    &e.tip[..7]
+                                    short_sha(&e.tip)
                                 )
                             }
                             (None, _) => String::new(),
@@ -7723,6 +7723,40 @@ mod tests {
         );
         assert_eq!(Shown::claude_of(&u, None, 290_000, here), Some((at, cost.clone())));
         assert_eq!(Shown::claude_of(&u, None, 1_000 + Ttl::Min5.ms(), here), Some(("◦ cold".into(), cost)));
+    }
+
+    /// The new session card says a base shorter than a sha's 7 characters whole — its own and the other one `b`
+    /// offers (#479: `sha[..7]` panicked); a full one by its first 7.
+    #[test]
+    fn a_short_base_is_said_whole_on_the_new_session_card() {
+        let making = |sha: &str, others: Vec<(String, String)>| Making {
+            top: PathBuf::from("/nonexistent/proj"),
+            branch: "fix".into(),
+            base: "main".into(),
+            base_sha: sha.into(),
+            path: PathBuf::from("/nonexistent/checkouts/fix"),
+            files: (1 << 20, true),
+            big: Vec::new(),
+            builds: None,
+            build_own: None,
+            warm: None,
+            copies: Vec::new(),
+            others,
+            billing: Default::default(),
+            billing_ask: None,
+            billing_note: None,
+        };
+        let short = making("abc", vec![("side".into(), "de".into())]);
+        assert_eq!(short.base_said(), "main (abc)");
+        let q = short.card(false).question;
+        assert!(
+            q.starts_with("Branch fix from main (abc).") && q.ends_with("b — from side (de) instead"),
+            "{q}"
+        );
+        let commit = Making { base: "ab".into(), ..making("ab", vec![("f".into(), "f".into())]) };
+        assert_eq!(commit.base_said(), "ab");
+        assert!(commit.card(false).question.ends_with("b — from f instead"));
+        assert_eq!(making(&"0123456789".repeat(4), Vec::new()).base_said(), "main (0123456)");
     }
 
     /// #111: a build-dir set per checkout (`{workspace-path-hash}`) — found where cargo looks: its variable,

@@ -816,8 +816,7 @@ impl Editor {
             q += "\nYour plan's usage credits are paying now — the choice is which balance pays.";
         }
         let mut o = self.weakness_on(q, Billing::Api);
-        let first = label[..1].to_uppercase() + &label[1..];
-        o.title = format!("{first} limit reached{resets}");
+        o.title = format!("{} limit reached{resets}", crate::cut::capitalized(&label));
         o.what = crate::offer::What::Limit(Box::new(ask.clone()));
         o
     }

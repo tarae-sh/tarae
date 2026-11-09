@@ -469,7 +469,7 @@ fn lang_of(e: &Entry) -> Result<LangSpec, String> {
         comment_token: string(t, "comment-token")?,
         block_comment,
         auto_pairs,
-        title: string(t, "title")?.unwrap_or_else(|| capitalized(&name)),
+        title: string(t, "title")?.unwrap_or_else(|| crate::cut::capitalized(&name)),
         shown: string(t, "shown-as")?.unwrap_or_else(|| name.clone()),
         aliases: list("aliases")?,
         doc_comments,
@@ -492,12 +492,6 @@ fn lang_of(e: &Entry) -> Result<LangSpec, String> {
         yours: e.yours,
         name,
     })
-}
-
-/// `go` → `Go`.
-fn capitalized(name: &str) -> String {
-    let mut c = name.chars();
-    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
 fn grammar_of(e: &Entry) -> Result<(crate::grammar::Source, bool), String> {

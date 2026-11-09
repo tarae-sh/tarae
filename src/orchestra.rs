@@ -325,7 +325,8 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
         _ => format!("\n\nWhat their Claudes read, their reports carry to {}'s Claude.", s.parent_name),
     };
     if let Some((b, sha)) = first.others.first() {
-        let said = if b == sha { sha[..7].to_string() } else { format!("{b} ({})", &sha[..7]) };
+        let short = crate::gitrepo::short_sha(sha);
+        let said = if b == sha { short.to_string() } else { format!("{b} ({short})") };
         q += &format!("\n\nb — from {said} instead");
     }
     let briefs: Vec<String> = s
@@ -1547,6 +1548,12 @@ pub fn parent_label(ed: &Editor) -> Option<String> {
 /// `worktree::make` stops before any write or git.
 #[cfg(test)]
 pub(crate) fn stand_in_card(ed: &Editor, names: &[&str]) -> crate::offer::Offer {
+    card(ed, stand_in_set(ed, names))
+}
+
+/// `stand_in_card`'s set, to change before its card is made.
+#[cfg(test)]
+fn stand_in_set(ed: &Editor, names: &[&str]) -> Set {
     let making = |b: &str| Making {
         top: ed.workspace.root.clone(),
         branch: b.into(),
@@ -1569,7 +1576,7 @@ pub(crate) fn stand_in_card(ed: &Editor, names: &[&str]) -> crate::offer::Offer 
     let (parent, parent_name, conversation) =
         (ed.workspace.id, ed.workspace.label().to_string(), conversation_of(ed));
     let (wake, costs) = (false, Costs::default());
-    card(ed, Set { call, parent, parent_name, conversation, sessions, wake, costs })
+    Set { call, parent, parent_name, conversation, sessions, wake, costs }
 }
 
 #[cfg(test)]

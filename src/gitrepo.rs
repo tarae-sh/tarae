@@ -44,6 +44,11 @@ pub fn runs(key: &str) -> &'static str {
     }
 }
 
+/// A commit as it's said: its first 7 characters, a shorter one whole (#479: `sha[..7]` of a short one panicked).
+pub fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};

@@ -349,7 +349,7 @@ pub fn card(a: Ask) -> crate::offer::Offer {
     // (its angles and the skeptics on a line of their own: the first to go where the card would be cut — the
     // user's decision 2026-10-20; then, still cut (a refused key's reason under it), how long a yes holds, with the
     // blank before it — back as soon as there's room; the cost and what it reads stay)
-    let them = format!("{}{}", them[..1].to_uppercase(), &them[1..]);
+    let them = crate::cut::capitalized(them);
     // (a child's: one its parent's Claude proposes always asks — `start`'s `asked`)
     let not = a.parent.as_ref().map(|p| format!(" (not one {p}'s Claude proposes)")).unwrap_or_default();
     let q = format!(

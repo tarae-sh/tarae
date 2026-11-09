@@ -1743,7 +1743,7 @@ impl Editor {
                 Ok((_, Deleting::Done(tip))) => {
                     ed.set_success(format!(
                         "Deleted {name} (was {}) — its commits are kept elsewhere",
-                        &tip[..7]
+                        crate::gitrepo::short_sha(&tip)
                     ));
                     if reopen && ed.picker.is_none() {
                         ed.git_branch_picker();
@@ -1797,7 +1797,7 @@ impl Editor {
                 match result {
                     Ok(_) => ed.set_success(format!(
                         "Deleted {branch} — `git branch {branch} {}` brings it back",
-                        &tip[..7]
+                        crate::gitrepo::short_sha(&tip)
                     )),
                     Err(e) => ed.set_error(format!("delete: {e}")),
                 }
@@ -1920,10 +1920,7 @@ fn commit_prompt(top: &Path, amend: bool) -> Result<String, String> {
     let skip = if amend { "1" } else { "0" };
     let recent = git(top, &["log", "-8", "--skip", skip, "--format=%B%x00"], None).unwrap_or_default();
     let recent: Vec<&str> = recent.split('\0').map(str::trim).filter(|m| !m.is_empty()).collect();
-    let mut cut = DRAFT_DIFF_MAX.min(diff.len());
-    while !diff.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    let (shown, more) = diff_within(&diff, DRAFT_DIFF_MAX);
     let mut p = String::from(
         "Write the git commit message for the change below. Match the style of this repository's recent \
          commit messages (their subject lines, how they explain, trailers they use). A subject line, a blank \
@@ -1938,17 +1935,37 @@ fn commit_prompt(top: &Path, amend: bool) -> Result<String, String> {
         }
         p.push_str("</recent-commits>\n\n");
     }
-    p.push_str(&format!("<stat>\n{}</stat>\n\n<diff>\n{}", stat, &diff[..cut]));
-    if cut < diff.len() {
-        p.push_str(&format!("\n… ({} more bytes of diff not shown)\n", diff.len() - cut));
+    p.push_str(&format!("<stat>\n{stat}</stat>\n\n<diff>\n{shown}"));
+    if more > 0 {
+        p.push_str(&format!("\n… ({more} more bytes of diff not shown)\n"));
     }
     p.push_str("</diff>\n");
     Ok(p)
 }
 
+/// The start of `diff` within `max` bytes, cut at a character's boundary (#479), and how many bytes it leaves out.
+fn diff_within(diff: &str, max: usize) -> (&str, usize) {
+    let shown = crate::cut::slice(diff, ..diff.floor_char_boundary(max));
+    (shown, diff.len() - shown.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The commit draft's diff past its limit is cut on a character's boundary at every limit — Korean and emoji in it
+    /// (#479) — the bytes it leaves out counted.
+    #[test]
+    fn a_drafts_diff_is_cut_on_a_characters_boundary() {
+        let diff = "+// 실타래 👍🏽\n-글타래 e\u{301}\n";
+        for max in 0..=diff.len() + 2 {
+            let (shown, more) = diff_within(diff, max);
+            assert!(shown.len() <= max && diff.starts_with(shown), "{max}: {shown:?}");
+            assert_eq!(shown.len() + more, diff.len(), "{max}");
+            assert!(shown.len() + 3 >= max.min(diff.len()), "{max}: {shown:?}, a character back at most");
+        }
+        assert_eq!(diff_within(diff, 6), ("+// ", diff.len() - 4), "inside 실: before it");
+    }
 
     /// The review of frictions36: of `diff-index`'s entries only a regular file's modification (its mode the same) is
     /// held against HEAD by content — a gitlink (a submodule) and a link are changed as git says, never handed to

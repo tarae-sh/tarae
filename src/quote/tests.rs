@@ -38,6 +38,20 @@ fn past_its_limit_a_quote_keeps_its_ends_and_says_so() {
     assert_eq!(said.as_deref(), Some("kept the first 244 and the last 732 of 6000 bytes"));
 }
 
+/// One long line of Korean and emoji is cut on characters' boundaries at every limit (#479): its ends are its own
+/// start and end, what's said cut is what's gone.
+#[test]
+fn a_long_line_of_korean_and_emoji_is_cut_between_characters() {
+    let long = "실타래👍🏽글e\u{301}".repeat(40);
+    for max in 0..long.len() {
+        let (t, _) = cut(&long, max);
+        let (head, rest) = t.split_once("\n… ").unwrap_or_else(|| panic!("{max}: {t}"));
+        let (gone, tail) = rest.split_once(" bytes cut …\n").unwrap();
+        assert!(long.starts_with(head) && long.ends_with(tail), "{max}: {t}");
+        assert_eq!(head.len() + gone.parse::<usize>().unwrap() + tail.len(), long.len(), "{max}");
+    }
+}
+
 /// Text that prints `</quoted>` — or a closing tag with another id — stays inside its block: only its own id closes
 /// it, and that id isn't one the text names.
 #[test]

@@ -918,6 +918,22 @@ fn a_late_save_is_skipped_only_against_its_own_file() {
     assert!(newest(&mut written, b, 4));
 }
 
+/// The limit card's title takes its window's first letter as a character (#479: `label[..1]` panicked on one outside
+/// ASCII) — a window named in Korean, an emoji, or nothing.
+#[test]
+fn the_limit_cards_title_takes_its_windows_first_letter_whole() {
+    let ed = Editor::new(crate::config::Config::default());
+    let title = |window: &str| {
+        let ask = LimitAsk { session: ed.workspace.id, window: window.into(), resets_at_ms: None };
+        ed.limit_card(&ask).title
+    };
+    assert_eq!(title("five_hour"), "5-hour limit reached");
+    assert_eq!(title("seven_day_opus"), "Weekly opus limit reached");
+    assert_eq!(title("실타래_주간"), "실타래 주간 limit reached");
+    assert_eq!(title("👍🏽_x"), "👍🏽 x limit reached");
+    assert_eq!(title(""), " limit reached");
+}
+
 /// What a create card is made from, by hand (no git asked): a branch `feat` from main.
 fn making(place: &Place) -> crate::worktree::Making {
     crate::worktree::Making {

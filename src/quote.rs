@@ -209,17 +209,15 @@ pub fn cut(text: &str, max: usize) -> (String, Option<String>) {
         tail += 1;
     }
     if head + tail == 0 {
-        let floor = |mut i: usize| {
-            while !text.is_char_boundary(i) {
-                i -= 1;
-            }
-            i
-        };
-        let a = floor(head_max);
-        let b = text.len() - (max - head_max);
-        let b = (b..=text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(text.len());
+        // (each end on a character's boundary, #479: the head's at or before its byte, the tail's at or after)
+        let a = text.floor_char_boundary(head_max);
+        let b = text.ceil_char_boundary(text.len() - (max - head_max));
         let gone = b - a;
-        let out = format!("{}\n… {gone} bytes cut …\n{}", &text[..a], &text[b..]);
+        let out = format!(
+            "{}\n… {gone} bytes cut …\n{}",
+            crate::cut::slice(text, ..a),
+            crate::cut::slice(text, b..)
+        );
         return (
             out,
             Some(format!("kept the first {a} and the last {} of {} bytes", text.len() - b, text.len())),

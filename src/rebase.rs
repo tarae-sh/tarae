@@ -153,7 +153,7 @@ impl Moved {
     /// — and `y` runs the preflight again on what's there now (`head`), said in the warning colour.
     pub fn untested_card(&self, quick: Option<Vec<String>>, tested: &str, head: &str) -> Offer {
         let (base, branch, them) = (&self.base, &self.branch, if self.ahead == 1 { "it" } else { "them" });
-        let short = |s: &str| s.get(..7).unwrap_or(s).to_string();
+        let short = |s: &str| crate::gitrepo::short_sha(s).to_string();
         let q = format!(
             "Run {} again, then bring {them} into {base}?\n\
              {branch} moved while its preflight ran — it tested {}, {branch} is at {} now. Nothing brought: {} \
@@ -771,7 +771,7 @@ fn ended(root: &Path, branch: &str, base: &str, onto: Option<&str>, aborting: bo
             };
             Ended::Done {
                 ahead: crate::worktree::count(root, &format!("{b}..{t}")),
-                tip: t[..7].to_string(),
+                tip: crate::gitrepo::short_sha(&t).to_string(),
                 moved,
             }
         }
@@ -810,7 +810,7 @@ fn changes_back(root: &Path, branch: &str, base: &str) -> Aside {
     match crate::aside::store(root, AT, &sha, &message) {
         Ok(()) => Aside::Kept(format!(
             "they're in git's stash as «{message}» — git stash apply {} brings them back",
-            sha.get(..7).unwrap_or(&sha)
+            crate::gitrepo::short_sha(&sha)
         )),
         Err(e) => Aside::Kept(e),
     }

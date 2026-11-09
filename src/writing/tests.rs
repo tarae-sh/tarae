@@ -1940,6 +1940,39 @@ fn a_piece_is_drawn_as_typed_at_the_streams_pace() {
     drop(sim);
 }
 
+/// Korean and emoji written at the stream's pace: each frame of the reveal draws whole characters — some of it, then
+/// all (#479: what's shown is cut from the text at a byte pace, on the draw path: off a boundary, every frame panicked).
+#[test]
+fn a_korean_and_emoji_edit_is_revealed_whole_characters_at_a_time() {
+    let (mut ed, _dir, g) = scene("writing-paced-korean");
+    ed.workspace.claude.chat.as_mut().unwrap().writing.paced = true;
+    frame(&mut ed, 100, 30);
+    let input = edit_input(&format!("    let b = {}글타래;\n", "실타래 👍🏽 한글 ".repeat(4)));
+    let head = input.find('실').unwrap();
+    let tail = input.rfind(';').unwrap();
+    let mut w = Writer::new("t1");
+    w.send(&mut ed, g, &input[..head], &[], false);
+    settle(&mut ed, |ed| shown(ed.doc()).is_some());
+    let mut sim =
+        crate::sim::Sim::new("writing_paced_korean", crate::sim::Choices::seeded(1), Duration::from_secs(30));
+    w.send(&mut ed, g, &input[head..tail], &[2, 5, 7], false);
+    let mut part = false;
+    // (a step every 5 ms: many before it's due, each ending where the pace puts it — inside a character, but for
+    // `cluster_end`)
+    for _ in 0..30 {
+        sim.wait(Duration::from_millis(5));
+        tick(&mut ed);
+        part |= row_with(&mut ed, "let b = 실").is_some_and(|r| !r.contains("글타래"));
+    }
+    assert!(part, "some of it shown, a frame before all of it");
+    w.send(&mut ed, g, &input[tail..], &[], true);
+    tick(&mut ed);
+    sim.wait(WHOLE + REVEAL_EVERY);
+    tick(&mut ed);
+    assert!(row_with(&mut ed, "한글 글타래;").is_some(), "whole within WHOLE");
+    drop(sim);
+}
+
 /// The terminal unfocused (nobody sees it): no reveal frames asked — and the next event, focus back among them,
 /// catches the reveal up.
 #[test]

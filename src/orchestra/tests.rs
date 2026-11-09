@@ -11,6 +11,19 @@ use crate::event::WorkspaceId;
 use crate::offer::What;
 use crate::reviewer::{Reviewer, State};
 
+/// The set card says a base shorter than a sha's 7 characters whole, its own and the other one `b` offers (#479:
+/// `sha[..7]` panicked).
+#[test]
+fn a_short_base_is_said_whole_on_the_set_card() {
+    let ed = Editor::new(crate::config::Config::default());
+    let mut set = super::stand_in_set(&ed, &["one"]);
+    set.sessions[0].0.base_sha = "abc".into();
+    set.sessions[0].0.others = vec![("abc".into(), "abc".into())];
+    let q = super::card(&ed, set).question;
+    assert!(q.starts_with("A branch from main (abc),"), "{q}");
+    assert!(q.contains("\n\nb — from abc instead"), "{q}");
+}
+
 /// A chat that may not start sessions (a child, another session under `home`) lists today's tools, none of the
 /// session tools; a parent's list is today's with the three after it (the cache's prefix kept).
 #[test]

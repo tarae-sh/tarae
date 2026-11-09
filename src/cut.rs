@@ -31,6 +31,13 @@ pub fn slice(s: &str, range: impl RangeBounds<usize>) -> &str {
     s.get(snapped(s, from, to)).unwrap_or_default()
 }
 
+/// `s` with its first letter upper-cased, taken as a character (#479: `s[..1]` of a `실` or a `👍` panicked): `go` →
+/// `Go`.
+pub fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+}
+
 /// `from..to` in `s` with each end snapped to the boundary at or before it (past the end: the end), never backwards.
 fn snapped(s: &str, from: usize, to: usize) -> std::ops::Range<usize> {
     let to = s.floor_char_boundary(to);
@@ -341,6 +348,18 @@ pub(crate) mod tests {
         assert_eq!((snapped(s, 2, 3), snapped(s, 3, 5)), (1..1, 1..5), "two slices that met still meet");
         assert_eq!(snapped(s, 0, 99), 0..5, "past the end: the end");
         assert_eq!(snapped(s, 4, 1), 1..1, "never backwards");
+    }
+
+    /// A first letter is a character, whatever its bytes (#479): Korean, an emoji, an accent that grows when
+    /// upper-cased, nothing.
+    #[test]
+    fn a_first_letter_is_taken_whole() {
+        assert_eq!(capitalized("from its angle"), "From its angle");
+        assert_eq!(capitalized("실타래 주간"), "실타래 주간");
+        assert_eq!(capitalized("👍🏽 weekly"), "👍🏽 weekly");
+        assert_eq!(capitalized("über"), "Über");
+        assert_eq!(capitalized("ßa"), "SSa");
+        assert_eq!(capitalized(""), "");
     }
 
     #[test]

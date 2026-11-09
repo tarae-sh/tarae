@@ -27,17 +27,13 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     crate::gitrepo::git_no_hooks(root, args)
 }
 
-fn short(sha: &str) -> &str {
-    sha.get(..7).unwrap_or(sha)
-}
-
 /// What's said when they stay set aside: where, the commit they were made on, and how to bring them back.
 pub fn kept_at(root: &Path, at: &str, sha: &str) -> String {
     let on = git(root, &["rev-parse", "--short", &format!("{sha}^1")]).map(|s| s.trim().to_string());
     format!(
         "your changes in no commit are kept at {at} ({}, made on {}) — git stash apply --index {at} brings them \
          back, then git update-ref -d {at}",
-        short(sha),
+        crate::gitrepo::short_sha(sha),
         on.as_deref().unwrap_or("its first parent"),
     )
 }
