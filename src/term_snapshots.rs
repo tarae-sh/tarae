@@ -6823,7 +6823,8 @@ fn snapshot_task_panel() {
     s.check("task_panel");
 }
 
-/// What the sandbox blocked in Claude's command, acted on: the panel's row with its key, the list of what
+/// What the sandbox blocked in Claude's command, acted on: the panel's row (its path whole, so its key folded —
+/// #484a), the list of what
 /// could open (folders widest last, a port, running it outside), and a folder's card. macOS only — the
 /// fixed folder is in `/private/tmp` so the paths read the same every run. With `TARAE_FRAMES_DIR` set,
 /// each frame is written there too (`cargo xtask shot` draws them: `TARAE_SHOT_REPLAY`).
@@ -7289,6 +7290,68 @@ fn a_refusal_leads_its_run_and_its_exact_repeat_folds() {
     let rows = rows_of(&mut s);
     let (y0, ..) = s.ed.screen.test_panel.get().expect("the panel is drawn");
     check(&rows, y0, "the tests' panel");
+}
+
+/// #484a: the lead line's own words fold last — at 80 beside the follow card (Short 4's take: the code zoomed, the run
+/// panel the whole width) it said `▲ sandbox blocked reaching uploads.skein.invalid — you …` with its `space m s open
+/// it` on the right: the hint goes first, the words whole; at 120 both. A file's refusal the same, and words too long
+/// for the row alone (a long path, or the panel beside the docked chat) are cut, without the hint.
+#[test]
+fn a_refusals_lead_words_fold_after_its_hint() {
+    let lead_of = |w: u16, chat: bool, d: crate::sandbox::Denial| {
+        let watch = crate::sandbox::Watch::quiet("t.");
+        watch.record(d);
+        let env = crate::sandbox::Env::default();
+        let policy =
+            crate::sandbox::Policy { watch: Some(watch), ..crate::sandbox::Policy::for_project(&env) };
+        let mut s = Shot::new(w, 43);
+        s.file("src/demo.rs", DEMO_RS);
+        if chat {
+            s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        }
+        let task = crate::task::Task { name: "upload".into(), cmd: "curl".into(), cwd: "/p".into() };
+        let mut r = crate::task::Run::for_test(task);
+        r.state = crate::task::State::Failed(Some(56));
+        r.took = Some(Duration::from_millis(40));
+        r.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
+        r.output = [(true, "curl: (56) CONNECT tunnel failed, response 403")].into_iter().collect();
+        s.ed.workspace.task_run = Some(r);
+        let mut p = vt100::Parser::new(s.h, s.w, 0);
+        p.process(&s.frame());
+        p.process(&s.frame());
+        let rows = p.screen().rows(0, s.w).collect::<Vec<String>>();
+        let (y0, ..) = s.ed.screen.task_panel.get().expect("the panel is drawn");
+        (rows[y0 + 1].clone(), rows.join("\n"))
+    };
+    let host = || crate::sandbox::Denial {
+        process: "curl".into(),
+        op: crate::sandbox::proxy::HOST_OP.into(),
+        target: format!("uploads.skein.invalid:443: {}", crate::sandbox::proxy::USER_REFUSED),
+    };
+    let write = |target: &str| crate::sandbox::Denial {
+        process: "curl".into(),
+        op: "file-write-create".into(),
+        target: target.into(),
+    };
+    let words = "▲ sandbox blocked reaching uploads.skein.invalid — you said no";
+    let (lead, all) = lead_of(80, false, host());
+    assert!(lead.contains(words) && !lead.contains('…'), "at 80, whole\n{all}");
+    assert!(!lead.contains("space m s"), "and the hint folded\n{all}");
+    let (lead, all) = lead_of(120, false, host());
+    assert!(lead.contains(&format!("{words}   space m s open it")), "at 120, both\n{all}");
+    // A file's refusal: the same rule
+    let path = "/opt/tarae-test/uploads/skein/release/out";
+    let file = format!("▲ sandbox blocked writing {path}");
+    let (lead, all) = lead_of(80, false, write(path));
+    assert!(lead.contains(&file) && !lead.contains("space m s"), "a file's at 80\n{all}");
+    let (lead, all) = lead_of(120, false, write(path));
+    assert!(lead.contains(&format!("{file}   space m s open it")), "a file's at 120\n{all}");
+    // Words longer than the row: cut, still no hint — a long path, or the panel beside the docked chat
+    let long = "/opt/tarae-test/a-folder-with-a-long-name/another-folder-with-a-long-name/out";
+    for (lead, all) in [lead_of(80, false, write(long)), lead_of(80, true, host())] {
+        assert!(lead.contains("▲ sandbox blocked ") && lead.contains('…'), "cut\n{all}");
+        assert!(!lead.contains("space m s"), "{all}");
+    }
 }
 
 /// A run where no test ran: the header says so (its tab's badge in the warning colour), and the first row

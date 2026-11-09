@@ -26,7 +26,7 @@
 23
 24
 25 ─ npm test ▲ ── failed 2.4s ──────────────────────────────────────── C-w j scroll  space m c close ─
-26   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacach…   space m s open it
+26   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacache/index-v5  +1
 27   npm ERR! code EPERM
 28   npm ERR! syscall open
 29  ● normal                                                                               rust   1:1
@@ -88,7 +88,7 @@
 23
 24
 25 f TTT TTTT e ff eeeeee dddd ffffffffffffffffffffffffffffffffffffffff DDD D ffffff  DDDDD D D fffff f
-26   w wwwwwww wwwwwww wwwwwww wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww   FFFFF F F ffff ff
+26   w wwwwwww wwwwwww wwwwwww wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww  ww
 27   fff ffff ffff fffff
 28   fff ffff fffffff ffff
 29  a TTTTTT                                                                               dddd   TTT

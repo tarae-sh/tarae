@@ -12363,14 +12363,17 @@ mod tests {
         run.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
         run.by_claude = true;
         ed.workspace.task_run = Some(run);
+        // (the lead's hint folds when the scratch folder's path leaves no room — #484a — and that path's length is the
+        // temp folder's, the environment's: the hint is the panel tests' with a fixed path, here it's the words)
         let screen = |ed: &mut Editor| {
             let mut bytes = Vec::new();
-            crate::term::render(ed, &mut bytes, 160, 40).unwrap();
-            let mut parser = vt100::Parser::new(40, 160, 0);
+            crate::term::render(ed, &mut bytes, 240, 40).unwrap();
+            let mut parser = vt100::Parser::new(40, 240, 0);
             parser.process(&bytes);
             parser.screen().contents()
         };
-        assert!(screen(&mut ed).contains("space m s open it"), "the panel says the key");
+        let s = screen(&mut ed);
+        assert!(s.contains("▲ sandbox blocked writing "), "the panel says what was blocked\n{s}");
         // The list: the folders, widest last, then running it outside
         ed.workspace.leave(crate::workspace::Here::Chat);
         feed(&mut ed, " ms");

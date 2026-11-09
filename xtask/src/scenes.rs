@@ -124,6 +124,35 @@ const REFUSED_HOST_KEYS: &[&str] = &[
     "@1",
 ];
 
+/// #484a's refused-host-follow scene's keys: refused-host's, then the chat hidden (`space L`) as Short 4's take has it —
+/// the run panel the whole width under the follow card, `[r` replaying the run there.
+const REFUSED_HOST_FOLLOW_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "check the upload host",
+    "\r",
+    "@20?It runs curl",
+    "@1",
+    "\x11",
+    "@1",
+    "y",
+    "@20?command reach",
+    "@1",
+    "\x11",
+    "@1",
+    "n",
+    "@20?closed to my",
+    "\x1b",
+    " ",
+    "L",
+    "@1",
+    "[",
+    "r",
+    "@2",
+];
+
 /// P2b's masked scenes' keys: the chat asked, the code zoomed (at 80 the chat beside it would cut the card), the card
 /// up and focused.
 const MASKED_KEYS: &[&str] = &[
@@ -4183,6 +4212,8 @@ const SCENES: &[Scene] = &[
     Scene { name: "refused-key-follow", claude: "refusedkey", files: MAIN, keys: REFUSED_FOLLOW_KEYS },
     // (#480: a host the user refused on its card — `curl` with the network closed, `n`: the run panel beside the chat)
     Scene { name: "refused-host", claude: "refusedhost", files: MAIN, keys: REFUSED_HOST_KEYS },
+    // (#484a: the same, the chat hidden — Short 4's layout: the panel's lead line the whole width, its hint beside it)
+    Scene { name: "refused-host-follow", claude: "refusedhost", files: MAIN, keys: REFUSED_HOST_FOLLOW_KEYS },
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },

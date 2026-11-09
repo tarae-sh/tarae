@@ -4027,9 +4027,10 @@ fn draw_task_group(
 /// output's first row, above what the program printed, in its text's columns (`x`, `w` wide): `▲ sandbox blocked
 /// writing ~/x  +2` in warning (its ground drying once as it lands, §6 — `motion::Place::Refused`), the key that acts
 /// on it (`space m s  open it`), and after it, faint, the quiet hint and how many more were refused by design — each
-/// folded away, last first, when the row is too narrow for it. Refused only what every run is by design
-/// (`PanelLine.calm`): the line alone, faint — no `▲`, no key (#290). 1 where it drew it, else 0 — the rows it
-/// takes from the output's.
+/// folded away, last first, when the row is too narrow for it: the line's own words go last (#484a — `— you said
+/// no` is the point), cut only where they alone don't fit, whole under the mouse. Refused only what every run is by
+/// design (`PanelLine.calm`): the line alone, faint — no `▲`, no key (#290). 1 where it drew it, else 0 — the rows
+/// it takes from the output's.
 fn lead_row(
     out: &mut impl Write,
     (editor, ui): (&Editor, &Ui),
@@ -4061,11 +4062,11 @@ fn lead_row(
         at(&main, x0, faint);
         return Ok(1);
     }
-    // (the key keeps its room — a long path is cut instead — unless the row is very narrow)
+    // (the key only beside the whole line — it folds before the line's words do, and what's after it with it)
     let hint = format!("{key} open it");
-    let keyed = room >= hint.width() + 3 + 24;
-    let main =
-        crate::whole::fit(&format!("▲ {}", said.line), if keyed { room - hint.width() - 3 } else { room });
+    let line = format!("▲ {}", said.line);
+    let keyed = line.width() + 3 + hint.width() <= room;
+    let main = crate::whole::fit(&line, room);
     let st = arrived_style(ui, editor, &crate::motion::Place::Refused(slot), Style { fg: warn, ..card });
     apply(out, st)?;
     queue!(out, Print(main.shown()))?;
@@ -4081,7 +4082,7 @@ fn lead_row(
         queue!(out, Print(" open it"))?;
         used += 3 + hint.width();
     }
-    for q in said.quiet.iter().chain(&said.designed) {
+    for q in said.quiet.iter().chain(&said.designed).filter(|_| keyed) {
         let left = room.saturating_sub(used + 3);
         if left < 12 {
             break;
