@@ -1,0 +1,56 @@
+# A wiki's pages through its REST API (the work-wiki plan W2, `src/web/source.rs`): for a wiki you name in
+# `web.signed-in` with this `kind`, an address of a page below its base → the API's request below the base → where the
+# page's HTML and title sit in the JSON answer (RFC 6901 pointers). The page keeps its own address.
+#
+# `page`: a path below the base, `{name}` one segment of it; a query's `key={name}` is that parameter's value, in
+# any order among the others. A value is read as a form writes it (`+` a space, `%xx`).
+# `api`: below the base too, `{name}` the value percent-encoded — `{name:cql}` as a CQL site search of its words.
+# `html` and `title`: the page's; or `list`: an array of results, each a `title`, `space` and `link` (below the
+# base) — read as a list of pages. `short`: that value is a short link's id, the page id it encodes asked, and the
+# answer's `check` must be the page's own path (else it isn't resolved).
+#
+# Confluence Data Center: its Server REST reference 8.5.4 (`/rest/api/content`, `/rest/api/content/{id}`,
+# `/rest/api/content/search`), its "REST API examples" (read 2026-11-09; `.sb/web-auth-step1.md` §2).
+
+[[confluence-dc]]
+page = "/display/{space}/{yyyy}/{mm}/{dd}/{title}"
+api = "/rest/api/content?spaceKey={space}&title={title}&type=blogpost&postingDay={yyyy}-{mm}-{dd}&expand=body.view"
+html = "/results/0/body/view/value"
+title = "/results/0/title"
+
+[[confluence-dc]]
+page = "/display/{space}/{title}"
+api = "/rest/api/content?spaceKey={space}&title={title}&expand=body.view"
+html = "/results/0/body/view/value"
+title = "/results/0/title"
+
+[[confluence-dc]]
+page = "/pages/viewpage.action?pageId={id}"
+api = "/rest/api/content/{id}?expand=body.view"
+html = "/body/view/value"
+title = "/title"
+
+[[confluence-dc]]
+page = "/x/{tiny}"
+short = "tiny"
+api = "/rest/api/content/{tiny}?expand=body.view"
+html = "/body/view/value"
+title = "/title"
+check = "/_links/tinyui"
+
+[[confluence-dc]]
+page = "/dosearchsite.action?queryString={words}"
+api = "/rest/api/content/search?cql={words:cql}&expand=space&limit=10"
+list = "/results"
+title = "/title"
+space = "/space/name"
+link = "/_links/webui"
+
+# (newer Data Center search pages carry the CQL itself)
+[[confluence-dc]]
+page = "/dosearchsite.action?cql={cql}"
+api = "/rest/api/content/search?cql={cql}&expand=space&limit=10"
+list = "/results"
+title = "/title"
+space = "/space/name"
+link = "/_links/webui"

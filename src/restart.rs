@@ -1167,7 +1167,8 @@ fn session_json(
         .and_then(|s| Some(json!({ "mode": mode_name(s.mode)?, "focus": l.is_at(Here::Side) })));
     let chat = l.claude.chat.as_ref().map(|c| {
         json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(Here::Chat),
-                "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end.as_deref().and_then(Path::to_str) })
+                "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end.as_deref().and_then(Path::to_str),
+                "signed_read": c.signed_read })
     });
     let on = docs.iter().find(|d| d.id == current).and_then(|d| d.path.as_deref());
     let turns = l.claude.checkpoints.list.len();
@@ -1434,6 +1435,7 @@ fn restore_session(ed: &mut Editor, v: &Value, behind: bool, back: &mut Back) {
                 follow: chat["follow"].as_bool().unwrap_or(ed.config.llm.follow),
                 at_end: chat["at_end"].as_str().map(PathBuf::from),
                 lazy: behind,
+                signed_read: chat["signed_read"].as_bool().unwrap_or(false),
             },
         );
     }
@@ -1871,6 +1873,7 @@ mod tests {
                 usage: None,
                 places: None,
                 seq: crate::chats::seq(),
+                signed_read: false,
             };
             crate::chats::save(&store, &cwd, saved);
         };
@@ -1930,6 +1933,7 @@ mod tests {
             usage: None,
             places: None,
             seq: crate::chats::seq(),
+            signed_read: false,
         };
         crate::chats::save(store, root, saved);
     }

@@ -61,6 +61,7 @@ fn fetched(url: &str, html: &str) -> (Fetched, Page) {
         cut: false,
         took: std::time::Duration::from_millis(120),
         elsewhere: None,
+        signed: false,
     };
     let page = super::super::read(&f.bytes, &f.url, f.content_type.as_deref(), Prefer::Guess);
     (f, page)
@@ -277,6 +278,198 @@ fn a_read_asks_by_host_and_its_answers_are_reads_alone() {
     settle(&mut ed, &|_| answered(9).is_some());
     let t = answered(9).unwrap().unwrap();
     assert!(t.contains("this machine's port 9 isn't one Claude's runs reach"), "{t}");
+}
+
+/// W3: a read under your wiki's base asks on a card saying the token — whatever a run's grant or `llm.sandbox-hosts`
+/// with the network open reaches — and a copy fetched with the token reaches Claude only past that card too; once a
+/// page was read with it, the chat is marked (its searches ask each time) and the token is nowhere in the answer.
+#[test]
+fn a_token_read_asks_on_its_own_card_whatever_runs_reach() {
+    use crate::web::fetch::tests::{json, signed};
+    let (at, heads) = server(true, |head| match path(head) {
+        "/confluence/rest/api/content/7?expand=body.view" => json(
+            r#"{"title":"Runbook","body":{"view":{"value":"<p>Roll back with care. tarae-fake-token</p>"}}}"#,
+        ),
+        "/in" => reply(
+            "HTTP/1.1 302 Found\r\nLocation: /confluence/pages/viewpage.action?pageId=7\r\nContent-Length: 0\r\n\r\n",
+        ),
+        "/fresh" => ok(r#"<meta http-equiv="refresh" content="0;url=/confluence/x"><p>moved</p>"#),
+        _ => ok("<title>A</title><main><h1>A</h1><p>t.</p></main>"),
+    });
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.set_at(crate::workspace::Here::Chat);
+    ed.workspace.web_way = Some(Arc::new(move |stop| fetch::Way {
+        stop,
+        signed: signed(Some("tarae-fake-token")),
+        ..way(at, yours_rules())
+    }));
+    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    let t: toml::Table = toml::from_str(
+        r#"v = [{ base = "https://page.test/confluence", kind = "confluence-dc", token-env = "TARAE_TEST_PAT" }]"#,
+    )
+    .unwrap();
+    ed.config.llm.signed_in =
+        crate::web::signed::with_env(crate::web::signed::wikis_of(&t["v"]).unwrap(), |_| {
+            Some("tarae-fake-token".into())
+        });
+    // (what opens a run's reach — and would open a plain read — opens none of a token read)
+    (ed.config.llm.sandbox_network, ed.config.llm.sandbox_hosts) = (true, crate::llm::Hosts::Any);
+    ed.workspace.claude.hosts.push(("page.test".into(), 443));
+    read(&mut ed, generation, 1, &["https://page.test/elsewhere"]);
+    assert!(card(&ed).is_none(), "outside the base: a plain read, unasked as the runs reach it");
+    settle(&mut ed, &|_| answered(1).is_some());
+    // (a plain read's redirect or refresh into the base: said, never followed with the token — its card is its own)
+    while heads.try_recv().is_ok() {}
+    read(&mut ed, generation, 10, &["https://page.test/in", "https://page.test/fresh"]);
+    assert!(card(&ed).is_none());
+    settle(&mut ed, &|_| answered(10).is_some());
+    let t = answered(10).unwrap().unwrap();
+    assert!(
+        t.contains(
+            "== https://page.test/in: it redirects into the user's wiki, where a read goes with their token: \
+                    https://page.test/confluence/pages/viewpage.action"
+        ),
+        "{t}"
+    );
+    assert!(t.contains("(it refreshes into the user's wiki"), "{t}");
+    let sent: Vec<String> = heads.try_iter().collect();
+    assert_eq!(sent.len(), 2, "the two plain requests alone: {sent:?}");
+    assert!(sent.iter().all(|h| !h.to_ascii_lowercase().contains("authorization")), "{sent:?}");
+    read(&mut ed, generation, 2, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
+    let (title, question) = card(&ed).expect("a token read's card");
+    assert_eq!(title, "Let Claude read a page at page.test with your token?");
+    let lines: Vec<&str> = question.lines().collect();
+    assert_eq!(
+        lines[1..],
+        [
+            "Claude's read · port 443 · through tarae's proxy · GET with your token, nothing else of yours",
+            "After it, this chat's web searches ask each time.",
+            "What it reads goes to Claude — your wiki's pages as your account sees them.",
+        ]
+    );
+    while heads.try_recv().is_ok() {}
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().signed_read);
+    ed.offer_accept();
+    settle(&mut ed, &|_| answered(2).is_some());
+    let t = answered(2).unwrap().unwrap();
+    assert!(t.contains("Roll back with care. [token]") && !t.contains("tarae-fake-token"), "{t}");
+    assert!(t.contains(
+        "<page from=\"https://page.test/confluence/pages/viewpage.action?pageId=7\" title=\"Runbook\""
+    ));
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().signed_read, "the chat read with your token");
+    // the copy it kept came with the token: no card skipped for it either
+    read(&mut ed, generation, 3, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
+    assert!(card(&ed).is_some(), "a token copy is carded as a token read");
+    ed.offer_for_session();
+    settle(&mut ed, &|_| answered(3).is_some());
+    assert!(
+        answered(3).unwrap().unwrap().contains("the session's copy"),
+        "read from the copy, past the card"
+    );
+    read(&mut ed, generation, 4, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
+    assert!(card(&ed).is_none(), "the read's own `s` lets it through");
+    settle(&mut ed, &|_| answered(4).is_some());
+}
+
+/// An editor whose config names `page.test/confluence` (its variable's value: `value`), its reads through the test's
+/// server with the token, no grant of any run's.
+fn wiki_editor(value: Option<&'static str>) -> (Editor, u64, std::sync::mpsc::Receiver<String>) {
+    let (mut ed, generation, heads) = editor(|head| match path(head) {
+        "/confluence/rest/api/content/7?expand=body.view" => crate::web::fetch::tests::json(
+            r#"{"title":"Runbook","body":{"view":{"value":"<p>Roll back.</p>"}}}"#,
+        ),
+        _ => ok("<title>A</title><main><h1>A</h1><p>t.</p></main>"),
+    });
+    let base = ed.workspace.web_way.take().unwrap();
+    let signed = crate::web::fetch::tests::signed(Some("tarae-fake-token"));
+    ed.workspace.web_way = Some(Arc::new(move |stop| fetch::Way { signed: signed.clone(), ..base(stop) }));
+    let t: toml::Table = toml::from_str(
+        r#"v = [{ base = "https://page.test/confluence", kind = "confluence-dc", token-env = "TARAE_TEST_PAT" }]"#,
+    )
+    .unwrap();
+    ed.config.llm.signed_in =
+        crate::web::signed::with_env(crate::web::signed::wikis_of(&t["v"]).unwrap(), |_| {
+            value.map(Into::into)
+        });
+    (ed, generation, heads)
+}
+
+/// W3: a plain card's answer never lets a token read through on its host — `s` on it reads plain pages there unasked,
+/// a wiki page there asks on its own card; a `y` on a plain card covers that call's plain items, not its token one.
+/// A token card's answer covers both.
+#[test]
+fn a_plain_answer_never_covers_a_token_read() {
+    let (mut ed, generation, _heads) = wiki_editor(Some("tarae-fake-token"));
+    let wiki = "https://page.test/confluence/pages/viewpage.action?pageId=7";
+    read(&mut ed, generation, 1, &["https://page.test/plain", wiki]);
+    assert_eq!(card(&ed).unwrap().0, "Let Claude read a page at page.test?", "the plain item's card first");
+    ed.offer_accept();
+    assert_eq!(
+        card(&ed).unwrap().0,
+        "Let Claude read a page at page.test with your token?",
+        "its y isn't the token's"
+    );
+    ed.offer_accept();
+    settle(&mut ed, &|_| answered(1).is_some());
+    read(&mut ed, generation, 2, &["https://page.test/plain2"]);
+    assert!(card(&ed).is_some());
+    ed.offer_for_session();
+    settle(&mut ed, &|_| answered(2).is_some());
+    assert!(ed.workspace.claude.web_signed.is_empty(), "a plain card's s isn't a token answer");
+    read(&mut ed, generation, 3, &["https://page.test/plain3"]);
+    assert!(card(&ed).is_none(), "plain pages there: unasked now");
+    settle(&mut ed, &|_| answered(3).is_some());
+    read(&mut ed, generation, 4, &[wiki]);
+    assert_eq!(card(&ed).unwrap().0, "Let Claude read a page at page.test with your token?");
+    ed.offer_for_session();
+    settle(&mut ed, &|_| answered(4).is_some());
+    assert_eq!(ed.workspace.claude.web_signed, [("page.test".to_string(), 443)]);
+    read(&mut ed, generation, 5, &[wiki, "https://page.test/plain4"]);
+    assert!(card(&ed).is_none(), "a token card's s covers both");
+    settle(&mut ed, &|_| answered(5).is_some());
+}
+
+/// W3: the mark is kept with the conversation the moment a token read lands, not at the turn's end — a crash right
+/// after still has it marked when the conversation is continued.
+#[test]
+fn a_token_read_is_kept_as_it_lands() {
+    let (mut ed, generation, _heads) = wiki_editor(Some("tarae-fake-token"));
+    let store = crate::scratch::Scratch::new("web-token-kept");
+    ed.chats_dir = Some(store.path().to_path_buf());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c-wiki".into());
+    let kept = |ed: &Editor| {
+        crate::chats::load(store.path(), &ed.workspace.root).into_iter().find(|s| s.id == "c-wiki")
+    };
+    read(&mut ed, generation, 1, &["https://page.test/plain"]);
+    ed.offer_accept();
+    settle(&mut ed, &|_| answered(1).is_some());
+    assert!(kept(&ed).is_none_or(|s| !s.signed_read), "a plain read marks nothing");
+    read(&mut ed, generation, 2, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
+    ed.offer_accept();
+    settle(&mut ed, &|ed| answered(2).is_some() && kept(ed).is_some_and(|s| s.signed_read));
+}
+
+/// W1: with the wiki's variable holding no token when tarae started — unset, only whitespace, or what a token can't
+/// hold, judged as the fetch judges it (`signed::token_in`) — Claude's read there is refused before any card, in the
+/// words that say what to do — nothing fetched.
+#[test]
+fn an_unset_token_is_said_before_any_card() {
+    let unset =
+        "TARAE_TEST_PAT isn't set in tarae's environment — export it and start tarae again — ask the user";
+    for (id, value, said) in [
+        (1, None, unset),
+        (2, Some(" \n"), unset),
+        (3, Some("tarae fake"), "TARAE_TEST_PAT holds what a token can't"),
+    ] {
+        let (mut ed, generation, heads) = wiki_editor(value);
+        read(&mut ed, generation, id, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
+        assert!(card(&ed).is_none(), "{value:?}: no card for a read that can't go");
+        settle(&mut ed, &|_| answered(id).is_some());
+        let t = answered(id).unwrap().unwrap();
+        assert!(t.contains(said), "{value:?}: {t}");
+        assert!(heads.try_recv().is_err(), "{value:?}: nothing fetched");
+    }
 }
 
 /// A `y` is tarae's, kept by the call it was for (`Session.web_once`): Claude can't send one — a key in tarae's namespace in its

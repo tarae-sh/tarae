@@ -30,6 +30,8 @@ pub enum Kind {
     /// `llm.sandbox-secrets`: a table of variable names, each a list of host rules (`llm.sandbox-hosts`' —
     /// `egress::Pattern`) — a whole name each, never a family.
     Secrets,
+    /// `web.signed-in`: a list of tables `{ base, kind, token-env }` (`web::signed::wikis_of`).
+    Wikis,
 }
 
 impl Kind {
@@ -60,6 +62,9 @@ impl Kind {
         }
         if let Kind::Secrets = self {
             return secrets_of(v).map(|_| ());
+        }
+        if let Kind::Wikis = self {
+            return crate::web::signed::wikis_of(v).map(|_| ());
         }
         let ok = match (self, v) {
             (Kind::Hosts, Value::String(s)) => ["registries", "*", "any"].contains(&s.as_str()),
@@ -94,6 +99,7 @@ impl Kind {
             Kind::Secrets => {
                 "table of variable = list of hosts (\"api.github.com\", \"*.example.com\")".into()
             }
+            Kind::Wikis => "list of tables { base, kind, token-env }".into(),
         }
     }
 }
@@ -933,6 +939,28 @@ pub static SETTINGS: &[Setting] = &[
         get: |c| Value::Integer(c.review_skeptics_max as i64),
         set: |c, v| c.review_skeptics_max = n(v),
     },
+    Setting {
+        path: "web.signed-in",
+        kind: Kind::Wikis,
+        doc: "Your work wiki (only your own config): [{ base = \"https://corp.example/confluence\", kind = \"confluence-dc\", token-env = \"CONFLUENCE_PAT\" }] — tarae's own GET under the base carries the token in that variable of tarae's environment (https only), and reads its pages through the wiki's API; Claude's reads there ask on their own card. The variable never reaches Claude's commands or any claude tarae starts",
+        get: |c| {
+            let row = |w: &crate::web::signed::Wiki| {
+                let mut t = toml::Table::new();
+                t.insert("base".into(), Value::from(w.base.as_str()));
+                t.insert("kind".into(), Value::from(w.kind.as_str()));
+                t.insert("token-env".into(), Value::from(w.token_env.as_str()));
+                Value::Table(t)
+            };
+            Value::Array(c.llm.signed_in.iter().map(row).collect())
+        },
+        // (whether each variable holds a token, read once here: tarae's environment is as it started)
+        set: |c, v| {
+            c.llm.signed_in =
+                crate::web::signed::with_env(crate::web::signed::wikis_of(v).unwrap_or_default(), |n| {
+                    std::env::var_os(n)
+                })
+        },
+    },
 ];
 
 pub fn find(path: &str) -> Option<&'static Setting> {
@@ -1143,6 +1171,7 @@ mod tests {
                 Kind::Angles => "list of tables".into(),
                 Kind::Rules => "table of lists of paths".into(),
                 Kind::Secrets => "table of lists of hosts".into(),
+                Kind::Wikis => "list of tables".into(),
             };
             let default = match s.kind {
                 // (the built-in angles' asks are paragraphs: named here, whole in `:config-show`)

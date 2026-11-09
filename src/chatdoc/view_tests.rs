@@ -870,6 +870,7 @@ fn an_earlier_conversation_asked_in_a_panes_key_waits_until_its_over() {
             usage: None,
             places: None,
             seq: 0,
+            signed_read: false,
         };
         under(&mut ed, which, |ed| crate::chat::continue_with(ed, saved));
         let c = ed.workspace.claude.chat.as_ref().unwrap();
@@ -1277,6 +1278,7 @@ fn another_conversation_ends_the_view_and_keeps_nothing_of_it() {
         usage: None,
         places: None,
         seq: 0,
+        signed_read: false,
     };
     crate::chat::continue_with(&mut ed, saved);
     frame(&mut ed);

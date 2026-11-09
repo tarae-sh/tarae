@@ -283,6 +283,9 @@ pub fn lists(ed: &Editor) -> bool {
 pub struct Ask {
     pub call: Call,
     pub query: Query,
+    /// The chat read your wiki with your token (`Chat.signed_read`): this search's own card — `y` this search, `n`
+    /// not this one (W3).
+    pub guarded: bool,
 }
 
 /// The tool: the query checked, then the gate — a card for a chat's first, else the helper started.
@@ -292,12 +295,19 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
 }
 
 fn gate(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
-    match ed.workspace.claude.chat.as_ref().and_then(|c| c.searches) {
+    let chat = ed.workspace.claude.chat.as_ref();
+    // (W3: after a read with your wiki's token, each search asks — whatever this chat's or this session's yes)
+    let guarded = chat.is_some_and(|c| c.signed_read);
+    match chat.and_then(|c| c.searches) {
         Some(false) => Err("the user said no to web searches in this conversation — don't ask again".into()),
+        _ if guarded => {
+            ask(ed, Ask { call, query, guarded });
+            Ok(())
+        }
         Some(true) => start(ed, call, query),
         None if ed.workspace.claude.searches_ok => start(ed, call, query),
         None => {
-            ask(ed, Ask { call, query });
+            ask(ed, Ask { call, query, guarded });
             Ok(())
         }
     }
@@ -311,10 +321,14 @@ fn ask(ed: &mut Editor, a: Ask) {
     if !a.query.sites.is_empty() {
         first.push_str(&format!("  · only {}", a.query.sites.join(" ")));
     }
+    let holds = match a.guarded {
+        true => "This chat read your wiki with your token: each search asks.",
+        false => "A yes holds for this chat: its later searches ask nothing.",
+    };
     let lines = [
         first,
         format!("Claude Code's WebSearch on {model} · a list of pages comes back"),
-        "A yes holds for this chat: its later searches ask nothing.".to_string(),
+        holds.to_string(),
         "What Claude has read can go out in the words it searches for.".to_string(),
     ];
     let o = crate::offer::Offer::new(
@@ -335,6 +349,18 @@ fn ask(ed: &mut Editor, a: Ask) {
 pub fn answer(ed: &mut Editor, id: u64, a: Ask, scope: Option<crate::allow::Scope>) {
     use crate::allow::Scope;
     ed.offer_finished(id, Ok(()));
+    // (W3's card: this search alone — a no isn't the chat's, it may ask again with other words)
+    if a.guarded {
+        let r = match (scope, ed.workspace.claude.chat.is_some()) {
+            (_, false) => Err("the conversation ended".into()),
+            (Some(_), true) => start(ed, a.call.clone(), a.query),
+            (None, true) => Err("the user said no to this search".into()),
+        };
+        if let Err(e) = r {
+            crate::tools::answer(ed, a.call, Err(e));
+        }
+        return;
+    }
     match scope {
         Some(Scope::Session | Scope::Always) => {
             ed.workspace.claude.searches_ok = true;
@@ -387,7 +413,7 @@ fn settle_others(ed: &mut Editor) -> Vec<Ask> {
 /// queued while `RUNNING_MAX` run.
 fn start(ed: &mut Editor, call: Call, query: Query) -> Result<(), String> {
     if ed.workspace.claude.searches.len() >= RUNNING_MAX {
-        ed.workspace.claude.searches_queued.push_back(Ask { call, query });
+        ed.workspace.claude.searches_queued.push_back(Ask { call, query, guarded: false });
         return Ok(());
     }
     if let Some(why) = llm::held(ed) {
@@ -681,6 +707,7 @@ fn page_of(q: &Query, found: &Found, summary: bool, took: std::time::Duration) -
         cut: false,
         took,
         elsewhere: None,
+        signed: false,
     }
 }
 

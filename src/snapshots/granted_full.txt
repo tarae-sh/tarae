@@ -2,7 +2,7 @@
 ## text
 00                                                             ┌─ claude ── 6 granted ───────── ready ─
 01  ╭─ granted ──────────────────────────────────────────────╮ │
-02  │   what you've let through                        20/20 │ │
+02  │   what you've let through                        21/21 │ │
 03  │ ────────────────────────────────────────────────────── │ │
 04  │  by default                                            │ │
 05  │  ◦ read /private/tmp/…tarae              this checkout │ │
@@ -12,21 +12,21 @@
 09  │  ◦ read …rustup/toolchains/1.99.0/…  a toolchain's own │ │
 10  │  ◦ read outside home        not others' homes, volumes │ │  It reads the whole project,
 11  │                                                        │ │  starting from demo.rs.
-12  │  always · this checkout                                │ │
-13  │▎ • reach registry.npmjs.org:443           you · 5h ago │ │  tab for a suggestion
-14  │  • write in /private/t…granted/npm-cache  you · 3d ago │ │  › Explain what this file does
-15  │                                                        │ │  › Where is this used across the pr…
-16  │  this session                                          │ │  › Why is this diagnostic happening?
-17  │  • connect to port 5432                   you · 2h ago │ │
-18  │  • reach db.example.com:5432      you · until you quit │ │  C-t for another model
-19  │  • run without a sandbox          you · until you quit │ │
-20  │                                                        │ │
-21  │  this chat                                             │ │
-22  │  • open terminals, yours too             you · 20s ago │ │
-23  │  • read /private/tmp/…notes              you · 12m ago │ │
-24  │                                                        │ │
-25  │  tarae's project settings · every checkout             │ │
-26  │  • .tarae.toml               you · 2d ago · 2 versions │ │  ───────────────────────────────────
+12  │  your token · your config                              │ │
+13  │  ◦ corp.example/confluence        from $CONFLUENCE_PAT │ │  tab for a suggestion
+14  │                                                        │ │  › Explain what this file does
+15  │  always · this checkout                                │ │  › Where is this used across the pr…
+16  │▎ • reach registry.npmjs.org:443           you · 5h ago │ │  › Why is this diagnostic happening?
+17  │  • write in /private/t…granted/npm-cache  you · 3d ago │ │
+18  │                                                        │ │  C-t for another model
+19  │  this session                                          │ │
+20  │  • connect to port 5432                   you · 2h ago │ │
+21  │  • reach db.example.com:5432      you · until you quit │ │
+22  │  • run without a sandbox          you · until you quit │ │
+23  │                                                        │ │
+24  │  this chat                                             │ │
+25  │  • open terminals, yours too             you · 20s ago │ │
+26  │  • read /private/tmp/…notes              you · 12m ago │ │  ───────────────────────────────────
 27  ╰────────────────────────────────────────────────────────╯ │  › Ask about demo.rs…
 28                                                             │  space l focus  space L hide
 29  ● picker   d take it back  j k move  esc close                                         rust   1:1
@@ -44,10 +44,10 @@
 10
 11
 12
-13   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+13
 14
 15
-16
+16   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
 17
 18
 19
@@ -74,21 +74,21 @@
 09  a  f                                   d ddddddddddd ddd a f
 10  a  f                          ddd ddddddd dddddd ddddddd a f  dd ddddd ddd ddddd dddddddd
 11  a                                                        a f  dddddddd dddd dddddddd
-12  a  ffffff f ffff ffffffff                                a f
-13  aa d TTTTT TTTTTTTTTTTTTTTTTTTTTT           ddd d dd ddd a f  DDD fff f ffffffffff
-14  a  d                                        ddd d dd ddd a f  f ddddddd dddd dddd dddd dddd
-15  a                                                        a f  f ddddd dd dddd dddd dddddd ddd ddd
-16  a  ffff fffffff                                          a f  f ddd dd dddd dddddddddd dddddddddd
+12  a  ffff fffff f ffff ffffff                              a f
+13  a  f                                dddd ddddddddddddddd a f  DDD fff f ffffffffff
+14  a                                                        a f  f ddddddd dddd dddd dddd dddd
+15  a  ffffff f ffff ffffffff                                a f  f ddddd dd dddd dddd dddddd ddd ddd
+16  aa d TTTTT TTTTTTTTTTTTTTTTTTTTTT           ddd d dd ddd a f  f ddd dd dddd dddddddddd dddddddddd
 17  a  d                                        ddd d dd ddd a f
-18  a  d                                ddd d ddddd ddd dddd a f  DDD fff fffffff fffff
-19  a  d                                ddd d ddddd ddd dddd a f
-20  a                                                        a f
-21  a  ffff ffff                                             a f
-22  a  d                                       ddd d ddd ddd a f
-23  a  d                                       ddd d ddd ddd a f
-24  a                                                        a f
-25  a  fffffff fffffff ffffffff f fffff ffffffff             a f
-26  a  d                           ddd d dd ddd d d dddddddd a f  fffffffffffffffffffffffffffffffffff
+18  a                                                        a f  DDD fff fffffff fffff
+19  a  ffff fffffff                                          a f
+20  a  d                                        ddd d dd ddd a f
+21  a  d                                ddd d ddddd ddd dddd a f
+22  a  d                                ddd d ddddd ddd dddd a f
+23  a                                                        a f
+24  a  ffff ffff                                             a f
+25  a  d                                       ddd d ddd ddd a f
+26  a  d                                       ddd d ddd ddd a f  fffffffffffffffffffffffffffffffffff
 27  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa f  f fff fffff ffffffff
 28                                                             f  DDDDD D fffff  DDDDD D ffff
 29  a TTTTTT   f ffff ff ffff  D D ffff  DDD fffff                                         dddd   TTT

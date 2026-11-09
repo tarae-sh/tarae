@@ -2,7 +2,7 @@
 ## text
 00                                                             ┌─ claude ── 6 granted ───────── ready ─
 01  ╭─ granted ──────────────────────────────────────────────╮ │
-02  │   what you've let through                        20/20 │ │
+02  │   what you've let through                        21/21 │ │
 03  │ ────────────────────────────────────────────────────── │ │
 04  │  by default                                            │ │
 05  │  ◦ read /private/tmp/…tarae              this checkout │ │
@@ -12,42 +12,42 @@
 09  │  ◦ read …rustup/toolchains/1.99.0/…  a toolchain's own │ │
 10  │  ◦ read outside home        not others' homes, volumes │ │
 11  │                                                        │ │
-12  │  always · this checkout                                │ │
-13  │  • reach registry.npmjs.org:443           you · 5h ago │ │
-14  │  • write in /private/t…granted/npm-cache  you · 3d ago │ │
-15  │                                                        │ │
-16  │  this session                                          │ │
-17  │  • connect to port 5432                   you · 2h ago │ │
-18  │  • reach db.example.com:5432      you · until you quit │ │  ▎ Ask Claude
-19  │  • run without a sandbox          you · until you quit │ │
-20  │                                                        │ │  It reads the whole project,
-21  │  this chat                                             │ │  starting from demo.rs.
-22  │  • open terminals, yours too             you · 20s ago │ │
-23  │  • read /private/tmp/…notes              you · 12m ago │ │  tab for a suggestion
-24  │                                                        │ │  › Explain what this file does
-25  │  tarae's project settings · every checkout             │ │  › Where is this used across the pr…
-26  │  • .tarae.toml               you · 2d ago · 2 versions │ │  › Why is this diagnostic happening?
+12  │  your token · your config                              │ │
+13  │  ◦ corp.example/confluence        from $CONFLUENCE_PAT │ │
+14  │                                                        │ │
+15  │  always · this checkout                                │ │
+16  │  • reach registry.npmjs.org:443           you · 5h ago │ │
+17  │  • write in /private/t…granted/npm-cache  you · 3d ago │ │
+18  │                                                        │ │  ▎ Ask Claude
+19  │  this session                                          │ │
+20  │  • connect to port 5432                   you · 2h ago │ │  It reads the whole project,
+21  │  • reach db.example.com:5432      you · until you quit │ │  starting from demo.rs.
+22  │  • run without a sandbox          you · until you quit │ │
+23  │                                                        │ │  tab for a suggestion
+24  │  this chat                                             │ │  › Explain what this file does
+25  │  • open terminals, yours too             you · 20s ago │ │  › Where is this used across the pr…
+26  │  • read /private/tmp/…notes              you · 12m ago │ │  › Why is this diagnostic happening?
 27  │                                                        │ │
-28  │  Claude's settings · every checkout                    │ │  C-t for another model
-29  │  • .claude/settings.json                  you · 1d ago │ │
+28  │  tarae's project settings · every checkout             │ │  C-t for another model
+29  │  • .tarae.toml               you · 2d ago · 2 versions │ │
 30  │                                                        │ │
-31  │  git's own commands · every checkout                   │ │
-32  │  • .git/config                            you · 5h ago │ │
+31  │  Claude's settings · every checkout                    │ │
+32  │  • .claude/settings.json                  you · 1d ago │ │
 33  │                                                        │ │
-34  │  git hooks · every checkout                            │ │
-35  │  • .githooks/pre-commit                   you · 1h ago │ │
-36  │  • .githooks/pre-push                     you · 1h ago │ │
-37  │                                                        │ │
-38  │  plugins · everywhere                                  │ │
-39  │  • k8s: run kubectl, r…kube/config, reach 2 hosts  you │ │
+34  │  git's own commands · every checkout                   │ │
+35  │  • .git/config                            you · 5h ago │ │
+36  │                                                        │ │
+37  │  git hooks · every checkout                            │ │
+38  │  • .githooks/pre-commit                   you · 1h ago │ │
+39  │  • .githooks/pre-push                     you · 1h ago │ │
 40  │                                                        │ │
-41  │  preflight · every checkout                            │ │
-42  │▎ • run the packs' default steps                    you │ │
+41  │  plugins · everywhere                                  │ │
+42  │  • k8s: run kubectl, r…kube/config, reach 2 hosts  you │ │
 43  │                                                        │ │
-44  │  4 more kept for other checkouts — not used here       │ │
-45  │                                                        │ │
-46  ╰────────────────────────────────────────────────────────╯ │  ───────────────────────────────────
-47                                                             │  › Ask about demo.rs…
+44  │  preflight · every checkout                            │ │
+45  │▎ • run the packs' default steps                    you │ │
+46  │                                                        │ │  ───────────────────────────────────
+47  ╰────────────────────────────────────────────────────────╯ │  › Ask about demo.rs…
 48                                                             │  space l focus  space L hide
 49  ● picker   d take it back  j k move  esc close                                         rust   1:1
 ## bg · surface per cell, blank = ui.background
@@ -93,10 +93,10 @@
 39
 40
 41
-42   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+42
 43
 44
-45
+45   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
 46
 47
 48
@@ -114,42 +114,42 @@
 09  a  f                                   d ddddddddddd ddd a f
 10  a  f                          ddd ddddddd dddddd ddddddd a f
 11  a                                                        a f
-12  a  ffffff f ffff ffffffff                                a f
-13  a  d                                        ddd d dd ddd a f
-14  a  d                                        ddd d dd ddd a f
-15  a                                                        a f
-16  a  ffff fffffff                                          a f
+12  a  ffff fffff f ffff ffffff                              a f
+13  a  f                                dddd ddddddddddddddd a f
+14  a                                                        a f
+15  a  ffffff f ffff ffffffff                                a f
+16  a  d                                        ddd d dd ddd a f
 17  a  d                                        ddd d dd ddd a f
-18  a  d                                ddd d ddddd ddd dddd a f  a TTT TTTTTT
-19  a  d                                ddd d ddddd ddd dddd a f
-20  a                                                        a f  dd ddddd ddd ddddd dddddddd
-21  a  ffff ffff                                             a f  dddddddd dddd dddddddd
-22  a  d                                       ddd d ddd ddd a f
-23  a  d                                       ddd d ddd ddd a f  DDD fff f ffffffffff
-24  a                                                        a f  f ddddddd dddd dddd dddd dddd
-25  a  fffffff fffffff ffffffff f fffff ffffffff             a f  f ddddd dd dddd dddd dddddd ddd ddd
-26  a  d                           ddd d dd ddd d d dddddddd a f  f ddd dd dddd dddddddddd dddddddddd
+18  a                                                        a f  a TTT TTTTTT
+19  a  ffff fffffff                                          a f
+20  a  d                                        ddd d dd ddd a f  dd ddddd ddd ddddd dddddddd
+21  a  d                                ddd d ddddd ddd dddd a f  dddddddd dddd dddddddd
+22  a  d                                ddd d ddddd ddd dddd a f
+23  a                                                        a f  DDD fff f ffffffffff
+24  a  ffff ffff                                             a f  f ddddddd dddd dddd dddd dddd
+25  a  d                                       ddd d ddd ddd a f  f ddddd dd dddd dddd dddddd ddd ddd
+26  a  d                                       ddd d ddd ddd a f  f ddd dd dddd dddddddddd dddddddddd
 27  a                                                        a f
-28  a  ffffffff ffffffff f fffff ffffffff                    a f  DDD fff fffffff fffff
-29  a  d                                        ddd d dd ddd a f
+28  a  fffffff fffffff ffffffff f fffff ffffffff             a f  DDD fff fffffff fffff
+29  a  d                           ddd d dd ddd d d dddddddd a f
 30  a                                                        a f
-31  a  fffff fff ffffffff f fffff ffffffff                   a f
+31  a  ffffffff ffffffff f fffff ffffffff                    a f
 32  a  d                                        ddd d dd ddd a f
 33  a                                                        a f
-34  a  fff fffff f fffff ffffffff                            a f
+34  a  fffff fff ffffffff f fffff ffffffff                   a f
 35  a  d                                        ddd d dd ddd a f
-36  a  d                                        ddd d dd ddd a f
-37  a                                                        a f
-38  a  fffffff f ffffffffff                                  a f
-39  a  d                                                 ddd a f
+36  a                                                        a f
+37  a  fff fffff f fffff ffffffff                            a f
+38  a  d                                        ddd d dd ddd a f
+39  a  d                                        ddd d dd ddd a f
 40  a                                                        a f
-41  a  fffffffff f fffff ffffffff                            a f
-42  aa d TTT TTT TTTTTT TTTTTTT TTTTT                    ddd a f
+41  a  fffffff f ffffffffff                                  a f
+42  a  d                                                 ddd a f
 43  a                                                        a f
-44  a  f ffff ffff fff fffff fffffffff f fff ffff ffff       a f
-45  a                                                        a f
-46  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa f  fffffffffffffffffffffffffffffffffff
-47                                                             f  f fff fffff ffffffff
+44  a  fffffffff f fffff ffffffff                            a f
+45  aa d TTT TTT TTTTTT TTTTTTT TTTTT                    ddd a f
+46  a                                                        a f  fffffffffffffffffffffffffffffffffff
+47  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa f  f fff fffff ffffffff
 48                                                             f  DDDDD D fffff  DDDDD D ffff
 49  a TTTTTT   f ffff ff ffff  D D ffff  DDD fffff                                         dddd   TTT
 ## legend

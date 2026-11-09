@@ -51,6 +51,8 @@ pub const RISKY: &[&str] = &[
     // (what Claude read could leave the machine as a search's words — and on whose model, billed to you)
     "llm.web-search",
     "llm.web-search-model",
+    // (where your token goes, and what of your wiki reaches Claude)
+    "web.signed-in",
     // (where a checkout of the project's files is written — a launch agents folder would run them)
     "workspace.worktrees",
     // (a command run outside the sandbox at every session's end)
@@ -109,6 +111,8 @@ pub const YOURS_ONLY: &[&str] = &[
     // (where a masked secret's real value goes, and which hosts' TLS tarae reads: a project naming its own host would
     // have your token sent there — a capability, D2)
     "llm.sandbox-secrets",
+    // (a project naming its own host as your wiki would have your token sent there)
+    "web.signed-in",
 ];
 
 pub fn yours_only(setting: &str) -> bool {
@@ -1399,6 +1403,10 @@ mod tests {
         }
         assert!(yours_only("llm.sandbox-ca"), "whom runs trust is never a project's");
         assert!(yours_only("llm.sandbox-secrets"), "where a secret goes is never a project's");
+        assert!(
+            yours_only("web.signed-in") && is_risky("web.signed-in"),
+            "where your wiki token goes neither"
+        );
         assert!(n >= 10, "the sandbox's settings found: {n}");
     }
 

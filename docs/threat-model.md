@@ -379,6 +379,20 @@ Not kept:
 - **cargo's `credentials.toml`** isn't read, but cargo takes no copy without it: the report says so in cargo's
   pack's words.
   test: `tokens::tests::cargos_tokens_are_told_once`
+- **Your wiki's token can write the wiki, and what it reads reaches Claude.** `web.signed-in` (your own config only)
+  names a variable of tarae's environment whose token tarae's own GET sends under the wiki's base (https, its host,
+  port and path): a personal access token has no scopes, so it can do whatever your account can. tarae never gives
+  it to a run (whatever `llm.sandbox-env`, a pack, `llm.sandbox-secrets` or a card names) nor to any claude it
+  starts, and only GETs; but Claude's read of a page there (on its own card) puts your wiki's text in its context,
+  which is Anthropic's. After such a read only that chat's web searches ask each time: its reads of other hosts and
+  its runs' network aren't guarded further — their cards already say that what Claude has read can go out there.
+  The token is wiped from tarae's own buffers as they go (`zeroize`); the TLS library's buffers and the process's
+  environment keep their copies.
+  test: `sandbox::runenv::tests::a_wikis_token_is_never_a_runs`, `llm::tests::every_claude_tarae_starts_has_no_wiki_token`,
+  `web::fetch::tests::the_token_goes_only_with_requests_under_the_base`,
+  `web::tool::tests::a_token_read_asks_on_its_own_card_whatever_runs_reach`,
+  `web::tool::tests::a_plain_answer_never_covers_a_token_read`,
+  `web::search::tests::after_a_token_read_each_search_asks`
 
 ### 1.5 The network
 

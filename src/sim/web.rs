@@ -5,9 +5,11 @@
 //! user taking their time, a frame; Claude's `read` of a page (P4): the session's copy, this machine's page at a port
 //! runs reach, a host not let through (its card, answered `y`, `s` or `n`) — the reads' and fetches' jobs landing
 //! among them in any order; Claude's `web_search` (its first card answered `y`, `s` or `n`, a helper's list, cost and
-//! end landing whenever, the turn's end). After every step: one buffer at most per page's address, what isn't a page
+//! end landing whenever, the turn's end); Claude's read of your wiki's page (a copy fetched with your token: its own
+//! card, and after it each search asks). After every step: one buffer at most per page's address, what isn't a page
 //! never read into its buffer, no step left by a read, no card for a host answered for the session or the
-//! conversation, no search card once the chat or the session answered, no search's helper twice.
+//! conversation, a wiki's card saying the token, no search card once the chat or the session answered but W3's own
+//! after a token read, no search's helper twice.
 
 use std::time::Duration;
 
@@ -62,8 +64,26 @@ fn run(choices: Choices) -> Vec<String> {
         cut: false,
         took: Duration::from_millis(30),
         elsewhere: None,
+        signed: false,
+    };
+    let wiki = crate::web::fetch::Fetched {
+        asked: WIKI.into(),
+        url: WIKI.into(),
+        content_type: Some("text/html".into()),
+        bytes: b"<title>Runbook</title><main><h1>Runbook</h1><p>Roll back.</p></main>".to_vec(),
+        signed: true,
+        ..kept.clone()
     };
     let _ = ed.workspace.pages.put(std::sync::Arc::new(kept), crate::clock::now());
+    let _ = ed.workspace.pages.put(std::sync::Arc::new(wiki), crate::clock::now());
+    let t: toml::Table = toml::from_str(
+        r#"v = [{ base = "https://wiki.test/confluence", kind = "confluence-dc", token-env = "TARAE_TEST_PAT" }]"#,
+    )
+    .unwrap();
+    ed.config.llm.signed_in =
+        crate::web::signed::with_env(crate::web::signed::wikis_of(&t["v"]).unwrap(), |_| {
+            Some("tarae-fake-token".into())
+        });
     let mut n = 0u64;
     let input = move |sim: &mut Sim, ed: &mut Editor| {
         n += 1;
@@ -79,12 +99,17 @@ fn run(choices: Choices) -> Vec<String> {
     trace
 }
 
+/// A wiki page's copy, fetched with your token (`web.signed-in` names its base).
+const WIKI: &str = "https://wiki.test/confluence/display/OPS/Runbook";
+
 fn input(sim: &mut Sim, ed: &mut Editor, fetched: &str, n: u64) -> String {
     let c = &mut sim.choices;
     // (by arm: the page 3, another part of it 2, the PDF 1, the session's copy 2, a fetch 2, a refused address 1, a
     // stop 1, a close 1, time 2, a frame 1; Claude reading the copy 1, this machine's page 1, a new host 2, a card's
-    // answer 2; Claude searching 3, a helper's stream 2, a search card's answer 2, the turn's end 1)
-    match c.weighted(&[3, 2, 1, 2, 2, 1, 1, 1, 2, 1, 1, 1, 2, 2, 3, 2, 2, 1]) {
+    // answer 2; Claude searching 3, a helper's stream 2, a search card's answer 2, the turn's end 1; Claude reading the
+    // wiki's copy 2)
+    match c.weighted(&[3, 2, 1, 2, 2, 1, 1, 1, 2, 1, 1, 1, 2, 2, 3, 2, 2, 1, 2]) {
+        18 => claude_reads(ed, n, WIKI),
         14 => {
             let Some(generation) = ed.workspace.claude.chat.as_ref().map(|c| c.generation()) else {
                 return "(no chat)".into();
@@ -243,11 +268,28 @@ fn held(ed: &Editor) -> Result<(), String> {
     if let Some(h) = cards.into_iter().find(|h| answered(h)) {
         return Err(format!("a card for {h}, which was answered for good"));
     }
-    // (a search's card only while neither the chat nor the session answered)
+    // (a token read's card says so)
+    let unsaid = ed
+        .offers
+        .iter()
+        .any(|o| matches!(&o.what, crate::offer::What::WebRead(a) if a.host == "wiki.test" && !a.signed));
+    if unsaid {
+        return Err("a card for the wiki's page that doesn't say the token".into());
+    }
+    // (a search's card only while neither the chat nor the session answered — but W3's, each search's own after a
+    // token read)
     let searched = ed.workspace.claude.searches_ok
         || ed.workspace.claude.chat.as_ref().is_some_and(|c| c.searches.is_some());
-    if searched && ed.offers.iter().any(|o| o.kind() == "web-search") {
+    let unguarded =
+        ed.offers.iter().any(|o| matches!(&o.what, crate::offer::What::WebSearch(a) if !a.guarded));
+    if searched && unguarded {
         return Err("a search's card after the chat or the session answered".into());
+    }
+    let read_signed = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.signed_read);
+    if !read_signed
+        && ed.offers.iter().any(|o| matches!(&o.what, crate::offer::What::WebSearch(a) if a.guarded))
+    {
+        return Err("W3's search card in a chat that read no page with your token".into());
     }
     // (three helpers at most, and one waits only while three run)
     let (running, queued) = (ed.workspace.claude.searches.len(), ed.workspace.claude.searches_queued.len());

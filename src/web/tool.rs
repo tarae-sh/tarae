@@ -16,6 +16,11 @@
 //! text inside `<page from=… id=…>` … `</page id=…>` with an id its text never holds (`quote::id_for`), lines that
 //! look like keys hidden (`tokens::redacted`). A page read is a replay stop (D14 — `follow::page_read`): follow and
 //! `]r`/`[r` show the copy Claude read, never a second fetch.
+//!
+//! Your wiki's pages (`web.signed-in`, the work-wiki plan W3): a read under its base goes with your token, so it gets
+//! what no run's curl could — neither a run's grant nor `llm.sandbox-hosts` opens it, and no copy fetched with the
+//! token reaches Claude without it: only the read card's own answers (`y`, `a`, `s`), the card saying the token. Once
+//! a chat read one, its web searches ask each time (`Chat.signed_read`, `search::gate`).
 
 use std::ops::Range;
 
@@ -116,6 +121,8 @@ pub struct Ask {
     pub url: String,
     pub host: String,
     pub port: u16,
+    /// Under a wiki's base: the read goes with your token (or its copy came with it).
+    pub signed: bool,
 }
 
 /// How one URL item is read.
@@ -145,8 +152,10 @@ type MakeWay = Box<dyn Fn((&str, u16), Stop) -> Result<fetch::Way, String> + Sen
 /// it's up, the call waits on it).
 pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Option<Reads> {
     // (this call's `y`s ride with the call, tarae's side — never in its arguments, which are Claude's)
-    let once: Vec<(String, u16)> =
-        ed.workspace.claude.web_once.iter().filter(|(c, _)| c.same(call)).map(|(_, at)| at.clone()).collect();
+    let once: Vec<((String, u16), bool)> = (ed.workspace.claude.web_once.iter())
+        .filter(|(c, ..)| c.same(call))
+        .map(|(_, at, signed)| (at.clone(), *signed))
+        .collect();
     let now = crate::clock::now();
     let mut out = Vec::new();
     for it in items {
@@ -157,11 +166,28 @@ pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Opt
                 continue;
             }
         };
-        if let Some((at, f)) = ed.workspace.pages.get(&it.url, now) {
+        let at = (t.host.clone(), t.port);
+        // (with your token: only a read's own answers given on a card that said the token let it through — never a
+        // run's reach, nor a plain read's yes)
+        let wiki = ed.config.llm.signed_in.iter().find(|w| w.under(&t));
+        let kept = ed.workspace.pages.get(&it.url, now);
+        let signed = wiki.is_some() || kept.as_ref().is_some_and(|(_, f)| f.signed);
+        let copy = kept.is_some();
+        let let_through = once.iter().any(|(a, s)| *a == at && (*s || !signed))
+            || match signed {
+                true => read_answered(ed, &at, true),
+                false => reads_unasked(ed, &at),
+            };
+        if let Some((at, f)) = kept.filter(|_| !signed || let_through) {
             out.push((it, How::Kept(at, f)));
             continue;
         }
-        let at = (t.host.clone(), t.port);
+        // (its variable holding no token since tarae started: said before any card — a yes would fetch nothing; a copy
+        // needs no token, only its card)
+        if let Some((w, m)) = wiki.and_then(|w| Some((w, w.token_missing?))).filter(|_| !copy) {
+            out.push((it, How::No(m.words(&w.token_env, true))));
+            continue;
+        }
         let how = match () {
             _ if t.loopback && runs_reach_here(ed, t.port) => How::Fetch(at.0, at.1),
             _ if t.loopback => How::No(format!(
@@ -172,7 +198,7 @@ pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Opt
                 "the user said no to your reading pages at {} in this conversation — don't ask again",
                 t.host
             )),
-            _ if once.contains(&at) || reads_unasked(ed, &at) => How::Fetch(at.0, at.1),
+            _ if let_through => How::Fetch(at.0, at.1),
             _ => {
                 ask(
                     ed,
@@ -182,6 +208,7 @@ pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Opt
                         url: it.url.clone(),
                         host: at.0,
                         port: at.1,
+                        signed,
                     },
                 );
                 return None;
@@ -206,7 +233,7 @@ pub fn turn_over(ed: &mut Editor) {
 
 /// `call`'s read is answered: its `y`s go.
 pub fn answered(ed: &mut Editor, call: &Call) {
-    ed.workspace.claude.web_once.retain(|(c, _)| !c.same(call));
+    ed.workspace.claude.web_once.retain(|(c, ..)| !c.same(call));
 }
 
 /// Whether the user said no to Claude's reads of `host:port` in this conversation.
@@ -214,15 +241,27 @@ fn refused(ed: &Editor, at: &(String, u16)) -> bool {
     ed.workspace.claude.chat.as_ref().is_some_and(|c| c.web_refused.contains(at))
 }
 
-/// Whether Claude's read of `host:port` goes unasked: a read's own answers (this chat's, this session's), else what
-/// Claude's runs reach unasked — `llm.sandbox-hosts` with the network open, the user's answers on runs' host cards
-/// (a run's grant opens reads: no more reach than a run's curl).
+/// Whether a read's own answers let Claude's reads of `host:port` through: this chat's `a`, this session's `s` — all a
+/// read with your token goes by, and then (`signed`) only those given on a card that said the token.
+fn read_answered(ed: &Editor, (host, port): &(String, u16), signed: bool) -> bool {
+    use crate::sandbox::proxy::egress::covers;
+    let named = |(h, p): &(String, u16)| p == port && covers(h, host);
+    let chat = ed.workspace.claude.chat.as_ref();
+    let s = &ed.workspace.claude;
+    match signed {
+        true => chat.is_some_and(|c| c.web_signed.iter().any(named)) || s.web_signed.iter().any(named),
+        false => chat.is_some_and(|c| c.web_hosts.iter().any(named)) || s.web_hosts.iter().any(named),
+    }
+}
+
+/// Whether Claude's read of `host:port` goes unasked: a read's own answers (`read_answered`), else what Claude's runs
+/// reach unasked — `llm.sandbox-hosts` with the network open, the user's answers on runs' host cards (a run's grant
+/// opens reads: no more reach than a run's curl).
 fn reads_unasked(ed: &Editor, (host, port): &(String, u16)) -> bool {
     use crate::sandbox::proxy::egress::covers;
     let named = |(h, p): &(String, u16)| p == port && covers(h, host);
     let chat = ed.workspace.claude.chat.as_ref();
-    if chat.is_some_and(|c| c.web_hosts.iter().any(named)) || ed.workspace.claude.web_hosts.iter().any(named)
-    {
+    if read_answered(ed, &(host.clone(), *port), false) {
         return true;
     }
     let llm = &ed.config.llm;
@@ -266,7 +305,12 @@ fn way_of(ed: &Editor) -> MakeWay {
         });
     }
     let (root, upstream) = (ed.workspace.root.clone(), ed.config.llm.sandbox_upstream);
-    Box::new(move |at, stop| fetch::claudes(&root, crate::sandbox::upstream_now(upstream), at, stop))
+    let wikis = ed.config.llm.signed_in.clone();
+    Box::new(move |at, stop| {
+        let here = crate::sandbox::Here::now();
+        let signed = super::signed::of(&wikis, &here.env, true);
+        fetch::claudes(&root, crate::sandbox::upstream_of(&here, upstream), signed, at, stop)
+    })
 }
 
 pub const TITLE: &str = "Let Claude read a page at";
@@ -275,13 +319,28 @@ pub const TITLE: &str = "Let Claude read a page at";
 fn ask(ed: &mut Editor, a: Ask) {
     use crate::cards::{Asked, Request, Why};
     let at = format!("{}:{}", a.host, a.port);
-    let lines = [
-        crate::nav::clip(&a.url, 300),
-        format!("Claude's read · port {} · through tarae's proxy · GET, nothing of yours sent", a.port),
-        "Reads of pages there only — a yes lets none of Claude's commands reach it.".to_string(),
-        "What Claude has read can go there in the addresses it asks for.".to_string(),
-    ];
-    let title = format!("{TITLE} {}?", a.host);
+    let lines = match a.signed {
+        // (W3: the token said, and what follows from it — the chat's searches ask each time after it)
+        true => [
+            crate::nav::clip(&a.url, 300),
+            format!(
+                "Claude's read · port {} · through tarae's proxy · GET with your token, nothing else of yours",
+                a.port
+            ),
+            "After it, this chat's web searches ask each time.".to_string(),
+            "What it reads goes to Claude — your wiki's pages as your account sees them.".to_string(),
+        ],
+        false => [
+            crate::nav::clip(&a.url, 300),
+            format!("Claude's read · port {} · through tarae's proxy · GET, nothing of yours sent", a.port),
+            "Reads of pages there only — a yes lets none of Claude's commands reach it.".to_string(),
+            "What Claude has read can go there in the addresses it asks for.".to_string(),
+        ],
+    };
+    let title = match a.signed {
+        true => format!("{TITLE} {} with your token?", a.host),
+        false => format!("{TITLE} {}?", a.host),
+    };
     let asked = Asked::new(Why::Web, Request::Host(at));
     let o = crate::offer::Offer::new(
         title,
@@ -303,19 +362,30 @@ pub fn answer(ed: &mut Editor, id: u64, a: Ask, scope: Option<crate::allow::Scop
     ed.offer_finished(id, Ok(()));
     let at = (a.host.clone(), a.port);
     let call = a.call;
+    let add = |list: &mut Vec<(String, u16)>| {
+        if !list.contains(&at) {
+            list.push(at.clone());
+        }
+    };
+    // (a token card's answer is a plain one's too; a plain card's never lets a token read through)
+    let with = if a.signed { " with your token" } else { "" };
     match scope {
-        Some(Scope::Once) => ed.workspace.claude.web_once.push((call.clone(), at.clone())),
+        Some(Scope::Once) => ed.workspace.claude.web_once.push((call.clone(), at.clone(), a.signed)),
         Some(Scope::ThisChat) => {
-            if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.web_hosts.contains(&at)) {
-                c.web_hosts.push(at.clone());
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
+                add(&mut c.web_hosts);
+                if a.signed {
+                    add(&mut c.web_signed);
+                }
             }
-            ed.set_success(format!("Claude may read pages at {} in this conversation", a.host));
+            ed.set_success(format!("Claude may read pages at {}{with} in this conversation", a.host));
         }
         Some(Scope::Session | Scope::Always) => {
-            if !ed.workspace.claude.web_hosts.contains(&at) {
-                ed.workspace.claude.web_hosts.push(at.clone());
+            add(&mut ed.workspace.claude.web_hosts);
+            if a.signed {
+                add(&mut ed.workspace.claude.web_signed);
             }
-            ed.set_success(format!("Claude may read pages at {} in this session", a.host));
+            ed.set_success(format!("Claude may read pages at {}{with} in this session", a.host));
         }
         None => {
             if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.web_refused.contains(&at)) {
@@ -412,6 +482,15 @@ struct Room {
 pub fn landed(ed: &mut Editor, got: Vec<Got>) {
     let now = crate::clock::now();
     let mut kept: Vec<(String, Instant)> = Vec::new();
+    // (W3: a page read with your token — this chat's web searches ask each time from now; kept at once, not at the
+    // turn's end, so a crash right after still has the conversation marked when it's continued)
+    if got.iter().any(|g| g.f.signed)
+        && let Some(c) = ed.workspace.claude.chat.as_mut()
+        && !c.signed_read
+    {
+        c.signed_read = true;
+        crate::chat::keep_places(ed);
+    }
     for g in got {
         let at = match g.at {
             Some(at) => at,
@@ -443,8 +522,14 @@ fn section(
     room: &mut Room,
 ) -> (String, Option<Range<usize>>) {
     let given = &it.given;
+    // (a same host's address is one into the user's wiki: its read goes with their token, asked on its own card)
+    let host = |u: &str| super::http::target(u).map(|t| t.host).ok();
+    let whither = |next: &str| match host(next) == host(&f.url) {
+        true => "into the user's wiki, where a read goes with their token",
+        false => "to another host",
+    };
     if let Some(next) = f.elsewhere.as_deref().filter(|_| f.bytes.is_empty()) {
-        return (format!("== {given}: it redirects to another host: {}\n", address(next)), None);
+        return (format!("== {given}: it redirects {}: {}\n", whither(next), address(next)), None);
     }
     if page.read == Read::None {
         return (format!("== {given}: {}\n", page.said.as_deref().unwrap_or("not a page tarae reads")), None);
@@ -471,7 +556,7 @@ fn section(
     }
     let mut notes: Vec<String> = [page.said.clone(), f.said.clone()].into_iter().flatten().collect();
     if let Some(next) = &f.elsewhere {
-        notes.push(format!("it refreshes to another host: {}", address(next)));
+        notes.push(format!("it refreshes {}: {}", whither(next), address(next)));
     }
     if hidden > 0 {
         notes.push(format!("{} that looked like a key hidden", crate::quote::lines(hidden)));

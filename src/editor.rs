@@ -14101,6 +14101,7 @@ mod tests {
             follow: false,
             at_end: Some(dir.clone()),
             lazy: true,
+            signed_read: false,
         };
         crate::chat::restore(&mut ed, back);
         assert!(!crate::edits::at_end(&ed), "a restored chat follows the config");

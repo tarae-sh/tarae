@@ -15,6 +15,10 @@
 //! - a name `llm.sandbox-secrets` masks (P2, `proxy::masked`): its sentinel, never its value — checked before every
 //!   other path, so neither `llm.sandbox-env` nor a card's real-value grant (which lands there) passes it whole.
 //!
+//! Before all of those: a variable `web.signed-in` names for your wiki's token (the work-wiki plan W1) is never a
+//! run's — not whole, not masked, whatever names it (`RunEnv.wiki`, said when something would have passed it): the
+//! token has no scopes and can write the wiki, and only tarae's own GET sends it.
+//!
 //! What looks like a token (`tokens::token_like` on `NAME=value`: a name for a secret with a value, a URL with
 //! a password, an option giving one, a known prefix) is left out whole, whatever passed it —
 //! `CARGO_REGISTRY_TOKEN` inside `CARGO_*`, `YARN_NPM_AUTH_IDENT` inside `YARN_*`, a `GRADLE_OPTS` holding
@@ -56,6 +60,12 @@ const FLOOR: &[&str] = &[
 
 /// The floor's families: the locale's parts (`LC_CTYPE` alone is common on macOS — no `LANG`).
 const FLOOR_FAMILIES: &[&str] = &["LC_"];
+
+/// Whether `name` is the floor's (a family's too) or a proxy's — every run's: never a wiki's `token-env`
+/// (`web::signed::wikis_of`).
+pub(crate) fn floor(name: &str) -> bool {
+    FLOOR.contains(&name) || FLOOR_FAMILIES.iter().any(|f| name.starts_with(f)) || PROXIES.contains(&name)
+}
 
 /// The user's proxies: never passed — while the network is open (`llm.sandbox-network`) tarae's egress proxy's
 /// own take their place (`proxy::run_env`), and those aren't said as left out.
@@ -126,7 +136,14 @@ pub struct RunEnv {
     /// The names `llm.sandbox-secrets` masks that can be (`masked::maskable`) — each in `vars` as its sentinel once
     /// the run's policy has the session's (`sandbox::for_its_run`), never its value.
     pub masked: Vec<String>,
+    /// Left out as your wiki's token (`web.signed-in`'s `token-env`) — names: never passed, and no card offers one
+    /// (not in `left_out`).
+    pub wiki: Vec<String>,
 }
+
+/// What marks a note on a wiki's variable (kept with the masked ones' where a run's homes say theirs —
+/// `sandbox::for_its_run`).
+pub(crate) const WIKI_NOTE: &str = "(web.signed-in)";
 
 /// Names only: a value never reaches a log through a policy's `Debug`.
 impl std::fmt::Debug for RunEnv {
@@ -141,6 +158,7 @@ impl std::fmt::Debug for RunEnv {
             // (apart: a name moved from its real value to masked is another policy — a daemon started with the real
             // value isn't the masked run's, `policy_key`)
             .field("masked", &self.masked)
+            .field("wiki", &self.wiki)
             .finish()
     }
 }
@@ -173,7 +191,8 @@ fn token_like(name: &str, value: &OsString) -> bool {
 /// said as left out). One its tool reads in any case (the packs' `any-case`) goes in the packs' spelling alone, its
 /// value `Here::spelled`'s — the user's other spellings `replaced`; a tool's own proxy setting (the packs'
 /// `proxy.out`, any case) never, as `PROXIES`. A name `masked` holds (`llm.sandbox-secrets`) first of all: none of
-/// those paths — `masked` where its value can be (its sentinel comes later), else left out, said why.
+/// those paths — `masked` where its value can be (its sentinel comes later), else left out, said why. A name `wiki`
+/// holds (`web.signed-in`'s variables) before even that: left out, said when a path would have passed it.
 pub fn of(
     here: &Here,
     policy: &[&str],
@@ -181,6 +200,7 @@ pub fn of(
     yours: &[String],
     set: &[&str],
     masked: &[&String],
+    wiki: &[&String],
 ) -> RunEnv {
     let packs = crate::sandboxpack::get();
     let folded = |n: &str| n.to_ascii_lowercase().replace('-', "_");
@@ -204,6 +224,22 @@ pub fn of(
     let mut out = RunEnv::default();
     for name in names {
         let value = &here.env[name];
+        if wiki.contains(&name) {
+            let why = match () {
+                _ if masked.contains(&name) => Some("llm.sandbox-secrets"),
+                _ if yours.iter().any(|e| matches(e, name)) => Some("llm.sandbox-env"),
+                _ if by(name).is_some() => Some("a language pack"),
+                _ => None,
+            };
+            if let Some(by) = why {
+                out.notes.push(format!(
+                    "{name} isn't passed though {by} names it {WIKI_NOTE}: it holds your wiki's token, which can write \
+                     the wiki — only tarae's own reads send it."
+                ));
+            }
+            out.wiki.push(name.clone());
+            continue;
+        }
         if masked.contains(&name) {
             match super::proxy::masked::maskable(value.as_encoded_bytes()) {
                 Ok(()) => out.masked.push(name.clone()),
@@ -398,6 +434,12 @@ impl RunEnv {
                 s.push_str(&format!("{k} ({from})\n"));
             }
         }
+        if !self.wiki.is_empty() {
+            s.push_str("\n## Left out — your wiki's token (web.signed-in): it can write the wiki, nothing passes it\n");
+            for k in &self.wiki {
+                s.push_str(&format!("{k}\n"));
+            }
+        }
         s.push_str("\n## Left out — the rest\n");
         for k in &self.others {
             s.push_str(&format!("{k}\n"));
@@ -452,7 +494,7 @@ mod tests {
         ]);
         let pass = vec!["CARGO_*".to_string(), "RUST*".to_string()];
         let yours = vec!["DATABASE_URL".to_string(), "MY_API_KEY".to_string()];
-        let e = of(&h, &["CARGO_HOME"], &pass, &yours, &["NO_COLOR"], &[]);
+        let e = of(&h, &["CARGO_HOME"], &pass, &yours, &["NO_COLOR"], &[], &[]);
         assert_eq!(
             names(&e),
             ["CARGO_HOME", "DATABASE_URL", "HOME", "LC_CTYPE", "MY_API_KEY", "PATH", "RUSTFLAGS"]
@@ -474,7 +516,7 @@ mod tests {
         assert!(!format!("{e:?}").contains(FAKE) && !format!("{e:?}").contains("/usr/bin"), "{e:?}");
         // (the user's proxies never pass: with the network open tarae's own take their place — `run_env_of`)
         // A family of the user's carries no token-like name; a bare `*` is no family
-        let fam = of(&h, &[], &[], &["MY_*".into(), "*".into()], &[], &[]);
+        let fam = of(&h, &[], &[], &["MY_*".into(), "*".into()], &[], &[], &[]);
         assert!(fam.tokens.contains(&"MY_API_KEY".to_string()) && !names(&fam).contains(&"CLAUDE_PID"));
     }
 
@@ -493,7 +535,7 @@ mod tests {
             ("GRADLE_OPTS", "-Xmx2g -Dfile.encoding=UTF-8"),
         ]);
         let pass = ["YARN_*", "JAVA_OPTS", "MAVEN_OPTS", "GRADLE_*"].map(String::from);
-        let e = of(&h, &[], &pass, &[], &[], &[]);
+        let e = of(&h, &[], &pass, &[], &[], &[], &[]);
         assert_eq!(names(&e), ["GIT_AUTHOR_EMAIL", "GIT_AUTHOR_NAME", "GRADLE_OPTS", "YARN_ENABLE_COLORS"]);
         assert_eq!(e.tokens, ["JAVA_OPTS", "MAVEN_OPTS", "YARN_NPM_AUTH_IDENT"]);
         assert!(!format!("{e:?}").contains(FAKE));
@@ -524,7 +566,7 @@ mod tests {
         let h = here(&vars);
         let pass =
             ["npm_config_*", "NPM_CONFIG_*", "YARN_*", "pnpm_config_*", "Npm_Config_*"].map(String::from);
-        let e = of(&h, &[], &pass, &["npm_config_https-proxy".into()], &[], &[]);
+        let e = of(&h, &[], &pass, &["npm_config_https-proxy".into()], &[], &[], &[]);
         assert_eq!(names(&e), ["YARN_ENABLE_COLORS", "npm_config_registry"]);
         assert!(e.left_out().next().is_none(), "{e:?}");
     }
@@ -552,6 +594,52 @@ mod tests {
         assert!(!page.contains("A_TOKEN (llm.sandbox-secrets)"), "{page}");
     }
 
+    /// Your wiki's token (`web.signed-in`'s variable) is never a run's — not whole by `llm.sandbox-env`, a family or a
+    /// pack, not masked by `llm.sandbox-secrets` — said when something named it; no card offers it (not left out as
+    /// the others are); its value in no `Debug`.
+    #[test]
+    fn a_wikis_token_is_never_a_runs() {
+        let h = here(&[("TARAE_TEST_PAT", FAKE), ("TARAE_TEST_OTHER", "x")]);
+        let wiki = "TARAE_TEST_PAT".to_string();
+        let pass = ["TARAE_TEST_*".to_string()];
+        let e = of(&h, &[], &pass, std::slice::from_ref(&wiki), &[], &[&wiki], &[&wiki]);
+        assert_eq!(e.var("TARAE_TEST_PAT"), None);
+        assert_eq!(e.var("TARAE_TEST_OTHER").as_deref(), Some("x"), "the family's others pass");
+        assert!(e.masked.is_empty() && e.wiki == [wiki.clone()]);
+        assert!(!e.left_out().any(|n| *n == wiki), "no card offers it");
+        assert_eq!(
+            e.notes,
+            [
+                "TARAE_TEST_PAT isn't passed though llm.sandbox-secrets names it (web.signed-in): it holds your wiki's \
+              token, which can write the wiki — only tarae's own reads send it."
+            ]
+        );
+        assert!(!format!("{e:?}").contains(FAKE) && !e.page().contains(FAKE));
+        assert!(e.page().contains("your wiki's token (web.signed-in)"));
+        let yours = of(&h, &[], &[], std::slice::from_ref(&wiki), &[], &[], &[&wiki]);
+        assert!(
+            yours.var("TARAE_TEST_PAT").is_none()
+                && yours.notes[0].contains("though llm.sandbox-env names it")
+        );
+        let pack = of(&h, &[], &pass, &[], &[], &[], &[&wiki]);
+        assert!(
+            pack.var("TARAE_TEST_PAT").is_none() && pack.notes[0].contains("though a language pack names it")
+        );
+        let named_by_none = of(&h, &[], &[], &[], &[], &[], &[&wiki]);
+        assert!(named_by_none.notes.is_empty() && named_by_none.wiki == [wiki.clone()]);
+        // (the settings' own way: `web.signed-in` with `llm.sandbox-env` naming the variable)
+        let t: toml::Table = toml::from_str(
+            r#"v = [{ base = "https://corp.example/w", kind = "confluence-dc", token-env = "TARAE_TEST_PAT" }]"#,
+        )
+        .unwrap();
+        let llm = crate::llm::LlmConfig {
+            signed_in: crate::web::signed::wikis_of(&t["v"]).unwrap(),
+            sandbox_env: vec![wiki.clone()],
+            ..Default::default()
+        };
+        assert_eq!(crate::sandbox::run_env_of(&h, &llm).var("TARAE_TEST_PAT"), None);
+    }
+
     #[test]
     fn a_masked_name_takes_no_other_path_and_no_value() {
         let real = concat!("tarae-fake-", "token-0123456789abcdef");
@@ -563,7 +651,7 @@ mod tests {
         ]);
         let masked: Vec<String> = ["GH_TOKEN", "SHORT_TOKEN", "SPACED_TOKEN"].map(String::from).into();
         let yours: Vec<String> = ["GH_TOKEN", "SHORT_TOKEN", "OTHER_TOKEN"].map(String::from).into();
-        let e = of(&h, &[], &["GH_*".into()], &yours, &[], &masked.iter().collect::<Vec<_>>());
+        let e = of(&h, &[], &["GH_*".into()], &yours, &[], &masked.iter().collect::<Vec<_>>(), &[]);
         assert_eq!(e.masked, ["GH_TOKEN"]);
         assert_eq!(e.var("GH_TOKEN"), None, "no value here: its sentinel comes with the run's policy");
         assert_eq!(
@@ -604,6 +692,7 @@ mod tests {
             replaced: Vec::new(),
             notes: Vec::new(),
             masked: Vec::new(),
+            wiki: Vec::new(),
         };
         let mut said = Vec::new();
         let first = e.said(&mut said).unwrap();

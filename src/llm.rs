@@ -214,6 +214,10 @@ pub struct LlmConfig {
     pub web_search: bool,
     /// The model its search runs on (`--model` of the helper `web::search` starts). Only your own config sets it.
     pub web_search_model: String,
+    /// `web.signed-in`: your wikis, each with the variable holding its token (`web::signed`) — here, beside what every
+    /// claude is made from, so no claude tarae starts can miss leaving the variable out (`command`). Only your own
+    /// config sets it.
+    pub signed_in: Vec<crate::web::signed::Wiki>,
 }
 
 impl Default for LlmConfig {
@@ -258,6 +262,7 @@ impl Default for LlmConfig {
             parent_wakes: 6,
             web_search: false,
             web_search_model: crate::web::search::MODEL.into(),
+            signed_in: Vec::new(),
         }
     }
 }
@@ -369,6 +374,11 @@ pub fn command(
     // whoever asks, no key read. claude's own git only reads status, it never needs one; Claude's runs never got
     // it (`runenv`). A path it finds elsewhere is reached: claude runs as you (threat model G20)
     cmd.env_remove("SSH_AUTH_SOCK");
+    // Nor your wiki's token (`web.signed-in`): it can write the wiki, and only tarae's own GET sends it — never a
+    // claude's, its children's, or what they print
+    for w in &cfg.signed_in {
+        cmd.env_remove(&w.token_env);
+    }
     // (removed by name, never `env_clear`: the rest of tarae's environment is claude's as it always was. An API
     // session never keeps a key from it: one there outranks its helper — Claude Code's credential order)
     let keep_keys = cfg.keep_env_key && *cred == Credential::Subscription;
@@ -411,8 +421,17 @@ impl SpawnError {
 mod claudeenv;
 #[cfg(test)]
 use claudeenv::NESTED_BY;
-use claudeenv::{CREDENTIALS, judged};
+use claudeenv::{CREDENTIALS, THE_HOSTS, judged};
 pub use claudeenv::{ClaudeEnv, claude_env};
+
+/// Whether `name` is Claude Code's own — a login, a host's, a setting (`ANTHROPIC_*`, `CLAUDE*`): never a wiki's
+/// `token-env` (`web::signed::wikis_of`), which `command` would strip from every claude and send to the wiki.
+pub fn claudes_own(name: &str) -> bool {
+    CREDENTIALS.contains(&name)
+        || THE_HOSTS.contains(&name)
+        || name.starts_with("ANTHROPIC_")
+        || name.starts_with("CLAUDE")
+}
 
 /// A stand-in for tarae's environment, by name (`Editor::claude_env`).
 pub type Env = std::collections::HashMap<String, String>;
@@ -2147,6 +2166,28 @@ pub(crate) mod tests {
         };
         // (given, as `given` passes tarae's environment on; the test binary's own isn't changed — a stand-in path)
         let given = Env::from([("SSH_AUTH_SOCK".to_string(), "/tarae-test/agent.sock".to_string())]);
+        let sub = Credential::Subscription;
+        let child = spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "unset");
+    }
+
+    /// Every claude tarae starts is without your wiki's token (`web.signed-in`'s variable) — inherited from tarae's
+    /// environment or given — so neither it, its children nor what they print has it: the chat, the helpers and the
+    /// web search's all start through `command`.
+    #[test]
+    fn every_claude_tarae_starts_has_no_wiki_token() {
+        let t: toml::Table = toml::from_str(
+            r#"v = [{ base = "https://corp.example/w", kind = "confluence-dc", token-env = "TARAE_TEST_PAT" }]"#,
+        )
+        .unwrap();
+        let cfg = LlmConfig {
+            command: "sh".into(),
+            args: vec!["-c".into(), "printf '%s' \"${TARAE_TEST_PAT-unset}\"".into()],
+            signed_in: crate::web::signed::wikis_of(&t["v"]).unwrap(),
+            ..Default::default()
+        };
+        let given = Env::from([("TARAE_TEST_PAT".to_string(), "tarae-fake-token".to_string())]);
         let sub = Credential::Subscription;
         let child = spawn(&cfg, &[], &std::env::temp_dir(), Some(&given), &sub).unwrap();
         let out = child.wait_with_output().unwrap();

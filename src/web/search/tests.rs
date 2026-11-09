@@ -330,6 +330,83 @@ fn the_first_search_asks_and_its_answer_holds_for_the_chat() {
     assert!(ed.workspace.claude.allowed.is_empty() && sent() == before);
 }
 
+/// W3: once the chat read a page with your wiki's token, each search asks on its own card — whatever this chat's or
+/// this session's yes — its words shown; `y` starts that one alone, `n` refuses that one alone (the chat may ask again
+/// with other words); this chat's no still holds with no card. A new conversation is unmarked.
+#[test]
+fn after_a_token_read_each_search_asks() {
+    let (mut ed, generation, rx) = editor();
+    ed.workspace.claude.searches_ok = true;
+    ed.workspace.claude.chat.as_mut().unwrap().searches = Some(true);
+    ed.workspace.claude.chat.as_mut().unwrap().signed_read = true;
+    search(&mut ed, generation, 1, json!({ "query": "rollback procedure postgres" })).unwrap();
+    let (title, question) = card(&ed).expect("its own card");
+    assert_eq!(title, "Let Claude search the web?");
+    let lines: Vec<&str> = question.lines().collect();
+    assert_eq!(lines[0], "rollback procedure postgres");
+    assert_eq!(lines[2], "This chat read your wiki with your token: each search asks.");
+    let o = ed.offers.iter().find(|o| o.kind() == "web-search").unwrap();
+    assert_eq!(o.answers(false), [('y', "This search"), ('n', "Not this one")]);
+    assert!(rx.try_recv().is_err(), "nothing before the answer");
+    ed.offer_accept();
+    assert!(rx.try_recv().is_ok_and(|m| m.contains("rollback procedure postgres")));
+    search(&mut ed, generation, 2, json!({ "query": "internal hostname" })).unwrap();
+    assert!(card(&ed).is_some(), "the next asks again");
+    ed.offer_dismiss();
+    assert_eq!(answered(2).unwrap().unwrap_err(), "the user said no to this search");
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().searches, Some(true), "not the chat's no");
+    search(&mut ed, generation, 3, json!({ "query": "postgres 18 release" })).unwrap();
+    assert!(card(&ed).is_some(), "it may ask again");
+    ed.offers.clear();
+    ed.workspace.claude.chat.as_mut().unwrap().searches = Some(false);
+    assert!(
+        search(&mut ed, generation, 4, json!({ "query": "x" }))
+            .unwrap_err()
+            .contains("said no to web searches")
+    );
+    ed.workspace.claude.chat.as_mut().unwrap().conversation_left();
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().signed_read);
+    search(&mut ed, generation, 5, json!({ "query": "y" })).unwrap();
+    assert!(card(&ed).is_none(), "a new conversation: the session's yes holds again");
+}
+
+/// W3's mark goes with the conversation: saved and continued (`:chats`, `C-p`), or carried over `:restart`, a chat
+/// that read a page with your token still asks for each search.
+#[test]
+fn a_token_read_is_kept_with_its_conversation() {
+    let (mut ed, generation, _rx) = editor();
+    let (tx, _lines) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    (c.conversation, c.signed_read, c.searches) = (Some("c-wiki".into()), true, Some(true));
+    let saved = crate::chat::saved_of(&ed.workspace).unwrap();
+    assert!(saved.signed_read);
+    // (another conversation in between: its marks gone, then this one continued)
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.conversation_left();
+    c.conversation = Some("c-other".into());
+    crate::chat::continue_with(&mut ed, saved);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().signed_read, "continued, still marked");
+    ed.workspace.claude.searches_ok = true;
+    search(&mut ed, generation, 1, json!({ "query": "after the continue" })).unwrap();
+    assert!(ed.offers.iter().any(|o| matches!(&o.what, crate::offer::What::WebSearch(a) if a.guarded)));
+    ed.offers.clear();
+    // (over `:restart`: the state's chat carries it)
+    let r = crate::chat::Restored {
+        conversation: None,
+        input: String::new(),
+        cursor: 0,
+        focused: false,
+        scroll: 0,
+        follow: false,
+        at_end: None,
+        lazy: true,
+        signed_read: true,
+    };
+    crate::chat::restore(&mut ed, r);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().signed_read, "restarted, still marked");
+}
+
 /// Off, the tool list is today's byte for byte — and `web_search` is no tool; on (as the chat's process started),
 /// the list is today's with `web_search` after it, the cache's prefix kept.
 #[test]

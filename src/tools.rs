@@ -1311,6 +1311,13 @@ fn also_env(
     caps: &crate::caps::Caps,
     env: Option<&crate::sandbox::runenv::RunEnv>,
 ) -> Result<Option<crate::allow::Grant>, String> {
+    // (your wiki's token: never a run's, whatever a card or a setting says — `runenv::of`)
+    if env.is_some_and(|e| e.wiki.iter().any(|w| w == n)) {
+        return Err(format!(
+            "{n} holds the user's wiki token (web.signed-in) — never passed to your commands: it can write the wiki. \
+             If the command needs it, tell the user"
+        ));
+    }
     if !crate::readonly::env_allowed(n) {
         return Err(format!(
             "{n} is a variable no card passes — it finds programs, runs or loads code, or a toolchain's own is \
@@ -8712,6 +8719,7 @@ mod tests {
             replaced: vec!["TARAE_TEST_STOOD_IN".into(), "npm_config_userconfig".into()],
             notes: Vec::new(),
             masked: Vec::new(),
+            wiki: vec!["TARAE_TEST_WIKI_PAT".into()],
         };
         let var = |n: &str, e: Option<&RunEnv>| grant(super::AlsoAsk::Env(n.into()), false, e);
         // (one tarae's own stands in for: no card — a yes would change nothing; review note 9)
@@ -8723,6 +8731,8 @@ mod tests {
         assert_eq!(var("GITHUB_TOKEN", Some(&env)), Ok(Some(Grant::Env("GITHUB_TOKEN".into()))));
         assert_eq!(var("LANG", Some(&env)), Ok(None), "passed already: it runs");
         assert!(var("NOT_SET_ANYWHERE", Some(&env)).is_err_and(|e| e.contains("isn't set")));
+        // (your wiki's token: no card passes it — it can write the wiki)
+        assert!(var("TARAE_TEST_WIKI_PAT", Some(&env)).is_err_and(|e| e.contains("wiki token")));
         assert!(var("DATABASE_URL", None).is_err_and(|e| e.contains("run it without also first")));
         for never in ["PATH", "RUSTFLAGS", "LD_PRELOAD", "GIT_SSH_COMMAND"] {
             assert!(var(never, Some(&env)).is_err_and(|e| e.contains("no card passes")), "{never}");

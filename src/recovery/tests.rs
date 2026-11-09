@@ -572,6 +572,7 @@ fn stored(dir: &Path, root: &Path, id: &str, ago: Duration) {
         })),
         places: None,
         seq: crate::chats::seq(),
+        signed_read: false,
     };
     crate::chats::save(&dir.join("chats"), root, saved);
 }
@@ -935,6 +936,7 @@ fn a_conversation_restart_brought_back_is_not_offered_and_a_failed_exec_keeps_it
         follow: false,
         at_end: None,
         lazy: true,
+        signed_read: false,
     };
     crate::chat::restore(&mut ed, restored);
     ed.recovery_scan();

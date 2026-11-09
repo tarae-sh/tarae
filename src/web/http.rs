@@ -2,7 +2,8 @@
 //! `https://` (or `http://`, made `https://` but on this machine — D4), a host by its name — never a user or password
 //! in the address, never a bare address but this machine's (the proxy names hosts, as runs reach them), not yet a name
 //! that isn't ASCII (IDNA's tables: later, their own call) —; a GET with nothing of the user's in it: no cookie, no
-//! credentials, no referrer, the fragment never sent. Pure.
+//! credentials, no referrer, the fragment never sent — but your wiki's token at its base (`signed.rs`, the work-wiki
+//! plan W1, decided 2026-11-09), and its API's JSON asked there. Pure.
 
 use std::net::IpAddr;
 
@@ -123,16 +124,32 @@ fn encoded(path: &str) -> String {
 }
 
 /// What the fetch asks for: the page, as a reader — its markup first, gzip taken (`gzip.rs`), one request a
-/// connection. Nothing else, ever (D7).
-pub fn request(t: &Target) -> Vec<u8> {
-    format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: tarae/{} (reader)\r\nAccept: text/html, text/markdown;q=0.9, \
-         text/plain;q=0.8\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n",
+/// connection. Nothing else (D7) — but at a wiki `web.signed-in` names, its token (`token`: the fetch judged this
+/// request to be under its base, `signed::Wiki::under`) and, for a source request, its API's JSON (`json`).
+/// The token goes straight into the request's one buffer, made big enough up front (a growth would leave a copy
+/// behind), wiped as it goes (`zeroize`).
+pub fn request(t: &Target, token: Option<&str>, json: bool) -> zeroize::Zeroizing<Vec<u8>> {
+    let accept = match json {
+        true => "application/json",
+        false => "text/html, text/markdown;q=0.9, text/plain;q=0.8",
+    };
+    let head = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: tarae/{} (reader)\r\nAccept: {accept}\r\n",
         t.path,
         t.authority(),
         env!("CARGO_PKG_VERSION"),
-    )
-    .into_bytes()
+    );
+    const TAIL: &[u8] = b"Accept-Encoding: gzip\r\nConnection: close\r\n\r\n";
+    let room = head.len() + token.map_or(0, |t| t.len() + 32) + TAIL.len();
+    let mut out = zeroize::Zeroizing::new(Vec::with_capacity(room));
+    out.extend_from_slice(head.as_bytes());
+    if let Some(token) = token {
+        out.extend_from_slice(b"Authorization: Bearer ");
+        out.extend_from_slice(token.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(TAIL);
+    out
 }
 
 #[cfg(test)]
@@ -181,14 +198,39 @@ mod tests {
     }
 
     /// The request asks for the page alone: its path, its host, who reads it, gzip taken, the connection closed after —
-    /// no cookie, credentials or referrer, ever (D7).
+    /// no cookie, credentials or referrer, ever (D7) — but a named wiki's request (`token`), whose fields are said in
+    /// `a_wiki_request_carries_its_token_and_asks_for_json`.
     #[test]
     fn the_request_holds_nothing_of_the_user_s() {
-        let r = String::from_utf8(request(&target("https://example.com:8443/a?b#c").unwrap())).unwrap();
+        let r = String::from_utf8(
+            request(&target("https://example.com:8443/a?b#c").unwrap(), None, false).to_vec(),
+        )
+        .unwrap();
         assert!(r.starts_with("GET /a?b HTTP/1.1\r\nHost: example.com:8443\r\nUser-Agent: tarae/"), "{r}");
         assert!(r.contains("\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n"), "{r}");
         assert_eq!(r.matches("\r\n").count(), 7, "the request line and five fields: {r}");
         for never in ["cookie", "authorization", "referer", "#c"] {
+            assert!(!r.to_ascii_lowercase().contains(never), "{never}: {r}");
+        }
+    }
+
+    /// A request the fetch judged under a wiki's base carries its token as a bearer and nothing else more; a source
+    /// request asks for JSON in place of markup.
+    #[test]
+    fn a_wiki_request_carries_its_token_and_asks_for_json() {
+        let t = target("https://corp.example/confluence/rest/api/content/1").unwrap();
+        let req = request(&t, Some("tarae-fake-token"), true);
+        assert!(
+            req.len() <= req.capacity() && req.capacity() <= req.len() + 32,
+            "one buffer, sized up front"
+        );
+        let r = String::from_utf8(req.to_vec()).unwrap();
+        assert!(
+            r.contains("\r\nAccept: application/json\r\nAuthorization: Bearer tarae-fake-token\r\n"),
+            "{r}"
+        );
+        assert_eq!(r.matches("\r\n").count(), 8, "the request line and six fields: {r}");
+        for never in ["cookie", "referer", "text/html"] {
             assert!(!r.to_ascii_lowercase().contains(never), "{never}: {r}");
         }
     }

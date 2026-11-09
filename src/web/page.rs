@@ -278,7 +278,12 @@ fn way_of(ed: &Editor) -> Box<dyn FnOnce(Stop) -> Result<fetch::Way, String> + S
         return Box::new(move |stop| Ok(make(stop)));
     }
     let (root, upstream) = (ed.workspace.root.clone(), ed.config.llm.sandbox_upstream);
-    Box::new(move |stop| fetch::yours(&root, crate::sandbox::upstream_now(upstream), stop))
+    let wikis = ed.config.llm.signed_in.clone();
+    Box::new(move |stop| {
+        let here = crate::sandbox::Here::now();
+        let signed = super::signed::of(&wikis, &here.env, false);
+        fetch::yours(&root, crate::sandbox::upstream_of(&here, upstream), signed, stop)
+    })
 }
 
 /// A read landed — into its buffer while that read is still the buffer's; else no one's (its buffer closed, read

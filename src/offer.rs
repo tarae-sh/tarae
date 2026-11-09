@@ -1561,6 +1561,8 @@ impl Offer {
                     plain('n', "No"),
                 ]
             }
+            // (after a read with your wiki's token each search asks, its answers its own — W3)
+            W::WebSearch(a) if a.guarded => vec![plain('y', "This search"), plain('n', "Not this one")],
             // (the first search's yes is the chat's — none asks after it: the user's choice, 2026-11-09)
             W::WebSearch(_) => vec![lasts('y', "This chat"), lasts('s', "This session"), plain('n', "No")],
             W::ReviewEnd { .. } => vec![plain('y', "End it"), plain('n', "Keep reviewing")],

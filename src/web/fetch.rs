@@ -8,7 +8,10 @@
 //! Yours (`:web`): never asked (the address you typed is the yes — `Egress::any`), the address rules held. Redirects
 //! as D5: at most `REDIRECTS_MAX`, another host's followed and said (`Fetched.from`), never from beyond this machine
 //! into it. Limits as D6: the body on the wire and what it unpacks to (gzip only, `gzip.rs`) at most `max`, cut and
-//! said past it; one deadline to the last byte. Nothing of the user's sent (D7, `http.rs`). `Stop` ends it: its socket
+//! said past it; one deadline to the last byte. Nothing of the user's sent (D7, `http.rs`) — but at a wiki
+//! `web.signed-in` names, its token (`signed.rs`: judged per request — each redirect hop and refresh again; unset said,
+//! never fetched without it; a 401 or 403 said as the token refused, never as the page; the token scrubbed from what
+//! came), its pages read through its API (`source.rs`, `Fetched.signed`). `Stop` ends it: its socket
 //! shut, its worker's read returns. Fetched pages are the session's for `KEEP` (`Pages`, D11) — Claude's `read` (P4)
 //! takes them from there.
 //!
@@ -67,6 +70,8 @@ pub struct Way {
     /// Another host's redirect followed (yours) — else not, said in `Fetched.elsewhere` (Claude's, D5).
     pub others: bool,
     pub stop: Stop,
+    /// The wikis `web.signed-in` names, each with its token read from tarae's environment (or why not).
+    pub signed: Arc<[super::signed::Signed]>,
 }
 
 /// Tests: a stand-in for `yours` — a way made for the fetch's `Stop` (`Workspace.web_way`).
@@ -74,11 +79,12 @@ pub struct Way {
 pub type MakeWay = Arc<dyn Fn(Stop) -> Way + Send + Sync>;
 
 /// The way of yours (`:web`): never asked, every address rule and the user's upstream proxy (`upstream`) as a run's
-/// — this machine's own addresses read as a run's policy reads them. Blocks (the first one makes the TLS config): a
-/// worker's.
+/// — this machine's own addresses read as a run's policy reads them; `signed` the named wikis with their tokens.
+/// Blocks (the first one makes the TLS config): a worker's.
 pub fn yours(
     root: &std::path::Path,
     upstream: proxy::upstream::Upstreams,
+    signed: Vec<super::signed::Signed>,
     stop: Stop,
 ) -> Result<Way, String> {
     // (loopback is `route::this_machine`'s: the own addresses are the others — a LAN's, a bridge's)
@@ -97,6 +103,7 @@ pub fn yours(
         process: ":web".into(),
         others: true,
         stop,
+        signed: signed.into(),
     })
 }
 
@@ -106,10 +113,11 @@ pub fn yours(
 pub fn claudes(
     root: &std::path::Path,
     upstream: proxy::upstream::Upstreams,
+    signed: Vec<super::signed::Signed>,
     (host, port): (&str, u16),
     stop: Stop,
 ) -> Result<Way, String> {
-    let mut way = yours(root, upstream, stop)?;
+    let mut way = yours(root, upstream, signed, stop)?;
     let name = crate::sandbox::proxy::parse::name(host).map_err(|e| format!("{host}: {e}"))?;
     let rules =
         Egress { any: false, hosts: vec![egress::Pattern::Name(name, Some(port))], ..(*way.rules).clone() };
@@ -220,16 +228,26 @@ pub struct Fetched {
     /// Where another host's redirect (then `bytes` is empty) or refresh sends it, not followed (`Way.others`
     /// off — Claude's: its next read is asked at that host).
     pub elsewhere: Option<String>,
+    /// Fetched with your wiki's token (a request of it carried it): Claude's read of the copy is carded as a token
+    /// read's, and that chat's web searches ask each time after it (W3).
+    pub signed: bool,
 }
 
 /// `url` fetched and read (`super::read`), a `<meta refresh>` within 5 s followed as a redirect is (D5) — one
 /// budget of `REDIRECTS_MAX` hops for both — the page and what it came from. A refresh that isn't followed (past
 /// the budget, an address the fetch refuses, from beyond this machine into it) leaves the page as read, said.
 pub fn page(url: &str, way: &Way, prefer: super::Prefer) -> Result<(Fetched, super::Page), String> {
+    let wikis: Vec<&super::signed::Wiki> = way.signed.iter().map(|s| &s.wiki).collect();
+    if let Some(asked) = super::source::asked(url, &wikis) {
+        return source_page(url, asked?, way, prefer);
+    }
     let started = crate::clock::now();
     let by = started + way.deadline;
     let mut f = get_by(url, way, by, 0)?;
     loop {
+        if f.signed {
+            super::signed::scrubbed(&mut f.bytes, &way.signed);
+        }
         let page = super::read(&f.bytes, &f.url, f.content_type.as_deref(), prefer);
         let Some(next) =
             page.refresh.as_ref().filter(|r| r.secs <= 5 && r.url != f.url).map(|r| r.url.clone())
@@ -239,7 +257,7 @@ pub fn page(url: &str, way: &Way, prefer: super::Prefer) -> Result<(Fetched, sup
         };
         let here = http::target(&f.url).is_ok_and(|t| t.loopback);
         let host = |u: &str| http::target(u).map(|t| t.host).unwrap_or_default();
-        if !way.others && host(&next) != host(&f.url) {
+        if !way.others && (host(&next) != host(&f.url) || newly_signed(way, &next, f.signed)) {
             f.elsewhere = Some(next);
             f.took = crate::clock::since(started);
             return Ok((f, page));
@@ -261,27 +279,78 @@ pub fn page(url: &str, way: &Way, prefer: super::Prefer) -> Result<(Fetched, sup
             f.from.push(host(&f.url));
         }
         n.from = [std::mem::take(&mut f.from), n.from].concat();
-        (n.asked, n.upgraded) = (f.asked.clone(), f.upgraded || n.upgraded);
+        (n.asked, n.upgraded, n.signed) = (f.asked.clone(), f.upgraded || n.upgraded, f.signed || n.signed);
         f = n;
     }
+}
+
+/// Whether going on to `next` would put a wiki's token on a fetch that went without it (`signed`) — Claude's way says
+/// it instead (`Fetched.elsewhere`): its next read there is planned, and carded, as a token read.
+fn newly_signed(way: &Way, next: &str, signed: bool) -> bool {
+    !signed && http::target(next).is_ok_and(|t| super::signed::covering(&way.signed, &t).is_some())
+}
+
+/// A wiki's page through its API (`source.rs`): its JSON fetched with the token, its HTML and title made the page —
+/// at the page's own address (`url`), never the API's; a redirect elsewhere or an answer that isn't the page said.
+fn source_page(
+    url: &str,
+    asked: super::source::Asked,
+    way: &Way,
+    prefer: super::Prefer,
+) -> Result<(Fetched, super::Page), String> {
+    let started = crate::clock::now();
+    let own = http::target(url)?.url();
+    let run = crate::sandbox::next_run();
+    let got = hops(&asked.api, way, run, started + way.deadline, 0, true);
+    way.proxy.send(ToProxy::RunEnded { run });
+    let mut f = got?;
+    if let Some(next) = f.elsewhere.take().or_else(|| f.from.first().cloned()) {
+        return Err(format!(
+            "{own}: {}'s API sent the read to {} — a sign-in page? not read",
+            asked.wiki.host,
+            super::url::host(&next).unwrap_or(next)
+        ));
+    }
+    super::signed::scrubbed(&mut f.bytes, &way.signed);
+    // (scrubbed again once read: JSON's escapes — `\/`, `+` — can hide a base64 token from the raw bytes)
+    let mut html = super::source::page_of(&asked, &own, f.status, &f.bytes)?.into_bytes();
+    super::signed::scrubbed(&mut html, &way.signed);
+    (f.asked, f.url, f.status) = (url.trim().to_string(), own, 200);
+    (f.content_type, f.bytes) = (Some("text/html; charset=utf-8".into()), html);
+    f.took = crate::clock::since(started);
+    let page = super::read(&f.bytes, &f.url, f.content_type.as_deref(), prefer);
+    Ok((f, page))
 }
 
 /// `url` fetched by `by`, its redirects followed with `used` of the budget gone — one run of the proxy's for all its
 /// hops.
 fn get_by(url: &str, way: &Way, by: Instant, used: usize) -> Result<Fetched, String> {
     let run = crate::sandbox::next_run();
-    let got = hops(url, way, run, by, used);
+    let got = hops(url, way, run, by, used, false);
     way.proxy.send(ToProxy::RunEnded { run });
     got
 }
 
-fn hops(url: &str, way: &Way, run: u64, by: Instant, used: usize) -> Result<Fetched, String> {
+/// `url`'s hops: each request judged for a wiki's token on its own (`signed::covering`) — one under a base whose
+/// variable isn't set isn't sent, said; `json`: a source request's (`Accept: application/json`).
+fn hops(url: &str, way: &Way, run: u64, by: Instant, used: usize, json: bool) -> Result<Fetched, String> {
     let mut t = http::target(url)?;
     let upgraded = t.upgraded;
     let mut from = Vec::new();
     let mut hop = used;
+    let mut signed = false;
     loop {
-        let (r, body, said) = exchange(&t, way, run, by)?;
+        let wiki = super::signed::covering(&way.signed, &t);
+        if let Some(Err(why)) = wiki.map(|s| &s.token) {
+            return Err(why.clone());
+        }
+        signed |= wiki.is_some();
+        let (r, body, said) = exchange(&t, way, run, by, json)?;
+        if let Some(s) = wiki
+            && matches!(r.status, 401 | 403)
+        {
+            return Err(s.wiki.refused(r.status));
+        }
         let location = r.field("location").filter(|_| matches!(r.status, 301 | 302 | 303 | 307 | 308));
         if let Some(location) = location {
             if hop >= REDIRECTS_MAX {
@@ -293,8 +362,10 @@ fn hops(url: &str, way: &Way, run: u64, by: Instant, used: usize) -> Result<Fetc
             if n.loopback && !t.loopback {
                 return Err(format!("{}: a redirect from {} to this machine isn't followed", next, t.host));
             }
-            // (Claude's: another host is its own read, asked at its own gate — said, not followed)
-            if n.host != t.host && !way.others {
+            // (Claude's: another host is its own read, asked at its own gate — said, not followed; so is a hop into
+            // a wiki's base from a read that went without the token: a token read is asked on its own card)
+            let into = !signed && super::signed::covering(&way.signed, &n).is_some();
+            if (n.host != t.host || into) && !way.others {
                 return Ok(Fetched {
                     asked: url.trim().to_string(),
                     url: t.url(),
@@ -308,6 +379,7 @@ fn hops(url: &str, way: &Way, run: u64, by: Instant, used: usize) -> Result<Fetc
                     cut: false,
                     took: Duration::ZERO,
                     elsewhere: Some(next),
+                    signed,
                 });
             }
             if n.host != t.host {
@@ -331,6 +403,7 @@ fn hops(url: &str, way: &Way, run: u64, by: Instant, used: usize) -> Result<Fetc
             cut,
             took: Duration::ZERO,
             elsewhere: None,
+            signed,
         });
     }
 }
@@ -400,17 +473,18 @@ fn exchange(
     way: &Way,
     run: u64,
     by: Instant,
+    json: bool,
 ) -> Result<(Response, Vec<u8>, Option<String>), String> {
     let mut tcp = connect(t, way, run, by)?;
     let at = t.url();
     let said = |e: String| format!("{at}: {e}");
     if !t.https {
-        return talk(&mut tcp, t, way).map_err(said);
+        return talk(&mut tcp, t, way, json).map_err(said);
     }
     let name = rustls::pki_types::ServerName::try_from(t.host.clone()).map_err(|e| said(e.to_string()))?;
     let conn = rustls::ClientConnection::new(way.tls.clone(), name).map_err(|e| said(format!("TLS: {e}")))?;
     let mut s = rustls::StreamOwned::new(conn, tcp);
-    talk(&mut s, t, way).map_err(said)
+    talk(&mut s, t, way, json).map_err(said)
 }
 
 /// Err once the fetch was stopped.
@@ -452,9 +526,14 @@ fn talk(
     s: &mut (impl Read + Write),
     t: &Target,
     way: &Way,
+    json: bool,
 ) -> Result<(Response, Vec<u8>, Option<String>), String> {
     going(way)?;
-    s.write_all(&http::request(t)).and_then(|()| s.flush()).map_err(|e| io_said(&e, way))?;
+    // (the token judged for this request alone — TLS's by then: `Wiki::under` takes https only)
+    let token =
+        super::signed::covering(&way.signed, t).and_then(|s| s.token.as_ref().ok()).map(|t| t.as_str());
+    let request = http::request(t, token, json && token.is_some());
+    s.write_all(&request).and_then(|()| s.flush()).map_err(|e| io_said(&e, way))?;
     let (mut buf, mut chunk) = (Vec::new(), vec![0u8; 64 << 10]);
     // (an interim 1xx head goes, the next one read)
     let r = loop {

@@ -72,7 +72,8 @@ verifies (a company's own root works). `http://` is read over https but on this 
 directly); redirects followed, five at most, another host's said (`from github.com`); gzip unpacked. 20 s to the last
 byte. A user or password in the address, a bare IP address and a host name that isn't ASCII are refused, said.
 
-**Nothing of yours is sent**: no cookie, credentials or referrer. A page in front is named to Claude by its address
+**Nothing of yours is sent**: no cookie, credentials or referrer — but your wiki's token at its base (below). A page in
+front is named to Claude by its address
 (`file: https://… (web page, read-only; its text isn't sent — read takes its address)`), never its text — a page is
 someone else's words, and Claude gets them only framed as such, by its own `read`.
 
@@ -92,6 +93,34 @@ the copy it read, at the lines it read, its line saying `the copy Claude read 2m
 `]r`/`[r`, `C-]` and the chat's row show it later. A copy is never fetched again: one the session no longer keeps is
 said. This is the one place follow goes outside the project — a page fetched through the gate you answered, opening no
 file and running nothing.
+
+## Your work wiki
+
+A wiki you name in your own config (a project's file never does) is read with your token:
+
+```toml
+[web]
+signed-in = [{ base = "https://corp.example/confluence", kind = "confluence-dc", token-env = "CONFLUENCE_PAT" }]
+```
+
+tarae reads the token from that variable of its own environment and sends it as `Authorization: Bearer` with its
+own GET only: over https, to the base's host and port, at or below its path — judged for each request, so a redirect
+elsewhere goes on without it. Unset, a read there says so (`CONFLUENCE_PAT isn't set in tarae's environment — export
+it and start tarae again`); a 401 says the token was refused (expired or revoked?), a 403 that your account isn't
+allowed this with it — never the sign-in page. The variable never
+reaches Claude's commands or any claude tarae starts. Confluence Data Center's page addresses — `/display/SPACE/Title`,
+a blog post's `/display/SPACE/yyyy/mm/dd/Title`, `/pages/viewpage.action?pageId=…`, a short link `/x/…` — are read
+through its REST API (`runtime/web/sources.toml`) and come at their own address, so links between pages and `:web-open`
+work as on any site; its search page (`/dosearchsite.action?queryString=…`) reads as a list of pages. A chat started
+with a wiki named is told where it is and how its search reads, in one line.
+
+Claude's read of a page there asks on a card of its own (`Let Claude read a page at corp.example with your
+token?`); its `a` or `s` holds for later reads there, as any read's does. Nothing else opens it: not a command's
+grant, `llm.sandbox-hosts`, an answer on a plain read's card at that host, the copy `:web` fetched, or a redirect
+from a plain read into the base (said to Claude, its next read asked). With the variable unset when tarae started,
+the read is refused before any card. Once a chat read a page with the token, each of its web searches asks (`y` this
+search · `n` not this one), continued or restarted too, since what it read could leave in the words. `:granted` lists
+the wiki with the variable its token comes from, never the token.
 
 ## Claude searches the web
 

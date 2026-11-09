@@ -106,6 +106,7 @@ fn restore(choices: Choices) -> Vec<String> {
         usage: u.conv_json("conv-1"),
         places: None,
         seq: crate::chats::seq(),
+        signed_read: false,
     };
     crate::chats::save(&dir, &ed.workspace.root, saved);
     // (the start: the panel as it was — lazy, no claude until a message — then the first frame)
@@ -119,6 +120,7 @@ fn restore(choices: Choices) -> Vec<String> {
         follow: false,
         at_end: None,
         lazy: true,
+        signed_read: false,
     };
     crate::chat::restore(&mut ed, r);
     ed.events.started();
@@ -152,6 +154,7 @@ fn kept(dir: &std::path::Path, root: &std::path::Path, id: &str, title: &str) {
         usage: None,
         places: None,
         seq: crate::chats::seq(),
+        signed_read: false,
     };
     crate::chats::save(dir, root, saved);
 }

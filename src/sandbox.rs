@@ -4915,15 +4915,10 @@ pub(crate) fn env_with(
     (env, above)
 }
 
-/// The upstream proxy tarae's environment names, as `setting` takes it — what a page's fetch goes out through, as a
-/// run does (`web/fetch.rs`). Reads the environment: a worker's.
-pub fn upstream_now(setting: proxy::upstream::Setting) -> proxy::upstream::Upstreams {
-    upstream_of(&Here::now(), setting)
-}
-
 /// The upstream proxy `here`'s environment names, as `setting` takes it (step 5g) — variables set in both cases
-/// with different values said in tarae's log once since tarae started (which one was taken: curl's order).
-fn upstream_of(here: &Here, setting: proxy::upstream::Setting) -> proxy::upstream::Upstreams {
+/// with different values said in tarae's log once since tarae started (which one was taken: curl's order). A page's
+/// fetch goes out through it as a run does (`web/fetch.rs`, `here` read on its worker).
+pub fn upstream_of(here: &Here, setting: proxy::upstream::Setting) -> proxy::upstream::Upstreams {
     let u = proxy::upstream::of(&here.env, setting);
     static SAID: std::sync::Once = std::sync::Once::new();
     if !u.mixed.is_empty() {
@@ -5401,7 +5396,7 @@ fn for_its_run(
         let ours = |when: &[String]| when.iter().any(|f| p.root.join(f).exists());
         let notes: Vec<String> = notes.filter(|(when, _)| ours(when)).map(|(_, say)| say.clone()).collect();
         // (after what `runenv::of` said: a masked name it left out, and why)
-        p.run_env.notes.retain(|n| n.contains("(llm.sandbox-secrets)"));
+        p.run_env.notes.retain(|n| n.contains("(llm.sandbox-secrets)") || n.contains(runenv::WIKI_NOTE));
         p.run_env.notes.extend(notes);
     }
     // Masked variables (P2): each its session's sentinel in the run's environment, the real value only in the
@@ -6423,7 +6418,8 @@ pub fn run_env_of(here: &Here, llm: &crate::llm::LlmConfig) -> runenv::RunEnv {
         set.push("GIT_CONFIG_COUNT");
     }
     let masked: Vec<&String> = llm.sandbox_secrets.keys().collect();
-    runenv::of(here, &policy, &packs.pass, &llm.sandbox_env, &set, &masked)
+    let wiki: Vec<&String> = llm.signed_in.iter().map(|w| &w.token_env).collect();
+    runenv::of(here, &policy, &packs.pass, &llm.sandbox_env, &set, &masked, &wiki)
 }
 
 /// A sandboxed command's environment: tarae's own isn't inherited — only what `run_env` passes of it. Every

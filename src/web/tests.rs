@@ -125,6 +125,7 @@ fn web_fetches_a_page_or_takes_the_session_s_copy() {
         cut: false,
         took: std::time::Duration::from_millis(40),
         elsewhere: None,
+        signed: false,
     };
     let gone = ed.workspace.pages.put(std::sync::Arc::new(f), crate::clock::now());
     assert!(gone.is_empty());

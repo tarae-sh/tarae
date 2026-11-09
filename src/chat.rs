@@ -688,9 +688,14 @@ pub struct Chat {
     /// and those the user said no to (`n`: refused with no card) — reads' answers, never a run's (`web::tool`).
     pub web_hosts: Vec<(String, u16)>,
     pub web_refused: Vec<(String, u16)>,
+    /// Those of `web_hosts` answered on a card that said your wiki's token (W3): only these let a token read through.
+    pub web_signed: Vec<(String, u16)>,
     /// The answer on this conversation's web search card (`web::search`): Some(true) its searches go unasked, Some(false)
     /// refused with no card — None: the next asks.
     pub searches: Option<bool>,
+    /// This conversation read a page with your wiki's token (`web::tool::landed`): each of its web searches asks from
+    /// then on, whatever `searches` holds but a no (W3 — internal words could leave in a public query).
+    pub signed_read: bool,
     /// The user said yes to the terminals on an `also` card this turn: asked again, they take none of its
     /// `ALSO_MAX` (frictions29 23: each e2e or scenes run asked, and the turn ran out of cards).
     pub also_yes: bool,
@@ -1161,7 +1166,9 @@ impl Chat {
         self.hosts_next.clear();
         self.web_hosts.clear();
         self.web_refused.clear();
+        self.web_signed.clear();
         self.searches = None;
+        self.signed_read = false;
         self.framed = false;
         self.said_at = None;
     }
@@ -1206,7 +1213,9 @@ impl Chat {
             also_asked: 0,
             web_hosts: Vec::new(),
             web_refused: Vec::new(),
+            web_signed: Vec::new(),
             searches: None,
+            signed_read: false,
             also_yes: false,
             run_scripts: Vec::new(),
             queued: None,
@@ -1810,6 +1819,8 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
     c.msgs.push(Msg::new(Role::Note, format!("continued from {when}"), ""));
     c.continued = back.then(|| saved.past());
     c.plan = saved.plan.as_ref().and_then(crate::plan::Plan::from_json);
+    // (it read a page with your wiki's token: still so — W3's searches ask each time)
+    c.signed_read |= saved.signed_read;
     // (its answers' notes back, the last one's gone — their words cut again from these rows)
     crate::chatnotes::restore(ed, saved.places.as_ref());
     let Some(c) = &mut ed.workspace.claude.chat else { return };
@@ -1897,6 +1908,8 @@ pub struct Restored {
     pub at_end: Option<PathBuf>,
     /// A session behind's: no claude until its first message (which resumes the conversation).
     pub lazy: bool,
+    /// Its conversation read a page with your wiki's token (`Chat.signed_read`).
+    pub signed_read: bool,
 }
 
 /// The note a conversation carried over a restart ends with (one — earlier ones go).
@@ -1911,6 +1924,7 @@ pub fn restore(ed: &mut Editor, r: Restored) {
     }
     let mut c = Chat::new();
     c.follow.on = r.follow;
+    c.signed_read = r.signed_read;
     c.input.set_at(&r.input, r.cursor);
     c.edits.at_end = r.at_end;
     ed.workspace.claude.chat = Some(c);
@@ -1986,6 +2000,7 @@ pub(crate) fn saved_of(l: &crate::workspace::Workspace) -> Option<crate::chats::
         rows: crate::chats::rows_of(&c.msgs),
         plan,
         seq: crate::chats::seq(),
+        signed_read: c.signed_read,
     })
 }
 
@@ -2539,7 +2554,8 @@ fn ensure_proc(ed: &mut Editor) {
         args = llm::with_flag(&args, "--permission-mode", "default");
     }
     let cfg = llm::LlmConfig { args, ..cfg };
-    let system = system();
+    // (your wikis' one line, only while `web.signed-in` names one — fixed for this process: the cache holds)
+    let system = system() + &crate::web::signed::prompt(&cfg.signed_in);
     let mut extra = vec!["--append-system-prompt", system.as_str(), "--permission-prompt-tool", "stdio"];
     if !c.no_thought_flag {
         extra.extend(["--thinking-display", "summarized"]);

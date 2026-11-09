@@ -2,7 +2,7 @@
 ## text
 00
 01  ╭─ granted ──────────────────────────────────────────────╮
-02  │   what you've let through                        20/20 │
+02  │   what you've let through                        21/21 │
 03  │ ────────────────────────────────────────────────────── │
 04  │  • .tarae.toml               you · 2d ago · 2 versions │
 05  │                                                        │

@@ -135,6 +135,12 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `review.board-at-once` | integer 1–8 | `3` | The board's Claudes reading at once, every session's together (one under memory pressure, none while it's critical). Only your own config sets it |
 | `review.skeptics-max` | integer 0–50 | `12` | The board's skeptics at most — the claims of groups past it go to you unchecked. Only your own config sets it |
 
+## `[web]`
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `web.signed-in` | list of tables | `[]` | Your work wiki (only your own config): [{ base = "https://corp.example/confluence", kind = "confluence-dc", token-env = "CONFLUENCE_PAT" }] — tarae's own GET under the base carries the token in that variable of tarae's environment (https only), and reads its pages through the wiki's API; Claude's reads there ask on their own card. The variable never reaches Claude's commands or any claude tarae starts |
+
 ## Tables you name yourself
 
 These are read alongside the settings above; see the [configuration guide](../configuration.md).

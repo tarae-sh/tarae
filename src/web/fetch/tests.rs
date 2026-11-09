@@ -314,6 +314,7 @@ pub(crate) fn way(at: SocketAddr, rules: Egress) -> Way {
         process: ":web".into(),
         others: true,
         stop: Stop::default(),
+        signed: Vec::new().into(),
     }
 }
 
@@ -594,6 +595,7 @@ fn the_session_keeps_its_pages_a_while() {
             cut: false,
             took: Duration::ZERO,
             elsewhere: None,
+            signed: false,
         };
         Arc::new(f)
     };
@@ -613,6 +615,135 @@ fn the_session_keeps_its_pages_a_while() {
     assert_eq!((gone, pages.0.len()), (1, PAGES_MAX));
 }
 
+// --- Your work wiki (the work-wiki plan W1–W2): the test's server plays Confluence at `page.test/confluence` ---
+
+const FAKE: &str = "tarae-fake-token";
+
+/// `page.test/confluence` named in `web.signed-in`, its variable holding `token` (None: unset).
+pub(crate) fn signed(token: Option<&str>) -> Arc<[crate::web::signed::Signed]> {
+    let t: toml::Table = toml::from_str(
+        r#"v = [{ base = "https://page.test/confluence", kind = "confluence-dc", token-env = "TARAE_TEST_PAT" }]"#,
+    )
+    .unwrap();
+    let wikis = crate::web::signed::wikis_of(&t["v"]).unwrap();
+    let env: HashMap<String, std::ffi::OsString> =
+        token.map(|t| [("TARAE_TEST_PAT".to_string(), t.into())].into()).unwrap_or_default();
+    crate::web::signed::of(&wikis, &env, false).into()
+}
+
+fn moved(to: &str) -> Reply {
+    reply(format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n"))
+}
+
+pub(crate) fn json(body: &str) -> Reply {
+    reply(format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    ))
+}
+
+/// The token goes with a request under the base alone — judged per request: a redirect to another host, or to the
+/// same host outside the base, goes on without it (the other host said in `from`); a page elsewhere never gets it.
+#[test]
+fn the_token_goes_only_with_requests_under_the_base() {
+    let (at, heads) = server(true, |head| match path(head) {
+        "/confluence/hop" => moved("https://other.test/c"),
+        "/confluence/out" => moved("/elsewhere"),
+        _ => ok("<p>x</p>"),
+    });
+    let w = Way { signed: signed(Some(FAKE)), ..way(at, yours_rules()) };
+    let auth = |h: &str| h.contains(&format!("\r\nAuthorization: Bearer {FAKE}\r\n"));
+    let f = fetch("https://page.test/confluence/a", &w).unwrap();
+    assert!(f.signed && auth(&heads.recv().unwrap()));
+    for plain in
+        ["https://page.test/elsewhere", "https://other.test/confluence/a", "https://page.test/confluencex"]
+    {
+        assert!(!fetch(plain, &w).unwrap().signed, "{plain}");
+        let h = heads.recv().unwrap();
+        assert!(!h.to_ascii_lowercase().contains("authorization") && !h.contains(FAKE), "{plain}: {h}");
+    }
+    let hop = fetch("https://page.test/confluence/hop", &w).unwrap();
+    assert_eq!((hop.url.as_str(), &hop.from[..]), ("https://other.test/c", &["page.test".to_string()][..]));
+    assert!(auth(&heads.recv().unwrap()), "the base's own request");
+    assert!(!heads.recv().unwrap().contains(FAKE), "never to the other host");
+    fetch("https://page.test/confluence/out", &w).unwrap();
+    assert!(auth(&heads.recv().unwrap()));
+    assert!(!heads.recv().unwrap().contains(FAKE), "nor outside the base on its host");
+}
+
+/// A 401 or 403 under the base says the token was refused — never read as the page; with the variable unset the read
+/// is said and nothing is sent at all.
+#[test]
+fn a_refused_or_missing_token_is_said_never_read_as_the_page() {
+    let (at, heads) = server(true, |head| match path(head) {
+        "/confluence/gone" => reply("HTTP/1.1 401 Unauthorized\r\nContent-Length: 15\r\n\r\n<p>sign in</p>!"),
+        "/confluence/off" => reply("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"),
+        _ => reply("HTTP/1.1 401 Unauthorized\r\nContent-Length: 13\r\n\r\n<p>other</p>!"),
+    });
+    let w = Way { signed: signed(Some(FAKE)), ..way(at, yours_rules()) };
+    for (p, why) in [("gone", "expired or revoked?"), ("off", "your account isn't allowed this with it")] {
+        let got = super::page(&format!("https://page.test/confluence/{p}"), &w, crate::web::Prefer::Guess);
+        let refused = format!("page.test refused the token in TARAE_TEST_PAT — {why}");
+        assert_eq!(got.map(|(f, _)| f.status).unwrap_err(), refused, "{p}");
+        heads.recv().unwrap();
+    }
+    // (a 401 of a page elsewhere is its page, as ever)
+    assert_eq!(fetch("https://page.test/x", &w).unwrap().status, 401);
+    heads.recv().unwrap();
+    let unset = Way { signed: signed(None), ..way(at, yours_rules()) };
+    let e = super::page("https://page.test/confluence/a", &unset, crate::web::Prefer::Guess).unwrap_err();
+    assert_eq!(e, "TARAE_TEST_PAT isn't set in tarae's environment — export it and start tarae again");
+    assert!(heads.try_recv().is_err(), "nothing sent without the token");
+}
+
+/// A wiki page's address reads through its API — the request at the base's API, JSON asked with the token — and the
+/// page comes at its own address: its title, its text, its links resolved against it, the token it echoed scrubbed.
+/// A host not named is fetched as a page, as ever.
+#[test]
+fn a_wiki_page_reads_through_its_api_at_its_own_address() {
+    let (at, heads) = server(true, |head| match path(head) {
+        "/confluence/rest/api/content?spaceKey=OPS&title=Run%20book&expand=body.view" => json(&format!(
+            r#"{{"results":[{{"title":"Run book","body":{{"view":{{"value":"<h2>Steps</h2><p>See <a href=\"/confluence/display/OPS/Other\">the other</a>. Bearer {FAKE}. Escaped: {esc}</p>"}}}}}}]}}"#,
+            // (JSON's own escape of `-`: the raw bytes don't hold the token, the page read does)
+            esc = FAKE.replace('-', &format!("{}u002d", char::from(92u8)))
+        )),
+        "/confluence/rest/api/content?spaceKey=OPS&title=Nothing&expand=body.view" => {
+            json(r#"{"results":[]}"#)
+        }
+        _ => ok("<title>plain</title><p>a page</p>"),
+    });
+    let w = Way { signed: signed(Some(FAKE)), ..way(at, yours_rules()) };
+    let (f, page) =
+        super::page("https://page.test/confluence/display/OPS/Run+book", &w, crate::web::Prefer::Guess)
+            .unwrap();
+    let head = heads.recv().unwrap();
+    assert!(head.contains("\r\nAccept: application/json\r\n") && head.contains(FAKE), "{head}");
+    assert_eq!(
+        (f.url.as_str(), f.status, f.signed),
+        ("https://page.test/confluence/display/OPS/Run+book", 200, true)
+    );
+    assert_eq!(page.title, "Run book");
+    assert!(
+        page.text.contains("Steps") && page.text.contains("[token]") && !page.text.contains(FAKE),
+        "{}",
+        page.text
+    );
+    assert!(page.text.contains("Escaped: [token]"), "{}", page.text);
+    assert!(
+        page.links.iter().any(|l| l.url == "https://page.test/confluence/display/OPS/Other"),
+        "{:?}",
+        page.links
+    );
+    let none = super::page("https://page.test/confluence/display/OPS/Nothing", &w, crate::web::Prefer::Guess);
+    assert_eq!(none.unwrap_err(), "no such page at page.test, or not one your account can see");
+    heads.recv().unwrap();
+    let (f, page) =
+        super::page("https://other.test/display/OPS/Run+book", &w, crate::web::Prefer::Guess).unwrap();
+    assert_eq!((page.title.as_str(), f.signed), ("plain", false));
+    let head = heads.recv().unwrap();
+    assert!(head.contains("Accept: text/html") && !head.contains(FAKE), "{head}");
+}
+
 /// A real page, through tarae's proxy (and the upstream proxy the environment names, as `:web`'s) and verified by the
 /// system's certificates (the network: CI's network job, with `TARAE_MEASURE_REACHES_NETWORK` — the proxy's tests
 /// never dial past this machine without it).
@@ -623,11 +754,12 @@ fn a_real_page_is_fetched() {
         std::env::var_os("TARAE_MEASURE_REACHES_NETWORK").is_some(),
         "run with TARAE_MEASURE_REACHES_NETWORK=1: a test's proxy dials past this machine only then"
     );
-    // (as `upstream_now` reads it outside tests — in tests `Here` leaves the proxy variables out)
+    // (as `upstream_of` reads it outside tests — in tests `Here` leaves the proxy variables out)
     let env: HashMap<String, std::ffi::OsString> =
         std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v))).collect();
     let upstream = proxy::upstream::of(&env, proxy::upstream::Setting::Env);
-    let way = yours(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), upstream, Stop::default()).unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let way = yours(root, upstream, Vec::new(), Stop::default()).unwrap();
     let (f, page) = super::page("http://example.com/", &way, crate::web::Prefer::Guess).unwrap();
     assert_eq!((f.status, f.upgraded, f.url.as_str()), (200, true, "https://example.com/"));
     assert!(page.title.contains("Example Domain"), "{}", page.title);

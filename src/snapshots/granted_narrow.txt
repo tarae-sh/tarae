@@ -2,7 +2,7 @@
 ## text
 00
 01  ╭─ granted ──────────────────────────────────────────────╮
-02  │   what you've let through                        20/20 │
+02  │   what you've let through                        21/21 │
 03  │ ────────────────────────────────────────────────────── │
 04  │  by default                                            │
 05  │  ◦ read /private/tmp/…tarae              this checkout │
@@ -12,15 +12,15 @@
 09  │  ◦ read …rustup/toolchains/1.99.0/…  a toolchain's own │
 10  │  ◦ read outside home        not others' homes, volumes │
 11  │                                                        │
-12  │  always · this checkout                                │
-13  │▎ • reach registry.npmjs.org:443           you · 5h ago │
-14  │  • write in /private/t…granted/npm-cache  you · 3d ago │
-15  │                                                        │
-16  │  this session                                          │
-17  │  • connect to port 5432                   you · 2h ago │
-18  │  • reach db.example.com:5432      you · until you quit │
-19  │  • run without a sandbox          you · until you quit │
-20  │                                                        │
+12  │  your token · your config                              │
+13  │  ◦ corp.example/confluence        from $CONFLUENCE_PAT │
+14  │                                                        │
+15  │  always · this checkout                                │
+16  │▎ • reach registry.npmjs.org:443           you · 5h ago │
+17  │  • write in /private/t…granted/npm-cache  you · 3d ago │
+18  │                                                        │
+19  │  this session                                          │
+20  │  • connect to port 5432                   you · 2h ago │
 21  ╰────────────────────────────────────────────────────────╯
 22
 23  ● picker   d take it back  j k move  esc close        1:1
@@ -38,10 +38,10 @@
 10
 11
 12
-13   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
+13
 14
 15
-16
+16   PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
 17
 18
 19
@@ -62,15 +62,15 @@
 09  a  f                                   d ddddddddddd ddd a
 10  a  f                          ddd ddddddd dddddd ddddddd a
 11  a                                                        a
-12  a  ffffff f ffff ffffffff                                a
-13  aa d TTTTT TTTTTTTTTTTTTTTTTTTTTT           ddd d dd ddd a
-14  a  d                                        ddd d dd ddd a
-15  a                                                        a
-16  a  ffff fffffff                                          a
+12  a  ffff fffff f ffff ffffff                              a
+13  a  f                                dddd ddddddddddddddd a
+14  a                                                        a
+15  a  ffffff f ffff ffffffff                                a
+16  aa d TTTTT TTTTTTTTTTTTTTTTTTTTTT           ddd d dd ddd a
 17  a  d                                        ddd d dd ddd a
-18  a  d                                ddd d ddddd ddd dddd a
-19  a  d                                ddd d ddddd ddd dddd a
-20  a                                                        a
+18  a                                                        a
+19  a  ffff fffffff                                          a
+20  a  d                                        ddd d dd ddd a
 21  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 22
 23  a TTTTTT   f ffff ff ffff  D D ffff  DDD fffff        TTT

@@ -59,6 +59,8 @@ pub struct More {
     /// The hosts whose pages Claude's `read` reaches by a read's own card (`web::tool`): host, port, whether it's
     /// the session's (`s`, else this chat's `a`) — listed apart from the runs' hosts, never opening a run.
     pub reads: Vec<(String, u16, bool)>,
+    /// Your wikis (`web.signed-in`): where, and the variable its token comes from — never the value.
+    pub wikis: Vec<(String, String)>,
 }
 
 /// Where `More` is read from, taken on the main thread.
@@ -93,11 +95,17 @@ impl More {
             preflight,
             elsewhere,
             reads: Vec::new(),
+            wikis: Vec::new(),
         }
     }
 }
 /// A default's row, once `d` was pressed on it.
 const NOT_YOURS: &str = "a default — no answer of yours to take back";
+/// A wiki's row (`web.signed-in`): its hint's start (the variable after it), and what `d` says on it.
+const WIKI_HINT: &str = "from $";
+const WIKI_NOT_YOURS: &str = "your config's — web.signed-in there takes it out";
+/// Their heading ("your token" there, so the row's base and variable fit the list's width whole).
+const YOUR_CONFIG: &str = "your token · your config";
 
 fn heading(label: &str) -> Item {
     Item { label: label.into(), action: Action::Heading, hint: String::new(), glyph: None }
@@ -193,6 +201,18 @@ pub fn items(
             hint: "not others' homes, volumes".into(),
             ..default("read outside home".into(), Why::Outside)
         });
+    }
+    // (your wikis: tarae's own reads there carry your token — the variable named, never its value)
+    if !more.wikis.is_empty() {
+        out.extend([heading(""), heading(YOUR_CONFIG)]);
+        for (at, var) in &more.wikis {
+            out.push(Item {
+                label: at.clone(),
+                action: Action::Granted(None),
+                hint: format!("{WIKI_HINT}{var}"),
+                glyph: Some(("◦", "ui.linenr")),
+            });
+        }
     }
     // (kept: what every checkout of the repository uses, then the checkout's own — piece J)
     let (mut every, mut own) = (Allowed::default(), Allowed::default());
@@ -346,6 +366,8 @@ impl Editor {
             (self.workspace.claude.web_hosts.iter().map(|(h, p)| (h.clone(), *p, true)))
                 .chain(chat_reads.into_iter().map(|(h, p)| (h, p, false)))
                 .collect();
+        let wikis: Vec<(String, String)> =
+            self.config.llm.signed_in.iter().map(|w| (w.shown(), w.token_env.clone())).collect();
         let look = Look {
             root: self.workspace.root.clone(),
             no_sandbox: self.workspace.claude.no_sandbox == Some(crate::tools::NoSandbox::Unasked),
@@ -362,7 +384,7 @@ impl Editor {
         let now = crate::allow::now_s();
         self.events.jobs().spawn(move || {
             let caps = basis.build();
-            let more = More { reads, ..More::look(&look) };
+            let more = More { reads, wikis, ..More::look(&look) };
             let answers = [&basis.kept().1.all, &basis.session, &basis.chat];
             let items = items(&caps, answers, &hosts, &more, now);
             move |ed: &mut Editor| ed.granted_open(items, again)
@@ -410,7 +432,10 @@ impl Editor {
                         self.set_error(e);
                     }
                 }
-                Some(Action::Granted(None)) => p.set_current_hint(NOT_YOURS),
+                Some(Action::Granted(None)) => {
+                    let wiki = p.current().is_some_and(|i| i.hint.starts_with(WIKI_HINT));
+                    p.set_current_hint(if wiki { WIKI_NOT_YOURS } else { NOT_YOURS })
+                }
                 _ => {}
             },
             _ => self.key_unused(key, "the list of grants", "d takes an answer back, j and k move"),
@@ -435,10 +460,14 @@ impl Editor {
                     false => ("This conversation", self.workspace.claude.web_hosts.contains(&at)),
                 };
                 match of_session {
-                    true => self.workspace.claude.web_hosts.retain(|a| *a != at),
+                    true => {
+                        self.workspace.claude.web_hosts.retain(|a| *a != at);
+                        self.workspace.claude.web_signed.retain(|a| *a != at);
+                    }
                     false => {
                         if let Some(c) = self.workspace.claude.chat.as_mut() {
                             c.web_hosts.retain(|a| *a != at);
+                            c.web_signed.retain(|a| *a != at);
                         }
                     }
                 }
@@ -993,6 +1022,33 @@ mod tests {
         until(&mut ed, "the told line gone", |_| std::fs::read_to_string(&told).unwrap() == "other\n");
         assert!(!ed.preflight_told.contains(&root), "nor kept since tarae started");
         until(&mut ed, "the list again", |ed| rows(ed).iter().any(|r| r.0 == NONE_PAST));
+    }
+
+    /// Your wikis (`web.signed-in`) are listed with the variable their token comes from — never its value — under your
+    /// config, and `d` there says where it's taken out.
+    #[test]
+    fn a_wiki_is_listed_by_its_variable_never_its_token() {
+        let more = More {
+            wikis: vec![("corp.example/confluence".into(), "TARAE_TEST_PAT".into())],
+            ..Default::default()
+        };
+        let none = Allowed::default();
+        let rows = items(&Caps::answered(&[&none]), [&none, &none, &none], &[], &more, 0);
+        let at = rows.iter().position(|i| i.label == YOUR_CONFIG).expect("its heading");
+        let row = &rows[at + 1];
+        assert_eq!(
+            (row.label.as_str(), row.hint.as_str()),
+            ("corp.example/confluence", "from $TARAE_TEST_PAT")
+        );
+        assert_eq!(row.action, Action::Granted(None));
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.granted_open(rows, false);
+        ed.picker.as_mut().unwrap().select_where(|a| matches!(a, Action::Granted(None)));
+        while ed.picker.as_ref().unwrap().current().is_some_and(|i| !i.hint.starts_with(WIKI_HINT)) {
+            ed.picker.as_mut().unwrap().move_by(1);
+        }
+        ed.granted_key('d');
+        assert_eq!(ed.picker.as_ref().unwrap().current().unwrap().hint, WIKI_NOT_YOURS);
     }
 
     /// A read's host granted both for the session and for this chat is two rows: `d` takes back the one picked, the

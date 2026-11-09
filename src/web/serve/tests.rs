@@ -346,6 +346,7 @@ fn ctrl_click_on_words_that_are_an_address_follows_the_link() {
         cut: false,
         took: Duration::from_millis(30),
         elsewhere: None,
+        signed: false,
     };
     let _ = ed.workspace.pages.put(Arc::new(b), crate::clock::now());
     let mut bytes = Vec::new();
@@ -410,6 +411,7 @@ fn a_page_s_language_keys_follow_its_links() {
         cut: false,
         took: Duration::from_millis(30),
         elsewhere: None,
+        signed: false,
     };
     let _ = ed.workspace.pages.put(Arc::new(b), crate::clock::now());
     put(&mut ed, on(&text, "bee"));

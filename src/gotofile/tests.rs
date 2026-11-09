@@ -257,6 +257,7 @@ fn bee_kept(ed: &mut Editor) {
         cut: false,
         took: Duration::from_millis(30),
         elsewhere: None,
+        signed: false,
     };
     let _ = ed.workspace.pages.put(std::sync::Arc::new(b), crate::clock::now());
 }

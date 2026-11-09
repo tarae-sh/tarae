@@ -1655,6 +1655,171 @@ fn frames_of_the_answer_words() {
     });
 }
 
+/// The work wiki (the work-wiki plan W1–W4), for its screenshots — only with `TARAE_FRAMES_DIR` set (both themes
+/// there, at 120×32 and 80×32; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): Claude's read of a wiki page
+/// on the card that says the token, the page read at its own address, the wiki's search as a list, a web search after
+/// a token read asking on its own card, and an unset variable's words. Its `:granted` row is `snapshot_granted`'s
+/// frames. The wiki is a stand-in Confluence (the fetch tests' TLS server, as `page.test`): no network, no real token.
+#[test]
+fn frames_of_the_work_wiki() {
+    use crate::chat::{Look, Msg, Role};
+    use crate::web::fetch::tests::{json, path, server, way, yours_rules};
+    use std::sync::Arc;
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    const BASE: &str = "https://page.test/confluence";
+    let html = "<h2>When to roll back</h2><p>A deploy whose error rate stays above 2 % for five minutes, or any \
+                failed ledger write.</p><h2>Steps</h2><ol><li>Freeze the pipeline: <code>deployctl freeze \
+                payments</code></li><li>Roll back to the last green build: <code>deployctl rollback payments --to \
+                last-green</code></li><li>Watch the ledger's lag on the <a href=\"/confluence/display/OPS/\
+                Payments+dashboards\">dashboards</a> until it's under a second.</li></ol><h2>After</h2><p>Write \
+                the incident note in <a href=\"/confluence/display/OPS/Incidents\">Incidents</a> the same day.</p>";
+    let page =
+        serde_json::json!({"results": [{"title": "Payments rollback", "body": {"view": {"value": html}}}]});
+    let found = |title: &str, space: &str, link: &str| serde_json::json!({"title": title, "space": {"name": space}, "_links": {"webui": link}});
+    let list = serde_json::json!({"results": [
+        found("Payments rollback", "Operations", "/display/OPS/Payments+rollback"),
+        found("Rollback drills, 2026 Q3", "Operations", "/display/OPS/Rollback+drills%2C+2026+Q3"),
+        found("Ledger: replaying writes after a rollback", "Payments", "/display/PAY/Ledger+replay"),
+        found("deployctl reference", "Platform", "/display/PLAT/deployctl"),
+    ]});
+    let (page, list) = (page.to_string(), list.to_string());
+    let (at, _heads) =
+        server(true, move |head| match path(head).starts_with("/confluence/rest/api/content/search") {
+            true => json(&list),
+            false => json(&page),
+        });
+    let wikis = crate::web::signed::wikis_of(
+        &toml::from_str::<toml::Table>(&format!(
+            r#"v = [{{ base = "{BASE}", kind = "confluence-dc", token-env = "CONFLUENCE_PAT" }}]"#
+        ))
+        .unwrap()["v"],
+    )
+    .unwrap();
+    let read = |url: &str| {
+        let mut m = Msg::new(Role::Tool, "", "");
+        m.look =
+            Some(Look { verb: "read", what: url.into(), pattern: false, range: String::new(), link: None });
+        m
+    };
+    let wiki_page = format!("{BASE}/display/OPS/Payments+rollback");
+    let wiki_search = format!("{BASE}/dosearchsite.action?queryString=payments+rollback");
+    for (w, h) in [(120, 32), (80, 32)] {
+        // (a session whose config names the wiki, its variable holding `token` — or not; the chat open on `msgs`)
+        let shot = |token: Option<&'static str>, web: Option<&str>, msgs: Vec<Msg>| {
+            let mut s = Shot::new(w, h);
+            s.ed.offer_popups = true;
+            s.in_project();
+            s.file("src/demo.rs", DEMO_RS);
+            s.ed.config.llm.command = "sh".into();
+            s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+            s.ed.config.llm.signed_in =
+                crate::web::signed::with_env(wikis.clone(), |_| token.map(Into::into));
+            let env: std::collections::HashMap<String, std::ffi::OsString> =
+                token.map(|t| [("CONFLUENCE_PAT".to_string(), t.into())].into()).unwrap_or_default();
+            let signed: Arc<[_]> = crate::web::signed::of(&wikis, &env, false).into();
+            s.ed.workspace.web_way = Some(Arc::new(move |stop| crate::web::fetch::Way {
+                stop,
+                signed: signed.clone(),
+                ..way(at, yours_rules())
+            }));
+            if let Some(url) = web {
+                s.keys(&format!(":web {url}<ret>"));
+                s.until("the page", |ed| {
+                    crate::web::page::of(ed.doc())
+                        .is_some_and(|p| p.failed.is_some() || ed.doc().text.len_chars() > 0)
+                });
+                // (its "how it read" toast, a page's every time, left out but where it's the words: the unset one)
+                if token.is_some() {
+                    s.ed.toasts.clear();
+                }
+            }
+            s.keys(" L");
+            s.ed.workspace.claude.chat.as_mut().unwrap().msgs = msgs;
+            s.frame();
+            s
+        };
+        let user = |text: &str| Msg::new(Role::User, text, "");
+        let says = |text: &str| Msg::new(Role::Assistant, text, "");
+        let question = "How do we roll back payments after a bad deploy?";
+        // Claude's read of a wiki page: the card says the token — `y` this read · `a` this chat · `s` · `n`
+        let mut s = shot(
+            Some("tarae-fake-token"),
+            None,
+            vec![user(question), says("The team's runbook is on your wiki — I'll read it.")],
+        );
+        let generation = s.ed.workspace.claude.chat.as_ref().unwrap().generation();
+        let call = crate::tools::Call::of(generation, "", serde_json::json!(1));
+        crate::readtool::call(&mut s.ed, call, &serde_json::json!({ "files": [wiki_page] })).unwrap();
+        s.until("its card", |ed| !ed.offers.is_empty());
+        s.frames_both(&format!("wiki_card_{w}"));
+        // The page read through the API, at its own address, Claude's read of it in the chat
+        let mut s = shot(
+            Some("tarae-fake-token"),
+            Some(&wiki_page),
+            vec![
+                user(question),
+                read(&wiki_page),
+                says(
+                    "Freeze the pipeline, then `deployctl rollback payments --to last-green`, and watch the ledger's \
+                     lag until it's under a second. The incident note goes in Incidents the same day.",
+                ),
+            ],
+        );
+        s.frames_both(&format!("wiki_page_{w}"));
+        // The wiki's own search, read as a list of pages at the wiki
+        let mut s = shot(
+            Some("tarae-fake-token"),
+            Some(&wiki_search),
+            vec![
+                user("Is there a runbook for rolling back payments?"),
+                read(&wiki_search),
+                says("Your wiki's search finds four; Payments rollback in Operations is the runbook."),
+            ],
+        );
+        s.frames_both(&format!("wiki_search_{w}"));
+        // After a token read, a web search asks on its own card — `y` this search · `n`
+        let mut s = shot(
+            Some("tarae-fake-token"),
+            None,
+            vec![
+                user(question),
+                read(&wiki_page),
+                says("The runbook's step 2 needs a flag I don't know for deployctl 4; I'll search for it."),
+            ],
+        );
+        let (tx, _searches) = std::sync::mpsc::channel();
+        s.ed.search_lines = Some(tx);
+        let c = s.ed.workspace.claude.chat.as_mut().unwrap();
+        (c.web_search, c.signed_read, c.searches) = (true, true, Some(true));
+        let generation = c.generation();
+        let call = crate::tools::Call::of(generation, "", serde_json::json!(2));
+        crate::web::search::call(
+            &mut s.ed,
+            call,
+            &serde_json::json!({ "query": "deployctl 4 rollback --to flag" }),
+        )
+        .unwrap();
+        s.until("its card", |ed| !ed.offers.is_empty());
+        s.frames_both(&format!("wiki_guarded_{w}"));
+        // The variable unset: the page says what to do, as Claude's read does
+        let mut s = shot(
+            None,
+            Some(&wiki_page),
+            vec![
+                user(question),
+                read(&wiki_page),
+                says(
+                    "I couldn't read the runbook: CONFLUENCE_PAT isn't set in tarae's environment. Export it and start \
+                     tarae again, and I'll read it.",
+                ),
+            ],
+        );
+        s.frames_both(&format!("wiki_unset_{w}"));
+    }
+}
+
 /// frictions30's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, at 80×24 and
 /// 160×45; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): a cut run card's hint row before and after an
 /// early `y` (13), the chat's queued row with review notes and two messages (18), a host card whose run ended (16),
@@ -3166,6 +3331,7 @@ fn projects2_frames() {
             usage: Some(serde_json::json!({ "turns": [], "last": last })),
             places: None,
             seq: crate::chats::seq() - ago,
+            signed_read: false,
         };
         crate::chats::save(&chats, root, saved);
     };
@@ -6800,6 +6966,7 @@ fn snapshot_granted() {
         preflight: vec!["0".repeat(64)],
         elsewhere: 4,
         reads: Vec::new(),
+        wikis: vec![("corp.example/confluence".into(), "CONFLUENCE_PAT".into())],
     };
     let full = [&kept, &session, &chat];
     let mut s = scene(100, 30, full, &hosts);
@@ -9731,6 +9898,7 @@ fn granted_rows_cut_the_same_when_scrolled() {
         preflight: Vec::new(),
         elsewhere: 0,
         reads: Vec::new(),
+        wikis: Vec::new(),
     };
     let bare = |r: &String| r.trim_start_matches(['▎', ' ']).to_string();
     let mut compared = 0;
@@ -9904,6 +10072,7 @@ fn granted_rows_cut_keep_what_differs() {
         preflight: Vec::new(),
         elsewhere: 0,
         reads: Vec::new(),
+        wikis: Vec::new(),
     };
     s.ed.granted_open(crate::granted::items(&caps, [&none, &none, &none], &[], &more, 1_792_000_000), false);
     let rows: Vec<String> =
