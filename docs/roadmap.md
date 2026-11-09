@@ -687,8 +687,8 @@ bugs its reviewer found, two of tarae's own gates misbehaved in daily use, four 
    with real output.
 3. **Less code**: what the card model's P3 replaced goes (its piece 5: the parser's gates, ~2,200 lines), and
    whatever else the hunt finds unused. The binary with it: back under older budgets or a reason why not — they
-   were 12 / 17 MB bundled until 2026-10-15, are 19 / 24 since 2026-11-05 (#365: 18.17 and 23.27 then, the growth
-   tarae's own code).
+   were 12 / 17 MB bundled until 2026-10-15, 19 / 24 from 2026-11-05 (#365: 18.17 and 23.27 then), are 20 / 25
+   since 2026-11-09 (19.229 then), the growth tarae's own code.
    `cargo bloat` first, for where the size is, then what P3 piece 5 removes and what the hunt finds unused.
 4. **Independent reviews of the sandbox** by Claude sessions that didn't build it: each given the threat model's
    claims and the code, not the design's reasoning, trying to show a claim false; their findings fixed like any
@@ -901,7 +901,8 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
 - **A size pass.** The release binary's budget was raised to 12 MB (2026-10-09), then to 13 MB (18 bundled,
   2026-10-15), then to 17 MB (22 bundled, 2026-10-24: 16.55 and 21.62 then — the web reader's TLS and parsers, the
   image decoder, panes P3 and collab C1–C3, hidden while `cargo perf` passed "not measured"), then to 19 MB (24
-  bundled, 2026-11-05, #365: 18.17 and 23.27 then, every MB since tarae's own code) until stabilization
+  bundled, 2026-11-05, #365: 18.17 and 23.27 then, every MB since tarae's own code), then to 20 MB (25 bundled,
+  2026-11-09: 19.229 then, tarae's own code, no new dependency) until stabilization
   (§9) brings it back; `cargo perf` fails a jump of more than 0.3 MB meanwhile. Four helpers LTO had copied into many callers are kept out of line
   (−66 KB measured). From the size audit (2026-10-09):
   - Per-package `opt-level = "s"` for crates off the hot path, the frame path kept at 3 (tarae, ropey,

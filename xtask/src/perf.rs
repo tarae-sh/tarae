@@ -444,9 +444,12 @@ fn report(
 /// and 21.62 on 2026-10-24): the user's call (#365) — grown with tarae's own code (`term.rs`'s UI rules, the flow
 /// plan, bring and base moves), found only once #363/#364 let `cargo perf` reach them; the size pass stays at
 /// stabilization (§9), `SIZE_JUMP` catches a dependency's jump meanwhile.
+/// 20 and bundled 25 (2026-11-09, 19.229 at ccc704f4 then; 19.047 at 46846a56 the evening before): the user's
+/// call — grown with tarae's own code (the night's landings: masking P2a/P2b, the plugin approvals, SM2), no new
+/// dependency; the size pass stays at stabilization (§9), `SIZE_JUMP` catches a dependency's jump meanwhile.
 const SIZES: [(&str, &[&str], &str, f64); 2] = [
-    ("release_size_mb", &[], "target", 19.0),
-    ("release_size_bundled_mb", &["--features", "bundled-grammars"], "target/bundled-size", 24.0),
+    ("release_size_mb", &[], "target", 20.0),
+    ("release_size_bundled_mb", &["--features", "bundled-grammars"], "target/bundled-size", 25.0),
 ];
 const SIZE_NOISE: f64 = 0.05;
 
