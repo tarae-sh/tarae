@@ -29,7 +29,7 @@ use harness::*;
 #[test]
 fn the_nofile_shim_gives_its_program_the_limit_and_refuses_any_other_shape() {
     let run = |args: &[&str]| {
-        let mut child = Command::new(BIN)
+        let mut child = tarae(BIN)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -56,7 +56,7 @@ fn the_nofile_shim_gives_its_program_the_limit_and_refuses_any_other_shape() {
         "the limit, then the program with its arguments"
     );
     // (its argv[0] as the process has it: a shell reading its commands from stdin says it as `$0`)
-    let mut sh = Command::new(BIN)
+    let mut sh = tarae(BIN)
         .args(["--nofile", "256", "/bin/sh", "named-sh", "-s"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -119,7 +119,7 @@ fn a_subcommand_under_a_low_limit_leaves_no_pin() {
     let sb = Sandbox::new("nofile-sub");
     let shims = sb.state().join("shims");
     for args in [&["state"][..], &["--version"], &["grammar", "list"]] {
-        let mut c = Command::new(BIN);
+        let mut c = tarae(BIN);
         c.args(args)
             .env_clear()
             .envs(sb.env())
@@ -207,7 +207,7 @@ fn tarae_state_ends_quietly_when_its_reader_is_gone() {
     for args in
         [&[][..], &["--json"], &["--watch"], &["--json", "--watch"], &["--frame", frame_arg], &["--help"]]
     {
-        let mut cmd = Command::new(BIN);
+        let mut cmd = tarae(BIN);
         cmd.arg("state")
             .args(args)
             .env_clear()
@@ -252,13 +252,13 @@ fn tarae_state_ends_quietly_when_its_reader_is_gone() {
 
 #[test]
 fn version_and_help_print_without_a_terminal() {
-    let (out, why) = output_and_reason(Command::new(BIN).arg("--version"));
+    let (out, why) = output_and_reason(tarae(BIN).arg("--version"));
     assert!(out.status.success(), "{}{why}", out.status);
     // (the build stamped: the version, the commit, a `+` where the sources differ from it)
     let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert_eq!(said, format!("tarae {}", tarae_wire::BUILD));
     assert!(said.starts_with(&format!("tarae {} ", env!("CARGO_PKG_VERSION"))), "{said}");
-    let (out, why) = output_and_reason(Command::new(BIN).arg("--help"));
+    let (out, why) = output_and_reason(tarae(BIN).arg("--help"));
     assert!(out.status.success(), "{}{why}", out.status);
     assert!(String::from_utf8_lossy(&out.stdout).contains("usage: tarae [FILE]"));
 }
@@ -1762,7 +1762,7 @@ fn tarae_attach_refuses_under_a_run_of_claudes() {
         vec!["attach".to_string(), "--pid".into(), h.pid().to_string()],
         vec!["attach".into(), "--stdio".into()],
     ] {
-        let out = Command::new(BIN)
+        let out = tarae(BIN)
             .args(&args)
             .current_dir(sb.work())
             .env_clear()
@@ -2030,7 +2030,7 @@ fn a_client_over_ssh_in_another_protocol_is_refused() {
     let sb = with_ssh("ssh-version");
     let h = sb.host(&[]);
     let url = format!("ssh://mac{}", sb.work().display());
-    let out = Command::new(BIN)
+    let out = tarae(BIN)
         .args(["attach", &url, "--remote-tarae", BIN])
         .current_dir(sb.work())
         .env_clear()
@@ -2182,7 +2182,7 @@ fn each_failure_over_ssh_is_said_in_its_own_words() {
     let noisy = sb.outside("noisy-tarae");
     tarae_testkit::scratch::write_script(&noisy, "#!/bin/sh\nyes 'motd motd motd' | head -c 70000\n");
     let attach = |path: &Path, args: &[&str]| {
-        let out = Command::new(BIN)
+        let out = tarae(BIN)
             .arg("attach")
             .args(args)
             .current_dir(sb.work())

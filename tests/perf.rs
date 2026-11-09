@@ -108,7 +108,7 @@ fn perf_e2e_nofile_shim_start() {
     let (mut straight, mut shimmed) = (Vec::new(), Vec::new());
     for _ in 0..200 {
         straight.push(time(&mut std::process::Command::new(program)));
-        shimmed.push(time(std::process::Command::new(BIN).args(["--nofile", "256", program, "true"])));
+        shimmed.push(time(tarae(BIN).args(["--nofile", "256", program, "true"])));
     }
     let (s, w) = (median(straight), median(shimmed));
     eprintln!("nofile shim: {program} straight {s:.3} ms, through the shim {w:.3} ms");

@@ -1,8 +1,13 @@
 //! The pty harness shared by tests/e2e.rs (offline, every `cargo test`) and tests/live.rs (real tools, on
 //! demand). Each uses part of it.
+//!
+//! Every tarae it starts goes through `tarae`, which first runs that binary once, alone, and waits for it (#459):
+//! macOS's first-run check of a freshly linked, ad-hoc-signed binary can fail closed under load — the kernel then
+//! refuses the exec — so the prewarm takes that check alone, before the suite's parallel starts.
+//! (`tarae_testkit::firstexec`.)
 #![allow(dead_code)]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -18,6 +23,28 @@ use std::time::{Duration, Instant};
 mod pty;
 
 pub const BIN: &str = env!("CARGO_BIN_EXE_tarae");
+
+/// A tarae to start — every one the harness and its tests start is one (`every_tarae_starts_as_tarae`), after that
+/// binary's first exec, run once and alone (`first_exec`) — this build's, or a kept one's (`TARAE_BIN`, `with_bin`).
+pub fn tarae(bin: impl AsRef<OsStr>) -> Command {
+    tarae_testkit::firstexec::alone(Path::new(bin.as_ref()), first_exec);
+    Command::new(bin)
+}
+
+/// `bin --version`, waited for: its first exec, its exit reason said when it's refused.
+fn first_exec(bin: &Path) -> Result<(), String> {
+    let (out, why) = output_and_reason(Command::new(bin).arg("--version"));
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "tarae's first exec, run alone before any test's (#459: `{} --version`), FAILED: ended with {}{why} — \
+         stderr: {:?}",
+        bin.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    ))
+}
 /// How long a wait waits before it calls it a hang — the unit tests' `test_results::PATIENCE`, the same value (a
 /// guard only stops a test that would never end; why it's this long is said there). A passing test never waits
 /// this long.
@@ -578,7 +605,7 @@ impl Term {
         let master = File::from(master);
         let stdio = || Stdio::from(slave.try_clone().expect("dup slave"));
         // (`TARAE_BIN` or `with_bin`: another build of tarae — a kept copy, to measure it against this one)
-        let mut cmd = Command::new(sb.bin());
+        let mut cmd = tarae(sb.bin());
         cmd.args(args)
             .current_dir(cwd)
             .env_clear()
@@ -912,7 +939,7 @@ impl Term {
     /// A watcher of its UI state — `tarae state --watch [kinds] --json` running beside it, its event lines
     /// gathered as they come (`Watching::events`); stopped when dropped.
     pub fn watch(&self, kinds: &str) -> Watching {
-        let mut cmd = Command::new(&self.bin);
+        let mut cmd = tarae(&self.bin);
         cmd.arg("state").args(["--pid", &self.asks.unwrap_or(self.pid()).to_string(), "--json", "--watch"]);
         if !kinds.is_empty() {
             cmd.arg(kinds);
@@ -1128,7 +1155,7 @@ impl Asked<'_> {
         let deadline = Instant::now() + self.timeout;
         loop {
             let (out, why) = output_and_reason(
-                Command::new(self.bin)
+                tarae(self.bin)
                     .arg("state")
                     .args(["--pid", &self.pid.to_string()])
                     .args(args)
@@ -1277,7 +1304,7 @@ impl Sandbox {
         static N: AtomicUsize = AtomicUsize::new(0);
         let out = self.root.join(format!("host-{}.out", N.fetch_add(1, Ordering::Relaxed)));
         let file = File::create(&out).expect("the host's output file");
-        let mut cmd = Command::new(self.bin());
+        let mut cmd = tarae(self.bin());
         cmd.arg("--host")
             .args(args)
             .current_dir(self.work())
@@ -1319,7 +1346,7 @@ impl Host {
     fn wait_ready(&mut self) {
         let deadline = Instant::now() + self.timeout;
         loop {
-            let ok = Command::new(&self.bin)
+            let ok = tarae(&self.bin)
                 .args(["state", "--json", "--pid", &self.pid().to_string()])
                 .env_clear()
                 .envs(self.env.iter().cloned())
@@ -1964,6 +1991,44 @@ mod tests {
         assert!(said, "{why:?}");
         let (out, why) = output_and_reason(Command::new("/bin/sh").args(["-c", "echo said"]));
         assert!(out.status.success() && out.stdout == b"said\n" && why.is_empty(), "{why:?}");
+    }
+
+    /// This build's first exec has run, and passed, once a `tarae` is made: asked again, nothing runs (#459; once
+    /// and before every caller is `tarae_testkit::firstexec`'s test). A refused one would fail here with its reason.
+    #[test]
+    fn a_taraes_first_exec_has_run_once_one_is_made() {
+        tarae(BIN);
+        tarae_testkit::firstexec::alone(Path::new(BIN), |_| Err("run again".into()));
+    }
+
+    /// Every tarae the harness and the tests start is a `tarae(…)`, so none starts before the first exec (#459): no
+    /// `Command::new` of a tarae binary (`BIN`, a sandbox's or a term's `bin`) but `first_exec`'s own.
+    #[test]
+    fn every_tarae_starts_as_tarae() {
+        // (in two parts: this test's own lines aren't a start)
+        let new = concat!("Command", "::new(");
+        let own = [
+            format!("{new}bin)"),
+            format!("let (out, why) = output_and_reason({new}bin).arg(\"--version\"));"),
+        ];
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+        let mut bypass = Vec::new();
+        for file in ["harness/mod.rs", "e2e.rs", "perf.rs"] {
+            let text = fs::read_to_string(dir.join(file)).unwrap();
+            for (i, line) in text.lines().enumerate() {
+                let Some((_, arg)) = line.split_once(new) else { continue };
+                let arg = arg.split(')').next().unwrap_or_default();
+                let own = file == "harness/mod.rs" && own.iter().any(|o| line.trim() == o);
+                if !arg.starts_with('"') && arg.to_lowercase().contains("bin") && !own {
+                    bypass.push(format!("tests/{file}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            bypass.is_empty(),
+            "started without the first exec — make it `tarae(…)`:\n{}",
+            bypass.join("\n")
+        );
     }
 
     /// A thread that ends inside a rest takes nothing from the others' wakes (#191's third review: on Linux a sum of
