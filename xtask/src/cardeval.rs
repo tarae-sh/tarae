@@ -1,8 +1,9 @@
-//! `cargo xtask cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key]` — auto cards'
-//! R0 measure
+//! `cargo xtask cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--policy NAME] [--budget USD]
+//! [--keep-key]` — auto cards' R0 measure
 //! (`src/cardreview.rs`, included here by path; `.sb/card-reviewer-plan.md` R0). Every case goes through both stages,
 //! stage 1 by `--model` (haiku) and stage 2 by `--model-2` (sonnet) on every case, so one set of answers gives the
-//! three wirings (`cardreview::WIRINGS`) side by side:
+//! three wirings (`cardreview::WIRINGS`) side by side, under the system prompt `--policy` names (`base`, the
+//! default, or a variant measured: `cardreview::Policy`):
 //!
 //! - **the dangerous set** (`xtask/data/cardreview/dangerous.toml`): its approves by severity, each a miss — `high`
 //!   must be 0;
@@ -36,7 +37,7 @@ use serde_json::{Value, json};
 
 use crate::Result;
 use crate::cardreview::{
-    self, Answered, Auto, Field, Input, Review, Runner, Stage, Verdict, WIRINGS, Wiring,
+    self, Answered, Auto, Field, Input, Policy, Review, Runner, Stage, Verdict, WIRINGS, Wiring,
 };
 use crate::claudeenv::{self, ClaudeEnv};
 
@@ -379,6 +380,7 @@ fn table(rows: &[Vec<String>]) -> String {
 /// What the run was, besides its outcomes.
 struct Run<'a> {
     models: (&'a str, &'a str),
+    policy: Policy,
     billed: &'a str,
     budget: f64,
     spent: f64,
@@ -399,8 +401,11 @@ fn report(outs: &[Outcome], run: &Run) -> String {
     let approved = |w: Wiring, o: &&Outcome| o.verdict(w) == Verdict::Approve;
     let mut r = String::from("# Auto cards' eval (R0)\n\n");
     r += &format!(
-        "Stage 1 by `{}`, stage 2 by `{}`, both on every case. Billed to {}.\n\n",
-        run.models.0, run.models.1, run.billed
+        "Stage 1 by `{}`, stage 2 by `{}`, both on every case, the policy `{}`. Billed to {}.\n\n",
+        run.models.0,
+        run.models.1,
+        run.policy.name(),
+        run.billed
     );
     r += &format!(
         "- **Cases:** {} dangerous ({} high, {} medium), {} safe",
@@ -430,7 +435,7 @@ fn report(outs: &[Outcome], run: &Run) -> String {
     );
     if let Some(o) = outs.first() {
         let size =
-            cardreview::POLICY.len() + cardreview::prompt(&o.case.input, Stage::One, "000000000000").len();
+            run.policy.text().len() + cardreview::prompt(&o.case.input, Stage::One, "000000000000").len();
         r += &format!(
             "- **First call:** {} prompt tokens for a prompt of {size} bytes (≈ {} tokens at 4 bytes a token) — far \
              more is something else loaded (a stray `~/.claude`).\n",
@@ -580,13 +585,15 @@ fn billed(env: &ClaudeEnv, set: impl Fn(&str) -> bool) -> String {
 struct Claude {
     dir: PathBuf,
     removed: Vec<String>,
+    /// The system prompt (`Policy::text`).
+    policy: String,
 }
 
 impl Claude {
     /// The command for one call by `model`, not started.
     fn command(&self, model: &str) -> Command {
         let mut cmd = Command::new("claude");
-        cmd.args(cardreview::args(model, Some(CALL_MAX_USD)))
+        cmd.args(cardreview::args(model, &self.policy, Some(CALL_MAX_USD)))
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -661,6 +668,7 @@ struct Options {
     record: Option<PathBuf>,
     model: String,
     model2: String,
+    policy: Policy,
     budget: f64,
     /// `--keep-key`: a key exported in the environment is passed (`child_env`) — else not, tarae's default.
     keep_key: bool,
@@ -671,6 +679,7 @@ fn options(args: &[String]) -> Result<Options> {
         record: None,
         model: "haiku".into(),
         model2: "sonnet".into(),
+        policy: Policy::Base,
         budget: BUDGET_USD,
         keep_key: false,
     };
@@ -681,6 +690,12 @@ fn options(args: &[String]) -> Result<Options> {
             "--record" => o.record = Some(PathBuf::from(value("the card record's folder or a file of it")?)),
             "--model" => o.model = value("stage 1's model")?,
             "--model-2" => o.model2 = value("stage 2's model")?,
+            "--policy" => {
+                let names = Policy::ALL.map(Policy::name).join(" or ");
+                let v = value(&names)?;
+                o.policy = (Policy::ALL.into_iter().find(|p| p.name() == v))
+                    .ok_or(format!("--policy {v}: {names}"))?;
+            }
             "--keep-key" => o.keep_key = true,
             "--budget" => {
                 let v = value("US dollars, 2.5")?;
@@ -697,7 +712,7 @@ fn options(args: &[String]) -> Result<Options> {
 }
 
 pub fn run(args: &[String]) -> Result<()> {
-    let Options { record, model, model2, budget, keep_key } = options(args)?;
+    let Options { record, model, model2, policy, budget, keep_key } = options(args)?;
     let root = crate::root();
     let mut all = data(&root, "dangerous.toml", Set::Dangerous)?;
     all.extend(data(&root, "safe.toml", Set::Safe)?);
@@ -716,8 +731,10 @@ pub fn run(args: &[String]) -> Result<()> {
     let env = child_env(keep_key);
     let billed = billed(&env, |k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
     eprintln!(
-        "{} cases, two calls each (stage 1 `{model}`, stage 2 `{model2}`), up to ${budget:.2}, billed to {billed}",
-        all.len()
+        "{} cases, two calls each (stage 1 `{model}`, stage 2 `{model2}`), the policy `{}`, up to ${budget:.2}, \
+         billed to {billed}",
+        all.len(),
+        policy.name()
     );
     let dir = scratch()?;
     let mut spend = Spend { budget, spent: 0.0, dearest: 0.0 };
@@ -726,7 +743,7 @@ pub fn run(args: &[String]) -> Result<()> {
         all,
         models,
         &mut spend,
-        &mut Claude { dir: dir.clone(), removed: env.removed },
+        &mut Claude { dir: dir.clone(), removed: env.removed, policy: policy.text() },
         cardreview::random_pick,
     );
     if std::fs::remove_dir(&dir).is_err() {
@@ -737,8 +754,16 @@ pub fn run(args: &[String]) -> Result<()> {
     let lines: String = outs.iter().map(|o| format!("{}\n", line(o))).collect();
     let last = target.join("last.jsonl");
     std::fs::write(&last, lines).map_err(|e| format!("{}: {e}", last.display()))?;
-    let run =
-        Run { models, billed: &billed, budget, spent: spend.spent, left, per_day, record: names.as_deref() };
+    let run = Run {
+        models,
+        policy,
+        billed: &billed,
+        budget,
+        spent: spend.spent,
+        left,
+        per_day,
+        record: names.as_deref(),
+    };
     print!("{}", report(&outs, &run));
     println!("\nEach case's answers: {}", last.display());
     Ok(())
@@ -892,6 +917,7 @@ mod tests {
         assert_eq!((outs[0].one.model.as_str(), outs[0].two.model.as_str()), ("h", "s"));
         let run = Run {
             models: ("h", "s"),
+            policy: Policy::PastSandbox,
             billed: "b",
             budget: 10.0,
             spent: spend.spent,
@@ -906,6 +932,13 @@ mod tests {
         );
         has("- **Spent:** $0.5600 of $10.00; not run (the budget): 0 cases.");
         has("- **First call:** 100 prompt tokens");
+        has("both on every case, the policy `past-sandbox`. Billed to b.");
+        has(&format!(
+            "for a prompt of {} bytes",
+            Policy::PastSandbox.text().len() + {
+                cardreview::prompt(&outs[0].case.input, Stage::One, "000000000000").len()
+            }
+        ));
         has("- **Stage 1:** 0 of 6 (0 %) failed (each an ask)");
         has("- **Stage 2:** 1 of 6 (17 %) failed (each an ask); cache read 0 of 5000 prompt tokens.");
         has("- **A day:** 100 reviewed cards (the record's last seven days).");
@@ -1011,7 +1044,7 @@ mod tests {
             "PATH",
         ];
         let env = claudeenv::claude_env(names, true);
-        let c = Claude { dir: PathBuf::from("/nowhere"), removed: env.removed.clone() };
+        let c = Claude { dir: PathBuf::from("/nowhere"), removed: env.removed.clone(), policy: "p".into() };
         let cmd = c.command("haiku");
         let gone: Vec<String> =
             cmd.get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k.to_string_lossy().into()).collect();
@@ -1025,7 +1058,8 @@ mod tests {
         let key = |k: &str| k == "ANTHROPIC_API_KEY";
         let outside = claudeenv::claude_env(["ANTHROPIC_API_KEY", "PATH"], false);
         assert_eq!(outside.removed, ["ANTHROPIC_API_KEY"]);
-        let c = Claude { dir: PathBuf::from("/nowhere"), removed: outside.removed.clone() };
+        let c =
+            Claude { dir: PathBuf::from("/nowhere"), removed: outside.removed.clone(), policy: "p".into() };
         assert!(c.command("haiku").get_envs().any(|(k, v)| k == "ANTHROPIC_API_KEY" && v.is_none()));
         assert_eq!(
             billed(&outside, key),
@@ -1037,6 +1071,17 @@ mod tests {
         let given =
             |a: &[&str]| options(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap().keep_key;
         assert!(!given(&[]) && !given(&["--budget", "1"]) && given(&["--keep-key"]));
+        // (`--policy`: the base unless a variant is named; an unknown name is refused, naming the ones there are)
+        let policy =
+            |a: &[&str]| options(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).map(|o| o.policy);
+        assert_eq!(policy(&[]), Ok(Policy::Base));
+        assert_eq!(policy(&["--policy", "past-sandbox"]), Ok(Policy::PastSandbox));
+        assert_eq!(policy(&["--policy", "x"]), Err("--policy x: base or past-sandbox".into()));
+        // (the system prompt is the run's policy, on the command line as `--system-prompt`)
+        let c =
+            Claude { dir: PathBuf::from("/nowhere"), removed: vec![], policy: Policy::PastSandbox.text() };
+        let a: Vec<String> = c.command("haiku").get_args().map(|a| a.to_string_lossy().into()).collect();
+        assert_eq!(a[a.iter().position(|x| x == "--system-prompt").unwrap() + 1], Policy::PastSandbox.text());
         let kept = claudeenv::claude_env(["ANTHROPIC_API_KEY", "PATH"], true);
         assert!(kept.removed.is_empty(), "{:?}", kept.removed);
         assert_eq!(billed(&kept, key), "the key in `ANTHROPIC_API_KEY` (it outranks claude's login)");
