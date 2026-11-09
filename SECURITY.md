@@ -2,7 +2,9 @@
 
 ## Reporting a vulnerability
 
-Email **security@sinabro.io** — not a public issue. Please include:
+Report it privately — not as a public issue — through GitHub's private reporting (the repository's **Security** tab
+→ **Report a vulnerability**, https://github.com/tarae-sh/tarae/security/advisories/new) or by email to
+**security@sinabro.io**. Please include:
 
 - what you did (the steps, a script or a repository that shows it),
 - what happened, and what you expected instead,
@@ -12,7 +14,10 @@ Email **security@sinabro.io** — not a public issue. Please include:
 ## What's in scope
 
 - tarae's sandbox for Claude's commands: Seatbelt on macOS; Landlock, seccomp and the keeper on Linux.
-- The confinement of the `claude` process itself.
+- The gates on Claude's own tools: reads outside the project asked on a card, edits reviewed, no shell — the
+  `claude` process itself runs as you, as in every other tool.
+- Credential masking: a masked variable reaches a run as a stand-in, and the proxy puts the real value in only
+  toward its hosts.
 - The trust gates: a project's settings (`.tarae.toml`), a repository's git config and hooks, a repository's
   Claude settings.
 - The egress proxy Claude's commands reach the network through.
