@@ -309,15 +309,15 @@ pub(crate) fn make(
         }
         Form::Wide => 0.0,
     };
-    // (the window's columns a row, at a mid zoom's cells; the frame's own, at the whole's — `view`'s)
+    // (the window's columns a row, at a mid zoom's cells; the frame's own, at the whole's, and the whole's fill of it —
+    // `view`'s)
     let (_, _, ww, wh) = short_window();
-    let shape = |(cw, ch): (usize, usize)| (ww as f32 / cw as f32) / (wh as f32 / ch as f32);
-    let (aspect, drawn) = (shape(shot::cell(&fonts, 30.0)), shape(shot::cell(&fonts, whole.max(8.0))));
+    let (aspect, frame) = frame_of(screen, (ww, wh), whole, |p| shot::cell(&fonts, p));
     let (aims, mut missed) = match form {
         Form::Short => {
             let legible = (LEGIBLE_MM / PHONE_MM * SHORT.0 as f32).ceil();
             let legible = (ww / shot::cell(&fonts, legible).0) as f32;
-            reads(rec, (aspect, drawn), short_eye(), legible)
+            reads(rec, (aspect, frame), short_eye(), legible)
         }
         Form::Wide => (Vec::new(), Vec::new()),
     };
@@ -420,7 +420,7 @@ pub(crate) fn make(
                         a.spec,
                         if a.deep { "deep" } else { "shallow" },
                         a.planned.window.w,
-                        camera::shown(a.planned.window, drawn).w,
+                        camera::shown(a.planned.window, frame).w,
                         match a.left_kept {
                             true => "",
                             false => "; its pane's left (the gutter) not kept — the target held whole",
@@ -461,6 +461,7 @@ pub(crate) fn make(
             // its largest)
             let (mut on_whole, mut zoomed, mut held) = (0u64, 0u64, 0u64);
             let (mut most, mut most_at) = (1.0f32, 0);
+            let mut cut_rows: Vec<usize> = Vec::new();
             for ms in (0..shown_ms).step_by(10) {
                 let at = path.at(ms);
                 if at == Region::all(screen) {
@@ -468,8 +469,18 @@ pub(crate) fn make(
                     continue;
                 }
                 zoomed += 10;
-                if windows.iter().any(|w| (w.0 + camera::DRIFT_MS..w.1).contains(&ms)) {
+                if let Some(i) = windows.iter().position(|w| (w.0 + camera::DRIFT_MS..w.1).contains(&ms)) {
                     held += 10;
+                    // (a held window's frame starts and ends on whole rows, as the frame draws it)
+                    let v = view(at, screen, (ww, wh), whole, |p| shot::cell(&fonts, p));
+                    if !v.whole_rows(wh, rows) && !cut_rows.contains(&i) {
+                        cut_rows.push(i);
+                        let (top, bottom) = v.rows(wh);
+                        missed.push(format!(
+                            "the read held at {:.1} s cuts a row at its frame's edge: rows {top:.2} to {bottom:.2}",
+                            s(ms)
+                        ));
+                    }
                 }
                 let k = camera::nearer(at, screen) / all;
                 if k > most {
@@ -767,7 +778,12 @@ struct Aim {
 /// `legible` columns at least, from the target's pane's left) — as wide as it grows on the same rows before the next beat
 /// (`camera::widened`: a line Claude is writing reaches its end, never past the window's edge); a beat with none stays
 /// on the whole. A second `@zoom` in a beat, one before the first beat and a target never found are said, left out.
-fn reads(rec: &Recorded, (aspect, drawn): (f32, f32), eye: f32, legible: f32) -> (Vec<Aim>, Vec<String>) {
+fn reads(
+    rec: &Recorded,
+    (aspect, frame): (f32, camera::Frame),
+    eye: f32,
+    legible: f32,
+) -> (Vec<Aim>, Vec<String>) {
     let (mut out, mut missed) = (Vec::new(), Vec::new());
     let s = |t: u64| t as f64 / 1000.0;
     let first = rec.beats.first().map_or(u64::MAX, |b| b.0);
@@ -796,7 +812,7 @@ fn reads(rec: &Recorded, (aspect, drawn): (f32, f32), eye: f32, legible: f32) ->
             let region = camera::widened(region, held, (cells.text[0].len() as u16, cells.text.len() as u16));
             let (window, left_kept) = match camera::news(spec) {
                 Some((text, _)) => {
-                    (camera::news_framed(&cells, text, region, (aspect, eye, legible, deep)), true)
+                    (camera::news_framed(&cells, text, region, (aspect, eye, legible, deep), frame), true)
                 }
                 None => {
                     // (the cards drawn while it stands — the ease in and the hold — wholly in its window or out of it)
@@ -812,15 +828,23 @@ fn reads(rec: &Recorded, (aspect, drawn): (f32, f32), eye: f32, legible: f32) ->
                         }
                     }
                     let window =
-                        camera::framed_among(&cells, region, (aspect, eye, legible, deep), (&later, drawn));
-                    let seen = camera::shown(window, drawn);
+                        camera::framed_among(&cells, region, (aspect, eye, legible, deep), (&later, frame));
+                    let seen = camera::shown(window, frame);
                     (window, deep || camera::keeps_panes_left(&cells, region, seen))
                 }
             };
-            Some((*at.max(&t), window, left_kept))
+            // (a window the frame shows the whole screen through: no read)
+            let seen = camera::shown(window, frame);
+            let whole = seen.w >= cells.text[0].len() as f32 && seen.h >= cells.text.len() as f32;
+            Some((*at.max(&t), window, left_kept, whole))
         });
         match found {
-            Some((found, window, left_kept)) => out.push(Aim {
+            Some((found, _, _, true)) => missed.push(format!(
+                "@zoom:{spec} at {:.1} s: no window holds it with every card wholly in or wholly out, short of the \
+                 whole screen — its beat on the whole",
+                s(found)
+            )),
+            Some((found, window, left_kept, false)) => out.push(Aim {
                 beat: b,
                 spec: spec.clone(),
                 deep,
@@ -1526,6 +1550,21 @@ impl View {
         let (r0, r1) = axis(self.origin.1, self.scale.1, window.1, self.cell.1, rows);
         (c0, r0, c1, r1)
     }
+
+    /// Where a window `wh` px tall starts and ends on the screen's rows (fractions where it cuts one).
+    fn rows(&self, wh: usize) -> (f32, f32) {
+        let (o, s, ch) = (self.origin.1, self.scale.1, self.cell.1 as f32);
+        ((o + 0.5 - s / 2.0 - PAD as f32) / ch, (o + 0.5 + (wh as f32 - 0.5) * s - PAD as f32) / ch)
+    }
+
+    /// Whether a window `wh` px tall starts and ends on whole rows of a screen `rows` tall, or past its edges (the pad),
+    /// to half a px.
+    fn whole_rows(&self, wh: usize, rows: u16) -> bool {
+        let (top, bottom) = self.rows(wh);
+        let slack = 0.5 * self.scale.1 / self.cell.1 as f32;
+        let whole = |v: f32| (v - v.round()).abs() <= slack;
+        (top <= slack || whole(top)) && (bottom >= f32::from(rows) - slack || whole(bottom))
+    }
 }
 
 /// How the camera's `region` of a `screen` maps onto a `window` (px): its cells as large on the window as the region
@@ -1564,6 +1603,20 @@ fn view(
         scale,
         origin: (origin(region.x, region.w, cw, ww, scale.0), origin(region.y, region.h, ch, wh, scale.1)),
     }
+}
+
+/// A read window's shape (columns a row, at a mid zoom's cells) and how a frame shows a window (`camera::Frame`, as
+/// `view` draws it): the frame's shape at the whole's cells, and the whole's fill of it — its pad round the screen.
+fn frame_of(
+    (cols, rows): (u16, u16),
+    (ww, wh): (usize, usize),
+    whole: f32,
+    cell: impl Fn(f32) -> (usize, usize),
+) -> (f32, camera::Frame) {
+    let shape = |(cw, ch): (usize, usize)| (ww as f32 / cw as f32) / (wh as f32 / ch as f32);
+    let (cw0, ch0) = cell(whole.max(8.0));
+    let margin = (ww as f32 / (f32::from(cols) * cw0 as f32)).min(wh as f32 / (f32::from(rows) * ch0 as f32));
+    (shape(cell(30.0)), camera::Frame { drawn: shape((cw0, ch0)), margin })
 }
 
 /// `pic` drawn through `view` into the `size` px at `at` of a frame `w` px wide (RGB): each px the picture's bilinear
@@ -2350,6 +2403,43 @@ mod tests {
         assert!(changed == 3 && changed > WRITING_ROWS_MAX, "a view moved: every row but the one both have");
     }
 
+    /// What the camera takes a frame to show of a window (`frame_of`: its shape and margin) is what `view` draws: a
+    /// window on whole rows by the one is drawn on whole rows by the other, to half a px, and one off them is drawn
+    /// off them — Short 4's retake held windows that cut line 12's comment and the status line across. And every
+    /// read framed at a Short's frame is drawn so.
+    #[test]
+    fn a_window_on_whole_rows_is_drawn_on_whole_rows() {
+        let cell = |p: f32| ((p * 0.6).round() as usize, (p * 1.25).round() as usize);
+        let (_, _, ww, wh) = short_window();
+        let screen = (80u16, 34u16);
+        let whole = camera::fit(Region::all(screen), (ww, wh), SHORT_PX_MAX, cell);
+        let (aspect, frame) = frame_of(screen, (ww, wh), whole, cell);
+        assert!(frame.margin > 1.0, "the whole's pad: {frame:?}");
+        for k in 0..200 {
+            let r = Region { x: 4.0, y: k as f32 * 0.1, w: 40.0, h: 14.0 };
+            let v = view(r, screen, (ww, wh), whole, cell);
+            assert_eq!(
+                camera::whole_rows(r, frame, 34),
+                v.whole_rows(wh, 34),
+                "{r:?}: rows {:?}",
+                v.rows(wh)
+            );
+        }
+        let mut p = vt100::Parser::new(34, 80, 0);
+        p.process(
+            b"\x1b[30;3Hsandbox blocked reading ~/.ssh/id_ed25519\x1b[5;3Hkey=$(cat ~/.ssh/id_ed25519)",
+        );
+        let cells = camera::Cells::of(p.screen());
+        for spec in ["sandbox blocked", "key="] {
+            for deep in [false, true] {
+                let target = camera::target(&cells, spec).expect(spec);
+                let window = camera::framed_among(&cells, target, (aspect, 0.33, 46.0, deep), (&[], frame));
+                let v = view(window, screen, (ww, wh), whole, cell);
+                assert!(v.whole_rows(wh, 34), "{spec} deep {deep}: {window:?}, rows {:?}", v.rows(wh));
+            }
+        }
+    }
+
     /// A screen of a code pane: its top line, `code` numbered from `first`, the status line.
     fn screen(first: u32, code: &[&str]) -> vt100::Screen {
         let mut p = vt100::Parser::new(6, 40, 0);
@@ -2740,7 +2830,8 @@ mod tests {
         assert_eq!(card_gone(&gone, "card:nowhere", 50, 1_000), Some(50));
         let back = rec(vec![(0, asks()), (200, plain()), (400, asks())], &zooms);
         assert_eq!(card_gone(&back, "card:asks", 0, 1_000), None, "back before the read's end");
-        let (aims, missed) = reads(&gone, (0.6, 0.6), 0.33, 40.0);
+        // (legible at 12 columns of the 40: a shallow read's window short of the whole screen)
+        let (aims, missed) = reads(&gone, (0.6, camera::Frame { drawn: 0.6, margin: 1.0 }), 0.33, 12.0);
         let read: Vec<_> = aims.iter().map(|a| (a.beat, a.spec.as_str(), a.deep, a.planned.next)).collect();
         assert_eq!(read, [(0, "card:asks", false, Some(300)), (1, "code:1-1", true, Some(450))]);
         assert_eq!(missed, ["@zoom:code:1-1 at 0.1 s: a beat reads one thing (card:asks) — left out"]);

@@ -602,13 +602,19 @@ pub(crate) fn news_framed(
     text: &str,
     target: Region,
     (aspect, eye, legible, deep): (f32, f32, f32, bool),
+    frame: Frame,
 ) -> Region {
     let toast = find(&screen.text, text).and_then(|at| holding(screen, at));
-    let r = shaped(screen, target, (aspect, eye, legible, deep), toast, (&[], aspect));
+    let r = shaped(screen, target, (aspect, eye, legible, deep), toast, (&[], frame));
     let Some(c) = callout(screen, text, (r.w as usize).saturating_sub(2)) else { return r };
     let size = (screen.text.first().map_or(0, Vec::len) as u16, screen.text.len() as u16);
     let need = 1.0 + c.lines.len() as f32;
-    Region { y: r.y.min((target.y - need).floor()).max(0.0), ..r }.inside(size)
+    let up = Region { y: r.y.min((target.y - need).floor()).max(0.0), ..r }.inside(size);
+    // (moved up, on whole rows still: the nearest top that is, no lower than the move put it)
+    match up == r {
+        true => r,
+        false => on_rows(up, frame, size).into_iter().find(|c| c.y <= up.y + EPS).unwrap_or(up),
+    }
 }
 
 /// A row's text between `from` and `to`: its first and past-its-last non-blank cell.
@@ -693,8 +699,9 @@ fn find(cells: &[Vec<String>], text: &str) -> Option<(usize, usize, usize)> {
     })
 }
 
-/// A cut card is taken in with the target only while that costs the zoom at most this much (the window this many
-/// times as wide); past it the camera draws the target alone (`framed`'s clip).
+/// A cut card is taken in with the target first only while that costs the zoom at most this much (the window this many
+/// times as wide); past it a shallow window narrows to clear the card, and only where that can't is the card taken in
+/// at any cost (`framed`).
 const TAKEN_IN_MAX: f32 = 1.25;
 
 /// `target`'s region shaped to a window of `aspect` columns a row, the screen round it filling the window: the rows (or
@@ -702,13 +709,15 @@ const TAKEN_IN_MAX: f32 = 1.25;
 /// target's centre nearest `eye` down the window (a fraction of its height) and its middle across; where every
 /// placement cuts one, that card is taken in with the target and shaped again while the window grows no more than
 /// `TAKEN_IN_MAX` nor past `legible` columns (what it shows at a phone's legible glyph — a target wider than that
-/// takes nothing in; at most four times); else the target's own shape placed so — the cards it cuts left out as each
-/// frame is drawn (`cut`), the zoom kept. A `deep` read's window is so; a shallow one's (every other read's) is at
+/// takes nothing in; at most four times). A `deep` read's window is so; a shallow one's (every other read's) is at
 /// least `legible` columns wide — the emphasis at a depth that reads (CLAUDE.md's Shorts bullet), wider only for a
 /// target wider than that —, taking in what it cuts while that costs it no more than `TAKEN_IN_MAX`, else narrower —
 /// deeper, never narrower than its target — until it cuts none (a card wholly in or wholly out), its left edge at
 /// the target's pane's left (`pane_left`: its gutter kept) wherever the target fits that way, centred only where it
-/// doesn't. Inside the screen.
+/// doesn't. Where no window does any of that, the card is taken in whatever it costs the zoom (a card wholly in or
+/// wholly out is the user's rule; the zoom gives way), to the whole screen if need be — a read the take then says it
+/// can't stand. Every card judged by what the frame shows of the window (`shown`), and every window as it holds on
+/// whole rows (`on_rows`). Inside the screen.
 #[cfg(test)]
 pub(crate) fn framed(
     screen: &Cells,
@@ -718,30 +727,30 @@ pub(crate) fn framed(
     legible: f32,
     deep: bool,
 ) -> Region {
-    shaped(screen, target, (aspect, eye, legible, deep), None, (&[], aspect))
+    shaped(screen, target, (aspect, eye, legible, deep), None, (&[], Frame { drawn: aspect, margin: 1.0 }))
 }
 
 /// `framed`, its window clear of `later` too — the cards the screens after this one draw while the read stands (a card
 /// growing beside the target as the camera holds: V4's follow card, a column wider by the hold), each wholly in or out
-/// as this screen's are; one over the target's own cells isn't one to clear. `drawn` is the shape (columns a row) the
-/// frame shows a window at (`video::view`: the whole's cells), where a window narrows to clear a card.
+/// as this screen's are; one over the target's own cells isn't one to clear. `frame` is how the frame shows a window
+/// (`video::view`), where a window narrows to clear a card.
 pub(crate) fn framed_among(
     screen: &Cells,
     target: Region,
     (aspect, eye, legible, deep): (f32, f32, f32, bool),
-    (later, drawn): (&[Card], f32),
+    (later, frame): (&[Card], Frame),
 ) -> Region {
-    shaped(screen, target, (aspect, eye, legible, deep), None, (later, drawn))
+    shaped(screen, target, (aspect, eye, legible, deep), None, (later, frame))
 }
 
-/// `framed`, `skip` (a news beat's toast) no card of the screen's, `later` cards to clear as its own and `drawn` the
-/// frame's shape (`framed_among`).
+/// `framed`, `skip` (a news beat's toast) no card of the screen's, `later` cards to clear as its own and `frame` how
+/// the frame shows a window (`framed_among`).
 fn shaped(
     screen: &Cells,
     target: Region,
     (aspect, eye, legible, deep): (f32, f32, f32, bool),
     skip: Option<Card>,
-    (later, drawn): (&[Card], f32),
+    (later, frame): (&[Card], Frame),
 ) -> Region {
     let rows = screen.text.len();
     let cols = screen.text.first().map_or(0, Vec::len);
@@ -784,14 +793,31 @@ fn shaped(
         }
         all
     };
-    let cuts = |x: f32, y: f32, (w, h): (f32, f32)| -> Option<Card> {
-        let (x1, y1) = (x + w, y + h);
+    // (the card a window cuts, by the cells the frame shows of it)
+    let cuts = |window: Region| -> Option<Card> {
+        let s = shown(window, frame);
+        let (x, y, x1, y1) = (s.x, s.y, s.x + s.w, s.y + s.h);
         cards.iter().copied().find(|&(r0, c0, r1, c1)| {
             let (cr0, cc0, cr1, cc1) = (r0 as f32, c0 as f32, r1 as f32 + 1.0, c1 as f32 + 1.0);
-            let meets = cc0 < x1 && x < cc1 && cr0 < y1 && y < cr1;
-            let whole = x <= cc0 && cc1 <= x1 && y <= cr0 && cr1 <= y1;
+            let meets = cc0 < x1 - EPS && x + EPS < cc1 && cr0 < y1 - EPS && y + EPS < cr1;
+            let whole = x <= cc0 + EPS && cc1 <= x1 + EPS && y <= cr0 + EPS && cr1 <= y1 + EPS;
             meets && !whole
         })
+    };
+    // (a window as it holds: on whole rows, near where it was placed, cutting no card and showing the target's cells)
+    let settle = |window: Region| -> Option<Region> {
+        let shows = |s: Region| {
+            s.x <= target.x + AIR + EPS
+                && target.x + target.w - AIR <= s.x + s.w + EPS
+                && s.y <= target.y + AIR + EPS
+                && target.y + target.h - AIR <= s.y + s.h + EPS
+        };
+        (on_rows(window, frame, size).into_iter()).find(|&c| cuts(c).is_none() && shows(shown(c, frame)))
+    };
+    let with = |want: Region, (r0, c0, r1, c1): Card| {
+        let (x0, y0) = (want.x.min(c0 as f32), want.y.min(r0 as f32));
+        let (x1, y1) = ((want.x + want.w).max(c1 as f32 + 1.0), (want.y + want.h).max(r1 as f32 + 1.0));
+        Region { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
     };
     let mut want = target;
     for _ in 0..4 {
@@ -801,16 +827,15 @@ fn shaped(
         let mut cut = None;
         for &y in &ys {
             for &x in &xs {
-                match cuts(x, y, (w, h)) {
-                    None => return Region { x, y, w, h }.inside(size),
-                    Some(c) => cut = cut.or(Some(c)),
+                let window = Region { x, y, w, h };
+                if let Some(held) = settle(window) {
+                    return held;
                 }
+                cut = cut.or(cuts(window.inside(size)));
             }
         }
-        let Some((r0, c0, r1, c1)) = cut else { break };
-        let (x0, y0) = (want.x.min(c0 as f32), want.y.min(r0 as f32));
-        let (x1, y1) = ((want.x + want.w).max(c1 as f32 + 1.0), (want.y + want.h).max(r1 as f32 + 1.0));
-        let more = Region { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        let Some(card) = cut else { break };
+        let more = with(want, card);
         let own = shape(target).0;
         if shape(more).0 > (own * TAKEN_IN_MAX).min(legible.max(own)) {
             break;
@@ -820,12 +845,13 @@ fn shaped(
     // (a shallow window that cuts a card wherever it stands, and can't take it in: narrower a column at a time — a
     // deeper read, never narrower than its target — until what the frame shows of it leaves every card wholly out; V4's
     // review beside the follow card. The frame shows a window as `drawn`'s shape about its middle — `k` times its
-    // width where its height binds —, so the columns shown are what's placed, whole cells, and the window centred in them)
-    let k = (drawn / aspect).max(1.0);
+    // width where its height binds, and the margin round it —, so the columns shown are what's placed, whole cells, and
+    // the window centred in them)
+    let k = (frame.drawn / aspect).max(1.0) * frame.margin;
     let own = target.w.min(cols as f32);
     let mut sw = ((least * k).floor() - 1.0).min(cols as f32);
     while sw >= own {
-        let (sh, w) = ((sw / drawn).min(rows as f32), sw / k);
+        let (sh, w) = ((sw / frame.drawn).min(rows as f32), sw / k);
         let h = w / aspect;
         if sh >= target.h.min(rows as f32) {
             let (xs, ys) = (
@@ -833,17 +859,89 @@ fn shaped(
                 starts(target.y, target.h, sh, rows, eye, None),
             );
             for &y in &ys {
-                if let Some(&x) = xs.iter().find(|&&x| cuts(x, y, (sw, sh)).is_none()) {
-                    return Region { x: x + (sw - w) / 2.0, y: y + (sh - h) / 2.0, w, h }.inside(size);
+                for &x in &xs {
+                    if let Some(held) = settle(Region { x: x + (sw - w) / 2.0, y: y + (sh - h) / 2.0, w, h })
+                    {
+                        return held;
+                    }
                 }
             }
         }
         sw -= 1.0;
     }
-    let (w, h) = shape(target);
-    let x = starts(target.x, target.w, w, cols, 0.5, left).first().copied().unwrap_or(target.x);
-    let y = starts(target.y, target.h, h, rows, eye, None).first().copied().unwrap_or(target.y);
-    Region { x, y, w, h }.inside(size)
+    // (no window clears the card, nor takes it in within `TAKEN_IN_MAX`: taken in whatever that costs the zoom — the
+    // follow card beside a run panel's line that reaches past its left, Short 4's first read —, to the whole if need be)
+    let mut want = target;
+    loop {
+        let (w, h) = shape(want);
+        let (xs, ys) =
+            (starts(want.x, want.w, w, cols, 0.5, left), starts(want.y, want.h, h, rows, eye, None));
+        let mut cut = None;
+        for &y in &ys {
+            for &x in &xs {
+                let window = Region { x, y, w, h };
+                if let Some(held) = settle(window) {
+                    return held;
+                }
+                cut = cut.or(cuts(window.inside(size)));
+            }
+        }
+        let Some(more) = cut.map(|card| with(want, card)).filter(|&more| more != want) else { break };
+        want = more;
+    }
+    Region::all(size)
+}
+
+/// A rounding's slack, in cells.
+const EPS: f32 = 1e-3;
+
+/// How a frame shows a window (`video::view`): at `drawn`'s shape (columns a row, at the whole's cells) about its
+/// middle, and `margin` times that each way — the whole's own fill of the frame (its pad round the screen's cells),
+/// which every window is shown with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Frame {
+    pub(crate) drawn: f32,
+    pub(crate) margin: f32,
+}
+
+/// Whether what the frame shows of `window` starts and ends on whole rows of a screen `rows` tall — or past its edge,
+/// where the frame shows the pad: no row cut across at a held window's top or bottom.
+pub(crate) fn whole_rows(window: Region, frame: Frame, rows: u16) -> bool {
+    let s = shown(window, frame);
+    let whole = |v: f32| (v - v.round()).abs() < EPS;
+    (s.y <= EPS || whole(s.y)) && (s.y + s.h >= f32::from(rows) - EPS || whole(s.y + s.h))
+}
+
+/// `window` as it may hold, near it (`whole_rows`), inside the screen: itself alone where it is so; else scaled about
+/// its middle so the frame shows a whole number of rows — the nearest first, then fewer, then more —, kept to what it
+/// showed's left, middle or right, its top the nearest whole row (or where it was, past the screen's edge).
+fn on_rows(window: Region, frame: Frame, (cols, rows): (u16, u16)) -> Vec<Region> {
+    let (cw, rh) = (f32::from(cols), f32::from(rows));
+    let r = window.inside((cols, rows));
+    let seen = shown(r, frame);
+    let fits = |c: &Region| c.x >= -EPS && c.y >= -EPS && c.x + c.w <= cw + EPS && c.y + c.h <= rh + EPS;
+    let mut out: Vec<Region> = Vec::new();
+    if whole_rows(r, frame, rows) {
+        return vec![r];
+    }
+    let mut sizes = vec![seen.h.round(), seen.h.floor(), seen.h.ceil()];
+    sizes.dedup();
+    for n in sizes.into_iter().filter(|&n| n >= 1.0) {
+        let s = n / seen.h;
+        let (w, h, sw) = (r.w * s, r.h * s, seen.w * s);
+        let mid = seen.y + (seen.h - n) / 2.0;
+        let tops = [mid.round(), mid.floor(), mid.ceil(), mid];
+        let lefts = [seen.x, seen.x + (seen.w - sw) / 2.0, seen.x + seen.w - sw];
+        for t in tops {
+            for a in lefts {
+                let c = Region { x: a + (sw - w) / 2.0, y: t + (n - h) / 2.0, w, h };
+                if fits(&c) && whole_rows(c, frame, rows) && !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The left column of the pane `target` starts in: past the nearest of the screen's `dividers` at or left of it (its
@@ -853,10 +951,11 @@ fn pane_left(cells: &[Vec<String>], target: Region) -> usize {
     dividers(cells).into_iter().filter(|&d| d <= at).max().map_or(0, |d| (d + 1).min(at))
 }
 
-/// What a frame shows of `window` where it draws a window at `drawn`'s shape (columns a row; `video::view`): the window
-/// widened, or made taller, about its middle to that shape.
-pub(crate) fn shown(window: Region, drawn: f32) -> Region {
-    let (w, h) = (window.w.max(window.h * drawn), window.h.max(window.w / drawn));
+/// What a frame shows of `window` (`Frame`): the window widened, or made taller, about its middle to the frame's shape,
+/// and its margin round that.
+pub(crate) fn shown(window: Region, frame: Frame) -> Region {
+    let (w, h) = (window.w.max(window.h * frame.drawn), window.h.max(window.w / frame.drawn));
+    let (w, h) = (w * frame.margin, h * frame.margin);
     Region { x: window.x + (window.w - w) / 2.0, y: window.y + (window.h - h) / 2.0, w, h }
 }
 
@@ -1241,7 +1340,8 @@ mod tests {
     /// A card is wholly in a window or wholly out of it: V4's review (its lines to column 37) beside the follow card (its
     /// frame from column 40, rows 23–31, 38 wide) — a shallow window of 46 columns cuts the card wherever it stands and
     /// can't take it in, so it narrows a column at a time until the card is out (40, from the pane's left), its rows
-    /// the window's shape; never narrower than its target — one that can't clear the card that way is cut as before.
+    /// the window's shape; never narrower than its target — one that can't clear the card that way takes it in, whatever
+    /// that costs the zoom.
     #[test]
     fn a_shallow_window_narrows_till_a_card_beside_it_is_wholly_out() {
         let follow: Card = (23, 40, 31, 77);
@@ -1249,31 +1349,80 @@ mod tests {
         let review = region(0.0, 11.0, 37.0, 13.0);
         let aspect = 46.0 / 20.5;
         let window = framed(&on, review, aspect, 0.5, 46.0, false);
-        assert_eq!((window.x, window.w), (0.0, 40.0), "{window:?}");
+        assert!(window.x.abs() < 1e-3 && window.w > 38.0, "from the pane's left, near 40: {window:?}");
         assert!(window.x + window.w <= follow.1 as f32, "the card wholly out");
+        assert!(whole_rows(window, Frame { drawn: aspect, margin: 1.0 }, 34), "on whole rows: {window:?}");
         assert!(
             window.y <= review.y && review.y + review.h <= window.y + window.h,
             "the target whole: {window:?}"
         );
         assert!((window.w / window.h - aspect).abs() < 0.01, "the window's shape");
-        // (a target reaching past the card's left: no narrower window clears it — 46 wide, the card cut as before)
+        // (a target reaching past the card's left — Short 4's refusal line under the follow card: no narrower window
+        // clears it, so the card is taken in, the window the whole width; never the card cut)
         let wide = region(0.0, 11.0, 42.0, 13.0);
-        assert_eq!(framed(&on, wide, aspect, 0.5, 46.0, false).w, 46.0);
+        let taken = framed(&on, wide, aspect, 0.5, 46.0, false);
+        assert!(taken.x <= 40.0 && 78.0 <= taken.x + taken.w, "the card wholly in: {taken:?}");
         // (the card a column narrower on this screen, wider by the hold: clear of it as the hold draws it; a later card
         // over the target's own cells — a review's line lit — none to clear)
         let first = boxed(80, 34, &[(23, 41, 31, 77)]);
         let params = (aspect, 0.5, 46.0, false);
-        assert_eq!(framed_among(&first, review, params, (&[], aspect)).w, 41.0, "this screen's alone");
-        assert_eq!(framed_among(&first, review, params, (&[follow, (12, 0, 12, 44)], aspect)).w, 40.0);
-        // (the frame drawing it 1.076× as wide as its shape — the whole's cells, its height binding: the columns it
-        // shows are what clear the card, 0–41 exactly, the window centred in them)
-        let drawn = aspect * 1.076;
-        let w = framed_among(&first, review, params, (&[], drawn));
-        let shown = (w.x + w.w / 2.0 - w.h * drawn / 2.0, w.x + w.w / 2.0 + w.h * drawn / 2.0);
-        assert!(shown.0.abs() < 1e-3 && (shown.1 - 41.0).abs() < 1e-3, "{shown:?} {w:?}");
-        let seen = super::shown(w, drawn);
-        assert!(seen.x.abs() < 1e-3 && (seen.w - 41.0).abs() < 1e-3, "{seen:?}");
-        assert!(keeps_panes_left(&first, review, seen), "the gutter shown from column 0");
+        let plain = Frame { drawn: aspect, margin: 1.0 };
+        let alone = framed_among(&first, review, params, (&[], plain));
+        assert!(alone.x.abs() < 1e-3 && alone.x + alone.w <= 41.0 + 1e-3, "this screen's alone: {alone:?}");
+        assert!(alone.w > 39.0, "no narrower than its whole rows need: {alone:?}");
+        let both = framed_among(&first, review, params, (&[follow, (12, 0, 12, 44)], plain));
+        assert!(both.x.abs() < 1e-3 && both.x + both.w <= 40.0 + 1e-3 && both.w > 38.0, "{both:?}");
+        // (the frame drawing it 1.076× as wide as its shape — the whole's cells, its height binding —, and its margin
+        // round that: the columns it shows are what clear the card, from column 0, the window centred in them)
+        for margin in [1.0, 1.04] {
+            let frame = Frame { drawn: aspect * 1.076, margin };
+            let w = framed_among(&first, review, params, (&[], frame));
+            let seen = super::shown(w, frame);
+            // (from column 0, or a hair of the pad left of it where that keeps a row more)
+            assert!(seen.x <= 1e-3 && seen.x > -0.5 && seen.x + seen.w <= 41.0 + 1e-3, "{seen:?} {w:?}");
+            assert!(seen.w > 39.0, "{seen:?} {w:?}");
+            assert!(whole_rows(w, frame, 34), "on whole rows: {seen:?}");
+            assert!(keeps_panes_left(&first, review, seen), "the gutter shown from column 0");
+        }
+    }
+
+    /// A held window starts and ends on whole rows as the frame shows it (or past the screen's edge): Short 4's
+    /// retake held one with line 12's comment half shown at its top, another with the status line's top half above the
+    /// caption band. Every read framed — deep and shallow, near cards or none, at the frame's shape and margin a Short
+    /// has — is so, cutting no card, its target shown.
+    #[test]
+    fn a_held_window_starts_and_ends_on_whole_rows() {
+        let aspect = 1.38;
+        let frame = Frame { drawn: aspect * 1.076, margin: 1.038 };
+        let follow: Card = (19, 40, 25, 79);
+        let screens =
+            [boxed(80, 34, &[]), boxed(80, 34, &[follow]), boxed(80, 34, &[(3, 50, 9, 70), follow])];
+        for on in &screens {
+            for (x, y, w, h) in [(2.0, 29.0, 30.0, 3.0), (0.0, 4.0, 38.0, 5.0), (10.0, 14.0, 20.0, 2.0)] {
+                for deep in [false, true] {
+                    let target = region(x, y, w, h);
+                    let window = framed_among(on, target, (aspect, 0.33, 46.0, deep), (&[], frame));
+                    let seen = super::shown(window, frame);
+                    assert!(
+                        whole_rows(window, frame, 34),
+                        "{target:?} deep {deep}: rows {} to {}",
+                        seen.y,
+                        seen.y + seen.h
+                    );
+                    for &(r0, c0, r1, c1) in &cards(on) {
+                        let (cx0, cx1) = (c0 as f32, c1 as f32 + 1.0);
+                        let meets = cx0 < seen.x + seen.w - 1e-3 && seen.x + 1e-3 < cx1;
+                        let rows_meet =
+                            (r0 as f32) < seen.y + seen.h - 1e-3 && seen.y + 1e-3 < r1 as f32 + 1.0;
+                        let whole = seen.x <= cx0 + 1e-3 && cx1 <= seen.x + seen.w + 1e-3;
+                        assert!(
+                            !(meets && rows_meet) || whole,
+                            "{target:?} deep {deep}: a card cut, {seen:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// A screen of `rows`, every cell on one ground.
@@ -1358,8 +1507,8 @@ mod tests {
     }
 
     /// A target shaped to the window: the rows it adds slid off a list above it, so the list isn't cut — the placement
-    /// nearest the eye's that cuts nothing; where every placement cuts a list close by, the list taken in whole; where
-    /// taking it in would cost the zoom past `TAKEN_IN_MAX`, the window the target's own; and with room all round, the
+    /// nearest the eye's that cuts nothing; where every placement cuts a list close by, the list taken in whole — past
+    /// `TAKEN_IN_MAX` and what reads too, the card wholly in or out outranking the zoom; and with room all round, the
     /// target's centre at the eye's height.
     #[test]
     fn a_framed_target_never_cuts_a_card() {
@@ -1371,12 +1520,12 @@ mod tests {
         // (every placement cuts a list just left of the card's columns: 2 more columns take it in)
         let on = boxed(40, 20, &[(7, 16, 10, 30), card]);
         assert_eq!(framed(&on, target, 2.0, 0.5, 80.0, true), region(16.0, 6.0, 24.0, 12.0));
-        // (…unless those 2 columns are past what the window shows legibly: the target's own window)
-        assert_eq!(framed(&on, target, 2.0, 0.5, 23.0, true), region(18.0, 8.0, 22.0, 11.0));
-        // (…a list reaching far left: 30 columns, past 1.25 × 22 — the target's own window)
+        // (…those 2 columns past what the window shows legibly too: taken in all the same, never the list cut)
+        assert_eq!(framed(&on, target, 2.0, 0.5, 23.0, true), region(16.0, 6.0, 24.0, 12.0));
+        // (…a list reaching far left: 30 columns, past 1.25 × 22 — taken in whole, the zoom less)
         let on = boxed(40, 20, &[(7, 10, 10, 30), card]);
         let window = framed(&on, target, 2.0, 0.5, 80.0, true);
-        assert_eq!(window, region(18.0, 8.0, 22.0, 11.0));
+        assert!(window.x <= 10.0 && window.y <= 7.0 && window.y + window.h >= 16.0, "{window:?}");
         // (nothing to cut: the target's centre at the eye's height — half way, then a fifth of the way down)
         let on = boxed(40, 30, &[card]);
         assert_eq!(framed(&on, target, 2.0, 0.5, 80.0, true), region(18.0, 8.0, 22.0, 11.0));
@@ -1479,7 +1628,13 @@ mod tests {
         assert_eq!(said(&laid), [" ▎ main ≈ fix ·", "   src/main.rs L30 —", "   would conflict"]);
         assert!(laid.lines.iter().all(|l| l.len() == 21), "each line the callout's width");
         assert_eq!(on.text[laid.ground.0][laid.ground.1], " ", "its ground a blank of its own");
-        let r = news_framed(&on, "would conflict", code, (1.8, 0.3, 40.0, true));
+        let r = news_framed(
+            &on,
+            "would conflict",
+            code,
+            (1.8, 0.3, 40.0, true),
+            Frame { drawn: 1.8, margin: 1.0 },
+        );
         let n = callout(&on, "would conflict", r.w as usize - 2).expect("the toast").lines.len() as f32;
         assert!(r.y + 1.0 + n <= code.y, "the callout above the code: {r:?}, {n} lines, {code:?}");
         assert!(code.y + code.h <= r.y + r.h, "the code in the window: {r:?}");
