@@ -2704,6 +2704,21 @@ impl Denial {
             || self.op == "system-fsctl"
     }
 
+    /// Whether it's a host the user said no to on its card (`proxy::USER_REFUSED`) — what their answer refused.
+    pub fn user_refused(&self) -> bool {
+        self.op == proxy::HOST_OP
+            && self.target.split_once(": ").is_some_and(|(_, why)| why == proxy::USER_REFUSED)
+    }
+
+    /// As a run's sandbox line says it (`panel_line`) — the user's no to a host in their words, `reaching
+    /// uploads.example.invalid — you said no` (`:443` left out, as the card asked it), the rest `plain`.
+    fn lead(&self) -> String {
+        match self.target.split_once(": ").filter(|_| self.user_refused()) {
+            Some((at, _)) => format!("reaching {} — you said no", at.strip_suffix(":443").unwrap_or(at)),
+            None => self.plain(),
+        }
+    }
+
     /// A look-up of LaunchServices (`NO_WAY_OUT`'s): how a program opens an app, a file or a URL in one —
     /// refused in every run by design. Node's start looks it up and goes on without it (compat B4).
     pub fn opens_apps(&self) -> bool {
@@ -3875,19 +3890,21 @@ pub enum RunIs {
 pub struct PanelLine {
     /// What was blocked, in plain words — `sandbox blocked writing ~/x  +2`.
     pub line: String,
-    /// Only what every run is refused by design (`Denial::by_design`), in a run that hasn't failed: said calmly —
-    /// faint, no `▲`, no key (nothing opens it; `:sandbox-blocked` still has the run).
+    /// Only what every run is refused by design (`Denial::by_design`), failed or not (#480): said calmly — faint, no
+    /// `▲`, no key (nothing opens it; `:sandbox-blocked` still has the run); a failed run's says they may be why.
     pub calm: bool,
     /// The quiet hint, while it runs and has printed nothing for `QUIET`.
     pub quiet: Option<String>,
-    /// Beside what's blocked, in a run that hasn't failed, how many refusals were by design: `5 more by design`.
+    /// Beside what's blocked, how many refusals were by design: `5 more by design`.
     pub designed: Option<String>,
 }
 
-/// A run's sandbox line for its panel — None when nothing was blocked. What every run is refused by design, in
-/// a run that hasn't failed, isn't what blocked it (friction #290: a passing `cargo xtask scenes` read `▲ sandbox
-/// blocked the network's settings  +7`): never the line's first nor in its `+N`, said apart and faint; all it
-/// was refused, the line is calm. A failed run's are named and counted as ever — they may be why.
+/// A run's sandbox line for its panel — None when nothing was blocked. What every run is refused by design isn't
+/// what blocked it, failed or not (friction #290: a passing `cargo xtask scenes` read `▲ sandbox blocked the
+/// network's settings  +7`; #480: a failed `curl` led with it, over the host the user refused): never the line's
+/// first nor in its `+N`, said apart and faint; all it was refused, the line is calm — a failed run's counts them,
+/// `1 refused by design — may be why it failed` (#290's point). What the user's answer refused (a host's `n`) leads,
+/// whatever came first.
 pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Instant) -> Option<PanelLine> {
     let g = guard?;
     let b = g.watch().map(|w| w.blocked()).unwrap_or_default();
@@ -3910,14 +3927,15 @@ pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Ins
         return Some(line(format!("sandbox kept {d} closed — your answer opened it, but {why}{more}")));
     };
     let more = |n: usize| if n > 1 { format!("  +{}", n - 1) } else { String::new() };
-    // (by design, of a run that hasn't failed — each kept one; past `DENIALS_KEPT` the rest can't be told)
-    let designed = match ran {
-        RunIs::Failed => 0,
-        _ => b.seen.iter().filter(|d| d.by_design()).count(),
-    };
-    let open = b.seen.iter().find(|d| designed == 0 || !d.by_design());
+    // (by design — each kept one; past `DENIALS_KEPT` the rest can't be told)
+    let designed = b.seen.iter().filter(|d| d.by_design()).count();
+    let open = b.seen.iter().find(|d| d.user_refused()).or_else(|| b.seen.iter().find(|d| !d.by_design()));
     if open.is_none() && b.distinct == b.seen.len() {
-        let said = format!("sandbox refused by design: {}{}", first.plain(), more(b.distinct));
+        let said = match ran {
+            // (#290's point kept, calmly: nothing else was refused — they may be why)
+            RunIs::Failed => format!("sandbox: {} refused by design — may be why it failed", b.distinct),
+            _ => format!("sandbox refused by design: {}{}", first.plain(), more(b.distinct)),
+        };
         return Some(PanelLine { calm: true, ..line(said) });
     }
     let (first, designed) = open.map_or((first, 0), |d| (d, designed));
@@ -3928,7 +3946,7 @@ pub fn panel_line(guard: Option<&Guard>, ran: RunIs, last_output: std::time::Ins
         )
     });
     Some(PanelLine {
-        line: format!("sandbox blocked {}{}", first.plain(), more(b.distinct - designed)),
+        line: format!("sandbox blocked {}{}", first.lead(), more(b.distinct - designed)),
         calm: false,
         quiet,
         designed: (designed > 0).then(|| format!("{designed} more by design")),
@@ -12755,12 +12773,15 @@ mod tests {
             "{}",
             failed.text
         );
-        // (the user's panel: calm unless it failed; the record as ever)
+        // (the user's panel: calm, failed or not — #480, failed saying it may be why; the record as ever)
         let panel = |ran| panel_line(Some(&g), ran, std::time::Instant::now()).unwrap();
         let calm = panel(RunIs::Passed);
         assert!(calm.calm && calm.line == "sandbox refused by design: opening apps", "{calm:?}");
         let failed = panel(RunIs::Failed);
-        assert!(!failed.calm && failed.line == "sandbox blocked opening apps", "{failed:?}");
+        assert!(
+            failed.calm && failed.line == "sandbox: 1 refused by design — may be why it failed",
+            "{failed:?}"
+        );
         assert!(crate::cards::denied_line("npm test", &w.blocked()).is_some());
         // Beside another refusal: both named, counted whole
         w.record(denial("file-write-create", "/Users/u/marker"));
@@ -13573,12 +13594,13 @@ mod tests {
         assert_eq!(panel_line(Some(&Guard::Off), RunIs::Running, long_ago), None);
     }
 
-    /// Friction #290: what every run is refused by design, in a run that hasn't failed, isn't what blocked it —
-    /// never the line's first nor in its `+N`, said apart (`5 more by design`); all it was refused, the line is
-    /// calm (faint, no `▲`, no key). A failed run's are named and counted as ever: they may be why. (The run
-    /// that showed it, a passing `cargo xtask scenes`: `▲ sandbox blocked the network's settings  +7`.)
+    /// Friction #290: what every run is refused by design isn't what blocked it — never the line's first nor in its
+    /// `+N`, said apart (`5 more by design`); all it was refused, the line is calm (faint, no `▲`, no key). #480: in
+    /// a failed run too — it never leads (Claude's report still names it); alone there, still calm, it's counted as
+    /// what may be why (#290's point). (The runs that showed it, a passing `cargo xtask scenes`: `▲ sandbox blocked
+    /// the network's settings  +7`; a failed `curl`, Short 4's retake.)
     #[test]
-    fn a_passing_runs_refusals_by_design_are_said_calmly() {
+    fn refusals_by_design_never_lead_and_alone_may_be_why_it_failed() {
         let p = Policy::for_project(&env(Path::new("/Users/u/p")));
         let w = Watch::quiet("t.");
         let g = Guard::In(Box::new(Policy { watch: Some(w.clone()), ..p }));
@@ -13586,31 +13608,29 @@ mod tests {
         let lookup = |s: &str| Denial { process: "cargo".into(), op: "mach-lookup".into(), target: s.into() };
         w.record(lookup("com.apple.SystemConfiguration.configd"));
         w.record(lookup("com.apple.analyticsd"));
-        for ran in [RunIs::Running, RunIs::Passed] {
+        for ran in [RunIs::Running, RunIs::Passed, RunIs::Failed] {
             let said = panel_line(Some(&g), ran, now - QUIET * 2).unwrap();
             assert!(said.calm && said.quiet.is_none() && said.designed.is_none(), "{ran:?}: {said:?}");
-            assert_eq!(
-                said.line,
-                "sandbox refused by design: the network's settings (com.apple.SystemConfiguration.configd)  +1"
-            );
+            let line = match ran {
+                RunIs::Failed => "sandbox: 2 refused by design — may be why it failed",
+                _ => {
+                    "sandbox refused by design: the network's settings (com.apple.SystemConfiguration.configd)  +1"
+                }
+            };
+            assert_eq!(said.line, line, "{ran:?}");
         }
-        let failed = panel_line(Some(&g), RunIs::Failed, now).unwrap();
-        assert!(!failed.calm && failed.designed.is_none(), "{failed:?}");
-        assert!(
-            failed.line.starts_with("sandbox blocked the network's settings")
-                && failed.line.ends_with("  +1")
-        );
-        // Beside one not by design: that one first, counted alone; the rest apart
+        // Beside one not by design: that one first, counted alone; the rest apart — failed or not
         w.record(denial("file-read-data", "/opt/tarae-test/x"));
         w.record(lookup("com.apple.DiskArbitration.diskarbitrationd"));
         w.record(denial("file-write-create", "/a"));
-        let said = panel_line(Some(&g), RunIs::Passed, now).unwrap();
-        assert_eq!(
-            (said.line.as_str(), said.calm, said.designed.as_deref()),
-            ("sandbox blocked reading /opt/tarae-test/x  +1", false, Some("3 more by design"))
-        );
-        let failed = panel_line(Some(&g), RunIs::Failed, now).unwrap();
-        assert!(failed.line.ends_with("  +4") && failed.designed.is_none(), "{failed:?}");
+        for ran in [RunIs::Passed, RunIs::Failed] {
+            let said = panel_line(Some(&g), ran, now).unwrap();
+            assert_eq!(
+                (said.line.as_str(), said.calm, said.designed.as_deref()),
+                ("sandbox blocked reading /opt/tarae-test/x  +1", false, Some("3 more by design")),
+                "{ran:?}"
+            );
+        }
         // Every one kept by design, and more past what's kept: those can't be told — named and counted as ever
         let many = Watch::quiet("t.");
         for i in 0..DENIALS_KEPT {
@@ -13621,6 +13641,50 @@ mod tests {
             Guard::In(Box::new(Policy { watch: Some(many), ..Policy::for_project(&env(Path::new("/u/p"))) }));
         let said = panel_line(Some(&g), RunIs::Passed, now).unwrap();
         assert!(!said.calm && said.line.ends_with(&format!("  +{DENIALS_KEPT}")), "{said:?}");
+    }
+
+    /// #480: what the user's answer refused leads its run — a host's `n`, in their words, over curl's look-up of the
+    /// network's settings (refused by design, first) and over a refusal that came before it; by design said apart.
+    /// That look-up alone, in a failed run, never leads: calm. A host refused unanswered isn't the user's answer — the
+    /// first refusal leads as ever. (Short 4's retake: a refused `curl` led with `▲ sandbox blocked the network's
+    /// settings  +1`, the user's no only the `+1`.)
+    #[test]
+    fn a_host_the_user_refused_leads_its_run() {
+        let p = Policy::for_project(&env(Path::new("/Users/u/p")));
+        let w = Watch::quiet("t.");
+        let g = Guard::In(Box::new(Policy { watch: Some(w.clone()), ..p.clone() }));
+        let now = std::time::Instant::now();
+        let curl = |op: &str, target: String| Denial { process: "curl".into(), op: op.into(), target };
+        w.record(curl("mach-lookup", "com.apple.SystemConfiguration.configd".into()));
+        let said = panel_line(Some(&g), RunIs::Failed, now).unwrap();
+        assert!(said.calm && said.line == "sandbox: 1 refused by design — may be why it failed", "{said:?}");
+        w.record(denial("file-write-create", "/a"));
+        w.record(curl(proxy::HOST_OP, format!("uploads.skein.invalid:443: {}", proxy::USER_REFUSED)));
+        for ran in [RunIs::Failed, RunIs::Passed] {
+            let said = panel_line(Some(&g), ran, now).unwrap();
+            assert_eq!(
+                (said.line.as_str(), said.calm, said.designed.as_deref()),
+                (
+                    "sandbox blocked reaching uploads.skein.invalid — you said no  +1",
+                    false,
+                    Some("1 more by design")
+                ),
+                "{ran:?}"
+            );
+        }
+        // (another port is said)
+        let other = Watch::quiet("t.");
+        other.record(curl(proxy::HOST_OP, format!("skein.invalid:8443: {}", proxy::USER_REFUSED)));
+        let g = Guard::In(Box::new(Policy { watch: Some(other), ..p.clone() }));
+        let said = panel_line(Some(&g), RunIs::Failed, now).unwrap();
+        assert_eq!(said.line, "sandbox blocked reaching skein.invalid:8443 — you said no");
+        // Unanswered: not the user's no — the first leads, said as the proxy said it
+        let unanswered = Watch::quiet("t.");
+        unanswered.record(denial("file-write-create", "/a"));
+        unanswered.record(curl(proxy::HOST_OP, "uploads.skein.invalid:443: no answer in time".into()));
+        let g = Guard::In(Box::new(Policy { watch: Some(unanswered), ..p }));
+        let said = panel_line(Some(&g), RunIs::Failed, now).unwrap();
+        assert_eq!(said.line, "sandbox blocked writing /a  +1");
     }
 
     /// What `sandbox-exec` says inside another sandbox (measured) reads as that.

@@ -476,7 +476,10 @@ fn keep(
             ed.workspace.claude.checkpoints.tell.push(format!(
                 "The user refused your commands to {doing} for this session: don't try it again."
             ));
-            ed.set_status(format!("{at} refused for this session — space m s on the run lets it through"));
+            // (`:443` left out, as the card asked it and the run's lead says it; at 80 beside the chat its card is
+            // 24 cells: the host, what happened, the key — three rows whole, #480)
+            let at = at.strip_suffix(":443").unwrap_or(&at);
+            ed.set_status(format!("{at} refused for this session — space m s opens it"));
         }
         Scope::Chat => {}
     }

@@ -1523,9 +1523,12 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   in plain words (`▲ sandbox blocked writing ~/x  +2`, `connecting to port 9`, `opening apps`). If the command then prints nothing for 15 seconds, a quiet
   note says it may be waiting on what was blocked: a blocked terminal or socket can hang a program instead of
   failing it. What every run is refused by design (the network's settings, Spotlight, opening apps — tools go on
-  without them) isn't what blocked a run that hasn't failed: the row names the rest first and counts only them,
-  the others faint after it (`5 more by design`); refused nothing else, the row is faint, with no `▲` and no key
-  (`sandbox refused by design: the network's settings  +4`). A failed run's are named and counted as ever.
+  without them) never leads, failed or not: the row names the rest first and counts only them, the others faint
+  after it (`5 more by design`); refused nothing else, the row is faint, with no `▲` and no key (`sandbox refused
+  by design: the network's settings  +4`) — in a failed run, counted as what may be why (`sandbox: 1 refused by
+  design — may be why it failed`). A host you refused on its card leads whatever came first, in your words
+  (`▲ sandbox blocked reaching uploads.example.invalid — you said no`), and its toast says it the same way
+  (`uploads.example.invalid refused for this session — space m s opens it`).
   Claude's result lists what was blocked, or says nothing was, along with which ports were open.
   If tarae can't watch (`log stream` refuses to run inside another sandbox), the result says so and quotes
   the output's `Operation not permitted` lines instead

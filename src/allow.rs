@@ -1749,7 +1749,17 @@ pub fn grant_by(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope, key: ch
     add_for(ed, std::slice::from_ref(g), scope, key);
     let (when, toast) = lasting(ed, scope, std::slice::from_ref(g));
     ed.workspace.claude.checkpoints.tell.push(format!("The user let your commands {} — {when}.", g.shown()));
-    ed.set_success(format!("Claude's commands may {}{toast}", g.shown()));
+    ed.set_success(toasted(g, &toast));
+}
+
+/// A grant's toast, `toast` how long it lasts after it: what's let, as the card said it — a masked variable's what
+/// happens first, then its hosts, before any cut (#480b, as #470's): `GH_TOKEN masked → api.github.com · github.com
+/// only, until you quit — :granted lists it`.
+fn toasted(g: &Grant, toast: &str) -> String {
+    match g {
+        Grant::Masked(n, hosts) => format!("{n} masked → {} only,{toast}", hosts.join(" · ")),
+        _ => format!("Claude's commands may {}{toast}", g.shown()),
+    }
 }
 
 impl crate::editor::Editor {

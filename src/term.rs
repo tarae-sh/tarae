@@ -32529,6 +32529,62 @@ mod tests {
         assert_eq!(toast_wrap("go: abcdefghijkl x", 8, true), ["go:", "abcdefgh", "ijkl x"]);
     }
 
+    /// #480b: the masked toast says what happens first, then the hosts — at 80 columns all three in sight before any cut
+    /// (it read `… a stand-in value, the real one put in only toward …`), how long it lasts after them.
+    #[test]
+    fn the_masked_toast_keeps_its_hosts_at_80() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.docs[0].text = ropey::Rope::from_str("one\n");
+        let hosts = ["api.github.com", "github.com", "uploads.github.com"].map(String::from).to_vec();
+        let masked = crate::allow::Grant::Masked("GH_TOKEN".into(), hosts);
+        crate::allow::grant_by(&mut ed, &masked, crate::allow::Scope::Session, 'y');
+        render(&mut ed, &mut Vec::new(), 80, 43).unwrap();
+        let (x, y, cw, ch) = ed.screen.toast_card.get().expect("its card");
+        let (frame, fw, fh) = ed.last_frame.as_ref().unwrap();
+        let text = crate::screen::text(frame, *fw, *fh).unwrap_or_default();
+        let card: Vec<String> =
+            text.lines().skip(y).take(ch).map(|r| r.chars().skip(x).take(cw).collect::<String>()).collect();
+        let said = card.iter().map(|r| r.trim_matches([' ', '▎'])).collect::<Vec<_>>().join(" ");
+        assert!(
+            said.starts_with("GH_TOKEN masked → api.github.com · github.com · uploads.github.com only"),
+            "{said}"
+        );
+        assert!(!said.contains('…'), "{said}");
+    }
+
+    /// #480: a host's `n` says the host as its card asked it (`:443` left out), what happened, then the key — at 80
+    /// columns beside the chat, its card 24 cells, whole between words (it read `uploads.skein.invalid:44` / `3
+    /// refused for this` / `session — space m s on …`).
+    #[test]
+    fn a_refused_hosts_toast_is_whole_at_80_beside_the_chat() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.docs[0].text = ropey::Rope::from_str("one\n");
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        let a = crate::hosts::Ask {
+            session: 1,
+            run: 1,
+            host: "uploads.skein.invalid".into(),
+            port: 443,
+            process: "curl".into(),
+            label: "curl".into(),
+            users: false,
+            left: false,
+            open: false,
+            hosts: crate::llm::Hosts::default(),
+            also: Vec::new(),
+            ended: false,
+        };
+        crate::hosts::answer(&mut ed, 0, a, crate::sandbox::proxy::Scope::Refused);
+        render(&mut ed, &mut Vec::new(), 80, 43).unwrap();
+        let (x, y, cw, ch) = ed.screen.toast_card.get().expect("its card");
+        let (frame, fw, fh) = ed.last_frame.as_ref().unwrap();
+        let text = crate::screen::text(frame, *fw, *fh).unwrap_or_default();
+        let card: Vec<String> = (text.lines().skip(y).take(ch))
+            .map(|r| r.chars().skip(x).take(cw).collect::<String>().trim_matches([' ', '▎']).to_string())
+            .collect();
+        assert_eq!(card, ["uploads.skein.invalid", "refused for this session", "— space m s opens it"]);
+    }
+
     /// #316: where the code is too narrow for a toast's card a routine message is said on the status line — only one the
     /// line says whole; a longer one keeps its card, read whole there.
     #[test]

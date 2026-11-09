@@ -718,7 +718,8 @@ impl State {
     /// The user's answer: kept as far as it reaches, and what waits on it let go or refused.
     fn answer(&mut self, key: Key, run: u64, scope: Scope) {
         let verdict = match scope {
-            Scope::Refused => Verdict::No("the user refused it".into()),
+            // (in the words a later connection hears: what the run's line leads with — `Denial::user_refused`, #480)
+            Scope::Refused => Verdict::No(USER_REFUSED.into()),
             _ => Verdict::Go,
         };
         match scope {

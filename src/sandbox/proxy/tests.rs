@@ -1370,7 +1370,9 @@ fn an_unknown_host_is_held_and_asked() {
 }
 
 /// Piece C: with the network closed (`Egress.closed`) no list is the way through, so a host left unanswered says the
-/// user's card was — never `llm.sandbox-hosts`; a no says the user refused it, as with the network open.
+/// user's card was — never `llm.sandbox-hosts`; a no says the user refused it, as with the network open — to the
+/// connection that waited on the card in the words a later one hears (`USER_REFUSED`, #480: the run's line leads with
+/// it).
 #[test]
 fn with_the_network_closed_a_refusal_names_the_users_card() {
     let out = outside(echo);
@@ -1400,7 +1402,7 @@ fn with_the_network_closed_a_refusal_names_the_users_card() {
     });
     assert_eq!(status(&mut c), 403);
     let why = said_host(&d);
-    assert!(why.ends_with(": the user refused it") && !why.contains("llm.sandbox-hosts"), "{why}");
+    assert_eq!(why, format!("ask.test:443: {}", super::USER_REFUSED));
 }
 
 /// Piece C: a yes for a registry's `*.domain` (the host card's suggestion, a conversation's `a`) lets every name

@@ -12254,8 +12254,8 @@ mod tests {
             s.contains("▲ sandbox blocked writing /opt/tarae-test/x  +1") && !s.contains("may be waiting"),
             "{s}"
         );
-        // #290: a run that passed, refused only what every run is by design — calm: no ▲, no key; beside what
-        // isn't, the rest said apart; failed, as ever
+        // #290: a run that passed, refused only what every run is by design — calm: no ▲, no key (failed, calm too,
+        // and may be why); beside what isn't, the rest said apart; failed, the same (#480: by design never leads)
         ed.workspace.test_run = None;
         let calm = crate::sandbox::Watch::quiet("t.");
         calm.record(d("mach-lookup", "com.apple.SystemConfiguration.configd"));
@@ -12276,6 +12276,16 @@ mod tests {
                 && !s.contains("open it"),
             "{s}"
         );
+        // (failed, still calm: they may be why — #480)
+        ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Failed(Some(1));
+        let s = screen(&mut ed);
+        assert!(
+            s.contains("sandbox: 2 refused by design — may be why it failed")
+                && !s.contains("▲ sandbox")
+                && !s.contains("open it"),
+            "{s}"
+        );
+        ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Passed;
         calm.record(d("file-write-data", "/opt/tarae-test/x"));
         let s = screen(&mut ed);
         assert!(
@@ -12284,7 +12294,10 @@ mod tests {
         );
         ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Failed(Some(1));
         let s = screen(&mut ed);
-        assert!(s.contains("▲ sandbox blocked the network's settings") && !s.contains("by design"), "{s}");
+        assert!(
+            s.contains("▲ sandbox blocked writing /opt/tarae-test/x   space m s open it   2 more by design"),
+            "{s}"
+        );
     }
 
     /// What the sandbox blocked in Claude's command is the user's to open (`space m s`): a list of the

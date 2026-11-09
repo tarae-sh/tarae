@@ -101,6 +101,29 @@ const REFUSED_FOLLOW_KEYS: &[&str] = &[
     "@2",
 ];
 
+/// #480's refused-host scene's keys: the chat asked, the run's card answered `y`, the host's card `n`, the run's end
+/// waited for.
+const REFUSED_HOST_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "check the upload host",
+    "\r",
+    "@20?It runs curl",
+    "@1",
+    "\x11",
+    "@1",
+    "y",
+    "@20?command reach",
+    "@1",
+    "\x11",
+    "@1",
+    "n",
+    "@20?closed to my",
+    "@1",
+];
+
 /// P2b's masked scenes' keys: the chat asked, the code zoomed (at 80 the chat beside it would cut the card), the card
 /// up and focused.
 const MASKED_KEYS: &[&str] = &[
@@ -4158,11 +4181,39 @@ const SCENES: &[Scene] = &[
     // panel beside the chat; `-follow` the code zoomed, the follow card's run row)
     Scene { name: "refused-key", claude: "refusedkey", files: MAIN, keys: REFUSED_KEYS },
     Scene { name: "refused-key-follow", claude: "refusedkey", files: MAIN, keys: REFUSED_FOLLOW_KEYS },
+    // (#480: a host the user refused on its card — `curl` with the network closed, `n`: the run panel beside the chat)
+    Scene { name: "refused-host", claude: "refusedhost", files: MAIN, keys: REFUSED_HOST_KEYS },
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },
     Scene { name: "masked-unmaskable", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-unknown", claude: "maskedother", files: MAIN, keys: MASKED_KEYS },
+    // (#480b: the masked card's `y`, and the toast that says it — the hosts before its cut)
+    Scene {
+        name: "masked-toast",
+        claude: "maskedopen",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "pass the token to the release script",
+            "\r",
+            "@1",
+            "\x1b",
+            "@1",
+            " ",
+            "w",
+            "z",
+            "@20?Open the sandbox a little",
+            "@1",
+            "\x11",
+            "@1",
+            "y",
+            "@20?masked →",
+        ],
+    },
     Scene {
         name: "masked-granted",
         claude: "maskedopen",
@@ -6004,7 +6055,7 @@ pub fn run(args: &[String]) -> Result<()> {
         Some(b) => return Err(format!("--bin {}: an absolute path to a tarae", b.display())),
         // (a recording's homes are its own: the grammars bundled, as the homepage's — else a scene with no Rust grammar
         // asks to download it, a card no one with it sees; so are #474's scenes')
-        None if recording || scenes.iter().any(|s| s.name.starts_with("refused-key")) => {
+        None if recording || scenes.iter().any(|s| s.name.starts_with("refused-")) => {
             shot::build(&root(), "shot-docs", &["bundled-grammars"])?
         }
         None => shot::build_shot(&root())?,
@@ -6190,7 +6241,7 @@ fn one(
     let keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
     // (#474's: a home of the scene's own, as the docs' shots — the key it reads is the scene's, and no path of yours
     // is on screen)
-    if scene.name.starts_with("refused-key") {
+    if scene.name.starts_with("refused-") {
         let homes = homes(&dir.0, &|k| std::env::var_os(k))?;
         let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("home/tarae-demo"))?;
         return shot::take_at(&setup, &keys, size, 1, &dir.0.join("state"), &homes, out).map(|_| ());
@@ -7559,6 +7610,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "volumecard",
     "grants",
     "refusedkey",
+    "refusedhost",
     "masked",
     "maskedopen",
     "maskedother",
@@ -7741,6 +7793,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "volumecard" => turn.read_volume()?,
             "grants" => turn.grants()?,
             "refusedkey" => turn.refused_key()?,
+            "refusedhost" => turn.refused_host()?,
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
             "big" => turn.big()?,
@@ -8763,6 +8816,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.text("\n")?;
         self.call(1, "run", json!({"command": "cat ~/.ssh/id_ed25519"}))?;
         self.words("The key is kept out of my commands.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #480's turn: a host the user refuses on its card (the network closed) — `curl` reaching it through the proxy.
+    fn refused_host(&mut self) -> io::Result<()> {
+        self.words("The release script uploads there. Let me check the host answers.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "curl -sS -I https://uploads.skein.invalid/"}))?;
+        self.words("The host is closed to my commands.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
