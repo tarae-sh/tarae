@@ -13,6 +13,9 @@
 //! something else wrote to the terminal, the terminal measured a character differently, or left something
 //! of its own behind (Terminal.app: a cursor drawn past its cell).
 
+// What draws slices text with `cut::slice` (#470: a slice off a character's boundary panicked the main thread)
+#![cfg_attr(not(test), deny(clippy::string_slice))]
+
 use crate::graphemes::cells_from;
 
 /// A color as SGR gives it — default, one of 256, or RGB — as 4 bytes, so cells compare as plain bytes
@@ -241,7 +244,7 @@ impl Grid {
             }
             let text = std::str::from_utf8(&frame[i..end]).ok()?;
             for c in cells_from(text, 0, x, 8) {
-                let g = &text[c.bytes.clone()];
+                let g = crate::cut::slice(text, c.bytes.clone());
                 // (a C1 control — U+0080…U+009F — the same: blank)
                 if g.chars().any(char::is_control) {
                     if x >= self.w {

@@ -1,7 +1,41 @@
 //! Text cut to a number of cells — by display width, for whatever lays text out in cells, the terminal's
 //! drawing (`term.rs`) first.
 
+// What draws slices text with `cut::slice` (#470: a slice off a character's boundary panicked the main thread)
+#![cfg_attr(not(test), deny(clippy::string_slice))]
+
+use std::ops::{Bound, RangeBounds};
+
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// `s[range]` for what draws: an end off a character's boundary (or past the end) fails a test or a simulation at
+/// once, and in a release build snaps to the boundary before it — a character drawn more or less, never the session
+/// ended (#470: an offset added up from wrapped rows landed inside a `—`, and the main thread panicked at each start).
+/// Both ends snap the same way, so two slices that meet at a wrong offset still meet.
+pub fn slice(s: &str, range: impl RangeBounds<usize>) -> &str {
+    let from = match range.start_bound() {
+        Bound::Included(&a) => a,
+        Bound::Excluded(&a) => a + 1,
+        Bound::Unbounded => 0,
+    };
+    let to = match range.end_bound() {
+        Bound::Included(&b) => b + 1,
+        Bound::Excluded(&b) => b,
+        Bound::Unbounded => s.len(),
+    };
+    debug_assert!(
+        s.is_char_boundary(from) && s.is_char_boundary(to) && from <= to,
+        "a slice off a character's boundary: {from}..{to} of {} bytes",
+        s.len()
+    );
+    s.get(snapped(s, from, to)).unwrap_or_default()
+}
+
+/// `from..to` in `s` with each end snapped to the boundary at or before it (past the end: the end), never backwards.
+fn snapped(s: &str, from: usize, to: usize) -> std::ops::Range<usize> {
+    let to = s.floor_char_boundary(to);
+    s.floor_char_boundary(from).min(to)..to
+}
 
 /// The start of `s` that fits in `width` cells — bare: for code and output lines.
 pub fn fit(s: &str, width: usize) -> String {
@@ -58,7 +92,11 @@ pub fn fit_left(s: &str, width: usize) -> String {
 /// workspace's folder in the file picker.
 pub fn fit_place(s: &str, width: usize) -> String {
     let at = fit_left(s, width);
-    match at.strip_prefix('…').filter(|r| !r.starts_with('/')).and_then(|r| r.find('/').map(|i| &r[i..])) {
+    match at
+        .strip_prefix('…')
+        .filter(|r| !r.starts_with('/'))
+        .and_then(|r| r.find('/').map(|i| slice(r, i..)))
+    {
         Some(rest) => format!("…{rest}"),
         None => at,
     }
@@ -94,69 +132,64 @@ pub struct Wrapped {
 /// mid-word, blank lines left out. The caller hangs the rows after the first under its text and records where a cut
 /// one is (`whole.rs`), so the mouse can take it in hand.
 pub fn fit_in_hand(s: &str, width: usize, keep_end: bool, whole: bool) -> Vec<Wrapped> {
-    let width = width.max(1);
-    let mut lines = s.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.trim().is_empty());
     if !whole {
+        let mut lines = s.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.trim().is_empty());
         let first = lines.next().unwrap_or_default();
         let text = match (lines.next().is_some(), keep_end) {
-            (true, _) => fit_ellipsis(&format!("{first} …"), width),
-            (false, true) => fit_left(first, width),
-            (false, false) => fit_ellipsis(first, width),
+            (true, _) => fit_ellipsis(&format!("{first} …"), width.max(1)),
+            (false, true) => fit_left(first, width.max(1)),
+            (false, false) => fit_ellipsis(first, width.max(1)),
         };
         return vec![Wrapped { text, space: false }];
     }
+    fit_in_hand_at(s, width).into_iter().map(|(_, row)| row).collect()
+}
+
+/// `fit_in_hand`'s rows of `s` in hand (`whole`), each with the byte where its text starts in `s` — kept as each row
+/// is cut, never added up nor searched for: a break isn't always one byte (a `\r\n`, a blank line left out), and an
+/// offset added up from the rows' lengths lands inside a character (#470).
+pub fn fit_in_hand_at(s: &str, width: usize) -> Vec<(usize, Wrapped)> {
+    let width = width.max(1);
     let mut rows = Vec::new();
-    for (k, line) in lines.enumerate() {
-        let mut space = k > 0;
+    let mut start = 0;
+    for raw in s.split_inclusive('\n') {
+        let mut at = start;
+        start += raw.len();
+        let line = raw.strip_suffix('\n').unwrap_or(raw).trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut space = !rows.is_empty();
         let mut rest = line;
         while !rest.is_empty() {
             // (the start that fits; past it, back to the row's last space — a word isn't cut while one is there)
             let fits = fit(rest, width).len().max(rest.chars().next().map_or(0, char::len_utf8));
             if fits == rest.len() {
-                rows.push(Wrapped { text: rest.to_string(), space });
+                rows.push((at, Wrapped { text: rest.to_string(), space }));
                 break;
             }
-            let next = fits + rest[fits..].chars().next().map_or(0, char::len_utf8);
+            let next = fits + slice(rest, fits..).chars().next().map_or(0, char::len_utf8);
             // (at the first of a run of spaces: the row ends on a word, the rest of the run starts the next — the
-            // text again, whatever the width)
-            match rest[..next]
-                .rfind(' ')
-                .map(|at| rest[..at].trim_end_matches(' ').len())
-                .filter(|&at| at > 0)
-            {
-                Some(at) => {
-                    rows.push(Wrapped { text: rest[..at].to_string(), space });
-                    (rest, space) = (&rest[at + 1..], true);
-                }
-                None => {
-                    rows.push(Wrapped { text: rest[..fits].to_string(), space });
-                    (rest, space) = (&rest[fits..], false);
-                }
-            }
+            // text again, whatever the width; a space is one byte, so past it is a boundary)
+            let word = slice(rest, ..next).rfind(' ').map(|sp| slice(rest, ..sp).trim_end_matches(' ').len());
+            let (taken, past) = match word.filter(|&w| w > 0) {
+                Some(w) => (w, w + 1),
+                None => (fits, fits),
+            };
+            rows.push((at, Wrapped { text: slice(rest, ..taken).to_string(), space }));
+            space = past > taken;
+            at += past;
+            rest = slice(rest, past..);
         }
     }
     if rows.is_empty() {
-        rows.push(Wrapped { text: String::new(), space: false });
+        rows.push((0, Wrapped { text: String::new(), space: false }));
     }
     rows
 }
 
-/// `fit_in_hand`'s rows of `s` in hand (`whole`), each with the byte where its text starts in `s` — found, never
-/// added up: a break isn't always one byte (a `\r\n`, a blank line left out), and an offset added up from the rows'
-/// lengths lands inside a character.
-pub fn fit_in_hand_at(s: &str, width: usize) -> Vec<(usize, Wrapped)> {
-    let mut pos = 0;
-    (fit_in_hand(s, width, false, true).into_iter())
-        .map(|row| {
-            let at = s[pos..].find(&row.text).map_or(pos, |k| pos + k);
-            pos = at + row.text.len();
-            (at, row)
-        })
-        .collect()
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn texts(rows: &[Wrapped]) -> Vec<(&str, bool)> {
@@ -182,6 +215,132 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Texts to wrap, the same every run (here and `term`'s tests): pieces with breaks that aren't one byte — blank
+    /// lines, `\r\n`, lines and runs of spaces, tabs — beside `—`, wide and combining characters, a third of them then
+    /// mutated (`mutate::text`: a NUL, a lone `\r`, a run of up to 300 of one character …).
+    pub(crate) fn wrap_inputs(n: usize) -> Vec<String> {
+        const PIECES: &[&str] = &[
+            "one",
+            "two words",
+            "—",
+            " — ",
+            "中文字",
+            "e\u{301}",
+            "a\u{20dd}",
+            "👍🏽",
+            "\t",
+            "\r\n",
+            "\n",
+            "\n\n",
+            "\n   \n",
+            "\r\n\r\n",
+            "   ",
+            " ",
+            "abcdefghijkl",
+            "\u{3000}",
+            "x",
+        ];
+        let mut rng = crate::mutate::Rng(0x470_2026_1109);
+        (0..n)
+            .map(|_| {
+                let mut s: String = (0..1 + rng.below(14)).map(|_| *rng.pick(PIECES)).collect();
+                if rng.below(3) == 0 {
+                    crate::mutate::text(&mut rng, &mut s, PIECES);
+                }
+                s
+            })
+            .collect()
+    }
+
+    /// The widths each text is wrapped at.
+    pub(crate) const WIDTHS: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 17, 24, 40, 80];
+
+    /// `fit_in_hand_at`'s property: each row starts and ends on a character's boundary, after the row before, its text
+    /// the text there; between rows only the space a break took, or a line break and the blank lines it left out — so
+    /// the rows give back `s` without those blank lines.
+    pub(crate) fn rows_give_back(s: &str, rows: &[(usize, Wrapped)]) -> Result<(), String> {
+        let blank = |t: &str| t.chars().all(char::is_whitespace);
+        let mut back = String::new();
+        let mut end = 0;
+        for (k, (at, row)) in rows.iter().enumerate() {
+            let to = at + row.text.len();
+            if !(end <= *at && s.is_char_boundary(*at) && s.is_char_boundary(to)) {
+                return Err(format!("row {k} at {at}..{to}, the last ended at {end}"));
+            }
+            if s.get(*at..to) != Some(row.text.as_str()) {
+                return Err(format!("row {k} at {at}: {:?} isn't its text {:?}", s.get(*at..to), row.text));
+            }
+            let gap = s.get(end..*at).unwrap_or_default();
+            let line = gap.contains('\n') && blank(gap);
+            let fits = match (k, row.space) {
+                (0, _) => blank(gap) && (gap.is_empty() || gap.ends_with('\n')) && !row.space,
+                (_, false) => gap.is_empty(),
+                (_, true) => gap == " " || line,
+            };
+            if !fits {
+                return Err(format!("row {k} at {at}: {gap:?} before it, its break's space {}", row.space));
+            }
+            // (a line's end: what's before its break — the space a break took there —, the blank lines after it gone)
+            match gap.split_once('\n') {
+                Some((last, _)) if k > 0 => {
+                    back.push_str(last.trim_end_matches('\r'));
+                    back.push('\n');
+                }
+                _ if k > 0 => back.push_str(gap),
+                _ => {}
+            }
+            back.push_str(&row.text);
+            end = to;
+        }
+        let tail = s.get(end..).unwrap_or_default();
+        if !blank(tail) {
+            return Err(format!("text left after the last row, from {end}"));
+        }
+        let lines: Vec<&str> =
+            s.lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.trim().is_empty()).collect();
+        if !lines.is_empty() {
+            back.push_str(tail.split('\n').next().unwrap_or_default().trim_end_matches('\r'));
+        }
+        match back == lines.join("\n") {
+            true => Ok(()),
+            false => Err(format!("the rows give back {back:?}")),
+        }
+    }
+
+    /// #470's property, over a few thousand texts at every width: the rows `fit_in_hand_at` cuts give back the text
+    /// (`rows_give_back`), and are `fit_in_hand`'s.
+    #[test]
+    fn wrapped_rows_give_back_the_text_at_every_width() {
+        for s in wrap_inputs(2000) {
+            for width in WIDTHS {
+                let rows = fit_in_hand_at(&s, width);
+                if let Err(e) = rows_give_back(&s, &rows) {
+                    panic!("{s:?} at {width}: {e}");
+                }
+                let plain: Vec<Wrapped> = rows.into_iter().map(|r| r.1).collect();
+                assert_eq!(fit_in_hand(&s, width, false, true), plain, "{s:?} at {width}");
+            }
+        }
+    }
+
+    /// `slice` at boundaries is the slice; off one, a test fails at once — and a release build snaps both ends to the
+    /// boundary before them, past the end to the end, never backwards.
+    #[test]
+    fn a_slice_off_a_boundary_fails_a_test_and_snaps_in_a_release() {
+        let s = "a—b";
+        assert_eq!((slice(s, 1..4), slice(s, ..1), slice(s, 4..), slice(s, ..)), ("—", "a", "b", s));
+        assert_eq!(slice(s, 1..=3), "—");
+        for (a, b) in [(2, 4), (1, 3), (0, 9), (4, 1)] {
+            let r = std::panic::catch_unwind(|| slice(s, a..b).len());
+            assert!(r.is_err(), "{a}..{b} fails a test");
+        }
+        assert_eq!(snapped(s, 2, 4), 1..4, "the start back to the `—`");
+        assert_eq!(snapped(s, 0, 3), 0..1, "the end back before it");
+        assert_eq!((snapped(s, 2, 3), snapped(s, 3, 5)), (1..1, 1..5), "two slices that met still meet");
+        assert_eq!(snapped(s, 0, 99), 0..5, "past the end: the end");
+        assert_eq!(snapped(s, 4, 1), 1..1, "never backwards");
     }
 
     #[test]

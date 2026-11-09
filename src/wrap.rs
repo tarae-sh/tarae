@@ -2,6 +2,9 @@
 //! where it can (else mid-word), continuation rows indented like the line. Shared by drawing (term.rs)
 //! and `j`/`k` (rows, not lines). Positions are bytes; columns are display cells from the line start.
 
+// What draws slices text with `cut::slice` (#470: a slice off a character's boundary panicked the main thread)
+#![cfg_attr(not(test), deny(clippy::string_slice))]
+
 use ropey::Rope;
 
 use unicode_width::UnicodeWidthStr;
@@ -189,7 +192,7 @@ pub fn rows(text: &Rope, line: usize, width: usize, tab: usize) -> Vec<Row> {
     // unless it would leave too little room
     let lead = s.len() - s.trim_start().len();
     let indent = cs.iter().take_while(|c| c.bytes.end <= lead).map(|c| c.width).sum::<usize>()
-        + marker(&s[lead..]).width();
+        + marker(crate::cut::slice(&s, lead..)).width();
     let indent = if indent <= width / 2 { indent } else { 0 };
     let mut out = Vec::new();
     let (mut row_start, mut row_col, mut x0) = (start, 0, 0);
@@ -200,7 +203,7 @@ pub fn rows(text: &Rope, line: usize, width: usize, tab: usize) -> Vec<Row> {
         let c = &cs[i];
         // Text leaves the row's last cell free — a blank may hang there, so a word that ends at the edge
         // doesn't get pushed down by the space after it
-        let blank = s[c.bytes.clone()].trim().is_empty();
+        let blank = crate::cut::slice(&s, c.bytes.clone()).trim().is_empty();
         let room = width - x0 - usize::from(!blank);
         if c.col + c.width - row_col > room && c.col > row_col {
             let (pos, col) = match brk.filter(|&(_, col)| col > row_col) {
@@ -234,7 +237,7 @@ fn marker(s: &str) -> &str {
         }
         _ => 0,
     };
-    &s[..n]
+    crate::cut::slice(s, ..n)
 }
 
 /// Which of `rows` holds `pos` (the last row whose start is at or before it).

@@ -3,6 +3,9 @@
 //! *italic*·[links](url)·backslash escapes. Colors come from the theme at build time; wrapping (and a table's
 //! layout) happens at draw time.
 
+// What draws slices text with `cut::slice` (#470: a slice off a character's boundary panicked the main thread)
+#![cfg_attr(not(test), deny(clippy::string_slice))]
+
 use ropey::Rope;
 use tree_sitter::QueryCursor;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -104,7 +107,7 @@ pub fn render_reading(src: &str, theme: &Theme, default_lang: Option<&str>, read
         let lead = l.len() - t.len();
         if let Some(info) = t.strip_prefix("```").or_else(|| t.strip_prefix("~~~")) {
             flush(&mut para, &mut out);
-            let fence = &t[..3];
+            let fence = crate::cut::slice(t, ..3);
             let mut code = String::new();
             for c in lines.by_ref() {
                 if c.trim_start().starts_with(fence) {
@@ -179,9 +182,12 @@ pub fn render_reading(src: &str, theme: &Theme, default_lang: Option<&str>, read
             continue;
         }
         let hashes = t.bytes().take_while(|&b| b == b'#').count();
-        if (1..=6).contains(&hashes) && t[hashes..].starts_with(' ') {
+        if (1..=6).contains(&hashes) && crate::cut::slice(t, hashes..).starts_with(' ') {
             flush(&mut para, &mut out);
-            out.push(Line::Text { spans: inline(t[hashes..].trim(), heading, theme), indent: 0 });
+            out.push(Line::Text {
+                spans: inline(crate::cut::slice(t, hashes..).trim(), heading, theme),
+                indent: 0,
+            });
             continue;
         }
         if let Some(rest) = t.strip_prefix("> ").or_else(|| (t == ">").then_some("")) {
@@ -195,8 +201,9 @@ pub fn render_reading(src: &str, theme: &Theme, default_lang: Option<&str>, read
             .find_map(|m| t.strip_prefix(m).map(|r| ("•".to_string(), r)))
             .or_else(|| {
                 let digits = t.bytes().take_while(u8::is_ascii_digit).count();
-                (digits > 0 && t[digits..].starts_with(". "))
-                    .then(|| (t[..digits + 1].to_string(), &t[digits + 2..]))
+                (digits > 0 && crate::cut::slice(t, digits..).starts_with(". ")).then(|| {
+                    (crate::cut::slice(t, ..digits + 1).to_string(), crate::cut::slice(t, digits + 2..))
+                })
             });
         if let Some((mark, rest)) = item {
             flush(&mut para, &mut out);

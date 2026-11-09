@@ -21,6 +21,9 @@
 //! shows its newest rows, `Chat.scroll` up from the bottom. Its selection is where you were: the next view lands
 //! there, in this conversation.
 
+// What draws slices text with `cut::slice` (#470: a slice off a character's boundary panicked the main thread)
+#![cfg_attr(not(test), deny(clippy::string_slice))]
+
 use std::sync::Arc;
 
 use unicode_width::UnicodeWidthStr;
@@ -107,7 +110,7 @@ pub fn keep_whole(r: &mut ChatRow, whole: &str) {
         same -= 1;
     }
     let at: usize = whole.chars().take(same).map(char::len_utf8).sum();
-    r.rest = Some(whole[at..].into());
+    r.rest = Some(crate::cut::slice(whole, at..).into());
     r.tail = n - (r.skip + same).min(n);
 }
 
@@ -134,7 +137,7 @@ pub fn lines_of(rows: &[ChatRow]) -> (String, Vec<Place>) {
         }
         let (shown, rest) = body(r);
         let from = text.len() - start;
-        let col = text[start..].width();
+        let col = crate::cut::slice(&text, start..).width();
         text.push_str(&shown);
         at.push(Place { line, from, col, len: shown.len(), x0: lead(r) });
         text.push_str(rest.unwrap_or_default());
@@ -528,7 +531,7 @@ fn follow(t: &mut Transcript, laid: &Laid) {
                 Some(blanks) => changes.extend(blanks),
                 None => {
                     let (pre, suf) = same_ends(&was, &text);
-                    let insert = text[pre..text.len() - suf].to_string();
+                    let insert = crate::cut::slice(&text, pre..text.len() - suf).to_string();
                     changes.push(Change { from: at + pre, to: at + old.len - suf, insert });
                 }
             }
@@ -614,7 +617,7 @@ fn blank_changes(was: &str, text: &str, at: usize) -> Option<Vec<Change>> {
 /// The bytes `a` and `b` share at their start, and then at their end (not overlapping) — on character boundaries.
 fn same_ends(a: &str, b: &str) -> (usize, usize) {
     let pre: usize = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum();
-    let (a, b) = (&a[pre..], &b[pre..]);
+    let (a, b) = (crate::cut::slice(a, pre..), crate::cut::slice(b, pre..));
     let suf =
         a.chars().rev().zip(b.chars().rev()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum();
     (pre, suf)

@@ -1,6 +1,9 @@
 //! Terminal UI — redraws the whole frame every time over crossterm (synchronized updates, so no flicker).
 //! A cell-diff buffer gets added when it becomes necessary (remote/slow terminals).
 
+// What draws slices text with `cut::slice` (#470: a slice off a character's boundary panicked the main thread)
+#![cfg_attr(not(test), deny(clippy::string_slice))]
+
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::OnceLock;
@@ -5071,7 +5074,7 @@ fn short_names<'a>(names: impl Iterator<Item = &'a str> + Clone) -> Vec<String> 
             .find(|&i| rest.iter().all(|n| n.len() > i && n.as_bytes()[..i] == first.as_bytes()[..i]))
             .unwrap_or(0),
     };
-    list.iter().map(|n| n[cut.min(n.len())..].to_string()).collect()
+    list.iter().map(|n| crate::cut::slice(n, cut.min(n.len())..).to_string()).collect()
 }
 
 /// Draws the panes (one if single window), and the dividers between side-by-side ones.
@@ -5879,7 +5882,7 @@ impl crossterm::Command for Spaces {
         let mut n = self.0;
         while n > 0 {
             let k = n.min(BLANKS.len());
-            f.write_str(&BLANKS[..k])?;
+            f.write_str(crate::cut::slice(BLANKS, ..k))?;
             n -= k;
         }
         Ok(())
@@ -7103,10 +7106,10 @@ fn print_lit_painted(
             false => Style { fg: paint.or(st.fg), ..st },
         };
         apply(out, s)?;
-        queue!(out, Print(&t[a..b]))?;
+        queue!(out, Print(crate::cut::slice(t, a..b)))?;
     }
     apply(out, st)?;
-    queue!(out, Print(&t[kept..]))
+    queue!(out, Print(crate::cut::slice(t, kept..)))
 }
 
 /// A docked group's edge, its line in the frame's edges (`edges::dock_meet`): in its leaf's cell on the code's side, a
@@ -7938,7 +7941,7 @@ fn draw_text(
                         st = st.patch(ui.selection_primary);
                     }
                     apply(out, if bleed_at.is_some_and(|w| c.bytes.start >= w) { bled(st) } else { st })?;
-                    match &gone[c.bytes.clone()] {
+                    match crate::cut::slice(gone, c.bytes.clone()) {
                         "\t" => queue!(out, Spaces(c.width))?,
                         g if g.chars().next().is_some_and(char::is_control) => {
                             queue!(out, Print('\u{fffd}'))?
@@ -8117,7 +8120,7 @@ fn draw_text(
                     && !hints.iter().any(|h| h.pos >= start && h.pos < start + b)
                     && !tests_skip_seek() =>
             {
-                (start + b, c, s[b..].to_string())
+                (start + b, c, crate::cut::slice(&s, b..).to_string())
             }
             _ => (start, col0, s),
         };
@@ -8160,7 +8163,7 @@ fn draw_text(
             current = None;
         }
         for c in graphemes::cells_from(&s, start, col0, tab) {
-            let g = &s[c.bytes.clone()];
+            let g = crate::cut::slice(&s, c.bytes.clone());
             if c.col >= row_end {
                 clipped = true; // the rest is the next row's
                 break;
@@ -8754,7 +8757,7 @@ fn draw_woven_row(
                     let cap = paint.get(g.bytes.start).copied().unwrap_or(u32::MAX);
                     let syn = capture_styles.get(cap as usize).copied().flatten().unwrap_or_default();
                     apply(out, st.patch(Style { bg: None, ..syn }))?;
-                    match &text[g.bytes.clone()] {
+                    match crate::cut::slice(text, g.bytes.clone()) {
                         "\t" => queue!(out, Spaces(g.width))?,
                         s if s.chars().next().is_some_and(char::is_control) => {
                             queue!(out, Print('\u{fffd}'))?
@@ -9461,7 +9464,7 @@ fn draw_folded_row(
                 run.0.clear();
             }
             run.1 = Some(painted);
-            run.0.push_str(&text[g.bytes]);
+            run.0.push_str(crate::cut::slice(&text, g.bytes));
             used += g.width;
         }
         if !run.0.is_empty() {
@@ -9784,14 +9787,14 @@ fn reason_rows(
     let starts = sentence_starts(reason);
     let mut fit = None;
     for &s in starts.iter().rev() {
-        let rows = rows_of(&reason[s..], w);
+        let rows = rows_of(crate::cut::slice(reason, s..), w);
         if rows.len() > REASON_ROWS {
             break;
         }
         fit = Some(rows);
     }
     let mut rows = fit.unwrap_or_else(|| {
-        let last = starts.last().map_or(reason, |&s| &reason[s..]);
+        let last = starts.last().map_or(reason, |&s| crate::cut::slice(reason, s..));
         let rows = rows_of(last, w);
         rows[rows.len().saturating_sub(REASON_ROWS)..].to_vec()
     });
@@ -10513,9 +10516,11 @@ fn draw_list_row(
             let Some((g, scope)) = glyph else { continue };
             let Some(range) = crate::turnmap::press_kept(&r.hint, hint, &g.clone(), range) else { continue };
             let inked = Style { fg: scope_fg(scope).or(plain.fg), ..base };
-            let spans =
-                vec![(hint[g.clone()].to_string(), inked), (hint[g.end..range.end].to_string(), plain)];
-            let cell = (x + 3 + lw - hint_w + hint[..range.start].width(), y);
+            let spans = vec![
+                (crate::cut::slice(hint, g.clone()).to_string(), inked),
+                (crate::cut::slice(hint, g.end..range.end).to_string(), plain),
+            ];
+            let cell = (x + 3 + lw - hint_w + crate::cut::slice(hint, ..range.start).width(), y);
             let spot =
                 word_spot(crate::mouse::Surface::Side, crate::wordspot::Press::Stop(*stop), cell, spans);
             editor.screen.word_spots.borrow_mut().push(spot.home(Here::Code));
@@ -10528,15 +10533,15 @@ fn draw_list_row(
                 continue;
             }
             apply(out, plain)?;
-            queue!(out, Print(&hint[at..start]))?;
+            queue!(out, Print(crate::cut::slice(hint, at..start)))?;
             let bold =
                 r.paint.as_ref().is_some_and(|p| p.bold.iter().any(|b| b.start <= start && end <= b.end));
             apply(out, Style { fg: scope_fg(scope).or(plain.fg), bold: bold || base.bold, ..base })?;
-            queue!(out, Print(&hint[start..end]))?;
+            queue!(out, Print(crate::cut::slice(hint, start..end)))?;
             at = end;
         }
         apply(out, plain)?;
-        queue!(out, Print(&hint[at..]), Print(" "))?;
+        queue!(out, Print(crate::cut::slice(hint, at..)), Print(" "))?;
         apply(out, base)?;
         used = lw;
     }
@@ -10576,7 +10581,7 @@ fn fit_middle(label: &str, marks: &[u32], width: usize) -> (String, Vec<u32>) {
     if width < 5 {
         return (fit_ellipsis(label, width), marks.to_vec());
     }
-    let ext = label.rfind('.').map_or(0, |i| label[i..].chars().count());
+    let ext = label.rfind('.').map_or(0, |i| crate::cut::slice(label, i..).chars().count());
     let tail_w = ((width - 1) * 2 / 5).max(ext.min(width / 2));
     let head_w = width - 1 - tail_w;
     let cw = |c: &char| c.width().unwrap_or(0);
@@ -10657,11 +10662,12 @@ fn fit_keeping(label: &str, keep: std::ops::Range<usize>, width: usize) -> Strin
     }
     let byte = |c: usize| label.char_indices().nth(c).map_or(label.len(), |(b, _)| b);
     let (a, b) = (byte(keep.start), byte(keep.end));
-    let (head, mid, tail) = (&label[..a], &label[a..b], &label[b..]);
+    let (head, mid, tail) =
+        (crate::cut::slice(label, ..a), crate::cut::slice(label, a..b), crate::cut::slice(label, b..));
     let least = match head.find(' ').map(|i| i + 1) {
         _ if head.is_empty() => String::new(),
         Some(i) if i == head.len() => head.to_string(),
-        Some(i) => format!("{}…", &head[..i]),
+        Some(i) => format!("{}…", crate::cut::slice(head, ..i)),
         None => "…".into(),
     };
     if least.width() + mid.width() + usize::from(!tail.is_empty()) > width {
@@ -10677,8 +10683,12 @@ fn fit_keeping(label: &str, keep: std::ops::Range<usize>, width: usize) -> Strin
     let share = if head.is_empty() { avail } else { avail * 2 / 5 }.max(1);
     let end = match tail.width() <= share {
         true => tail.to_string(),
-        false => match tail.match_indices('/').map(|(i, _)| i).find(|&i| tail[i..].width() < share) {
-            Some(i) => format!("…{}", &tail[i..]),
+        false => match tail
+            .match_indices('/')
+            .map(|(i, _)| i)
+            .find(|&i| crate::cut::slice(tail, i..).width() < share)
+        {
+            Some(i) => format!("…{}", crate::cut::slice(tail, i..)),
             None => "…".into(),
         },
     };
@@ -10688,8 +10698,8 @@ fn fit_keeping(label: &str, keep: std::ops::Range<usize>, width: usize) -> Strin
         false => {
             let mut marks =
                 head.char_indices().filter(|(_, c)| matches!(c, '/' | ' ')).map(|(i, c)| i + c.len_utf8());
-            match marks.rfind(|&i| head[..i].width() < left) {
-                Some(i) => format!("{}…", &head[..i]),
+            match marks.rfind(|&i| crate::cut::slice(head, ..i).width() < left) {
+                Some(i) => format!("{}…", crate::cut::slice(head, ..i)),
                 None => least,
             }
         }
@@ -11092,7 +11102,9 @@ fn picker_input(p: &Picker, lw: usize, count: &str) -> PickerInput {
     let text = p.input.text();
     let room = lw.saturating_sub(tail.width() + 3).max(1);
     let line = prompt_window(&text, p.input.cursor(), p.left.get(), room);
-    let q = usize::from(line.lead) + text[line.first..line.end].width() + usize::from(line.tail);
+    let q = usize::from(line.lead)
+        + crate::cut::slice(&text, line.first..line.end).width()
+        + usize::from(line.tail);
     // A word about the query — an unfinished pattern — said quietly in the title's place: the reason, and
     // that the rows are the last search's as far as the room goes
     let room_note = lw.saturating_sub(q + tail.width() + 3);
@@ -11136,13 +11148,13 @@ fn print_input_line(
         })
         .collect();
     let style_at = |b: usize| washes.iter().find(|(a, z, _)| (*a..*z).contains(&b)).map_or(base, |w| w.2);
-    let shown = &text[line.first..line.end];
+    let shown = crate::cut::slice(text, line.first..line.end);
     let mut from = 0;
     for b in shown.char_indices().map(|(b, _)| b).skip(1).chain([shown.len()]) {
         let at = line.first + from;
         if b > from && (b == shown.len() || style_at(line.first + b) != style_at(at)) {
             apply(out, style_at(at))?;
-            queue!(out, Print(&shown[from..b]))?;
+            queue!(out, Print(crate::cut::slice(shown, from..b)))?;
             from = b;
         }
     }
@@ -11489,7 +11501,7 @@ fn draw_diff_row(
         if c.col >= to || c.col - from + c.width > room {
             break;
         }
-        let g = &l.text[c.bytes.clone()];
+        let g = crate::cut::slice(&l.text, c.bytes.clone());
         let mut st = base;
         if let Some(Some(hs)) = paint.get(c.bytes.start).and_then(|&cap| styles.get(cap as usize)) {
             st = st.patch(Style { bg: None, ..*hs });
@@ -13444,7 +13456,9 @@ fn draw_signature(
     // If long, cut the front so the current parameter lands at the 1/3 mark
     let active_col: usize = sig
         .active
-        .map(|(a, _)| label[..a.min(label.len())].chars().map(|c| c.width().unwrap_or(0)).sum())
+        .map(|(a, _)| {
+            crate::cut::slice(&label, ..a.min(label.len())).chars().map(|c| c.width().unwrap_or(0)).sum()
+        })
         .unwrap_or(0);
     let skip_cols = if full > room { active_col.saturating_sub(room / 3).min(full - room + 1) } else { 0 };
     let dim = Style { fg: ui.virt.fg, ..Style::default() };
@@ -13472,8 +13486,8 @@ fn draw_signature(
     let head = doc.selection().primary().head;
     let line_start = mv::line_start(&doc.text, mv::line_of(&doc.text, head));
     let typed = doc.text.byte_slice(line_start..head).to_string();
-    let call = call_paren(&typed).map(|i| typed[i..].width());
-    let text_x = match (call, label.find('(').map(|i| label[..i].width())) {
+    let call = call_paren(&typed).map(|i| crate::cut::slice(&typed, i..).width());
+    let text_x = match (call, label.find('(').map(|i| crate::cut::slice(&label, ..i).width())) {
         (Some(after), Some(before)) if skip_cols == 0 => (cx as usize).saturating_sub(after + before),
         _ => cx as usize,
     };
@@ -13816,12 +13830,12 @@ fn toast_wrap(line: &str, w: usize, phrases: bool) -> Vec<String> {
         for (i, c) in word.char_indices() {
             let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
             if cells + cw > w.max(2) && i > from {
-                pieces.push(&word[from..i]);
+                pieces.push(crate::cut::slice(word, from..i));
                 (from, cells) = (i, 0);
             }
             cells += cw;
         }
-        pieces.push(&word[from..]);
+        pieces.push(crate::cut::slice(word, from..));
         pieces
     });
     for word in words {
@@ -14107,7 +14121,7 @@ fn draw_overlays(
                 let mut pieces: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
                 let mut at = 0;
                 for s in &o.rows[i] {
-                    let same = (text[at..].char_indices().zip(s.text.chars()))
+                    let same = (crate::cut::slice(&text, at..).char_indices().zip(s.text.chars()))
                         .find(|((_, a), b)| a != b)
                         .map_or(s.text.len().min(text.len() - at), |((k, _), _)| k);
                     pieces.push((at..at + same, role(s.role)));
@@ -14147,14 +14161,14 @@ fn toast_paint(
         .map(|t| {
             let (mut out, mut at) = (Vec::new(), 0);
             while let Some((word, scope)) = paint.get(next) {
-                let Some(i) = t[at..].find(word.as_str()) else { break };
+                let Some(i) = crate::cut::slice(t, at..).find(word.as_str()) else { break };
                 if i > 0 {
-                    out.push((t[at..at + i].to_string(), None));
+                    out.push((crate::cut::slice(t, at..at + i).to_string(), None));
                 }
                 out.push((word.clone(), Some(*scope).filter(|s| !s.is_empty())));
                 (at, next) = (at + i + word.len(), next + 1);
             }
-            out.push((t[at..].to_string(), None));
+            out.push((crate::cut::slice(t, at..).to_string(), None));
             out
         })
         .collect()
@@ -16921,7 +16935,7 @@ fn spans_left(row: &[crate::markdown::Span], w: usize) -> Vec<crate::markdown::S
             out.push(crate::markdown::Span {
                 cut: None,
                 hint: s.hint,
-                text: s.text[at..].to_string(),
+                text: crate::cut::slice(&s.text, at..).to_string(),
                 style: s.style,
             });
         }
@@ -18483,7 +18497,7 @@ fn session_tabs_in(
     let fresh = |place: Place, s: Span| -> Vec<Span> {
         let Some(ui) = drawn.filter(|_| editor.arrival(&place) > 0.0) else { return vec![s] };
         let word = s.text.trim_start().to_string();
-        let lead = s.text[..s.text.len() - word.len()].to_string();
+        let lead = crate::cut::slice(&s.text, ..s.text.len() - word.len()).to_string();
         let style = arrived_style(ui, editor, &place, s.style);
         let lead = (!lead.is_empty()).then(|| Span { text: lead, ..s.clone() });
         lead.into_iter().chain([Span { text: word, style, ..s }]).collect()
@@ -19414,11 +19428,21 @@ fn told_row(text: &str, w: usize, dim: Style, theme: &Theme) -> crate::chat::Cha
     for (r, style) in &pieces {
         let (a, b) = (r.start, r.end.min(kept));
         if a < b {
-            spans.push(Span { cut: None, hint: false, text: plain[a..b].to_string(), style: *style });
+            spans.push(Span {
+                cut: None,
+                hint: false,
+                text: crate::cut::slice(&plain, a..b).to_string(),
+                style: *style,
+            });
         }
     }
     if kept < shown.len() {
-        spans.push(Span { cut: None, hint: false, text: shown[kept..].to_string(), style: dim });
+        spans.push(Span {
+            cut: None,
+            hint: false,
+            text: crate::cut::slice(&shown, kept..).to_string(),
+            style: dim,
+        });
     }
     let mut row = ChatRow { spans, skip: hang, ..ChatRow::default() };
     crate::chatdoc::keep_whole(&mut row, &plain);
@@ -19966,7 +19990,7 @@ fn draw_ask_line(
             for b in row.char_indices().map(|(b, _)| b).skip(1).chain([row.len()]) {
                 if b > from && (b == row.len() || style_at(start + b) != style_at(start + from)) {
                     apply(out, style_at(start + from))?;
-                    queue!(out, Print(&row[from..b]))?;
+                    queue!(out, Print(crate::cut::slice(row, from..b)))?;
                     from = b;
                 }
             }
@@ -20811,7 +20835,7 @@ fn draw_chat(
             for b in row.char_indices().map(|(b, _)| b).skip(1).chain([row.len()]) {
                 if b > from && (b == row.len() || style_at(start + b) != style_at(start + from)) {
                     apply(out, style_at(start + from))?;
-                    queue!(out, Print(&row[from..b]))?;
+                    queue!(out, Print(crate::cut::slice(row, from..b)))?;
                     from = b;
                 }
             }
@@ -21400,7 +21424,7 @@ fn chat_markdown_drawn(
                         }
                         at += s.text.len();
                     }
-                    let whole = line[ind..].to_string();
+                    let whole = crate::cut::slice(&line, ind..).to_string();
                     (ind, crate::whole::Of { from: 0, to: 0, whole, pieces, key: None })
                 });
                 let carried = |at: usize, t: &str| {
@@ -21420,7 +21444,7 @@ fn chat_markdown_drawn(
                     };
                     let t = fit(&s.text, room);
                     used += t.width();
-                    rest.push_str(&s.text[t.len()..]);
+                    rest.push_str(crate::cut::slice(&s.text, t.len()..));
                     let cut = carried(at, &t);
                     at += s.text.len();
                     row.push(Span { cut, hint: false, text: t, style: Style { bg: well, ..s.style } });
@@ -21639,8 +21663,10 @@ fn trail_row_at(
     let (mut row, mark) = trail_spans(look, ran, knot, w, slim, st);
     let mut tail = 0;
     if stamped {
+        // (a control character is no cell to `cut::fit` and one to `width`: a target of several lines measures wider
+        // than its room)
         let used: usize = row.iter().map(|s| s.text.width()).sum();
-        row.push(sp(" ".repeat(end - stamps_w - used), st.faint));
+        row.push(sp(" ".repeat(end.saturating_sub(stamps_w + used)), st.faint));
         row.extend(stamps.iter().cloned());
         tail = stamps.iter().map(|s| s.text.chars().count()).sum();
     }
@@ -21755,8 +21781,8 @@ fn tool_rows(
         segs.push((at, at + t.len(), *s));
     }
     // (where a click says where it ran: the suffix's words, on the row its end is on)
-    let words_at =
-        look.what.len() + (text.len() - look.what.len() - text[look.what.len()..].trim_start().len());
+    let words_at = look.what.len()
+        + (text.len() - look.what.len() - crate::cut::slice(&text, look.what.len()..).trim_start().len());
     let mut rows: Vec<ChatRow> = Vec::new();
     for (k, (a, part)) in crate::cut::fit_in_hand_at(&text, room).into_iter().enumerate() {
         let b = a + part.text.len();
@@ -21767,10 +21793,10 @@ fn tool_rows(
         for &(x, y, s) in &segs {
             let (x, y) = (x.max(a), y.min(b));
             if x < y {
-                spans.push(sp(text[x..y].to_string(), s));
+                spans.push(sp(crate::cut::slice(&text, x..y).to_string(), s));
             }
         }
-        let at = |p: usize| hang + text[a..p.clamp(a, b)].width();
+        let at = |p: usize| hang + crate::cut::slice(&text, a..p.clamp(a, b)).width();
         let ran = (ran.is_some() && b == text.len() && words_at < b).then(|| (at(words_at), at(b)));
         let (skip, join) = if k == 0 { (2, None) } else { (hang, Some(part.space)) };
         rows.push(ChatRow { spans, skip, join, ran, ..ChatRow::default() });
@@ -21824,6 +21850,26 @@ const CUT_CARD_MIN: usize = 32;
 /// The most rows a cut text's card takes (`cut_card`) — past them its last says how many more, a press there opening it
 /// whole in a read-only buffer (`whole::pressed`).
 pub(crate) const CUT_CARD_MAX: usize = 12;
+
+/// `cut_card`'s rows of `text[from..to]` wrapped in `width` cells (`one`: its first alone), each with the byte its
+/// text starts at in `text` (`cut::fit_in_hand_at`: found, never added up); where the last one ends.
+fn lay_text(
+    text: &str,
+    (from, to): (usize, usize),
+    width: usize,
+    one: bool,
+    rows: &mut Vec<(usize, String)>,
+) -> usize {
+    let mut pos = from;
+    for (at, p) in crate::cut::fit_in_hand_at(crate::cut::slice(text, from..to), width) {
+        pos = from + at + p.text.len();
+        rows.push((from + at, p.text));
+        if one {
+            break;
+        }
+    }
+    pos
+}
 
 /// A text cut to `…` (`whole::cut_at`: blame or a diagnostic at a line's end, a list's row, the chat's rows) whole on a
 /// borderless card over it (#178, #179, #187) — the mouse's, else the row in hand's (`whole::shown`): its first row on
@@ -21896,24 +21942,6 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
     };
     // (each row with where its bytes start in the text — its pieces' colours)
     let mut rows: Vec<(usize, String)> = Vec::new();
-    fn lay_text(
-        text: &str,
-        (from, to): (usize, usize),
-        width: usize,
-        one: bool,
-        rows: &mut Vec<(usize, String)>,
-    ) -> usize {
-        let mut pos = from;
-        for p in crate::cut::fit_in_hand(&text[from..to], width, false, true) {
-            let at = text[pos..].find(&p.text).map_or(pos, |k| pos + k);
-            pos = at + p.text.len();
-            rows.push((at, p.text));
-            if one {
-                break;
-            }
-        }
-        pos
-    }
     // (a row's trailing state whole on one row: after the name's last row where it fits there, else on its own)
     let mut lay_rows = |from: usize, width: usize, one: bool| {
         let Some(k) = w.state.filter(|&k| k > from) else {
@@ -21921,18 +21949,19 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
         };
         let first = rows.len();
         let pos = lay_text(&w.text, (from, k), width, one, &mut rows);
-        if pos < w.text[..k].trim_end().len() {
+        if pos < crate::cut::slice(&w.text, ..k).trim_end().len() {
             return pos;
         }
-        let joined = rows[first..].last().map(|r| r.0).filter(|&at| w.text[at..].width() <= width);
+        let joined =
+            rows[first..].last().map(|r| r.0).filter(|&at| crate::cut::slice(&w.text, at..).width() <= width);
         match joined {
             Some(at) => {
-                rows.last_mut().expect("its name's row").1 = w.text[at..].to_string();
+                rows.last_mut().expect("its name's row").1 = crate::cut::slice(&w.text, at..).to_string();
                 w.text.len()
             }
             None if one => pos,
             None => {
-                let s = w.text.len() - w.text[k..].trim_start().len();
+                let s = w.text.len() - crate::cut::slice(&w.text, k..).trim_start().len();
                 lay_text(&w.text, (s, w.text.len()), width, false, &mut rows)
             }
         }
@@ -21940,7 +21969,8 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
     match beside {
         Some(edge) => {
             let pos = lay_rows(0, past, true);
-            let rest = w.text[pos..].len() - w.text[pos..].trim_start().len();
+            let rest = crate::cut::slice(&w.text, pos..).len()
+                - crate::cut::slice(&w.text, pos..).trim_start().len();
             if right.saturating_sub(edge + 2) >= 4 && pos + rest < w.text.len() {
                 lay_rows(pos + rest, right - edge - 2, false);
             }
@@ -22076,7 +22106,7 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
             false => (w.pieces.iter())
                 .filter_map(|(r, s)| {
                     let (p, q) = (r.start.max(*at), r.end.min(at + row.len()));
-                    (p < q).then(|| (&w.text[p..q], Style { bg: ground.bg, ..*s }))
+                    (p < q).then(|| (crate::cut::slice(&w.text, p..q), Style { bg: ground.bg, ..*s }))
                 })
                 .collect(),
         };
@@ -22160,7 +22190,7 @@ fn letter_in<'a>(text: &'a str, rows: &[(usize, String)], col: usize) -> Option<
         col < at
     })?;
     let k = rows.iter().rposition(|(from, row)| *from <= byte && byte < from + row.len())?;
-    Some((k, text[rows[k].0..byte].width(), g))
+    Some((k, crate::cut::slice(text, rows[k].0..byte).width(), g))
 }
 
 /// What a cut card's row shows at column `cx`, its text from column `start`: the letter there (a wide one's either cell),
@@ -23113,11 +23143,16 @@ fn underline_refs<'a>(
                 Some(_) => Style { underline: true, ..s.style },
                 None => Style { underline: s.style.underline || inside, ..s.style },
             };
-            out.push(Span { cut: None, hint: false, text: joined[a..b].to_string(), style });
+            out.push(Span {
+                cut: None,
+                hint: false,
+                text: crate::cut::slice(&joined, a..b).to_string(),
+                style,
+            });
         }
         at = end;
     }
-    let col = |b: usize| joined[..b].width();
+    let col = |b: usize| crate::cut::slice(&joined, ..b).width();
     let found = refs.into_iter().map(|(r, link)| (col(r.start), col(r.end), link)).collect();
     let elements = ids.into_iter().map(|(r, id)| (col(r.start), col(r.end), id)).collect();
     let names = names.into_iter().map(|r| (col(r.start), col(r.end))).collect();
@@ -23142,13 +23177,13 @@ fn fit_path_left(s: &str, width: usize) -> String {
         return s.to_string();
     }
     let lead = ["~/", "/"].into_iter().find(|l| s.starts_with(l)).unwrap_or("");
-    let (rest, room) = (&s[lead.len()..], width.saturating_sub(lead.width()));
+    let (rest, room) = (crate::cut::slice(s, lead.len()..), width.saturating_sub(lead.width()));
     // (a cell left for the `/` after `…`)
     let tail = fit_left(rest, room.saturating_sub(1));
     let kept = tail.strip_prefix('…').unwrap_or(&tail);
-    let kept = match rest[..rest.len() - kept.len()].ends_with('/') {
+    let kept = match crate::cut::slice(rest, ..rest.len() - kept.len()).ends_with('/') {
         true => Some(kept),
-        false => kept.find('/').map(|i| &kept[i + 1..]),
+        false => kept.find('/').map(|i| crate::cut::slice(kept, i + 1..)),
     };
     match kept {
         Some(kept) => format!("{lead}…/{kept}"),
@@ -25018,11 +25053,16 @@ fn message_spans(text: &str, base: Style, lang: Option<&str>, editor: &Editor) -
     let mut out = Vec::new();
     let mut rest = text;
     while let Some(open) = rest.find('`') {
-        let Some(len) = rest[open + 1..].find('`') else { break };
+        let Some(len) = crate::cut::slice(rest, open + 1..).find('`') else { break };
         if open > 0 {
-            out.push(Span { cut: None, hint: false, text: rest[..open].to_string(), style: base });
+            out.push(Span {
+                cut: None,
+                hint: false,
+                text: crate::cut::slice(rest, ..open).to_string(),
+                style: base,
+            });
         }
-        let code = &rest[open + 1..open + 1 + len];
+        let code = crate::cut::slice(rest, open + 1..open + 1 + len);
         // Inline-code color underneath, syntax colors on top (unparsed bits still read as code)
         match crate::markdown::code_lines(code, lang, t).into_iter().next() {
             Some(Line::Code(spans)) => {
@@ -25030,7 +25070,7 @@ fn message_spans(text: &str, base: Style, lang: Option<&str>, editor: &Editor) -
             }
             _ => out.push(Span { cut: None, hint: false, text: code.to_string(), style: raw }),
         }
-        rest = &rest[open + 1 + len + 1..];
+        rest = crate::cut::slice(rest, open + 1 + len + 1..);
     }
     if !rest.is_empty() {
         out.push(Span { cut: None, hint: false, text: rest.to_string(), style: base });
@@ -25376,8 +25416,8 @@ pub(crate) struct PromptLine {
 pub(crate) fn prompt_window(text: &str, cursor: usize, left: usize, room: usize) -> PromptLine {
     use unicode_width::UnicodeWidthChar as _;
     let width = |s: &str| s.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
-    let prev = |b: usize| text[..b].char_indices().next_back().map_or(0, |(i, _)| i);
-    let next = |b: usize| text[b..].chars().next().map_or(b, |c| b + c.len_utf8());
+    let prev = |b: usize| crate::cut::slice(text, ..b).char_indices().next_back().map_or(0, |(i, _)| i);
+    let next = |b: usize| crate::cut::slice(text, b..).chars().next().map_or(b, |c| b + c.len_utf8());
     let cursor = cursor.min(text.len());
     let at_end = usize::from(cursor == text.len());
     // (the rest fits from further back: drawn from there)
@@ -25387,7 +25427,7 @@ pub(crate) fn prompt_window(text: &str, cursor: usize, left: usize, room: usize)
     }
     while first > 0 {
         let back = prev(first);
-        if usize::from(back > 0) + width(&text[back..]) + at_end > room {
+        if usize::from(back > 0) + width(crate::cut::slice(text, back..)) + at_end > room {
             break;
         }
         first = back;
@@ -25396,7 +25436,7 @@ pub(crate) fn prompt_window(text: &str, cursor: usize, left: usize, room: usize)
         let lead = first > 0;
         let fits = |avail: usize| {
             let (mut cells, mut end) = (0, first);
-            for (b, c) in text[first..].char_indices() {
+            for (b, c) in crate::cut::slice(text, first..).char_indices() {
                 let w = c.width().unwrap_or(0);
                 if cells + w > avail {
                     break;
@@ -25468,6 +25508,75 @@ mod tests {
             "neither whole: the larger side, shorter"
         );
         assert_eq!(clear(r(9, 20), Some((5, 33)), 39, 8), r(9, 20), "under `min`: where it was");
+    }
+
+    /// #470's property where the wrapped rows are drawn, over `cut`'s texts at every width: a cut text's card lays
+    /// `fit_in_hand_at`'s rows where their text is, inside the range it was given (`lay_text`); a tool call's row with
+    /// a blank line, a `—`, a `\r\n` in its words lays out without a panic, and keeps them all — the transcript's line
+    /// is its words, its card's whole the text.
+    #[test]
+    fn wrapped_rows_are_drawn_where_their_text_is() {
+        use crate::cut::tests::{WIDTHS, wrap_inputs};
+        use crate::markdown::Span;
+        let st = super::TrailStyles {
+            faint: Default::default(),
+            dim: Default::default(),
+            string: Default::default(),
+            accent: Default::default(),
+            warn: Default::default(),
+            plus: Default::default(),
+        };
+        let sp = |t: &str| Span { text: t.into(), style: Default::default(), cut: None, hint: false };
+        let solid = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        for (n, s) in wrap_inputs(600).into_iter().enumerate() {
+            // (a range inside it: its middle's boundaries)
+            let (from, to) = (s.floor_char_boundary(s.len() / 4), s.floor_char_boundary(s.len() * 3 / 4));
+            for width in WIDTHS {
+                for one in [false, true] {
+                    let mut rows = Vec::new();
+                    let end = super::lay_text(&s, (from, to), width, one, &mut rows);
+                    let want = crate::cut::fit_in_hand_at(crate::cut::slice(&s, from..to), width);
+                    let want: Vec<(usize, String)> = want
+                        .into_iter()
+                        .take(if one { 1 } else { usize::MAX })
+                        .map(|(a, r)| (from + a, r.text))
+                        .collect();
+                    assert_eq!(rows, want, "{s:?} {from}..{to} at {width}");
+                    assert!(
+                        end <= to && s.is_char_boundary(end),
+                        "{s:?} {from}..{to} at {width}: ends at {end}"
+                    );
+                }
+                let look = crate::chat::Look {
+                    verb: "replace",
+                    what: s.clone(),
+                    pattern: n % 2 == 0,
+                    range: if n % 3 == 0 { "L1–9".into() } else { String::new() },
+                    link: None,
+                };
+                let ran = crate::chat::Ran {
+                    mark: "here".into(),
+                    past: false,
+                    why: String::new(),
+                    warned: Vec::new(),
+                };
+                let ran = (n % 5 == 0).then_some(&ran);
+                let stamps = if n % 4 == 0 { vec![sp("12s")] } else { Vec::new() };
+                let laid = std::panic::AssertUnwindSafe(|| {
+                    super::tool_rows(&look, ran, sp("◦"), &stamps, width + 12, &st)
+                });
+                let rows = std::panic::catch_unwind(laid).unwrap_or_else(|_| {
+                    panic!("{s:?} at {width}, ran {}: laying it out panicked", ran.is_some())
+                });
+                let line = solid(&crate::chatdoc::lines_of(&rows).0);
+                let words = solid(&format!("replace{s}{}", look.range));
+                assert!(line.starts_with(&words), "{s:?} at {width}: {line:?}");
+                assert!(line.ends_with(ran.map_or(&words, |r| &r.mark)), "{s:?} at {width}: {line:?}");
+                if let Some((_, _, whole)) = &rows[0].cut {
+                    assert!(whole.text.starts_with(&s), "{s:?} at {width}: its card's whole");
+                }
+            }
+        }
     }
 
     /// `print_lit_painted`'s line in a one-row terminal: its text and each cell's (fg, bg).
