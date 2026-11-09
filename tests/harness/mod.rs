@@ -4,7 +4,8 @@
 //! Every tarae it starts goes through `tarae`, which first runs that binary once, alone, and waits for it (#459):
 //! macOS's first-run check of a freshly linked, ad-hoc-signed binary can fail closed under load — the kernel then
 //! refuses the exec — so the prewarm takes that check alone, before the suite's parallel starts.
-//! (`tarae_testkit::firstexec`.)
+//! (`tarae_testkit::firstexec`.) A later exec refused the same way is spawned once more, said and counted
+//! (`once_more_if_exec_refused`), where `tarae state` is asked.
 #![allow(dead_code)]
 
 use std::ffi::{OsStr, OsString};
@@ -1154,14 +1155,17 @@ impl Asked<'_> {
     fn state(&self, args: &[&str], again: &AtomicUsize, shown: impl Fn() -> String) -> String {
         let deadline = Instant::now() + self.timeout;
         loop {
-            let (out, why) = output_and_reason(
-                tarae(self.bin)
-                    .arg("state")
-                    .args(["--pid", &self.pid.to_string()])
-                    .args(args)
-                    .env_clear()
-                    .envs(self.env.iter().cloned()),
-            );
+            let (out, end) = once_more_if_exec_refused(&format!("tarae state {args:?}"), || {
+                output_and_end(
+                    tarae(self.bin)
+                        .arg("state")
+                        .args(["--pid", &self.pid.to_string()])
+                        .args(args)
+                        .env_clear()
+                        .envs(self.env.iter().cloned()),
+                )
+            });
+            let why = end.reason.said;
             let (stdout, stderr) =
                 (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
             if out.status.success() {
@@ -1183,7 +1187,12 @@ impl Asked<'_> {
 /// `cmd`'s output, as `Command::output` — and, when a signal ended it, why (`exit_reason`), read before it's reaped
 /// (#459: `tarae state` ended by a SIGKILL no one in the harness sent).
 pub fn output_and_reason(cmd: &mut Command) -> (std::process::Output, String) {
-    use std::os::unix::process::ExitStatusExt;
+    let (out, end) = output_and_end(cmd);
+    (out, end.reason.said)
+}
+
+/// `output_and_reason`'s, with how it ended as an `End` — what `once_more_if_exec_refused` judges.
+pub fn output_and_end(cmd: &mut Command) -> (std::process::Output, End) {
     let mut child =
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
     let mut err = child.stderr.take().expect("stderr");
@@ -1200,10 +1209,74 @@ pub fn output_and_reason(cmd: &mut Command) -> (std::process::Output, String) {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
     unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
-    let why = exit_reason(child.id());
+    let reason = exit_reason_of(child.id());
     let status = child.wait().expect("wait");
-    let why = if status.signal().is_some() { why } else { String::new() };
-    (std::process::Output { status, stdout, stderr }, why)
+    let end = End::of(&status, reason);
+    (std::process::Output { status, stdout, stderr }, end)
+}
+
+/// How a child ended, read before it was reaped: the signal that ended it, if one did, and why (`exit_reason_of`) —
+/// kept only for a signal's end.
+#[derive(Debug, Default)]
+pub struct End {
+    pub signal: Option<i32>,
+    pub reason: ExitReason,
+}
+
+impl End {
+    /// `status`'s end, with its reason read before it was reaped.
+    pub fn of(status: &ExitStatus, reason: ExitReason) -> Self {
+        use std::os::unix::process::ExitStatusExt;
+        let signal = status.signal();
+        Self { signal, reason: if signal.is_some() { reason } else { ExitReason::default() } }
+    }
+}
+
+/// XNU's sys/reason.h: the namespace of an exec the kernel refused, and its code for a security policy's no.
+const OS_REASON_EXEC: u32 = 9;
+const EXEC_EXIT_REASON_SECURITY_POLICY: u64 = 8;
+
+/// Whether `end` is macOS refusing the exec itself (#459): a SIGKILL whose exit reason is `OS_REASON_EXEC`
+/// (namespace 9) with code 8, `EXEC_EXIT_REASON_SECURITY_POLICY` — the check of a freshly linked, ad-hoc-signed
+/// binary failing closed under load, so the program never ran. Nothing else is: another signal, another namespace or
+/// code, a SIGKILL with no reason, an exit of its own.
+pub fn exec_refused_by_security_policy(end: &End) -> bool {
+    end.signal == Some(libc::SIGKILL)
+        && end.reason.kernel == Some((OS_REASON_EXEC, EXEC_EXIT_REASON_SECURITY_POLICY))
+}
+
+/// The spawns of the test binary run once more since this test binary started (#459's tally, said with each).
+static EXEC_REFUSALS_RETRIED: AtomicUsize = AtomicUsize::new(0);
+
+/// `spawn` — one spawn of the test binary, waited for: what came, and how it ended — run once more when the first
+/// ended with `exec_refused_by_security_policy`, and on nothing else (#459): that exec never ran. The retry is said
+/// past the test's capture, so it's on the run's output beside the test's line, and counted; a second refusal comes
+/// back as it came, to fail as any end does. `what` names the spawn in that line. The prewarm (`first_exec`) isn't
+/// one: it stays a single exec.
+pub fn once_more_if_exec_refused<T>(what: &str, spawn: impl FnMut() -> (T, End)) -> (T, End) {
+    // (straight to stderr, not `eprintln!`: libtest keeps a passing test's `eprintln!` out of sight)
+    once_more_counted(&EXEC_REFUSALS_RETRIED, &mut io::stderr(), what, spawn)
+}
+
+/// `once_more_if_exec_refused`, its retries counted in `count` and said in `say`.
+fn once_more_counted<T>(
+    count: &AtomicUsize,
+    say: &mut dyn Write,
+    what: &str,
+    mut spawn: impl FnMut() -> (T, End),
+) -> (T, End) {
+    let first = spawn();
+    if !exec_refused_by_security_policy(&first.1) {
+        return first;
+    }
+    let n = count.fetch_add(1, Ordering::Relaxed) + 1;
+    let test = thread::current().name().unwrap_or("a test").to_string();
+    let _ = writeln!(
+        say,
+        "#459 RETRIED {test}: {what} ended with SIGKILL{} — spawned once more ({n} in this test binary)",
+        first.1.reason.said
+    );
+    spawn()
 }
 
 /// Whether child `pid` has ended — left unreaped (`WNOWAIT`): `exit_reason` reads it before `wait` does.
@@ -1225,11 +1298,24 @@ pub fn ended(pid: u32) -> bool {
 /// (`PROC_PIDEXITREASONINFO`) — for a kill(2), its sender's pid and name (the reason's kcdata); for one the kernel
 /// ended (code signing, jetsam, exec), its namespace and code. Nothing for one with none, or elsewhere.
 pub fn exit_reason(pid: u32) -> String {
+    exit_reason_of(pid).said
+}
+
+/// Why an ended child ended (`exit_reason_of`): the kernel's namespace and code when the kernel ended it, and in
+/// words (`exit_reason`'s).
+#[derive(Debug, Default)]
+pub struct ExitReason {
+    pub kernel: Option<(u32, u64)>,
+    pub said: String,
+}
+
+/// `exit_reason`, with the kernel's namespace and code kept apart.
+pub fn exit_reason_of(pid: u32) -> ExitReason {
     #[cfg(target_os = "macos")]
     {
         // (XNU's `proc_exitreasoninfo`, packed)
         #[repr(C, packed)]
-        struct ExitReason {
+        struct Raw {
             namespace: u32,
             code: u64,
             flags: u64,
@@ -1245,23 +1331,20 @@ pub fn exit_reason(pid: u32) -> String {
         const OS_REASON_SIGNAL: u32 = 2;
         let (kcdata_pid, kcdata_procname) = (0x36, 0x37);
         let mut kcd = [0u8; 2048];
-        let mut r = ExitReason {
-            namespace: 0,
-            code: 0,
-            flags: 0,
-            size: kcd.len() as u32,
-            buf: kcd.as_mut_ptr() as u64,
-        };
-        let size = std::mem::size_of::<ExitReason>() as i32;
-        // SAFETY: fills one ExitReason and up to `size` bytes of our own buffer it points at.
+        let mut r =
+            Raw { namespace: 0, code: 0, flags: 0, size: kcd.len() as u32, buf: kcd.as_mut_ptr() as u64 };
+        let size = std::mem::size_of::<Raw>() as i32;
+        // SAFETY: fills one Raw and up to `size` bytes of our own buffer it points at.
         let n = unsafe { proc_pidinfo(pid as i32, PROC_PIDEXITREASONINFO, 0, (&raw mut r).cast(), size) };
         let (namespace, code, kcd_size) = (r.namespace, r.code, r.size);
         if n <= 0 {
-            return format!(" — no exit reason ({})", io::Error::last_os_error());
+            let said = format!(" — no exit reason ({})", io::Error::last_os_error());
+            return ExitReason { kernel: None, said };
         }
         if namespace != OS_REASON_SIGNAL {
             let name = NAMESPACES.get(namespace as usize).map_or(namespace.to_string(), |n| n.to_string());
-            return format!(" — ended by the kernel: {name} (namespace {namespace}), code {code:#x}");
+            let said = format!(" — ended by the kernel: {name} (namespace {namespace}), code {code:#x}");
+            return ExitReason { kernel: Some((namespace, code)), said };
         }
         // (kcdata: items of a type, a size and flags — 16 bytes — then their data, that size)
         let (mut at, len, mut from) = (0, (kcd_size as usize).min(kcd.len()), Vec::new());
@@ -1278,12 +1361,16 @@ pub fn exit_reason(pid: u32) -> String {
             }
             at += 16 + size;
         }
-        format!(" — sent by {}", if from.is_empty() { "no one named".to_string() } else { from.join(" ") })
+        let said = format!(
+            " — sent by {}",
+            if from.is_empty() { "no one named".to_string() } else { from.join(" ") }
+        );
+        ExitReason { kernel: None, said }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = pid;
-        String::new()
+        ExitReason::default()
     }
 }
 
@@ -1991,6 +2078,50 @@ mod tests {
         assert!(said, "{why:?}");
         let (out, why) = output_and_reason(Command::new("/bin/sh").args(["-c", "echo said"]));
         assert!(out.status.success() && out.stdout == b"said\n" && why.is_empty(), "{why:?}");
+    }
+
+    /// A spawn whose exec macOS refused is run once more, and only that one (#459) — stand-in ends, no real spawn: a
+    /// refusal then a run gives the run; two refusals give the second, to fail; an end near it isn't retried.
+    #[test]
+    fn only_a_refused_exec_is_spawned_once_more() {
+        let end =
+            |signal, kernel| End { signal, reason: ExitReason { kernel, said: " — a stand-in".into() } };
+        let refused = || end(Some(libc::SIGKILL), Some((9, 8)));
+        let (count, said) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+        let run = |ends: Vec<End>| {
+            let (mut ends, mut spawns) = (ends.into_iter(), 0);
+            let ((), last) = once_more_counted(&count, &mut *said.lock().unwrap(), "a stand-in", || {
+                spawns += 1;
+                ((), ends.next().expect("no spawn past the second"))
+            });
+            (spawns, last)
+        };
+        let (spawns, last) = run(vec![refused(), End::default()]);
+        assert!(spawns == 2 && last.signal.is_none(), "{spawns}: {last:?}");
+        let line = String::from_utf8(said.lock().unwrap().clone()).unwrap();
+        let test = "harness::tests::only_a_refused_exec_is_spawned_once_more";
+        let want = "a stand-in ended with SIGKILL — a stand-in — spawned once more (1 in this test binary)";
+        // (the test's name is its thread's, as libtest names it — none when the tests run on one thread)
+        assert!(line.starts_with("#459 RETRIED ") && line.ends_with(&format!("{want}\n")), "{line:?}");
+        assert!(line.contains(test) || thread::current().name() != Some(test), "{line:?}");
+        let (spawns, last) = run(vec![refused(), refused()]);
+        assert!(spawns == 2 && exec_refused_by_security_policy(&last), "{spawns}: {last:?}");
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        let near = [
+            end(Some(libc::SIGKILL), Some((9, 7))),
+            end(Some(libc::SIGKILL), Some((3, 8))),
+            end(Some(libc::SIGKILL), None),
+            end(Some(libc::SIGTERM), Some((9, 8))),
+            end(None, Some((9, 8))),
+            End::default(),
+        ];
+        for other in near {
+            let shown = format!("{other:?}");
+            let (spawns, last) = run(vec![other, refused()]);
+            assert!(spawns == 1 && !exec_refused_by_security_policy(&last), "{shown} ran {spawns} times");
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert_eq!(said.lock().unwrap().iter().filter(|b| **b == b'\n').count(), 2, "one line a retry");
     }
 
     /// This build's first exec has run, and passed, once a `tarae` is made: asked again, nothing runs (#459; once

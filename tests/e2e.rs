@@ -229,22 +229,26 @@ fn tarae_state_ends_quietly_when_its_reader_is_gone() {
                 Ok(())
             })
         };
-        let mut child = cmd.spawn().unwrap();
-        let end = std::time::Instant::now() + TIMEOUT;
-        // (ended, not reaped yet: a signal's sender is read from it first. A diagnostic, not a fix — flaky80 saw a
-        // SIGKILL 1 run in 10 and didn't find its sender; it can still come, and on Linux this names no one)
-        while !ended(child.id()) {
-            if std::time::Instant::now() > end {
-                child.kill().ok();
-                panic!("tarae state {args:?} didn't end with its reader gone");
+        // (ended, not reaped yet: why is read from it first — #459's refused exec, run once more, or a signal's
+        // sender; on Linux this names no one)
+        let ((status, said), end) = once_more_if_exec_refused(&format!("tarae state {args:?}"), || {
+            let mut child = cmd.spawn().unwrap();
+            let deadline = std::time::Instant::now() + TIMEOUT;
+            while !ended(child.id()) {
+                if std::time::Instant::now() > deadline {
+                    child.kill().ok();
+                    panic!("tarae state {args:?} didn't end with its reader gone");
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let sender = exit_reason(child.id());
-        let status = child.wait().unwrap();
-        let mut said = String::new();
-        std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut said).unwrap();
-        assert!(status.success() && said.is_empty(), "tarae state {args:?}: {status}{sender}: {said}");
+            let reason = exit_reason_of(child.id());
+            let status = child.wait().unwrap();
+            let mut said = String::new();
+            std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut said).unwrap();
+            ((status, said), End::of(&status, reason))
+        });
+        let why = end.reason.said;
+        assert!(status.success() && said.is_empty(), "tarae state {args:?}: {status}{why}: {said}");
     }
     // (the frame was written before its line went nowhere)
     assert_eq!(fs::read_to_string(&frame).unwrap(), "ab");
