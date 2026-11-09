@@ -1834,6 +1834,11 @@ fn hover(cx: &mut Context) {
     if crate::docpane::swapped(cx.editor) == Some(crate::docpane::Which::Chat) {
         return crate::chatlink::key(cx.editor, None);
     }
+    // (the edit review has no cursor: none to ask at — the document's, hidden under it, isn't where you look; the
+    // pointer's rest asks a name there by the same rule, `hoverrest::code_spot`)
+    if cx.editor.keys_to().region == crate::uistate::Region::EditReview {
+        return cx.editor.set_status("the edit review has no cursor — rest the pointer on a name");
+    }
     cx.editor.lsp_request(crate::lsp_editor::Kind::Hover, "textDocument/hover", serde_json::json!({}));
 }
 /// To the next/previous git hunk — selects its lines (for a deletion, the line start at that spot). In a code

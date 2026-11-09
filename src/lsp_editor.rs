@@ -516,6 +516,14 @@ pub struct Pending {
     session: crate::event::WorkspaceId,
 }
 
+#[cfg(test)]
+impl Pending {
+    /// The document and place it was asked at.
+    pub fn at(&self) -> (DocId, usize) {
+        (self.doc, self.head)
+    }
+}
+
 impl Editor {
     pub(crate) fn client_mut(&mut self, cid: ClientId) -> Option<&mut Client> {
         self.lsp.clients.iter_mut().find(|c| c.id == cid)

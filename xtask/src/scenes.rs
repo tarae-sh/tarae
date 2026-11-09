@@ -153,6 +153,25 @@ const REFUSED_HOST_FOLLOW_KEYS: &[&str] = &[
     "@2",
 ];
 
+/// #481's rest-review scene's keys: Claude's edit review up, the pointer resting on `Thread` in a line it keeps (the
+/// buffer's own text).
+const REST_REVIEW_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    "@?Change 1 of 1",
+    "@1",
+    "@hover+2?= Thread {",
+    "@2",
+];
+
+/// #481's rest-removed scene's keys: `space v v` on main.rs, the pointer resting on its removed doc comment (the base's
+/// text, not the buffer's).
+const REST_REMOVED_KEYS: &[&str] = &["@1", " ", "v", "v", "@?/// 실타래", "@1", "@hover+6?/// 실타래", "@2"];
+
 /// P2b's masked scenes' keys: the chat asked, the code zoomed (at 80 the chat beside it would cut the card), the card
 /// up and focused.
 const MASKED_KEYS: &[&str] = &[
@@ -4214,6 +4233,11 @@ const SCENES: &[Scene] = &[
     Scene { name: "refused-host", claude: "refusedhost", files: MAIN, keys: REFUSED_HOST_KEYS },
     // (#484a: the same, the chat hidden — Short 4's layout: the panel's lead line the whole width, its hint beside it)
     Scene { name: "refused-host-follow", claude: "refusedhost", files: MAIN, keys: REFUSED_HOST_FOLLOW_KEYS },
+    // (#481: the pointer's rest in every code view, on the buffer's own text only — the stand-in language server's
+    // hover, the scene's own home: `-review` on a line Claude's edit review keeps, `-removed` on a line `space v`
+    // shows removed)
+    Scene { name: "rest-review", claude: "full", files: MAIN, keys: REST_REVIEW_KEYS },
+    Scene { name: "rest-removed", claude: "idle", files: MAIN, keys: REST_REMOVED_KEYS },
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },
@@ -6085,8 +6109,8 @@ pub fn run(args: &[String]) -> Result<()> {
         Some(b) if b.is_absolute() && b.is_file() => b,
         Some(b) => return Err(format!("--bin {}: an absolute path to a tarae", b.display())),
         // (a recording's homes are its own: the grammars bundled, as the homepage's — else a scene with no Rust grammar
-        // asks to download it, a card no one with it sees; so are #474's scenes')
-        None if recording || scenes.iter().any(|s| s.name.starts_with("refused-")) => {
+        // asks to download it, a card no one with it sees; so are #474's and #481's scenes')
+        None if recording || scenes.iter().any(|s| own_home(s.name)) => {
             shot::build(&root(), "shot-docs", &["bundled-grammars"])?
         }
         None => shot::build_shot(&root())?,
@@ -6270,15 +6294,20 @@ fn one(
 ) -> Result<()> {
     let dir = Fresh::new("tarae-scene")?;
     let keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
-    // (#474's: a home of the scene's own, as the docs' shots — the key it reads is the scene's, and no path of yours
-    // is on screen)
-    if scene.name.starts_with("refused-") {
+    // (#474's and #481's: a home of the scene's own, as the docs' shots — the key #474's reads is the scene's, and no
+    // grammar, server or path of yours is in it or on screen)
+    if own_home(scene.name) {
         let homes = homes(&dir.0, &|k| std::env::var_os(k))?;
         let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("home/tarae-demo"))?;
         return shot::take_at(&setup, &keys, size, 1, &dir.0.join("state"), &homes, out).map(|_| ());
     }
     let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("tarae-demo"))?;
     shot::take(&setup, &keys, size, &dir.0.join("state"), out)
+}
+
+/// Whether scene `name` is shot in a home of its own, the grammars bundled (#474's `refused-`, #481's `rest-`).
+fn own_home(name: &str) -> bool {
+    name.starts_with("refused-") || name.starts_with("rest-")
 }
 
 /// `scene` measured for the polish plan's "cells tinted in the code" (`--tint`): driven as `one` drives it, its regions
@@ -6410,9 +6439,13 @@ fn lsp(input: &mut impl BufRead, out: &mut impl Write, knows: bool) -> io::Resul
                 let text = open.get(p["textDocument"]["uri"].as_str().unwrap_or_default());
                 let (line, ch) = (p["position"]["line"].as_u64(), p["position"]["character"].as_u64());
                 let word = text.zip(line.zip(ch)).and_then(|(t, (l, c))| lsp_word(t, l as usize, c as usize));
-                let found = word.and_then(|w: String| lsp_defined(&root, &w));
+                let found = word.as_ref().and_then(|w| lsp_defined(&root, w));
+                // (a keyword's hover, as rust-analyzer answers it: its docs)
+                let keyword = word.as_deref().and_then(lsp_keyword).filter(|_| m == "textDocument/hover");
                 let result = match (m, found) {
-                    (_, None) => Value::Null,
+                    (_, None) => keyword.map_or(Value::Null, |(k, docs)| {
+                        json!({"contents": {"kind": "markdown", "value": format!("```rust\n{k}\n```\n\n---\n\n{docs}")}})
+                    }),
                     ("textDocument/definition", Some((path, l, c, _, _))) => {
                         let uri = format!("file://{}", path.display());
                         json!([{"uri": uri, "range": range(l as u32, c as u32, c as u32)}])
@@ -6454,6 +6487,21 @@ fn lsp(input: &mut impl BufRead, out: &mut impl Write, knows: bool) -> io::Resul
             _ => {}
         }
     }
+}
+
+/// A keyword's docs, as rust-analyzer's hover says them (the first lines of std's keyword docs).
+fn lsp_keyword(word: &str) -> Option<(&str, &'static str)> {
+    let docs = match word {
+        "fn" => {
+            "A function or function pointer.\n\nFunctions are the primary way code is executed within Rust."
+        }
+        "pub" => "Make an item visible to others.",
+        "let" => "Bind a value to a variable.",
+        "use" => "Import or rename items from other crates or modules.",
+        "mod" => "Organize code into modules.",
+        _ => return None,
+    };
+    Some((word, docs))
 }
 
 /// The name at `line`, `ch` (bytes) of `text`.
@@ -6836,6 +6884,10 @@ fn prepare(
     if scene.name.starts_with("refused-key") {
         write(&dir.join("home/.ssh/id_ed25519"), concat!("tarae-fake-", "ssh-key-stand-in\n"))?;
     }
+    // (#481's rest-removed: main.rs's doc comment taken out since the commit — a removed row right above `fn main`)
+    if scene.name == "rest-removed" {
+        write(&demo.join("src/main.rs"), &MAIN_RS.replace("/// 실타래 — 이어진 실 한 가닥.\n", ""))?;
+    }
     let config = dir.join("xdg");
     // (the overlay scenes': the SDK's demo plugin, its permissions asked as it loads — `C-q y` in their keys)
     if scene.name.starts_with("overlay-") {
@@ -6942,7 +6994,7 @@ fn scene_config(scene: &Scene, bg: &str, transparent: bool, me: &Path, dir: &Pat
     if scene.name == "diag" {
         toml = stand_in_lsp(me, toml);
     }
-    if scene.name.starts_with("chatlink-") {
+    if scene.name.starts_with("chatlink-") || scene.name.starts_with("rest-") {
         toml = stand_in_lsp_as(me, toml, "knows");
     }
     if transparent {

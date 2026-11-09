@@ -569,7 +569,13 @@ cursor or document moved on are dropped.
   on a name about half a second shows the same card at that name, the problems underlined there first; it never takes
   the keys, the wheel over it scrolls it, and it goes as the pointer leaves the name and the card
   (`editor.mouse-hover`). With a card up — this one, a `…`'s, an answer's `¶`'s — the next name is asked at once, the
-  card up staying until the answer comes: every card the mouse brings waits so, and hands off so. A list of
+  card up staying until the answer comes: every card the mouse brings waits so, and hands off so. It rests wherever a
+  file's code is drawn — a pane, Claude's edit review, `space v`'s code review, an edit follow shows, a picker's
+  preview of an open file — but only where the text drawn is the buffer's own, since the server knows only the buffer:
+  the edit review's lines as they are now (not the ones it proposes, as the buffer holds the old text until you
+  accept), the code review's lines (not the base's removed ones). Elsewhere, and on a folded doc comment's rows, it
+  shows nothing. `space k` follows the same rule: at the cursor, which is always on the buffer's text; the edit review
+  has no cursor, so it says so there. A list of
   places (`gr`, or several `gi`) shows each one's code: the line trimmed, the name standing out, line numbers
   right-aligned, by file then line. For `gr` the declaration (the server's own definition) comes first, marked `decl`.
   While the server is still starting or loading the project, `gr` doesn't wait: the name's text matches (whole

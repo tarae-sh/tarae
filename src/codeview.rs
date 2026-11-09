@@ -165,8 +165,9 @@ pub struct Shows {
     pub map: Vec<crate::turnmap::Sign>,
     /// Its marked blocks' words, said at a line end (`turnmap::words`, #412) — a pane's only.
     pub words: Vec<crate::turnmap::Words>,
-    /// A code pane's: which (an open note's card there records its words as that pane's — focus A1b); None elsewhere.
-    pub pane: Option<crate::split::PaneId>,
+    /// Where it's drawn — a code pane's id among them (an open note's card there records its words as that pane's —
+    /// focus A1b).
+    pub at: CodeIn,
     /// What a mouse drag selected where there's no cursor to hold it (the edit review: the file's lines and the ones
     /// a change proposes alike): by row drawn, its text's display columns `from..to` on the selection's ground.
     pub marked: Vec<Option<(usize, usize)>>,
@@ -653,7 +654,7 @@ impl Shows {
             presence: crate::presence::marks(editor, doc),
             map: crate::turnmap::signs(editor, doc),
             words: crate::turnmap::words(editor, doc),
-            pane: Some(id),
+            at: CodeIn::Pane(id),
             marked: Vec::new(),
         }
     }
@@ -685,7 +686,7 @@ impl Shows {
             presence: Vec::new(),
             map: Vec::new(),
             words: Vec::new(),
-            pane: None,
+            at: CodeIn::EditReview,
             marked: Vec::new(),
         }
     }
@@ -714,7 +715,7 @@ impl Shows {
             presence: Vec::new(),
             map: Vec::new(),
             words: Vec::new(),
-            pane: None,
+            at: CodeIn::Output,
             marked: Vec::new(),
         }
     }
@@ -748,9 +749,93 @@ impl Shows {
             presence: Vec::new(),
             map: Vec::new(),
             words: Vec::new(),
-            pane: None,
+            at: CodeIn::Preview,
             marked: Vec::new(),
         }
+    }
+
+    /// The code pane it's drawn in, if one.
+    pub fn pane_id(&self) -> Option<crate::split::PaneId> {
+        match self.at {
+            CodeIn::Pane(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// Where a code view is drawn — set by its `Shows`' constructor, so no place that draws code can leave it out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeIn {
+    /// A code pane — the code review's, `:diff`'s, an edit follow shows and a woven view among them.
+    Pane(crate::split::PaneId),
+    /// Claude's edit review.
+    EditReview,
+    /// A picker's code preview.
+    Preview,
+    /// A run panel's output.
+    Output,
+}
+
+/// A row a code view drew that is its document's own text there (`Row::Text`): its line, the display column at its
+/// first text cell, the cells before its text, the column it stops before (`Row::origin`'s). None for a row that
+/// isn't: a line that isn't the document's (a removed one, one Claude proposes or writes), a folded doc comment's
+/// row (its words are rendered, not the text's columns), a change's head.
+pub type TextRow = Option<(usize, usize, usize, usize)>;
+
+/// A code view as the last frame drew it (`Drawn`): where, its document, its text's rect (`x`, `w` from the gutter's
+/// left edge; `y`, `h` its rows), the gutter's width, its first line and sideways scroll.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct View {
+    pub at: CodeIn,
+    pub doc: crate::document::DocId,
+    pub rect: crate::split::Rect,
+    pub gutter: usize,
+    pub top: usize,
+    pub left: usize,
+    rows: Range<usize>,
+}
+
+/// Every code view the last frame drew (`term::draw_text` records each, the one drawer — `Screen.code_views`): what
+/// the pointer's rest reads (`hoverrest.rs`). Its buffers are kept from frame to frame, cleared and filled again.
+#[derive(Clone, Debug, Default)]
+pub struct Drawn {
+    views: Vec<View>,
+    rows: Vec<TextRow>,
+}
+
+impl Drawn {
+    /// Emptied for a new frame, its room kept.
+    pub fn cleared(mut self) -> Drawn {
+        self.views.clear();
+        self.rows.clear();
+        self
+    }
+
+    /// A view drawn: `rows` its screen rows, top first.
+    #[allow(clippy::too_many_arguments)]
+    pub fn push(
+        &mut self,
+        at: CodeIn,
+        doc: crate::document::DocId,
+        rect: crate::split::Rect,
+        gutter: usize,
+        (top, left): (usize, usize),
+        rows: impl Iterator<Item = TextRow>,
+    ) {
+        let from = self.rows.len();
+        self.rows.extend(rows);
+        self.views.push(View { at, doc, rect, gutter, top, left, rows: from..self.rows.len() });
+    }
+
+    /// The view drawn at `at` (the last, were there two) and its rows.
+    pub fn get(&self, at: CodeIn) -> Option<(&View, &[TextRow])> {
+        self.views.iter().rev().find(|v| v.at == at).map(|v| (v, &self.rows[v.rows.clone()]))
+    }
+
+    /// Every view drawn, in order, with its rows.
+    #[cfg(test)]
+    pub fn iter(&self) -> impl Iterator<Item = (&View, &[TextRow])> {
+        self.views.iter().map(|v| (v, &self.rows[v.rows.clone()]))
     }
 }
 
@@ -896,6 +981,11 @@ impl Row {
             // Not a line of the text: it doesn't widen the per-line tables
             Row::Other { at, .. } | Row::Header { at, .. } => at.saturating_sub(1),
         }
+    }
+
+    /// The row as the document's own text (`TextRow`), unless it isn't — what the pointer's rest reads.
+    pub fn text(&self, left: usize) -> TextRow {
+        matches!(self, Row::Text { .. }).then(|| self.origin(left))
     }
 
     /// For the mouse: (doc line, display column at the row's first text cell, cells before the text,

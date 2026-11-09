@@ -722,6 +722,9 @@ pub struct Screen {
     /// The edit review's rows of text as drawn: (screen row, which of its rows, the display column it starts at, the
     /// screen column its text starts at) — where a drag selects (`mouse::review_at`).
     pub review_text: std::cell::RefCell<Vec<(usize, usize, usize, usize)>>,
+    /// Every file's code drawn (`term::draw_text`, the one drawer, records each): where, and which rows are its
+    /// document's own text — what the pointer's rest reads (`hoverrest.rs`).
+    pub code_views: std::cell::RefCell<crate::codeview::Drawn>,
     /// The task panel's: (first, last, rows of output).
     pub task_panel: std::cell::Cell<Option<(usize, usize, usize)>>,
     /// A plugin's panel: (its first screen line, its last, its first row's line, the first row shown).

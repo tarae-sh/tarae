@@ -96,22 +96,35 @@ fn run(choices: Choices) -> Vec<String> {
 
 fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
     let c = &mut sim.choices;
-    // (by arm: the pointer anywhere 2, onto a name 4, onto the card 2, time 4, a key 1, an edit 1, a frame 3, the wheel 1)
-    match c.weighted(&[2, 4, 2, 4, 1, 1, 3, 1]) {
+    // (by arm: the pointer anywhere 2, onto a name 4, onto the card 2, time 4, a key 1, an edit 1, a frame 3, the wheel 1,
+    // Claude's edit review opening or closing over the file 1)
+    match c.weighted(&[2, 4, 2, 4, 1, 1, 3, 1, 1]) {
         0 => {
             let (x, y) = (c.below(40), c.below(10));
             hover(ed, w, x, y);
             format!("the pointer at {x},{y}")
         }
         1 => {
-            // (a name's letter as the last frame laid the text: its row under the pane's top line, after its gutter)
-            let Some(&(_, rect, gutter, _)) = ed.screen.panes.first() else {
-                return "(no pane drawn)".into();
+            // (a name's letter as the last frame drew the text: a row of a code view's own text — the pane's, the edit
+            // review's —, after its gutter)
+            let views = ed.screen.code_views.borrow();
+            let drawn: Vec<_> = views.iter().collect();
+            if drawn.is_empty() {
+                return "(no code drawn)".into();
+            }
+            let (v, texts) = *c.pick(&drawn);
+            let texts: Vec<(usize, usize)> =
+                texts.iter().enumerate().filter_map(|(k, t)| t.map(|t| (k, t.0))).take(8).collect();
+            if texts.is_empty() {
+                return "(no row of text drawn)".into();
+            }
+            let (k, line) = *c.pick(&texts);
+            let (rect, gutter) = (v.rect, v.gutter);
+            let Some(doc) = ed.docs.iter().find(|d| d.id == v.doc) else {
+                return "(its document gone)".into();
             };
-            let text = crate::chrome::pane_text(rect, ed.screen.text_top);
-            let doc = ed.doc();
-            let line = doc.top + c.below(text.h.min(8));
             let row = doc.text.get_line(line).map(|l| l.to_string()).unwrap_or_default();
+            drop(views);
             let names: Vec<usize> = row
                 .char_indices()
                 .filter(|&(i, ch)| {
@@ -123,9 +136,26 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
                 return format!("(no name on line {line})");
             }
             let col = *c.pick(&names) + c.below(2);
-            let (x, y) = (rect.x + gutter + col, text.y + line - doc.top);
+            let (x, y) = (rect.x + gutter + col, rect.y + k);
             hover(ed, w, x, y);
             format!("onto a name at {x},{y}")
+        }
+        8 => {
+            if ed.workspace.claude.review.take().is_some() {
+                return "the edit review closed".into();
+            }
+            // (its second line taken out for another — the lines around it the buffer's, the one proposed not)
+            let text = &ed.doc().text;
+            let (from, to) =
+                (text.line_to_byte(1.min(text.len_lines() - 1)), text.line_to_byte(2.min(text.len_lines())));
+            let old = text.byte_slice(from..to).to_string();
+            let (decision, conflict) = (crate::llm::Decision::Undecided, false);
+            let hunk =
+                crate::llm::Hunk { from, to, old, new: "    proposed(a)\n".into(), decision, conflict };
+            let mut rev = crate::llm::Review::new(1, ed.doc().id, "two", vec![hunk]);
+            (rev.ready, rev.follow) = (true, false);
+            ed.workspace.claude.review = Some(rev);
+            "the edit review opened".into()
         }
         2 => {
             let Some(r) = ed.screen.rest_card.get() else { return "(no card to go onto)".into() };

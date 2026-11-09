@@ -954,6 +954,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         review_change: Default::default(),
         review_rows: Default::default(),
         review_text: Default::default(),
+        // (its buffers kept: cleared and filled again each frame)
+        code_views: std::cell::RefCell::new(editor.screen.code_views.take().cleared()),
         task_panel: Default::default(),
         plugin_panel: Default::default(),
         procs_panel: Default::default(),
@@ -6245,7 +6247,9 @@ fn draw(
         _ => {}
     }
     // (the pointer's hover card: `K`'s look, at the name it rests on — after the cursor's cards, the mouse's first)
-    draw_rest_card(editor, ui, lay, out)?;
+    editor.screen.rest_card.set(None);
+    editor.screen.rest_end.set(None);
+    draw_rest_card(editor, ui, lay, false, out)?;
     drew(editor, Kind::Hover, editor.screen.rest_card.get());
     // (the list first: the signature goes where it isn't)
     if let (Some(c), Some(at)) = (&editor.completion, text_cursor) {
@@ -6305,6 +6309,9 @@ fn draw(
             // (a picker is drawn over a blank screen: nothing under it is seen)
             editor.screen.regions.clear();
             drew(editor, Kind::Float, editor.screen.picker_box.get());
+            // (the pointer's hover card on a name in its preview: over it)
+            draw_rest_card(editor, ui, lay, true, out)?;
+            drew(editor, Kind::Hover, editor.screen.rest_card.get());
             Some(at)
         }
         None => None,
@@ -7621,7 +7628,7 @@ fn draw_text(
         Style { fg, bold: s.in_hand, ..ui.base }
     };
     let map_sign = |s: &crate::turnmap::Sign, y: usize| {
-        if let Some(pane) = shows.pane {
+        if let Some(pane) = shows.pane_id() {
             let at = (lay.x0 + signs - 1, y);
             let glyph = s.mark.glyph().to_string();
             // (lines follow shows that no stop holds — a walk-through's: a mark, no press)
@@ -7766,6 +7773,16 @@ fn draw_text(
     // (a mark drawn in the sign column — its line, row, glyph and ink: where its line end can't say its words, the mark
     // says them on its card, as a cut button — B)
     let mut mark_drawn: Option<(usize, u16, &str, Style)> = None;
+    // (what it draws, for the pointer's rest: where, and which rows are the document's own text)
+    let rect = crate::split::Rect {
+        x: lay.x0,
+        y: lay.text_top as usize,
+        w: lay.x1.saturating_sub(lay.x0),
+        h: lay.text_rows,
+    };
+    let texts = view.iter().take(lay.text_rows).map(|r| r.text(shows.left));
+    let scroll = (top, shows.left);
+    editor.screen.code_views.borrow_mut().push(shows.at, doc.id, rect, lay.gutter, scroll, texts);
     // (each row takes its ground across the pane first — `ground` — and draws over it)
     for row in 0..lay.text_rows {
         let y = lay.text_top + row as u16;
@@ -8992,7 +9009,7 @@ fn rows_pane(
     }
     let end = end + usize::from(woven.is_some());
     // The open note's card (focus A1b): its rows under its last line — or under the folded block or writing that line is in
-    let note = note_rows(editor, doc, (lay.text_cols, lay.text_rows)).filter(|_| shows.pane.is_some());
+    let note = note_rows(editor, doc, (lay.text_cols, lay.text_rows)).filter(|_| shows.pane_id().is_some());
     let push_card = |view: &mut Vec<Row>, from: usize, to: usize, skip: usize| {
         let Some((at, n)) = note.filter(|&(at, _)| (from..=to).contains(&at)) else { return };
         for index in skip..n {
@@ -9292,7 +9309,7 @@ fn draw_flag_end(
     queue!(out, Print("   "))?;
     apply(out, style)?;
     queue!(out, Print("¶"))?;
-    if let Some(pane) = shows.pane {
+    if let Some(pane) = shows.pane_id() {
         let at = (lay.x0 + lay.gutter + used + 2, y as usize);
         let on = crate::mouse::Surface::Code(pane);
         let spot = word_spot(on, crate::wordspot::Press::Flag(f.id), at, vec![("¶".to_string(), style)]);
@@ -9364,7 +9381,7 @@ fn draw_note_end(
     apply(out, Style { fg: glyph_fg, ..line_base })?;
     queue!(out, Print("¶ "))?;
     // (a button: pressed, its card opens — or closes, the one open)
-    if let Some(pane) = shows.pane {
+    if let Some(pane) = shows.pane_id() {
         let at = (lay.x0 + lay.gutter + used + 2, y as usize);
         let spans = vec![("¶".to_string(), Style { fg: glyph_fg, ..line_base })];
         let on = crate::mouse::Surface::Code(pane);
@@ -23892,9 +23909,8 @@ fn draw_popup(
     let (container, body) = docs_container(lines);
     let name = (cx as usize).saturating_sub(before);
     let by = (name, cy as usize);
-    if let Some((rect, end)) =
-        docs_popup(&body, container, &editor.popup_name, editor.popup_scroll, by, &pane, ui, editor, out)?
-    {
+    let (name, scroll) = (&editor.popup_name, editor.popup_scroll);
+    if let Some((rect, end)) = docs_popup(&body, container, name, scroll, by, None, &pane, ui, editor, out)? {
         editor.screen.popup.set(Some(rect));
         editor.screen.popup_end.set(Some(end));
     }
@@ -23934,9 +23950,8 @@ fn draw_chat_popup(
     let Some(pane) = chat_pane(editor, lay) else { return Ok(()) };
     let (container, body) = docs_container(lines);
     let by = (cx.saturating_sub(before), cy);
-    if let Some((rect, end)) =
-        docs_popup(&body, container, &editor.popup_name, editor.popup_scroll, by, &pane, ui, editor, out)?
-    {
+    let (name, scroll) = (&editor.popup_name, editor.popup_scroll);
+    if let Some((rect, end)) = docs_popup(&body, container, name, scroll, by, None, &pane, ui, editor, out)? {
         editor.screen.popup.set(Some(rect));
         editor.screen.popup_end.set(Some(end));
     }
@@ -23954,19 +23969,37 @@ fn chat_pane(editor: &Editor, lay: &Layout) -> Option<Layout> {
 }
 
 /// The pointer's hover card (`hoverrest.rs`, #233): `K`'s, at the name the pointer rests on — the problems underlined
-/// there first, as the cursor's card says them, then the docs; clear of the pointer's row as `K`'s is of the cursor's.
-/// Never while `K`'s is up (one card at a time), nor once its pane or document moved on.
-fn draw_rest_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
-    editor.screen.rest_card.set(None);
-    editor.screen.rest_end.set(None);
+/// there first, as the cursor's card says them, then the docs; clear of the pointer's row as `K`'s is of the cursor's,
+/// and in Claude's edit review of the change being decided (#481: its head and rows, where the other side fits — a
+/// card over them hid what you answer). Never while `K`'s is up (one card at a time), nor once its pane or document
+/// moved on.
+fn draw_rest_card(
+    editor: &Editor,
+    ui: &Ui,
+    lay: &Layout,
+    over_picker: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
     let Some(rest) = editor.hover_rest.rest.as_ref().filter(|_| editor.popup.is_none()) else {
         return Ok(());
     };
     // (the card it took over from, until this one's answered — #391's hand-off)
     let Some((spot, card)) = rest.shown(editor) else { return Ok(()) };
-    // (a name in the chat's: in the chat, as `space k`'s there — #389)
+    // (a picker's preview's: over the picker, once it's drawn — `over_picker`; every other's before it)
+    let preview = spot.pane == crate::hoverrest::In::Code(crate::codeview::CodeIn::Preview);
+    if preview != over_picker {
+        return Ok(());
+    }
+    // (in the code view it rests in, as drawn; a name in the chat's: in the chat, as `space k`'s there — #389)
     let pane = match &spot.pane {
-        crate::hoverrest::In::Code(id) => panes(editor, lay).into_iter().find(|p| p.0 == *id).map(|p| p.2),
+        crate::hoverrest::In::Code(at) => editor.screen.code_views.borrow().get(*at).map(|(v, _)| Layout {
+            x0: v.rect.x,
+            x1: v.rect.x + v.rect.w,
+            text_top: v.rect.y as u16,
+            text_rows: v.rect.h,
+            gutter: v.gutter,
+            ..lay.clone()
+        }),
         crate::hoverrest::In::Chat(_) => chat_pane(editor, lay),
     };
     let Some(pane) = pane else { return Ok(()) };
@@ -23992,8 +24025,10 @@ fn draw_rest_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
         true => doc.text.byte_slice(w.clone()).to_string(),
         false => "problem".to_string(),
     };
+    let review = crate::hoverrest::In::Code(crate::codeview::CodeIn::EditReview);
+    let clear = editor.screen.review_change.get().filter(|_| spot.pane == review);
     if let Some((rect, end)) =
-        docs_popup(&body, container, &name, card.scroll, spot.cell, &pane, ui, editor, out)?
+        docs_popup(&body, container, &name, card.scroll, spot.cell, clear, &pane, ui, editor, out)?
     {
         editor.screen.rest_card.set(Some(rect));
         editor.screen.rest_end.set(Some(end));
@@ -24002,8 +24037,9 @@ fn draw_rest_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
 }
 
 /// A docs card by the name whose first cell is (`nx`, `cy`) in `pane` (#234's look): below its row if it fits, else
-/// above; at most 20 rows, scrolled `scroll`; framed and named `name` (the docs' `container` after it, faint), how many
-/// lines are past it in its bottom line. Where it went and its last page, if it fit.
+/// above — the side clear of the screen rows `clear` (first, last) first, but the name's own; at most 20 rows, scrolled
+/// `scroll`; framed and named `name` (the docs' `container` after it, faint), how many lines are past it in its bottom
+/// line. Where it went and its last page, if it fit.
 #[allow(clippy::too_many_arguments)]
 fn docs_popup(
     body: &[crate::markdown::Line],
@@ -24011,6 +24047,7 @@ fn docs_popup(
     name: &str,
     scroll: usize,
     (nx, cy): (usize, usize),
+    clear: Option<(usize, usize)>,
     pane: &Layout,
     ui: &Ui,
     editor: &Editor,
@@ -24031,7 +24068,18 @@ fn docs_popup(
     let (top, bottom) = (pane.text_top as usize, pane.text_top as usize + pane.text_rows);
     let (below, above) = (bottom.saturating_sub(cy + 2), cy.saturating_sub(top));
     let want = rows.len().min(CAP) + 2;
-    let down = want <= below || (want > above && below >= above);
+    // (each side's room up to `clear`'s nearest row there: none when the name's row is inside them and they go on)
+    let (clear_below, clear_above) = match clear {
+        Some((a, _)) if a > cy => (below.min(a - cy - 1), above),
+        Some((_, b)) if b < cy => (below, above.min(cy - b - 1)),
+        Some((a, b)) => (if b > cy { 0 } else { below }, if a < cy { 0 } else { above }),
+        None => (below, above),
+    };
+    let down = if want <= clear_below || want <= clear_above {
+        want <= clear_below
+    } else {
+        want <= below || (want > above && below >= above)
+    };
     let room = if down { below } else { above };
     if room < 3 {
         return Ok(None);

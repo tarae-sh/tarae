@@ -340,7 +340,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "editor.mouse-hover",
         kind: Kind::Bool,
-        doc: "The pointer resting on a name in the code: its docs and problems in a card, as K shows them (gone as it leaves)",
+        doc: "The pointer resting on a name in the code (a pane, the edit and code reviews, a picker's preview): its docs and problems in a card, as K shows them (gone as it leaves)",
         get: |c| Value::from(c.mouse_hover),
         set: |c, v| c.mouse_hover = b(v),
     },

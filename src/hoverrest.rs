@@ -17,6 +17,12 @@
 //! pointer comes onto a name (`State.warm`), its server is asked at once, the card up staying until the answer comes
 //! (`Rest.before`) — never a gap between two cards, never a card asked for a name the pointer only crossed cold.
 //!
+//! **Wherever a file's code is drawn** (#481, the user, 2026-11-09: "why is there a branch?"): a pane, Claude's edit
+//! review, the code review, an edit follow shows, a picker's preview — by the one drawer's record of what it drew
+//! (`Screen.code_views`), and one rule (`code_spot`): a rest goes only where the drawn text is the buffer's own text
+//! there, since the server knows only the buffer. `space k` keeps it: at the cursor, always on the buffer's text — said
+//! in the edit review, which has none.
+//!
 //! **A name in the chat alike** (#389 step 6, `.sb/chatlink-plan.md` §2.4): the pointer resting on a name in the
 //! conversation shows the server's hover there, by the same rest, hand-off and leaving — asked where `space k` asks it
 //! (`chatlink::rest`: a cited place's lines, a quoted block's spot in its file, else by name), the card in the chat at
@@ -26,11 +32,14 @@ use std::time::{Duration, Instant};
 
 use unicode_width::UnicodeWidthStr;
 
+use crate::codeview::CodeIn;
 use crate::document::DocId;
 use crate::editor::Editor;
 use crate::event::Event;
 use crate::mouse::{Part, Surface, Under};
-use crate::split::PaneId;
+
+#[cfg(test)]
+mod tests;
 
 /// How long the pointer rests on a name before its hover is asked.
 pub const REST: Duration = Duration::from_millis(500);
@@ -55,15 +64,16 @@ impl State {
     }
 }
 
-/// What a rest is on: a code pane's text, or the chat's conversation — a name there by its text (what streams in after
-/// it moves the conversation's version on, never the name).
+/// What a rest is on: a code view's text (`codeview::CodeIn`: a pane's, the edit review's, a picker's preview), or the
+/// chat's conversation — a name there by its text (what streams in after it moves the conversation's version on, never
+/// the name).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum In {
-    Code(PaneId),
+    Code(CodeIn),
     Chat(std::sync::Arc<str>),
 }
 
-/// Where the pointer rests: a name (or a problem's underline) of a code pane, or a name in the chat, as it was drawn
+/// Where the pointer rests: a name (or a problem's underline) of a code view, or a name in the chat, as it was drawn
 /// then.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Spot {
@@ -77,8 +87,8 @@ pub struct Spot {
     pub name: bool,
     /// The name's first cell on screen.
     pub cell: (usize, usize),
-    /// The pane's rect and scroll as drawn (the chat's: its conversation's rect and first row) — another (a resize,
-    /// follow moving the view, the wheel) leaves the card unshown.
+    /// The view's rect, first line and sideways scroll as drawn (the chat's: its conversation's rect and first row) —
+    /// another (a resize, follow moving the view, the wheel) leaves the card unshown.
     pub view: (crate::split::Rect, usize, usize),
 }
 
@@ -155,24 +165,30 @@ pub fn card_up(ed: &Editor) -> bool {
     ed.cut_hover.is_some() || ed.flag_hover.is_some() || docs
 }
 
-/// The pane's rect and scroll in the last frame — the chat's: its conversation's rect and first row.
+/// The view's rect, first line and sideways scroll in the last frame drawn (`Screen.code_views`) — the chat's: its
+/// conversation's rect and first row.
 fn view_of(ed: &Editor, pane: &In) -> Option<(crate::split::Rect, usize, usize)> {
-    let pane = match pane {
-        In::Code(p) => *p,
+    match pane {
+        In::Code(at) => ed.screen.code_views.borrow().get(*at).map(|(v, _)| (v.rect, v.top, v.left)),
         In::Chat(_) => {
             let (y, w, h, first) = ed.screen.chat_view.get()?;
-            return Some((crate::split::Rect { x: ed.screen.chat_x()?, y, w, h }, first, 0));
+            Some((crate::split::Rect { x: ed.screen.chat_x()?, y, w, h }, first, 0))
         }
-    };
-    let rect = ed.screen.panes.iter().find(|p| p.0 == pane)?.1;
-    let (top, left) = match ed.workspace.views.iter().find(|v| v.id == pane) {
-        Some(v) if pane != ed.workspace.viewer.focus => (v.top, v.left),
-        _ => (ed.doc().top, ed.doc().left),
-    };
-    Some((rect, top, left))
+    }
 }
 
-/// The name (or underlined problem) at (`x`, `y`) of a code pane, or the name there in the chat (`u`: `mouse_under`'s
+/// The code view under the pointer (`u`: `mouse_under`'s answer at it, which says what's on top): a pane's text, the
+/// edit review's, a picker's preview — whatever row there, the rest reads the row itself (`code_spot`).
+pub fn code_in(u: Under) -> Option<CodeIn> {
+    match (u.surface, u.part) {
+        (Surface::Code(pane), Part::Text { .. }) => Some(CodeIn::Pane(pane)),
+        (Surface::EditReview, Part::Row(_) | Part::Blank) => Some(CodeIn::EditReview),
+        (Surface::PickerPreview, _) => Some(CodeIn::Preview),
+        _ => None,
+    }
+}
+
+/// The name (or underlined problem) at (`x`, `y`) of a code view, or the name there in the chat (`u`: `mouse_under`'s
 /// answer there), if one rests there.
 fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
     // (one card at a time: `K`'s up, or a cut `…`'s card under the pointer, stays theirs)
@@ -182,14 +198,32 @@ fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
     if u.surface == Surface::Transcript {
         return chat_spot(ed, u.part, x, y);
     }
-    let (Surface::Code(pane), Part::Text { line, col }) = (u.surface, u.part) else { return None };
-    let id = match pane == ed.workspace.viewer.focus {
-        true => ed.doc().id,
-        false => ed.workspace.views.iter().find(|v| v.id == pane)?.doc,
-    };
-    let doc = ed.docs.iter().find(|d| d.id == id)?;
+    code_spot(ed, code_in(u)?, x, y)
+}
+
+/// The name (or underlined problem) at (`x`, `y`) of the code view drawn at `at`, if one rests there — one rule for every
+/// view: **a rest goes only where the drawn text is the buffer's own text at that place** (`codeview::TextRow`), as the
+/// server it asks knows only the buffer. So the edit review rests on its context, kept and taken-out lines (the buffer
+/// holds the old text until you accept) and not on the lines it proposes, and the code review the reverse — on its
+/// lines, not on the base's removed ones; a folded doc comment's rows are rendered words, not the text's columns: none.
+/// A row that isn't the buffer's shows nothing and says nothing (a pass of the pointer asks nothing). A preview read from
+/// disk is nobody's buffer: none either.
+fn code_spot(ed: &Editor, at: CodeIn, x: usize, y: usize) -> Option<Spot> {
+    let views = ed.screen.code_views.borrow();
+    let (view, rows) = views.get(at)?;
+    let r = view.rect;
+    let x0 = r.x + view.gutter;
+    if !(x0..r.x + r.w).contains(&x) {
+        return None;
+    }
+    let &(line, c0, cells, end) = rows.get(y.checked_sub(r.y)?)?.as_ref()?;
+    let doc = ed.docs.iter().find(|d| d.id == view.doc)?;
     let text = &doc.text;
     let line = line.min(crate::movement::last_line(text));
+    // (a wrapped row: cells after its indent, never past its end — the hints drawn before the pointer not counted, as a
+    // press's: `mouse::code_text`)
+    let col = c0 + ed.screen.text_x(x, y, r.x).saturating_sub(x0).saturating_sub(cells);
+    let col = crate::wrap::clamp_col(col, end);
     let pos = crate::movement::pos_at_col(text, line, col, ed.config.tab_width);
     // (the character there from its chunk — no slice to the file's end at every cell the pointer crosses, #406)
     let c = match (pos <= text.len_bytes()).then(|| text.chunk_at_byte(pos)) {
@@ -204,15 +238,14 @@ fn spot_at(ed: &Editor, u: Under, x: usize, y: usize) -> Option<Spot> {
     let word = if name { crate::completion::word_at(text, pos) } else { pos..pos + c.len_utf8() };
     // (its first cell: back from the pointer by what's before it on the row — a name is never wrapped inside)
     let before = std::borrow::Cow::<str>::from(text.byte_slice(word.start..pos)).width();
-    let x0 = ed.screen.panes.iter().find(|p| p.0 == pane).map_or(0, |p| p.1.x + p.2);
     Some(Spot {
-        pane: In::Code(pane),
-        doc: id,
+        pane: In::Code(at),
+        doc: doc.id,
         version: doc.version(),
         word,
         name,
         cell: (x.saturating_sub(before).max(x0), y),
-        view: view_of(ed, &In::Code(pane))?,
+        view: (r, view.top, view.left),
     })
 }
 
