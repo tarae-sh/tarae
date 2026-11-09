@@ -2,7 +2,8 @@
 
 A tour of what tarae does. Every key is listed in the [default keymap](reference/keymap.md); every setting in the
 [settings reference](reference/settings.md). Tests have [their own page](testing.md),
-and so do [Claude](claude-integration.md) and [web pages](web.md).
+and so do [Claude](claude-integration.md), [web pages](web.md) and [plugins](plugins.md) (writing one, `tarae plugin
+test`, asking Claude for one).
 
 - [First steps](#first-steps)
 - [Editing](#editing)
@@ -501,6 +502,10 @@ configs carry over as they are.
 - **Claude reads pages** — its `read` takes an `https://` URL beside files, a host its commands don't reach asked on a
   card first; the page framed as someone else's words; each read a replay stop showing the copy Claude read
   ([web pages](web.md#claude-reads-pages))
+- **Claude searches the web** — with `llm.web-search` on in your own config (off by default), a chat has a
+  `web_search` tool: a small model's search beside the chat, a list of pages back framed as someone else's words, a
+  chat's first search asked on a card showing its words; its cost a `web-search` entry in `:usage`
+  ([web pages](web.md#claude-searches-the-web))
 - **`gf`** opens the path or address under the cursor (or each selection's): a file as `:open` does, from the file's
   folder or the project's (`file:12:5` at its line), a folder as its file list, an address as a page
 
@@ -615,7 +620,10 @@ your `PATH`.
   kept in sight above them — (another session's a peek named in its colour, alone when none of yours waits — a press takes you
   there, its card in hand); brought back into main, a rebase's conflicts resolved by that session's Claude
   ([rebasing a session](claude-integration.md#rebasing-a-session)); its git-ignored notes (`workspace.keep`:
-  `.sb`) moved to the main checkout's `.sb/sessions/<name>/` when it ends; where each session's Claude
+  `.sb`) moved to the main checkout's `.sb/sessions/<name>/` when it ends; a workspace ended with changes that would go
+  saved first, as one commit on `refs/tarae/ended/<name>-<time>` (never your index, branches or stash), and
+  `:workspace-restore` brings it back as a session, its Claude fresh (`workspace.restore-count` and
+  `workspace.restore-days` say how long saves stay); where each session's Claude
   is reading and writing shown wherever that file is, in any checkout (`▎` and a name tag, each session its own
   colour), and `space F` follows the next one at work (none at work: the one in front — its turn waiting on you, else its next) — follow moves the view, never your cursor; two sessions'
   changes that would conflict said the moment they do (`fix ≈ main · src/term.rs L210–260`, `git merge-tree` of the
@@ -653,7 +661,9 @@ your `PATH`.
   second Claude reviewing as notes on the lines, `space v c`, or a board of them, one per angle with a skeptic
   checking each finding, `space v C` ([code review](claude-integration.md#code-review))
 - **Claude's commands in a sandbox** — Seatbelt on macOS; Landlock, seccomp and a session's own namespaces on
-  Linux; the network only through tarae's proxy, a card for anything past it
+  Linux; the network only through tarae's proxy, a card for anything past it; a token a run needs can reach it
+  masked (`llm.sandbox-secrets`, or `y masked` on its card): the run holds a stand-in, and the proxy puts the real
+  value in only toward that token's hosts
   ([the sandbox](claude-integration.md#the-sandbox), [threat model](threat-model.md))
 
 ## Updating without losing your place

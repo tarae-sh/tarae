@@ -844,6 +844,14 @@ beside it. `workspace.sync` (your own
 config only): `"ask"` (the card), `"idle"` (the clean ones moved unasked, a card for the conflicting ones), `"off"`.
 Claude hears nothing of it: a file a move changed is one "changed since you last read it".
 
+**Forking a session.** `O` on a row of the session list, or `:session-fork [name]`, makes a new session from that
+one's present, to try another way from there: its commit, its changes in no commit, its unsaved buffers and its
+conversation so far, the two going on apart. None of its answers come along (runs, reads and hosts ask again). It
+forks only between turns. The fork's first message reads the conversation from the cache and writes the project's
+instructions again, so its context starts near the two together; the card says that price
+([features](features.md#sessions-review-and-the-sandbox)). An ended workspace with changes that would go is saved
+first, and `:workspace-restore` brings it back as a session whose Claude starts fresh: no conversation comes back.
+
 **Replay.** Live, stops can come faster than anyone reads, so every stop of a turn is kept: each read with its
 range, each edit with its changes, each search with its first hit and count, each command with how it ended,
 each note. `[r` and `]r` step back and forward through them at any time, during the turn or after it. The editor
@@ -2043,6 +2051,17 @@ place outside is asked about as that place — and the call goes on once you ans
 hasn't read. That depends on the model and the CLI — older models needed the Read first. `run`'s description
 sends reading and searching here, and `:usage`
 counts the runs that only read text, by program.
+
+**Pages and the web.** `read` takes an `https://` URL too, a host Claude's commands don't reach asked on a card first
+([Claude reads pages](web.md#claude-reads-pages)). With `llm.web-search` on in your own config (off by default) a chat
+has a `web_search` tool besides: a small model's search beside the chat, told only the words, a list of pages back,
+a chat's first search asked on a card showing its words ([Claude searches the web](web.md#claude-searches-the-web)).
+
+**A plugin of yours.** Asked for a plugin, Claude asks tarae to start its crate (a card: `Cargo.toml` and `.cargo`
+are names a run can't write), reads the API in the crate's `REFERENCE.md`, edits and builds in its run, and asks to
+install the build on one card whose `y` approves those bytes alone. The crate starts with a test on the SDK's mock
+host; `tarae plugin test` runs its tests, then loads its wasm as tarae does
+([asking Claude for a plugin](plugins.md#asking-claude-for-a-plugin), [testing](plugins.md#testing)).
 
 ### Notes
 
