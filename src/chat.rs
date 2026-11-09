@@ -436,6 +436,9 @@ pub struct Msg {
     pub key_pass: Vec<(String, PathBuf)>,
     /// A command's row (`run`): where it ran, and what it warned of — from the run's own record, at its end.
     pub ran: Option<Ran>,
+    /// A command's or a test run's row: what the sandbox blocked it, as its panel's line says it (#474a: the same words
+    /// under the row — `mark_refused`, at its end).
+    pub refused: Option<String>,
     /// A change's row (`edit`, `write`, `rename`, `replace`): the keys that decided it, each once, `y` before `n`
     /// (`stamp_call` — its review's answers, its card's) — none while undecided, unasked or unknown.
     pub stamps: Vec<crate::stamp::Stamp>,
@@ -551,6 +554,7 @@ impl Msg {
             pointed: Vec::new(),
             key_pass: Vec::new(),
             ran: None,
+            refused: None,
             stamps: Vec::new(),
             from: None,
             from_conversation: None,
@@ -984,6 +988,16 @@ pub fn mark_ran(ed: &mut Editor, cmd: &str, ran: Ran) {
     let calls: Vec<String> = c.calls.iter().filter(|k| k.runs(cmd.trim())).map(|k| k.id.clone()).collect();
     if let Some(m) = c.msgs.iter_mut().rev().find(|m| m.ran.is_none() && calls.contains(&m.call)) {
         m.ran = Some(ran);
+        m.changed();
+    }
+}
+
+/// A run of Claude's ended refused (#474a): the rows of its calls (`rows`, each its request's — `tools::refused_rows`)
+/// say what the sandbox blocked (`line`, its panel's words) under them.
+pub fn mark_refused(ed: &mut Editor, rows: &[String], line: String) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    for m in c.msgs.iter_mut().filter(|m| m.role == Role::Tool && rows.contains(&m.call)) {
+        m.refused = Some(line.clone());
         m.changed();
     }
 }

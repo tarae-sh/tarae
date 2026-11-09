@@ -133,6 +133,15 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
             // (a key in tarae's own namespace is never Claude's to send — what a call was granted stays on tarae's
             // side, `Session.web_once`)
             let ours = args.as_object().and_then(|o| o.keys().find(|k| k.starts_with("tarae-")));
+            // (a change, a lookup, a run: its call's row, found now by its input — it may land later than one called
+            // after it, a rename on its server's answer, a run on its card; what shows Claude code too: what it
+            // showed goes on that row's stop as it lands — `follow::shown`)
+            if let Some(name) = params["name"].as_str()
+                && ours.is_none()
+                && claims_its_row(name)
+            {
+                crate::chat::claim_for(ed, &format!("mcp__tarae__{name}"), args, &id);
+            }
             let mut news = String::new();
             let r = match params["name"].as_str() {
                 _ if ours.is_some() => {
@@ -186,15 +195,6 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     | "rename" | "replace" | "edit"),
                 ) => {
                     let call = call();
-                    // (a change: its call's row, found now by its input — it may land later than one called after
-                    // it, a rename on its server's answer; what shows Claude code too: what it showed goes on that
-                    // row's stop as it lands — `follow::shown`)
-                    if matches!(
-                        name,
-                        "rename" | "replace" | "edit" | "read" | "search" | "references" | "definition"
-                    ) {
-                        crate::chat::claim_for(ed, &format!("mcp__tarae__{name}"), args, &id);
-                    }
                     // (watched while it waits — one silent too long marks its session: `workspace::Doing::Stuck`)
                     let tool = WATCHED.iter().copied().find(|t| *t == name).unwrap_or("tool");
                     let wait = match name {
@@ -738,6 +738,34 @@ impl Waited<'_> {
 /// The run Claude asked for ended — its results go back (to every call that joined it too), and the editor
 /// shows the first failure. One the user ran again (`blocked.rs`): Claude hears how it ended with the next
 /// message.
+/// What the sandbox blocked a run of Claude's, as its panel's line says it (`sandbox::panel_line`) — for its chat row
+/// (#474a); None where nothing was, or only what every run is refused by design (calm: nothing blocked it).
+fn refused_line(
+    guard: Option<&Guard>,
+    ran: crate::sandbox::RunIs,
+    last_output: std::time::Instant,
+) -> Option<String> {
+    crate::sandbox::panel_line(guard, ran, last_output).filter(|p| !p.calm).map(|p| p.line)
+}
+
+/// Whether a request of tool `name` claims its call's chat row as it comes (`chat::claim_for`): a change's, what shows
+/// Claude code, and a run's — marked at its end by its request (#474a's refusal).
+fn claims_its_row(name: &str) -> bool {
+    matches!(
+        name,
+        "rename" | "replace" | "edit" | "read" | "search" | "references" | "definition" | "run" | "run_tests"
+    )
+}
+
+/// The chat rows of a run's own call and the calls that joined it — each its request's (`chat::row_of`), never guessed
+/// by its command: two alike may end out of order.
+fn refused_rows(ed: &Editor, call: &Call, others: &[(Call, String)]) -> Vec<String> {
+    std::iter::once(call)
+        .chain(others.iter().map(|o| &o.0))
+        .filter_map(|c| crate::chat::row_of(ed, c))
+        .collect()
+}
+
 pub fn tests_done(ed: &mut Editor) {
     let failed = ed.workspace.test_run.as_ref().is_some_and(|r| matches!(r.state, RunState::Failed(_)));
     let known = rules_known(ed, failed);
@@ -768,8 +796,14 @@ pub fn tests_done(ed: &mut Editor) {
     let key = crate::blocked::RunKey { tests: true, generation: r.generation() };
     let ended_failed = matches!(r.state, RunState::Failed(_));
     let env = r.guard.as_ref().and_then(|g| g.run_env()).cloned().map(|e| (e, r.output.to_vec()));
+    let refused = refused_line(r.guard.as_ref(), crate::rundoc::tests_ran(r), r.last_output);
     rules_told(ed, said.as_ref());
     crate::reads::run_ended(ed);
+    // (what the sandbox blocked it, under its chat row — #474a)
+    if let Some(line) = refused {
+        let rows = refused_rows(ed, &call, &others);
+        crate::chat::mark_refused(ed, &rows, line);
+    }
     let text = format!("{text}{}", env_left_out(ed, env));
     let generation = call.generation;
     if ended_failed {
@@ -4939,9 +4973,15 @@ pub fn run_done(ed: &mut Editor) {
     let job = Job::Command(cmd.clone(), r.task.cwd.clone());
     let key = crate::blocked::RunKey { tests: false, generation: r.generation() };
     let env = r.guard.as_ref().and_then(|g| g.run_env()).cloned().map(|e| (e, r.output.to_vec()));
-    // (its chat row says where it ran, and what it warned of — the run's own record, cardburden 4)
+    let refused = refused_line(r.guard.as_ref(), crate::rundoc::task_ran(r), r.last_output);
+    // (its chat row says where it ran, and what it warned of — the run's own record, cardburden 4 — and what the
+    // sandbox blocked it, under it, #474a)
     if let Some(ran) = r.ran.clone() {
         crate::chat::mark_ran(ed, &cmd, ran);
+    }
+    if let Some(line) = refused {
+        let rows = refused_rows(ed, &call, &others);
+        crate::chat::mark_refused(ed, &rows, line);
     }
     rules_told(ed, said.as_ref());
     crate::reads::run_ended(ed);
@@ -7367,39 +7407,54 @@ mod tests {
         };
         let q = send(&mut ed, 1).unwrap().expect("its card");
         let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
-        // (in this order: what it lets, Claude's reason, the answers, the hosts still asked, whose hosts, the setting)
-        let mut from = 0;
-        for said in [
-            "Let Claude's commands have your variable TARAE_TEST_GH_TOKEN",
-            "Claude asks, for `true`: gh reads it",
-            "y masked: your commands see a stand-in; tarae puts the real value in only in the sign-in header toward \
-             api.github.com, github.com, uploads.github.com, until you quit.",
-            "r real value: this run, for a tool that needs it here.",
-            "The network is closed: they still need their own yes.",
+        // (#474c, in this order: Claude's reason naming it, the answers — the hosts once, still asking —, the warning;
+        // then the details: what it lets, where the real value goes, why they still ask, whose hosts, the setting)
+        let card = [
+            "Claude asks for TARAE_TEST_GH_TOKEN, for `true`: gh reads it",
+            "y masked: commands see a stand-in until you quit",
+            "→ api.github.com · github.com · uploads.github.com get the real value — each still asks its own yes",
+            "r real value: this run, for a tool that needs it",
+            "With r its commands read its value, and what they print reaches Claude.",
+        ];
+        let details = [
+            "Claude's commands have your variable TARAE_TEST_GH_TOKEN (its value is never shown). It runs with it \
+             open, whichever you choose.",
+            "Masked, tarae puts the real value in only in the sign-in header toward those hosts.",
+            "They still ask: the network is closed.",
             "The hosts are the tools pack's, for a token starting gho_.",
             "To keep it masked, in your config: [llm.sandbox-secrets] TARAE_TEST_GH_TOKEN = [\"api.github.com\", \
              \"github.com\", \"uploads.github.com\"]",
-            "With r its commands read its value, and what they print reaches Claude.",
-        ] {
+        ];
+        let mut from = 0;
+        for said in card.iter().chain(&details) {
             let at = flat[from..].find(said).unwrap_or_else(|| panic!("{said} after {from}: {flat}"));
             from += at + said.len();
         }
-        // (where it would be cut, the setting's line folds first, then whose hosts — `y masked` answers at once at 80)
+        // (the details never on the card, whatever the room: whole on `v` — every fact still reachable)
         let o = &ed.offers[0];
         let lines: Vec<&str> = o.question.split('\n').collect();
-        let folded: Vec<&str> = o.folds.iter().map(|r| lines[r.start]).collect();
-        assert_eq!(folded.len(), 2, "{:?}", o.folds);
-        assert!(
-            folded[0].starts_with("To keep it masked") && folded[1].starts_with("The hosts are"),
-            "{folded:?}"
-        );
+        let folded: String =
+            o.details.iter().flat_map(|r| lines[r.clone()].to_vec()).collect::<Vec<_>>().join(" ");
+        assert!(details.iter().all(|d| folded.contains(d)), "{folded}");
+        assert!(card.iter().all(|c| !folded.contains(c)), "{folded}");
         let mut frame = Vec::new();
-        crate::term::render(&mut ed, &mut frame, 80, 24).unwrap();
-        let mut screen = vt100::Parser::new(24, 80, 0);
+        crate::term::render(&mut ed, &mut frame, 80, 43).unwrap();
+        let mut screen = vt100::Parser::new(43, 80, 0);
         screen.process(&frame);
         let rows: Vec<String> = screen.screen().rows(0, 80).collect();
-        assert!(ed.offer_seen_whole(), "whole at 80×24: no `v` before `y`:\n{}", rows.join("\n"));
+        let shown = rows.join("\n");
+        assert!(ed.offer_seen_whole(), "whole at 80×43: no `v` before `y`:\n{shown}");
+        // (shorter: from its top line to its bottom one at most 13 rows, the details nowhere, `v see` on its keys)
+        let top = rows.iter().position(|r| r.contains("Open the sandbox a little?")).expect(&shown);
+        let bottom = rows.iter().position(|r| r.contains("y masked ·")).expect(&shown);
+        assert!(bottom - top < 13, "{} rows:\n{shown}", bottom - top + 1);
+        assert!(rows[bottom].contains("v see"), "{}", rows[bottom]);
+        for d in ["never shown", "sign-in header", "pack's", "sandbox-secrets"] {
+            assert!(!shown.contains(d), "{d} on the card:\n{shown}");
+        }
         let o = &ed.offers[0];
+        let settled = crate::offer::Stands { drawn: true, whole: true };
+        assert_eq!(o.act('v', settled), Some(crate::offer::Act::View), "`v` sees what's folded");
         assert_eq!(o.answers(false), [('y', "Masked"), ('r', "Real value"), ('n', "No")]);
         assert!(o.lasting('y') && o.lasting('r'), "never a bare letter on the bottom line");
         let short: Vec<String> =
@@ -7416,7 +7471,6 @@ mod tests {
         );
         assert!(!record.contains("tarae0fake"), "{record}");
         // (no `a` or `s`: two yeses that differ in what — said, never the code's)
-        let settled = crate::offer::Stands { drawn: true, whole: true };
         for k in ['a', 's', 'A'] {
             assert_eq!(o.act(k, settled), Some(crate::offer::Act::Say("this card asks y, r or n")), "{k}");
         }
@@ -7456,9 +7510,10 @@ mod tests {
         let q = send(&mut ed, 31).unwrap().expect("its card");
         let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            flat.contains("closed: api.github.com, uploads.github.com still need their own yes."),
+            flat.contains("value — api.github.com, uploads.github.com still ask their own yes"),
             "{flat}"
         );
+        assert!(flat.contains("They still ask: the network is closed."), "{flat}");
         ed.offers.clear();
         crate::reads::turn_over(&mut ed);
         // The network open at its default (the packs' registries unasked): the proxy still asks for them, said why
@@ -7466,12 +7521,12 @@ mod tests {
         ed.config.llm.sandbox_network = true;
         let q = send(&mut ed, 4).unwrap().expect("its card");
         let flat = q.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(flat.contains("Not on your host list: they still need their own yes."), "{flat}");
+        assert!(flat.contains("They still ask: they're not on your host list."), "{flat}");
         ed.offers.clear();
         // …and with every host unasked (`*`): nothing left to answer
         ed.config.llm.sandbox_hosts = crate::llm::Hosts::Any;
         let q = send(&mut ed, 41).unwrap().expect("its card");
-        assert!(!q.contains("still need their own yes"), "{q}");
+        assert!(!q.contains("still ask"), "{q}");
         // `n`: told, and it sticks for the chat — masked or not (asked again in the next turn: three cards a turn)
         ed.offer_dismiss();
         crate::reads::turn_over(&mut ed);
@@ -7479,6 +7534,56 @@ mod tests {
         assert!(again.as_ref().is_err_and(|e| e.contains("don't ask for it again")), "{again:?}");
         ed.offers.clear();
         ed.workspace.task_run = None;
+    }
+
+    /// #474a: a run that ended refused marks its own chat row — by its request (`chat::row_of`), never by its command:
+    /// two alike waiting, the second ending first, only the second's row says the refusal; a call that joined a run, its
+    /// row too.
+    #[test]
+    fn a_refused_run_marks_its_own_row_by_its_request() {
+        use serde_json::json;
+        let s = crate::scratch::Scratch::new("refused-rows");
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.workspace.root = s.to_path_buf();
+        let mut c = crate::chat::Chat::new();
+        // (a command that asks its card first, never answered: nothing runs)
+        let input = json!({ "command": "touch made" });
+        for id in ["c1", "c2", "c3"] {
+            c.calls.push(crate::chat::Called {
+                id: id.into(),
+                name: "mcp__tarae__run".into(),
+                input: input.clone(),
+            });
+            let look = crate::chat::Look {
+                verb: "run",
+                what: "touch made".into(),
+                pattern: true,
+                range: String::new(),
+                link: None,
+            };
+            c.msgs.push(crate::chat::Msg::tool(look, id));
+        }
+        let generation = c.generation();
+        ed.workspace.claude.chat = Some(c);
+        // (the requests as they come, each claiming its row by its input)
+        for n in 1..=3 {
+            let msg = json!({"jsonrpc": "2.0", "id": n, "method": "tools/call",
+                "params": {"name": "run", "arguments": input}});
+            assert!(super::mcp(&mut ed, generation, "r", &msg).is_none(), "answered from its card");
+        }
+        assert!(super::claims_its_row("run_tests"), "a test run's row too");
+        let call = |n: u64| super::Call { generation, ..super::Call::test(n) };
+        let refused = |ed: &crate::editor::Editor| -> Vec<bool> {
+            ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().map(|m| m.refused.is_some()).collect()
+        };
+        let said = "sandbox blocked reading ~/k";
+        let rows = super::refused_rows(&ed, &call(2), &[]);
+        crate::chat::mark_refused(&mut ed, &rows, said.into());
+        assert_eq!(refused(&ed), [false, true, false], "the second, ended first: its row alone");
+        // (the third joined the first's run: both rows)
+        let rows = super::refused_rows(&ed, &call(1), &[(call(3), String::new())]);
+        crate::chat::mark_refused(&mut ed, &rows, said.into());
+        assert_eq!(refused(&ed), [true, true, true]);
     }
 
     /// P2b, a token-like variable no `y masked` is offered for: a value `maskable` refuses (a space) says why, its card

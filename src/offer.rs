@@ -59,6 +59,9 @@ pub struct Offer {
     /// blank before it): left out one by one while the card would otherwise be cut (`term::OfferCard` — bgreview:
     /// the board's card whole at 60 columns, `y` answering at once).
     pub folds: Vec<std::ops::Range<usize>>,
+    /// The question's lines it never draws, its details (#474c: the masked card's asides, its config line): folded off
+    /// the card whatever the room, whole on `v` with the rest — a card with anything folded offers `v see`.
+    pub details: Vec<std::ops::Range<usize>>,
     /// When it came (`push_offer`) — `C-q` goes to the session whose card has waited longest (#90).
     pub since: Instant,
     /// When it was first drawn in front (`term::render_frame`) — its `card` line says how long it was up
@@ -666,6 +669,7 @@ impl Offer {
             named: Vec::new(),
             told: Vec::new(),
             folds: Vec::new(),
+            details: Vec::new(),
             since: crate::clock::now(),
             drawn: Default::default(),
             asked: None,
@@ -753,6 +757,17 @@ impl Offer {
     pub fn folding(mut self, lines: Vec<std::ops::Range<usize>>) -> Offer {
         self.folds = lines;
         self
+    }
+
+    /// These lines of the question are its details: never on the card, whole on `v` (`details`).
+    pub fn with_details(mut self, lines: Vec<std::ops::Range<usize>>) -> Offer {
+        self.details = lines;
+        self
+    }
+
+    /// Whether any of its lines may fold off the card (`folds`, `details`) — its `v` shows them with the rest.
+    pub fn folds_any(&self) -> bool {
+        !self.folds.is_empty() || !self.details.is_empty()
     }
 
     /// What's being decided is these lines of the question, not its first paragraph.
@@ -980,7 +995,7 @@ impl Offer {
     /// (`acts_on_is_every_letter_a_card_acts_on`).
     pub fn acts_on(&self, c: char) -> bool {
         matches!(c, 'y' | 'n')
-            || (c == 'v' && (self.weighty() || matches!(self.what, What::Instructions(_))))
+            || (c == 'v' && (self.weighty() || self.folds_any() || matches!(self.what, What::Instructions(_))))
             // (its letters a weighty card takes while it's cut — `offer_key`'s weighty part)
             || (self.weighty() && self.weighty_answer(c))
             || (c == 'N' && matches!(self.what, What::Install { .. } | What::Fetch { .. }))
@@ -1080,6 +1095,8 @@ impl Offer {
             'v' if matches!(self.what, What::ClaudeSettings { .. } | What::RepoTrust { .. }) => A::View,
             'v' if self.host_details().is_some() || self.read_details().is_some() => A::View,
             'v' if matches!(self.what, What::Instructions(_)) => A::View,
+            // (what folded off the card, whole with the rest — #474c: `v` one thing on every card)
+            'v' if self.folds_any() => A::View,
             'r' if self.made() || self.masks() => A::AcceptBy('r'),
             'a' | 'A' | 's' if self.masks() => A::Say("this card asks y, r or n"),
             'n' => A::Dismiss,

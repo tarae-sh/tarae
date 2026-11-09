@@ -505,7 +505,13 @@ pub fn also_card(
     closed: bool,
 ) -> crate::offer::Offer {
     use crate::cards::{Asked, Request, Why};
-    let said = format!("Claude asks, for `{cmd}`: {reason}\n\nIt runs with it open, whichever you choose.");
+    // (offered masked, its reason leads the card: it names the variable — #474c)
+    let what = match (&grant, &masking) {
+        (Grant::Env(n), Some(Masking::Offered { .. })) => format!(" for {n}"),
+        _ => String::new(),
+    };
+    let said =
+        format!("Claude asks{what}, for `{cmd}`: {reason}\n\nIt runs with it open, whichever you choose.");
     let ids = asks.iter().map(|w| w.id.clone()).collect();
     let mut asked = Asked::new(Why::Also, Request::Grant(grant.clone())).about(cmd).warned(ids);
     // (the record: the name and the hosts offered, never the value)
@@ -567,12 +573,13 @@ fn secrets_line(n: &str, hosts: &[&str]) -> String {
     format!("[llm.sandbox-secrets] {n} = [{}]", hosts.join(", "))
 }
 
-/// The masked card's lines for variable `n` (P2b), and which of them fold where the card would be cut, least
-/// important first (`Offer::folding`: the config line, then the pack aside — so `y masked` answers at once at 80
-/// columns). Offered: what `y` and `r` do — what masked means, so whoever's tool needs the real value on this machine
-/// knows to press `r` — the hosts the proxy still asks for and why, whose suggestion the hosts are, the setting that
-/// would keep it. A refused or unknown form: the line that says why there's no `y masked`, or how to have one.
-fn masking_lines(n: &str, m: &Masking) -> (Vec<String>, Vec<usize>) {
+/// The masked card's lines for variable `n` (P2b; #474c, shorter under the card-burden rules): what's on the card, and
+/// its details — folded off it, whole on `v` with the rest (`Offer::with_details`). Offered: on the card what `y` and
+/// `r` do — what masked means, so whoever's tool needs the real value on this machine knows to press `r` — and the
+/// hosts once, on one line, with whether they still ask; its details where the real value goes, why they still ask,
+/// whose suggestion the hosts are, the setting that would keep it. A refused or unknown form: the line that says why
+/// there's no `y masked`, or how to have one — no details.
+fn masking_lines(n: &str, m: &Masking) -> (Vec<String>, Vec<String>) {
     let Masking::Offered { pack, prefix, hosts, still, closed } = m else {
         let line = match m {
             Masking::Refused(why) => format!("No masked answer: {why}."),
@@ -583,25 +590,29 @@ fn masking_lines(n: &str, m: &Masking) -> (Vec<String>, Vec<usize>) {
         };
         return (vec![line], Vec::new());
     };
-    let mut lines = vec![
-        format!(
-            "y masked: your commands see a stand-in; tarae puts the real value in only in the sign-in header toward \
-             {}, until you quit.",
-            hosts.join(", ")
-        ),
-        "r real value: this run, for a tool that needs it here.".to_string(),
+    let asks = match still.len() {
+        0 => String::new(),
+        k if k == hosts.len() => " — each still asks its own yes".to_string(),
+        _ => format!(" — {} still ask their own yes", still.join(", ")),
+    };
+    // (each a row of the card at 80 columns)
+    let lines = vec![
+        "y masked: commands see a stand-in until you quit".to_string(),
+        format!("→ {}", hosts.join(" · ")),
+        format!("  get the real value{asks}"),
+        "r real value: this run, for a tool that needs it".to_string(),
     ];
-    let why = if *closed { "The network is closed" } else { "Not on your host list" };
-    match still.len() {
-        0 => {}
-        k if k == hosts.len() => lines.push(format!("{why}: they still need their own yes.")),
-        _ => lines.push(format!("{why}: {} still need their own yes.", still.join(", "))),
+    let mut details = vec![
+        "Masked, tarae puts the real value in only in the sign-in header toward those hosts.".to_string(),
+    ];
+    if !still.is_empty() {
+        let why = if *closed { "the network is closed" } else { "they're not on your host list" };
+        details.push(format!("They still ask: {why}."));
     }
-    lines.push(format!("The hosts are the {pack} pack's, for a token starting {prefix}."));
+    details.push(format!("The hosts are the {pack} pack's, for a token starting {prefix}."));
     let hosts: Vec<&str> = hosts.iter().map(String::as_str).collect();
-    lines.push(format!("To keep it masked, in your config: {}", secrets_line(n, &hosts)));
-    let last = lines.len() - 1;
-    (lines, vec![last, last - 1])
+    details.push(format!("To keep it masked, in your config: {}", secrets_line(n, &hosts)));
+    (lines, details)
 }
 
 /// Gradle's loopback (piece D2): Claude's `cmd` failed because a program the packs say picks its ports as it
@@ -664,17 +675,19 @@ fn grant_offer(
     };
     let registry = registry.map(|r| format!("\n{r}")).unwrap_or_default();
     let masked = masking.as_ref().and_then(|m| m.hosts().map(<[String]>::to_vec));
-    let mut folds = Vec::new();
+    // (the masked card's details — its asides, after its warning: never on the card, whole on `v`)
+    let mut details = Vec::new();
     let mut question = match (&grant, &masking) {
-        // (offered: Claude's reason first, as on every grant card, then its answers — each says how long it lasts;
-        // its least important lines fold where the card would be cut)
+        // (offered: Claude's reason first — it names the variable —, then its answers, each saying how long it lasts;
+        // what's left of what it said, what it lets, and the rest are its details)
         (Grant::Env(n), Some(m)) if masked.is_some() => {
-            let mut q = format!("Let Claude's commands {}\n\n{said}\n\n", grant.shown());
-            let at = q.split('\n').count() - 1;
-            let (lines, fold) = masking_lines(n, m);
-            q.push_str(&lines.join("\n"));
-            folds = fold.into_iter().map(|i| at + i..at + i + 1).collect();
-            q
+            let (lead, rest) = said.split_once("\n\n").unwrap_or((&said, ""));
+            let (lines, more) = masking_lines(n, m);
+            let mut aside =
+                vec![format!("Claude's commands {}. {}", grant.shown(), rest.trim()).trim_end().to_string()];
+            aside.extend(more);
+            details = aside;
+            format!("{lead}\n\n{}", lines.join("\n"))
         }
         (Grant::Env(n), Some(m)) => {
             let line = masking_lines(n, m).0.join("\n");
@@ -696,8 +709,19 @@ fn grant_offer(
         question.push_str(&warn.join("\n"));
         at..at + warn.len()
     });
+    // (the blank before them folded with them)
+    let details: Vec<std::ops::Range<usize>> = (!details.is_empty())
+        .then(|| {
+            question.push_str("\n\n");
+            let at = question.split('\n').count() - 2;
+            question.push_str(&details.join("\n"));
+            at..at + 1 + details.len()
+        })
+        .into_iter()
+        .collect();
     let what = crate::offer::What::Grant { grant, run, masked };
-    let o = crate::offer::Offer::new(GRANT_TITLE.into(), &question, "", String::new(), what).folding(folds);
+    let o = crate::offer::Offer::new(GRANT_TITLE.into(), &question, "", String::new(), what)
+        .with_details(details);
     match warning {
         Some(lines) => o.warning(lines).asked(asked),
         None => o.asked(asked),

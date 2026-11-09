@@ -26,9 +26,9 @@
 23                                      ╰─── esc back · y once · a chat · s session · A always · n ──╯
 24
 25 ─ npm test ▲ ── failed 2.4s ────────────────────────────────────────────────────── space m c close ─
-26   npm ERR! code EPERM
-27   npm ERR! syscall open
-28   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacach…   space m s open it
+26   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacach…   space m s open it
+27   npm ERR! code EPERM
+28   npm ERR! syscall open
 29  ● card                                                                                 rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
@@ -88,9 +88,9 @@
 23                                      aaaa AAA dddd f A      f A dddd f A ddddddd f A dddddd f A aaa
 24
 25 f TTT TTTT e ff eeeeee dddd ffffffffffffffffffffffffffffffffffffffffffffffffffffff DDDDD D D fffff f
-26   fff ffff ffff fffff
-27   fff ffff fffffff ffff
-28   w wwwwwww wwwwwww wwwwwww wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww   FFFFF F F ffff ff
+26   w wwwwwww wwwwwww wwwwwww wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww   FFFFF F F ffff ff
+27   fff ffff ffff fffff
+28   fff ffff fffffff ffff
 29  a TTTT                                                                                 dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary

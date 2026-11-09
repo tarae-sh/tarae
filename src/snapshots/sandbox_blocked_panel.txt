@@ -26,9 +26,9 @@
 23
 24
 25 ─ npm test ▲ ── failed 2.4s ──────────────────────────────────────── C-w j scroll  space m c close ─
-26   npm ERR! code EPERM
-27   npm ERR! syscall open
-28   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacach…   space m s open it
+26   ▲ sandbox blocked writing /private/tmp/tarae-shot-blocked/npm-cache/_cacach…   space m s open it
+27   npm ERR! code EPERM
+28   npm ERR! syscall open
 29  ● normal                                                                               rust   1:1
 ## bg · surface per cell, blank = ui.background
 00
@@ -88,9 +88,9 @@
 23
 24
 25 f TTT TTTT e ff eeeeee dddd ffffffffffffffffffffffffffffffffffffffff DDD D ffffff  DDDDD D D fffff f
-26   fff ffff ffff fffff
-27   fff ffff fffffff ffff
-28   w wwwwwww wwwwwww wwwwwww wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww   FFFFF F F ffff ff
+26   w wwwwwww wwwwwww wwwwwww wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww   FFFFF F F ffff ff
+27   fff ffff ffff fffff
+28   fff ffff fffffff ffff
 29  a TTTTTT                                                                               dddd   TTT
 ## legend
 bg: c=ui.cursorline.primary  A=ui.cursor.primary

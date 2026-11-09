@@ -359,6 +359,76 @@ fn lines(ed: &Editor, slot: Slot, from: usize) -> Vec<(Kind, Cow<'_, str>)> {
     }
 }
 
+/// Where a task is, for its sandbox line: failed as Claude's report has it (`tools::run_done`) — stopped too.
+pub fn task_ran(r: &crate::task::Run) -> crate::sandbox::RunIs {
+    use crate::sandbox::RunIs;
+    use crate::task::State;
+    match r.state {
+        State::Running => RunIs::Running,
+        State::Failed(_) | State::Stopped(_) | State::NotRun(_) => RunIs::Failed,
+        State::Passed => RunIs::Passed,
+    }
+}
+
+/// Where a test run is, for its sandbox line: failed as Claude's report has it (`tools::tests_done`).
+pub fn tests_ran(r: &crate::testing::TestRun) -> crate::sandbox::RunIs {
+    use crate::sandbox::RunIs;
+    use crate::testing::RunState;
+    match r.state {
+        RunState::Running => RunIs::Running,
+        RunState::Failed(_) => RunIs::Failed,
+        _ => RunIs::Passed,
+    }
+}
+
+/// The sandbox's line that leads a run panel's output when it blocked something (#474a: its first row, above what the
+/// program printed — `term::lead_row`): the task's run or the tests', as `sandbox::panel_line` says it.
+pub fn refused(ed: &Editor, slot: Slot) -> Option<crate::sandbox::PanelLine> {
+    use crate::sandbox::panel_line;
+    match slot {
+        Slot::Task => ed
+            .workspace
+            .task_run
+            .as_ref()
+            .and_then(|r| panel_line(r.guard.as_ref(), task_ran(r), r.last_output)),
+        Slot::Test => ed
+            .workspace
+            .test_run
+            .as_ref()
+            .and_then(|r| panel_line(r.guard.as_ref(), tests_ran(r), r.last_output)),
+        _ => None,
+    }
+}
+
+/// Of `slot`'s document's lines `lines`, those that only repeat what the sandbox refused its run (#474b,
+/// `sandbox::repeats`): each with its program's name — folded where they're drawn, their text the document's still.
+/// None while it shows no run's output (a failure's message, the command waiting).
+pub fn repeats(ed: &Editor, slot: Slot, lines: std::ops::Range<usize>) -> Vec<(usize, String)> {
+    let (guard, root) = match slot {
+        Slot::Task => match ed.workspace.task_run.as_ref() {
+            Some(r) if !r.output.is_empty() => (r.guard.as_ref(), ed.workspace.root.join(&r.task.cwd)),
+            _ => return Vec::new(),
+        },
+        Slot::Test => match ed.workspace.test_run.as_ref() {
+            Some(r) if r.picked().is_none() && !r.output.is_empty() => {
+                (r.guard.as_ref(), ed.workspace.root.clone())
+            }
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    let denied = crate::sandbox::denied(guard);
+    let Some(doc) = ed.workspace.outputs.doc(slot).filter(|_| !denied.is_empty()) else { return Vec::new() };
+    let n = doc.text.len_lines();
+    (lines.start.min(n)..lines.end.min(n))
+        .filter_map(|l| {
+            let line = doc.text.line(l).to_string();
+            let line = line.trim_end_matches(['\n', '\r']);
+            Some((l, crate::sandbox::repeats(line, &denied, &root)?))
+        })
+        .collect()
+}
+
 /// The command a run panel shows while nothing is printed.
 fn command(ed: &Editor, slot: Slot) -> String {
     match slot {

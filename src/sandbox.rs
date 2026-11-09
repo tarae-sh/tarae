@@ -4107,6 +4107,64 @@ fn refusal(line: &str) -> bool {
         || (cfg!(target_os = "linux") && linux.iter().any(|w| l.contains(w)))
 }
 
+/// A refusal as the system spells it at a line's end (`repeats`): `refusal`'s words, as printed.
+const REFUSALS: [&str; 4] =
+    ["Operation not permitted", "Permission denied", "Read-only file system", "Device or resource busy"];
+
+/// What a run was refused that a line of its output may repeat (`repeats`): the files of what its panel names as
+/// blocked — not what every run is refused by design.
+pub fn denied(guard: Option<&Guard>) -> Vec<Denial> {
+    let b = guard.and_then(|g| g.watch()).map(|w| w.blocked()).unwrap_or_default();
+    b.seen.into_iter().filter(|d| !d.by_design() && d.file().is_some()).collect()
+}
+
+/// The program's own line of output that only repeats what the sandbox refused its run (#474b: folded under the
+/// refusal that leads the run, never rewritten) — the same operation on the same path, in one of the exact forms
+/// tools print it in: `<prog>: <path>: <refusal>`; GNU's `<prog>: cannot open '<path>' for reading: <refusal>` (a
+/// read) and its `cannot create directory`, `cannot touch`, `cannot create regular file '<path>': <refusal>` (a
+/// write) — the refusal as the system spells it (`REFUSALS`, as `refusal` reads them on each system). Its program's
+/// name (`cat`) when it is; None for anything else — another path, another error (`No such file or directory`), a
+/// word more: the program's line as printed. The path as `paths_in` reads it, from `root` (where it ran) — no disk.
+pub fn repeats(line: &str, denied: &[Denial], root: &Path) -> Option<String> {
+    let (prog, rest) = line.split_once(": ")?;
+    if prog.is_empty() || prog.contains(char::is_whitespace) {
+        return None;
+    }
+    let said = if cfg!(target_os = "linux") { &REFUSALS[..] } else { &REFUSALS[..1] };
+    let body = said.iter().find_map(|r| rest.strip_suffix(r)?.strip_suffix(": "))?;
+    let quoted = |pre: &str| body.strip_prefix(pre)?.strip_prefix('\'')?.strip_suffix('\'');
+    let writes = ["cannot create directory ", "cannot touch ", "cannot create regular file "];
+    // (what was tried, where the line says it — None: it doesn't)
+    let (path, read) = match body.strip_prefix("cannot open '").and_then(|b| b.strip_suffix("' for reading"))
+    {
+        Some(p) => (p, Some(true)),
+        None => match writes.iter().find_map(|w| quoted(w)) {
+            Some(p) => (p, Some(false)),
+            None => (body, None),
+        },
+    };
+    // (one path, the whole of it: nothing `paths_in` would trim or split off)
+    let whole = !path.ends_with([':', '.'])
+        && !path.contains(|c: char| c.is_whitespace() || "`'\"()[]{}<>,;=".contains(c));
+    let [real] = &paths_in(path, root)[..] else { return None };
+    let op = |d: &Denial| match read {
+        Some(true) => d.op.starts_with("file-read") || d.op == EITHER,
+        Some(false) => d.op.starts_with("file-write") || d.op.starts_with("file-entry") || d.op == EITHER,
+        None => true,
+    };
+    // (macOS's `/tmp`, `/var`, `/etc` are `/private`'s: the same file with or without it — by the text alone)
+    let unprivate = |p: &Path| -> PathBuf {
+        let rest = p
+            .strip_prefix("/private")
+            .ok()
+            .filter(|r| cfg!(target_os = "macos") && ["tmp", "var", "etc"].iter().any(|d| r.starts_with(d)));
+        rest.map_or_else(|| p.to_path_buf(), |r| Path::new("/").join(r))
+    };
+    let same = whole && denied.iter().any(|d| d.file().map(unprivate) == Some(unprivate(real)) && op(d));
+    let name = Path::new(prog).file_name()?.to_string_lossy().into_owned();
+    same.then_some(name)
+}
+
 /// The names every project keeps, whatever its languages: tarae's project config (its trusted settings and
 /// steps), direnv's, Claude's, the CI's and VS Code's settings and tasks, `.tarae.local.toml` (read as the
 /// user's own config, its preflight steps run unsandboxed: `config::personal`) and `.git`. The ecosystems'
@@ -13440,6 +13498,51 @@ mod tests {
         assert_eq!(plain("system-info", ""), "system-info");
         assert_eq!(denial("file-write-unlink", "/a").reported(), "deleting /a (file-write-unlink, touch)");
         assert_eq!(denial("system-info", "x").reported(), "system-info x (touch)");
+    }
+
+    /// #474b: the program's line that only repeats a refusal is the exact line — one of the forms, the same operation on
+    /// the same path — and its program named; a near miss stays as printed: another error, another path, a word more
+    /// before or after, a path with more to it, a write's form for what was read and a read's for what was written.
+    #[test]
+    fn a_refusals_repeat_is_only_the_exact_line() {
+        let root = Path::new("/stand-in/project");
+        let d = |op: &str, t: &str| Denial { process: "cat".into(), op: op.into(), target: t.into() };
+        let key = "/stand-in/home/.ssh/id_ed25519";
+        let denied = [d("file-read-data", key), d("file-write-create", "/stand-in/project/out/x")];
+        for (line, folds) in [
+            (format!("cat: {key}: Operation not permitted"), Some("cat")),
+            (format!("/bin/cat: {key}: Operation not permitted"), Some("cat")),
+            (format!("tail: cannot open '{key}' for reading: Operation not permitted"), Some("tail")),
+            ("touch: cannot touch './out/x': Operation not permitted".into(), Some("touch")),
+            (
+                "mkdir: cannot create directory '/stand-in/project/out/x': Operation not permitted".into(),
+                Some("mkdir"),
+            ),
+            (format!("cat: {key}: No such file or directory"), None),
+            ("cat: /stand-in/home/.ssh/other: Operation not permitted".into(), None),
+            (format!("cat: {key}: Operation not permitted (os error 1)"), None),
+            (format!("error: cat: {key}: Operation not permitted"), None),
+            (format!("cat: {key}.: Operation not permitted"), None),
+            (format!("cat: {key} and more: Operation not permitted"), None),
+            (format!("touch: cannot touch '{key}': Operation not permitted"), None),
+            ("tail: cannot open './out/x' for reading: Operation not permitted".into(), None),
+        ] {
+            assert_eq!(repeats(&line, &denied, root).as_deref(), folds, "{line}");
+        }
+        let exact = format!("cat: {key}: Operation not permitted");
+        assert_eq!(repeats(&exact, &[], root), None, "nothing refused, nothing repeated");
+        // (macOS: `/var` is `/private/var` — a denial named either way, the program's line either way)
+        if cfg!(target_os = "macos") {
+            let line = "cat: /var/folders/x/k: Operation not permitted";
+            for target in ["/private/var/folders/x/k", "/var/folders/x/k"] {
+                let denied = [d("file-read-data", target)];
+                assert_eq!(repeats(line, &denied, root).as_deref(), Some("cat"), "{target}");
+                let line = "cat: /private/var/folders/x/k: Operation not permitted";
+                assert_eq!(repeats(line, &denied, root).as_deref(), Some("cat"), "{target}");
+            }
+            let other = [d("file-read-data", "/private/var/folders/x/other")];
+            assert_eq!(repeats(line, &other, root), None, "the prefix only: another file stays");
+        }
     }
 
     /// The panel's line: the first thing blocked and how many more; the quiet hint only while it runs and

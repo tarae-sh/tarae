@@ -78,6 +78,29 @@ pub(crate) fn sh_waits_by_time<S: AsRef<str>>(keys: &[S]) -> Vec<String> {
 
 const MAIN: &[&str] = &["src/main.rs"];
 
+/// #474's refused-key scene's keys: the chat asked, the run's refusal waited for.
+const REFUSED_KEYS: &[&str] = &["@1", " ", "l", "@1", "read the signing key", "\r", "@20?kept out", "@1"];
+
+/// #474's refused-key-follow scene's keys: the chat asked, then left and the code zoomed — `[r` replays the run in the
+/// follow card.
+const REFUSED_FOLLOW_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "read the signing key",
+    "\r",
+    "@20?kept out",
+    "\x1b",
+    " ",
+    "w",
+    "z",
+    "@1",
+    "[",
+    "r",
+    "@2",
+];
+
 /// P2b's masked scenes' keys: the chat asked, the code zoomed (at 80 the chat beside it would cut the card), the card
 /// up and focused.
 const MASKED_KEYS: &[&str] = &[
@@ -96,6 +119,28 @@ const MASKED_KEYS: &[&str] = &[
     "@20?Open the sandbox a little",
     "@1",
     "\x11",
+    "@1",
+];
+
+/// #474c's masked-see scene's keys: the masked scene's, then `v` — what the card folded, whole.
+const MASKED_SEE_KEYS: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "pass the token to the release script",
+    "\r",
+    "@1",
+    "\x1b",
+    "@1",
+    " ",
+    "w",
+    "z",
+    "@20?Open the sandbox a little",
+    "@1",
+    "\x11",
+    "@1",
+    "v",
     "@1",
 ];
 const WIDE: &[&str] = &["src/wide.rs"];
@@ -4109,8 +4154,13 @@ const SCENES: &[Scene] = &[
     // `masked-closed` with the hosts still to answer, `masked-unmaskable` a value `maskable` refuses, `masked-unknown` a
     // form no pack knows; `masked-granted` its `y`, then `:granted`. The code zoomed first, as `granted`'s. The runs
     // need the sandbox: run outside one)
+    // (#474: the sandbox refusing a key's read — `cat ~/.ssh/id_ed25519`, a stand-in in the scene's own home: the run
+    // panel beside the chat; `-follow` the code zoomed, the follow card's run row)
+    Scene { name: "refused-key", claude: "refusedkey", files: MAIN, keys: REFUSED_KEYS },
+    Scene { name: "refused-key-follow", claude: "refusedkey", files: MAIN, keys: REFUSED_FOLLOW_KEYS },
     Scene { name: "masked", claude: "maskedopen", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-closed", claude: "masked", files: MAIN, keys: MASKED_KEYS },
+    Scene { name: "masked-see", claude: "maskedopen", files: MAIN, keys: MASKED_SEE_KEYS },
     Scene { name: "masked-unmaskable", claude: "masked", files: MAIN, keys: MASKED_KEYS },
     Scene { name: "masked-unknown", claude: "maskedother", files: MAIN, keys: MASKED_KEYS },
     Scene {
@@ -5953,8 +6003,10 @@ pub fn run(args: &[String]) -> Result<()> {
         Some(b) if b.is_absolute() && b.is_file() => b,
         Some(b) => return Err(format!("--bin {}: an absolute path to a tarae", b.display())),
         // (a recording's homes are its own: the grammars bundled, as the homepage's — else a scene with no Rust grammar
-        // asks to download it, a card no one with it sees)
-        None if recording => shot::build(&root(), "shot-docs", &["bundled-grammars"])?,
+        // asks to download it, a card no one with it sees; so are #474's scenes')
+        None if recording || scenes.iter().any(|s| s.name.starts_with("refused-key")) => {
+            shot::build(&root(), "shot-docs", &["bundled-grammars"])?
+        }
         None => shot::build_shot(&root())?,
     };
     let me = std::env::current_exe().map_err(|e| format!("this xtask: {e}"))?;
@@ -6135,8 +6187,15 @@ fn one(
     out: &Path,
 ) -> Result<()> {
     let dir = Fresh::new("tarae-scene")?;
-    let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("tarae-demo"))?;
     let keys: Vec<String> = scene.keys.iter().map(|k| k.to_string()).collect();
+    // (#474's: a home of the scene's own, as the docs' shots — the key it reads is the scene's, and no path of yours
+    // is on screen)
+    if scene.name.starts_with("refused-key") {
+        let homes = homes(&dir.0, &|k| std::env::var_os(k))?;
+        let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("home/tarae-demo"))?;
+        return shot::take_at(&setup, &keys, size, 1, &dir.0.join("state"), &homes, out).map(|_| ());
+    }
+    let setup = prepare(scene, bg, transparent, bin, me, &dir.0, &dir.0.join("tarae-demo"))?;
     shot::take(&setup, &keys, size, &dir.0.join("state"), out)
 }
 
@@ -6691,6 +6750,10 @@ fn prepare(
     demo: &Path,
 ) -> Result<Setup> {
     demo_crate_at(demo, scene.name == "trusted", &run_files(scene.name), Some(&dates().0))?;
+    // (#474's: a key file in the scene's own home — a stand-in, in two parts)
+    if scene.name.starts_with("refused-key") {
+        write(&dir.join("home/.ssh/id_ed25519"), concat!("tarae-fake-", "ssh-key-stand-in\n"))?;
+    }
     let config = dir.join("xdg");
     // (the overlay scenes': the SDK's demo plugin, its permissions asked as it loads — `C-q y` in their keys)
     if scene.name.starts_with("overlay-") {
@@ -7495,6 +7558,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "searchcard",
     "volumecard",
     "grants",
+    "refusedkey",
     "masked",
     "maskedopen",
     "maskedother",
@@ -7676,6 +7740,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "searchcard" => turn.search_outside()?,
             "volumecard" => turn.read_volume()?,
             "grants" => turn.grants()?,
+            "refusedkey" => turn.refused_key()?,
             "masked" | "maskedopen" => turn.masked("GH_TOKEN")?,
             "maskedother" => turn.masked("MY_SERVICE_TOKEN")?,
             "big" => turn.big()?,
@@ -8689,6 +8754,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(3, "run", also)?;
         self.permission(4, "Read", json!({"file_path": format!("{home}/Sites/skein/knots.css")}))?;
         self.words("Read them: nothing in the project needs to change.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #474's turn: a key's read the sandbox refuses.
+    fn refused_key(&mut self) -> io::Result<()> {
+        self.words("The release script signs the tag with the SSH key. Let me look at it.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "cat ~/.ssh/id_ed25519"}))?;
+        self.words("The key is kept out of my commands.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

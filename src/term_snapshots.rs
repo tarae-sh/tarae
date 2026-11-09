@@ -3616,7 +3616,8 @@ fn plus_n_frames() {
 }
 
 /// The board's card at 60 columns (bgreview, the user's decision 2026-10-20): whole — no `↓ more lines`, so its
-/// `y` answers at once — its angles' line folded away first; at 160 it's there.
+/// `y` answers at once — its angles' line folded away first, and `v see` on its keys for it (#474c: no fold drops a
+/// fact out of reach); at 160 it's there.
 #[test]
 fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     let card = || {
@@ -3650,8 +3651,8 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     // reason — still whole)
     // (16 rows: its answers on its bottom line, not two rows of their own, gave 20 the room for it whole)
     for (how, said, bottom) in [
-        (1, "", "╰─── esc back · y start · n ───────╯"),
-        (2, "not taken", "╰─ C-q answer · y start · n ───────╯"),
+        (1, "", "╰─── esc back · y start · v see · n ─╯"),
+        (2, "not taken", "╰─ C-q answer · y start · v see · n ─╯"),
     ] {
         let (at, line) = screen_as(60, 16, how);
         assert!(at.contains(said) && !at.contains("more lines"), "{at}");
@@ -3659,7 +3660,7 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     }
     let (narrow, line) = screen_as(60, 16, 0);
     assert!(narrow.contains("Start a board on tarae-demo?"), "{narrow}");
-    assert_eq!(line, "╰─ C-q answer · y start · n ───────╯", "{narrow}");
+    assert_eq!(line, "╰─ C-q answer · y start · v see · n ─╯", "{narrow}");
     assert!(!narrow.contains("more lines") && !narrow.contains("Each from its angle"), "{narrow}");
     assert!(narrow.contains("A yes holds for this session"), "what a yes means stays: {narrow}");
     let wide = screen(160, 30);
@@ -7220,6 +7221,74 @@ fn snapshot_test_panel_scrolled() {
     }
     s.ed.toasts.clear();
     s.check("test_panel_scrolled");
+}
+
+/// #474a/b: a refusal leads its run — the output's first row, right under the run panel's header, above what the
+/// program printed (the task's panel, the tests' with no results) — and the program's line that only repeats it folds
+/// to a faint row in its place, its text the document's still; a near miss stays as printed, and no home path is on
+/// screen outside the fold.
+#[test]
+fn a_refusal_leads_its_run_and_its_exact_repeat_folds() {
+    // (the home is this machine's, read — a refusal's words spell it `~`, and its path must be on no row but the fold's)
+    let Some(home) = std::env::var("HOME").ok().filter(|h| h.len() > 1) else { return };
+    let key = format!("{home}/.ssh/id_ed25519");
+    let guard = || {
+        let watch = crate::sandbox::Watch::quiet("t.");
+        let op = "file-read-data".into();
+        watch.record(crate::sandbox::Denial { process: "cat".into(), op, target: key.clone() });
+        let env = crate::sandbox::Env::default();
+        let policy =
+            crate::sandbox::Policy { watch: Some(watch), ..crate::sandbox::Policy::for_project(&env) };
+        Some(crate::sandbox::Guard::In(Box::new(policy)))
+    };
+    let output = [
+        format!("cat: {key}: Operation not permitted"),
+        "cat: /stand-in/other: Operation not permitted".into(),
+    ];
+    let rows_of = |s: &mut Shot| {
+        let mut p = vt100::Parser::new(s.h, s.w, 0);
+        p.process(&s.frame());
+        p.process(&s.frame());
+        p.screen().rows(0, s.w).collect::<Vec<String>>()
+    };
+    let check = |rows: &[String], head: usize, what: &str| {
+        let all = rows.join("\n");
+        let at =
+            |t: &str| rows.iter().position(|r| r.contains(t)).unwrap_or_else(|| panic!("{what}: {t}\n{all}"));
+        let lead = at("▲ sandbox blocked reading ~/.ssh/id_ed25519");
+        assert_eq!(lead, head + 1, "{what}: first, right under the header\n{all}");
+        assert_eq!(at("… cat's line, the same refusal"), lead + 1, "{what}: the exact repeat folded\n{all}");
+        assert_eq!(
+            at("cat: /stand-in/other: Operation not permitted"),
+            lead + 2,
+            "{what}: a near miss stays\n{all}"
+        );
+        assert!(!all.contains(&home), "{what}: no home path outside the fold\n{all}");
+    };
+    // The task panel
+    let mut s = Shot::new(100, 24);
+    s.file("src/demo.rs", DEMO_RS);
+    let task =
+        crate::task::Task { name: "readkey".into(), cmd: "cat ~/.ssh/id_ed25519".into(), cwd: "/p".into() };
+    let mut r = crate::task::Run::for_test(task);
+    r.state = crate::task::State::Failed(Some(1));
+    r.took = Some(Duration::from_millis(40));
+    r.guard = guard();
+    r.output = output.iter().map(|l| (true, l.as_str())).collect();
+    s.ed.workspace.task_run = Some(r);
+    let rows = rows_of(&mut s);
+    let (y0, ..) = s.ed.screen.task_panel.get().expect("the panel is drawn");
+    check(&rows, y0, "the task panel");
+    // The tests' panel, no results: the same row, first
+    let mut s = Shot::new(100, 24);
+    s.file("src/demo.rs", DEMO_RS);
+    let mut run = crate::testing::TestRun::finished("keys::read", Vec::new(), output.to_vec());
+    run.state = crate::testing::RunState::Failed(None);
+    run.guard = guard();
+    s.ed.workspace.test_run = Some(run);
+    let rows = rows_of(&mut s);
+    let (y0, ..) = s.ed.screen.test_panel.get().expect("the panel is drawn");
+    check(&rows, y0, "the tests' panel");
 }
 
 /// A run where no test ran: the header says so (its tab's badge in the warning colour), and the first row

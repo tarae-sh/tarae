@@ -2470,6 +2470,24 @@ fn draw_output(
     let hits = editor.workspace.outputs.get(slot).and_then(|o| o.hits()).filter(|_| keys);
     let src = Source { hits, ..Source::of(doc) };
     draw_text(editor, &src, top, &shows, &view, &ui.on(card), &pl, out)?;
+    // The program's lines that only repeat what the sandbox refused (#474b, `rundoc::repeats`), folded: a faint row each
+    // in its place, the text the document's still — whole on a card under the mouse, and as the row in hand where the
+    // view mode's cursor is (`whole.rs`)
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let here = crate::rundoc::cursor_line(editor, slot).filter(|_| keys);
+    for (line, prog) in crate::rundoc::repeats(editor, slot, top..top + view.len()) {
+        let y = y + line - top;
+        let whole = doc.text.line(line).to_string().trim_end_matches(['\n', '\r']).to_string();
+        let mut of = crate::whole::Of { from: 0, to: 0, whole, pieces: Vec::new(), key: None };
+        let text =
+            crate::cut::fit(&format!("{} {prog}'s line, the same refusal", crate::whole::mark(&of)), w);
+        of.to = text.len();
+        queue!(out, MoveTo(x as u16, y as u16))?;
+        apply(out, faint)?;
+        queue!(out, Print(&text), Spaces(w.saturating_sub(text.width())))?;
+        let hand = (here == Some(line)).then_some(crate::whole::Hand::Over);
+        crate::whole::placed(slot_on(editor, slot), (&text, Some(&of)), (x, y), card, (x, x + w), hand);
+    }
     Ok(())
 }
 
@@ -3443,17 +3461,8 @@ fn task_list_h(r: &crate::task::Run, n: usize, queued: usize, total: usize, head
 
 /// The sandbox's row under the task panel's body, when it blocked something: 1, else 0.
 fn task_panel_foot(r: &crate::task::Run) -> usize {
-    usize::from(crate::sandbox::panel_line(r.guard.as_ref(), task_ran(r), r.last_output).is_some())
-}
-
-/// Where a task is, for its sandbox line: failed as Claude's report has it (`tools::run_done`) — stopped too.
-fn task_ran(r: &crate::task::Run) -> crate::sandbox::RunIs {
-    use crate::task::State;
-    match r.state {
-        State::Running => crate::sandbox::RunIs::Running,
-        State::Failed(_) | State::Stopped(_) | State::NotRun(_) => crate::sandbox::RunIs::Failed,
-        State::Passed => crate::sandbox::RunIs::Passed,
-    }
+    let ran = crate::rundoc::task_ran(r);
+    usize::from(crate::sandbox::panel_line(r.guard.as_ref(), ran, r.last_output).is_some())
 }
 
 /// The terminal panel's height for `total` rows of editing area — more than the other panels (a shell wants
@@ -3804,21 +3813,16 @@ fn draw_task_panel(
             word_lit(editor, crate::mouse::Word::Step(k), y, (from, to), spans);
         }
     }
-    // The sandbox's line, when it blocked something: the bottom row, under the output — and over it, what
-    // waits for the panel, a row each (`queued.rs`)
-    let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), task_ran(r), r.last_output);
+    // What waits for the panel, a row each under the output (`queued.rs`) — and the sandbox's line, when it blocked
+    // something, leading the output (`lead_row`)
+    let sandbox = crate::rundoc::refused(editor, crate::sizes::Slot::Task);
     // (the output keeps a row)
     let below = here.rect.h.saturating_sub(top + 1).min(queued_h(editor, crate::queued::Slot::Task));
-    let rows = here.rect.h.saturating_sub(top + below + usize::from(sandbox.is_some()));
+    let rows = here.rect.h.saturating_sub(top + below);
     draw_queued(out, editor, ui, crate::queued::Slot::Task, (x0, y0 + top + rows), w, below, card)?;
-    if let Some(said) = &sandbox {
-        let at = (x0, (y0 + top + rows + below) as u16);
-        let on = slot_on(editor, crate::sizes::Slot::Task);
-        sandbox_row(out, on, at, w, said, "space m s", card, warn, faint)?;
-    }
     if let Some((g, m)) = members {
         let at = (y0 + top, rows, y0 + top - 1 + rows + below);
-        draw_task_group(r, editor, ui, (lay, here), out, g, m, at)?;
+        draw_task_group(r, editor, ui, (lay, here), out, g, m, at, sandbox.as_ref())?;
         // (over and under: the output's top line between them)
         if let Some(head) = &head {
             member_line(out, editor, ui, card, (x0, w), head)?;
@@ -3827,21 +3831,24 @@ fn draw_task_panel(
     }
     // Its output, a document (`rundoc.rs`): its end, unless scrolled back — its own top while it has the keys; the
     // wheel's thumb when it doesn't fit
-    editor.screen.task_panel.set(Some((y0, y0 + top - 1 + rows + below, rows)));
-    editor.screen.run_rows.set(Some((crate::sizes::Slot::Task, y0 + top, x0 + PAD, rows)));
-    let lines = r.output.len();
-    let start = output_top(editor, crate::sizes::Slot::Task, rows);
-    let bar = (lines > rows).then(|| scroll_thumb(rows, lines, start));
     for i in 0..rows {
         queue!(out, MoveTo(x0 as u16, (y0 + top + i) as u16))?;
         apply(out, card)?;
         queue!(out, Spaces(w))?;
     }
-    let at = (x0 + PAD, y0 + top, w.saturating_sub(2 * PAD), rows);
-    draw_output(out, editor, ui, lay, card, crate::sizes::Slot::Task, start, at, None)?;
+    let (tx, tw) = (x0 + PAD, w.saturating_sub(2 * PAD));
+    let lead =
+        lead_row(out, (editor, ui), crate::sizes::Slot::Task, sandbox.as_ref(), (tx, y0 + top, tw), card)?;
+    let (y, rows) = (y0 + top + lead, rows.saturating_sub(lead));
+    editor.screen.task_panel.set(Some((y0, y0 + top - 1 + lead + rows + below, rows)));
+    editor.screen.run_rows.set(Some((crate::sizes::Slot::Task, y, tx, rows)));
+    let lines = r.output.len();
+    let start = output_top(editor, crate::sizes::Slot::Task, rows);
+    let bar = (lines > rows).then(|| scroll_thumb(rows, lines, start));
+    draw_output(out, editor, ui, lay, card, crate::sizes::Slot::Task, start, (tx, y, tw, rows), None)?;
     for i in (0..rows).filter(|i| bar.as_ref().is_some_and(|b| b.contains(i))) {
         apply(out, faint)?;
-        queue!(out, MoveTo((x0 + w).saturating_sub(1) as u16, (y0 + top + i) as u16), Print(THUMB))?;
+        queue!(out, MoveTo((x0 + w).saturating_sub(1) as u16, (y + i) as u16), Print(THUMB))?;
     }
     Ok(())
 }
@@ -3861,6 +3868,7 @@ fn draw_task_group(
     g: crate::pane::Group,
     (list, detail): (crate::split::Rect, crate::split::Rect),
     (y, rows, last): (usize, usize, usize),
+    sandbox: Option<&crate::sandbox::PanelLine>,
 ) -> io::Result<()> {
     use crate::chrome::PAD;
     use crate::pane::GroupKind;
@@ -3882,6 +3890,11 @@ fn draw_task_group(
         true => (detail.y, (y + rows).saturating_sub(detail.y)),
         false => (y, rows),
     };
+    // (the sandbox's line leads the output, on its first row — `lead_row`)
+    let sandbox = sandbox.filter(|_| detail.w > 0 && detail_rows > 1);
+    let lead_y = detail_y;
+    let (detail_y, detail_rows) =
+        (detail_y + usize::from(sandbox.is_some()), detail_rows - usize::from(sandbox.is_some()));
     let steps = crate::grouplist::preflight(editor).filter(|_| g.kind == GroupKind::Preflight);
     let order = if steps.is_some() { Vec::new() } else { r.place_rows() };
     let (n, sel) = match steps {
@@ -4000,6 +4013,7 @@ fn draw_task_group(
     if detail.w == 0 {
         return Ok(());
     }
+    lead_row(out, (editor, ui), crate::sizes::Slot::Task, sandbox, (text.0, lead_y, text.1), card)?;
     let at = (text.0, detail_y, text.1, detail_rows);
     draw_output(out, editor, ui, lay, card, crate::sizes::Slot::Task, start, at, band)?;
     for i in (0..detail_rows).filter(|i| bar.as_ref().is_some_and(|b| b.contains(i))) {
@@ -4009,44 +4023,53 @@ fn draw_task_group(
     Ok(())
 }
 
-/// A sandboxed run's line in its panel (from column `x0`, `w` wide): `▲ sandbox blocked writing ~/x  +2` in
-/// warning, the key that acts on it (`space m s  open it`), and after it, faint, the quiet hint and how many more
-/// were refused by design — each folded away, last first, when the row is too narrow for it. Refused only what
-/// every run is by design (`PanelLine.calm`): the line alone, faint — no `▲`, no key (#290).
-#[allow(clippy::too_many_arguments)]
-fn sandbox_row(
+/// The sandbox's line that leads a run's output (#474a, `rundoc::refused`) — one shape wherever a run shows: the
+/// output's first row, above what the program printed, in its text's columns (`x`, `w` wide): `▲ sandbox blocked
+/// writing ~/x  +2` in warning (its ground drying once as it lands, §6 — `motion::Place::Refused`), the key that acts
+/// on it (`space m s  open it`), and after it, faint, the quiet hint and how many more were refused by design — each
+/// folded away, last first, when the row is too narrow for it. Refused only what every run is by design
+/// (`PanelLine.calm`): the line alone, faint — no `▲`, no key (#290). 1 where it drew it, else 0 — the rows it
+/// takes from the output's.
+fn lead_row(
     out: &mut impl Write,
-    on: crate::whole::On,
-    (x0, y): (usize, u16),
-    w: usize,
-    said: &crate::sandbox::PanelLine,
-    key: &str,
+    (editor, ui): (&Editor, &Ui),
+    slot: crate::sizes::Slot,
+    said: Option<&crate::sandbox::PanelLine>,
+    (x0, y, w): (usize, usize, usize),
     card: Style,
-    warn: Option<Color>,
-    faint: Style,
-) -> io::Result<()> {
-    queue!(out, MoveTo(x0 as u16, y))?;
+) -> io::Result<usize> {
+    use crate::sizes::Slot;
+    // (drawn or not, for what lands on it next — §6, `motion::arrivals`)
+    let lit = said.is_some_and(|s| !s.calm);
+    editor.screen.news.borrow_mut().refused.get_or_insert_default().push((slot, lit));
+    let Some(said) = said else { return Ok(0) };
+    let on = slot_on(editor, slot);
+    let key = if slot == Slot::Test { "space x s" } else { "space m s" };
+    let warn = editor.theme.try_get("warning").and_then(|s| s.fg);
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    queue!(out, MoveTo(x0 as u16, y as u16))?;
     apply(out, card)?;
-    queue!(out, Spaces(w), MoveTo((x0 + crate::chrome::PAD) as u16, y))?;
-    let room = w.saturating_sub(4);
+    queue!(out, Spaces(w), MoveTo(x0 as u16, y as u16))?;
+    let room = w;
     let at = |text: &Fit, x: usize, st: Style| {
-        crate::whole::at(on, text, (x, y as usize), st, (x0, usize::MAX));
+        crate::whole::at(on, text, (x, y), st, (x0, usize::MAX));
     };
     if said.calm {
         let main = crate::whole::fit(&said.line, room);
         apply(out, faint)?;
         queue!(out, Print(main.shown()))?;
-        at(&main, x0 + crate::chrome::PAD, faint);
-        return Ok(());
+        at(&main, x0, faint);
+        return Ok(1);
     }
     // (the key keeps its room — a long path is cut instead — unless the row is very narrow)
     let hint = format!("{key} open it");
     let keyed = room >= hint.width() + 3 + 24;
     let main =
         crate::whole::fit(&format!("▲ {}", said.line), if keyed { room - hint.width() - 3 } else { room });
-    apply(out, Style { fg: warn, ..card })?;
+    let st = arrived_style(ui, editor, &crate::motion::Place::Refused(slot), Style { fg: warn, ..card });
+    apply(out, st)?;
     queue!(out, Print(main.shown()))?;
-    at(&main, x0 + crate::chrome::PAD, Style { fg: warn, ..card });
+    at(&main, x0, st);
     let mut used = main.width();
     if keyed {
         let k = Style { bold: true, fg: faint.fg, ..card };
@@ -4066,10 +4089,10 @@ fn sandbox_row(
         apply(out, faint)?;
         let q = crate::whole::fit(q, left);
         queue!(out, Print("   "), Print(q.shown()))?;
-        at(&q, x0 + crate::chrome::PAD + used + 3, faint);
+        at(&q, x0 + used + 3, faint);
         used += 3 + q.width();
     }
-    Ok(())
+    Ok(1)
 }
 
 /// Rows a panel gives what waits in line for it (`queued.rs`), at most — past that the last says how many
@@ -4882,27 +4905,15 @@ fn draw_test_panel(
         fold,
     )?;
 
-    // The sandbox's line, when it blocked something: the bottom row, under the rest — and over it, what waits
-    // for the pane, a row each (`queued.rs`)
-    // (failed as Claude's report has it, `tools::tests_done`)
-    let ran = match r.state {
-        RunState::Running => crate::sandbox::RunIs::Running,
-        RunState::Failed(_) => crate::sandbox::RunIs::Failed,
-        _ => crate::sandbox::RunIs::Passed,
-    };
-    let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), ran, r.last_output);
-    let inner = here.rect.h.saturating_sub(body - here.rect.y + usize::from(sandbox.is_some()));
+    // What waits for the pane, a row each under the rest (`queued.rs`) — and the sandbox's line, when it blocked
+    // something, leading the output or the detail (`lead_row`)
+    let sandbox = crate::rundoc::refused(editor, crate::sizes::Slot::Test);
+    let inner = here.rect.h.saturating_sub(body - here.rect.y);
     let below = inner.saturating_sub(2).min(queued_h(editor, crate::queued::Slot::Tests));
     let rows = inner - below;
     // (for the mouse: the panel from its tabs to its last row)
     let last = body + inner - usize::from(inner > 0);
     draw_queued(out, editor, ui, crate::queued::Slot::Tests, (x0, body + rows), w, below, card)?;
-    if let Some(said) = &sandbox {
-        let warn = color("warning");
-        let at = (x0, (body + rows + below) as u16);
-        let on = slot_on(editor, crate::sizes::Slot::Test);
-        sandbox_row(out, on, at, w, said, "space x s", card, warn, faint)?;
-    }
     // The detail is a document (`rundoc.rs`): from the window the wheel is at (a message from its top, the output at
     // its end) — its own top while it has the keys; the wheel's thumb on the card's right edge when it doesn't fit
     let thumb = |detail_rows: usize, top: usize| {
@@ -4912,10 +4923,11 @@ fn draw_test_panel(
     // No results yet — the whole output (following its end, unless the wheel moved it); a run where no
     // test ran says so above it (its last line may well read "ok")
     if r.cases.is_empty() {
+        let lead = usize::from(sandbox.is_some() && rows > 1);
         let note = usize::from(r.state == RunState::NoTests);
-        let out_rows = rows.saturating_sub(note);
+        let out_rows = rows.saturating_sub(lead + note);
         editor.screen.test_panel.set(Some((y0, last, out_rows)));
-        editor.screen.run_rows.set(Some((crate::sizes::Slot::Test, body + note, x0 + PAD, out_rows)));
+        editor.screen.run_rows.set(Some((crate::sizes::Slot::Test, body + lead + note, x0 + PAD, out_rows)));
         let start = output_top(editor, crate::sizes::Slot::Test, out_rows);
         let bar = thumb(out_rows, start);
         for i in 0..rows {
@@ -4923,7 +4935,7 @@ fn draw_test_panel(
             queue!(out, MoveTo(x0 as u16, y))?;
             apply(out, card)?;
             queue!(out, Spaces(w), MoveTo((x0 + PAD) as u16, y))?;
-            if i < note {
+            if (lead..lead + note).contains(&i) {
                 apply(out, Style { fg: color("warning"), ..card })?;
                 let why = crate::whole::fit(
                     "no test ran — nothing matched it. What the runner did:",
@@ -4940,10 +4952,19 @@ fn draw_test_panel(
                 );
             }
         }
-        let at = (x0 + PAD, body + note, w.saturating_sub(2 * PAD), out_rows);
+        let said = sandbox.as_ref().filter(|_| lead > 0);
+        lead_row(
+            out,
+            (editor, ui),
+            crate::sizes::Slot::Test,
+            said,
+            (x0 + PAD, body, w.saturating_sub(2 * PAD)),
+            card,
+        )?;
+        let at = (x0 + PAD, body + lead + note, w.saturating_sub(2 * PAD), out_rows);
         draw_output(out, editor, ui, lay, card, crate::sizes::Slot::Test, start, at, None)?;
         for i in (0..out_rows).filter(|i| bar.as_ref().is_some_and(|b| b.contains(i))) {
-            let y = (body + note + i) as u16;
+            let y = (body + lead + note + i) as u16;
             apply(out, faint)?;
             queue!(out, MoveTo((x0 + w).saturating_sub(1) as u16, y), Print(THUMB))?;
         }
@@ -4973,6 +4994,11 @@ fn draw_test_panel(
         true => (detail.y, (body + rows).saturating_sub(detail.y)),
         false => (body, rows),
     };
+    // (the sandbox's line leads the detail, on its first row — `lead_row`)
+    let sandbox = sandbox.filter(|_| detail.w > 0 && detail_rows > 1);
+    let lead_y = detail_y;
+    let (detail_y, detail_rows) =
+        (detail_y + usize::from(sandbox.is_some()), detail_rows - usize::from(sandbox.is_some()));
     editor.screen.test_panel.set(Some((y0, last, list_rows)));
     // Keep the selection visible from where the list is (`C-e`/`C-y` move it), but where the wheel left it while the
     // selection stays; while running, the latest visible — until the wheel takes it off the end
@@ -5050,6 +5076,14 @@ fn draw_test_panel(
     }
     // Right (or under it): the detail (stacked, the slot's width)
     if detail.w > 0 {
+        lead_row(
+            out,
+            (editor, ui),
+            crate::sizes::Slot::Test,
+            sandbox.as_ref(),
+            (text.0, lead_y, text.1),
+            card,
+        )?;
         let at = (text.0, detail_y, text.1, detail_rows);
         draw_output(out, editor, ui, lay, card, crate::sizes::Slot::Test, top, at, None)?;
     }
@@ -14507,6 +14541,10 @@ const READ_ALL: (char, &str) = ('v', "read it all");
 /// `READ_ALL` in the short words.
 const READ_ALL_SHORT: &str = "read all";
 
+/// A whole card's way to the lines folded off it (`Offer.folds`, `Offer.details` — #474c), on its bottom line: the
+/// words a card's own `v` says them in (`See them`'s short words).
+const SEE_FOLDED: (char, &str) = ('v', "see");
+
 /// A cut card's row, after how many lines are left out: not read yet, open in its buffer, read whole.
 const CUT_UNREAD: &str = "not read yet";
 const CUT_OPEN: &str = "open but not read to its end";
@@ -14850,6 +14888,8 @@ impl OfferCard {
             let mut all = std::iter::once(&editor.workspace).chain(&editor.workspaces);
             Some((*n, all.find(|l| l.root == *root)?.claude.colour))
         };
+        // (lines of its question folded off it — its `v` sees them, #474c)
+        let mut folded = false;
         let (mut lines, labels) = match &o.state {
             OfferState::Asking => {
                 let b = o.answers(quick);
@@ -14947,7 +14987,8 @@ impl OfferCard {
                     // they can't show the status line's count)
                     v
                 };
-                let mut skip: Vec<usize> = Vec::new();
+                // (its details never on it — #474c, `Offer.details`)
+                let mut skip: Vec<usize> = o.details.iter().flat_map(|d| d.clone()).collect();
                 let v = loop {
                     (warn, diff, names) = (Vec::new(), Vec::new(), Vec::new());
                     let v = build(&skip, &mut warn, &mut diff, &mut names);
@@ -14957,6 +14998,7 @@ impl OfferCard {
                         None => break v,
                     }
                 };
+                folded = !skip.is_empty();
                 (v, Some(b))
             }
             OfferState::Installing(_) => {
@@ -15125,7 +15167,13 @@ impl OfferCard {
         }
         // Keep card width steady across states (ask → downloading → failed): ask text width is the floor
         // The longer of the ask and downloading texts (including the four wave cells)
-        let ask = o.question.split('\n').map(|l| l.width()).max().unwrap_or(0).max(o.working.width() + 4);
+        // (its details aren't drawn: they set no width)
+        let ask = (o.question.split('\n').enumerate())
+            .filter(|(k, _)| !o.details.iter().any(|d| d.contains(k)))
+            .map(|(_, l)| l.width())
+            .max()
+            .unwrap_or(0)
+            .max(o.working.width() + 4);
         let inner =
             lines.iter().map(|l| l.0.width()).max().unwrap_or(0).max(ask.min(max_inner)).max(cut_floor);
         // Framed (D3): its title the frame's name, its answers its bottom line — a cell of padding each side
@@ -15154,6 +15202,12 @@ impl OfferCard {
             let at = read.map_or(1, |i| i + 1).min(whole.len());
             whole.insert(at, READ_ALL);
             short.insert(at.min(short.len()), (READ_ALL.0, READ_ALL_SHORT.into()));
+            keep = Some(at);
+        } else if folded && o.acts_on('v') && !labels.iter().any(|a| a.0 == 'v') {
+            // (whole, but lines folded off it: `v` sees them — before its no, kept as what's cut is)
+            let at = whole.iter().position(|a| a.0 == 'n').unwrap_or(whole.len());
+            whole.insert(at, SEE_FOLDED);
+            short.insert(at.min(short.len()), (SEE_FOLDED.0, SEE_FOLDED.1.into()));
             keep = Some(at);
         }
         let kept: Vec<usize> = (whole.iter().enumerate())
@@ -19146,11 +19200,26 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                 let stamps = knot_stamps(ui, &m.stamps, knot_lit(editor, m, in_hand), card);
                 let glyph = knot(look, in_hand, &styles);
                 // (its words whole: the transcript keeps them, its card shows them — `whole.rs`)
+                let hang = refused_hang(look, &glyph);
                 let mut rows = tool_rows(look, m.ran.as_ref(), glyph, &stamps, w, &styles);
                 for r in &mut rows {
                     (r.link, r.call) = (look.link.clone(), Some(m.call.clone()));
                 }
                 lines.extend(rows);
+                // (what the sandbox blocked it, under it — its words wrapped hanging under the command, as its row's)
+                if let Some(line) = &m.refused {
+                    let text = format!("▲ {line}");
+                    let room = w.saturating_sub(hang).max(4);
+                    for (k, (_, part)) in crate::cut::fit_in_hand_at(&text, room).into_iter().enumerate() {
+                        lines.push(ChatRow {
+                            spans: vec![sp(" ".repeat(hang), styles.faint), sp(part.text, styles.warn)],
+                            skip: hang,
+                            join: (k > 0).then_some(part.space),
+                            call: Some(m.call.clone()),
+                            ..ChatRow::default()
+                        });
+                    }
+                }
             }
             // Elapsed time dimmed at the right end; stopped/error on the left
             Role::Note => {
@@ -21733,6 +21802,20 @@ fn trail_spans(
     (row, mark)
 }
 
+/// Where a knot row's target starts (`trail_spans`' knot and verb) — what's under it hangs there.
+fn refused_hang(look: &crate::chat::Look, knot: &crate::markdown::Span) -> usize {
+    knot.text.width() + format!(" {:<6} ", crate::chat::label(look.verb)).width()
+}
+
+/// What the sandbox blocked a run, the row under its knot row (#474a, `Msg.refused`) — one shape wherever a run shows:
+/// its panel's words and `▲` in warning (`lead_row`), hanging under the target (`hang` cells), cut to `w`, whole under
+/// the mouse.
+fn refused_spans(line: &str, hang: usize, w: usize, st: &TrailStyles) -> Vec<crate::markdown::Span> {
+    use crate::markdown::Span;
+    let text = crate::whole::fit(&format!("▲ {line}"), w.saturating_sub(hang).max(4));
+    vec![Span { cut: None, hint: false, text: " ".repeat(hang), style: st.faint }, text.span(st.warn)]
+}
+
 /// A tool call's row in the chat, its words whole in the transcript (`whole.rs`): `trail_row_at`'s one row, what it
 /// cut kept as the document's (`chatdoc::keep_whole`) — its words wrapped as one text (the target, then the suffix — a
 /// range, a note's words — and where it ran) only to say the transcript's line, the same at every width. A cut row
@@ -22680,16 +22763,23 @@ fn follow_thread(
                 if plan_said && look.verb == "plan" && !in_hand {
                     continue;
                 }
-                if in_hand {
-                    below = Some(total);
-                }
                 // (the stop in hand where it is now — its lines moved by later edits, a search's count)
                 let look = gaze.filter(|_| in_hand).map_or(look, |g| &g.look);
                 let stamps = knot_stamps(ui, &m.stamps, knot_lit(editor, m, in_hand), card);
                 let glyph = knot(look, in_hand, st);
+                let hang = refused_hang(look, &glyph);
                 let (row, ..) = trail_row_at(look, m.ran.as_ref(), glyph, &stamps, inner, false, st);
                 voice_under = false;
-                vec![(row, look.link.clone().filter(|_| links))]
+                let mut rows = vec![(row, look.link.clone().filter(|_| links))];
+                // (what the sandbox blocked it, under it, as the chat says it)
+                if let Some(line) = &m.refused {
+                    rows.push((refused_spans(line, hang, inner, st), None));
+                }
+                // (the row in hand is the knot's own, its first — counted from the bottom)
+                if in_hand {
+                    below = Some(total + rows.len() - 1);
+                }
+                rows
             }
             // Its thinking (italic) and what it said between stops — a new thought goes under the last one instead
             // of taking its place (thinking comes in bursts: a lone "I should" for seconds, read as flicker)
@@ -22726,7 +22816,9 @@ fn follow_thread(
         total += rows.len();
         parts.push((m.role == Role::Tool, rows));
     }
-    let knots: Vec<bool> = parts.iter().rev().flat_map(|(k, p)| std::iter::repeat_n(*k, p.len())).collect();
+    // (a call's knot its first row — what the sandbox blocked it, under it, its paragraph's)
+    let knots: Vec<bool> =
+        parts.iter().rev().flat_map(|(k, p)| (0..p.len()).map(move |i| *k && i == 0)).collect();
     let rows: Vec<CardRow> = parts.into_iter().rev().flat_map(|(_, p)| p).collect();
     let hand_row = below.map(|b| rows.len() - 1 - b);
     (rows, hand_row, knots)
@@ -27661,6 +27753,7 @@ mod tests {
                 gate: Vec::new(),
                 held_changes: Vec::new(),
                 folds: Vec::new(),
+                details: Vec::new(),
                 aside: false,
                 like: Vec::new(),
                 came: 0,
@@ -29973,6 +30066,57 @@ mod tests {
                 assert!(card.1 + card.3 < ask.1, "{at}: above the ask\n{s}");
             }
         }
+    }
+
+    /// #474a: what the sandbox blocked a run leads it wherever it shows — in the chat and on the follow card, the row
+    /// under its knot: the run panel's words and `▲`, in warning, hanging under the command; nothing under a run it
+    /// didn't block.
+    #[test]
+    fn a_refusal_leads_its_run_in_the_chat_and_on_the_follow_card() {
+        let said = "sandbox blocked reading ~/.ssh/id_ed25519";
+        // (the command's column on the run's row, and the row under it with its `▲`'s column)
+        let col = |r: &str, t: &str| r.find(t).map(|b| r[..b].chars().count());
+        let under = |rows: &[String]| {
+            let run = rows.iter().position(|r| r.contains("▸ run    cargo test")).expect("the run's row");
+            let next = rows.get(run + 1).cloned().unwrap_or_default();
+            (col(&rows[run], "cargo"), col(&next, "▲"), next)
+        };
+        let mut ed = threaded_turn();
+        let (.., next) = under(&chat_rows(&mut ed, 120, "Done now."));
+        assert!(!next.contains('▲'), "not blocked: nothing under it — {next:?}");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs[5].refused = Some(said.into());
+        c.msgs[5].changed();
+        // (in the chat its words wrapped, hanging under the command)
+        let rows = chat_rows(&mut ed, 120, "Done now.");
+        let (at, mark, next) = under(&rows);
+        assert_eq!(mark, at, "under the command: {next:?}");
+        let run = rows.iter().position(|r| r.contains("▸ run")).unwrap();
+        let words: Vec<&str> =
+            rows[run + 1..].iter().map(|r| r.trim()).take_while(|r| !r.is_empty()).collect();
+        assert_eq!(words.join(" "), format!("▲ {said}"), "the chat: {rows:#?}");
+        // (minimized, following its turn under way — as `the_follow_card_shows_the_turn_as_knots_and_words`)
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.hidden, c.follow.on, c.state) = (true, true, crate::chat::State::Writing);
+        c.msgs.pop();
+        let run = c.msgs[5].look.clone().unwrap();
+        c.follow.gaze =
+            Some(crate::follow::Gaze { call: "x1".into(), ..crate::follow::Gaze::new(run, None, None) });
+        let (at, mark, next) = under(&follow_card(&mut ed, 160));
+        assert_eq!(next.trim_start(), format!("▲ {said}"), "the follow card");
+        assert_eq!(mark, at, "under the command: {next:?}");
+        // (the row in hand — its `▎` — is the run's own, not the line under it)
+        let vt = screen_at(&mut ed, 160);
+        let s = vt.screen();
+        let (x0, y0, w, h) = ed.screen.thought_card.get().expect("the card");
+        let (x0, w) = (x0 as u16, w as u16);
+        let bar_on = |text: &str| {
+            (y0..y0 + h)
+                .map(|y| y as u16)
+                .find(|&y| s.contents_between(y, x0, y, x0 + w).contains(text))
+                .map(|y| s.cell(y, x0 + 1).unwrap().contents() == "▎")
+        };
+        assert_eq!((bar_on("cargo test"), bar_on(said)), (Some(true), Some(false)), "the run's row in hand");
     }
 
     /// The chat's rows from right after its gutter (its padding, then its text) on, from the question's row to the

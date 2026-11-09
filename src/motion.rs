@@ -495,6 +495,14 @@ pub fn arrivals(ed: &mut Editor, peeks: &[u64], drawn: &[u64], unread: bool) {
             }
         }
     }
+    // (the sandbox's line come where the run's panel drew none — a calm one, by design only, isn't news)
+    if let Some(before) = &ed.seen.refused {
+        for &(slot, _) in before.iter().filter(|b| !b.1) {
+            if crate::rundoc::refused(ed, slot).is_some_and(|p| !p.calm) {
+                places.push(Place::Refused(slot));
+            }
+        }
+    }
     // (a child come in the list and on the strip: one place)
     let mut once = Vec::with_capacity(places.len());
     for p in places {
@@ -539,6 +547,7 @@ pub fn drawn(ed: &mut Editor) {
     ed.seen.unread = Some(d.unread);
     (ed.seen.waiting, ed.seen.quiet) = (Some(d.waiting), Some(d.quiet));
     ed.seen.badges = d.badges;
+    ed.seen.refused = d.refused;
 }
 
 /// Each session's state word (`Doing::word`), as the session list says it now.
@@ -585,6 +594,8 @@ pub struct Seen {
     pub quiet: Option<usize>,
     /// The slot's tabs' badges — None where the frame drew no slot's tabs.
     pub badges: Option<Vec<(crate::sizes::Slot, crate::chrome::Badge)>>,
+    /// The run panels it drew, each with whether the sandbox's line led its output — None where it drew none.
+    pub refused: Option<Vec<(crate::sizes::Slot, bool)>>,
 }
 
 /// What a frame draws of `Seen`'s places, recorded where each is drawn (`Screen.news`).
@@ -596,6 +607,7 @@ pub struct Drawn {
     pub waiting: usize,
     pub quiet: usize,
     pub badges: Option<Vec<(crate::sizes::Slot, crate::chrome::Badge)>>,
+    pub refused: Option<Vec<(crate::sizes::Slot, bool)>>,
 }
 
 /// Every event (`handle_event`): a buffer a run of Claude's rewrote (`run_wrote`) whose version moved — wet and heard
@@ -737,6 +749,8 @@ pub enum Place {
     Quiet,
     /// A run's tab's badge, turned to its end mark (§6).
     Badge(crate::sizes::Slot),
+    /// The sandbox's line leading a run's output (#474a, `term::lead_row`), come where its panel drew none (§6).
+    Refused(crate::sizes::Slot),
 }
 
 /// The act a flash shows.
