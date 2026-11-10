@@ -246,7 +246,8 @@ up what matters least first, in one order. Kept longest:
 
 1. its way in, `C-q answer` (inside zellij its twin, `F2 answer`) — without it nothing on the card says your keys
    don't answer it;
-2. answers that last or can't be taken back, in their short words — each card kind marks them on its answers
+2. its yes, `y`, in its short words (`y once`, `y move`) — the answer you read the card for is never a bare letter —,
+   and answers that last or can't be taken back, in theirs — each card kind marks them on its answers
    (`y Remove checkout`, `y Commit`, `y Stop it`, `y Bring`, a trust, a capital such as `N` never or `D` remove both,
    the `a`/`s` grants), and a cut card's `y once read` and `v read all`;
 3. the other answers' short words (`y move · c all · v files · n not now`), then their keys alone, the last first.

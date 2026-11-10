@@ -14363,12 +14363,14 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
         return None;
     }
     let height = lay.status_y as usize + 1;
-    // (its narrowest bottom line, as `answers_fit`'s last try: its way in, then its answers' keys alone but what lasts
-    // in its short words — `answer_forms` — and what lists the cards behind it)
-    let short = o.answers_short(editor.preflight_quick().is_some());
-    let keys = short.iter().map(|(k, l)| pair_w(if o.lasting(*k) { l } else { "" }));
-    let way = way_w(&editor.card_way_said()) + 3;
-    let answer = keys.map(|w| w + 3).sum::<usize>().checked_sub(3).map(|w| w + way);
+    // (its narrowest bottom line, as `answers_fit`'s last try: its way in, then its answers' keys alone but its yes and
+    // what lasts in their short words — `answer_forms`' last form — and what lists the cards behind it)
+    let quick = editor.preflight_quick().is_some();
+    let (whole, short) = (o.answers(quick), o.answers_short(quick));
+    let kept: Vec<usize> =
+        (whole.iter().enumerate()).filter(|(_, a)| o.lasting(a.0)).map(|(i, _)| i).collect();
+    let narrowest = answer_forms(&whole, &short, None, &kept).pop().filter(|f| !f.is_empty());
+    let answer = narrowest.map(|f| answers_line_w(&editor.card_way_said(), &f));
     let side = editor.workspace.viewer.sidebar.is_some();
     let nav = if side {
         crate::sizes::Nav::Side(editor.workspace.kept(crate::pane::Shows::Side))
@@ -14414,11 +14416,12 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
 
 /// A card's answers in the forms its frame's bottom line takes them, the first that fits (`answers_fit` — the user,
 /// 2026-10-25: a floating card's keys are always in its bottom line, never rows inside): whole, each its short words
-/// (`Offer::answers_short`), then the others — the last first — their keys alone one by one. `kept` (by index): what
-/// keeps its short words in every form — what lasts (`Offer::lasting`: holds past this once or can't be taken back),
-/// a cut card's yes saying what it waits for (`read`: `READ_FIRST` in its meaning's place, `READ_FIRST_SHORT` past
-/// the whole form) and its `v read all` (the review of cardkeys: `N` alone was a permanent no nothing on the card
-/// named).
+/// (`Offer::answers_short`), then the others — the last first — their keys alone one by one. Its yes (`y`) keeps its
+/// short words in every form (#488: `y` alone while `a chat` kept its words — the one answer a first-timer reads the
+/// card for, a bare letter); so does what `kept` names (by index) — what lasts (`Offer::lasting`: holds past this
+/// once or can't be taken back), a cut card's yes saying what it waits for (`read`: `READ_FIRST` in its meaning's
+/// place, `READ_FIRST_SHORT` past the whole form) and its `v read all` (the review of cardkeys: `N` alone was a
+/// permanent no nothing on the card named).
 fn answer_forms(
     whole: &[(char, &'static str)],
     short: &[(char, String)],
@@ -14435,7 +14438,8 @@ fn answer_forms(
     let mut forms = vec![said(whole, READ_FIRST)];
     let mut v = short.to_vec();
     forms.push(said(v.clone(), READ_FIRST_SHORT));
-    for i in (0..v.len()).rev().filter(|i| Some(*i) != read && !kept.contains(i)) {
+    let yes = v.iter().position(|a| a.0 == 'y');
+    for i in (0..v.len()).rev().filter(|i| Some(*i) != read && Some(*i) != yes && !kept.contains(i)) {
         v[i].1.clear();
         forms.push(said(v.clone(), READ_FIRST_SHORT));
     }
@@ -14460,9 +14464,9 @@ fn answers_line_w(key: &str, labels: &[(char, String)]) -> usize {
 
 /// The form of a card's answers (`answer_forms`' index) its bottom line takes within `room` cells. One order for what
 /// the line gives up (the user, 2026-10-25), kept longest first: (1) its way in (`key`, `C-q answer`) — without it
-/// nothing on the card says a key typed now doesn't answer it; (2) what keeps its short words (`answer_forms`'
-/// `kept`); (3) the other answers' short words, then their keys alone, the last first. Past (3), None: the card grows
-/// left for its narrowest form (`OfferCard::laid`) — no key is ever said in a card's body.
+/// nothing on the card says a key typed now doesn't answer it; (2) what keeps its short words (`answer_forms`: its
+/// yes, `kept`); (3) the other answers' short words, then their keys alone, the last first. Past (3), None: the card
+/// grows left for its narrowest form (`OfferCard::laid`) — no key is ever said in a card's body.
 fn answers_fit(key: &str, forms: &[Vec<(char, String)>], room: usize) -> Option<usize> {
     (0..forms.len()).find(|&f| answers_line_w(key, &forms[f]) <= room)
 }
@@ -15208,8 +15212,8 @@ impl OfferCard {
         // width); never wider for them. A card cut short adds `v read it all` (unless an answer of its own is `v`),
         // and its weighty yes says it waits `once it's read`, in the warning colour once a `y` came early (frictions29
         // 13). What gives way, in `answers_fit`'s one order: the other answers' words down to their keys — never its
-        // way in, what lasts (`Offer::lasting`), what a cut yes waits for, nor what lists the cards behind it; past
-        // that the card grows left for its line, and only a screen too narrow for that draws none.
+        // way in, its yes, what lasts (`Offer::lasting`), what a cut yes waits for, nor what lists the cards behind it;
+        // past that the card grows left for its line, and only a screen too narrow for that draws none.
         let room = fixed.unwrap_or_else(|| inner.max(reading)).saturating_sub(2);
         // (cut, or scrolled to its end: the same card — its yes keeps the form it had, the card its width)
         let read =
@@ -25807,6 +25811,91 @@ mod tests {
         assert_eq!(&cells[..4], &[(ink, ground), (ink, ground), (ink, ground), (ink, D)]);
     }
 
+    /// #488: a card's yes keeps its word on its bottom line however narrow, every answer a whole pair, in order.
+    #[test]
+    fn a_cards_yes_keeps_its_word_on_its_bottom_line() {
+        use crate::offer::{Offer, What};
+        // #488: the cards whose `y` stands beside answers that may fold — the grant Claude's `also` raises (R1's
+        // `also-read`: `y once` beside the lasting `a chat · s session · A always`), a host's, a change set's, a
+        // restart's (its yes lasts) — at 80×43 and 120×34, over the code and over the chat's foot, waiting and focused:
+        // `y` always with its words, every answer whole (its words, its short words, or its key alone), never cut
+        let scratch = crate::scratch::Scratch::new("card-yes");
+        let base = scratch.to_path_buf();
+        let grant = |g: crate::allow::Grant| {
+            let run = crate::blocked::BlockedRun::of(crate::tools::Job::Command("true".into(), base.clone()));
+            let why = "Reading the notes on the strands it was asked about, which live outside the project.";
+            crate::blocked::also_card(
+                g,
+                why,
+                ("cat notes/strands.md", None),
+                Box::new(run),
+                None,
+                Vec::new(),
+                true,
+            )
+        };
+        let card = |name: &str| match name {
+            "a folder's grant" => grant(crate::allow::Grant::Read(base.join("notes"))),
+            "a host's grant" => grant(crate::allow::Grant::Host("example.invalid".into(), 443)),
+            "a change set" => {
+                let what = What::ChangeSet { whose: crate::refactor::Whose::Claude(7), ops: false };
+                let q = "Claude renames `a` to `b` in 3 files.\n\nOne review for the set.";
+                Offer::new("Claude changes 3 files".into(), q, "", String::new(), what)
+            }
+            _ => {
+                let q = "The build it would make is the one running now.";
+                let what = What::RestartSame { id: 1 };
+                Offer::new("Restart into the same build?".into(), q, "", String::new(), what)
+            }
+        };
+        let mut bare = 0;
+        for name in ["a folder's grant", "a host's grant", "a change set", "a restart"] {
+            for (cols, rows) in [(80u16, 43u16), (120, 34)] {
+                for (chat, focused) in [(false, false), (true, false), (true, true)] {
+                    let at = format!("{name} at {cols}×{rows}, the chat {chat}, focused {focused}");
+                    let mut ed = Editor::new(Config::default());
+                    ed.push_offer(card(name));
+                    ed.workspace.claude.chat = chat.then(crate::chat::Chat::new);
+                    if chat {
+                        ed.workspace.set_at(Here::Chat);
+                    }
+                    render(&mut ed, &mut Vec::new(), cols, rows).unwrap();
+                    if focused {
+                        ed.handle_key("C-q".parse().unwrap());
+                        render(&mut ed, &mut Vec::new(), cols, rows).unwrap();
+                    }
+                    let line = card_line(&ed).unwrap_or_else(|| panic!("{at}: no card drawn"));
+                    let o = &ed.offers[0];
+                    let (whole, short) = (o.answers(false), o.answers_short(false));
+                    let said = line.trim_start_matches(['╰', '─', ' ']).trim_end_matches(['╯', '─', ' ']);
+                    let mut parts = said.split(" · ");
+                    let way = parts.next().unwrap_or_default();
+                    assert!(way == "esc back" || way.ends_with(" answer"), "{at}: its way in first: {line}");
+                    let mut keys = String::new();
+                    for p in parts {
+                        let (k, words) = p.split_at(p.chars().next().map_or(0, char::len_utf8));
+                        let k = k.chars().next().unwrap_or(' ');
+                        let words = words.strip_prefix(' ').unwrap_or(words);
+                        let w = whole.iter().find(|a| a.0 == k);
+                        let s = short.iter().find(|a| a.0 == k);
+                        let (w, s) = w
+                            .zip(s)
+                            .unwrap_or_else(|| panic!("{at}: `{p}` isn't one of its answers: {line}"));
+                        let fits = words.is_empty() || words == w.1 || words == s.1;
+                        assert!(fits, "{at}: `{p}` isn't a whole pair: {line}");
+                        assert!(k != 'y' || !words.is_empty(), "{at}: `y` without its word: {line}");
+                        bare += usize::from(words.is_empty());
+                        keys.push(k);
+                    }
+                    let all: String = whole.iter().map(|a| a.0).collect();
+                    assert_eq!(keys, all, "{at}: every answer, in its order: {line}");
+                }
+            }
+        }
+        // (the walk meets a fold: some answer somewhere went down to its key)
+        assert!(bare > 0, "no card folded its foot: the walk proves nothing");
+    }
+
     /// #201: a weighty card fits itself to a narrow screen — its answers on its bottom line, whole, else their short
     /// words, else their keys alone (the user, 2026-10-25) — down to `CARD_MIN_INNER`; narrower, it isn't drawn and
     /// the status line says one waits and the window's size it needs. (In a 50-column pane `:restart`'s four answers
@@ -25857,7 +25946,7 @@ mod tests {
         let narrowest = forms.last().unwrap();
         assert_eq!(
             narrowest.iter().map(|(k, l)| format!("{k}{l}")).collect::<Vec<_>>(),
-            ["y", "achat", "Aalways", "n", "Nnever"],
+            ["yonce", "achat", "Aalways", "n", "Nnever"],
             "{forms:?}"
         );
         let shown_after = |cols: u16, rows: u16, chat: bool, keys: &[&str]| {
