@@ -742,6 +742,8 @@ fn render_drawing(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> 
         | editor.words_drawn()
         // (and a session's "waits for you" whose card it didn't draw: its toast — #405)
         | crate::motion::peeks_said(editor)
+        // (and a failed page's words whose first row it didn't draw: their toast — #473)
+        | crate::web::page::rows_said(editor)
         // (and a chat a restore brought back that it didn't draw: said — `recovery.rs`)
         | crate::recovery::chat_drawn(editor)
     {

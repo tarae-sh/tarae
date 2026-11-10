@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use super::fetch::{self, Fetched, Stop};
 use super::{Page, Prefer, Read};
 use crate::document::DocId;
-use crate::editor::Editor;
+use crate::editor::{Editor, ToastKind};
 
 /// A page's buffer: where it came from, how it read, the fetch under way.
 pub struct PageOf {
@@ -290,20 +290,40 @@ fn landed(ed: &mut Editor, id: DocId, mine: &Stop, got: Result<Got, String>) {
         return crate::log::line("web", "info", "a stopped read's result dropped");
     };
     p.fetching = None;
-    match got {
-        Err(e) => {
-            ed.set_error(format!("web: {e}"));
-            said_in(ed, id, e)
-        }
+    let (kind, why) = match got {
+        Err(e) => (ToastKind::Error, e),
         // (what isn't a page: said as the reader says it)
         Ok(g) if g.page.read == Read::None => {
             let said = g.page.said.clone().unwrap_or_else(|| "not a page".into());
             crate::event::drop_later(g);
-            ed.set_warning(format!("web: {said}"));
-            said_in(ed, id, said)
+            (ToastKind::Warning, said)
         }
-        Ok(g) => filled(ed, id, g),
+        Ok(g) => return filled(ed, id, g),
+    };
+    // (#473: the first row says it whole — its toast only where no frame draws that row; one that keeps a copy, a
+    // toast)
+    let msg = format!("web: {why}");
+    match said_in(ed, id, why) {
+        true => ed.said_by_row(id, kind, msg),
+        false => ed.say(kind, msg),
     }
+}
+
+/// After a frame (`term::render_drawing`): a failed page's words held for its first row (#473,
+/// `Editor::said_by_row`) — dropped where this frame drew that row (it says them), else their toast. Whether one was
+/// made (the frame is drawn again with it).
+pub fn rows_said(ed: &mut Editor) -> bool {
+    if ed.row_words.is_empty() {
+        return false;
+    }
+    let mut said = false;
+    for (id, of, kind, msg) in std::mem::take(&mut ed.row_words) {
+        if !ed.screen.rows_of(id).any(|r| r.0 == 0) {
+            ed.row_unseen(of, kind, msg);
+            said = true;
+        }
+    }
+    said
 }
 
 /// A failure's why for the page's line, which names its host already: `<address>: <why> · <the OS's words>` (the
@@ -317,10 +337,11 @@ pub fn brief(why: &str) -> &str {
 }
 
 /// Why a read ended without a page (failed, stopped, not a page): on its line (`brief`), and whole on the first row of
-/// a buffer that has no page yet, faint — one that has a copy keeps it.
-fn said_in(ed: &mut Editor, id: DocId, why: String) {
-    let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
-    if doc.text.len_bytes() == 0 || doc.page.as_ref().is_some_and(|p| p.read.is_none()) {
+/// a buffer that has no page yet, faint — one that has a copy keeps it. Whether its first row says it.
+fn said_in(ed: &mut Editor, id: DocId, why: String) -> bool {
+    let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return false };
+    let first = doc.text.len_bytes() == 0 || doc.page.as_ref().is_some_and(|p| p.read.is_none());
+    if first {
         crate::disk::reload_text(doc, &ropey::Rope::from_str(&why));
         // (at its start, as a first read's: the insert would carry the cursor to its end)
         doc.set_selection(crate::selection::Selection::point(0));
@@ -331,6 +352,7 @@ fn said_in(ed: &mut Editor, id: DocId, why: String) {
     if let Some(p) = doc.page.as_deref_mut() {
         p.failed = Some(why);
     }
+    first
 }
 
 /// A page landed in buffer `id`: its text in with one change (the cursor kept where it was, a first read's at the

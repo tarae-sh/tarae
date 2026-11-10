@@ -1656,7 +1656,7 @@ fn frames_of_the_answer_words() {
 }
 
 /// The work wiki (the work-wiki plan W1–W4), for its screenshots — only with `TARAE_FRAMES_DIR` set (both themes
-/// there, at 120×32 and 80×32; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): Claude's read of a wiki page
+/// there, at 120×34 and 80×43; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): Claude's read of a wiki page
 /// on the card that says the token, the page read at its own address, the wiki's search as a list, and an unset
 /// variable's words. Its `:granted` row is `snapshot_granted`'s
 /// frames. The wiki is a stand-in Confluence (the fetch tests' TLS server, as `page.test`): no network, no real token.
@@ -1705,7 +1705,7 @@ fn frames_of_the_work_wiki() {
     };
     let wiki_page = format!("{BASE}/display/OPS/Payments+rollback");
     let wiki_search = format!("{BASE}/dosearchsite.action?queryString=payments+rollback");
-    for (w, h) in [(120, 32), (80, 32)] {
+    for (w, h) in [(120, 34), (80, 43)] {
         // (a session whose config names the wiki, its variable holding `token` — or not; the chat open on `msgs`)
         let shot = |token: Option<&'static str>, web: Option<&str>, msgs: Vec<Msg>| {
             let mut s = Shot::new(w, h);
@@ -1730,7 +1730,8 @@ fn frames_of_the_work_wiki() {
                     crate::web::page::of(ed.doc())
                         .is_some_and(|p| p.failed.is_some() || ed.doc().text.len_chars() > 0)
                 });
-                // (its "how it read" toast, a page's every time, left out but where it's the words: the unset one)
+                // (its "how it read" toast, a page's every time, left out; a failed one has none — its first row says
+                // it, #473)
                 if token.is_some() {
                     s.ed.toasts.clear();
                 }
@@ -1793,6 +1794,42 @@ fn frames_of_the_work_wiki() {
             ],
         );
         s.frames_both(&format!("wiki_unset_{w}"));
+    }
+}
+
+/// #473: a failed page says its failure once on the screen — its first row, whole; no toast over it repeating it — at
+/// 80 and 120, beside the chat or alone; kept in `:messages` all the same.
+#[test]
+fn a_failed_page_says_its_failure_once() {
+    use crate::web::fetch::tests::{way, yours_rules};
+    // (a port held refusing for the test's length: #430)
+    let (_held, at) = tarae_testkit::net::refused_at();
+    let address = format!("http://localhost:{}/", at.port());
+    for ((w, h), chat) in [(80, 43), (120, 34)].into_iter().flat_map(|s| [(s, false), (s, true)]) {
+        let mut s = Shot::new(w, h);
+        s.in_project();
+        s.ed.config.llm.command = "sh".into();
+        s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        s.ed.workspace.web_way =
+            Some(std::sync::Arc::new(move |stop| crate::web::fetch::Way { stop, ..way(at, yours_rules()) }));
+        s.keys(&format!(":web {address}<ret>"));
+        s.until("the failure", |ed| crate::web::page::of(ed.doc()).is_some_and(|p| p.failed.is_some()));
+        if chat {
+            s.keys(" L");
+        }
+        let screen = rows_of(&mut s, (0, 0, w as usize, h as usize)).join("\n");
+        let at = format!("{w}×{h}, chat {chat}");
+        assert_eq!(screen.matches(&address).count(), 1, "{at}: once\n{screen}");
+        assert!(s.ed.doc().text.to_string().starts_with(&address), "{at}: the first row says it");
+        let kept = s.ed.messages.iter().any(|m| m.2.starts_with(&format!("web: {address}")));
+        assert!(kept, "{at}: in :messages");
+        assert!(s.ed.toasts.iter().all(|t| !t.text.contains(&address)), "{at}: no toast");
+        // (a page out of sight as its words come: their toast)
+        let page = s.ed.doc().id;
+        s.ed.open_virtual("elsewhere", "");
+        s.ed.said_by_row(page, crate::editor::ToastKind::Error, format!("web: {address}: again"));
+        s.frame();
+        assert!(s.ed.toasts.iter().any(|t| t.text.ends_with(": again")), "{at}: out of sight, a toast");
     }
 }
 

@@ -48,6 +48,12 @@ fn toasts(ed: &crate::editor::Editor) -> Vec<String> {
     ed.toasts.iter().map(|t| t.text.clone()).collect()
 }
 
+/// What `:messages` keeps — a failed page's words too, whose toast a frame decides (#473: none where it draws the page's
+/// first row).
+fn messages(ed: &crate::editor::Editor) -> Vec<String> {
+    ed.messages.iter().map(|m| m.2.clone()).collect()
+}
+
 /// The front buffer is a page whose read has landed (or ended).
 fn landed(ed: &crate::editor::Editor) -> bool {
     super::page::of(ed.doc()).is_some_and(|p| p.fetching.is_none())
@@ -98,7 +104,7 @@ fn web_reads_a_saved_page_into_a_buffer_named_by_its_title() {
 
     // What isn't a page: its buffer says so, faint, on its first row — and its line
     feed(&mut ed, ":web saved/a.pdf<ret>");
-    settle_until(&mut ed, |ed| toasts(ed).iter().any(|t| t.starts_with("web: a PDF")));
+    settle_until(&mut ed, |ed| messages(ed).iter().any(|t| t.starts_with("web: a PDF")));
     assert_eq!(ed.docs.len(), docs + 1);
     let p = super::page::of(ed.doc()).unwrap();
     assert!(p.read.is_none() && p.failed.as_deref().is_some_and(|f| f.starts_with("a PDF")));
@@ -119,7 +125,7 @@ fn web_says_what_it_takes_of_other_words() {
     assert!(none_reading(&ed) && ed.docs.len() == docs, "nothing under way, no buffer");
     feed(&mut ed, ":web tokio<ret>");
     let said = format!("/tokio: no such file — {}", super::open::TAKES);
-    settle_until(&mut ed, |ed| toasts(ed).iter().any(|t| t.starts_with("web: ") && t.ends_with(&said)));
+    settle_until(&mut ed, |ed| messages(ed).iter().any(|t| t.starts_with("web: ") && t.ends_with(&said)));
 }
 
 /// `:web https://…` with the session's copy of that page (fetched within `KEEP`, by the address asked or the one it

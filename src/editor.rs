@@ -1130,6 +1130,9 @@ pub struct Editor {
     /// A session's "waits for you" while a peek of its card may say it (#405): kept in `:messages`, its toast only after a
     /// frame that drew no card of that session's (`motion::peeks_said`).
     pub peek_words: Vec<(crate::event::WorkspaceId, ToastKind, String)>,
+    /// A failed page's words while its first row says them (#473): kept in `:messages`, their toast only after a frame
+    /// that drew no pane's first row of that page (`web::page::rows_said`) — (the page, the session behind, …).
+    pub row_words: Vec<(DocId, Option<crate::event::WorkspaceId>, ToastKind, String)>,
     /// A hunk reset waiting on its diff (§5): (the document, the version it left) — a turn's file's `u` shows once
     /// that version's diff lands empty, and is pressed then (`Editor::diff_landed`).
     pub press_on_diff: Option<(crate::document::DocId, u64)>,
@@ -1645,6 +1648,7 @@ impl Editor {
             motions: Vec::new(),
             seen: Default::default(),
             peek_words: Vec::new(),
+            row_words: Vec::new(),
             press_on_diff: None,
             wet_waiting: Vec::new(),
             motion_drawn: !cfg!(test),
@@ -3081,6 +3085,21 @@ impl Editor {
     /// Words `said_by_peek` held that no frame drew a card of session `id`'s saying: their toast after all (kept already).
     pub(crate) fn peek_unseen(&mut self, id: crate::event::WorkspaceId, kind: ToastKind, msg: String) {
         self.toast(kind, msg, Some(id));
+    }
+
+    /// Document `doc`'s first row says `msg` (a failed page's whole why, #473): kept in `:messages` and a note now, its
+    /// toast only after a frame that drew no first row of it (`web::page::rows_said`).
+    pub(crate) fn said_by_row(&mut self, doc: DocId, kind: ToastKind, msg: String) {
+        let msg = self.said_by_session(msg);
+        self.recorded(kind, msg.clone());
+        self.note(msg.clone());
+        let of = self.behind.then_some(self.workspace.id);
+        self.row_words.push((doc, of, kind, msg));
+    }
+
+    /// Words `said_by_row` held that no frame drew the row of: their toast after all (kept already).
+    pub(crate) fn row_unseen(&mut self, of: Option<crate::event::WorkspaceId>, kind: ToastKind, msg: String) {
+        self.toast(kind, msg, of);
     }
 
     /// `msg` as a toast of `kind` — `set_status`, `set_success`, … by its kind.
