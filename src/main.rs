@@ -152,7 +152,6 @@ mod picker;
 mod places;
 mod plan;
 mod plugin;
-mod pointed;
 mod preflight;
 mod presence;
 mod procs;

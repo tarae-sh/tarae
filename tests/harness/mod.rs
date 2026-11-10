@@ -108,7 +108,8 @@ const SUN_PATH: usize = 108;
 const SOCKETS: &str = "target/e2e-sockets";
 
 /// `paths` of this repository as of `commit` written into `to` (`git archive`): each file's time the commit's, so
-/// two copies of one commit look the same to cargo. False when this clone hasn't that commit.
+/// two copies of one commit look the same to cargo. False when this clone hasn't that commit. `Sandbox::copy_commit`'s
+/// body, a function of its own for code mode (b)'s step 0 to reuse beside it.
 pub fn extract_commit(to: &Path, commit: &str, paths: &[&str]) -> bool {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     fs::create_dir_all(to).unwrap();
@@ -160,8 +161,9 @@ impl Sandbox {
         sb
     }
 
-    /// A sandbox for tests/live.rs: tarae's own config and state stay in the temp dir as always, but the child
-    /// sees the real PATH and HOME — rust-analyzer, cargo and a logged-in claude work as they do for you.
+    /// A sandbox for tests/live.rs (its live runs, the A/Bs and the fix loops' cells, `fix_cell`): tarae's own config
+    /// and state stay in the temp dir as always, but the child sees the real PATH and HOME — rust-analyzer, cargo and
+    /// a logged-in claude work as they do for you.
     pub fn live(name: &str) -> Self {
         let mut sb = Sandbox::new(&format!("live-{name}"));
         sb.live = true;

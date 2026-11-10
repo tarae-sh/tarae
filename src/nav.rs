@@ -52,7 +52,7 @@ const CONTEXT_MAX: u64 = 10;
 const LIMIT_MAX: usize = 1000;
 
 /// A line's text in an answer, at most (chars).
-pub(crate) const LINE_MAX: usize = 240;
+const LINE_MAX: usize = 240;
 
 /// Files named in the "more not shown" line, at most.
 const MORE_NAMED: usize = 12;

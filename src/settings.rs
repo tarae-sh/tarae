@@ -600,13 +600,6 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.session_tools = s(v).to_string(),
     },
     Setting {
-        path: "llm.compound",
-        kind: Kind::Bool,
-        doc: "Chat: a failed run's or test run's report brings the source lines its output points at. From Claude's next start",
-        get: |c| Value::from(c.llm.compound),
-        set: |c, v| c.llm.compound = b(v),
-    },
-    Setting {
         path: "llm.web-search",
         kind: Kind::Bool,
         doc: "Chat: Claude can search the web (web_search) — a small model's search beside the chat (llm.web-search-model), a list of pages back; a chat's first search asks on a card showing its words, which leave the machine for Anthropic's search engine. A change takes the next chat. Only your own config sets it",

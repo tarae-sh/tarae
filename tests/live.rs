@@ -5964,18 +5964,17 @@ fn mcp_image_and_pdf_reach_the_model() {
     }
 }
 
-// ── Code mode (a)'s a6 A/B ───────────────────────────────────────────────────────
+// ── The fix loops ────────────────────────────────────────────────────────────────
 
-/// A fix loop of the a6 A/B: a bug planted in the corpus first (file, old, new), then a task whose check passes once
-/// it's fixed.
+/// A fix loop: a bug planted in the corpus first (file, old, new), then a task whose check passes once it's fixed —
+/// code mode (b)'s regression turns (main's `.sb/codemode-plan.md`), on the warm build below.
 struct FixTask {
     task: EditTask,
     plant: (&'static str, &'static str, &'static str),
 }
 
 /// The fix loops (the design session's brief, 2026-11-09): a type error (rustc's ` --> ` form) the task says to `run`
-/// the check for, and a test that panics, its task naming no tool (Claude picks `run` or `run_tests` — a6 is at both
-/// ends since 2026-11-10).
+/// the check for, and a test that panics, its task naming no tool (Claude picks `run` or `run_tests`).
 const FIX_TASKS: [FixTask; 2] = [
     FixTask {
         task: EditTask {
@@ -6006,24 +6005,8 @@ const FIX_TASKS: [FixTask; 2] = [
     },
 ];
 
-/// What the a6 A/B reads of a turn beside `measure`'s: its tokens by kind (claude's result), its failed runs and
-/// test runs (`run`'s `exit` not 0, `run_tests`' `failed`) — a6's chances — and those whose report brought the lines
-/// they point at; of the failed test runs, those with no failed case (`unbuilt`: a build that failed — a6 points only
-/// round failed cases, so it has nothing to bring there, and a low pointed/failed isn't read as a6 missing); and the
-/// crates its first run's cargo compiled (a cold build in the turn shows there).
-#[derive(Debug, Default, PartialEq)]
-struct Compounded {
-    input: u64,
-    read: u64,
-    write: u64,
-    output: u64,
-    failed: usize,
-    unbuilt: usize,
-    pointed: usize,
-    compiled: Vec<String>,
-}
-
-/// The crates cargo compiled as `said` tells it: its `Compiling x v…` and `Checking x v…` lines' names, in order.
+/// The crates cargo compiled as `said` tells it: its `Compiling x v…` and `Checking x v…` lines' names, in order —
+/// how `warm_seed` and `warm_check` tell a warm build from a cold one.
 fn compiled(said: &str) -> Vec<String> {
     said.lines()
         .filter_map(|l| {
@@ -6034,142 +6017,8 @@ fn compiled(said: &str) -> Vec<String> {
         .collect()
 }
 
-fn compounded(stream: &str) -> Compounded {
-    let mut c = Compounded::default();
-    // (the call's id and its tool)
-    let mut calls: Vec<(String, String)> = Vec::new();
-    let mut results: std::collections::HashMap<String, String> = Default::default();
-    for line in stream.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        match v["type"].as_str() {
-            Some("assistant") => {
-                for b in v["message"]["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|b| b["type"] == "tool_use")
-                {
-                    let id = b["id"].as_str().unwrap_or_default().to_string();
-                    if !calls.iter().any(|x| x.0 == id) {
-                        calls.push((id, b["name"].as_str().unwrap_or_default().into()));
-                    }
-                }
-            }
-            Some("user") => {
-                for b in v["message"]["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|b| b["type"] == "tool_result")
-                {
-                    let text = match &b["content"] {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|t| t["text"].as_str())
-                            .collect(),
-                    };
-                    results.insert(b["tool_use_id"].as_str().unwrap_or_default().to_string(), text);
-                }
-            }
-            Some("result") => {
-                let n = |k: &str| v["usage"][k].as_u64().unwrap_or(0);
-                (c.input, c.read, c.write, c.output) = (
-                    n("input_tokens"),
-                    n("cache_read_input_tokens"),
-                    n("cache_creation_input_tokens"),
-                    n("output_tokens"),
-                );
-            }
-            _ => {}
-        }
-    }
-    let mut first = true;
-    for (id, name) in &calls {
-        let said = results.get(id).map_or("", String::as_str);
-        let failed = match name.as_str() {
-            "mcp__tarae__run" => said.starts_with("exit ") && !said.starts_with("exit 0 "),
-            "mcp__tarae__run_tests" => said.starts_with("failed"),
-            _ => continue,
-        };
-        if std::mem::take(&mut first) {
-            c.compiled = compiled(said);
-        }
-        c.failed += usize::from(failed);
-        // (a failed test run's report shows its output's tail only when no case failed — `tools::report`)
-        c.unbuilt +=
-            usize::from(failed && name == "mcp__tarae__run_tests" && said.contains("\nOutput (last "));
-        c.pointed += usize::from(said.contains("\nLines it points at:\n"));
-    }
-    c
-}
-
-/// The a6 A/B's yardstick on a stream written by hand: tokens by kind from the result, a failed run or test run
-/// counted, and one whose report brought lines; a passed one, or another tool's answer, neither; a failed test run
-/// with no failed case counted apart too; the first run's compiled crates. Runs offline, in every `cargo test`.
-#[test]
-fn the_pointed_ab_reads_its_counts_from_claudes_stream() {
-    use serde_json::json;
-    let call_in = |message: &str, id: &str, name: &str, input: serde_json::Value| {
-        json!({ "type": "assistant", "message": { "id": message, "content": [
-            { "type": "tool_use", "id": id, "name": name, "input": input }
-        ] } })
-        .to_string()
-    };
-    let call = |id: &str, name: &str, input: serde_json::Value| call_in(&format!("m{id}"), id, name, input);
-    let result = |id: &str, text: &str| {
-        json!({ "type": "user", "message": { "content": [
-            { "type": "tool_result", "tool_use_id": id, "content": [{ "type": "text", "text": text }] }
-        ] } })
-        .to_string()
-    };
-    let run = |cmd: &str| json!({ "command": cmd });
-    let lines = [
-        call("s1", "mcp__tarae__search", json!({ "pattern": "x" })),
-        result("s1", "1 matching line in 1 file:\n\nLines it points at:\n"),
-        call("r1", "mcp__tarae__run", run("cargo build")),
-        result(
-            "r1",
-            "exit 0 in 2.0s\n$ cargo build\n   Compiling cc v1.2.0\n    Checking tarae v0.1.0 (/p)\n    Finished `dev`\n",
-        ),
-        call("r2", "mcp__tarae__run", run("cargo test")),
-        result("r2", "exit 101 in 3.0s\n$ cargo test\n\nLines it points at:\nsrc/a.rs\n  3: x\n"),
-        call("r3", "mcp__tarae__run", run("cargo check")),
-        result("r3", "exit 101 in 1.0s"),
-        call("t1", "mcp__tarae__run_tests", json!({ "path": "src/a.rs" })),
-        result("t1", "failed (exit 101) in 1.0s — tests::t\n\nLines it points at:\nsrc/a.rs\n  3: x\n"),
-        call("t2", "mcp__tarae__run_tests", json!({ "path": "src/a.rs" })),
-        result("t2", "passed in 1.0s — tests::t"),
-        call("t3", "mcp__tarae__run_tests", json!({ "path": "src/a.rs" })),
-        result(
-            "t3",
-            "failed (exit 101) in 1.0s — a\n$ cargo test\n\nOutput (last 2 lines):\nerror[E0308]: mismatched types\n\
-             error: could not compile `a`\n",
-        ),
-        json!({ "type": "result", "usage": { "input_tokens": 7, "cache_read_input_tokens": 900,
-            "cache_creation_input_tokens": 80, "output_tokens": 40 } })
-        .to_string(),
-    ];
-    let c = compounded(&lines.join("\n"));
-    let want = Compounded {
-        input: 7,
-        read: 900,
-        write: 80,
-        output: 40,
-        failed: 4,
-        unbuilt: 1,
-        pointed: 2,
-        compiled: vec!["cc".into(), "tarae".into()],
-    };
-    assert_eq!(
-        c, want,
-        "r2, r3, t1 and t3 failed, t3 with no case; r2 and t1 brought lines; s1 isn't a run; r1 compiled two"
-    );
-}
-
-/// `bug` planted in the corpus `sb` copied: its file's `old` made `new` — there at `TOOLS_CORPUS`, else it panics.
+/// `bug` planted in the corpus `sb` copied: its file's `old` made `new` — there at `TOOLS_CORPUS`, else it panics. A
+/// fix loop's first step (`FixTask.plant`).
 fn plant(sb: &Sandbox, (file, old, new): (&str, &str, &str)) {
     let path = sb.work().join(file);
     let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -6179,10 +6028,10 @@ fn plant(sb: &Sandbox, (file, old, new): (&str, &str, &str)) {
 
 /// A fix loop's project as every cell has it: `TOOLS_CORPUS` in a live sandbox (its files' times the commit's), the
 /// warm build kept in `seed` cloned into its `target` (`clone_dir`, then `moved_build`; none kept yet: none), that `target` cargo's
-/// target-dir and build-dir both — inside the project, where the sandbox lets Claude's cargo write: the first A/B's
-/// target-dir sat outside it and the sandbox refused its `.cargo-lock` (2026-11-10: fix-type never compiled; the
-/// harness answers no card `y` — that refusal is tarae's rule) — and out of tarae's walk (a folder with no git reads
-/// `.ignore`).
+/// target-dir and build-dir both — inside the project, where the sandbox lets Claude's cargo write: code mode (a)'s
+/// first A/B's target-dir sat outside it and the sandbox refused its `.cargo-lock` (2026-11-10: fix-type never
+/// compiled; the harness answers no card `y` — that refusal is tarae's rule) — and out of tarae's walk (a folder with
+/// no git reads `.ignore`).
 fn fix_cell(name: &str, seed: &Path, bin: Option<&str>) -> Sandbox {
     let mut sb = Sandbox::live(name);
     assert!(sb.copy_commit(TOOLS_CORPUS, &EDIT_CORPUS_PATHS), "commit {TOOLS_CORPUS} in this clone");
@@ -6294,9 +6143,10 @@ fn through_run(sb: &Sandbox, cmds: &[&str], patience: Duration, lsp: bool) -> Re
 /// construction: a build script's `rerun-if-env-changed` (the `cc` crate's CC, CFLAGS, SDKROOT,
 /// MACOSX_DEPLOYMENT_TARGET — the grammars build with it) sees what Claude's cargo will — then its `target` kept in
 /// `seed`. Cargo keeps a target moved with its workspace fresh (`.sb/codemode-a-reloc.sh`); `warm_check` proves it
-/// on the corpus. The first time: minutes of cargo, no Claude. Ok with how many crates each command compiled.
+/// on the corpus. The first time: minutes of cargo, no Claude. Ok with how many crates each command compiled. Its
+/// users: `fix_tasks_warm`, and code mode (b)'s A/B before its fix turns.
 fn warm_seed(seed: &Path, bin: Option<&str>) -> Result<Vec<usize>, String> {
-    let sb = fix_cell("pointed-ab-seed", seed, bin);
+    let sb = fix_cell("fix-seed", seed, bin);
     let cmds = ["cargo check --bin tarae", "cargo test --bin tarae --no-run"];
     let said = through_run(&sb, &cmds, Duration::from_secs(60 * 60), false)?;
     if let Some((cmd, s)) = cmds.iter().zip(&said).find(|(_, s)| !s.starts_with("exit 0 ")) {
@@ -6351,7 +6201,7 @@ fn moved_build<'a>(target: &Path, from: impl Iterator<Item = &'a str>, to: &Path
 /// tarae`, `cargo test --bin tarae --no-run`) — Ok when each compiled tarae alone, else Err naming what else: a cell
 /// would build that cold inside Claude's turn.
 fn warm_check(seed: &Path, bin: Option<&str>) -> Result<Vec<String>, String> {
-    let sb = fix_cell("pointed-ab-warm", seed, bin);
+    let sb = fix_cell("fix-warm", seed, bin);
     let main = std::fs::File::options().append(true).open(sb.file("src/main.rs")).unwrap();
     main.set_modified(std::time::SystemTime::now()).unwrap();
     let cmds = ["cargo check --bin tarae", "cargo test --bin tarae --no-run"];
@@ -6370,7 +6220,7 @@ fn warm_check(seed: &Path, bin: Option<&str>) -> Result<Vec<String>, String> {
 }
 
 /// `from` copied to `to` as clones of its files where the disk can (APFS's `clonefile`, a reflink elsewhere), their
-/// times kept — a warm target in seconds, not its gigabytes written again.
+/// times kept — a warm target in seconds, not its gigabytes written again (`fix_cell`, `warm_seed`).
 fn clone_dir(from: &Path, to: &Path) {
     let mut cp = Command::new("cp");
     match cfg!(target_os = "macos") {
@@ -6381,241 +6231,28 @@ fn clone_dir(from: &Path, to: &Path) {
     assert!(st.is_ok_and(|s| s.success()), "cloning {} to {}", from.display(), to.display());
 }
 
-/// `pointed_ab`'s steps before its spend, alone: the warm build through tarae's own `run` and its proof on a cell
-/// (`warm_seed`, `warm_check`) — a stand-in claude, no model: free. What it compiled is printed as `POINTED_AB warm`.
+/// The fix loops (`FIX_TASKS`) are ready: each bug still plants at `TOOLS_CORPUS` (`plant`), and their build is warm
+/// where Claude's cargo runs — the warm build through tarae's own `run` and its proof on a cell (`warm_seed`,
+/// `warm_check`), a stand-in claude, no model: free. What a spend on the fix turns checks first (code mode (b)'s A/B);
+/// kept in `target/live/fix-seed`. What it compiled is printed as `FIX_WARM`.
 #[test]
 #[ignore = "live: run with `cargo live` (cargo through tarae's run; no Claude)"]
-fn pointed_ab_warm() {
+fn fix_tasks_warm() {
     if !have("cargo") {
         return;
     }
+    for f in &FIX_TASKS {
+        let sb = Sandbox::live(&format!("fix-plant-{}", f.task.name));
+        assert!(sb.copy_commit(TOOLS_CORPUS, &EDIT_CORPUS_PATHS), "commit {TOOLS_CORPUS} in this clone");
+        plant(&sb, f.plant);
+    }
     let bin = std::env::var("TARAE_AB_BIN").ok().filter(|b| !b.is_empty());
-    let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/pointed-ab-seed");
+    let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/fix-seed");
     let started = Instant::now();
     let n = warm_seed(&seed, bin.as_deref()).unwrap_or_else(|e| panic!("the warm build: {e}"));
-    eprintln!("POINTED_AB seed built through tarae's run in {:?}, crates compiled {n:?}", started.elapsed());
+    eprintln!("FIX_WARM seed built through tarae's run in {:?}, crates compiled {n:?}", started.elapsed());
     match warm_check(&seed, bin.as_deref()) {
-        Ok(built) => eprintln!("POINTED_AB warm: a cell's check through tarae's run compiled {built:?}"),
+        Ok(built) => eprintln!("FIX_WARM a cell's check through tarae's run compiled {built:?}"),
         Err(e) => panic!("not warm — {e}"),
     }
-}
-
-/// Code mode (a)'s a6: does a failed run's or test run's report with the lines it points at (`llm.compound`) save
-/// requests and $ on real fix loops? The first A/B (`compound_ab`, 2026-11-10, $18.84, git has it) never gave a6 a
-/// failing run it could see: fix-panic's failure went through `run_tests`, where a6 had no hook, and fix-type's
-/// check never compiled (its target-dir outside the project, refused). Now a6 is at both ends and each cell's target
-/// is inside its project, warm (`warm_seed`). Two arms by its config (`off` · `on`), rotated (A B, then B A), on
-/// `TOOLS_CORPUS` with rust-analyzer on, the two fix loops (`FIX_TASKS`) only. Measured from claude's stream:
-/// requests, calls, calls a request, tokens by kind, $, wall time, the check, the failed runs and test runs and those
-/// whose report brought lines (and the failed test runs with no failed case apart: a build that failed, nothing for
-/// a6 to point at). It pays by the rule set before it (main's `.sb/decisions/chat.md`, "a6's keep-or-drop rule").
-///
-/// Before anything spends: the warm build (`warm_seed`, through tarae's `run`) and its proof (`warm_check`: a cell's
-/// check compiling anything but tarae refuses to start). **Its spend is the user's call, asked each time** — 5 runs
-/// (2 turns × 2 arms × 5 = 20 cells, ~$10): it starts only with `TARAE_AB_GO=1`, said after the user's yes.
-/// `TARAE_AB_RUNS` (5: the last run), `TARAE_AB_FROM` (1: the first — run 1 alone, `TARAE_AB_RUNS=1`, reported
-/// before runs 2–5, `TARAE_AB_FROM=2`; the arms' order is the run's number's), `TARAE_AB_SPENT` ($ the runs before
-/// `TARAE_AB_FROM` spent, as the last report says it: 0), `TARAE_AB_BUDGET` ($ claude reports, 15: no run starts
-/// that the last run's cost — the mean of the runs before, going on — would carry past it; never mid-run, which
-/// would leave the arms unbalanced), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_EFFORT`, `TARAE_AB_BIN`, `TARAE_AB_TURNS`
-/// (names, comma-separated; both). Rows to `target/live/pointed-ab.tsv`, streams beside them in
-/// `target/live/pointed-ab/`; the warm build in `target/live/pointed-ab-seed` (built cold the first time: minutes,
-/// no Claude).
-#[test]
-#[ignore = "live: run with `cargo live` (uses Claude and rust-analyzer — its spend asked of the user first)"]
-fn pointed_ab() {
-    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    if var("TARAE_AB_GO").as_deref() != Some("1") {
-        skip("TARAE_AB_GO=1 once the user said yes to the spend (~$10)");
-        return;
-    }
-    if !have("claude") || !have("cargo") || !have("rust-analyzer") {
-        return;
-    }
-    let bin = var("TARAE_AB_BIN");
-    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(5);
-    let from: usize = var("TARAE_AB_FROM").and_then(|r| r.parse().ok()).unwrap_or(1).max(1);
-    let mut spent: f64 = var("TARAE_AB_SPENT").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(15.0);
-    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
-    let effort = var("TARAE_AB_EFFORT").unwrap_or_default();
-    let only = var("TARAE_AB_TURNS");
-    let turns: Vec<&FixTask> = FIX_TASKS
-        .iter()
-        .filter(|f| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == f.task.name)))
-        .collect();
-    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let live = here.join("target/live");
-    let (tsv, kept) = (live.join("pointed-ab.tsv"), live.join("pointed-ab"));
-    let (check, target) = (live.join("pointed-ab-check"), live.join("pointed-ab-target"));
-    let seed = live.join("pointed-ab-seed");
-    std::fs::create_dir_all(&kept).unwrap();
-    // (the warm build and its proof, before anything is spent)
-    match warm_seed(&seed, bin.as_deref()) {
-        Ok(n) => eprintln!("POINTED_AB seed: crates compiled through tarae's run {n:?}"),
-        Err(e) => panic!("POINTED_AB not started: the warm build: {e}"),
-    }
-    match warm_check(&seed, bin.as_deref()) {
-        Ok(built) => eprintln!("POINTED_AB warm: a cell's check through tarae's run compiled {built:?}"),
-        Err(e) => panic!("POINTED_AB not started: not warm — {e}"),
-    }
-    let arms = ["off", "on"];
-    let mut rows: Vec<(&str, &str, Measured, Compounded)> = Vec::new();
-    let (spent_before, mut last) = (spent, if from > 1 { spent / (from - 1) as f64 } else { 0.0 });
-    let mut done = from - 1;
-    for run in from - 1..runs {
-        if spent + last > budget {
-            eprintln!(
-                "POINTED_AB budget: ${spent:.2} spent + ${last:.2} (the last run's) passes ${budget} — run {} not \
-                 started",
-                run + 1
-            );
-            break;
-        }
-        let at_start = spent;
-        for turn in &turns {
-            let name = turn.task.name;
-            for k in 0..arms.len() {
-                let arm = arms[(k + run) % arms.len()];
-                let sb = fix_cell(&format!("pointed-ab-{name}-{arm}"), &seed, bin.as_deref());
-                let work = sb.work();
-                let built = work.join("target");
-                plant(&sb, turn.plant);
-                let llm = format!(
-                    "model = \"{model}\"\neffort = \"{effort}\"\nreview-at-end = true\ncompound = {}\n",
-                    arm == "on"
-                );
-                let stream = teed_lsp(&sb, &llm, true);
-                let mut t = sb.spawn(&["src/main.rs"]);
-                code_trusted(&mut t);
-                t.wait_text("rust-analyzer ready");
-                let loading = !quiet(&mut t, 10);
-                let started = Instant::now();
-                let (cards, capped) = ab_turn(&mut t, turn.task.ask, &stream);
-                let text = std::fs::read_to_string(&stream).unwrap_or_default();
-                let mut m = measure(&text, work.to_str().unwrap());
-                m.wall_ms = started.elapsed().as_millis() as u64;
-                (m.cards, m.capped, m.loading) = (cards, capped, loading);
-                drop(t);
-                // (the check copies the project: its build stays behind — the sandbox's own folder)
-                let _ = std::fs::remove_dir_all(&built);
-                let checked = edit_check(&turn.task, &work, &check, &target);
-                m.right = if checked.is_ok() { 1.0 } else { 0.0 };
-                let c = compounded(&text);
-                spent += m.cost;
-                let said = format!(
-                    "POINTED_AB {name} {arm} run {}: {} requests, {} calls {:?}, tokens in {} · read {} · written {} · out \
-                     {}, ${:.3}, {} ms, failed runs {} ({} test runs with no case), lines pointed {}, first run \
-                     compiled {:?}, cards {}, capped {}, outside {}, right {:.2}{}\n  answer: {}",
-                    run + 1,
-                    m.requests,
-                    m.calls,
-                    m.tools,
-                    c.input,
-                    c.read,
-                    c.write,
-                    c.output,
-                    m.cost,
-                    m.wall_ms,
-                    c.failed,
-                    c.unbuilt,
-                    c.pointed,
-                    c.compiled,
-                    m.cards,
-                    m.capped,
-                    m.outside,
-                    m.right,
-                    match &checked {
-                        Err(e) => format!(" — check FAILED: {e}"),
-                        Ok(_) if m.loading => ", ASKED WHILE RUST-ANALYZER WAS STILL AT WORK".into(),
-                        Ok(_) => String::new(),
-                    },
-                    m.answer.replace('\n', " ⏎ "),
-                );
-                eprintln!("{said}");
-                let one = format!("{name}-{arm}-{}-{}", run + 1, std::process::id());
-                let _ = std::fs::copy(&stream, kept.join(format!("{one}.jsonl")));
-                std::fs::write(kept.join(format!("{one}.txt")), &said).unwrap();
-                let row = format!(
-                    "{TOOLS_CORPUS}\t{name}\t{arm}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{:?}\n",
-                    run + 1,
-                    m.requests,
-                    m.calls,
-                    c.input,
-                    c.read,
-                    c.write,
-                    c.output,
-                    m.cost,
-                    m.wall_ms,
-                    c.failed,
-                    c.unbuilt,
-                    c.pointed,
-                    c.compiled.len(),
-                    m.capped,
-                    m.right,
-                    m.loading,
-                    m.tools,
-                );
-                use std::io::Write;
-                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
-                f.write_all(row.as_bytes()).unwrap();
-                rows.push((name, arm, m, c));
-            }
-        }
-        (last, done) = (spent - at_start, run + 1);
-    }
-    // (what the driver reads before the next runs: warm in each cell, a6 firing in the on arm, $ a cell)
-    eprintln!("POINTED_AB report, runs {from}–{done}:");
-    for (name, arm, m, c) in &rows {
-        eprintln!(
-            "POINTED_AB   {name} {arm}: ${:.3}, failed runs {} ({} with no case), lines pointed {}, first run compiled \
-             {:?}",
-            m.cost, c.failed, c.unbuilt, c.pointed, c.compiled
-        );
-    }
-    for turn in &turns {
-        let on: Vec<&Compounded> =
-            rows.iter().filter(|r| r.0 == turn.task.name && r.1 == "on").map(|r| &r.3).collect();
-        let fired = on.iter().filter(|c| c.pointed > 0).count();
-        eprintln!("POINTED_AB   {}: a6 brought lines in {fired} of {} on cells", turn.task.name, on.len());
-    }
-    let cold = rows.iter().filter(|r| r.3.compiled.iter().any(|c| c != "tarae")).count();
-    eprintln!("POINTED_AB   cells whose first run compiled more than tarae: {cold} of {}", rows.len());
-    eprintln!(
-        "POINTED_AB   spent ${:.2} in these runs, ${spent:.2} in all — to go on: TARAE_AB_FROM={} TARAE_AB_SPENT={spent:.2}",
-        spent - spent_before,
-        done + 1
-    );
-    eprintln!(
-        "POINTED_AB median (min–max) — turn arm n: requests · calls/request · read · written · out · $ · wall ms · \
-         failed runs · with no case · lines pointed · right"
-    );
-    for turn in &turns {
-        for arm in arms {
-            let of: Vec<(&Measured, &Compounded)> =
-                rows.iter().filter(|r| r.0 == turn.task.name && r.1 == arm).map(|r| (&r.2, &r.3)).collect();
-            let at = |f: &dyn Fn(&Measured, &Compounded) -> f64, p: usize| {
-                let v: Vec<f64> = of.iter().map(|(m, c)| f(m, c)).collect();
-                let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |(l, h), x| (l.min(*x), h.max(*x)));
-                format!("{:.p$} ({lo:.p$}–{hi:.p$})", median(v))
-            };
-            eprintln!(
-                "POINTED_AB {} {arm} {}: {} · {} · {} · {} · {} · {} · {} · {} · {} · {} · {}",
-                turn.task.name,
-                of.len(),
-                at(&|m, _| m.requests as f64, 0),
-                at(&|m, _| m.calls as f64 / m.requests.max(1) as f64, 2),
-                at(&|_, c| c.read as f64, 0),
-                at(&|_, c| c.write as f64, 0),
-                at(&|_, c| c.output as f64, 0),
-                at(&|m, _| m.cost, 3),
-                at(&|m, _| m.wall_ms as f64, 0),
-                at(&|_, c| c.failed as f64, 0),
-                at(&|_, c| c.unbuilt as f64, 0),
-                at(&|_, c| c.pointed as f64, 0),
-                at(&|m, _| m.right, 2),
-            );
-        }
-    }
-    assert!(!rows.is_empty(), "no run");
 }

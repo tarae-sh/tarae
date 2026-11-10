@@ -765,40 +765,25 @@ fn refused_rows(ed: &Editor, call: &Call, others: &[(Call, String)]) -> Vec<Stri
 pub fn tests_done(ed: &mut Editor) {
     let failed = ed.workspace.test_run.as_ref().is_some_and(|r| matches!(r.state, RunState::Failed(_)));
     let known = rules_known(ed, failed);
-    // (code mode's a6, `llm.compound`: a failed run brings the lines round its failed cases' places, as a failed
-    // `run` brings its output's — `pointed.rs`)
-    let pointing = (failed && crate::orchestra::compound(ed)).then(|| crate::reads::Keys::of(ed));
     let Some(r) = ed.workspace.test_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
     let guard = said.as_ref().map(|s| format!("\n{}\n", s.text)).unwrap_or_default();
     let loopback = said.as_ref().filter(|_| failed).and_then(|s| loopback_of(&s.open));
-    let wanted = match pointing {
-        Some(_) => crate::pointed::wanted(
-            r.failures().into_iter().filter_map(|i| r.cases[i].at.as_ref()).map(|(p, l)| (p.as_path(), *l)),
-        ),
-        None => Vec::new(),
-    };
     if let Some(head) = r.tell.take() {
-        let text = report(&ed.workspace.root, r, Waited::No);
+        let text = report(&ed.workspace.root, r, Waited::No) + &guard;
         rules_told(ed, said.as_ref());
-        // (the same lines as a call's report — `run_done`'s late report)
-        return crate::pointed::then(ed, pointing, wanted, move |ed, pointed| {
-            if let Some(generation) = ed.workspace.claude.chat.as_ref().map(|c| c.generation()) {
-                pointed.showed.seen(ed, generation, &[]);
-            }
-            told(ed, head, format!("{text}{}{guard}", pointed.text))
-        });
+        return told(ed, head, text);
     }
     let joined = std::mem::take(&mut r.joined);
     let Some(call) = r.chat.take() else { return };
     let snap = r.snap.take();
     let root = ed.workspace.root.clone();
-    let text = report(&root, r, Waited::of(r.started, r.queued.as_ref(), None));
+    let text = report(&root, r, Waited::of(r.started, r.queued.as_ref(), None)) + &guard;
     let others: Vec<(Call, String)> = joined
         .into_iter()
         .map(|j| {
             let how = Waited::of(r.started, r.queued.as_ref(), Some((j.asked, j.running)));
-            (j.call, report(&root, r, how))
+            (j.call, report(&root, r, how) + &guard)
         })
         .collect();
     let failed = r.failures().first().map(|&i| r.cases[i].clone());
@@ -815,19 +800,13 @@ pub fn tests_done(ed: &mut Editor) {
         let rows = refused_rows(ed, &call, &others);
         crate::chat::mark_refused(ed, &rows, line);
     }
-    let left_out = env_left_out(ed, env);
+    let text = format!("{text}{}", env_left_out(ed, env));
     let generation = call.generation;
     if ended_failed {
         failed_in_turn(ed, key);
     }
-    // (the lines it points at before the sandbox's report, in every report of it)
-    let told = move |ed: &mut Editor, pointed: crate::pointed::Pointed, changed: String| {
-        let report = format!("{text}{}{guard}{left_out}{changed}", pointed.text);
-        let rows: Vec<String> = std::iter::once(&call)
-            .chain(others.iter().map(|o| &o.0))
-            .filter_map(|c| crate::chat::row_of(ed, c))
-            .collect();
-        pointed.showed.seen(ed, generation, &rows);
+    let told = move |ed: &mut Editor, changed: String| {
+        let report = format!("{text}{changed}");
         let held = match loopback {
             Some(card) => loopback_card(ed, &card, job, call, report.clone()),
             None => Err(call),
@@ -836,7 +815,7 @@ pub fn tests_done(ed: &mut Editor) {
             answer(ed, call, Ok(report));
         }
         for (c, text) in others {
-            answer(ed, c, Ok(format!("{text}{}{guard}{changed}", pointed.text)));
+            answer(ed, c, Ok(format!("{text}{changed}")));
         }
         if let Some(case) = failed
             && let Some((path, line)) = case.at.clone()
@@ -847,10 +826,10 @@ pub fn tests_done(ed: &mut Editor) {
             crate::follow::point(ed, "failed", case.name, &path, line..line + 1, Some(why));
         }
     };
-    crate::pointed::then(ed, pointing, wanted, move |ed, pointed| match snap {
-        Some(snap) => run_changes(ed, snap, generation, label, move |ed, changed| told(ed, pointed, changed)),
-        None => told(ed, pointed, String::new()),
-    });
+    match snap {
+        Some(snap) => run_changes(ed, snap, generation, label, told),
+        None => told(ed, String::new()),
+    }
 }
 
 /// The chat turn ended (stopped) with a run still going: it goes on for the user, unreported — and a
@@ -4896,10 +4875,6 @@ pub fn run_done(ed: &mut Editor) {
         .task_run
         .as_ref()
         .is_some_and(|r| matches!(r.state, State::Failed(_) | State::Stopped(_) | State::NotRun(_)));
-    // (code mode's a6, `llm.compound`: a run that failed — not one refused before it started — brings the lines its
-    // places point at, `pointed.rs`; the chat's keys judge them)
-    let not_run = ed.workspace.task_run.as_ref().is_some_and(|r| matches!(r.state, State::NotRun(_)));
-    let pointing = (failed && !not_run && crate::orchestra::compound(ed)).then(|| crate::reads::Keys::of(ed));
     let known = rules_known(ed, failed);
     let Some(r) = ed.workspace.task_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
@@ -4930,17 +4905,9 @@ pub fn run_done(ed: &mut Editor) {
     // (its own places — the user's list has them only when it was a check, #28)
     if let Some(head) = r.tell.take() {
         let r = &*r;
-        let text = run_report(&ed.workspace.root, r, &r.places, Waited::No);
-        let wanted =
-            pointing.as_ref().map(|_| crate::pointed::wanted(places_of(&r.places))).unwrap_or_default();
+        let text = run_report(&ed.workspace.root, r, &r.places, Waited::No) + &guard;
         rules_told(ed, said.as_ref());
-        // (the same lines as a call's report: one report wherever it lands — what the chat's process saw)
-        return crate::pointed::then(ed, pointing, wanted, move |ed, pointed| {
-            if let Some(generation) = ed.workspace.claude.chat.as_ref().map(|c| c.generation()) {
-                pointed.showed.seen(ed, generation, &[]);
-            }
-            told(ed, head, format!("{text}{}{guard}", pointed.text))
-        });
+        return told(ed, head, text);
     }
     let joined = std::mem::take(&mut r.joined);
     // (on a commit's tree: said first, and the tree goes — its build folder stays for the next; the run keeps
@@ -4965,17 +4932,17 @@ pub fn run_done(ed: &mut Editor) {
     let items = &r.places;
     let on = base.map(|b| format!("On {}'s tree — a copy apart from the project, removed now:\n", b.said()));
     let text = on.unwrap_or_default()
-        + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None));
+        + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None))
+        + &guard;
     // (each call that joined it: the same run, its own wait)
     let others: Vec<(Call, String)> = joined
         .into_iter()
         .map(|j| {
             let how = Waited::of(r.started, r.queued.as_ref(), Some((j.asked, j.running)));
             let call = Call { output: Some(r.output_bytes), ..j.call };
-            (call, run_report(&ed.workspace.root, r, items, how))
+            (call, run_report(&ed.workspace.root, r, items, how) + &guard)
         })
         .collect();
-    let wanted = pointing.as_ref().map(|_| crate::pointed::wanted(places_of(items))).unwrap_or_default();
     let first =
         items.iter().find(|i| i.severity == 1).filter(|_| r.state != crate::task::State::Passed).cloned();
     let (label, cmd) = (r.task.name.clone(), r.task.cmd.clone());
@@ -4994,19 +4961,13 @@ pub fn run_done(ed: &mut Editor) {
     }
     rules_told(ed, said.as_ref());
     crate::reads::run_ended(ed);
-    let left_out = env_left_out(ed, env);
+    let text = format!("{text}{}", env_left_out(ed, env));
     let generation = call.generation;
     if failed {
         failed_in_turn(ed, key);
     }
-    // (the lines it points at before the sandbox's report, in every report of it)
-    let told = move |ed: &mut Editor, pointed: crate::pointed::Pointed, changed: String| {
-        let report = format!("{text}{}{guard}{left_out}{changed}", pointed.text);
-        let rows: Vec<String> = std::iter::once(&call)
-            .chain(others.iter().map(|o| &o.0))
-            .filter_map(|c| crate::chat::row_of(ed, c))
-            .collect();
-        pointed.showed.seen(ed, generation, &rows);
+    let told = move |ed: &mut Editor, changed: String| {
+        let report = format!("{text}{changed}");
         let held = match loopback {
             Some(card) => loopback_card(ed, &card, job, call, report.clone()),
             None => Err(call),
@@ -5015,34 +4976,29 @@ pub fn run_done(ed: &mut Editor) {
             answer(ed, call, Ok(report));
         }
         for (c, text) in others {
-            answer(ed, c, Ok(format!("{text}{}{guard}{changed}", pointed.text)));
+            answer(ed, c, Ok(format!("{text}{changed}")));
         }
         if let Some(it) = first {
             crate::follow::point(ed, "failed", label, &it.path, it.line..it.line + 1, Some(it.message));
         }
     };
     // (what `also` could open of it: said on a worker — a grant's choices look at the disk — by `Caps` made there)
-    let told = move |ed: &mut Editor, pointed: crate::pointed::Pointed, changed: String| {
+    let told = move |ed: &mut Editor, changed: String| {
         if candidates.is_empty() {
-            return told(ed, pointed, changed);
+            return told(ed, changed);
         }
         let basis = ed.caps_basis();
         let (localhost, ports) = (ed.config.llm.sandbox_localhost, ed.config.llm.sandbox_ports.clone());
         ed.events.jobs().spawn(move || {
             let open = |n: u16| localhost || ports.contains(&n);
             let line = also_line(&candidates, keys.as_ref(), &basis.build(), &open);
-            move |ed: &mut Editor| told(ed, pointed, format!("{line}{changed}"))
+            move |ed: &mut Editor| told(ed, format!("{line}{changed}"))
         });
     };
-    crate::pointed::then(ed, pointing, wanted, move |ed, pointed| match snap {
-        Some(snap) => run_changes(ed, snap, generation, cmd, move |ed, changed| told(ed, pointed, changed)),
-        None => told(ed, pointed, String::new()),
-    });
-}
-
-/// A run's places as `pointed::wanted` takes them: path and line.
-fn places_of(items: &[crate::quickfix::Item]) -> impl Iterator<Item = (&Path, usize)> {
-    items.iter().map(|it| (it.path.as_path(), it.line))
+    match snap {
+        Some(snap) => run_changes(ed, snap, generation, cmd, told),
+        None => told(ed, String::new()),
+    }
 }
 
 /// The denials of Claude's run that `also` could open (cardauto P3, §8.4) — only when it failed: one that
@@ -8458,196 +8414,6 @@ mod tests {
             report.contains("\n1 place in the user's list (]q):\n  a.test.ts:3:5 note: stack frame\n"),
             "{report}"
         );
-    }
-
-    /// Code mode's a6 (`llm.compound`, as the chat's process started): a failed run's report brings the lines its
-    /// places point at — the call's, a joined call's and a late report's alike, the file seen as `read` sees it; a run
-    /// that passed, one refused before it started, or the setting off brings none.
-    #[test]
-    fn a_failed_runs_report_brings_the_lines_it_points_at() {
-        use crate::task::State;
-        use serde_json::json;
-        let scratch = crate::scratch::Scratch::new("pointed-run");
-        let dir = std::fs::canonicalize(&scratch).unwrap();
-        let a = dir.join("a.rs");
-        std::fs::write(&a, (1..=20).map(|i| format!("line {i}\n")).collect::<String>()).unwrap();
-        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.workspace.root = dir.clone();
-        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
-        let place = crate::quickfix::Item {
-            path: a.clone(),
-            line: 9,
-            col: 0,
-            message: "boom".into(),
-            severity: 1,
-            mark: None,
-        };
-        let said = |n: u64| {
-            super::ANSWERED
-                .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(n)).map(|(_, r)| r.clone()))
-        };
-        // (run `n` ended as `state`, with its place, answering call `n` — and `joined`, a call that joined it)
-        let ended =
-            |ed: &mut crate::editor::Editor, n: u64, state: State, compound: bool, joined: Option<u64>| {
-                ed.workspace.claude.chat.as_mut().unwrap().compound = compound;
-                let task =
-                    crate::task::Task { name: "check".into(), cmd: "make check".into(), cwd: dir.clone() };
-                let mut r = crate::task::Run::for_test(task);
-                (r.state, r.places, r.chat) =
-                    (state, vec![place.clone()], Some(super::Call::of(generation, "", json!(n))));
-                r.joined = (joined.into_iter())
-                    .map(|j| crate::queued::Joined {
-                        call: super::Call::of(generation, "", json!(j)),
-                        asked: std::time::Instant::now(),
-                        running: None,
-                    })
-                    .collect();
-                ed.workspace.task_run = Some(r);
-                super::run_done(ed);
-                crate::test_results::settle_until(ed, |_| {
-                    said(n).is_some() && joined.is_none_or(|j| said(j).is_some())
-                });
-                said(n).unwrap().unwrap()
-            };
-        let lines = "\nLines it points at:\na.rs\n   7- line 7\n   8- line 8\n   9- line 9\n  10: line 10\n";
-        let report = ended(&mut ed, 1, State::Failed(Some(2)), true, Some(2));
-        assert!(report.contains(lines), "{report}");
-        assert!(said(2).unwrap().unwrap().contains(lines), "the joined call's too");
-        let seen = ed.workspace.claude.chat.as_ref().unwrap().edits.seen.get(&a).copied();
-        assert_eq!(seen, crate::disk::stamp(&a), "seen as it was read");
-        for (n, state, compound) in [
-            (3, State::Passed, true),
-            (4, State::NotRun("no room".into()), true),
-            (5, State::Failed(Some(2)), false),
-        ] {
-            let report = ended(&mut ed, n, state, compound, None);
-            assert!(!report.contains("Lines it points at"), "{n}: {report}");
-        }
-        // A late report — the user's run of Claude's again — brings them too
-        ed.workspace.claude.chat.as_mut().unwrap().compound = true;
-        let task = crate::task::Task { name: "check".into(), cmd: "make check".into(), cwd: dir.clone() };
-        let mut r = crate::task::Run::for_test(task);
-        (r.state, r.places, r.tell) = (State::Failed(Some(2)), vec![place], Some("Ran again:".into()));
-        ed.workspace.task_run = Some(r);
-        super::run_done(&mut ed);
-        crate::test_results::settle_until(&mut ed, |ed| !ed.workspace.claude.checkpoints.tell.is_empty());
-        let told = ed.workspace.claude.checkpoints.tell.join("\n");
-        assert!(told.starts_with("Ran again:") && told.contains(lines), "{told}");
-    }
-
-    /// rustc's error and a test's panic as they're printed, `src/a.rs` in a scratch project (`line 1` … `line 20`).
-    const RUSTC_SAID: &str = "error[E0308]: mismatched types\n --> src/a.rs:9:5\n  |\n9 |     \"200\"\n  |     ^^^^^ \
-                              expected `usize`, found `&str`\n\nerror: could not compile `a` (bin \"a\") due to 1 previous error\n";
-    const PANIC_SAID: &str = "running 1 test\ntest tests::t ... FAILED\n\nfailures:\n\n---- tests::t stdout ----\n\n\
-                              thread 'tests::t' panicked at src/a.rs:12:5:\nassertion `left == right` failed\n  left: 1\n \
-                              right: 2\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\
-                              failures:\n    tests::t\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; \
-                              0 filtered out; finished in 0.00s\n";
-
-    /// A scratch project with `src/a.rs` and what rustc and a test printed (`rustc.txt`, `panic.txt`), and an editor
-    /// on it whose chat's process has `llm.compound` as `on`.
-    fn pointing_project(
-        name: &str,
-        on: bool,
-    ) -> (crate::scratch::Scratch, std::path::PathBuf, crate::editor::Editor, u64) {
-        let scratch = crate::scratch::Scratch::new(name);
-        let dir = std::fs::canonicalize(&scratch).unwrap();
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/a.rs"), (1..=20).map(|i| format!("line {i}\n")).collect::<String>())
-            .unwrap();
-        std::fs::write(dir.join("rustc.txt"), RUSTC_SAID).unwrap();
-        std::fs::write(dir.join("panic.txt"), PANIC_SAID).unwrap();
-        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.workspace.root = dir.clone();
-        let mut chat = crate::chat::Chat::new();
-        chat.compound = on;
-        let generation = chat.generation();
-        ed.workspace.claude.chat = Some(chat);
-        (scratch, dir, ed, generation)
-    }
-
-    /// What call `n` was answered (it waits for it).
-    fn answered(ed: &mut crate::editor::Editor, n: u64) -> String {
-        use serde_json::json;
-        let said = || super::ANSWERED.with(|a| a.borrow().iter().find(|(id, _)| *id == json!(n)).cloned());
-        crate::test_results::settle_until(ed, |_| said().is_some());
-        said().unwrap().1.unwrap_or_else(|e| e)
-    }
-
-    /// a6's whole chain through a real `run`, as Claude asks it: rustc's error and a test's panic, as they're printed,
-    /// become the run's places (the rust pack's `[[places]]`) and the report brings the lines they point at — the
-    /// place's own marked; off, none.
-    #[test]
-    fn a_failed_runs_rustc_error_and_panic_bring_the_lines_they_point_at() {
-        use serde_json::json;
-        let around = |at: usize| -> String {
-            let lines: String = (at - 3..=at + 3)
-                .map(|i| format!("  {i:>2}{} line {i}\n", if i == at { ':' } else { '-' }))
-                .collect();
-            format!("\nLines it points at:\nsrc/a.rs\n{lines}")
-        };
-        for on in [true, false] {
-            let (_scratch, _dir, mut ed, generation) = pointing_project("pointed-real-run", on);
-            // (each call its own id: the answers are kept by id)
-            for (n, file, at) in
-                [(1, "rustc.txt", 9), (2, "panic.txt", 12)].map(|(n, f, a)| (n + 2 * u64::from(!on), f, a))
-            {
-                let msg = json!({ "jsonrpc": "2.0", "id": n, "method": "tools/call",
-                    "params": { "name": "run", "arguments": { "command": format!("cat {file}; exit 101") } } });
-                assert!(
-                    super::mcp(&mut ed, generation, &format!("r{n}"), &msg).is_none(),
-                    "it waits for its end"
-                );
-                let report = answered(&mut ed, n);
-                assert!(report.starts_with("exit 101"), "{report}");
-                assert!(report.contains(&format!("src/a.rs:{at}:5")), "{file}: its place listed: {report}");
-                match on {
-                    true => assert!(report.contains(&around(at)), "{file}: {report}"),
-                    false => assert!(!report.contains("Lines it points at"), "{file}: {report}"),
-                }
-            }
-        }
-    }
-
-    /// a6 at the tests tool's end: a failed run's report brings the lines round each failed case's place (`Case.at`,
-    /// read from the runner's output), after `FAILED name at file:line`; a run that passed, or the setting off, none.
-    #[test]
-    fn a_failed_test_runs_report_brings_the_lines_round_its_failures() {
-        use serde_json::json;
-        let target = |dir: &std::path::Path, cmd: &str| crate::testing::Target {
-            label: "tests::t".into(),
-            cwd: dir.to_path_buf(),
-            holds: None,
-            how: crate::testing::How::Pack {
-                lang: "rust".into(),
-                argv: vec!["sh".into(), "-c".into(), cmd.into()],
-                lines: crate::test_results::Rules::builtin("rust"),
-                junit: None,
-            },
-        };
-        let lines = "\nLines it points at:\nsrc/a.rs\n   9- line 9\n  10- line 10\n  11- line 11\n  12: line 12\n  13- line 13\n";
-        for (n, on, cmd) in [
-            (1, true, "cat panic.txt; exit 101"),
-            (2, false, "cat panic.txt; exit 101"),
-            (3, true, "echo 'test tests::t ... ok'"),
-        ] {
-            let (_scratch, dir, mut ed, generation) = pointing_project("pointed-tests", on);
-            super::start(&mut ed, super::Call::of(generation, "", json!(n)), target(&dir, cmd));
-            let report = answered(&mut ed, n);
-            let failed = n != 3;
-            assert_eq!(report.contains("FAILED tests::t at src/a.rs:12\n"), failed, "{n}: {report}");
-            assert_eq!(
-                report.contains(&format!("{lines}  14- line 14\n  15- line 15\n")),
-                on && failed,
-                "{n}: {report}"
-            );
-            if on && failed {
-                let seen =
-                    ed.workspace.claude.chat.as_ref().unwrap().edits.seen.get(&dir.join("src/a.rs")).copied();
-                assert_eq!(seen, crate::disk::stamp(&dir.join("src/a.rs")), "seen as it was read");
-            }
-        }
     }
 
     /// A rerun from what the sandbox blocked (piece D3, the user's Q2): when it ran again Claude's last turn's

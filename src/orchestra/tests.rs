@@ -1245,22 +1245,6 @@ fn the_session_tools_are_fixed_per_chat_process() {
     assert!(!listed(&mut p.ed), "the next process's");
 }
 
-/// The compound answers (`llm.compound`, code mode (a)'s a6) are fixed as a chat's claude starts, as the session
-/// tools are: `:set` says the next start has them, they stay as they were while its process runs, the next process
-/// goes by it.
-#[test]
-fn the_compound_answers_are_fixed_per_chat_process() {
-    let mut p = place("compound");
-    assert!(!super::compound(&p.ed), "off by default");
-    crate::typed::execute(&mut p.ed, "set llm.compound true").unwrap();
-    let said = p.ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-    assert!(said.contains("llm.compound = true — Claude has it from its next start"), "{said}");
-    assert!(!super::compound(&p.ed), "as it was while its process runs");
-    p.ed.workspace.claude.chat = None;
-    crate::chat::open(&mut p.ed);
-    assert!(super::compound(&p.ed), "the next process's");
-}
-
 /// The set card's `y` with its briefs cut at their rows' ends answers — it doesn't wait for `v` (user, 2026-10-28):
 /// what a cut in height would hold, a cut row doesn't.
 #[test]

@@ -595,15 +595,13 @@ fn set_value(editor: &mut Editor, path: &str, v: toml::Value, persist: bool) -> 
         crate::edits::at_end_follow_here(editor);
     }
     crate::edits::at_end_follow_config(editor);
-    // (what a claude process is given as it starts — `Chat.compound`: the next one has it)
-    let when = if path == "llm.compound" { " — Claude has it from its next start" } else { "" };
     match kept {
-        Some(Ok(file)) => editor.set_status(format!("{path} = {v}{when}  (saved to {})", file.display())),
+        Some(Ok(file)) => editor.set_status(format!("{path} = {v}  (saved to {})", file.display())),
         Some(Err(e)) => editor.set_error(match (path, v.as_bool()) {
             ("llm.review-at-end", Some(on)) => crate::edits::at_end_not_saved(on, &e),
-            _ => format!("{path} = {v}{when} until you quit — not saved: {e}"),
+            _ => format!("{path} = {v} until you quit — not saved: {e}"),
         }),
-        None => editor.set_status(format!("{path} = {v}{when}  (until you quit — :set! to save)")),
+        None => editor.set_status(format!("{path} = {v}  (until you quit — :set! to save)")),
     }
     Ok(())
 }

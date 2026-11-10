@@ -1547,7 +1547,7 @@ mod tests {
         assert_eq!(got.map(|i| i.path.ends_with("src/main.rs")), Some(true));
     }
 
-    /// The forms the packs add for code mode's a6 and `]q` (2026-11-09): a row each — a stack frame's (`own`) only
+    /// The forms the packs add for `]q` (2026-11-09): a row each — a stack frame's (`own`) only
     /// in the project's own files, never a dependency's folder (one the walk skips) or a file outside the project.
     #[test]
     fn places_from_panics_frames_and_more_tools() {
