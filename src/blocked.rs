@@ -147,12 +147,29 @@ pub fn choices_by(
             Some(k) => k.closes(t),
             None => crate::sandbox::key_named_in(&crate::sandbox::profile_path(root), t),
         };
-        let key = file && read && closes(&target) && !kept.iter().any(|k| target.starts_with(k));
+        // (macOS closes its changes too — B1, `KEY_WRITES`: one refused where runs write is the name's, not the
+        // place's; where they don't — home, a place read only — the place's, its folder offered, as before B1)
+        let refuses = |t: &Path| match keys {
+            Some(k) => k.refuses_change(t),
+            None => crate::sandbox::key_named_in(&crate::sandbox::profile_path(root), t),
+        };
+        let changed = d.op.starts_with("file-write") && d.op != "file-write-create" && refuses(&target);
+        let key = file && (read || changed) && closes(&target) && !kept.iter().any(|k| target.starts_with(k));
         if key {
+            // (as the panel's row says it: `Denial::plain`)
+            let doing = match d.op.as_str() {
+                "file-write-unlink" => "deleting",
+                "file-write-data" => "writing",
+                o if o.starts_with("file-write") => "changing",
+                crate::sandbox::EITHER => "reading or writing",
+                _ => "reading",
+            };
+            // (its hint: who did what, then why the file is closed — what a narrow list cuts first; not its path,
+            // the row's own)
             found.push(Choice {
                 grant: Grant::Key(target.clone()),
-                hint: format!("{} reading {}", d.process, below(&crate::sandbox::profile_path(root))),
-                why: format!("{} was reading {}, named like a key", d.process, crate::allow::tilde(&target)),
+                hint: format!("{} {doing} · named like a key", d.process),
+                why: format!("{} was {doing} {}, named like a key", d.process, crate::allow::tilde(&target)),
             });
         } else if file && !d.terminal() && read {
             found.extend(crate::allow::read_choices(&target, home, kept).into_iter().map(|place| {
@@ -160,7 +177,9 @@ pub fn choices_by(
                 Choice { hint: below(&place), grant: Grant::Read(place), why }
             }));
         }
-        if file && !d.terminal() && (d.op.starts_with("file-write") || d.op == crate::sandbox::EITHER) {
+        // (a key's change refused: its name's, so no folder opens it)
+        let writing = d.op.starts_with("file-write") && !(key && changed);
+        if file && !d.terminal() && (writing || d.op == crate::sandbox::EITHER) {
             found.extend(crate::allow::write_choices(&target, home, root, later, kept).into_iter().map(
                 |dir| {
                     let why = format!("{} was writing {} in it", d.process, below(&dir));
@@ -199,6 +218,17 @@ pub fn choices_by(
         }
     }
     out
+}
+
+/// A file named like a key as the list offers it (`Grant::Key`): used where runs write, since its writes reach
+/// there (`KeyRules::written`); read elsewhere — home, a place read only. With no rule, the project's only.
+pub(crate) fn key_label(k: &Path, keys: Option<&crate::sandbox::KeyRules>, root: &Path) -> String {
+    let written = match keys {
+        Some(rules) => rules.written(k),
+        None => k.starts_with(root),
+    };
+    let verb = if written { "using" } else { "reading" };
+    format!("allow {verb} {} — that file only", crate::allow::tilde(k))
 }
 
 /// What could open for the variables `names` (left out of a run's environment, named in its output): each one
@@ -315,6 +345,7 @@ impl Editor {
     /// The list of what the sandbox blocked in `run`, `list` what could open.
     fn blocked_open(&mut self, run: Option<BlockedRun>, list: Vec<Choice>) {
         use crate::picker::{Action, Item};
+        let keys = run.as_ref().and_then(|r| r.keys.as_ref());
         let mut items: Vec<Item> = list
             .iter()
             .enumerate()
@@ -326,7 +357,7 @@ impl Editor {
                     Grant::Socket(s) => format!("allow the socket {} only", crate::allow::tilde(s)),
                     Grant::Host(h, p) => format!("allow reaching {h}:{p}"),
                     Grant::Terminals => "allow opening terminals — yours too".into(),
-                    Grant::Key(k) => format!("allow reading {} — that file only", crate::allow::tilde(k)),
+                    Grant::Key(k) => key_label(k, keys, &self.workspace.root),
                     Grant::Localhost => "allow every port on this machine — the risky ones too".into(),
                     Grant::Env(n) => format!("allow passing your variable {n}"),
                     Grant::Masked(n, _) => format!("allow passing your variable {n} masked"),
@@ -1174,7 +1205,7 @@ mod tests {
             all.iter().map(|c| (&c.grant, c.hint.as_str(), c.why.as_str())).collect();
         let g = Grant::Key(env.clone());
         let why = format!("node was reading {}, named like a key", crate::allow::tilde(&env));
-        assert_eq!(got, [(&g, "node reading …/app/.env", why.as_str())]);
+        assert_eq!(got, [(&g, "node reading · named like a key", why.as_str())]);
         // (outside the project, by the run's own rule: `sandbox::tests::every_user_of_the_key_rule_gives_one_answer`;
         // with none, the project's only)
         let outside = choices(&[d("/Users/u/q/.env")], &crate::caps::Caps::at(home, root));
@@ -1193,6 +1224,38 @@ mod tests {
         assert!(w.keys == [env.clone()] && w.granted == [g.shown()] && w.reads.is_empty(), "{:?}", w.granted);
         crate::allow::keep(&store, root, |a| a.remove(&env.display().to_string())).unwrap();
         assert_eq!(crate::allow::Store::read(Some(&store)).get(root), Default::default());
+    }
+
+    /// A file named like a key the run was refused changing (macOS, B1 — `policy::KEY_WRITES`: written, removed,
+    /// its mode, flags, ACL or owner) offers that one file, said as what it was doing — never a folder of it: the name
+    /// closed it, not the place. Its creation refused is the place's (B1 leaves `file-write-create` open), and a
+    /// write of a file not named like one stays the folder's.
+    #[test]
+    fn a_key_named_files_change_refused_offers_that_file() {
+        let d =
+            |op: &str, target: &str| Denial { process: "sh".into(), op: op.into(), target: target.into() };
+        let (home, root) = (Path::new("/Users/u"), Path::new("/Users/u/p"));
+        let caps = crate::caps::Caps::at(home, root);
+        let env = root.join("app/.env");
+        let g = Grant::Key(env.clone());
+        for (op, doing) in [
+            ("file-write-data", "writing"),
+            ("file-write-unlink", "deleting"),
+            ("file-write-mode", "changing"),
+            ("file-write-acl", "changing"),
+            ("file-write-owner", "changing"),
+        ] {
+            let all = choices(&[d(op, "/Users/u/p/app/.env")], &caps);
+            let got: Vec<(&Grant, &str, &str)> =
+                all.iter().map(|c| (&c.grant, c.hint.as_str(), c.why.as_str())).collect();
+            let why = format!("sh was {doing} {}, named like a key", crate::allow::tilde(&env));
+            let hint = format!("sh {doing} · named like a key");
+            assert_eq!(got, [(&g, hint.as_str(), why.as_str())], "{op}");
+        }
+        let made = choices(&[d("file-write-create", "/Users/u/p/app/.env")], &caps);
+        assert!(made.iter().all(|c| !matches!(c.grant, Grant::Key(_))), "{made:?}");
+        let plain = choices(&[d("file-write-data", "/Users/u/p/app/notes.txt")], &caps);
+        assert!(plain.iter().all(|c| !matches!(c.grant, Grant::Key(_))), "{plain:?}");
     }
 
     /// A host the proxy held and the user's answer would lift (`network-host`: not among the hosts, no answer,
@@ -1458,13 +1521,10 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
         let cases = [
-            (Grant::Read(dir.join("hidden")), Keys::Hidden, "but files named like keys"),
-            (
-                Grant::Write(dir.join("read-only")),
-                Keys::ReadOnly,
-                "files named like keys too, though never read",
-            ),
+            (Grant::Read(dir.join("closed")), Keys::Closed, "but files named like keys"),
+            (Grant::Write(dir.join("closed-w")), Keys::Closed, "in it but files named like keys"),
             (Grant::Read(dir.join("open")), Keys::Open, ", files named like keys too"),
+            (Grant::Write(dir.join("open-w")), Keys::Open, ", files named like keys too"),
         ];
         for (n, (grant, keys, words)) in cases.into_iter().enumerate() {
             let c = ed.workspace.claude.chat.as_mut().unwrap();

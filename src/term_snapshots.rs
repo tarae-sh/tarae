@@ -7012,6 +7012,55 @@ fn snapshot_granted() {
     s.frames_both("granted_empty");
 }
 
+/// B1's screens (macOS, a key's change refused), for their screenshots — only with `TARAE_FRAMES_DIR` set (both
+/// themes there, 120×34 and 80×43; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): a run refused deleting
+/// `.env` and writing `config/server.pem` — the run panel's rows, then its list of what could open (`space m s`).
+#[cfg(target_os = "macos")]
+#[test]
+fn frames_of_key_writes() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    let root = PathBuf::from("/private/tmp/tarae-shot-keys/app");
+    std::fs::create_dir_all(root.join("config")).unwrap();
+    for (w, h) in [(120, 34), (80, 43)] {
+        let mut s = Shot::new(w, h);
+        s.root = root.clone();
+        s.ed.workspace.root = root.clone();
+        s.file("src/demo.rs", DEMO_RS);
+        let watch = crate::sandbox::Watch::quiet("t.");
+        let d = |op: &str, f: &str| crate::sandbox::Denial {
+            process: "sh".into(),
+            op: op.into(),
+            target: root.join(f).display().to_string(),
+        };
+        watch.record(d("file-write-unlink", ".env"));
+        watch.record(d("file-write-data", "config/server.pem"));
+        let env = crate::sandbox::Env { root: root.clone(), ..crate::sandbox::Env::default() };
+        let policy =
+            crate::sandbox::Policy { watch: Some(watch), ..crate::sandbox::Policy::for_project(&env) };
+        let task =
+            crate::task::Task { name: "./reset.sh".into(), cmd: "./reset.sh".into(), cwd: root.clone() };
+        let mut r = crate::task::Run::for_test(task);
+        r.state = crate::task::State::Failed(Some(1));
+        r.took = Some(Duration::from_millis(140));
+        r.by_claude = true;
+        r.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
+        r.output = [
+            (true, "rm: .env: Operation not permitted"),
+            (true, "./reset.sh: line 3: config/server.pem: Operation not permitted"),
+        ]
+        .into_iter()
+        .collect();
+        s.ed.workspace.task_run = Some(r);
+        s.ed.workspace.claude.sandbox = Some(crate::sandbox::guarantees::Guarantees::seatbelt(false, false));
+        s.frames_both(&format!("keywrites-panel-{w}"));
+        s.keys(" ms");
+        s.until("the list", |ed| ed.picker.is_some());
+        s.frames_both(&format!("keywrites-list-{w}"));
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn blocked_npm_run(s: &mut Shot) {
     let cache = PathBuf::from("/private/tmp/tarae-shot-blocked/npm-cache");
@@ -8478,7 +8527,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         report: None,
         key: None,
         keys: None,
-        granting: Some(crate::allow::Keys::ReadOnly),
+        granting: Some(crate::allow::Keys::Closed),
     };
     let grant = crate::allow::Grant::Write(p("npm-cache"));
     let reason = "npm keeps its cache there";
@@ -8515,7 +8564,7 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
                 Vec::new(),
                 false,
             ),
-            "╰─ C-q answer · y once · a chat · s session · A always · n ─╯",
+            "╰─ C-q answer · y once · a chat · s session · A always · n no ──╯",
         ),
         (
             "host",
@@ -8526,14 +8575,16 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
 }
 
 /// R1 step 3's shot question: a card a row taller (the write card with fix 6's words) moves nothing beside or under it
-/// — the chat's rows stay where they were, only the card's own differ — at 120×34 and 80×43. With
+/// — the chat's rows stay where they were, only the card's own differ — at 120×34 and 80×43 (B1's shorter words
+/// fit 120 as they were: taller at one of them at least, its bottom line where it was at both). With
 /// `TARAE_FRAMES_DIR`, its frames before fix 6 (the words as they were) and after, both themes, for their screenshots
 /// (`r1-write-{before,after}-{w}`).
 #[test]
 fn a_taller_card_moves_nothing_beside_it() {
     use crate::chat::{Msg, Role};
-    const SINCE: &str = " — files named like keys too, though never read";
+    const SINCE: &str = " but files named like keys";
     crate::clock::hold();
+    let mut taller = Vec::new();
     for (w, h) in [(120u16, 34u16), (80, 43)] {
         let shot = |before: bool| {
             let mut s = Shot::new(w, h);
@@ -8562,8 +8613,12 @@ fn a_taller_card_moves_nothing_beside_it() {
             (top, bottom)
         };
         let ((bt, bb), (at, ab)) = (span(&b), span(&a));
-        assert!(ab - at > bb - bt && ab == bb, "{w}: a row taller, its bottom line where it was");
-        for i in 0..a.len() {
+        assert!(ab - at >= bb - bt && ab == bb, "{w}: no row shorter, its bottom line where it was");
+        // (where the words fit as they were, the card only widens to them: nothing of this test's there)
+        if ab - at > bb - bt {
+            taller.push(w);
+        }
+        for i in (0..a.len()).filter(|_| taller.contains(&w)) {
             let left = |l: &str| l.split(['│', '╭']).next().unwrap_or("").trim_end().to_string();
             match i >= at.min(bt) && i <= ab {
                 false => assert_eq!(a[i], b[i], "{w}: row {i} moved"),
@@ -8573,6 +8628,7 @@ fn a_taller_card_moves_nothing_beside_it() {
         before.frames_both(&format!("r1-write-before-{w}"));
         after.frames_both(&format!("r1-write-after-{w}"));
     }
+    assert!(!taller.is_empty(), "a row taller at one width at least");
 }
 
 /// The user's three cards of 2026-10-25, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there,

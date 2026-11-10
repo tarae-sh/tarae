@@ -17,7 +17,7 @@
 14  14 fn main() {                      ╭─ Open the sandbox a little? ───────────────────────────────╮
 15  15     let text = "the quick brown f│ Let Claude's commands write in                             │
 16  16     let counts = word_counts(text│ /private/tmp/tarae-shot-blocked/npm-cache and everything   │
-17  17     println!("{} distinct words",│ in it — files named like keys too, though never read       │
+17  17     println!("{} distinct words",│ in it but files named like keys                            │
 18  18 }                                │                                                            │
 19                                      │ npm was writing …/_cacache/index-v5 in it, in `npm test` — │
 20                                      │ which runs again now with it open, whichever you choose.   │

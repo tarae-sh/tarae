@@ -572,10 +572,18 @@ impl Guard {
                         false => names.push(rel.display().to_string()),
                     }
                 }
-                // (a read the key rule refused — never a write: one refused where keys are closed is the place's)
-                _ if !d.op.starts_with("file-write")
-                    && p.key_rule(path).is_some()
-                    && !p.reads_allow(path) =>
+                // (what the key rule refused: a read; a change or a removal where runs write — B1, macOS; another
+                // write refused where keys are closed, or any where runs don't write, is the place's. A write
+                // rebuilt from the run's output, its kernel report lost, is `file-write*`: where runs write, only
+                // the name can have refused it)
+                _ if p.key_rule(path).is_some()
+                    && match d.op.starts_with("file-write") {
+                        true => {
+                            (d.op == "file-write*" || policy::KEY_WRITES.split(' ').any(|o| o == d.op))
+                                && p.key_refuses_change(path)
+                        }
+                        false => !p.reads_allow(path),
+                    } =>
                 {
                     let shown = match path.strip_prefix(&p.root) {
                         Ok(rel) => rel.display().to_string(),
@@ -647,12 +655,24 @@ impl Guard {
                 what.join(", ")
             ));
         }
+        // (macOS closes their writes too — B1, `KEY_WRITES`: said as Linux's hidden key is, `hidden_keys_said`)
+        let (read, use_) = match p.supervised {
+            false => ("read, write, remove or rename", "use"),
+            true => ("read", "read"),
+        };
         if !keys.is_empty() {
             let it = if keys.len() == 1 { "it" } else { "them" };
+            let made = match p.supervised {
+                false => {
+                    ", and nothing brings back one that's lost. They can make a new one, though not change it \
+                          after; in $TMPDIR they can"
+                }
+                true => "",
+            };
             s.push_str(&format!(
-                "{}: named like a key, so your commands can't read {it} — a key or a token may be in {it}. If a \
-                 command needs {it}, tell the user: the run's panel (space m s) lets your commands read that file. \
-                 Don't work around it.\n",
+                "{}: named like a key, so your commands can't {read} {it} — a key or a token may be in {it}{made}. \
+                 If a command needs {it}, tell the user: the run's panel (space m s) lets your commands {use_} that \
+                 file. Don't work around it.\n",
                 keys.join(", ")
             ));
         }
@@ -660,7 +680,7 @@ impl Guard {
             let it = if temp_keys.len() == 1 { "it" } else { "them" };
             s.push_str(&format!(
                 "{}: named like a key in the shared temp folder, which every program writes, so your commands \
-                 can't read {it} — even one a command of yours made there. Make such a file under $TMPDIR \
+                 can't {read} {it} — even one a command of yours made there. Make such a file under $TMPDIR \
                  instead: that folder is this run's own (a JVM: -Djava.io.tmpdir=$TMPDIR).\n",
                 temp_keys.join(", ")
             ));
@@ -953,15 +973,15 @@ impl Guard {
                 let keys = match (p.keys.is_some(), !p.supervised) {
                     (true, true) if !p.folders.is_empty() => {
                         " In the project, its folders, the repository's other checkouts, the temp folders and what the \
-                         user let it read or write it can't read a file named like a key or a token (but templates, \
-                         public keys, CA bundles and a toolchain's installs and packages) — the user can open one from \
-                         the run's panel."
+                         user let it read or write it can't read, change or remove a file named like a key or a token \
+                         (but templates, public keys, CA bundles and a toolchain's installs and packages; a new one it \
+                         makes) — the user can open one from the run's panel."
                     }
                     (true, true) => {
                         " In the project, the repository's other checkouts, the temp folders and what the user let it \
-                         read or write it can't read a file named like a key or a token (but templates, public keys, \
-                         CA bundles and a toolchain's installs and packages) — the user can open one from the run's \
-                         panel."
+                         read or write it can't read, change or remove a file named like a key or a token (but \
+                         templates, public keys, CA bundles and a toolchain's installs and packages; a new one it \
+                         makes) — the user can open one from the run's panel."
                     }
                     (true, false) => {
                         " In the project it can't read a file named like a key or a token (but templates and \
@@ -10138,15 +10158,16 @@ mod tests {
         let text = none.profile();
         // (but the rules of files named like keys: the project's, and the temp folders' —
         // `files_named_like_keys_are_closed_…`)
-        let keys = "(deny file-read-data file-read-xattr (require-all (subpath (param \"ROOT\"))";
-        let places = "(deny file-read-data file-read-xattr (require-all (require-any (subpath (param \"KP";
+        let closed = format!("(deny file-read-data file-read-xattr {}", policy::KEY_WRITES);
+        let keys = format!("{closed} (require-all (subpath (param \"ROOT\"))");
+        let places = format!("{closed} (require-all (require-any (subpath (param \"KP");
         let reads: Vec<&str> = text
             .lines()
             .filter(|l| {
                 l.contains("file-read")
                     && !l.contains(TERMINALS)
-                    && !l.starts_with(keys)
-                    && !l.starts_with(places)
+                    && !l.starts_with(&keys)
+                    && !l.starts_with(&places)
                     && *l != "(allow file-read*)"
             })
             .collect();
@@ -10322,7 +10343,8 @@ mod tests {
         let mac = Policy::for_project(&env(root));
         assert_eq!(mac.keys, Some(Vec::new()), "closed, whatever the system");
         let text = mac.profile();
-        let deny = text.lines().find(|l| l.contains("(deny file-read-data file-read-xattr (require-all"));
+        let rule = format!("(deny file-read-data file-read-xattr {} (require-all", policy::KEY_WRITES);
+        let deny = text.lines().find(|l| l.contains(&rule));
         let deny = deny.unwrap_or_else(|| panic!("{text}"));
         assert!(deny.contains("\\.[eE][nN][vV]") && deny.contains("[^/]*\\.[pP][eE][mM]"), "{deny}");
         assert!(deny.contains("(require-not (require-any") && deny.contains("node_modules|"), "{deny}");
@@ -10349,8 +10371,18 @@ mod tests {
         let refused =
             [Denial { process: "cat".into(), op: "file-read-data".into(), target: "/Users/u/p/.env".into() }];
         let said = |p: &Policy| Guard::In(Box::new(p.clone())).kept(&refused).0;
-        let line = ".env: named like a key, so your commands can't read it — a key or a token may be in it. If a \
-                    command needs it, tell the user: the run's panel (space m s) lets your commands read that file.";
+        let line = match mac.supervised {
+            false => {
+                ".env: named like a key, so your commands can't read, write, remove or rename it — a key or a \
+                      token may be in it, and nothing brings back one that's lost. They can make a new one, though \
+                      not change it after; in $TMPDIR they can. If a command needs it, tell the user: the run's \
+                      panel (space m s) lets your commands use that file."
+            }
+            true => {
+                ".env: named like a key, so your commands can't read it — a key or a token may be in it. If a \
+                     command needs it, tell the user: the run's panel (space m s) lets your commands read that file."
+            }
+        };
         assert!(said(&mac).contains(line), "{}", said(&mac));
         assert!(!said(&granted).contains("named like a key"), "{}", said(&granted));
         let open = Policy { keys: None, ..mac.clone() };
@@ -10358,11 +10390,82 @@ mod tests {
         assert!(!open.profile().contains("[pP][eE][mM]"));
         let summary = |p: &Policy| Guard::In(Box::new(p.clone())).report(&[]);
         let said = match mac.supervised {
-            false => "what the user let it read or write it can't read a file named like a key or a token",
+            false => {
+                "what the user let it read or write it can't read, change or remove a file named like a key or \
+                      a token"
+            }
             true => "In the project it can't read a file named like a key or a token",
         };
         assert!(summary(&mac).contains(said), "{}", summary(&mac));
         assert!(!summary(&open).contains("named like a key"));
+    }
+
+    /// B1 (macOS, 2026-11-10): where the profile closes a file named like a key to reads it closes its changes —
+    /// written, removed or renamed, its mode, flags, ACL and owner (`KEY_WRITES`) — in the same rule, below the
+    /// root and in the places outside, never its creation, its times nor its extended attributes (`cp`'s copy of a
+    /// template's). The file the user opened is written again only where runs write: in the project, never a key opened in home, and never inside a protected name
+    /// (`.cargo/credentials`: the protected names' deny comes after). The rule in Rust (`writes_allow`,
+    /// `key_writes_closed`) agrees; Linux's (`supervised`: its mounts) closes nothing by name. The report says a
+    /// change refused as the key's; a key's creation refused is the place's.
+    #[test]
+    fn a_key_named_file_is_changed_by_no_run_but_where_the_user_opened_it() {
+        let (root, home) = (Path::new("/Users/u/p"), Path::new("/Users/u"));
+        let mac = Policy { supervised: false, ..Policy::for_project(&env(root)) };
+        let text = mac.profile();
+        let closing: Vec<&str> = text.lines().filter(|l| l.contains(policy::KEY_WRITES)).collect();
+        assert!(closing.len() >= 2, "the project's and the places': {text}");
+        for l in &closing {
+            assert!(l.starts_with("(deny file-read-data file-read-xattr file-write-data"), "{l}");
+            for open in ["file-write-create", "file-write-times", "file-write-xattr"] {
+                assert!(!l.contains(open), "{l}");
+            }
+        }
+        assert!(closing.iter().any(|l| l.contains("(subpath (param \"KP0\"))")), "{closing:?}");
+        let at = |t: &Path| mac.writes_allow(&root.join(t));
+        for f in [".env", "a/b/Server.PEM", "deep/id_ED25519"] {
+            assert!(mac.key_writes_closed(&root.join(f)) && !at(Path::new(f)), "{f}");
+        }
+        for f in [".env.example", "id_rsa.pub", "node_modules/x/test.pem", "src/env.rs"] {
+            assert!(!mac.key_writes_closed(&root.join(f)) && at(Path::new(f)), "{f}");
+        }
+        // Opened: written again where the run writes — the project's file, not one in home, not in `.cargo`
+        let (env_file, gh, cred) =
+            (root.join(".env"), home.join(".config/gh/hosts.yml"), root.join(".cargo/credentials"));
+        let granted = Policy { keys: Some(vec![env_file.clone(), gh.clone(), cred.clone()]), ..mac.clone() };
+        let text = granted.profile();
+        let opened = " (literal (param \"Y0\")) (literal (param \"Y1\")) (literal (param \"Y2\"))";
+        let writes = format!(
+            "(allow {} (require-all (require-any{opened}) (require-any (require-all (subpath (param \"ROOT\"))",
+            policy::KEY_WRITES
+        );
+        let protected = "(deny file-write* (require-all (subpath (param \"ROOT\"))";
+        let find = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s}: {text}"));
+        assert!(find(&writes) > find(closing[0]) && find(&writes) < find(protected), "{text}");
+        assert!(granted.writes_allow(&env_file) && !granted.key_writes_closed(&env_file));
+        assert!(!granted.writes_allow(&gh), "a key opened in home is read, never written");
+        assert!(!granted.writes_allow(&cred), "nor one inside a protected name");
+        assert!(!granted.writes_allow(&root.join(".env.local")), "another stays closed");
+        // Linux's rule: its mounts hide what its walk found — nothing closed by name
+        let linux = Policy { supervised: true, ..mac.clone() };
+        assert!(!linux.key_writes_closed(&env_file) && linux.writes_allow(&env_file));
+        // The report: a change refused is the key's, in Linux's hidden key's words; its creation the place's
+        let said = |op: &str| {
+            let d = Denial { process: "sh".into(), op: op.into(), target: env_file.display().to_string() };
+            Guard::In(Box::new(mac.clone())).kept(&[d]).0
+        };
+        for op in
+            ["file-write-data", "file-write-unlink", "file-write-mode", "file-write-acl", "file-write-owner"]
+        {
+            assert!(
+                said(op).contains(
+                    ".env: named like a key, so your commands can't read, write, remove or rename it"
+                ),
+                "{op}: {}",
+                said(op)
+            );
+            assert!(said(op).contains("lets your commands use that file"), "{op}: {}", said(op));
+        }
+        assert!(!said("file-write-create").contains("named like a key"), "{}", said("file-write-create"));
     }
 
     /// frictions29, second review: a nested worktree's main checkout (`app/.claude/worktrees/feat` — another
@@ -10409,8 +10512,11 @@ mod tests {
         assert!(text.contains("[cC][aA][cC][eE][rR][tT]\\.[pP][eE][mM]"), "the exception in the profile");
         assert!(text.contains("lib/python3[^/]*/site-packages"), "the packages in the rule outside: {text}");
         // (the CA bundles' names: an exception in the rules outside, not in the project's — review)
-        let rule = "(deny file-read-data file-read-xattr (require-all (subpath (param \"ROOT\"))";
-        let project = text.lines().find(|l| l.starts_with(rule)).unwrap();
+        let rule = format!(
+            "(deny file-read-data file-read-xattr {} (require-all (subpath (param \"ROOT\"))",
+            policy::KEY_WRITES
+        );
+        let project = text.lines().find(|l| l.starts_with(&rule)).unwrap();
         assert!(project.contains("[pP][eE][mM]"), "the project's key rule: {project}");
         assert!(!project.contains("[cC][aA][cC][eE][rR][tT]"), "{project}");
     }
@@ -10472,6 +10578,17 @@ mod tests {
             (f("/private/var/folders/ab/cd/T/x/deploy.key"), at("/private/var/folders/ab/cd")),
             (f("/Users/u/q/.env"), Some(ClosedOnceRead)),
             (f("/opt/x/.env"), None),
+        ];
+        // (of those, the ones whose change the key rule refuses on macOS: closed where runs write — not a place read
+        // only, nor home)
+        let changes = [
+            f("/Users/u/code/p/.env"),
+            f("/Users/u/code/p/certs/cacert.pem"),
+            f("/Users/u/out/deploy.key"),
+            w.join(".env"),
+            f("/private/tmp/x/.env.local"),
+            f("/private/var/folders/ab/cd/C/x/deploy.key"),
+            f("/private/var/folders/ab/cd/T/x/deploy.key"),
         ];
         // (taken apart, what's decided after a run goes by: `key_rules` copies each field the rule reads)
         let rules = p.key_rules();
@@ -10538,6 +10655,25 @@ mod tests {
             // (the report: one closed in a shared temp folder says where a run's own goes)
             let temp = matches!(&want, Some(Closed(k)) if k.starts_with("/private/tmp") || k.starts_with("/private/var"));
             assert_eq!(said.contains("under $TMPDIR"), temp, "{file:?}: the report: {said}");
+            // (a change refused: the name's where runs write — the opened file's writes reach only there — else
+            // the place's, as before B1 — B1's review)
+            let changed = !p.supervised && changes.contains(&file);
+            assert_eq!(p.key_refuses_change(&file), changed, "{file:?}: a change");
+            assert_eq!(rules.refuses_change(&file), changed, "{file:?}: a change, taken apart");
+            // (and one rebuilt from the run's output, its kernel report lost: `file-write*`)
+            for op in ["file-write-data", "file-write*"] {
+                let change =
+                    Denial { process: "sh".into(), op: op.into(), target: file.display().to_string() };
+                let told = Guard::In(Box::new(p.clone())).kept(std::slice::from_ref(&change)).0;
+                assert_eq!(told.contains("named like a key"), changed, "{file:?}: {op}'s report: {told}");
+                let panel = crate::blocked::choices_by(&[change], &caps, Some(&rules));
+                let key = Grant::Key(file.clone());
+                assert_eq!(
+                    panel.iter().any(|c| c.grant == key),
+                    changed,
+                    "{file:?}: {op}'s panel: {panel:?}"
+                );
+            }
         }
         // (the one place they part, said: outside home in no place runs close — the threat model's "not kept")
         assert_eq!(read_asks_alone, [f("/opt/x/.env")], "where Read asks and runs read");
@@ -10574,11 +10710,91 @@ mod tests {
         assert!(!said.contains("named like a key"), "{said}");
     }
 
+    /// B1's review: a change refused of a file named like a key is the name's only where runs write — the file the
+    /// user opens (`Grant::Key`) is written only there. In home (an existing `~/.npmrc` that `npm config set`
+    /// rewrites) or a place read only, the place refused it, as before B1: the report says no key, the panel offers
+    /// its folder and not the file, whose grant would leave the same write refused. Once the folder's written, a
+    /// change refused there is the name's and offers the file. The file's choice says using where runs write,
+    /// reading elsewhere.
+    #[test]
+    fn a_keys_change_refused_where_runs_dont_write_is_the_places() {
+        use crate::allow::{Allowed, Grant};
+        // (a made-up home in the test's own folder: the panel offers the folders that are there)
+        let base = crate::scratch::Scratch::new("key-change");
+        for d in ["home/code/p", "home/q", "home/ref", "home/out"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let home = std::fs::canonicalize(base.join("home")).unwrap();
+        let (root, home) = (home.join("code/p"), home.as_path());
+        let root = root.as_path();
+        let shared = home.join("ref");
+        let policy = |write: Vec<String>| {
+            let e = env(root);
+            let reads = Reads {
+                home: Some(home.into()),
+                allow: vec![shared.clone()],
+                kept: Vec::new(),
+                ..e.reads.clone()
+            };
+            let key_places = vec![shared.clone()];
+            let mut p = Policy::for_project(&Env { home: Some(home.into()), key_places, reads, write, ..e });
+            p.keys = Some(Vec::new());
+            p
+        };
+        let p = policy(vec!["~/out".into()]);
+        let rules = p.key_rules();
+        let none = Allowed::default();
+        let answered = Allowed { read: vec![shared.clone()], ..Default::default() };
+        let caps = crate::caps::Caps {
+            home: Some(home.into()),
+            ..crate::caps::Caps::granted(root, &answered, &none, &none)
+        };
+        let change = |t: &Path| Denial {
+            process: "sh".into(),
+            op: "file-write-data".into(),
+            target: t.display().to_string(),
+        };
+        // (in home, nothing opening it; in a place read only)
+        for file in [home.join("q/.env"), shared.join("id_ed25519")] {
+            assert!(rules.closes(&file), "{file:?}: closed by its name");
+            assert!(!p.key_refuses_change(&file) && !rules.refuses_change(&file), "{file:?}");
+            let said = Guard::In(Box::new(p.clone())).kept(&[change(&file)]).0;
+            assert!(!said.contains("named like a key"), "{file:?}: the report: {said}");
+            let panel = crate::blocked::choices_by(&[change(&file)], &caps, Some(&rules));
+            let folders: Vec<Grant> = crate::allow::write_choices(&file, home, root, &caps.later, &caps.kept)
+                .into_iter()
+                .map(Grant::Write)
+                .collect();
+            assert!(!folders.is_empty(), "{file:?}: a folder to offer");
+            let got: Vec<Grant> = panel.into_iter().map(|c| c.grant).collect();
+            assert_eq!(got, folders, "{file:?}: the panel");
+            let label = crate::blocked::key_label(&file, Some(&rules), root);
+            assert_eq!(label, format!("allow reading {} — that file only", crate::allow::tilde(&file)));
+        }
+        // (where runs write: the name's — the project's, and the read place once it's opened for writing)
+        let ours = root.join(".env");
+        assert!(p.key_refuses_change(&ours));
+        let said = Guard::In(Box::new(p.clone())).kept(&[change(&ours)]).0;
+        assert!(said.contains("named like a key"), "{said}");
+        let panel = crate::blocked::choices_by(&[change(&ours)], &caps, Some(&rules));
+        assert_eq!(panel.into_iter().map(|c| c.grant).collect::<Vec<_>>(), [Grant::Key(ours.clone())]);
+        let label = crate::blocked::key_label(&ours, Some(&rules), root);
+        assert_eq!(label, format!("allow using {} — that file only", crate::allow::tilde(&ours)));
+        let opened = policy(vec!["~/out".into(), "~/ref".into()]);
+        let theirs = shared.join("id_ed25519");
+        assert!(opened.key_refuses_change(&theirs) && opened.key_rules().refuses_change(&theirs));
+        let panel = crate::blocked::choices_by(&[change(&theirs)], &caps, Some(&opened.key_rules()));
+        assert_eq!(panel.into_iter().map(|c| c.grant).collect::<Vec<_>>(), [Grant::Key(theirs.clone())]);
+        let label = crate::blocked::key_label(&theirs, Some(&opened.key_rules()), root);
+        assert!(label.starts_with("allow using "), "{label}");
+    }
+
     /// R1 fix 6: a place's grant says of the files named like keys in it what the rule its run will have does to one
     /// there (`grant_keys`) — for each case the words agree with the built policy's `key_rule` and, on Linux,
-    /// `hidden_keys` on a stand-in key inside the place: macOS's closed to reads only, Linux's hidden in tier own,
-    /// open in tiers host and unserved. (A made-up home in the test's temp folder, `$TMPDIR` not said.) A machine said
-    /// to give a tier (`TARAE_EXPECT_TIER`) fails where the real policy's is another.
+    /// `hidden_keys` on a stand-in key inside the place: macOS's closed by its name, its writes too (B1 — a write
+    /// grant opens the place's other files, never it), Linux's hidden in tier own, open in tiers host and unserved.
+    /// (A made-up home in the test's temp folder, `$TMPDIR` not said.) A machine said to give a tier
+    /// (`TARAE_EXPECT_TIER`) fails where the real policy's is another.
     #[test]
     fn a_grants_words_say_what_its_runs_rule_does_to_a_key_in_it() {
         use crate::allow::{Grant, Keys};
@@ -10603,7 +10819,7 @@ mod tests {
                 at(Os::Mac, None),
                 [
                     "read ~/ref and everything in it but files named like keys",
-                    "write in ~/out and everything in it — files named like keys too, though never read",
+                    "write in ~/out and everything in it but files named like keys",
                 ],
             ),
             (
@@ -10636,10 +10852,20 @@ mod tests {
                 let mut p = run_policy_with(&root, &w.llm, &w.reads, &w.folders, here).unwrap();
                 w.onto(&mut p);
                 match keys {
-                    Keys::ReadOnly => assert!(p.key_rule(&key).is_some() && !p.supervised, "{case} {g:?}"),
-                    Keys::Open => assert_eq!(p.key_rule(&key), None, "{case} {g:?}"),
                     // (tier own's: what its mounts hide — the real one below, on Linux)
-                    Keys::Hidden => assert!(p.supervised, "{case} {g:?}"),
+                    Keys::Closed if p.supervised => {}
+                    Keys::Closed => assert!(
+                        p.key_rule(&key).is_some()
+                            && p.key_writes_closed(&key)
+                            && !p.reads_allow(&key)
+                            && !p.writes_allow(&key),
+                        "{case} {g:?}"
+                    ),
+                    Keys::Open => assert_eq!(p.key_rule(&key), None, "{case} {g:?}"),
+                }
+                // (the write grant opens the place's other files all the same)
+                if matches!(g, Grant::Write(_)) {
+                    assert!(p.writes_allow(&place.join("notes.txt")), "{case}");
                 }
             }
         }
@@ -10658,7 +10884,7 @@ mod tests {
                 }
                 let hidden = p.hidden_keys().contains(&key);
                 let said = grant_keys(&llm, &caps, g, &here);
-                assert_eq!(said == Some(Keys::Hidden), hidden, "{g:?}: tier {:?}", p.tier_said());
+                assert_eq!(said == Some(Keys::Closed), hidden, "{g:?}: tier {:?}", p.tier_said());
                 assert_eq!(said == Some(Keys::Open), p.key_rule(&key).is_none() && !hidden, "{g:?}");
             }
         }
@@ -14329,6 +14555,140 @@ mod tests {
             let (ok, out, err) = sh_under(&p, &root, script);
             assert!(!ok && !out.contains("tarae-fake-token"), "{script}: {out} {err}");
         }
+        std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// For real, on macOS (B1): a run can't change a file named like a key in the project — write over it (`>`),
+    /// append to it, open it to write (`O_CREAT` on one there), remove it, rename it or put another over it (`sed
+    /// -i`'s way), give it a second name, change its mode, flags, ACL (`chmod +a`) or group (`chgrp`) — and the file
+    /// is as it was. Its times and extended attributes it may change, on purpose (`KEY_WRITES`'s rule: neither
+    /// changes what a reader gets, nor who may read it), and the file is as it was but for them; the attributes'
+    /// reads stay closed. Through `setattrlist(2)` its mode and group change, its flags don't: the recorded gap
+    /// (G34), asserted as seen. Its folder renamed keeps the rule (by name). A new one it makes, written through that
+    /// open (`cp .env.example .env`) — but not after, nor removed (the cost: Linux lets that be until the next run);
+    /// in its own folder (`TMPDIR`) it does as it likes; in a temp folder outside, as in the project. The file the
+    /// user opened (`Grant::Key`) it writes and removes. (Linux's mounts: `a_run_cant_take_a_keys_mount_back`.)
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_run_cant_change_a_key_named_file_but_makes_a_new_one() {
+        use std::os::macos::fs::MetadataExt as _;
+        if !keys_tested_here("a_run_cant_change_a_key_named_file_but_makes_a_new_one") {
+            return;
+        }
+        let (t, root) = key_files("unchanged");
+        let mut p = key_policy(&root);
+        p.run = Some(RunDir::new().unwrap());
+        let own = p.run.as_ref().unwrap().path().display().to_string();
+        // (in `/tmp`, a key place: the test's own folder may be below `$TMPDIR`, which isn't one)
+        let elsewhere = crate::scratch::Scratch::in_dir(Path::new(TMP), "sb-keys-outside");
+        let outside = profile_path(&elsewhere.join("other.pem"));
+        std::fs::write(&outside, "tarae-fake-token").unwrap();
+        assert!(p.key_writes_closed(&outside), "a temp folder outside closes it: {:?}", p.key_places);
+        std::fs::write(root.join("x.tmp"), "planted").unwrap();
+        let (env, o) = (root.join(".env"), outside.display());
+        // (its ACL as `ls -le` lists it, below the file's line; its attributes' names apart: the open side)
+        let state = |f: &Path| {
+            let m = std::fs::metadata(f).unwrap();
+            let acl = Command::new("/bin/ls").args(["-led"]).arg(f).output().unwrap();
+            let acl = String::from_utf8_lossy(&acl.stdout).lines().skip(1).collect::<Vec<_>>().join("\n");
+            (std::fs::read_to_string(f).unwrap(), m.st_mode(), m.st_flags(), m.st_ino(), m.st_gid(), acl)
+        };
+        let attrs = |f: &Path| {
+            let out = Command::new("/usr/bin/xattr").arg(f).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let (before, attrs_before) = (state(&env), attrs(&env));
+        for script in [
+            "printf x > .env".to_string(),
+            "printf x >> .env".into(),
+            "perl -MFcntl -e 'sysopen(F, \".env\", O_WRONLY|O_CREAT) or die \"$!\\n\"'".into(),
+            "rm .env".into(),
+            "mv .env moved".into(),
+            "mv x.tmp .env".into(),
+            "ln .env second".into(),
+            "chmod 640 .env".into(),
+            "chflags hidden .env".into(),
+            "chmod +a 'everyone allow read' .env".into(),
+            "chgrp everyone .env".into(),
+            "rm deep/er/Server.PEM".into(),
+            format!("printf x > '{o}'"),
+            format!("rm '{o}'"),
+        ] {
+            let (ok, _, err) = sh_under(&p, &root, &script);
+            assert!(!ok && err.contains(KEY_DENIED), "{script}: {err}");
+        }
+        assert_eq!(state(&env), before, "the key as it was");
+        assert_eq!(attrs(&env), attrs_before, "its attributes as they were");
+        assert!(root.join("x.tmp").exists() && !root.join("moved").exists() && !root.join("second").exists());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "tarae-fake-token");
+        assert_eq!(std::fs::read_to_string(root.join("deep/er/Server.PEM")).unwrap(), "tarae-fake-token");
+        let (ok, _, err) = sh_under(&p, &root, "touch .env");
+        assert!(ok, "its times: {err}");
+        // Its attributes: open on purpose — set, the rest as it was; read, still closed. By path, with no open
+        // (perl's `syscall`: Darwin's setxattr 236, getxattr 234) — `xattr -w` opens the file to read first
+        let set = r#"perl -e '($f, $n, $v) = (".env", "tarae.set", "y"); syscall(236, $f, $n, $v, 1, 0, 0) == 0 or die "$!\n"'"#;
+        let (ok, _, err) = sh_under(&p, &root, set);
+        assert!(ok && attrs(&env).contains("tarae.set"), "an attribute set: {err}");
+        let set = state(&env);
+        assert_eq!((&set.0, set.1, set.2, &set.5), (&before.0, before.1, before.2, &before.5), "but for it");
+        let get = r#"perl -e '($f, $n, $b) = (".env", "tarae.set", "\0" x 8); $r = syscall(234, $f, $n, $b, 8, 0, 0); $r >= 0 or die "$!\n"; print substr($b, 0, $r)'"#;
+        let (ok, out, err) = sh_under(&p, &root, get);
+        assert!(!ok && !out.contains('y') && err.contains(KEY_DENIED), "its attribute read: {out} {err}");
+        // Through `setattrlist(2)` (Darwin's 221, by path), as seen — the recorded gap (G34): Seatbelt checks its
+        // attributes but the flags by the whole `file-write*`, none of `KEY_WRITES`'s ops, so its mode and group
+        // change; its flags are refused; its times are open as `touch`'s. Its bytes stay. (A macOS that closes them
+        // fails here: the gap's line goes.)
+        let sal = |attr: u32, value: &str| {
+            format!(
+                r#"perl -e '$f = ".env"; $al = pack("SSLLLLL", 5, 0, {attr}, 0, 0, 0, 0); $v = {value}; syscall(221, $f, $al, $v, length($v), 0) == 0 or die "$!\n"'"#
+            )
+        };
+        let (ok, _, err) = sh_under(&p, &root, &sal(0x0004_0000, r#"pack("L", 0x8000)"#));
+        assert!(!ok && err.contains(KEY_DENIED), "setattrlist, its flags: {err}");
+        assert_eq!(state(&env).2, before.2, "its flags as they were");
+        let (ok, _, err) = sh_under(&p, &root, &sal(0x0000_0400, r#"pack("qq", 1000000000, 0)"#));
+        assert!(
+            ok && std::fs::metadata(&env).unwrap().st_mtime() == 1_000_000_000,
+            "setattrlist, its times: {err}"
+        );
+        let (ok, _, err) = sh_under(&p, &root, &sal(0x0002_0000, r#"pack("L", 0666)"#));
+        assert!(ok && state(&env).1 & 0o7777 == 0o666, "setattrlist, its mode (G34): {err}");
+        let (ok, _, err) = sh_under(&p, &root, &sal(0x0001_0000, r#"pack("L", 12)"#));
+        assert!(ok && state(&env).4 == 12, "setattrlist, its group (G34): {err}");
+        assert_eq!(state(&env).0, before.0, "its bytes as they were");
+        // Its folder renamed: still closed, by its name
+        let (ok, _, err) = sh_under(&p, &root, "mv deep moved-deep && printf x > moved-deep/er/Server.PEM");
+        assert!(!ok && root.join("moved-deep").is_dir(), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("moved-deep/er/Server.PEM")).unwrap(),
+            "tarae-fake-token"
+        );
+        // A new one: made and written in that open — not after. Its template carries an attribute, as macOS puts
+        // on what apps write (`com.apple.provenance`): `cp` copies it through that open
+        let mark = Command::new("/usr/bin/xattr")
+            .args(["-w", "tarae.b1", "x"])
+            .arg(root.join(".env.example"))
+            .status();
+        assert!(mark.unwrap().success());
+        let (ok, _, err) = sh_under(&p, &root, "cp .env.example .env.local && printf made > .env.made");
+        assert!(ok, "made: {err}");
+        assert_eq!(std::fs::read_to_string(root.join(".env.made")).unwrap(), "made");
+        assert_eq!(std::fs::read_to_string(root.join(".env.local")).unwrap(), "tarae-fake-token");
+        for script in ["printf again > .env.made", "rm .env.made"] {
+            let (ok, _, err) = sh_under(&p, &root, script);
+            assert!(!ok && err.contains(KEY_DENIED), "the cost, {script}: {err}");
+        }
+        // Its own folder: free
+        let script =
+            format!("printf x > '{own}/own.pem' && printf y >> '{own}/own.pem' && rm '{own}/own.pem'");
+        let (ok, _, err) = sh_under(&p, &root, &script);
+        assert!(ok, "its own folder: {err}");
+        // Opened by the user: written and removed
+        let opened = Policy { keys: Some(vec![env.clone()]), ..p.clone() };
+        let (ok, _, err) = sh_under(&opened, &root, "printf new >> .env && cat .env && rm .env");
+        assert!(ok && !env.exists(), "opened: {err}");
+        let (ok, _, err) = sh_under(&opened, &root, "rm moved-deep/er/Server.PEM");
+        assert!(!ok && err.contains(KEY_DENIED), "another stays closed: {err}");
         std::fs::remove_dir_all(&t).ok();
     }
 

@@ -121,7 +121,7 @@ fn label(g: &Grant) -> String {
         Grant::Socket(s) => format!("connect to the socket {}", t(s)),
         Grant::Host(h, p) => format!("reach {h}:{p}"),
         Grant::Terminals => "open terminals, yours too".into(),
-        Grant::Key(k) => format!("read {}, named like a key", t(k)),
+        Grant::Key(k) => format!("use {}, named like a key", t(k)),
         Grant::Localhost => "connect to every port here, the risky ones too".into(),
         Grant::Env(n) => format!("have your variable {n}"),
         Grant::Masked(n, hosts) => format!("have your variable {n} masked → {}", hosts.join(", ")),
@@ -1123,7 +1123,7 @@ mod tests {
         let (shared, own) = (at(ALWAYS_SHARED), at(ALWAYS));
         assert_eq!(at("read /opt/tarae-stand-in"), shared + 1, "{listed:?}");
         assert_eq!(
-            at(&format!("read {}, named like a key", crate::allow::tilde(&main.join(".env")))),
+            at(&format!("use {}, named like a key", crate::allow::tilde(&main.join(".env")))),
             own + 1
         );
         assert_eq!(listed.last().unwrap().0, "1 more kept for other checkouts — not used here");

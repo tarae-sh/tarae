@@ -374,8 +374,8 @@ pub enum Grant {
     /// macOS: open the terminals (`sandbox::TERMINALS`) — all of them, the user's own too: Seatbelt can't
     /// tell a pty a run made (expect, `script`, a pty test) from the user's shells.
     Terminals,
-    /// Read that file in the project, named like a key (`sandbox::key_named_in`) — that one file, its real path
-    /// (macOS 7a, Linux 7b).
+    /// Use that file as any file there, named like a key (`sandbox::key_named_in`) — that one file, its real
+    /// path: read it (macOS 7a, Linux 7b), and write it where runs write (macOS B1; Linux's mounts, 7d).
     Key(PathBuf),
     /// Every port on this machine, `sandbox::RISKY_PORTS` too (as `llm.sandbox-localhost`: Seatbelt can't open
     /// `localhost:*` but some) — Gradle's client and daemon talk over ports chosen as they start.
@@ -393,10 +393,9 @@ pub enum Grant {
 /// (`sandbox::KeyRules::in_grant`, R1 fix 6) — what its card says (`Grant::shown_with`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Keys {
-    /// Closed and hidden: neither read nor written (Linux's mounts, tier own — `Policy::hidden_keys`).
-    Hidden,
-    /// Closed to reads only (macOS's profile): never read, but a write may replace or remove one.
-    ReadOnly,
+    /// Closed: neither read nor written — Linux's mounts hide it (tier own, `Policy::hidden_keys`), macOS's
+    /// profile closes it by its name (B1, `policy::KEY_WRITES`).
+    Closed,
     /// Open as any file there (Linux's tiers host and unserved outside the project) — or not worked out.
     #[default]
     Open,
@@ -413,7 +412,9 @@ impl Grant {
             Grant::Socket(s) => format!("connect to the socket {} — that one file", tilde(s)),
             Grant::Host(h, p) => format!("reach {h}:{p} through tarae's proxy"),
             Grant::Terminals => "open terminals (/dev/ttys*) — every one, yours too".into(),
-            Grant::Key(k) => format!("read {}, named like a key — that one file", tilde(k)),
+            // (its reads, and its writes where runs write — macOS's profile closes both by its name, B1; Linux's
+            // mounts hide it whole)
+            Grant::Key(k) => format!("use {} as any file there, named like a key — that one file", tilde(k)),
             Grant::Localhost => "connect to every port on this machine".into(),
             Grant::Env(n) => format!("have your variable {n} (its value is never shown)"),
             Grant::Masked(n, hosts) => format!(
@@ -432,10 +433,9 @@ impl Grant {
             Grant::Write(p) => ("write in", p),
             _ => return self.shown(),
         };
-        let rest = match (self, keys) {
-            (_, Keys::Hidden) | (Grant::Read(_), Keys::ReadOnly) => " but files named like keys",
-            (_, Keys::ReadOnly) => " — files named like keys too, though never read",
-            (_, Keys::Open) => ", files named like keys too",
+        let rest = match keys {
+            Keys::Closed => " but files named like keys",
+            Keys::Open => ", files named like keys too",
         };
         format!("{verb} {} and everything in it{rest}", tilde(p))
     }
@@ -1757,9 +1757,11 @@ pub fn grant_keys(ed: &mut crate::editor::Editor, keys: &[PathBuf], scope: Scope
     let shown = keys.iter().map(|k| tilde(k)).collect::<Vec<_>>().join(", ");
     let (when, toast) = lasting(ed, scope, &grants);
     // (Claude's read was answered; that its commands may read it too is news to it — as `grant` says)
-    let tell = format!("The user let you and your commands read {shown}, named like a key — {when}.");
+    let tell = format!(
+        "The user let you read {shown}, named like a key, and your commands use it as any file there — {when}."
+    );
     ed.workspace.claude.checkpoints.tell.push(tell);
-    ed.set_success(format!("Claude and its commands may read {shown}{toast}"));
+    ed.set_success(format!("Claude may read {shown}, its commands use it{toast}"));
 }
 
 /// `a`/`s`/`A` on a card about what the sandbox blocked: Claude's commands may do `g` for the rest of this

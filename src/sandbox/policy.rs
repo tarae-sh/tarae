@@ -173,6 +173,10 @@ pub struct KeyRules {
     write: Vec<PathBuf>,
     files: Vec<PathBuf>,
     covered: Vec<PathBuf>,
+    protect: Vec<PathBuf>,
+    opened: Vec<PathBuf>,
+    keep: Vec<PathBuf>,
+    caches: Vec<PathBuf>,
     /// Linux tier own: its run's child hides by mounts every file named like a key in the places outside the project
     /// it reads (D-i) — what one made there would be (`in_grant`).
     pub(super) hides: bool,
@@ -183,9 +187,9 @@ pub const KEY_NAMED: &str = "id_ed25519";
 
 impl KeyRules {
     /// What this rule — the run's with a grant of `place` (real) in it, `sandbox::grant_keys` — does to a file named
-    /// like a key inside it, as the grant's words say (`allow::Grant::shown_with`, R1 fix 6): closed and hidden by
-    /// Linux's mounts, which a run can't write either (`Policy::hidden_keys`); closed to reads only (macOS's profile
-    /// denies reading it, never writing); or open.
+    /// like a key inside it, as the grant's words say (`allow::Grant::shown_with`, R1 fix 6): closed — hidden by
+    /// Linux's mounts, which a run can't write either (`Policy::hidden_keys`), or neither read nor changed by its
+    /// name in macOS's profile (B1, `Policy::key_writes_closed`) — or open.
     pub fn in_grant(&self, place: &Path) -> crate::allow::Keys {
         use crate::allow::Keys;
         let named = place.join(KEY_NAMED);
@@ -199,8 +203,7 @@ impl KeyRules {
         let view = KeyView { covered: &covered, ..self.view() };
         match view.rule(&named) {
             None => Keys::Open,
-            Some(_) if self.supervised => Keys::Hidden,
-            Some(_) => Keys::ReadOnly,
+            Some(_) => Keys::Closed,
         }
     }
 
@@ -221,6 +224,10 @@ impl KeyRules {
             write: &self.write,
             files: &self.files,
             covered: &self.covered,
+            protect: &self.protect,
+            opened: &self.opened,
+            keep: &self.keep,
+            caches: &self.caches,
         }
     }
 
@@ -241,6 +248,17 @@ impl KeyRules {
     /// Whether only the user's opening of that file (`Grant::Key`) lets a run read `real`.
     pub fn closes(&self, real: &Path) -> bool {
         self.rule(real).is_some()
+    }
+
+    /// `Policy::key_refuses_change`.
+    pub fn refuses_change(&self, real: &Path) -> bool {
+        self.view().refuses_change(real)
+    }
+
+    /// Whether runs write `real`, its name aside (`KeyView::writes_place`): where the user's opening of it
+    /// (`Grant::Key`) lets runs use it as any file there, not only read it.
+    pub fn written(&self, real: &Path) -> bool {
+        self.view().writes_place(real, false)
     }
 
     /// Whether runs read a copy of `real` in its place (a setting holding a token, `tokens::Copies`): the file
@@ -271,6 +289,12 @@ struct KeyView<'a> {
     /// Linux tier own: the files named like keys outside the project its run's mounts hid (`linux::Outside`, D-i) —
     /// closed, the rest there not.
     covered: &'a [PathBuf],
+    /// What `writes_place` reads besides: the project's kept places, the folders opened for writing (their
+    /// protected names kept), what's kept in the places runs write (`Policy::protect`, `opened`, `keep`, `caches`).
+    protect: &'a [PathBuf],
+    opened: &'a [PathBuf],
+    keep: &'a [PathBuf],
+    caches: &'a [PathBuf],
 }
 
 impl KeyView<'_> {
@@ -312,6 +336,30 @@ impl KeyView<'_> {
         let unread = self.reads.home_of(real).is_some() && !self.reads_place(real);
         let named = self.places.iter().all(|k| !real.starts_with(k)) && key_named_below(Path::new("/"), real);
         (unread && named).then_some(KeyRule::ClosedOnceRead)
+    }
+
+    /// Whether a run writes `real`, its name aside — the project but `protect` and its protected names, the run's
+    /// folder, `write` but a protected name in a folder opened for writing and what's kept (`keep`, `caches`);
+    /// `/dev/shm` where `shm` (Linux, a run's own): where the writes of a file the user opened reach (`Grant::Key`,
+    /// `Y<n>`), and `Policy::writes_allow`'s places.
+    fn writes_place(&self, real: &Path, shm: bool) -> bool {
+        if real.starts_with(self.root) {
+            return !protected_in(self.root, real) && !self.protect.iter().any(|p| real.starts_with(p));
+        }
+        if self.opened.iter().any(|o| protected_in(o, real)) {
+            return false;
+        }
+        let open = (shm && real.starts_with(Path::new("/dev/shm")))
+            || self.run.is_some_and(|d| real.starts_with(d))
+            || self.write.iter().any(|w| real.starts_with(w));
+        open && !self.keep.iter().chain(self.caches).any(|k| real.starts_with(k))
+    }
+
+    /// `Policy::key_refuses_change`.
+    fn refuses_change(&self, real: &Path) -> bool {
+        !self.supervised
+            && matches!(self.rule(real), Some(KeyRule::Closed(_)))
+            && self.writes_place(real, false)
     }
 
     /// Whether the profile's reads in home — or a Windows profile, closed as home is — let a run read `real`, its
@@ -515,6 +563,26 @@ pub const TTY_IOCTLS: &[(&str, u64)] = &[
     ("FIONCLEX", 0x2000_6602),
 ];
 
+/// What the profile closes of a file named like a key where its rule holds, beside its reads (7a; B1, 2026-11-10).
+/// The rule: closed is what changes the bytes a reader gets — its data (`O_TRUNC`, `O_APPEND`, `>` over it,
+/// `truncate`); whether it's there under its name — `rm`, `mv` from it, a rename over it (`sed -i`'s); and who may
+/// read or change it — its mode, flags, ACL and owner or group, by `chmod`, `chown`, `chflags` and the ACL calls
+/// (`chmod +a`). Not by `setattrlist(2)`: Seatbelt checks its attributes but the flags by the whole `file-write*`,
+/// none of these ops, so a run sets a key's mode (`ATTR_CMN_ACCESSMASK`) or group (`ATTR_CMN_GRPID`) through it —
+/// never its bytes nor its name, and nothing more is read inside the run (the reads are closed by name, not mode):
+/// the threat model's G34, measured (`.sb/b1-seatbelt.sh`, the real test). Its times and extended
+/// attributes change none of those, so they stay open (the design session, 2026-11-10) — and `cp` copies a
+/// template's attributes (`com.apple.provenance`) through the descriptor that made the copy, which Seatbelt checks by
+/// the path: closed, `cp .env.example .env` fails. The attributes' reads stay closed. Linux's mounts hide one found
+/// before the run alike (7d, D-i). Not `file-write-create`: a new one is made, written through the descriptor that
+/// made it — but once there it's closed as one found, so a key a run made earlier in that run can't be rewritten,
+/// removed or `chmod`ed (an `fchmod` through that descriptor too — `cp` and `cp -p` make one without; Linux lets
+/// that be until the next run; B2, its walk, only if those refusals show up). The run's own folder (`TMPDIR`) is
+/// free. Measured with real syscalls, `.sb/b1-seatbelt.sh` (its table in `.sb/key-writes-b1-report.md`).
+#[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
+pub(crate) const KEY_WRITES: &str =
+    "file-write-data file-write-unlink file-write-mode file-write-flags file-write-acl file-write-owner";
+
 impl Policy {
     /// Whether its run gets a pty broker (macOS, `ptybroker`): it has a folder of its own, and no socket of the
     /// user's is granted it — one could hand it a descriptor of the user's terminal, and its profile then has no
@@ -651,19 +719,14 @@ impl Policy {
                 "(allow file-read-data (require-all (subpath (param \"HOME\")) {GLOBAL_PREFERENCES}))\n"
             ));
         }
-        // After the allows, so these win. The names a run keeps off, below the project's root however deep
-        // (`protected_writes`)
-        p.push_str(&deny(&format!("file-write* {}", protected_writes(&self.root))));
-        // …and below each folder the user opened for writing, counted from it as the root's are (`opened`)
-        for (i, o) in self.opened.iter().enumerate() {
-            p.push_str(&deny(&format!("file-write* {}", protected_writes_in(o, &format!("O{i}")))));
-        }
-        // …the files named like keys (`secretnames`, data — 7a): not read, below the root however deep, but a
-        // template or a public key (its `!` lines), what's below tools' output (a package's test keys), and each
-        // file the user opened (`keys`)
+        // After the allows, so these win. The files named like keys (`secretnames`, data — 7a): not read, below
+        // the root however deep, but a template or a public key (its `!` lines), what's below tools' output (a
+        // package's test keys), and each file the user opened (`keys`). Nor changed, removed or renamed (B1,
+        // `KEY_WRITES`): a new one is made all the same, then it's closed as one found
         if let Some(keys) = &self.keys {
+            let closed = format!("file-read-data file-read-xattr {KEY_WRITES}");
             p.push_str(&deny(&format!(
-                "file-read-data file-read-xattr (require-all (subpath (param \"ROOT\")) {})",
+                "{closed} (require-all (subpath (param \"ROOT\")) {})",
                 key_files(&below(&self.root))
             )));
             // …and below the places outside it a grant or a default opened (frictions29), alike: one rule for
@@ -688,14 +751,26 @@ impl Policy {
             };
             for (at, subs) in deep {
                 p.push_str(&deny(&format!(
-                    "file-read-data file-read-xattr (require-all (require-any{subs}) {not} {})",
+                    "{closed} (require-all (require-any{subs}) {not} {})",
                     key_files_outside(&at)
                 )));
             }
             let open: String = (0..keys.len()).map(|i| format!(" (literal (param \"Y{i}\"))")).collect();
             if !open.is_empty() {
                 p.push_str(&format!("(allow file-read-data file-read-xattr{open})\n"));
+                // (its writes only where the run writes anyway: a key opened in home is read, never written)
+                p.push_str(&format!(
+                    "(allow {KEY_WRITES} (require-all (require-any{open}) (require-any (require-all (subpath \
+                     (param \"ROOT\")){protect}){run}{dirs})))\n"
+                ));
             }
+        }
+        // The names a run keeps off, below the project's root however deep (`protected_writes`) — after the
+        // keys, so a file the user opened inside one (`.cargo/credentials`) is read, never written
+        p.push_str(&deny(&format!("file-write* {}", protected_writes(&self.root))));
+        // …and below each folder the user opened for writing, counted from it as the root's are (`opened`)
+        for (i, o) in self.opened.iter().enumerate() {
+            p.push_str(&deny(&format!("file-write* {}", protected_writes_in(o, &format!("O{i}")))));
         }
         // …the multiplexers' socket folders (they sit inside writable temp ones), cargo's caches
         let keep: String = (0..self.keep.len()).map(|i| format!(" (subpath (param \"K{i}\"))")).collect();
@@ -1066,6 +1141,22 @@ impl Policy {
         self.key_view().rule(real)
     }
 
+    /// Whether the profile keeps a run from changing or removing `real` by its name (`KEY_WRITES`, B1): named like
+    /// a key where the rule closes it, and not opened. macOS's — on Linux the mounts hide what the walk found
+    /// (`hidden_keys`), and a key the run made there it writes until the next run.
+    pub fn key_writes_closed(&self, real: &Path) -> bool {
+        !self.supervised && matches!(self.key_rule(real), Some(KeyRule::Closed(_)))
+    }
+
+    /// Whether the key rule is what refused a change of `real` (B1): its writes closed by its name
+    /// (`key_writes_closed`) where runs write, its name aside — so the user's opening of that file (`Grant::Key`,
+    /// whose writes reach only there) lets the change through. Elsewhere — home, a place read only — the place
+    /// refused it, as before B1: the report says the place's, the panel offers its folder; once that's written, a
+    /// change refused is the name's. What the report (`kept`) and the run's panel (`blocked::choices_by`) go by.
+    pub fn key_refuses_change(&self, real: &Path) -> bool {
+        self.key_view().refuses_change(real)
+    }
+
     /// The key rule taken apart from the policy, for what's decided after its run on a worker (`KeyRules`).
     pub fn key_rules(&self) -> KeyRules {
         KeyRules {
@@ -1079,6 +1170,10 @@ impl Policy {
             write: self.write.clone(),
             files: self.files.clone(),
             covered: self.covered().to_vec(),
+            protect: self.protect.clone(),
+            opened: self.opened.clone(),
+            keep: self.keep.clone(),
+            caches: self.caches.clone(),
             hides: self.hides(),
         }
     }
@@ -1123,6 +1218,10 @@ impl Policy {
             write: &self.write,
             files: &self.files,
             covered: self.covered(),
+            protect: &self.protect,
+            opened: &self.opened,
+            keep: &self.keep,
+            caches: &self.caches,
         }
     }
 
@@ -1149,16 +1248,7 @@ impl Policy {
         if self.files.iter().any(|f| f == real) || is_terminal(real) && self.terminals {
             return true;
         }
-        if real.starts_with(&self.root) {
-            return !protected_in(&self.root, real) && !self.protect.iter().any(|p| real.starts_with(p));
-        }
-        if self.opened.iter().any(|o| protected_in(o, real)) {
-            return false;
-        }
-        let open = (self.own_shm && real.starts_with(Path::new("/dev/shm")))
-            || self.run.as_ref().is_some_and(|d| real.starts_with(d.path()))
-            || self.write.iter().any(|w| real.starts_with(w));
-        open && !self.keep.iter().chain(&self.caches).any(|k| real.starts_with(k))
+        !self.key_writes_closed(real) && self.key_view().writes_place(real, self.own_shm)
     }
 
     /// What the run's output says was refused where the profile denies it — the kernel's own report of a
