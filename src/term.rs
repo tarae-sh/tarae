@@ -20692,6 +20692,16 @@ fn draw_chat(
                 .collect()
         }
     };
+    // (each piece's first row and message: an answer's names that are locals of its files are underlined by message)
+    let mut piece_rows = 0;
+    let piece_starts: Vec<(usize, Option<usize>)> = (pieces.iter())
+        .map(|(o, rows)| {
+            let i = if let crate::chatdoc::Of::Msg(i) = o { Some(*i) } else { None };
+            piece_rows += rows.len();
+            (piece_rows - rows.len(), i)
+        })
+        .collect();
+    let msg_of = |row: usize| piece_starts[..piece_starts.partition_point(|p| p.0 <= row)].last()?.1;
     let doubt_at = |row: usize, r: &ChatRow| {
         let t = row_turn.get(row).copied().flatten()?;
         let doc = |p: &std::path::Path| crate::docpaths::find(editor, p);
@@ -20731,7 +20741,7 @@ fn draw_chat(
                 }
                 // `path:line` and an element's id in an answer: underlined, clickable
                 None => {
-                    let (l, found, ids, names) = underline_refs(editor, r, c, faint);
+                    let (l, found, ids, names) = underline_refs(editor, r, c, msg_of(from + i), faint);
                     for (a, b, link) in found {
                         chat_links.push((y, text_x + a, text_x + b, link));
                     }
@@ -23203,11 +23213,13 @@ type Underlined<'a> =
 /// a file (`places::Known`: one asked for after this frame isn't yet) —, the names written as code that came to a
 /// definition (`ChatRow.names`, `chatlink::Links::underlined`: one not known yet is asked after this frame) and the UI
 /// elements' ids (`card#12` — one that never was an element here stays plain, in `faint`) → (row, where they are). A
-/// name several files end with is a place too: pressed, its picker.
+/// name several files end with is a place too: pressed, its picker. A name its message's files define as a local
+/// (`msg`'s, `chatlink::local_underlined`) is underlined without asking; an answer not mapped yet asks nothing yet.
 fn underline_refs<'a>(
     editor: &Editor,
     r: &'a crate::chat::ChatRow,
     c: &crate::chat::Chat,
+    msg: Option<usize>,
     faint: Style,
 ) -> Underlined<'a> {
     use crate::markdown::Span;
@@ -23225,7 +23237,11 @@ fn underline_refs<'a>(
         .collect();
     let names: Vec<std::ops::Range<usize>> = (r.names.iter())
         .filter(|n| !refs.iter().any(|(b, _)| b.start < n.bytes.end && n.bytes.start < b.end))
-        .filter(|n| c.links.underlined(&n.word))
+        .filter(|n| match msg.map(|i| crate::chatlink::local_underlined(c, i, &n.word)) {
+            Some(Some(true)) => true,
+            Some(None) => false,
+            _ => c.links.underlined(&n.word),
+        })
         .map(|n| n.bytes.clone())
         .collect();
     if refs.is_empty() && ids.is_empty() && names.is_empty() {

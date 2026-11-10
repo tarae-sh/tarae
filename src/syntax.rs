@@ -405,6 +405,9 @@ struct Locals {
     defs: HashMap<u32, u32>,
     /// Per pattern: a scope that doesn't see its parents' definitions (`(#set! local.scope-inherits false)`).
     closed: Vec<bool>,
+    /// tarae's `@local.binding`: a name a `let` binds — a definition for a name in the chat (`local_defs`), never for
+    /// highlighting (a `let`'s uses keep their own colour).
+    binding: Option<u32>,
 }
 
 impl Locals {
@@ -430,8 +433,58 @@ impl Locals {
                     .any(|s| &*s.key == "local.scope-inherits" && s.value.as_deref() == Some("false"))
             })
             .collect();
-        Locals { scope: find("local.scope"), reference: find("local.reference"), defs, closed, query }
+        let (scope, reference, binding) =
+            (find("local.scope"), find("local.reference"), find("local.binding"));
+        Locals { scope, reference, defs, closed, binding, query }
     }
+}
+
+/// A local definition in a file (`local_defs`): its name, its line and byte column, and the lines of the scopes around
+/// it, innermost first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LocalDef {
+    pub name: String,
+    pub line: usize,
+    pub col: usize,
+    pub scopes: Vec<std::ops::Range<usize>>,
+}
+
+/// The local definitions in `text` by `lang`'s `locals.scm` — `@local.definition…` and tarae's `@local.binding` — each
+/// with its scopes; one only the file's own scope holds is no local (a top-level item, an import). Parsed here: a
+/// worker's. None: the language has no `locals.scm`.
+pub(crate) fn local_defs(lang: &LangData, text: &str) -> Option<Vec<LocalDef>> {
+    let l = lang.locals.as_ref()?;
+    let mut parser = Parser::new();
+    parser.set_language(&lang.language).ok()?;
+    let tree = parser.parse(text, None)?;
+    let root = tree.root_node();
+    let mut cursor = QueryCursor::new();
+    let mut caps = cursor.captures(&l.query, root, text.as_bytes());
+    // (the scopes open at a capture: each one's end byte and lines — the file's own left out)
+    let mut open: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+    let mut out: Vec<LocalDef> = Vec::new();
+    while let Some((m, i)) = caps.next() {
+        let n = m.captures()[*i].node;
+        let index = m.captures()[*i].index;
+        let (s, e) = (n.start_byte(), n.end_byte());
+        while open.last().is_some_and(|o| o.0 <= s) {
+            open.pop();
+        }
+        if Some(index) == l.scope {
+            // (the file's own node — python's `module` —, never a function that happens to span it all)
+            if n.id() != root.id() {
+                open.push((e, n.start_position().row..n.end_position().row + 1));
+            }
+        } else if (l.defs.contains_key(&index) || Some(index) == l.binding) && !open.is_empty() {
+            let (line, col) = (n.start_position().row, n.start_position().column);
+            if out.iter().any(|d| (d.line, d.col) == (line, col)) {
+                continue;
+            }
+            let scopes = open.iter().rev().map(|o| o.1.clone()).collect();
+            out.push(LocalDef { name: text[s..e].to_string(), line, col, scopes });
+        }
+    }
+    Some(out)
 }
 
 /// Nodes by (start, end) byte.

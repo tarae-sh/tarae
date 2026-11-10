@@ -30,8 +30,9 @@ const LIMIT: Duration = crate::test_results::PATIENCE;
 const SIZE: (u16, u16) = (120, 30);
 
 /// Where the pointer is put: what it finds there (a code span drawn without its backticks) — the quoted name, the
-/// prose one on the cited line, the place, a word that isn't code, a name no cited place holds.
-const AT: &[&str] = &["helper(2)", "total", "main.rs:6", "Nothing", "helper alone"];
+/// prose one on the cited line, the place, a word that isn't code, a name no cited place holds, a parameter of the
+/// file the answer cites far from the line it cites (a local of the answer's files, `chatlink::locals_of`).
+const AT: &[&str] = &["helper(2)", "total", "main.rs:6", "Nothing", "helper alone", "a goes up"];
 
 #[test]
 fn the_pointer_resting_on_a_name_in_the_chat_asks_only_there() {

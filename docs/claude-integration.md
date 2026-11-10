@@ -603,6 +603,12 @@ there. Where the name stands decides what's asked, exact first:
   found line by line by its text, `…` skipping ahead): asked at that very spot in the file, as if your cursor were
   there.
 - **A name written as code in a paragraph that cites places**: found on the lines it cites, and asked there.
+- **A local of the answer's own files** — a parameter, a `let`, a closure's parameter, by the syntax tree's
+  `locals.scm`: looked for in the files the answer cites, quotes or its turn changed (8 at most), then, only if none
+  of those defines it, in the files its turn read (those whose text holds the name, 16 at most). One: asked there,
+  underlined. Several: the one whose function holds a line the answer cites or its turn changed, where exactly one's
+  does; else `gd` lists them, grouped by file, and the hover shows nothing. A top-level item is no local; a language
+  with no `locals.scm` skips this.
 - **Any other name written as code** — backticked in prose, or in a block that quotes no file (Claude's own
   proposal): asked by name of the project's language servers (`workspace/symbol`, the exact name, never a close
   one; a qualified `Thread::length` the ones in `Thread` first). One definition: `gd` goes there, and the other keys

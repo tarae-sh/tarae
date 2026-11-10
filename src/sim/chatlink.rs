@@ -32,7 +32,7 @@ const LIMIT: Duration = crate::test_results::PATIENCE;
 
 pub(super) const TEXT: &str = "fn helper(a: u32) -> u32 {\n    a + 1\n}\n\nfn main() {\n    let total = helper(2);\n    println!(\"{total}\");\n}\n";
 
-const ANSWER: &str = "It sums at src/main.rs:6, `total` kept:\n\n```rust\n    let total = helper(2);\n```\n\nNothing else but `helper` alone.";
+const ANSWER: &str = "It sums at src/main.rs:6, `total` kept:\n\n```rust\n    let total = helper(2);\n```\n\nNothing else but `helper` alone.\n\nIts `a` goes up by one.";
 
 /// Where the transcript's cursor is put: what it finds there (a code span drawn without its backticks).
 const AT: &[&str] = &["helper(2)", "total", "main.rs:6", "Nothing", "helper alone"];

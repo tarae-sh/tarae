@@ -29,6 +29,19 @@ fn setup_with(
     answer: &str,
     files: &[(&str, &str)],
 ) -> (crate::scratch::Scratch, Editor, PathBuf) {
+    setup_turn(name, server, answer, files, &[], |_| Vec::new())
+}
+
+/// `setup_with`, the files `open` opened in buffers first and the turn's tool rows (`rows`, given the project's root)
+/// between the question and the answer — the answer the chat's last message.
+fn setup_turn(
+    name: &str,
+    server: bool,
+    answer: &str,
+    files: &[(&str, &str)],
+    open: &[&str],
+    rows: impl Fn(&Path) -> Vec<Msg>,
+) -> (crate::scratch::Scratch, Editor, PathBuf) {
     let scratch = crate::scratch::Scratch::new(name);
     let root = std::fs::canonicalize(&*scratch).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -51,6 +64,9 @@ fn setup_with(
     assert!(w.is_empty(), "{w:?}");
     let mut ed = Editor::new(config);
     ed.workspace.root = root.clone();
+    for path in open {
+        ed.open(&root.join(path)).unwrap();
+    }
     ed.open(&file).unwrap();
     if server {
         let cid = ed.doc().lsp.client.expect("attached");
@@ -60,12 +76,15 @@ fn setup_with(
         ed.on_lsp_message(cid, init);
     }
     let mut c = Chat::new();
-    c.msgs = vec![Msg::new(Role::User, "q", ""), Msg::new(Role::Assistant, answer, "")];
+    c.msgs = vec![Msg::new(Role::User, "q", "")];
+    c.msgs.extend(rows(&root));
+    c.msgs.push(Msg::new(Role::Assistant, answer, ""));
+    let last = c.msgs.len() - 1;
     ed.workspace.claude.chat = Some(c);
     ed.workspace.set_at(crate::workspace::Here::Chat);
     until(&mut ed, "its places found and its blocks mapped", |ed| {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        crate::places::answered(ed) && !c.links.asking && c.links.maps.contains_key(&1)
+        crate::places::answered(ed) && !c.links.asking && c.links.maps.contains_key(&last)
     });
     (scratch, ed, file)
 }
@@ -798,4 +817,269 @@ fn a_quoted_block_finds_its_lines_in_the_file() {
     );
     assert_eq!(map_block(&file, &code("fn b() {"), 0, Some(2), false), None, "outside the window");
     assert_eq!(map_block(&file, &code("nothing"), 0, None, false), None);
+}
+
+// ── #389's locals: a name in the answer's own files (`locals_of`) ─────────────────────────────────────────────
+
+/// A file with locals: a parameter and a `let` in one function, an `i` in each of two more, far apart.
+const LOCALS: &str = "fn count_words(text: &str) -> usize {\n    let counts = text.split_whitespace().count();\n    counts\n}\n\nfn first(items: &[u32]) -> u32 {\n    let mut i = 0;\n    // one\n    // two\n    // three\n    // four\n    items[0]\n}\n\n// five\n// six\nfn second(items: &[u32]) -> u32 {\n    let mut i = 1;\n    items[i]\n}\n";
+
+/// A tool row of the turn: `verb` (`edit`, `read`) of `path`, its call `id`.
+fn row(verb: &'static str, path: PathBuf, id: &str) -> Msg {
+    let link = Some(crate::chat::Link { path, line: 0 });
+    Msg::tool(crate::chat::Look { verb, what: String::new(), pattern: false, range: String::new(), link }, id)
+}
+
+/// The answer's map (the chat's last message) as kept for it as it is — none while one's being made.
+fn last_map(ed: &Editor) -> Option<Map> {
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let i = c.msgs.len() - 1;
+    c.links.maps.get(&i).filter(|mp| !c.links.asking && mp.key == key_of(&c.msgs[i])).cloned()
+}
+
+/// #389's locals: a name the answer writes as code, with no line cited, that's a local of a file its turn changed — a
+/// `let`, a parameter — is found there: underlined without asking any server by name, `gd` and `space k` asked at its
+/// definition, the keys staying in the chat. A top-level function is no local: asked by name, as ever.
+#[test]
+fn a_local_of_a_file_the_turn_changed_is_found_there() {
+    let answer = "Then `counts` holds the total, `text` is what it splits, and `count_words` returns it.";
+    let edit = |root: &Path| vec![row("edit", root.join("src/lib.rs"), "e1")];
+    let (_s, mut ed, _) = setup_turn("chatlink-locals", true, answer, &[("src/lib.rs", LOCALS)], &[], edit);
+    let lib = ed.workspace.root.join("src/lib.rs");
+    let words: Vec<String> = underlines_asked(&ed).into_iter().map(|a| a.2).collect();
+    assert_eq!(words, ["count_words"], "the locals asked of no server by name");
+    assert_eq!(underlined(&mut ed), ["counts", "text"], "underlined as found, the function not known yet");
+    // A `let`: `gd` asked at its name
+    feed(&mut ed, "<esc>gg/counts<ret>");
+    let text = LOCALS.lines().nth(1).unwrap().to_string();
+    assert_eq!(spot(&ed), Spot { path: lib.clone(), line: 1, col: 8, word: "counts".into(), text });
+    feed(&mut ed, "gd");
+    let a = ed.workspace.claude.chat.as_ref().unwrap().links.asked.clone().expect("asked at its definition");
+    let byte = LOCALS.lines().next().unwrap().len() + 1 + 8;
+    assert_eq!((a.byte, a.goto), (byte, Some(Goto::Definition)), "on the `let`'s name");
+    assert_eq!(ed.docs.iter().find(|d| d.id == a.doc).and_then(|d| d.path.clone()), Some(lib.clone()));
+    assert!(ed.workspace.is_at(crate::workspace::Here::Chat), "the keys stay in the chat");
+    feed(&mut ed, " k");
+    let a = ed.workspace.claude.chat.as_ref().unwrap().links.asked.clone().expect("the hover asked");
+    assert_eq!((a.byte, a.goto), (byte, None), "the hover asked there");
+    // A parameter, the same way
+    feed(&mut ed, "<esc>gg/text<ret>");
+    assert_eq!((spot(&ed).path, spot(&ed).line, spot(&ed).col), (lib, 0, 15));
+    // A top-level function: by name
+    feed(&mut ed, "gg/count_w<ret>");
+    let t = target(&ed);
+    assert!(matches!(t, Ok(Target::Named { ref word, .. }) if word == "count_words"), "{t:?}");
+}
+
+/// Several locals of one name in the answer's files: a rest shows nothing (`rest` fails a `Target::Locals`), another key
+/// says how many, `gd` lists them grouped by file — unless the answer's focus picks one: the `i` whose function holds the
+/// line it cites, beyond the lines a cite reads around it.
+#[test]
+fn several_locals_list_unless_the_answers_focus_picks_one() {
+    let edit = |root: &Path| vec![row("edit", root.join("src/lib.rs"), "e1")];
+    let files = [("src/lib.rs", LOCALS)];
+    let (_s, mut ed, _) = setup_turn("chatlink-locals-two", true, "`i` starts at zero.", &files, &[], edit);
+    feed(&mut ed, "<esc>gg/\\bi\\b<ret>");
+    let t = target(&ed);
+    assert!(
+        matches!(t, Ok(Target::Locals { ref word, ref spots }) if word == "i" && spots.len() == 2),
+        "{t:?}"
+    );
+    assert_eq!(underlined(&mut ed), ["i"]);
+    ed.toasts.clear();
+    feed(&mut ed, " k");
+    let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(toasts, ["2 definitions of `i` in the answer's files — gd lists them"]);
+    feed(&mut ed, "gd");
+    until(&mut ed, "its list", |ed| ed.picker.is_some());
+    let p = ed.picker.as_ref().unwrap();
+    assert_eq!((p.kind, p.title.as_str()), ("places", "definitions"));
+    let rows: Vec<&str> =
+        p.items().iter().filter(|i| i.label.contains("src/lib.rs:")).map(|i| &*i.label).collect();
+    assert_eq!(rows.len(), 2, "both, under their file: {rows:?}");
+    // (line 12 is five past `first`'s `i`, its lines read around it holding neither)
+    let answer = "`i` starts at zero: src/lib.rs:12 reads it.";
+    let (_s, ed, _) = setup_turn("chatlink-locals-focus", true, answer, &files, &[], edit);
+    assert_eq!(spot(&ed_at(ed, "\\bi\\b")).line, 6, "the `i` of the function the answer cites");
+    // The lines its turn changed pick too: the replay's stops of its edit — every file it wrote, the row only its first
+    let main_first = |root: &Path| vec![row("edit", root.join("src/main.rs"), "e1")];
+    let (_s, mut ed, _) =
+        setup_turn("chatlink-locals-changed", true, "`i` starts at zero.", &files, &[], main_first);
+    let lib = ed.workspace.root.join("src/lib.rs");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.follow.replay.asked(1, "q");
+    let look = crate::chat::Look {
+        verb: "edit",
+        what: String::new(),
+        pattern: false,
+        range: String::new(),
+        link: None,
+    };
+    let hunks =
+        vec![crate::replay::Hunk { lines: 18..19, removed: Vec::new(), added: vec!["    items[i]".into()] }];
+    let (path, lines, why, page, map) = (Some(lib), Some(18..19), String::new(), None, Default::default());
+    c.follow.replay.add(crate::replay::Stop { call: "e1".into(), look, path, lines, hunks, why, page, map });
+    c.links.maps.clear();
+    until(&mut ed, "mapped again", |ed| last_map(ed).is_some());
+    assert_eq!(spot(&ed_at(ed, "\\bi\\b")).line, 17, "the `i` of the function its turn changed");
+}
+
+/// A name shadowed in one function the answer cites (`let x = parse(a); let x = x.trim();`): no scope holds either `x`
+/// alone, so the answer's focus can't pick one — never the first, quietly. A rest shows and says nothing, `gd` lists both.
+#[test]
+fn a_shadowed_local_is_listed_never_picked() {
+    let lib = "fn tidy(a: &str) -> String {\n    // one\n    // two\n    // three\n    // four\n    let x = parse(a);\n    let x = x.trim();\n    x.into()\n}\n";
+    let answer = "In src/lib.rs:1 `x` is trimmed.";
+    let (_s, mut ed, _) = setup_with("chatlink-locals-shadow", true, answer, &[("src/lib.rs", lib)]);
+    feed(&mut ed, "<esc>gg/\\bx\\b<ret>");
+    let lines: Vec<usize> = match target(&ed) {
+        Ok(Target::Locals { word, spots }) if word == "x" => spots.iter().map(|s| s.line).collect(),
+        t => panic!("{t:?}"),
+    };
+    assert_eq!(lines, [5, 6], "both, the cited line in their function picking neither");
+    ed.toasts.clear();
+    let x = cell(&mut ed, "is trimmed", "x", 0);
+    hover(&mut ed, x);
+    crate::hoverrest::rested(&mut ed);
+    assert!(rest_asked(&ed).is_none() && rest_named(&ed).is_none(), "the rest asks nothing");
+    frame(&mut ed);
+    assert!(ed.screen.rest_card.get().is_none() && ed.toasts.is_empty(), "nor shows or says anything");
+    feed(&mut ed, "gd");
+    until(&mut ed, "its list", |ed| ed.picker.is_some());
+    let p = ed.picker.as_ref().unwrap();
+    let rows: Vec<&str> =
+        p.items().iter().filter(|i| i.label.contains("src/lib.rs:")).map(|i| &*i.label).collect();
+    assert_eq!(rows.len(), 2, "both listed: {rows:?}");
+}
+
+/// The locals pass's cost on the map's worker (#389's review): an answer citing tarae's 8 largest files, its names
+/// (`ed`, `i`, `text`) in every one's text — ring 1 parsing all 8 —, then with `self` too, in every file's text and
+/// never a local, so ring 2 parses the 16 next largest the turn read. Files read cold each run (the map's own reads
+/// would have read the cited ones first), the best of 5; numbers for `cargo perf`.
+#[test]
+fn perf_locals_of_an_answer_citing_the_largest_files() {
+    if crate::test_results::unoptimized("chatlink::tests::perf_locals_of_an_answer_citing_the_largest_files")
+    {
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut by_size: Vec<(u64, PathBuf)> = std::fs::read_dir(root.join("src"))
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .filter_map(|p| Some((std::fs::metadata(&p).ok()?.len(), p)))
+        .filter(|(n, _)| *n <= FILE_MAX)
+        .collect();
+    by_size.sort_by(|a, b| b.cmp(a));
+    let paths: Vec<PathBuf> = by_size.into_iter().take(OWN_MAX + READ_MAX).map(|f| f.1).collect();
+    let (own, read) = paths.split_at(OWN_MAX);
+    let want = |words: &[&str]| Want {
+        msg: 0,
+        key: (0, 0),
+        parts: Vec::new(),
+        places: own.iter().map(|p| (0, Arc::from("a.rs:1"), 0, 0, p.clone())).collect(),
+        words: words.iter().map(|w| Arc::from(*w)).collect(),
+        turned: Turned { changed: Vec::new(), read: read.to_vec() },
+    };
+    let best = |w: &Want, parsed: usize| {
+        let mut best = f64::MAX;
+        for _ in 0..5 {
+            let mut files =
+                Files { open: HashMap::new(), read: HashMap::new(), root: root.clone(), used: Vec::new() };
+            let t = std::time::Instant::now();
+            let (locals, p) = locals_of(w, &[], &mut files);
+            best = best.min(t.elapsed().as_secs_f64() * 1000.0);
+            assert_eq!(p.len(), parsed, "{p:?}");
+            assert!(locals.contains_key("ed"), "found");
+        }
+        best
+    };
+    let ring1 = best(&want(&["ed", "i", "text"]), OWN_MAX);
+    let ring2 = best(&want(&["ed", "i", "text", "self"]), OWN_MAX + READ_MAX);
+    let lines: usize = paths.iter().map(|p| std::fs::read_to_string(p).unwrap().lines().count()).sum();
+    for (name, v, budget) in
+        [("locals_of_8_files_ms", ring1, 2000), ("locals_of_8_and_16_files_ms", ring2, 4000)]
+    {
+        let line = format!("PERF {name} {v:.1} budget={budget} noise=10\n");
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+    }
+    let own_lines: usize = own.iter().map(|p| std::fs::read_to_string(p).unwrap().lines().count()).sum();
+    eprintln!("(ring 1: {own_lines} lines; both rings: {lines} lines)");
+}
+
+/// `ed` with the transcript's cursor on the first match of `pattern`.
+fn ed_at(mut ed: Editor, pattern: &str) -> Editor {
+    feed(&mut ed, &format!("<esc>gg/{pattern}<ret>"));
+    ed
+}
+
+/// The turn's reads are the next ring: a local only a file it read holds is found there, the answer's own files winning
+/// where they hold one; a file read that holds none of the names left isn't parsed, a language with no `locals.scm` adds
+/// nothing, and a local in a file the turn never touched isn't found by this step.
+#[test]
+fn a_local_of_a_file_the_turn_only_read_is_found_after_the_answers_own() {
+    let files = [
+        ("src/lib.rs", LOCALS),
+        ("src/read.rs", "fn total_of(total: u32) -> u32 {\n    let counts = total;\n    counts\n}\n"),
+        ("src/skip.rs", "fn nothing() {}\n"),
+        ("src/far.rs", "fn far(far_only: u32) {}\n"),
+        ("notes.md", "far_only\n"),
+    ];
+    let rows = |root: &Path| {
+        vec![
+            row("edit", root.join("src/lib.rs"), "e1"),
+            row("read", root.join("src/read.rs"), "r1"),
+            row("read", root.join("src/skip.rs"), "r2"),
+            row("edit", root.join("notes.md"), "e2"),
+        ]
+    };
+    let answer = "`counts` here, `total` there, never `far_only`.";
+    let (_s, ed, _) = setup_turn("chatlink-locals-rings", true, answer, &files, &[], rows);
+    let root = ed.workspace.root.clone();
+    let mut ed = ed_at(ed, "counts");
+    assert_eq!((spot(&ed).path, spot(&ed).line), (root.join("src/lib.rs"), 1), "the answer's own file first");
+    ed = ed_at(ed, "total");
+    assert_eq!((spot(&ed).path, spot(&ed).line, spot(&ed).col), (root.join("src/read.rs"), 0, 12));
+    ed = ed_at(ed, "far_o");
+    let t = target(&ed);
+    assert!(matches!(t, Ok(Target::Named { ref word, .. }) if word == "far_only"), "{t:?}");
+    let parsed = last_map(&ed).expect("mapped").parsed;
+    assert_eq!(parsed, [root.join("src/lib.rs"), root.join("src/read.rs")], "never skip.rs, nor notes.md");
+    // Every name in the answer's own files: the reads aren't parsed
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    let m = c.msgs.last_mut().unwrap();
+    m.text = "`counts` only.".into();
+    m.changed();
+    until(&mut ed, "mapped again", |ed| last_map(ed).is_some());
+    assert_eq!(last_map(&ed).unwrap().parsed, [root.join("src/lib.rs")], "ring 2 not parsed");
+}
+
+/// A local's file edited since the answer: found where it is now; its definition gone, asked by name as ever — and said.
+#[test]
+fn a_local_is_found_where_its_file_has_it_now() {
+    use crate::transaction::{Change, Transaction};
+    let edit = |root: &Path| vec![row("edit", root.join("src/lib.rs"), "e1")];
+    let files = [("src/lib.rs", LOCALS)];
+    let (_s, mut ed, _) =
+        setup_turn("chatlink-locals-edited", true, "`counts` holds it.", &files, &["src/lib.rs"], edit);
+    let lib = ed.workspace.root.join("src/lib.rs");
+    let change = |ed: &mut Editor, ch: Change| {
+        let d = ed.docs.iter_mut().find(|d| d.path.as_deref() == Some(lib.as_path())).unwrap();
+        d.apply(&Transaction::new(vec![ch]));
+    };
+    let line = |ed: &Editor| last_map(ed).and_then(|m| m.locals.get("counts").map(|s| s[0].line));
+    assert_eq!(line(&ed), Some(1));
+    change(&mut ed, Change::insert(0, "// x\n"));
+    until(&mut ed, "found where it is now", |ed| line(ed) == Some(2));
+    let from = "// x\n".len() + LOCALS.lines().next().unwrap().len() + 1;
+    change(&mut ed, Change::delete(from, from + LOCALS.lines().nth(1).unwrap().len() + 1));
+    until(&mut ed, "mapped again", |ed| last_map(ed).is_some());
+    assert_eq!(line(&ed), None, "its `let` gone");
+    ed = ed_at(ed, "counts");
+    feed(&mut ed, "gd");
+    let (cid, id) = asked_by_name(&ed).expect("asked by name");
+    ed.toasts.clear();
+    ed.on_lsp_message(cid, json!({ "id": id, "result": [] }));
+    let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(toasts, ["fake found nothing named `counts`"]);
 }

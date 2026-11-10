@@ -1,7 +1,9 @@
 //! A name in the chat answers the code's language keys (#389, `.sb/chatlink-plan.md` §2): on a `path:line` an answer
 //! cites, in a code block that quotes a file, or backticked in a paragraph that cites places (step 4, by place), a key on
 //! the transcript (`gd` `gD` `gy` `gi` `gr`, ctrl+press, `K`) asks the language server at that spot in the file, exact
-//! as in the code itself; `K` on a cited place shows its lines. Any other name written as code — backticked in prose, or
+//! as in the code itself; `K` on a cited place shows its lines. A backticked name no cited line holds that's a local of
+//! the answer's own files, else of those its turn read (`locals_of`: the syntax tree's `locals.scm`), is asked at its
+//! definition there. Any other name written as code — backticked in prose, or
 //! in a block that quotes no file (step 5, by name) — is asked of the workspace (`workspace/symbol`, the exact name, a
 //! qualified one's container first): one definition goes there, several are a list of places; the other keys ask at the
 //! one found. What each message's blocks quote is found on a worker after the frame that drew it (`after_frame`, one
@@ -36,6 +38,10 @@ const SKIP_MAX: usize = 2000;
 const FILE_MAX: u64 = 4 << 20;
 /// A busy server asked again at most this often for one question.
 const TRIES_MAX: u8 = 20;
+/// An answer's own files looked through for a local at most — the ones it cites, quotes or its turn changed —, and the
+/// files its turn only read parsed at most, those whose text holds the name (`locals_of`).
+const OWN_MAX: usize = 8;
+const READ_MAX: usize = 16;
 
 /// A message's markdown as the transcript draws it: prose (a paragraph, a heading, an item, a table row) and fenced code.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,8 +175,14 @@ pub struct Map {
     key: (u64, usize),
     quoted: Vec<Option<Quoted>>,
     near: Vec<Near>,
+    /// The definitions of each name its prose writes as code that are locals in the answer's own files, else in those
+    /// its turn only read (`locals_of`): one, or several none of which the answer's focus picks.
+    locals: HashMap<Arc<str>, Vec<Spot>>,
     /// The open buffers it read, at their versions then — one edited since, it's made again after the next frame.
     versions: Vec<(PathBuf, u64)>,
+    /// The files parsed for its locals (the tests' check that a file read without the name isn't).
+    #[cfg(test)]
+    parsed: Vec<PathBuf>,
 }
 
 /// A code block that quotes a file: the file, and each of the block's lines' line there with its text as read.
@@ -449,12 +461,82 @@ fn generation() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A message to map: its index and key, its parts, and each cited place that came to a file (its part, name, lines, file).
+/// A message to map: its index and key, its parts, each cited place that came to a file (its part, name, lines, file),
+/// the names its prose writes as code that may be locals (`local_words`), and what its turn did to files (`turned`).
 struct Want {
     msg: usize,
     key: (u64, usize),
     parts: Vec<Part>,
     places: Vec<(usize, Arc<str>, usize, usize, PathBuf)>,
+    words: Vec<Arc<str>>,
+    turned: Turned,
+}
+
+/// The names a message's prose writes as code that may be locals: a code span that's one identifier (a call's `()`
+/// after it) — a qualified one names an item, never a local.
+fn local_words(parts: &[Part]) -> Vec<Arc<str>> {
+    let mut out: Vec<Arc<str>> = Vec::new();
+    for p in parts {
+        let Part::Prose(t) = p else { continue };
+        for span in t.split('`').skip(1).step_by(2) {
+            let s = span.trim();
+            let s = s.strip_suffix("()").unwrap_or(s);
+            if name_shaped(s) && !s.contains(['.', ':']) && !out.iter().any(|w| &**w == s) {
+                out.push(Arc::from(s));
+            }
+        }
+    }
+    out
+}
+
+/// What an answer's turn did to files: those its `edit`, `replace` and `rename` calls changed, each with the lines they
+/// left changed where the replay has them, and the project's files its `read` calls read.
+#[derive(Clone, Debug, Default)]
+struct Turned {
+    changed: Vec<(PathBuf, Vec<Range<usize>>)>,
+    read: Vec<PathBuf>,
+}
+
+impl Turned {
+    fn note(&mut self, look: &crate::chat::Look, path: &Path, hunks: &[crate::replay::Hunk], root: &Path) {
+        if look.changes() {
+            let lines = hunks.iter().map(|h| h.lines.start..h.lines.end.max(h.lines.start + 1));
+            match self.changed.iter_mut().find(|c| c.0 == path) {
+                Some(c) => c.1.extend(lines),
+                None => self.changed.push((path.to_path_buf(), lines.collect())),
+            }
+        } else if look.verb == "read" && path.starts_with(root) && !self.read.iter().any(|r| r == path) {
+            self.read.push(path.to_path_buf());
+        }
+    }
+}
+
+/// What answer `i`'s turn did to files, from the chat's record: its tool rows between the question and this answer —
+/// each row's first file (`Look.link`), for the whole conversation — and the replay's stops of those same calls, every
+/// file each touched with the lines an edit left (`replay::Turn.asked`: the last `replay::TURNS` turns). A read of a page
+/// is no file.
+fn turned(c: &Chat, i: usize, root: &Path) -> Turned {
+    let mut t = Turned::default();
+    let Some(q) = c.msgs[..i].iter().rposition(|m| m.role == Role::User) else { return t };
+    let mut calls = Vec::new();
+    for m in c.msgs[q + 1..i].iter().filter(|m| m.role == Role::Tool) {
+        calls.push(m.call.as_str());
+        if let Some(l) = &m.look
+            && let Some(link) = &l.link
+        {
+            t.note(l, &link.path, &[], root);
+        }
+    }
+    // (the replay's turn of this question: by its place among yours)
+    let n = c.msgs[..=q].iter().filter(|m| m.role == Role::User).count();
+    let turn = c.follow.replay.turns().iter().find(|t| t.asked.as_ref().is_some_and(|a| a.0 == n));
+    let stops = turn.into_iter().flat_map(|t| &t.stops);
+    for s in stops.filter(|s| s.page.is_none() && calls.contains(&s.call.as_str())) {
+        if let Some(p) = &s.path {
+            t.note(&s.look, p, &s.hunks, root);
+        }
+    }
+    t
 }
 
 /// After each frame (`term::render_drawing`, before `places::after_frame` asks the names it wants): the messages it
@@ -472,6 +554,7 @@ pub fn after_frame(ed: &mut Editor) {
     }
     ask_names(ed);
     let docs = &ed.docs;
+    let root = ed.workspace.root.clone();
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if c.links.asking {
         return;
@@ -503,42 +586,70 @@ pub fn after_frame(ed: &mut Editor) {
                 }
             }
         }
-        match (places.is_empty(), answered) {
+        // (an answer's names that may be locals, looked for in its own files and its turn's)
+        let words = if m.role == Role::Assistant { local_words(&parts) } else { Vec::new() };
+        let turned = if words.is_empty() { Turned::default() } else { turned(c, i, &root) };
+        let files = !places.is_empty() || !turned.changed.is_empty() || !turned.read.is_empty();
+        match (files && (!places.is_empty() || !words.is_empty()), answered) {
             (_, false) => {}
-            (true, true) => {
+            (false, true) => {
                 c.links.maps.insert(i, Map { key, ..Map::default() });
+                want_names(c, i);
             }
-            (false, true) => want.push(Want { msg: i, key, parts, places }),
+            (true, true) => want.push(Want { msg: i, key, parts, places, words, turned }),
         }
     }
     drop(laid);
     if want.is_empty() {
-        return;
+        return ask_names(ed);
     }
     c.links.asking = true;
     let generation = c.links.generation;
-    let paths: Vec<&PathBuf> = want.iter().flat_map(|w| w.places.iter().map(|p| &p.4)).collect();
+    let paths: Vec<&PathBuf> = (want.iter())
+        .flat_map(|w| {
+            let changed = w.turned.changed.iter().map(|c| &c.0);
+            w.places.iter().map(|p| &p.4).chain(changed).chain(&w.turned.read)
+        })
+        .collect();
     let open: HashMap<PathBuf, (ropey::Rope, u64)> = (paths.iter())
         .filter_map(|p| ed.docs.by_path(p).map(|d| ((*p).clone(), (d.text.clone(), d.version()))))
         .collect();
-    let root = ed.workspace.root.clone();
     ed.events.jobs().spawn(move || {
         let mut files = Files { open, read: HashMap::new(), root, used: Vec::new() };
         let maps: Vec<(usize, Map)> = want.into_iter().map(|w| (w.msg, map_of(&w, &mut files))).collect();
         move |ed: &mut Editor| landed(ed, generation, maps)
     });
+    ask_names(ed);
 }
 
-/// A search's maps: kept when they're for the files as they are (another `listing` since: dropped, asked again). Nothing
-/// on screen changes (a frame only for the next search, when one waits).
+/// Message `i`'s names written as code, its map just made: those that aren't locals of its files wanted by name, as the
+/// frame that held them back would have (`local_underlined`, `Links::underlined`).
+fn want_names(c: &Chat, i: usize) {
+    let Some(laid) = c.msgs.get(i).map(|m| m.cache.borrow()) else { return };
+    for n in laid.iter().flat_map(|l| l.rows.iter()).flat_map(|r| &r.names) {
+        if local_underlined(c, i, &n.word) != Some(true) {
+            c.links.underlined(&n.word);
+        }
+    }
+}
+
+/// A search's maps: kept when they're for the files as they are (another `listing` since: dropped, asked again), their
+/// messages' names not locals asked by name. A frame only where a local came to be underlined (else one for the next
+/// search, when one waits).
 fn landed(ed: &mut Editor, generation: u64, maps: Vec<(usize, Map)>) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if c.links.generation != generation {
         return;
     }
     c.links.asking = false;
+    let locals = maps.iter().any(|(_, m)| !m.locals.is_empty());
+    let landed: Vec<usize> = maps.iter().map(|m| m.0).collect();
     c.links.maps.extend(maps);
-    ed.unchanged = true;
+    for i in landed {
+        want_names(c, i);
+    }
+    ask_names(ed);
+    ed.unchanged = !locals;
 }
 
 /// The files a search reads: an open buffer's text, else the disk's — never a file named like a key, nor a huge one.
@@ -600,7 +711,99 @@ fn map_of(w: &Want, files: &mut Files) -> Map {
         });
         quoted.push(found);
     }
-    Map { key: w.key, quoted, near, versions: std::mem::take(&mut files.used) }
+    let (locals, _parsed) = locals_of(w, &quoted, files);
+    Map {
+        key: w.key,
+        quoted,
+        near,
+        locals,
+        versions: std::mem::take(&mut files.used),
+        #[cfg(test)]
+        parsed: _parsed,
+    }
+}
+
+/// A definition a ring found, with the lines of the scopes around it (innermost first).
+type Def = (Spot, Vec<Range<usize>>);
+
+/// The definitions of each of `w`'s names (`local_words`) that are locals by the syntax tree (`syntax::local_defs`),
+/// nearest ring first, the first that holds one deciding: the answer's own files — those it cites, its blocks quote
+/// (`quoted`) and its turn changed, `OWN_MAX` at most —, then those its turn only read whose text holds the name
+/// (`READ_MAX`). Several in a ring: the one whose scope holds a line the answer cites or its turn changed, where exactly
+/// one's does (`settle`). A language with no `locals.scm` adds none. And the files parsed.
+fn locals_of(
+    w: &Want,
+    quoted: &[Option<Quoted>],
+    files: &mut Files,
+) -> (HashMap<Arc<str>, Vec<Spot>>, Vec<PathBuf>) {
+    let (mut out, mut parsed) = (HashMap::new(), Vec::new());
+    if w.words.is_empty() {
+        return (out, parsed);
+    }
+    let mut own: Vec<&PathBuf> = Vec::new();
+    let cited = w.places.iter().map(|p| &p.4);
+    let changed = w.turned.changed.iter().map(|c| &c.0);
+    for p in cited.chain(quoted.iter().flatten().map(|q| &q.path)).chain(changed) {
+        if !own.contains(&p) && own.len() < OWN_MAX {
+            own.push(p);
+        }
+    }
+    // (the answer's focus: the lines it cites, the lines its turn changed)
+    let mut focus: Vec<(&Path, Range<usize>)> = w.places.iter().map(|p| (&*p.4, p.2..p.3 + 1)).collect();
+    focus.extend(w.turned.changed.iter().flat_map(|(p, lines)| lines.iter().map(move |l| (&**p, l.clone()))));
+    let mut left = w.words.clone();
+    let read: Vec<&PathBuf> = w.turned.read.iter().filter(|p| !own.contains(p)).collect();
+    for (ring, max) in [(own, OWN_MAX), (read, READ_MAX)] {
+        let mut found: HashMap<Arc<str>, Vec<Def>> = HashMap::new();
+        let mut looked = 0;
+        for path in ring {
+            if left.is_empty() || looked == max {
+                break;
+            }
+            let Some(lines) = files.lines(path) else { continue };
+            // (a file whose text holds none of the names left isn't parsed)
+            if !lines.iter().any(|l| left.iter().any(|w| !whole_in(l, w).is_empty())) {
+                continue;
+            }
+            looked += 1;
+            let Some(spec) = crate::syntax::detect(path) else { continue };
+            let Ok(lang) = crate::syntax::Loader::global().load(spec) else { continue };
+            let Some(defs) = crate::syntax::local_defs(&lang, &lines.join("\n")) else { continue };
+            parsed.push(path.clone());
+            for d in defs {
+                let Some(word) = left.iter().find(|w| ***w == *d.name) else { continue };
+                let text = lines.get(d.line).cloned().unwrap_or_default();
+                let spot = Spot { path: path.clone(), line: d.line, col: d.col, word: d.name, text };
+                found.entry(word.clone()).or_default().push((spot, d.scopes));
+            }
+        }
+        left.retain(|w| !found.contains_key(w));
+        out.extend(found.into_iter().map(|(word, defs)| (word, settle(defs, &focus))));
+    }
+    (out, parsed)
+}
+
+/// A ring's definitions of one name: one is the answer; of several, the one whose scope holds a line in the answer's
+/// `focus` wins where exactly one's does — its scope the widest around it that holds no other of them (an `i` in three
+/// functions: each its function's) —, else all of them.
+fn settle(defs: Vec<Def>, focus: &[(&Path, Range<usize>)]) -> Vec<Spot> {
+    let territory = |k: usize| {
+        let (s, scopes) = &defs[k];
+        let other = |sc: &Range<usize>| {
+            (defs.iter().enumerate()).any(|(j, (o, _))| j != k && o.path == s.path && sc.contains(&o.line))
+        };
+        scopes.iter().take_while(|sc| !other(sc)).last().cloned()
+    };
+    let held = |k: usize| {
+        territory(k).is_some_and(|t| {
+            (focus.iter()).any(|(p, r)| *p == defs[k].0.path && r.start < t.end && t.start < r.end)
+        })
+    };
+    let picked: Vec<usize> = (0..defs.len()).filter(|&k| defs.len() > 1 && held(k)).collect();
+    match picked.as_slice() {
+        &[k] => vec![defs[k].0.clone()],
+        _ => defs.into_iter().map(|d| d.0).collect(),
+    }
 }
 
 /// A quoted line as a block has it.
@@ -695,9 +898,22 @@ pub(crate) struct Spot {
 /// (`Thread` of `Thread::length`), and why no place held it where the answer has places (said with the answer).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
-    Place { name: String, link: crate::chat::Link, peek: Option<Vec<String>> },
+    Place {
+        name: String,
+        link: crate::chat::Link,
+        peek: Option<Vec<String>>,
+    },
     At(Spot),
-    Named { word: String, container: Option<String>, why: Option<String> },
+    Named {
+        word: String,
+        container: Option<String>,
+        why: Option<String>,
+    },
+    /// Several locals of that name in the answer's files, none in its focus (`settle`): `gd` lists them.
+    Locals {
+        word: String,
+        spots: Vec<Spot>,
+    },
 }
 
 /// A language key on the chat's transcript at its cursor — `goto`, or the hover (None). Inside a key's command (its
@@ -841,8 +1057,22 @@ fn target_at(ed: &Editor, head: usize) -> Result<Target, String> {
     if let Some(said) = keyword(langs_of(&parts)) {
         return Err(said);
     }
+    // (then a local of that name in the answer's own files, or those its turn read: `locals_of`)
+    let local = |map: &Map, why: Option<String>| match map.locals.get(word.as_str()).map(Vec::as_slice) {
+        Some([one]) if qualifier(&here, w.start).is_none() => Ok(Target::At(one.clone())),
+        Some(spots) if qualifier(&here, w.start).is_none() && !spots.is_empty() => {
+            Ok(Target::Locals { word: word.clone(), spots: spots.to_vec() })
+        }
+        _ => named(why),
+    };
     if cites.is_empty() {
-        return named(None);
+        let writing = c.state == crate::chat::State::Writing && i + 1 == c.msgs.len();
+        return match map {
+            Some(map) => local(map, None),
+            // (the answer's files not read yet, where it has names that may be locals)
+            None if !writing && local_words(&parts).iter().any(|l| **l == *word) => Err(WAIT.into()),
+            None => named(None),
+        };
     }
     let Some(map) = map else { return Err(WAIT.into()) };
     let mut best: Option<(usize, Spot)> = None;
@@ -864,8 +1094,27 @@ fn target_at(ed: &Editor, head: usize) -> Result<Target, String> {
         Some((_, spot)) => Ok(Target::At(spot)),
         None => {
             let places: Vec<&str> = cites.iter().map(|c| &*c.0).collect();
-            named(Some(format!("`{word}` isn't on the lines this paragraph cites ({})", places.join(", "))))
+            local(
+                map,
+                Some(format!("`{word}` isn't on the lines this paragraph cites ({})", places.join(", "))),
+            )
         }
+    }
+}
+
+/// Whether message `i`'s `word` is a local its files define (`Map.locals`, for the message as it is): underlined. None:
+/// an answer whose map isn't made yet — nothing underlined nor asked by name until it is (a local is never asked).
+pub fn local_underlined(c: &Chat, i: usize, word: &str) -> Option<bool> {
+    let m = c.msgs.get(i)?;
+    match c.links.maps.get(&i).filter(|mp| mp.key == key_of(m)) {
+        Some(mp) => Some(mp.locals.get(word).is_some_and(|s| !s.is_empty())),
+        // (the answer being written isn't mapped until it ends: asked by name meanwhile)
+        None if m.role != Role::Assistant
+            || (c.state == crate::chat::State::Writing && i + 1 == c.msgs.len()) =>
+        {
+            Some(false)
+        }
+        None => None,
     }
 }
 
@@ -929,6 +1178,19 @@ fn act(ed: &mut Editor, t: Result<Target, String>, goto: Option<Goto>) {
         },
         Ok(Target::At(spot)) => ask(ed, spot, goto),
         Ok(Target::Named { word, container, why }) => by_name(ed, Named::new(word, container, goto, why)),
+        Ok(Target::Locals { word, spots }) => {
+            let k = spots.len();
+            match goto {
+                Some(Goto::Definition | Goto::Declaration) => {
+                    let found = spots.into_iter().map(|s| (s.path, s.line, s.col)).collect();
+                    ed.refs_anew(word);
+                    ed.list_places(Goto::Definition, found);
+                    ed.set_status(format!("{k} found in the answer's files"));
+                }
+                _ => ed
+                    .set_status(format!("{k} definitions of `{word}` in the answer's files — gd lists them")),
+            }
+        }
     }
 }
 
@@ -1458,7 +1720,7 @@ pub fn rest(ed: &mut Editor, at: usize, n: u64) {
     use crate::hoverrest::{busy, failed};
     match target_at(ed, at) {
         Err(why) if why == WAIT => busy(ed, n),
-        Err(_) => failed(ed, n),
+        Err(_) | Ok(Target::Locals { .. }) => failed(ed, n),
         Ok(Target::Place { link, peek, .. }) => match peek {
             Some(lines) if !lines.is_empty() => {
                 let (md, lang) = peek_md(&link, &lines);
