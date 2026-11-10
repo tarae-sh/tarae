@@ -7338,7 +7338,8 @@ mod tests {
 
     /// The pointer resting on a name in the code (#233): its hover asked there — never at the cursor — and `K`'s card
     /// shown at that name, under its row, the problems there first; the keys and the cursor untouched. It stays while
-    /// the pointer is on the name or the card (the wheel scrolls it), and goes as the pointer leaves, at a key, off.
+    /// the pointer is on the name or the card (the wheel scrolls it) — the card standing for a newer rest too, which
+    /// goes then — and goes as the pointer leaves, at a key, off.
     #[test]
     fn the_pointer_resting_on_a_name_shows_its_hover_there() {
         use crate::event::Event;
@@ -7403,8 +7404,20 @@ mod tests {
             rest_frame(&mut ed).iter().any(|r| r.contains("╭─ helper")),
             "helper's card until main's answer"
         );
-        let id = ed.lsp.pending.keys().map(|k| k.1).max().unwrap();
+        // Onto helper's card meanwhile: main's rest goes, the card stays as it is, helper's own again (the pointer's
+        // reading it) — main's answer, come late, never takes its place; onto main again, asked at once again
+        let late = ed.lsp.pending.keys().map(|k| k.1).max().unwrap();
+        ed.handle_event(Event::Hover(x + 1, y + 2));
+        let r = ed.hover_rest.rest.as_ref();
+        assert!(r.is_some_and(|r| r.card.is_some() && r.before.is_none()), "helper's rest again");
         let main = json!({ "contents": { "kind": "markdown", "value": "```rust\nfn main()\n```" } });
+        ed.on_lsp_message(cid, json!({ "id": late, "result": main.clone() }));
+        let shown = rest_frame(&mut ed);
+        let on = |s: &str| shown.iter().any(|r| r.contains(s));
+        assert!(on("╭─ helper") && !on("╭─ main"), "main's answer dropped:\n{}", shown.join("\n"));
+        ed.handle_event(Event::Hover(mx, my));
+        assert_eq!(asked(&ed), 1, "main asked at once again");
+        let id = ed.lsp.pending.keys().map(|k| k.1).max().unwrap();
         ed.on_lsp_message(cid, json!({ "id": id, "result": main }));
         let shown = rest_frame(&mut ed);
         assert!(shown.iter().any(|r| r.contains("╭─ main")), "main's card:\n{}", shown.join("\n"));

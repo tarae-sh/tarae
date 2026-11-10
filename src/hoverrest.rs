@@ -15,7 +15,8 @@
 //! next target's shows at once; off them all, it goes at once. The row in hand's card (keys) and the lit grounds under
 //! the pointer are no such card: they stay immediate. The docs' hover too: with any of the mouse's cards up as the
 //! pointer comes onto a name (`State.warm`), its server is asked at once, the card up staying until the answer comes
-//! (`Rest.before`) — never a gap between two cards, never a card asked for a name the pointer only crossed cold.
+//! (`Rest.before`) — never a gap between two cards, never a card asked for a name the pointer only crossed cold. The
+//! pointer onto that card meanwhile drops the newer rest: the card under it stays, as it was, its own rest's again.
 //!
 //! **Wherever a file's code is drawn** (#481, the user, 2026-11-09: "why is there a branch?"): a pane, Claude's edit
 //! review, the code review, an edit follow shows, a picker's preview — by the one drawer's record of what it drew
@@ -102,8 +103,9 @@ pub struct Rest {
     again: bool,
     /// What it shows once answered (docs empty: the problems alone, else nothing).
     pub card: Option<Card>,
-    /// The card up as the pointer came here from it (the hand-off): shown, where it was, until this one's answer.
-    pub before: Option<Box<(Spot, Card)>>,
+    /// The card up as the pointer came here from it (the hand-off), and its rest's number: shown, where it was, until
+    /// this one's answer — the pointer onto it meanwhile takes it back (`hovered`).
+    pub before: Option<Box<(Spot, Card, u64)>>,
 }
 
 #[derive(Default)]
@@ -134,9 +136,9 @@ impl Rest {
     }
 
     /// What it showed, to stand on as the next rest's `before`.
-    fn into_shown(self, ed: &Editor) -> Option<Box<(Spot, Card)>> {
+    fn into_shown(self, ed: &Editor) -> Option<Box<(Spot, Card, u64)>> {
         match self.card {
-            Some(card) => still(ed, &self.spot).then(|| Box::new((self.spot, card))),
+            Some(card) => still(ed, &self.spot).then(|| Box::new((self.spot, card, self.n))),
             None => self.before.filter(|b| still(ed, &b.0)),
         }
     }
@@ -274,10 +276,21 @@ pub fn resting(ed: &Editor) -> Option<u64> {
 
 /// The pointer moved to (`x`, `y`) (`Event::Hover`): a new name rests from now, the card of the one left goes — over the
 /// card itself it stays. With a mouse's card up as it came (`State.warm`), the name is asked at once and the docs' card
-/// up stays until its answer. Whether what's drawn changed.
+/// up stays until its answer — onto that card meanwhile, the newer rest goes and the card's own is back, as it was.
+/// Whether what's drawn changed.
 pub fn hovered(ed: &mut Editor, u: Under, x: usize, y: usize) -> bool {
     if over_card(ed, x, y) {
-        return false;
+        // (the card is what's read and the wheel there scrolls it: it stays — and never stands for a rest elsewhere, whose
+        // answer would come up off the pointer)
+        let waiting = ed.hover_rest.rest.as_mut().filter(|r| r.card.is_none());
+        let Some(b) = waiting.and_then(|r| r.before.take()) else { return false };
+        let back = still(ed, &b.0).then(|| {
+            let (spot, card, n) = *b;
+            let due = crate::clock::now();
+            Rest { spot, n, due, landed: true, again: false, card: Some(card), before: None }
+        });
+        ed.hover_rest.rest = back;
+        return ed.hover_rest.rest.is_none();
     }
     let spot = spot_at(ed, u, x, y);
     if ed.hover_rest.rest.as_ref().is_some_and(|r| Some(&r.spot) == spot.as_ref()) {
@@ -292,6 +305,12 @@ pub fn hovered(ed: &mut Editor, u: Under, x: usize, y: usize) -> bool {
     st.n += 1;
     let now = crate::clock::now();
     let due = if warm { now } else { now + REST };
+    // (the card as last drawn was the old rest's: gone with it, but where the new one stands on it until its answer —
+    // never taken for the new rest's own before a frame draws that)
+    if before.is_none() {
+        ed.screen.rest_card.set(None);
+    }
+    let st = &mut ed.hover_rest;
     st.rest = Some(Rest { spot, n: st.n, due, landed: false, again: false, card: None, before });
     match warm {
         true => land(ed),
