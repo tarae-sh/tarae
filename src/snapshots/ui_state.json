@@ -555,6 +555,10 @@
                   "edit_failed": 0,
                   "reread": 0,
                   "run_refused": 0
+                },
+                "web": {
+                  "failed": 0,
+                  "searches": 0
                 }
               },
               "cost": 0.0213,
@@ -587,6 +591,10 @@
                   "edit_failed": 0,
                   "reread": 0,
                   "run_refused": 0
+                },
+                "web": {
+                  "failed": 0,
+                  "searches": 0
                 }
               },
               "cost": 0.0213,

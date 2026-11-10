@@ -344,11 +344,12 @@ fn a_token_read_asks_on_its_own_card_whatever_runs_reach() {
         lines[1..],
         [
             "Claude's read · port 443 · through tarae's proxy · GET with your token, nothing else of yours",
-            "Reads of pages there only — a yes lets none of Claude's commands reach it.",
+            "After it, this chat's web searches ask each time.",
             "What it reads goes to Claude — your wiki's pages as your account sees them.",
         ]
     );
     while heads.try_recv().is_ok() {}
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().signed_read);
     ed.offer_accept();
     settle(&mut ed, &|_| answered(2).is_some());
     let t = answered(2).unwrap().unwrap();
@@ -356,6 +357,7 @@ fn a_token_read_asks_on_its_own_card_whatever_runs_reach() {
     assert!(t.contains(
         "<page from=\"https://page.test/confluence/pages/viewpage.action?pageId=7\" title=\"Runbook\""
     ));
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().signed_read, "the chat read with your token");
     // the copy it kept came with the token: no card skipped for it either
     read(&mut ed, generation, 3, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
     assert!(card(&ed).is_some(), "a token copy is carded as a token read");
@@ -428,6 +430,26 @@ fn a_plain_answer_never_covers_a_token_read() {
     settle(&mut ed, &|_| answered(5).is_some());
 }
 
+/// W3: the mark is kept with the conversation the moment a token read lands, not at the turn's end — a crash right
+/// after still has it marked when the conversation is continued.
+#[test]
+fn a_token_read_is_kept_as_it_lands() {
+    let (mut ed, generation, _heads) = wiki_editor(Some("tarae-fake-token"));
+    let store = crate::scratch::Scratch::new("web-token-kept");
+    ed.chats_dir = Some(store.path().to_path_buf());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c-wiki".into());
+    let kept = |ed: &Editor| {
+        crate::chats::load(store.path(), &ed.workspace.root).into_iter().find(|s| s.id == "c-wiki")
+    };
+    read(&mut ed, generation, 1, &["https://page.test/plain"]);
+    ed.offer_accept();
+    settle(&mut ed, &|_| answered(1).is_some());
+    assert!(kept(&ed).is_none_or(|s| !s.signed_read), "a plain read marks nothing");
+    read(&mut ed, generation, 2, &["https://page.test/confluence/pages/viewpage.action?pageId=7"]);
+    ed.offer_accept();
+    settle(&mut ed, &|ed| answered(2).is_some() && kept(ed).is_some_and(|s| s.signed_read));
+}
+
 /// W1: with the wiki's variable holding no token when tarae started — unset, only whitespace, or what a token can't
 /// hold, judged as the fetch judges it (`signed::token_in`) — Claude's read there is refused before any card, in the
 /// words that say what to do — nothing fetched.
@@ -479,6 +501,46 @@ fn the_turns_end_stops_a_read_under_way() {
     let said = format!("{:?}", answered(51));
     assert!(said.contains("stopped") && !said.contains("no whole answer"), "{said}");
     assert!(ed.workspace.claude.web_reads.is_empty(), "its stop dropped as it lands");
+}
+
+/// B5: the chat's turn counts the pages its reads didn't bring — a 404, a host the user said no to — each address
+/// once a call, never one read; kept with the turn, in its record and in `:usage`. Another claude's read (`space i`'s)
+/// is no turn of the chat's.
+#[test]
+fn the_pages_a_turn_didnt_read_are_counted_with_it() {
+    let (mut ed, generation, _heads) = editor(|head| match path(head) {
+        "/gone" => reply("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"),
+        _ => ok("<title>A</title><main><h1>A</h1><p>Its text.</p></main>"),
+    });
+    ed.workspace.claude.web_hosts.push(("page.test".into(), 443));
+    let gone = "https://page.test/gone";
+    read(&mut ed, generation, 61, &["https://page.test/a", gone, gone]);
+    settle(&mut ed, &|_| answered(61).is_some());
+    let t = answered(61).unwrap().unwrap();
+    assert!(t.contains("Its text.") && t.contains("== https://page.test/gone"), "{t}");
+    read(&mut ed, generation, 62, &["https://refused.test/p"]);
+    assert!(card(&ed).is_some());
+    ed.offer_dismiss();
+    settle(&mut ed, &|_| answered(62).is_some());
+    read(&mut ed, generation + 1, 63, &[gone]);
+    settle(&mut ed, &|_| answered(63).is_some());
+    assert_eq!(ed.workspace.claude.usage.tally.sums().web_failed, 2, "the 404 once, the host refused");
+    let u = &mut ed.workspace.claude.usage;
+    let at_ms = crate::usage::now_ms();
+    let sums = u.spent(crate::usage::Spent { at_ms, ..Default::default() }).calls.as_ref().unwrap().sums;
+    assert_eq!((sums.web_failed, sums.searches), (2, 0));
+    let entry = u.to_record.last().unwrap();
+    assert_eq!(entry["calls"]["web"], json!({ "failed": 2, "searches": 0 }), "{entry}");
+    let report = crate::usage::report("s", u, &ed.limits, &[], at_ms, crate::log::Zone::Here);
+    // (`:usage`'s tool calls: the last two columns, the turn's row and the total's)
+    let last_two = |l: &str| {
+        let cells: Vec<&str> = l.trim_end().trim_end_matches('|').split('|').map(str::trim).collect();
+        cells[cells.len().saturating_sub(2)..].join(" · ")
+    };
+    let calls = report.split("## Tool calls").nth(1).expect("its table");
+    let rows: Vec<String> = calls.lines().filter(|l| l.starts_with('|')).map(last_two).collect();
+    assert_eq!(rows[0], "pages not read · web searches", "{report}");
+    assert_eq!(rows[2..4], ["2 · 0", "2 · 0"], "{report}");
 }
 
 /// Two calls asking for one host each wait on a card of their own (as Claude's commands do); an answer that holds for

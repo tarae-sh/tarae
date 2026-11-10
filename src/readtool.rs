@@ -208,9 +208,9 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
             false => read(&root, &items, &gate, &unsaved),
         };
         // (a file's card asked first: no page is fetched for an answer that waits)
-        let (r, got) = match (r, pages) {
+        let (r, got, failed) = match (r, pages) {
             (Ok(Ok((mut parts, shown))), Some(pages)) => {
-                let (text, got) = pages.fetch();
+                let (text, got, failed) = pages.fetch();
                 match parts.last_mut() {
                     Some(Part::Text(t)) => {
                         t.push_str(if t.is_empty() { "" } else { "\n" });
@@ -218,13 +218,19 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
                     }
                     _ => parts.push(Part::Text(text.trim_end().to_string())),
                 }
-                (Ok(Ok((parts, shown))), got)
+                (Ok(Ok((parts, shown))), got, failed)
             }
-            (r, _) => (r, Vec::new()),
+            (r, _) => (r, Vec::new(), 0),
         };
         move |ed: &mut Editor| {
             if let Some(stop) = &stop {
                 ed.workspace.claude.web_reads.retain(|s| !s.same(stop));
+            }
+            // (B5: the chat's turn's pages that didn't come — `space i`'s reads are no turn of the chat's)
+            if failed > 0
+                && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() == call.generation())
+            {
+                ed.workspace.claude.usage.tally.web_failed(failed);
             }
             match r {
                 Ok(Ok((parts, shown))) => {

@@ -419,14 +419,15 @@ Not kept:
   port and path): a personal access token has no scopes, so it can do whatever your account can. tarae never gives
   it to a run (whatever `llm.sandbox-env`, a pack, `llm.sandbox-secrets` or a card names) nor to any claude it
   starts, and only GETs; but Claude's read of a page there (on its own card) puts your wiki's text in its context,
-  which is Anthropic's. Its reads of other hosts and its runs' network aren't guarded further: their cards already
-  say that what Claude has read can go out there.
+  which is Anthropic's. After such a read only that chat's web searches ask each time: its reads of other hosts and
+  its runs' network aren't guarded further — their cards already say that what Claude has read can go out there.
   The token is wiped from tarae's own buffers as they go (`zeroize`); the TLS library's buffers and the process's
   environment keep their copies.
   test: `sandbox::runenv::tests::a_wikis_token_is_never_a_runs`, `llm::tests::every_claude_tarae_starts_has_no_wiki_token`,
   `web::fetch::tests::the_token_goes_only_with_requests_under_the_base`,
   `web::tool::tests::a_token_read_asks_on_its_own_card_whatever_runs_reach`,
-  `web::tool::tests::a_plain_answer_never_covers_a_token_read`
+  `web::tool::tests::a_plain_answer_never_covers_a_token_read`,
+  `web::search::tests::after_a_token_read_each_search_asks`
 
 ### 1.5 The network
 
@@ -945,6 +946,15 @@ Kept:
   makes every change), no Read (tarae's `read` reads images too), no Bash, no WebFetch or WebSearch, no Grep or
   Glob, no Task.
   test: `chat::tests::the_chat_edits_with_tarae_s_edit_alone`
+- **The web search's helper** (`web::search`, on by default; `llm.web-search = false`, your config's alone, removes
+  it): a `claude -p` with WebSearch as its one tool and the rest disallowed, no MCP, no settings, no memory, no session kept, one request, in
+  an empty 0700 folder of its own, told only the query. That query leaves the machine for Anthropic's search engine,
+  so it can carry what Claude read: a chat's first search shows it on a card, and a key-shaped one is refused before
+  anything starts. Its answers are the searches' alone, never a run's or the proxy's. The list goes to the chat
+  framed as someone else's words.
+  test: `web::search::tests::its_args_are_websearch_alone_on_the_settings_model` ·
+  `web::search::tests::the_first_search_asks_and_its_answer_holds_for_the_chat` ·
+  `web::search::tests::a_key_shaped_query_is_refused_before_anything_starts`
 - **Only tarae's MCP server** (`--strict-mcp-config`: a project's `.mcp.json` doesn't connect); `Skill` denied;
   hooks off (`disableAllHooks`).
   test: `claudetrust::tests::the_chat_asks_for_only_tarae_s_own_mcp_servers` ·

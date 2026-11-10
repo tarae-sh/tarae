@@ -7872,6 +7872,7 @@ fn wide_rs(lines: usize, width: usize) -> String {
 pub(crate) const SCRIPTS: &[&str] = &[
     "idle",
     "full",
+    "websearch",
     "chatlink",
     "chatlink-named",
     "chatlink-under",
@@ -8030,6 +8031,14 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
         if docshots::answered(script, &line, out, pause)? {
             continue;
         }
+        // (`websearch`'s helper — started with WebSearch its one tool, the query its one message: `web::search`)
+        if script == "websearch"
+            && std::env::args().any(|a| a == "WebSearch")
+            && line.contains("\"role\":\"user\"")
+        {
+            let asked: Value = serde_json::from_str(&line).unwrap_or_default();
+            return searched(out, asked["message"]["content"].as_str().unwrap_or_default(), pause);
+        }
         if !line.starts_with("{\"message\"") {
             continue;
         }
@@ -8038,6 +8047,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
         match script {
             "full" => turn.explain(true, false)?,
             "three" => turn.explain(true, true)?,
+            // (Claude's web search: its card, then the list it got and an answer from it)
+            "websearch" => turn.web_search()?,
             // (V3's video: two reads the view follows, then three changes written at a stream's pace)
             "v3" => turn.edit_in_buffer()?,
             // (V5's video: three reads far apart, the view taken back and followed again, two edits under review at the end)
@@ -8179,6 +8190,50 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
         }
     }
     Ok(())
+}
+
+/// The web search's helper as the stand-in plays it: its WebSearch's list after the time a search takes, then its
+/// `result` with a cost (`--max-turns 1`'s end, as step 1's probe saw it).
+fn searched(out: &mut impl Write, query: &str, pause: Duration) -> io::Result<()> {
+    let links = [
+        ("tokio - Rust", "https://docs.rs/tokio/latest/tokio/"),
+        ("Releases · tokio-rs/tokio", "https://github.com/tokio-rs/tokio/releases"),
+        ("tokio - crates.io: Rust Package Registry", "https://crates.io/crates/tokio"),
+        ("Tokio - An asynchronous Rust runtime", "https://tokio.rs/"),
+        (
+            "tokio/README.md at master · tokio-rs/tokio",
+            "https://github.com/tokio-rs/tokio/blob/master/README.md",
+        ),
+        ("Announcing Tokio 1.54 | Tokio blog", "https://tokio.rs/blog/2026-10-tokio-1-54"),
+        (
+            "tokio/CHANGELOG.md · tokio-rs/tokio",
+            "https://github.com/tokio-rs/tokio/blob/master/tokio/CHANGELOG.md",
+        ),
+        (
+            "MSRV policy — Tokio's minimum supported Rust",
+            "https://github.com/tokio-rs/tokio#supported-rust-versions",
+        ),
+    ];
+    // (19 found, as the probe's one search did: the list shows ten and counts the rest)
+    let more =
+        (1..=11).map(|i| (format!("tokio {i} — a mirror"), format!("https://mirror{i}.example.org/tokio")));
+    let links: Vec<(String, String)> =
+        links.iter().map(|(t, u)| (t.to_string(), u.to_string())).chain(more).collect();
+    let links: Vec<Value> = links.iter().map(|(t, u)| json!({"title": t, "url": u})).collect();
+    if !pause.is_zero() {
+        std::thread::sleep(pause * 20);
+    }
+    let content = json!([{"type": "tool_result", "tool_use_id": "toolu_1", "content": "Web search results"}]);
+    let summary = "The newest Tokio in these results is 1.54, which needs Rust 1.85.";
+    let found = json!({"query": query, "durationSeconds": 5.5, "searchCount": 1,
+        "results": [{"tool_use_id": "srvtoolu_1", "content": links}, summary]});
+    let line =
+        json!({"type": "user", "message": {"role": "user", "content": content}, "tool_use_result": found});
+    writeln!(out, "{line}")?;
+    let result = json!({"type": "result", "subtype": "error_max_turns", "is_error": true, "num_turns": 2,
+        "session_id": "helper", "total_cost_usd": 0.0119, "usage": {"input_tokens": 2, "output_tokens": 81}});
+    writeln!(out, "{result}")?;
+    out.flush()
 }
 
 /// Where the `now` turn is held: its run in flight, its card up, a read in flight, or an edit being written (its call not
@@ -9201,6 +9256,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         }
         self.words(V2_SAYS)?;
         self.lines.by_ref().try_for_each(|l| l.map(drop))
+    }
+
+    /// (`websearch`: a sentence of intent, the search — its card the chat's first —, then an answer from its list)
+    fn web_search(&mut self) -> io::Result<()> {
+        self.words("Tokio's newest release is past what I know, so I will search for it.")?;
+        self.text("\n")?;
+        self.call(1, "web_search", json!({"query": "tokio latest release MSRV", "sites": ""}))?;
+        self.words("The list names Tokio 1.54 on its blog; its README says which Rust it needs.")?;
+        self.line(json!({"type": "result", "result": "done"}))
     }
 
     /// Claude's `plugin` call, waiting on the user's card.

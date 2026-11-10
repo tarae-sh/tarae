@@ -1657,8 +1657,8 @@ fn frames_of_the_answer_words() {
 
 /// The work wiki (the work-wiki plan W1–W4), for its screenshots — only with `TARAE_FRAMES_DIR` set (both themes
 /// there, at 120×34 and 80×43; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): Claude's read of a wiki page
-/// on the card that says the token, the page read at its own address, the wiki's search as a list, and an unset
-/// variable's words. Its `:granted` row is `snapshot_granted`'s
+/// on the card that says the token, the page read at its own address, the wiki's search as a list, a web search after
+/// a token read asking on its own card, and an unset variable's words. Its `:granted` row is `snapshot_granted`'s
 /// frames. The wiki is a stand-in Confluence (the fetch tests' TLS server, as `page.test`): no network, no real token.
 #[test]
 fn frames_of_the_work_wiki() {
@@ -1780,6 +1780,30 @@ fn frames_of_the_work_wiki() {
             ],
         );
         s.frames_both(&format!("wiki_search_{w}"));
+        // After a token read, a web search asks on its own card — `y` this search · `n`
+        let mut s = shot(
+            Some("tarae-fake-token"),
+            None,
+            vec![
+                user(question),
+                read(&wiki_page),
+                says("The runbook's step 2 needs a flag I don't know for deployctl 4; I'll search for it."),
+            ],
+        );
+        let (tx, _searches) = std::sync::mpsc::channel();
+        s.ed.search_lines = Some(tx);
+        let c = s.ed.workspace.claude.chat.as_mut().unwrap();
+        (c.web_search, c.signed_read, c.searches) = (true, true, Some(true));
+        let generation = c.generation();
+        let call = crate::tools::Call::of(generation, "", serde_json::json!(2));
+        crate::web::search::call(
+            &mut s.ed,
+            call,
+            &serde_json::json!({ "query": "deployctl 4 rollback --to flag" }),
+        )
+        .unwrap();
+        s.until("its card", |ed| !ed.offers.is_empty());
+        s.frames_both(&format!("wiki_guarded_{w}"));
         // The variable unset: the page says what to do, as Claude's read does
         let mut s = shot(
             None,
@@ -3344,6 +3368,7 @@ fn projects2_frames() {
             usage: Some(serde_json::json!({ "turns": [], "last": last })),
             places: None,
             seq: crate::chats::seq() - ago,
+            signed_read: false,
         };
         crate::chats::save(&chats, root, saved);
     };

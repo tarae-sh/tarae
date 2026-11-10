@@ -2073,7 +2073,10 @@ sends reading and searching here, and `:usage`
 counts the runs that only read text, by program.
 
 **Pages and the web.** `read` takes an `https://` URL too, a host Claude's commands don't reach asked on a card first
-([Claude reads pages](web.md#claude-reads-pages)).
+([Claude reads pages](web.md#claude-reads-pages)). A chat has a `web_search` tool besides, on by default: a small model's
+search beside the chat, told only the words, a list of pages back, a chat's first search asked on a card showing its
+words; `llm.web-search = false` in your own config removes the tool
+([Claude searches the web](web.md#claude-searches-the-web)).
 
 **A plugin of yours.** Asked for a plugin, Claude asks you to type `:plugin-new <dir>` (`Cargo.toml` and `.cargo` are
 names a run can't write), reads the API in the crate's `REFERENCE.md`, edits and builds in its run, and asks to
@@ -2257,8 +2260,9 @@ ones at once, a busy one when its turn ends — without `:restart`, which would 
 into the model's, the tools' and — of the tools' — waiting for you (a card of Claude's, an edit to review), and the
 calls wasted: a range read again with nothing written since (Read's offset/limit, a read-only run's `sed -n`,
 `head`, `cat`), an edit claude reported failed (not one you or tarae declined — those are counted apart), a run that
-didn't run or that the sandbox blocked. Then the calls by tool, and the runs that only read text by program — each
-a process tarae's own reads could spare. `tarae state` has the same under each session's `usage` (`last_turn.calls`,
+didn't run or that the sandbox blocked. Then the web: the pages `read` asked for and didn't bring (an address that
+isn't there, a host refused), and the web searches made. Then the calls by tool, and the runs that only read text by
+program — each a process tarae's own reads could spare. `tarae state` has the same under each session's `usage` (`last_turn.calls`,
 `totals.calls`), and `--watch usage` hears it with each turn. Counted from what tarae sees of claude's stream —
 nothing asked of claude; a turn kept before they were counted shows none.
 

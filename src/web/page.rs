@@ -175,7 +175,7 @@ pub fn open_copy(ed: &mut Editor, f: Arc<Fetched>, at: Instant, lines: std::ops:
         return at_claudes_lines(ed, lines);
     }
     let url = split_fragment(&f.url).0.to_string();
-    let place = super::url::host(&url).unwrap_or_else(|| url.clone());
+    let place = host_of(&url).unwrap_or_else(|| url.clone());
     let mut page = PageOf::new(&url, Prefer::Guess, None, Some(Want::Lines(lines)));
     page.claudes = true;
     let id = made(ed, &place, &url, page);
@@ -202,6 +202,15 @@ impl PageOf {
 
 fn name_of(path: &std::path::Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Where a page is from, as its buffer's name says it: its host — a web search's list `search`, its words the page's
+/// title (`search::page_url`).
+fn host_of(url: &str) -> Option<String> {
+    match url.starts_with("web-search:") {
+        true => Some("search".into()),
+        false => super::url::host(url),
+    }
 }
 
 /// The page's buffer, made current: empty, read-only, `web · place`.
@@ -399,7 +408,7 @@ fn filled(ed: &mut Editor, id: DocId, g: Got) {
     let Got { page, text, facts, copy, saved, .. } = g;
     let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
     // (a saved page's own address has no host: its file's name)
-    let place = super::url::host(&url)
+    let place = host_of(&url)
         .or_else(|| doc.page.as_ref().and_then(|p| p.saved.as_deref()).map(name_of))
         .unwrap_or_else(|| url.clone());
     doc.title = Some(match page.title.is_empty() {

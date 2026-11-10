@@ -19,7 +19,8 @@
 //!
 //! Your wiki's pages (`web.signed-in`, the work-wiki plan W3): a read under its base goes with your token, so it gets
 //! what no run's curl could — neither a run's grant nor `llm.sandbox-hosts` opens it, and no copy fetched with the
-//! token reaches Claude without it: only the read card's own answers (`y`, `a`, `s`), the card saying the token.
+//! token reaches Claude without it: only the read card's own answers (`y`, `a`, `s`), the card saying the token. Once
+//! a chat read one, its web searches ask each time (`Chat.signed_read`, `search::gate`).
 
 use std::ops::Range;
 
@@ -319,14 +320,14 @@ fn ask(ed: &mut Editor, a: Ask) {
     use crate::cards::{Asked, Request, Why};
     let at = format!("{}:{}", a.host, a.port);
     let lines = match a.signed {
-        // (W3: the token said)
+        // (W3: the token said, and what follows from it — the chat's searches ask each time after it)
         true => [
             crate::nav::clip(&a.url, 300),
             format!(
                 "Claude's read · port {} · through tarae's proxy · GET with your token, nothing else of yours",
                 a.port
             ),
-            "Reads of pages there only — a yes lets none of Claude's commands reach it.".to_string(),
+            "After it, this chat's web searches ask each time.".to_string(),
             "What it reads goes to Claude — your wiki's pages as your account sees them.".to_string(),
         ],
         false => [
@@ -436,14 +437,18 @@ pub struct Got {
 type Came = Result<(Option<Instant>, Arc<Fetched>, Arc<Page>), String>;
 
 impl Reads {
-    /// The pages fetched (each address once) and read, and the answer's text — a worker's.
-    pub fn fetch(self) -> (String, Vec<Got>) {
+    /// The pages fetched (each address once) and read, and the answer's text — a worker's; and how many addresses
+    /// brought no page (B5's count, `calls::Tally::web_failed`): refused before the fetch (the user's no, a port or an
+    /// address tarae won't take), a fetch that failed, a status of 400 or more — never one the turn's end stopped.
+    pub fn fetch(self) -> (String, Vec<Got>, u64) {
         let mut fetched: Vec<(String, Came)> = Vec::new();
         let mut out = String::new();
         let mut got = Vec::new();
+        let mut failed = 0;
         let mut room = Room { lines: LINES_MAX, bytes: ANSWER_MAX };
         for (it, how) in self.items {
             let done = fetched.iter().find(|(u, _)| *u == it.url).map(|(_, r)| r.clone());
+            let again = done.is_some();
             let r = match (done, how) {
                 (Some(r), _) => r,
                 (None, How::No(e)) => Err(e),
@@ -457,6 +462,11 @@ impl Reads {
                     .map(|(f, page)| (None, Arc::new(f), Arc::new(page))),
             };
             fetched.push((it.url.clone(), r.clone()));
+            let no_page = match &r {
+                Ok((_, f, _)) => f.status >= 400,
+                Err(_) => !self.stop.stopped(),
+            };
+            failed += u64::from(no_page && !again);
             match r {
                 Err(e) => out.push_str(&format!("== {}: {e}\n", it.given)),
                 Ok((at, f, page)) => {
@@ -466,7 +476,7 @@ impl Reads {
                 }
             }
         }
-        (out, got)
+        (out, got, failed)
     }
 }
 
@@ -481,6 +491,15 @@ struct Room {
 pub fn landed(ed: &mut Editor, got: Vec<Got>) {
     let now = crate::clock::now();
     let mut kept: Vec<(String, Instant)> = Vec::new();
+    // (W3: a page read with your token — this chat's web searches ask each time from now; kept at once, not at the
+    // turn's end, so a crash right after still has the conversation marked when it's continued)
+    if got.iter().any(|g| g.f.signed)
+        && let Some(c) = ed.workspace.claude.chat.as_mut()
+        && !c.signed_read
+    {
+        c.signed_read = true;
+        crate::chat::keep_places(ed);
+    }
     for g in got {
         let at = match g.at {
             Some(at) => at,

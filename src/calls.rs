@@ -12,6 +12,11 @@
 //! - an edit claude reported failed (`old_string` not found, not read first) — not one tarae or the user
 //!   declined: that's `declined`, apart;
 //! - a run of tarae's that didn't run (refused, a card's `n`) or that the sandbox blocked.
+//!
+//! The web (the web bundle's B5, decided 2026-11-11 with web search's return): a turn's page reads that brought no
+//! page — an address that isn't there, a host refused (the user's `n`, the server's 4xx or 5xx, a fetch that failed) —
+//! and the web searches it made. Whether search earns its place, and whether its description holds Claude to reading
+//! an address it can guess first, is read from these.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -53,6 +58,10 @@ pub struct Sums {
     /// Calls of tarae's tools that came while another of them was unanswered — claude ran them side by side
     /// (it does for tools marked `readOnlyHint`, else one after another).
     pub parallel: u64,
+    /// Pages `read` asked for that it didn't bring (each address once a call) · `web_search` calls answered with a
+    /// list.
+    pub web_failed: u64,
+    pub searches: u64,
 }
 
 impl Sums {
@@ -70,6 +79,8 @@ impl Sums {
         self.run_refused += o.run_refused;
         self.read_only += o.read_only;
         self.parallel += o.parallel;
+        self.web_failed += o.web_failed;
+        self.searches += o.searches;
     }
 
     /// Calls a request — None: no request.
@@ -91,6 +102,7 @@ impl Sums {
             "ms": { "tools": self.tool_ms, "waiting": self.waiting_ms, "model": self.model_ms },
             "wasted": { "reread": self.reread, "edit_failed": self.edit_failed, "run_refused": self.run_refused },
             "declined": self.declined, "read_only_runs": self.read_only, "parallel": self.parallel,
+            "web": { "failed": self.web_failed, "searches": self.searches },
         })
     }
 
@@ -110,6 +122,8 @@ impl Sums {
             declined: n(&v["declined"]),
             read_only: n(&v["read_only_runs"]),
             parallel: n(&v["parallel"]),
+            web_failed: n(&v["web"]["failed"]),
+            searches: n(&v["web"]["searches"]),
         }
     }
 }
@@ -260,6 +274,10 @@ impl Tally {
             self.turn.sums.tool_ms += now.saturating_sub(since);
         }
         if !error {
+            // (a search's list came: one made — a no on its card, a refused query or a failed helper is an error)
+            if tool == "web_search" {
+                self.turn.sums.searches += 1;
+            }
             return;
         }
         let s = &mut self.turn.sums;
@@ -307,6 +325,11 @@ impl Tally {
         self.turn.sums.run_refused += 1;
     }
 
+    /// A `read` of the chat's brought no page for `n` of its addresses (`web::tool::Reads::fetch`).
+    pub fn web_failed(&mut self, n: u64) {
+        self.turn.sums.web_failed += n;
+    }
+
     /// Whether the user is being waited for (a card of Claude's, an edit to review) while a turn is under way.
     pub fn waiting(&mut self, on: bool, now: u64) {
         match (on, self.waiting_since) {
@@ -322,6 +345,12 @@ impl Tally {
     #[cfg(test)]
     pub fn is_waiting(&self) -> bool {
         self.waiting_since.is_some()
+    }
+
+    /// The turn under way's numbers so far.
+    #[cfg(test)]
+    pub fn sums(&self) -> Sums {
+        self.turn.sums
     }
 
     /// The conversation compacted: what it read is no longer in its context.
@@ -618,6 +647,24 @@ mod tests {
         t.answered("u2", false, 0);
         let s = t.end(&[1], None, 0).sums;
         assert_eq!((s.edit_failed, s.declined, s.run_refused), (1, 1, 2));
+    }
+
+    /// B5: a search counts once its list came — not one refused (its card's `n`, a key-like query) — and the pages a
+    /// read didn't bring add up; both kept with the turn and read back.
+    #[test]
+    fn searches_made_and_pages_not_read_are_counted_and_kept() {
+        let mut t = Tally::default();
+        call(&mut t, "s1", "mcp__tarae__web_search", json!({ "query": "a" }), 0);
+        t.answered("s1", false, 0);
+        call(&mut t, "s2", "mcp__tarae__web_search", json!({ "query": "b" }), 0);
+        t.answered("s2", true, 0);
+        call(&mut t, "r1", "mcp__tarae__read", json!({ "files": ["https://a.test/x"] }), 0);
+        t.web_failed(2);
+        t.answered("r1", false, 0);
+        t.web_failed(1);
+        let c = t.end(&[1], None, 0);
+        assert_eq!((c.sums.searches, c.sums.web_failed), (1, 3));
+        assert_eq!(Calls::from_json(&c.json()), Some(c));
     }
 
     /// Calls of tarae's tools side by side: one coming while another is unanswered counts; one after

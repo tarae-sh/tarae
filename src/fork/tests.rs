@@ -248,6 +248,7 @@ fn the_conversation_is_forked_once_then_its_own_across_a_restart() {
             follow: false,
             at_end: None,
             lazy: false,
+            signed_read: false,
         },
     );
     one_more(&mut back);

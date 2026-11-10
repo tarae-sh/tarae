@@ -2309,6 +2309,7 @@ mod tests {
                 usage: None,
                 places: None,
                 seq: crate::chats::seq(),
+                signed_read: false,
             };
             crate::chats::save(&chats, &root, c);
         };
@@ -2471,6 +2472,7 @@ mod tests {
                     usage: None,
                     places: None,
                     seq: crate::chats::seq(),
+                    signed_read: false,
                 };
                 crate::chats::save(&store, &root, c);
             }

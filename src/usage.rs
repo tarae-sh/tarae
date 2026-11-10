@@ -1038,7 +1038,8 @@ pub fn report(
 }
 
 /// `:usage`'s tool calls (`calls.rs`): a row per turn that counted them and the total — calls a request, what
-/// a request carried, where the time went, the calls wasted, the runs that only read — then the calls by tool
+/// a request carried, where the time went, the calls wasted, the runs that only read, the pages `read` didn't
+/// bring and the web searches made (B5) — then the calls by tool
 /// and the read-only runs by program. Nothing when no turn counted calls.
 fn calls_section(u: &Usage, zone: crate::log::Zone) -> String {
     use crate::calls::Sums;
@@ -1063,6 +1064,8 @@ fn calls_section(u: &Usage, zone: crate::log::Zone) -> String {
             s.run_refused.to_string(),
             s.read_only.to_string(),
             s.parallel.to_string(),
+            s.web_failed.to_string(),
+            s.searches.to_string(),
         ]
     };
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -1099,6 +1102,8 @@ fn calls_section(u: &Usage, zone: crate::log::Zone) -> String {
             "runs refused",
             "read-only runs",
             "side by side",
+            "pages not read",
+            "web searches",
         ],
         &rows,
         1,

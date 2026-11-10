@@ -8801,6 +8801,7 @@ mod tests {
                 usage: Some(json!({ "turns": [], "last": last })),
                 places: None,
                 seq: crate::chats::seq(),
+                signed_read: false,
             };
             crate::chats::save(&chats, root, saved);
         };

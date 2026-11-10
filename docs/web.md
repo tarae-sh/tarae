@@ -21,8 +21,7 @@ cookies, GET only.
   links resolve against it). Into the buffer of that address the file is its source from then on: `:reload` and
   `:web-reader` read the file again, `:web!` fetches.
 - **Other words** — `:web tokio set_times`, or a word that names no file — get one line: `:web takes an address
-  (https://…) or a saved page, not other words`. There is no web search: Claude finds pages by reading the sites, a
-  site's own search address included.
+  (https://…) or a saved page, not other words`.
 
 A buffer is one copy. `:web` of an address already open shows that buffer; **`:reload`** (or `:web!`) fetches it anew
 into it. A whole page fetched is the session's for 15 minutes (`read 2m ago`) — never an error's page, one maybe cut
@@ -121,8 +120,31 @@ Claude's read of a page there asks on a card of its own (`Let Claude read a page
 token?`); its `a` or `s` holds for later reads there, as any read's does. Nothing else opens it: not a command's
 grant, `llm.sandbox-hosts`, an answer on a plain read's card at that host, the copy `:web` fetched, or a redirect
 from a plain read into the base (said to Claude, its next read asked). With the variable unset when tarae started,
-the read is refused before any card. `:granted` lists the wiki with the variable its token comes from, never the
-token.
+the read is refused before any card. Once a chat read a page with the token, each of its web searches asks (`y` this
+search · `n` not this one), continued or restarted too, since what it read could leave in the words. `:granted` lists
+the wiki with the variable its token comes from, never the token.
+
+## Claude searches the web
+
+A chat has a `web_search` tool: web search is on by default, and a chat's first search asks you on a card.
+`llm.web-search = false` in your own config removes the tool from the chats started after it (a project's file never
+sets it, either way). Claude gives it words (and, if it likes, sites: `docs.rs github.com`); tarae starts a
+small `claude -p` beside the chat on `llm.web-search-model` (`haiku`), told only those words, in an empty folder of its
+own, with Claude Code's WebSearch its one tool. What comes back to the chat is a list, not a summary: up to ten pages,
+title and address, framed as someone else's words (no dates: the search engine gives none). Claude reads a page of it
+with `read`, whose host card is as it was. The tool tells Claude it's for a page it can't name (an error's words, a tool
+it doesn't know): an address it knows or can guess (a project's releases, its issues' own search, a registry) it reads
+instead.
+
+A chat's first search asks on a card that shows its words, since they leave the machine for Anthropic's search engine:
+`y` this chat · `s` this session · `n` no, for the chat. After an answer that chat's searches ask nothing. A query that
+looks like it holds a key is refused before anything starts. What a search cost is an entry of its own in `:usage`
+(`web-search`), billed as the chat is, never part of a chat turn's cost. Each search is a replay stop: follow and `]r`
+show the list Claude got, as a page whose links `gd` follows. The turn's end stops a search still under way.
+
+`:usage`'s tool calls count, a turn, the pages `read` asked for and didn't bring (an address that isn't there, a host
+refused) and the web searches made — with `llm.web-search` on or off — so what search saves, and what reading
+first costs, is seen from use.
 
 ## Limits
 

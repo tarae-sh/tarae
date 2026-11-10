@@ -1406,6 +1406,9 @@ pub struct Editor {
     /// from the chat's).
     #[cfg(test)]
     pub ask_lines: Option<std::sync::mpsc::Sender<String>>,
+    /// (tests: the web search's helper stands in here — what it's told; `web::search`)
+    #[cfg(test)]
+    pub search_lines: Option<std::sync::mpsc::Sender<String>>,
     /// The review record's folder (`reviews.rs`, `$state/reviews`) — None in tests: nothing written.
     pub reviews_dir: Option<PathBuf>,
     /// The border the mouse is dragging (pressed on it, not let go yet).
@@ -1790,6 +1793,8 @@ impl Editor {
             claude_lines: None,
             #[cfg(test)]
             ask_lines: None,
+            #[cfg(test)]
+            search_lines: None,
             reviews_dir: if cfg!(test) {
                 None
             } else {
@@ -14189,6 +14194,7 @@ mod tests {
             follow: false,
             at_end: Some(dir.clone()),
             lazy: true,
+            signed_read: false,
         };
         crate::chat::restore(&mut ed, back);
         assert!(!crate::edits::at_end(&ed), "a restored chat follows the config");
