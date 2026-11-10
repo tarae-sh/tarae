@@ -177,6 +177,9 @@ pub struct KeyRules {
     opened: Vec<PathBuf>,
     keep: Vec<PathBuf>,
     caches: Vec<PathBuf>,
+    /// macOS: the keys the walk before its run found and the folders it locked (`Policy::key_folders`; what it
+    /// didn't reach left out).
+    locks: super::keyfolders::KeyFolders,
     /// Linux tier own: its run's child hides by mounts every file named like a key in the places outside the project
     /// it reads (D-i) — what one made there would be (`in_grant`).
     pub(super) hides: bool,
@@ -258,6 +261,12 @@ impl KeyRules {
     /// `Policy::key_refuses_change`.
     pub fn refuses_change(&self, real: &Path) -> bool {
         self.view().refuses_change(real)
+    }
+
+    /// The keys whose folder `folder` (real) is, locked by the walk before the run (G33, `KeyFolders::holding`):
+    /// none, not a folder it locked — a refusal there is the place's.
+    pub fn held_by(&self, folder: &Path) -> Vec<&PathBuf> {
+        self.locks.holding(folder)
     }
 
     /// Whether runs write `real`, its name aside (`KeyView::writes_place`): where the user's opening of it
@@ -491,6 +500,10 @@ pub struct Policy {
     /// `installs` — pyenv's, conda's: their CA bundles, their packages' test keys). Not the user's `$TMPDIR`:
     /// every program of theirs writes there (frictions29 round 3) — the run's own is its `RunDir`. Real paths.
     pub key_spared: Vec<PathBuf>,
+    /// macOS: the folders between each file named like a key where runs write and its place's root, which a run
+    /// can't move or remove (G33) — found by the walk before each run (`keyfolders::locked`); empty until then, and
+    /// on Linux.
+    pub key_folders: super::keyfolders::KeyFolders,
     /// The folders the checkout's build tool named that stay closed, and why (`asked_dir_verdict`) — said with
     /// the result and on the panel — and who named them (`builds-said`: `cargo`).
     pub refused: Vec<(PathBuf, String)>,
@@ -769,7 +782,50 @@ impl Policy {
                      (param \"ROOT\")){protect}){run}{dirs})))\n"
                 ));
             }
+            // …and the folders between each key found where runs write and its place's root, that root too: not
+            // removed nor renamed — moved below tools' output or into the run's own folder, a key would be out of
+            // the rule (G33, `keyfolders`; srt's `generateMoveBlockingRules`, by `file-write-unlink` — a rename's
+            // source, `rmdir`). Not `file-write-create` as srt's: onto a folder holding a key nothing renames (the
+            // kernel's `ENOTEMPTY`, measured in `.sb/key-folders-seatbelt.sh`), and a key made since is free anyway.
+            // One rule: Seatbelt compiles every literal of the op into one data object however many rules hold
+            // them, which the walk's caps keep under half its limit (`keyfolders::LOCKS_BYTES`). As literal
+            // parameters, as every path: a folder's name, which a repository chooses, never in the profile's text
+            let n = if self.supervised { 0 } else { self.key_folders.folders.len() };
+            let locked: String = (0..n).map(|i| format!(" (literal (param \"KD{i}\"))")).collect();
+            if !locked.is_empty() {
+                p.push_str(&deny(&format!("file-write-unlink{locked}")));
+            }
         }
+        // A folder isn't cloned but where a run reads everything below it (G33's review, G35): Seatbelt checks a
+        // folder's clone on its source, never as a read of what's in it — `clonefile` of the folder above home, then
+        // `~/.ssh` read from the copy (measured on this profile:
+        // `a_clone_of_the_folder_above_home_reads_nothing_of_home`). So every read rule by place or by name is
+        // open to a clone of a folder above it; an allow-list closes them all, a key made since or past the walk's
+        // caps too. Free: tools' output in the project, the run's own folder, an install, a write folder no place
+        // of the key rule holds or is held by (a toolchain's cache: uv's and bun's installs) — but a folder there
+        // holding what no run reads (`clone_held`: home, a kept place, a token's settings). `vnode-type` leaves a
+        // file's clone as it was (`fs::copy`, `cp -c`): its own read is checked (B1, measured)
+        p.push_str(&deny(&format!("{} (vnode-type DIRECTORY)", keyfolders::CLONE_OP)));
+        let keyed = self.keys.is_some() && !self.supervised;
+        let installs: String = (0..self.key_spared.len())
+            .filter(|_| keyed)
+            .map(|i| format!(" (subpath (param \"KI{i}\"))"))
+            .collect();
+        let caches: String =
+            self.clone_free_writes().iter().map(|i| format!(" (subpath (param \"W{i}\"))")).collect();
+        let (above, held) = self.clone_held();
+        let held: String = (0..above.len())
+            .map(|i| format!(" (literal (param \"CA{i}\"))"))
+            .chain((0..held.len()).map(|i| format!(" (subpath (param \"CH{i}\"))")))
+            .collect();
+        let held =
+            if held.is_empty() { String::new() } else { format!(" (require-not (require-any{held}))") };
+        p.push_str(&format!(
+            "(allow {} (require-all (vnode-type DIRECTORY) (require-any (require-all (subpath (param \"ROOT\")) \
+             {}){run}{installs}{caches}){held}))\n",
+            keyfolders::CLONE_OP,
+            key_free_folders(&below(&self.root), false)
+        ));
         // The names a run keeps off, below the project's root however deep (`protected_writes`) — after the
         // keys, so a file the user opened inside one (`.cargo/credentials`) is read, never written
         p.push_str(&deny(&format!("file-write* {}", protected_writes(&self.root))));
@@ -1110,6 +1166,44 @@ impl Policy {
         None
     }
 
+    /// The write folders (`write`, by index) a run may clone a folder from (`profile`'s clone rule): none a place
+    /// of the key rule holds or is held by — every write folder where no key is closed.
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
+    pub(super) fn clone_free_writes(&self) -> Vec<usize> {
+        let keyed = self.keys.is_some() && !self.supervised;
+        let covered = |w: &Path| self.key_places.iter().any(|k| w.starts_with(k) || k.starts_with(w));
+        (0..self.write.len()).filter(|&i| !(keyed && covered(&self.write[i]))).collect()
+    }
+
+    /// What a folder's clone where it's free (`profile`) still can't take: each place no run reads (home and the
+    /// Windows profiles where reads are confined, the kept places, a token's settings) inside a free one — the
+    /// folders above it there, each that folder (`CA<n>`), and itself with what's below (`CH<n>`). Real paths,
+    /// sorted; none for a closed place that holds the free one (home holding a cache: read there by its own allow).
+    #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
+    pub(super) fn clone_held(&self) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let r = &self.reads;
+        let home = r.home.iter().chain(r.profiles.iter().filter(|_| r.home.is_some()));
+        let closed = home.chain(&r.kept).chain(r.copies.hidden.iter().map(|(p, _)| p));
+        let mut free: Vec<&Path> = vec![&self.root];
+        free.extend(self.run.iter().map(|d| d.path()));
+        if self.keys.is_some() && !self.supervised {
+            free.extend(self.key_spared.iter().map(PathBuf::as_path));
+        }
+        free.extend(self.clone_free_writes().into_iter().map(|i| self.write[i].as_path()));
+        let (mut above, mut held) = (Vec::new(), Vec::new());
+        for c in closed {
+            for f in free.iter().filter(|f| c.starts_with(f) && c != *f) {
+                held.push(c.clone());
+                above.extend(c.ancestors().skip(1).take_while(|a| a.starts_with(f)).map(Path::to_path_buf));
+            }
+        }
+        for v in [&mut above, &mut held] {
+            crate::sorting::sort(v);
+            v.dedup();
+        }
+        (above, held)
+    }
+
     /// The kept places (`Reads::kept`, by index) that hold the project, and the others.
     #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
     pub(super) fn kept_split(&self) -> (Vec<usize>, Vec<usize>) {
@@ -1162,6 +1256,13 @@ impl Policy {
         self.key_view().refuses_change(real)
     }
 
+    /// Whether runs write in the folder `real`, its name aside (`KeyView::writes_place`) — where they don't (a
+    /// protected name, `.git`; a kept folder), nothing in or at it moves: the walk before a run takes one key there
+    /// and locks only the folders above it (G33's review, `keyfolders::walk`).
+    pub fn writes_folder(&self, real: &Path) -> bool {
+        self.key_view().writes_place(real, self.own_shm)
+    }
+
     /// The key rule taken apart from the policy, for what's decided after its run on a worker (`KeyRules`).
     pub fn key_rules(&self) -> KeyRules {
         KeyRules {
@@ -1179,6 +1280,11 @@ impl Policy {
             opened: self.opened.clone(),
             keep: self.keep.clone(),
             caches: self.caches.clone(),
+            locks: super::keyfolders::KeyFolders {
+                keys: self.key_folders.keys.clone(),
+                folders: self.key_folders.folders.clone(),
+                ..Default::default()
+            },
             hides: self.hides(),
         }
     }
@@ -1511,6 +1617,9 @@ impl Policy {
         v.extend(places.enumerate().map(|(i, p)| (format!("KP{i}"), s(p))));
         let spared = self.key_spared.iter().filter(|_| self.keys.is_some() && !self.supervised);
         v.extend(spared.enumerate().map(|(i, p)| (format!("KI{i}"), s(p))));
+        if self.keys.is_some() && !self.supervised {
+            v.extend(self.key_folders.folders.iter().enumerate().map(|(i, f)| (format!("KD{i}"), s(f))));
+        }
         let r = &self.reads;
         v.extend(r.home.iter().map(|h| ("HOME".to_string(), s(h))));
         let profiles = r.profiles.iter().filter(|_| r.home.is_some());
@@ -1520,6 +1629,9 @@ impl Policy {
         );
         v.extend(r.kept.iter().enumerate().map(|(i, p)| (format!("X{i}"), s(p))));
         v.extend(r.copies.hidden.iter().enumerate().map(|(i, (p, _))| (format!("T{i}"), s(p))));
+        let (above, held) = self.clone_held();
+        v.extend(above.iter().enumerate().map(|(i, p)| (format!("CA{i}"), s(p))));
+        v.extend(held.iter().enumerate().map(|(i, p)| (format!("CH{i}"), s(p))));
         v
     }
 
@@ -1699,6 +1811,7 @@ impl Policy {
             keys: Some(Vec::new()),
             key_places,
             key_spared,
+            key_folders: Default::default(),
             refused,
             refused_asked,
             refused_write: Vec::new(),

@@ -1188,15 +1188,9 @@ pub struct There {
     pub unseen: Vec<PathBuf>,
 }
 
-/// The most entries the walk of the key places outside the project reads before a run (`outside_keys`, D-i): past
-/// it the run starts, the folders not reached named in its report. Measured (`perf_a_walk_of_the_key_places`, Linux
-/// 7.0 on the GCP VM, warm, the `perf` profile): 2.18 µs an entry — 20,011 of them 43.7 ms, about what a run in tier
-/// own takes to start (~39 ms); a checkout of tarae (2,314 files, 250 folders) 4.8 ms, 1,000 files 2.8 ms, an empty
-/// `/tmp` 14 µs (`.sb/sandbox-d2-walk.md`). Each folder sorted by name before it's queued (ci5: a walk cut
-/// short finds the same on every disk) adds 0.04–0.07 µs an entry — +0.8 ms in folders of 99, +1.5 ms of 999 or one
-/// of 20,000 (`sorting::tests::perf_a_listing_in_name_order`, this Mac): 2–3 % of the walk. Every run walks afresh (user decision 2026-10-20, request 3's question 4):
-/// nothing kept from one run to the next, so a key made anywhere below a place since is found.
-pub const WALK_MAX: usize = 20_000;
+// (the most entries the walk of the key places outside the project reads before a run, D-i — macOS's walk of the
+// places runs write shares it, G33)
+pub use super::keyfolders::WALK_MAX;
 
 /// The files named like keys outside the project a run's child hides (D-i), found before each run (`outside_keys`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

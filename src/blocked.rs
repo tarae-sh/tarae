@@ -156,7 +156,30 @@ pub fn choices_by(
             None => crate::sandbox::key_named_in(&crate::sandbox::profile_path(root), t),
         };
         let changed = d.op.starts_with("file-write") && d.op != "file-write-create" && refuses(&target);
-        let key = file && (read || changed) && closes(&target) && !kept.iter().any(|k| target.starts_with(k));
+        // (macOS: a folder the walk before its run locked for the keys it holds — G33: the key, where it's the only
+        // one — opened, the next run's walk leaves it out and the folder is free; holding more, none, one opened
+        // alone wouldn't free it. No folder either way: a grant of one doesn't lift the lock)
+        let held = match keys {
+            Some(k) if file && crate::sandbox::keyfolders::lock_op(&d.op) => k.held_by(&target),
+            _ => Vec::new(),
+        };
+        if let [k] = held.as_slice() {
+            found.push(Choice {
+                grant: Grant::Key(k.to_path_buf()),
+                hint: format!("{} moving or removing its folder · named like a key", d.process),
+                why: format!(
+                    "{} was moving or removing {}, which holds {}, named like a key",
+                    d.process,
+                    crate::allow::tilde(&target),
+                    crate::allow::tilde(k)
+                ),
+            });
+        }
+        let key = file
+            && held.is_empty()
+            && (read || changed)
+            && closes(&target)
+            && !kept.iter().any(|k| target.starts_with(k));
         if key {
             // (as the panel's row says it: `Denial::plain`)
             let doing = match d.op.as_str() {
@@ -180,7 +203,7 @@ pub fn choices_by(
             }));
         }
         // (a key's change refused: its name's, so no folder opens it)
-        let writing = d.op.starts_with("file-write") && !(key && changed);
+        let writing = d.op.starts_with("file-write") && !(key && changed) && held.is_empty();
         if file && !d.terminal() && (writing || d.op == crate::sandbox::EITHER) {
             found.extend(crate::allow::write_choices(&target, home, root, later, kept).into_iter().map(
                 |dir| {

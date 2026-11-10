@@ -5189,7 +5189,13 @@ fn rules_told(ed: &mut Editor, said: Option<&crate::sandbox::Report>) {
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         // (a run without guarantees — outside, or a probe's rules — leaves what was told as it was)
         let before = if c.rules_said.0 == c.conversation { c.rules_said.1.guarantees } else { None };
-        let told = crate::sandbox::Told { rules: Some(r.rules), guarantees: r.guarantees.or(before) };
+        // (the temp folders' cut: `r` says whether it was told, in it or before — G33)
+        let told = crate::sandbox::Told {
+            rules: Some(r.rules),
+            guarantees: r.guarantees.or(before),
+            temp_cut: r.temp_cut,
+            lock_cut: r.lock_cut,
+        };
         c.rules_said = (c.conversation.clone(), told);
     }
     if r.blocked {
@@ -10245,9 +10251,11 @@ mod tests {
             open: Vec::new(),
             rules: 7,
             guarantees,
+            temp_cut: false,
+            lock_cut: false,
         };
         let none = Told::default();
-        let known = Told { rules: Some(7), guarantees: Some(9) };
+        let known = Told { rules: Some(7), guarantees: Some(9), temp_cut: false, lock_cut: false };
         assert_eq!(super::rules_known(&ed, false), none, "the first run says them");
         super::rules_told(&mut ed, Some(&report(false, Some(9))));
         assert_eq!(super::rules_known(&ed, false), known, "known: a quiet report leaves them out");
@@ -10268,12 +10276,67 @@ mod tests {
         crate::compaction::on_compacted(&mut ed, compacted);
         assert_eq!(super::rules_known(&ed, false), none, "a compaction may have dropped them");
         super::rules_told(&mut ed, Some(&report(true, None)));
-        assert_eq!(super::rules_known(&ed, false), Told { rules: Some(7), guarantees: None });
+        assert_eq!(
+            super::rules_known(&ed, false),
+            Told { rules: Some(7), guarantees: None, temp_cut: false, lock_cut: false }
+        );
         super::rules_told(&mut ed, Some(&report(false, Some(9))));
         ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
         assert_eq!(super::rules_known(&ed, false), none, "another conversation hasn't heard them");
         let calls = ed.workspace.claude.usage.tally.end(&[], None, 0);
         assert_eq!(calls.sums.run_refused, 1, "the blocked run");
+    }
+
+    /// G33: the shared temp folders' cut and the lock's cap are each the same sentence every run, so Claude is told
+    /// them once a conversation — two runs say them once, a failed run doesn't again (a cut isn't why it failed);
+    /// after a compaction, or in another conversation, they're said again. Never in the rules, whose digest would
+    /// change with them; the cap's keys are named there (`KeyFolders::said`). Each told apart: a cap first met later
+    /// is said then.
+    #[test]
+    fn the_walks_cuts_are_said_once_a_conversation() {
+        use crate::sandbox::{Env, Guard, Policy};
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        let mut c = crate::chat::Chat::new();
+        c.conversation = Some("c1".into());
+        ed.workspace.claude.chat = Some(c);
+        let mut p = Policy::for_project(&Env { root: "/Users/u/p".into(), ..Default::default() });
+        p.key_folders.temp_unwalked = vec!["/private/tmp/scratch/deep".into()];
+        let mut capped = p.clone();
+        let guard = Guard::In(Box::new(p));
+        let cut = "The shared temp folders are looked through before a command to their first";
+        let cap = "Before a command the folders between each file named like a key and its place are locked, key by \
+                   key, up to";
+        let run_as = |ed: &mut crate::editor::Editor, guard: &Guard, failed: bool| {
+            let r = guard.report_with(&[], super::rules_known(ed, failed), !failed);
+            super::rules_told(ed, Some(&r));
+            (r.text.contains(cut), r.text.contains(cap), r.text)
+        };
+        let run = |ed: &mut crate::editor::Editor, failed: bool| run_as(ed, &guard, failed).0;
+        assert!(run(&mut ed, false), "the conversation's first run says it");
+        assert!(!run(&mut ed, false), "the second doesn't");
+        assert!(!run(&mut ed, true), "nor a failed one");
+        let compacted = crate::compaction::Compaction {
+            trigger: "auto".into(),
+            pre_tokens: None,
+            post_tokens: None,
+            at_ms: 0,
+        };
+        crate::compaction::on_compacted(&mut ed, compacted);
+        assert!(run(&mut ed, false), "a compaction may have dropped it");
+        ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
+        assert!(run(&mut ed, false), "another conversation hasn't heard it");
+        assert!(!guard.rules().contains(cut), "not in the rules");
+        // The lock's cap: met later in the conversation, said then, once, with the count; its keys in the rules
+        capped.key_folders.unlocked = vec!["/Users/u/p/a/.env".into(), "/Users/u/p/b/id_rsa".into()];
+        let capped = Guard::In(Box::new(capped));
+        let (temp, said, text) = run_as(&mut ed, &capped, false);
+        assert!(!temp && said && text.contains("past them — 2 keys here —"), "{text}");
+        let (_, again, text) = run_as(&mut ed, &capped, false);
+        assert!(!again, "once: {text}");
+        let rules = capped.rules();
+        let named = rules.contains("Past the lock's cap: ")
+            && rules.contains("p/b/id_rsa — their folders aren't locked");
+        assert!(!rules.contains(cap) && named, "{rules}");
     }
 
     /// Long output comes as its start and its end, a line too long cut; the places come first.

@@ -46,6 +46,9 @@ pub mod guarantees;
 mod handed;
 #[cfg(target_os = "linux")]
 pub mod keeper;
+// (G33: the folders holding a key, locked against a run's move — macOS's, its walk and words tested everywhere)
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub mod keyfolders;
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(test)]
@@ -168,14 +171,22 @@ pub struct Report {
     pub open: Vec<Denial>,
     pub rules: u64,
     pub guarantees: Option<u64>,
+    /// The shared temp folders' cut (`KeyFolders::temp_said`) was told: in this report or before it.
+    pub temp_cut: bool,
+    /// The lock's cap (`KeyFolders::lock_said`) was told: in this report or before it.
+    pub lock_cut: bool,
 }
 
 /// What Claude was told in its conversation (`Chat.rules_said`, `tools::rules_known`), by digest: the rules (None:
-/// say them) and the guarantees (`Guarantees::told` — None: say them).
+/// say them) and the guarantees (`Guarantees::told` — None: say them); and whether the shared temp folders' cut
+/// (`KeyFolders::temp_said`, G33) was, and the lock's cap (`KeyFolders::lock_said`) — each the same sentence every
+/// run, said once.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Told {
     pub rules: Option<u64>,
     pub guarantees: Option<u64>,
+    pub temp_cut: bool,
+    pub lock_cut: bool,
 }
 
 impl Guard {
@@ -310,8 +321,23 @@ impl Guard {
         let told = guarantees.map(|g| g.told());
         let guarantees = told.as_ref().map(digest);
         let apart = told.filter(|_| known.guarantees != guarantees).unwrap_or_default();
-        let (text, blocked, open) = self.report_text(output, rules, quiet_rules, &apart, passed);
-        Report { text, blocked, open, rules: rules_digest, guarantees }
+        // (G33: the shared temp folders' cut and the lock's cap, each once a conversation — after the guarantees, a
+        // line of its own)
+        let (temp, lock) = match self {
+            Guard::In(p) => (
+                if known.temp_cut { String::new() } else { p.key_folders.temp_said() },
+                if known.lock_cut { String::new() } else { p.key_folders.lock_said() },
+            ),
+            _ => (String::new(), String::new()),
+        };
+        let (temp_cut, lock_cut) = (known.temp_cut || !temp.is_empty(), known.lock_cut || !lock.is_empty());
+        let apart = [apart.trim_end(), temp.as_str(), lock.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>();
+        let (text, blocked, open) = self.report_text(output, rules, quiet_rules, &apart.join("\n"), passed);
+        Report { text, blocked, open, rules: rules_digest, guarantees, temp_cut, lock_cut }
     }
 
     /// What its runs are kept apart from and share (`Policy::guarantees`) — None: not in the sandbox.
@@ -524,7 +550,8 @@ impl Guard {
         let (mut names, mut git, mut caches, mut all) = (Vec::new(), false, Vec::new(), true);
         let (mut secret, mut services, mut copied) = (Vec::new(), Vec::new(), Vec::new());
         let (mut homes, mut ports, mut keys) = (Vec::new(), Vec::new(), Vec::new());
-        let (mut beyond, mut temp_keys) = (Vec::new(), Vec::new());
+        let (mut beyond, mut temp_keys, mut locked) = (Vec::new(), Vec::new(), Vec::new());
+        let mut cloned = Vec::new();
         let refused_port = &crate::sandboxpack::get().refused_port;
         let (mut entries, mut signals, mut looks, mut attaches) = (false, false, false, false);
         let (mut sealed, mut mounts, mut userns) = (false, false, false);
@@ -566,6 +593,12 @@ impl Guard {
                 continue;
             };
             match path.strip_prefix(&p.root) {
+                // (macOS: a folder's clone, refused by its place — G33; first, as a folder named like a key or a
+                // protected one is cloned under the same rule, not its name's)
+                rel if d.op == keyfolders::CLONE_OP => cloned.push(match rel {
+                    Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+                    _ => crate::allow::tilde(path),
+                }),
                 Ok(rel) if protected_in(&p.root, path) => {
                     match rel.iter().any(|c| c.eq_ignore_ascii_case(".git")) {
                         true => git = true,
@@ -592,6 +625,11 @@ impl Guard {
                         Some(policy::KeyRule::Closed(k)) if shared_temp(&k) => temp_keys.push(shown),
                         _ => keys.push(shown),
                     }
+                }
+                // (macOS: a folder the walk before the run locked for the keys it holds — G33; any other folder's
+                // removal refused is the place's)
+                _ if keyfolders::lock_op(&d.op) && !p.key_folders.holding(path).is_empty() => {
+                    locked.push(path.to_path_buf())
                 }
                 _ if p.caches.iter().any(|c| path.starts_with(c)) => {
                     let of = p.caches_said.iter().position(|s| s.dirs.iter().any(|c| path.starts_with(c)));
@@ -628,6 +666,10 @@ impl Guard {
         keys.dedup();
         crate::sorting::sort(&mut temp_keys);
         temp_keys.dedup();
+        crate::sorting::sort(&mut locked);
+        locked.dedup();
+        crate::sorting::sort(&mut cloned);
+        cloned.dedup();
         services.dedup();
         crate::sorting::sort(&mut copied);
         copied.dedup();
@@ -673,6 +715,11 @@ impl Guard {
                 keys.join(", ")
             ));
         }
+        s.push_str(&keyfolders::refused_said(&p.key_folders, &locked, |f| match f.strip_prefix(&p.root) {
+            Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+            _ => crate::allow::tilde(f),
+        }));
+        s.push_str(&keyfolders::cloned_said(&cloned));
         if !temp_keys.is_empty() {
             let it = if temp_keys.len() == 1 { "it" } else { "them" };
             s.push_str(&format!(
@@ -986,6 +1033,9 @@ impl Guard {
                     }
                     (false, _) => "",
                 };
+                // (macOS: what the walk before it didn't lock — past its cap, another filesystem; nothing where all
+                // was — G33)
+                let keys = format!("{keys}{}", p.key_folders.said());
                 // (what's shared with other sessions' commands isn't here: the guarantees' paragraph, 9b)
                 let (names_where, net, linux) = match linux {
                     Some((said, notes)) => ("where they are now", said.unwrap_or(net), notes),
@@ -2789,6 +2839,7 @@ impl Denial {
             "file-write-create" | "file-write-data" | "file-write*" => format!("writing {t}"),
             "file-write-unlink" => format!("deleting {t}"),
             "file-write-rename" => format!("moving {t}"),
+            keyfolders::CLONE_OP => format!("cloning {t}"),
             _ if op.starts_with(LINK_PRIV) => {
                 format!("linking {}", t.rsplit_once(" /").map_or(t.as_str(), |(s, _)| s))
             }
@@ -3893,6 +3944,8 @@ pub fn policy_key(p: &Policy) -> String {
     // (what its report says once a conversation is words, not what it allows: the trust bundle's line comes after
     // the kept homes' key was taken — #419)
     q.run_env.notes = Vec::new();
+    // (what the walk before each run found: the run's, as its Landlock rules are)
+    q.key_folders = Default::default();
     #[cfg(target_os = "linux")]
     {
         q.confine = None;
@@ -4379,6 +4432,13 @@ pub(crate) fn key_files(at: &str) -> String {
 /// bundles) — `key_named_below`.
 #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
 pub(crate) fn key_files_outside(at: &str) -> String {
+    key_files_but(at, &outside_but(), key_outside_exception_regexes())
+}
+
+/// The folders below which a place outside the project leaves files named like keys alone (`key_files_outside`):
+/// tools' output and an install's packages, as regex alternatives.
+#[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
+fn outside_but() -> String {
     let part = |s: &str| match s.split_once('*') {
         Some((a, b)) => format!("{}[^/]*{}", as_written(a), as_written(b)),
         None => as_written(s),
@@ -4386,7 +4446,16 @@ pub(crate) fn key_files_outside(at: &str) -> String {
     let packages = crate::sandboxpack::get().packages.iter();
     let packages = packages.map(|p| p.split('/').map(part).collect::<Vec<_>>().join("/"));
     let but: Vec<String> = std::iter::once(outputs_regex()).chain(packages).collect();
-    key_files_but(at, &but.join("|"), key_outside_exception_regexes())
+    but.join("|")
+}
+
+/// The folders the key rule leaves alone right after `at` (a regex's start: `below` a place) — tools' output, and
+/// outside the project (`outside`) an install's packages — themselves and what's below them: the folders' clone
+/// rule's exception (G33, `Policy::profile`), as the key rule's (`key_files`, `key_files_outside`).
+#[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
+pub(crate) fn key_free_folders(at: &str, outside: bool) -> String {
+    let but = if outside { outside_but() } else { outputs_regex() };
+    format!("(regex #\"{at}({but})(/|$)\")")
 }
 
 /// `key_files`, but below the folders `outputs` names (regex alternatives) and the names `exceptions` take back.
@@ -5234,6 +5303,9 @@ pub fn policy_from(root: &Path, w: crate::tools::Widened, here: &Here) -> Result
     }
     #[cfg(target_os = "linux")]
     let p = confined(p);
+    // (macOS: the folders holding its keys, found afresh before each run — G33)
+    #[cfg(not(target_os = "linux"))]
+    let p = keyfolders::locked(p);
     Ok(p)
 }
 
@@ -10243,7 +10315,8 @@ mod tests {
         let rules = quiet.rules();
         let first = quiet.report_with(&[], Told::default(), false);
         assert!(first.text.contains(&rules) && !first.blocked, "{}", first.text);
-        let known = |r: &Report| Told { rules: Some(r.rules), guarantees: None };
+        let known =
+            |r: &Report| Told { rules: Some(r.rules), guarantees: None, temp_cut: false, lock_cut: false };
         let again = quiet.report_with(&[], known(&first), false);
         assert!(!again.text.contains(&rules), "{}", again.text);
         assert!(again.text.starts_with("The sandbox blocked nothing."), "{}", again.text);
@@ -10297,7 +10370,7 @@ mod tests {
                 let lines = first.text.find("Lines that may be the sandbox");
                 assert!(lines > at_rules && at_told > lines, "{path}: {}", first.text);
             }
-            let known = Told { rules: None, guarantees: first.guarantees };
+            let known = Told { rules: None, guarantees: first.guarantees, temp_cut: false, lock_cut: false };
             let again = guard.report_as(output, known, Some(g.clone()), false);
             assert!(again.text.contains(&rules) && !again.text.contains(&told), "{path}: {}", again.text);
         }
@@ -14208,6 +14281,7 @@ mod tests {
             keys: None,
             key_places: Vec::new(),
             key_spared: Vec::new(),
+            key_folders: Default::default(),
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
@@ -14540,7 +14614,12 @@ mod tests {
     /// A project for the real-sandbox tests of files named like keys (7a, 7b), in the test's own temp folder:
     /// each file's whole text a fake token — what a run that reads it prints. (Its folder, its project.)
     fn key_files(tag: &str) -> (PathBuf, PathBuf) {
-        let t = profile_path(&crate::scratch::Scratch::new(&format!("sb-keys-{tag}")).into_path());
+        key_files_in(crate::scratch::Scratch::new(&format!("sb-keys-{tag}")))
+    }
+
+    /// `key_files` in the scratch folder `s`.
+    fn key_files_in(s: crate::scratch::Scratch) -> (PathBuf, PathBuf) {
+        let t = profile_path(&s.into_path());
         let root = t.join("project");
         for f in [
             ".env",
@@ -14764,6 +14843,426 @@ mod tests {
         let (ok, _, err) = sh_under(&opened, &root, "rm moved-deep/er/Server.PEM");
         assert!(!ok && err.contains(KEY_DENIED), "another stays closed: {err}");
         std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// For real (G33, macOS): a folder holding a file named like a key, found by the walk before the run
+    /// (`keyfolders::locked`), isn't moved — into tools' output, into the run's own folder, to a sibling name — nor
+    /// removed; nor is a folder two levels above one, nor the project's root. The keys stay where they were. A folder
+    /// holding none moves, beside a locked one or inside it; so does one the run made, a new key in it, read below
+    /// tools' output then (the walk didn't see it: the cost, as Linux's). A key runs can't write — a protected name,
+    /// `.npmrc` — locks its folder all the same (G33's review: the lock is about reads). The file the user opened
+    /// (`Grant::Key`) is left out of the next run's walk: its folder moves.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_run_cant_move_or_remove_a_folder_holding_a_key() {
+        if !keys_tested_here("a_run_cant_move_or_remove_a_folder_holding_a_key") {
+            return;
+        }
+        let test = "a_run_cant_move_or_remove_a_folder_holding_a_key";
+        let (t, root) = key_files("folders");
+        let make = |f: &str| {
+            let at = root.join(f);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(&at, "tarae-fake-token").unwrap();
+        };
+        for f in ["config/.env", "plain/notes.txt", "sub/.npmrc"] {
+            make(f);
+        }
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        let policy = |keys: Vec<PathBuf>| {
+            let mut p = key_policy(&root);
+            p.keys = Some(keys);
+            p.run = Some(RunDir::new().unwrap());
+            keyfolders::locked(p)
+        };
+        let p = policy(Vec::new());
+        let (config, locked) = (root.join("config"), &p.key_folders.folders);
+        // Every row runs and what failed is gathered, said once at the end: a row failing for its own reason hides
+        // none after it.
+        let mut failed: Vec<String> = Vec::new();
+        for f in [&root, &config, &root.join("deep"), &root.join("deep/er"), &root.join("sub")] {
+            if !locked.contains(f) {
+                failed.push(format!("not locked: {f:?}"));
+            }
+        }
+        let own = p.run.as_ref().unwrap().path().display().to_string();
+        let r = root.display();
+        for script in [
+            "mv config target/config".to_string(),
+            format!("mv config '{own}/config'"),
+            "mv config config2".into(),
+            "rm -rf config".into(),
+            "mv deep target/deep".into(),
+            "mv deep/er deep/er2".into(),
+            format!("mv '{r}' '{own}/project'"),
+            "mv sub target/sub".into(),
+        ] {
+            let (ok, _, err) = sh_under(&p, &root, &script);
+            if ok || !err.contains(KEY_DENIED) {
+                failed.push(format!("refused, ran: {script}: {}", err.trim()));
+            }
+        }
+        for key in ["config/.env", "deep/er/Server.PEM", "sub/.npmrc"] {
+            if std::fs::read_to_string(root.join(key)).ok().as_deref() != Some("tarae-fake-token") {
+                failed.push(format!("the key moved or changed: {key}"));
+            }
+        }
+        for made in ["config2", "target/config", "target/deep", "deep/er2", "target/sub"] {
+            if root.join(made).exists() {
+                failed.push(format!("made by a refused row: {made}"));
+            }
+        }
+        // Free: a folder holding none, beside a locked one or inside it; one the run made, a new key in it. (The
+        // keyless folder inside `config` is made only now: the refused `rm -rf config` removes what holds no key.)
+        make("config/inner/notes.txt");
+        for (script, said) in [
+            ("mv plain plain2", ""),
+            ("mv src src2", ""),
+            ("mv config/inner config/inner2", ""),
+            ("mkdir new && printf made > new/.env && mv new target/new && cat target/new/.env", "made"),
+        ] {
+            let (ok, out, err) = sh_under(&p, &root, script);
+            if !ok || out != said {
+                failed.push(format!("free, refused: {script}: {out} {}", err.trim()));
+            }
+        }
+        // Opened by the user: left out of the next run's walk, its folder moves
+        let opened = policy(vec![config.join(".env")]);
+        if opened.key_folders.folders.contains(&config) {
+            failed.push(format!("opened, still locked: {:?}", opened.key_folders));
+        }
+        let (ok, out, err) = sh_under(&opened, &root, "mv config target/config && cat target/config/.env");
+        if !ok || out != "tarae-fake-token" {
+            failed.push(format!("opened, refused: {}", err.trim()));
+        }
+        std::fs::remove_dir_all(&t).ok();
+        assert!(
+            failed.is_empty(),
+            "{test}: {} rows failed: {}\n(the lock: {:?})",
+            failed.len(),
+            failed.join(" · "),
+            p.key_folders
+        );
+    }
+
+    /// By hand (G33's third card, `.sb/key-folders-outside3.sh`): sandbox-exec's start with the lock, tarae's own
+    /// profile and arguments (`Policy::args`) running `/usr/bin/true`, p50 and p90 of 11 — or its failure. Rows: none;
+    /// 50, 100, 150, 200 and 300 real-length folders (the count cap: the largest adding at most ~20 ms at p90), 500
+    /// and 2,000; `LOCKS_BYTES` of the longest paths (32 of 1,023 bytes: must start). The folders are the project's
+    /// root, `a` and siblings in it, ~95 bytes each — only paths in the profile's parameters: nothing is made there.
+    /// Prints the table, asserts only that the byte cap's row started.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "by hand: sandbox-exec's start with the lock, G33's third card"]
+    fn the_lock_starts_by_its_count() {
+        if skipped_inside("sandbox::tests::the_lock_starts_by_its_count") {
+            return;
+        }
+        let s = crate::scratch::Scratch::in_dir(Path::new(TMP), "sb-g33-start");
+        let root = profile_path(&s).join("kp/proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let real = |n: usize| -> Vec<PathBuf> {
+            let mut v = vec![root.clone(), root.join("a")];
+            v.extend(
+                (0..n.saturating_sub(2))
+                    .map(|i| root.join(format!("a/folder-number-{i}-with-a-name-as-long-as-a-real-one"))),
+            );
+            v.truncate(n);
+            v
+        };
+        let longest = |n: usize| -> Vec<PathBuf> {
+            (0..n)
+                .map(|i| {
+                    let mut s = format!("{}/{i:04}", root.display());
+                    while s.len() < 1023 {
+                        s.push_str(&format!("/{}", "x".repeat(255.min(1022 - s.len()))));
+                    }
+                    PathBuf::from(s)
+                })
+                .collect()
+        };
+        let mut p = key_policy(&root);
+        (p.keys, p.run) = (Some(Vec::new()), Some(RunDir::new().unwrap()));
+        let mut rows: Vec<(String, Vec<PathBuf>)> = vec![("none".into(), Vec::new())];
+        for n in [50, 100, 150, 200, 300, 500, 2000] {
+            rows.push((format!("real length, {n}"), real(n)));
+        }
+        let at_cap = longest(keyfolders::LOCKS_BYTES / 1024);
+        rows.push(("the byte cap's longest paths (must start)".into(), at_cap));
+        let mut started_at_cap = false;
+        let mut base: Option<f64> = None;
+        for (what, folders) in rows {
+            p.key_folders = keyfolders::KeyFolders { folders, ..Default::default() };
+            let bytes: usize = p.key_folders.folders.iter().map(|f| f.as_os_str().len()).sum();
+            let args = p.args();
+            let shape = format!(
+                "{:>5} paths {:>7} bytes {:>7}-byte profile",
+                p.key_folders.folders.len(),
+                bytes,
+                args[1].len()
+            );
+            let mut ms: Vec<f64> = Vec::new();
+            let mut failed = None;
+            for _ in 0..11 {
+                let at = std::time::Instant::now();
+                let out = Command::new(SANDBOX_EXEC)
+                    .args(&args)
+                    .arg("/usr/bin/true")
+                    .stdin(Stdio::null())
+                    .output()
+                    .unwrap();
+                if !out.status.success() {
+                    failed = Some(
+                        String::from_utf8_lossy(&out.stderr).split_whitespace().collect::<Vec<_>>().join(" "),
+                    );
+                    break;
+                }
+                ms.push(at.elapsed().as_secs_f64() * 1000.0);
+            }
+            match failed {
+                Some(err) => {
+                    println!("  {what:<52} {shape}: FAILED {}", err.chars().take(120).collect::<String>())
+                }
+                None => {
+                    ms.sort_by(f64::total_cmp);
+                    let (p50, p90) = (ms[5], ms[9]);
+                    let added = base.map(|b| format!(", added p90 {:+.1} ms", p90 - b)).unwrap_or_default();
+                    base.get_or_insert(p90);
+                    println!("  {what:<52} {shape}: p50 {p50:.1} ms, p90 {p90:.1} ms{added}");
+                    started_at_cap |= what.contains("must start");
+                }
+            }
+        }
+        assert!(started_at_cap, "the byte cap's longest paths must start");
+        drop(s);
+    }
+
+    /// For real (G33 and its review, G35, macOS): a run clones a folder only where it reads everything below it —
+    /// not one holding a key, nor one two levels above it, the project's root, from a folder's descriptor
+    /// (`fclonefileat`), a key's folder in the shared temp folder, nor a folder in a write grant inside a key place,
+    /// nor in a cache it writes the folder holding a kept place: its copy would be read where no rule holds. (`/` and
+    /// a system folder: the kernel refuses them first, nothing is made.) A file's clone works
+    /// (`fs::copy`'s `fclonefileat`, `cp -c`), so does a folder's from a cache into `.venv` (uv, bun), and inside
+    /// tools' output or the run's own folder. The keys stay where they were; no copy is made. (The folder above home:
+    /// `a_clone_of_the_folder_above_home_reads_nothing_of_home`.)
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_run_cant_clone_a_folder_where_keys_are_closed() {
+        let test = "a_run_cant_clone_a_folder_where_keys_are_closed";
+        if !keys_tested_here(test) {
+            return;
+        }
+        // (in `/tmp`, a key place: the test's own folder may be below `$TMPDIR`, which isn't one)
+        let (t, root) = key_files_in(crate::scratch::Scratch::in_dir(Path::new(TMP), "sb-keys-clones"));
+        for f in ["config/.env", "plain/notes.txt", "target/x/o"] {
+            let at = root.join(f);
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            std::fs::write(&at, "tarae-fake-token").unwrap();
+        }
+        std::fs::create_dir_all(root.join(".venv")).unwrap();
+        // (a key in the shared temp folder, beside the project: the test's folder is in one)
+        let temp_key = t.join("scratch/cfg/.env");
+        std::fs::create_dir_all(temp_key.parent().unwrap()).unwrap();
+        std::fs::write(&temp_key, "tarae-fake-token").unwrap();
+        // (a cache outside every place the key rule holds: beside the build, as `a_kept_place_outside_home_is_closed`)
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).expect("the build folder").to_path_buf();
+        let beside = match std::fs::create_dir_all(&beside).is_ok() && writable(&beside) {
+            true => beside,
+            false => Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        };
+        let s = crate::scratch::Scratch::in_dir(&beside, "sb-clone-cache");
+        let cache = profile_path(&s).join("pkg");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("m.py"), "plain").unwrap();
+        // (a kept place inside the cache, as tarae's state in a cache folder would be)
+        let kept = profile_path(&s).join("held/kept");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::write(kept.join("k"), "tarae-fake-token").unwrap();
+        let mut p = key_policy(&root);
+        // (the run's own folder inside the key place: its clone is free by `RUN` alone — G33's review)
+        (p.keys, p.run) = (Some(Vec::new()), Some(RunDir::new_in(&t).unwrap()));
+        p.write.push(profile_path(&s));
+        // (a write grant inside the key place: not free, the key rule closes names below it)
+        let granted = t.join("granted");
+        std::fs::create_dir_all(granted.join("dir")).unwrap();
+        std::fs::write(granted.join("dir/notes.txt"), "plain").unwrap();
+        p.write.push(granted.clone());
+        p.reads.kept.push(kept.clone());
+        let p = keyfolders::locked(p);
+        assert!(p.key_places.iter().any(|k| t.starts_with(k)), "{test}: the test's folder in a key place");
+        assert!(!p.key_places.iter().any(|k| cache.starts_with(k)), "{test}: the cache outside them");
+        let own = p.run.as_ref().unwrap().path().to_path_buf();
+        assert!(p.key_places.iter().any(|k| own.starts_with(k)), "{test}: the run's folder in a key place");
+        std::fs::create_dir_all(own.join("x")).unwrap();
+        let clone = |op: &str, from: &Path, to: &Path| -> String {
+            let args = ["--exact", "sandbox::tests::a_clone_in_a_run", "--ignored", "--nocapture"];
+            let mut c = command(Some(&p), &exe.to_string_lossy(), &args.map(String::from));
+            c.env("TARAE_CLONE", format!("{op}\t{}\t{}", from.display(), to.display()));
+            let out = c.current_dir(&root).stdin(Stdio::null()).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            match text.lines().find_map(|l| l.strip_prefix("clone: ")) {
+                Some(said) => said.to_string(),
+                None => {
+                    panic!("{test}: the helper said nothing: {text} {}", String::from_utf8_lossy(&out.stderr))
+                }
+            }
+        };
+        let refused = [
+            ("clone", root.join("config"), root.join("target/cl")),
+            ("clone", root.join("deep"), root.join("target/deep")),
+            ("clone", root.clone(), own.join("project")),
+            ("fclone", root.join("config"), root.join("target/cf")),
+            ("clone", temp_key.parent().unwrap().to_path_buf(), own.join("cfg")),
+            ("clone", granted.join("dir"), own.join("granted")),
+            ("clone", profile_path(&s), own.join("cache")),
+            ("clone", profile_path(&s).join("held"), own.join("held")),
+            ("clone", kept.clone(), own.join("kept")),
+        ];
+        // Every row runs and what failed is gathered, said once at the end: a row failing for its own reason hides
+        // none after it.
+        let mut failed: Vec<String> = Vec::new();
+        for (op, from, to) in &refused {
+            let got = clone(op, from, to);
+            if !got.contains(KEY_DENIED) || to.exists() {
+                failed.push(format!("refused, {op} {from:?} -> {to:?}: {got}"));
+            }
+        }
+        // `/` and `/usr/share`: the kernel answers before any profile is asked — a volume's root `EINVAL`, a folder
+        // on another volume `EXDEV` (the sealed system volume; every folder a run writes is on the data volume) —
+        // so the system volume can't test the rule. These rows hold what's true: no clone. The rule's rows for a
+        // folder outside every place are the scratch home's parent
+        // (`a_clone_of_the_folder_above_home_reads_nothing_of_home`), the cache's held folder and the one above it.
+        for (from, to) in [("/", own.join("slash")), ("/usr/share", own.join("share"))] {
+            let got = clone("clone", Path::new(from), &to);
+            let refused = [KEY_DENIED, "os error 22", "os error 18"].iter().any(|e| got.contains(e));
+            if !refused || to.exists() {
+                failed.push(format!("refused, clone {from:?} -> {to:?}: {got}"));
+            }
+        }
+        let free = [
+            ("clone", root.join("plain/notes.txt"), root.join("target/n")),
+            ("fclone", root.join("plain/notes.txt"), root.join("plain/n2")),
+            ("clone", cache.clone(), root.join(".venv/pkg")),
+            ("clone", root.join("target/x"), root.join("target/y")),
+            ("clone", own.join("x"), own.join("y")),
+        ];
+        for (op, from, to) in &free {
+            let got = clone(op, from, to);
+            if got != "ok" || !to.exists() {
+                failed.push(format!("free, {op} {from:?} -> {to:?}: {got}"));
+            }
+        }
+        let (ok, _, err) = sh_under(&p, &root, "cp -c plain/notes.txt plain/n3");
+        if !ok {
+            failed.push(format!("free, cp -c a file: {}", err.trim()));
+        }
+        if std::fs::read_to_string(root.join("config/.env")).ok().as_deref() != Some("tarae-fake-token") {
+            failed.push("the key moved or changed: config/.env".into());
+        }
+        std::fs::remove_dir_all(&t).ok();
+        drop(s);
+        assert!(failed.is_empty(), "{test}: {} rows failed: {}", failed.len(), failed.join(" · "));
+    }
+
+    /// For real (G33's review, URGENT): home's read rule holds against a clone of the folder above it — a run that
+    /// `clonefile`s a stand-in home's parent into its own folder reads none of home from the copy. The scratch is
+    /// beside the build, outside every place G33's clone rule names, so only the read rules answer.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_clone_of_the_folder_above_home_reads_nothing_of_home() {
+        let test = "a_clone_of_the_folder_above_home_reads_nothing_of_home";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).expect("the build folder").to_path_buf();
+        let beside = match std::fs::create_dir_all(&beside).is_ok() && writable(&beside) {
+            true => beside,
+            false => Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        };
+        let s = crate::scratch::Scratch::in_dir(&beside, "sb-clone-home");
+        let t = profile_path(&s);
+        let (home, root) = (t.join("home"), t.join("proj"));
+        let key = home.join(".ssh/id_stand_in");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let token = concat!("tarae-fake-", "token");
+        std::fs::write(&key, token).unwrap();
+        let mut p =
+            Policy { reads: Reads { home: Some(home.clone()), ..Reads::default() }, ..key_policy(&root) };
+        (p.keys, p.run) = (Some(Vec::new()), Some(RunDir::new().unwrap()));
+        let p = keyfolders::locked(p);
+        assert!(!p.key_places.iter().any(|k| t.starts_with(k)), "{test}: the scratch in a key place");
+        let copy = p.run.as_ref().unwrap().path().join("above");
+        let args = ["--exact", "sandbox::tests::a_clone_in_a_run", "--ignored", "--nocapture"];
+        let mut c = command(Some(&p), &exe.to_string_lossy(), &args.map(String::from));
+        c.env("TARAE_CLONE", format!("clone\t{}\t{}", t.display(), copy.display()));
+        let out = c.current_dir(&root).stdin(Stdio::null()).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let cloned =
+            text.lines().find_map(|l| l.strip_prefix("clone: ")).unwrap_or("(the helper said nothing)");
+        let (_, direct, _) = sh_under(&p, &root, &format!("cat '{}'", key.display()));
+        let from_copy = copy.join("home/.ssh/id_stand_in");
+        let (_, read, err) = sh_under(&p, &root, &format!("cat '{}'", from_copy.display()));
+        let said =
+            if read.contains(token) { "READ".to_string() } else { format!("refused ({})", err.trim()) };
+        println!(
+            "clone-above-home: the key itself {}; clone of home's parent: {cloned}; the key from the copy: {said}",
+            if direct.contains(token) { "READ" } else { "refused" }
+        );
+        std::fs::remove_dir_all(&copy).ok();
+        assert!(!direct.contains(token), "{test}: home's key read directly");
+        assert!(!read.contains(token), "{test}: home's key read from a clone of its parent ({cloned})");
+        drop(s);
+    }
+
+    /// Whether a file can be made in `dir` (the build folder, under another run's sandbox maybe).
+    #[cfg(target_os = "macos")]
+    fn writable(dir: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).expect("a path");
+        // SAFETY: a NUL-terminated path; access(2) only reads it.
+        unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+    }
+
+    /// `a_run_cant_clone_a_folder_where_keys_are_closed`'s helper, in a run: `$TARAE_CLONE` (op, from, to — tabs)
+    /// made for real, `clone` by `clonefile(2)`, `fclone` by `fclonefileat` from the source's descriptor (Rust's
+    /// `fs::copy`); `clone: ok` or the error.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "run by a_run_cant_clone_a_folder_where_keys_are_closed under its policy"]
+    fn a_clone_in_a_run() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let Ok(what) = std::env::var("TARAE_CLONE") else { return };
+        let v: Vec<&str> = what.split('\t').collect();
+        let &[op, from, to] = v.as_slice() else { panic!("op, from, to: {what}") };
+        let c = |s: &str| std::ffi::CString::new(Path::new(s).as_os_str().as_bytes()).unwrap();
+        let (from, to) = (c(from), c(to));
+        // SAFETY: NUL-terminated paths that live through each call; a descriptor opened here, closed after.
+        let r = unsafe {
+            match op {
+                "clone" => libc::clonefile(from.as_ptr(), to.as_ptr(), 0),
+                "fclone" => match libc::open(from.as_ptr(), libc::O_RDONLY) {
+                    fd if fd < 0 => -1,
+                    fd => {
+                        let r = libc::fclonefileat(fd, libc::AT_FDCWD, to.as_ptr(), 0);
+                        let e = std::io::Error::last_os_error();
+                        libc::close(fd);
+                        if r != 0 {
+                            println!("clone: {e}");
+                            return;
+                        }
+                        r
+                    }
+                },
+                _ => panic!("no op {op}"),
+            }
+        };
+        match r {
+            0 => println!("clone: ok"),
+            _ => println!("clone: {}", std::io::Error::last_os_error()),
+        }
     }
 
     /// For real (7a, 7b): a file named like a key inside a protected name — `.cargo/credentials`, a real token — is
@@ -16457,6 +16956,7 @@ mod tests {
                 keys: None,
                 key_places: Vec::new(),
                 key_spared: Vec::new(),
+                key_folders: Default::default(),
                 refused: Vec::new(),
                 named_by: String::new(),
                 refused_asked: Vec::new(),
@@ -16551,6 +17051,7 @@ mod tests {
             keys: None,
             key_places: Vec::new(),
             key_spared: Vec::new(),
+            key_folders: Default::default(),
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
@@ -16632,6 +17133,7 @@ mod tests {
             keys: None,
             key_places: Vec::new(),
             key_spared: Vec::new(),
+            key_folders: Default::default(),
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
@@ -18207,6 +18709,7 @@ mod tests {
             keys: None,
             key_places: Vec::new(),
             key_spared: Vec::new(),
+            key_folders: Default::default(),
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
