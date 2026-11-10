@@ -5009,14 +5009,128 @@ fn chat_web_ab() {
     assert!(!rows.is_empty(), "no run");
 }
 
-/// Share of `q`'s key `answer` names — markdown's emphasis and code marks (`*`, `_`, backticks) taken out of both
-/// first, case aside: `*O*(1)` names `O(1)`.
+/// Share of `q`'s key `answer` names (`web_met`).
 fn web_right(q: &Question, answer: &str) -> f64 {
+    let met = web_met(q, answer);
+    met.iter().filter(|m| **m).count() as f64 / met.len() as f64
+}
+
+/// Which of `q`'s keys `answer` names — markdown's emphasis and code marks (`*`, `_`, backticks) taken out of both
+/// first, case aside: `*O*(1)` names `O(1)`. A date in a key is written ISO, once, and met however the answer writes
+/// that day (`names_date`); a version is met only with no digit after it (`names_version`).
+fn web_met(q: &Question, answer: &str) -> Vec<bool> {
     let plain =
         |s: &str| s.chars().filter(|c| !matches!(c, '*' | '_' | '`')).collect::<String>().to_lowercase();
     let answer = plain(answer);
-    let met = q.key.iter().filter(|alts| alts.iter().any(|a| answer.contains(&plain(a))));
-    met.count() as f64 / q.key.len() as f64
+    let names = |a: &str| {
+        let a = plain(a);
+        (names_date(&answer, &a).or_else(|| names_version(&answer, &a)))
+            .unwrap_or_else(|| answer.contains(&a))
+    };
+    q.key.iter().map(|alts| alts.iter().any(|a| names(a))).collect()
+}
+
+/// Whether `answer` names the version `key` (digits and dots, two parts at least) with no digit after it: `0.16.1`
+/// isn't in `0.16.10`, `1.54` is in `1.54.0`. `None`: `key` isn't a version.
+fn names_version(answer: &str, key: &str) -> Option<bool> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let version =
+        parts.len() > 1 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    version.then(|| {
+        (answer.match_indices(key))
+            .any(|(i, _)| !answer[i + key.len()..].starts_with(|c: char| c.is_ascii_digit()))
+    })
+}
+
+#[test]
+fn search_keys_meet_a_version_only_with_no_digit_after() {
+    for (answer, key) in [
+        ("fixed in 0.16.1.", "0.16.1"),
+        ("tokio 1.54.0", "1.54"),
+        ("(3.20.1)", "3.20.1"),
+        ("0.16.1–0.16.10", "0.16.1"),
+    ] {
+        assert_eq!(names_version(answer, key), Some(true), "{answer:?} names {key}");
+    }
+    for (answer, key) in [("0.16.0 works, 0.16.10 panics", "0.16.1"), ("actix-http 3.20.10", "3.20.1")] {
+        assert_eq!(names_version(answer, key), Some(false), "{answer:?} isn't {key}");
+    }
+    assert_eq!(names_version("rfc 4013", "4013"), None, "a number isn't a version");
+    assert_eq!(names_version("2026-10-09", "2026-10-09"), None, "a date isn't a version");
+    let bom = &SEARCH_QUESTIONS.iter().find(|d| d.q.name == "ruff-bom-panic").unwrap().q;
+    assert_eq!(web_met(bom, "It panics from **0.16.10** on; `0.17.4` fixes it."), [false, true]);
+}
+
+/// Each month's names, whole and short, as alternatives of a regex.
+const MONTHS: [&str; 12] = [
+    "january|jan",
+    "february|feb",
+    "march|mar",
+    "april|apr",
+    "may",
+    "june|jun",
+    "july|jul",
+    "august|aug",
+    "september|sept|sep",
+    "october|oct",
+    "november|nov",
+    "december|dec",
+];
+
+/// Whether `answer` (lowercase) names the day `iso` (`2026-08-19`): ISO, day first (`19 August 2026`, `19th of Aug`)
+/// or month first (`August 19`, `Aug. 19, 2026`), the month whole or short. The day's digits stand alone (`October 1`
+/// isn't in `October 10–19`), and a year beside it must be the key's. `None`: `iso` isn't a date.
+fn names_date(answer: &str, iso: &str) -> Option<bool> {
+    let parts = regex::Regex::new(r"^(\d{4})-(\d{2})-(\d{2})$").unwrap().captures(iso)?;
+    let year = &parts[1];
+    let month = MONTHS.get(parts[2].parse::<usize>().ok()?.checked_sub(1)?)?;
+    let day: u32 = parts[3].parse().ok()?;
+    let (th, beside) = (r"(?:st|nd|rd|th)?", r"(?:,?\s+(\d{4})\b)?");
+    let day_first = format!(r"\b0?{day}{th}\.?\s+(?:of\s+)?(?:{month})\b\.?{beside}");
+    let month_first = format!(r"\b(?:{month})\.?\s+0?{day}{th}\b{beside}");
+    let any = regex::Regex::new(&format!(r"\b{iso}\b|{day_first}|{month_first}")).unwrap();
+    Some(
+        any.captures_iter(answer)
+            .any(|c| [c.get(1), c.get(2)].into_iter().flatten().all(|y| y.as_str() == year)),
+    )
+}
+
+#[test]
+fn search_keys_meet_a_date_however_it_is_written() {
+    let met = |answer: &str, iso: &str| names_date(&answer.to_lowercase(), iso).unwrap();
+    for answer in
+        ["19 August 2026", "August 19", "2026-08-19", "Aug. 19th, 2026", "the 19th of Aug", "on 19 aug"]
+    {
+        assert!(met(answer, "2026-08-19"), "{answer:?} names 2026-08-19");
+    }
+    for answer in ["August 19, 2025", "August 1", "19 July", "119 August"] {
+        assert!(!met(answer, "2026-08-19"), "{answer:?} isn't 2026-08-19");
+    }
+    for answer in ["October 15", "October 10–19", "11 October", "Oct 1, 2025"] {
+        assert!(!met(answer, "2026-10-01"), "{answer:?} isn't 2026-10-01");
+    }
+    for answer in ["October 1", "1 October 2026", "Oct 1st"] {
+        assert!(met(answer, "2026-10-01"), "{answer:?} names 2026-10-01");
+    }
+    for answer in ["9 October", "Oct 9", "Oct. 9", "October 9, 2026"] {
+        assert!(met(answer, "2026-10-09"), "{answer:?} names 2026-10-09");
+    }
+    assert!(!met("October 19", "2026-10-09"));
+    assert_eq!(names_date("1.27.3", "1.27.3"), None, "a version isn't a date");
+    // The pilot's go-1-27 in arms 1 and 2, which the substring key scored 0.5
+    let go = &SEARCH_QUESTIONS.iter().find(|d| d.q.name == "go-1-27").unwrap().q;
+    assert_eq!(web_right(go, "The newest is **Go 1.27.3**; Go 1.27 came out on 19 August 2026."), 1.0);
+    // Dates in keys are written ISO, once: a month's name in one is the old way
+    let named = regex::Regex::new(&format!(r"(?i)\b(?:{})\b", MONTHS.join("|"))).unwrap();
+    for d in &SEARCH_QUESTIONS {
+        let alts = d.q.key.iter().flat_map(|alts| alts.iter());
+        assert!(
+            !alts.clone().any(|a| named.is_match(a)),
+            "{}: a date in a key is ISO: {:?}",
+            d.q.name,
+            d.q.key
+        );
+    }
 }
 
 /// `chat_web_ab`'s runs graded again from their saved streams (`target/live/web-ab/<question>-<arm>-<run>-<pid>.jsonl`)
@@ -5066,54 +5180,47 @@ fn arm_webfetch(sb: &Sandbox, stream: &Path) {
 }
 
 /// The web search A/B's question (`chat_search_ab`): its key read on its host on `checked` — "" not yet: the run refuses
-/// it until the driver reads it there — and whether it needs the web at all.
+/// it until the driver reads it there — and its class.
 struct Dated {
     q: Question,
     checked: &'static str,
     source: &'static str,
-    web: bool,
+    class: Class,
+}
+
+/// A web search A/B question's class, as the sums take it: a release (its address guessable: a project's releases
+/// page), a key at an address the question doesn't lead to, or no web needed.
+#[derive(Clone, Copy, PartialEq)]
+enum Class {
+    Release,
+    NoAddress,
+    NoWeb,
+}
+
+impl Class {
+    const ALL: [Class; 3] = [Class::Release, Class::NoAddress, Class::NoWeb];
+
+    fn name(self) -> &'static str {
+        match self {
+            Class::Release => "release",
+            Class::NoAddress => "no-address",
+            Class::NoWeb => "no-web",
+        }
+    }
 }
 
 /// The tree the web search A/B runs in: this repository at step 1's commit (the no-web keys were read there).
 const SEARCH_CORPUS: &str = "76965fa6";
 
-/// The web search A/B's questions (the web checkout's `.sb/web-search-step1.md` §4, three of its six Rust ones swapped
-/// for Python, Go and ruff): ten whose answers are past the model's cutoff, none naming an address, across ecosystems
-/// and hosts; three that need no web (`QUESTIONS`' asks, their keys as the code at `SEARCH_CORPUS` has them) — does
-/// the tool's presence start a needless search? Every key is read again on its host before each run.
+/// The web search A/B's questions, the design session's change to step 1's set (2026-11-10, the web checkout's
+/// `.sb/web-search-ab-questions.md`): the pilot's arm 0 read every release page by the address it guessed, so on that
+/// class 0 = 1 = R. Ten whose answers are past the model's cutoff, none naming an address: five releases, one per
+/// project's host (the common case — does the list hurt?), and five whose key lives at an address the question doesn't
+/// lead to (a fix's PR, an advisory, an issue thread, a deprecation, an RFC) — the keys today's chat can't get. And
+/// three that need no web (`QUESTIONS`' asks, their keys as the code at `SEARCH_CORPUS` has them) — does the tool's
+/// presence start a needless search? A date in a key is ISO (`names_date` meets the other ways). Every key is read
+/// again on its host before each run.
 const SEARCH_QUESTIONS: [Dated; 13] = [
-    Dated {
-        q: Question {
-            name: "rust-1-99-profile",
-            ask: "Which new built-in Cargo profile came with Rust 1.99, and when was 1.99 released?",
-            key: &[&["debug"], &["2026-10-01", "October 1"]],
-        },
-        checked: "2026-11-09",
-        source: "github.com/rust-lang/rust releases: 1.99.0, 2026-10-01",
-        web: true,
-    },
-    Dated {
-        q: Question {
-            name: "vec-from-parts",
-            ask: "On stable Rust, can I rebuild a Vec from a NonNull pointer, length and capacity now? Which \
-                  function, since which version?",
-            key: &[&["from_parts"], &["1.99"]],
-        },
-        checked: "2026-11-09",
-        source: "github.com/rust-lang/rust releases: 1.99.0, Stabilized APIs",
-        web: true,
-    },
-    Dated {
-        q: Question {
-            name: "cargo-warnings",
-            ask: "Is there a stable Cargo config now to fail on warnings without RUSTFLAGS=-Dwarnings? Its key and \
-                  the Rust version that stabilized it?",
-            key: &[&["build.warnings"], &["1.97"]],
-        },
-        checked: "2026-11-09",
-        source: "github.com/rust-lang/rust releases: 1.97.0 Cargo, 2026-07-09",
-        web: true,
-    },
     Dated {
         q: Question {
             name: "tokio-set-times",
@@ -5122,7 +5229,7 @@ const SEARCH_QUESTIONS: [Dated; 13] = [
         },
         checked: "2026-11-09",
         source: "github.com/tokio-rs/tokio releases: tokio-1.54.0, 2026-10-19",
-        web: true,
+        class: Class::Release,
     },
     Dated {
         q: Question {
@@ -5133,7 +5240,7 @@ const SEARCH_QUESTIONS: [Dated; 13] = [
         },
         checked: "2026-11-09",
         source: "github.com/microsoft/TypeScript releases: 7.0.2 2026-08-20, 7.1 Beta 2026-10-20",
-        web: true,
+        class: Class::Release,
     },
     Dated {
         q: Question {
@@ -5143,52 +5250,91 @@ const SEARCH_QUESTIONS: [Dated; 13] = [
         },
         checked: "2026-11-09",
         source: "github.com/nodejs/node releases: 26.13.0, 2026-10-28",
-        web: true,
+        class: Class::Release,
     },
-    Dated {
-        q: Question {
-            name: "node-27-v8",
-            ask: "Which V8 version does the first Node.js 27 alpha ship?",
-            key: &[&["15.6"]],
-        },
-        checked: "2026-11-09",
-        source: "github.com/nodejs/node releases: 27.0.0-alpha.0, 2026-10-29",
-        web: true,
-    },
-    // (the three swapped in: each a new host, its key read there before the pilot — none written from memory)
     Dated {
         q: Question {
             name: "python-3-15",
             ask: "Is Python 3.15 out as a final release? When did 3.15.0 come out, and what's its newest point \
                   release?",
             // (drifts: a 3.15.3 changes it)
-            key: &[&["2026-10-09", "October 9", "Oct. 9"], &["3.15.2"]],
+            key: &[&["2026-10-09"], &["3.15.2"]],
         },
         checked: "2026-11-09",
         source: "python.org/downloads: 3.15.0 2026-10-09, 3.15.2 2026-10-25",
-        web: true,
+        class: Class::Release,
     },
     Dated {
         q: Question {
             name: "go-1-27",
             ask: "Which Go release is the newest now, and when did Go 1.27 come out?",
             // (drifts: a 1.27.4 changes it)
-            key: &[&["1.27.3"], &["2026-08-19", "August 19"]],
+            key: &[&["1.27.3"], &["2026-08-19"]],
         },
         checked: "2026-11-09",
         source: "go.dev/doc/devel/release: go1.27.0 2026-08-19, go1.27.3 2026-10-19",
-        web: true,
+        class: Class::Release,
+    },
+    // (the five whose key is past an address the question gives no way to: found on their pages 2026-11-10, each
+    // `checked` empty until the driver reads it there — the run refuses them till then)
+    Dated {
+        q: Question {
+            name: "ruff-ple0643",
+            ask: "ruff's PLE0643 flags `(*a, 9)[2]` as a potential IndexError, though it can't raise one. Is that a \
+                  known bug, and which ruff release fixed it?",
+            key: &[&["0.17.2"]],
+        },
+        checked: "2026-11-10",
+        source: "github.com/astral-sh/ruff/pull/29483 (closes #29343, merged 2026-10-19); CHANGELOG.md 0.17.2 \
+                 (2026-10-22): [pylint] Avoid false positive on starred elements (PLE0643) (#29483)",
+        class: Class::NoAddress,
     },
     Dated {
         q: Question {
-            name: "ruff-latest",
-            ask: "What's ruff's newest release, and the newest Python version its target-version setting takes?",
-            // (drifts: a 0.17.5 changes it)
-            key: &[&["0.17.4"], &["py315", "3.15"]],
+            name: "actix-advisory",
+            ask: "Is there a recent security advisory about actix-web and compressed request bodies? Which \
+                  actix-web and actix-http versions fix it?",
+            key: &[&["4.18.2"], &["3.20.1"]],
         },
-        checked: "2026-11-09",
-        source: "github.com/astral-sh/ruff releases: 0.17.4 2026-11-05; 0.17.0 (2026-10-09) made 3.15 the latest Python",
-        web: true,
+        checked: "2026-11-10",
+        source: "rustsec.org/advisories/RUSTSEC-2026-0447.html (2026-11-06): Upgrade to actix-web 4.18.2 or later \
+                 with actix-http 3.20.1 or later",
+        class: Class::NoAddress,
+    },
+    Dated {
+        q: Question {
+            name: "ruff-bom-panic",
+            ask: "Since I upgraded ruff, `ruff format --check` panics on some files with \"Annotation range \
+                  `0..3` is beyond the end of buffer `0`\". Which ruff version brought this in, and which fixes it?",
+            key: &[&["0.16.1"], &["0.17.4"]],
+        },
+        checked: "2026-11-10",
+        source: "github.com/astral-sh/ruff/issues/29958 (2026-11-03): Regression introduced in 0.16.1; closed by \
+                 #30017, CHANGELOG.md 0.17.4 (2026-11-05): Fix panic on BOM-prefixed files in diagnostic renderer",
+        class: Class::NoAddress,
+    },
+    Dated {
+        q: Question {
+            name: "astral-tl-successor",
+            ask: "Is the astral-tl crate still maintained? If not, what does Astral point to instead?",
+            key: &[&["astral-html"]],
+        },
+        checked: "2026-11-10",
+        source: "github.com/astral-sh/astral-tl/pull/31 (merged 2026-10-05): deprecated in the README, users \
+                 directed to astral-html; RUSTSEC-2026-0444",
+        class: Class::NoAddress,
+    },
+    Dated {
+        q: Question {
+            name: "cargo-required-targets",
+            ask: "Has Cargo accepted a manifest field that lets a workspace package say which targets it builds \
+                  for, so a build at the root skips it elsewhere? The field's name, and the RFC's number?",
+            key: &[&["required-targets"], &["4013"]],
+        },
+        checked: "2026-11-10",
+        source: "github.com/rust-lang/rfcs/pull/4013 (merged 2026-11-01): RFC: Add `required-targets` for \
+                 workspace package selection",
+        class: Class::NoAddress,
     },
     Dated {
         q: Question {
@@ -5204,7 +5350,7 @@ const SEARCH_QUESTIONS: [Dated; 13] = [
         },
         checked: "2026-11-09",
         source: "the code at 76965fa6 (setsid_as is gone)",
-        web: false,
+        class: Class::NoWeb,
     },
     Dated {
         q: Question {
@@ -5214,13 +5360,13 @@ const SEARCH_QUESTIONS: [Dated; 13] = [
         },
         checked: "2026-11-09",
         source: "the code at 76965fa6 (chat_lent is gone)",
-        web: false,
+        class: Class::NoWeb,
     },
     Dated {
         q: Question { name: "awk-tests", ask: QUESTIONS[2].ask, key: QUESTIONS[2].key },
         checked: "2026-11-09",
         source: "the code at 76965fa6",
-        web: false,
+        class: Class::NoWeb,
     },
 ];
 
@@ -5335,14 +5481,7 @@ fn chat_search_ab() {
     let tsv = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/search-ab.tsv");
     let kept = tsv.with_file_name("search-ab");
     std::fs::create_dir_all(&kept).unwrap();
-    struct Row {
-        q: &'static str,
-        web: bool,
-        arm: &'static str,
-        right: f64,
-        total: f64,
-    }
-    let mut rows: Vec<Row> = Vec::new();
+    let mut rows: Vec<SearchRow> = Vec::new();
     let mut spent = 0.0;
     'runs: for run in 0..runs {
         for (i, d) in questions.iter().enumerate() {
@@ -5409,22 +5548,297 @@ fn chat_search_ab() {
                 use std::io::Write;
                 let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
                 f.write_all(row.as_bytes()).unwrap();
-                rows.push(Row { q: d.q.name, web: d.web, arm, right, total });
+                rows.push(SearchRow {
+                    q: d.q.name,
+                    class: d.class,
+                    arm,
+                    run: run + 1,
+                    right,
+                    met: web_met(&d.q, &m.answer),
+                    total,
+                    wall_ms,
+                    searches,
+                    pages: pages_read(&text),
+                });
             }
         }
     }
-    eprintln!("SEARCH_AB sums — arm: runs · right · $ · $ a right answer · no-web $");
+    search_sums("SEARCH_AB", &rows);
+    search_by_question("SEARCH_AB", &rows);
+    eprintln!("SEARCH_AB spent ${spent:.2}");
+    assert!(!rows.is_empty(), "no run");
+}
+
+/// One run of the web search A/B, as its sums take it.
+struct SearchRow {
+    q: &'static str,
+    class: Class,
+    arm: &'static str,
+    run: usize,
+    right: f64,
+    /// Each key met or not (`web_met`)
+    met: Vec<bool>,
+    total: f64,
+    wall_ms: u64,
+    searches: usize,
+    pages: Vec<Page>,
+}
+
+/// A page the chat read, from its stream: its address (the scheme, a read's lines and heading taken off) and how it
+/// came to it — `guessed` (no earlier page held it: the questions name none), `searched` (a guessed address of a
+/// host's own search), `followed` (a link on an earlier page) or `again`.
+struct Page {
+    address: String,
+    how: &'static str,
+}
+
+/// The pages a stream's chat read (`Page`), in order: tarae's `read` of a URL, or WebFetch.
+fn pages_read(stream: &str) -> Vec<Page> {
+    let address = |url: &str| {
+        let url = url.trim();
+        let url = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let url = url.split_once('#').map_or(url, |(a, _)| a);
+        match url.rsplit_once(':') {
+            Some((a, lines))
+                if !lines.is_empty()
+                    && lines.bytes().all(|b| b.is_ascii_digit() || b == b'-' || b == b',') =>
+            {
+                a
+            }
+            _ => url,
+        }
+        .to_string()
+    };
+    let (mut seen, mut pages) = (String::new(), Vec::<Page>::new());
+    for v in stream.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
+        let content = v["message"]["content"].as_array().cloned().unwrap_or_default();
+        if v["type"] == "user" {
+            for c in content.iter().filter(|c| c["type"] == "tool_result") {
+                match &c["content"] {
+                    serde_json::Value::String(s) => seen.push_str(s),
+                    blocks => (blocks.as_array().into_iter().flatten())
+                        .filter_map(|b| b["text"].as_str())
+                        .for_each(|t| seen.push_str(t)),
+                }
+            }
+            continue;
+        }
+        if v["type"] != "assistant" {
+            continue;
+        }
+        for c in content.iter().filter(|c| c["type"] == "tool_use") {
+            let urls: Vec<&str> = match c["name"].as_str() {
+                Some("WebFetch") => c["input"]["url"].as_str().into_iter().collect(),
+                Some("mcp__tarae__read") => (c["input"]["files"].as_array().into_iter().flatten())
+                    .filter_map(|f| f.as_str().filter(|f| f.trim_start().starts_with("http")))
+                    .collect(),
+                _ => continue,
+            };
+            for url in urls {
+                let address = address(url);
+                let how = if pages.iter().any(|p| p.address == address) {
+                    "again"
+                } else if seen.contains(&address) {
+                    "followed"
+                } else if address.contains("?q=") || address.contains("/search") {
+                    "searched"
+                } else {
+                    "guessed"
+                };
+                pages.push(Page { address, how });
+            }
+        }
+    }
+    pages
+}
+
+/// The web search A/B's sums, an arm a line: runs, right, $ in all, $ a right answer, the median wall time (the
+/// helper's 15–70 s are in it), and the no-web questions' $ and searches apart — the tool's presence starting a
+/// needless search shows there.
+fn search_sums(label: &str, rows: &[SearchRow]) {
+    eprintln!(
+        "{label} sums — arm: runs · right · $ · $ a right answer · median wall s · no-web $ · no-web searches"
+    );
     for arm in SEARCH_ARMS {
-        let of: Vec<&Row> = rows.iter().filter(|r| r.arm == arm).collect();
+        let of: Vec<&SearchRow> = rows.iter().filter(|r| r.arm == arm).collect();
+        if of.is_empty() {
+            continue;
+        }
         let right: f64 = of.iter().map(|r| r.right).sum();
         let cost: f64 = of.iter().map(|r| r.total).sum();
-        let no_web: f64 = of.iter().filter(|r| !r.web).map(|r| r.total).sum();
+        let no_web: Vec<&&SearchRow> = of.iter().filter(|r| r.class == Class::NoWeb).collect();
+        let no_web_cost: f64 = no_web.iter().map(|r| r.total).sum();
+        let no_web_searches: usize = no_web.iter().map(|r| r.searches).sum();
         let each = if right > 0.0 { format!("${:.3}", cost / right) } else { "—".into() };
-        eprintln!("SEARCH_AB {arm}: {} · {right:.1} · ${cost:.3} · {each} · ${no_web:.3}", of.len());
+        let mut walls: Vec<u64> = of.iter().map(|r| r.wall_ms).collect();
+        walls.sort_unstable();
+        let n = walls.len();
+        let median =
+            if n % 2 == 1 { walls[n / 2] as f64 } else { (walls[n / 2 - 1] + walls[n / 2]) as f64 / 2.0 };
+        eprintln!(
+            "{label} {arm}: {n} · {right:.1} · ${cost:.3} · {each} · {:.1} · ${no_web_cost:.3} · {no_web_searches}",
+            median / 1000.0
+        );
     }
     let asked: std::collections::BTreeSet<&str> = rows.iter().map(|r| r.q).collect();
-    eprintln!("SEARCH_AB spent ${spent:.2} on {} questions", asked.len());
-    assert!(!rows.is_empty(), "no run");
+    eprintln!("{label} {} questions, {} runs", asked.len(), rows.len());
+    eprintln!("{label} by class — class (cells an arm): right · $ of arm 0 | 1 | 2 | R");
+    for class in Class::ALL {
+        let cells = |arm: &str| rows.iter().filter(|r| r.class == class && r.arm == arm).collect::<Vec<_>>();
+        let n = cells(SEARCH_ARMS[0]).len();
+        if SEARCH_ARMS.iter().all(|a| cells(a).is_empty()) {
+            continue;
+        }
+        let arms = SEARCH_ARMS.map(|arm| {
+            let of = cells(arm);
+            let (right, cost) =
+                (of.iter().map(|r| r.right).sum::<f64>(), of.iter().map(|r| r.total).sum::<f64>());
+            format!("{right:.1} · ${cost:.3}")
+        });
+        eprintln!("{label} {} ({n}): {}", class.name(), arms.join(" | "));
+    }
+}
+
+/// The web search A/B per question, across its runs, read as decided before the result (the web decisions' "How the
+/// run is read"): each arm's right run by run, and the keys arm 0 can't get — a key arm 1 met in every run, or arm 2
+/// did, that arm 0 met in none, a question's share (one key of two: 0.5) — summed by class. Then each no-address
+/// question's arm 0, run by run: the keys it met and the pages it read, each as it came to it (`Page`), the key's
+/// source page marked.
+fn search_by_question(label: &str, rows: &[SearchRow]) {
+    let runs: std::collections::BTreeSet<usize> = rows.iter().map(|r| r.run).collect();
+    let of = |q: &str, arm: &str| {
+        let mut of: Vec<&SearchRow> = rows.iter().filter(|r| r.q == q && r.arm == arm).collect();
+        of.sort_by_key(|r| r.run);
+        of
+    };
+    eprintln!(
+        "{label} by question ({} runs) — right run by run, arm 0 | 1 | 2 | R · keys arm 0 can't get (a share: one \
+         key of two is 0.5)",
+        runs.len()
+    );
+    let mut cant = [0.0; 3];
+    let asked = SEARCH_QUESTIONS.iter().filter(|d| rows.iter().any(|r| r.q == d.q.name));
+    for d in asked.clone() {
+        let every = |arm: &str, k: usize| {
+            let o = of(d.q.name, arm);
+            o.len() == runs.len() && o.iter().all(|r| r.met[k])
+        };
+        let missed = |k: usize| {
+            let o = of(d.q.name, SEARCH_ARMS[0]);
+            o.len() == runs.len() && o.iter().all(|r| !r.met[k])
+        };
+        let keys: Vec<usize> =
+            (0..d.q.key.len()).filter(|&k| (every("1", k) || every("2", k)) && missed(k)).collect();
+        let share = keys.len() as f64 / d.q.key.len() as f64;
+        cant[Class::ALL.iter().position(|c| *c == d.class).unwrap()] += share;
+        let arms = SEARCH_ARMS.map(|arm| {
+            (of(d.q.name, arm).iter()).map(|r| format!("{:.1}", r.right)).collect::<Vec<_>>().join("/")
+        });
+        let which: Vec<&str> = keys.iter().map(|&k| d.q.key[k][0]).collect();
+        let which = if which.is_empty() { String::new() } else { format!(" ({})", which.join(", ")) };
+        eprintln!("{label} {} [{}]: {} · {share:.1}{which}", d.q.name, d.class.name(), arms.join(" | "));
+    }
+    let sums = Class::ALL.map(|c| {
+        let n = asked.clone().filter(|d| d.class == c).count();
+        format!("{} {:.1} of {n}", c.name(), cant[Class::ALL.iter().position(|x| *x == c).unwrap()])
+    });
+    eprintln!("{label} keys arm 0 can't get: {}", sums.join(" · "));
+    for d in asked.filter(|d| d.class == Class::NoAddress) {
+        let sources: Vec<&str> = (d.source.split_whitespace())
+            .map(|w| w.trim_end_matches([';', ',', ')', ':']))
+            .filter(|w| w.contains('/') && w.split('/').next().is_some_and(|h| h.contains('.')))
+            .collect();
+        for r in of(d.q.name, SEARCH_ARMS[0]) {
+            let met: Vec<&str> =
+                (d.q.key.iter().zip(&r.met)).map(|(alts, m)| if *m { alts[0] } else { "—" }).collect();
+            let pages: Vec<String> = (r.pages.iter())
+                .map(|p| {
+                    let source = if sources.iter().any(|s| p.address.starts_with(s)) {
+                        " ← the key's source"
+                    } else {
+                        ""
+                    };
+                    format!("{} {}{source}", p.how, p.address)
+                })
+                .collect();
+            let pages = if pages.is_empty() { "no page read".to_string() } else { pages.join(" · ") };
+            eprintln!("{label} arm 0 on {} run {}: met {} · {pages}", d.q.name, r.run, met.join(", "));
+        }
+    }
+}
+
+/// `chat_search_ab`'s runs graded again from their saved streams (`target/live/search-ab/<question>-<arm>-<run>-<pid>
+/// .jsonl`, the helper's beside it) by today's `web_right` and `SEARCH_QUESTIONS` — no new run, no network, no Claude;
+/// the wall time from the run's own line (`.txt`). Each run's pid its own table; a stream of a question no longer in the
+/// set is counted, not graded. By hand: `cargo test --test live chat_search_ab_rescore -- --ignored --nocapture`.
+#[test]
+#[ignore = "by hand: reads chat_search_ab's saved streams"]
+fn chat_search_ab_rescore() {
+    let kept = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/search-ab");
+    let Ok(dir) = std::fs::read_dir(&kept) else {
+        skip("no target/live/search-ab: run chat_search_ab first");
+        return;
+    };
+    let mut names: Vec<String> = dir.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+    names.retain(|n| n.ends_with(".jsonl") && !n.ends_with(".helper.jsonl"));
+    names.sort();
+    let mut runs: std::collections::BTreeMap<String, Vec<SearchRow>> = Default::default();
+    let mut gone = 0;
+    for name in &names {
+        let stem = name.trim_end_matches(".jsonl");
+        // (the longest name that fits: no question's name is another's with a dash and more)
+        let found = (SEARCH_QUESTIONS.iter())
+            .filter_map(|d| {
+                let rest = stem.strip_prefix(d.q.name)?.strip_prefix('-')?;
+                let arm = SEARCH_ARMS.into_iter().find(|a| rest.starts_with(&format!("{a}-")))?;
+                let pid = rest.rsplit('-').next()?;
+                Some((d, arm, pid, rest))
+            })
+            .max_by_key(|(d, ..)| d.q.name.len());
+        let Some((d, arm, pid, rest)) = found else {
+            gone += 1;
+            continue;
+        };
+        let read = |ext: &str| std::fs::read_to_string(kept.join(format!("{stem}{ext}"))).unwrap_or_default();
+        let (text, said) = (read(".jsonl"), read(".txt"));
+        let m = measure(&text, "");
+        let right = web_right(&d.q, &m.answer);
+        let (_, helper_cost) = helpers_spent(&read(".helper.jsonl"));
+        let (searches, pages) = searches_and_reads(&text);
+        // The run's own line: `SEARCH_AB <q> <arm> run <n>: right 0.50 · … · $0.093 · 84597 ms · …`
+        let items: Vec<&str> = said.lines().next().unwrap_or_default().split(" · ").collect();
+        let was = items.first().and_then(|i| i.split_once(": right ")?.1.parse::<f64>().ok());
+        let wall_ms = items.iter().find_map(|i| i.strip_suffix(" ms")?.parse().ok()).unwrap_or(0);
+        let total = m.cost + helper_cost;
+        eprintln!(
+            "SEARCH_AB_RESCORED {pid} {} {arm}: right {right:.2} (was {}) · searches {searches} · pages read {pages} · \
+             ${total:.3} · {wall_ms} ms",
+            d.q.name,
+            was.map_or("?".into(), |w| format!("{w:.2}")),
+        );
+        let run = rest.strip_prefix(arm).and_then(|r| r.trim_matches('-').split('-').next()?.parse().ok());
+        let row = SearchRow {
+            q: d.q.name,
+            class: d.class,
+            arm,
+            run: run.unwrap_or(0),
+            right,
+            met: web_met(&d.q, &m.answer),
+            total,
+            wall_ms,
+            searches,
+            pages: pages_read(&text),
+        };
+        runs.entry(pid.to_string()).or_default().push(row);
+    }
+    for (pid, rows) in &runs {
+        search_sums(&format!("SEARCH_AB_RESCORED {pid}"), rows);
+        search_by_question(&format!("SEARCH_AB_RESCORED {pid}"), rows);
+    }
+    if gone > 0 {
+        eprintln!("SEARCH_AB_RESCORED {gone} streams of questions no longer in the set, not graded");
+    }
+    assert!(!runs.is_empty(), "no saved stream in {}", kept.display());
 }
 
 /// web-plan P0: the exact tokens of a page read each way (§3's columns) — each file of `TARAE_WEB_TOKENS`'s folder
