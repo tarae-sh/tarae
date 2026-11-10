@@ -120,15 +120,18 @@ fn until(t: &mut Term, keys: &str, what: &str, done: impl Fn(&Screen) -> bool) -
 }
 
 /// rust-analyzer runs the project's code, so it waits for the repository's code trust — a live sandbox's home of
-/// its own has never given it: the card waited for, focused (`C-q`) and answered `y` until it's gone.
+/// its own has never given it: the card waited for, focused (`C-q`) and answered `y` until it's gone, at most
+/// `LIVE_TIMEOUT` (a card that stays would else get `y` forever — and another card holding the focus takes it).
 fn code_trusted(t: &mut Term) {
     let card = "Trust this repository's code";
     t.wait_for("the code-trust card", |s| s.contains(card));
     t.send("\x11");
-    while t.screen().contains(card) {
+    let end = Instant::now() + LIVE_TIMEOUT;
+    while t.screen().contains(card) && Instant::now() < end {
         t.send("y");
         let _ = t.poll_for(Duration::from_millis(500), |s| !s.contains(card));
     }
+    assert!(!t.screen().contains(card), "the code-trust card never went\n{}", t.screen());
 }
 
 fn raw_text(t: &Term) -> String {
@@ -408,6 +411,36 @@ fn quiet(t: &mut Term, secs: u64) -> bool {
     }
     since.elapsed() >= Duration::from_secs(secs)
 }
+
+/// rust-analyzer in `sb` has loaded the project: it said it's quiescent (`experimental/serverStatus` — what tarae's
+/// swap switches on, `Client.quiescent`), as tarae.log's line says, with no `loading` after it; at most `within`.
+/// Not "rust-analyzer ready": that is its `initialize` answered, milliseconds after it starts and before any of its
+/// load. Nor the status line gone quiet (`quiet`): after its load tarae asks it a `cargo check`, shown as work for
+/// ~20 s, while answers are already right. The load itself is about a second plus indexing; outside tarae's sandbox
+/// on this Mac it takes minutes, rust-analyzer 1.99's file watcher setting up folder by folder against fseventsd
+/// (the references-loading report). `seen` gets each screen looked at. Whether it got there (false: still loading at
+/// the limit).
+fn loaded(t: &mut Term, sb: &Sandbox, within: Duration, mut seen: impl FnMut(&Screen)) -> bool {
+    let log = sb.state().join("tarae.log");
+    let end = Instant::now() + within;
+    let done = || {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let last = text.lines().rev().find(|l| l.contains(" rust-analyzer ") && l.contains(" quiescent "));
+        last.is_some_and(|l| l.ends_with("nothing left to load"))
+    };
+    while Instant::now() < end {
+        seen(&t.screen());
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
+/// How long a live A/B's cell waits for rust-analyzer's load (`loaded`): the longest measured was past 12 minutes,
+/// on a loaded machine.
+const LOADED_WITHIN: Duration = Duration::from_secs(20 * 60);
 
 /// The project's `.tarae.toml` card (this repository's risky settings), answered `n` if it comes within
 /// `within` — its settings left out.
@@ -1985,7 +2018,7 @@ struct Measured {
     errors: usize,
     cards: usize,
     capped: bool,
-    /// Asked while rust-analyzer was still at work (`quiet` gave up) — its tools may have answered "loading".
+    /// Asked while rust-analyzer was still loading (`loaded` gave up) — its tools may have answered "loading".
     loading: bool,
     /// Share of the question's key the answer names (an edit task: 1 when its check passed, else 0).
     right: f64,
@@ -2444,8 +2477,7 @@ fn tools_ab(questions: &[Question], name: &str, lsp: bool) {
                 let mut t = sb.spawn(&[if lsp { "src/main.rs" } else { "README.md" }]);
                 let loading = lsp && {
                     code_trusted(&mut t);
-                    t.wait_text("rust-analyzer ready");
-                    !quiet(&mut t, 10)
+                    !loaded(&mut t, &sb, LOADED_WITHIN, |_| {})
                 };
                 let started = Instant::now();
                 let (cards, capped) = ab_turn(&mut t, q.ask, &stream);
@@ -2459,7 +2491,7 @@ fn tools_ab(questions: &[Question], name: &str, lsp: bool) {
                 m.right = met.count() as f64 / q.key.len() as f64;
                 spent += m.cost;
                 let flag = match m.loading {
-                    true => ", ASKED WHILE RUST-ANALYZER WAS STILL AT WORK",
+                    true => ", ASKED WHILE RUST-ANALYZER WAS STILL LOADING (the wait's limit)",
                     false => "",
                 };
                 // (the new build counts its own calls — `calls.rs`; said beside the stream's, a check of it)
@@ -2556,7 +2588,7 @@ fn tools_ab(questions: &[Question], name: &str, lsp: bool) {
                 at(&|m| m.right, 2),
                 match of.iter().filter(|m| m.loading).count() {
                     0 => String::new(),
-                    n => format!(" · {n} asked while rust-analyzer was still at work"),
+                    n => format!(" · {n} asked while rust-analyzer was still loading"),
                 },
             );
         }
@@ -4691,16 +4723,10 @@ fn probe_turn(dir: &Path, content: serde_json::Value) -> (String, String, u64) {
 
 /// One turn of a bare `claude -p` in `dir` with Claude Code's `tools` (allowed up front): its whole stream.
 fn bare_turn(dir: &Path, tools: &str, ask: &str) -> String {
-    bare_turn_with(dir, tools, &[], ask)
-}
-
-/// `bare_turn`, with more of claude's flags (`bare_turn_as`: the model).
-fn bare_turn_with(dir: &Path, tools: &str, more: &[&str], ask: &str) -> String {
     use std::io::{BufRead, Write};
     let mut child = Command::new("claude")
         .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
         .args(["--tools", tools, "--allowedTools", tools, "--strict-mcp-config", "--setting-sources", ""])
-        .args(more)
         .arg("--no-session-persistence")
         .current_dir(dir)
         .stdin(std::process::Stdio::piped())
@@ -5591,7 +5617,7 @@ fn fix_tasks_warm() {
     }
 }
 
-// ── Code mode (b): the chain tasks, the A/B and the language probe ──────────────────────────────────
+// ── Code mode (b): the chain tasks and the A/B ───────────────────────────────────────────────────────
 
 /// A chain task of code mode (b) (the design session's `.sb/codemode-b-plan.md` §5, step 0): a question on
 /// `TOOLS_CORPUS` whose answer is a small exact set — 3 to 8 items, each a key (`chain_met`) — that takes 3 or more
@@ -6051,15 +6077,16 @@ fn code_sums(label: &str, rows: &[CodeRow]) {
 /// Code mode (b)'s A/B (`.sb/codemode-b-plan.md` §5): does a `code` tool — Claude's program calling tarae's
 /// read-only tools — save round trips and context where chains are mechanical, and lose nothing elsewhere? Its eight
 /// tasks (`code_tasks`: the five chain tasks, the two fix loops, card-front) in each arm of `CODEMODE_ARMS`, rotated
-/// cell by cell, one turn each in tarae's chat on `TOOLS_CORPUS`, opus pinned, rust-analyzer on,
-/// review at the end on; every cell made as the fix loops' are (`fix_cell`: the warm build in `target/live/fix-seed`,
-/// built and proved first — `warm_seed`, `warm_check`), a fix loop's bug planted, `untested-changes` given the
+/// cell by cell, one turn each in tarae's chat on `TOOLS_CORPUS`, opus pinned, rust-analyzer on and its load waited
+/// for (`loaded`: 0b's cells were all asked mid-load, and `references` answered text matches), review at the end on;
+/// every cell made as the fix loops' are (`fix_cell`: the warm build in `target/live/fix-seed`, built and proved
+/// first — `warm_seed`, `warm_check`), a fix loop's bug planted, `untested-changes` given the
 /// corpus's last two commits (`replay_history`). Right: a chain task's share of keys met whole (`chain_met`),
 /// card-front's as the search A/B grades it, a fix loop's check on its project (`edit_check`). The stream kept has
 /// the question as its first line, so `cargo xtask fold` reads it too.
 ///
-/// **Its spend is the user's call, asked each time** — 0b is the off arm alone on the chain tasks (~$5, 5 × 2 runs,
-/// cap $6, with the language probe ~$7, cap $8 together): it starts only with `TARAE_AB_GO=1`, and refuses a chain task
+/// **Its spend is the user's call, asked each time** — 0b was the off arm alone on the chain tasks (~$5, 5 × 2 runs,
+/// cap $6): it starts only with `TARAE_AB_GO=1`, and refuses a chain task
 /// whose key the driver hasn't read again (`ChainTask.checked`). `TARAE_AB_RUNS` (2), `TARAE_AB_TASKS` (names,
 /// comma-separated; all eight — 0b: the five chain tasks), `TARAE_AB_BUDGET` ($ claude reports, 6: before each cell,
 /// none starts that the mean cell so far would carry past it), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_EFFORT`,
@@ -6136,8 +6163,7 @@ fn codemode_ab() {
                 let stream = teed_lsp(&sb, &llm, true);
                 let mut t = sb.spawn(&["src/main.rs"]);
                 code_trusted(&mut t);
-                t.wait_text("rust-analyzer ready");
-                let loading = !quiet(&mut t, 10);
+                let loading = !loaded(&mut t, &sb, LOADED_WITHIN, |_| {});
                 let started = Instant::now();
                 let (cards, capped) = ab_turn(&mut t, task.ask(), &stream);
                 let text = std::fs::read_to_string(&stream).unwrap_or_default();
@@ -6176,7 +6202,11 @@ fn codemode_ab() {
                         Some(Err(e)) => format!(" — check FAILED: {e}"),
                         _ => String::new(),
                     },
-                    if m.loading { " — ASKED WHILE RUST-ANALYZER WAS STILL AT WORK" } else { "" },
+                    if m.loading {
+                        " — ASKED WHILE RUST-ANALYZER WAS STILL LOADING (the wait's limit)"
+                    } else {
+                        ""
+                    },
                     m.answer.replace('\n', " ⏎ "),
                 );
                 eprintln!("{said}");
@@ -6217,6 +6247,84 @@ fn codemode_ab() {
     code_sums("CODEMODE_AB", &rows);
     eprintln!("CODEMODE_AB spent ${spent:.2} — the fold bound: codemode_ab_rescore");
     assert!(!rows.is_empty(), "no run");
+}
+
+/// How long rust-analyzer takes to load `TOOLS_CORPUS` in a cell's project (`fix_cell`), cold (no build in its
+/// `target`: its build scripts and proc macros compile) and warm (the warm build in `target/live/fix-seed`, as every
+/// A/B cell has it): from the code trust's `y` to "rust-analyzer ready" (its `initialize` answered), to its load
+/// over (`loaded`), each step the status line showed and when, and tarae.log's server lines (its quiescence too).
+/// No Claude, no network, no run of tarae's — the references-loading report's measure (main's
+/// `.sb/decisions/chat.md`). In tarae's sandbox rust-analyzer can't reach FSEvents: its load is about a second plus
+/// indexing. Outside it, as the A/Bs run, rust-analyzer 1.99's file watcher sets up folder by folder against this
+/// Mac's fseventsd: minutes. By hand: `cargo live rust_analyzer_load_on_the_corpus -- --nocapture`.
+#[test]
+#[cfg(target_os = "macos")]
+#[ignore = "live: run with `cargo live` (rust-analyzer on TOOLS_CORPUS; outside the sandbox its 1.99 watcher's setup against fseventsd takes minutes)"]
+fn rust_analyzer_load_on_the_corpus() {
+    if !have("cargo") || !have("rust-analyzer") {
+        return;
+    }
+    let bin = std::env::var("TARAE_AB_BIN").ok().filter(|v| !v.is_empty());
+    let seed = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/fix-seed");
+    // (the warm build is the A/B's, made by `warm_seed` — its runs need tarae's sandbox, so not here)
+    assert!(
+        seed.join("built-in").exists(),
+        "no warm build in {}: run codemode_ab's seed first",
+        seed.display()
+    );
+    let none = seed.join("none");
+    // (`TARAE_RA_CASES`: some of them, comma-separated — cold, warm)
+    let only = std::env::var("TARAE_RA_CASES").ok().filter(|v| !v.is_empty());
+    let cases = [("cold", &none), ("warm", &seed)];
+    let mut late = Vec::new();
+    for (case, from) in
+        cases.into_iter().filter(|c| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == c.0)))
+    {
+        let sb = fix_cell(&format!("ra-load-{case}"), from, bin.as_deref());
+        sb.write_config(&format!("{LIVE_CONFIG}[llm]\ncommand = \"true\"\n"));
+        let mut t = sb.spawn(&["src/main.rs"]);
+        code_trusted(&mut t);
+        let trusted = Instant::now();
+        t.wait_text("rust-analyzer ready");
+        let ready = trusted.elapsed();
+        // (each step the status line showed — its title, what it's at aside — and when it first did)
+        let mut steps: Vec<(Duration, String)> = Vec::new();
+        let at_work = |s: &Screen| -> Option<String> {
+            let st = s.status();
+            let i = st.find("rust-analyzer:")?;
+            let title = st[i..].split(" · ").next().unwrap_or_default();
+            Some(title.split("   ").next().unwrap_or_default().trim().to_string())
+        };
+        let over = loaded(&mut t, &sb, LOADED_WITHIN, |s| {
+            if let Some(w) = at_work(s)
+                && steps.last().is_none_or(|l| l.1 != w)
+            {
+                steps.push((trusted.elapsed(), w));
+            }
+        });
+        let took = trusted.elapsed();
+        // (then the check tarae asks once it's loaded: the status line quiet, what `quiet` waited for)
+        let still = over && quiet(&mut t, 10);
+        let calm = trusted.elapsed().saturating_sub(Duration::from_secs(10));
+        let log = std::fs::read_to_string(sb.state().join("tarae.log")).unwrap_or_default();
+        let ra: Vec<&str> = log.lines().filter(|l| l.contains("rust-analyzer")).collect();
+        eprintln!(
+            "RA_LOAD {case}: ready {:.1}s after the trust, quiescent{} at {:.1}s, the status line quiet{} at {:.1}s",
+            ready.as_secs_f64(),
+            if over { "" } else { " NOT (the limit)" },
+            took.as_secs_f64(),
+            if still { "" } else { " NOT" },
+            calm.as_secs_f64()
+        );
+        for (at, w) in &steps {
+            eprintln!("  {:>6.1}s  {w}", at.as_secs_f64());
+        }
+        eprintln!("  tarae.log:\n    {}", ra.join("\n    "));
+        if !over {
+            late.push(case);
+        }
+    }
+    assert!(late.is_empty(), "rust-analyzer still loading at the limit in {late:?}");
 }
 
 /// Each saved cell's fold bound (A + B), by its file's stem: `cargo xtask fold` on the folder — code mode (b)'s
@@ -6307,421 +6415,4 @@ fn codemode_ab_rescore() {
         eprintln!("CODEMODE_AB_RESCORED {gone} streams of tasks no longer in the set, not graded");
     }
     assert!(!rows.is_empty(), "no saved stream in {}", kept.display());
-}
-
-/// One language of code mode (b)'s probe: its name in file names, as the prompt says it, what its core gives a
-/// program there, its binding description (`tests/codemode/`: the same functions and fields, each its language's
-/// way — Go's is the stub package `go vet` checks against too), and its programs' extension.
-struct Lang {
-    name: &'static str,
-    title: &'static str,
-    core: &'static str,
-    bindings: &'static str,
-    ext: &'static str,
-}
-
-const LANGS: [Lang; 5] = [
-    Lang {
-        name: "python",
-        title: "Python",
-        core: "the built-in functions",
-        bindings: include_str!("codemode/bindings.py"),
-        ext: "py",
-    },
-    Lang {
-        name: "js",
-        title: "JavaScript",
-        core: "the built-in objects (console.log prints)",
-        bindings: include_str!("codemode/bindings.js"),
-        ext: "js",
-    },
-    Lang {
-        name: "ts",
-        title: "TypeScript",
-        core: "the built-in objects (console.log prints)",
-        bindings: include_str!("codemode/bindings.d.ts"),
-        ext: "ts",
-    },
-    Lang {
-        name: "lua",
-        title: "Lua",
-        core: "the base library, string and table",
-        bindings: include_str!("codemode/bindings.lua"),
-        ext: "lua",
-    },
-    Lang {
-        name: "go",
-        title: "Go",
-        core: "the packages fmt, strings, sort, strconv and regexp",
-        bindings: include_str!("codemode/bindings.go"),
-        ext: "go",
-    },
-];
-
-/// The probe's one request: a chain task's question and one language's binding description, the program alone back.
-fn lang_prompt(task: &ChainTask, lang: &Lang) -> String {
-    format!(
-        "Write one {title} program that answers the question below by calling tarae's functions, described after it. \
-         It runs in a small interpreter inside tarae, on the project the question is about: these functions, {core} \
-         and printing are there — no other module, no files, network or clock. Only what it prints comes back to \
-         you: print the answer itself. Reply with the program alone, in one fenced code block.\n\nThe question: \
-         {ask}\n\nThe functions:\n\n```{fence}\n{bindings}```\n",
-        title = lang.title,
-        core = lang.core,
-        ask = task.q.ask,
-        fence = lang.name,
-        bindings = lang.bindings,
-    )
-}
-
-/// The program in an answer: its first fenced block's body, else the whole answer.
-fn program_of(answer: &str) -> String {
-    let Some(at) = answer.find("```") else { return format!("{}\n", answer.trim()) };
-    let body = answer[at + 3..].split_once('\n').map_or("", |(_, b)| b);
-    format!("{}\n", body.split("```").next().unwrap_or(body).trim_end())
-}
-
-/// `bare_turn` with the model pinned.
-fn bare_turn_as(dir: &Path, tools: &str, model: &str, ask: &str) -> String {
-    bare_turn_with(dir, tools, &["--model", model], ask)
-}
-
-/// The probe for the own interpreter's language (the user, 2026-11-10: "응 측정해보고 결정하자"; the plan's §5 0b): for each
-/// chain task, Claude writes the program in Python, JavaScript, TypeScript, Lua and Go against that language's
-/// binding description (`LANGS`) — opus pinned, one request each, no tools; 5 × 5 × 2 = 50 programs, each request's
-/// stream kept in `target/live/codemode-lang/<task>-<lang>-<n>-<pid>.jsonl` with its program beside it. Read, free,
-/// by `codemode_lang_check`.
-///
-/// **Its spend is the user's call** (~$2, asked with 0b: ~$7, cap $8 together): only with `TARAE_AB_GO=1`.
-/// `TARAE_AB_RUNS` (2: programs a task and language), `TARAE_AB_BUDGET` ($, 2.5: before each request, none starts
-/// that the mean request so far would carry past it), `TARAE_AB_MODEL` ("opus").
-#[test]
-#[ignore = "live: run with `cargo live` (uses Claude — its spend asked of the user first)"]
-fn codemode_lang_probe() {
-    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    if var("TARAE_AB_GO").as_deref() != Some("1") {
-        skip("TARAE_AB_GO=1 once the user said yes to the spend (~$2, with 0b)");
-        return;
-    }
-    if !have("claude") {
-        return;
-    }
-    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(2);
-    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(2.5);
-    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
-    let kept = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/codemode-lang");
-    std::fs::create_dir_all(&kept).unwrap();
-    // (an empty folder: no project to read, and no tool to read it with)
-    let sb = Sandbox::live("codemode-lang");
-    let (mut spent, mut asked) = (0.0, 0);
-    'all: for n in 0..runs {
-        for task in &CHAIN_TASKS {
-            for lang in &LANGS {
-                let next = if asked == 0 { 0.0 } else { spent / asked as f64 };
-                if spent + next > budget {
-                    eprintln!(
-                        "LANG_PROBE budget: ${spent:.2} spent + ${next:.2} (a request's mean) passes ${budget}"
-                    );
-                    break 'all;
-                }
-                let stream = bare_turn_as(&sb.work(), "", &model, &lang_prompt(task, lang));
-                let cost = measure(&stream, "").cost;
-                (spent, asked) = (spent + cost, asked + 1);
-                let name = format!("{}-{}-{}-{}", task.q.name, lang.name, n + 1, std::process::id());
-                std::fs::write(kept.join(format!("{name}.jsonl")), &stream).unwrap();
-                std::fs::write(kept.join(format!("{name}.{}", lang.ext)), program_of(&result_of(&stream)))
-                    .unwrap();
-                eprintln!("LANG_PROBE {name}: ${cost:.4} · output {} tokens", output_tokens(&stream));
-            }
-        }
-    }
-    eprintln!("LANG_PROBE spent ${spent:.2} on {asked} programs — their check: codemode_lang_check");
-}
-
-/// A one-request stream's output tokens, as its result counts them.
-fn output_tokens(stream: &str) -> u64 {
-    let mut lines = stream.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
-    let r = lines.rfind(|v| v["type"] == "result");
-    r.and_then(|v| v["usage"]["output_tokens"].as_u64()).unwrap_or(0)
-}
-
-/// The images the check runs in, as Docker Hub names them; Lua's is built here from Alpine's (`lua_image`).
-const LANG_IMAGES: [(&str, &str); 5] = [
-    ("python", "python:3.13-slim"),
-    ("js", "node:24-slim"),
-    ("ts", "node:24-slim"),
-    ("lua", "tarae-codemode-lua"),
-    ("go", "golang:1.24"),
-];
-
-/// The Python check's script: the program parsed, and the constructs outside the own interpreter's planned subset
-/// (`class`, `import`, `try`, `with`, `yield` — the plan's §5 0b) listed. Python reading Python: the one way to
-/// parse it as Python does.
-const PY_CHECK: &str = r#"import ast, sys
-src = open(sys.argv[1], encoding="utf-8").read()
-try:
-    tree = ast.parse(src)
-except SyntaxError as e:
-    print("SyntaxError:", e)
-    sys.exit(1)
-names = {"ClassDef": "class", "Import": "import", "ImportFrom": "import", "Try": "try", "TryStar": "try",
-         "With": "with", "AsyncWith": "with", "Yield": "yield", "YieldFrom": "yield"}
-print("outside: " + ",".join(sorted({names[type(n).__name__] for n in ast.walk(tree) if type(n).__name__ in names})))
-"#;
-
-/// TypeScript's types taken out by Node's own `stripTypeScriptTypes` (transform mode: an `enum` is TypeScript too),
-/// what's left written for `node --check`.
-const TS_STRIP: &str = r#"const m = require("node:module");
-const fs = require("node:fs");
-fs.writeFileSync(process.argv[3], m.stripTypeScriptTypes(fs.readFileSync(process.argv[2], "utf8"), { mode: "transform" }));
-"#;
-
-/// The Lua image: Alpine's `lua5.4` package, built once (its build reaches Alpine's mirror; the check's containers
-/// reach nothing).
-fn lua_image() -> Result<(), String> {
-    let have = Command::new("docker").args(["image", "inspect", "tarae-codemode-lua"]).output();
-    if have.is_ok_and(|o| o.status.success()) {
-        return Ok(());
-    }
-    use std::io::Write;
-    let mut build = Command::new("docker")
-        .args(["build", "-q", "-t", "tarae-codemode-lua", "-"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("docker build: {e}"))?;
-    let mut stdin = build.stdin.take().unwrap();
-    stdin.write_all(b"FROM alpine:3.20\nRUN apk add --no-cache lua5.4\n").unwrap();
-    drop(stdin);
-    match build.wait() {
-        Ok(s) if s.success() => Ok(()),
-        _ => Err("docker build of tarae-codemode-lua failed".into()),
-    }
-}
-
-/// A program of `lang` checked in Docker as code mode (b)'s probe reads it — one container at a time, with no network
-/// (`--network none`), the program's folder read-only: Python `ast.parse` (Ok's list: the constructs outside the
-/// planned subset), JavaScript `node --check`, TypeScript type-stripped then `node --check`, Lua `luac -p`, Go `go vet`
-/// in one package with the bindings' stub. Err: what the check said. `dir`: the program's folder, made new here.
-fn lang_check(lang: &str, program: &str, dir: &Path) -> Result<Vec<String>, String> {
-    let _ = std::fs::remove_dir_all(dir);
-    std::fs::create_dir_all(dir).unwrap();
-    let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
-    let cmd = match lang {
-        "python" => {
-            write("check.py", PY_CHECK);
-            write("p.py", program);
-            "python3 -I /w/check.py /w/p.py"
-        }
-        "js" => {
-            write("p.js", program);
-            "node --check /w/p.js"
-        }
-        "ts" => {
-            write("strip.js", TS_STRIP);
-            write("p.ts", program);
-            "node /w/strip.js /w/p.ts /tmp/p.js && node --check /tmp/p.js"
-        }
-        "lua" => {
-            lua_image()?;
-            write("p.lua", program);
-            "luac5.4 -p /w/p.lua"
-        }
-        "go" => {
-            write("go.mod", "module probe\n\ngo 1.24\n");
-            write("bindings.go", LANGS[4].bindings);
-            write("p.go", program);
-            "cd /w && GOTOOLCHAIN=local GOFLAGS=-mod=mod go vet ."
-        }
-        _ => return Err(format!("no check for {lang}")),
-    };
-    let image = LANG_IMAGES.iter().find(|(l, _)| *l == lang).map(|(_, i)| *i).unwrap();
-    let real = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let out = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "-v"])
-        .arg(format!("{}:/w:ro", real.display()))
-        .args([image, "sh", "-c", cmd])
-        .output()
-        .map_err(|e| format!("docker: {e}"))?;
-    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    if !out.status.success() {
-        return Err(said.lines().take(4).collect::<Vec<_>>().join(" ⏎ "));
-    }
-    let outside = said.lines().find_map(|l| l.strip_prefix("outside: ")).unwrap_or_default();
-    Ok(outside.split(',').filter(|c| !c.is_empty()).map(String::from).collect())
-}
-
-/// The plan's rule for the own interpreter's language (`.sb/codemode-b-plan.md` §5 0b, set before the probe): the
-/// highest pass rate wins, within 1 of 10 the fewer median output tokens; within 10 % of Python on both, Python; Go only
-/// on a clear win over that pick (pass ≥ +2 of 10 and tokens ≤ −15 %) — its interpreter needs a type checker. `rows`:
-/// (language, passed, programs, median output tokens). The pick and why.
-fn lang_pick(rows: &[(&str, usize, usize, f64)]) -> (String, String) {
-    // (passes out of 10)
-    let rate = |r: &(&str, usize, usize, f64)| r.1 as f64 * 10.0 / r.2.max(1) as f64;
-    let others: Vec<&(&str, usize, usize, f64)> = rows.iter().filter(|r| r.0 != "go").collect();
-    let best = others.iter().map(|r| rate(r)).fold(f64::MIN, f64::max);
-    let near = others.iter().filter(|r| rate(r) >= best - 1.0);
-    let Some(mut pick) = near.min_by(|a, b| a.3.total_cmp(&b.3)).copied() else {
-        return ("—".into(), "no program checked".into());
-    };
-    let mut why = format!("{}: the best pass rate, the fewest tokens within 1 of 10", pick.0);
-    if let Some(py) = rows.iter().find(|r| r.0 == "python")
-        && pick.0 != "python"
-        && rate(py) >= rate(pick) - 1.0
-        && py.3 <= pick.3 * 1.1
-    {
-        why = format!("python: within 10 % of {} on both", pick.0);
-        pick = py;
-    }
-    if let Some(go) = rows.iter().find(|r| r.0 == "go")
-        && rate(go) >= rate(pick) + 2.0
-        && go.3 <= pick.3 * 0.85
-    {
-        why = format!("go: a clear win over {} (pass ≥ +2 of 10, tokens ≤ −15 %)", pick.0);
-        pick = go;
-    }
-    (pick.0.to_string(), why)
-}
-
-#[test]
-fn the_language_pick_follows_the_rule_set_before() {
-    // (JavaScript wins on tokens among the best rates, but Python is within 10 % on both; Go's win isn't clear)
-    let rows = [
-        ("python", 9, 10, 500.0),
-        ("js", 10, 10, 480.0),
-        ("ts", 10, 10, 520.0),
-        ("lua", 7, 10, 400.0),
-        ("go", 10, 10, 450.0),
-    ];
-    assert_eq!(lang_pick(&rows).0, "python", "{}", lang_pick(&rows).1);
-    // (Python two passes behind: the best rate's fewest tokens)
-    let rows = [
-        ("python", 6, 10, 600.0),
-        ("js", 10, 10, 500.0),
-        ("ts", 9, 10, 550.0),
-        ("lua", 5, 10, 400.0),
-        ("go", 10, 10, 300.0),
-    ];
-    assert_eq!(lang_pick(&rows).0, "js", "{}", lang_pick(&rows).1);
-    // (Go three passes ahead and 25 % fewer tokens: a clear win)
-    let rows = [
-        ("python", 7, 10, 600.0),
-        ("js", 7, 10, 620.0),
-        ("ts", 6, 10, 640.0),
-        ("lua", 5, 10, 500.0),
-        ("go", 10, 10, 450.0),
-    ];
-    assert_eq!(lang_pick(&rows).0, "go", "{}", lang_pick(&rows).1);
-}
-
-/// `codemode_lang_probe`'s kept programs checked (`lang_check`, free: no Claude, Docker with no network, one at a
-/// time): per language, programs passing of all, the median output tokens, and Python's constructs outside the planned
-/// subset; then the plan's pick (`lang_pick`). Each program's check folder in `target/live/codemode-lang-check/`.
-/// By hand: `cargo test --test live codemode_lang_check -- --ignored --nocapture`.
-#[test]
-#[ignore = "by hand: Docker (no network in its containers); reads codemode_lang_probe's kept programs"]
-fn codemode_lang_check() {
-    if !have("docker") {
-        return;
-    }
-    let live = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live");
-    let (kept, checks) = (live.join("codemode-lang"), live.join("codemode-lang-check"));
-    let Ok(dir) = std::fs::read_dir(&kept) else {
-        skip("no target/live/codemode-lang: run codemode_lang_probe first");
-        return;
-    };
-    let mut names: Vec<String> = dir.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
-    names.retain(|n| n.ends_with(".jsonl"));
-    names.sort();
-    // (each program's pass, output tokens, constructs outside the subset)
-    type Programs = Vec<(bool, u64, Vec<String>)>;
-    let mut by: std::collections::BTreeMap<&str, Programs> = Default::default();
-    for name in &names {
-        let stem = name.trim_end_matches(".jsonl");
-        let Some(lang) = LANGS.iter().find(|l| stem.split('-').rev().nth(2) == Some(l.name)) else {
-            continue;
-        };
-        let stream = std::fs::read_to_string(kept.join(name)).unwrap_or_default();
-        let tokens = output_tokens(&stream);
-        let checked = lang_check(lang.name, &program_of(&result_of(&stream)), &checks.join(stem));
-        eprintln!(
-            "LANG_CHECK {stem}: {} · {tokens} output tokens",
-            match &checked {
-                Ok(o) if o.is_empty() => "passes".to_string(),
-                Ok(o) => format!("passes, outside the subset: {}", o.join(", ")),
-                Err(e) => format!("FAILS: {e}"),
-            }
-        );
-        let (ok, outside) = match checked {
-            Ok(o) => (true, o),
-            Err(_) => (false, Vec::new()),
-        };
-        by.entry(lang.name).or_default().push((ok, tokens, outside));
-    }
-    eprintln!(
-        "LANG_CHECK — language: passed of programs · median output tokens · programs outside the subset"
-    );
-    let mut rows = Vec::new();
-    for lang in &LANGS {
-        let Some(of) = by.get(lang.name) else { continue };
-        let passed = of.iter().filter(|p| p.0).count();
-        let tokens = median(of.iter().map(|p| p.1 as f64).collect());
-        let outside = match lang.name {
-            "python" => of.iter().filter(|p| !p.2.is_empty()).count().to_string(),
-            _ => "—".into(),
-        };
-        eprintln!("LANG_CHECK {}: {passed} of {} · {tokens:.0} · {outside}", lang.name, of.len());
-        rows.push((lang.name, passed, of.len(), tokens));
-    }
-    let (pick, why) = lang_pick(&rows);
-    eprintln!("LANG_CHECK pick: {pick} — {why}");
-    assert!(!rows.is_empty(), "no kept program in {}", kept.display());
-}
-
-/// The check itself checked: a hand-written program in each language passes, the same broken on purpose fails — a
-/// check that passed everything would pass these too — and Python's `import` is seen as outside the subset.
-#[test]
-#[ignore = "by hand: Docker (codemode_lang_check's own check)"]
-fn the_language_check_fails_a_broken_program_in_each_language() {
-    if !have("docker") {
-        return;
-    }
-    let samples: [(&str, &str, &str); 5] = [
-        (
-            "python",
-            "for h in search(\"x\", \"src\", False, False):\n    print(h[\"path\"], h[\"fn\"])\n",
-            "for h in search(\"x\")\n    print(h)\n",
-        ),
-        (
-            "js",
-            "for (const h of search(\"x\")) console.log(h.path);\n",
-            "for (const h of search(\"x\") console.log(h);\n",
-        ),
-        (
-            "ts",
-            "const hits = search(\"x\") as Hit[];\nfor (const h of hits) console.log(h.path);\n",
-            "const n: number = ;\n",
-        ),
-        (
-            "lua",
-            "for _, h in ipairs(search(\"x\")) do print(h.path) end\n",
-            "for _, h in ipairs(search(\"x\")) print(h.path) end\n",
-        ),
-        (
-            "go",
-            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\thits, err := Search(\"x\", \"\", false, false)\n\tif err != nil \
-             {\n\t\treturn\n\t}\n\tfor _, h := range hits {\n\t\tfmt.Println(h.Path, h.Fn)\n\t}\n}\n",
-            // (a field the stub hasn't: `go vet` type-checks against the bindings, not only the syntax)
-            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\thits, _ := Search(\"x\", \"\", false, false)\n\tfor _, h := range \
-             hits {\n\t\tfmt.Println(h.Name)\n\t}\n}\n",
-        ),
-    ];
-    let checks = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/codemode-lang-check");
-    for (lang, good, broken) in samples {
-        let ok = lang_check(lang, good, &checks.join(format!("sample-{lang}")));
-        assert!(ok.as_ref().is_ok_and(|o| o.is_empty()), "{lang}'s program fails: {ok:?}");
-        let bad = lang_check(lang, broken, &checks.join(format!("sample-{lang}-broken")));
-        assert!(bad.is_err(), "{lang}'s broken program passes");
-    }
-    let import = lang_check("python", "import re\nprint(re.escape(\"a\"))\n", &checks.join("sample-import"));
-    assert_eq!(import, Ok(vec!["import".to_string()]));
 }

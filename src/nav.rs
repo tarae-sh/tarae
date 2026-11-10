@@ -409,7 +409,8 @@ fn refs_text(
 }
 
 /// The name's whole-word text matches in the project (case as written), as the answer — `why` the
-/// server's references aren't (`later`: they will be, ask again).
+/// server's references aren't (`later`: they will be, ask again). Its first line's words are matched by
+/// `xtask/src/fold.rs`'s `while_loading`: change them together.
 fn text_matches(ed: &mut Editor, call: Call, name: Name, why: String, later: bool) {
     let (root, keys) = (project_root(ed), crate::reads::Keys::of(ed));
     let Name { word, tests } = name;
@@ -697,7 +698,8 @@ fn lsp_kind(kind: u64, name: &str) -> &'static str {
 }
 
 /// tarae's outline (`syntax::outline` — its grammar, on a worker) as the answer — `why` the server's
-/// symbols aren't.
+/// symbols aren't. Its first line's words are matched by `xtask/src/fold.rs`'s `while_loading`: change them
+/// together.
 fn outline(ed: &mut Editor, call: Call, path: PathBuf, line: Option<usize>, why: String) {
     let text = ed.docs.iter().find(|d| d.path.as_ref() == Some(&path) && !d.loading).map(|d| d.text.clone());
     let shown = rel(&project_root(ed), &path);
@@ -1379,7 +1381,7 @@ fn signature(line: &dyn Fn(usize) -> Option<String>, at: usize) -> String {
 
 /// The syntax tree's definitions of `word` (its implementations for `goto` implementation) among its
 /// whole-word text matches in the project, as the answer — `why` the server's isn't (`later`: it will be,
-/// ask again).
+/// ask again). Its first line's words are matched by `xtask/src/fold.rs`'s `while_loading`: change them together.
 fn tree_defs(ed: &mut Editor, call: Call, word: String, goto: Goto, why: String, later: bool) {
     if word.is_empty() {
         return answer(ed, call, Ok(format!("{why} — and there's no name at that column to look for")));

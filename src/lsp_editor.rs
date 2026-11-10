@@ -1424,6 +1424,10 @@ impl Editor {
                     c.log().line(&c.name, "health", format!("{health} {msg}").trim_end());
                 }
                 let became = quiescent && c.quiescent != Some(true);
+                if c.quiescent != Some(quiescent) {
+                    let said = if quiescent { "nothing left to load" } else { "loading" };
+                    c.log().line(&c.name, "quiescent", said);
+                }
                 (c.quiescent, c.health) = (Some(quiescent), health);
                 c.settled_once |= quiescent;
                 if quiescent {
@@ -3528,6 +3532,7 @@ impl Editor {
         let cid = self.server_for_doc(id, kind).ok_or((cannot.to_string(), false))?;
         let c = self.client(cid).ok_or(("its language server stopped".to_string(), true))?;
         if !c.ready {
+            // ("is starting": matched by `xtask/src/fold.rs`'s `while_loading` — change them together)
             return Err((format!("{} is starting", c.name), true));
         }
         Ok(cid)

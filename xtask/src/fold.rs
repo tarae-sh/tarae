@@ -22,6 +22,13 @@
 //!   program that kept none of it in the context. An upper bound too.
 //! - **The self-check:** the requests' summed cost against the `result` event's `total_cost_usd`; more than 2 %
 //!   apart is said on the cell's line (the rates, or a model the requests don't show — WebFetch's).
+//!
+//! Apart from folding, a line a folder: **the nav answers given while a server loaded** (the references-loading
+//! brief, main's `.sb/decisions/chat.md`). Of `NAV`'s answers, those that are tarae's stand-in for a server that
+//! will answer later (`while_loading`: text matches for `references`, the syntax tree's for `definition`, tarae's
+//! outline for `symbols`, each saying the server is starting, still loading or didn't answer in time), by tool, of
+//! how many; their characters; and what they cost to carry: each one's share (by characters) of the results its
+//! next request wrote to the cache, at that request's write rates, and the same tokens read by each request after.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -56,6 +63,9 @@ const EXEMPT: [(&str, &str); 14] = [
     ("git", "offset"),
     ("read", "offset"),
 ];
+
+/// The tools that answer with a stand-in while a server loads (`nav.rs`).
+const NAV: [&str; 3] = ["references", "definition", "symbols"];
 
 /// A result this many tokens or more is large (`turns::LARGE`'s 8k: code mode's gate counts the same).
 const LARGE: u64 = 8_000;
@@ -184,6 +194,43 @@ struct Cell {
     total: Option<f64>,
     /// Models the result's `modelUsage` billed.
     models: usize,
+    /// Its nav answers (`NAV`), in the order they came.
+    nav: Vec<NavAnswer>,
+}
+
+/// A nav tool's answer in a cell.
+struct NavAnswer {
+    tool: String,
+    /// tarae's stand-in for a server still loading (`while_loading`).
+    loading: bool,
+    chars: usize,
+    /// The request that came after it (None: none did) — and the characters of every result in its step, this
+    /// one's too: what that request wrote to the cache besides its own call.
+    next: Option<usize>,
+    step: usize,
+}
+
+/// Whether `text`, tool `name`'s answer, is tarae's stand-in for a server that will answer later (`nav.rs`'s
+/// `text_matches`, `tree_defs`, `outline`): its first line says what it is and why — starting, still loading, or no
+/// answer in time. The words are copies of theirs (and of `lsp_editor.rs`'s `tool_server`, "is starting"), each of
+/// those naming this function: a wording changed there is changed here, else fold counts 0.
+fn while_loading(name: &str, text: &str) -> bool {
+    let first = text.lines().next().unwrap_or_default();
+    let later =
+        ["is still loading", " is starting", "didn't answer within"].iter().any(|w| first.contains(w));
+    let stand_in = match name {
+        "references" => {
+            first.contains(", so these are the whole-word text matches of `")
+                || first.starts_with("no text matches of `")
+        }
+        "definition" => {
+            first.contains(" by the syntax tree among its text matches — ")
+                || first.contains(" found by the syntax tree either — ")
+        }
+        "symbols" => first.contains("(tarae's outline — "),
+        _ => false,
+    };
+    stand_in && later
 }
 
 fn text_of(content: &Value) -> String {
@@ -197,18 +244,27 @@ fn text_of(content: &Value) -> String {
 }
 
 fn cell(stream: &str) -> Cell {
-    let mut c = Cell { requests: Vec::new(), seen: String::new(), total: None, models: 0 };
+    let mut c = Cell { requests: Vec::new(), seen: String::new(), total: None, models: 0, nav: Vec::new() };
     let mut totals: BTreeMap<String, f64> = BTreeMap::new();
     // (the last thing a request could follow: a tool result, else a question)
     let mut after_result = false;
     let mut started: Option<usize> = None;
-    let at = |c: &mut Cell, id: &str, after_result: bool| -> usize {
+    // (each call's tool by its id; the characters of the results since the last request began)
+    let mut called: BTreeMap<String, String> = BTreeMap::new();
+    let mut step = 0;
+    let at = |c: &mut Cell, id: &str, after_result: bool, step: &mut usize| -> usize {
         match c.requests.iter().position(|r| r.id == id) {
             Some(i) => i,
             None => {
                 let seen = c.seen.len();
                 c.requests.push(Request { id: id.to_string(), after_result, seen, ..Default::default() });
-                c.requests.len() - 1
+                let i = c.requests.len() - 1;
+                // (the nav answers waiting for a request: this one carries them first)
+                for a in c.nav.iter_mut().filter(|a| a.next.is_none()) {
+                    (a.next, a.step) = (Some(i), *step);
+                }
+                *step = 0;
+                i
             }
         }
     };
@@ -227,7 +283,7 @@ fn cell(stream: &str) -> Cell {
                 match e["type"].as_str() {
                     Some("message_start") => {
                         let id = e["message"]["id"].as_str().unwrap_or_default();
-                        let i = at(&mut c, id, after_result);
+                        let i = at(&mut c, id, after_result, &mut step);
                         started = Some(i);
                     }
                     Some("message_delta") => {
@@ -240,7 +296,7 @@ fn cell(stream: &str) -> Cell {
             }
             Some("assistant") => {
                 let m = &v["message"];
-                let i = at(&mut c, m["id"].as_str().unwrap_or_default(), after_result);
+                let i = at(&mut c, m["id"].as_str().unwrap_or_default(), after_result, &mut step);
                 let r = &mut c.requests[i];
                 r.model = m["model"].as_str().unwrap_or_default().to_string();
                 if m["usage"].is_object() {
@@ -252,8 +308,9 @@ fn cell(stream: &str) -> Cell {
                             r.text = true
                         }
                         Some("tool_use") => {
-                            let name = b["name"].as_str().unwrap_or_default();
-                            r.calls.push((tool(name).to_string(), b["input"].clone()));
+                            let name = tool(b["name"].as_str().unwrap_or_default()).to_string();
+                            called.insert(b["id"].as_str().unwrap_or_default().to_string(), name.clone());
+                            r.calls.push((name, b["input"].clone()));
                         }
                         _ => {}
                     }
@@ -272,7 +329,19 @@ fn cell(stream: &str) -> Cell {
                     }
                     false => {
                         for b in results {
-                            c.seen += &text_of(&b["content"]);
+                            let text = text_of(&b["content"]);
+                            step += text.chars().count();
+                            let name = called.get(b["tool_use_id"].as_str().unwrap_or_default());
+                            if let Some(name) = name.filter(|n| NAV.contains(&n.as_str())) {
+                                c.nav.push(NavAnswer {
+                                    tool: name.clone(),
+                                    loading: while_loading(name, &text),
+                                    chars: text.chars().count(),
+                                    next: None,
+                                    step: 0,
+                                });
+                            }
+                            c.seen += &text;
                             c.seen.push('\n');
                         }
                         after_result = true;
@@ -395,6 +464,27 @@ struct Measured {
     folding: usize,
     /// The self-check, when it failed: said on the cell's line.
     check: Option<String>,
+    /// Nav answers by tool: given while a server loaded, of how many.
+    nav: BTreeMap<String, (usize, usize)>,
+    /// The loading ones' characters, and what carrying them cost: written to the cache, read after.
+    loading_chars: usize,
+    loading_cost: (f64, f64),
+}
+
+/// What carrying nav answer `a` cost in cell `c`: its share by characters of what its next request wrote to the
+/// cache (that step's results), at that request's write rates; the same tokens read by each request after it.
+fn carried(c: &Cell, a: &NavAnswer) -> (f64, f64) {
+    let Some(j) = a.next else { return (0.0, 0.0) };
+    let r = &c.requests[j];
+    let Some(rates) = rates(&r.model, r.usage[0] + r.written() + r.usage[3]) else { return (0.0, 0.0) };
+    if r.written() == 0 || a.step == 0 {
+        return (0.0, 0.0);
+    }
+    let share = a.chars as f64 / a.step as f64;
+    let written = r.usage[1] as f64 * rates.write_5m + r.usage[2] as f64 * rates.write_1h;
+    let tokens = r.written() as f64 * share;
+    let after = (c.requests.len() - j - 1) as f64;
+    (written * share / 1e6, tokens * after * rates.read / 1e6)
 }
 
 fn measured(c: &Cell) -> Measured {
@@ -423,7 +513,64 @@ fn measured(c: &Cell) -> Measured {
         )),
         Some(_) => None,
     };
-    Measured { cost, a, b, requests: n, folding, check }
+    let mut nav: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    let (mut loading_chars, mut loading_cost) = (0, (0.0, 0.0));
+    for x in &c.nav {
+        let e = nav.entry(x.tool.clone()).or_default();
+        e.1 += 1;
+        if x.loading {
+            e.0 += 1;
+            loading_chars += x.chars;
+            let (w, r) = carried(c, x);
+            loading_cost = (loading_cost.0 + w, loading_cost.1 + r);
+        }
+    }
+    Measured { cost, a, b, requests: n, folding, check, nav, loading_chars, loading_cost }
+}
+
+/// The folder's line of nav answers given while a server loaded (the module's doc), over `cells`.
+fn loading_line(cells: &[&Measured]) -> String {
+    let mut by: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for m in cells {
+        for (tool, (l, n)) in &m.nav {
+            let e = by.entry(tool.as_str()).or_default();
+            (e.0, e.1) = (e.0 + l, e.1 + n);
+        }
+    }
+    if by.is_empty() {
+        return "\nNav answers while a server loaded: none — no references, definition or symbols answer.\n"
+            .into();
+    }
+    let tools: Vec<String> = by.iter().map(|(t, (l, n))| format!("{t} {l} of {n}")).collect();
+    let chars: usize = cells.iter().map(|m| m.loading_chars).sum();
+    let (w, r) = cells.iter().fold((0.0, 0.0), |s, m| (s.0 + m.loading_cost.0, s.1 + m.loading_cost.1));
+    let cost: f64 = cells.iter().map(|m| m.cost).sum();
+    let share =
+        if cost > 0.0 { format!(", {:.0} % of the cells' $", (w + r) * 100.0 / cost) } else { String::new() };
+    let cells_with = cells.iter().filter(|m| m.loading_chars > 0).count();
+    format!(
+        "\nNav answers while a server loaded: {} · in {cells_with} of {} cells · {} chars · {} to carry ({} written, \
+         {} read after){share}.\n",
+        tools.join(", "),
+        cells.len(),
+        thousands(chars),
+        dollars(w + r),
+        dollars(w),
+        dollars(r),
+    )
+}
+
+/// `n` with a comma every three digits.
+fn thousands(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// A cell's task and arm from its file's name, `<task>-<arm>-<run>-<pid>` as the live A/Bs keep them; else the
@@ -512,6 +659,7 @@ fn report(groups: &[(String, Vec<(String, String)>)]) -> String {
             every.len(),
             CHECK * 100.0
         );
+        out += &loading_line(&every);
         totals.push(row(vec![name.clone()], &every));
     }
     out += "\n## Totals\n\n";
@@ -554,6 +702,37 @@ mod tests {
         let r = report(&[("kept".into(), vec![("find-off-1-7".into(), off)])]);
         assert!(r.contains("— rates off: $0.1528 summed, $0.2000 claude's"), "{r}");
         assert!(r.contains("Self-check: 1 of 1 cells"), "{r}");
+    }
+
+    /// The nav answers given while a server loaded, from a hand-made cell: `references` twice (text matches while
+    /// rust-analyzer loads — counted; text matches because it found none, nothing later — not), `definition` once
+    /// (the server's: not), `symbols` twice (tarae's outline while it loads — counted; the server's — not). The
+    /// first is carried by the second request (its share of that step's 4,000 tokens written, read once after), the
+    /// outline by the third (written, nothing after).
+    #[test]
+    fn the_nav_answers_given_while_a_server_loaded_are_counted_and_priced() {
+        let text = include_str!("../fixtures/fold-loading.jsonl");
+        let r = report(&[("kept".into(), vec![("callers-off-1-7".into(), text.into())])]);
+        let has = |s: &str| assert!(r.contains(s), "{s:?} not in:\n{r}");
+        has(
+            "Nav answers while a server loaded: definition 0 of 1, references 1 of 2, symbols 1 of 2 · in 1 of 1 cells",
+        );
+        let c = cell(text);
+        let len = |a: &NavAnswer| a.chars as f64;
+        let [t1, t2, t5, t3, t4] = &c.nav[..] else { panic!("5 nav answers: {}", c.nav.len()) };
+        assert_eq!(c.nav.iter().map(|a| a.loading).collect::<Vec<_>>(), [true, false, false, true, false]);
+        assert_eq!((t1.next, t3.next), (Some(1), Some(2)));
+        let m = measured(&c);
+        assert_eq!(m.loading_chars, t1.chars + t3.chars);
+        has(&format!(" · {} chars · ", thousands(m.loading_chars)));
+        // (opus 5.5: an hour's write $8, a read $0.20, a million each)
+        let one = len(t1) / (len(t1) + len(t2) + len(t5));
+        let three = len(t3) / (len(t3) + len(t4));
+        let written = (4000.0 * one + 1000.0 * three) * 8.0 / 1e6;
+        let read = 4000.0 * one * 0.20 / 1e6;
+        assert!((m.loading_cost.0 - written).abs() < 1e-12, "written {} ≠ {written}", m.loading_cost.0);
+        assert!((m.loading_cost.1 - read).abs() < 1e-12, "read {} ≠ {read}", m.loading_cost.1);
+        assert_eq!(thousands(1234567), "1,234,567");
     }
 
     /// A read's range is met by a hit it holds or an end a result wrote; a name or path as written; a number only
