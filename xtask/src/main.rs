@@ -88,6 +88,7 @@ mod deb;
 mod dockerlock;
 mod failures;
 mod focus;
+mod fold;
 mod glyphs;
 mod homepage;
 mod kernels;
@@ -168,6 +169,7 @@ fn main() {
         Some("cardreview-eval") => cardeval::run(&args[1..]),
         Some("reviews") => reviews::run(&args[1..]),
         Some("turns") => turns::run(&args[1..]),
+        Some("fold") => fold::run(&args[1..]),
         Some("compat") => compat::run(&args[1..]),
         Some("glyphs") => glyphs::run(&args[1..]),
         Some("homepage") => homepage::run(&args[1..]),
@@ -176,7 +178,7 @@ fn main() {
         Some("sound") => sound::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | remote [--dry-run] [--keep-vm] | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | cardreview-eval [--record PATH] [--model M] [--model-2 M2] [--budget USD] [--keep-key] | reviews [PATH …] | turns [PATH …] | fold PATH … | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };

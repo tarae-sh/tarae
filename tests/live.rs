@@ -4691,10 +4691,16 @@ fn probe_turn(dir: &Path, content: serde_json::Value) -> (String, String, u64) {
 
 /// One turn of a bare `claude -p` in `dir` with Claude Code's `tools` (allowed up front): its whole stream.
 fn bare_turn(dir: &Path, tools: &str, ask: &str) -> String {
+    bare_turn_with(dir, tools, &[], ask)
+}
+
+/// `bare_turn`, with more of claude's flags (`bare_turn_as`: the model).
+fn bare_turn_with(dir: &Path, tools: &str, more: &[&str], ask: &str) -> String {
     use std::io::{BufRead, Write};
     let mut child = Command::new("claude")
         .args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
         .args(["--tools", tools, "--allowedTools", tools, "--strict-mcp-config", "--setting-sources", ""])
+        .args(more)
         .arg("--no-session-persistence")
         .current_dir(dir)
         .stdin(std::process::Stdio::piped())
@@ -5583,4 +5589,1139 @@ fn fix_tasks_warm() {
         Ok(built) => eprintln!("FIX_WARM a cell's check through tarae's run compiled {built:?}"),
         Err(e) => panic!("not warm — {e}"),
     }
+}
+
+// ── Code mode (b): the chain tasks, the A/B and the language probe ──────────────────────────────────
+
+/// A chain task of code mode (b) (the design session's `.sb/codemode-b-plan.md` §5, step 0): a question on
+/// `TOOLS_CORPUS` whose answer is a small exact set — 3 to 8 items, each a key (`chain_met`) — that takes 3 or more
+/// dependent calls without code mode, naming no file the answer lives in. Its keys were read at the corpus commit,
+/// each one's derivation and the calls expected in `.sb/codemode-b-tasks.md`; `checked` is the day the driver read
+/// them again there — "" not yet, and `codemode_ab` refuses the task. `out`: the candidates the task's filtering
+/// leaves out, each named takes a key off (`chain_right`), derived beside the keys. `history`: the cell needs the
+/// corpus's last two commits as its git history (`replay_history`).
+struct ChainTask {
+    q: Question,
+    out: &'static [&'static str],
+    checked: &'static str,
+    history: bool,
+}
+
+const CHAIN_TASKS: [ChainTask; 5] = [
+    // (kind 1, the callers of a function that pass a given argument: `--show-toplevel` through `gitrepo::git` —
+    // codereview's three through its wrapper `git`; `gitpanel::top_of`'s own callers are neither keys nor outs)
+    ChainTask {
+        q: Question {
+            name: "git-toplevel",
+            ask: "Which functions outside tests hold a call that passes rev-parse --show-toplevel to gitrepo::git, \
+                  directly or through a function that forwards its arguments to it? Callers of those functions \
+                  don't count. Name each as module::function, the module being its file's name without .rs. Name \
+                  only the items of the answer, not the ones you ruled out. Answer from the code; change nothing.",
+            key: &[
+                &["codereview::gitlink_now"],
+                &["codereview::start_in"],
+                &["codereview::beyond_turn"],
+                &["gitmenu::changed"],
+                &["gitpanel::status"],
+                &["gitpanel::top_of"],
+            ],
+        },
+        // (the other `rev-parse` calls outside tests: through `gitrepo::git`, through `Repo::run`, which
+        // `gitrepo::git` calls, and the repository discovery's own Command under `repo()`, which takes the top from
+        // `--show-cdup` — no test code at the corpus asks for `--show-toplevel`)
+        out: &[
+            "codereview::push_bring_card",
+            "codereview::show_binary",
+            "gitpanel::force_ask",
+            "gitpanel::git_commit_open",
+            "gitpanel::git_branch_delete_asking",
+            "gitpanel::git_branch_delete_answer",
+            "worktree::sha",
+            "reviewer::start",
+            "hooks::unseen",
+            "diffview::base_text",
+            "worktree::remove",
+            "gitrepo::resolve_with",
+        ],
+        checked: "2026-11-10",
+        history: false,
+    },
+    // (kind 2, a list in the code against another: the `[llm]` settings less `trust::RISKY` and `trust::YOURS_ONLY`
+    // — the literal instance, RISKY against the settings reference, is empty at this commit: that page is the table's)
+    ChainTask {
+        q: Question {
+            name: "untrusted-llm",
+            ask: "Which llm settings can a project's own .tarae.toml set while the project isn't trusted? Name each \
+                  in full (llm.…). Name only the items of the answer, not the ones you ruled out. Answer from the \
+                  code; change nothing.",
+            key: &[
+                &["llm.model"],
+                &["llm.effort"],
+                &["llm.follow"],
+                &["llm.follow-resume"],
+                &["llm.stuck-after"],
+                &["llm.stuck-after-outside"],
+                &["llm.sandbox-kept-days"],
+                &["llm.context-lines"],
+            ],
+        },
+        // (`trust::RISKY`'s `llm.` sixteen, then `trust::YOURS_ONLY`'s three)
+        out: &[
+            "llm.command",
+            "llm.args",
+            "llm.run-allow",
+            "llm.review-ask",
+            "llm.review-at-end",
+            "llm.chat-settings",
+            "llm.sandbox",
+            "llm.sandbox-network",
+            "llm.sandbox-hosts",
+            "llm.sandbox-upstream",
+            "llm.sandbox-write",
+            "llm.sandbox-protect",
+            "llm.sandbox-ports",
+            "llm.sandbox-localhost",
+            "llm.sandbox-env",
+            "llm.screen-terminal",
+            "llm.environment-key",
+            "llm.billing",
+            "llm.reviewer-billing",
+        ],
+        checked: "2026-11-10",
+        history: false,
+    },
+    // (kind 3, the functions that call both of two: editdiff's one-argument `clip` is a function of its own)
+    ChainTask {
+        q: Question {
+            name: "count-and-clip",
+            ask: "Which functions outside tests call both nav::count and nav::clip? Name each as module::function, \
+                  the module being its file's name without .rs. Name only the items of the answer, not the ones you \
+                  ruled out. Answer from the code; change nothing.",
+            key: &[&["nav::text_matches"], &["nav::diags_text"], &["refactor::preview"]],
+        },
+        // (calling `nav::clip` alone, then `nav::count` alone, then editdiff's own `clip` — a closure in `diff_file`)
+        out: &[
+            "nav::locate",
+            "nav::signature",
+            "nav::hover_trim",
+            "nav::run_search",
+            "nav::refs_text",
+            "nav::symbols_text",
+            "nav::defs_text",
+            "nav::tree_defs",
+            "nav::lines_text",
+            "nav::files_text",
+            "nav::more",
+            "refactor::card",
+            "refactor::view_all",
+            "refactor::report",
+            "refactor::file_changes",
+            "refactor::plan",
+            "codereview::since_here",
+            "codereview::high_holds_mark",
+            "codereview::held_seen",
+            "codereview::held_said",
+            "codereview::push_bring_card",
+            "codereview::reviewer_said",
+            "codereview::hunk_seen",
+            "codereview::binary_seen",
+            "codereview::high_step",
+            "codereview::close_asked",
+            "codereview::send_as",
+            "notes::stale_text",
+            "notes::stale_answer",
+            "notes::close_by",
+            "notes::close_ids",
+            "reviewer::ask",
+            "reviewer::ended",
+            "reviewer::news",
+            "reviewer::reads",
+            "term::draw_text",
+            "term::rail_risk",
+            "uistate::text",
+            "editdiff::clip",
+            "editdiff::diff_file",
+        ],
+        checked: "2026-11-10",
+        history: false,
+    },
+    // (kind 4, a fan-out: a small module's `pub fn`s, each one's callers outside tests — `apply_edits` and `summary`
+    // are called in another file's tests too, `build` from two files, the three `format_` ones only inside editdiff)
+    ChainTask {
+        q: Question {
+            name: "one-caller",
+            ask: "Which of editdiff's public functions (the pub fn items of src/editdiff.rs) are called, outside \
+                  tests, from exactly one other file? Name each as editdiff::function. Name only the items of the \
+                  answer, not the ones you ruled out. Answer from the code; change nothing.",
+            key: &[
+                &["editdiff::summary"],
+                &["editdiff::apply_edits"],
+                &["editdiff::format_only_touched"],
+                &["editdiff::diff_file"],
+            ],
+        },
+        // (called from two files, from four, and only inside editdiff)
+        out: &[
+            "editdiff::build",
+            "editdiff::line_changes",
+            "editdiff::format_hunks",
+            "editdiff::format_kept",
+            "editdiff::format_apply",
+        ],
+        checked: "2026-11-10",
+        history: false,
+    },
+    // (kind 5, the files the last commits touched that no test names: the src/ `.rs` files of the last two with no
+    // `#[test]` in them and no `<module>/tests.rs`)
+    ChainTask {
+        q: Question {
+            name: "untested-changes",
+            ask: "Of the Rust files under src/ that the last two commits changed, which have no test of their own \
+                  — no #[test] in the file and no tests file of its own module (<module>/tests.rs)? Name each by \
+                  its path. Name only the items of the answer, not the ones you ruled out. Answer from the code and \
+                  git; change nothing.",
+            key: &[&["src/main.rs"], &["src/offer.rs"], &["src/uisocket.rs"]],
+        },
+        // (the other 32: a `#[test]` in them, their own `tests.rs`, or a tests file themselves)
+        out: &[
+            "src/chat.rs",
+            "src/dap.rs",
+            "src/debugpack.rs",
+            "src/document.rs",
+            "src/editor.rs",
+            "src/edits.rs",
+            "src/event.rs",
+            "src/follow.rs",
+            "src/gitrepo.rs",
+            "src/inbox.rs",
+            "src/lsp.rs",
+            "src/lsp_editor.rs",
+            "src/nofile.rs",
+            "src/nofile/tests.rs",
+            "src/readonly.rs",
+            "src/restart.rs",
+            "src/sandbox/keeper.rs",
+            "src/sandbox/linux.rs",
+            "src/sandbox/ptys.rs",
+            "src/saver.rs",
+            "src/session.rs",
+            "src/shell.rs",
+            "src/sizes.rs",
+            "src/spawn.rs",
+            "src/term.rs",
+            "src/terminal.rs",
+            "src/tools.rs",
+            "src/typed.rs",
+            "src/uistate.rs",
+            "src/uistate/claude/tests.rs",
+            "src/uistate/tests.rs",
+            "src/worktree.rs",
+        ],
+        checked: "2026-11-10",
+        history: true,
+    },
+];
+
+/// Every chain question's closing sentence, before "Answer from …": the grader counts any out named, a reasoned
+/// "X is left out" too.
+const ONLY_THE_ANSWER: &str =
+    "Name only the items of the answer, not the ones you ruled out. Answer from the code";
+
+/// Whether `answer` names `k` whole — no letter, digit, `_` or `-` right beside it: `llm.follow` isn't named by
+/// `llm.follow-resume`, nor `nav::count` by `nav::counts`. Case aside, markdown's `*` and backticks out of both.
+fn names_whole(answer: &str, k: &str) -> bool {
+    let plain = |s: &str| s.chars().filter(|c| !matches!(c, '*' | '`')).collect::<String>().to_lowercase();
+    let (answer, k) = (plain(answer), plain(k));
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
+    answer.match_indices(&k).any(|(i, _)| {
+        !answer[..i].chars().next_back().is_some_and(word)
+            && !answer[i + k.len()..].chars().next().is_some_and(word)
+    })
+}
+
+/// Which of `q`'s keys `answer` names whole (`names_whole`).
+fn chain_met(q: &Question, answer: &str) -> Vec<bool> {
+    q.key.iter().map(|alts| alts.iter().any(|a| names_whole(answer, a))).collect()
+}
+
+/// The names of `c.out` that `answer` names whole, as keys are met.
+fn chain_outs(c: &ChainTask, answer: &str) -> Vec<&'static str> {
+    c.out.iter().copied().filter(|o| names_whole(answer, o)).collect()
+}
+
+/// A chain task's right: (keys met − outs named) / keys, never below 0 — an answer listing every candidate doesn't
+/// score the filtering the task is about.
+fn chain_right(c: &ChainTask, answer: &str) -> f64 {
+    let met = chain_met(&c.q, answer).iter().filter(|m| **m).count() as f64;
+    let outs = chain_outs(c, answer).len() as f64;
+    ((met - outs) / c.q.key.len().max(1) as f64).max(0.0)
+}
+
+#[test]
+fn an_answer_naming_what_the_task_leaves_out_scores_less() {
+    for c in &CHAIN_TASKS {
+        let keys: Vec<&str> = c.q.key.iter().map(|alts| alts[0]).collect();
+        let exact = keys.join(", ");
+        assert_eq!(chain_right(c, &exact), 1.0, "{}: its keys alone", c.q.name);
+        assert!(c.out.iter().all(|o| !keys.contains(o)), "{}: an out is a key", c.q.name);
+        assert!(
+            c.q.ask.contains(ONLY_THE_ANSWER),
+            "{}: its question asks for the answer's items only",
+            c.q.name
+        );
+        if let Some(out) = c.out.first() {
+            let over = format!("{exact}, {out}");
+            assert!(chain_right(c, &over) < 1.0, "{}: {out} named too", c.q.name);
+        }
+    }
+    // (one-caller: all nine named meets the four and names the five — never below 0; one out takes one key's share)
+    let c = &CHAIN_TASKS[3];
+    let nine = "editdiff::summary, editdiff::apply_edits, editdiff::build, editdiff::line_changes, \
+                editdiff::format_hunks, editdiff::format_kept, editdiff::format_only_touched, \
+                editdiff::format_apply, editdiff::diff_file";
+    assert_eq!(chain_met(&c.q, nine), [true; 4]);
+    assert_eq!(chain_outs(c, nine).len(), 5);
+    assert_eq!(chain_right(c, nine), 0.0);
+    let one = "editdiff::summary, editdiff::apply_edits, editdiff::format_only_touched, editdiff::diff_file, and \
+               `editdiff::build`";
+    assert_eq!(chain_right(c, one), 0.75);
+    // (an out is named whole too: `llm.sandbox` isn't named by the key `llm.sandbox-kept-days`)
+    assert_eq!(chain_outs(&CHAIN_TASKS[1], "llm.sandbox-kept-days"), Vec::<&str>::new());
+}
+
+#[test]
+fn chain_keys_are_met_only_by_the_whole_name() {
+    let q = &CHAIN_TASKS[1].q;
+    let met = chain_met(q, "`llm.follow-resume`, **llm.stuck-after-outside** and llm.model.");
+    assert_eq!(met, [true, false, false, true, false, true, false, false], "a longer name meets only itself");
+    let q = &CHAIN_TASKS[2].q;
+    assert_eq!(chain_met(q, "- `nav::text_matches`\n- crate::refactor::preview()"), [true, false, true]);
+    assert_eq!(chain_met(q, "nav::text_matches_all"), [false, false, false]);
+    let q = &CHAIN_TASKS[3].q;
+    let met = chain_met(q, "`editdiff::summary_of`, crate::editdiff::apply_edits(), editdiff::format_only");
+    assert_eq!(met, [false, true, false, false]);
+}
+
+/// The corpus's last two commits as the cell's git history (`ChainTask.history`; a cell's files come from `git
+/// archive`, with none): the tree two commits before `TOOLS_CORPUS` first — what those two added taken out —, then
+/// each commit's tree, committed with its own subject, so each changes the files it changed there. The warm build and
+/// `.ignore` stay out of git.
+fn replay_history(sb: &Sandbox) {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = |args: &[&str]| {
+        let o = Command::new("git").arg("-C").arg(here).args(args).output().expect("git");
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let revs = [format!("{TOOLS_CORPUS}~2"), format!("{TOOLS_CORPUS}~1"), TOOLS_CORPUS.to_string()];
+    for added in ours(&["diff", "--name-only", "--diff-filter=A", &revs[0], TOOLS_CORPUS]).lines() {
+        let _ = std::fs::remove_file(sb.work().join(added));
+    }
+    sb.git(&["init", "-q"]);
+    std::fs::create_dir_all(sb.work().join(".git/info")).unwrap();
+    std::fs::write(sb.work().join(".git/info/exclude"), "/target/\n/.ignore\n").unwrap();
+    for rev in &revs {
+        assert!(extract_commit(&sb.work(), rev, &EDIT_CORPUS_PATHS), "{rev} in this clone");
+        let subject = ours(&["log", "-1", "--format=%s", rev]);
+        sb.git(&["add", "-A"]);
+        sb.git(&["commit", "-q", "-m", subject.trim()]);
+    }
+}
+
+/// Code mode (b)'s arms (`llm.code`, the plan's §2): `off` alone until step 2 brings the engines — then quickjs,
+/// monty, starlark and own, rotated as they are here.
+const CODEMODE_ARMS: [&str; 1] = ["off"];
+
+/// An arm's `[llm]` lines: none for `off`; the engines' come with the setting (step 2) — a config naming a setting
+/// tarae doesn't have starts no claude.
+fn code_arm(arm: &str) -> &'static str {
+    match arm {
+        "off" => "",
+        _ => panic!("arm {arm}: llm.code comes with step 2"),
+    }
+}
+
+/// A cell's task in code mode (b)'s A/B: a chain task, a fix loop (`FIX_TASKS`) or a question of the tools A/B's.
+#[derive(Clone, Copy)]
+enum CodeTask<'a> {
+    Chain(&'a ChainTask),
+    Fix(&'a FixTask),
+    Asked(&'a Question),
+}
+
+impl CodeTask<'_> {
+    fn name(self) -> &'static str {
+        match self {
+            CodeTask::Chain(c) => c.q.name,
+            CodeTask::Fix(f) => f.task.name,
+            CodeTask::Asked(q) => q.name,
+        }
+    }
+
+    fn ask(self) -> &'static str {
+        match self {
+            CodeTask::Chain(c) => c.q.ask,
+            CodeTask::Fix(f) => f.task.ask,
+            CodeTask::Asked(q) => q.ask,
+        }
+    }
+
+    /// Right for an answer: the share of keys met (a fix loop is checked on its project instead: None).
+    fn right(self, answer: &str) -> Option<f64> {
+        match self {
+            CodeTask::Chain(c) => Some(chain_right(c, answer)),
+            CodeTask::Asked(q) => Some(web_right(q, answer)),
+            CodeTask::Fix(_) => None,
+        }
+    }
+
+    /// A chain task's right taken apart, for a cell's line: keys met of all, and the outs named ("" for the others).
+    fn graded(self, answer: &str) -> String {
+        match self {
+            CodeTask::Chain(c) => {
+                let met = chain_met(&c.q, answer).iter().filter(|m| **m).count();
+                let outs = chain_outs(c, answer);
+                format!(" (keys {met}/{} · outs {} {outs:?})", c.q.key.len(), outs.len())
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+/// The A/B's eight: the five chain tasks, then the three guarding against a regression — the fix loops and
+/// card-front (code mode (a)'s A/B's set, its key as that A/B read it).
+fn code_tasks<'a>(
+    chains: &'a [ChainTask],
+    fixes: &'a [FixTask],
+    questions: &'a [Question],
+) -> Vec<CodeTask<'a>> {
+    let mut v: Vec<CodeTask> = chains.iter().map(CodeTask::Chain).collect();
+    v.extend(fixes.iter().map(CodeTask::Fix));
+    v.extend(questions.iter().filter(|q| q.name == "card-front").map(CodeTask::Asked));
+    v
+}
+
+/// One cell of code mode (b)'s A/B, as its sums take it.
+struct CodeRow {
+    task: &'static str,
+    arm: &'static str,
+    right: f64,
+    cost: f64,
+    wall_ms: u64,
+    requests: usize,
+    /// The fold bound (`cargo xtask fold`, A + B), when read.
+    fold: Option<f64>,
+}
+
+/// The A/B's sums, a task and arm a line: cells · right (mean) · $ (median) · wall s (median) · requests (median) ·
+/// the fold bound (mean) and its share of the mean $.
+fn code_sums(label: &str, rows: &[CodeRow]) {
+    eprintln!(
+        "{label} — task arm: cells · right · median $ · median wall s · median requests · fold bound (A + B)"
+    );
+    let mut seen: Vec<(&str, &str)> = Vec::new();
+    for r in rows {
+        if !seen.contains(&(r.task, r.arm)) {
+            seen.push((r.task, r.arm));
+        }
+    }
+    for (task, arm) in seen {
+        let of: Vec<&CodeRow> = rows.iter().filter(|r| r.task == task && r.arm == arm).collect();
+        let n = of.len() as f64;
+        let mean_cost = of.iter().map(|r| r.cost).sum::<f64>() / n;
+        let folds: Vec<f64> = of.iter().filter_map(|r| r.fold).collect();
+        let fold = match folds.is_empty() {
+            true => "—".to_string(),
+            false => {
+                let f = folds.iter().sum::<f64>() / folds.len() as f64;
+                format!("${f:.3} ({:.0} %)", f * 100.0 / mean_cost.max(1e-9))
+            }
+        };
+        eprintln!(
+            "{label} {task} {arm}: {} · {:.2} · ${:.3} · {:.1} · {} · {fold}",
+            of.len(),
+            of.iter().map(|r| r.right).sum::<f64>() / n,
+            median(of.iter().map(|r| r.cost).collect()),
+            median(of.iter().map(|r| r.wall_ms as f64).collect()) / 1000.0,
+            median(of.iter().map(|r| r.requests as f64).collect()),
+        );
+    }
+}
+
+/// Code mode (b)'s A/B (`.sb/codemode-b-plan.md` §5): does a `code` tool — Claude's program calling tarae's
+/// read-only tools — save round trips and context where chains are mechanical, and lose nothing elsewhere? Its eight
+/// tasks (`code_tasks`: the five chain tasks, the two fix loops, card-front) in each arm of `CODEMODE_ARMS`, rotated
+/// cell by cell, one turn each in tarae's chat on `TOOLS_CORPUS`, opus pinned, rust-analyzer on,
+/// review at the end on; every cell made as the fix loops' are (`fix_cell`: the warm build in `target/live/fix-seed`,
+/// built and proved first — `warm_seed`, `warm_check`), a fix loop's bug planted, `untested-changes` given the
+/// corpus's last two commits (`replay_history`). Right: a chain task's share of keys met whole (`chain_met`),
+/// card-front's as the search A/B grades it, a fix loop's check on its project (`edit_check`). The stream kept has
+/// the question as its first line, so `cargo xtask fold` reads it too.
+///
+/// **Its spend is the user's call, asked each time** — 0b is the off arm alone on the chain tasks (~$5, 5 × 2 runs,
+/// cap $6, with the language probe ~$7, cap $8 together): it starts only with `TARAE_AB_GO=1`, and refuses a chain task
+/// whose key the driver hasn't read again (`ChainTask.checked`). `TARAE_AB_RUNS` (2), `TARAE_AB_TASKS` (names,
+/// comma-separated; all eight — 0b: the five chain tasks), `TARAE_AB_BUDGET` ($ claude reports, 6: before each cell,
+/// none starts that the mean cell so far would carry past it), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_EFFORT`,
+/// `TARAE_AB_BIN`. Rows to `target/live/codemode-ab.tsv`, streams and each cell's line beside them in
+/// `target/live/codemode-ab/`; the fix loops' checks build in `target/live/codemode-ab-target` (cold the first time).
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude and rust-analyzer — its spend asked of the user first)"]
+fn codemode_ab() {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if var("TARAE_AB_GO").as_deref() != Some("1") {
+        skip("TARAE_AB_GO=1 once the user said yes to the spend (0b: ~$5, cap $6)");
+        return;
+    }
+    if !have("claude") || !have("cargo") || !have("rust-analyzer") {
+        return;
+    }
+    let bin = var("TARAE_AB_BIN");
+    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(2);
+    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(6.0);
+    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
+    let effort = var("TARAE_AB_EFFORT").unwrap_or_default();
+    let only = var("TARAE_AB_TASKS");
+    let (chains, fixes, questions) = (CHAIN_TASKS, FIX_TASKS, QUESTIONS);
+    let tasks: Vec<CodeTask> = code_tasks(&chains, &fixes, &questions)
+        .into_iter()
+        .filter(|t| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == t.name())))
+        .collect();
+    let unread: Vec<&str> = (tasks.iter())
+        .filter_map(|t| match t {
+            CodeTask::Chain(c) if c.checked.is_empty() => Some(c.q.name),
+            _ => None,
+        })
+        .collect();
+    assert!(unread.is_empty(), "keys not read again at {TOOLS_CORPUS} (.sb/codemode-b-tasks.md): {unread:?}");
+    let live = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live");
+    let (tsv, kept) = (live.join("codemode-ab.tsv"), live.join("codemode-ab"));
+    let (check, target, seed) =
+        (live.join("codemode-ab-check"), live.join("codemode-ab-target"), live.join("fix-seed"));
+    std::fs::create_dir_all(&kept).unwrap();
+    // (the warm build and its proof, before anything is spent)
+    match warm_seed(&seed, bin.as_deref()) {
+        Ok(n) => eprintln!("CODEMODE_AB seed: crates compiled through tarae's run {n:?}"),
+        Err(e) => panic!("CODEMODE_AB not started: the warm build: {e}"),
+    }
+    if let Err(e) = warm_check(&seed, bin.as_deref()) {
+        panic!("CODEMODE_AB not started: not warm — {e}");
+    }
+    let mut rows: Vec<CodeRow> = Vec::new();
+    let mut spent = 0.0;
+    'runs: for run in 0..runs {
+        for (i, task) in tasks.iter().enumerate() {
+            let turn = (run * tasks.len() + i) % CODEMODE_ARMS.len();
+            for k in 0..CODEMODE_ARMS.len() {
+                let arm = CODEMODE_ARMS[(turn + k) % CODEMODE_ARMS.len()];
+                let next = if rows.is_empty() { 0.0 } else { spent / rows.len() as f64 };
+                if spent + next > budget {
+                    eprintln!(
+                        "CODEMODE_AB budget: ${spent:.2} spent + ${next:.2} (a cell's mean) passes ${budget}"
+                    );
+                    break 'runs;
+                }
+                let name = task.name();
+                let sb = fix_cell(&format!("codemode-ab-{name}-{arm}"), &seed, bin.as_deref());
+                let work = sb.work();
+                match task {
+                    CodeTask::Fix(f) => plant(&sb, f.plant),
+                    CodeTask::Chain(c) if c.history => replay_history(&sb),
+                    _ => {}
+                }
+                let llm = format!(
+                    "model = \"{model}\"\neffort = \"{effort}\"\nreview-at-end = true\n{}",
+                    code_arm(arm)
+                );
+                let stream = teed_lsp(&sb, &llm, true);
+                let mut t = sb.spawn(&["src/main.rs"]);
+                code_trusted(&mut t);
+                t.wait_text("rust-analyzer ready");
+                let loading = !quiet(&mut t, 10);
+                let started = Instant::now();
+                let (cards, capped) = ab_turn(&mut t, task.ask(), &stream);
+                let text = std::fs::read_to_string(&stream).unwrap_or_default();
+                let mut m = measure(&text, work.to_str().unwrap());
+                m.wall_ms = started.elapsed().as_millis() as u64;
+                (m.cards, m.capped, m.loading) = (cards, capped, loading);
+                drop(t);
+                let checked = match task {
+                    CodeTask::Fix(f) => {
+                        // (the check copies the project: its build stays behind — the sandbox's own folder)
+                        let _ = std::fs::remove_dir_all(work.join("target"));
+                        Some(edit_check(&f.task, &work, &check, &target))
+                    }
+                    _ => None,
+                };
+                m.right = task.right(&m.answer).unwrap_or(if checked.as_ref().is_some_and(|c| c.is_ok()) {
+                    1.0
+                } else {
+                    0.0
+                });
+                spent += m.cost;
+                let said = format!(
+                    "CODEMODE_AB {name} {arm} run {}: right {:.2}{} · {} requests · {} calls {:?} · ${:.3} · {} ms · \
+                     cards {} · capped {}{}{}\n  answer: {}",
+                    run + 1,
+                    m.right,
+                    task.graded(&m.answer),
+                    m.requests,
+                    m.calls,
+                    m.tools,
+                    m.cost,
+                    m.wall_ms,
+                    m.cards,
+                    m.capped,
+                    match &checked {
+                        Some(Err(e)) => format!(" — check FAILED: {e}"),
+                        _ => String::new(),
+                    },
+                    if m.loading { " — ASKED WHILE RUST-ANALYZER WAS STILL AT WORK" } else { "" },
+                    m.answer.replace('\n', " ⏎ "),
+                );
+                eprintln!("{said}");
+                let one = format!("{name}-{arm}-{}-{}", run + 1, std::process::id());
+                // (the question first, as claude was given it: what `cargo xtask fold` counts a value from)
+                let asked =
+                    serde_json::json!({"type": "user", "message": {"role": "user", "content": task.ask()}});
+                std::fs::write(kept.join(format!("{one}.jsonl")), format!("{asked}\n{text}")).unwrap();
+                std::fs::write(kept.join(format!("{one}.txt")), &said).unwrap();
+                let row = format!(
+                    "{TOOLS_CORPUS}\t{name}\t{arm}\t{}\t{:.2}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{:?}\n",
+                    run + 1,
+                    m.right,
+                    m.requests,
+                    m.calls,
+                    m.cost,
+                    m.wall_ms,
+                    m.cards,
+                    m.capped,
+                    m.loading,
+                    m.tools,
+                );
+                use std::io::Write;
+                let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
+                f.write_all(row.as_bytes()).unwrap();
+                rows.push(CodeRow {
+                    task: name,
+                    arm,
+                    right: m.right,
+                    cost: m.cost,
+                    wall_ms: m.wall_ms,
+                    requests: m.requests,
+                    fold: None,
+                });
+            }
+        }
+    }
+    code_sums("CODEMODE_AB", &rows);
+    eprintln!("CODEMODE_AB spent ${spent:.2} — the fold bound: codemode_ab_rescore");
+    assert!(!rows.is_empty(), "no run");
+}
+
+/// Each saved cell's fold bound (A + B), by its file's stem: `cargo xtask fold` on the folder — code mode (b)'s
+/// measure (`xtask/src/fold.rs`) — its cell lines read (`- <stem>: $… · k of n requests fold · A $a · B $b`).
+fn fold_bounds(folder: &Path) -> std::collections::BTreeMap<String, f64> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = Command::new(cargo)
+        .args(["run", "-q", "-p", "xtask", "--", "fold"])
+        .arg(folder)
+        .current_dir(here)
+        .output();
+    let out = out.expect("cargo run -p xtask");
+    assert!(out.status.success(), "cargo xtask fold: {}", String::from_utf8_lossy(&out.stderr));
+    let dollars = |s: &str| s.trim().trim_start_matches('$').parse::<f64>().ok();
+    (String::from_utf8_lossy(&out.stdout).lines())
+        .filter_map(|l| {
+            let (stem, rest) = l.strip_prefix("- ")?.split_once(": ")?;
+            let a = dollars(rest.split(" · A ").nth(1)?.split(" · ").next()?)?;
+            let b = dollars(rest.split(" · B ").nth(1)?.split(" — ").next()?)?;
+            Some((stem.to_string(), a + b))
+        })
+        .collect()
+}
+
+/// `codemode_ab`'s cells graded again from their saved streams (`target/live/codemode-ab/<task>-<arm>-<run>-<pid>
+/// .jsonl`) by today's keys — a fix loop's check from its line (`.txt`), as it can't run again — with each cell's
+/// fold bound (`fold_bounds`): per task and arm, right, $, wall time and the bound. No Claude, no network. By hand:
+/// `cargo test --test live codemode_ab_rescore -- --ignored --nocapture`.
+#[test]
+#[ignore = "by hand: reads codemode_ab's saved streams"]
+fn codemode_ab_rescore() {
+    let kept = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/codemode-ab");
+    let Ok(dir) = std::fs::read_dir(&kept) else {
+        skip("no target/live/codemode-ab: run codemode_ab first");
+        return;
+    };
+    let mut names: Vec<String> = dir.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+    names.retain(|n| n.ends_with(".jsonl"));
+    names.sort();
+    let folds = fold_bounds(&kept);
+    let (chains, fixes, questions) = (CHAIN_TASKS, FIX_TASKS, QUESTIONS);
+    let tasks = code_tasks(&chains, &fixes, &questions);
+    let (mut rows, mut gone) = (Vec::new(), 0);
+    for name in &names {
+        let stem = name.trim_end_matches(".jsonl");
+        // (the longest name that fits: no task's name is another's with a dash and more)
+        let found = (tasks.iter())
+            .filter_map(|t| {
+                let rest = stem.strip_prefix(t.name())?.strip_prefix('-')?;
+                let arm = CODEMODE_ARMS.into_iter().find(|a| rest.starts_with(&format!("{a}-")))?;
+                Some((*t, arm))
+            })
+            .max_by_key(|(t, _)| t.name().len());
+        let Some((task, arm)) = found else {
+            gone += 1;
+            continue;
+        };
+        let read = |ext: &str| std::fs::read_to_string(kept.join(format!("{stem}{ext}"))).unwrap_or_default();
+        let (text, said) = (read(".jsonl"), read(".txt"));
+        let m = measure(&text, "");
+        let items: Vec<&str> = said.lines().next().unwrap_or_default().split(" · ").collect();
+        // (the number alone: a chain task's line goes on with its keys and outs)
+        let was = (items.first())
+            .and_then(|i| i.split_once(": right ")?.1.split_whitespace().next()?.parse::<f64>().ok());
+        let wall_ms = items.iter().find_map(|i| i.strip_suffix(" ms")?.parse().ok()).unwrap_or(0);
+        let right = task.right(&m.answer).or(was).unwrap_or(0.0);
+        let fold = folds.get(stem).copied();
+        eprintln!(
+            "CODEMODE_AB_RESCORED {stem}: right {right:.2}{} (was {}) · ${:.3} · {wall_ms} ms · fold bound {}",
+            task.graded(&m.answer),
+            was.map_or("?".into(), |w| format!("{w:.2}")),
+            m.cost,
+            fold.map_or("—".into(), |f| format!("${f:.3}")),
+        );
+        rows.push(CodeRow {
+            task: task.name(),
+            arm,
+            right,
+            cost: m.cost,
+            wall_ms,
+            requests: m.requests,
+            fold,
+        });
+    }
+    code_sums("CODEMODE_AB_RESCORED", &rows);
+    if gone > 0 {
+        eprintln!("CODEMODE_AB_RESCORED {gone} streams of tasks no longer in the set, not graded");
+    }
+    assert!(!rows.is_empty(), "no saved stream in {}", kept.display());
+}
+
+/// One language of code mode (b)'s probe: its name in file names, as the prompt says it, what its core gives a
+/// program there, its binding description (`tests/codemode/`: the same functions and fields, each its language's
+/// way — Go's is the stub package `go vet` checks against too), and its programs' extension.
+struct Lang {
+    name: &'static str,
+    title: &'static str,
+    core: &'static str,
+    bindings: &'static str,
+    ext: &'static str,
+}
+
+const LANGS: [Lang; 5] = [
+    Lang {
+        name: "python",
+        title: "Python",
+        core: "the built-in functions",
+        bindings: include_str!("codemode/bindings.py"),
+        ext: "py",
+    },
+    Lang {
+        name: "js",
+        title: "JavaScript",
+        core: "the built-in objects (console.log prints)",
+        bindings: include_str!("codemode/bindings.js"),
+        ext: "js",
+    },
+    Lang {
+        name: "ts",
+        title: "TypeScript",
+        core: "the built-in objects (console.log prints)",
+        bindings: include_str!("codemode/bindings.d.ts"),
+        ext: "ts",
+    },
+    Lang {
+        name: "lua",
+        title: "Lua",
+        core: "the base library, string and table",
+        bindings: include_str!("codemode/bindings.lua"),
+        ext: "lua",
+    },
+    Lang {
+        name: "go",
+        title: "Go",
+        core: "the packages fmt, strings, sort, strconv and regexp",
+        bindings: include_str!("codemode/bindings.go"),
+        ext: "go",
+    },
+];
+
+/// The probe's one request: a chain task's question and one language's binding description, the program alone back.
+fn lang_prompt(task: &ChainTask, lang: &Lang) -> String {
+    format!(
+        "Write one {title} program that answers the question below by calling tarae's functions, described after it. \
+         It runs in a small interpreter inside tarae, on the project the question is about: these functions, {core} \
+         and printing are there — no other module, no files, network or clock. Only what it prints comes back to \
+         you: print the answer itself. Reply with the program alone, in one fenced code block.\n\nThe question: \
+         {ask}\n\nThe functions:\n\n```{fence}\n{bindings}```\n",
+        title = lang.title,
+        core = lang.core,
+        ask = task.q.ask,
+        fence = lang.name,
+        bindings = lang.bindings,
+    )
+}
+
+/// The program in an answer: its first fenced block's body, else the whole answer.
+fn program_of(answer: &str) -> String {
+    let Some(at) = answer.find("```") else { return format!("{}\n", answer.trim()) };
+    let body = answer[at + 3..].split_once('\n').map_or("", |(_, b)| b);
+    format!("{}\n", body.split("```").next().unwrap_or(body).trim_end())
+}
+
+/// `bare_turn` with the model pinned.
+fn bare_turn_as(dir: &Path, tools: &str, model: &str, ask: &str) -> String {
+    bare_turn_with(dir, tools, &["--model", model], ask)
+}
+
+/// The probe for the own interpreter's language (the user, 2026-11-10: "응 측정해보고 결정하자"; the plan's §5 0b): for each
+/// chain task, Claude writes the program in Python, JavaScript, TypeScript, Lua and Go against that language's
+/// binding description (`LANGS`) — opus pinned, one request each, no tools; 5 × 5 × 2 = 50 programs, each request's
+/// stream kept in `target/live/codemode-lang/<task>-<lang>-<n>-<pid>.jsonl` with its program beside it. Read, free,
+/// by `codemode_lang_check`.
+///
+/// **Its spend is the user's call** (~$2, asked with 0b: ~$7, cap $8 together): only with `TARAE_AB_GO=1`.
+/// `TARAE_AB_RUNS` (2: programs a task and language), `TARAE_AB_BUDGET` ($, 2.5: before each request, none starts
+/// that the mean request so far would carry past it), `TARAE_AB_MODEL` ("opus").
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude — its spend asked of the user first)"]
+fn codemode_lang_probe() {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if var("TARAE_AB_GO").as_deref() != Some("1") {
+        skip("TARAE_AB_GO=1 once the user said yes to the spend (~$2, with 0b)");
+        return;
+    }
+    if !have("claude") {
+        return;
+    }
+    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(2);
+    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(2.5);
+    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
+    let kept = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/codemode-lang");
+    std::fs::create_dir_all(&kept).unwrap();
+    // (an empty folder: no project to read, and no tool to read it with)
+    let sb = Sandbox::live("codemode-lang");
+    let (mut spent, mut asked) = (0.0, 0);
+    'all: for n in 0..runs {
+        for task in &CHAIN_TASKS {
+            for lang in &LANGS {
+                let next = if asked == 0 { 0.0 } else { spent / asked as f64 };
+                if spent + next > budget {
+                    eprintln!(
+                        "LANG_PROBE budget: ${spent:.2} spent + ${next:.2} (a request's mean) passes ${budget}"
+                    );
+                    break 'all;
+                }
+                let stream = bare_turn_as(&sb.work(), "", &model, &lang_prompt(task, lang));
+                let cost = measure(&stream, "").cost;
+                (spent, asked) = (spent + cost, asked + 1);
+                let name = format!("{}-{}-{}-{}", task.q.name, lang.name, n + 1, std::process::id());
+                std::fs::write(kept.join(format!("{name}.jsonl")), &stream).unwrap();
+                std::fs::write(kept.join(format!("{name}.{}", lang.ext)), program_of(&result_of(&stream)))
+                    .unwrap();
+                eprintln!("LANG_PROBE {name}: ${cost:.4} · output {} tokens", output_tokens(&stream));
+            }
+        }
+    }
+    eprintln!("LANG_PROBE spent ${spent:.2} on {asked} programs — their check: codemode_lang_check");
+}
+
+/// A one-request stream's output tokens, as its result counts them.
+fn output_tokens(stream: &str) -> u64 {
+    let mut lines = stream.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok());
+    let r = lines.rfind(|v| v["type"] == "result");
+    r.and_then(|v| v["usage"]["output_tokens"].as_u64()).unwrap_or(0)
+}
+
+/// The images the check runs in, as Docker Hub names them; Lua's is built here from Alpine's (`lua_image`).
+const LANG_IMAGES: [(&str, &str); 5] = [
+    ("python", "python:3.13-slim"),
+    ("js", "node:24-slim"),
+    ("ts", "node:24-slim"),
+    ("lua", "tarae-codemode-lua"),
+    ("go", "golang:1.24"),
+];
+
+/// The Python check's script: the program parsed, and the constructs outside the own interpreter's planned subset
+/// (`class`, `import`, `try`, `with`, `yield` — the plan's §5 0b) listed. Python reading Python: the one way to
+/// parse it as Python does.
+const PY_CHECK: &str = r#"import ast, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+try:
+    tree = ast.parse(src)
+except SyntaxError as e:
+    print("SyntaxError:", e)
+    sys.exit(1)
+names = {"ClassDef": "class", "Import": "import", "ImportFrom": "import", "Try": "try", "TryStar": "try",
+         "With": "with", "AsyncWith": "with", "Yield": "yield", "YieldFrom": "yield"}
+print("outside: " + ",".join(sorted({names[type(n).__name__] for n in ast.walk(tree) if type(n).__name__ in names})))
+"#;
+
+/// TypeScript's types taken out by Node's own `stripTypeScriptTypes` (transform mode: an `enum` is TypeScript too),
+/// what's left written for `node --check`.
+const TS_STRIP: &str = r#"const m = require("node:module");
+const fs = require("node:fs");
+fs.writeFileSync(process.argv[3], m.stripTypeScriptTypes(fs.readFileSync(process.argv[2], "utf8"), { mode: "transform" }));
+"#;
+
+/// The Lua image: Alpine's `lua5.4` package, built once (its build reaches Alpine's mirror; the check's containers
+/// reach nothing).
+fn lua_image() -> Result<(), String> {
+    let have = Command::new("docker").args(["image", "inspect", "tarae-codemode-lua"]).output();
+    if have.is_ok_and(|o| o.status.success()) {
+        return Ok(());
+    }
+    use std::io::Write;
+    let mut build = Command::new("docker")
+        .args(["build", "-q", "-t", "tarae-codemode-lua", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("docker build: {e}"))?;
+    let mut stdin = build.stdin.take().unwrap();
+    stdin.write_all(b"FROM alpine:3.20\nRUN apk add --no-cache lua5.4\n").unwrap();
+    drop(stdin);
+    match build.wait() {
+        Ok(s) if s.success() => Ok(()),
+        _ => Err("docker build of tarae-codemode-lua failed".into()),
+    }
+}
+
+/// A program of `lang` checked in Docker as code mode (b)'s probe reads it — one container at a time, with no network
+/// (`--network none`), the program's folder read-only: Python `ast.parse` (Ok's list: the constructs outside the
+/// planned subset), JavaScript `node --check`, TypeScript type-stripped then `node --check`, Lua `luac -p`, Go `go vet`
+/// in one package with the bindings' stub. Err: what the check said. `dir`: the program's folder, made new here.
+fn lang_check(lang: &str, program: &str, dir: &Path) -> Result<Vec<String>, String> {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let write = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
+    let cmd = match lang {
+        "python" => {
+            write("check.py", PY_CHECK);
+            write("p.py", program);
+            "python3 -I /w/check.py /w/p.py"
+        }
+        "js" => {
+            write("p.js", program);
+            "node --check /w/p.js"
+        }
+        "ts" => {
+            write("strip.js", TS_STRIP);
+            write("p.ts", program);
+            "node /w/strip.js /w/p.ts /tmp/p.js && node --check /tmp/p.js"
+        }
+        "lua" => {
+            lua_image()?;
+            write("p.lua", program);
+            "luac5.4 -p /w/p.lua"
+        }
+        "go" => {
+            write("go.mod", "module probe\n\ngo 1.24\n");
+            write("bindings.go", LANGS[4].bindings);
+            write("p.go", program);
+            "cd /w && GOTOOLCHAIN=local GOFLAGS=-mod=mod go vet ."
+        }
+        _ => return Err(format!("no check for {lang}")),
+    };
+    let image = LANG_IMAGES.iter().find(|(l, _)| *l == lang).map(|(_, i)| *i).unwrap();
+    let real = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let out = Command::new("docker")
+        .args(["run", "--rm", "--network", "none", "-v"])
+        .arg(format!("{}:/w:ro", real.display()))
+        .args([image, "sh", "-c", cmd])
+        .output()
+        .map_err(|e| format!("docker: {e}"))?;
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        return Err(said.lines().take(4).collect::<Vec<_>>().join(" ⏎ "));
+    }
+    let outside = said.lines().find_map(|l| l.strip_prefix("outside: ")).unwrap_or_default();
+    Ok(outside.split(',').filter(|c| !c.is_empty()).map(String::from).collect())
+}
+
+/// The plan's rule for the own interpreter's language (`.sb/codemode-b-plan.md` §5 0b, set before the probe): the
+/// highest pass rate wins, within 1 of 10 the fewer median output tokens; within 10 % of Python on both, Python; Go only
+/// on a clear win over that pick (pass ≥ +2 of 10 and tokens ≤ −15 %) — its interpreter needs a type checker. `rows`:
+/// (language, passed, programs, median output tokens). The pick and why.
+fn lang_pick(rows: &[(&str, usize, usize, f64)]) -> (String, String) {
+    // (passes out of 10)
+    let rate = |r: &(&str, usize, usize, f64)| r.1 as f64 * 10.0 / r.2.max(1) as f64;
+    let others: Vec<&(&str, usize, usize, f64)> = rows.iter().filter(|r| r.0 != "go").collect();
+    let best = others.iter().map(|r| rate(r)).fold(f64::MIN, f64::max);
+    let near = others.iter().filter(|r| rate(r) >= best - 1.0);
+    let Some(mut pick) = near.min_by(|a, b| a.3.total_cmp(&b.3)).copied() else {
+        return ("—".into(), "no program checked".into());
+    };
+    let mut why = format!("{}: the best pass rate, the fewest tokens within 1 of 10", pick.0);
+    if let Some(py) = rows.iter().find(|r| r.0 == "python")
+        && pick.0 != "python"
+        && rate(py) >= rate(pick) - 1.0
+        && py.3 <= pick.3 * 1.1
+    {
+        why = format!("python: within 10 % of {} on both", pick.0);
+        pick = py;
+    }
+    if let Some(go) = rows.iter().find(|r| r.0 == "go")
+        && rate(go) >= rate(pick) + 2.0
+        && go.3 <= pick.3 * 0.85
+    {
+        why = format!("go: a clear win over {} (pass ≥ +2 of 10, tokens ≤ −15 %)", pick.0);
+        pick = go;
+    }
+    (pick.0.to_string(), why)
+}
+
+#[test]
+fn the_language_pick_follows_the_rule_set_before() {
+    // (JavaScript wins on tokens among the best rates, but Python is within 10 % on both; Go's win isn't clear)
+    let rows = [
+        ("python", 9, 10, 500.0),
+        ("js", 10, 10, 480.0),
+        ("ts", 10, 10, 520.0),
+        ("lua", 7, 10, 400.0),
+        ("go", 10, 10, 450.0),
+    ];
+    assert_eq!(lang_pick(&rows).0, "python", "{}", lang_pick(&rows).1);
+    // (Python two passes behind: the best rate's fewest tokens)
+    let rows = [
+        ("python", 6, 10, 600.0),
+        ("js", 10, 10, 500.0),
+        ("ts", 9, 10, 550.0),
+        ("lua", 5, 10, 400.0),
+        ("go", 10, 10, 300.0),
+    ];
+    assert_eq!(lang_pick(&rows).0, "js", "{}", lang_pick(&rows).1);
+    // (Go three passes ahead and 25 % fewer tokens: a clear win)
+    let rows = [
+        ("python", 7, 10, 600.0),
+        ("js", 7, 10, 620.0),
+        ("ts", 6, 10, 640.0),
+        ("lua", 5, 10, 500.0),
+        ("go", 10, 10, 450.0),
+    ];
+    assert_eq!(lang_pick(&rows).0, "go", "{}", lang_pick(&rows).1);
+}
+
+/// `codemode_lang_probe`'s kept programs checked (`lang_check`, free: no Claude, Docker with no network, one at a
+/// time): per language, programs passing of all, the median output tokens, and Python's constructs outside the planned
+/// subset; then the plan's pick (`lang_pick`). Each program's check folder in `target/live/codemode-lang-check/`.
+/// By hand: `cargo test --test live codemode_lang_check -- --ignored --nocapture`.
+#[test]
+#[ignore = "by hand: Docker (no network in its containers); reads codemode_lang_probe's kept programs"]
+fn codemode_lang_check() {
+    if !have("docker") {
+        return;
+    }
+    let live = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live");
+    let (kept, checks) = (live.join("codemode-lang"), live.join("codemode-lang-check"));
+    let Ok(dir) = std::fs::read_dir(&kept) else {
+        skip("no target/live/codemode-lang: run codemode_lang_probe first");
+        return;
+    };
+    let mut names: Vec<String> = dir.filter_map(|e| e.ok()?.file_name().into_string().ok()).collect();
+    names.retain(|n| n.ends_with(".jsonl"));
+    names.sort();
+    // (each program's pass, output tokens, constructs outside the subset)
+    type Programs = Vec<(bool, u64, Vec<String>)>;
+    let mut by: std::collections::BTreeMap<&str, Programs> = Default::default();
+    for name in &names {
+        let stem = name.trim_end_matches(".jsonl");
+        let Some(lang) = LANGS.iter().find(|l| stem.split('-').rev().nth(2) == Some(l.name)) else {
+            continue;
+        };
+        let stream = std::fs::read_to_string(kept.join(name)).unwrap_or_default();
+        let tokens = output_tokens(&stream);
+        let checked = lang_check(lang.name, &program_of(&result_of(&stream)), &checks.join(stem));
+        eprintln!(
+            "LANG_CHECK {stem}: {} · {tokens} output tokens",
+            match &checked {
+                Ok(o) if o.is_empty() => "passes".to_string(),
+                Ok(o) => format!("passes, outside the subset: {}", o.join(", ")),
+                Err(e) => format!("FAILS: {e}"),
+            }
+        );
+        let (ok, outside) = match checked {
+            Ok(o) => (true, o),
+            Err(_) => (false, Vec::new()),
+        };
+        by.entry(lang.name).or_default().push((ok, tokens, outside));
+    }
+    eprintln!(
+        "LANG_CHECK — language: passed of programs · median output tokens · programs outside the subset"
+    );
+    let mut rows = Vec::new();
+    for lang in &LANGS {
+        let Some(of) = by.get(lang.name) else { continue };
+        let passed = of.iter().filter(|p| p.0).count();
+        let tokens = median(of.iter().map(|p| p.1 as f64).collect());
+        let outside = match lang.name {
+            "python" => of.iter().filter(|p| !p.2.is_empty()).count().to_string(),
+            _ => "—".into(),
+        };
+        eprintln!("LANG_CHECK {}: {passed} of {} · {tokens:.0} · {outside}", lang.name, of.len());
+        rows.push((lang.name, passed, of.len(), tokens));
+    }
+    let (pick, why) = lang_pick(&rows);
+    eprintln!("LANG_CHECK pick: {pick} — {why}");
+    assert!(!rows.is_empty(), "no kept program in {}", kept.display());
+}
+
+/// The check itself checked: a hand-written program in each language passes, the same broken on purpose fails — a
+/// check that passed everything would pass these too — and Python's `import` is seen as outside the subset.
+#[test]
+#[ignore = "by hand: Docker (codemode_lang_check's own check)"]
+fn the_language_check_fails_a_broken_program_in_each_language() {
+    if !have("docker") {
+        return;
+    }
+    let samples: [(&str, &str, &str); 5] = [
+        (
+            "python",
+            "for h in search(\"x\", \"src\", False, False):\n    print(h[\"path\"], h[\"fn\"])\n",
+            "for h in search(\"x\")\n    print(h)\n",
+        ),
+        (
+            "js",
+            "for (const h of search(\"x\")) console.log(h.path);\n",
+            "for (const h of search(\"x\") console.log(h);\n",
+        ),
+        (
+            "ts",
+            "const hits = search(\"x\") as Hit[];\nfor (const h of hits) console.log(h.path);\n",
+            "const n: number = ;\n",
+        ),
+        (
+            "lua",
+            "for _, h in ipairs(search(\"x\")) do print(h.path) end\n",
+            "for _, h in ipairs(search(\"x\")) print(h.path) end\n",
+        ),
+        (
+            "go",
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\thits, err := Search(\"x\", \"\", false, false)\n\tif err != nil \
+             {\n\t\treturn\n\t}\n\tfor _, h := range hits {\n\t\tfmt.Println(h.Path, h.Fn)\n\t}\n}\n",
+            // (a field the stub hasn't: `go vet` type-checks against the bindings, not only the syntax)
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\thits, _ := Search(\"x\", \"\", false, false)\n\tfor _, h := range \
+             hits {\n\t\tfmt.Println(h.Name)\n\t}\n}\n",
+        ),
+    ];
+    let checks = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/codemode-lang-check");
+    for (lang, good, broken) in samples {
+        let ok = lang_check(lang, good, &checks.join(format!("sample-{lang}")));
+        assert!(ok.as_ref().is_ok_and(|o| o.is_empty()), "{lang}'s program fails: {ok:?}");
+        let bad = lang_check(lang, broken, &checks.join(format!("sample-{lang}-broken")));
+        assert!(bad.is_err(), "{lang}'s broken program passes");
+    }
+    let import = lang_check("python", "import re\nprint(re.escape(\"a\"))\n", &checks.join("sample-import"));
+    assert_eq!(import, Ok(vec!["import".to_string()]));
 }

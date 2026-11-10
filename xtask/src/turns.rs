@@ -214,7 +214,7 @@ fn dollars(x: f64) -> String {
 }
 
 /// A Markdown table, its columns padded to line up in a terminal too.
-fn table(head: &[&str], rows: &[Vec<String>]) -> String {
+pub(crate) fn table(head: &[&str], rows: &[Vec<String>]) -> String {
     let w: Vec<usize> = (0..head.len())
         .map(|c| {
             rows.iter().map(|r| r[c].chars().count()).chain([head[c].chars().count()]).max().unwrap_or(0)
